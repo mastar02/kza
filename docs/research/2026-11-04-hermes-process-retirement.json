@@ -1,0 +1,421 @@
+{
+  "schema_version": 1,
+  "task": "T022",
+  "unit": "T022-W/hermes-process-retirement",
+  "status": "verified_local",
+  "private_evidence_root": "data/autonomous-roadmap-20261102/t022/w",
+  "baseline_commit": null,
+  "implementation_commit": "ac8ae1ce450b05efc1d6e3f2c93d02be3fc1a110",
+  "scope": [
+    "One production file, src/llm/hermes_reasoner.py: per-invocation ownership and exceptional retirement of a returned actual Popen from HermesCliReasoner.generate via __call__/_run.",
+    "Actual group-signal request, direct-child wait, independent acquired stdout/stderr close and usage-path custody; uncertain cleanup retains the same actual owner and resources.",
+    "No whole-instance close API, new executor/framework, main/graph integration, async cancellation fix, model/provider request or another backend family."
+  ],
+  "genuine_baseline_red": {
+    "status": "one_genuine_existing_public_API_RED",
+    "scenario_count": 1,
+    "proof": {
+      "path": "data/autonomous-roadmap-20261102/t022/w/baseline-red-proof.json",
+      "sha256": "37929c0954e0f06f91630e38d69eb9d16ff2be68cb941997863f4a8f22ac602f"
+    },
+    "public_API": "HermesCliReasoner.generate",
+    "baseline_source_sha256": "5fe2c24ab09e4c70dd66ce66441a6f1d29aefb52db84070393f85d45f1433903",
+    "probe_terminal_exit_code": 1,
+    "root_driver_terminal_exit_code": 0,
+    "driver_attribution": "Driver0 is root's report of the evidence-capture command, not a successful product/probe result. The saved actual probe terminal is1 and contract_passed=false.",
+    "observed": {
+      "actual_child_ready_before_fault": true,
+      "actual_child_alive_after_public_error": true,
+      "actual_public_generate_returned_with_error": true,
+      "original_communicate_control_preserved": true,
+      "communicate_fault_entries": 1,
+      "actual_wait_entries_before_fixture_cleanup": 0,
+      "actual_wait_returns_before_fixture_cleanup": 0,
+      "stdout_closed_before_fixture_cleanup": false,
+      "stderr_closed_before_fixture_cleanup": false,
+      "usage_file_removed_by_public_call": true,
+      "fixture_reaped_all_actual_children": true,
+      "fixture_closed_all_actual_pipes": true,
+      "contract_passed": false
+    },
+    "limit": "One communicate OSError after readiness of a real test-owned inert direct child. Actual live child/open pipes were observed before the unconditional fixture killed/reaped/closed them. Not a permanent OS leak, real Hermes behavior, private-descendant or SDK retirement claim."
+  },
+  "initial_candidate_failure_not_RED": {
+    "classification": "50PASS plus1 legacy-oracle FAIL on candidate; all10 new real-OS cases passed",
+    "counted_as_product_RED": false,
+    "candidate_source_sha256": "0f5460e1f10460e6b8a231ee4f8f1120f76ef9a2d85f4b717a72041c6fc8f333",
+    "actual_component_terminal_exit_code": 1,
+    "failed_test": "tests.unit.llm.test_hermes_cli_reasoner::test_run_kills_process_group_on_timeout",
+    "reason": "Legacy oracle expected late getpgid(4242)->9999; new owner keeps known initial groupID=PID under unchanged start_new_session. This candidate compatibility failure is retained and is not an additional baseline RED.",
+    "explicit_adaptation": "Only two legacy timeout tests change their PGID lookup expectations to the acquired group. Remove unused getpgid mocks and keep actual killpg/wait assertions. Already-dead test already injected ProcessLookupError at killpg; its fault was NOT relocated from getpgid.",
+    "root_pre_read_correction": "An earlier note incorrectly described the already-dead fault location; focused source confirmed existing killpg injection. The classification preserves that correction explicitly.",
+    "proof": {
+      "path": "data/autonomous-roadmap-20261102/t022/w/initial-compatibility-classification.json",
+      "sha256": "cbd0fe35399fe09fa3f5ae79ae6e1b641af4726945ff2417a9f224bd242af0b3"
+    }
+  },
+  "green_replay": {
+    "status": "original_public_API_GREEN_verified",
+    "probe_terminal_exit_code": 0,
+    "one_baseline_scenario": true,
+    "source_guard_only_changed": true,
+    "normalized_AST_identical": true,
+    "original_error_identity_preserved": true,
+    "actual_child_ready_before_fault": true,
+    "actual_child_alive_after_public_error": false,
+    "actual_wait_entries_before_fixture_cleanup": 1,
+    "actual_wait_returns_before_fixture_cleanup": 1,
+    "stdout_closed_before_fixture_cleanup": true,
+    "stderr_closed_before_fixture_cleanup": true,
+    "usage_file_removed_by_public_call": true,
+    "fixture_actual_reap_and_pipe_close_after_product_observations": true,
+    "contract_passed": true,
+    "proof": {
+      "path": "data/autonomous-roadmap-20261102/t022/w/green-replay-proof.json",
+      "sha256": "f04cc5ba6eca358fba672a6d4aeb250801ebc82b91d0a469597e40253faf4cd6"
+    },
+    "limit": "This guard-only replay observes product wait/pipe receipts before the public original error returns. Later fixture cleanup remains separate, not a substitute product receipt."
+  },
+  "owner_phase_and_exception_contract": {
+    "registration": "A strong per-invocation owner exists before Popen. Returned process is attached before communicate with actual pipes and known initial PGID. Metadata lock is not held around native process operations or callbacks.",
+    "normal": "Successful communicate supplies its real wait receipt; existing elapsed sample, usage/token parsing and text validation retain their positions. Known pipe cleanup and usage unlink must succeed before a text result is accepted; no destructive kill on normal success.",
+    "exceptional": "After communicate failure, request group termination once, observe actual direct-child wait and independently attempt both pipe closes. No launch or communicate replay. A failed group request permits only a nonblocking wait observation rather than an unbounded wait assuming kill succeeded.",
+    "receipt_phase": "Signal entry is not signal return; wait entry is not wait return; raw pipe close return is distinct from successful wrapper close return. A throwing close remains unresolved even if the underlying IO object became closed.",
+    "retained_failure": "Any unresolved phase keeps the owner/actual handle/pipes/usage path strongly registered. No automatic retry, replacement or private state reset. Fixed phase_codes do not retain raw exception objects/messages/tracebacks.",
+    "ordinary_primary": "Original non-timeout communicate OSError preserves type and identity after cleanup attempts; ordinary cleanup failures do not replace it.",
+    "controls": "Original controls preserve their observer contract. A distinct cleanup control is combined with the primary in a local BaseExceptionGroup rather than silently swallowed. Real-OS tests use a contained custom BaseException; they do not claim external-signal/actual KI coverage.",
+    "timeout": "Established timed-out RuntimeError message and original TimeoutExpired cause remain; actual group target is the acquired initial PGID rather than a late unrelated getpgid lookup.",
+    "normal_cleanup_failure": "No text result after otherwise normal communicate if cleanup is uncertain: fixed RuntimeError(hermes_process_retirement_failed), with owner retained.",
+    "launch_unknown": "If Popen was invoked but no handle returned, source records launch_unconfirmed and retains conservative owner/path state. This is uncertainty, not proof that an OS actor was created, leaked or retired.",
+    "usage_path": "Unlink only after confirmed known process/pipe cleanup with no unresolved phase. Unconfirmed child may still write; path retention is intentional. Usage unlink is not physical erasure or a process-exit receipt.",
+    "old_helper": "Existing _kill_process_group body stays unchanged for direct callers; _run now uses owner phase handling."
+  },
+  "new_tests_and_overlap": {
+    "actual_OS_cases": 10,
+    "legacy_Hermes_cases": 41,
+    "all_inside_directed_397": true,
+    "counts_not_additive": true,
+    "cases": [
+      "communicate_error",
+      "primary_control",
+      "timeout",
+      "signal_failure",
+      "wait_failure",
+      "pipe_failure",
+      "pipe_after_close_failure",
+      "cleanup_control",
+      "success",
+      "successful_pipe_failure"
+    ],
+    "causality": "All use actual Popen on an inert executable, actual readiness and saved original wait/pipe operations. Strong owner checked before launch and at communicate. No fake returncode. Normal success returns real trimmed stdout and42 tokens; successful_pipe_failure is armed only after real communicate returned. Fixture receipt is collected after product assertions and actual separate cleanup.",
+    "selection_rule": "10 new OS cases and all41 legacy Hermes IDs are already included in397 directed PASS. Do not add them again or infer a future full total."
+  },
+  "targeted_validation": {
+    "status": "passed_targeted_only",
+    "session_id": 23750,
+    "terminal_exit_code": 0,
+    "counts": {
+      "tests": 397,
+      "passed": 397,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0
+    },
+    "junit_duration_seconds": 70.389,
+    "log_duration_seconds": 70.4,
+    "source_files": 976,
+    "script_files": 37,
+    "source_snapshot_sha256": "dfd03396ae4bd4e0fc27f76502201886653682d78885c48d980684703474d275",
+    "source_unchanged": true,
+    "normal_full_pending": true,
+    "proof": {
+      "path": "data/autonomous-roadmap-20261102/t022/w/targeted-proof.json",
+      "sha256": "b2acc9445e5e6a5f77fcb48bc54482f5126463998e729333da64d0b663fa7595"
+    }
+  },
+  "source_scope": {
+    "snapshot": {
+      "path": "data/autonomous-roadmap-20261102/t022/w/source-snapshot.json",
+      "sha256": "dfd03396ae4bd4e0fc27f76502201886653682d78885c48d980684703474d275"
+    },
+    "file_count": 976,
+    "script_count": 37,
+    "source_sha256": "0f5460e1f10460e6b8a231ee4f8f1120f76ef9a2d85f4b717a72041c6fc8f333",
+    "production_changed": [
+      "src/llm/hermes_reasoner.py"
+    ],
+    "test_added": [
+      "tests/integration/test_hermes_process_retirement.py"
+    ],
+    "test_changed": [
+      "tests/unit/llm/test_hermes_cli_reasoner.py"
+    ],
+    "removed": [],
+    "other_973_source_rows_identical": true,
+    "existing_Hermes_methods_changed": [
+      "_run"
+    ],
+    "other12_Hermes_methods_AST_preserved": true,
+    "legacy_test_functions_changed": [
+      "test_run_kills_process_group_on_timeout",
+      "test_run_timeout_survives_process_already_dead"
+    ],
+    "other_legacy_functions_AST_preserved": true,
+    "new_OS_test_sha256": "cf835dbd9c701581db63d7a0b2af5248dcb1a5488ed86e19e3fb1ce6c47f03ea",
+    "proofs": [
+      {
+        "path": "data/autonomous-roadmap-20261102/t022/w/source-scope-proof.json",
+        "sha256": "a73b0f276a8540066d301c0413ac0f8d49ccf834e79ad85c0f388b0d986b6baa"
+      },
+      {
+        "path": "data/autonomous-roadmap-20261102/t022/w/cross-unit-source-proof.json",
+        "sha256": "75ee2893c814d211b3c890f7a72a9bb31a84737c644e5b9c13e5dde1e8627b30"
+      },
+      {
+        "path": "data/autonomous-roadmap-20261102/t022/w/implementation-notes.json",
+        "sha256": "18b7ea13199425d24b85cd635ae577310b16b139e522818d90628da6cd5304eb"
+      }
+    ]
+  },
+  "full_validation": {
+    "status": "verified_normal_full",
+    "normal_full_verified": true,
+    "session_id": 42715,
+    "attempt_root": "data/autonomous-roadmap-20261102/t022/w/normal-full-attempt-01",
+    "source_head": "ac8ae1ce450b05efc1d6e3f2c93d02be3fc1a110",
+    "source_snapshot_sha256": "dfd03396ae4bd4e0fc27f76502201886653682d78885c48d980684703474d275",
+    "source_files": 976,
+    "script_files": 37,
+    "runner_terminal_exit_code": 0,
+    "pytest_terminal_exit_code": 0,
+    "actual_outcomes": {
+      "tests": 8079,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1,
+      "passed": 8078,
+      "known_xfail": 1,
+      "ordinary_skipped": 0
+    },
+    "duration_seconds": 665.556,
+    "minimum_available_bytes": 74372218880,
+    "storage_aborted": false,
+    "post_run_sources_unchanged": true,
+    "verification_artifact": {
+      "path": "data/autonomous-roadmap-20261102/t022/w/normal-full-attempt-01/acceptance-proof.json",
+      "sha256": "f3ef09dde7efa4928e898cda974f8a504bab14b394a5b42c60e00aa27b0fa915"
+    },
+    "terminal_receipt": {
+      "path": "data/autonomous-roadmap-20261102/t022/w/normal-full-attempt-01/terminal-receipt.json",
+      "sha256": "447ac2ac1d127e14aa424244a439048287cf18475d74bb66f0ec412aa9de954b"
+    },
+    "terminal_artifacts": {
+      "full-runner.py": {
+        "size": 2662,
+        "sha256": "40af6b2043d4349c007e9917aeca7ad375575d437baa19bcbcde8c37c8e99a7f"
+      },
+      "preparation-proof.json": {
+        "size": 489,
+        "sha256": "0be83ec28b48af411a0e85a3113f7be74b30256319722b434fb1ce43436f6454"
+      },
+      "source.json": {
+        "size": 166968,
+        "sha256": "dfd03396ae4bd4e0fc27f76502201886653682d78885c48d980684703474d275"
+      },
+      "source-post.json": {
+        "size": 166968,
+        "sha256": "dfd03396ae4bd4e0fc27f76502201886653682d78885c48d980684703474d275"
+      },
+      "full.log": {
+        "size": 2106747,
+        "sha256": "5018acf1a1836989028499574188fe740ea849a787a1bba3f50bce90ee5e7eaa"
+      },
+      "full.xml": {
+        "size": 2290383,
+        "sha256": "bd7672ba654921e1ecd567c4732bf8c83083c2f4d61c380c2a5e6098cb9c3305"
+      },
+      "full-status.json": {
+        "size": 651,
+        "sha256": "e8d4cdc68970bd4c8a62c20b27aeb735d9f315d0b653a143aa4615027afebe3d"
+      },
+      "storage-telemetry.json": {
+        "size": 167270,
+        "sha256": "7756832c6dd8ce03ef0f4964a94852477ec03818ac030c7484f465e7bd34d0ed"
+      },
+      "terminal-receipt.json": {
+        "size": 453,
+        "sha256": "447ac2ac1d127e14aa424244a439048287cf18475d74bb66f0ec412aa9de954b"
+      }
+    },
+    "unchanged_storage_bytes": {
+      "preflight": 5368709120,
+      "abort_floor": 536870912
+    },
+    "collection_scope": {
+      "prior_V_full_cases": 8069,
+      "all_prior_V_full_ids_preserved": true,
+      "current_ids_equal_prior_full_union_W_directed": true,
+      "new_W_case_ids": 10,
+      "legacy_oracle_changes": "Two existing timeout case IDs preserved; known acquiredPGID replaces late getpgid fake oracle, already-dead killpg fault preserved with explicit wait assertion."
+    },
+    "directed_coverage": {
+      "W": {
+        "unique_directed_cases": 397,
+        "all_in_full": true
+      },
+      "V": {
+        "unique_directed_cases": 298,
+        "all_in_full": true
+      },
+      "H_original29": {
+        "unique_directed_cases": 29,
+        "all_in_full": true
+      },
+      "U": {
+        "unique_directed_cases": 203,
+        "all_in_full": true
+      },
+      "T": {
+        "unique_directed_cases": 191,
+        "all_in_full": true
+      },
+      "S": {
+        "unique_directed_cases": 715,
+        "all_in_full": true
+      },
+      "R": {
+        "unique_directed_cases": 664,
+        "all_in_full": true
+      }
+    },
+    "counts_not_additive": true,
+    "command": [
+      "timeout",
+      "1500",
+      "nice",
+      "-n",
+      "10",
+      "/home/yo/projects/kza/data/project-assessment-20261102/venv/bin/python",
+      "-m",
+      "pytest",
+      "tests",
+      "--junitxml=/home/yo/projects/kza/data/autonomous-roadmap-20261102/t022/w/normal-full-attempt-01/full.xml"
+    ],
+    "environment": {
+      "base": "inherited os.environ.copy; no complete historical environment equality claimed",
+      "explicit_updates": {
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "ANONYMIZED_TELEMETRY": "False"
+      }
+    }
+  },
+  "reviews": [
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/w/baseline-review.json",
+      "sha256": "6075703063a0f273033293636b15f1dac8c4f983c33411de352dbfca9483c53a",
+      "scope": "Independent static probe/entry review; no runtime by reviewer."
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/w/test-review.json",
+      "sha256": "df53a53cf0df996d81e3c7efca180662a2370172e4400bee08639eceda9b93aa",
+      "scope": "Independent static10-case test review, source integration then in progress; no GREEN/runtime inferred."
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/w/process-retirement-design.json",
+      "sha256": "2cb993d20e00b5c5d2bb2251242536dddb820e48caa6d5eeb77cb26153d2879c",
+      "scope": "Private static design, not runtime acceptance."
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/w/process-test-plan.json",
+      "sha256": "781e4f4a520ddee4f9211e266617c93d5fcbfbf786dd0be2ddcf0749e2c7a30c",
+      "scope": "Private bounded OS oracle/test plan."
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/w/implementation-review.json",
+      "sha256": "f527c1d621bc27ab51d5150ed2daa2c6e4c3fe1d43e85d4d4e9a84cf13cc213d",
+      "scope": "Independent exact candidate source0f review approved; scoped W resource/exception contract, no runtime by reviewer."
+    }
+  ],
+  "artifacts_sha256": {
+    "communicate-baseline.py": "2ea2153c309d9afec53b287fb930c93dd896450deae88d39712a0defc019db2a",
+    "communicate-red.log": "c6afb57ad7e5e2657afc0fddbeb40623f22161179542c7e08ae758b4290e7cc5",
+    "communicate-terminal.json": "a5f8b62070b34f19e6977206822d47fdb34494c10b1f151123f436ae35b391e3",
+    "communicate-green.py": "537fc05a81902a6abd3be04d0852489d2f98a94714e920ee08fcc7214e6f0a99",
+    "communicate-green.log": "cfa4ac91e0525d4930f63b2995877524a29d696b2a7a60ea7fa14f64ec7108e7",
+    "communicate-green-terminal.json": "df9cafbfc5985dd86728feed4ad97076d507e016f02d868c2aea118a93950950",
+    "component-initial.xml": "d176a5ef378e4df71f24961fa51e018ade702e0cc540b98b6b3c0608218e378f",
+    "component-initial.log": "d69dba3c41365ceaaf35508f75d9814e16ee8041d5f98d12803bbb36920d01c4",
+    "component-initial-terminal.json": "88a7422e2b19102005b45465fea2f6c5d560bd0cb2cdc70bacc0d4be290f20be",
+    "targeted-initial.xml": "c57f51f50da871503dc532ecdf160ee3f0263bf24bf8243bf3456c7ab80b17dc",
+    "targeted-initial.log": "50551ef9e6f75ea5e440d28b03ec786aee3f0e71f0d7ec39922d67c71ee64f9a",
+    "targeted-initial-terminal.json": "4db3358d6b17462bab45e0cc523de2d9b4c05e723f6ef8aa0e866eb1a2c1996f",
+    "next-implementation-plan.json": "190ea6929e9b35967f3e1c1dc00ea651d712321ff0800af206814e6f1f06edf8",
+    "collection-scope-plan.json": "9b2fdae68885d06adf30230b66f0d62bcaf27fd2f96250352b8d68a521604daa",
+    "implementation-review.json": "f527c1d621bc27ab51d5150ed2daa2c6e4c3fe1d43e85d4d4e9a84cf13cc213d",
+    "implementation-notes.json": "18b7ea13199425d24b85cd635ae577310b16b139e522818d90628da6cd5304eb",
+    "code-staged-proof.json": "f9ca64f8859c4ac79a1892fb4e48859e1ce5cdac417aa01f4894d1f82cc3c316",
+    "code-delivery.json": "6177c47a1144ae9e8b41463d75ee7e242dab02f3e4b3f861d29918ab4a53bf06",
+    "source-scope-proof.json": "a73b0f276a8540066d301c0413ac0f8d49ccf834e79ad85c0f388b0d986b6baa",
+    "cross-unit-source-proof.json": "75ee2893c814d211b3c890f7a72a9bb31a84737c644e5b9c13e5dde1e8627b30",
+    "next-boundary-plan.json": "7c87d00310ce639de6e030bf8a5a504c22f95830a0ce446951bc0eb167b1492a",
+    "normal-full-attempt-01/full-runner.py": "40af6b2043d4349c007e9917aeca7ad375575d437baa19bcbcde8c37c8e99a7f",
+    "normal-full-attempt-01/preparation-proof.json": "0be83ec28b48af411a0e85a3113f7be74b30256319722b434fb1ce43436f6454",
+    "normal-full-attempt-01/source.json": "dfd03396ae4bd4e0fc27f76502201886653682d78885c48d980684703474d275",
+    "normal-full-attempt-01/source-post.json": "dfd03396ae4bd4e0fc27f76502201886653682d78885c48d980684703474d275",
+    "normal-full-attempt-01/full.log": "5018acf1a1836989028499574188fe740ea849a787a1bba3f50bce90ee5e7eaa",
+    "normal-full-attempt-01/full.xml": "bd7672ba654921e1ecd567c4732bf8c83083c2f4d61c380c2a5e6098cb9c3305",
+    "normal-full-attempt-01/full-status.json": "e8d4cdc68970bd4c8a62c20b27aeb735d9f315d0b653a143aa4615027afebe3d",
+    "normal-full-attempt-01/storage-telemetry.json": "7756832c6dd8ce03ef0f4964a94852477ec03818ac030c7484f465e7bd34d0ed",
+    "normal-full-attempt-01/terminal-receipt.json": "447ac2ac1d127e14aa424244a439048287cf18475d74bb66f0ec412aa9de954b",
+    "normal-full-attempt-01/acceptance-proof.json": "f3ef09dde7efa4928e898cda974f8a504bab14b394a5b42c60e00aa27b0fa915"
+  },
+  "excluded_and_copy_limits": [
+    "Actual retained Popen includes .args/prompt/pipes and their transitive data. Fixed safe metadata applies only to the diagnostic phase ledger; it is not absence of payload or erasure in the owner. No handle/args/output repr is serialized as diagnostics.",
+    "Original primary exceptions retain their existing caller traceback contract. A caller-held exception may retain frame data; the owner registry itself stores fixed phase strings, not raw errors.",
+    "Direct-child wait/known parent-pipe receipts do not establish retirement of all descendants, private SDK/native participants, allocator memory or copy destinations. Group signal is a request, not universal descendant retirement.",
+    "No arbitrary repeated-signal atomicity, bounded resistant-process exit, unreturned-constructor actor disposition, load/auth subprocess.run, async complete cancellation or whole-family lifecycle claim.",
+    "No physical deletion/wipe, SDK/model/hardware acceptance or production operation. Conditional usage-path unlink is only the selected filesystem operation, not privacy erasure."
+  ],
+  "product_boundaries": {
+    "objective_not_complete": true,
+    "T022_status": "in_progress",
+    "criteria_total": 21,
+    "criteria_accepted": [],
+    "all_criteria_open": true,
+    "T020_P1_T047": "unchanged",
+    "authority_separation": "Acoustic voice, person, account, session, consent and permissions remain separate; voice identity grants no account authority.",
+    "production": "No deployment, real Hermes/provider/model request, GPU/audio/USB/hardware or production acceptance."
+  },
+  "verified_at_utc": "2026-11-04T17:11:16.192920+00:00",
+  "template": {
+    "path": "data/autonomous-roadmap-20261102/t022/w/evidence-template.json",
+    "sha256": "bb204b5b4df49bf3ea356f1d230de6acbec89da31d3802b34685b4953e583788"
+  },
+  "source_delivery_history": {
+    "status": "source_committed_pushed_directed397_GREEN_full_running",
+    "implementation_commit": "ac8ae1ce450b05efc1d6e3f2c93d02be3fc1a110",
+    "push_session": 79274,
+    "push_terminal_exit_code": 0,
+    "full_session": 42715,
+    "runner_pid": 1186725,
+    "pytest_wrapper_pid": 1187113,
+    "source_snapshot_sha256": "dfd03396ae4bd4e0fc27f76502201886653682d78885c48d980684703474d275",
+    "source_files": 976,
+    "script_files": 37,
+    "targeted_cases": 397,
+    "new_actual_OS_cases": 10,
+    "full_pending": true,
+    "source_scope": "Hermes returned-Popen exceptional retirement; other12classmethods ASTunchanged;2explicit legacy timeout oraclechanges",
+    "objective_not_complete": true
+  },
+  "history_note": "Earlier pending/null template and code-delivery fields describe immutable earlier stages. The final normal-full result is recorded separately here.",
+  "next_boundary": {
+    "plan": {
+      "path": "data/autonomous-roadmap-20261102/t022/w/next-boundary-plan.json",
+      "sha256": "7c87d00310ce639de6e030bf8a5a504c22f95830a0ce446951bc0eb167b1492a"
+    },
+    "runtime": "not_run",
+    "scope": "Hermes native-job and graph lifetime after complete observer cancellation; W process-owner retention is not graph waiting."
+  }
+}
