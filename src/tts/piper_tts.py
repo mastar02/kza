@@ -6,9 +6,6 @@ Soporta streaming para menor latencia percibida.
 
 from __future__ import annotations
 
-import asyncio
-from contextlib import contextmanager
-from contextvars import Context
 import logging
 import math
 import time
@@ -663,164 +660,64 @@ class XTTS:
         self.speaker_wav = speaker_wav
 
 
-class _TTSLease:
-    def __init__(self, owner):
-        self.owner = owner
-        self.active = True
-
-
 class _TTSRetirementError(RuntimeError):
     """A fixed lifecycle failure, without retaining a native exception."""
 
 
-class _TTSLifecycle:
-    """Per-instance admission; a suspended stream retains an independent lease."""
+class _TTSLifecycle(_AdapterLifecycle):
+    """Keep legacy TTS contracts on the shared identity/retirement owner."""
 
     def _tts_initialize(self):
-        self._tts_condition = threading.Condition()
-        self._tts_local = threading.local()
-        self._tts_active = 0
-        self._tts_sealed = False
-        self._tts_close_started = False
-        self._tts_close_owner = None
-        self._tts_close_done = threading.Event()
-        self._tts_failure = None
-        self._tts_closing = None
-        self._tts_retained_iterators = []
+        self._adapter_initialize('tts')
+
+    @property
+    def _tts_active(self) -> int:
+        return self._adapter_active
+
+    @property
+    def _tts_sealed(self) -> bool:
+        return self._adapter_sealed
+
+    @property
+    def _tts_retained_iterators(self):
+        return tuple(self._adapter_retained_iterators.values())
 
     def _tts_current(self):
-        lease = getattr(self._tts_local, "lease", None)
-        return lease if lease is not None and lease.owner is self and lease.active else None
+        return self._adapter_current()
 
-    def _tts_reserve(self, *, independent=False):
-        current = self._tts_current()
-        if current is not None and not independent:
-            return current, False
-        with self._tts_condition:
-            if self._tts_sealed and current is None:
-                raise RuntimeError("tts_closed")
-            self._tts_active += 1
-            return _TTSLease(self), True
-
-    @contextmanager
-    def _tts_entered(self, lease):
-        previous = getattr(self._tts_local, "lease", None)
-        self._tts_local.lease = lease
-        try:
-            yield
-        finally:
-            self._tts_local.lease = previous
-
-    def _tts_release(self, lease):
-        with self._tts_condition:
-            if lease.active:
-                lease.active = False
-                self._tts_active -= 1
-                self._tts_condition.notify_all()
-
-    @contextmanager
     def _tts_admit(self):
-        lease, owned = self._tts_reserve()
-        try:
-            with self._tts_entered(lease):
-                yield
-        finally:
-            if owned:
-                self._tts_release(lease)
+        return self._adapter_admit()
 
-    def _tts_close_iterator(self, source):
-        close = getattr(source, "close", None)
-        if close is not None:
-            try:
-                close()
-            except BaseException:
-                # Failed close is not proof that the delegated generator retired.
-                with self._tts_condition:
-                    self._tts_retained_iterators.append(source)
-                    self._tts_sealed = True
-                    self._tts_condition.notify_all()
-                raise
+    def _tts_stream_admit(self):
+        return self._adapter_stream_admit()
 
-    def _tts_require_retired_iterators(self):
-        with self._tts_condition:
-            if self._tts_retained_iterators:
-                raise _TTSRetirementError("tts_iterator_close_failed")
+    def _tts_entered(self, lease):
+        return self._adapter_entered(lease)
 
     def _tts_require_close_caller(self):
-        if self._tts_current() is not None:
-            raise RuntimeError("tts_close_from_worker")
-        with self._tts_condition:
-            if self._tts_close_owner is threading.current_thread() and not self._tts_close_done.is_set():
-                raise RuntimeError("tts_close_from_owner")
+        self._adapter_require_close_caller()
 
-    def request_close(self) -> None:
-        """Seal new admission using memory only; never wait for model/native work."""
-        with self._tts_condition:
-            self._tts_sealed = True
-            self._tts_condition.notify_all()
+    def _tts_close_iterator(self, source, *, exhausted: bool=False):
+        self._adapter_close_iterator(source, exhausted=exhausted)
 
-    def wait_closed(self) -> None:
-        """Join actual operations/stream exits synchronously, outside the event loop."""
-        self._tts_require_close_caller()
-        self.request_close()
-        with self._tts_condition:
-            own_close = not self._tts_close_started
-            if own_close:
-                self._tts_close_started = True
-                self._tts_close_owner = threading.current_thread()
-        if own_close:
-            failure = None
-            try:
-                with self._tts_condition:
-                    while self._tts_active:
-                        self._tts_condition.wait()
-                self._tts_release_resources()
-            except _TTSRetirementError as error:
-                failure = str(error)
-            except BaseException:
-                failure = "tts_close_failed"
-            with self._tts_condition:
-                self._tts_failure = failure
-                self._tts_close_owner = None
-                self._tts_close_done.set()
-        else:
-            self._tts_close_done.wait()
-        if self._tts_failure is not None:
-            raise RuntimeError(self._tts_failure)
+    def _tts_require_retired_iterators(self):
+        if self._adapter_retained_iterators:
+            raise _TTSRetirementError('tts_iterator_close_failed')
 
-    def close(self) -> None:
-        """Synchronous retained retirement; async callers use begin_close/aclose."""
-        self.wait_closed()
+    def _adapter_release_resources(self):
+        self._tts_release_resources()
 
-    def begin_close(self) -> asyncio.Task:
-        """Return the retained owner; observe via shield/aclose, never cancel it."""
-        self._tts_require_close_caller()
-        loop = asyncio.get_running_loop()
-        self.request_close()
-        with self._tts_condition:
-            if self._tts_closing is None:
-                async def finish():
-                    # Publish the owner outside the condition, even with eager tasks.
-                    await asyncio.sleep(0)
-                    await asyncio.to_thread(self.wait_closed)
-
-                self._tts_closing = loop.create_task(finish(), context=Context())
-                self._tts_closing.add_done_callback(
-                    lambda done: None if done.cancelled() else done.exception(), context=Context(),
-                )
-            return self._tts_closing
-
-    async def aclose(self) -> None:
-        closing = self.begin_close()
-        cancelled = False
-        while not closing.done():
-            try:
-                await asyncio.shield(closing)
-            except asyncio.CancelledError:
-                cancelled = True
-        closing.result()
-        if cancelled:
-            raise asyncio.CancelledError
+    def _adapter_close_failure_code(self, phase: str, error: BaseException) -> str:
+        if phase == 'iterators' and self._adapter_retained_iterators:
+            return 'tts_iterator_close_failed'
+        if phase == 'resource' and type(error) is _TTSRetirementError:
+            args = error.args
+            if len(args) == 1 and type(args[0]) is str:
+                if args[0] == 'tts_iterator_close_failed':
+                    return 'tts_iterator_close_failed'
+                if args[0] == 'tts_backend_close_unsupported':
+                    return 'tts_backend_close_unsupported'
+        return 'tts_close_failed'
 
 
 class KokoroTTS(_TTSLifecycle):
@@ -877,75 +774,98 @@ class KokoroTTS(_TTSLifecycle):
             )
             raise
 
-    def synthesize(self, text: str, voice: str = None) -> tuple[np.ndarray, float]:
+    def synthesize(self, text: str, voice: str=None) -> tuple[np.ndarray, float]:
         """Sintetizar con Kokoro.
 
         KPipeline.__call__ devuelve un generator de Result (un chunk por
         segmento según split_pattern). Concatenamos los chunks y pasamos
         el audio a np.ndarray.
         """
-        source = result = chunk = chunks = audio = None
+        raw_source = source = result = chunk = chunks = audio = None
+        exhausted = False
         try:
             with self._tts_admit():
-                with self._model_lock:
-                    if self._model is None:
-                        self.load()
-                    voice = voice or self.default_voice
-                    start = time.perf_counter()
-                    chunks = []
-                    try:
-                        source = iter(self._model(text, voice=voice))
-                        for result in source:
-                            chunk = result.audio
-                            if chunk is None:
-                                continue
-                            if hasattr(chunk, "cpu"):
-                                chunk = chunk.cpu().numpy()
-                            chunks.append(chunk)
-                        if not chunks:
-                            audio = np.zeros(0, dtype=np.float32)
-                        elif len(chunks) == 1:
-                            audio = chunks[0]
-                        else:
-                            audio = np.concatenate(chunks)
-                        elapsed_ms = (time.perf_counter() - start) * 1000
-                        logger.debug("Kokoro TTS completed in %.0fms", elapsed_ms)
-                        return audio, elapsed_ms
-                    finally:
-                        if source is not None:
-                            self._tts_close_iterator(source)
+                try:
+                    with self._model_lock:
+                        if self._model is None:
+                            self.load()
+                        voice = voice or self.default_voice
+                        start = time.perf_counter()
+                        chunks = []
+                        try:
+                            raw_source = self._model(text, voice=voice)
+                            if raw_source is not None:
+                                self._adapter_track_iterator(raw_source)
+                            source = iter(raw_source)
+                            self._adapter_track_iterator(source)
+                            while True:
+                                try:
+                                    result = next(source)
+                                except StopIteration:
+                                    exhausted = True
+                                    break
+                                chunk = result.audio
+                                if chunk is None:
+                                    continue
+                                if hasattr(chunk, 'cpu'):
+                                    chunk = chunk.cpu().numpy()
+                                chunks.append(chunk)
+                            if not chunks:
+                                audio = np.zeros(0, dtype=np.float32)
+                            elif len(chunks) == 1:
+                                audio = chunks[0]
+                            else:
+                                audio = np.concatenate(chunks)
+                            elapsed_ms = (time.perf_counter() - start) * 1000
+                            logger.debug('Kokoro TTS completed in %.0fms', elapsed_ms)
+                            return (audio, elapsed_ms)
+                        finally:
+                            try:
+                                self._tts_close_iterator(source, exhausted=exhausted)
+                            finally:
+                                if raw_source is not source:
+                                    self._tts_close_iterator(raw_source, exhausted=exhausted)
+                finally:
+                    raw_source = text = voice = source = result = chunk = chunks = audio = _ = None
         finally:
-            text = voice = source = result = chunk = chunks = audio = None
+            raw_source = text = voice = source = result = chunk = chunks = audio = _ = None
 
     def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
-        """Admit on first next; retain computed PCM until exhaustion or close.
-
-        Closing before first next owns no lease and starts no inference.
-        """
-        lease = audio = None
+        """Admit on first next; retain each unchanged 4096-sample PCM view."""
+        lease = audio = chunk = None
         try:
-            lease, _ = self._tts_reserve(independent=True)
-            with self._tts_entered(lease):
-                audio, _ = self.synthesize(text)
-            text = None
-            for i in range(0, len(audio), 4096):
-                yield audio[i:i + 4096]
+            with self._tts_stream_admit() as lease:
+                try:
+                    with self._tts_entered(lease):
+                        audio, _ = self.synthesize(text)
+                    text = None
+                    for i in range(0, len(audio), 4096):
+                        with self._tts_entered(lease):
+                            chunk = audio[i:i + 4096]
+                        yield chunk
+                finally:
+                    try:
+                        with self._tts_entered(lease):
+                            text = audio = chunk = _ = None
+                    finally:
+                        text = audio = chunk = _ = None
         finally:
-            text = audio = None
-            if lease is not None:
-                self._tts_release(lease)
+            text = audio = chunk = _ = None
 
-    def speak(self, text: str, blocking: bool = True):
+    def speak(self, text: str, blocking: bool=True):
         """Sintetizar y reproducir"""
         audio = None
         try:
             with self._tts_admit():
-                audio, _ = self.synthesize(text)
-                sd.play(audio, samplerate=self.sample_rate)
-                if blocking:
-                    sd.wait()
+                try:
+                    audio, _ = self.synthesize(text)
+                    sd.play(audio, samplerate=self.sample_rate)
+                    if blocking:
+                        sd.wait()
+                finally:
+                    text = audio = _ = None
         finally:
-            text = audio = None
+            text = audio = _ = None
 
     def _tts_release_resources(self):
         self._tts_require_retired_iterators()
@@ -1150,9 +1070,7 @@ class DualTTS(_TTSLifecycle):
             return "kokoro"
         return "qwen3"
 
-    def synthesize(
-        self, text: str, force_quality: bool = False
-    ) -> tuple[np.ndarray, float, str]:
+    def synthesize(self, text: str, force_quality: bool=False) -> tuple[np.ndarray, float, str]:
         """
         Sintetizar eligiendo motor automaticamente.
 
@@ -1162,54 +1080,76 @@ class DualTTS(_TTSLifecycle):
         audio = None
         try:
             with self._tts_admit():
-                if self.qwen3 and (force_quality or self._select_engine(text) == "qwen3"):
-                    audio, elapsed = self.qwen3.synthesize(text)
-                    return audio, elapsed, "qwen3"
-                audio, elapsed = self.kokoro.synthesize(text)
-                return audio, elapsed, "kokoro"
+                try:
+                    if self.qwen3 and (force_quality or self._select_engine(text) == 'qwen3'):
+                        audio, elapsed = self.qwen3.synthesize(text)
+                        return (audio, elapsed, 'qwen3')
+                    audio, elapsed = self.kokoro.synthesize(text)
+                    return (audio, elapsed, 'kokoro')
+                finally:
+                    text = audio = _ = None
         finally:
-            text = audio = None
+            text = audio = _ = None
 
     def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
-        """Admit on first next and retain the delegated generator's real exit.
-
-        Closing before first next owns no lease and starts no inference.
-        """
-        lease = source = chunk = engine = None
+        """Admit on first next; retain both returned source and its iterator."""
+        lease = raw_source = source = chunk = engine = None
+        exhausted = False
         try:
-            lease, _ = self._tts_reserve(independent=True)
-            with self._tts_entered(lease):
-                engine = self.qwen3 if self._select_engine(text) == "qwen3" and self.qwen3 else self.kokoro
-                source = iter(engine.synthesize_stream(text))
-            text = None
-            while True:
+            with self._tts_stream_admit() as lease:
                 try:
                     with self._tts_entered(lease):
-                        chunk = next(source)
-                except StopIteration:
-                    break
-                yield chunk
+                        engine = self.qwen3 if self._select_engine(text) == 'qwen3' and self.qwen3 else self.kokoro
+                        raw_source = engine.synthesize_stream(text)
+                        if raw_source is not None:
+                            self._adapter_track_iterator(raw_source)
+                        source = iter(raw_source)
+                        self._adapter_track_iterator(source)
+                    text = None
+                    while True:
+                        try:
+                            with self._tts_entered(lease):
+                                chunk = next(source)
+                        except StopIteration:
+                            exhausted = True
+                            break
+                        yield chunk
+                finally:
+                    try:
+                        with self._tts_entered(lease):
+                            try:
+                                self._tts_close_iterator(source, exhausted=exhausted)
+                            finally:
+                                if raw_source is not source:
+                                    self._tts_close_iterator(raw_source, exhausted=exhausted)
+                    finally:
+                        text = raw_source = source = chunk = engine = None
         finally:
-            try:
-                if source is not None:
-                    with self._tts_entered(lease):
-                        self._tts_close_iterator(source)
-            finally:
-                text = source = chunk = engine = None
-                if lease is not None:
-                    self._tts_release(lease)
+            text = raw_source = source = chunk = engine = None
 
-    def speak(self, text: str, blocking: bool = True):
+    def speak(self, text: str, blocking: bool=True):
         """Sintetizar y reproducir."""
         audio = None
         try:
             with self._tts_admit():
-                audio, _, _ = self.synthesize(text)
-                sd.play(audio, samplerate=self.sample_rate)
-                if blocking:
-                    sd.wait()
+                try:
+                    audio, _, _ = self.synthesize(text)
+                    sd.play(audio, samplerate=self.sample_rate)
+                    if blocking:
+                        sd.wait()
+                finally:
+                    text = audio = _ = None
         finally:
-            text = audio = None
+            text = audio = _ = None
+
+    def _adapter_require_close_caller(self) -> None:
+        super()._adapter_require_close_caller()
+        # Validate reviewed owned children in the original caller, before an
+        # async bridge can reuse a suspended stream's latest consumer Thread.
+        # Children remain open until all admitted parent delegation has drained.
+        for engine in self._owned_tts_engines:
+            if isinstance(engine, _TTSLifecycle):
+                engine._adapter_require_close_caller()
 
     def _tts_release_resources(self):
         self._tts_require_retired_iterators()
@@ -1218,7 +1158,15 @@ class DualTTS(_TTSLifecycle):
         # after the parent drain, preserving already admitted delegation/streams.
         for engine in self._owned_tts_engines:
             if isinstance(engine, _TTSLifecycle):
-                engine.close()
+                if (
+                    type(engine).close is _AdapterLifecycle.close
+                    and type(engine).wait_closed is _AdapterLifecycle.wait_closed
+                    and "close" not in vars(engine)
+                    and "wait_closed" not in vars(engine)
+                ):
+                    engine._adapter_wait_closed()
+                else:
+                    engine.close()
             else:
                 unsupported = True
         if unsupported:

@@ -155,11 +155,20 @@ class _AdapterLifecycle:
             self._adapter_sealed = True
             self._adapter_condition.notify_all()
 
+    def _adapter_close_failure_code(self, _phase: str, _error: BaseException) -> str:
+        """Map a trusted close stage to a fixed code, never SDK error text."""
+        return self._adapter_prefix + '_close_failed'
+
     def wait_closed(self) -> None:
         """Retire once, keeping metadata/SDK failure terminal and observable."""
         self._adapter_require_close_caller()
+        self._adapter_wait_closed()
+
+    def _adapter_wait_closed(self) -> None:
+        """Drain after the original caller has passed the public close guard."""
         admission = self._CloseAdmission(
             threading.current_thread(), self._adapter_prefix + "_close_failed")
+        phase = "admission"
         try:
             self.request_close()
             with self._adapter_condition:
@@ -170,20 +179,23 @@ class _AdapterLifecycle:
                     self._adapter_close_started = True
                     self._adapter_close_owner = admission.owner
             if self._adapter_close_admission is admission:
+                phase = "drain"
                 with self._adapter_condition:
                     while any(lease.active for lease in self._adapter_leases):
                         # Notifications are advisory, including cleanup faults.
                         self._adapter_condition.wait(.05)
+                phase = "iterators"
                 if self._adapter_retained_iterators:
                     raise RuntimeError(self._adapter_prefix + "_iterator_close_failed")
+                phase = "resource"
                 self._adapter_release_resources()
                 admission.failure = None
-        except BaseException:
+        except BaseException as error:
             if self._adapter_close_admission is not admission:
                 raise
             # Preserve the established fixed close-error contract. An uncertain
             # metadata/disposal failure never admits a second resource release.
-            admission.failure = self._adapter_prefix + "_close_failed"
+            admission.failure = self._adapter_close_failure_code(phase, error)
         finally:
             if self._adapter_close_admission is admission:
                 try:
@@ -221,7 +233,13 @@ class _AdapterLifecycle:
                 async def finish():
                     # Publish the task outside the condition even with eager tasks.
                     await asyncio.sleep(0)
-                    await asyncio.to_thread(self.wait_closed)
+                    if (
+                        type(self).wait_closed is _AdapterLifecycle.wait_closed
+                        and "wait_closed" not in vars(self)
+                    ):
+                        await asyncio.to_thread(self._adapter_wait_closed)
+                    else:
+                        await asyncio.to_thread(self.wait_closed)
 
                 self._adapter_closing = loop.create_task(finish(), context=Context())
                 self._adapter_closing.add_done_callback(
