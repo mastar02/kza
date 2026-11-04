@@ -1135,7 +1135,8 @@
         "cc8578836dec02308468e84d094ffe478d5ee53b",
         "7e1b0fe632215a22657c0e8710b67c03769620eb",
         "e6e753fdbb924683da757da15a5cce01779f7491",
-        "8a6df6dd1875a0aae59b733192b5aaaac9fff27c"
+        "8a6df6dd1875a0aae59b733192b5aaaac9fff27c",
+        "089cdb620fb2af3dfb0f6930e803337a6ab1cf2d"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t022/a/evidence.json",
@@ -1153,9 +1154,10 @@
         "data/autonomous-roadmap-20261102/t022/m/evidence.json",
         "data/autonomous-roadmap-20261102/t022/n/evidence.json",
         "data/autonomous-roadmap-20261102/t022/o/evidence.json",
-        "data/autonomous-roadmap-20261102/t022/p/evidence.json"
+        "data/autonomous-roadmap-20261102/t022/p/evidence.json",
+        "data/autonomous-roadmap-20261102/t022/q/evidence.json"
       ],
-      "next_action": "T022-P verificada localmente: Kokoro/Dual comparten leases por identidad y cierre de intento único, con limpieza de PCM/SDK dentro de admisión y fuente/iterador retenidos antes de iterar. Se comprueba al llamador original a través de coordinadores e hijos propios, preservando overrides públicos y etiquetas fijas. Selección, cálculo, intervalos y vistas de 4096 conservados; 30 RED únicos y 49 casos nuevos con regresiones y full congelada en evidencia. Continuar T022-Q: reconciliar 29 familias, productores/actores/copias/destinos actuales y followups N/O supersedidos sin borrar historia. Executor compartido saturado, SDK privado y matriz T023/T024 siguen sin prueba completa. T021/T022 y C03/C04/C06/C20 abiertos; M/G/J/K y ENOSPC K sin causa acreditada, HA resistente >60 s incumplido. T047 NEXO y autoridades separadas conservadas."
+      "next_action": "T022-Q verificada como inventario documental: 29 familias y 174 facetas, linaje A–P y destinos T023/T024; fuente idéntica a P y límites por participante explícitos. Continuar T022-R: propietarios y retiro de clientes síncronos HttpReasoner principal y de compactación, incluida la fábrica parcial, con RED real antes del cambio. Arranque STT, metadatos Parakeet/wake, SDK/copias y CLI conservan brechas; T021/T022 y C03/C04/C06/C20 abiertos. HA resistente >60 s incumplido y causas históricas M/G/J/K/ENOSPC K sin atribuir. T020/P1/T047 y autoridades separadas conservados."
     },
     {
       "id": "T023",
@@ -2336,7 +2338,7 @@
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T022-P/tts-lifecycle-retirement",
+    "last_verified_unit": "T022-Q/resource-inventory-reconciliation",
     "user_priority_after_admin_unit": "T047"
   }
 }
