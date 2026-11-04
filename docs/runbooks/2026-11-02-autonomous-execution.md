@@ -2696,3 +2696,11 @@ El snapshot de src/tests/tools/scripts contiene **968 archivos**, incluidos **37
 **R no está verificada localmente**: la regresión normal completa no se inició porque falla su precondición conservada de **5 GiB libres**. No se redujeron el corpus, el umbral ni el límite de aborto de 512 MiB. Revalidar capacidad y ejecutar esa regresión antes de cerrar R. La full P conserva su atribución histórica y no acredita este código.
 
 Esto no prueba borrado de copias, retiro de Tasks privadas de HTTPX/AnyIO, constructores sin handle retornado ni participantes desconocidos. No se ejecutaron modelos, solicitudes reales al SDK, hardware o producción. T021/T022 y los criterios siguen abiertos; T020/P1/T047 y la separación entre voz, persona, cuenta, consentimiento y permisos permanecen intactos.
+
+### Conservación y retirada del temporal de la full P
+
+Se retiró únicamente la encarnación comprobada de `/tmp/pytest-of-yo/pytest-430`, ligada al recibo terminal de P por dispositivo, inode, propietario y tiempos. Sus 21.006 entradas se conservaron en un archivo privado de 79.183.130 bytes, con manifiesto por ruta y verificación de bytes, tipos, modos, tiempos, enlaces simbólicos y los tres enlaces físicos. El FIFO se conservó como metadatos, sin abrirlo. Un inventario fresco y las comprobaciones de referencias precedieron al cambio de nombre y a la retirada; la visibilidad de procesos siguió limitada por permisos.
+
+La retirada terminó y el archivo permaneció verificado. El espacio disponible aumentó en 1.005.707.264 bytes durante esa operación; las mediciones posteriores volvieron a variar y no se atribuyen a una causa histórica. No se retiraron los otros temporales candidatos, logs, XML, snapshots, dependencias, modelos, otros proyectos ni producción. Los 103 artefactos históricos de R y sus 968 archivos de código/pruebas/herramientas/scripts conservan sus hashes.
+
+La regresión normal completa sigue sin iniciarse: la medición posterior conserva menos de 5 GiB libres. R continúa pendiente de esa verificación. El plan de ejecución mantiene el runner normal, el intérprete, la cobertura y los umbrales de capacidad; la operación de almacenamiento no añade una nueva certificación de producto. Evidencia: `docs/research/2026-11-04-http-reasoner-storage.json` y `data/autonomous-roadmap-20261102/t022/r/storage-recovery/evidence.json`.

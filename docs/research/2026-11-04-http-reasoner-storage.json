@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "unit": "T022-R/scoped-test-scratch-recovery",
+  "status": "completed_reclamation_full_still_pending",
+  "baseline_revision": "325015aed565c527fb99e5a26ba9d46640006555",
+  "implementation_revision": "f7301b2fbeaa35b949bc8848719a25d69463350b",
+  "criteria_accepted": [],
+  "source_root": "/tmp/pytest-of-yo/pytest-430",
+  "source_identity": [
+    64512,
+    6160454,
+    1011,
+    1793765902172898807,
+    1793765902172898807
+  ],
+  "source_allocated_bytes": 1005744128,
+  "verified_archive": {
+    "path": "data/autonomous-roadmap-20261102/t022/r/storage-recovery/pytest-430-preserved.tar.gz",
+    "sha256": "6db1495090ecfc00e8d758487aa083865f397b3820525860bfbcf8053f81ce9d",
+    "bytes": 79183130,
+    "mode": "0600",
+    "parent_mode": "0700",
+    "entries": 21006,
+    "regular_paths": 13645,
+    "directories": 5329,
+    "symlinks": 2031,
+    "hardlinks_preserved": 3,
+    "fifo_entries": 1,
+    "fifo_payload_opened": false,
+    "manifest_path": "data/autonomous-roadmap-20261102/t022/r/storage-recovery/pytest-430-manifest.json",
+    "manifest_bytes": 7801558,
+    "manifest_sha256": "b5cd3f631a7d25d8b02857abf8bce1e00ba6188a3896d2a2b52975089515f95c"
+  },
+  "execution": {
+    "archive_session": 53023,
+    "archive_terminal_exit_code": 0,
+    "release_session": 35180,
+    "release_terminal_exit_code": 0,
+    "raw_and_quarantine_absent": true,
+    "observed_available_delta_during_release_bytes": 1005707264,
+    "available_after_release_bytes": 1718779904,
+    "archive_verified_after_release": true
+  },
+  "latest_full_preflight": {
+    "checked_at_utc": "2026-11-04T07:55:15.409070+00:00",
+    "available_bytes": 1507151872,
+    "minimum_bytes": 5368709120,
+    "abort_floor_bytes": 536870912,
+    "status": "not_started_capacity_preflight_failed",
+    "source_files": 968,
+    "scripts": 37,
+    "policy_unchanged": true,
+    "full_started": false
+  },
+  "latest_deficit_bytes": 3861557248,
+  "integrity": {
+    "status": "passed",
+    "recorded_at_utc": "2026-11-04T07:58:47.266866+00:00",
+    "original_r_artifacts_verified": 103,
+    "source_files_verified": 968,
+    "script_files_preserved": 37,
+    "source_snapshot_sha256": "897a537819abcc9f068843368fb0d66b1fd1ac39d539dbffd37db842c663ad39",
+    "application_or_tests_changed": false,
+    "source_scope_unchanged": true
+  },
+  "private_evidence_root": "data/autonomous-roadmap-20261102/t022/r/storage-recovery",
+  "evidence_sha256": {
+    "candidate-audit.json": "27b6fd67d0de47c11fcde537574beee3355277aebae1193495750dde25d20e9b",
+    "archive-review.json": "2b22b6a15a7f62ab4f5412dc332d97fdda328051ddff3e644329adeea9a8d10c",
+    "release-review.json": "a25270c4d1943c6134c576343eea18759df16629e364785c0a9ba905321d25ab",
+    "archive_pytest430.py": "b840f619cfaf67d4578619156876c5d717f587e1700dfb4bd8228dcfe0d7dff9",
+    "release_pytest430.py": "372ff420aa5887a67be8f640a6df5bec516a66c0c822132bae9c7b16a72d60cf",
+    "archive-verification.json": "375c1b01bdd00cf13a76256d7bf72118824cee83f79267ecb07824ca0067b38b",
+    "raw-release.json": "2678ec9d5a0111e1f2814602b7b9d1422f1d526b2171a8940e1e392f63fa5d17",
+    "pytest-430-manifest.json": "b5cd3f631a7d25d8b02857abf8bce1e00ba6188a3896d2a2b52975089515f95c",
+    "integrity-proof.json": "0defd114dabb1414809ebf6300913daaf126cca0b88f93d4e7a28409200511a0",
+    "full-command-plan.json": "444abac3e0ea5751a3593ff40b43e072b8899d98f3bb84b7fddbbbf52df4fbcd"
+  },
+  "limits": [
+    "Only the proven terminal P pytest-430 root was retired, after complete byte/type/link/metadata verification and a fresh matching inventory.",
+    "Permission-limited same-UID process/lock checks observed no references; they do not prove universal absence.",
+    "Pytest431/432, R runtime directories, six previously excluded stateful kza roots, accepted logs/XML/snapshots, dependencies, models, other projects and production were not retired.",
+    "Available-space observations can vary independently of this action; no historical ENOSPC cause is attributed.",
+    "The normal full regression has not started; 5 GiB admission and 512 MiB abort thresholds remain unchanged. R is not verified_local.",
+    "Prior 664 directed tests, 67 new cases and 13 tracking tests retain their original scope; this storage operation is not new product verification."
+  ]
+}
