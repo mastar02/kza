@@ -1137,7 +1137,8 @@
         "e6e753fdbb924683da757da15a5cce01779f7491",
         "8a6df6dd1875a0aae59b733192b5aaaac9fff27c",
         "089cdb620fb2af3dfb0f6930e803337a6ab1cf2d",
-        "f7301b2fbeaa35b949bc8848719a25d69463350b"
+        "f7301b2fbeaa35b949bc8848719a25d69463350b",
+        "a87e8048e83af48d5f737e83ebd0f15628e939b2"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t022/a/evidence.json",
@@ -1160,9 +1161,11 @@
         "docs/research/2026-11-04-http-reasoner-ownership.json",
         "data/autonomous-roadmap-20261102/t022/r/evidence.json",
         "docs/research/2026-11-04-http-reasoner-storage.json",
-        "data/autonomous-roadmap-20261102/t022/r/storage-recovery/evidence.json"
+        "data/autonomous-roadmap-20261102/t022/r/storage-recovery/evidence.json",
+        "docs/research/2026-11-04-pinned-start-admission.json",
+        "data/autonomous-roadmap-20261102/t022/s/evidence.json"
       ],
-      "next_action": "T022-R implementada y commiteada con 664 casos dirigidos aprobados, incluidos 67 nuevos y los 6 RED originales. No está verified_local: falta la regresión normal completa sobre los 968 archivos (37 scripts), detenida por la precondición intacta de 5 GiB. Revalidar capacidad y ejecutar la full antes de dar R por verificada; luego abordar las brechas restantes de arranque STT, metadatos Parakeet/wake y SDK/copias/CLI. T021/T022 y C03/C04/C06/C20 abiertos; causas M/G/J/K/ENOSPC K sin atribuir y HA resistente >60 s pendiente. T020/P1/T047 y autoridades separadas conservados."
+      "next_action": "T022-S implementada:715 casos dirigidos aprobados, incluidos los664 de R,2 nuevos de admisión y la expectativa before_start anterior sustituida explícitamente. R/S no están verified_local: falta la regresión normal completa sobre el snapshot ampliado de969 archivos y37 scripts. Su precondición de5 GiB y aborto de512 MiB permanecen intactos; la medición posterior a la selección es inferior al umbral. Conservar esta evidencia, obtener capacidad y usar un destino nuevo del runner normal con el snapshot actual antes de verificar R/S. Quedan metadatos Parakeet/wake y SDK/copias/CLI; T021/T022 y C03/C04/C06/C20 abiertos. Causas M/G/J/K/ENOSPC K sin atribuir y HA resistente >60 s pendiente; T020/P1/T047 y autoridades separadas conservados."
     },
     {
       "id": "T023",

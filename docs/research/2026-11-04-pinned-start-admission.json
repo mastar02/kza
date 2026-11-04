@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "unit": "T022-S/pinned-start-admission",
+  "status": "implemented_directed_full_pending_capacity",
+  "implementation_commit": "a87e8048e83af48d5f737e83ebd0f15628e939b2",
+  "baseline_commit": "fc622d3fe8126aa201b3a62dc79b90c376bef882",
+  "criteria_accepted": [],
+  "baseline_red": {
+    "scenarios": 1,
+    "failed_properties": 3,
+    "terminal_exit_code": 1,
+    "source_sha256": "adf5b602931d9900b962f493f7b4dd1d00ee87868e3e9e2fe612d1b4becfa3c4",
+    "proof": "data/autonomous-roadmap-20261102/t022/s/start-admission-red-proof.json",
+    "limit": "Fault leaf invokes no original Thread.start and creates no pinned OS worker; this is an observed ownership/receipt/retry contract failure, not an observed OS actor leak."
+  },
+  "green_replay": {
+    "same_scenario_body": true,
+    "source_guard_only_changed": true,
+    "terminal_exit_code": 0,
+    "actual_thread_and_queue_retained": true,
+    "start_invocations": 1,
+    "subsequent_submit": "BrokenThreadPool",
+    "shutdown": "RuntimeError",
+    "native_handle_done": false,
+    "callable_invocations": 0
+  },
+  "directed_validation": {
+    "status": "passed_directed_only",
+    "session_id": 42560,
+    "terminal_exit_code": 0,
+    "counts": {
+      "tests": 715,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "duration_seconds": 100.418,
+    "source_snapshot_sha256": "3c0365bc7b956624aaa4dd2ee4b456bacd46fb7bfdcbc92e0fcae30433fca61f",
+    "source_files": 969,
+    "script_files": 37,
+    "source_unchanged_through_run": true,
+    "r_application_core_files_preserved": true,
+    "normal_full_verified": false
+  },
+  "r_prior_664_case_ids_included": true,
+  "targeted_stt": {
+    "baseline_positive": 22,
+    "candidate_targeted": 25,
+    "candidate_targeted_xml": "data/autonomous-roadmap-20261102/t022/s/targeted-owner.xml",
+    "new_cases": 2,
+    "legacy_before_start_case_superseded": 1
+  },
+  "source_scope": {
+    "status": "pass",
+    "actual_changed_application_paths": [
+      "src/stt/pinned_executor.py"
+    ],
+    "runtime_guard_and_constructor_AST_unchanged": true,
+    "legacy_after_start_body_AST_unchanged": true,
+    "legacy_before_start_explicitly_superseded": true,
+    "whisper_fast_byte_unchanged": true,
+    "r_five_application_files_unchanged": true,
+    "scope_files": 969,
+    "scope_scripts": 37,
+    "source_snapshot_sha256": "3c0365bc7b956624aaa4dd2ee4b456bacd46fb7bfdcbc92e0fcae30433fca61f",
+    "limits": "The R historical whole-snapshot is superseded for future full execution by this broader current snapshot; R and S remain full_pending_capacity."
+  },
+  "source_sha256": {
+    "src/stt/pinned_executor.py": "8752b957c898b846575f8986284ed6dda95fceecf32b96b2fae0230fac23166b",
+    "tests/unit/stt/test_pinned_executor_start_admission.py": "a814f19c1e6108cd49e686cf504050fd7802e2da7cfda62f5cb028911bdbec62",
+    "tests/integration/test_stt_submit_retirement.py": "fceba6c697130d65d63365ac564faf8dfca85855c13ca954750273efeea41399"
+  },
+  "full_validation": {
+    "status": "not_started_capacity_preflight_failed",
+    "checked_at_utc": "2026-11-04T09:08:13.868728+00:00",
+    "available_bytes": 300634112,
+    "minimum_bytes": 5368709120,
+    "abort_floor_bytes": 536870912,
+    "source_files": 969,
+    "script_files": 37,
+    "policy_unchanged": true
+  },
+  "review": {
+    "path": "data/autonomous-roadmap-20261102/t022/s/implementation-review.json",
+    "sha256": "08a39a7e8191aaae915c1e14f8a5b9e58244b219813e8e1e3d732df454bb8eba",
+    "approved": true
+  },
+  "behavior": [
+    "Before calling start, a registration failure proves that this candidate was not dispatched and can be removed.",
+    "After invoked start throws, zero ident and an unset Python Event alone cannot certify absence; without native completion, retain exact Thread/queue and reject a successor.",
+    "A known native worker remains usable for its admitted work and model disposal on that same worker. Shutdown joins actual exit outside SDK submit locks.",
+    "An unconfirmed join fails with a fixed safe code. Whisper and its graph model owner report failure and retain their original model/executor references."
+  ],
+  "legacy_resolution": "The before_start node remains collected but now checks finite failure, no retry and retained model/Thread ownership in an isolated child. Its after_start body and native/bootstrap/authority checks are preserved; original D source/evidence is unchanged.",
+  "private_evidence_root": "data/autonomous-roadmap-20261102/t022/s",
+  "limits": [
+    "Directed selections overlap:715 includes all664 prior R cases; totals are not additive.",
+    "No full regression has started. The future normal full must use the broader969-file/37-script current snapshot and cover R and S; historical P/R results do not verify it.",
+    "No physical model/GPU/audio/USB operation, real model SDK request, production change or acceptance criterion is proved.",
+    "No automatic recovery of an unconfirmed native admission, private allocator erasure, orphan queue replay policy for positively absent workers or broader SDK metadata atomicity is certified.",
+    "T021/T022 and criteria remain open; T020/P1/T047 and voice/person/account/consent/permission boundaries remain unchanged."
+  ]
+}
