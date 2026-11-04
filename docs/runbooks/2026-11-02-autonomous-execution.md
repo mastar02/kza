@@ -2680,3 +2680,19 @@ Quedan registradas además las ventanas de arranque incierto del executor STT y 
 Documento de inventario verificado en `089cdb6`. Las referencias, estructura y alcance documental tienen revisión independiente. Los comandos y resultados de la validación de tracking se conservan en `data/autonomous-roadmap-20261102/t022/q/evidence.json`. Esta unidad no contiene cambios de producto ni una nueva ejecución de la full.
 
 T021/T022 y C03/C04/C06/C20 siguen abiertos. Las causas históricas M/G/J/K y ENOSPC K permanecen sin atribuir; el retiro HA resistente a cancelación mayor a 60 segundos sigue incumplido. T020/P1/T047 se conservan. La asociación vocal-persona mantiene separados identidad acústica, cuentas, consentimiento y permisos.
+
+## Retiro de HttpReasoner principal y de compactación
+
+T022-R implementa la propiedad de los clientes SDK/HTTP de ambas instancias. Los bundles se registran antes del descubrimiento, incluidos los fallos del constructor SDK posteriores a adquirir HTTPX. Las cargas explícitas siguen reconectando y admiten concurrencia; cada cliente adquirido conserva un propietario hasta su retiro. La fábrica registra ambos reasoners antes de cargar en un worker y vincula sus prestatarios al cierre de privacidad.
+
+El propietario espera las llamadas síncronas, Tasks y recursos por petición reales. Los streams conservan la fuente y su iterador distinto hasta completar su cierre. Las Tasks internas que cierran respuestas y cuerpos HTTP reservan su pertenencia antes del despacho. La lectura con deadline tiene una Task explícita: CPython 3.13 puede ejecutar una corutina directamente dentro de `wait_for`. No se mantiene TLS de Thread a través de un yield o await.
+
+El cierre asíncrono drena las operaciones en el loop antes de ocupar el executor prestado para disponer el SDK. `aclose` conserva el despacho público de `begin_close` y la cancelación del observador no sustituye el recibo de salida. Un cierre fallido o incierto conserva el recurso y falla ante el propietario del grafo; HTTPX marcado como cerrado no acredita la salida de su transporte ni permite reintentar un cierre incierto.
+
+La selección final aprueba **664 casos**, incluidos **67 nuevos** y los seis fallos originales de adquisición/fábrica. Incluye ambos reasoners retenidos, postludios del SDK, autoridad de privacidad, cancelación repetida y fallos antes/después del despacho. Las correcciones de fixtures conservan procedencia vigente validada por el ledger, el contrato `chat` del compactador local y las comprobaciones de identidad y autoridad. Se mantienen los intentos fallidos y sus diagnósticos; sus resultados no se suman.
+
+El snapshot de src/tests/tools/scripts contiene **968 archivos**, incluidos **37 scripts**, y permanece idéntico durante la selección. Ruff y el chequeo de diff pasan. La evidencia y los límites están en `docs/research/2026-11-04-http-reasoner-ownership.json` y `data/autonomous-roadmap-20261102/t022/r/evidence.json`.
+
+**R no está verificada localmente**: la regresión normal completa no se inició porque falla su precondición conservada de **5 GiB libres**. No se redujeron el corpus, el umbral ni el límite de aborto de 512 MiB. Revalidar capacidad y ejecutar esa regresión antes de cerrar R. La full P conserva su atribución histórica y no acredita este código.
+
+Esto no prueba borrado de copias, retiro de Tasks privadas de HTTPX/AnyIO, constructores sin handle retornado ni participantes desconocidos. No se ejecutaron modelos, solicitudes reales al SDK, hardware o producción. T021/T022 y los criterios siguen abiertos; T020/P1/T047 y la separación entre voz, persona, cuenta, consentimiento y permisos permanecen intactos.

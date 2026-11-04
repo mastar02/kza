@@ -1136,7 +1136,8 @@
         "7e1b0fe632215a22657c0e8710b67c03769620eb",
         "e6e753fdbb924683da757da15a5cce01779f7491",
         "8a6df6dd1875a0aae59b733192b5aaaac9fff27c",
-        "089cdb620fb2af3dfb0f6930e803337a6ab1cf2d"
+        "089cdb620fb2af3dfb0f6930e803337a6ab1cf2d",
+        "f7301b2fbeaa35b949bc8848719a25d69463350b"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t022/a/evidence.json",
@@ -1155,9 +1156,11 @@
         "data/autonomous-roadmap-20261102/t022/n/evidence.json",
         "data/autonomous-roadmap-20261102/t022/o/evidence.json",
         "data/autonomous-roadmap-20261102/t022/p/evidence.json",
-        "data/autonomous-roadmap-20261102/t022/q/evidence.json"
+        "data/autonomous-roadmap-20261102/t022/q/evidence.json",
+        "docs/research/2026-11-04-http-reasoner-ownership.json",
+        "data/autonomous-roadmap-20261102/t022/r/evidence.json"
       ],
-      "next_action": "T022-Q verificada como inventario documental: 29 familias y 174 facetas, linaje A–P y destinos T023/T024; fuente idéntica a P y límites por participante explícitos. Continuar T022-R: propietarios y retiro de clientes síncronos HttpReasoner principal y de compactación, incluida la fábrica parcial, con RED real antes del cambio. Arranque STT, metadatos Parakeet/wake, SDK/copias y CLI conservan brechas; T021/T022 y C03/C04/C06/C20 abiertos. HA resistente >60 s incumplido y causas históricas M/G/J/K/ENOSPC K sin atribuir. T020/P1/T047 y autoridades separadas conservados."
+      "next_action": "T022-R implementada y commiteada con 664 casos dirigidos aprobados, incluidos 67 nuevos y los 6 RED originales. No está verified_local: falta la regresión normal completa sobre los 968 archivos (37 scripts), detenida por la precondición intacta de 5 GiB. Revalidar capacidad y ejecutar la full antes de dar R por verificada; luego abordar las brechas restantes de arranque STT, metadatos Parakeet/wake y SDK/copias/CLI. T021/T022 y C03/C04/C06/C20 abiertos; causas M/G/J/K/ENOSPC K sin atribuir y HA resistente >60 s pendiente. T020/P1/T047 y autoridades separadas conservados."
     },
     {
       "id": "T023",

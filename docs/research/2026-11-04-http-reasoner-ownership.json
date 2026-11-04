@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "unit": "T022-R/http-reasoner-ownership",
+  "status": "implemented_targeted_full_pending_capacity",
+  "implementation_commit": "f7301b2fbeaa35b949bc8848719a25d69463350b",
+  "baseline_commit": "f2913e01804e8b5e814ca303d8c799b3908210e5",
+  "criteria_accepted": [],
+  "genuine_baseline_red": {
+    "acquisition": 2,
+    "factory": 4,
+    "evidence": [
+      "acquisition-red-proof.json",
+      "factory-red-proof.json"
+    ],
+    "limits": "Original acquired handles and actual factory exits; absent new APIs are not RED evidence."
+  },
+  "targeted_validation": {
+    "status": "passed_targeted_only",
+    "session_id": 27228,
+    "terminal_exit_code": 0,
+    "counts": {
+      "tests": 664,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "duration_seconds": 97.21,
+    "new_unique_cases": 67,
+    "source_snapshot": "final-source-snapshot.json",
+    "source_snapshot_sha256": "897a537819abcc9f068843368fb0d66b1fd1ac39d539dbffd37db842c663ad39",
+    "source_files": 968,
+    "script_files": 37,
+    "source_unchanged_through_test": true,
+    "log": "final-targeted.log",
+    "xml": "final-targeted.xml",
+    "full": "full-preflight.json"
+  },
+  "full_validation": {
+    "status": "not_started_capacity_preflight_failed",
+    "checked_at_utc": "2026-11-04T07:13:32.508231+00:00",
+    "available_bytes": 1340866560,
+    "minimum_bytes": 5368709120,
+    "abort_floor_bytes": 536870912,
+    "source_files": 968,
+    "script_files": 37,
+    "policy_unchanged": true,
+    "cleanup_performed": false,
+    "limits": "No normal full regression was launched or inferred from P. Other projects/dependencies/models/production and historical evidence were not removed."
+  },
+  "ownership": [
+    "Instance-owned SDK/HTTP acquisition bundles registered before fallible discovery; explicit repeated loads remain concurrent and reconnect.",
+    "Actual synchronous Thread calls and async Task/child identities; source/iterator and request-local cleanup retain their lifetimes.",
+    "Internal HTTP response/body closes reserve ownership before dispatch; the default None branch preserves prior transport behavior.",
+    "Both factory-created HTTP reasoners are registered before off-loop load; borrower drains precede model disposal and privacy writer-lease retirement.",
+    "Failed or uncertain disposal remains observable, strongly retained, and is not retried based on HTTPX CLOSED flags."
+  ],
+  "preserved": [
+    "Endpoint/model/options, consent gates, generation payloads/metrics, separate per-request async resources.",
+    "Default transport None branch, LLMReasoner/FastRouter, shared executor ownership and unrelated nominal fake peers.",
+    "T020/P1/T047, all 21 acceptance criteria, voice/person/account/consent/permission separation."
+  ],
+  "iterations": [
+    {
+      "xml": "component-contracts-initial.xml",
+      "passed": 38,
+      "failed": 11,
+      "fixes": [
+        "Public begin_close delegation retained by facade aclose.",
+        "Explicit reserved read Task; CPython3.13 wait_for can await a bare coroutine inline.",
+        "Read fixture followup expects its configured SSE payload."
+      ]
+    },
+    {
+      "xml": "component-contracts-fixed.xml",
+      "passed": 49,
+      "failed": 0
+    },
+    {
+      "xml": "graph-dispatch-initial.xml",
+      "passed": 3,
+      "failed": 9,
+      "fixture_fixes": [
+        "Main reasoner identity belongs to ResponseHandler, not ApplicationModels.",
+        "Compaction turn requires a current source accepted by the actual ledger.",
+        "Safe ResourceFailure messages include the kind suffix."
+      ]
+    },
+    {
+      "xml": "dispatch-fixed.xml",
+      "passed": 4,
+      "failed": 0
+    },
+    {
+      "xml": "graph-fixed.xml",
+      "passed": 4,
+      "failed": 4,
+      "fixture_fix": "Local compaction transport is chat; preserve that real endpoint contract."
+    },
+    {
+      "xml": "graph-chat.xml",
+      "passed": 8,
+      "failed": 0
+    }
+  ],
+  "source_files": 968,
+  "script_files": 37,
+  "changed_source_sha256": {
+    "src/main.py": "a57cb7ec895e08444809e13adbe0cb6770b67a8fc698b4e4b280b54f29b5a8e9",
+    "src/application.py": "32d57d0f3df97f4108dc5c586eef18c573823cbac5a836d49283d177aec8da66",
+    "src/llm/reasoner.py": "998918497663536d606ba832afd44e541f4362dd478c88a9f7766be2c994bad2",
+    "src/llm/http_generation.py": "028c71cc2cf652aa0a008f7429c477b9a70564d883e5beae9d730af21653b148",
+    "src/llm/http_reasoner_lifecycle.py": "5f69d976a9dced8cc231360f5d71fb6d15dd749a2b53fd9a397cc637934a37f8"
+  },
+  "evidence_root": "data/autonomous-roadmap-20261102/t022/r",
+  "limits": [
+    "The 664-case directed run includes all 67 new cases; historical selections and retries are not additive.",
+    "Normal full regression was not started: the unchanged 5 GiB precondition failed. R is not verified_local.",
+    "No real SDK/model requests, GPU/model loads, hardware window, production deployment or acceptance criterion was authorized or performed.",
+    "No universal retirement of private HTTPX/AnyIO Tasks, unreturned constructor internals, copied payload destinations or unknown participants is proved.",
+    "T021/T022 and C03/C04/C06/C20 remain open; historical M/G/J/K/ENOSPC K and HA cancellation over 60 s remain unresolved."
+  ]
+}
