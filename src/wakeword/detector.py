@@ -21,7 +21,15 @@ logger = logging.getLogger(__name__)
 class _WakeLease:
     def __init__(self, owner):
         self.owner = owner
+        self.thread = threading.current_thread()
         self.active = True
+
+
+class _WakeClose:
+    def __init__(self):
+        self.owner = threading.current_thread()
+        # None is pending; the sole owner publishes one immutable outcome.
+        self.result: tuple[str | None] | None = None
 
 class _WakeLifecycle:
     """Retain this adapter's real operations without owning its callers' data."""
@@ -29,46 +37,59 @@ class _WakeLifecycle:
     def _wake_initialize(self) -> None:
         self._wake_condition = threading.Condition()
         self._wake_local = threading.local()
-        self._wake_active = 0
+        self._wake_leases = []
         self._wake_sealed = False
-        self._wake_close_started = False
-        self._wake_close_owner = None
-        self._wake_close_done = threading.Event()
-        self._wake_failure = None
+        self._wake_close: _WakeClose | None = None
         self._wake_closing = None
+
+    @property
+    def _wake_active(self) -> int:
+        return sum(lease.active for lease in self._wake_leases)
 
     def _wake_current(self):
         lease = getattr(self._wake_local, "lease", None)
-        return lease if lease is not None and lease.owner is self and lease.active else None
+        return lease if (lease is not None and lease.owner is self
+                         and lease.thread is threading.current_thread()
+                         and lease.active) else None
 
     @contextmanager
     def _wake_admit(self):
         lease = self._wake_current()
         owned = lease is None
         if owned:
-            with self._wake_condition:
-                if self._wake_sealed:
-                    raise RuntimeError("wake_closed")
-                lease = _WakeLease(self)
-                self._wake_active += 1
+            lease = _WakeLease(self)
         previous = getattr(self._wake_local, "lease", None)
-        self._wake_local.lease = lease
         try:
-            yield
-        finally:
-            self._wake_local.lease = previous
             if owned:
                 with self._wake_condition:
-                    lease.active = False
-                    self._wake_active -= 1
-                    self._wake_condition.notify_all()
+                    if self._wake_sealed:
+                        raise RuntimeError("wake_closed")
+                    self._wake_leases.append(lease)
+            self._wake_local.lease = lease
+            yield
+        finally:
+            # Logical exit precedes fallible TLS restoration and notification.
+            if owned:
+                lease.active = False
+            try:
+                self._wake_local.lease = previous
+            finally:
+                if owned:
+                    with self._wake_condition:
+                        self._wake_leases = [
+                            active for active in self._wake_leases if active.active
+                        ]
+                        self._wake_condition.notify_all()
 
     def _wake_require_close_caller(self) -> None:
-        if self._wake_current() is not None:
-            raise RuntimeError("wake_close_from_worker")
+        current = threading.current_thread()
         with self._wake_condition:
-            if (self._wake_close_owner is threading.current_thread()
-                    and not self._wake_close_done.is_set()):
+            if any(lease.active and lease.thread is current
+                   for lease in self._wake_leases):
+                raise RuntimeError("wake_close_from_worker")
+            closing = self._wake_close
+            if (closing is not None and closing.owner is current
+                    and closing.result is None):
                 raise RuntimeError("wake_close_from_owner")
 
     def request_close(self) -> None:
@@ -78,31 +99,44 @@ class _WakeLifecycle:
             self._wake_condition.notify_all()
 
     def wait_closed(self) -> None:
-        """Drain actual operations and drop only this adapter's Python references."""
+        """Drain actual operations and publish one truthful close outcome."""
         self._wake_require_close_caller()
         self.request_close()
-        with self._wake_condition:
-            own_close = not self._wake_close_started
-            if own_close:
-                self._wake_close_started = True
-                self._wake_close_owner = threading.current_thread()
-        if own_close:
-            failure = None
-            try:
+        candidate = _WakeClose()
+        failure = "wake_close_failed"
+        try:
+            with self._wake_condition:
+                if self._wake_close is None:
+                    self._wake_close = candidate
+            if self._wake_close is candidate:
                 with self._wake_condition:
                     while self._wake_active:
-                        self._wake_condition.wait()
+                        self._wake_condition.wait(timeout=0.05)
                 self._wake_release_resources()
-            except BaseException:
-                failure = "wake_close_failed"
+                failure = None
+        except BaseException:
+            if self._wake_close is not candidate:
+                raise
+            failure = "wake_close_failed"
+        finally:
+            if self._wake_close is candidate:
+                try:
+                    with self._wake_condition:
+                        self._wake_condition.notify_all()
+                except BaseException:
+                    failure = "wake_close_failed"
+                finally:
+                    # Publish after fallible notification/lock exit so success
+                    # cannot become visible before a later metadata failure.
+                    candidate.result = (failure,)
+        closing = self._wake_close
+        while closing.result is None:
             with self._wake_condition:
-                self._wake_failure = failure
-                self._wake_close_owner = None
-                self._wake_close_done.set()
-        else:
-            self._wake_close_done.wait()
-        if self._wake_failure is not None:
-            raise RuntimeError(self._wake_failure)
+                if closing.result is None:
+                    self._wake_condition.wait(timeout=0.05)
+        failure = closing.result[0]
+        if failure is not None:
+            raise RuntimeError(failure)
 
     def close(self) -> None:
         """Synchronous retirement; async callers use begin_close or aclose."""
