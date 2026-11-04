@@ -2473,3 +2473,97 @@ HA resistente supera 60 s. Las causas de G, los primeros intervalos J/K y ENOSPC
 no están acreditadas. T047 conserva integración local y autoridades separadas.
 Sigue T022-N con enrollment y su reserva interna Speaker; el script se incluirá
 expresamente en el próximo snapshot de fuentes.
+
+## Retiro de recursos de inscripción de voz
+
+T022-N incorpora dueños explícitos para la inscripción standalone y corrige
+la admisión interna de Speaker. El alcance son referencias Python conocidas y
+actores observados; el inventario completo y las copias privadas del SDK siguen
+pendientes.
+
+### Propiedad y resultados de inscripción
+
+La sesión registra sus dueños antes de cargar Speaker o el Silero directo de
+Hub. El holder VAD conserva modelo, utilidades y módulo hasta que terminan las
+operaciones admitidas. Hub no ofrece una API de cierre: el holder sólo retira
+sus propias referencias, sin inventar dispose, limpiar caches globales ni usar
+la fábrica Silero seleccionada por habitación.
+
+La carga WAV, el trim, la extracción y los cálculos salen de sus scopes antes
+del retiro de la sesión. Se liberan listas y aliases de PCM y embeddings por
+muestra; sólo la media final y las estadísticas necesarias pasan a publicación.
+Los dos cierres se inician antes de esperar el primero. Las salidas sin audio,
+dry-run, rechazo y archivos se emiten después del retiro confirmado.
+
+Los fallos del flujo propietario salen de sus handlers SDK y se reconstruyen
+con descriptores fijos. Se conservan los controles conocidos y códigos escalares
+seguros de SystemExit. Un fallo de retiro conserva el dueño fuerte y no concede
+una confirmación falsa. Esto no sanea excepciones retenidas por otros llamadores
+ni borra copias internas del SDK, destinos persistentes o logs emitidos.
+
+### Admisión y cierre internos de Speaker
+
+Tres RED con el adaptador real mostraron reservas sin productor: interrupción
+de Condition al admitir load o embedding y al reservar close. Un observador
+nativo externo seguía vivo; los hijos terminaron sin rescatar flags. Dos RED de
+inscripción mostraron modelo retenido con wrapper visible y anuncios de dry-run
+anteriores al retiro de modelo y utilidades VAD.
+
+Las leases por identidad registran el Thread real. El try protege publicación
+y TLS; una lease propia se desactiva antes de restaurar TLS o notificar. Los
+scopes anidados conservan la lease del padre. El guard reconoce al Thread antes
+de instalar TLS, incluso desde llamadas externas al owner genérico.
+
+Un token único resuelve el intento de cierre. Su fallo inicial es pesimista;
+los seguidores consultan el recibo terminal por sondeo, sin depender de una
+señal única. El cierre normal espera a sus productores. Un intento fallido
+conserva su fallo y no acredita retiro exitoso; el owner genérico retiene el
+adaptador sin confirmación. Una disposición incierta no se repite. Los fallos
+de ese tramo mantienen el contrato fijo `speaker_close_failed`; no se promete
+preservar todos los controles brutos del cierre. Las APIs async y la clase
+SpeakerIdentifier, incluidos sus cálculos y fallbacks, conservan su AST.
+
+### Algoritmos y publicación de perfiles
+
+Los helpers load_wav, vad_trim e intra_user_consistency conservan su AST.
+También los dos loops de selección/extracción y el prefijo CLI/discovery.
+Se mantienen PCM int16/int32 y media de canales, 16 kHz estricto, ventana VAD
+exclusiva final, estado recurrente sin eval/reset añadido y fórmulas de media,
+consistencia y normalización. No se cambia device ni la selección de modelo.
+
+Dry-run sigue devolviendo 0 antes de rechazar por consistencia; el rechazo
+normal devuelve 2 salvo force y la falta de entrada válida devuelve 1. El
+orden durable conserva mkdir, NPY, construcción de metadata y JSON. El cast
+`int(dim)`, la relativización de source_dirs y created_at siguen después de NPY;
+un error puede dejar el mismo artefacto parcial que antes. No se agrega borrado
+ni transacción de ambos archivos. Los metadatos describen el modelo/device solicitado,
+sin convertirlos en prueba de la procedencia real de un fallback.
+
+El usuario vocal, su embedding y force no autentican una cuenta ni conceden
+roles, consentimiento o contexto personal. T047 conserva autoridades separadas.
+
+### Verificación y continuidad de inscripción
+
+Pasan 54 casos nuevos: 40 de inscripción y 14 de admisión Speaker. Los cinco
+RED quedan preservados; los tres Speaker pasaron después de corregir su
+lifecycle y los dos de inscripción pasaron antes de ampliar la cobertura.
+También pasan 182 regresiones existentes de Speaker y los benchmarks. Los
+casos de finalizadores y postludios observan handles nativos reales, sin
+confundir salida del target con salida del Thread.
+
+T022-N queda verificada localmente en `7e1b0fe`. Full: 7836 casos
+más la xfail conocida en 578.68 segundos, con 938
+archivos idénticos durante la corrida. Evidencia privada:
+`data/autonomous-roadmap-20261102/t022/n/evidence.json`.
+
+El snapshot y su verificador incluyen src, tests, tools y scripts, con el hash
+del script modificado explícito. Las hojas SDK/WAV son sintéticas y se usan los
+wrappers y actores reales; no se acredita precisión ECAPA, latencia física,
+GPU/VRAM ni aceptación de campo.
+
+El mapa de 29 familias sigue incompleto. WAV fuente, NPY, JSON y logs son
+destinos distintos; linaje, consentimiento, caducidad, mute, borrado y restore
+siguen en T023/T024. Continúa el benchmark de latencia y sus modelos/transportes.
+T021/T022 y C03/C04/C06/C20 permanecen abiertos. Las causas históricas de M
+(respuesta y observador wake), G y los primeros intervalos J/K, además de ENOSPC
+K, siguen sin acreditarse. HA resistente supera 60 segundos.
