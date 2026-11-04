@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "unit": "T022-R/scoped-test-scratch-recovery",
-  "status": "completed_reclamation_full_still_pending",
+  "status": "completed_reclamation_full_subsequently_verified",
   "baseline_revision": "325015aed565c527fb99e5a26ba9d46640006555",
   "implementation_revision": "f7301b2fbeaa35b949bc8848719a25d69463350b",
   "criteria_accepted": [],
@@ -81,7 +81,36 @@
     "Permission-limited same-UID process/lock checks observed no references; they do not prove universal absence.",
     "Pytest431/432, R runtime directories, six previously excluded stateful kza roots, accepted logs/XML/snapshots, dependencies, models, other projects and production were not retired.",
     "Available-space observations can vary independently of this action; no historical ENOSPC cause is attributed.",
-    "The normal full regression has not started; 5 GiB admission and 512 MiB abort thresholds remain unchanged. R is not verified_local.",
+    "At the storage checkpoint the normal full had not started and R was not verified_local; that observation is historical. A later combined R/S normal full is recorded separately in later_full_validation. The5GiB admission and512MiB abort thresholds were unchanged.",
     "Prior 664 directed tests, 67 new cases and 13 tracking tests retain their original scope; this storage operation is not new product verification."
-  ]
+  ],
+  "historical_status": "completed_reclamation_full_still_pending",
+  "later_full_validation": {
+    "counts": {
+      "tests": 8023,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1,
+      "passed": 8022,
+      "known_xfail": 1,
+      "ordinary_skipped": 0
+    },
+    "duration_seconds": 657.279,
+    "session_id": 52003,
+    "source_snapshot_sha256": "3c0365bc7b956624aaa4dd2ee4b456bacd46fb7bfdcbc92e0fcae30433fca61f",
+    "source_files": 969,
+    "script_files": 37,
+    "source_unchanged": true,
+    "storage_aborted": false,
+    "minimum_available_bytes": 71874314240,
+    "minimum_preflight_bytes": 5368709120,
+    "abort_floor_bytes": 536870912,
+    "status": "verified_normal_full",
+    "scope": "combined_R_S_snapshot",
+    "evidence": "docs/research/2026-11-04-r-s-normal-full.json",
+    "attempt_root": "data/autonomous-roadmap-20261102/t022/s/normal-full-attempt-01",
+    "verification_receipt": "data/autonomous-roadmap-20261102/t022/s/normal-full-attempt-01/acceptance-proof.json",
+    "verification_receipt_sha256": "78bf3123abda7447521646a7dfe8d21e61b2e329bc34a030a5d55655b9bab6a7",
+    "terminal_exit_code": 0
+  }
 }

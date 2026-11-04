@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "unit": "T022-R-S/shared-normal-full",
+  "status": "verified_local",
+  "source_head": "ac16f3913bc0df7d8c32ef76041ba9bf52777605",
+  "source_snapshot_sha256": "3c0365bc7b956624aaa4dd2ee4b456bacd46fb7bfdcbc92e0fcae30433fca61f",
+  "source_files": 969,
+  "script_files": 37,
+  "source_unchanged": true,
+  "counts": {
+    "tests": 8023,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 1,
+    "passed": 8022,
+    "known_xfail": 1,
+    "ordinary_skipped": 0
+  },
+  "known_xfail": [
+    {
+      "classname": "tests.unit.nlu.test_regex_extractor",
+      "name": "test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]",
+      "skipped": [
+        {
+          "type": "pytest.xfail",
+          "message": "limitación documentada del regex puro"
+        }
+      ]
+    }
+  ],
+  "duration_seconds": 657.279,
+  "session_id": 52003,
+  "runner_terminal_exit_code": 0,
+  "pytest_terminal_exit_code": 0,
+  "started_at_utc": "2026-11-04T13:08:35.371929+00:00",
+  "finished_at_utc": "2026-11-04T13:19:38.553624+00:00",
+  "storage_preflight": {
+    "at_utc": "2026-11-04T13:08:35.371913+00:00",
+    "monotonic": 2458127.087612546,
+    "available_bytes": 72494612480,
+    "tmp_available_bytes": 72494612480,
+    "free_inodes": 48475266,
+    "tmp_free_inodes": 48475266
+  },
+  "minimum_available_bytes": 71874314240,
+  "storage_aborted": false,
+  "minimum_preflight_bytes": 5368709120,
+  "abort_floor_bytes": 536870912,
+  "interpreter": "Python 3.13.12",
+  "command": [
+    "timeout",
+    "1500",
+    "nice",
+    "-n",
+    "10",
+    "/home/yo/projects/kza/data/project-assessment-20261102/venv/bin/python",
+    "-m",
+    "pytest",
+    "tests",
+    "--junitxml=/home/yo/projects/kza/data/autonomous-roadmap-20261102/t022/s/normal-full-attempt-01/full.xml"
+  ],
+  "environment": {
+    "base": "inherited os.environ.copy; no complete historical environment equality claimed",
+    "explicit_updates": {
+      "HF_HUB_OFFLINE": "1",
+      "TRANSFORMERS_OFFLINE": "1",
+      "ANONYMIZED_TELEMETRY": "False"
+    }
+  },
+  "directed_coverage": {
+    "s_unique_cases": 715,
+    "r_unique_cases": 664,
+    "all_r_in_s": true,
+    "all_s_in_full": true,
+    "counts_not_additive": true
+  },
+  "artifacts": {
+    "full-runner.py": {
+      "size": 2662,
+      "sha256": "3550dfc26792efecb74723dc451ac5a04db4cf39ebea835b71d666f8bf96ba02"
+    },
+    "source.json": {
+      "size": 165652,
+      "sha256": "3c0365bc7b956624aaa4dd2ee4b456bacd46fb7bfdcbc92e0fcae30433fca61f"
+    },
+    "source-post.json": {
+      "size": 165652,
+      "sha256": "3c0365bc7b956624aaa4dd2ee4b456bacd46fb7bfdcbc92e0fcae30433fca61f"
+    },
+    "preparation-proof.json": {
+      "size": 489,
+      "sha256": "6ce50da852d7eac58712aaf4d69172235d51904c16df2ceaeb98910f119642f5"
+    },
+    "full-status.json": {
+      "size": 652,
+      "sha256": "44ac4d667de8ef17a3e5161fd0cff1868870ce09536bc5f1377b68069106f434"
+    },
+    "full.log": {
+      "size": 2099177,
+      "sha256": "2ab4bef9d42626c8213f83ae04c82f5c5a443277a0906031e0b41437f62c7540"
+    },
+    "full.xml": {
+      "size": 2281547,
+      "sha256": "834c72d076d2e928de960a10e78c37ee187ac56a20c284edd571fa37c1ddd167"
+    },
+    "storage-telemetry.json": {
+      "size": 165285,
+      "sha256": "c91c4c4ce8fe86e42acc3f3d3c4bfba9e85662f6bd32fe388e9204fbd40afb1c"
+    },
+    "terminal-receipt.json": {
+      "size": 249,
+      "sha256": "fd846eaf4ca349a0db53b95820ae1da2c88ddd7d7b6ffabd10a5d74621472b00"
+    }
+  },
+  "limits": [
+    "Scoped local R/S verification only; parent T022 remains in_progress and all21 acceptance criteria unaccepted.",
+    "No physical models, real SDK/model requests, hardware, production or universal SDK-private erasure proof.",
+    "Historical failure causes and HA cancellation-resistant recovery over60s remain open."
+  ],
+  "private_evidence_root": "data/autonomous-roadmap-20261102/t022/s/normal-full-attempt-01",
+  "verification_receipt_sha256": "78bf3123abda7447521646a7dfe8d21e61b2e329bc34a030a5d55655b9bab6a7",
+  "parent_task_status": "in_progress",
+  "criteria_accepted": [],
+  "units": {
+    "T022-R": {
+      "status": "verified_local",
+      "implementation_commit": "f7301b2fbeaa35b949bc8848719a25d69463350b"
+    },
+    "T022-S": {
+      "status": "verified_local",
+      "implementation_commit": "a87e8048e83af48d5f737e83ebd0f15628e939b2"
+    }
+  }
+}

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "unit": "T022-S/pinned-start-admission",
-  "status": "implemented_directed_full_pending_capacity",
+  "status": "verified_local",
   "implementation_commit": "a87e8048e83af48d5f737e83ebd0f15628e939b2",
   "baseline_commit": "fc622d3fe8126aa201b3a62dc79b90c376bef882",
   "criteria_accepted": [],
@@ -63,7 +63,7 @@
     "scope_files": 969,
     "scope_scripts": 37,
     "source_snapshot_sha256": "3c0365bc7b956624aaa4dd2ee4b456bacd46fb7bfdcbc92e0fcae30433fca61f",
-    "limits": "The R historical whole-snapshot is superseded for future full execution by this broader current snapshot; R and S remain full_pending_capacity."
+    "limits": "The historical R whole snapshot remains history. Its code is covered by the subsequent normal full on the broader969-file/37-script frozen R/S snapshot recorded in full_validation."
   },
   "source_sha256": {
     "src/stt/pinned_executor.py": "8752b957c898b846575f8986284ed6dda95fceecf32b96b2fae0230fac23166b",
@@ -71,14 +71,32 @@
     "tests/integration/test_stt_submit_retirement.py": "fceba6c697130d65d63365ac564faf8dfca85855c13ca954750273efeea41399"
   },
   "full_validation": {
-    "status": "not_started_capacity_preflight_failed",
-    "checked_at_utc": "2026-11-04T09:08:13.868728+00:00",
-    "available_bytes": 300634112,
-    "minimum_bytes": 5368709120,
-    "abort_floor_bytes": 536870912,
+    "counts": {
+      "tests": 8023,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1,
+      "passed": 8022,
+      "known_xfail": 1,
+      "ordinary_skipped": 0
+    },
+    "duration_seconds": 657.279,
+    "session_id": 52003,
+    "source_snapshot_sha256": "3c0365bc7b956624aaa4dd2ee4b456bacd46fb7bfdcbc92e0fcae30433fca61f",
     "source_files": 969,
     "script_files": 37,
-    "policy_unchanged": true
+    "source_unchanged": true,
+    "storage_aborted": false,
+    "minimum_available_bytes": 71874314240,
+    "minimum_preflight_bytes": 5368709120,
+    "abort_floor_bytes": 536870912,
+    "status": "verified_normal_full",
+    "scope": "combined_R_S_snapshot",
+    "evidence": "docs/research/2026-11-04-r-s-normal-full.json",
+    "attempt_root": "data/autonomous-roadmap-20261102/t022/s/normal-full-attempt-01",
+    "verification_receipt": "data/autonomous-roadmap-20261102/t022/s/normal-full-attempt-01/acceptance-proof.json",
+    "verification_receipt_sha256": "78bf3123abda7447521646a7dfe8d21e61b2e329bc34a030a5d55655b9bab6a7",
+    "terminal_exit_code": 0
   },
   "review": {
     "path": "data/autonomous-roadmap-20261102/t022/s/implementation-review.json",
@@ -95,9 +113,22 @@
   "private_evidence_root": "data/autonomous-roadmap-20261102/t022/s",
   "limits": [
     "Directed selections overlap:715 includes all664 prior R cases; totals are not additive.",
-    "No full regression has started. The future normal full must use the broader969-file/37-script current snapshot and cover R and S; historical P/R results do not verify it.",
+    "The prior capacity preflight did not launch a full. The subsequent normal full verifies the broader969-file/37-script combined R/S snapshot and records actual terminal outcomes in full_validation; historical P and directed selections are not added or used as substitutes.",
     "No physical model/GPU/audio/USB operation, real model SDK request, production change or acceptance criterion is proved.",
     "No automatic recovery of an unconfirmed native admission, private allocator erasure, orphan queue replay policy for positively absent workers or broader SDK metadata atomicity is certified.",
     "T021/T022 and criteria remain open; T020/P1/T047 and voice/person/account/consent/permission boundaries remain unchanged."
-  ]
+  ],
+  "full_preflight_history": [
+    {
+      "status": "not_started_capacity_preflight_failed",
+      "checked_at_utc": "2026-11-04T09:08:13.868728+00:00",
+      "available_bytes": 300634112,
+      "minimum_bytes": 5368709120,
+      "abort_floor_bytes": 536870912,
+      "source_files": 969,
+      "script_files": 37,
+      "policy_unchanged": true
+    }
+  ],
+  "directed_validation_history_note": "The nested normal_full_verified=false describes the earlier directed-only run. Current full verification is recorded separately in full_validation."
 }

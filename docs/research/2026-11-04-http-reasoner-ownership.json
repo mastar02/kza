@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "unit": "T022-R/http-reasoner-ownership",
-  "status": "implemented_targeted_full_pending_capacity",
+  "status": "verified_local",
   "implementation_commit": "f7301b2fbeaa35b949bc8848719a25d69463350b",
   "baseline_commit": "f2913e01804e8b5e814ca303d8c799b3908210e5",
   "criteria_accepted": [],
@@ -36,16 +36,32 @@
     "full": "full-preflight.json"
   },
   "full_validation": {
-    "status": "not_started_capacity_preflight_failed",
-    "checked_at_utc": "2026-11-04T07:13:32.508231+00:00",
-    "available_bytes": 1340866560,
-    "minimum_bytes": 5368709120,
-    "abort_floor_bytes": 536870912,
-    "source_files": 968,
+    "counts": {
+      "tests": 8023,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1,
+      "passed": 8022,
+      "known_xfail": 1,
+      "ordinary_skipped": 0
+    },
+    "duration_seconds": 657.279,
+    "session_id": 52003,
+    "source_snapshot_sha256": "3c0365bc7b956624aaa4dd2ee4b456bacd46fb7bfdcbc92e0fcae30433fca61f",
+    "source_files": 969,
     "script_files": 37,
-    "policy_unchanged": true,
-    "cleanup_performed": false,
-    "limits": "No normal full regression was launched or inferred from P. Other projects/dependencies/models/production and historical evidence were not removed."
+    "source_unchanged": true,
+    "storage_aborted": false,
+    "minimum_available_bytes": 71874314240,
+    "minimum_preflight_bytes": 5368709120,
+    "abort_floor_bytes": 536870912,
+    "status": "verified_normal_full",
+    "scope": "combined_R_S_snapshot",
+    "evidence": "docs/research/2026-11-04-r-s-normal-full.json",
+    "attempt_root": "data/autonomous-roadmap-20261102/t022/s/normal-full-attempt-01",
+    "verification_receipt": "data/autonomous-roadmap-20261102/t022/s/normal-full-attempt-01/acceptance-proof.json",
+    "verification_receipt_sha256": "78bf3123abda7447521646a7dfe8d21e61b2e329bc34a030a5d55655b9bab6a7",
+    "terminal_exit_code": 0
   },
   "ownership": [
     "Instance-owned SDK/HTTP acquisition bundles registered before fallible discovery; explicit repeated loads remain concurrent and reconnect.",
@@ -114,9 +130,23 @@
   "evidence_root": "data/autonomous-roadmap-20261102/t022/r",
   "limits": [
     "The 664-case directed run includes all 67 new cases; historical selections and retries are not additive.",
-    "Normal full regression was not started: the unchanged 5 GiB precondition failed. R is not verified_local.",
+    "The historical R968-file full preflight failed and remains in full_preflight_history. The subsequent normal full verifies R and S locally on the broader969-file/37-script frozen snapshot; actual outcomes and scope are recorded in full_validation.",
     "No real SDK/model requests, GPU/model loads, hardware window, production deployment or acceptance criterion was authorized or performed.",
     "No universal retirement of private HTTPX/AnyIO Tasks, unreturned constructor internals, copied payload destinations or unknown participants is proved.",
     "T021/T022 and C03/C04/C06/C20 remain open; historical M/G/J/K/ENOSPC K and HA cancellation over 60 s remain unresolved."
+  ],
+  "full_preflight_history": [
+    {
+      "status": "not_started_capacity_preflight_failed",
+      "checked_at_utc": "2026-11-04T07:13:32.508231+00:00",
+      "available_bytes": 1340866560,
+      "minimum_bytes": 5368709120,
+      "abort_floor_bytes": 536870912,
+      "source_files": 968,
+      "script_files": 37,
+      "policy_unchanged": true,
+      "cleanup_performed": false,
+      "limits": "No normal full regression was launched or inferred from P. Other projects/dependencies/models/production and historical evidence were not removed."
+    }
   ]
 }

@@ -1163,9 +1163,11 @@
         "docs/research/2026-11-04-http-reasoner-storage.json",
         "data/autonomous-roadmap-20261102/t022/r/storage-recovery/evidence.json",
         "docs/research/2026-11-04-pinned-start-admission.json",
-        "data/autonomous-roadmap-20261102/t022/s/evidence.json"
+        "data/autonomous-roadmap-20261102/t022/s/evidence.json",
+        "docs/research/2026-11-04-r-s-normal-full.json",
+        "data/autonomous-roadmap-20261102/t022/s/normal-full-attempt-01/acceptance-proof.json"
       ],
-      "next_action": "T022-S implementada:715 casos dirigidos aprobados, incluidos los664 de R,2 nuevos de admisión y la expectativa before_start anterior sustituida explícitamente. R/S no están verified_local: falta la regresión normal completa sobre el snapshot ampliado de969 archivos y37 scripts. Su precondición de5 GiB y aborto de512 MiB permanecen intactos; la medición posterior a la selección es inferior al umbral. Conservar esta evidencia, obtener capacidad y usar un destino nuevo del runner normal con el snapshot actual antes de verificar R/S. Quedan metadatos Parakeet/wake y SDK/copias/CLI; T021/T022 y C03/C04/C06/C20 abiertos. Causas M/G/J/K/ENOSPC K sin atribuir y HA resistente >60 s pendiente; T020/P1/T047 y autoridades separadas conservados."
+      "next_action": "R y S verificadas localmente en la full normal compartida sobre969 archivos y37 scripts:8022 aprobados y1xfail conocida, sin fallos/errores ni aborto de almacenamiento; todos los715 dirigidos incluidos. El siguiente corte es metadatos de admisión/cierre de Parakeet, con un único RED público sobre el código actual antes de editar; wake queda aparte. Siguen SDK/copias/CLI y T021/T022/C03/C04/C06/C20 abiertos. Causas M/G/J/K/ENOSPC K sin atribuir y HA resistente >60s pendiente; T020/P1/T047 y autoridades separadas conservados."
     },
     {
       "id": "T023",
