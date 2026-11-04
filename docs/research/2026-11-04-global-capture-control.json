@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "unit": "T023-C",
+  "task_ids": [
+    "T023"
+  ],
+  "criterion_ids": [
+    "C04"
+  ],
+  "status": "verified_local_selected_server_and_browser_scope",
+  "baseline_revision": "6862378d5079e4ec33d372e422e8f93b9d3f32f4",
+  "implementation_commit": "f3c9d66b2f0098cf94a1634489410bba9f2b7dbf",
+  "sources": {
+    "src/ambient/control.py": "fdfc3206ef72e68fe704409f31162d40aa2d226e32e4241ce7bc2c4361f6c528",
+    "src/application.py": "25dd348e5aaa49588b0ebc8c1a21d4569bcb9e54e94aac2c8c698d0fd1f90734",
+    "src/dashboard/admin.py": "296fdec34e8b8ee4292c9933c982014587d5225dcca1be606098dd69c93b06e6",
+    "src/dashboard/api.py": "0a1e3da710d18646ed734a55828bdb37b657395cf3ad037f9796d46819f5e9cc",
+    "src/dashboard/auth.py": "00067bae4e8fa6e6cd44928e8db3b3166172eeb683d6d9c9e3eb5101249e415c",
+    "src/dashboard/capture_api.py": "1d31e42ae80f2c55e4333654a4f31a36990158f3dd0cde42242d28124a0b3220",
+    "src/dashboard/capture_browser_api.py": "3461eeb9e6949d8a1f208e2c21ee7adb51eba4d166c6b7f09fef4d7ca0776408",
+    "src/dashboard/capture_ingress.py": "33d94863d54003d65e0ae3ea42efcf125d0b1fe672ad17def0780aa50dce6990",
+    "src/dashboard/frontend/obs/index.html": "e4ef59201ef8ede8ac10b001b6ed4641a1b634f56c268177844b7116bf01a9d8",
+    "src/dashboard/frontend/obs/src/capture-recorder.js": "6c1a39e9f98d29f727b999372fe74d8efa0f098894fe65f8886ce6e477b97f0a",
+    "src/dashboard/frontend/obs/src/views/admin.jsx": "1741f34b3b09c9f01c0f31bb46e1166ab60c563113224f53a1b5620f8e8f5666",
+    "src/dashboard/frontend/obs/src/views/privacy.jsx": "be5caf536deeae295cd0c0e628fd36028a6c42af6ba700deb9c6d72b3d69b708",
+    "src/llm/router_lifecycle.py": "dc40552a3ea6baf01a1a8cef0203dfd6cd961138e39b9bb1531b9af64e95c56a",
+    "src/main.py": "4b5329bd5275416e8b672a4d1301d8988ec69153ad03ba6c85c3b4e8aa8e26a4",
+    "src/memory/capture_control.py": "9b1efacf2201dc20c6f02ccfee80950973d4a4ae787c6b10dd619d20646e9c85",
+    "src/memory/capture_native.py": "6520f347b0049690000d4017f7cfe555721435ad425af2282ff7012e3effea55",
+    "src/memory/capture_recorders.py": "b0fae176f461f10faf1dfa884aaa01bfe5bbf7206f8dbf93b4070c62dcd681ac",
+    "src/training/conversation_collector.py": "73800c6a6d96ba2c72563f51dfbe1faaeab6f324b377e4dc833f28f6cb5cf009",
+    "src/training/stt_correction_collector.py": "042a0367fbe377bf1f016659126ec09cd67e49218ed8bcbf685d778119c6dd47",
+    "tests/frontend/browser_global_capture.py": "3c53ce247185f4999d96fda5124a85c7e86e29bcd661f48e181da4379cd54904",
+    "tests/integration/test_capture_browser_owners.py": "1db4c6252953842fa57ec2ab46a64320630fd44c47b3422a79a48df138c501ff",
+    "tests/integration/test_capture_collectors_pause.py": "750452a8066c41be40731bb864bfc47da53534e4bb9509d4d1f2568e67a0de20",
+    "tests/integration/test_capture_derived_drains.py": "5e1549fed0ff24eb2776dca44f4e089293b14fddbc80c72cc953d09070ccd5da",
+    "tests/integration/test_capture_native_drains.py": "4b3d5f9c5336584d8c01e34bd9b9f11ca4ca67e4133b32a115f776f15484dc32",
+    "tests/integration/test_capture_nlu_drains.py": "6edc487254c1e14757f3cf5a24aa8844a9cafd60598df2d1b8b91f185df50f72",
+    "tests/integration/test_capture_policy_initialization.py": "3c361d14229be39d87ba763a7903b40648af67480b3d9071de24a42dec84849f",
+    "tests/integration/test_capture_shutdown_policy.py": "1dffe43acc42eba7ad0a933192f3be1a66491e798962b4135addae18867d821d",
+    "tests/integration/test_global_capture_control.py": "35f62b17b0f9a558958622f7584d9b68caad0337f6bda0ebf4fdea6b05aa290e",
+    "tests/integration/test_global_capture_http.py": "af16659e4c647e8afdb8043bffc65621e6d5b8341b7e0cbd64c403f663d43080",
+    "tests/mocks/capture_models.py": "edd245de8c128b4a3a19bcad276afee2470229f572d55526744aaf37ddc3482f",
+    "tests/unit/dashboard/test_capture_recorder_browser.py": "5536e236b54aeaf46e69f4fd2ee524986150b703d1392b4be1cc7dec19f1cb2f",
+    "tests/unit/dashboard/test_private_access.py": "d09c22fc957fd655ea1ee3fe86c8d20e4639fd8f63bdd5523bf968385bc4ce20"
+  },
+  "change": "Durable global capture policy composed before operational startup, explicit administrative HTTP/UI and original-session reactivation without voice; known input, command, ambient, collector, model borrower, browser recorder and upload retirement receipts.",
+  "authority": "admin:manage is distinct from ambient:control. Acoustic voice, linked person, account, consent and dashboard permissions do not imply one another. Retire-only browser capability permits cleanup after logout and never grants unmute.",
+  "durability": "Fresh schema preserves capture-enabled default; established missing/invalid policy stays sealed. Muted/resuming state restores before capture admission. Failed transitions compensate to durable mute; admitted policy/recorder SQL owners survive closing public privacy admission until their actual native returns.",
+  "acknowledgment": "total_mute_confirmed requires muted durable state, sealed ingress, reviewed supported participants, zero actual pending operations and explicit browser stop receipts. Unknown/foreign participants cannot receive confirmation; borrowed models are not disposed.",
+  "history": "Pause preserves historical IDs, expiration and independent ambient preference; it does not erase data or renew TTL.",
+  "API": {
+    "control": "GET/POST /api/capture/control",
+    "permission": "admin:manage",
+    "write": "strict bool/int revision CAS, original live actor through transaction and final release",
+    "cache": "no-store",
+    "browser": "durable reserve/activate/poll/retire; active/unknown owners require explicit stop receipt"
+  },
+  "directed": {
+    "passed": 1046,
+    "new_cases": 102,
+    "explicit_new_cases": 82,
+    "dynamic_private_auth_cases": 20,
+    "runs": [
+      {
+        "passed": 686,
+        "xml_duration_s": 87.63,
+        "session_id": 52019,
+        "root_terminal_consumed": true
+      },
+      {
+        "passed": 364,
+        "xml_duration_s": 50.353,
+        "session_id": 95032,
+        "terminal_owner": "calibration_tests",
+        "terminal_observed": true
+      }
+    ],
+    "overlap": 4,
+    "B379_is_subset": true
+  },
+  "normal_full": {
+    "counts": {
+      "passed": 8204,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfailed": 1
+    },
+    "total": 8205,
+    "duration_seconds": 728.302,
+    "source_files": 999,
+    "script_files": 37,
+    "source_snapshot_sha256": "13c4d8257b268592056a77ea865d7cf6376d3239653f11a9b029690baf739acf",
+    "minimum_available_bytes": 65160540160
+  },
+  "normal_full_proof": "data/autonomous-roadmap-20261102/t023/c/normal-full-attempt-04/acceptance-proof.json",
+  "counts_not_additive": "Directed, native, collector and Node/ASGI runs overlap full. All 8103 B IDs plus 102 new C IDs (82 explicit plus 20 dynamic private-auth) form 8205 full cases; Chromium standalone is separate.",
+  "genuine_behavior_RED_count": 6,
+  "RED_scope": "Six behavior witnesses against the C draft: two SQL lifecycle defects and four independent native owner omissions (NLU, FastRouter, EventLogger, LongTermMemory). Baseline B had no global control; no missing API is presented as RED.",
+  "initial_outcomes": [
+    "Core01:11PASS4fixture/timingFAIL, then process timeout180s; all preserved. HTTP01:34PASS1restore-timing assertion. Global02:51PASS1single callback fixture stage; corrected against actual copy boundary.",
+    "Shutdown-policy actual baseline1FAIL -> identical test1PASS with Control-owned policy work.",
+    "Policy-initialization actual baseline2corruptionPASS1lateFAIL -> same3PASS with Recorder-owned SQL work ->4PASS including distinct held recorder initializer.",
+    "Full01 intentionally interrupted for known tracked Chromium harness corrections:894partialPASS, wrapper0/pytest1, source996 unchanged until terminal; not accepted.",
+    "Full02 intentionally interrupted after independent NLU-owner source omission:3333partialPASS, wrapper0/pytest2,997sources unchanged until terminal; not accepted.",
+    "Independent NLU timeout, FastRouter logical-finish/native-Future gap, EventLogger timeout and LongTermMemory observer cancellation each reproduced a genuine premature-ACK RED; identical oracles pass after binding actual owners and retaining the FastRouter native Future.",
+    "Full03 complete8205PASS3FAIL1xfail/8209IDs: the dynamic private-route matrix treated exactPOSTretire capability as session-private. Actual422 invalid token-body statuses disagreed with its401/503 oracles. Two tests corrected only classification plus retained foreign-Origin negative assertion; product unchanged. Latest364PASS supersedes4browser-owner cases and adds360private-auth cases; no product RED claimed from this test-contract mismatch.",
+    "Chromium01 setup/watchdog;02 sample oracle with cause unassigned;03 missing instrumentation precondition;04 progressed through real recording/mute/retire but desktop resume click after mobile observation was not admitted;05 desktop PASS;06 repeat on final source PASS after all native bindings and pending counter changes. Earlier receipts retained; no single retrospective product cause asserted."
+  ],
+  "browser": {
+    "final": "attempt-06",
+    "exit_code": 0,
+    "actual_factory_HTTP_auth_React": true,
+    "two_tabs": true,
+    "native_virtual_media": true,
+    "held_ACK_prevents_confirmation": true,
+    "tracks_contexts_and_samples_retired": true,
+    "authenticated_nonvoice_resume_preserves_ambient": true,
+    "javascript_exceptions": 0,
+    "external_attempts": [],
+    "mobile": "390px screenshot observation only; legacy technical layout is not responsive/interactivity/accessibility/iPhone acceptance"
+  },
+  "artifacts": {
+    "data/autonomous-roadmap-20261102/t023/c/normal-full-attempt-04/acceptance-proof.json": "0e3d91fa78caee7b471ca6d3d1d37d547233e483f3d280d56f40d67674995966",
+    "data/autonomous-roadmap-20261102/t023/c/directed-proof.json": "f11a9150c6132596b70abf4e924bd46ab154e2e20c18b72fb7fbaba919836540",
+    "data/autonomous-roadmap-20261102/t023/c/control-native-review.json": "12175c9ec1c751447be3088a848d23f83f1846138e185e79cc64a3219cfce0f3",
+    "data/autonomous-roadmap-20261102/t023/c/global-lifecycle-review.json": "2fe1b1676842f64cb94fcae112ba44add03feccfc25f36712db9774f9aacccb0",
+    "data/autonomous-roadmap-20261102/t023/c/browser-react/review.json": "7765fb394c4b0c335f1cda08a41755f07d9025708b8e569b5ee38669f2369562",
+    "data/autonomous-roadmap-20261102/t023/c/browser-tests/review.json": "271d221b0076755f50cb063aa7eb74df72ee225985d9cac817c2435e7f9daf97",
+    "data/autonomous-roadmap-20261102/t023/c/finalizer-preflight-review.json": "0531e37135f751313f553117bdb25ca52650d3659169ab25b282ee1071f6f790",
+    "data/autonomous-roadmap-20261102/t023/c/next-boundary-plan.json": "5dbc200570504b0f550022ba41e5a7632de727deddd3b405374fab389842280b",
+    "data/autonomous-roadmap-20261102/t023/c/router-parent-audit.json": "63a27f8c244f2498c7195f5bf283f12a9479deb375f173b15a2b43b10e8fa8d0",
+    "data/autonomous-roadmap-20261102/t023/c/nlu-drains/receipt.json": "f09aba46ee7abcd4ee9afd5171337137dea4b797ac6b206be3077fa7383b278d",
+    "data/autonomous-roadmap-20261102/t023/c/derived-drains/green-terminal-receipt.json": "ac7fc9d5f19a1ccc91ca8e6f8cf948b374ddbf8ab6e558b6350e8aa7e0e7b681",
+    "data/autonomous-roadmap-20261102/t023/c/ruff-proof.json": "c231a3039935812cfd1799c81a6266cafac5e34684497b7632f538f6b54b1edb",
+    "data/autonomous-roadmap-20261102/t023/c/matrix-fix/initial-terminal-receipt.json": "39d77cdb3218a1731e8d70386a2b09e4e8a5bdee2a6ccfb7a57fc30ce951d8d4",
+    "data/autonomous-roadmap-20261102/t023/c/matrix-fix/test-scope-proof.json": "0782c9cb9a0246bfc0887d52ec8b82c1c8e4d90e01d272bb327a10b6eb1a55de",
+    "data/autonomous-roadmap-20261102/t023/c/private-route-matrix-review.json": "574c3242e113334a200765717b089d4dda5dec0b56e940c8c99305cbb4379327",
+    "data/autonomous-roadmap-20261102/t023/c/full03-failure-review.json": "5e76aa0be3cf8bc4d25610e3476739e84b62568b76578a22692567cb0101164e",
+    "data/autonomous-roadmap-20261102/t023/c/capture-control-pending-delta-proof.json": "9a521744cb422f9748c52f268119e750274a0dc9c2de62b87324941abcb052d5",
+    "data/autonomous-roadmap-20261102/t023/c/full-review.json": "23b6147e54871db7292676fad45582026cb231ab715c70bd2872b0f75c3699f0"
+  },
+  "next_unit": "T023-D concrete live calibration producer: bind tools/acoustic_calibration.py run_capture to durable authority/admission and actual retirement; do not blanket-block historical/synthetic analysis.",
+  "limits": [
+    "T023 remains in_progress; live standalone calibration is not covered by the application graph.",
+    "T022 producer/SDK/copy inventory and T024 erasure/compatible restore remain open.",
+    "Unavailable storage after a legitimate running commit does not provide a promised crash rollback; local uncertainty stays sealed/unconfirmed.",
+    "No physical microphone capture, real model/provider inference, production deployment, physical wipe, field/iPhone acceptance or criterion acceptance. All 21 criteria remain not_evaluated; T020/P1/T047 and 49 other tasks are unchanged."
+  ]
+}
