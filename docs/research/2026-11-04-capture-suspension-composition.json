@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "unit": "T023-A/independent-capture-suspension-reasons",
+  "task_ids": [
+    "T023"
+  ],
+  "criterion_ids": [
+    "C04"
+  ],
+  "status": "verified_local_prerequisite",
+  "baseline_revision": "1bb2a2b95c8353bb312ab5d8519709f5c2d450f7",
+  "implementation_commit": "ec24701020ff3ae19f539b7bd80ca55bdec27acc",
+  "change": "Independent server-owned suspension reasons compose in CaptureScopes and VoiceRegistry. Legacy ambient resume releases only its own reason. Final release creates fresh capture epochs and requires actual retained voice work exit; original history and deadlines remain.",
+  "sources": {
+    "src/memory/sources.py": "523401166524d2c2eeda77c0b7cc16c6c868f591790c0eb48d3feb198434bb76",
+    "src/users/voice_registry.py": "6654ebd4a88d4a07701296db3c083a1a55297fe9fea6271eda4be66e7ede6ae6",
+    "tests/integration/test_capture_suspension_reasons.py": "5a1a7c5c95db5f38236270864dd14cfec9c3b7fc32ec9f55ffbf80368211ae4e"
+  },
+  "API": {
+    "reason": "keyword-only None for legacy or stable exact object() identity, held only by server control",
+    "authorization": "Suspension reasons confer no user/voice/person/account/session permissions. Global administrative authorization remains separate future product work.",
+    "idempotency": "Repeated suspend is idempotent; unknown/repeated explicit release does not rotate or unseal another reason.",
+    "legacy": "Existing no-reason scope resume boundary is preserved. Closed VoiceRegistry cannot be resumed."
+  },
+  "characterization": {
+    "tests": 47,
+    "passed": 47,
+    "duration_seconds": 5.967,
+    "classification": "Expected correct ambient-only behavior, not RED or global support.",
+    "subset_of_existing_directed": true,
+    "HTTP_limit": "Direct DashboardAPI fixture; not actual build_application HTTP characterization."
+  },
+  "directed": {
+    "distinct_passed": 171,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "runs": [
+      {
+        "tests": 167,
+        "duration_seconds": 17.467
+      },
+      {
+        "tests": 4,
+        "duration_seconds": 1.025
+      }
+    ],
+    "new_cases": 4,
+    "new_oracles": [
+      "Actual AmbientControl pause/resume cannot remove independent scope/voice reason; real callback produces command copy while ambient copy remains blocked.",
+      "Reverse release order preserves ambient pause; VOICE and AMBIENT remain independent, old epochs stay retired, historical records expire at original deadline.",
+      "Held synthetic encoder actual native return precedes final voice reason release; failed premature release preserves seal and late fingerprint cannot commit. Both origins covered."
+    ]
+  },
+  "normal_full": {
+    "counts": {
+      "tests": 8096,
+      "passed": 8095,
+      "failures": 0,
+      "errors": 0,
+      "known_xfail": 1,
+      "ordinary_skipped": 0
+    },
+    "duration_seconds": 689.536,
+    "source_files": 979,
+    "script_files": 37,
+    "source_snapshot_sha256": "3d22ca7cd1cea4c48e17e38204130e62ae897bcd2583c9e17c45bfdf7c881807",
+    "source_unchanged": true,
+    "session_id": 20742,
+    "runner_terminal_exit_code": 0,
+    "pytest_terminal_exit_code": 0,
+    "minimum_available_bytes": 70703206400,
+    "storage_aborted": false,
+    "collection_scope": {
+      "same_ids_as_prior_X_union_new": true,
+      "prior_X": 8092,
+      "new_ids": 4,
+      "existing_directed_subset": 167,
+      "directed_distinct": 171,
+      "characterization_subset": 47
+    }
+  },
+  "normal_full_proof": {
+    "path": "data/autonomous-roadmap-20261102/t023/a/normal-full-attempt-01/acceptance-proof.json",
+    "sha256": "98c07ba63fc086958e53e93e0b10d826c3f9badc8af6aafa1c8481d5c700e996"
+  },
+  "counts_not_additive": true,
+  "genuine_runtime_RED_count": 0,
+  "artifacts": {
+    "data/autonomous-roadmap-20261102/t023/a/unit-plan.json": "522f7c76afe084a3024a042eb3f7e5612a289ac1eeffbdfc73845a5d98aab2cf",
+    "data/autonomous-roadmap-20261102/t023/a/characterization-proof.json": "1ef9335cbecdd1d325b851dbcb9a4d9e2168616cbf9da540029906a19681d8ae",
+    "data/autonomous-roadmap-20261102/t023/a/directed-proof.json": "d0f2dea0fbf381c0fbb1617e1255f56f41fcb00f2156f2940597ace31fb21ecf",
+    "data/autonomous-roadmap-20261102/t023/a/ast-scope-proof.json": "9ab6aba9a70e4437cc14e7f2248b3b7915e75a4b99e5c7defabdd428daba30c9",
+    "data/autonomous-roadmap-20261102/t023/a/scope-review.json": "3d6448979f75ac08c5e9c8e7d0857148c31d8a890cac00b750d4d71a82af8af3",
+    "data/autonomous-roadmap-20261102/t023/a/capture-composition-review.json": "5d27b328107e64bdad41c0475228764616d3add4289d8e2d66aa4042ab2f4b73",
+    "data/autonomous-roadmap-20261102/t023/a/finalizer-preflight-review.json": "1324d04cedf13e7d0b3a037df97d04ee7892006092027cbf8c7bc1453f6591da",
+    "data/autonomous-roadmap-20261102/t023/a/next-boundary-plan.json": "7c3dc244171eab6941e6aca1de450d7a0fb02856d128324b64da273c0d31d7ca",
+    "data/autonomous-roadmap-20261102/t023/a/capture-design.json": "038dd581f23c0f38bb79ec5b5d6da34933a659feda1b43c4d98bbb6ec0246f08",
+    "data/autonomous-roadmap-20261102/t023/a/authority-design.json": "09a481676b71544ec1bf62c9525b44dfba85094acac0ae3c04d44ee832659c72",
+    "data/autonomous-roadmap-20261102/t023/a/b-auxiliary-contract.json": "3ec3674a5ee13ef25621e4f7e65982a7b86b48adcf0216f3516a91dd0016a34a",
+    "data/autonomous-roadmap-20261102/t023/a/b-auxiliary-test-plan.json": "599abaa87249d7f2001e489dd040f1a2375d466ae5fe6f6a1bceb6cf953d8ae0",
+    "data/autonomous-roadmap-20261102/t023/a/full-review.json": "e4961be746d13301930c23b8b6fd4bffd19c62d3137b9d818414709aecb71acc",
+    "data/autonomous-roadmap-20261102/t023/a/source-push-terminal.json": "46308375348db97bc9bb67fde7760d968c001490f8fbcaa2242bf108ec59a655"
+  },
+  "next_unit": "T023-B: reusable pause/start/resume barriers for selected XVF/direction/telemetry/audio-health participants, using real retained native receipts with synthetic leaves. Durable coordinator and authenticated nonvoice HTTP/UI follow complete participant coverage.",
+  "limits": [
+    "No durable global controller, new global HTTP/UI toggle or completed total-mute acknowledgement is enabled by A. T023 remains in_progress and C04/all21 criteria unaccepted.",
+    "VoiceRegistry suspension controls retain serialized loop contract; no general multithread mutation guarantee. Historical already-entered observe/copy-before-job gap is unchanged; parent callbacks/writers must drain before future final global release.",
+    "No universal SDK/private copy/allocator erasure, restore antirollback or physical mute proof. No real hardware, models/providers, production deployment or service changes.",
+    "T022 residual inventory/SDK/copies/CLI/constructor/task uncertainty and historical HA/M/G/J/K/ENOSPC obligations remain open; T020/P1/T047 and voice/person/account/consent/permission separation remain."
+  ],
+  "full_review_approved": true
+}
