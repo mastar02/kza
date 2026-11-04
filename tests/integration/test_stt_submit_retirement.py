@@ -21,6 +21,11 @@ async def until(predicate):
 async def test_partial_submit_keeps_model_and_real_thread_owned_until_actual_exit(
     monkeypatch, fault_point,
 ):
+    if fault_point == "before_start":
+        # An invoked start without a positive receipt cannot grant a retry.
+        from tests.unit.stt.test_pinned_executor_start_admission import _run_case
+        await asyncio.to_thread(_run_case, "whisper")
+        return
     model = FastWhisperSTT(model="synthetic", device="cpu")
     entered, release, releasing_model = threading.Event(), threading.Event(), threading.Event()
     attempts, faulted = [], []
@@ -65,7 +70,7 @@ async def test_partial_submit_keeps_model_and_real_thread_owned_until_actual_exi
             await until(entered.is_set)
             assert attempts[0].is_alive()
         closing = model.begin_close()
-        # A pre-start failure leaves an enqueued job; the close drains it too.
+        # The confirmed native worker drains its admitted job before disposal.
         await until(entered.is_set)
         released_early = await asyncio.to_thread(releasing_model.wait, 0.15)
         if released_early:

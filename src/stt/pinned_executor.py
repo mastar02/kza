@@ -18,6 +18,8 @@ from typing import Callable
 
 
 _UNSUPPORTED = 'pinned_executor_unsupported_runtime'
+_START_UNCONFIRMED = 'pinned_executor_start_unconfirmed'
+_EXIT_UNCONFIRMED = 'pinned_executor_exit_unconfirmed'
 
 
 def _require_runtime() -> None:
@@ -49,13 +51,20 @@ class _PinnedWorker(threading.Thread):
     """Join the native handle even if Python bootstrap has not published yet."""
 
     def join(self, timeout: float | None = None) -> None:
-        if not self._started.is_set() and self._handle.ident != 0:
+        """Join actual native exit or reject an unconfirmed start receipt."""
+        if not self._started.is_set():
+            if self._handle.ident == 0:
+                if self._handle.is_done() is True:
+                    return
+                raise RuntimeError(_START_UNCONFIRMED)
             if timeout is None:
                 self._handle.join()
             else:
                 self._handle.join(max(timeout, 0))
-            return
-        super().join(timeout)
+        else:
+            super().join(timeout)
+        if timeout is None and self._handle.is_done() is not True:
+            raise RuntimeError(_EXIT_UNCONFIRMED)
 
 
 class PinnedThreadPoolExecutor(_pool.ThreadPoolExecutor):
@@ -110,24 +119,31 @@ class PinnedThreadPoolExecutor(_pool.ThreadPoolExecutor):
         if (handle_type is None or type(handle) is not handle_type
                 or type(getattr(handle, 'ident', None)) is not int or handle.ident != 0
                 or not callable(getattr(handle, 'join', None))
+                or not callable(getattr(handle, 'is_done', None))
                 or not callable(getattr(started, 'is_set', None))
                 or not callable(getattr(started, 'wait', None)) or started.is_set()):
             raise RuntimeError(_UNSUPPORTED)
+        start_called = False
         try:
             # Both owners must exist before the SDK can create an OS thread.
             self._threads.add(thread)
             _pool._threads_queues[thread] = self._work_queue
+            start_called = True
             thread.start()
         except BaseException:
-            # Thread.ident may still be None after native creation. The audited
-            # native handle receives its nonzero ident before bootstrap runs.
-            if handle.ident == 0 and not started.is_set():
-                # This start admission has resolved without a native worker.
+            if not start_called:
+                # This candidate has not entered native start admission.
                 _pool._threads_queues.pop(thread, None)
                 self._threads.discard(thread)
-            else:
-                # Retain the native handle without waiting under the SDK's
-                # submission locks. Its join observes native exit even before
-                # Python bootstrap can publish the ordinary started receipt.
-                pass
+            elif handle.ident == 0 and not started.is_set():
+                if handle.is_done() is True:
+                    # Positive native completion proves resolved absence.
+                    _pool._threads_queues.pop(thread, None)
+                    self._threads.discard(thread)
+                else:
+                    # Keep both owners and reject a successor for the stranded
+                    # WorkItem. No join may wait under the SDK submit locks.
+                    self._broken = _START_UNCONFIRMED
+            # A known native worker stays usable to drain its admitted work
+            # and _release_model on that same worker before shutdown joins it.
             raise
