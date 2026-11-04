@@ -1,0 +1,414 @@
+{
+  "schema_version": 1,
+  "task": "T022",
+  "unit": "T022-T/parakeet-operation-admission",
+  "status": "verified_local",
+  "prepared_at_utc": "2026-11-04T13:45:55.268156+00:00",
+  "implementation_commit": "3013d085eba6eaba9f9227bcad5f9021a756a71e",
+  "baseline_commit": "bc4834ce3723fe6f4dd17c262f9424d907dcbec0",
+  "evidence_root": "data/autonomous-roadmap-20261102/t022/t",
+  "scope": [
+    "Identity-based leases owned by actual Thread and model, with derived read-only active-count compatibility.",
+    "Outer admission try/finally covers collection publication, Condition exit and TLS setter; logical inactive precedes TLS restoration/reacquire/notify.",
+    "Nested calls borrow parent identity; foreign Thread cannot borrow TLS authority; close guard observes actual live Thread leases despite missing TLS.",
+    "Only active Condition.wait becomes advisory timeout0.05, preventing a lost-notification dependency after logical exit."
+  ],
+  "baseline_red": {
+    "scenario_count": 1,
+    "status": "genuine_current_existing_API_RED",
+    "terminal_exit_code": 1,
+    "source_sha256": "f033f913a0c6987a2e0f98cfa8e58cb56c0316e3345c62539328ab613c362fef",
+    "probe": "data/autonomous-roadmap-20261102/t022/s/parakeet-admission-baseline.py",
+    "observed": {
+      "scenario_count": 1,
+      "source_sha256": "f033f913a0c6987a2e0f98cfa8e58cb56c0316e3345c62539328ab613c362fef",
+      "fault_invocations": 1,
+      "original_operation_control_preserved": true,
+      "active_after_operation": 1,
+      "sentinel_retained_before_close": true,
+      "actual_close_condition_wait_observed": true,
+      "actual_closer_thread_alive": true,
+      "actual_close_finished": false,
+      "close_result": {},
+      "sentinel_retained_after_close_observation": true,
+      "sdk_imported": false,
+      "limits": "A bounded pending close observation is not OS/backend leakage or a retirement receipt. Process exit is containment only.",
+      "contract_passed": false
+    },
+    "first_attempt": {
+      "status": "setup_error_not_RED",
+      "log": "../s/parakeet-admission-red.log",
+      "cause": "Driver resolved venv symlink to base interpreter; corrected literal venv path in attempt02 without modifying scenario."
+    },
+    "classification": "One genuine existing-public-load/close admission scenario. First driver.resolve/base-interpreter attempt was setup_error_not_RED; do not count two scenarios or infer OS/backend leakage."
+  },
+  "green_replay": {
+    "same_scenario_body": true,
+    "guard_only_changed": true,
+    "baseline_probe_sha256": "7be0ea1862d60691f5b74845210b69b03813c68363d2dfa698aae96cf56ecfc3",
+    "green_probe_sha256": "90d22093f23a8593982a7d0f43c66137def7af9b4649d099783acffbb37d52cd",
+    "terminal_receipt": {
+      "command": [
+        "/home/yo/projects/kza/data/project-assessment-20261102/venv/bin/python",
+        "/home/yo/projects/kza/data/autonomous-roadmap-20261102/t022/t/green-replay.py"
+      ],
+      "started_at_utc": "2026-11-04T13:31:12.895096+00:00",
+      "finished_at_utc": "2026-11-04T13:31:13.033801+00:00",
+      "terminal_exit_code": 0
+    },
+    "observed": {
+      "scenario_count": 1,
+      "source_sha256": "4242cbc5148f431c0d9a94825c9c3fcabd01fc6cda8825babc5d75709aa37281",
+      "fault_invocations": 1,
+      "original_operation_control_preserved": true,
+      "active_after_operation": 0,
+      "sentinel_retained_before_close": true,
+      "actual_close_condition_wait_observed": false,
+      "actual_closer_thread_alive": false,
+      "actual_close_finished": true,
+      "close_result": {
+        "returned": true
+      },
+      "sentinel_retained_after_close_observation": false,
+      "sdk_imported": false,
+      "limits": "A bounded pending close observation is not OS/backend leakage or a retirement receipt. Process exit is containment only.",
+      "contract_passed": true
+    },
+    "attribution": "Root executed recorded replay; template author did not run/import project/SDK. Only same scenario source guard differs."
+  },
+  "targeted_validation": {
+    "status": "passed_targeted_only",
+    "session_id": 52094,
+    "terminal_exit_code": 0,
+    "counts": {
+      "tests": 191,
+      "passed": 191,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "new_unique_cases": 11,
+    "duration_seconds": 15.324,
+    "source_files": 970,
+    "script_files": 37,
+    "source_snapshot_sha256": "3f6b278ea91feb3534d60fccc5654a7bbb7a74d79a711156cdf6744349e26a32",
+    "source_unchanged": true,
+    "green_same_scenario_passed": true,
+    "normal_full_pending": true,
+    "artifacts": {
+      "targeted-initial.xml": "1037e0046b77dec220e3d4869edae894b31ae32211d509842de5845125a77691",
+      "targeted-initial.log": "069ba30e66cbe1bb20e4133d07d50ffc75f9bc2c4b11f0fe078e63bf7ef69b9e",
+      "targeted-initial-terminal.json": "6a6dd53f94739010bae5603c1f13710cc1893f633d2f87a3a1ba33cfcccb2d93",
+      "green-replay.log": "e7efd5ad6f70dd2db2882ace1f3d7f5dbecbce49de7e9a92c3c6372be8db64eb",
+      "green-replay-terminal.json": "b9c1e3305deda2b3dd3bc38fb70aea49a2c675cbd7312afd03f10575629e9f3e",
+      "source-snapshot.json": "3f6b278ea91feb3534d60fccc5654a7bbb7a74d79a711156cdf6744349e26a32",
+      "source-scope-proof.json": "bcb93b674a59d7d6a842a63b0579ef53870a94a20b67a8039ab69399b6de022e"
+    }
+  },
+  "directed_count_limit": "191 passing targeted cases already include all11 new cases. No addition of baseline/replay/retries to191 and no inference of normal-full counts.",
+  "frozen_source": {
+    "file_count": 970,
+    "script_count": 37,
+    "snapshot": {
+      "path": "data/autonomous-roadmap-20261102/t022/t/source-snapshot.json",
+      "sha256": "3f6b278ea91feb3534d60fccc5654a7bbb7a74d79a711156cdf6744349e26a32"
+    },
+    "changed_source_hashes": {
+      "src/stt/parakeet_stt.py": "4242cbc5148f431c0d9a94825c9c3fcabd01fc6cda8825babc5d75709aa37281",
+      "tests/unit/stt/test_parakeet_admission.py": "1a20168c0ba39a186eb53579921cf802b3270342f0755ad99596bf1736262f96"
+    },
+    "scope_proof": {
+      "candidate_source_sha256": "4242cbc5148f431c0d9a94825c9c3fcabd01fc6cda8825babc5d75709aa37281",
+      "ParakeetSTT_entire_AST_preserved": true,
+      "close_election_failure_Event_AST_preserved": true,
+      "wait_closed_only_change": "active Condition.wait now advisory timeout0.05",
+      "changed_lifecycle_methods": [
+        "_parakeet_admit",
+        "_parakeet_current",
+        "_parakeet_initialize",
+        "_parakeet_require_close_caller",
+        "wait_closed"
+      ],
+      "new_property": "_parakeet_active derived from active identities",
+      "baseline_probe_sha256": "7be0ea1862d60691f5b74845210b69b03813c68363d2dfa698aae96cf56ecfc3",
+      "green_probe_sha256": "90d22093f23a8593982a7d0f43c66137def7af9b4649d099783acffbb37d52cd",
+      "same_scenario_body": true,
+      "guard_only_changed": true,
+      "next_gap": "close-election/completion Event metadata remains separately pending"
+    },
+    "cross_unit_source_proof": {
+      "R_S_snapshot_sha256": "3c0365bc7b956624aaa4dd2ee4b456bacd46fb7bfdcbc92e0fcae30433fca61f",
+      "T_snapshot_sha256": "3f6b278ea91feb3534d60fccc5654a7bbb7a74d79a711156cdf6744349e26a32",
+      "added": [
+        "tests/unit/stt/test_parakeet_admission.py"
+      ],
+      "removed": [],
+      "changed": [
+        "src/stt/parakeet_stt.py"
+      ],
+      "other_968_source_rows_identical": true
+    }
+  },
+  "reviews": {
+    "implementation": {
+      "path": "data/autonomous-roadmap-20261102/t022/t/implementation-review.json",
+      "sha256": "ba926b29688cb8f9be517315b19a799840cbf3a5f13ebe9341cdb587ac81b53e",
+      "approved": true,
+      "scope": "Only actual synchronous operation admission, nested same-Thread lease identity, logical deactivation, TLS publication/restoration and advisory active wait. No close-election/Event/failure or wake acceptance."
+    },
+    "tests": {
+      "path": "data/autonomous-roadmap-20261102/t022/t/test-review.json",
+      "sha256": "aba3048f0ca4dbe98576848b11c84ef25a0b4198bb58fc0f92196bb1d550ee83",
+      "approved": true,
+      "blockers": [],
+      "scope": "Only the new admission tests, their embedded child/delegates and scoped root metadata. No close-election/Event/failure or wake acceptance."
+    },
+    "historical_staging_note": "code-staged-proof test_review_pending=true describes the earlier staging checkpoint; later immutable test-review.json is approved. Do not silently rewrite the earlier receipt."
+  },
+  "full_validation": {
+    "schema_version": 1,
+    "unit": "T022-T/parakeet-operation-admission",
+    "status": "verified_normal_full",
+    "source_head": "3013d085eba6eaba9f9227bcad5f9021a756a71e",
+    "source_snapshot_sha256": "3f6b278ea91feb3534d60fccc5654a7bbb7a74d79a711156cdf6744349e26a32",
+    "source_files": 970,
+    "script_files": 37,
+    "source_unchanged": true,
+    "counts": {
+      "tests": 8034,
+      "passed": 8033,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1,
+      "known_xfail": 1,
+      "ordinary_skipped": 0
+    },
+    "known_xfail": [
+      {
+        "classname": "tests.unit.nlu.test_regex_extractor",
+        "name": "test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]",
+        "skipped": [
+          {
+            "type": "pytest.xfail",
+            "message": "limitación documentada del regex puro"
+          }
+        ]
+      }
+    ],
+    "duration_seconds": 648.289,
+    "session_id": 89830,
+    "runner_terminal_exit_code": 0,
+    "pytest_terminal_exit_code": 0,
+    "started_at_utc": "2026-11-04T13:42:43.293789+00:00",
+    "finished_at_utc": "2026-11-04T13:53:37.709048+00:00",
+    "storage_preflight": {
+      "at_utc": "2026-11-04T13:42:43.293775+00:00",
+      "monotonic": 2460175.009473574,
+      "available_bytes": 79740628992,
+      "tmp_available_bytes": 79740628992,
+      "free_inodes": 48701743,
+      "tmp_free_inodes": 48701743
+    },
+    "minimum_available_bytes": 78642585600,
+    "storage_aborted": false,
+    "minimum_preflight_bytes": 5368709120,
+    "abort_floor_bytes": 536870912,
+    "interpreter": "Python 3.13.12",
+    "command": [
+      "timeout",
+      "1500",
+      "nice",
+      "-n",
+      "10",
+      "/home/yo/projects/kza/data/project-assessment-20261102/venv/bin/python",
+      "-m",
+      "pytest",
+      "tests",
+      "--junitxml=/home/yo/projects/kza/data/autonomous-roadmap-20261102/t022/t/normal-full-attempt-01/full.xml"
+    ],
+    "environment": {
+      "base": "inherited os.environ.copy; no complete historical environment equality claimed",
+      "explicit_updates": {
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "ANONYMIZED_TELEMETRY": "False"
+      }
+    },
+    "directed_coverage": {
+      "T": {
+        "unique_directed_cases": 191,
+        "all_in_full": true
+      },
+      "S": {
+        "unique_directed_cases": 715,
+        "all_in_full": true
+      },
+      "R": {
+        "unique_directed_cases": 664,
+        "all_in_full": true
+      }
+    },
+    "counts_not_additive": true,
+    "artifacts": {
+      "full-runner.py": {
+        "size": 2662,
+        "sha256": "ae912275c5f1831cc3ac918e2698e8395c932e9fe601148dd098a61e59eccbfe"
+      },
+      "preparation-proof.json": {
+        "size": 489,
+        "sha256": "cff5157e2bfb6518709392a9dc57025590f051ad93a7142bfd54cee589e6c571"
+      },
+      "source.json": {
+        "size": 165871,
+        "sha256": "3f6b278ea91feb3534d60fccc5654a7bbb7a74d79a711156cdf6744349e26a32"
+      },
+      "source-post.json": {
+        "size": 165871,
+        "sha256": "3f6b278ea91feb3534d60fccc5654a7bbb7a74d79a711156cdf6744349e26a32"
+      },
+      "full.log": {
+        "size": 2100576,
+        "sha256": "ed48881629eda93baaa0255c9a32427fab6df36d1a72f13314e09d43d4b0e910"
+      },
+      "full.xml": {
+        "size": 2283228,
+        "sha256": "6306df97d64ef96d67ec9f61a7daf1366d990eba5eb1d3f3578e39fd1a6cb13a"
+      },
+      "full-status.json": {
+        "size": 652,
+        "sha256": "58dead1bc6a473824bbf2640938704a7a48796de8fbc01b1833dab006c2626d8"
+      },
+      "storage-telemetry.json": {
+        "size": 163027,
+        "sha256": "5bb494211a1b516c53d4b186d4cecd87a8ba2f4f776d8e4d89424a8f7336e645"
+      },
+      "terminal-receipt.json": {
+        "size": 249,
+        "sha256": "d530488eed74863700da108efca6ba1bf01b056d693e575736b69823259f7da3"
+      }
+    },
+    "limits": [
+      "Selected operation admission only; close election/Event/wake remain pending.",
+      "T022 in_progress and all21 criteria unaccepted; no physical, real SDK/model, production or universal erasure proof."
+    ],
+    "normal_full_verified": true,
+    "verification_receipt": "data/autonomous-roadmap-20261102/t022/t/normal-full-attempt-01/acceptance-proof.json",
+    "verification_receipt_sha256": "27feff6926200554480d1bf4dcbd93681b41ffae6660c43e1a155549b8a23823"
+  },
+  "explicit_exclusions": [
+    "Close-election reservation, _parakeet_close_started/_owner/_done/Event/failure publication is NOT fixed or accepted by T; retained as the next independent boundary requiring its own genuine RED.",
+    "Wake is untouched and outside this scope.",
+    "No change to ParakeetSTT load/transcription/confidence/release algorithms or SDK math/metrics; entire class AST preserved.",
+    "No actual onnx_asr/model/GPU/audio/USB/hardware/native backend operation or private allocator/copy erasure claim. Sentinel reference retirement proves only adapter ownership protocol; containment process exit is not an exit/retirement receipt."
+  ],
+  "preserved_boundaries": {
+    "T022_status": "in_progress",
+    "acceptance_criteria": {
+      "total": 21,
+      "accepted": [],
+      "unchanged": true
+    },
+    "T021_and_C03_C04_C06_C20": "remain open",
+    "T020_P1_T047": "unchanged",
+    "identity_and_authority": "voice, person, account, consent and permissions remain separate; no automatic permission grant from voice identity.",
+    "production": "No deployment, service restart or production mutation.",
+    "goal_completion": "not_complete"
+  },
+  "artifacts": [
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/t/baseline-red-proof.json",
+      "sha256": "00db82cb562eae0b1cbc88a51624512ee93ae46287257978184dea481022e5cc"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/t/baseline-source.py",
+      "sha256": "f033f913a0c6987a2e0f98cfa8e58cb56c0316e3345c62539328ab613c362fef"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/t/green-replay.py",
+      "sha256": "90d22093f23a8593982a7d0f43c66137def7af9b4649d099783acffbb37d52cd"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/t/green-replay.log",
+      "sha256": "e7efd5ad6f70dd2db2882ace1f3d7f5dbecbce49de7e9a92c3c6372be8db64eb"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/t/green-replay-terminal.json",
+      "sha256": "b9c1e3305deda2b3dd3bc38fb70aea49a2c675cbd7312afd03f10575629e9f3e"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/t/targeted-proof.json",
+      "sha256": "5c4c7f5a141e10135632934bb900a727187d6f634f2c2389ede0cde5c2fc8569"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/t/targeted-initial.xml",
+      "sha256": "1037e0046b77dec220e3d4869edae894b31ae32211d509842de5845125a77691"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/t/targeted-initial.log",
+      "sha256": "069ba30e66cbe1bb20e4133d07d50ffc75f9bc2c4b11f0fe078e63bf7ef69b9e"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/t/targeted-initial-terminal.json",
+      "sha256": "6a6dd53f94739010bae5603c1f13710cc1893f633d2f87a3a1ba33cfcccb2d93"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/t/source-snapshot.json",
+      "sha256": "3f6b278ea91feb3534d60fccc5654a7bbb7a74d79a711156cdf6744349e26a32"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/t/source-scope-proof.json",
+      "sha256": "bcb93b674a59d7d6a842a63b0579ef53870a94a20b67a8039ab69399b6de022e"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/t/cross-unit-source-proof.json",
+      "sha256": "f1b471f370b86fcb90af27bb4f60b861c5f4245c950da09550823b4be62fa003"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/t/implementation-review.json",
+      "sha256": "ba926b29688cb8f9be517315b19a799840cbf3a5f13ebe9341cdb587ac81b53e"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/t/test-review.json",
+      "sha256": "aba3048f0ca4dbe98576848b11c84ef25a0b4198bb58fc0f92196bb1d550ee83"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/t/code-staged-proof.json",
+      "sha256": "e7c30af8b9d89285983b4d299dbdf9e8943f6d2dbe4ee1df627c7ca799e1f864"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/t/code-delivery.json",
+      "sha256": "57884e6c355ced341aacbb3c96a27a5675b7b8e165ad1a92a37a83e4ae3d6fde"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/t/normal-full-attempt-01/acceptance-proof.json",
+      "sha256": "27feff6926200554480d1bf4dcbd93681b41ffae6660c43e1a155549b8a23823"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t022/t/evidence-template-errata.json",
+      "sha256": "e458f7b8f97c8870730cf907dcfcc39efa12d1f67078daa4e83f9f9761838118"
+    }
+  ],
+  "source_delivery_history": {
+    "status": "source_committed_and_pushed_targeted_green_full_running",
+    "implementation_commit": "3013d085eba6eaba9f9227bcad5f9021a756a71e",
+    "targeted_cases": 191,
+    "new_unique_cases": 11,
+    "push_session": 11717,
+    "push_terminal_exit_code": 0,
+    "full_session": 89830,
+    "full_pending": true,
+    "close_election_Event_wake_excluded": true
+  },
+  "verified_at_utc": "2026-11-04T13:56:47.292709+00:00",
+  "prepared_from_template_sha256": "34d451da22af1e4fbe8228ebe9a732422a1033fd72a2cbad091e1ee93ed028c5",
+  "history_note": "source_delivery_history and targeted_validation.normal_full_pending describe their earlier checkpoints. Current normal-full verification is recorded separately in full_validation; the private draft and its errata remain preserved.",
+  "ruff": {
+    "paths": [
+      "src/stt/parakeet_stt.py",
+      "tests/unit/stt/test_parakeet_admission.py"
+    ],
+    "terminal_exit_code": 0,
+    "findings": 0,
+    "receipt": "data/autonomous-roadmap-20261102/t022/t/ruff-initial.json"
+  }
+}
