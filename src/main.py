@@ -7,11 +7,13 @@ Entry point principal
 import asyncio
 from collections.abc import Callable
 from contextlib import AsyncExitStack
+from contextvars import Context
 import logging
 import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import yaml
 from dotenv import load_dotenv
@@ -19,6 +21,7 @@ from dotenv import load_dotenv
 from src.application import (
     ApplicationFactories, ApplicationGraph, ApplicationModels,
     HttpReasonerOwner, SpeakerModelOwner, STTExecutorOwner, TTSModelOwner, WakeModelOwner,
+    _ModelResourceOwner,
 )
 from src.core.owned_work import OwnedBlockingWork
 from src.core.settings_schema import (
@@ -95,6 +98,34 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+class _HermesReasonerOwner(_ModelResourceOwner):
+    """Retire owned Hermes instances after their actual graph borrowers."""
+
+    def __init__(self) -> None:
+        from src.llm.hermes_reasoner import _HermesLifecycle
+        super().__init__((_HermesLifecycle,))
+
+    async def load_model(self, model: Any) -> None:
+        """Load owned models through their retained native-call receipt."""
+        if issubclass(type(model), self._model_types):
+            await model.aload()
+        else:
+            # A substituted foreign leaf retains its existing loading contract.
+            model.load()
+
+    def begin_close(self) -> asyncio.Task:
+        """Validate the original caller before any isolated close Task exists."""
+        if not self._models:
+            if self._closing is None:
+                async def empty():
+                    return None
+                self._closing = asyncio.create_task(empty(), context=Context())
+            return self._closing
+        for reasoner in self._models.values():
+            reasoner._hermes_require_close_caller()
+        return super().begin_close()
 
 
 def load_config(config_path: str = "config/settings.yaml") -> dict:
@@ -464,6 +495,8 @@ async def build_application(
     from src.llm import HttpReasoner
     http_reasoners = HttpReasonerOwner()
     shutdown.push_async_callback(http_reasoners.aclose)
+    hermes_reasoners = _HermesReasonerOwner()
+    shutdown.push_async_callback(hermes_reasoners.aclose)
     reasoner_config = config.get("reasoner", {})
     reasoner_mode = reasoner_config.get("mode", "http")
 
@@ -544,8 +577,9 @@ async def build_application(
                 model=reasoner_config.get("hermes_model"),
                 timeout_s=hermes_timeout_s,
             )
+            hermes_reasoners.add_model(llm)
             try:
-                llm.load()
+                await hermes_reasoners.load_model(llm)
                 info = llm.get_info()
                 logger.info(f"LLM reasoner (cloud) vía Hermes CLI → provider={info['provider']} modelo={info['model']}")
             except Exception as e:
@@ -624,7 +658,9 @@ async def build_application(
     privacy_services = await build_privacy_services(config, shutdown=shutdown)
     privacy_services.add_borrower(chroma.begin_close)
     privacy_services.add_borrower(http_reasoners.begin_close)
+    privacy_services.add_borrower(hermes_reasoners.begin_close)
     http_reasoners.add_borrower(chroma.begin_close)
+    hermes_reasoners.add_borrower(chroma.begin_close)
     privacy_services.add_borrower(stt_executors.begin_close)
     privacy_services.add_borrower(tts_models.begin_close)
     if fast_router is not None:
@@ -1280,6 +1316,7 @@ async def build_application(
     )
     stt_executors.add_borrower(command_processor.begin_close)
     http_reasoners.add_borrower(command_processor.begin_close)
+    hermes_reasoners.add_borrower(command_processor.begin_close)
     speaker_models.add_borrower(command_processor.begin_close)
     shutdown.push_async_callback(command_processor.aclose)
 
@@ -1359,6 +1396,7 @@ async def build_application(
         """Capture the shared response drain before later builders run."""
         tts_models.add_borrower(begin_close)
         http_reasoners.add_borrower(begin_close)
+        hermes_reasoners.add_borrower(begin_close)
 
     voice_services = build_voice_services(
         config, tts=tts, shutdown=shutdown, zone_manager=zone_manager, llm=llm,
@@ -1445,15 +1483,13 @@ async def build_application(
                     model=reasoner_config.get("hermes_model"),
                     timeout_s=compaction_hermes_timeout_s,
                 )
+                hermes_reasoners.add_model(compaction_reasoner)
                 try:
-                    compaction_reasoner.load()
-                    # El timeout_s del Compactor es el asyncio.wait_for EXTERNO que
-                    # envuelve compaction_reasoner.complete() — mismo riesgo que finding
-                    # #4 (main.py, branch hermes_cli del reasoner principal) si es menor
-                    # al timeout_s del subproceso de arriba: el wait_for cancela la task
-                    # antes de que el subproceso/su kill de process-group lleguen a
-                    # dispararse, y hermes queda huérfano hasta SU PROPIO timeout. Usar
-                    # el máximo entre lo configurado y el timeout del subproceso hermes.
+                    await hermes_reasoners.load_model(compaction_reasoner)
+                    # El timeout de Compactor limita al observador de complete;
+                    # el dueño conserva el job nativo aunque ese observador se cancele.
+                    # Mantener el máximo entre lo configurado y el presupuesto del
+                    # subproceso evita agotar la espera antes de su propio timeout.
                     compactor = Compactor(
                         reasoner=compaction_reasoner,
                         max_summary_tokens=compaction_cfg.get("max_summary_tokens", 200),
@@ -1585,6 +1621,7 @@ async def build_application(
         shutdown.push_async_callback(orchestrator.stop)
         if isinstance(orchestrator.context_manager, ContextManager):
             http_reasoners.add_borrower(orchestrator.context_manager.begin_close)
+            hermes_reasoners.add_borrower(orchestrator.context_manager.begin_close)
         context_erasure.attach_manager(orchestrator.context_manager)
 
     # Request router (command routing: orchestrated + legacy paths)
@@ -1661,6 +1698,7 @@ async def build_application(
     query_work = getattr(request_router, "_query_work", None)
     if isinstance(query_work, OwnedBlockingWork):
         http_reasoners.add_borrower(query_work.begin_close)
+        hermes_reasoners.add_borrower(query_work.begin_close)
     context_erasure.attach_router(request_router)
     suggestion_erasure.attach_router(request_router)
 
@@ -1864,7 +1902,7 @@ async def build_application(
             ((dashboard.admin_work.begin_close,) if dashboard is not None else ())
             + ((multi_room_loop.begin_close,) if multi_room_loop is not None else ())
             + (stt_executors.begin_close, tts_models.begin_close, speaker_models.begin_close,
-               wake_models.begin_close, http_reasoners.begin_close)
+               wake_models.begin_close, http_reasoners.begin_close, hermes_reasoners.begin_close)
         ),
     )
 

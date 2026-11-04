@@ -7,6 +7,7 @@ de un cliente HTTP. Ver docs/superpowers/specs/2026-08-10-hermes-cli-reasoner-de
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -15,6 +16,8 @@ import subprocess
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import Context
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
@@ -100,6 +103,7 @@ class _HermesProcessOwner:
     cleanup_started: bool = False
     cleanup_finished: bool = False
     retired: bool = False
+    reasoner: _HermesLifecycle | None = None
 
     def __post_init__(self) -> None:
         with _HERMES_PROCESS_LOCK:
@@ -191,7 +195,311 @@ class _HermesProcessOwner:
         return controls
 
 
-class HermesCliReasoner:
+@dataclass(eq=False)
+class _HermesCall:
+    asynchronous: bool = False
+    thread: threading.Thread | None = None
+    on_stack: bool = False
+    native_started: bool = False
+    native_finished: bool = False
+    job_returned: bool = False
+    uncertain: bool = False
+    observer_attached: bool = False
+    task: asyncio.Task | None = None
+    operation: object | None = None
+    value: object = None
+    error: BaseException | None = None
+    process_owners: set[_HermesProcessOwner] = field(default_factory=set)
+
+
+class _HermesLifecycle:
+    """Own admitted CLI invocations without owning the borrowed thread pool."""
+
+    def _hermes_initialize(self) -> None:
+        self._hermes_condition = threading.Condition()
+        self._hermes_local = threading.local()
+        self._hermes_calls: set[_HermesCall] = set()
+        self._hermes_process_owners: set[_HermesProcessOwner] = set()
+        self._hermes_sealed = False
+        self._hermes_closing: asyncio.Task | None = None
+        self._hermes_close_started = False
+        self._hermes_close_uncertain = False
+        self._hermes_close_operation = None
+
+    def _hermes_current(self) -> _HermesCall | None:
+        thread = threading.current_thread()
+        with self._hermes_condition:
+            return next(
+                (call for call in self._hermes_calls
+                 if call.on_stack and call.thread is thread), None,
+            )
+
+    def _hermes_collect_locked(self) -> None:
+        for call in tuple(self._hermes_calls):
+            complete = call.native_finished and call.job_returned
+            if call.asynchronous:
+                complete = complete and call.task is not None and call.task.done()
+            confirmed = all(owner.retired for owner in call.process_owners)
+            if complete and confirmed and not call.uncertain:
+                self._hermes_calls.discard(call)
+                self._hermes_process_owners.difference_update(call.process_owners)
+
+    @contextmanager
+    def _hermes_enter(self, call: _HermesCall):
+        previous = getattr(self._hermes_local, "call", None)
+        try:
+            with self._hermes_condition:
+                call.thread = threading.current_thread()
+                call.native_started = True
+                call.on_stack = True
+            self._hermes_local.call = call
+            yield call
+        finally:
+            call.on_stack = False
+            try:
+                self._hermes_local.call = previous
+                with self._hermes_condition:
+                    self._hermes_condition.notify_all()
+            except BaseException:
+                call.uncertain = True
+                raise
+
+    @contextmanager
+    def _hermes_admit(self):
+        parent = self._hermes_current()
+        if parent is not None:
+            yield parent
+            return
+        call = _HermesCall()
+        try:
+            with self._hermes_condition:
+                if self._hermes_sealed:
+                    raise RuntimeError("hermes_closed")
+                self._hermes_calls.add(call)
+            with self._hermes_enter(call):
+                yield call
+        finally:
+            call.on_stack = False
+            call.native_finished = True
+            call.job_returned = True
+            with self._hermes_condition:
+                self._hermes_collect_locked()
+                self._hermes_condition.notify_all()
+
+    def _hermes_track_process(self, owner: _HermesProcessOwner) -> None:
+        call = self._hermes_current()
+        if call is None:
+            raise RuntimeError("hermes_admission_missing")
+        with self._hermes_condition:
+            self._hermes_process_owners.add(owner)
+            call.process_owners.add(owner)
+
+    def _hermes_outcome(
+        self, call: _HermesCall, value=None, error: BaseException | None = None
+    ) -> None:
+        with self._hermes_condition:
+            if call.observer_attached:
+                call.value, call.error = value, error
+
+    def _hermes_invoke(self, call: _HermesCall, function, args, kwargs) -> None:
+        value = None
+        try:
+            with self._hermes_enter(call):
+                try:
+                    value = function(*args, **kwargs)
+                except BaseException as error:
+                    self._hermes_outcome(call, error=error)
+                else:
+                    self._hermes_outcome(call, value=value)
+                finally:
+                    value = function = None
+                    args, kwargs = (), {}
+        except BaseException as error:
+            call.uncertain = True
+            self._hermes_outcome(call, error=error)
+        finally:
+            value = function = None
+            args, kwargs = (), {}
+            call.on_stack = False
+            call.native_finished = True
+            with self._hermes_condition:
+                self._hermes_condition.notify_all()
+
+    async def _hermes_execute(self, call: _HermesCall, function, args, kwargs) -> None:
+        try:
+            await asyncio.to_thread(self._hermes_invoke, call, function, args, kwargs)
+            call.job_returned = True
+        except BaseException as error:
+            call.uncertain = True
+            self._hermes_outcome(call, error=error)
+        finally:
+            function = None
+            args, kwargs = (), {}
+
+    def _hermes_job_done(self, call: _HermesCall, task: asyncio.Task) -> None:
+        if task.cancelled() or task.exception() is not None:
+            call.uncertain = True
+        with self._hermes_condition:
+            self._hermes_collect_locked()
+            self._hermes_condition.notify_all()
+
+    async def _hermes_async(self, function, *args, **kwargs):
+        call = _HermesCall(asynchronous=True, observer_attached=True)
+        try:
+            with self._hermes_condition:
+                if self._hermes_sealed:
+                    raise RuntimeError("hermes_closed")
+                self._hermes_calls.add(call)
+            call.operation = self._hermes_execute(call, function, args, kwargs)
+            try:
+                call.task = asyncio.create_task(call.operation, context=Context())
+                call.operation = None
+                call.task.add_done_callback(
+                    lambda done: self._hermes_job_done(call, done), context=Context(),
+                )
+            except BaseException:
+                call.uncertain = True
+                raise
+            await asyncio.shield(call.task)
+            if call.error is not None:
+                raise call.error
+            if call.uncertain:
+                raise RuntimeError("hermes_retirement_unconfirmed")
+            return call.value
+        except BaseException:
+            if call.task is None:
+                call.uncertain = True
+            raise
+        finally:
+            with self._hermes_condition:
+                call.observer_attached = False
+                call.value = call.error = None
+                self._hermes_collect_locked()
+                self._hermes_condition.notify_all()
+            function = None
+            args, kwargs = (), {}
+
+    def _hermes_require_close_caller(self) -> None:
+        if self._hermes_current() is not None:
+            raise RuntimeError("hermes_close_from_worker")
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:
+            current = None
+        if current is not None and current is self._hermes_closing:
+            raise RuntimeError("hermes_close_from_owner")
+
+    def request_close(self) -> None:
+        """Seal new invocations without waiting or performing external IO."""
+        with self._hermes_condition:
+            self._hermes_sealed = True
+            self._hermes_condition.notify_all()
+
+    def _hermes_pending_locked(self) -> bool:
+        for call in self._hermes_calls:
+            if call.native_started and not call.native_finished:
+                return True
+            if call.asynchronous:
+                if call.task is not None and not call.task.done():
+                    return True
+                if call.task is None and not call.uncertain:
+                    return True
+            elif not call.native_finished:
+                return True
+        return False
+
+    def _hermes_failed_locked(self) -> bool:
+        if self._hermes_close_uncertain or any(call.uncertain for call in self._hermes_calls):
+            return True
+        if any(not owner.retired for owner in self._hermes_process_owners):
+            return True
+        with _HERMES_PROCESS_LOCK:
+            return any(owner.reasoner is self and not owner.retired
+                       for owner in _HERMES_PROCESS_OWNERS)
+
+    async def _hermes_finish(self) -> None:
+        while True:
+            with self._hermes_condition:
+                self._hermes_collect_locked()
+                pending = self._hermes_pending_locked()
+                failed = self._hermes_failed_locked()
+            if not pending:
+                if failed:
+                    raise RuntimeError("hermes_retirement_unconfirmed")
+                return
+            try:
+                await asyncio.sleep(.01)
+            except asyncio.CancelledError:
+                # This owner continues observing actual native work.
+                continue
+
+    def begin_close(self) -> asyncio.Task:
+        """Return the one actual retirement owner after original-caller checks."""
+        self._hermes_require_close_caller()
+        asyncio.get_running_loop()
+        self.request_close()
+        if self._hermes_closing is None:
+            if self._hermes_close_started:
+                raise RuntimeError("hermes_retirement_unconfirmed")
+            self._hermes_close_started = True
+            self._hermes_close_operation = self._hermes_finish()
+            try:
+                self._hermes_closing = asyncio.create_task(
+                    self._hermes_close_operation, context=Context(),
+                )
+                self._hermes_close_operation = None
+            except BaseException:
+                self._hermes_close_uncertain = True
+                raise
+        return self._hermes_closing
+
+    async def aclose(self) -> None:
+        """Join actual retirement despite cancellation of this observer."""
+        closing = self.begin_close()
+        cancelled = failure = None
+        while not closing.done():
+            try:
+                await asyncio.shield(closing)
+            except asyncio.CancelledError as error:
+                cancelled = cancelled or error
+            except Exception:
+                break
+        try:
+            closing.result()
+        except BaseException as error:
+            failure = error
+        if failure is not None and cancelled is not None:
+            raise BaseExceptionGroup("hermes_close_observation", [failure, cancelled])
+        if failure is not None:
+            raise failure
+        if cancelled is not None:
+            raise cancelled
+
+    def wait_closed(self) -> None:
+        """Wait off-loop for admitted work; never join an active caller itself."""
+        self._hermes_require_close_caller()
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError("hermes_close_requires_async")
+        self.request_close()
+        with self._hermes_condition:
+            while True:
+                self._hermes_collect_locked()
+                if not self._hermes_pending_locked():
+                    if self._hermes_failed_locked():
+                        raise RuntimeError("hermes_retirement_unconfirmed")
+                    return
+                self._hermes_condition.wait(.05)
+
+    def close(self) -> None:
+        """Wait synchronously outside an event loop for actual retirement."""
+        self.wait_closed()
+
+
+class HermesCliReasoner(_HermesLifecycle):
     """Reasoner que delega en el CLI de Hermes Agent (`hermes -z`).
 
     Drop-in de HttpReasoner/LLMReasoner — misma interfaz (`__call__`, `generate`,
@@ -223,6 +531,7 @@ class HermesCliReasoner:
                 equivalente (60s en HttpReasoner) porque suma el arranque del
                 proceso `hermes`.
         """
+        self._hermes_initialize()
         self.binary_path = binary_path
         self.provider = provider
         self.model = model
@@ -248,23 +557,24 @@ class HermesCliReasoner:
         el agente completo, con su propio timeout acotado — el riesgo de
         huérfanos que justifica el mecanismo de `_run()` no aplica acá.
         """
-        self.policy.require_allowed()
-        try:
-            result = subprocess.run(
-                [self.binary_path, "auth", "status"],
-                capture_output=True, encoding="utf-8", errors="replace", timeout=10,
-            )
-        except (OSError, subprocess.TimeoutExpired) as e:
-            raise RuntimeError(
-                f"No se pudo correr '{self.binary_path} auth status': {e}"
-            ) from e
-        if result.returncode != 0 or self.provider not in result.stdout:
-            raise RuntimeError(
-                f"Hermes auth no está lista para provider={self.provider!r}. "
-                f"Correr '{self.binary_path} auth add {self.provider}' en el server. "
-                f"stdout={result.stdout!r} stderr={result.stderr!r}"
-            )
-        logger.info(f"HermesCliReasoner OK — provider={self.provider}")
+        with self._hermes_admit():
+            self.policy.require_allowed()
+            try:
+                result = subprocess.run(
+                    [self.binary_path, "auth", "status"],
+                    capture_output=True, encoding="utf-8", errors="replace", timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired) as e:
+                raise RuntimeError(
+                    f"No se pudo correr '{self.binary_path} auth status': {e}"
+                ) from e
+            if result.returncode != 0 or self.provider not in result.stdout:
+                raise RuntimeError(
+                    f"Hermes auth no está lista para provider={self.provider!r}. "
+                    f"Correr '{self.binary_path} auth add {self.provider}' en el server. "
+                    f"stdout={result.stdout!r} stderr={result.stderr!r}"
+                )
+            logger.info(f"HermesCliReasoner OK — provider={self.provider}")
 
     def _build_cmd(self, prompt: str, usage_path: str) -> list[str]:
         """Arma el argv de `hermes -z`. Sin shell=True — sin riesgo de injection."""
@@ -314,68 +624,71 @@ class HermesCliReasoner:
             a __call__ leer el valor de SU PROPIA corrida sin una carrera si
             dos llamadas pisan la misma instancia concurrentemente.
         """
-        self.policy.require_allowed()
-        self._last_metrics = None
-        fd, usage_path = tempfile.mkstemp(suffix=".json", prefix="hermes-usage-")
-        os.close(fd)
-        owner = _HermesProcessOwner(usage_path)
-        primary: BaseException | None = None
-        try:
-            cmd = self._build_cmd(prompt, usage_path)
-            start = time.perf_counter()
-            owner.launch_called = True
+        with self._hermes_admit():
+            self.policy.require_allowed()
+            self._last_metrics = None
+            fd, usage_path = tempfile.mkstemp(suffix=".json", prefix="hermes-usage-")
+            os.close(fd)
+            owner = _HermesProcessOwner(usage_path)
+            primary: BaseException | None = None
             try:
-                owner.proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    stdin=subprocess.DEVNULL,
-                    encoding="utf-8",
-                    errors="replace",
-                    start_new_session=True,
-                )
-            except OSError as e:
-                raise RuntimeError(f"hermes -z could not start: {e}") from e
-            proc = owner.proc
-            owner.adopt(proc)
-            try:
-                stdout, stderr = proc.communicate(timeout=self.timeout_s)
-            except subprocess.TimeoutExpired as e:
-                raise RuntimeError(f"hermes -z timed out after {self.timeout_s}s") from e
-            elapsed_ms = (time.perf_counter() - start) * 1000
-            # A successful communicate returns only after its actual wait.
-            owner.wait_confirmed = True
-            if proc.returncode != 0:
-                raise RuntimeError(
-                    f"hermes -z failed (exit={proc.returncode}): {stderr.strip()}"
-                )
-            tokens = self._record_usage(usage_path, elapsed_ms)
-            if not stdout.strip():
-                raise RuntimeError(
-                    f"hermes -z returned empty output (exit=0), stderr={stderr.strip()!r}"
-                )
-            return stdout.strip(), tokens
-        except BaseException as error:
-            primary = error
-            raise
-        finally:
-            controls: list[BaseException] = []
-            try:
-                controls = owner.retire(terminate=not owner.wait_confirmed)
+                owner.reasoner = self
+                self._hermes_track_process(owner)
+                cmd = self._build_cmd(prompt, usage_path)
+                start = time.perf_counter()
+                owner.launch_called = True
+                try:
+                    owner.proc = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        stdin=subprocess.DEVNULL,
+                        encoding="utf-8",
+                        errors="replace",
+                        start_new_session=True,
+                    )
+                except OSError as e:
+                    raise RuntimeError(f"hermes -z could not start: {e}") from e
+                proc = owner.proc
+                owner.adopt(proc)
+                try:
+                    stdout, stderr = proc.communicate(timeout=self.timeout_s)
+                except subprocess.TimeoutExpired as e:
+                    raise RuntimeError(f"hermes -z timed out after {self.timeout_s}s") from e
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                # A successful communicate returns only after its actual wait.
+                owner.wait_confirmed = True
+                if proc.returncode != 0:
+                    raise RuntimeError(
+                        f"hermes -z failed (exit={proc.returncode}): {stderr.strip()}"
+                    )
+                tokens = self._record_usage(usage_path, elapsed_ms)
+                if not stdout.strip():
+                    raise RuntimeError(
+                        f"hermes -z returned empty output (exit=0), stderr={stderr.strip()!r}"
+                    )
+                return stdout.strip(), tokens
             except BaseException as error:
-                # The strong registry remains the owner even if metadata fails.
-                owner.phase_codes.append("retirement_unconfirmed")
-                if not isinstance(error, Exception):
-                    controls.append(error)
-            if controls:
-                errors = ([primary] if primary is not None else []) + [
-                    error for error in controls if error is not primary
-                ]
-                if len(errors) == 1:
-                    raise errors[0]
-                raise BaseExceptionGroup("hermes_process_cleanup_controls", errors)
-            if primary is None and not owner.retired:
-                raise RuntimeError("hermes_process_retirement_failed")
+                primary = error
+                raise
+            finally:
+                controls: list[BaseException] = []
+                try:
+                    controls = owner.retire(terminate=not owner.wait_confirmed)
+                except BaseException as error:
+                    # The strong registry remains the owner even if metadata fails.
+                    owner.phase_codes.append("retirement_unconfirmed")
+                    if not isinstance(error, Exception):
+                        controls.append(error)
+                if controls:
+                    errors = ([primary] if primary is not None else []) + [
+                        error for error in controls if error is not primary
+                    ]
+                    if len(errors) == 1:
+                        raise errors[0]
+                    raise BaseExceptionGroup("hermes_process_cleanup_controls", errors)
+                if primary is None and not owner.retired:
+                    raise RuntimeError("hermes_process_retirement_failed")
 
     @staticmethod
     def _kill_process_group(proc: subprocess.Popen) -> None:
@@ -468,15 +781,17 @@ class HermesCliReasoner:
         tokens de la OTRA corrida. HttpReasoner.__call__ evita esto mismo
         armando su dict `usage` desde una variable local (`resp.usage`).
         """
-        text, tokens = self._run(prompt)
-        return {
-            "choices": [{"text": text}],
-            "usage": {"prompt_tokens": 0, "completion_tokens": tokens},
-        }
+        with self._hermes_admit():
+            text, tokens = self._run(prompt)
+            return {
+                "choices": [{"text": text}],
+                "usage": {"prompt_tokens": 0, "completion_tokens": tokens},
+            }
 
     def generate(self, prompt: str, max_tokens: int = 1024, temperature: float = 0.7) -> str:
         """Generar solo el texto (drop-in de LLMReasoner.generate/HttpReasoner.generate)."""
-        return self(prompt, max_tokens=max_tokens, temperature=temperature)["choices"][0]["text"]
+        with self._hermes_admit():
+            return self(prompt, max_tokens=max_tokens, temperature=temperature)["choices"][0]["text"]
 
     def generate_stream(self, prompt: str, max_tokens: int = 1024, temperature: float = 0.7, **_ignored):
         """Streaming "falso": un solo chunk con la respuesta completa.
@@ -504,19 +819,21 @@ class HermesCliReasoner:
             Un único dict {"token", "text", "token_count": 1} con la
             respuesta completa.
         """
-        text, _tokens = self._run(prompt)
+        with self._hermes_admit():
+            text, _tokens = self._run(prompt)
         yield {"token": text, "text": text, "token_count": 1}
 
-    async def complete(self, prompt: str, max_tokens: int = 512, temperature: float = 0.7, **_ignored) -> str:
-        """API unificada para LLMRouter — async, retorna texto plano.
+    async def aload(self) -> None:
+        """Load through an owned native receipt without blocking the event loop."""
+        return await self._hermes_async(self.load)
 
-        `_run` es síncrono (subprocess.run bloqueante) — se envuelve en
-        `asyncio.to_thread` para no bloquear el event loop mientras el
-        subproceso corre, mismo patrón que el path sin idle-watchdog de
-        `HttpReasoner.complete()`.
+    async def complete(self, prompt: str, max_tokens: int = 512, temperature: float = 0.7, **_ignored) -> str:
+        """Run one owned native invocation and return its complete text.
+
+        Cancellation detaches this observer while actual native work remains
+        retained until its real callable and process retirement finish.
         """
-        import asyncio
-        text, _tokens = await asyncio.to_thread(self._run, prompt)
+        text, _tokens = await self._hermes_async(self._run, prompt)
         return text
 
     def get_info(self) -> dict:
