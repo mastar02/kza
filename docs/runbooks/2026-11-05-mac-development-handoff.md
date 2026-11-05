@@ -6,22 +6,22 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 ## Punto de reanudación
 
-La unidad **T023-H quedó verificada localmente en Mac**. El MISMO goal está **activo e incompleto**; la reanudación revocó la pausa histórica de G. No recrear la `.venv` ni repetir tandas cerradas sin una razón nueva.
+La unidad **T023-I quedó verificada localmente en Mac**. El mismo goal sigue **activo e incompleto**. La reanudación revocó la pausa histórica de G. Usar la `.venv` nativa existente y no repetir tandas cerradas sin una razón nueva.
 
-| Dato | Estado actual Mac |
+| Dato | Estado actual |
 | --- | --- |
-| Entorno | `gabriel`, `/Users/gabriel/Documents/Proyectos/kza`, macOS 26.6.1 arm64, `.venv` CPython 3.13.18 |
-| Código H publicado | `815941b6d120bcfe385ab5897c4cc79b329c1204` |
-| Integración H | 34 PASS; se conservan 4 RED y el primer 33/1 |
-| Dirigida H | 946 PASS, XML 156.358 s |
-| Full normal H | **8472 PASS + una xfail conocida**, 8473 IDs exactos; XML 636.873 s |
-| Fuentes | 1022 archivos incluidos 37 scripts y 10 protegidos intactos durante dirigida/full |
-| PC/Terra | Chrome escritorio 5→4→3→2→1→0, sólo control HTTP con fixtures |
-| Delegación | Hasta 8 agentes activos en total si el entorno lo permite; pruebas interactivas de PC con `gpt-6.1-terra` |
-| Próxima unidad | I propuesta; leer su plan antes de cualquier baseline |
-| Tracking | Este commit; verificar SHA y publicación con Git al retomar |
+| Entorno | `gabriel`, `/Users/gabriel/Documents/Proyectos/kza`, macOS 26.6.1 arm64, CPython 3.13.18 |
+| Código I | `9d9613d0fe6058d27c0200aec7b688c4019f90b7` |
+| Baseline original | 8 PASS; 12 actores nativos del fixture cerrados y unidos, servicios sintéticos |
+| Integración I | 43 PASS; primer 35/8 y correcciones explícitas conservados |
+| Dirigida I | 989 PASS; XML 171.008 s |
+| Full normal I | **8515 PASS + una xfail conocida**, 8516 IDs exactos; XML 663.630 s |
+| Fuentes | 1025 archivos incluidos 37 scripts y 11 protegidos intactos durante las tandas amplias |
+| Delegación | Hasta ocho agentes activos en total según plazas; pruebas interactivas de PC con `gpt-6.1-terra` |
+| Próxima unidad | J propuesta: recibos de cierre del input de producción, primero baseline aislado |
+| Tracking | Este commit; verificar SHA y publicación al retomar |
 
-T022/T023 siguen `in_progress`, T024 `planned` y los 21 criterios `not_evaluated`. T020/P1/T047 y permisos separados se conservan. Sin release o cambios de producción. Ver [informe H](../research/2026-11-05-manual-voice-command-capture-authority.json).
+T022/T023 siguen `in_progress`, T024 `planned` y los 21 criterios `not_evaluated`. T020/P1/T047, fases, presupuestos y permisos separados se conservan. Ver [informe I](../research/2026-11-05-legacy-wakeword-capture-authority.json). Sin release o cambios de producción.
 
 ## Referencia histórica del cierre Linux F
 
@@ -103,9 +103,7 @@ secretos.
 
 ## Comprobación y próxima unidad
 
-El entorno nativo y los recibos actuales están en el [informe H](../research/2026-11-05-manual-voice-command-capture-authority.json). G y Linux conservan sus propios recibos históricos; no ejecutar sus venv o reutilizar handles de otras sesiones.
-
-Continuar con el [plan propuesto I](../plans/2026-11-05-legacy-wakeword-capture-continuation.json): ambos CLI legacy de wakeword y su separación de captura frente a servicios. Primero lectura y baseline aislado; no ejecutar systemctl, audio, modelos o HA reales. Ambos scripts hoy son idénticos y usan nexa. StreamingSTT queda condicional sin llamador acreditado. I no tiene implementación, baseline ni runtime.
+Leer el [informe I](../research/2026-11-05-legacy-wakeword-capture-authority.json) y la [auditoría y propuesta J](../plans/2026-11-05-global-capture-followup.json). La fábrica real inicializa el control antes de los dos loops de producción, pero su OwnedInputStream compartido omite comprobación estricta de errores PortAudio y reintenta sobre un wrapper cuyo puntero puede haberse descartado. Es un hallazgo estático pendiente de reproducción aislada, sin ejecutar dispositivos o servicios reales. StreamingSTT permanece condicional sin llamador acreditado. La propuesta original I es histórica; no repetir su baseline ni sus pruebas por cambio de sesión.
 
 ## Verificación inicial en Mac — 2026-11-05
 
@@ -217,16 +215,22 @@ H usa kind fijo manual_voice_command y admin:manage original; la acción utiliza
 
 Se conservan todos los primeros resultados: watchdog de causa desconocida, dos errores de fixtures,4 RED genuinos y replay 33/1. El replay final 34 y la full validan el arreglo; esto no prueba audio/GPU/HA físicos ni borrado de SDK. La pausa mencionada en el registro histórico G quedó revocada por la reanudación posterior; el estado actual del goal es activo.
 
+## CLI legacy de wakeword bajo captura autorizada — I
+
+Ambos aliases conservan el wake word nexa. Las grabaciones y la prueba exigen administración original mediante el kind existente wakeword_training; no hay sexto kind ni nuevas rutas. El dueño conserva streams, detector, colas y operaciones hasta sus retornos reales, antes de ACK. Se retira systemctl implícito; train sigue offline y deploy sólo informa. Se conservan seis canales, copia del canal 0, RMS float32, filtro sólo positivo, WAV y semántica de score/threshold.
+
+Se archivan el baseline 8 PASS, el primer 35/8 y el replay 43 PASS. Se restablece la propagación original de main; cinco fallos de los fixtures nuevos se corrigen con cambios explícitos, sin aumentar presupuestos ni rebajar barreras. La dirigida y full validan los bytes finales; esto no acredita hardware, modelo real, SDK privado, borrado ni criterios físicos.
+
 ## Prompt para la sesión nueva
 
-> Retomá el MISMO goal de KZA de `docs/plans/2026-11-02-autonomous-roadmap.md`, activo e incompleto. Leé AGENTS.md, CLAUDE.md, este handoff y el informe H. Confirmá API del goal, checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro objetivo ni marques éste completo.
-> T023-H quedó verificada: 34 de integración, 946 dirigidos, full 8472 PASS + una xfail conocida y Chrome Terra. Usá `.venv/bin/python` nativo; no recrees el venv ni repitas tandas sin razón nueva. Hasta 8 agentes totales según plazas disponibles; pruebas interactivas de PC delegadas a `gpt-6.1-terra`.
-> Seguí I propuesta de `docs/plans/2026-11-05-legacy-wakeword-capture-continuation.json`: primero baseline aislado de ambos CLI legacy, sin servicios/modelos/audio/HA reales. Conservá todos los primeros resultados y permisos separados. T022/T023/T024 y los 21 criterios siguen abiertos; T020/P1/T047 se conservan. Producción/releases mantienen su alcance separado.
+> Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff, el informe I y la propuesta J. Confirmá API del goal, checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro objetivo ni marques éste completo.
+> I quedó verificada: 8 de caracterización original, 43 de integración, 989 dirigidos y full de 8515 PASS + una xfail conocida. Usá la `.venv` nativa; no recrees dependencias ni repitas tandas sin razón nueva. Hasta ocho agentes totales según plazas; interacción de PC delegada a Terra.
+> Comenzá J con caracterización original aislada de OwnedInputStream y sus llamadores reales; no ejecutar audio/modelos/GPU/HA/servicios reales. No usar un puntero nulo, reintento o ausencia de Task como recibo de cierre nativo. T022/T023/T024 y los 21 criterios siguen abiertos; T020/P1/T047 y permisos separados se conservan. Producción/releases mantienen su alcance separado.
 
 ## Lista de cierre y reanudación
 
-- [x] F/Linux, bootstrap Mac y G conservados con sus propios recibos.
-- [x] H,34 de integración, 946 dirigidos, full Mac y Chrome Terra revisados; primeros intentos preservados.
-- [x] Código H publicado; tracking y handoff incluidos en este commit.
-- [x] Mismo goal activo, sin nueva petición de pausa; confirmar estado real por API al retomar.
-- [ ] Próxima sesión confirma estado/Git y comienza I propuesta con baseline aislado, sin repetir trabajo verificado.
+- [x] F/Linux, bootstrap Mac, G y H conservados con recibos propios.
+- [x] I, primeras pruebas/fallos/correcciones y 43/989/full con evidencia local.
+- [x] Código I, tracking y handoff guardados y publicados; verificar Git al retomar.
+- [x] Mismo goal activo, sin nueva petición de pausa ni criterios físicos aceptados.
+- [ ] Confirmar estado/Git y comenzar J propuesta con baseline aislado, sin repetir trabajo cerrado.

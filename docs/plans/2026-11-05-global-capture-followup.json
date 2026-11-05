@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "timestamp_utc": "2026-11-05T17:22:55.401627+00:00",
+  "reviewer": "/root/h_fix_review",
+  "status": "bounded_current_source_audit_one_concrete_production_native_receipt_gap",
+  "task_status_changed": false,
+  "target": "Software preparation of T023 durable global mute; no T023/T022/C04 or physical acceptance.",
+  "inputs": {
+    "inventory": {
+      "path": "data/autonomous-roadmap-20261102/t023/i/current-capture-inventory.json",
+      "sha256": "213e4d6197bc1448f5f305d58c29348b858742d14d3f00e5ebf239e88bb73049",
+      "qualification": "Historical textual discovery inventory at1c14161, before I. Raw legacy lines are no longer current; refreshed focused source inspection below is authoritative."
+    },
+    "roadmap": "docs/plans/2026-11-02-autonomous-roadmap.json",
+    "requirements": "C04 complete producer/SDK/copy inventory, durable mute/nonvoice authenticated resume, coordinated expiry/erasure and restoration without resurrection. T024 explicitly covers deletion/restoration; these are not accepted by I."
+  },
+  "source_sha256": {
+    "src/main.py": "4b5329bd5275416e8b672a4d1301d8988ec69153ad03ba6c85c3b4e8aa8e26a4",
+    "src/application.py": "25dd348e5aaa49588b0ebc8c1a21d4569bcb9e54e94aac2c8c698d0fd1f90734",
+    "config/settings.yaml": "692c89f2f7ec986c07af75d4a9763381eadf80767525d0d51bd61147e1affe19",
+    "src/pipeline/voice_pipeline.py": "ed48f111a3a204fa7e6a00049cf860f7ea50e859d2a96e7e43d02e89f6f5796d",
+    "src/pipeline/audio_loop.py": "c378cd2de108447515417142fbee7728837220954497656072f95818b64e972e",
+    "src/pipeline/multi_room_audio_loop.py": "399683aa12a8ce7b431df9ad647259fcaa71861ba3f5dbbe836ee41cb3979b63",
+    "src/audio/owned_input.py": "5fe12d5280b6e496282e85fc1e043e67689bd0254c378007c24619a1cf7494d1",
+    "src/audio/input_group.py": "003d14ab285aace9dd158d75b20d7a4c88428322edf9e940319b4e75c9310ac3",
+    "src/memory/capture_control.py": "b8abfbe90341f9dd69421a057a6bcc68ac49138f71ef5787363b08ac9d2d496a",
+    "src/audio/native_capture_authority.py": "0347d906aba9a40654a94a62773b91a80ffcadc92564a156697c49d347afb633",
+    "src/audio/multi_mic_capture.py": "7ea7c2125bbb0823a8d2a6f002e2b25ca2810998dc0a660ecedd4604a72c6f40",
+    "src/stt/streaming_stt.py": "9b7518afdf9049ce958c074c7e604b507001035277c922a179150007e1517e89",
+    "scripts/train_nexa.py": "07262b1afa11f4e4d5d7d4967634ad0d4947f41076021ebd2f2bf258ed40b79a",
+    "scripts/train_che_bo.py": "07262b1afa11f4e4d5d7d4967634ad0d4947f41076021ebd2f2bf258ed40b79a",
+    "scripts/train_wakeword.py": "d79ea74adc5fc2894a1c5dcbdb24b1294ed226593f7ece594e268a8e1cdaac0e",
+    "scripts/diagnose_wakeword.py": "e009aa1fcfc50aeb911a28b3f0bcf5c6ce2448980fb7a7bb21f0c39147335a53",
+    "scripts/test_voice_command.py": "071b986f70f8c6fd1e00343277834302c1ffb6005313209e8ff92b5cbbf7b1d3",
+    "scripts/zone_setup.py": "71b543a294d6505277c2f264d4ffeeaefd956a7c19abc9bc1a381b7553402a10",
+    "src/wakeword/recorder.py": "1f44b2c00530a3e012060f4d7b75102539c9ebc221cced3f175719312bde04f7",
+    "src/wakeword/legacy_capture.py": "0e7a1dcb502a2c1761373b8255edf3e0a165826c31cff1c4ae6928b80107543e",
+    "tools/acoustic_calibration.py": "fee40a0bbf4de96cf0ee511c8f5581545f7e49e8a44de874d252d47813fdfa67"
+  },
+  "real_production_wiring": [
+    {
+      "path": "src/main.py",
+      "symbol": "_run_main",
+      "evidence": "await build_application(load_config(...)) completes before graph.warmup and graph.run. Default config is config/settings.yaml; no actual CONFIG_PATH/.env/runtime values were read."
+    },
+    {
+      "path": "src/main.py",
+      "symbol": "build_application",
+      "evidence": "rooms.enabled branch at886 builds room_streams and MultiRoomAudioLoop at1193 only if streams exist. Always constructs fallback AudioLoop at1432. active_audio_loop at1793 is shared by build_capture_control at1800 and VoicePipeline at1908/1909. There are no loop.start calls in the factory."
+    },
+    {
+      "path": "config/settings.yaml",
+      "evidence": "Repository default rooms.enabled=true at1232. Actual hardware resolution/number of usable microphones is not established; both configured paths were reviewed."
+    },
+    {
+      "path": "src/memory/capture_control.py",
+      "symbol": "build_capture_control / initialize / _initialize",
+      "evidence": "Factory awaits control.initialize before returning graph. Initialization seals origins before policy load; persisted muted or invalid policy calls _seal, which pauses nominal loop participants and closes input admission before pipeline run. Valid running policy releases origins."
+    },
+    {
+      "path": "src/application.py",
+      "symbol": "ApplicationGraph.run",
+      "evidence": "Unsupported/errored sealed control blocks pipeline; otherwise VoicePipeline.run calls selected loop.start and run only after graph construction. A supported paused loop may remain alive to service authenticated nonvoice resume."
+    },
+    {
+      "path": "src/pipeline/audio_loop.py",
+      "symbol": "AudioLoop.run / pause_admission / drain_pause",
+      "evidence": "run opens OwnedInputStream only when not _paused. pause_admission seals room and input; drain_pause awaits admitted work, actual input close and CaptureRoom callbacks/model work. Callback checks ticket/paused/holder generation before push."
+    },
+    {
+      "path": "src/pipeline/multi_room_audio_loop.py",
+      "symbol": "run / _run_capture / _try_reopen_once / _make_stream",
+      "evidence": "InputGroup.open and _make_stream require accepting state; recovery carries epoch checks before/after open. pause_admission seals input/recovery/room/auxiliary generations. begin_pause_inputs owns late opens and closes; drain_pause also awaits rooms, wake clips and auxiliary joins. Callback checks ticket/input acceptance/holder identity and clears input aliases."
+    }
+  ],
+  "findings": [
+    {
+      "id": "J-production-input-close-errors-ignored",
+      "severity": "high",
+      "classification": "current_source_static_gap_not_runtime_RED",
+      "live_path": "VoicePipeline -> AudioLoop._input OR MultiRoomAudioLoop._inputs/InputGroup -> OwnedInputStream -> stream.stop/close -> CaptureControl._drain_server -> total_mute_confirmed",
+      "calls": [
+        {
+          "method": "stop",
+          "keywords": [],
+          "line": 75
+        },
+        {
+          "method": "close",
+          "keywords": [],
+          "line": 80
+        }
+      ],
+      "sdk_contract": {
+        "path": ".venv/lib/python3.13/site-packages/sounddevice.py",
+        "sha256": "5f871d3a3ccc52d737e4507d25f785ec414da87115c0048d6b538d872792bce7",
+        "defaults": {
+          "stop": {
+            "ignore_errors": true,
+            "line": 1131
+          },
+          "close": {
+            "ignore_errors": true,
+            "line": 1160
+          }
+        },
+        "evidence": "Installed _StreamBase.stop and close call _check(err) only when ignore_errors is false. close also nulls its Python pointer before reporting a strict error. Read source only; sounddevice was not imported/executed."
+      },
+      "failure_path": "OwnedInputStream._close currently omits ignore_errors=False. A PortAudio failure can therefore be suppressed by the real public wrapper, after which this owner clears its stream, sets CLOSED and returnsTrue. begin_close then completes and global mute has no remaining native operation to count. No actual false ACK is claimed without reproduction.",
+      "retry_contract": "begin_close retries _close when it returnsFalse. Because installed sounddevice.close nulls its pointer even on strict error, blindly retrying that same wrapper is not an independent native exit receipt. The next unit must preserve unknown/noACK instead of accepting a later empty/idempotent close.",
+      "why_next_unit_is_coherent": "This is one shared live production input owner, covering both real factory-selected capture paths; no new producer namespace or speculative dead-code work is needed."
+    }
+  ],
+  "other_inventory_classification": {
+    "native_tools_and_legacy": "Current record/test CLI sites are inside explicit calibration/training/diagnostic/zone/manual owners. G MultiMicCapture.start initializes ZoneCaptureOwner before SD construction; E/F/H/I call explicit nominal clients before acquisition. Their native closes already pass ignore_errors=False. This audit did not rerun or reaccept their suites.",
+    "non_capture": "validate_hardware, health_check and room_context use query_devices metadata. zone_setup listing is query_devices. ma1260/zone_manager tones and Piper OutputStream/play are output, not microphone acquisition. Shell arecord references found in setup/smoke are arecord-l listing, not a new recording producer.",
+    "streaming_stt": {
+      "status": "conditional_excluded_no_live_caller_accredited",
+      "evidence": "Serena find_referencing_symbols StreamingSTT returned{}; focused rg in src/scripts/tests/tools/config found only its own definition/docstring/logs. No unit should be invented solely from that unused implementation."
+    },
+    "before_authority_conclusion": "No live SD microphone acquisition before the initialized global control was found in the real factory/pipeline paths inspected. Library import/device enumeration/model metadata are not equated with microphone capture. The concrete gap is close receipt fidelity, not absence of backend capabilities."
+  },
+  "recommended_next_step": {
+    "candidate": "T023-J/production-native-input-close-receipts",
+    "start_condition": "Finish I evidence/source/tracking publication and current validation before any J source/runtime. Same active goal; no new pause or replacement.",
+    "bounded_scope": [
+      "Characterize the original OwnedInputStream close through real AudioLoop and MultiRoom/InputGroup wiring with synthetic SD semantics matching installed ignore_errors defaults.",
+      "Require checked public native close results, retain constructor/open/callback/native work and unknown close state until honest exit receipt; do not turn pointer-null/retry/no-task into retirement proof.",
+      "Preserve successful mute/durable restart/authenticated nonvoice resume and both configured capture paths; no roles/services/deployment/voice-person grant expansion."
+    ],
+    "baseline_constraints": [
+      "Original existing API first, fake SD/model/HA leaves preimport, real control/SQLite and native Thread/handle receipts.",
+      "A live synthetic native actor plus suppressed default close error can establish the current behavior; fixture finally must actually join it. No missing-method, wrong-policy-argument or policy-denial RED.",
+      "No actual device/model/GPU/HA/service execution and no competing timing suite. Root defines/fixes exact nodes and budgets before dispatch."
+    ],
+    "after_J": "Reconcile T022/T023 producer/SDK/copy matrix against actual sources and accepted integration receipts. Do not invent more capture units unless a real caller or failing boundary is found. Advance the next required C04 work, T024 deletion/restoration on compatible copies, while keeping task/criterion decisions explicit."
+  },
+  "requirements_not_proved_here": [
+    "Checked PortAudio close/error receipt for production inputs (findingJ).",
+    "Actual failure/restart/resume integration on the current complete source; static code or namespace support alone is insufficient.",
+    "Complete privateSDK/copy disposal and unsupported participant treatment remain T022 reconciliation; no universal SDK memory-erasure claim.",
+    "T024 expiry/erasure/restoration without resurrection remains planned; global mute does not accept it.",
+    "Physical four-input/iPhone/voice/HA/native driver observation and release window remain P7 gates after software candidate, not a reason to fabricate another software producer.",
+    "All21 acceptance criteria remain unaccepted by this audit."
+  ],
+  "limits": [
+    "Only private audit JSON written; no source/tests/status/roadmap changes, runtime/SDK/model/audio/HA/service/browser actions, external scan or other repository access.",
+    "No actual .env/credential read, RAG assumption/index/tunnel, hardware query or package import.",
+    "Serena main local-variable bodies exposed identifiers only; focused rg around specific constructor/control calls was used. MultiRoom callback retrieval was bounded to one101-line method, not the2860-line module.",
+    "Sources/selected config and installed SDK source are current evidence; historical inventory, plan text and backend capabilities alone were not treated as producer proof."
+  ]
+}

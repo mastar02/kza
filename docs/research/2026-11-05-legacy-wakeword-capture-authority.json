@@ -1,0 +1,194 @@
+{
+  "schema_version": 1,
+  "unit": "T023-I/legacy-wakeword-cli-capture-and-service-boundary",
+  "status": "verified_local_within_open_T023",
+  "baseline_revision": "1c14161f19c99d75a15857a047b4b96321294ffc",
+  "summary_spanish": "Ambos CLI legacy de wakeword requieren la concesión administrativa original de captura y esperan el retiro real de sus recursos. Se conserva el audio, el corpus y la detección; se retiran los cambios automáticos de servicios.",
+  "environment": {
+    "user": "gabriel",
+    "checkout": "/Users/gabriel/Documents/Proyectos/kza",
+    "platform": "macOS 26.6.1 arm64",
+    "python": "CPython 3.13.18, .venv nativa"
+  },
+  "scope": {
+    "aliases": [
+      "scripts/train_nexa.py",
+      "scripts/train_che_bo.py"
+    ],
+    "aliases_byte_identical": true,
+    "wake_word_name": "nexa para ambos, sin inferir otro modelo por el filename",
+    "live_entrypoints": [
+      "record_sample",
+      "record-positive",
+      "record-negative",
+      "test"
+    ],
+    "offline": "train y deploy no necesitan concesión de captura; deploy sigue siendo sólo informativo",
+    "excluded": "StreamingSTT sigue condicional sin llamador acreditado; no ampliar cobertura global a partir de rg."
+  },
+  "authority": {
+    "client": "WakewordTrainingAuthorityClient nominal",
+    "kind": "wakeword_training",
+    "namespace": "/api/capture/native/wakeword-training/",
+    "permission": "admin:manage de la sesión original",
+    "CLI": "--dashboard-url/--capture-url y --capture-token-env/--token-env después de cada subcomando vivo; variable predeterminadaKZA_DASHBOARD_TOKEN",
+    "direct_API": "record_sample(duration_s,*,authority_factory=None) falla antes de SDK si falta o es ajena la autoridad nominal",
+    "retire": "Capacidad opaca+Origin permiten sólo retiro exacto después de logout, sin permitir captura/unmute/acción",
+    "unchanged": "Mismos cinco kinds/rutas backend. No concesión de servicios, home:control, voz/persona/cuentas/roles/consentimiento ni fallback de credenciales."
+  },
+  "ownership": {
+    "owner": "LegacyWakewordCapture hereda ZoneCaptureOwner con leases por identidad de Thread; no cambios de bases E/G/H",
+    "streams": "Slot antes de constructor/start; read admitido y stop/close estrictos reales. Error/constructor/cierre incierto conserva dueño y capacidad pendiente sin ACK ni reintento ciego.",
+    "detector": "Reserva atómica antes de factory/load; close público de WakeWordDetector heredado de _WakeLifecycle, sin inferir métodos privados SDK",
+    "queues": "Conserva cola de copias mientras captura; publicación se vuelve a validar y sólo se vacían pendientes propios después del retorno de callbacks y operaciones. No se borran arrays prestados ni WAV existentes.",
+    "waits": "stdin select/os.read prestado, pausas y queue.get interrumpibles por política, sin lector de input abandonado",
+    "finish": "Sello y drenaje real de callbacks/read/predict/WAV/report; cierre del modelo y retorno del monitor antes de retirar capacidad",
+    "errors": "Control primario y cleanup se reconstruyen sin traceback SDK/PCM; KeyboardInterrupt/SystemExit7 se conservan junto a fallo de cierre. main conserva propagación original de excepciones."
+  },
+  "preserved": {
+    "record": "16000Hz, seis canales float32, dispositivo9, frames=int(rate*duration), canal0 COPY y RMS sqrt(mean(mono**2))",
+    "corpus": "Positivas descartan rms<.01, negativas conservan silencio; nombres basados en cantidad de archivos existentes, contador de guardadas, selección random.choice original, WAV mono16bit con clip*32767",
+    "float32_boundary": "Amplitud nominal.01 produce RMS float32 menor a.01; se conserva la comparación real, no se redondea para forzar aceptación",
+    "detection": "Default hey_jarvis/customnexa, custom_models_dir, threshold.35, blocksize1280, callbackchannel0 astype(float32).copy, bestmaxdict, >= threshold, RMS>.02/score>.05/verbose, barra int(score*30), máximo de sesión y formato.3f",
+    "offline_AST": "save_wav/cmd_train/cmd_deploy iguales tras normalizar f-strings constantes; prompts/defaults y nueve cálculos detector idénticos",
+    "service": "Sin systemctl is-active/stop/start en captura. Gestión de servicios y releases separada; deploy no adquiere nuevos efectos."
+  },
+  "validation": {
+    "baseline": {
+      "passed": 8,
+      "XML_duration_s": 0.652,
+      "real_native_actors_joined": 12,
+      "classification": "Caracterización original con fuentes4ace91b2, no RED por API inexistente ni bypass de permisos",
+      "source_entries": 1022,
+      "scripts": 37,
+      "protected": 11,
+      "proof": "data/autonomous-roadmap-20261102/t023/i/baseline/baseline-proof.json"
+    },
+    "first_integration": {
+      "passed": 35,
+      "failed": 8,
+      "errors": 0,
+      "skipped": 0,
+      "XML_duration_s": 26.885,
+      "accepted": false,
+      "classification": "3regresiones de propagación de main;5fallos de fixtures nuevos (2relojcorpus,2nombremejorscore,1observadordeQueueHTTP)",
+      "path": "integration-attempt-01"
+    },
+    "replay_integration": {
+      "passed": 43,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "XML_duration_s": 20.591,
+      "exact_same43_IDs": true,
+      "source_entries": 1025,
+      "scripts": 37,
+      "protected": 11,
+      "proof": "data/autonomous-roadmap-20261102/t023/i/integration-attempt-02/component-proof.json"
+    },
+    "fixture_corrections": "fixture-corrections/proof.json: sólo reloj corpuspositivo con guard/wait(0)/guard y misma secuencia solicitada, keymaxscore correcta y observador cola real. Mismos43 IDs/argumentos/budgets; barreras y5aislados intactos. No aumento de tiempos, skips ni flags de rescate.",
+    "static_review": "implementation-review.json; reserva detector corregida antes de primer runtime, candidate59389 archivado, no RED observado",
+    "CLI_smoke": "10PASS: ambosalias ayuda0/faltaURL2/faltacredencial1/train-help0/deploy-help0; .env/SDK/socket/process bloqueados",
+    "counting": "Componentes, replays y tandas amplias se solapan; nunca sumar como casos únicos",
+    "full": {
+      "tests": 8516,
+      "passed": 8515,
+      "known_xfailed": 1,
+      "ordinary_skips": 0,
+      "failures": 0,
+      "errors": 0,
+      "XML_duration_s": 663.63,
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/t023/i/full-normal-attempt-01/acceptance-proof.json",
+        "sha256": "811113c224aff1f1ac15b02b07d2f1bafea3c393e819c17bbb1527046ad30b98"
+      }
+    },
+    "directed": {
+      "tests": 989,
+      "passed": 989,
+      "known_xfailed": 0,
+      "ordinary_skips": 0,
+      "failures": 0,
+      "errors": 0,
+      "XML_duration_s": 171.008,
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/t023/i/directed-attempt-01/acceptance-proof.json",
+        "sha256": "06fa4dfa28874dfd41a6a9717b7015d08fa77a09c2b98a05c5fc45ee8f8cd832"
+      }
+    },
+    "exact_union": {
+      "full": "8473 H +43 I =8516 exact",
+      "directed": "946 H +43 I =989 exact",
+      "source_files": 1025,
+      "scripts": 37,
+      "protected": 11,
+      "before_after_unchanged": true
+    },
+    "references": [
+      {
+        "path": "data/autonomous-roadmap-20261102/t023/i/baseline/baseline-proof.json",
+        "sha256": "8c0091175e83fcc3e0e3af0fdf944f5d7247886294ab81c6868d98c37eee1fce"
+      },
+      {
+        "path": "data/autonomous-roadmap-20261102/t023/i/integration-attempt-01/first-classification.json",
+        "sha256": "b54a4d1711ee68fa1e7dcf5a928d5648625a847e4eb79986a310b70ab7fc9171"
+      },
+      {
+        "path": "data/autonomous-roadmap-20261102/t023/i/integration-attempt-02/component-proof.json",
+        "sha256": "d8c76d7d8eee0dc4dd9d439622be037785e812aa8f0e47414029032f86098a54"
+      },
+      {
+        "path": "data/autonomous-roadmap-20261102/t023/i/fixture-corrections/proof.json",
+        "sha256": "ba3712b629451400c4d8a1200370ae3d568cc847feededae46568cad10edef4e"
+      },
+      {
+        "path": "data/autonomous-roadmap-20261102/t023/i/implementation-review.json",
+        "sha256": "15133b0133a47d6df61d51be8e3983049db7252a3363076c68631694d8d9ac31"
+      },
+      {
+        "path": "data/autonomous-roadmap-20261102/t023/i/component-directed-review.json",
+        "sha256": "f7f42f8970ba9a810663e80a3d56bf918d8b1a4b985a8e1d144594ffa2f9b8e9"
+      },
+      {
+        "path": "data/autonomous-roadmap-20261102/t023/i/root-preservation-proof.json",
+        "sha256": "595ef19683d0d22fb3646f95b26aab2297ab65b390cbe2958bf0a52c8fd0cda2"
+      },
+      {
+        "path": "data/autonomous-roadmap-20261102/t023/i/root-cli-doc-only.json",
+        "sha256": "ca98bac1ac24fa3dc7af0162f4f44b785ae991511a160cc5543214d1feb3f3f5"
+      },
+      {
+        "path": "data/autonomous-roadmap-20261102/t023/i/root-lint-final/status.json",
+        "sha256": "5ab9248ada4bb3f6b8f1bf026ea5a56f06151c729f1b928c22b0cb6f6c7525ab"
+      },
+      {
+        "path": "data/autonomous-roadmap-20261102/t023/i/cli-smoke-01/status.json",
+        "sha256": "c2e3ef925133cc43f06af43833738ae925ec13cb0ca03468efef065bbb28c7e1"
+      },
+      {
+        "path": "data/autonomous-roadmap-20261102/t023/i/detector-reservation-static-fix.json",
+        "sha256": "3667deae386b64786732a038007cc80da88b7aece315fe134d7de68e6d49e525"
+      },
+      {
+        "path": "data/autonomous-roadmap-20261102/t023/i/suite-identity-proof.json",
+        "sha256": "0a6e0b4cb0ca62f6c5a32d2c61b17e9c2f234309d994d342b360bd11c9647b89"
+      },
+      {
+        "path": "data/autonomous-roadmap-20261102/t023/i/next-capture-audit.json",
+        "sha256": "1e2b353468514fb43fc3b1c935d058f328155c3fa1e504735af6ff3dfd3c0bc6"
+      }
+    ],
+    "full_independent_review": {
+      "path": "data/autonomous-roadmap-20261102/t023/i/full-independent-review.json",
+      "sha256": "b64109e0894a664bcd3dcb45c75fa2677fcfd2e9785bcac3f8c0e3ccf36fc922"
+    }
+  },
+  "limits": [
+    "Fixtures locales: HTTP/SQLite/NumPy/WAV/Threads/handles reales; audio/modelos/servicios sintéticos, sin ejecutar systemctl real, GPU, HA o grabación física.",
+    "No aceptación de rendimiento real, calidad del modelo, SDK/allocator privados, borrado de copias ajenas, móvil o hardware.",
+    "Sin nueva validación de navegador en I: frontend y rutas no cambian. Las pruebas interactivas de PC siguen delegadas a Terra.",
+    "T022/T023/T024 y criterios siguen abiertos; T020/P1/T047, otras49 tareas/fases/presupuestos y autoridades se conservan. Mismo goal activo e incompleto, sin producción/release."
+  ],
+  "implementation_commit": "9d9613d0fe6058d27c0200aec7b688c4019f90b7",
+  "verified_at_utc": "2026-11-05T17:26:08.828317+00:00"
+}
