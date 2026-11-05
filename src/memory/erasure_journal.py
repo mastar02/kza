@@ -132,10 +132,10 @@ class ErasureJournal:
                            (str(uuid4()), row["conversation_id"], row["deleted_at"], row["deleted_by"]))
             for row in list(db.execute("SELECT id FROM conversation_erasures")):
                 self._ensure_steps(db, row[0])
-            # A restored event database may contain rows behind an old cursor
+            # Restored participant data may exist behind an old cursor
             # or completed receipt. Only leased startup may reopen that proof.
             db.execute("""UPDATE erasure_steps SET state='pending',claim_token=NULL,cursor=NULL,
-                next_attempt_at=0,last_error=? WHERE participant IN ('events','contexts','suggestions','collectors','diagnostics','streams','voices')""", (ErasureError.RESTARTED.value,))
+                next_attempt_at=0,last_error=? WHERE participant IN ('captures','events','contexts','suggestions','collectors','diagnostics','streams','voices')""", (ErasureError.RESTARTED.value,))
             return db.execute("UPDATE erasure_steps SET state=?, claim_token=NULL, next_attempt_at=0, last_error=? WHERE state=?",
                 (ErasureState.PENDING.value, ErasureError.RESTARTED.value, ErasureState.RUNNING.value)).rowcount
 
