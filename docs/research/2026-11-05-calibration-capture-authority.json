@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "unit": "T023-D",
+  "task_ids": [
+    "T023"
+  ],
+  "criterion_ids": [
+    "C04"
+  ],
+  "status": "verified_local_policy_bound_calibration_scope",
+  "baseline_revision": "3032d94a2250eccc5b28fa20b97e154c4bdb4677",
+  "implementation_commit": "80d22351cccb42c6b9a892bd864a1a7a97508cd9",
+  "sources": {
+    "src/dashboard/auth.py": "828b592ff072eaf7265c3fd30bd16f122bb8ea3b1ea3801f74472202ab8866c2",
+    "src/dashboard/capture_browser_api.py": "d97693b08cfb14bb318d4364e82c798e123df5bcfda4b210684141032aef67db",
+    "src/dashboard/frontend/obs/src/views/privacy.jsx": "3d5dd9df82e6bab39035864f13332a2e215fa53399ec47bcebfe57d68a333f80",
+    "src/memory/capture_control.py": "fba8b6197e0d5d741c09fbd892226d3fb77c7edcef0ecbb875783508518f66d0",
+    "src/memory/capture_recorders.py": "e0555b7cfe733eba744393540550e96f3b509319b212cbb9ddaf80cfa4568945",
+    "tests/frontend/browser_global_capture.py": "1f26faaca6ec2582aea6dcb24068018c47b260af7bd1520818818837a3a41796",
+    "tests/integration/test_calibration_capture_authority.py": "decb995196022ac9da11600b8ef152632377a3731f431d1199512c7cfa95f08c",
+    "tests/integration/test_calibration_retirement.py": "d21608ad15dc59213d7926641045439bb16fdf93f7c061670a4d17b61c6ac049",
+    "tests/integration/test_capture_native_clients.py": "5e5e5bc2fafb0e86e975f51481da3122b2ec9a9ad81965db3cd8740927c0f549",
+    "tests/integration/test_global_capture_http.py": "283b13bf88d9ca3a2fbfc5bc0ccf05bd851b754f7363d893e3d6948175596a34",
+    "tests/mocks/calibration_authority.py": "2efd6777ce32a4c492ba387dd968f3785c624c8144e7bb8939b7f34da65dc833",
+    "tests/unit/dashboard/test_private_access.py": "8aee5a6cf06c9417c3d24ba9a7dbfe21beb3affd0100a942734db808d14db1ea",
+    "tests/unit/tools/test_acoustic_calibration.py": "58469cbb58eaae6035090c43e7643f91115ea5baa49058b46bfff0d4f6681a41",
+    "tests/unit/tools/test_calibration_authority_client.py": "9ede2fcfb69bb959daceb24e652c8f36581c84bb9ea68161a1dd52e258f57f18",
+    "tools/acoustic_calibration.py": "fee40a0bbf4de96cf0ee511c8f5581545f7e49e8a44de874d252d47813fdfa67",
+    "tools/calibration_authority.py": "b80b56b451d1573bf96817ebd330911a56d94a962dd1f5d665574dab8ea341c5"
+  },
+  "change": "Bind the actual public acoustic calibration tool to an explicitly selected live authority before SDK/model/USB/stream acquisition; retain local native and report work before retire-only acknowledgment.",
+  "authority": "Explicit Dashboard origin and operator credential environment variable, original admin:manage scope; no voice/person/account permission inference. No alternate credential, redirect, ambient netrc or proxy selection.",
+  "protocol": "POST /api/capture/native/calibration/{register,activate,poll,retire}; fixed server kind and separate token namespace, legacy browser rows migrate as browser. ACTIVE/UNKNOWN persist. Only exact POST retire permits capability cleanup after logout, with Origin required; registration/activation/poll remain administrative.",
+  "local_order": [
+    "reserve and activate before any native acquisition",
+    "monitor current policy; deny callback/publication admission when stopped",
+    "actual K stream/callback/poller/model retirement; retain uncertainty for unreturned InputStream",
+    "resolve admitted JSONL/print output, then actual native monitor join",
+    "explicit retire-only receipt; close alone never acknowledges capture"
+  ],
+  "output": "A known stop prevents new report publication. An already admitted native write must actually return before retirement; scalar files are not claimed erased by mute.",
+  "history": "Analysis-only reads existing JSONL without authority or native acquisition. RMS/wake/SPENERGY, channel/USB binding and K retirement oracles remain unchanged.",
+  "counts": {
+    "directed_passed": 506,
+    "new_explicit_cases": 29,
+    "new_dynamic_private_auth": 12,
+    "new_total_IDs": 41,
+    "C8205_preserved": true
+  },
+  "normal_full": {
+    "counts": {
+      "passed": 8245,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfailed": 1
+    },
+    "total": 8246,
+    "duration_seconds": 739.021,
+    "source_files": 1004,
+    "script_files": 37,
+    "source_snapshot_sha256": "a50596621d882608d5d64aed735d657ddb809a678f9a9a79644e9c86f8766d52",
+    "minimum_available_bytes": 65952620544
+  },
+  "normal_full_proof": "data/autonomous-roadmap-20261102/t023/d/normal-full-attempt-02/acceptance-proof.json",
+  "counts_not_additive": "506 directed contains backend6, client14, loopback9, K32 and CLI11; those are subsets, not added totals. New41 = explicit29 plus12 generated private-route credentials. Baseline3 is historical characterization, not added.",
+  "baseline": "Existing public run_capture characterized with synthetic SDK leaves before binding:3PASS; no locator existed, so an unrelated seeded DB was never presented as policy authority or as a bypass RED.",
+  "initial_outcomes": [
+    "Native backend first45PASS1FAIL: validation became503 through the wrong route wrapper. Corrected the native handler to fixed422/no-store; identical46PASS replay.",
+    "Client first6PASS6FAIL: draft used allowed instead of actual capture_allowed and required kind on retire. Corrected to actual backend schema. Second11PASS1FAIL exposed trust_env=True; explicit actor/origin isolation restored. Same12PASS, then14PASS with two stronger native close/join cases.",
+    "Directed506PASS rawsource_unchangedFalse is preserved: only module docstring changed; exact cached old/current AST without that docstring is identical, every other input matches. Fresh full freezes actual current bytes.",
+    "First D full was mistakenly dispatched by root after a failed preflight; no prelaunch source snapshot existed. It was interrupted, archived and never accepted. Corrected launcher dispatches only after an actual successful preflight."
+  ],
+  "browser": "Actual Chromium/HTTP/React desktop: native1/browser0 is displayed, total ACK and resume remain blocked, anonymous retire-only capability plus Origin clears it, explicit administrative resume succeeds. Native HTTP fixture is not physical CLI capture proof; mobile screenshot remains observation only.",
+  "genuine_original_policy_bypass_RED_count": 0,
+  "artifacts": {
+    "data/autonomous-roadmap-20261102/t023/d/normal-full-attempt-02/acceptance-proof.json": "a1bb48c04f579c2db5c43daef3c26460a339a94f0b0757c5332703bd9fab3cc2",
+    "data/autonomous-roadmap-20261102/t023/d/full-review.json": "21bd92aa35f12b3b4ddfce8351c15f35807e4c9c6edaf1f73629e19997918325",
+    "data/autonomous-roadmap-20261102/t023/d/native-tool-final-review.json": "f9666d102e37eb63c0f0d5b4be32d9f3683c626e0e05ef91c9e2cde2d9bc7c65",
+    "data/autonomous-roadmap-20261102/t023/d/calibration-integration-review.json": "ffa3c99535502282d8c960043ad1d6bae70e7e765a80d75f44bc7395e32f7503",
+    "data/autonomous-roadmap-20261102/t023/d/client-tests/review.json": "ef8f814f699215241271f27d0e9a49db9e93681d0d96fd2b73e23dc856701530",
+    "data/autonomous-roadmap-20261102/t023/d/browser/review.json": "d6b5c89398f8d2541f23433f5928fd25888be420823837937f38eb16c6803f67",
+    "data/autonomous-roadmap-20261102/t023/d/backend/implementation-notes.json": "f602076b2118e9ac1cd836cc5ac3c91564aba51013315d25028a215ed68e5e18",
+    "data/autonomous-roadmap-20261102/t023/d/directed-docstring-delta-proof.json": "d2d363db4ba50c403be8c72b3975fa2a6b78547c6f8ce6d4cd301e8504a68dbd",
+    "data/autonomous-roadmap-20261102/t023/d/finalizer-preflight-review.json": "3de089cfc7ca7ded78e1074b73a43eff868be7c13f79cdb219cb577e5f297bfa",
+    "data/autonomous-roadmap-20261102/t023/d/next-boundary-plan.json": "0136aecc9e5c93688676be06c892c8f24ace643b8806f9a9d14d66521fb8b8be"
+  },
+  "next_unit": "T023-E live record/test paths of scripts/train_wakeword.py and src/wakeword/recorder.py; preserve train/list/existing-audio analysis separately.",
+  "limits": [
+    "No real microphone/USB/model/provider inference or deployment; tests use synthetic SDK leaves with real HTTP/SQLite and native ownership receipts.",
+    "No physical/libusb/internal SDK Thread or universal erasure proof.",
+    "T023 remains in_progress; remaining live producers, T022 inventory and T024 erasure/restore remain open.",
+    "All 21 criteria remain not_evaluated; 49 other tasks, T020/P1/T047 and voice/person/account/consent/permissions remain unchanged."
+  ]
+}
