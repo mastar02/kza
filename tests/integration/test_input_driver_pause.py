@@ -42,10 +42,12 @@ class Driver:
         self.started += 1
         self.held('start')
 
-    def stop(self):
+    def stop(self, *, ignore_errors=True):
+        assert ignore_errors is False, 'production stop must expose native errors'
         self.held('stop')
 
-    def close(self):
+    def close(self, *, ignore_errors=True):
+        assert ignore_errors is False, 'production close must expose native errors'
         self.close_attempts += 1
         self.held('close')
         self.closed += 1
@@ -124,24 +126,13 @@ async def test_pause_closes_drivers_blocks_watchdog_and_reopens_only_fresh_handl
         assert g.loop._capture_rooms[rs.room_id].resource_status()['queued'] == 1
 
 
-async def test_pause_retains_failed_native_close_and_refuses_premature_resume(tmp_path, monkeypatch):
-    driver = Driver(fail='close')
-    portaudio(monkeypatch, [driver])
-    async with graph(tmp_path, controllers=False) as g:
-        assert await g.loop._try_reopen_once(g.loop.room_streams['synthetic-a'])
-        pause = g.loop.begin_pause_inputs()
-        try:
-            await until(lambda: driver.close_attempts == 1)
-            driver.stage = 'close'
-            await until(driver.entered.is_set)
-            assert not pause.done() and driver.closed == 0
-            assert g.loop._inputs.resource_status()['operations'] > 0
-            with pytest.raises(RuntimeError, match='still_owned'):
-                g.loop.resume_inputs()
-        finally:
-            driver.release.set()
-            await pause
-        assert driver.closed == 1 and driver.close_attempts == 2
+async def test_failed_native_close_is_terminal_and_refuses_resume(tmp_path, monkeypatch):
+    from tests.mocks.production_input import run_isolated
+
+    receipt = await asyncio.to_thread(run_isolated, 'multi', 'legacy-close', tmp_path)
+    assert receipt['close_attempts'] == 1
+    assert receipt['retirement_unknown'] and not receipt['retired']
+    assert receipt['writer_lease'] and receipt['resume_rejected']
 
 
 async def test_driver_pause_waits_for_the_actual_callback_after_native_close(tmp_path, monkeypatch):

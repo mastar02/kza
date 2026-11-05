@@ -61,9 +61,11 @@ class Backend:
             def start(self):
                 backend.gates['start'].step()
                 self.opened = True
-            def stop(self):
+            def stop(self, *, ignore_errors=True):
+                assert ignore_errors is False, 'production stop must expose native errors'
                 backend.gates['stop'].step()
-            def close(self):
+            def close(self, *, ignore_errors=True):
+                assert ignore_errors is False, 'production close must expose native errors'
                 backend.gates['close'].step()
                 if backend.close_failures:
                     backend.close_failures -= 1
@@ -261,18 +263,14 @@ async def test_wake_warmup_cancel_keeps_manager_reset_after_actual_load(tmp_path
         assert g.gates['load'].threads[0] != threading.get_ident()
 
 
-async def test_close_failure_retries_the_same_owned_handle_without_reopening(tmp_path, monkeypatch, caplog):
-    async with graph(tmp_path, monkeypatch) as g:
-        g.backend.close_failures = 2
-        with pytest.raises(WorkCloseTimeout):
-            await g.loop.stop()
-        with pytest.raises(WorkCloseTimeout):
-            await g.privacy.aclose()
-        assert g.privacy.resource_status()['writer_lease']
-        await g.privacy.begin_close()
-        assert g.backend.stream.closed and g.gates['constructor'].calls == 1
-        assert g.gates['close'].calls == 3
-        assert 'Synthetic private close failure' not in caplog.text
+async def test_close_failure_stays_unknown_without_retry_or_reopening(tmp_path, monkeypatch, caplog):
+    from tests.mocks.production_input import run_isolated
+
+    receipt = await asyncio.to_thread(run_isolated, 'single', 'legacy-close', tmp_path)
+    assert receipt['close_attempts'] == 1
+    assert receipt['retirement_unknown'] and not receipt['retired']
+    assert receipt['writer_lease'] and receipt['constructor_calls'] == 1
+    assert 'Synthetic private close failure' not in caplog.text
 
 
 async def test_completed_capture_preserves_original_source_and_endpoint_finality(tmp_path, monkeypatch):

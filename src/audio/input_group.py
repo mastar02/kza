@@ -8,6 +8,9 @@ from src.audio.owned_input import OwnedInputStream
 from src.core.owned_work import OwnedBlockingWork
 
 
+from src.audio.owned_input import InputRetirementError, _input_failures
+
+
 class InputGroup:
     """Own each driver before opening it; seal before waiting for native exit.
 
@@ -64,15 +67,31 @@ class InputGroup:
             if owner.stream is not None:
                 return owner.stream
             await asyncio.shield(owner.begin_close())
+            if not owner.retired:
+                raise InputRetirementError()
         if not self.accepting:
             return None
         owner = OwnedInputStream(lambda: self._factory(key), lambda: self._retire_key(key),
                                  configure=lambda stream: self._configure(key, stream))
         self._owners[key] = owner
+        open_failed = False
+        failures = []
         try:
             await owner.open()
         except RuntimeError:
-            await asyncio.shield(owner.begin_close())
+            open_failed = True
+        except BaseException as error:
+            open_failed = True
+            failures.extend(_input_failures(error))
+        if open_failed:
+            # Observe cleanup outside the open-error handler: propagating the
+            # retained close error there would attach the open traceback.
+            try:
+                await asyncio.shield(owner.begin_close())
+            except BaseException as cleanup:
+                failures.extend(_input_failures(cleanup))
+            if failures:
+                raise InputRetirementError(failures)
             return None
         if not self.accepting or owner.stream is None:
             await asyncio.shield(owner.begin_close())
@@ -102,30 +121,60 @@ class InputGroup:
             await asyncio.shield(task)
 
     def begin_pause(self) -> asyncio.Task:
-        """Seal immediately and await native opens, closes and callback release."""
+        """Seal now and observe all real close receipts, including failures."""
         self._paused = True
-        for key in self._keys:
-            self._retire_key(key)
-        closes = [owner.begin_close() for owner in self._owners.values()]
         if self._pausing is None:
+            failures = []
+            for key in self._keys:
+                try:
+                    self._retire_key(key)
+                except BaseException as error:
+                    failures.extend(_input_failures(error))
+            closes = []
+
+            def begin_all():
+                for owner in tuple(self._owners.values()):
+                    try:
+                        task = owner.begin_close()
+                        if task not in closes:
+                            closes.append(task)
+                    except BaseException as error:
+                        failures.extend(_input_failures(error))
+
+            begin_all()
+
             async def finish():
                 await asyncio.gather(*(asyncio.shield(task) for task in tuple(self._opening.values())),
                                      return_exceptions=True)
-                await asyncio.gather(*(asyncio.shield(task) for task in closes))
-                await asyncio.gather(*(asyncio.shield(task) for task in self._catalog_calls | set(self._catalog._tasks)),
-                                     return_exceptions=True)
+                # An admitted open may have installed its owner after the
+                # synchronous first snapshot. Seal and observe that owner too.
+                begin_all()
+                results = await asyncio.gather(*(asyncio.shield(task) for task in closes),
+                                               return_exceptions=True)
+                for result in results:
+                    if isinstance(result, BaseException):
+                        failures.extend(_input_failures(result))
+                await asyncio.gather(
+                    *(asyncio.shield(task) for task in self._catalog_calls | set(self._catalog._tasks)),
+                    return_exceptions=True)
                 while any(self._callbacks(key).status()['active'] for key in self._keys):
                     await asyncio.sleep(.005)
+                if any(not owner.retired for owner in self._owners.values()):
+                    failures.append(('error', None))
+                if failures:
+                    raise InputRetirementError(failures)
             self._pausing = asyncio.create_task(finish(), context=Context())
+            self._pausing.add_done_callback(
+                lambda done: None if done.cancelled() else done.exception(), context=Context())
         return self._pausing
 
     def resume(self) -> None:
-        """Allow fresh driver owners only after the actual pause has completed."""
+        """Allow fresh drivers only after confirmed retirement of old owners."""
         if self._closed or self._pausing is not None and not self._pausing.done():
             raise RuntimeError('input_group_still_owned')
         if self._pausing is not None:
             self._pausing.result()
-        if any(owner.stream is not None or owner.snapshot_operations() for owner in self._owners.values()):
+        if any(not owner.retired or owner.snapshot_operations() for owner in self._owners.values()):
             raise RuntimeError('input_group_still_owned')
         self._paused = False
         self._pausing = None
@@ -150,9 +199,12 @@ class InputGroup:
         return tuple(task for task in tasks if not task.done())
 
     def resource_status(self) -> dict:
-        """Project fixed counts and admission, never devices or household keys."""
+        """Project admission, pending work and uncertain retirement separately."""
+        retired = all(owner.retired for owner in self._owners.values())
         return {'admission_sealed': not self.accepting, 'closed': self._closed,
                 'pause_complete': self._pausing is not None and self._pausing.done()
-                    and not self._pausing.cancelled() and self._pausing.exception() is None,
+                    and not self._pausing.cancelled() and self._pausing.exception() is None and retired,
                 'streams': len(self.streams), 'operations': len(self.snapshot_operations()),
-                'callbacks': sum(self._callbacks(key).status()['active'] for key in self._keys)}
+                'callbacks': sum(self._callbacks(key).status()['active'] for key in self._keys),
+                'retirement_confirmed': retired,
+                'retirement_unknown': sum(owner.retirement_unknown for owner in self._owners.values())}

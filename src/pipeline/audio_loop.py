@@ -480,6 +480,8 @@ class AudioLoop:
         if self._closed or self._pausing is None or not self._pausing.done() or any(not task.done() for task in self.snapshot_operations()):
             raise RuntimeError('single_capture_pause_still_owned')
         self._pausing.result()
+        if not self._input.retired:
+            raise RuntimeError('single_capture_pause_still_owned')
         if self._privacy is not None:
             self._privacy.scopes.resume_origin(MemoryOrigin.VOICE)
         self._room.resume_admission()

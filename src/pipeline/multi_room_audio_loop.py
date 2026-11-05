@@ -26,6 +26,7 @@ import sounddevice as sd
 
 from src.ambient.tap import MultiChannelTap
 from src.audio.input_group import InputGroup
+from src.audio.owned_input import InputNotAdmitted
 from src.audio.xvf_controller import XvfController
 from src.pipeline.ambient_guard import AmbientGuard, GuardState, classify_outcome
 from src.pipeline.command_event import CapturedTranscript, CommandEvent, TranscriptSource
@@ -494,7 +495,7 @@ class MultiRoomAudioLoop:
             for room_id, rs in room_streams.items()
         }
         self._inputs = InputGroup(room_streams,
-            factory=lambda key: self._make_stream(self.room_streams[key]),
+            factory=lambda key: self._make_stream(self.room_streams[key], report_not_admitted=True),
             configure=lambda key, stream: self._configure_stream(self.room_streams[key], stream),
             retire=self._retire_microphone_capture,
             callbacks=lambda key: self._capture_rooms[key].callbacks)
@@ -1268,18 +1269,23 @@ class MultiRoomAudioLoop:
                         f"[XVF-tuning] {room_id}: {name} no aplicado (write fail-open)"
                     )
 
-    def _make_stream(self, rs: "RoomStream"):
+    def _make_stream(self, rs: "RoomStream", *, report_not_admitted: bool = False):
         """Construct only; its retained owner configures and starts the handle."""
         if rs.mic_usb_port:
             rs.device_index = resolve_mic_usb_port(rs.mic_usb_port)
         if rs.device_index is None or self._closed or not self._inputs.accepting:
+            if report_not_admitted:
+                raise InputNotAdmitted()
             return None
         with self._direction_lock:
             self._direction_opening.add(rs.room_id)
         self._invalidate_direction(rs.room_id)
+        native_admitted = False
         try:
             dev_info = sd.query_devices(rs.device_index)
             if self._closed or not self._inputs.accepting:
+                if report_not_admitted:
+                    raise InputNotAdmitted()
                 return None
             capture_channels = _resolve_capture_channels(
                 int(dev_info.get("max_input_channels", 0))
@@ -1302,6 +1308,7 @@ class MultiRoomAudioLoop:
             ))
             self._microphone_captures[rs.room_id] = holder
             callback = self._make_audio_callback(rs, holder)
+            native_admitted = True
             stream = sd.InputStream(
                 device=rs.device_index,
                 samplerate=self.sample_rate,
@@ -1316,6 +1323,8 @@ class MultiRoomAudioLoop:
             logger.error(
                 f"Room {rs.room_id}: failed to open device {rs.device_index}: {e}"
             )
+            if report_not_admitted and not native_admitted:
+                raise InputNotAdmitted() from None
             return None
         finally:
             with self._direction_lock:
