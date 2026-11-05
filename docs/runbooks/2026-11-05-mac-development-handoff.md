@@ -1,8 +1,8 @@
 # Continuar el desarrollo de KZA en Mac
 
 Traspaso del desarrollo solicitado por el usuario al cerrar T023-F.
-El entorno Mac queda pendiente de preparar y verificar; esta entrega conserva
-los resultados obtenidos en Linux y el mismo objetivo del roadmap.
+El traspaso original conserva los resultados Linux y el mismo objetivo del
+roadmap. La sección de verificación inicial registra el avance posterior en Mac.
 
 ## Punto de reanudación
 
@@ -12,7 +12,7 @@ mismo goal desde una sesión nueva en Mac. El objetivo sigue en
 `docs/plans/2026-11-02-autonomous-roadmap.json` y el historial en
 `docs/runbooks/2026-11-02-autonomous-execution.md`.
 
-| Dato | Estado que debe quedar en el cierre |
+| Dato | Estado al cerrar la sesión Linux |
 | --- | --- |
 | Rama | `recovery/production-2026-10-25` |
 | Última entrega verificada antes de F | `be32294`, T023-E: 8294 PASS y una xfail conocida; 1010 archivos, incluidos 37 scripts, sin cambios durante esa full |
@@ -77,9 +77,10 @@ del servidor Linux no impidan el desarrollo Mac autorizado.
    preparados allí, informar el límite y usar lectura enfocada; no consultar
    silenciosamente otro checkout ni crear índices/túneles como efecto lateral.
 
-No se conoce todavía la arquitectura, usuario, ruta, Python instalado ni
-disponibilidad de wheels del Mac. Las herramientas Git y del asistente deben
-autenticarse por sus flujos propios; este documento no transporta secretos.
+Al cerrar el traspaso Linux todavía se desconocían esos datos. La verificación
+inicial de la sesión Mac está registrada más abajo. Las herramientas Git y del
+asistente se autentican por sus flujos propios; este documento no transporta
+secretos.
 
 ## Comprobación y próxima unidad
 
@@ -111,9 +112,38 @@ vincular `zone_setup test-mic`/`test-detection` y las APIs públicas
 cada stream y retiro real de callbacks, colas y reportes antes del ACK. El plan portable está en [continuación de MultiMicCapture](../plans/2026-11-05-multimic-capture-continuation.json),
 con estado `proposed_read_only_no_runtime_no_RED`. Su copia original privada
 es `data/autonomous-roadmap-20261102/t023/f/next-boundary-plan.json`. Todavía no se implementó G
-ni se ejecutó su baseline. Antes de hacerlo, confirmar por lectura enfocada el
+ni se ejecutó su baseline durante el cierre Linux. Antes de implementarlo, confirmar por lectura enfocada el
 constructor de `ZoneManager`; conservar separados listado de dispositivos,
-reproducción sintética y controles MA1260. No empezar G durante este cierre.
+reproducción sintética y controles MA1260. G se retoma en la sesión Mac, una vez
+comprobado el entorno inicial.
+
+## Verificación inicial en Mac — 2026-11-05
+
+El usuario reactivó el mismo goal; la pausa del cierre Linux ya terminó.
+El checkout de `gabriel` está en
+`/Users/gabriel/Documents/Proyectos/kza`, sobre la rama registrada y el commit
+de traspaso `06cd916`. El equipo ejecuta macOS 26.6.1 arm64; Serena apunta a ese
+checkout y no tiene memorias de proyecto disponibles.
+
+Se creó un `.venv` nuevo con CPython 3.13.18 nativo arm64. El venv trasladado de
+Linux conserva su enlace roto a `/usr/bin/python3.13` y no se ejecutó. El
+manifiesto completo de tests se instaló y `pip check` terminó sin errores;
+Torch, SoundFile y Chroma son módulos reales. Los markers de PyTorch conservan
+`2.12.0+cpu` fuera de Darwin y seleccionan `2.12.0` en Darwin, sin recortar el
+resto de requisitos.
+
+Pasaron los **31 tests iniciales de clientes** y el escenario de escritorio
+C/D/E/F con Chrome.app, perfil temporal nativo y HTTP real. Sus 20 archivos
+observados permanecieron intactos y se confirmaron los retornos del navegador
+y del servidor. Los oráculos y cierres del fixture siguen iguales; Linux
+conserva su binario `chromium` y su directorio snap. La UI usa assets locales
+vendorizados: no hizo falta instalar paquetes npm.
+
+La [evidencia de esta verificación](../research/2026-11-05-mac-development-environment.json)
+distingue estos resultados del histórico Linux. Esta primera tanda no acredita
+la suite completa Mac, hardware, interacción móvil, modelos ni producción. El
+desarrollo de G y su baseline tienen evidencia separada; los 21 criterios
+continúan pendientes.
 
 ## Prompt para la sesión nueva
 
@@ -141,7 +171,8 @@ reproducción sintética y controles MA1260. No empezar G durante este cierre.
 - [x] Tracking y este handoff publicados/subidos; checkout y trabajos propios
   reconciliados, sin un full o Chromium pendientes que la sesión nueva duplique.
 - [x] Pausa del mismo goal solicitada por el usuario al cerrar, sin declararlo completo; confirmar su estado al retomar.
-- [ ] En Mac: usuario/ruta/arquitectura/CPython y dependencias comprobados;
-  ninguna preparación de Mac se da por realizada sólo por este documento.
-- [ ] Mismo roadmap y próxima unidad recuperados desde Git; registrar los
-  primeros resultados del entorno nuevo antes de ampliar validación.
+- [x] Entorno inicial de tests comprobado en Mac: usuario, ruta, arquitectura,
+  CPython y dependencias. La suite completa y el hardware no quedan acreditados
+  por esta primera tanda.
+- [x] Mismo roadmap y próxima unidad recuperados desde Git, con primeros
+  resultados nativos registrados antes de ampliar validación.

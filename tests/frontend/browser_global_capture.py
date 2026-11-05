@@ -113,11 +113,33 @@ async def open_page(client, debug: int, target_id: str) -> tuple:
     return page, connection
 
 
+def _browser_binary() -> str:
+    """Select an owned headless browser without changing the Linux default."""
+    override = os.environ.get('KZA_CAPTURE_BROWSER_BINARY')
+    try:
+        if override is None and sys.platform != 'darwin':
+            if shutil.which('chromium') is not None:
+                return 'chromium'
+        else:
+            selected = Path(override if override is not None else
+                            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
+            if selected.is_absolute() and selected.is_file() and os.access(selected, os.X_OK):
+                return str(selected)
+    except (OSError, ValueError):
+        pass
+    raise RuntimeError('capture_browser_binary_missing')
+
+
 async def exercise(receipt: dict) -> None:
-    browser_root = Path.home() / 'snap/chromium/common'
-    browser_root.mkdir(parents=True, exist_ok=True)
+    binary = _browser_binary()
+    receipt.update(browser_binary=binary, browser_platform=sys.platform)
+    browser_root = None
+    if sys.platform != 'darwin':
+        browser_root = Path.home() / 'snap/chromium/common'
+        browser_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='kza-global-capture-browser-', dir=browser_root) as directory:
         work = Path(directory)
+        receipt['browser_profile_root'] = str(work.parent)
         patch = pytest.MonkeyPatch()
         browser = None
         serving = None
@@ -196,7 +218,7 @@ async def exercise(receipt: dict) -> None:
                                 'name': 'Browser synthetic', 'permission_level': 'adult'}) as response:
                             assert response.status in (200, 201), await response.text()
                         profile = work / 'chromium'
-                        command = ['chromium', '--headless', '--disable-gpu', '--no-first-run',
+                        command = [binary, '--headless', '--disable-gpu', '--no-first-run',
                             '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream',
                             '--mute-audio', '--autoplay-policy=no-user-gesture-required',
                             '--proxy-server=http://127.0.0.1:9', '--proxy-bypass-list=localhost;127.0.0.1;[::1]',

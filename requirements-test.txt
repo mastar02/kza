@@ -35,9 +35,9 @@
 # convirtio 2 fallos reales de tests/safety/ en 11 failed + 2 errors.
 # Si hay que agregar algo, agregarlo (ver seccion final); si hay que sacar
 # algo, sacarlo solo si `pip freeze` en el venv local deja de listarlo.
-# Excepcion: la version de torch usa el sufijo `+cpu` (ver arriba), que no
-# es lo que devuelve `pip freeze` en darwin — no lo "corrijas" a la version
-# sin sufijo.
+# Excepcion: conservar el sufijo `+cpu` fuera de Darwin (ver arriba).
+# macOS arm64 publica la misma version sin ese sufijo; los markers evitan
+# sustituir el pin CPU de Linux al preparar el entorno Mac.
 
 --extra-index-url https://download.pytorch.org/whl/cpu
 
@@ -143,7 +143,8 @@ sympy==1.14.0
 tenacity==9.1.4
 threadpoolctl==3.6.0
 tokenizers==0.22.2
-torch==2.12.0+cpu
+torch==2.12.0+cpu ; sys_platform != 'darwin'
+torch==2.12.0 ; sys_platform == 'darwin'
 tqdm==4.67.3
 transformers==5.10.2
 typer==0.25.1

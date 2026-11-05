@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "unit": "Mac native development environment bootstrap",
+  "objective": "docs/plans/2026-11-02-autonomous-roadmap.md",
+  "status": "verified_local_test_subset",
+  "at_utc": "2026-11-05T11:12:37.064335+00:00",
+  "baseline_revision": "06cd9162e8516ff906ab092246e02edc499823ad",
+  "user": "gabriel",
+  "checkout": "/Users/gabriel/Documents/Proyectos/kza",
+  "platform": "macOS-26.6.1-arm64-arm-64bit-Mach-O",
+  "architecture": "arm64",
+  "CPython": "3.13.18",
+  "venv": ".venv",
+  "copied_Linux_venv_preserved_and_not_executed": true,
+  "package_install": {
+    "manifest": "requirements-test.txt",
+    "exit_code": 0,
+    "wall_duration_s": 113.37168204200134,
+    "pip_check_exit_code": 0,
+    "real_imports": {
+      "platform": "macOS-26.6.1-arm64-arm-64bit-Mach-O",
+      "architecture": "arm64",
+      "torch": "2.12.0",
+      "soundfile": "0.13.1",
+      "chromadb": "1.5.5",
+      "real_torch_spec": true,
+      "same_native_thread_handle_done_after_join": true,
+      "pip_check_exit": 0,
+      "models_or_microphones_opened": false
+    }
+  },
+  "source_sha256": {
+    "requirements-test.txt": "c8e87bf1f787569c74cfe5393372dacc32de74a15539665a960a3dd7b8023bb9",
+    "tests/frontend/browser_global_capture.py": "5f03bc00adcca91c3ab0893dee270a6a77ed1731cf037ebeb47bc040dfe810a4"
+  },
+  "dependency_portability": {
+    "Linux_torch_pin": "2.12.0+cpu",
+    "Darwin_torch_pin": "2.12.0",
+    "other_requirement_lines_and_official_index_unchanged": true,
+    "primary_wheel_source": "https://pypi.org/project/torch/2.12.0/"
+  },
+  "client_validation": {
+    "passed": 31,
+    "failed": 0,
+    "errors": 0,
+    "source_pre_post_identical": true,
+    "XML_duration_s": 1.746,
+    "base_implementations": "C/D/E/F before G native-kind edits"
+  },
+  "desktop_browser": {
+    "passed": true,
+    "exercise_duration_s": 15.45061707496643,
+    "watched_files": 20,
+    "source_pre_post_identical": true,
+    "browser_version_from_plist": "157.0.8103.39",
+    "actual_browser_and_HTTP_server_returns": true,
+    "native_pending_sequence": [
+      3,
+      2,
+      1,
+      0
+    ],
+    "JavaScript_errors": 0,
+    "egress_recorded": 0,
+    "no_npm_required": "UI uses locally vendored React/ReactDOM/Babel, three SRI values verified"
+  },
+  "artifacts_sha256": {
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/opening.json": "309382823e9c7b7fe536d41c7266785045fe05217aecb7494988e9592a34ff8b",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/install-attempt-01/status.json": "bf82bd6b2ceef3595cdac4be3751c67aba96f54cd2a6b058fd4c51e318dcf142",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/install-attempt-01/terminal-receipt.json": "cd4049accad2c36ee9938616611b8099801d8d636eaf146840a3227103fb5a3e",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/native-import-check.json": "6aab6b8bbac4b19caff6e698796d79fca35f4944cb91740c81c0420a1dc667a2",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/native-import-terminal-receipt.json": "fc61fb14f23cf5dbd689f9818512ee56aa2ee8f5adeab10ea6664415c67c93eb",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/pip-check.log": "9261363b733079a641c2e4cc9bc46ffa1d8336945a87f807b6cf68847dbc9b09",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/pip-freeze.txt": "8cdbc83b6363535d35401e09b81ffa36a032c8045b467952481c49d7d4188dc1",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/requirements-preservation-proof.json": "b06f5a3c56e2a6402809a9cf2d357249ec1bed38620c0f97553151c53429a3fa",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/dependency-portability-proposal.json": "969a45a0930e926f51b1f63fb9c84877162a9a650752d6e37c5a754de6d83ee1",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/client-tests-attempt-01/junit.xml": "f6679663f61904f9f535a30e5fb5e8a7f3cddd46c8a500c60984112e9972f071",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/client-tests-attempt-01/status.json": "9f583cc37856fbe9d982c4b25a3b002b75696f6e67507c11a6b2f154463bf286",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/client-tests-attempt-01/source-before.json": "9dbcb2d29b3560859c2fa7454ffd1ae5aca94ba4868e979bfb4d2609f563d105",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/client-tests-attempt-01/source-after.json": "9dbcb2d29b3560859c2fa7454ffd1ae5aca94ba4868e979bfb4d2609f563d105",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/client-tests-attempt-01/terminal-receipt.json": "fb5dda48f9d6652d1f77bf08d92cdb37dfa37acb8623200ea85db9840bbf8ee6",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/browser-review.json": "216b0ed3f79c798aa41293c2c5da3d97e5b8070a152af519f57e5dd213579652",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/browser-portability-implementation-proof.json": "df0f32e2d159888f10f1647ab9da24f8e07b50418b217546ef2b49966a4d2c11"
+  },
+  "next_unit": "T023-G/MultiMicCapture-zone-setup-live-inputs",
+  "limits": [
+    "Mac full suite not yet claimed by this initial verification; these are scoped startup checks.",
+    "Linux F8341PASS+knownxfail remains historical Linux evidence.",
+    "No real microphone, USB, MA1260, HA, model/provider inference, production or release operation.",
+    "Browser uses virtual media and HTTP native-client fixtures; no mobile/iPhone or physical CLI attestation.",
+    "G baseline and implementation have separate evidence; no G acceptance inferred.",
+    "All21 acceptance criteria and T023/T022/T024 remain open; no permission, GPU or production changes."
+  ]
+}
