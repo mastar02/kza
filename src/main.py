@@ -7,13 +7,11 @@ Entry point principal
 import asyncio
 from collections.abc import Callable
 from contextlib import AsyncExitStack
-from contextvars import Context
 import logging
 import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
 
 import yaml
 from dotenv import load_dotenv
@@ -21,7 +19,7 @@ from dotenv import load_dotenv
 from src.application import (
     ApplicationFactories, ApplicationGraph, ApplicationModels,
     HttpReasonerOwner, SpeakerModelOwner, STTExecutorOwner, TTSModelOwner, WakeModelOwner,
-    _ModelResourceOwner,
+    HermesReasonerOwner as _HermesReasonerOwner,
 )
 from src.core.owned_work import OwnedBlockingWork
 from src.core.settings_schema import (
@@ -98,34 +96,6 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-
-
-class _HermesReasonerOwner(_ModelResourceOwner):
-    """Retire owned Hermes instances after their actual graph borrowers."""
-
-    def __init__(self) -> None:
-        from src.llm.hermes_reasoner import _HermesLifecycle
-        super().__init__((_HermesLifecycle,))
-
-    async def load_model(self, model: Any) -> None:
-        """Load owned models through their retained native-call receipt."""
-        if issubclass(type(model), self._model_types):
-            await model.aload()
-        else:
-            # A substituted foreign leaf retains its existing loading contract.
-            model.load()
-
-    def begin_close(self) -> asyncio.Task:
-        """Validate the original caller before any isolated close Task exists."""
-        if not self._models:
-            if self._closing is None:
-                async def empty():
-                    return None
-                self._closing = asyncio.create_task(empty(), context=Context())
-            return self._closing
-        for reasoner in self._models.values():
-            reasoner._hermes_require_close_caller()
-        return super().begin_close()
 
 
 def load_config(config_path: str = "config/settings.yaml") -> dict:
@@ -1296,6 +1266,7 @@ async def build_application(
     # Audio manager (wake word + VAD)
     audio_manager = AudioManager(
         zone_manager=zone_manager,
+        wake_models=wake_models,
         wake_word_model=wake_config.get("model", "hey_jarvis"),
         wake_word_threshold=wake_config.get("threshold", 0.5),
         sample_rate=16000,
@@ -1925,7 +1896,7 @@ async def build_application(
 
     shutdown.push_async_callback(pipeline.stop)
 
-    return ApplicationGraph(
+    graph = ApplicationGraph(
         config=config, pipeline=pipeline, ha_client=ha_client,
         home_actions=home_action_service, privacy=privacy_services,
         voice_registry=voice_registry, voice_services=voice_services,
@@ -1937,8 +1908,24 @@ async def build_application(
         ambient_path=ambient_path, nightly_trainer=nightly_trainer,
         stt_executors=stt_executors, tts_models=tts_models, speaker_models=speaker_models,
         wake_models=wake_models, http_reasoners=http_reasoners,
-        capture_control=capture_control,
+        capture_control=capture_control, fallback_audio_loop=audio_loop,
+        hermes_reasoners=hermes_reasoners,
+        erasure_services=erasure_services,
     )
+    from src.memory.producer_erasure import ProducerCoverage, build_producer_erasure
+
+    coverage = ProducerCoverage(
+        fallback_audio_loop=audio_loop, hermes_reasoners=hermes_reasoners,
+        context_erasure=context_erasure, suggestion_erasure=suggestion_erasure,
+        capture_erasure=capture_erasure,
+        collectors=(stt_correction_collector, conversation_collector),
+    )
+    graph.producer_coverage = coverage
+    graph.producer_erasure = await build_producer_erasure(
+        privacy=privacy_services, owner=erasure_services, graph=graph, coverage=coverage,
+    )
+    shutdown.push_async_callback(graph.producer_erasure.aclose)
+    return graph
 
 
 if __name__ == "__main__":

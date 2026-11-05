@@ -5,12 +5,17 @@ Gestiona la captura de audio, detección de wake word, VAD y detección de zonas
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from src.wakeword.detector import WakeWordDetector
+
+if TYPE_CHECKING:
+    from src.application import WakeModelOwner
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +40,7 @@ class AudioManager:
         sample_rate: int = 16000,
         command_duration: float = 2.0,
         *, clock: Callable[[], float] | None = None, wake_factory: Callable | None = None,
+        wake_models: WakeModelOwner | None = None,
     ):
         """
         Inicializar AudioManager.
@@ -47,6 +53,7 @@ class AudioManager:
             command_duration: Duración máxima de comando (segundos)
             clock: Recording clock shared with the capture owner.
             wake_factory: Native wake backend constructor, injected for runtime adapters.
+            wake_models: Shared nominal owner for lazily constructed wake models.
         """
         self.zone_manager = zone_manager
         self.wake_word_model = wake_word_model
@@ -56,8 +63,19 @@ class AudioManager:
         self._clock = clock or time.time
         self._wake_factory = wake_factory or WakeWordDetector
 
+        if wake_models is not None:
+            from src.application import WakeModelOwner
+            if not isinstance(wake_models, WakeModelOwner):
+                raise ValueError("unsupported_wake_model_owner")
+        self._wake_models = wake_models
+        self._wake_inventory_lock = threading.RLock()
         self._wake_model: WakeWordDetector | None = None
         self._wake_closed = False
+
+    def wake_inventory(self) -> tuple[WakeModelOwner | None, Callable, WakeWordDetector | None]:
+        """Return the shared owner, lazy constructor and model under one metadata lock."""
+        with self._wake_inventory_lock:
+            return self._wake_models, self._wake_factory, self._wake_model
 
     def load_wake_word(self) -> None:
         """
@@ -66,21 +84,28 @@ class AudioManager:
         Soporta múltiples modelos separados por coma. Called by the serialized
         capture worker, never by the device callback or event loop.
         """
-        if self._wake_closed:
-            raise RuntimeError("wake_backend_closed")
+        with self._wake_inventory_lock:
+            if self._wake_closed:
+                raise RuntimeError("wake_backend_closed")
         logger.info(f"Cargando wake word: {self.wake_word_model}")
-
-        # Soportar múltiples modelos separados por coma
         models = [m.strip() for m in self.wake_word_model.split(",")]
-
-        self._wake_model = self._wake_factory(
+        # Construction and model loading can call native SDK code. The shared
+        # lock protects only the short metadata publication and registration.
+        model = self._wake_factory(
             models=models,
             threshold=self.wake_word_threshold,
-            refractory_period=2.0
+            refractory_period=2.0,
         )
-        self._wake_model.load()
-
-        logger.info(f"Wake word cargado: {self._wake_model.get_active_models()}")
+        with self._wake_inventory_lock:
+            self._wake_model = model
+            if self._wake_models is not None:
+                self._wake_models.add_model(model)
+            closed = self._wake_closed
+        if closed:
+            self.close_wake_word()
+            raise RuntimeError("wake_backend_closed")
+        model.load()
+        logger.info(f"Wake word cargado: {model.get_active_models()}")
 
     def detect_wake_word(self, audio_chunk: np.ndarray) -> tuple[str, float] | None:
         """
@@ -110,8 +135,9 @@ class AudioManager:
 
     def close_wake_word(self) -> None:
         """Retire the owned backend on the serialized capture cleanup worker."""
-        self._wake_closed = True
-        model = self._wake_model
+        with self._wake_inventory_lock:
+            self._wake_closed = True
+            model = self._wake_model
         if model is not None:
             if issubclass(type(model), WakeWordDetector):
                 model.close()
@@ -120,7 +146,9 @@ class AudioManager:
                 delete = getattr(model, 'delete', None)
                 if callable(delete):
                     delete()
-            self._wake_model = None
+            with self._wake_inventory_lock:
+                if self._wake_model is model:
+                    self._wake_model = None
 
     def detect_source_zone(self, audio: np.ndarray = None) -> str | None:
         """

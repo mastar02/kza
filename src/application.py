@@ -21,7 +21,10 @@ if TYPE_CHECKING:
     from src.home_assistant.ha_client import HomeAssistantClient
     from src.home_assistant.home_actions import HomeActionService
     from src.lists.list_manager import ListManager
+    from src.memory.erasure_coordinator import ErasureCoordinator
     from src.memory.privacy_services import PrivacyServices
+    from src.memory.producer_erasure import ProducerCoverage, ProducersEraser
+    from src.pipeline.audio_loop import AudioLoop
     from src.pipeline.voice_pipeline import VoicePipeline
     from src.pipeline.voice_services import VoiceServices
     from src.reminders.reminder_manager import ReminderManager
@@ -118,6 +121,34 @@ class _ModelResourceOwner:
         closing.result()
         if cancelled:
             raise asyncio.CancelledError
+
+
+class HermesReasonerOwner(_ModelResourceOwner):
+    """Retire owned Hermes instances after their actual graph borrowers."""
+
+    def __init__(self) -> None:
+        from src.llm.hermes_reasoner import _HermesLifecycle
+        super().__init__((_HermesLifecycle,))
+
+    async def load_model(self, model: Any) -> None:
+        """Load owned models through their retained native-call receipt."""
+        if issubclass(type(model), self._model_types):
+            await model.aload()
+        else:
+            # A substituted foreign leaf retains its existing loading contract.
+            model.load()
+
+    def begin_close(self) -> asyncio.Task:
+        """Validate the original caller before any isolated close Task exists."""
+        if not self._models:
+            if self._closing is None:
+                async def empty():
+                    return None
+                self._closing = asyncio.create_task(empty(), context=Context())
+            return self._closing
+        for reasoner in self._models.values():
+            reasoner._hermes_require_close_caller()
+        return super().begin_close()
 
 
 class STTExecutorOwner(_ModelResourceOwner):
@@ -223,6 +254,11 @@ class ApplicationGraph:
     wake_models: WakeModelOwner | None = None
     http_reasoners: HttpReasonerOwner | None = None
     capture_control: Any = None
+    fallback_audio_loop: AudioLoop | None = field(default=None, repr=False)
+    hermes_reasoners: HermesReasonerOwner | None = field(default=None, repr=False)
+    erasure_services: ErasureCoordinator | None = field(default=None, repr=False)
+    producer_coverage: ProducerCoverage | None = field(default=None, repr=False)
+    producer_erasure: ProducersEraser | None = field(default=None, repr=False)
     _run_entered: bool = field(default=False, init=False, repr=False)
 
     async def warmup(self) -> None:

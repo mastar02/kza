@@ -135,7 +135,7 @@ class ErasureJournal:
             # Restored participant data may exist behind an old cursor
             # or completed receipt. Only leased startup may reopen that proof.
             db.execute("""UPDATE erasure_steps SET state='pending',claim_token=NULL,cursor=NULL,
-                next_attempt_at=0,last_error=? WHERE participant IN ('captures','events','contexts','suggestions','collectors','diagnostics','streams','voices')""", (ErasureError.RESTARTED.value,))
+                next_attempt_at=0,last_error=? WHERE participant IN ('producers','captures','events','contexts','suggestions','collectors','diagnostics','streams','voices')""", (ErasureError.RESTARTED.value,))
             return db.execute("UPDATE erasure_steps SET state=?, claim_token=NULL, next_attempt_at=0, last_error=? WHERE state=?",
                 (ErasureState.PENDING.value, ErasureError.RESTARTED.value, ErasureState.RUNNING.value)).rowcount
 
@@ -232,6 +232,44 @@ class ErasureJournal:
                 (row["operation_id"], row["participant"], row["target_id"])).fetchone()
             return ErasureStep(result["operation_id"], result["conversation_id"], ErasureParticipant(result["participant"]),
                 result["target_id"], result["version"], json.loads(result["descriptor"]), result["attempts"], token, result["cursor"])
+
+    def is_current_claim(self, step: ErasureStep) -> bool:
+        """Check the exact live claim and its committed conversation tombstone.
+
+        This read does not acknowledge or renew a claim. Runtime participants
+        recheck it after awaited work; finish() remains the atomic receipt guard.
+        """
+        if (type(step) is not ErasureStep
+                or type(step.participant) is not ErasureParticipant
+                or type(step.version) is not int or step.version < 1
+                or type(step.attempts) is not int or step.attempts < 1
+                or type(step.descriptor) is not dict
+                or any(type(value) is not str or not value for value in (
+                    step.operation_id, step.conversation_id, step.target_id, step.claim_token))
+                or (step.cursor is not None and type(step.cursor) is not str)):
+            return False
+        try:
+            encoded = json.dumps(
+                step.descriptor, sort_keys=True, separators=(",", ":"), allow_nan=False
+            )
+        except (TypeError, ValueError):
+            return False
+        with self.ledger._transaction() as db:
+            return db.execute(
+                """SELECT 1 FROM erasure_steps s
+                JOIN conversation_erasures o ON o.id=s.operation_id
+                JOIN conversation_tombstones revoked
+                  ON revoked.conversation_id=o.conversation_id
+                JOIN erasure_targets t ON t.id=s.target_id
+                  AND t.participant=s.participant AND t.version=s.version
+                WHERE s.operation_id=? AND o.conversation_id=?
+                  AND s.participant=? AND s.target_id=? AND s.version=?
+                  AND s.state=? AND s.claim_token=? AND s.attempts=?
+                  AND s.cursor IS ? AND t.descriptor=?""",
+                (step.operation_id, step.conversation_id, step.participant.value,
+                 step.target_id, step.version, ErasureState.RUNNING.value,
+                 step.claim_token, step.attempts, step.cursor, encoded),
+            ).fetchone() is not None
 
     def finish(self, step: ErasureStep, result: ErasureResult | None, error: ErasureError | None = None) -> bool:
         """Commit a content-free receipt only for the exact owned claim."""
