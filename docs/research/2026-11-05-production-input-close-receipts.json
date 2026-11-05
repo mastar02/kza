@@ -1,0 +1,260 @@
+{
+  "schema_version": 1,
+  "unit": "T023-J/production-native-input-close-receipts",
+  "status": "verified_local_within_open_T023",
+  "baseline_revision": "4a7d7a8a288b0f30dc6c7ae71900d27ab6697f99",
+  "summary_spanish": "El input de producción exige recibos estrictos de stop y close; conserva la incertidumbre nativa y bloquea ACK y reapertura cuando no puede confirmar el retiro.",
+  "environment": {
+    "user": "gabriel",
+    "checkout": "/Users/gabriel/Documents/Proyectos/kza",
+    "platform": "macOS26.6.1 arm64",
+    "python": "CPython3.13.18 .venv nativa"
+  },
+  "scope": [
+    "OwnedInputStream",
+    "InputGroup",
+    "single AudioLoop resume guard",
+    "MultiRoom pre-admission signal; no DSP changes"
+  ],
+  "native_contract": {
+    "installed_sdk_sha256": "5f871d3a3ccc52d737e4507d25f785ec414da87115c0048d6b538d872792bce7",
+    "source": "sounddevice._StreamBase.stop/close",
+    "probe": {
+      "path": "data/autonomous-roadmap-20261102/t023/j/sdk-contract-probe-01.json",
+      "sha256": "ace62cef3c8840ef5d470ff282817a1e754c2e5cb20486d001effaf86a25c43b"
+    },
+    "finding": "Both defaults ignore_errors=True; close nulls the public pointer before strict error check. Null pointer/terminal Future is not proof of native exit."
+  },
+  "implementation": {
+    "strict": "For each known returned handle, exactly one stop(ignore_errors=False) and close(ignore_errors=False); close is attempted even after stop/control failure. No returned handle means zero native stop/close calls.",
+    "unknown": "Admitted constructor without returned handle or strict close error retains owner/strong registry, UNKNOWN, no retry/eviction/replacement/resume/global ACK.",
+    "stop_failure": "Successful close proves retirement; stop failure remains a safe structured error and prevents ACK/resume.",
+    "not_admitted": "Only nominal preconstructor signal from MultiRoom proves no capture was admitted. USB absence/query failure before InputStream remains recoverable; postadmission None/error stays UNKNOWN.",
+    "Python_work": "Actual retained callable/Future completion precedes Python work closure; borrowed executor not shut down.",
+    "errors": "Retained errors carry safe descriptors. InputGroup observes cleanup and creates fresh boundary errors outside active handlers. The nominal preadmission signal is transient and discarded by the owner.",
+    "hooks": "Preserve existing best-effort ordinary callback-retirement hooks; controls remain errors. Actual native closure and loop callback drains remain authoritative."
+  },
+  "preserved": [
+    "DSP channels/PCM algorithms/copy behavior/thresholds",
+    "global CaptureControl durable policy/authenticated nonvoice resume",
+    "existing permission separation and five native kinds",
+    "existing recovery/backoff behavior when no native constructor was entered"
+  ],
+  "validation": {
+    "baseline": {
+      "passed": 2,
+      "failed": 2,
+      "classification": "Two genuine old false mute ACKs with live native fixture actors, plus2 success controls. All fixture actors actually joined only in cleanup.",
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/t023/j/baseline/baseline-proof.json",
+        "sha256": "ab5acdcebd3670e9d24368b22d1d5ac4448cef3609de8413807cf0b5d272ee41"
+      }
+    },
+    "first_J14": {
+      "passed": 13,
+      "failed": 1,
+      "accepted": false,
+      "XML_duration_s": 3.815,
+      "classification": "Real exception-context propagation defect plus missing PortAudioError in fixture; classified and archived."
+    },
+    "first_replay14": {
+      "passed": 14,
+      "failed": 0,
+      "XML_duration_s": 3.683
+    },
+    "first_legacy219": {
+      "passed": 215,
+      "failed": 4,
+      "accepted": false,
+      "XML_duration_s": 12.752,
+      "classification": "3 real preadmission recovery regressions;1 ordinary hook policy regression. Original tests unchanged."
+    },
+    "final14": {
+      "path": "data/autonomous-roadmap-20261102/t023/j/integration-attempt-03/component-proof.json",
+      "sha256": "02ffe8651df8d29ef64bff39164ccf722f22509773448ca04a8327e72f8195f7"
+    },
+    "final219": {
+      "path": "data/autonomous-roadmap-20261102/t023/j/regressions-attempt-02/component-proof.json",
+      "sha256": "b770b43ea1b54ec12f4a0339594b8bb112371503f7e2ff611de3b6b39d43f219"
+    },
+    "identity": "Explicit2legacy retry-oracle migrations; I8516 minus2old+2renamed+14new=8530. Directed I989+202 scoped existing+14new=1205. No claim that all old8516 IDs are unchanged.",
+    "full_collection": {
+      "count": 8530,
+      "exact_expected_nodeids": true,
+      "terminal": "78102/7fbee1 exit0"
+    },
+    "static": [
+      "root-all-lint-final/status.json",
+      "regression-design-review-addendum.json",
+      "independent-review-02-addendum.json"
+    ],
+    "directed": {
+      "accepted_within_scope": true,
+      "observed_at_utc": "2026-11-05T21:00:20.272541+00:00",
+      "scope": "native Mac offline local fixtures; no physical acceptance or whole-goal completion",
+      "terminal": {
+        "session_id": 22460,
+        "chunk": "639902",
+        "exit_code": 0,
+        "consumed_by": "root"
+      },
+      "mode": "directed",
+      "tests": 1205,
+      "passed": 1205,
+      "known_xfailed": 0,
+      "failures": 0,
+      "errors": 0,
+      "ordinary_skips": 0,
+      "XML_duration_s": 182.901,
+      "known_xfail": [],
+      "exact_expected_ids": true,
+      "source_files": 1027,
+      "script_files": 37,
+      "source_unchanged": true,
+      "protected_files": 12,
+      "protected_unchanged": true,
+      "actual_wait_returned": true,
+      "minimum_available_bytes": 192988078080,
+      "artifacts": [
+        {
+          "path": "data/autonomous-roadmap-20261102/t023/j/directed-attempt-01/full-status.json",
+          "sha256": "2e76a83283382f874feada2c7cd9ea0e2b03cc3cda83e206b245f395e409ab16",
+          "bytes": 3819
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t023/j/directed-attempt-01/full.xml",
+          "sha256": "a16ba851c611c0f893a99d948ad0d77e3ccf7471140444f19803c6c902326883",
+          "bytes": 208462
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t023/j/directed-attempt-01/full.log",
+          "sha256": "a6305a6939347db8699287361d3d75b1462d754ffee3a4b5dacdb0ce02a682bc",
+          "bytes": 180981
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t023/j/directed-attempt-01/source-before.json",
+          "sha256": "32038654db23053cc75e09c58f8a756273d730474b5239ef2dff59debde2bdc5",
+          "bytes": 154975
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t023/j/directed-attempt-01/source-after.json",
+          "sha256": "32038654db23053cc75e09c58f8a756273d730474b5239ef2dff59debde2bdc5",
+          "bytes": 154975
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t023/j/directed-attempt-01/protected-before.json",
+          "sha256": "ff6ac959f4c4082720dea9bb084a12bf3ad85b9c9ebda1c0f2afa47a91f1045f",
+          "bytes": 1750
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t023/j/directed-attempt-01/protected-after.json",
+          "sha256": "ff6ac959f4c4082720dea9bb084a12bf3ad85b9c9ebda1c0f2afa47a91f1045f",
+          "bytes": 1750
+        }
+      ],
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/t023/j/directed-attempt-01/acceptance-proof.json",
+        "sha256": "985fe56a7c3bc913e87df00cd77aa747cd5e7314c71d564f845e7cb6b6c25102"
+      }
+    },
+    "full": {
+      "accepted_within_scope": true,
+      "observed_at_utc": "2026-11-05T21:11:46.942631+00:00",
+      "scope": "native Mac offline local fixtures; no physical acceptance or whole-goal completion",
+      "terminal": {
+        "session_id": 73921,
+        "chunk": "18e78d",
+        "exit_code": 0,
+        "consumed_by": "root"
+      },
+      "mode": "full",
+      "tests": 8530,
+      "passed": 8529,
+      "known_xfailed": 1,
+      "failures": 0,
+      "errors": 0,
+      "ordinary_skips": 0,
+      "XML_duration_s": 664.688,
+      "known_xfail": [
+        [
+          "tests.unit.nlu.test_regex_extractor",
+          "test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]",
+          {
+            "type": "pytest.xfail",
+            "message": "limitación documentada del regex puro"
+          }
+        ]
+      ],
+      "exact_expected_ids": true,
+      "source_files": 1027,
+      "script_files": 37,
+      "source_unchanged": true,
+      "protected_files": 12,
+      "protected_unchanged": true,
+      "actual_wait_returned": true,
+      "minimum_available_bytes": 191846318080,
+      "artifacts": [
+        {
+          "path": "data/autonomous-roadmap-20261102/t023/j/full-normal-attempt-01/full-status.json",
+          "sha256": "96e4b03ead629e76b2b6b8af262515a5cb0fae74e801a9d63d0f17d34855437e",
+          "bytes": 1957
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t023/j/full-normal-attempt-01/full.xml",
+          "sha256": "4933ed5ce385a479a206cfbc54a136b8e78f046aa474175bc90d94ccd0b7943e",
+          "bytes": 2368658
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t023/j/full-normal-attempt-01/full.log",
+          "sha256": "0b3e3720a5acb337203eac9aa7835652677b467b838fbd635efcfc19c7d8fa68",
+          "bytes": 2174445
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t023/j/full-normal-attempt-01/source-before.json",
+          "sha256": "32038654db23053cc75e09c58f8a756273d730474b5239ef2dff59debde2bdc5",
+          "bytes": 154975
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t023/j/full-normal-attempt-01/source-after.json",
+          "sha256": "32038654db23053cc75e09c58f8a756273d730474b5239ef2dff59debde2bdc5",
+          "bytes": 154975
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t023/j/full-normal-attempt-01/protected-before.json",
+          "sha256": "ff6ac959f4c4082720dea9bb084a12bf3ad85b9c9ebda1c0f2afa47a91f1045f",
+          "bytes": 1750
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t023/j/full-normal-attempt-01/protected-after.json",
+          "sha256": "ff6ac959f4c4082720dea9bb084a12bf3ad85b9c9ebda1c0f2afa47a91f1045f",
+          "bytes": 1750
+        }
+      ],
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/t023/j/full-normal-attempt-01/acceptance-proof.json",
+        "sha256": "b1396da3238d8f6befbdde5a61837a6ac427a15bc48fbe60f31c7c6671a11490"
+      }
+    },
+    "source_files": 1027,
+    "script_files": 37,
+    "protected_files": 12
+  },
+  "limits": [
+    "Local synthetic audio SDK/native actors only; no actual audio/model/GPU/HA/services or release.",
+    "No private SDK/allocator wipe, physical recording acceptance or claim that product unknown owners were repaired by fixture cleanup.",
+    "T022/T023/T024 and21criteria remain open; same active incomplete goal. Interactive PC testing delegated to Terra; no UI change in J."
+  ],
+  "implementation_commit": "3874ffc8ddeadcb231f48ee1eee02ed7dfdd5828",
+  "verified_at_utc": "2026-11-05T21:12:05.692877+00:00",
+  "source_sha256": {
+    "tests/integration/test_production_input_receipts.py": "9a502beaede07da072821c9243b95ef811b286d6be3e3cf5f568fd83d5913089",
+    "tests/mocks/production_input.py": "60427abfef14f670a426cf4b124fe37a41f59eb7c51e4d16a483725e8bb0fc31",
+    "src/audio/input_group.py": "65e61b404a4121509c14409b6f48bc7de7ff3006f4fbcf9d1479cd7b1010f684",
+    "src/audio/owned_input.py": "3619e18e637639f399a74588d7e6aff16558787eabdf64cbe3f962048c7be3ea",
+    "src/pipeline/audio_loop.py": "711768b4ead34dcad49ef4d197e8f685e4340609be00e60d5f0acf2dde386757",
+    "src/pipeline/multi_room_audio_loop.py": "e85d456e6a3c157dc05a878fc8c1a07a19dfeb2f7664f904bce2e4b5252086a6",
+    "tests/integration/test_input_driver_pause.py": "ac7351fdadf1f3251e74b70e169199803b2382aa838a695f6cc51d2a1ed2b74f",
+    "tests/integration/test_single_input_privacy.py": "bc523bff878a12b1a4fac7e1ce055babab87cd20373b3ef95bde56f9eb97b159"
+  },
+  "evidence_root": "data/autonomous-roadmap-20261102/t023/j"
+}

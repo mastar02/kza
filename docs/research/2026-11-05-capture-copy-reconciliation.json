@@ -1,0 +1,599 @@
+{
+  "schema": "kza.next-capture-copy-matrix-proposal.v1",
+  "created_at_utc": "2026-11-05T20:57:44.704106+00:00",
+  "status": "selected_local_evidence_reconciled_no_criterion_acceptance",
+  "task_states": {
+    "T022": {
+      "status": "in_progress",
+      "title": "Cerrar inventario de SDK, productores, copias y recursos nativos",
+      "criteria": [
+        "C03",
+        "C04"
+      ]
+    },
+    "T023": {
+      "status": "in_progress",
+      "title": "Completar mute global durable y reactivación autenticada sin voz",
+      "criteria": [
+        "C04"
+      ]
+    },
+    "T024": {
+      "status": "planned",
+      "title": "Ensayar borrado y restauración sin resurrección de datos retirados",
+      "criteria": [
+        "C04",
+        "C05"
+      ]
+    }
+  },
+  "criteria": {
+    "C03": {
+      "status": "not_evaluated",
+      "target": "Conservar H2: heartbeat 5 ms, retraso p95 <=25 ms y máximo <=75 ms; cancelación <=100 ms, parada simulada <=200 ms, cleanup cooperativo <=1 s; PCM exacto y colas acotadas.",
+      "minimum_evidence": "Diez repeticiones y productores simulados de 200 ms, incluidas respuestas largas y trabajo nativo retenido."
+    },
+    "C04": {
+      "status": "not_evaluated",
+      "target": "Inventario completo de productores/SDK/copias, mute total durable reactivable sin voz, vencimiento/borrado sin resurrección en restauración compatible.",
+      "minimum_evidence": "Casos con inicialización, escritura, modelo, transporte y frontend tardíos; ningún participante desconocido permite afirmar borrado total."
+    },
+    "C05": {
+      "status": "not_evaluated",
+      "target": "Suite completa y checks requeridos sin fallos ni xfail en requisitos incluidos; artefacto CPython 3.13 verificado fuera de fuentes y rollback de runtime/datos probado.",
+      "minimum_evidence": "Candidato exacto, dependencias reproducibles y hashes; configuración de arranque validada, entrenamiento nocturno deshabilitado si su utilidad/recursos no están aceptados; advertencias nuevas de aplicación justificadas, sin ocultarlas indiscriminadamente."
+    }
+  },
+  "all21_status_counts": {
+    "not_evaluated": 21
+  },
+  "authoritative_contract_sections": [
+    {
+      "path": "docs/plans/2026-11-02-autonomous-roadmap.md",
+      "heading": "Contratos existentes que se conservan"
+    },
+    {
+      "path": "docs/plans/2026-10-26-h3-memory-privacy.md",
+      "headings": [
+        "Decisiones y alcance",
+        "Trabajo restante"
+      ]
+    }
+  ],
+  "current_followup": {
+    "path": "docs/plans/2026-11-05-global-capture-followup.json",
+    "sha256": "1e2b353468514fb43fc3b1c935d058f328155c3fa1e504735af6ff3dfd3c0bc6"
+  },
+  "A_to_J": [
+    {
+      "unit": "T023-A",
+      "evidence": {
+        "path": "docs/research/2026-11-04-capture-suspension-composition.json",
+        "sha256": "f3475fe70f65fbd7a80530430db737ebff6eccc3755c8affd371b345a93f26f6"
+      },
+      "document_status": "verified_local_prerequisite",
+      "covered_within_local_scope": "Independent opaque reasons for capture scopes and VoiceRegistry; releasing ambient cannot release global/other reasons.",
+      "limit": "Named local fixtures/receipts only; no complete SDK/private-copy erasure or physical criterion acceptance."
+    },
+    {
+      "unit": "T023-B",
+      "evidence": {
+        "path": "docs/research/2026-11-04-capture-auxiliary-pause.json",
+        "sha256": "0c5a62e7bb22b222473416fe80f8d46b499b64a63a71bdb430b5123e7ab5a89d"
+      },
+      "document_status": "verified_local_prerequisite",
+      "covered_within_local_scope": "Reusable XVF/direction/sysfs/health drain and epoch readiness; actual auxiliary work survives observer cancellation.",
+      "limit": "Named local fixtures/receipts only; no complete SDK/private-copy erasure or physical criterion acceptance."
+    },
+    {
+      "unit": "T023-C",
+      "evidence": {
+        "path": "docs/research/2026-11-04-global-capture-control.json",
+        "sha256": "389c49e20b102371fd1bc1dfff3d4255d151c2e5407e150594221cdaf2c17715"
+      },
+      "document_status": "verified_local_selected_server_and_browser_scope",
+      "covered_within_local_scope": "Durable global policy, original admin/nonvoice resume, registered native/browser barriers, derived NLU/event/memory drains and owned SQL initialization/compensation.",
+      "limit": "Named local fixtures/receipts only; no complete SDK/private-copy erasure or physical criterion acceptance."
+    },
+    {
+      "unit": "T023-D",
+      "evidence": {
+        "path": "docs/research/2026-11-05-calibration-capture-authority.json",
+        "sha256": "99d8e435b02b48e5929bbdcf0ec560c448846fd5f97645606295ef34a05f6753"
+      },
+      "document_status": "verified_local_policy_bound_calibration_scope",
+      "covered_within_local_scope": "Explicit calibration capability before acquisition; native/callback/live output/monitor retirement.",
+      "limit": "Named local fixtures/receipts only; no complete SDK/private-copy erasure or physical criterion acceptance."
+    },
+    {
+      "unit": "T023-E",
+      "evidence": {
+        "path": "docs/research/2026-11-05-wakeword-training-capture-authority.json",
+        "sha256": "bcf836bd37423696c79606bcd2fb4b8b4e01e548fd5bd2941c2312e2468f54a8"
+      },
+      "document_status": "verified_local_policy_bound_wakeword_training_scope",
+      "covered_within_local_scope": "Recorder/train_wakeword live paths use training capability and owned input/model/output work; historical helpers remain separate.",
+      "limit": "Named local fixtures/receipts only; no complete SDK/private-copy erasure or physical criterion acceptance."
+    },
+    {
+      "unit": "T023-F",
+      "evidence": {
+        "path": "docs/research/2026-11-05-wakeword-diagnostics-capture-authority.json",
+        "sha256": "f2c9aa78cbeaede69264453dfd4c703a31d20efe14165861881677040ba93e67"
+      },
+      "document_status": "verified_local_policy_bound_wakeword_diagnostics_scope",
+      "covered_within_local_scope": "diagnose_wakeword six-channel live acquisition and model/report return owned; Python model references only, no invented SDK close.",
+      "limit": "Named local fixtures/receipts only; no complete SDK/private-copy erasure or physical criterion acceptance."
+    },
+    {
+      "unit": "T023-G",
+      "evidence": {
+        "path": "docs/research/2026-11-05-zone-setup-capture-authority.json",
+        "sha256": "e1dc13dd6a6692cca4b5c3c62c88a313afefdaad055abe993145bd583f2427ba"
+      },
+      "document_status": "verified_local_within_open_T023",
+      "covered_within_local_scope": "MultiMic/zone_setup owned epochs, strict native retirement and output; borrowed AudioChunk copies stay valid.",
+      "limit": "Named local fixtures/receipts only; no complete SDK/private-copy erasure or physical criterion acceptance."
+    },
+    {
+      "unit": "T023-H",
+      "evidence": {
+        "path": "docs/research/2026-11-05-manual-voice-command-capture-authority.json",
+        "sha256": "561ef47578bf0dd19dd2ee290312067420088b17f52104f8308d22033174946a"
+      },
+      "document_status": "verified_local_within_open_T023",
+      "covered_within_local_scope": "Manual capture/admin separate from home:control action; STT iterators/models/native/output drain; remote action uncertainty blocks ACK.",
+      "limit": "Named local fixtures/receipts only; no complete SDK/private-copy erasure or physical criterion acceptance."
+    },
+    {
+      "unit": "T023-I",
+      "evidence": {
+        "path": "docs/research/2026-11-05-legacy-wakeword-capture-authority.json",
+        "sha256": "d040b3cc7a5a9d5b2ce5f3f98aeebc870cc48ad2ca0b791441aa348259455b49"
+      },
+      "document_status": "verified_local_within_open_T023",
+      "covered_within_local_scope": "Both legacy aliases/direct API use training capability, six-channel copy/RMS/corpus semantics and fenced detector/queue/output; no implicit services.",
+      "limit": "Named local fixtures/receipts only; no complete SDK/private-copy erasure or physical criterion acceptance."
+    },
+    {
+      "unit": "T023-J",
+      "document_status": "verified_local_within_open_T023",
+      "evidence": {
+        "path": "docs/research/2026-11-05-production-input-close-receipts.json",
+        "sha256": "33b4c947cd66b28cc785d4d9687478271c198c794c4eec2ff9d6b9e7d1ab6429"
+      },
+      "covered_within_local_scope": "Strict production native close receipts, persistent UNKNOWN after admitted constructor/close uncertainty, no retry/ACK/replacement, explicit recoverable nonadmission.",
+      "limit": "Named offline fixtures; no private SDK-copy erasure or physical acceptance."
+    }
+  ],
+  "source_bindings": [
+    {
+      "path": "src/audio/owned_input.py",
+      "sha256": "3619e18e637639f399a74588d7e6aff16558787eabdf64cbe3f962048c7be3ea",
+      "symbols": [
+        "OwnedInputStream.open",
+        "OwnedInputStream.begin_close",
+        "OwnedInputStream.retired",
+        "OwnedInputStream.resource_status"
+      ]
+    },
+    {
+      "path": "src/audio/input_group.py",
+      "sha256": "65e61b404a4121509c14409b6f48bc7de7ff3006f4fbcf9d1479cd7b1010f684",
+      "symbols": [
+        "InputGroup._open",
+        "InputGroup.begin_pause",
+        "InputGroup.resume"
+      ]
+    },
+    {
+      "path": "src/pipeline/audio_loop.py",
+      "sha256": "711768b4ead34dcad49ef4d197e8f685e4340609be00e60d5f0acf2dde386757",
+      "symbols": [
+        "AudioLoop.drain_pause",
+        "AudioLoop.resume_admission"
+      ]
+    },
+    {
+      "path": "src/pipeline/multi_room_audio_loop.py",
+      "sha256": "e85d456e6a3c157dc05a878fc8c1a07a19dfeb2f7664f904bce2e4b5252086a6",
+      "symbols": [
+        "MultiRoomAudioLoop.begin_pause_inputs",
+        "MultiRoomAudioLoop.drain_pause",
+        "MultiRoomAudioLoop.resume_inputs"
+      ]
+    },
+    {
+      "path": "src/memory/capture_control.py",
+      "sha256": "b8abfbe90341f9dd69421a057a6bcc68ac49138f71ef5787363b08ac9d2d496a",
+      "symbols": [
+        "CaptureControl.initialize",
+        "CaptureControl.request",
+        "CaptureControl._drain_server",
+        "CaptureControl.snapshot"
+      ]
+    },
+    {
+      "path": "src/memory/erasure_journal.py",
+      "sha256": "41884e764e4906e4efeaa4e5fbd431e47f8dfe6a9ff5000db7e3f32453263984",
+      "symbols": [
+        "ErasureJournal.register_target",
+        "ErasureJournal.recover",
+        "ErasureJournal.snapshot"
+      ]
+    },
+    {
+      "path": "src/memory/erasure_coordinator.py",
+      "sha256": "e2ee9cc7be2da955cb8905383aa006b13629c20f156077d786ab948d3cdca805",
+      "symbols": [
+        "ErasureCoordinator.request",
+        "ErasureCoordinator.reconcile",
+        "ErasureCoordinator.begin_close"
+      ]
+    },
+    {
+      "path": "src/ambient/erasure.py",
+      "sha256": "e3eb198f7dd0dcc7cc3e06a116d70fff51e785de48d034d183e8fcf8b55a316d",
+      "symbols": [
+        "CaptureEraser.clean",
+        "build_capture_erasure"
+      ]
+    },
+    {
+      "path": "src/ambient/retention.py",
+      "sha256": "0ce0774a26583755359473da83e2e8785270a0473cef7db47eae42de6cea2464",
+      "symbols": [
+        "CaptureRetention._sweep",
+        "CaptureRetention.reconcile"
+      ]
+    },
+    {
+      "path": "src/training/collector_erasure.py",
+      "sha256": "730737d76a6e084ce4ab22c6e23896ef28601c7fd2b867d97e67204122ae0384",
+      "symbols": [
+        "CollectorAudit.check_identity",
+        "CollectorEraser.clean",
+        "build_collector_erasure"
+      ]
+    },
+    {
+      "path": "src/memory/index_erasure.py",
+      "sha256": "fabce074e0de7c7870480b55238c5bca428b24936fe855f7952d3cc916d0d8de",
+      "symbols": [
+        "build_erasure_services",
+        "PolicyIndexEraser.clean"
+      ]
+    }
+  ],
+  "copy_matrix": [
+    {
+      "edge": "multichannel native input -> owned callback copy -> selected channel/preroll/cropped/full/STT windows -> borrowed event/receiver",
+      "current_boundary": "A/B/C/J cover source seals, callback/native operation drains and fresh epochs within named local fixtures; do not overwrite caller loans.",
+      "open": "Complete allocation/tensor/SDK-private census and every destination correlation remain T022. Mute prevents further capture/publication, not physical byte/VRAM erasure.",
+      "sources": [
+        "src/pipeline/capture_room.py",
+        "src/pipeline/command_event.py",
+        "src/audio/owned_input.py"
+      ]
+    },
+    {
+      "edge": "managed ambient/capture -> SQLite rows + durable write intents + WAV/FLAC path -> review/collector",
+      "current_boundary": "Registered archive locators, selected TTL/revocation/native-write tests and per-participant erasure receipts already exist.",
+      "open": "Combined multi-participant compatible restore against retained authority, late native writes after revoke, and every historical configured root must be reconciled.",
+      "sources": [
+        "src/ambient/audio_archive.py",
+        "src/ambient/erasure.py",
+        "src/ambient/retention.py"
+      ]
+    },
+    {
+      "edge": "managed STT/conversation -> policy_v1 audio/text/JSON/JSONL + wake clip SQL locators -> export/adapters",
+      "current_boundary": "C pauses actual collectors; CollectorEraser supports managed/versioned roots and selected leased-restart rechecks.",
+      "open": "Raw/legacy/unattributed datasets, exports, adapters and snapshots are not silently registered or deleted. Separate ordinary48h data from explicitly consented evaluation/training purpose; no TTL renewal by copying.",
+      "sources": [
+        "src/training/stt_correction_collector.py",
+        "src/training/conversation_collector.py",
+        "src/training/collector_erasure.py"
+      ]
+    },
+    {
+      "edge": "voice preview PCM/WAV -> embedding/vector ledger -> reviewed profile/browser/legacy NPY",
+      "current_boundary": "A/C retain independent capture reasons and review authority; no acoustic/person/account permission inference.",
+      "open": "Derived-copy/restore coverage remains distinct from grouping/identity review. Q voice-slot control gap is a source hypothesis, not newly reproduced here and not erased from history.",
+      "sources": [
+        "src/users/voice_registry.py",
+        "src/users/voice_ledger.py"
+      ]
+    },
+    {
+      "edge": "source facts -> policy SQL/tombstones -> Chroma document/embedding index -> prompt/context/events/suggestions/diagnostics/browser",
+      "current_boundary": "Erasure journal, versioned drivers, source deadlines and selected late-index/context/collector rechecks exist; model/client lifetime work in T022 is separate.",
+      "open": "A successful local SDK close or hash match is not a source-wide erasure receipt. Unknown/missing drivers, historical protocol, raw file, browser delivery and remote copy must stay visible pending.",
+      "sources": [
+        "src/memory/erasure_journal.py",
+        "src/memory/index_erasure.py",
+        "src/orchestrator/context_erasure.py",
+        "src/memory/long_term.py"
+      ]
+    },
+    {
+      "edge": "D/E/F/G/H/I standalone live capture -> arrays/models/queue/live reports -> explicit WAV/JSON/stdout/history",
+      "current_boundary": "Original-admin native kinds cover acquisition/drain; H independently requires home:control for action and retains remote unknown. I preserves training-family alias behavior.",
+      "open": "Existing WAVs, successful caller arrays, historical scalar summaries/stdout/log/browser and SDK-private buffers are explicitly outside those retirement/ACK claims. Classify/register durable descendants for T024; do not infer erasure consent from capture/admin permission.",
+      "sources": [
+        "tools/acoustic_calibration.py",
+        "src/wakeword/recorder.py",
+        "scripts/diagnose_wakeword.py",
+        "src/audio/multi_mic_capture.py",
+        "scripts/test_voice_command.py",
+        "scripts/train_nexa.py",
+        "scripts/train_che_bo.py"
+      ]
+    }
+  ],
+  "Q_inventory_reconciliation": {
+    "evidence": {
+      "path": "docs/research/2026-11-04-resource-inventory.json",
+      "sha256": "7c98e5b62e65475b564922e215cfb21dbbf3b24100a06929444f92e8f5714d48"
+    },
+    "scope": "Original29families/6facets are historical Q/P source-bound evidence. Hash comparisons only, not a new semantic review or restored acceptance. A-J supersede named input/CLI/global-mute boundaries; no global rewrite of old rows.",
+    "current_hash_summary": [
+      {
+        "family": "graph",
+        "same_hash_refs": 1,
+        "changed_hash_refs": 2,
+        "missing_refs": 0
+      },
+      {
+        "family": "native_work",
+        "same_hash_refs": 3,
+        "changed_hash_refs": 2,
+        "missing_refs": 0
+      },
+      {
+        "family": "multi_input",
+        "same_hash_refs": 0,
+        "changed_hash_refs": 3,
+        "missing_refs": 0
+      },
+      {
+        "family": "single_input",
+        "same_hash_refs": 1,
+        "changed_hash_refs": 1,
+        "missing_refs": 0
+      },
+      {
+        "family": "capture_buffers",
+        "same_hash_refs": 2,
+        "changed_hash_refs": 1,
+        "missing_refs": 0
+      },
+      {
+        "family": "ambient_segments",
+        "same_hash_refs": 4,
+        "changed_hash_refs": 0,
+        "missing_refs": 0
+      },
+      {
+        "family": "recovery_health",
+        "same_hash_refs": 1,
+        "changed_hash_refs": 1,
+        "missing_refs": 0
+      },
+      {
+        "family": "command_stt",
+        "same_hash_refs": 4,
+        "changed_hash_refs": 3,
+        "missing_refs": 0
+      },
+      {
+        "family": "ambient_shadow_stt",
+        "same_hash_refs": 2,
+        "changed_hash_refs": 2,
+        "missing_refs": 0
+      },
+      {
+        "family": "speaker_models",
+        "same_hash_refs": 2,
+        "changed_hash_refs": 2,
+        "missing_refs": 0
+      },
+      {
+        "family": "tts_output",
+        "same_hash_refs": 4,
+        "changed_hash_refs": 1,
+        "missing_refs": 0
+      },
+      {
+        "family": "response_cache",
+        "same_hash_refs": 2,
+        "changed_hash_refs": 1,
+        "missing_refs": 0
+      },
+      {
+        "family": "wake_clips",
+        "same_hash_refs": 1,
+        "changed_hash_refs": 0,
+        "missing_refs": 0
+      },
+      {
+        "family": "archive_collectors",
+        "same_hash_refs": 2,
+        "changed_hash_refs": 2,
+        "missing_refs": 0
+      },
+      {
+        "family": "voice_registry",
+        "same_hash_refs": 2,
+        "changed_hash_refs": 1,
+        "missing_refs": 0
+      },
+      {
+        "family": "privacy_ledger",
+        "same_hash_refs": 2,
+        "changed_hash_refs": 1,
+        "missing_refs": 0
+      },
+      {
+        "family": "memory_sdk",
+        "same_hash_refs": 2,
+        "changed_hash_refs": 0,
+        "missing_refs": 0
+      },
+      {
+        "family": "chroma_sync",
+        "same_hash_refs": 1,
+        "changed_hash_refs": 1,
+        "missing_refs": 0
+      },
+      {
+        "family": "household_sql",
+        "same_hash_refs": 4,
+        "changed_hash_refs": 0,
+        "missing_refs": 0
+      },
+      {
+        "family": "admin_catalog",
+        "same_hash_refs": 3,
+        "changed_hash_refs": 1,
+        "missing_refs": 0
+      },
+      {
+        "family": "generation_http",
+        "same_hash_refs": 2,
+        "changed_hash_refs": 5,
+        "missing_refs": 0
+      },
+      {
+        "family": "conditional_cli_legacy_models",
+        "same_hash_refs": 1,
+        "changed_hash_refs": 2,
+        "missing_refs": 0
+      },
+      {
+        "family": "usb_sidecars",
+        "same_hash_refs": 2,
+        "changed_hash_refs": 2,
+        "missing_refs": 0
+      },
+      {
+        "family": "legacy_training",
+        "same_hash_refs": 2,
+        "changed_hash_refs": 2,
+        "missing_refs": 0
+      },
+      {
+        "family": "events_transients",
+        "same_hash_refs": 5,
+        "changed_hash_refs": 0,
+        "missing_refs": 0
+      },
+      {
+        "family": "private_delivery",
+        "same_hash_refs": 7,
+        "changed_hash_refs": 0,
+        "missing_refs": 0
+      },
+      {
+        "family": "frontend_voice",
+        "same_hash_refs": 3,
+        "changed_hash_refs": 0,
+        "missing_refs": 0
+      },
+      {
+        "family": "frontend_evaluator",
+        "same_hash_refs": 4,
+        "changed_hash_refs": 0,
+        "missing_refs": 0
+      },
+      {
+        "family": "ha_transport_root",
+        "same_hash_refs": 3,
+        "changed_hash_refs": 0,
+        "missing_refs": 0
+      }
+    ],
+    "remaining": "Keep ownership, actual exit, known copies, destinations, mute/deadline/erase/restore and field/SDK-private facets separate; matching hashes do not close any facet."
+  },
+  "next_unit": {
+    "candidate": "T024-A/compatible-multistore-erasure-restore-rehearsal",
+    "why_now": "After J root validation, the highest-value required gap is the remaining C04/C05 erasure/restore behavior across named managed descendants. Do not create another microphone unit from unused StreamingSTT or an unproven metadata hypothesis.",
+    "start_gate": "J accepted local evidence and code/tracking delivery; confirm current ledger/participant hashes before T024-A.",
+    "first_scope": "One source/conversation with ordinary48h capture plus managed conversation/STT collector descendants. Synthetic consistent snapshot of those registered participant stores/files, with an unrelated live source preserved. Same retained authoritative PrivacyServices ledger/tombstones/locators, existing public builders and ErasureCoordinator.request/reconcile. No new restore API is assumed.",
+    "compatible_restore_definition": [
+      "Use explicitly registered supported-version participant locations and known snapshot provenance. Preserve the current privacy ledger/deletion intent and writer lease generation; never restore an older authority DB over tombstones and call the resulting state a valid bypass.",
+      "Keep root/descriptor/file identity checks. A replaced/unrecognized root or unsupported version remains unknown/pending; do not bypass checks, edit journal state manually or delete foreign files to manufacture success.",
+      "Do not stub remaining participants as complete. Assert selected real participant steps only; aggregate completion requires every actual required driver/target.",
+      "No ordinary-data promotion into a new training corpus; original capture/deadline/source/consent continue through every compatible restored descendant."
+    ],
+    "concrete_first_proofs": [
+      "Existing public API characterization: create two supported descendants, take consistent synthetic snapshots, request authenticated erasure, and record actual selected step/file/row receipts. This is not a missing-API RED.",
+      "After a leased restart, restore both named participant data snapshots behind prior complete receipts while keeping tombstones current; rebuild/reconcile through real builders. Restored revoked rows/files cannot be served or newly indexed and are physically cleaned before their step completes; unrelated live source remains byte/state-identical.",
+      "Hold one actual encoder/unlink/index operation through observer cancellation while another participant finishes. The held/unknown participant prevents aggregate complete; after real return, same claim/version recheck and no late publication/resurrection.",
+      "Corrupt/missing/replaced historical root or unsupported protocol retains explicit pending/unknown and does not create replacement storage or remove foreign payloads."
+    ],
+    "existing_selected_proofs_not_to_repeat": [
+      {
+        "path": "tests/integration/test_erasure_coordinator.py",
+        "sha256": "09a49a0eebec5e1f03eb2080b38eccd4204230b9312ec56ed9fcc1ce927dce6f",
+        "symbols": [
+          "test_complete_requires_every_participant_and_new_targets_reopen_old_operations",
+          "test_missing_driver_never_completes_and_receipts_exclude_storage_details",
+          "test_real_index_batch_cursor_survives_restart_and_rechecks_old_receipts"
+        ]
+      },
+      {
+        "path": "tests/integration/test_capture_erasure.py",
+        "sha256": "d0a086a86e4cfda2e42f02278e1c2a8e2ec9dc0c861169f5a11506ffe05d32f2",
+        "symbols": [
+          "test_unlink_failure_stays_pending_through_restart_and_keeps_no_text",
+          "test_revocation_waits_native_encoder_even_when_ttl_purge_runs_first",
+          "test_unregistered_archive_path_stays_pending_without_deleting_foreign_file"
+        ]
+      },
+      {
+        "path": "tests/integration/test_collector_erasure.py",
+        "sha256": "df253eb9afd27e6e85910122ef1e35e401da55a8caca55a1b19bca8f68d0031c",
+        "symbols": [
+          "test_restored_files_behind_complete_receipt_are_rechecked_on_leased_restart",
+          "test_unattributed_files_remain_pending_and_are_never_deleted",
+          "test_replaced_policy_directory_cannot_complete_an_existing_audit"
+        ]
+      },
+      {
+        "path": "tests/integration/test_context_erasure.py",
+        "sha256": "e27e14eb98b9e40b0ca6adc812df980aa808fdc75f21a7eeae4ed82c7a9cff96",
+        "symbols": [
+          "test_completed_context_receipts_are_rechecked_after_restored_file_on_leased_restart"
+        ]
+      }
+    ],
+    "production_change_rule": "Start with rehearsal and exact outcome. If a genuine source failure appears, propose the smallest coherent fix at that observed boundary (journal/recovery plus one selected participant); no speculative restore framework or blanket SDK wipe.",
+    "later_acceptance": [
+      "Extend the matrix to semantic facts/index, context/event/suggestion/diagnostic/stream/browser/voice targets, CLI durable artifacts, legacy/quarantine/raw exports/adapters and runtime/data rollback before claiming C04 complete.",
+      "Compatible real-data/runtime copy rehearsal and physical four-input/iPhone/HA observations remain separately controlled work; local synthetic tests cannot replace them.",
+      "C05 exact candidate artifact/dependency/rollback checks and included known-xfail resolution remain open; a normal suite with one known xfail is not C05 acceptance."
+    ]
+  },
+  "preserved": [
+    "T022/T023 in_progress; T024 planned; todos los estados de tareas, criterios, fases y presupuestos se conservan.",
+    "T020/P1/T047 and separation of capture, consent, voice/person/account, admin and home:control unchanged.",
+    "Reconciliación documental; las pruebas ejecutadas por root se citan en J_delivery. Sin producción/release/servicios/.env/modelos/GPU/hardware/HA.",
+    "StreamingSTT remains conditional without an accredited caller.",
+    "Unknown private SDK/caller/remote copies are described honestly rather than assumed erased or used to justify endless unrelated metadata work."
+  ],
+  "tool_limits": [
+    "Serena overview then focused symbols for current erasure/retention APIs and selected existing tests; ctx outline/doc for named contract sections.",
+    "An initial guessed H3 plan date2026-10-25 did not exist; narrow rg resolved actual2026-10-26 source. No RAG/index/other-project query.",
+    "Q row hash summary is metadata correlation only; no fresh global29family semantic audit or vendor-private allocation proof."
+  ],
+  "objective_complete": false,
+  "baseline_roadmap": {
+    "path": "docs/plans/2026-11-02-autonomous-roadmap.json",
+    "sha256": "64eac99ba65e631f1db481d135054304547cfc39017d3699b4fe8e40adeb34fe"
+  },
+  "J_delivery": {
+    "path": "docs/research/2026-11-05-production-input-close-receipts.json",
+    "sha256": "33b4c947cd66b28cc785d4d9687478271c198c794c4eec2ff9d6b9e7d1ab6429"
+  }
+}

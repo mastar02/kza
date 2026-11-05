@@ -6,22 +6,24 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 ## Punto de reanudación
 
-La unidad **T023-I quedó verificada localmente en Mac**. El mismo goal sigue **activo e incompleto**. La reanudación revocó la pausa histórica de G. Usar la `.venv` nativa existente y no repetir tandas cerradas sin una razón nueva.
+La unidad **T023-J quedó verificada localmente en Mac**. El mismo goal sigue **activo e incompleto**. Usar la `.venv` nativa existente y no repetir tandas cerradas sin una razón nueva.
 
 | Dato | Estado actual |
 | --- | --- |
 | Entorno | `gabriel`, `/Users/gabriel/Documents/Proyectos/kza`, macOS 26.6.1 arm64, CPython 3.13.18 |
-| Código I | `9d9613d0fe6058d27c0200aec7b688c4019f90b7` |
-| Baseline original | 8 PASS; 12 actores nativos del fixture cerrados y unidos, servicios sintéticos |
-| Integración I | 43 PASS; primer 35/8 y correcciones explícitas conservados |
-| Dirigida I | 989 PASS; XML 171.008 s |
-| Full normal I | **8515 PASS + una xfail conocida**, 8516 IDs exactos; XML 663.630 s |
-| Fuentes | 1025 archivos incluidos 37 scripts y 11 protegidos intactos durante las tandas amplias |
+| Código J | `3874ffc8ddeadcb231f48ee1eee02ed7dfdd5828` |
+| Baseline original J | 2 PASS + 2 RED reales: ACK anterior con actor nativo aún vivo; cleanup del fixture lo une después |
+| Integración J | 14 PASS; primer 13/1 y corrección explícita conservados |
+| Regresión J | 219 PASS; primer 215/4 y correcciones de no admisión/hooks conservados |
+| Dirigida J | 1205 PASS; XML 182.901 s |
+| Full normal J | **8529 PASS + una xfail conocida**, 8530 IDs exactos |
+| Fuentes | 1027 archivos incluidos 37 scripts y 12 protegidos intactos durante las tandas amplias |
+| Identidades | I8516 − dos nombres antiguos + dos renombres documentados + 14 casos nuevos |
 | Delegación | Hasta ocho agentes activos en total según plazas; pruebas interactivas de PC con `gpt-6.1-terra` |
-| Próxima unidad | J propuesta: recibos de cierre del input de producción, primero baseline aislado |
+| Próxima unidad | T024-A: ensayo de borrado y restauración compatible entre almacenes registrados |
 | Tracking | Este commit; verificar SHA y publicación al retomar |
 
-T022/T023 siguen `in_progress`, T024 `planned` y los 21 criterios `not_evaluated`. T020/P1/T047, fases, presupuestos y permisos separados se conservan. Ver [informe I](../research/2026-11-05-legacy-wakeword-capture-authority.json). Sin release o cambios de producción.
+T022/T023 siguen `in_progress`, T024 `planned` y los 21 criterios `not_evaluated`. T020/P1/T047, fases, presupuestos y permisos separados se conservan. Leer el [informe J](../research/2026-11-05-production-input-close-receipts.json), la [reconciliación de copias](../research/2026-11-05-capture-copy-reconciliation.json) y la [continuación T024-A](../plans/2026-11-05-erasure-restore-continuation.json). Sin release o cambios de producción.
 
 ## Referencia histórica del cierre Linux F
 
@@ -221,16 +223,22 @@ Ambos aliases conservan el wake word nexa. Las grabaciones y la prueba exigen ad
 
 Se archivan el baseline 8 PASS, el primer 35/8 y el replay 43 PASS. Se restablece la propagación original de main; cinco fallos de los fixtures nuevos se corrigen con cambios explícitos, sin aumentar presupuestos ni rebajar barreras. La dirigida y full validan los bytes finales; esto no acredita hardware, modelo real, SDK privado, borrado ni criterios físicos.
 
+## Recibos estrictos del input de producción — J
+
+Cada handle devuelto y conocido recibe una llamada estricta a stop y close, incluso si stop falla. Un constructor admitido sin handle o un close fallido conserva UNKNOWN, el dueño y la prohibición de ACK/reapertura; un puntero nulo o Future terminal no prueba retiro. La no admisión comprobada antes del constructor mantiene la recuperación de dispositivos ausentes. Se conservan DSP, drenaje real de callbacks y el tratamiento previo de errores ordinarios de hooks.
+
+Quedan archivados el baseline original, los fallos iniciales y sus correcciones, sin cambiar los 14 oráculos nuevos ni las cuatro regresiones originales. Dos antiguos oráculos de reintento se migran expresamente al contrato real del SDK. Las pruebas usan SDK/actores sintéticos; no acreditan hardware, memoria privada del SDK, borrado universal ni C04/C05.
+
 ## Prompt para la sesión nueva
 
-> Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff, el informe I y la propuesta J. Confirmá API del goal, checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro objetivo ni marques éste completo.
-> I quedó verificada: 8 de caracterización original, 43 de integración, 989 dirigidos y full de 8515 PASS + una xfail conocida. Usá la `.venv` nativa; no recrees dependencias ni repitas tandas sin razón nueva. Hasta ocho agentes totales según plazas; interacción de PC delegada a Terra.
-> Comenzá J con caracterización original aislada de OwnedInputStream y sus llamadores reales; no ejecutar audio/modelos/GPU/HA/servicios reales. No usar un puntero nulo, reintento o ausencia de Task como recibo de cierre nativo. T022/T023/T024 y los 21 criterios siguen abiertos; T020/P1/T047 y permisos separados se conservan. Producción/releases mantienen su alcance separado.
+> Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff, el informe J, la reconciliación de copias y la continuación T024-A. Confirmá API del goal, checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro objetivo ni marques éste completo.
+> J quedó verificada: baseline original 2 PASS/2 RED, finales 14/219/1205 PASS y full 8529 PASS + una xfail conocida, 8530 IDs exactos. Usá la `.venv` nativa; no recrees dependencias ni repitas tandas sin razón nueva. Hasta ocho agentes totales según plazas; interacción de PC delegada a Terra.
+> Comenzá T024-A con ledger/tombstones actuales y descendientes gestionados, mediante builders/journal reales. Conservá desconocidos pendientes y datos ajenos intactos; no inventes RestoreAPI ni tomes cierre SDK como borrado. T022/T023/T024 y los 21 criterios siguen abiertos; T020/P1/T047 y permisos separados se conservan. Producción/releases mantienen su alcance separado.
 
 ## Lista de cierre y reanudación
 
-- [x] F/Linux, bootstrap Mac, G y H conservados con recibos propios.
-- [x] I, primeras pruebas/fallos/correcciones y 43/989/full con evidencia local.
-- [x] Código I, tracking y handoff guardados y publicados; verificar Git al retomar.
+- [x] F/Linux, bootstrap Mac, G, H e I conservados con recibos propios.
+- [x] J, primeras pruebas/fallos/correcciones y 14/219/1205/full con evidencia local.
+- [x] Código J, tracking y handoff guardados; verificar publicación y HEAD al retomar.
 - [x] Mismo goal activo, sin nueva petición de pausa ni criterios físicos aceptados.
-- [ ] Confirmar estado/Git y comenzar J propuesta con baseline aislado, sin repetir trabajo cerrado.
+- [ ] Confirmar estado/Git y comenzar T024-A según continuación, sin repetir trabajo cerrado.

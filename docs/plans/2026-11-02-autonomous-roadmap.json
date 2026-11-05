@@ -1143,7 +1143,8 @@
         "75b2878e1fe665447eb84d1428c02de9be85fcee",
         "a838165cf77b1bb67735866f458b5fe709874e48",
         "ac8ae1ce450b05efc1d6e3f2c93d02be3fc1a110",
-        "e2d5f83478b6535e64b602847529543da5eba551"
+        "e2d5f83478b6535e64b602847529543da5eba551",
+        "3874ffc8ddeadcb231f48ee1eee02ed7dfdd5828"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t022/a/evidence.json",
@@ -1185,9 +1186,11 @@
         "data/autonomous-roadmap-20261102/t022/w/normal-full-attempt-01/acceptance-proof.json",
         "docs/research/2026-11-04-hermes-native-graph-lifetime.json",
         "data/autonomous-roadmap-20261102/t022/x/evidence.json",
-        "data/autonomous-roadmap-20261102/t022/x/normal-full-attempt-01/acceptance-proof.json"
+        "data/autonomous-roadmap-20261102/t022/x/normal-full-attempt-01/acceptance-proof.json",
+        "docs/research/2026-11-05-production-input-close-receipts.json",
+        "docs/research/2026-11-05-capture-copy-reconciliation.json"
       ],
-      "next_action": "T022-X verificada localmente: recibos nativos por llamada Hermes/Context vacío/cierre principal+compactor,410 dirigidos incluidos13 nuevos y fullnormal8091PASS+1xfail conocida sobre978 archivos incluidos37scripts idénticos;0fallos/errores/aborto,runner/pytest0. Conserva todos8079 IDs de fullW y13nuevos. Cierre esperaCFuture/postlude real, conserva privacidad anteWownerincierto aunconFutureterminal;poolprestado no dispuesto. Inicialesstreamoráculo/graphaccessor/watchdog sonfixtures separados del únicoRED e83; causa interna delwatchdogsinatribuir. SiguienteunidadindependienteT023-A: caracterizar pausaambiental correcta(permitecomandos) y preparar muteGLOBALdurable/barrera real/capacidad distinta conreactivación autenticada no voz; no APIabsence comoRED ni ampliarambient:control. T022 sigueabierto: SDKprivados/copias/CLI/constructores/admisiónincierta;T021/C03/C04/C06/C20/21criterios abiertos, HAresistente>60s yM/G/J/K/ENOSPC pendientes,T020/P1/T047/autoridadesseparadas conservados."
+      "next_action": "T023-J verificada localmente: cierre nativo estricto por handle conocido, UNKNOWN persistente sin retry/ACK/reapertura y no admisión explícita recuperable. Baseline original2PASS/2RED, primer J14 13/1 y219 215/4 conservados; finales14/219/1205PASS y full8529PASS+una xfail conocida sobre8530IDs exactos,1027fuentes/37scripts/12protegidos estables. Dos renombres explícitos de oráculos retry. Leer informe J y reconciliación de productores/copias; próxima unidad T024-A según continuación. T022/T023 y21criterios siguen abiertos; T020/P1/T047, autoridades, presupuestos y producción se conservan."
     },
     {
       "id": "T023",
@@ -1210,7 +1213,8 @@
         "38f3912d5272be408f9d27afb74a298a54d2b5ac",
         "43b44b933d8bff8a8a8bd2bdbd4f4d5555bfc743",
         "815941b6d120bcfe385ab5897c4cc79b329c1204",
-        "9d9613d0fe6058d27c0200aec7b688c4019f90b7"
+        "9d9613d0fe6058d27c0200aec7b688c4019f90b7",
+        "3874ffc8ddeadcb231f48ee1eee02ed7dfdd5828"
       ],
       "evidence": [
         "docs/research/2026-11-04-capture-suspension-composition.json",
@@ -1241,9 +1245,11 @@
         "data/autonomous-roadmap-20261102/t023/h/full-normal-attempt-01/acceptance-proof.json",
         "docs/research/2026-11-05-legacy-wakeword-capture-authority.json",
         "docs/plans/2026-11-05-global-capture-followup.json",
-        "data/autonomous-roadmap-20261102/t023/i/full-normal-attempt-01/acceptance-proof.json"
+        "data/autonomous-roadmap-20261102/t023/i/full-normal-attempt-01/acceptance-proof.json",
+        "docs/research/2026-11-05-production-input-close-receipts.json",
+        "docs/research/2026-11-05-capture-copy-reconciliation.json"
       ],
-      "next_action": "T023-I verificada localmente: ambos CLI legacy conservan nexa, seis canales/copia/RMS/corpus/detector y usan la concesión original de wakeword_training sin servicios implícitos. Pasan 8 caracterizaciones originales, 43 integración, 989 dirigidos y full 8515 PASS + una xfail conocida: 8516 IDs exactos, 1025 fuentes/37 scripts/11 protegidos intactos. Primer 35/8 y correcciones de propagación/fixtures preservados, sin aumentar presupuestos ni rebajar barreras. Leer informe I, handoff y auditoría de seguimiento para la próxima unidad de recibos nativos; no inferir cierre de T023 ni caller de StreamingSTT. Mismo goal activo e incompleto; T022/T023/T024 y los 21 criterios abiertos; T020/P1/T047 y permisos separados conservados. Sin producción, servicios reales o release."
+      "next_action": "T023-J verificada localmente: cierre nativo estricto por handle conocido, UNKNOWN persistente sin retry/ACK/reapertura y no admisión explícita recuperable. Baseline original2PASS/2RED, primer J14 13/1 y219 215/4 conservados; finales14/219/1205PASS y full8529PASS+una xfail conocida sobre8530IDs exactos,1027fuentes/37scripts/12protegidos estables. Dos renombres explícitos de oráculos retry. Leer informe J y reconciliación de productores/copias; próxima unidad T024-A según continuación. T022/T023 y21criterios siguen abiertos; T020/P1/T047, autoridades, presupuestos y producción se conservan."
     },
     {
       "id": "T024",
@@ -1261,8 +1267,10 @@
       "inclusion": "required",
       "status": "planned",
       "implementation_commits": [],
-      "evidence": [],
-      "next_action": null
+      "evidence": [
+        "docs/plans/2026-11-05-erasure-restore-continuation.json"
+      ],
+      "next_action": "Preparar baseline T024-A con ledger/tombstones actuales y dos descendientes gestionados; ensayar restauración compatible detrás de recibos con builders/journal reales y actor retenido. Conservar desconocidos/raíces reemplazadas pendientes y fuente ajena intacta; no inventar RestoreAPI ni declarar SDK borrado. Leer continuación y pruebas existentes antes de diseñar."
     },
     {
       "id": "T025",
@@ -2404,11 +2412,11 @@
     "checkpoint_path": "data/autonomous-roadmap-20261102/checkpoint.json",
     "evidence_contract": "docs/runbooks/2026-11-02-autonomous-execution.md",
     "field_authorized": false,
-    "next_task": "T023",
+    "next_task": "T024",
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T023-I/legacy-wakeword-cli-capture-and-service-boundary",
+    "last_verified_unit": "T023-J/production-native-input-close-receipts",
     "user_priority_after_admin_unit": "T047"
   }
 }

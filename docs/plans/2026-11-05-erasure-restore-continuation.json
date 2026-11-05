@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "status": "proposed_next_unit_not_implemented",
+  "goal": "docs/plans/2026-11-02-autonomous-roadmap.md",
+  "baseline_commit": "3874ffc8ddeadcb231f48ee1eee02ed7dfdd5828",
+  "reconciliation": {
+    "path": "docs/research/2026-11-05-capture-copy-reconciliation.json",
+    "sha256": "00d58cf48762f32c6ad4984a883cd8a4374bd9cf908c17a4a4d94b39cc97aa1c"
+  },
+  "candidate": "T024-A/compatible-multistore-erasure-restore-rehearsal",
+  "why_now": "After J root validation, the highest-value required gap is the remaining C04/C05 erasure/restore behavior across named managed descendants. Do not create another microphone unit from unused StreamingSTT or an unproven metadata hypothesis.",
+  "start_gate": "J accepted local evidence and code/tracking delivery; confirm current ledger/participant hashes before T024-A.",
+  "first_scope": "One source/conversation with ordinary48h capture plus managed conversation/STT collector descendants. Synthetic consistent snapshot of those registered participant stores/files, with an unrelated live source preserved. Same retained authoritative PrivacyServices ledger/tombstones/locators, existing public builders and ErasureCoordinator.request/reconcile. No new restore API is assumed.",
+  "compatible_restore_definition": [
+    "Use explicitly registered supported-version participant locations and known snapshot provenance. Preserve the current privacy ledger/deletion intent and writer lease generation; never restore an older authority DB over tombstones and call the resulting state a valid bypass.",
+    "Keep root/descriptor/file identity checks. A replaced/unrecognized root or unsupported version remains unknown/pending; do not bypass checks, edit journal state manually or delete foreign files to manufacture success.",
+    "Do not stub remaining participants as complete. Assert selected real participant steps only; aggregate completion requires every actual required driver/target.",
+    "No ordinary-data promotion into a new training corpus; original capture/deadline/source/consent continue through every compatible restored descendant."
+  ],
+  "concrete_first_proofs": [
+    "Existing public API characterization: create two supported descendants, take consistent synthetic snapshots, request authenticated erasure, and record actual selected step/file/row receipts. This is not a missing-API RED.",
+    "After a leased restart, restore both named participant data snapshots behind prior complete receipts while keeping tombstones current; rebuild/reconcile through real builders. Restored revoked rows/files cannot be served or newly indexed and are physically cleaned before their step completes; unrelated live source remains byte/state-identical.",
+    "Hold one actual encoder/unlink/index operation through observer cancellation while another participant finishes. The held/unknown participant prevents aggregate complete; after real return, same claim/version recheck and no late publication/resurrection.",
+    "Corrupt/missing/replaced historical root or unsupported protocol retains explicit pending/unknown and does not create replacement storage or remove foreign payloads."
+  ],
+  "existing_selected_proofs_not_to_repeat": [
+    {
+      "path": "tests/integration/test_erasure_coordinator.py",
+      "sha256": "09a49a0eebec5e1f03eb2080b38eccd4204230b9312ec56ed9fcc1ce927dce6f",
+      "symbols": [
+        "test_complete_requires_every_participant_and_new_targets_reopen_old_operations",
+        "test_missing_driver_never_completes_and_receipts_exclude_storage_details",
+        "test_real_index_batch_cursor_survives_restart_and_rechecks_old_receipts"
+      ]
+    },
+    {
+      "path": "tests/integration/test_capture_erasure.py",
+      "sha256": "d0a086a86e4cfda2e42f02278e1c2a8e2ec9dc0c861169f5a11506ffe05d32f2",
+      "symbols": [
+        "test_unlink_failure_stays_pending_through_restart_and_keeps_no_text",
+        "test_revocation_waits_native_encoder_even_when_ttl_purge_runs_first",
+        "test_unregistered_archive_path_stays_pending_without_deleting_foreign_file"
+      ]
+    },
+    {
+      "path": "tests/integration/test_collector_erasure.py",
+      "sha256": "df253eb9afd27e6e85910122ef1e35e401da55a8caca55a1b19bca8f68d0031c",
+      "symbols": [
+        "test_restored_files_behind_complete_receipt_are_rechecked_on_leased_restart",
+        "test_unattributed_files_remain_pending_and_are_never_deleted",
+        "test_replaced_policy_directory_cannot_complete_an_existing_audit"
+      ]
+    },
+    {
+      "path": "tests/integration/test_context_erasure.py",
+      "sha256": "e27e14eb98b9e40b0ca6adc812df980aa808fdc75f21a7eeae4ed82c7a9cff96",
+      "symbols": [
+        "test_completed_context_receipts_are_rechecked_after_restored_file_on_leased_restart"
+      ]
+    }
+  ],
+  "production_change_rule": "Start with rehearsal and exact outcome. If a genuine source failure appears, propose the smallest coherent fix at that observed boundary (journal/recovery plus one selected participant); no speculative restore framework or blanket SDK wipe.",
+  "later_acceptance": [
+    "Extend the matrix to semantic facts/index, context/event/suggestion/diagnostic/stream/browser/voice targets, CLI durable artifacts, legacy/quarantine/raw exports/adapters and runtime/data rollback before claiming C04 complete.",
+    "Compatible real-data/runtime copy rehearsal and physical four-input/iPhone/HA observations remain separately controlled work; local synthetic tests cannot replace them.",
+    "C05 exact candidate artifact/dependency/rollback checks and included known-xfail resolution remain open; a normal suite with one known xfail is not C05 acceptance."
+  ]
+}
