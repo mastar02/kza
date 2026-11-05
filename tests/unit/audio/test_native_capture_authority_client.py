@@ -12,7 +12,7 @@ import requests
 
 from src.audio import native_capture_authority as common
 from src.audio.native_capture_authority import (
-    CalibrationAuthorityClient, NativeCaptureAuthorityClient,
+    CalibrationAuthorityClient, ManualVoiceCommandAuthorityClient, NativeCaptureAuthorityClient,
     WakewordDiagnosticsAuthorityClient, WakewordTrainingAuthorityClient, ZoneSetupAuthorityClient,
 )
 from tests.unit.tools.test_calibration_authority_client import (
@@ -303,3 +303,52 @@ def test_zone_setup_hyphenated_kind_is_rejected_before_transport():
         NativeCaptureAuthorityClient(URL, ADMIN_TOKEN, kind='zone-setup',
                                      session_factory=forbidden)
     assert attempted == []
+
+
+def test_manual_voice_fixed_namespace_original_actor_and_token_only_retirement():
+    protocol = NativeProtocol()
+    protocol.namespace = "manual-voice-command"
+    protocol.reply_kind = "manual_voice_command"
+    authority = ManualVoiceCommandAuthorityClient(URL, ADMIN_TOKEN,
+        session_factory=protocol.session, poll_interval_s=.001)
+    stopped = threading.Event()
+    try:
+        authority.register()
+        assert not authority.current()
+        authority.activate()
+        assert authority.current()
+        protocol.allowed = False
+        authority.start_monitor(stopped.set)
+        assert stopped.wait(3)
+        authority.stop_monitor()
+        assert not authority.current()
+        authority.retire()
+        assert protocol.calls[:2] == ["register", "activate"]
+        assert "poll" in protocol.calls and protocol.calls[-1] == "retire"
+        assert all(session.trust_env is False for session in protocol.sessions)
+    finally:
+        authority.close()
+
+
+@pytest.mark.parametrize("wrong_kind", ["calibration", "wakeword_training", "wakeword_diagnostics", "zone_setup"])
+def test_manual_voice_rejects_other_native_namespace(wrong_kind):
+    protocol = NativeProtocol()
+    protocol.namespace = "manual-voice-command"
+    protocol.reply_kind = "manual_voice_command"
+    protocol.wrong_kind, protocol.wrong_action = wrong_kind, "activate"
+    authority = ManualVoiceCommandAuthorityClient(URL, ADMIN_TOKEN,
+        session_factory=protocol.session)
+    try:
+        authority.register()
+        with pytest.raises(RuntimeError):
+            authority.activate()
+        assert not authority.current()
+        assert protocol.calls == ["register", "activate"]
+    finally:
+        authority.close()
+    assert "retire" not in protocol.calls
+
+
+def test_manual_voice_wrapper_kind_cannot_be_spoofed():
+    with pytest.raises(TypeError):
+        ManualVoiceCommandAuthorityClient(URL, ADMIN_TOKEN, kind="zone_setup")

@@ -231,6 +231,7 @@ async def require_dashboard_access(
             "/api/capture/native/wakeword-training/retire",
             "/api/capture/native/wakeword-diagnostics/retire",
             "/api/capture/native/zone-setup/retire",
+            "/api/capture/native/manual-voice-command/retire",
         })
     )
     if public:

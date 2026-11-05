@@ -138,3 +138,4 @@ def register_capture_browser_routes(app: FastAPI, control: CaptureControl) -> No
     native_routes("wakeword_training", "wakeword-training")
     native_routes("wakeword_diagnostics", "wakeword-diagnostics")
     native_routes("zone_setup", "zone-setup")
+    native_routes("manual_voice_command", "manual-voice-command")

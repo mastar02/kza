@@ -24,6 +24,7 @@ _NAMESPACES = MappingProxyType({
     "wakeword_training": "/api/capture/native/wakeword-training/",
     "wakeword_diagnostics": "/api/capture/native/wakeword-diagnostics/",
     "zone_setup": "/api/capture/native/zone-setup/",
+    "manual_voice_command": "/api/capture/native/manual-voice-command/",
 })
 
 
@@ -57,7 +58,7 @@ class NativeCaptureAuthorityClient:
 
     def __init__(self, url: str, token: str, *,
                  kind: Literal["calibration", "wakeword_training", "wakeword_diagnostics",
-                               "zone_setup"],
+                               "zone_setup", "manual_voice_command"],
                  timeout_s: float = 1.0,
                  poll_interval_s: float = .25,
                  session_factory: Callable = requests.Session) -> None:
@@ -285,4 +286,14 @@ class ZoneSetupAuthorityClient(NativeCaptureAuthorityClient):
                  poll_interval_s: float = .25,
                  session_factory: Callable = requests.Session) -> None:
         super().__init__(url, token, kind="zone_setup", timeout_s=timeout_s,
+                         poll_interval_s=poll_interval_s, session_factory=session_factory)
+
+
+class ManualVoiceCommandAuthorityClient(NativeCaptureAuthorityClient):
+    """Bind manual microphone commands to their fixed capture namespace."""
+
+    def __init__(self, url: str, token: str, *, timeout_s: float = 1.0,
+                 poll_interval_s: float = .25,
+                 session_factory: Callable = requests.Session) -> None:
+        super().__init__(url, token, kind="manual_voice_command", timeout_s=timeout_s,
                          poll_interval_s=poll_interval_s, session_factory=session_factory)

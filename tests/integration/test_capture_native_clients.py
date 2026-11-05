@@ -21,6 +21,7 @@ NATIVE = "/api/capture/native/calibration"
 TRAINING = "/api/capture/native/wakeword-training"
 DIAGNOSTICS = "/api/capture/native/wakeword-diagnostics"
 ZONE_SETUP = "/api/capture/native/zone-setup"
+MANUAL_VOICE = "/api/capture/native/manual-voice-command"
 BROWSER = "/api/capture/recorders"
 
 
@@ -652,5 +653,166 @@ async def test_zone_setup_registration_kind_and_muted_admission_are_server_owned
             g.control.request(True, g.control.snapshot()["revision"], actor())
             await capture_phase(g.control, "muted")
             denied = await client.post(ZONE_SETUP + "/register", headers=ORIGIN, json={})
+            assert denied.status_code == 409 and denied.headers["Cache-Control"] == "no-store"
+            assert g.control.snapshot()["total_mute_confirmed"]
+
+
+async def test_manual_voice_five_native_barrier_and_original_actor_retirement(tmp_path, monkeypatch, dashboard_auth):
+    async with controlled(tmp_path, monkeypatch) as g, browser_app(g.control, tmp_path) as app:
+        register_capture_routes(app, control=g.control)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
+            credentials = {"token": dashboard_auth["Authorization"].split(" ", 1)[1]}
+            assert (await client.post("/api/admin/auth/login", headers=ORIGIN, json=credentials)).status_code == 200
+            issued = []
+            try:
+                for route, kind in ((NATIVE, "calibration"), (TRAINING, "wakeword_training"),
+                                    (DIAGNOSTICS, "wakeword_diagnostics"), (ZONE_SETUP, "zone_setup"),
+                                    (MANUAL_VOICE, "manual_voice_command")):
+                    registered = await client.post(route + "/register", headers=ORIGIN, json={})
+                    assert registered.status_code == 200
+                    assert registered.json()["kind"] == kind
+                    assert registered.json()["capture_allowed"] is False
+                    token = registered.json()["token"]
+                    issued.append((route, kind, token))
+                    active = await client.post(route + "/activate", headers=ORIGIN, json={"token": token})
+                    assert active.status_code == 200 and active.json()["capture_allowed"] is True
+                assert g.control.snapshot()["pending_native_clients"] == 5
+                assert g.control.snapshot()["pending_browser_recorders"] == 0
+                manual_token = issued[-1][2]
+                for route, _kind, token in issued:
+                    targets = (NATIVE, TRAINING, DIAGNOSTICS, ZONE_SETUP, BROWSER) if route == MANUAL_VOICE else (MANUAL_VOICE,)
+                    for target in targets:
+                        for action in ("activate", "poll", "retire"):
+                            denied = await client.post(target + "/" + action, headers=ORIGIN, json={"token": token})
+                            assert denied.status_code == 409
+                assert g.control.snapshot()["pending_native_clients"] == 5
+                assert (await client.post("/api/admin/auth/logout", headers=ORIGIN)).status_code == 200
+                assert (await client.post(MANUAL_VOICE + "/poll", headers=ORIGIN,
+                                          json={"token": manual_token})).status_code == 401
+                assert (await client.post("/api/admin/auth/login", headers=ORIGIN, json=credentials)).status_code == 200
+                replaced = await client.post(MANUAL_VOICE + "/poll", headers=ORIGIN, json={"token": manual_token})
+                assert replaced.status_code == 200 and replaced.json()["capture_allowed"] is False
+                assert replaced.json()["retirement_required"] is True
+                assert (await client.post(MANUAL_VOICE + "/activate", headers=ORIGIN,
+                                          json={"token": manual_token})).status_code == 409
+                assert (await client.post("/api/admin/auth/logout", headers=ORIGIN)).status_code == 200
+                g.control.request(True, g.control.snapshot()["revision"], actor())
+                await until(lambda: g.control.snapshot()["phase"] == "muting")
+                assert (await client.post(MANUAL_VOICE + "/retire", json={"token": manual_token})).status_code == 403
+                assert (await client.post(MANUAL_VOICE + "/retire", headers={"Origin": "https://other.invalid"},
+                                          json={"token": manual_token})).status_code == 403
+                assert (await client.post(MANUAL_VOICE + "/retire", headers=ORIGIN,
+                                          json={"token": manual_token, "muted": False})).status_code == 422
+                for expected, (route, _kind, token) in zip((4, 3, 2, 1, 0), issued):
+                    retired = await client.post(route + "/retire", headers=ORIGIN, json={"token": token})
+                    assert retired.status_code == 200 and retired.json() == {"retired": True}
+                    state = g.control.snapshot()
+                    assert state["pending_native_clients"] == expected
+                    assert state["pending_browser_recorders"] == 0
+                    if expected:
+                        assert state["total_mute_confirmed"] is False
+                muted = await capture_phase(g.control, "muted")
+                assert muted["persisted_muted"] and muted["total_mute_confirmed"]
+                denied = await client.post("/api/capture/control", headers=ORIGIN,
+                    json={"muted": False, "expected_revision": muted["revision"]})
+                assert denied.status_code == 401
+                assert g.control.snapshot()["persisted_muted"] is True
+            finally:
+                for _route, kind, token in issued:
+                    await g.control.recorders.retire(token, kind=kind)
+
+async def test_restart_keeps_five_native_kinds_unknown_and_manual_reservation_retirable(tmp_path):
+    path = str(tmp_path / "five-native.sqlite")
+    first = PrivacyServices(path)
+    await first.acall(first.initialize)
+    registry = CaptureRecorders(first, capture_allowed=lambda: True)
+    issued = []
+    try:
+        await registry.initialize()
+        principal = actor()
+        for kind in ("calibration", "wakeword_training", "wakeword_diagnostics", "zone_setup", "manual_voice_command"):
+            item = await registry.register(principal, kind=kind)
+            issued.append((item["token"], kind))
+            await registry.activate(item["token"], principal, kind=kind)
+        reserved = await registry.register(principal, kind="manual_voice_command")
+        await registry.aclose()
+        assert registry.pending(kind="manual_voice_command") == 2
+    finally:
+        try:
+            await registry.aclose()
+        finally:
+            await first.aclose()
+
+    second = PrivacyServices(path)
+    await second.acall(second.initialize)
+    recovered = CaptureRecorders(second, capture_allowed=lambda: True)
+    draining = None
+    try:
+        await recovered.initialize()
+        for token, kind in issued:
+            state = await recovered.poll(token, actor(), kind=kind)
+            assert state["state"] == "unknown" and state["capture_allowed"] is False
+        assert recovered.pending(kind="browser") == 0
+        draining = asyncio.create_task(recovered.drain())
+        await until(lambda: recovered.pending() == 5)
+        assert not draining.done()
+        assert (await recovered.poll(reserved["token"], actor(), kind="manual_voice_command"))["state"] == "retired"
+        for expected, (token, kind) in zip((4, 3, 2, 1, 0), issued):
+            wrong_kind = "manual_voice_command" if kind != "manual_voice_command" else "zone_setup"
+            with pytest.raises(ValueError, match="capture_recorder_kind_denied"):
+                await recovered.retire(token, kind=wrong_kind)
+            assert recovered.pending() == expected + 1
+            await recovered.retire(token, kind=kind)
+            assert recovered.pending() == expected
+            if expected:
+                assert not draining.done()
+        await asyncio.wait_for(asyncio.shield(draining), 2)
+    finally:
+        for token, kind in issued:
+            await recovered.retire(token, kind=kind)
+        if draining is not None:
+            await asyncio.gather(draining, return_exceptions=True)
+        await recovered.aclose()
+        await second.aclose()
+
+@pytest.mark.parametrize("role", [DashboardRole.HOME, DashboardRole.EVALUATOR])
+async def test_manual_voice_requires_admin_even_with_person_and_voice_claims(tmp_path, monkeypatch, dashboard_auth, role):
+    async with controlled(tmp_path, monkeypatch) as g, browser_app(g.control, tmp_path) as app:
+        before = g.control.snapshot()
+        now = time.time()
+        samples = (EvaluationSample("vf_" + "a" * 64, frozenset({"b" * 64}),
+            frozenset({EvaluationModality.AUDIO_PREVIEW}), now + 60),) if role is DashboardRole.EVALUATOR else ()
+        authority = app.state.dashboard_authority
+        grant = await authority.issue_credential(
+            authority.resolve(dashboard_auth["Authorization"]),
+            subject="synthetic-manual-member", role=role, expires_at=now + 120, samples=samples,
+        )
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
+            logged = await client.post("/api/admin/auth/login", headers=ORIGIN, json={
+                "token": grant.token, "role": "operator", "permissions": ["admin:manage"],
+                "user_id": "synthetic-untrusted-person",
+            })
+            assert logged.status_code == 200
+            for action, body in (("register", {}), ("activate", {"token": "a" * 43}),
+                                 ("poll", {"token": "a" * 43})):
+                denied = await client.post(MANUAL_VOICE + "/" + action, headers=ORIGIN, json=body)
+                assert denied.status_code == 403
+        assert g.control.snapshot() == before
+
+async def test_manual_voice_registration_kind_and_muted_admission_are_server_owned(tmp_path, monkeypatch, dashboard_auth):
+    async with controlled(tmp_path, monkeypatch) as g, browser_app(g.control, tmp_path) as app:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
+            logged = await client.post("/api/admin/auth/login", headers=ORIGIN,
+                json={"token": dashboard_auth["Authorization"].split(" ", 1)[1]})
+            assert logged.status_code == 200
+            for body in ({"kind": "calibration"}, {"kind": "wakeword_training"},
+                         {"kind": "wakeword_diagnostics"}, {"kind": "zone_setup"}, {"kind": "manual_voice_command"},
+                         {"capture_allowed": True}, {"muted": False}):
+                rejected = await client.post(MANUAL_VOICE + "/register", headers=ORIGIN, json=body)
+                assert rejected.status_code == 422 and rejected.headers["Cache-Control"] == "no-store"
+            assert g.control.snapshot()["pending_native_clients"] == 0
+            g.control.request(True, g.control.snapshot()["revision"], actor())
+            await capture_phase(g.control, "muted")
+            denied = await client.post(MANUAL_VOICE + "/register", headers=ORIGIN, json={})
             assert denied.status_code == 409 and denied.headers["Cache-Control"] == "no-store"
             assert g.control.snapshot()["total_mute_confirmed"]
