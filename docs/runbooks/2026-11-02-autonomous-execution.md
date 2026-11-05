@@ -2890,3 +2890,13 @@ T023-I integra record_sample, record-positive, record-negative y test en ambos a
 La caracterización original pasa 8; el primer 35/8 se archiva. Se restablece propagación original de main y se corrigen cinco desajustes de fixtures sin aumentar presupuestos ni reducir barreras. Replay 43 PASS, dirigida 989 PASS y full nativa 8515 PASS + una xfail conocida: 8516 IDs exactos, 1025 fuentes incluidos 37 scripts y 11 protegidos intactos. Código `9d9613d0fe6058d27c0200aec7b688c4019f90b7`; informe `docs/research/2026-11-05-legacy-wakeword-capture-authority.json`. Sin aceptación de hardware, calidad real del modelo o borrado de SDK/copias ajenas.
 
 La auditoría actual acredita el control inicial de la fábrica, pero encuentra un hueco estático de errores PortAudio omitidos y reintento sin recibo nativo en OwnedInputStream, compartido por ambos loops. J queda propuesta en `docs/plans/2026-11-05-global-capture-followup.json`, primero baseline aislado. StreamingSTT sigue condicional sin llamador. El mismo goal continúa activo e incompleto; T022/T023/T024 y los 21 criterios abiertos, otras 49 tareas, fases, presupuestos, T020/P1/T047 y permisos separados conservados. Sin despliegue, servicios reales ni nueva pausa.
+
+## Restauración integrada con inventarios pendientes — T024-B
+
+Una autoridad y nueve drivers reales cubren diez obligaciones. Tres casos prueban payloads compatibles, dos retiros nativos independientes y lease retenido por CommandProcessor. Productores y los tres guards unresolved siguen bloqueando el agregado. Restore excluye revocaciones, ACK y decisiones/permisos manuales; la fuente ajena permanece igual.
+
+Los primeros intentos fallaron por contar una revisión expirada de feedback y exigir turnos volátiles tras reiniciar. Son fallos del fixture conservados, sin RED de producto. La revisión independiente corrigió una ruta de observación de Task en una rama aún no ejecutada. Identidades y presupuestos se conservan.
+
+Pruebas B: 3 PASS, dirigida 844 PASS y full 8538 PASS + la misma xfail conocida sobre 8539 IDs exactos; XML 633.320 s. 1030 entradas/37 scripts/16 protegidos estables; retorno real del proceso y pruebas de identidad archivados. Código `f5b846a538a71a386da68ca72b7fa35d619754b1`. [Informe](../research/2026-11-05-integrated-restore-characterization.json) y [siguiente unidad](../plans/2026-11-05-producer-erasure-continuation.json).
+
+T024/C04/C05 y los 21 criterios siguen abiertos. Sin release ni cambio de producción. La interacción de PC se delega a Terra; máximo acordado de ocho agentes, sujeto a plazas.

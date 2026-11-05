@@ -6,23 +6,23 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 ## Punto de reanudación
 
-La unidad **T024-A quedó verificada localmente en Mac**. El mismo goal sigue **activo e incompleto**. Usar la `.venv` nativa y no repetir tandas cerradas sin una razón nueva.
+La unidad **T024-B quedó verificada localmente como caracterización en Mac**. El mismo goal sigue **activo e incompleto**. Usar la `.venv` nativa y conservar los ensayos cerrados.
 
 | Dato | Estado actual |
 | --- | --- |
 | Entorno | `gabriel`, `/Users/gabriel/Documents/Proyectos/kza`, macOS 26.6.1 arm64, CPython 3.13.18 |
-| Código T024-A | `71971584430adbbaae425923d92f4a23a9ce7f25` |
-| Baseline original A | 4 PASS + un RED genuino + un fallo del fixture; ambos preservados y clasificados |
-| Integración A | 6 PASS; mismos seis IDs y presupuestos |
-| Dirigida A | 589 PASS; XML 26.285 s |
-| Full normal A | **8535 PASS + una xfail conocida**, 8536 IDs exactos; XML 673.755 s |
-| Fuentes | 1028 archivos de fuentes/pruebas/útiles, incluidos 37 scripts; además 13 archivos protegidos intactos |
-| Identidades | Todos los 8530 IDs de J más seis nuevos; sin renombres ni retiradas |
-| Delegación | Hasta ocho agentes activos en total según plazas; pruebas interactivas de PC con `gpt-6.1-terra` |
-| Próxima unidad | T024-B: restauración integrada e inventario de los diez participantes, con drivers reales |
+| Código de pruebas B | `f5b846a538a71a386da68ca72b7fa35d619754b1`; no modifica código de producto |
+| Originales B | 0 PASS/3 fallos de fixture y luego 2 PASS/1 fallo de fixture, preservados; ningún RED de producto |
+| Integración / dirigida B | 3 PASS / 844 PASS; XML 3.388 s / 43.518 s |
+| Full normal B | **8538 PASS + la misma xfail conocida**, 8539 IDs exactos; XML 633.320 s |
+| Fuentes | 1030 entradas, incluidos 37 scripts, más 16 archivos protegidos intactos durante las tandas |
+| Identidades | A8536 intactas más tres; sin renombres ni retiradas |
+| Alcance | Una autoridad, nueve drivers, diez obligaciones; productores y tres inventarios unresolved siguen pendientes |
+| Delegación | Hasta ocho agentes activos en total según plazas; pruebas de PC con subagente `gpt-6.1-terra` |
+| Próxima unidad | T024-C: inventario y barrera real de productores por conversación |
 | Tracking | Este commit; verificar SHA y publicación al retomar |
 
-T022/T023/T024 siguen `in_progress` y los 21 criterios `not_evaluated`. T020/P1/T047, fases, presupuestos y permisos separados se conservan. Leer el [informe A](../research/2026-11-05-multistore-restore-rehearsal.json) y la [continuación B](../plans/2026-11-05-integrated-restore-continuation.json). Sin release ni cambios de producción.
+T021/T022/T023/T024 siguen `in_progress` y los 21 criterios `not_evaluated`. T020/P1/T047, fases, presupuestos y permisos separados se conservan. Leer el [informe B](../research/2026-11-05-integrated-restore-characterization.json) y la [continuación C](../plans/2026-11-05-producer-erasure-continuation.json). A conserva su informe y sus 6/589 PASS y full 8535 PASS + una xfail. Sin release ni cambios de producción.
 
 ## Referencia histórica del cierre Linux F
 
@@ -236,16 +236,24 @@ El ensayo comparte una autoridad para captura FLAC y conversación gestionada, r
 
 Esto no acredita STT nuevo ni un agregado completo. Productores y los inventarios deliberadamente pendientes de diagnósticos, streams y voces siguen abiertos; no retirar esos targets ni simular sus recibos. El índice semántico ya tiene su propio recovery. El warning existente del logger por datetime.utcnow y la xfail conocida no se ocultan ni aceptan C05.
 
+## Restauración integrada e inventarios pendientes — T024-B
+
+Los builders reales comparten PrivacyServices, journal, lease y el coordinador creado por el índice. Se restauran datos seleccionados sin retroceder autoridad, tombstones, ACK ni decisiones manuales. La fuente ajena conserva datos persistidos exactos. El contexto rehidratado recupera resumen/fuentes y no turnos volátiles, conforme a su contrato.
+
+Dos gates retienen delete Chroma y unlink reales; cancelar un observador iniciado o liberar sólo unlink no completa el índice. CommandProcessor conserva el lease hasta retirar su STT nativo. Los primeros fallos eran supuestos del fixture sobre revisiones expiradas e historia volátil; se mantienen evidencia, identidades y tiempos.
+
+Productores sigue sin driver y diagnósticos/streams/voces mantienen sus guards unresolved. El peer sintético y los WAV/transcripciones no acreditan navegador físico ni procedencia explícita donde el metadata permanece NULL. El warning del logger y la xfail conocida siguen visibles. C04/C05 y el goal permanecen abiertos.
+
 ## Prompt para la sesión nueva
 
-> Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff, el informe T024-A y la continuación T024-B. Confirmá API del goal, checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro objetivo ni marques éste completo.
-> A quedó verificada: originales 4 PASS/un RED genuino/un fallo del fixture; finales 6/589 PASS y full 8535 PASS + una xfail conocida, 8536 IDs exactos. Usá la `.venv` nativa; no recrees dependencias ni repitas tandas sin razón nueva. Hasta ocho agentes totales según plazas; interacción de PC delegada a Terra.
-> Comenzá B con los diez participantes y sus builders reales, misma autoridad y snapshots de datos compatibles. Conservá obligaciones unresolved, desconocidos, tombstones y datos ajenos; ningún callback ficticio ni eliminación de targets puede fabricar complete. T022/T023/T024 y los 21 criterios siguen abiertos; T020/P1/T047 y permisos separados se conservan. Producción/releases mantienen su alcance separado.
+> Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff, el informe T024-B y la continuación T024-C. Confirmá API del goal, checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro objetivo ni marques éste completo.
+> B quedó caracterizada localmente: 3/844 PASS y full 8538 PASS + la misma xfail conocida, 8539 IDs exactos. Usá la `.venv` nativa; no recrees dependencias ni repitas tandas sin razón nueva. Hasta ocho agentes totales según plazas; toda prueba interactiva de PC se delega a un subagente Terra.
+> Continuá C con inventario real y barrera de productores por conversación, misma autoridad y preservación de ajenos. Conservá los tres guards unresolved, desconocidos y tombstones. No uses mute global ni callbacks ficticios para fabricar complete. T021/T022/T023/T024 y los 21 criterios siguen abiertos; T020/P1/T047 y permisos separados se conservan. Producción/releases mantienen su alcance separado.
 
 ## Lista de cierre y reanudación
 
 - [x] Linux y unidades G/H/I/J conservados con recibos propios.
-- [x] T024-A con baseline original, correcciones y 6/589/full documentados.
+- [x] T024-A conservada y T024-B con originales, correcciones y 3/844/full documentados.
 - [x] Código, tracking y handoff guardados; verificar publicación y HEAD al retomar.
 - [x] Mismo goal activo, sin nueva petición de pausa ni criterios físicos aceptados.
 - [ ] Confirmar estado/Git y comenzar T024-B según continuación, sin repetir A.

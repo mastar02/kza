@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "candidate": "T024-B/all-participant-restore-and-inventory-characterization",
-  "status": "proposed_next_unit_not_implemented",
+  "status": "verified_local_characterization_not_whole_T024",
   "start_gate": "Accept A replay/directed/full and publish code+tracking before freezing B; root pins resulting commit and rechecks these current source hashes.",
   "goal_status": "T024 remains in_progress; all21 criteria remain open.",
   "main_finding": "Current public builders supply nine real participant drivers. Aggregate completion is correctly impossible today: producers is unregistered, and diagnostics/streams/voices have additional deliberately unresolved inventory targets. These are real required obligations, not missing-API RED and not removable test inconvenience.",
@@ -397,5 +397,13 @@
   "previous_delivery": {
     "path": "docs/research/2026-11-05-multistore-restore-rehearsal.json",
     "sha256": "e7e456ada740f1c631af374da91c6aca199383ecb69479a75f7b3899ae3d6ee7"
+  },
+  "execution_result": {
+    "implementation_commit": "f5b846a538a71a386da68ca72b7fa35d619754b1",
+    "report": "docs/research/2026-11-05-integrated-restore-characterization.json",
+    "component": "3PASS",
+    "directed": "844PASS",
+    "full": "8538PASS+same known xfail/8539exactIDs",
+    "next_plan": "docs/plans/2026-11-05-producer-erasure-continuation.json"
   }
 }

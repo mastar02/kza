@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "unit": "T024-C: productores por conversación",
+  "status": "proposed_next_unit_not_implemented",
+  "created_at_utc": "2026-11-05T22:39:48.020669+00:00",
+  "objective": "Dar un recibo local de PRODUCERS sólo cuando el grafo real y su autoridad estén acreditados y no quede trabajo de la conversación ni afinidad desconocida; conservar el trabajo ajeno.",
+  "evidence": {
+    "contract": {
+      "path": "data/autonomous-roadmap-20261102/t024/b/producer-contract-proposal.json",
+      "sha256": "19a823d2987c07202e4ac171d3a8f33ef9e3a4547bfaea92b8ab5d7a3402616d"
+    },
+    "source_check": "Los 26 archivos del inventario del contrato coinciden con sus SHA-256 en esta lectura. Sin Git, imports de proyecto ni ejecución de pruebas.",
+    "focused_symbols": [
+      "ProducerScopes.operation/_reap/busy",
+      "ProducerScope.include_prompt",
+      "CommandProcessor.process_command",
+      "PrivacyServices.initialize/add_borrower/begin_close"
+    ],
+    "baseline_status": "Root informó B same3 PASS; full 8539 y calibración 844 pendientes. Este borrador no certifica B ni depende de atribuir aceptación a esos procesos."
+  },
+  "existing_apis": {
+    "construction": "main.build_application construye PrivacyServices compartido y los propietarios nominales; build_capture_control reúne drenajes globales, no es un borrador de conversación.",
+    "scopes": "ProducerScopes.operation(sources, receiver=...), busy(id, ledger); ProducerScope.begin_read/finish_read/include_prompt. El receiver es una referencia fuerte a metadatos preexistentes. _reap conserva scopes si falta el WeakMethod del propietario y conserva tareas terminadas hasta el callback real de retiro.",
+    "owners": "AudioLoop/MultiRoomAudioLoop, CommandProcessor, AmbientTranscriber, Distiller y MultiUserOrchestrator exponen conversation_busy y snapshot_operations. prune_private existe en los tres primeros, con firmas sync/async específicas; Distiller y MultiUserOrchestrator no ofrecen un prune_private genérico.",
+    "authority_and_lifecycle": "PrivacyServices.initialize toma flock antes de SQLite/recover. add_borrower registra WeakMethods de begin_close; no acredita inventario completo. begin_close espera drenajes reales y cierra recursos/lease al final.",
+    "receipts": "ErasureCoordinator.register y ErasureJournal.claim/finish validan target, versión y claim_token. Actualmente PRODUCERS queda unregistered; eso caracteriza capacidad ausente, no un RED por import/API inexistente."
+  },
+  "new_capability_proposed": {
+    "surface": "Un adaptador nominal de productores con inventario sellado, descriptor y versión fijos; nombres/API definitivos por diseñar antes de editar. No aceptar predicados arbitrarios ni callbacks que devuelvan éxito constante.",
+    "builder_proof": [
+      "Manifest derivado de la configuración resuelta y de los objetos realmente construidos: active_capture_loop, command_processor, ambient_transcriber, ambient_distiller y orchestrator_queue. Cada rol queda cubierto, deshabilitado explícitamente por DI o pendiente; excluirlo de una lista no demuestra ausencia.",
+      "Registrar antes de admitir trabajo privado; sellar sólo con manifest exacto, tipos nominales soportados, identidades de propietario y autoridad comprobadas. Incluir fallback construido aunque no sea el loop seleccionado: acreditar que nunca admitió trabajo o cubrir sus recursos.",
+      "Los propietarios con _privacy deben usar el mismo PrivacyServices; Distiller._policy y MultiUserOrchestrator._source_policy, el mismo privacy.ledger. No basta igualdad de ruta SQLite ni otro objeto que lea el mismo archivo.",
+      "Conservar referencias fuertes mientras exista cobertura; pérdidas, sustituciones o nuevas admisiones fuera del manifest invalidan el sello. Un borrower débil o un inventario vacío no prueba cierre.",
+      "Declarar cobertura delegada real para RequestRouter, ContextManager, SuggestionEngine, VoiceRegistry, WakeClipStore, LiveEventBus y ResponseHandler. Mantener sus participantes/targets independientes; PRODUCERS no los absorbe ni deduce su éxito."
+    ],
+    "runtime_proof": [
+      "Antes de limpiar, comprobar conversación revocada en la autoridad compartida, target/versión soportados y claim vigente; consultar un inventario sellado en la misma generación local de lease.",
+      "Invocar sólo prune_private nominal aplicable y observar después conversation_busy, reservas de lectura, entregas al receiver, callbacks de entrada, buffers y resets reales. Prune iniciado, Task.done, caller cancelado o timeout de observación no son retiro.",
+      "reads > 0 o sources=None mantienen pendiente incluso si el metadato anterior parecía ajeno. Fuente de la conversación o dependencias revocadas también bloquean. Sólo fuentes conocidas ajenas, con reads=0 y dependencias vigentes, pueden continuar sin bloquear esta conversación.",
+      "Proyectar explícitamente la incertidumbre persistente de OwnedInputStream/recursos nativos al inventario. retirement_unknown no desaparece porque no haya tareas; un stream conocido abierto para otra fuente tampoco equivale automáticamente a trabajo de la conversación.",
+      "Done exige todos los miembros acreditados sin trabajo matching/desconocido y sello/generación aún iguales al terminar. Revalidar antes del ACK; conservar el protocolo claim_token existente. Desconocimiento o error produce pendiente/fallo verificable, nunca éxito por defecto."
+    ],
+    "lease_and_restart": "El adaptador debe conservar owners y limpieza bajo el shielding actual; registrar drenajes reales antes de admisión. Proponer revalidación de recibos PRODUCERS al recuperar bajo una nueva lease, antes de admitir trabajo, siguiendo initialize/_ready; la regla exacta de recover es parte de la implementación revisable. No reutilizar complete de otra generación, resetear por cada reconcile ni aceptar ACK viejo. No añadir restarts/reset de otros participantes.",
+    "conversation_boundary": "No usar CaptureControl._seal, mute global, pausa global ni drain de todos los rooms para borrar S. Conservar U y sus plazos. La revocación/publicación de fuentes sigue siendo responsabilidad de las barreras existentes."
+  },
+  "first_case_before_implementation": {
+    "id": "C0_current_matching_native_retirement",
+    "purpose": "Fijar un oráculo ejecutable con APIs actuales antes de introducir el adaptador.",
+    "setup": "PrivacyServices real con archivo temporal y propietarios nominales usando su autoridad; CommandProcessor.process_command dentro del producer_context de una fuente S válida. Bloquear una dependencia STT nativa con una barrera liberable, no reemplazar conversation_busy ni el recibo. Mantener además un scope/trabajo U conocido ajeno, sin lectura pendiente.",
+    "sequence": [
+      "Esperar entrada nativa real, cancelar el caller y revocar S por la vía de revisión existente. Observar que el propietario retiene el hijo y conversation_busy(S) sigue true; comprobar que no hay publicación tardía.",
+      "Antes de shutdown, acreditar que U sigue vivo, no fue cancelado/reetiquetado y no renovó su plazo; el estado PRODUCERS actual permanece unregistered.",
+      "Liberar sólo el hijo S; esperar el callback real de retiro y comprobar que S deja de estar busy aun con U válido en curso. Guardar un caso separado para afinidad desconocida/receiver, que debe seguir bloqueando.",
+      "En una variante de shutdown, retener el hijo durante begin_close y timeout/cancelación del observador: otra PrivacyServices no adquiere la lease hasta la salida y los drenajes reales. Liberar también U al finalizar el cierre; no confundir ese cierre global con borrado de S."
+    ],
+    "existing_references": [
+      "tests/integration/test_producer_scope_handoffs.py::test_lost_scope_owner_cannot_be_reported_as_proof_of_native_exit",
+      "tests/integration/test_queue_producer_scopes.py::test_unresolved_native_read_keeps_worker_and_receiver_scopes_after_queue_cycle_exits",
+      "tests/integration/test_memory_worker_retirement.py::test_selected_sources_are_published_before_result_delivery"
+    ],
+    "not_an_expected_red": "Si C0 ya pasa, se conserva como contrato. Luego se escriben pruebas de la capacidad nueva sobre una implementación nominal revisable; no importar una API ausente para fabricar fallo."
+  },
+  "required_matrix": [
+    {
+      "case": "missing_required_owner",
+      "oracle": "No sellar o mantener pending; distinguirlo del rol deshabilitado por configuración resuelta."
+    },
+    {
+      "case": "wrong_owner_or_authority",
+      "oracle": "Rechazar antes de admisión o invalidar cobertura. Mismo path/db no sustituye identidad de PrivacyServices/FactLedger."
+    },
+    {
+      "case": "unsupported_type_or_target_version",
+      "oracle": "No ejecutar por reflexión ni completar; el target desconocido conserva obligación pendiente/no soportada."
+    },
+    {
+      "case": "lost_or_replaced_owner",
+      "oracle": "No borrar inventario ni interpretar WeakMethod perdido como salida. Retener scopes y bloqueo hasta prueba real; reemplazo exige nueva acreditación."
+    },
+    {
+      "case": "lost_receiver_or_cancelled_queue_cycle",
+      "oracle": "Al soltar referencias externas, el receiver metadata retenido por el hijo sigue conservando reads/fuentes. Fin del caller/queue no permite borrar esa reserva. Handoff no acreditado queda desconocido; no convertirlo en sources=()."
+    },
+    {
+      "case": "matching_or_unknown_read",
+      "oracle": "S, sources=None, reads>0, dependencia revocada y reset/callback incierto mantienen pending hasta salida real."
+    },
+    {
+      "case": "proven_unrelated_U",
+      "oracle": "U conocido y sin reads no bloquea S; sigue operativo sin cancelación, relabel ni renovación de deadlines."
+    },
+    {
+      "case": "late_native_stage_and_done_handoff",
+      "oracle": "Revocación antes del siguiente lock/etapa impide admisión tardía; Task.done retenido sigue busy hasta su retiro real, sin nueva publicación."
+    },
+    {
+      "case": "lease_restart_stale_claim",
+      "oracle": "Lease retenida durante cierre real; tras adquirir la nueva, revalidar grafo y rechazar ACK de claim/generación anterior."
+    }
+  ],
+  "minimum_reviewable_delivery": [
+    "Caso C0 y caracterización del inventario actual con fixtures reales y barreras controlables; sin modelos/hardware/servicios externos.",
+    "Un adaptador/inventario nominal acotado, binding en el builder real y regla explícita de recuperación por lease si se persiste el recibo. Rechazo verificable de manifest incompleto/ajeno y de versiones no soportadas.",
+    "Pruebas del builder público y del runtime con la matriz anterior, incluyendo el contraste S/U y receiver perdido. Verificar target local y que el agregado sigue incompleto por los tres guards independientes.",
+    "Coordinador revisa contrato, diff y evidencia original antes de calibración/full y tracking; avanzar bajo la autorización del mismo goal, sin cerrar criterios por el borrador."
+  ],
+  "independent_guards": [
+    {
+      "participant": "diagnostics",
+      "target": "v1 unresolved_diagnostic_inventory",
+      "driver_supported": "v2 local metrics catalog/file protocol",
+      "relation": "Application/SDK/unversioned/remote logs may retain producer payload outside finite first-party scopes. Producer done cannot certify these copies."
+    },
+    {
+      "participant": "streams",
+      "target": "v2 unresolved_stream_inventory",
+      "driver_supported": "v1/v3/v4 local stream/rest/voice review tickets",
+      "relation": "Actual native send/receiver/browser/page/OS buffers and offline peers require their own clearing acknowledgement/inventory; producer native return is not client data deletion."
+    },
+    {
+      "participant": "voices",
+      "target": "v2 unresolved_voice_inventory",
+      "driver_supported": "v1 managed local registry",
+      "relation": "Opaque encoder/model buffers, raw/legacy profile copies and external enrollment artifacts remain separate obligations even after source jobs and local vectors are pruned."
+    }
+  ],
+  "status_and_limits": {
+    "remain_open": [
+      "T024",
+      "C04",
+      "C05"
+    ],
+    "guards": "No quitar, resolver manualmente ni marcar complete unresolved_diagnostic_inventory v1, unresolved_stream_inventory v2 ni unresolved_voice_inventory v2.",
+    "coverage": "Un recibo local de productores sólo acredita propietarios nominales y sus recursos declarados. No prueba borrado de SDK opacos, logs remotos, buffers de navegador/OS/peers ni copias/encoders externos.",
+    "authority": "La revocación, permisos separados, retención de ajenos y decisiones manuales existentes se conservan. Sin restaurar autoridad ni usar mute global.",
+    "work_done_here": "Sólo lectura estática y este JSON privado; ninguna prueba, colección, import de proyecto, Git o cambio de producto/tests/docs."
+  },
+  "baseline_revision": "f5b846a538a71a386da68ca72b7fa35d619754b1",
+  "execution_authorization": "Proceed under the existing active user goal after B publication; this proposal does not require another user approval. Changes outside that scope keep their separate authorization.",
+  "previous_evidence": {
+    "path": "docs/research/2026-11-05-integrated-restore-characterization.json",
+    "sha256": "2263abaf2b9fae8173496b11d129d64654ee003ad297ba884f9ef9c56d763e93",
+    "bytes": 18072
+  },
+  "baseline_status": "B local characterization verified:3/844PASS;full8538PASS+sameknownxfail/8539exactIDs; T024/C04/C05 remain open.",
+  "durable_target_contract": "Stable nominal/versioned descriptor only (for example kind=runtime_producers, protocol=1). No object identity, PID, runtime UUID, lease, timestamp or dynamic manifest in persisted descriptor. Bind owner identities, exact current DI coverage and lease generation at runtime; revalidate before every receipt and after a new lease. Compare replacement against live DI, not only a retained sealed list. Unsupported historical versions stay pending.",
+  "foreign_case_requirement": "C0 must retain a nominal real U operation with its own releasable gate and known lineage, not only synthetic scope metadata. Pick a real stage whose source/dependency affinity is already settled (reads=0); if a real read remains unresolved it must conservatively block S. Keep shutdown/lease variant separate so global close is not confused with per-conversation erasure.",
+  "independent_review": "j_retirement_review: no design blocker; stable durable descriptor vs ephemeral binding, live-DI replacement checks and real unrelated gated work clarified by root before publication.",
+  "C0_stage_candidate": "Current CommandProcessor creates ProducerScopes.operation from the exact producer_context sources and has no unresolved read reservation at its STT stage. Use real process_command calls for S and U with distinct synthetic input and independent native gates. U may queue on the actual shared model lock while S is held; after S returns, require U actually enters and remains held while busy(S) becomes false. Preserve source tuples, expiry and U output; clean both gates before owner close.",
+  "goal": "docs/plans/2026-11-02-autonomous-roadmap.md",
+  "start_gate": "Publish B tests+tracking, then root verifies current source and freezes a concrete producer contract/test cut. B characterization is not complete aggregate erasure."
+}

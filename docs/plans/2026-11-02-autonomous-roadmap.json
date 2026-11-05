@@ -1269,15 +1269,19 @@
       "inclusion": "required",
       "status": "in_progress",
       "implementation_commits": [
-        "71971584430adbbaae425923d92f4a23a9ce7f25"
+        "71971584430adbbaae425923d92f4a23a9ce7f25",
+        "f5b846a538a71a386da68ca72b7fa35d619754b1"
       ],
       "evidence": [
         "docs/plans/2026-11-05-erasure-restore-continuation.json",
         "docs/research/2026-11-05-multistore-restore-rehearsal.json",
         "docs/plans/2026-11-05-integrated-restore-continuation.json",
-        "data/autonomous-roadmap-20261102/t024/a/full-normal-attempt-01/acceptance-proof.json"
+        "data/autonomous-roadmap-20261102/t024/a/full-normal-attempt-01/acceptance-proof.json",
+        "docs/research/2026-11-05-integrated-restore-characterization.json",
+        "docs/plans/2026-11-05-producer-erasure-continuation.json",
+        "data/autonomous-roadmap-20261102/t024/b/full-normal-attempt-01/acceptance-proof.json"
       ],
-      "next_action": "T024-A verificada localmente: fuente única con captura/conversación y restore de datos detrás de recibos, sin retroceder tombstones; 6/589 PASS y full8535 PASS+una xfail conocida sobre8536IDs exactos,1028fuentes/37scripts/13protegidos intactos. Original4PASS/1RED genuino/1fallo de fixture y correcciones conservados. Continuar T024-B con inventario de los10 participantes y drivers reales; productores e inventarios unresolved siguen visibles/pending. No fabricar complete ni borrar targets para obtenerlo. C04/C05 y21criterios abiertos; leer continuación."
+      "next_action": "T024-B caracterización local verificada: 3/844PASS y full8538PASS+misma xfail/8539IDs exactos; 1030fuentes/37scripts/16protegidos estables. Originales con fallos de fixture preservados; sin RED de producto ni cambio de producción. Nueve drivers/diez obligaciones con productores y tres inventarios unresolved pendientes. Continuar T024-C con barrera/inventario real por conversación, sin mute global ni callbacks ficticios; leer continuación. C04/C05 y21criterios abiertos."
     },
     {
       "id": "T025",
@@ -2423,7 +2427,7 @@
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T024-A/compatible-multistore-erasure-restore-rehearsal",
+    "last_verified_unit": "T024-B/all-participant-restore-and-inventory-characterization",
     "user_priority_after_admin_unit": "T047"
   }
 }
