@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "unit": "T023-E",
+  "task_ids": [
+    "T023"
+  ],
+  "criterion_ids": [
+    "C04"
+  ],
+  "status": "verified_local_policy_bound_wakeword_training_scope",
+  "baseline_revision": "4404699e9146d057e4ec76b483085521c651ac5b",
+  "implementation_commit": "05b6dfe61956c72e4967a509ffe7bc1091b3f00f",
+  "sources": {
+    "scripts/train_wakeword.py": "d79ea74adc5fc2894a1c5dcbdb24b1294ed226593f7ece594e268a8e1cdaac0e",
+    "src/audio/native_capture_authority.py": "aa9d296a48b55e17ea901ce08cff40281f750ec646f2cba1a411213565d98d2d",
+    "src/dashboard/auth.py": "4a7cd01926b4d40ca1f70e0a20eb3edf274fae2f184401acd29471e8e97d790a",
+    "src/dashboard/capture_browser_api.py": "268b2b39ba56cacbdb02f09c8a51b8039884e6a7499a41b710927f2c68e7043f",
+    "src/dashboard/frontend/obs/src/views/privacy.jsx": "7fdd9d8f32e9d89295502511a6830ba560b1bb280d9e2c5b155be5b4f06ef995",
+    "src/memory/capture_control.py": "c85f08cc3549d4068c6461b3a0f2ba62a0dd191d03d82596f0dc25463939746b",
+    "src/memory/capture_recorders.py": "63492df219db5ac405aa3eeb369e6c2bc682729fc948190059a23bdc1f1726e0",
+    "src/wakeword/live_capture.py": "713c784b666a3c616c237f7e2c661cfc6cb3814ea237490e10c4ddecc4373c83",
+    "src/wakeword/recorder.py": "1f44b2c00530a3e012060f4d7b75102539c9ebc221cced3f175719312bde04f7",
+    "tests/frontend/browser_global_capture.py": "f8b8129560404ae853ecb4651b033ec8d3862b2079e38a27171dc935d9d9c76c",
+    "tests/integration/test_capture_native_clients.py": "7f86ace1789ccaf1deb4af20f4954fbc6b2f318f99554edfcfdd95c046999c8c",
+    "tests/integration/test_wakeword_capture_authority.py": "2d693d8dbc344e04ff00cdb10049c1f10535f33074ebfa76b3ce8b31ee973ba1",
+    "tests/mocks/wakeword_capture.py": "a2e3f3a8bf727ef247545119a7bf9e3b918c020fb2bce9836a7538a84bcf420b",
+    "tests/unit/audio/test_native_capture_authority_client.py": "2ed98ec2bdad36d2a9d00a9e899bd62bb9fe08930fe83a74158e9bd8264cd9f1",
+    "tests/unit/dashboard/test_private_access.py": "7d87b78b5051e8a8d5e1f6058d8417f567a15cc49b73a8e896c2fc9733e9806b",
+    "tests/unit/wakeword/test_live_capture.py": "8669dcc4231c39fa758738b635c35df31a8a0d7c70085f094d3a3d19b5f2b710",
+    "tools/calibration_authority.py": "3784ee75baadf27cf1ddfaf02d264134fde01206a501a20be84006287d26afa9"
+  },
+  "change": "Live WakeWordRecorder positive/negative and train_wakeword record/test require an explicit original administrative authority before SDK/model/stream acquisition.",
+  "authority": "Original admin:manage actor; fixed wakeword_training kind and /api/capture/native/wakeword-training namespace. Retire-only capability plus mandatory Origin after logout grants no registration, reading or resume authority.",
+  "native_order": [
+    "Fresh nominal authority per public positive/negative invocation; reserve, activate and monitor before native admission.",
+    "Own each InputStream and use blocking read in chunks up to 1280; strict stop/close for the same stream, no global sounddevice.stop.",
+    "Drain admitted native read/start, callbacks, WAV writes, progress callbacks and detection-print return before the monitor native join and explicit remote retire.",
+    "Unreturned constructor or unconfirmed disposal remains pending; close is not an acknowledgment and permission resume does not restart a finished invocation."
+  ],
+  "output_scope": "Live WAV/progress/detection-print work is owned. cmd_record summaries and get_stats after a recording call are historical scalars, outside that live invocation; no all-stdout barrier is claimed. Already admitted WAV files are not erased by mute.",
+  "history": "train/list and add_sample_from_audio operate on historical/provided data without microphone activation. Seven original function ASTs, WAV conversion/threshold/countdown and six CLI checks are preserved separately.",
+  "callback_fix": "Independent review after the first 16 PASS found retained raw callback errors. Final source captures fresh fixed descriptors, clears the failure list before raising and drops callback arguments before publishing count0. The first 16 source snapshots remain unchanged; final directed/full bind the later bytes.",
+  "browser": "Actual Chromium/React/HTTP desktop confirms native2 then native1 still blocks total acknowledgment and resume; only native0 after both namespace capabilities retire allows acknowledgment and explicit administrative resume. Generic tool-capture label covers calibration and training. Native UI clients are HTTP fixtures, not hardware or CLI attestations; mobile remains observation only.",
+  "counts": {
+    "directed_passed": 555,
+    "new_explicit_cases": 37,
+    "new_dynamic_private_auth": 12,
+    "new_total_IDs": 49,
+    "prior_D_IDs_preserved": 8246
+  },
+  "counts_not_additive": "Backend 49, client 24 and first integration 16 are historical/component subgroups; they are not added to directed/full totals. Historical baseline 3 is not new final coverage or a bypass RED.",
+  "subgroups": {
+    "backend": {
+      "session_id": 42326,
+      "real_terminal_exit": 0,
+      "tests": 49,
+      "passed": 49,
+      "failures": 0,
+      "errors": 0,
+      "skips": 0,
+      "XML_duration_s": 16.576,
+      "xml_sha256": "10dbae08ecb715340f6e141fbd52381a814f3229b997268cd025f779b290267b",
+      "log_sha256": "0e4c27dd2a48febadc450ccdc75e7adfee8b216ad94522d6bdfd746e6cc8b9a2",
+      "ruff": "five changed files exit0",
+      "first_failures": "none in this block; no RED or retry claimed",
+      "full": "not run"
+    },
+    "client": {
+      "tests": 24,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "XML_seconds": 0.649,
+      "log_seconds": 0.66
+    },
+    "first_bound_integration": {
+      "passed": 16,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "XML_seconds": 20.164,
+      "log_seconds": 20.18
+    },
+    "historical_baseline_passed": 3
+  },
+  "normal_full": {
+    "counts": {
+      "passed": 8294,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfailed": 1
+    },
+    "total": 8295,
+    "duration_seconds": 777.208,
+    "source_files": 1010,
+    "script_files": 37,
+    "source_snapshot_sha256": "4248fdb8154d72826a0bbc87faa4c2004652f93144850b6c94f8f501816b2e9f",
+    "minimum_available_bytes": 65056002048
+  },
+  "normal_full_proof": "data/autonomous-roadmap-20261102/t023/e/normal-full-attempt-01/acceptance-proof.json",
+  "genuine_original_policy_bypass_RED_count": 0,
+  "historical_scope": "Original public positive/negative and cmd_test passed with synthetic SDK, real WAV and joined native fixture Threads. No unrelated database locator existed or was claimed as bypass authority.",
+  "lint_history": "The script had 9 baseline lint findings and retains 8 existing F541 findings. The unused numpy import in changed live detection was removed; no noqa or suppression was added and unchanged train/list ASTs were not cosmetically rewritten.",
+  "next_unit": "T023-F: captura, inferencia y reporte de diagnose_wakeword",
+  "artifacts": {
+    "data/autonomous-roadmap-20261102/t023/e/normal-full-attempt-01/acceptance-proof.json": "922fed3a471f165cfbf4081f7f30c13c7de8b45c2581ada7e8a2d7c2055e9dad",
+    "data/autonomous-roadmap-20261102/t023/e/full-review.json": "89c5755fa8cd54f2ffb47e39fbd4a0bc79235b9875884476c5532ed2c40ed682",
+    "data/autonomous-roadmap-20261102/t023/e/owner-unit-review.json": "8b688c40ae3de6626cefd2704cd66aa8d4b4c08d1408997eee70634a6c155fb6",
+    "data/autonomous-roadmap-20261102/t023/e/live-owner-review.json": "3d735f378a65ebc27f64ec99a388e7218ebf0fdca6c6e86a294f69fe9334bd30",
+    "data/autonomous-roadmap-20261102/t023/e/next-boundary-plan.json": "30c85274cc9d20964d9f9879cd2236cb069f4e7cf70ab96178014de79d6575b1",
+    "data/autonomous-roadmap-20261102/t023/e/opening.json": "b40c2f6b13d05c1491703e33357a07308dc81be40ad63d6d98375fa15c8915af",
+    "data/autonomous-roadmap-20261102/t023/e/baseline/terminal-receipt.json": "0e2235e43e06472b11e9f115749e19260d8e5168f1eea41860960f9eb7dd642d",
+    "data/autonomous-roadmap-20261102/t023/e/integration-review.json": "96b84d5df5522125e6ea54dbaa6d7512c530767912c8c355ce39432631313be0",
+    "data/autonomous-roadmap-20261102/t023/e/integration-first/inputs.json": "88c8db02822dc628c0ce31f977a369852e3553daf55a0175adcbb29d87e0d48d",
+    "data/autonomous-roadmap-20261102/t023/e/backend-notes.json": "6f50aeab3ec35d9faeecab1e01d3e8bc02c65fb7962f2d0ffd19a4582646e326",
+    "data/autonomous-roadmap-20261102/t023/e/client-tests/review.json": "52de2958b6300db5f6365a04673481e1419a3fb905b84a3693eab3e27965ec9a",
+    "data/autonomous-roadmap-20261102/t023/e/extraction-proof.json": "ce5c8d18b1fa9754720ed65479bd65628665403f1e37683d8f1274f2cc36a8f7",
+    "data/autonomous-roadmap-20261102/t023/e/historical-ast-proof.json": "6edf3bfabfae71b5622f924291dde2e8d2406e855ebce82389f55be64600aa93",
+    "data/autonomous-roadmap-20261102/t023/e/cli-checks/status.json": "e41fe62278d127a970e50f376bf025ae0472c54ce5adcfc072bcd09fba31a832",
+    "data/autonomous-roadmap-20261102/t023/e/cli-ruff-baseline.json": "6d1b6fd75a4fc2ca14ccf08102f45e4804112b5e7a5c264d60c97b6bd8911a90",
+    "data/autonomous-roadmap-20261102/t023/e/cli-ruff-current.json": "c83e10fcac7af7a9af4f9382cf0d47acfa2079187d2871cd8b86a18863175ea5",
+    "data/autonomous-roadmap-20261102/t023/e/browser/review.json": "71326781aded7414202e71b6cf2161e7e92e06970f9b10ddc7939f170953e3ba",
+    "data/autonomous-roadmap-20261102/t023/e/finalizer-preflight-review.json": "7b9f8d1cf16f37bded93d92b88a90da1a62d64daeb1551ec0fb898b261f23213",
+    "data/autonomous-roadmap-20261102/t023/e/publication-preflight-review.json": "d67b2f049761d412b40a62e63a73aaad6133a4ff7a50b231d4fdae5b186a7cf5",
+    "data/autonomous-roadmap-20261102/t023/e/root-initial-static.json": "d229ae59c7922368f88b36c80b7912392ac9e614b58b3afd961faa0037fdd1fa"
+  },
+  "limits": [
+    "Selected cooperative software paths only: synthetic device/model leaves with actual HTTP/SQLite/WAV/native fixture receipts; no microphone, USB, model/provider, production or physical attestation.",
+    "No universal SDK wipe, complete native-producer inventory or all-stdout claim.",
+    "T023 remains in_progress; T022 inventory, T024 erasure/restore, C04 and all 21 criteria remain open.",
+    "All 49 other tasks, phases/budgets, T020/P1/T047 and voice/person/account/consent/permissions remain unchanged."
+  ]
+}

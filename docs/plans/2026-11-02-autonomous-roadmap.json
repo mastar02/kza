@@ -1205,7 +1205,8 @@
         "ec24701020ff3ae19f539b7bd80ca55bdec27acc",
         "a746f106042c95271de53b326804f4532445b160",
         "f3c9d66b2f0098cf94a1634489410bba9f2b7dbf",
-        "80d22351cccb42c6b9a892bd864a1a7a97508cd9"
+        "80d22351cccb42c6b9a892bd864a1a7a97508cd9",
+        "05b6dfe61956c72e4967a509ffe7bc1091b3f00f"
       ],
       "evidence": [
         "docs/research/2026-11-04-capture-suspension-composition.json",
@@ -1219,9 +1220,12 @@
         "data/autonomous-roadmap-20261102/t023/c/normal-full-attempt-04/acceptance-proof.json",
         "docs/research/2026-11-05-calibration-capture-authority.json",
         "data/autonomous-roadmap-20261102/t023/d/evidence.json",
-        "data/autonomous-roadmap-20261102/t023/d/normal-full-attempt-02/acceptance-proof.json"
+        "data/autonomous-roadmap-20261102/t023/d/normal-full-attempt-02/acceptance-proof.json",
+        "docs/research/2026-11-05-wakeword-training-capture-authority.json",
+        "data/autonomous-roadmap-20261102/t023/e/evidence.json",
+        "data/autonomous-roadmap-20261102/t023/e/normal-full-attempt-01/acceptance-proof.json"
       ],
-      "next_action": "T023-D verificada localmente: calibración viva vinculada antes del SDK a una autoridad explícita y credencial administrativa; namespace y contador nativos separados del navegador. El retiro espera K, escritura y monitor reales; una construcción sin recibo conserva incertidumbre. Pasan 506 dirigidos y full con 8.245 aprobados y una xfail conocida, sobre 1004 archivos incluidos 37 scripts intactos; se conservan 8205 IDs de C y 41 nuevos. Chromium escritorio muestra el pendiente nativo sin afirmar hardware ni móvil. Seguir T023-E con grabación y prueba viva del CLI train_wakeword; conservar train/list y audio histórico. T023/T022/T024 y 21 criterios permanecen abiertos, con T020/P1/T047 y autoridades separadas."
+      "next_action": "T023-E verificada localmente: grabación positiva/negativa y prueba viva de wakewords bajo autoridad administrativa explícita, con retiro de stream, callback, WAV, progreso y monitor reales. Pasan 555 dirigidos y una full con 8294 aprobados y una xfail conocida, sobre 1010 archivos incluidos 37 scripts sin cambios durante esa ejecución; se conservan 8246 IDs de D y 49 nuevos. La primera integración de 16 casos conserva sus bytes previos al ajuste independiente de retención de errores; la full valida los bytes finales. Chromium escritorio verifica pendientes nativos 2→1→0 y resume explícito, con clientes HTTP de prueba. train/list y audio histórico no activan el micrófono. Continuar con: T023-F: captura, inferencia y reporte de diagnose_wakeword. T023/T022/T024, C04 y los 21 criterios permanecen abiertos; T020/P1/T047 y las autoridades siguen separados."
     },
     {
       "id": "T024",
@@ -2386,7 +2390,7 @@
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T023-D/policy-bound-live-calibration",
+    "last_verified_unit": "T023-E/policy-bound-live-wakeword-training",
     "user_priority_after_admin_unit": "T047"
   }
 }
