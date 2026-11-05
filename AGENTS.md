@@ -43,6 +43,10 @@
 - La cantidad efectiva respeta las plazas disponibles en cada sesión. Si el
   entorno admite menos de ocho, usar ese límite sin interpretar cuatro como un
   máximo permanente del proyecto.
+- Las pruebas que requieran interacción con la PC, mediante el navegador o
+  aplicaciones de escritorio, se delegan a un subagente con el modelo
+  `gpt-6.1-terra` (Terra). El coordinador define qué verificar y revisa la
+  evidencia obtenida.
 
 ## Contexto
 
