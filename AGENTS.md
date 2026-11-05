@@ -35,6 +35,15 @@
   No borrar los archivos que necesita la versión instalada para adelantar esa
   limpieza, ni solicitar acceso administrativo mientras sólo se desarrolla.
 
+## Delegación de agentes
+
+- Podemos usar más de cuatro agentes cuando haya trabajo útil para paralelizar.
+  El máximo acordado es de ocho agentes activos en total, incluido el
+  coordinador.
+- La cantidad efectiva respeta las plazas disponibles en cada sesión. Si el
+  entorno admite menos de ocho, usar ese límite sin interpretar cuatro como un
+  máximo permanente del proyecto.
+
 ## Contexto
 
 - Rescate de producción: rama `recovery/production-2026-10-25` y manifiesto
