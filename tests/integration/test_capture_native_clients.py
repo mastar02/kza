@@ -15,6 +15,7 @@ from tests.integration.test_global_capture_control import actor, capture_phase, 
 
 pytestmark = pytest.mark.asyncio
 NATIVE = "/api/capture/native/calibration"
+TRAINING = "/api/capture/native/wakeword-training"
 BROWSER = "/api/capture/recorders"
 
 
@@ -26,23 +27,29 @@ async def test_native_reservation_and_namespace_do_not_grant_browser_capture(tmp
     issued = []
     try:
         principal = actor()
-        browser = await recorders.register(principal)
-        native = await recorders.register(principal, kind="calibration")
-        issued.extend(((browser["token"], "browser"), (native["token"], "calibration")))
-        assert "kind" not in browser and native["kind"] == "calibration"
-        assert native["capture_allowed"] is False
-        assert recorders.pending(kind="browser") == 1
-        assert recorders.pending(kind="calibration") == 1
-        for token, wrong_kind in ((browser["token"], "calibration"), (native["token"], "browser")):
-            with pytest.raises(ValueError, match="capture_recorder_kind_denied"):
-                await recorders.activate(token, principal, kind=wrong_kind)
-            with pytest.raises(ValueError, match="capture_recorder_kind_denied"):
-                await recorders.poll(token, principal, kind=wrong_kind)
-            with pytest.raises(ValueError, match="capture_recorder_kind_denied"):
-                await recorders.retire(token, kind=wrong_kind)
-        assert recorders.pending(kind="browser") == recorders.pending(kind="calibration") == 1
-        activated = await recorders.activate(native["token"], principal, kind="calibration")
-        assert activated["state"] == "active" and activated["capture_allowed"] is True
+        for kind in ("browser", "calibration", "wakeword_training"):
+            item = await recorders.register(principal, kind=kind)
+            issued.append((item["token"], kind))
+            if kind == "browser":
+                assert "kind" not in item
+            else:
+                assert item["kind"] == kind
+            assert item["capture_allowed"] is False
+            assert recorders.pending(kind=kind) == 1
+        for token, actual_kind in issued:
+            for wrong_kind in ("browser", "calibration", "wakeword_training"):
+                if wrong_kind == actual_kind:
+                    continue
+                with pytest.raises(ValueError, match="capture_recorder_kind_denied"):
+                    await recorders.activate(token, principal, kind=wrong_kind)
+                with pytest.raises(ValueError, match="capture_recorder_kind_denied"):
+                    await recorders.poll(token, principal, kind=wrong_kind)
+                with pytest.raises(ValueError, match="capture_recorder_kind_denied"):
+                    await recorders.retire(token, kind=wrong_kind)
+        assert all(recorders.pending(kind=kind) == 1 for _, kind in issued)
+        for token, kind in issued:
+            activated = await recorders.activate(token, principal, kind=kind)
+            assert activated["state"] == "active" and activated["capture_allowed"] is True
     finally:
         for token, kind in issued:
             await recorders.retire(token, kind=kind)
@@ -201,4 +208,132 @@ async def test_native_registration_kind_and_policy_are_not_client_claims(tmp_pat
             await capture_phase(g.control, "muted")
             denied = await client.post(NATIVE + "/register", headers=ORIGIN, json={})
             assert denied.status_code == 409
+            assert g.control.snapshot()["total_mute_confirmed"]
+
+
+async def test_training_and_calibration_share_ack_barrier_but_not_capabilities(tmp_path, monkeypatch, dashboard_auth):
+    async with controlled(tmp_path, monkeypatch) as g, browser_app(g.control, tmp_path) as app:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
+            credentials = {"token": dashboard_auth["Authorization"].split(" ", 1)[1]}
+            assert (await client.post("/api/admin/auth/login", headers=ORIGIN, json=credentials)).status_code == 200
+            tokens = []
+            try:
+                for route, kind in ((NATIVE, "calibration"), (TRAINING, "wakeword_training")):
+                    reserved = await client.post(route + "/register", headers=ORIGIN, json={})
+                    assert reserved.status_code == 200 and reserved.json()["kind"] == kind
+                    assert reserved.json()["capture_allowed"] is False
+                    assert reserved.headers["Cache-Control"] == "no-store"
+                    token = reserved.json()["token"]
+                    tokens.append((route, kind, token))
+                    active = await client.post(route + "/activate", headers=ORIGIN, json={"token": token})
+                    assert active.status_code == 200 and active.json()["capture_allowed"] is True
+                state = g.control.snapshot()
+                assert state["pending_native_clients"] == 2 and state["pending_browser_recorders"] == 0
+                for source_route, _, token in tokens:
+                    wrong_route = TRAINING if source_route == NATIVE else NATIVE
+                    for action in ("activate", "poll", "retire"):
+                        denied = await client.post(wrong_route + "/" + action, headers=ORIGIN, json={"token": token})
+                        assert denied.status_code == 409
+                assert g.control.snapshot()["pending_native_clients"] == 2
+
+                assert (await client.post("/api/admin/auth/logout", headers=ORIGIN)).status_code == 200
+                for route, _, token in tokens:
+                    for action in ("activate", "poll"):
+                        assert (await client.post(route + "/" + action, headers=ORIGIN, json={"token": token})).status_code == 401
+                # A new valid session is not the originally registered actor.
+                assert (await client.post("/api/admin/auth/login", headers=ORIGIN, json=credentials)).status_code == 200
+                for route, _, token in tokens:
+                    poll = await client.post(route + "/poll", headers=ORIGIN, json={"token": token})
+                    assert poll.status_code == 200 and poll.json()["capture_allowed"] is False
+                    assert poll.json()["retirement_required"] is True
+                    assert (await client.post(route + "/activate", headers=ORIGIN, json={"token": token})).status_code == 409
+                assert (await client.post("/api/admin/auth/logout", headers=ORIGIN)).status_code == 200
+
+                g.control.request(True, g.control.snapshot()["revision"], actor())
+                await until(lambda: g.control.snapshot()["phase"] == "muting")
+                assert not g.control.snapshot()["total_mute_confirmed"]
+                training_token = tokens[1][2]
+                assert (await client.post(TRAINING + "/retire", json={"token": training_token})).status_code == 403
+                assert (await client.post(TRAINING + "/retire", headers={"Origin": "https://other.invalid"},
+                                          json={"token": training_token})).status_code == 403
+                assert (await client.post(TRAINING + "/retire", headers=ORIGIN,
+                                          json={"token": training_token, "muted": False})).status_code == 422
+                assert g.control.snapshot()["pending_native_clients"] == 2
+                calibration_token = tokens[0][2]
+                assert (await client.post(NATIVE + "/retire", headers=ORIGIN,
+                                          json={"token": calibration_token})).status_code == 200
+                assert g.control.snapshot()["pending_native_clients"] == 1
+                assert not g.control.snapshot()["total_mute_confirmed"]
+                retired = await client.post(TRAINING + "/retire", headers=ORIGIN, json={"token": training_token})
+                assert retired.status_code == 200 and retired.json() == {"retired": True}
+                state = await capture_phase(g.control, "muted")
+                assert state["total_mute_confirmed"] and state["persisted_muted"]
+                assert state["pending_native_clients"] == state["pending_browser_recorders"] == 0
+            finally:
+                for _, kind, token in tokens:
+                    await g.control.recorders.retire(token, kind=kind)
+
+
+async def test_restart_keeps_training_unknown_until_its_own_retirement(tmp_path):
+    path = str(tmp_path / "both-native.sqlite")
+    first = PrivacyServices(path)
+    await first.acall(first.initialize)
+    registry = CaptureRecorders(first, capture_allowed=lambda: True)
+    await registry.initialize()
+    principal = actor()
+    calibration = await registry.register(principal, kind="calibration")
+    training = await registry.register(principal, kind="wakeword_training")
+    reserved = await registry.register(principal, kind="wakeword_training")
+    await registry.activate(calibration["token"], principal, kind="calibration")
+    await registry.activate(training["token"], principal, kind="wakeword_training")
+    try:
+        await registry.aclose()
+        assert registry.pending(kind="calibration") == 1 and registry.pending(kind="wakeword_training") == 2
+    finally:
+        await first.aclose()
+
+    second = PrivacyServices(path)
+    await second.acall(second.initialize)
+    recovered = CaptureRecorders(second, capture_allowed=lambda: True)
+    draining = None
+    try:
+        await recovered.initialize()
+        for entry, kind in ((calibration, "calibration"), (training, "wakeword_training")):
+            state = await recovered.poll(entry["token"], actor(), kind=kind)
+            assert state["state"] == "unknown" and not state["capture_allowed"]
+        draining = asyncio.create_task(recovered.drain())
+        await until(lambda: recovered.pending() == 2)
+        assert not draining.done()
+        assert (await recovered.poll(reserved["token"], actor(), kind="wakeword_training"))["state"] == "retired"
+        await recovered.retire(calibration["token"], kind="calibration")
+        assert recovered.pending(kind="wakeword_training") == 1 and not draining.done()
+        with pytest.raises(ValueError, match="capture_recorder_kind_denied"):
+            await recovered.retire(training["token"], kind="calibration")
+        assert recovered.pending() == 1
+        await recovered.retire(training["token"], kind="wakeword_training")
+        await asyncio.wait_for(asyncio.shield(draining), 2)
+        assert recovered.pending() == 0
+    finally:
+        await recovered.retire(calibration["token"], kind="calibration")
+        await recovered.retire(training["token"], kind="wakeword_training")
+        if draining is not None:
+            await asyncio.gather(draining, return_exceptions=True)
+        await recovered.aclose()
+        await second.aclose()
+
+
+async def test_training_registration_rejects_client_kind_and_muted_admission(tmp_path, monkeypatch, dashboard_auth):
+    async with controlled(tmp_path, monkeypatch) as g, browser_app(g.control, tmp_path) as app:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
+            logged = await client.post("/api/admin/auth/login", headers=ORIGIN,
+                json={"token": dashboard_auth["Authorization"].split(" ", 1)[1]})
+            assert logged.status_code == 200
+            for body in ({"kind": "calibration"}, {"kind": "wakeword_training"}, {"muted": False}, {"capture_allowed": True}):
+                rejected = await client.post(TRAINING + "/register", headers=ORIGIN, json=body)
+                assert rejected.status_code == 422 and rejected.headers["Cache-Control"] == "no-store"
+            assert g.control.snapshot()["pending_native_clients"] == 0
+            g.control.request(True, g.control.snapshot()["revision"], actor())
+            await capture_phase(g.control, "muted")
+            denied = await client.post(TRAINING + "/register", headers=ORIGIN, json={})
+            assert denied.status_code == 409 and denied.headers["Cache-Control"] == "no-store"
             assert g.control.snapshot()["total_mute_confirmed"]

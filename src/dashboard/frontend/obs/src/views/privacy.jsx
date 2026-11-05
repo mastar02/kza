@@ -96,7 +96,7 @@ function CaptureControlCard() {
     {status && !status.supported && <p>El control global no está disponible. No se confirmó la pausa de todos los participantes.</p>}
     {status?.pending_operations>0 && <p className="mute">Hay procesamiento iniciado que todavía debe terminar.</p>}
     {status?.pending_browser_recorders>0 && <p className="mute">Hay grabaciones del navegador pendientes de retiro.</p>}
-    {status?.pending_native_clients>0 && <p className="mute">Hay capturas de calibración pendientes de retiro.</p>}
+    {status?.pending_native_clients>0 && <p className="mute">Hay capturas de herramientas pendientes de retiro.</p>}
     {status?.ingress_sealed && !confirmed && <p className="mute">La entrada está sellada; el retiro completo sigue sin confirmar.</p>}
     {status?.phase==='failed' && <p>Actualizá el estado antes de volver a solicitar un cambio. No se mostrará una pausa completa sin confirmación.</p>}
     <p>La pausa global incluye la captura de comandos y la captura ambiental. La reactivación se solicita desde este panel autenticado.</p>

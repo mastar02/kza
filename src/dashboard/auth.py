@@ -228,6 +228,7 @@ async def require_dashboard_access(
         or (request.scope["method"] == "POST" and request.url.path in {
             "/api/admin/auth/login", "/api/capture/recorders/retire",
             "/api/capture/native/calibration/retire",
+            "/api/capture/native/wakeword-training/retire",
         })
     )
     if public:

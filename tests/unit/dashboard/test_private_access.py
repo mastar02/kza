@@ -36,6 +36,7 @@ def _private_routes():
             if (method, route.path) in {
                 ("POST", "/api/capture/recorders/retire"),
                 ("POST", "/api/capture/native/calibration/retire"),
+                ("POST", "/api/capture/native/wakeword-training/retire"),
             }:
                 continue
             yield method, path

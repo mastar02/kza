@@ -104,31 +104,35 @@ def register_capture_browser_routes(app: FastAPI, control: CaptureControl) -> No
 
     app.include_router(router)
 
-    native = APIRouter(prefix="/api/capture/native/calibration", tags=["capture"],
-                       route_class=_NativeRecorderRoute)
+    def native_routes(kind: str, slug: str) -> None:
+        # Each call owns its kind closure; request JSON cannot select a namespace.
+        native = APIRouter(prefix="/api/capture/native/" + slug, tags=["capture"],
+                           route_class=_NativeRecorderRoute)
 
-    @native.post("/register")
-    async def native_register(body: CalibrationRegistration, request: Request,
+        @native.post("/register")
+        async def native_register(body: CalibrationRegistration, request: Request,
+                                  principal: DashboardPrincipal = Depends(require_admin)) -> dict:
+            return await perform(control.recorders.register, _actor(request, principal), kind=kind)
+
+        @native.post("/activate")
+        async def native_activate(body: RecorderToken, request: Request,
+                                  principal: DashboardPrincipal = Depends(require_admin)) -> dict:
+            return await perform(control.recorders.activate, body.token, _actor(request, principal),
+                                 kind=kind)
+
+        @native.post("/poll")
+        async def native_poll(body: RecorderToken, request: Request,
                               principal: DashboardPrincipal = Depends(require_admin)) -> dict:
-        return await perform(control.recorders.register, _actor(request, principal),
-                             kind="calibration")
+            return await perform(control.recorders.poll, body.token, _actor(request, principal),
+                                 kind=kind)
 
-    @native.post("/activate")
-    async def native_activate(body: RecorderToken, request: Request,
-                              principal: DashboardPrincipal = Depends(require_admin)) -> dict:
-        return await perform(control.recorders.activate, body.token, _actor(request, principal),
-                             kind="calibration")
+        @native.post("/retire", dependencies=[Depends(require_dashboard_origin)])
+        async def native_retire(body: RecorderToken, request: Request) -> dict:
+            if not request.headers.get("origin"):
+                raise HTTPException(403, "capture_recorder_origin_required")
+            return await perform(control.recorders.retire, body.token, kind=kind)
 
-    @native.post("/poll")
-    async def native_poll(body: RecorderToken, request: Request,
-                          principal: DashboardPrincipal = Depends(require_admin)) -> dict:
-        return await perform(control.recorders.poll, body.token, _actor(request, principal),
-                             kind="calibration")
+        app.include_router(native)
 
-    @native.post("/retire", dependencies=[Depends(require_dashboard_origin)])
-    async def native_retire(body: RecorderToken, request: Request) -> dict:
-        if not request.headers.get("origin"):
-            raise HTTPException(403, "capture_recorder_origin_required")
-        return await perform(control.recorders.retire, body.token, kind="calibration")
-
-    app.include_router(native)
+    native_routes("calibration", "calibration")
+    native_routes("wakeword_training", "wakeword-training")

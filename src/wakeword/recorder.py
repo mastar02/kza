@@ -5,12 +5,14 @@ Graba muestras de audio para entrenar un wake word personalizado.
 from __future__ import annotations
 
 import logging
-import time
 import wave
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
+
+from src.audio.native_capture_authority import WakewordTrainingAuthorityClient
+from src.wakeword.live_capture import LiveWakewordCapture
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +32,15 @@ class WakeWordRecorder:
         wake_word_name: str,
         output_dir: str = "./data/wakeword_training",
         sample_rate: int = 16000,
-        sample_duration: float = 2.0,  # segundos por muestra
-    ):
+        sample_duration: float = 2.0,
+        *,
+        authority_factory: Callable[[], WakewordTrainingAuthorityClient] | None = None,
+    ) -> None:
         self.wake_word_name = wake_word_name.lower().replace(" ", "_")
         self.output_dir = Path(output_dir) / self.wake_word_name
         self.sample_rate = sample_rate
         self.sample_duration = sample_duration
-
-        # Crear directorios
+        self._authority_factory = authority_factory
         self.positive_dir = self.output_dir / "positive"
         self.negative_dir = self.output_dir / "negative"
         self.positive_dir.mkdir(parents=True, exist_ok=True)
@@ -102,68 +105,71 @@ class WakeWordRecorder:
         prefix: str,
         prompt: str,
         delay_between: float,
-        callback: Callable | None
+        callback: Callable | None,
     ) -> int:
-        """Grabar n muestras de audio"""
-        import sounddevice as sd
-
+        """Record samples under one explicit live authority per invocation."""
+        if self._authority_factory is None:
+            raise RuntimeError("wakeword_capture_authority_required")
         recorded = 0
         existing = len(list(output_dir.glob("*.wav")))
+        with LiveWakewordCapture(self._authority_factory()) as live:
+            import sounddevice as sd
 
-        logger.info(f"Grabando {n} muestras {prefix} (existentes: {existing})")
-        logger.info(f"Prompt: {prompt}")
-        logger.info(f"Duración por muestra: {self.sample_duration}s")
-
-        for i in range(n):
-            try:
-                # Countdown
-                print(f"\n[{i+1}/{n}] {prompt}")
-                print("Grabando en: ", end="", flush=True)
-                for countdown in [3, 2, 1]:
-                    print(f"{countdown}...", end="", flush=True)
-                    time.sleep(0.5)
-                print(" 🎤 ¡HABLA!")
-
-                # Grabar
-                samples = int(self.sample_rate * self.sample_duration)
-                audio = sd.rec(
-                    samples,
-                    samplerate=self.sample_rate,
-                    channels=1,
-                    dtype='float32'
-                )
-                sd.wait()
-
-                # Verificar que hay audio (no silencio)
-                audio_flat = audio.flatten()
-                rms = np.sqrt(np.mean(audio_flat**2))
-
-                if rms < 0.01:
-                    print("⚠️ Audio muy bajo, intenta de nuevo")
-                    continue
-
-                # Guardar
-                filename = f"{prefix}_{existing + recorded + 1:04d}.wav"
-                filepath = output_dir / filename
-                self._save_wav(filepath, audio_flat)
-
-                print(f"✅ Guardado: {filename} (RMS: {rms:.3f})")
-                recorded += 1
-
-                if callback:
-                    callback(recorded, n)
-
-                # Pausa entre grabaciones
-                if i < n - 1:
-                    time.sleep(delay_between)
-
-            except KeyboardInterrupt:
-                logger.info("Grabación interrumpida por usuario")
-                break
-            except Exception as e:
-                logger.error(f"Error grabando: {e}")
-
-        logger.info(f"Grabación completada: {recorded}/{n} muestras")
+            logger.info("Recording %s %s samples (existing: %s)", n, prefix, existing)
+            for i in range(n):
+                audio = None
+                try:
+                    live.publish(print, f"\n[{i+1}/{n}] {prompt}")
+                    live.publish(print, "Grabando en: ", end="", flush=True)
+                    for countdown in (3, 2, 1):
+                        live.publish(print, f"{countdown}...", end="", flush=True)
+                        live.pause(0.5)
+                    live.publish(print, " 🎤 ¡HABLA!")
+                    samples = int(self.sample_rate * self.sample_duration)
+                    audio = np.empty((samples, 1), dtype=np.float32)
+                    stream = live.open_stream(lambda: sd.InputStream(
+                        samplerate=self.sample_rate, channels=1, dtype="float32",
+                        blocksize=1280,
+                    ))
+                    offset = 0
+                    while offset < samples:
+                        live.require_current()
+                        frames = min(1280, samples - offset)
+                        block, _overflowed = stream.read(frames)
+                        live.require_current()
+                        if block.shape != (frames, 1):
+                            raise RuntimeError("wakeword_capture_invalid_frames")
+                        audio[offset:offset + frames] = block
+                        offset += frames
+                    live.close_stream()
+                    live.require_current()
+                    audio_flat = audio.flatten()
+                    try:
+                        rms = np.sqrt(np.mean(audio_flat**2))
+                        if rms < 0.01:
+                            live.publish(print, "⚠️ Audio muy bajo, intenta de nuevo")
+                            continue
+                        filename = f"{prefix}_{existing + recorded + 1:04d}.wav"
+                        live.publish(self._save_wav, output_dir / filename, audio_flat)
+                        live.publish(print, f"✅ Guardado: {filename} (RMS: {rms:.3f})")
+                        recorded += 1
+                        if callback:
+                            live.publish(callback, recorded, n)
+                    finally:
+                        audio_flat.fill(0)
+                    if i < n - 1:
+                        live.pause(delay_between)
+                except KeyboardInterrupt:
+                    logger.info("Wakeword recording interrupted")
+                    raise
+                except Exception:
+                    logger.exception("Wakeword recording failed")
+                    raise
+                finally:
+                    if audio is not None:
+                        audio.fill(0)
+            live.require_current()
+            logger.info("Recording completed: %s/%s samples", recorded, n)
         return recorded
 
     def _save_wav(self, filepath: Path, audio: np.ndarray):

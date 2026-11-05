@@ -289,24 +289,48 @@ async def exercise(receipt: dict) -> None:
                               const active=await activation.json();return {kind:active.kind,state:active.state,capture_allowed:active.capture_allowed};
                             })()""")
                             assert native == {'kind': 'calibration', 'state': 'active', 'capture_allowed': True}
+                            training = await privacy.evaluate("""(async()=>{
+                              const base='/api/capture/native/wakeword-training/';
+                              const post=(action,body)=>fetch(base+action,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+                              const registration=await post('register',{});if(!registration.ok)throw Error('training reservation unavailable');
+                              const reserved=await registration.json();window.__wakewordTrainingRetirementToken=reserved.token;
+                              const activation=await post('activate',{token:reserved.token});if(!activation.ok)throw Error('training activation unavailable');
+                              const active=await activation.json();return {kind:active.kind,state:active.state,capture_allowed:active.capture_allowed};
+                            })()""")
+                            assert training == {'kind': 'wakeword_training', 'state': 'active', 'capture_allowed': True}
                             before_native_mute = graph.capture_control.snapshot()
-                            assert before_native_mute['pending_native_clients'] == 1
+                            assert before_native_mute['pending_native_clients'] == 2
                             assert before_native_mute['pending_browser_recorders'] == 0
                             await click_button(privacy, 'Pausar captura global')
-                            await privacy.wait_for("document.querySelector('section[aria-label=\"Captura global\"]')?.textContent.includes('Hay capturas de calibración pendientes de retiro')")
+                            await privacy.wait_for("document.querySelector('section[aria-label=\"Captura global\"]')?.textContent.includes('Hay capturas de herramientas pendientes de retiro')")
                             native_pending = graph.capture_control.snapshot()
-                            assert native_pending['pending_native_clients'] == 1
+                            assert native_pending['pending_native_clients'] == 2
                             assert native_pending['pending_browser_recorders'] == 0
                             assert native_pending['total_mute_confirmed'] is False
                             assert await privacy.evaluate("[...document.querySelectorAll('button')].find(row=>row.textContent==='Reactivar captura global').disabled")
-                            receipt['native_calibration_separate_pending_count_and_DOM'] = True
-                            receipt['native_calibration_pending_snapshot'] = native_pending
+                            receipt['both_native_kinds_separate_pending_count_and_DOM'] = True
+                            receipt['both_native_kinds_pending_snapshot'] = native_pending
                             retired = await privacy.evaluate("""(async()=>{
                               const response=await fetch('/api/capture/native/calibration/retire',{method:'POST',credentials:'omit',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:window.__calibrationRetirementToken})});
                               const value=await response.json();if(response.ok&&value.retired===true)window.__calibrationRetirementToken=null;
                               return {status:response.status,retired:value.retired};
                             })()""")
                             assert retired == {'status': 200, 'retired': True}
+                            await privacy.wait_for("document.querySelector('section[aria-label=\"Captura global\"]')?.textContent.includes('Hay capturas de herramientas pendientes de retiro')")
+                            partial_native = graph.capture_control.snapshot()
+                            assert partial_native['pending_native_clients'] == 1
+                            assert partial_native['pending_browser_recorders'] == 0
+                            assert partial_native['total_mute_confirmed'] is False
+                            assert await privacy.evaluate("[...document.querySelectorAll('button')].find(row=>row.textContent==='Reactivar captura global').disabled")
+                            receipt['native_calibration_separate_pending_count_and_DOM'] = True
+                            receipt['native_calibration_pending_snapshot'] = partial_native
+                            receipt['one_native_retirement_does_not_confirm_other'] = True
+                            training_retired = await privacy.evaluate("""(async()=>{
+                              const response=await fetch('/api/capture/native/wakeword-training/retire',{method:'POST',credentials:'omit',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:window.__wakewordTrainingRetirementToken})});
+                              const value=await response.json();if(response.ok&&value.retired===true)window.__wakewordTrainingRetirementToken=null;
+                              return {status:response.status,retired:value.retired};
+                            })()""")
+                            assert training_retired == {'status': 200, 'retired': True}
                             await privacy.wait_for("document.querySelector('section[aria-label=\"Captura global\"]')?.textContent.includes('Captura global pausada y confirmada')")
                             native_muted = graph.capture_control.snapshot()
                             assert native_muted['pending_native_clients'] == native_muted['pending_browser_recorders'] == 0
@@ -316,6 +340,8 @@ async def exercise(receipt: dict) -> None:
                             assert graph.capture_control.capture_allowed is True
                             receipt['native_calibration_token_only_HTTP_retire_and_UI_resume'] = True
                             receipt['native_calibration_HTTP_fixture_only_no_CLI_or_hardware'] = True
+                            receipt['wakeword_training_token_only_HTTP_retire_and_UI_resume'] = True
+                            receipt['both_native_kinds_HTTP_fixture_only_no_CLI_or_hardware'] = True
                             assert all(page.errors == [] for page in pages), [page.errors for page in pages]
                             assert external_attempts == []
                             assert not any(name in sys.modules for name in (
@@ -339,7 +365,13 @@ async def exercise(receipt: dict) -> None:
                 finally:
                     for page in pages:
                         try:
-                            await page.evaluate("""(async()=>{const token=window.__calibrationRetirementToken;if(token){const response=await fetch('/api/capture/native/calibration/retire',{method:'POST',credentials:'omit',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});if(response.ok)window.__calibrationRetirementToken=null;}})()""")
+                            await page.evaluate("""(async()=>{
+                              for(const [key,path] of [['__calibrationRetirementToken','/api/capture/native/calibration/retire'],['__wakewordTrainingRetirementToken','/api/capture/native/wakeword-training/retire']]){
+                                const token=window[key];if(!token)continue;
+                                const response=await fetch(path,{method:'POST',credentials:'omit',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});
+                                if(response.ok)window[key]=null;
+                              }
+                            })()""")
                         except Exception:
                             pass
                     for page in pages[:1]:
