@@ -11,6 +11,8 @@ from typing import Callable
 from dataclasses import dataclass
 import numpy as np
 
+from src.audio.zone_capture import ZoneCaptureOwner, ZoneCaptureStopped
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,41 +57,26 @@ class MultiMicCapture:
         microphones: list[MicrophoneConfig],
         buffer_duration_sec: float = 5.0,
         vad_threshold: float = 0.02,
-        on_voice_detected: Callable[[AudioChunk], None] | None = None
+        on_voice_detected: Callable[[AudioChunk], None] | None = None,
+        *,
+        authority_factory: Callable | None = None,
     ):
-        """
-        Args:
-            microphones: Lista de configuraciones de micrófonos
-            buffer_duration_sec: Duración del buffer circular por micrófono
-            vad_threshold: Umbral para detectar voz
-            on_voice_detected: Callback cuando se detecta voz
-        """
+        """Configure metadata; live admission requires a fresh authority."""
         self.microphones = {m.zone_id: m for m in microphones}
         self.buffer_duration_sec = buffer_duration_sec
         self.vad_threshold = vad_threshold
         self.on_voice_detected = on_voice_detected
-        
-        # Streams de audio por micrófono
+        self._authority_factory = authority_factory
+        self._capture_owner: ZoneCaptureOwner | None = None
         self._streams: dict[str, any] = {}
-        
-        # Buffers circulares por zona
         self._buffers: dict[str, np.ndarray] = {}
         self._buffer_positions: dict[str, int] = {}
-        
-        # Niveles de audio actuales
         self._current_levels: dict[str, float] = {}
-        
-        # Queue para chunks procesados
         self._audio_queue: queue.Queue = queue.Queue(maxsize=100)
-        
-        # Control
         self._running = False
         self._lock = threading.Lock()
-        
-        # Zona con voz detectada
         self._active_zone: str | None = None
         self._voice_start_time: float = 0
-        
         self._init_buffers()
     
     def _init_buffers(self):
@@ -101,105 +88,141 @@ class MultiMicCapture:
             self._current_levels[zone_id] = 0.0
     
     def start(self):
-        """Iniciar captura de todos los micrófonos"""
-        if self._running:
-            return
-        
-        import sounddevice as sd
-        
-        self._running = True
-        
-        for zone_id, mic in self.microphones.items():
+        """Start one fresh, explicitly authorized capture invocation."""
+        with self._lock:
+            previous = self._capture_owner
+            if previous is not None and not previous.retired:
+                if self._running and not previous._sealed:
+                    return
+                raise RuntimeError("zone_capture_retirement_unconfirmed")
+            owner = ZoneCaptureOwner(self._authority_factory)
+            self._capture_owner = owner
+            self._streams = {}
+            self._audio_queue = queue.Queue(maxsize=100)
+            self._active_zone = None
+            self._voice_start_time = 0
+            self._init_buffers()
+            self._running = True
+        try:
+            with owner.operation("startup", require_authority=False):
+                try:
+                    owner.initialize()
+                    import sounddevice as sd
+
+                    for zone_id, mic in self.microphones.items():
+                        owner.require_current()
+                        callback = self._create_callback(zone_id, mic)
+                        owner.open_stream(
+                            zone_id,
+                            lambda: sd.InputStream(
+                                device=mic.device_index,
+                                samplerate=mic.sample_rate,
+                                channels=mic.channels,
+                                dtype=np.float32,
+                                blocksize=int(mic.sample_rate * mic.chunk_duration_ms / 1000),
+                                callback=callback,
+                            ),
+                            lambda stream: self._streams.__setitem__(zone_id, stream),
+                        )
+                        owner.publish(
+                            logger.info,
+                            "Micrófono iniciado: %s (device %s)", zone_id, mic.device_index,
+                        )
+                finally:
+                    callback = None
+        except BaseException as error:
+            self._running = False
             try:
-                # Crear callback para este micrófono
-                callback = self._create_callback(zone_id, mic)
-                
-                # Iniciar stream
-                stream = sd.InputStream(
-                    device=mic.device_index,
-                    samplerate=mic.sample_rate,
-                    channels=mic.channels,
-                    dtype=np.float32,
-                    blocksize=int(mic.sample_rate * mic.chunk_duration_ms / 1000),
-                    callback=callback
-                )
-                stream.start()
-                self._streams[zone_id] = stream
-                
-                logger.info(f"Micrófono iniciado: {zone_id} (device {mic.device_index})")
-                
-            except Exception as e:
-                logger.error(f"Error iniciando micrófono {zone_id}: {e}")
+                owner.finish()
+            except BaseException as cleanup:
+                raise BaseExceptionGroup(
+                    "zone_capture_start_failed", [error, cleanup]
+                ) from None
+            raise
     
     def _create_callback(self, zone_id: str, mic: MicrophoneConfig):
-        """Crear callback para un stream de audio"""
+        """Bind callbacks to this invocation, including their actual return."""
+        owner = self._capture_owner
+        if owner is None:
+            raise RuntimeError("zone_capture_authority_required")
+
         def callback(indata, frames, time_info, status):
-            if status:
-                logger.warning(f"Mic {zone_id} status: {status}")
-            
-            if not self._running:
-                return
-            
-            # Convertir a mono si es necesario
-            audio = indata[:, 0] if indata.ndim > 1 else indata.flatten()
-            
-            # Calcular RMS
-            rms = np.sqrt(np.mean(audio ** 2))
-            
-            with self._lock:
-                # Actualizar nivel
-                self._current_levels[zone_id] = rms
-                
-                # Agregar al buffer circular
-                buffer = self._buffers[zone_id]
-                pos = self._buffer_positions[zone_id]
-                chunk_len = len(audio)
-                
-                if pos + chunk_len <= len(buffer):
-                    buffer[pos:pos + chunk_len] = audio
-                else:
-                    # Wrap around
-                    first_part = len(buffer) - pos
-                    buffer[pos:] = audio[:first_part]
-                    buffer[:chunk_len - first_part] = audio[first_part:]
-                
-                self._buffer_positions[zone_id] = (pos + chunk_len) % len(buffer)
-            
-            # Detectar voz
-            if rms > self.vad_threshold:
-                chunk = AudioChunk(
-                    zone_id=zone_id,
-                    device_index=mic.device_index,
-                    audio_data=audio.copy(),
-                    timestamp=time.time(),
-                    rms_level=rms
-                )
-                
-                # Agregar a queue si no está llena
-                try:
-                    self._audio_queue.put_nowait(chunk)
-                except queue.Full:
-                    pass
-                
-                # Callback
-                if self.on_voice_detected:
-                    self.on_voice_detected(chunk)
-        
-        return callback
+            audio = chunk = None
+            try:
+                if status:
+                    owner.publish(logger.warning, "Mic %s status: %s", zone_id, status)
+                owner.require_current()
+                audio = indata[:, 0] if indata.ndim > 1 else indata.flatten()
+                rms = np.sqrt(np.mean(audio ** 2))
+
+                def commit():
+                    with self._lock:
+                        owner.require_current()
+                        self._current_levels[zone_id] = rms
+                        buffer = self._buffers[zone_id]
+                        pos = self._buffer_positions[zone_id]
+                        chunk_len = len(audio)
+                        if pos + chunk_len <= len(buffer):
+                            buffer[pos:pos + chunk_len] = audio
+                        else:
+                            first_part = len(buffer) - pos
+                            buffer[pos:] = audio[:first_part]
+                            buffer[:chunk_len - first_part] = audio[first_part:]
+                        self._buffer_positions[zone_id] = (pos + chunk_len) % len(buffer)
+
+                owner.publish(commit)
+                if rms > self.vad_threshold:
+                    chunk = AudioChunk(
+                        zone_id=zone_id,
+                        device_index=mic.device_index,
+                        audio_data=audio.copy(),
+                        timestamp=time.time(),
+                        rms_level=rms,
+                    )
+                    try:
+                        owner.publish(self._audio_queue.put_nowait, chunk)
+                    except queue.Full:
+                        pass
+                    if self.on_voice_detected:
+                        owner.publish(self.on_voice_detected, chunk)
+            finally:
+                indata = audio = chunk = status = None
+                del frames, time_info
+
+        return owner.callback(callback)
     
     def stop(self):
-        """Detener captura"""
-        self._running = False
-        
-        for zone_id, stream in self._streams.items():
-            try:
-                stream.stop()
-                stream.close()
-            except Exception as e:
-                logger.error(f"Error deteniendo stream {zone_id}: {e}")
-        
-        self._streams.clear()
-        logger.info("Captura multi-micrófono detenida")
+        """Seal and drain known resources; uncertain retirement is not retried."""
+        owner = self._capture_owner
+        if owner is None:
+            return
+        try:
+            owner.finish()
+        finally:
+            with self._lock:
+                if self._capture_owner is owner:
+                    if owner._sealed:
+                        self._running = False
+                    if owner.retired:
+                        self._streams.clear()
+
+    def require_current(self) -> None:
+        owner = self._capture_owner
+        if owner is None:
+            raise RuntimeError("zone_capture_authority_required")
+        owner.require_current()
+
+    def publish(self, function: Callable, *args, **kwargs):
+        owner = self._capture_owner
+        if owner is None:
+            raise RuntimeError("zone_capture_authority_required")
+        return owner.publish(function, *args, **kwargs)
+
+    def pause(self, seconds: float) -> None:
+        owner = self._capture_owner
+        if owner is None:
+            raise RuntimeError("zone_capture_authority_required")
+        owner.pause(seconds)
     
     def get_loudest_zone(self) -> tuple[str, float] | None:
         """
@@ -296,46 +319,57 @@ class MultiMicCapture:
         return devices
     
     @staticmethod
-    def test_microphone(device_index: int, duration_sec: float = 2.0) -> dict:
-        """
-        Probar un micrófono.
-        
-        Args:
-            device_index: Índice del dispositivo
-            duration_sec: Duración de la prueba
-        
-        Returns:
-            Diccionario con resultados de la prueba
-        """
-        import sounddevice as sd
-        
+    def test_microphone(
+        device_index: int,
+        duration_sec: float = 2.0,
+        *,
+        authority_factory: Callable | None = None,
+        report: Callable | None = None,
+    ) -> dict:
+        """Measure one owned live input; optional reporting precedes retire."""
+        owner = ZoneCaptureOwner(authority_factory)
+        recording = stream = result = None
         try:
-            # Grabar audio
-            recording = sd.rec(
-                int(16000 * duration_sec),
-                samplerate=16000,
-                channels=1,
-                device=device_index,
-                dtype=np.float32
+            owner.initialize()
+            import sounddevice as sd
+
+            stream = owner.open_stream(
+                "test_microphone",
+                lambda: sd.InputStream(
+                    samplerate=16000, channels=1, device=device_index,
+                    dtype=np.float32,
+                ),
+                lambda value: None,
             )
-            sd.wait()
-            
-            # Analizar
-            rms = np.sqrt(np.mean(recording ** 2))
-            peak = np.abs(recording).max()
-            
-            return {
-                "success": True,
-                "device_index": device_index,
-                "rms_level": float(rms),
-                "peak_level": float(peak),
-                "duration_sec": duration_sec,
-                "has_signal": rms > 0.001
-            }
-            
-        except Exception as e:
-            return {
+            with owner.operation("read"):
+                try:
+                    recording, _overflowed = stream.read(int(16000 * duration_sec))
+                    owner.require_current()
+                    rms = np.sqrt(np.mean(recording ** 2))
+                    peak = np.abs(recording).max()
+                    result = {
+                        "success": True,
+                        "device_index": device_index,
+                        "rms_level": float(rms),
+                        "peak_level": float(peak),
+                        "duration_sec": duration_sec,
+                        "has_signal": rms > 0.001,
+                    }
+                finally:
+                    recording = stream = None
+                    _overflowed = None
+            if report is not None:
+                owner.publish(report, result, owner.publish)
+        except Exception as error:
+            result = {
                 "success": False,
                 "device_index": device_index,
-                "error": str(e)
+                "error": ("zone_capture_stopped" if isinstance(error, ZoneCaptureStopped)
+                          else "zone_capture_failed"),
             }
+        except BaseException as error:
+            owner.record_failure(error)
+        finally:
+            recording = stream = report = None
+        owner.finish()
+        return result

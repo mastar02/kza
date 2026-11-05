@@ -13,7 +13,7 @@ import requests
 from src.audio import native_capture_authority as common
 from src.audio.native_capture_authority import (
     CalibrationAuthorityClient, NativeCaptureAuthorityClient,
-    WakewordDiagnosticsAuthorityClient, WakewordTrainingAuthorityClient,
+    WakewordDiagnosticsAuthorityClient, WakewordTrainingAuthorityClient, ZoneSetupAuthorityClient,
 )
 from tests.unit.tools.test_calibration_authority_client import (
     ADMIN_TOKEN, CAPABILITY, Protocol, URL,
@@ -68,6 +68,13 @@ def diagnostics_client(protocol):
     protocol.reply_kind = 'wakeword_diagnostics'
     return WakewordDiagnosticsAuthorityClient(URL, ADMIN_TOKEN, poll_interval_s=.01,
                                               session_factory=protocol.session)
+
+
+def zone_setup_client(protocol):
+    protocol.namespace = 'zone-setup'
+    protocol.reply_kind = 'zone_setup'
+    return ZoneSetupAuthorityClient(URL, ADMIN_TOKEN, poll_interval_s=.01,
+                                    session_factory=protocol.session)
 
 
 def test_wakeword_fixed_namespace_original_actor_and_token_only_retirement():
@@ -231,3 +238,68 @@ print('NATIVE_AUTHORITY_IMPORT_COMPLETE')
                             capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.count('NATIVE_AUTHORITY_IMPORT_COMPLETE') == 1
+
+
+def test_zone_setup_fixed_namespace_original_actor_and_token_only_retirement():
+    protocol = NativeProtocol()
+    authority = zone_setup_client(protocol)
+    stopped = threading.Event()
+    assert type(authority) is ZoneSetupAuthorityClient
+    assert not isinstance(authority, (CalibrationAuthorityClient, WakewordTrainingAuthorityClient,
+                                      WakewordDiagnosticsAuthorityClient))
+    try:
+        authority.register()
+        assert authority.current() is False
+        authority.activate()
+        assert authority.current() is True
+        protocol.allowed = False
+        authority.start_monitor(stopped.set)
+        assert stopped.wait(3)
+        authority.stop_monitor()
+        assert authority.current() is False
+        authority.retire()
+        assert protocol.calls[:2] == ['register', 'activate']
+        assert 'poll' in protocol.calls and protocol.calls[-1] == 'retire'
+        assert all(session.trust_env is False for session in protocol.sessions)
+    finally:
+        authority.close()
+
+
+@pytest.mark.parametrize('wrong_kind', ['calibration', 'wakeword_training', 'wakeword_diagnostics'])
+@pytest.mark.parametrize('action', ['register', 'activate'])
+def test_other_namespace_response_cannot_grant_zone_setup_capture(action, wrong_kind):
+    protocol = NativeProtocol()
+    authority = zone_setup_client(protocol)
+    protocol.wrong_kind = wrong_kind
+    protocol.wrong_action = action
+    try:
+        if action == 'activate':
+            authority.register()
+        with pytest.raises(RuntimeError) as caught:
+            getattr(authority, action)()
+        assert ADMIN_TOKEN not in str(caught.value)
+        assert CAPABILITY not in str(caught.value)
+        assert URL not in str(caught.value)
+        assert authority.current() is False
+        assert 'poll' not in protocol.calls
+    finally:
+        authority.close()
+    assert 'retire' not in protocol.calls
+
+
+def test_zone_setup_fixed_wrapper_cannot_accept_another_kind():
+    with pytest.raises(TypeError):
+        ZoneSetupAuthorityClient(URL, ADMIN_TOKEN, kind='wakeword_diagnostics')
+
+
+def test_zone_setup_hyphenated_kind_is_rejected_before_transport():
+    attempted = []
+
+    def forbidden():
+        attempted.append(True)
+        raise AssertionError('invalid kind acquired transport')
+
+    with pytest.raises(ValueError, match='^native_capture_authority_kind_invalid$'):
+        NativeCaptureAuthorityClient(URL, ADMIN_TOKEN, kind='zone-setup',
+                                     session_factory=forbidden)
+    assert attempted == []

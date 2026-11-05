@@ -39,30 +39,61 @@ def cmd_list_devices(args):
     return 0
 
 
-def cmd_test_mic(args):
-    """Probar un micrófono"""
+def _capture_authority_factory(args: argparse.Namespace):
+    """Keep the original explicit operator credential for each live invocation."""
+    import os
+    from src.audio.native_capture_authority import ZoneSetupAuthorityClient
+
+    url = getattr(args, "dashboard_url", None)
+    token = os.environ.get(getattr(args, "token_env", "KZA_DASHBOARD_TOKEN"), "")
+    if not url or not token:
+        raise RuntimeError("zone_capture_authority_required")
+
+    def create() -> ZoneSetupAuthorityClient:
+        return ZoneSetupAuthorityClient(url, token)
+
+    return create
+
+
+def _stop_capture(capture, prior_error: BaseException | None = None) -> None:
+    """Observe cleanup without losing a primary control or operation failure."""
+    try:
+        capture.stop()
+    except BaseException as error:
+        if prior_error is None or error is prior_error:
+            raise
+        raise BaseExceptionGroup("zone_setup_capture_failed", [prior_error, error]) from None
+
+
+def cmd_test_mic(args: argparse.Namespace) -> int:
+    """Test one input and publish its report before its retirement receipt."""
+    factory = _capture_authority_factory(args)
     from src.audio.multi_mic_capture import MultiMicCapture
-    
+
     print(f"\n🎤 Probando micrófono {args.device}...")
     print(f"   Duración: {args.duration} segundos")
     print("   Habla algo...")
-    
-    result = MultiMicCapture.test_microphone(args.device, args.duration)
-    
-    if result["success"]:
-        print(f"\n✅ Prueba exitosa:")
-        print(f"   RMS Level: {result['rms_level']:.4f}")
-        print(f"   Peak Level: {result['peak_level']:.4f}")
-        print(f"   Señal detectada: {'Sí' if result['has_signal'] else 'No'}")
-        
-        if not result['has_signal']:
-            print("\n⚠️  No se detectó señal. Verifica:")
-            print("   - El micrófono está conectado")
-            print("   - El micrófono no está muteado")
-            print("   - El dispositivo correcto está seleccionado")
-    else:
-        print(f"\n❌ Error: {result['error']}")
-    
+
+    def report(result: dict, publish) -> None:
+        def emit(*values, **kwargs) -> None:
+            publish(print, *values, **kwargs)
+
+        if result["success"]:
+            emit("\n✅ Prueba exitosa:")
+            emit(f"   RMS Level: {result['rms_level']:.4f}")
+            emit(f"   Peak Level: {result['peak_level']:.4f}")
+            emit(f"   Señal detectada: {'Sí' if result['has_signal'] else 'No'}")
+            if not result['has_signal']:
+                emit("\n⚠️  No se detectó señal. Verifica:")
+                emit("   - El micrófono está conectado")
+                emit("   - El micrófono no está muteado")
+                emit("   - El dispositivo correcto está seleccionado")
+        else:
+            emit(f"\n❌ Error: {result['error']}")
+
+    result = MultiMicCapture.test_microphone(
+        args.device, args.duration, authority_factory=factory, report=report,
+    )
     return 0 if result["success"] else 1
 
 
@@ -119,79 +150,62 @@ def cmd_test_zone(args):
     return 0
 
 
-def cmd_test_detection(args):
-    """Probar detección de zona con múltiples micrófonos"""
+def cmd_test_detection(args: argparse.Namespace) -> int:
+    """Test zone levels under one explicit capture authority."""
+    factory = _capture_authority_factory(args)
     from src.audio.multi_mic_capture import MultiMicCapture, MicrophoneConfig
     from src.audio.zone_manager import ZoneManager, Zone
-    import numpy as np
-    
-    print(f"\n🎤 Probando detección de zona...")
+
+    print("\n🎤 Probando detección de zona...")
     print(f"   Micrófonos: {args.mics}")
     print(f"   Duración: {args.duration} segundos")
-    
-    # Crear configuración de micrófonos
     mic_configs = []
     zones = []
     for i, mic_idx in enumerate(args.mics):
         zone_id = f"zone_{i+1}"
-        mic_configs.append(MicrophoneConfig(
-            device_index=mic_idx,
-            zone_id=zone_id
-        ))
-        zones.append(Zone(
-            id=zone_id,
-            name=f"Zone {i+1}",
-            mic_device_index=mic_idx,
-            ma1260_zone=i+1
-        ))
-    
-    # Crear zone manager
+        mic_configs.append(MicrophoneConfig(device_index=mic_idx, zone_id=zone_id))
+        zones.append(Zone(id=zone_id, name=f"Zone {i+1}",
+                          mic_device_index=mic_idx, ma1260_zone=i+1))
     manager = ZoneManager(zones=zones)
-    
-    # Crear multi-mic capture
-    capture = MultiMicCapture(
-        microphones=mic_configs,
-        vad_threshold=args.threshold
-    )
-    
+    capture = MultiMicCapture(microphones=mic_configs, vad_threshold=args.threshold,
+                              authority_factory=factory)
     print("\n   Iniciando captura. Habla en diferentes habitaciones...")
     print("   Presiona Ctrl+C para terminar.\n")
-    
-    capture.start()
-    
     try:
-        start_time = time.time()
-        while time.time() - start_time < args.duration:
-            # Actualizar niveles en zone manager
-            levels = capture.get_audio_levels()
-            for zone_id, level in levels.items():
-                # Simular update (normalmente vendría del callback)
-                if zone_id in manager.zones:
-                    manager._audio_levels[zone_id] = level
-                    if level > args.threshold:
-                        manager._detection_timestamps[zone_id] = time.time()
-            
-            # Mostrar niveles
-            level_str = " | ".join([
-                f"{zid}: {'█' * int(lvl * 100):<10} {lvl:.3f}"
-                for zid, lvl in sorted(levels.items())
-            ])
-            print(f"\r   {level_str}", end="", flush=True)
-            
-            # Detectar zona más activa
-            loudest = capture.get_loudest_zone()
-            if loudest:
-                zone_id, level = loudest
-                print(f"\n   → Detectado en {zone_id} (nivel: {level:.3f})")
-            
-            time.sleep(0.1)
-            
-    except KeyboardInterrupt:
-        print("\n\n   Detenido por usuario")
-    finally:
-        capture.stop()
-    
-    print("\n✅ Prueba completada")
+        capture.start()
+        try:
+            start_time = time.time()
+            while time.time() - start_time < args.duration:
+                capture.require_current()
+                levels = capture.get_audio_levels()
+
+                def update_levels() -> None:
+                    for zone_id, level in levels.items():
+                        if zone_id in manager.zones:
+                            manager._audio_levels[zone_id] = level
+                            if level > args.threshold:
+                                manager._detection_timestamps[zone_id] = time.time()
+
+                capture.publish(update_levels)
+                level_str = " | ".join([
+                    f"{zid}: {'█' * int(lvl * 100):<10} {lvl:.3f}"
+                    for zid, lvl in sorted(levels.items())
+                ])
+                capture.publish(print, f"\r   {level_str}", end="", flush=True)
+                capture.require_current()
+                loudest = capture.get_loudest_zone()
+                if loudest:
+                    zone_id, level = loudest
+                    capture.publish(print, f"\n   → Detectado en {zone_id} (nivel: {level:.3f})")
+                capture.pause(0.1)
+        except KeyboardInterrupt:
+            capture.publish(print, "\n\n   Detenido por usuario")
+        capture.publish(print, "\n✅ Prueba completada")
+    except BaseException as error:
+        _stop_capture(capture, error)
+        raise
+    else:
+        _stop_capture(capture)
     return 0
 
 
@@ -262,7 +276,7 @@ def cmd_ma1260_control(args):
     return 0
 
 
-def main():
+def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(
         description="KZA Multi-Zone Setup Helper",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -273,13 +287,13 @@ Ejemplos:
   python zone_setup.py devices
 
   # Probar un micrófono
-  python zone_setup.py test-mic --device 2
+  python zone_setup.py test-mic --device 2 --dashboard-url http://localhost:8000
 
   # Probar zona completa
   python zone_setup.py test-zone --mic 2 --ma1260-zone 1 --simulate
 
   # Probar detección multi-zona
-  python zone_setup.py test-detection --mics 1 2 3 --duration 30
+  python zone_setup.py test-detection --mics 1 2 3 --duration 30 --dashboard-url http://localhost:8000
 
   # Ver estado del MA1260
   python zone_setup.py ma1260-status --simulate
@@ -299,6 +313,9 @@ Ejemplos:
     mic_parser.add_argument("--device", type=int, required=True, help="Índice del dispositivo")
     mic_parser.add_argument("--duration", type=float, default=3.0, help="Duración en segundos")
     
+    mic_parser.add_argument("--dashboard-url", required=True, help="Origen del Dashboard que controla la captura")
+    mic_parser.add_argument("--token-env", default="KZA_DASHBOARD_TOKEN", help="Variable con la credencial administrativa")
+
     # test-zone
     zone_parser = subparsers.add_parser("test-zone", help="Probar zona completa")
     zone_parser.add_argument("--mic", type=int, required=True, help="Índice del micrófono")
@@ -313,6 +330,9 @@ Ejemplos:
     det_parser.add_argument("--duration", type=float, default=60.0, help="Duración en segundos")
     det_parser.add_argument("--threshold", type=float, default=0.02, help="Umbral de detección")
     
+    det_parser.add_argument("--dashboard-url", required=True, help="Origen del Dashboard que controla la captura")
+    det_parser.add_argument("--token-env", default="KZA_DASHBOARD_TOKEN", help="Variable con la credencial administrativa")
+
     # ma1260-status
     status_parser = subparsers.add_parser("ma1260-status", help="Estado del MA1260")
     status_parser.add_argument("--serial-port", default="/dev/ttyUSB0", help="Puerto serial")
@@ -327,7 +347,7 @@ Ejemplos:
     ctrl_parser.add_argument("--serial-port", default="/dev/ttyUSB0", help="Puerto serial")
     ctrl_parser.add_argument("--simulate", action="store_true", help="Modo simulación")
     
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     
     if args.command == "devices":
         return cmd_list_devices(args)

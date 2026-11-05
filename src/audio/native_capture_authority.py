@@ -23,6 +23,7 @@ _NAMESPACES = MappingProxyType({
     "calibration": "/api/capture/native/calibration/",
     "wakeword_training": "/api/capture/native/wakeword-training/",
     "wakeword_diagnostics": "/api/capture/native/wakeword-diagnostics/",
+    "zone_setup": "/api/capture/native/zone-setup/",
 })
 
 
@@ -55,7 +56,8 @@ class NativeCaptureAuthorityClient:
     """Own a capture capability and observe stop without granting authority."""
 
     def __init__(self, url: str, token: str, *,
-                 kind: Literal["calibration", "wakeword_training", "wakeword_diagnostics"],
+                 kind: Literal["calibration", "wakeword_training", "wakeword_diagnostics",
+                               "zone_setup"],
                  timeout_s: float = 1.0,
                  poll_interval_s: float = .25,
                  session_factory: Callable = requests.Session) -> None:
@@ -273,4 +275,14 @@ class WakewordDiagnosticsAuthorityClient(NativeCaptureAuthorityClient):
                  poll_interval_s: float = .25,
                  session_factory: Callable = requests.Session) -> None:
         super().__init__(url, token, kind="wakeword_diagnostics", timeout_s=timeout_s,
+                         poll_interval_s=poll_interval_s, session_factory=session_factory)
+
+
+class ZoneSetupAuthorityClient(NativeCaptureAuthorityClient):
+    """Bind zone microphone tests to the fixed zone-setup namespace."""
+
+    def __init__(self, url: str, token: str, *, timeout_s: float = 1.0,
+                 poll_interval_s: float = .25,
+                 session_factory: Callable = requests.Session) -> None:
+        super().__init__(url, token, kind="zone_setup", timeout_s=timeout_s,
                          poll_interval_s=poll_interval_s, session_factory=session_factory)
