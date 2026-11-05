@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -118,6 +119,7 @@ def _child(base: Path, case: str):
         proc = real_popen(*args, **kwargs)
         state = {
             "proc": proc,
+            "owned_pgid": proc.pid,
             "owner": before[0],
             "wait": proc.wait,
             "communicate": proc.communicate,
@@ -275,16 +277,33 @@ def _child(base: Path, case: str):
     finally:
         for state in captured:
             proc = state["proc"]
+            signal_errno = None
             try:
                 if proc.poll() is None:
-                    assert real_getpgid(proc.pid) == proc.pid
-                    real_killpg(proc.pid, signal.SIGKILL)
-                state["wait"](timeout=3)
+                    # The launch/session and live-child PGID were checked
+                    # before fault injection. The child can disappear after
+                    # poll(), so do not rediscover its group during cleanup.
+                    try:
+                        real_killpg(state["owned_pgid"], signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    except PermissionError as signal_error:
+                        if signal_error.errno != errno.EPERM:
+                            raise
+                        signal_errno = signal_error.errno
             finally:
                 try:
-                    state["raw_stdout"].close()
+                    # This is the sole original bounded cleanup wait.
+                    # EPERM is accepted only after this actual exit receipt.
+                    exit_code = state["wait"](timeout=3)
+                    if signal_errno is not None:
+                        observed["fixture_signal_error_errno"] = signal_errno
+                        observed["fixture_wait_after_signal_error_returncode"] = exit_code
                 finally:
-                    state["raw_stderr"].close()
+                    try:
+                        state["raw_stdout"].close()
+                    finally:
+                        state["raw_stderr"].close()
             assert proc.returncode is not None
             assert state["raw_stdout"].closed and state["raw_stderr"].closed
             state["usage_path"].unlink(missing_ok=True)

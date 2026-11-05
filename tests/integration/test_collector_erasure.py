@@ -649,6 +649,8 @@ async def test_distinct_registered_collectors_can_share_a_policy_directory(tmp_p
 @pytest.mark.parametrize('failure_at',[1,2],ids=['root','policy'])
 async def test_directory_iterator_failure_releases_descriptors_with_exception_retained(tmp_path,monkeypatch,failure_at):
     import os
+    import sys
+    fd_directory = '/dev/fd' if sys.platform == 'darwin' else '/proc/self/fd'
     async with graph(tmp_path) as g:
         source,other=g.source(),g.source()
         await g.add('conversations',other)
@@ -663,10 +665,10 @@ async def test_directory_iterator_failure_releases_descriptors_with_exception_re
                     raise OSError('synthetic iterator allocation failure')
             return original(path)
         monkeypatch.setattr(os,'scandir',failing)
-        baseline=len(os.listdir('/proc/self/fd'))
+        baseline=len(os.listdir(fd_directory))
         with pytest.raises(OSError) as retained:
             await g.driver.clean(step)
         assert retained.value is not None and calls==failure_at
-        assert len(os.listdir('/proc/self/fd'))==baseline
+        assert len(os.listdir(fd_directory))==baseline
         assert not g.driver._audits
         assert len(await g.records())==1
