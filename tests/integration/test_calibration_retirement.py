@@ -15,6 +15,7 @@ import pytest
 
 from src.wakeword.detector import WakeWordDetector as _ActualWakeWordDetector
 from tools import acoustic_calibration as ac
+from tests.mocks.calibration_authority import positive_authority
 
 
 _REAL_THREAD = threading.Thread
@@ -31,8 +32,9 @@ def _contains(error: BaseException, expected: BaseException) -> bool:
 
 
 class _Harness:
-    def __init__(self, monkeypatch, out_dir: Path):
+    def __init__(self, monkeypatch, out_dir: Path, *, authority=None):
         self.out_dir = out_dir
+        self.authority = positive_authority(monkeypatch) if authority is None else authority
         self.events: list[str] = []
         self.faults: set[str] = set()
         self.error = _Failure("synthetic calibration failure")
@@ -258,7 +260,7 @@ class _Harness:
         try:
             self.result = ac.run_capture(
                 "silencio", duration_s, 17, channel, "synthetic-model.onnx",
-                self.out_dir, usb_port="5-5.4",
+                self.out_dir, usb_port="5-5.4", authority=self.authority,
             )
         except BaseException as exc:
             self.failure = exc

@@ -33,7 +33,10 @@ def _private_routes():
             continue
         path = re.sub(r"\{[^}]+\}", "example", route.path)
         for method in sorted(route.methods):
-            if (method, route.path) == ("POST", "/api/capture/recorders/retire"):
+            if (method, route.path) in {
+                ("POST", "/api/capture/recorders/retire"),
+                ("POST", "/api/capture/native/calibration/retire"),
+            }:
                 continue
             yield method, path
 

@@ -9,12 +9,14 @@ La pregunta que responde: ¿qué señal tiene gap entre voz(p5) y tv(p95)?
 Esa señal es compuerta viable; las que no separan quedan documentadas como
 muertas con el chip en su estado actual (MAXGAIN=8, ch1 ASR).
 
-⚠️ Correr con kza-voice PARADO (contención del mic y del USB vendor):
-    systemctl --user stop kza-voice
+La captura requiere un Dashboard disponible y una credencial administrativa.
+El dispositivo debe estar cedido a esta invocación para evitar contención del
+micrófono y USB. No detener la autoridad que confirma el retiro de la captura.
 
-Uso (server, venv de kza):
+Uso (entorno de desarrollo y credencial en una variable de entorno):
     python -m tools.acoustic_calibration --condition silencio --duration 120 \
-        --device 4 --channel 1 --model models/wakeword/nexa.onnx
+        --device 4 --channel 1 --model models/wakeword/nexa.onnx \
+        --dashboard-url http://127.0.0.1:9500 --token-env KZA_CALIBRATION_TOKEN
     python -m tools.acoustic_calibration --condition tv --duration 180 ...
     python -m tools.acoustic_calibration --condition voz --duration 120 ...
     python -m tools.acoustic_calibration --condition voz_tv --duration 120 ...
@@ -24,12 +26,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import threading
 import time
 from pathlib import Path
 
 import numpy as np
+
+from tools.calibration_authority import CalibrationAuthorityClient
 
 CHUNK_SIZE = 1280  # 80ms @ 16kHz — mismo framing que prod (multi_room_audio_loop)
 SAMPLE_RATE = 16000
@@ -352,6 +357,31 @@ def _spenergy_poller(controller, rows: list, stop: threading.Event, *, publish=N
         stop.wait(SPENERGY_POLL_S)
 
 
+def _finish_authority(authority: CalibrationAuthorityClient, owner: _CaptureOwner,
+                      prior_error: BaseException | None) -> None:
+    """Observe local control-plane exit before issuing a retire-only receipt."""
+    failures: list[BaseException] = []
+    monitor_done = False
+    try:
+        authority.stop_monitor()
+        monitor_done = True
+    except BaseException as error:
+        failures.append(error)
+    if owner.retired and monitor_done:
+        try:
+            authority.retire()
+        except BaseException as error:
+            failures.append(error)
+    try:
+        authority.close()
+    except BaseException as error:
+        failures.append(error)
+    if failures:
+        errors = ([prior_error] if prior_error is not None else []) + failures
+        if len(errors) == 1:
+            raise errors[0]
+        raise BaseExceptionGroup("calibration_authority_cleanup_failed", errors)
+
 def run_capture(
     condition: str,
     duration_s: float,
@@ -360,6 +390,8 @@ def run_capture(
     model_path: str,
     out_dir: Path,
     usb_port: str | None = None,
+    *,
+    authority: CalibrationAuthorityClient | None = None,
 ) -> Path:
     """Capture scalar measurements, publishing JSONL only after real retirement.
 
@@ -368,80 +400,114 @@ def run_capture(
     acquired resources; this tool cannot claim disposal of an unreturned SDK
     object or physical libusb internals.
     """
-    import sounddevice as sd
-
-    from src.wakeword.detector import WakeWordDetector
-    from src.audio.xvf_controller import XvfController
-
+    if not isinstance(authority, CalibrationAuthorityClient):
+        raise RuntimeError("calibration_authority_required")
     owner = _CaptureOwner()
+
+    def seal() -> None:
+        with owner.condition:
+            owner.sealed = True
+            owner.stop.set()
+
+    def require_current() -> None:
+        if not authority.current():
+            seal()
+            raise RuntimeError("calibration_capture_stopped")
+
     try:
-        # Own each object before calling operations that load/open native work.
-        owner.detector = WakeWordDetector(models=[model_path])
-        owner.detector.load()
-        owner.controller = XvfController(usb_port=usb_port)
-        spenergy_ok = owner.controller.open()
-        if not spenergy_ok:
-            print("⚠️  XVF3800 no accesible — se mide sin SPENERGY (RMS + wake igual sirven)")
-        owner.publish({
-            "meta": True, "condition": condition, "device": device,
-            "channel": channel, "model": model_path, "duration_s": duration_s,
-            "started_at": time.time(),
-        })
-        if spenergy_ok:
-            owner.start_poller()
+        try:
+            authority.register()
+            authority.activate()
+            authority.start_monitor(seal)
+            require_current()
+            import sounddevice as sd
+            from src.wakeword.detector import WakeWordDetector
+            from src.audio.xvf_controller import XvfController
+            # Own each object before calling operations that load/open native work.
+            owner.detector = WakeWordDetector(models=[model_path])
+            require_current()
+            owner.detector.load()
+            require_current()
+            owner.controller = XvfController(usb_port=usb_port)
+            require_current()
+            spenergy_ok = owner.controller.open()
+            require_current()
+            if not spenergy_ok:
+                print("⚠️  XVF3800 no accesible — se mide sin SPENERGY (RMS + wake igual sirven)")
+            owner.publish({
+                "meta": True, "condition": condition, "device": device,
+                "channel": channel, "model": model_path, "duration_s": duration_s,
+                "started_at": time.time(),
+            })
+            if spenergy_ok:
+                owner.start_poller()
 
-        def callback(indata, frames, time_info, status):
-            if not owner.admit_callback():
-                return
-            chunk = scores = None
+            def callback(indata, frames, time_info, status):
+                if not owner.admit_callback():
+                    return
+                chunk = scores = None
+                try:
+                    if status:
+                        print(f"⚠️ sd callback status: {status}", flush=True)
+                    ch = channel if indata.shape[1] > channel else 0
+                    chunk = indata[:, ch].copy()
+                    now = time.time()
+                    rms = float(np.sqrt(np.mean(chunk ** 2)))
+                    owner.publish({"t": now, "kind": "rms", "value": rms})
+                    scores = owner.detector.predict(chunk)
+                    if scores:
+                        owner.publish({"t": now, "kind": "wake", "value": float(max(scores.values()))})
+                except BaseException as error:
+                    owner.record_worker_failure(error, "calibration_callback_failed")
+                finally:
+                    # Discard owned PCM/driver parameters before publishing count0.
+                    # Stream.close's strict receipt additionally covers SDK callers.
+                    del indata, chunk, scores, time_info, status
+                    owner.finish_callback()
+
+            if channel == 0:
+                print(
+                    "⚠️  --channel 0: el XVF3800 tiene 2 canales — abrirlo como 1ch puede "
+                    "garbler el audio. Considera usar --channel 1 o superior en dispositivos "
+                    "multi-canal (ver _resolve_capture_channels en src/pipeline/multi_room_audio_loop.py)."
+                )
+            print(f"▶ Capturando condición '{condition}' por {duration_s:.0f}s "
+                  f"(device={device}, channel={channel})...")
+            require_current()
             try:
-                if status:
-                    print(f"⚠️ sd callback status: {status}", flush=True)
-                ch = channel if indata.shape[1] > channel else 0
-                chunk = indata[:, ch].copy()
-                now = time.time()
-                rms = float(np.sqrt(np.mean(chunk ** 2)))
-                owner.publish({"t": now, "kind": "rms", "value": rms})
-                scores = owner.detector.predict(chunk)
-                if scores:
-                    owner.publish({"t": now, "kind": "wake", "value": float(max(scores.values()))})
-            except BaseException as error:
-                owner.record_worker_failure(error, "calibration_callback_failed")
-            finally:
-                # Discard owned PCM/driver parameters before publishing count0.
-                # Stream.close's strict receipt additionally covers SDK callers.
-                del indata, chunk, scores, time_info, status
-                owner.finish_callback()
+                owner.stream = sd.InputStream(
+                    device=device, samplerate=SAMPLE_RATE,
+                    channels=max(channel + 1, 1), dtype="float32", blocksize=CHUNK_SIZE,
+                    callback=callback,
+                )
+            except BaseException:
+                # No returned SDK object means no strict close receipt. Preserve
+                # uncertainty rather than retiring the remote producer capability.
+                owner.uncertain = True
+                raise
+            require_current()
+            owner.stream.__enter__()
+            require_current()
+            deadline = time.time() + duration_s
+            while time.time() < deadline and not owner.stop.is_set():
+                time.sleep(1.0)
+                elapsed = duration_s - (deadline - time.time())
+                print(f"  ... {elapsed:.0f}/{duration_s:.0f}s ({len(owner.rows)} muestras)", end="\r")
+        finally:
+            owner.retire(sys.exc_info()[1])
+        require_current()
+        snapshot = owner.snapshot()
 
-        if channel == 0:
-            print(
-                "⚠️  --channel 0: el XVF3800 tiene 2 canales — abrirlo como 1ch puede "
-                "garbler el audio. Considera usar --channel 1 o superior en dispositivos "
-                "multi-canal (ver _resolve_capture_channels en src/pipeline/multi_room_audio_loop.py)."
-            )
-        print(f"▶ Capturando condición '{condition}' por {duration_s:.0f}s "
-              f"(device={device}, channel={channel})...")
-        owner.stream = sd.InputStream(
-            device=device, samplerate=SAMPLE_RATE,
-            channels=max(channel + 1, 1), dtype="float32", blocksize=CHUNK_SIZE,
-            callback=callback,
-        )
-        owner.stream.__enter__()
-        deadline = time.time() + duration_s
-        while time.time() < deadline and not owner.stop.is_set():
-            time.sleep(1.0)
-            elapsed = duration_s - (deadline - time.time())
-            print(f"  ... {elapsed:.0f}/{duration_s:.0f}s ({len(owner.rows)} muestras)", end="\r")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        out_file = out_dir / f"{stamp}_{condition}.jsonl"
+        require_current()
+        out_file.write_text("\n".join(json.dumps(r) for r in snapshot))
+        require_current()
+        print(f"\n✔ {len(snapshot)} muestras → {out_file}")
+        return out_file
     finally:
-        owner.retire(sys.exc_info()[1])
-    snapshot = owner.snapshot()
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    out_file = out_dir / f"{stamp}_{condition}.jsonl"
-    out_file.write_text("\n".join(json.dumps(r) for r in snapshot))
-    print(f"\n✔ {len(snapshot)} muestras → {out_file}")
-    return out_file
+        _finish_authority(authority, owner, sys.exc_info()[1])
 
 
 # ---------------------------------------------------------------- reporte
@@ -499,6 +565,9 @@ def main(argv: list[str] | None = None) -> int:
             "calibra una habitación con la energía acústica de otra"
         ),
     )
+    parser.add_argument("--dashboard-url", help="origen explícito del Dashboard que controla esta captura")
+    parser.add_argument("--token-env", default="KZA_DASHBOARD_TOKEN",
+                        help="variable de entorno de la credencial administrativa; no pasar el token como argumento")
     parser.add_argument("--analyze", metavar="DIR", help="solo análisis de JSONLs existentes")
     args = parser.parse_args(argv)
 
@@ -507,8 +576,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if not args.condition or args.device is None:
         parser.error("--condition y --device son requeridos para capturar (o usar --analyze)")
+    if not args.dashboard_url:
+        parser.error("--dashboard-url es requerido para capturar")
+    token = os.environ.get(args.token_env)
+    if not token:
+        parser.error("No hay credencial administrativa en la variable indicada")
+    authority = CalibrationAuthorityClient(args.dashboard_url, token)
+    token = None
     run_capture(args.condition, args.duration, args.device, args.channel,
-                args.model, Path(args.out), usb_port=args.port)
+                args.model, Path(args.out), usb_port=args.port, authority=authority)
     return 0
 
 

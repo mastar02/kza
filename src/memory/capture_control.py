@@ -401,14 +401,18 @@ class CaptureControl:
             pending += len(part._jobs) + len(part._active)
         if self._enrollment_work is not None:
             pending += self._enrollment_work.status()['operations']
-        browsers = self.recorders.pending()
+        recorders_pending = self.recorders.pending()
+        browsers = self.recorders.pending(kind='browser')
+        native_clients = self.recorders.pending(kind='calibration')
         return {'revision': self._revision, 'target_muted': self._target,
                 'persisted_muted': self._persisted, 'phase': self._phase,
                 'ingress_sealed': self._sealed, 'supported': bool(self._supported),
-                'pending_operations': pending + browsers, 'pending_browser_recorders': browsers,
+                'pending_operations': pending + recorders_pending,
+                'pending_browser_recorders': browsers, 'pending_native_clients': native_clients,
                 'error_code': self._error_code,
                 'total_mute_confirmed': (self._phase == 'muted' and self._persisted
-                                         and self._sealed and self._supported and not pending and not browsers)}
+                                         and self._sealed and self._supported and not pending
+                                         and not recorders_pending)}
 
     def begin_close(self) -> asyncio.Task:
         self._closed = True

@@ -111,10 +111,12 @@ class TestCliPortBinding:
         import tools.acoustic_calibration as ac
 
         captured = {}
+        monkeypatch.setenv("KZA_DASHBOARD_TOKEN", "synthetic-calibration-operator")
+        monkeypatch.setattr(ac, "CalibrationAuthorityClient", lambda url, token: (url, token))
 
         def fake_run_capture(
             condition, duration_s, device, channel, model_path, out_dir,
-            usb_port=None,
+            usb_port=None, *, authority=None,
         ):
             captured["usb_port"] = usb_port
             return out_dir
@@ -124,11 +126,13 @@ class TestCliPortBinding:
 
     def test_port_reaches_run_capture(self, monkeypatch):
         ac, captured = self._patched(monkeypatch)
-        rc = ac.main(["--condition", "silencio", "--device", "4", "--port", "5-5.4"])
+        rc = ac.main(["--condition", "silencio", "--device", "4", "--port", "5-5.4",
+                      "--dashboard-url", "http://127.0.0.1:9500"])
         assert rc == 0
         assert captured["usb_port"] == "5-5.4"
 
     def test_without_port_stays_unbound(self, monkeypatch):
         ac, captured = self._patched(monkeypatch)
-        ac.main(["--condition", "silencio", "--device", "4"])
+        ac.main(["--condition", "silencio", "--device", "4",
+                 "--dashboard-url", "http://127.0.0.1:9500"])
         assert captured["usb_port"] is None
