@@ -6,21 +6,22 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 ## Punto de reanudación
 
-La unidad **T023-G quedó verificada localmente en Mac**. El mismo goal sigue incompleto. No recrear la `.venv` ni repetir tandas cerradas sólo por cambiar de sesión; confirmar primero Git, el checkpoint y el estado real del goal.
+La unidad **T023-H quedó verificada localmente en Mac**. El MISMO goal está **activo e incompleto**; la reanudación revocó la pausa histórica de G. No recrear la `.venv` ni repetir tandas cerradas sin una razón nueva.
 
-| Dato | Estado al cierre Mac |
+| Dato | Estado actual Mac |
 | --- | --- |
 | Entorno | `gabriel`, `/Users/gabriel/Documents/Proyectos/kza`, macOS 26.6.1 arm64, `.venv` CPython 3.13.18 |
-| Bootstrap publicado | `26e549d8ecc4bc7b75029ff0f1e93518cbe661dd` |
-| Portabilidad de fixtures | `da86bc5d84abbdd059f632d4934877b6e0953c45` |
-| Código G publicado | `43b44b933d8bff8a8a8bd2bdbd4f4d5555bfc743` |
-| Dirigida G | 653 PASS, XML 131.673 s; 1016 archivos/37 scripts intactos |
-| Full normal Mac | **8392 PASS + una xfail conocida**, sin fallos, errores u omisiones ordinarias; XML 583.548 s; 8393 IDs exactos y 1016 archivos/37 scripts intactos |
-| Browser G | Chrome escritorio: 4→3→2→1→0 con clientes HTTP de fixture; sin aceptación de hardware/móvil |
-| Tracking | Commit que contiene este documento; verificar su SHA y publicación con Git al retomar |
-| Goal | Pausa solicitada al concluir esta entrega; confirmar el resultado real de la API al retomar. No marcar completo ni crear otro objetivo |
+| Código H publicado | `815941b6d120bcfe385ab5897c4cc79b329c1204` |
+| Integración H | 34 PASS; se conservan 4 RED y el primer 33/1 |
+| Dirigida H | 946 PASS, XML 156.358 s |
+| Full normal H | **8472 PASS + una xfail conocida**, 8473 IDs exactos; XML 636.873 s |
+| Fuentes | 1022 archivos incluidos 37 scripts y 10 protegidos intactos durante dirigida/full |
+| PC/Terra | Chrome escritorio 5→4→3→2→1→0, sólo control HTTP con fixtures |
+| Delegación | Hasta 8 agentes activos en total si el entorno lo permite; pruebas interactivas de PC con `gpt-6.1-terra` |
+| Próxima unidad | I propuesta; leer su plan antes de cualquier baseline |
+| Tracking | Este commit; verificar SHA y publicación con Git al retomar |
 
-T022/T023 siguen `in_progress`, T024 `planned` y los 21 criterios `not_evaluated`. T020/P1/T047 y la separación voz/persona/cuenta/roles/consentimiento/administración/captura/acción se conservan.
+T022/T023 siguen `in_progress`, T024 `planned` y los 21 criterios `not_evaluated`. T020/P1/T047 y permisos separados se conservan. Sin release o cambios de producción. Ver [informe H](../research/2026-11-05-manual-voice-command-capture-authority.json).
 
 ## Referencia histórica del cierre Linux F
 
@@ -102,9 +103,9 @@ secretos.
 
 ## Comprobación y próxima unidad
 
-El entorno nativo, la dirigida, la full y Chrome tienen recibos separados en el [informe G](../research/2026-11-05-zone-setup-capture-authority.json). Los recibos privados copiados de Linux son históricos: no ejecutar su venv ni intentar reutilizar sus handles de sesión en Mac.
+El entorno nativo y los recibos actuales están en el [informe H](../research/2026-11-05-manual-voice-command-capture-authority.json). G y Linux conservan sus propios recibos históricos; no ejecutar sus venv o reutilizar handles de otras sesiones.
 
-Continuar desde el [plan propuesto H](../plans/2026-11-05-manual-voice-command-continuation.json): lectura y baseline aislado de `scripts/test_voice_command.py`. Su import actual lee `.env`; no importarlo ni ejecutar modelos, micrófono o HA para caracterizarlo. Separar permiso de captura y permiso de actuar. La propuesta todavía no tiene implementación, runtime ni RED; no confundirla con G ya entregada.
+Continuar con el [plan propuesto I](../plans/2026-11-05-legacy-wakeword-capture-continuation.json): ambos CLI legacy de wakeword y su separación de captura frente a servicios. Primero lectura y baseline aislado; no ejecutar systemctl, audio, modelos o HA reales. Ambos scripts hoy son idénticos y usan nexa. StreamingSTT queda condicional sin llamador acreditado. I no tiene implementación, baseline ni runtime.
 
 ## Verificación inicial en Mac — 2026-11-05
 
@@ -210,16 +211,22 @@ se solicita al finalizar la publicación. Confirmar su resultado real por API al
 
 La propuesta H queda en [continuación del diagnóstico de comandos](../plans/2026-11-05-manual-voice-command-continuation.json): sólo lectura y baseline sintético futuro, sin importar `.env` privada ni ejecutar HA.
 
+## Diagnóstico manual bajo autoridades separadas — H
+
+H usa kind fijo manual_voice_command y admin:manage original; la acción utiliza otra credencial home:control y el endpoint tipado existente. El cierre espera streams, iteradores, referencias propias de modelos, Chroma, reportes y monitor. Una respuesta HTTP200 sola no es éxito y un POST remoto sin recibo terminal conocido mantiene pendiente el retiro. No hay fallback a credenciales de captura ni lectura de .env para HA.
+
+Se conservan todos los primeros resultados: watchdog de causa desconocida, dos errores de fixtures,4 RED genuinos y replay 33/1. El replay final 34 y la full validan el arreglo; esto no prueba audio/GPU/HA físicos ni borrado de SDK. La pausa mencionada en el registro histórico G quedó revocada por la reanudación posterior; el estado actual del goal es activo.
+
 ## Prompt para la sesión nueva
 
-> Retomá el MISMO goal de KZA de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff y el informe público G. Confirmá estado real del goal, checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos antes de continuar. No crees otro objetivo ni marques éste completo.
-> El entorno Mac y T023-G quedaron verificados: 653 dirigidos, full de 8392 PASS y una xfail conocida, y Chrome G. Usá `.venv/bin/python` nativo; no recrees el venv ni repitas tandas sin una razón nueva. No ejecutes el venvLinux ni copies secretos/datos/modelos.
-> Seguí el plan propuesto H de `docs/plans/2026-11-05-manual-voice-command-continuation.json`: primero revisión y baseline aislado de captura frente a acción, sin importar `.env` privada ni llamar HA/modelos. Conservá todos los primeros resultados y las autoridades separadas. T022/T023/T024 y los 21 criterios siguen abiertos; T020/P1/T047 se conservan. Producción/releases mantienen su alcance separado.
+> Retomá el MISMO goal de KZA de `docs/plans/2026-11-02-autonomous-roadmap.md`, activo e incompleto. Leé AGENTS.md, CLAUDE.md, este handoff y el informe H. Confirmá API del goal, checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro objetivo ni marques éste completo.
+> T023-H quedó verificada: 34 de integración, 946 dirigidos, full 8472 PASS + una xfail conocida y Chrome Terra. Usá `.venv/bin/python` nativo; no recrees el venv ni repitas tandas sin razón nueva. Hasta 8 agentes totales según plazas disponibles; pruebas interactivas de PC delegadas a `gpt-6.1-terra`.
+> Seguí I propuesta de `docs/plans/2026-11-05-legacy-wakeword-capture-continuation.json`: primero baseline aislado de ambos CLI legacy, sin servicios/modelos/audio/HA reales. Conservá todos los primeros resultados y permisos separados. T022/T023/T024 y los 21 criterios siguen abiertos; T020/P1/T047 se conservan. Producción/releases mantienen su alcance separado.
 
 ## Lista de cierre y reanudación
 
-- [x] F/Linux y bootstrap Mac conservados con sus propios recibos.
-- [x] G, 653 dirigidos, full Mac y Chrome revisados; historia de todos los intentos conservada.
-- [x] Código G y fixtures de portabilidad publicados; tracking y handoff incluidos en este commit.
-- [x] Checkpoint Mac identifica commits, evidencia y procesos terminados; la pausa del mismo goal se solicita al finalizar. Confirmar su resultado real por API al retomar.
-- [ ] Próxima sesión confirma estado/Git y selecciona H sin repetir trabajo verificado ni ejecutar acciones por defecto.
+- [x] F/Linux, bootstrap Mac y G conservados con sus propios recibos.
+- [x] H,34 de integración, 946 dirigidos, full Mac y Chrome Terra revisados; primeros intentos preservados.
+- [x] Código H publicado; tracking y handoff incluidos en este commit.
+- [x] Mismo goal activo, sin nueva petición de pausa; confirmar estado real por API al retomar.
+- [ ] Próxima sesión confirma estado/Git y comienza I propuesta con baseline aislado, sin repetir trabajo verificado.

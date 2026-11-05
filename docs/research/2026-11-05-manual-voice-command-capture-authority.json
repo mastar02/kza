@@ -1,0 +1,206 @@
+{
+  "schema_version": 1,
+  "unit": "T023-H/manual-voice-command-capture-and-action-boundary",
+  "status": "verified_local_within_open_T023",
+  "baseline_revision": "1002dc7",
+  "summary_spanish": "El diagnóstico manual conserva el flujo de grabación, STT y búsqueda, exige una concesión administrativa original para capturar y usa una concesión home:control independiente para acciones tipadas del backend real. El retiro espera recursos locales y el resultado remoto conocido.",
+  "environment": {
+    "user": "gabriel",
+    "checkout": "/Users/gabriel/Documents/Proyectos/kza",
+    "platform": "macOS 26.6.1 arm64",
+    "python": "CPython 3.13.18, .venv nativa"
+  },
+  "authority": {
+    "capture_client": "ManualVoiceCommandAuthorityClient",
+    "capture_kind": "manual_voice_command",
+    "capture_namespace": "/api/capture/native/manual-voice-command/",
+    "capture_permission": "admin:manage, sesión original",
+    "retire": "Sólo POST exacto retire con capacidad opaca y Origin del mismo sitio puede limpiar después de logout; no concede captura, reactivación o acción.",
+    "native_kinds": [
+      "calibration",
+      "wakeword_training",
+      "wakeword_diagnostics",
+      "zone_setup",
+      "manual_voice_command"
+    ],
+    "action_client": "ManualVoiceActionClient",
+    "action_endpoint": "POST /api/home/actions",
+    "action_permission": "home:control; HomeActionService/HomeControlPolicy existentes",
+    "credentials": "--capture-token-env (KZA_DASHBOARD_TOKEN) y --action-token-env (KZA_DASHBOARD_ACTION_TOKEN), sin fallback entre ellas ni lectura de .env/credenciales HA directas",
+    "no_execute": "No construye cliente de acción ni obtiene su credencial.",
+    "separation": "Voz, persona, cuenta, roles, consentimiento, administración, captura y control del hogar conservan permisos separados."
+  },
+  "ownership": {
+    "native": "Slots de streams/modelos/resultado STT/source/iterator preceden adquisiciones; operaciones y reportes admitidos, cierre real de streams/iteradores/Chroma y unión del monitor preceden ACK.",
+    "input": "select/os.read sobre fd prestado, sin hilo lector abandonado.",
+    "controls": "KeyboardInterrupt/SystemExit y fallo de cierre se conservan juntos en errores reconstruidos sin traceback SDK/PCM.",
+    "STT_failure": "Una excepción ordinaria de transcribe que termina sin devolver fuente libera los borrows. Controles asíncronos, recepción/indexado/iteración y constructor inciertos siguen pendientes.",
+    "action": "Request ID nuevo por intención, sin reintento POST ni redirects. Sólo confirmed+dispatch accepted+effect observed+ha_state se muestra exitoso. Uncertain/failed produce salida no cero.",
+    "remote_unknown": "El transporte puede haber dejado una Task del servidor aunque Session.close retorne. La acción remota sin recibo terminal conocido bloquea ACK; close local no fabrica confirmación. No se implementa reconciliación GET en esta unidad.",
+    "SDK_limits": "Modelos sin close público: libera referencias propias después del trabajo; Chroma usa close público, sin _system.stop ni cacheclear."
+  },
+  "preserved": {
+    "signal": "6 canales, float32, frecuencia de muestreo 16000 Hz y mono como vista de columna 0; RMS y umbral de silencio originales.",
+    "STT": "language es, vad_filter true, beam_size1, concatenación de segmentos y relojes originales.",
+    "retrieval": "Colección home_assistant_commands existente, clasificador léxico con prioridad off, filtro service, top 3, sim=1-dist/2 y threshold .55.",
+    "CLI": "once/no-execute conservados; URL dashboard requerida; alias capture-url/token-env disponibles.",
+    "GPU": "Defaults heredados del diagnóstico Whisper cuda:0/BGE cuda:0 conservados, sin ejecución GPU ni conciliación con asignación de producción."
+  },
+  "limits": [
+    "Validación local con backend HTTP loopback y SQLite reales; SDK/audio/HA de fixtures y Threads/handles reales. No aceptación física, de HA real, GPU, copias privadas/allocator, borrado ni interacción móvil.",
+    "Las referencias de arrays ya prestadas y los datos históricos no se borran.",
+    "T022/T023/T024, C04 y todos los criterios permanecen abiertos; T020/P1/T047, las otras tareas, fases y presupuestos se conservan.",
+    "El mismo goal sigue activo e incompleto. Sin release o cambios de producción."
+  ],
+  "validation": {
+    "manual_integration": {
+      "passed": 34,
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/t023/h/integration-attempt-04/component-proof.json",
+        "sha256": "622db33cfe641fa61e34495ea6debbe1732a677011fc0e0cdd7ec5f3c52ccb27"
+      }
+    },
+    "backend_action": {
+      "passed": 92,
+      "review": {
+        "path": "data/autonomous-roadmap-20261102/t023/h/backend-action/review.json",
+        "sha256": "240af74c3b2a13585a31cf9b10624f0267c4f30d24e2631cf8a96f75c7f5cd5f"
+      },
+      "scope": "component only, overlaps directed/full"
+    },
+    "directed": {
+      "passed": 946,
+      "XML_duration_s": 156.358,
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/t023/h/directed-attempt-01/acceptance-proof.json",
+        "sha256": "6cec65b9536374b36e7c627ee150db56e9126c76749c1b545aa40b62eb159a1e"
+      }
+    },
+    "full": {
+      "passed": 8472,
+      "known_xfailed": 1,
+      "ordinary_skips": 0,
+      "failures": 0,
+      "errors": 0,
+      "XML_duration_s": 636.873,
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/t023/h/full-normal-attempt-01/acceptance-proof.json",
+        "sha256": "26882d16a911f8926101d9c1cd5495b70c0b7b80f48cf203024eecfdca1f2fb5"
+      }
+    },
+    "identities": {
+      "full": "8393 G preserved +80 H =8473 exact",
+      "directed": "653 G +213 existing home-policy/session/typed/composite +80 H =946",
+      "new": {
+        "native_backend": 5,
+        "native_client": 6,
+        "action_unit": 16,
+        "action_integration": 7,
+        "manual_integration": 34,
+        "auth_matrix": 12
+      },
+      "proposal": {
+        "path": "data/autonomous-roadmap-20261102/t023/h/suite-proposal.json",
+        "sha256": "3c978c04749e0114a074eaae880d568b55988331e4fe59424ed4930a729ee50e"
+      },
+      "collection": {
+        "path": "data/autonomous-roadmap-20261102/t023/h/full-collection-01/full-status.json",
+        "sha256": "68bac5d37e383fe16cf41aeae77794fb7cee2127deaca3ccd87af2fb55d29055"
+      }
+    },
+    "source_freeze": "1022 archivos de fuentes en src/tests/tools/scripts, incluidos 37 scripts, y 10 archivos protegidos; dirigida/full con manifiestos antes/después exactos",
+    "PC_browser": {
+      "model": "gpt-6.1-terra",
+      "review": {
+        "path": "data/autonomous-roadmap-20261102/t023/h/browser-attempt-01/review.json",
+        "sha256": "f4cabca7f9bf422675ca2eac4986af14e5a40ad1dcac0ad39c34efc0100859ee"
+      },
+      "scope": "real Chrome desktop, loopback fixtures and fake media; pending5→4→3→2→1 prevents resume, last retirement→0/ACK then original-admin resume",
+      "limits": "Screenshots desktop/390px are observations, not mobile interaction or physical acceptance. Watched dependencies unchanged; broader367-file watch included one declared nondependency lexical-test edit. No universal egress proof."
+    },
+    "static_review": {
+      "path": "data/autonomous-roadmap-20261102/t023/h/peer-gap-fix/independent-review-final.json",
+      "sha256": "6de9f5b706e2d261be55e0280c93ce15e4af5f4adffe5c102cfa7fa3e3234ebc"
+    },
+    "style": {
+      "files": 16,
+      "exit_code": 0,
+      "evidence": {
+        "path": "data/autonomous-roadmap-20261102/t023/h/root-lint-final/status.json",
+        "sha256": "ecf31c7b03454cce9b8397672f5dc336dc930a7db711fd189110fe7b0ff4a007"
+      },
+      "note": "Ruff absent from venv; used already cached executable, no dependency install. Only local info bindings renamed _info, same normalized AST."
+    },
+    "CLI_smoke": {
+      "help": 0,
+      "missing_url": 2,
+      "missing_credential": 1,
+      "guards": "deny private.env access, SDK imports, socket bind/connect, subprocess",
+      "evidence": {
+        "path": "data/autonomous-roadmap-20261102/t023/h/cli-smoke-01/status.json",
+        "sha256": "930ec522a4535014a28b83174c35c12f1141eb4d27beead0cce2b64cd10881b4"
+      }
+    },
+    "counting": "Replays and component groups overlap; never sum them as unique tests."
+  },
+  "runtime_history": [
+    {
+      "stage": "original baseline",
+      "result": "1PASS characterization of existing record API with synthetic SDK, actual native thread join; not a RED for missing authority API",
+      "evidence": {
+        "path": "data/autonomous-roadmap-20261102/t023/h/baseline/baseline-proof.json",
+        "sha256": "4c94aba9dc8be2accffb2faca0db71015407ce57f59555e433c3199a1c75939f"
+      }
+    },
+    {
+      "stage": "backend/action initial normal",
+      "result": "300s watchdog +15s termination; pytest-9, noXML, cause unknown; not accepted or claimed repaired",
+      "evidence": {
+        "path": "data/autonomous-roadmap-20261102/t023/h/backend-action/attempt-01-review.json",
+        "sha256": "89b8a27f39de98f10e960dcba3bdb800deef6693ed01bdaaf0e4a0507f05b9bf"
+      }
+    },
+    {
+      "stage": "backend/action diagnostics and second normal",
+      "result": "Diagnostics1/58 passed without explaining first hang. Diagnostic92 had91PASS/1FAIL from newly cloned status-oracle typo409→509; only erroneous new test HTTP expectations fixed. Normal92PASS then accepted scoped.",
+      "evidence": {
+        "path": "data/autonomous-roadmap-20261102/t023/h/backend-action/review.json",
+        "sha256": "240af74c3b2a13585a31cf9b10624f0267c4f30d24e2631cf8a96f75c7f5cd5f"
+      }
+    },
+    {
+      "stage": "initial manual30",
+      "result": "29PASS/1FAIL; new lexical fixture incorrectly expected enciende to match unchanged regex. Test phrase corrected to prende; original classifier unchanged. Then30PASS.",
+      "evidence": {
+        "path": "data/autonomous-roadmap-20261102/t023/h/integration-attempt-01/initial-classification.json",
+        "sha256": "65f0b715f875ff606e1872802e49084d78110f1aedb5a60b2b3221ea295c2d57"
+      }
+    },
+    {
+      "stage": "peer review genuine RED",
+      "result": "4FAIL: allocation/publication could lose returned SDK source/iterator and ACK with actor alive; read KeyboardInterrupt/SystemExit masked by close error. Real actors closed/joined in fixture finally.",
+      "evidence": {
+        "path": "data/autonomous-roadmap-20261102/t023/h/peer-gap-baseline/baseline-proof.json",
+        "sha256": "9916e65782f43edd082642606f70304550d573b225959f34717bdd0b128c4342"
+      }
+    },
+    {
+      "stage": "first complete34 after fix",
+      "result": "33PASS/1FAIL: four REDs pass but old synchronous transcribe-failure case retains model. No test weakened; first failure of models assertion precedes weakref/pending assertions.",
+      "evidence": {
+        "path": "data/autonomous-roadmap-20261102/t023/h/integration-attempt-03/first-replay-classification.json",
+        "sha256": "9a38079f6ae9bc29974105d14495a7c00e388be111243f2c914a9e3526b6a433"
+      }
+    },
+    {
+      "stage": "final complete34",
+      "result": "34PASS, same test/helper bytes and budgets. Distinguishes completed ordinary transcribe failure without source from uncertain acquisition; old weakref/model/ACK and four peer cases pass.",
+      "evidence": {
+        "path": "data/autonomous-roadmap-20261102/t023/h/integration-attempt-04/component-proof.json",
+        "sha256": "622db33cfe641fa61e34495ea6debbe1732a677011fc0e0cdd7ec5f3c52ccb27"
+      }
+    }
+  ],
+  "verified_at_utc": "2026-11-05T15:03:24.344726+00:00",
+  "implementation_commit": "815941b6d120bcfe385ab5897c4cc79b329c1204"
+}

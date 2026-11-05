@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "candidate_unit": "T023-I/legacy-wakeword-cli-capture-and-service-boundary",
+  "prerequisite": "Close H validation/tracking before starting I; this review executes no I runtime.",
+  "source_sha256": {
+    "scripts/train_nexa.py": "4ace91b2908cd162cb2e11bac3e94c7b9bf4674ab74033e2fd405dbea1ffa0eb",
+    "scripts/train_che_bo.py": "4ace91b2908cd162cb2e11bac3e94c7b9bf4674ab74033e2fd405dbea1ffa0eb",
+    "src/stt/streaming_stt.py": "9b7518afdf9049ce958c074c7e604b507001035277c922a179150007e1517e89",
+    "scripts/train_wakeword.py": "d79ea74adc5fc2894a1c5dcbdb24b1294ed226593f7ece594e268a8e1cdaac0e",
+    "src/wakeword/recorder.py": "1f44b2c00530a3e012060f4d7b75102539c9ebc221cced3f175719312bde04f7",
+    "src/wakeword/live_capture.py": "06e06dfc658f87544e45d689b5377b5260bc04d247cac4d19dcbec0613d150ab",
+    "src/audio/native_capture_authority.py": "0347d906aba9a40654a94a62773b91a80ffcadc92564a156697c49d347afb633",
+    "src/dashboard/capture_browser_api.py": "6f32aed5d3495a86465bf3c39135ed19e696cae680ebabe97c1bedc557338922"
+  },
+  "observed_current_source": [
+    {
+      "paths": [
+        "scripts/train_nexa.py",
+        "scripts/train_che_bo.py"
+      ],
+      "fact": "Byte-identical sources (4ace91b2...) and all eleven top-level function ASTs identical. Both WAKE_WORD_NAME=nexa, SAMPLE_RATE=16000, SAMPLE_DURATION_S=2.0, MIC_DEVICE=9. Preserve current alias behavior; filename does not prove a distinct che_bo model."
+    },
+    {
+      "symbol": "record_sample",
+      "lines_1based": [
+        104,
+        112
+      ],
+      "fact": "Direct sd.rec(samples,16000,channels6,device9,float32), sd.wait, channel0 copy and RMS return. No nominal authority, epoch or mute check."
+    },
+    {
+      "symbols": [
+        "cmd_record_positive",
+        "cmd_record_negative"
+      ],
+      "fact": "Directory/count/prompt/countdown/stdin work precedes capture. Commands implicitly stop voice service and restore it in finally. Positive rejects RMS<0.01; negative saves all RMS. WAV names/counters/sample math are existing behavior."
+    },
+    {
+      "symbol": "cmd_test",
+      "lines_1based": [
+        238,
+        292
+      ],
+      "fact": "Constructs/loads detector before service probe; opens6-channel1280-frame callback, copies channel0 into unbounded queue, blocks q.get and predicts/reports without capture/publication barriers. Preserve custom/default model, threshold, verbosity, RMS and score/bar semantics."
+    },
+    {
+      "symbols": [
+        "_voice_service_running",
+        "_stop_voice_service",
+        "_start_voice_service"
+      ],
+      "fact": "Implicit subprocess systemctl --user is-active/stop/start kza-voice.service. Capture capability is not service-management authority; current Mac development does not authorize production service changes."
+    },
+    {
+      "symbol": "cmd_deploy",
+      "fact": "Implementation only checks model exists and prints settings/restart instructions. Despite copy/update docstring, no copy/settings-write/restart happens. Do not add deployment effects in I."
+    },
+    {
+      "symbol": "cmd_train",
+      "fact": "Offline WakeWordTrainer on existing paths, with no direct audio/systemctl. Keep outside bounded live-capture migration."
+    }
+  ],
+  "recommended_authority_contract": {
+    "capture": "Reuse original admin:manage via WakewordTrainingAuthorityClient and fixed /api/capture/native/wakeword-training/ for these training-family commands, matching scripts/train_wakeword.py. Validate before native/detector acquisition. Proposal only.",
+    "kind": "Reuse training family rather than create sixth native kind or conflate with diagnostics/manual-command capability. Reassess only if source requirements establish distinct lifetime.",
+    "inputs": "Require explicit Dashboard origin and selected credential env var; no dotenv/session/capability fallback. Direct record_sample missing/foreign nominal authority fails before audio acquisition.",
+    "service_effect": "Remove implicit systemctl stop/start from capture paths, including finally restart. Report microphone/resource failure as a failure. Leave service/release operations to separately authorized runbook; add no live service endpoint or admin-token fallback in I.",
+    "separation": "Wake-word capture is not voice-person linking, identity enrollment, role/account change, consent, home:control, release or service-management authority."
+  },
+  "bounded_implementation_proposal": [
+    "Migrate both aliases, direct record_sample and all three capturing handlers; helper-only conversion leaves raw test capture alive.",
+    "Preserve six channels/channel0 copy, frames/dtype/device defaults, positive-only RMS rejection, random negative prompts, WAV encoding/names/counts and detector model/threshold/report behavior.",
+    "Own authority/model/native/callback/queue/predict/write/report work through actual returns before retire ACK; reserve SDK/native slots before constructors. Invent no SDK close.",
+    "Make stdin/countdown/empty queue wait interruptible by current policy checks without abandoned reader Threads or timeout-as-drain proof.",
+    "On mute/logout/epoch change seal admission, drain admitted callback/read/predict/WAV/report and require actual native stop+close. Clear owned queue/refs without claiming erasure of caller arrays, saved corpus or SDK buffers.",
+    "Reuse existing live owner where contract fits. Do not simply delegate to current WakeWordRecorder: it captures one channel and rejects low RMS for both labels, unlike legacy sources.",
+    "Keep offline train and informational deploy behavior outside capture authority; no production deployment/corpus relocation."
+  ],
+  "isolated_baseline_plan": {
+    "not_executed": true,
+    "original_api": "Archive both current sources/hashes. Child-process load each with synthetic audio/model leaves before import; call original record_sample(duration_s=.01) without invented args. Observe actual original6-channel acquisition, copy and RMS.",
+    "native_leaf": "Deterministic real NumPy buffer plus synthetic SD that starts real Thread/native handle. sd.wait actually joins; fixture finally actually closes/join actors, no flag/registry reset or missing-API RED.",
+    "handlers": "Original record-positive/negative with temporary ROOT/output and count/prompt/input/time fixtures; test with synthetic detector/callback and controlled Ctrl-C exit. No actual audio, SDK weights, download or persistent stdin reader.",
+    "service_stub": "Block actual subprocess/network/env reads. Strict synthetic recorder for exact known systemctl calls: inactive branch reaches capture; active branch records stop/start requests without effects. Never execute systemctl.",
+    "post_migration": "Preserve original math/side-effect observations; real loopback/SQLite cases for authority/missing/foreign denial, global mute, original-session revoke, queue/callback/predict/WAV/report barrier, strict native close, controls+cleanup failure and pending/noACK after unknown close.",
+    "evidence": "Bounded owned child runner, exact IDs/budgets, source/protected manifests, logs/XML, actual Popen.wait and terminal receipt. Preserve failures. Root defines concrete runtime before I starts."
+  },
+  "streaming_stt": {
+    "status": "conditional_no_live_caller_accredited_excluded_from_I",
+    "search_evidence": [
+      "Serena find_referencing_symbols StreamingSTT returned {}.",
+      "rg StreamingSTT|streaming_stt in src/scripts/tests/tools/config Python/YAML/TOML/JSON found only self-definition/docstring/logs."
+    ],
+    "observed_source": "start launches daemon worker and raw6-channel SD callback without authority; stop does stream stop/close and join(timeout2) then drops worker. Those source issues do not establish a live caller.",
+    "reentry": "Separate bounded unit only after finding real caller/import/dynamic wiring. Do not infer source absence from RAG."
+  },
+  "created_at_utc": "2026-11-05T14:51:19.452758+00:00",
+  "status": "proposed_not_started_no_runtime_or_baseline",
+  "goal": "docs/plans/2026-11-02-autonomous-roadmap.md",
+  "H_prerequisite": "Publish verified H and its tracking before I source/runtime. Do not pause or replace the same active goal.",
+  "review_reference": {
+    "path": "data/autonomous-roadmap-20261102/t023/h/next-unit-review.json",
+    "sha256": "3d0d7d9022d0b39a00f8dfc98e6700061ee8dda8139161d2c0d8d16226ffcccb"
+  },
+  "preserved_constraints": [
+    "No release, production/service changes, real SDK/audio/GPU/HA or real corpus writing in baseline.",
+    "Do not alter offline training or implement real deploy effects. Both existing filenames currently use nexa.",
+    "Keep source/authority/algorithm oracles; preserve every failed run; do not turn expected policy denial or missing API into a historical RED.",
+    "No acceptance of T022/T023/T024/C04 or physical/global criteria from one unit.",
+    "Max8 agents total subject environment capacity; interactive PC validation only delegated gpt-6.1-terra."
+  ]
+}
