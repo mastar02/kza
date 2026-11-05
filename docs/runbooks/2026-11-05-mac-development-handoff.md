@@ -1,10 +1,28 @@
 # Continuar el desarrollo de KZA en Mac
 
-Traspaso del desarrollo solicitado por el usuario al cerrar T023-F.
-El traspaso original conserva los resultados Linux y el mismo objetivo del
-roadmap. La sección de verificación inicial registra el avance posterior en Mac.
+Estado del desarrollo al cerrar T023-G en el nuevo entorno Mac.
+Conserva el traspaso Linux de T023-F y los resultados nativos posteriores
+para retomar el mismo goal con su roadmap y evidencias.
 
 ## Punto de reanudación
+
+La unidad **T023-G quedó verificada localmente en Mac**. El mismo goal sigue incompleto. No recrear la `.venv` ni repetir tandas cerradas sólo por cambiar de sesión; confirmar primero Git, el checkpoint y el estado real del goal.
+
+| Dato | Estado al cierre Mac |
+| --- | --- |
+| Entorno | `gabriel`, `/Users/gabriel/Documents/Proyectos/kza`, macOS 26.6.1 arm64, `.venv` CPython 3.13.18 |
+| Bootstrap publicado | `26e549d8ecc4bc7b75029ff0f1e93518cbe661dd` |
+| Portabilidad de fixtures | `da86bc5d84abbdd059f632d4934877b6e0953c45` |
+| Código G publicado | `43b44b933d8bff8a8a8bd2bdbd4f4d5555bfc743` |
+| Dirigida G | 653 PASS, XML 131.673 s; 1016 archivos/37 scripts intactos |
+| Full normal Mac | **8392 PASS + una xfail conocida**, sin fallos, errores u omisiones ordinarias; XML 583.548 s; 8393 IDs exactos y 1016 archivos/37 scripts intactos |
+| Browser G | Chrome escritorio: 4→3→2→1→0 con clientes HTTP de fixture; sin aceptación de hardware/móvil |
+| Tracking | Commit que contiene este documento; verificar su SHA y publicación con Git al retomar |
+| Goal | Pausa solicitada al concluir esta entrega; confirmar el resultado real de la API al retomar. No marcar completo ni crear otro objetivo |
+
+T022/T023 siguen `in_progress`, T024 `planned` y los 21 criterios `not_evaluated`. T020/P1/T047 y la separación voz/persona/cuenta/roles/consentimiento/administración/captura/acción se conservan.
+
+## Referencia histórica del cierre Linux F
 
 El usuario pidió terminar la unidad en curso, guardar el avance y retomar el
 mismo goal desde una sesión nueva en Mac. El objetivo sigue en
@@ -19,9 +37,9 @@ mismo goal desde una sesión nueva en Mac. El objetivo sigue en
 | Unidad entregada | T023-F: autoridad y retiro de captura/inferencia/reporte de `diagnose_wakeword` |
 | Commit de código F | `38f3912d5272be408f9d27afb74a298a54d2b5ac`; comprobar su publicación con el historial de la rama y el registro de cierre |
 | Full F y evidencia pública | 8341 PASS y una xfail conocida; 1013 archivos, incluidos 37 scripts, sin cambios; XML 851.448 s. Evidencia: [captura de diagnóstico](../research/2026-11-05-wakeword-diagnostics-capture-authority.json) |
-| Commit de tracking y handoff | El commit que contiene este archivo y las actualizaciones del roadmap; obtener su SHA con `git log -1 --format=%H -- docs/runbooks/2026-11-05-mac-development-handoff.md`. El mensaje de cierre confirma el push y el checkout limpio. |
+| Commit de tracking y handoff Linux | `06cd9162e8516ff906ab092246e02edc499823ad`, histórico; no usar el último cambio Mac de este archivo como SHA del cierre Linux |
 | Estado del goal al salir | Pausa solicitada por el usuario después de esta entrega, con el objetivo incompleto. Confirmar el estado del mismo goal al retomar; no crear otro objetivo ni marcarlo completo. |
-| Procesos de desarrollo pendientes | La full, las tandas dirigidas y Chromium de F terminaron; el cierre exige consumir también las comprobaciones documentales y los pushes. No hay una validación de audio que la sesión nueva deba duplicar. |
+| Procesos de desarrollo pendientes Linux | F terminó; sus handles son históricos y no se reutilizan en Mac |
 
 En la lectura previa al cierre, T023 y T022 están `in_progress`, T024 está
 `planned` y los 21 criterios siguen `not_evaluated`. La migración de equipo no
@@ -84,38 +102,9 @@ secretos.
 
 ## Comprobación y próxima unidad
 
-Primero leer las evidencias públicas de F y el resultado de su full. Los
-recibos privados bajo `data/` se conservan en el entorno Linux y no se presume
-que existan en un clon nuevo. Una ruta ausente en Mac no invalida ni reemplaza
-el resultado histórico: registrar qué material está disponible.
+El entorno nativo, la dirigida, la full y Chrome tienen recibos separados en el [informe G](../research/2026-11-05-zone-setup-capture-authority.json). Los recibos privados copiados de Linux son históricos: no ejecutar su venv ni intentar reutilizar sus handles de sesión en Mac.
 
-Con el entorno Mac instalado y registrado, las pruebas del cliente son un
-primer conjunto acotado, sin iniciar el sistema ni los CLI de audio:
-
-```sh
-python -m pytest tests/unit/tools/test_calibration_authority_client.py \
-  tests/unit/audio/test_native_capture_authority_client.py
-```
-
-Estos comandos son instrucciones futuras, no resultados obtenidos en Mac.
-Conservar el primer resultado y distinguir incompatibilidad de plataforma,
-fixture y defecto del producto. La evidencia de CUDA, USB, audio físico y SDK
-Linux sigue ligada a su entorno; una prueba simulada o un skip en Mac no la
-reemplaza. El harness Chromium actual usa `chromium` y un perfil snap de Linux;
-su ejecución en Mac necesita una adaptación explícita del fixture, sin cambiar
-oráculos para obtener un verde. Los screenshots móviles previos son sólo
-observación y no aceptan iPhone/C07.
-
-La propuesta siguiente es **T023-G/MultiMicCapture-zone-setup-live-inputs**:
-vincular `zone_setup test-mic`/`test-detection` y las APIs públicas
-`MultiMicCapture` a una autoridad administrativa explícita, con dueño previo de
-cada stream y retiro real de callbacks, colas y reportes antes del ACK. El plan portable está en [continuación de MultiMicCapture](../plans/2026-11-05-multimic-capture-continuation.json),
-con estado `proposed_read_only_no_runtime_no_RED`. Su copia original privada
-es `data/autonomous-roadmap-20261102/t023/f/next-boundary-plan.json`. Todavía no se implementó G
-ni se ejecutó su baseline durante el cierre Linux. Antes de implementarlo, confirmar por lectura enfocada el
-constructor de `ZoneManager`; conservar separados listado de dispositivos,
-reproducción sintética y controles MA1260. G se retoma en la sesión Mac, una vez
-comprobado el entorno inicial.
+Continuar desde el [plan propuesto H](../plans/2026-11-05-manual-voice-command-continuation.json): lectura y baseline aislado de `scripts/test_voice_command.py`. Su import actual lee `.env`; no importarlo ni ejecutar modelos, micrófono o HA para caracterizarlo. Separar permiso de captura y permiso de actuar. La propuesta todavía no tiene implementación, runtime ni RED; no confundirla con G ya entregada.
 
 ## Verificación inicial en Mac — 2026-11-05
 
@@ -145,34 +134,92 @@ la suite completa Mac, hardware, interacción móvil, modelos ni producción. El
 desarrollo de G y su baseline tienen evidencia separada; los 21 criterios
 continúan pendientes.
 
+## Captura MultiMic y zone_setup en Mac — G
+
+El estado actual es G en Mac. El bootstrap está subido en
+`26e549d8ecc4bc7b75029ff0f1e93518cbe661dd`; las tandas dirigidas y el browser G
+ya terminaron. La segunda full Mac quedó verificada, con 8392 PASS y una xfail conocida. El código G está publicado en `43b44b933d8bff8a8a8bd2bdbd4f4d5555bfc743` y la portabilidad de fixtures en `da86bc5d84abbdd059f632d4934877b6e0953c45`.
+
+Las APIs vivas `MultiMicCapture` y los comandos `test-mic`/`test-detection`
+requieren un cliente nominal `zone_setup` y la autoridad administrativa
+original. Los cuatro kinds nativos —calibración, grabación y diagnóstico de
+wakewords, y zone_setup— comparten la barrera durable sin intercambiar
+capacidades. El POST exacto de retiro admite capacidad opaca y Origin tras
+logout; esa capacidad no permite captura ni reactivación.
+
+El baseline conserva una caracterización aprobada y un RED genuino de arranque
+parcial. La primera integración terminó con 20 PASS y 4 FAIL: dos oráculos del
+DTO eran incorrectos y el reporte del CLI tenía un error real al adaptar
+`publish(fn,*args)` a `print`. Se conservan resultados y causas; el segundo
+bloque aprobó los mismos 24 casos. Otro RED confirmó que el retorno de un
+`stop()` viejo podía borrar el estado de una captura nueva. La guarda de
+identidad bajo lock lo corrigió; los 25 casos completos pasaron sin cambiar el
+nuevo oráculo. El dueño nuevo conservaba sus handles: no se presenta esa carrera
+como una fuga o ACK prematuro.
+
+La dirigida Mac terminó con **653 PASS**, terminal 0, XML 131.673 s, sobre 1016
+archivos incluidos 37 scripts sin cambios. La unión de IDs es exacta:
+602 de F conservados, 5 backend, 9 cliente, 25 de integración G y 12 auth nuevos.
+Los 58 del backend/cliente y los 25 de integración son grupos solapados, no
+sumandos adicionales. El review final del dueño cerró estáticamente la carrera;
+el runtime G25 conserva su recibo independiente.
+
+La primera full Mac terminó con **8389 PASS, 3 FAIL y una xfail conocida**,
+8393 IDs exactos, XML 740.423 s y guardas de 1016/37 sin cambios. No se acepta como
+full válida. Dos casos del fixture de descriptores asumían `/proc/self/fd`;
+el tercero falló en el cleanup Hermes al consultar `getpgid` después de una
+carrera de salida. No son REDs del producto G. Se corrigieron sólo los dos
+archivos de tests; las fuentes productivas G siguen iguales.
+
+Los dos primeros replays de esos fixtures terminaron cada uno con 47 PASS y
+1 FAIL: primero `killpg` devolvió EPERM en Mac; después el nuevo wait0 era un
+oráculo innecesariamente inmediato. El patch final conserva exactamente el
+único wait real original de 3 s y admite EPERM sólo después de ese retorno real;
+no agrega otro plazo, reintento o skip. El tercero pasó los 48 casos, terminal 0,
+XML 7.668 s. La sonda del observador Darwin `/dev/fd` mostró 4→5→4 y EBADF tras
+cierre real; eso valida el observador, no sustituye los tests de producto.
+
+Se conservaron en cuarentena privada 920 archivos ignorados de bytecode copiado
+que guardaban `co_filename` Linux. La recompilación fresca usa la `.venv`
+nativa; no cambiaron fuentes, flags, dependencias ni el venv Linux. La segunda
+full terminó con 8392 PASS y una xfail conocida, sin fallos, errores ni omisiones ordinarias, en 583.548 s XML. Conserva los 8342 IDs de F y añade 51; sus 1016 archivos, incluidos 37 scripts, permanecieron intactos.
+
+El browser G terminó con terminal 0 y ejercicio 11.696 s. React/Chrome y HTTP
+reales comprobaron native 4→3→2→1 sin ACK y con resume deshabilitado; sólo el
+retiro por capacidad de zone_setup alcanza 0/ACK, seguido por reactivación
+explícita de la sesión original. Los cuatro participantes nativos de ese
+fixture son registros HTTP del plano de control: el browser no ejecuta los CLI
+ni prueba retiro de micrófonos o SDK físicos. La imagen de 390 px sigue siendo sólo
+observación, sin aceptación móvil.
+
+Los retornos de streams conocidos, callbacks admitidos, reportes y monitor
+preceden el ACK. Cierres inciertos o constructores sin retorno mantienen la
+barrera. Reanudar o recuperar permiso no arranca audio: hace falta un `start()`
+nuevo. Los arrays ya cedidos a callback/cola no se borran como propios; las
+lecturas históricas, copias, TTL y borrado/restauración conservan su alcance.
+
+El [informe G](../research/2026-11-05-zone-setup-capture-authority.json)
+registra el proof real de full, commits, publicación e historia de cada intento.
+No hay aceptación de hardware, SDK privado, borrado físico, C04 ni de todos los
+productores. T022/T023 siguen `in_progress`, T024 `planned` y los 21 criterios
+`not_evaluated`; T020/P1/T047 y las autoridades separadas se conservan.
+
+El usuario pidió cerrar G y continuar en otra sesión del mismo goal. La pausa
+se solicita al finalizar la publicación. Confirmar su resultado real por API al retomar, junto al checkpoint Mac y Git. No crear otro objetivo ni marcar éste como completo.
+
+
+La propuesta H queda en [continuación del diagnóstico de comandos](../plans/2026-11-05-manual-voice-command-continuation.json): sólo lectura y baseline sintético futuro, sin importar `.env` privada ni ejecutar HA.
+
 ## Prompt para la sesión nueva
 
-> Retomá el mismo goal de KZA de
-> `docs/plans/2026-11-02-autonomous-roadmap.md`, pausado por la migración a Mac.
-> Leé primero AGENTS.md, CLAUDE.md y
-> `docs/runbooks/2026-11-05-mac-development-handoff.md`; después el manifiesto
-> JSON y la última evidencia pública de T023-F. La migración de desarrollo a
-> este Mac está autorizada; usá mi usuario y checkout locales reales, sin
-> trasladar la ruta ni los privilegios del servidor. Confirmá rama, commit,
-> cambios ajenos y estado de cualquier trabajo previo antes de repetirlo.
-> Completá y verificá el entorno CPython 3.13 para esta plataforma sin copiar
-> el venv Linux ni secretos/datos/modelos. Conservá los resultados Linux como
-> históricos y no acredites hardware ni criterios físicos con pruebas Mac.
-> Después continuá desde el próximo paso registrado para T023-G, sin reiniciar
-> el roadmap ni crear un objetivo distinto. Mantené abiertos los criterios
-> pendientes y separados permisos de captura, retiro, reactivación, voz,
-> persona, cuenta y consentimiento. Producción y releases conservan su alcance
-> autorizado por separado.
+> Retomá el MISMO goal de KZA de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff y el informe público G. Confirmá estado real del goal, checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos antes de continuar. No crees otro objetivo ni marques éste completo.
+> El entorno Mac y T023-G quedaron verificados: 653 dirigidos, full de 8392 PASS y una xfail conocida, y Chrome G. Usá `.venv/bin/python` nativo; no recrees el venv ni repitas tandas sin una razón nueva. No ejecutes el venvLinux ni copies secretos/datos/modelos.
+> Seguí el plan propuesto H de `docs/plans/2026-11-05-manual-voice-command-continuation.json`: primero revisión y baseline aislado de captura frente a acción, sin importar `.env` privada ni llamar HA/modelos. Conservá todos los primeros resultados y las autoridades separadas. T022/T023/T024 y los 21 criterios siguen abiertos; T020/P1/T047 se conservan. Producción/releases mantienen su alcance separado.
 
 ## Lista de cierre y reanudación
 
-- [x] F terminada, revisada, commiteada y subida; registrar fuentes, métricas y
-  evidencia final sin sustituir los intentos históricos.
-- [x] Tracking y este handoff publicados/subidos; checkout y trabajos propios
-  reconciliados, sin un full o Chromium pendientes que la sesión nueva duplique.
-- [x] Pausa del mismo goal solicitada por el usuario al cerrar, sin declararlo completo; confirmar su estado al retomar.
-- [x] Entorno inicial de tests comprobado en Mac: usuario, ruta, arquitectura,
-  CPython y dependencias. La suite completa y el hardware no quedan acreditados
-  por esta primera tanda.
-- [x] Mismo roadmap y próxima unidad recuperados desde Git, con primeros
-  resultados nativos registrados antes de ampliar validación.
+- [x] F/Linux y bootstrap Mac conservados con sus propios recibos.
+- [x] G, 653 dirigidos, full Mac y Chrome revisados; historia de todos los intentos conservada.
+- [x] Código G y fixtures de portabilidad publicados; tracking y handoff incluidos en este commit.
+- [x] Checkpoint Mac identifica commits, evidencia y procesos terminados; la pausa del mismo goal se solicita al finalizar. Confirmar su resultado real por API al retomar.
+- [ ] Próxima sesión confirma estado/Git y selecciona H sin repetir trabajo verificado ni ejecutar acciones por defecto.

@@ -1,0 +1,575 @@
+{
+  "schema_version": 1,
+  "unit": "T023-G/MultiMicCapture-zone-setup-live-inputs",
+  "status": "verified_local_within_open_T023",
+  "verified_at_utc": "2026-11-05T12:32:35.723274+00:00",
+  "baseline_revision": "26e549d8ecc4bc7b75029ff0f1e93518cbe661dd",
+  "implementation_commit": "43b44b933d8bff8a8a8bd2bdbd4f4d5555bfc743",
+  "Mac_fixture_portability_commit": "da86bc5d84abbdd059f632d4934877b6e0953c45",
+  "summary_spanish": "Las APIs de captura viva MultiMicCapture y los comandos test-mic/test-detection de zone_setup usan una autoridad administrativa explícita del dashboard. Cada invocación conserva el actor original, registra sus recursos antes de iniciar captura y espera retornos reales de streams, callbacks, reportes y monitor antes del retiro remoto.",
+  "environment": {
+    "platform": "macOS 26.6.1 arm64",
+    "user": "gabriel",
+    "checkout": "/Users/gabriel/Documents/Proyectos/kza",
+    "python": ".venv/bin/python, CPython 3.13.18 nativo arm64",
+    "bootstrap_commit": "26e549d8ecc4bc7b75029ff0f1e93518cbe661dd",
+    "bootstrap_push_terminal": {
+      "session": 37203,
+      "exit_code": 0,
+      "consumed": true
+    },
+    "copied_linux_venv": "Conservado; no ejecutado ni reutilizado.",
+    "tests_profile": "Manifiesto completo instalado y pip check0; torch/soundfile/chromadb reales. Linux conserva torch2.12.0+cpu fuera de Darwin; Darwin usa2.12.0."
+  },
+  "scope": {
+    "live_entrypoints": [
+      "MultiMicCapture.start/stop",
+      "MultiMicCapture.test_microphone",
+      "zone_setup cmd_test_mic",
+      "zone_setup cmd_test_detection"
+    ],
+    "separate_unchanged_flows": [
+      "listado de dispositivos",
+      "test-zone y tono sintético",
+      "MA1260 status/control"
+    ],
+    "no_physical_runtime": true,
+    "SDK_leaves": "sounddevice sintético; Threads/handles nativos reales, backend HTTP loopback y SQLite reales.",
+    "not_whole_T023_acceptance": true
+  },
+  "authority": {
+    "client": "src.audio.native_capture_authority.ZoneSetupAuthorityClient",
+    "kind": "zone_setup",
+    "namespace": "/api/capture/native/zone-setup/",
+    "register": "Objeto vacío estricto; kind fijo en servidor.",
+    "activate_poll_retire": "Sólo token de capacidad, sin identidad elegida por el cliente.",
+    "original_operator": "Register/activate/poll requieren el mismo lease administrativo original; HOME/EVALUATOR, voz, persona, cuenta o claim no se convierten en admin:manage.",
+    "cleanup": "Sólo POST exacto a /api/capture/native/zone-setup/retire admite capacidad opaca y Origin del mismo sitio tras logout/revocación; no concede captura ni unmute.",
+    "four_native_kinds": [
+      "calibration",
+      "wakeword_training",
+      "wakeword_diagnostics",
+      "zone_setup"
+    ],
+    "barrier": "Los cuatro kinds nativos participan de la barrera durable sin intercambiar capacidades. El monitor sella al perder permiso; no ejecuta su propio join ni promete ACK automático. El caller retira explícitamente; restaurar autoridad o reanudar el control no inicia audio."
+  },
+  "ownership_and_outputs": [
+    "El dueño fuerte y los slots preceden adquisición/start; un stream retornado queda retenido antes de start, incluido start que inicia trabajo nativo y luego lanza.",
+    "Retiro intenta stop(ignore_errors=False) y close(ignore_errors=False) de todos los streams conocidos; los recibos son sus retornos reales, no closed/running.",
+    "Trabajo de startup/read/callback/output usa leases de identidad ligados al Thread real. La guarda self-drain rechaza desde callback antes del sello/cierre nativo.",
+    "Un constructor que no retorna o un cierre incierto deja owner pendiente y sin ACK ni reintento ciego. La presencia de un worker terminado no prueba por sí sola retorno de close.",
+    "Reportes admitidos y callbacks reales deben retornar; después el monitor se une y sólo entonces se solicita retiro remoto.",
+    "Una nueva invocación explícita usa cliente/epoch/cola/buffers frescos. El finally de un stop anterior sólo modifica metadatos bajo lock si el owner sigue siendo el actual."
+  ],
+  "math_and_copy_scope": {
+    "preserved": [
+      "RMS y peak",
+      "selección mono columna0",
+      "sample_rate/channels/blocksize de configuración",
+      "ring buffer y wrap",
+      "AudioChunk.copy/timestamp/zone/device",
+      "lectores históricos y DTOs"
+    ],
+    "borrowed_outputs": "El callback y la cola comparten el AudioChunk publicado; stop y cambio de epoch no borran arrays ya cedidos. La prueba conserva esas referencias y sus valores.",
+    "historical_readers": "get_audio_levels/get_loudest_zone/get_recent_audio/get_next_chunk/clear_queue no se reclasifican como outputs vivos drenados. Sus copias, destinos, TTL y borrado/restauración siguen en T022/T024.",
+    "excluded": "No Model.close inventado, limpieza de heaps SDK/driver/allocator ni prueba de borrado físico."
+  },
+  "runtime_history": [
+    {
+      "stage": "baseline histórico anterior a G",
+      "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/g-baseline",
+      "pytest_exit_code": 1,
+      "driver_exit_code": 0,
+      "counts": {
+        "passed": 1,
+        "failed": 1,
+        "errors": 0,
+        "skipped": 0
+      },
+      "classification": "Una caracterización PASS de test_microphone(17,.01) sin binding y un RED genuino de ownership: start delegado del segundo stream inicia Thread real y lanza; stop retorna sin cerrar/unirlo. El fixture observa el fallo antes de cerrar y unir realmente ambos. No bypass de una DB ajena ni API ausente.",
+      "original_sources": {
+        "MultiMicCapture": "7716120a7fa743307b138075a97872aed7dbb760bf0edf5344eb91a527d95065",
+        "zone_setup": "cae155253fa2918cfef4a006cfd178ec0fb6e149cdd3ed237cd4b9d4df9c94ef"
+      },
+      "preparation_error_not_RED": "Un assertion de ruta privada falló antes de imports de producto/pytest; preparación y corrección se conservan separadas."
+    },
+    {
+      "stage": "primer bloque de integración G24",
+      "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/g-integration-first",
+      "pytest_exit_code": 1,
+      "driver_exit_code": 1,
+      "counts": {
+        "passed": 20,
+        "failed": 4,
+        "errors": 0,
+        "skipped": 0
+      },
+      "classification": "Dos oráculos esperaban excepción donde test_microphone conserva DTO de fallo fijo; se corrigieron a DTO exacto y cero SDK. Los otros dos fallos provenían del CLI: trataba publish(fn,*args) como emit(texto), causaba TypeError y no alcanzaba el reporte. El callback sintético de reporte también se alineó al API publish(print,texto). Sin reducir barreras ni presupuestos."
+    },
+    {
+      "stage": "segundo bloque G24",
+      "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/g-integration-second",
+      "pytest_exit_code": 0,
+      "driver_exit_code": 0,
+      "counts": {
+        "passed": 24,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "xml_duration_s": 6.658,
+      "driver_elapsed_s": 8.22334166699875,
+      "source_inputs_unchanged": 20,
+      "classification": "CLI corregido y dos funciones de test corregidas; mismos24 IDs, otros18 inputs idénticos. No se sustituye el primer 20/4."
+    },
+    {
+      "stage": "RED de stop viejo frente a epoch nueva",
+      "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/g-stale-stop-baseline",
+      "pytest_exit_code": 1,
+      "driver_exit_code": 1,
+      "counts": {
+        "passed": 0,
+        "failed": 1,
+        "errors": 0,
+        "skipped": 0
+      },
+      "xml_duration_s": 1.217,
+      "classification": "Tras retiro real del owner viejo se retiene sólo su retorno, se hace start explícito con segundo cliente/stream y el finally viejo borra running/map actuales. El owner nuevo conserva handles; no se afirma fuga ni ACK falso. Finally libera gate y retira realmente ambos.",
+      "prior_24_function_ASTs_preserved": true
+    },
+    {
+      "stage": "tercer bloque completo G25",
+      "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/g-integration-third",
+      "pytest_exit_code": 0,
+      "driver_exit_code": 0,
+      "counts": {
+        "passed": 25,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "xml_duration_s": 6.871,
+      "driver_elapsed_s": 8.341573208002956,
+      "source_inputs_unchanged": 20,
+      "classification": "Mismos bytes de los25 tests que el RED; único cambio de input: lock+identity en MultiMicCapture.stop. IDs=24 previos unión caso nuevo. Cleanup estricto y handles reales aprobados."
+    },
+    {
+      "stage": "backend/client G",
+      "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/g-backend-client",
+      "pytest_exit_code": 0,
+      "counts": {
+        "passed": 58,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "xml_duration_s": 2.07,
+      "composition": {
+        "old_native": 13,
+        "new_native": 5,
+        "old_shared_client": 17,
+        "new_shared_client": 9,
+        "unchanged_D_client": 14
+      },
+      "initial_attempt": {
+        "passed": 57,
+        "failed": 1,
+        "errors": 0,
+        "classification": "Fixture404 por falta de router capture/control y campo de revisión equivocado; corregido sólo el nuevo test, no RED de producto."
+      },
+      "scope": "G fixed zone_setup backend protocol and nominal shared client; no native MultiMic owner or CLI validation in this group."
+    },
+    {
+      "stage": "browser G desktop Mac",
+      "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/g-browser-attempt-01",
+      "review": {
+        "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/g-browser-review.json",
+        "sha256": "09ce0897ede88fbf1ed7255f5fc83a7ed201dd6beb20dbc45763e6d2687ec4c9",
+        "bytes": 11116
+      },
+      "runner_exit_code": 0,
+      "session_id": 14533,
+      "fixture_passed": true,
+      "fixture_exercise_duration_s": 11.695823192596436,
+      "classification": "Escenario real React/Chrome/HTTP con media virtual; cuatro registros nativos son fixtures del plano de control. Native4/3/2/1 mantiene mute sin ACK y resume deshabilitado; retiro zone_setup final alcanza0/ACK y luego resume autenticado separado. No ejecución de CLI nativos, micrófono físico o interacción móvil."
+    },
+    {
+      "stage": "dirigida Mac G",
+      "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/g-directed-first",
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/g-directed-first/component-proof.json",
+        "sha256": "44454fbe99f3b945bd21ad136dc67be95ec2cde8bd911ef2e73c0b5115718908",
+        "bytes": 3676
+      },
+      "pytest_exit_code": 0,
+      "driver_exit_code": 0,
+      "session_id": 59316,
+      "counts": {
+        "passed": 653,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "xml_duration_s": 131.673,
+      "source_files": 1016,
+      "script_files": 37,
+      "classification": "Unión exacta de602 IDs F conservados,5backend,9cliente,25integraciónG y12auth exactos nuevos; no suma de tandas repetidas. Source/protected antes/después idénticos. La clasificación inicial del parser de colección es preparación, no RED de producto."
+    },
+    {
+      "stage": "primera full normal Mac G, no aceptada",
+      "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/g-native-full-attempt-01",
+      "first_outcome": {
+        "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/g-native-full-attempt-01/first-outcome.json",
+        "sha256": "62d38f4b852c10fbab5a30f7484013ab4321813cf1732aad1aeb2061494f1fef",
+        "bytes": 6494
+      },
+      "session_id": 91897,
+      "terminal_chunk": "a31380",
+      "pytest_exit_code": 1,
+      "runner_exit_code": 1,
+      "counts": {
+        "total": 8393,
+        "failed": 3,
+        "passed": 8389,
+        "xfailed": 1
+      },
+      "XML_duration_s": 740.423,
+      "source_files": 1016,
+      "script_files": 37,
+      "source_unchanged": true,
+      "protected_unchanged": true,
+      "exact_expected_ids": true,
+      "classification": "Dos casos del fixture FD asumían /proc/self/fd de Linux y el cleanup de un fixture Hermes consultaba getpgid después de una carrera de salida. Estos tres fallos no son REDs de productoG ni de productor de captura; no se ocultan ni convierten en full válida."
+    },
+    {
+      "stage": "regresiones de portabilidad FD/Hermes después de full01",
+      "attempts": [
+        {
+          "attempt": 1,
+          "status_ref": {
+            "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/mac-fixture-regression-attempt-01/status.json",
+            "sha256": "29a5921450aa6680d5619c1078cf7a077e0ec503f58974a3837f4afbd032e818",
+            "bytes": 882
+          },
+          "junit_ref": {
+            "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/mac-fixture-regression-attempt-01/junit.xml",
+            "sha256": "f158aae6118b4ac2902da06d47d7ac8d05e7125a3ddf72c4bab834ab3c6bcc43",
+            "bytes": 11661
+          },
+          "counts": {
+            "tests": 48,
+            "failures": 1,
+            "errors": 0,
+            "skipped": 0
+          },
+          "XML_duration_s": 7.945,
+          "pytest_exit_code": 1,
+          "runner_exit_code": 1,
+          "actual_wait_returned": true,
+          "source_unchanged": true,
+          "exact_prior_IDs": true,
+          "classification": "47PASS/1FAIL: cleanup fixture own-group killpg raised Darwin EPERM; not G/product RED."
+        },
+        {
+          "attempt": 2,
+          "status_ref": {
+            "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/mac-fixture-regression-attempt-02/status.json",
+            "sha256": "bfae020e78fef68d9ab5979a1cb2eef45d2535f99dd12b0fc6b5185241c2596d",
+            "bytes": 976
+          },
+          "junit_ref": {
+            "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/mac-fixture-regression-attempt-02/junit.xml",
+            "sha256": "0f89870a0b2d71d40f1ab607bc65a77a9e3182d1a1af6c848915bd7a3376aaed",
+            "bytes": 16581
+          },
+          "counts": {
+            "tests": 48,
+            "failures": 1,
+            "errors": 0,
+            "skipped": 0
+          },
+          "XML_duration_s": 7.876,
+          "pytest_exit_code": 1,
+          "runner_exit_code": 1,
+          "actual_wait_returned": true,
+          "source_unchanged": true,
+          "exact_prior_IDs": true,
+          "classification": "47PASS/1FAIL: added immediate wait(timeout0) was an over-strict fixture oracle; original real wait(timeout3) returned. Not evidence of persistent live child."
+        },
+        {
+          "attempt": 3,
+          "status_ref": {
+            "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/mac-fixture-regression-attempt-03/status.json",
+            "sha256": "1ca2493d9ca560fe9b6f6c15ed2d902c27d3bf1ac7f0adaa78d2c5ba54eba3d8",
+            "bytes": 976
+          },
+          "junit_ref": {
+            "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/mac-fixture-regression-attempt-03/junit.xml",
+            "sha256": "c3fa1b5350ece27136e5d9fe299d69104a022c459576e35414620e12a9873ec9",
+            "bytes": 7688
+          },
+          "counts": {
+            "tests": 48,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "XML_duration_s": 7.668,
+          "pytest_exit_code": 0,
+          "runner_exit_code": 0,
+          "actual_wait_returned": true,
+          "source_unchanged": true,
+          "exact_prior_IDs": true,
+          "classification": "48PASS: final fixture keeps exactly the original captured real wait(timeout3); EPERM alone is accepted only after that actual wait returns. Other errors/timeouts/pipe failures still fail."
+        }
+      ],
+      "final_terminal": {
+        "session_id": 9873,
+        "terminal_chunk": "17ab06",
+        "terminal_consumed": true,
+        "observed_by": "root",
+        "exit_code": 0,
+        "observed_at_utc": "2026-11-05T12:18:15.554902+00:00"
+      },
+      "final_result": "48PASS, terminal0; mismos IDs/presupuestos, sólo2testfiles cambiados.",
+      "FD_observer": "Darwin usa/dev/fd; la sonda stdlib observa4→5→4 y EBADF tras os.close real. La sonda acredita el observador, no demuestra por sí sola cleanup productivo.",
+      "Hermes_cleanup": "El patch final mantiene UNwait real(timeout3) original. Captura sólo errno.EPERM del killpg propio y lo tolera únicamente tras retorno real de ese wait; no añade wait0, reintentos ni plazos y mantiene errores/pipe failures observables."
+    }
+  ],
+  "counting_rule": "Tandas y repeticiones se solapan; no sumar31/58/24/25 ni sus duraciones como un total de validación. La futura unión dirigida/full debe derivarse de IDs reales.",
+  "validation": {
+    "G_browser": {
+      "status": "verified_scoped_desktop_HTTP_fixture",
+      "review": {
+        "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/g-browser-review.json",
+        "sha256": "09ce0897ede88fbf1ed7255f5fc83a7ed201dd6beb20dbc45763e6d2687ec4c9",
+        "bytes": 11116
+      },
+      "session_id": 14533,
+      "runner_exit_code": 0,
+      "fixture_exercise_duration_s": 11.695823192596436,
+      "runner_wall_duration_s": 16.710433,
+      "native_count_sequence": [
+        4,
+        3,
+        2,
+        1,
+        0
+      ],
+      "scope": "First actual Mac desktop Chrome G four-namespace capture-control scenario; browser fake media and HTTP fixture registrations only.",
+      "limits": [
+        "All four native participants here are HTTP control-plane fixtures. This does not run MultiMicCapture, zone_setup or other native CLIs and does not prove real audio/USB/provider/model hardware retirement.",
+        "The primary Popen/process-group receipt does not establish retirement of every hidden OS browser helper, SDK private buffer or allocator.",
+        "The recorded external-attempt list is the existing Python loopback guard; browser proxy restrictions are preserved, without adding a universal egress claim.",
+        "The 390px screenshot remains observation only. No mobile interaction, accessibility, iPhone/C07, physical field or complete visual acceptance. Screenshots are from the preserved browser prefix, not each native count.",
+        "No normal full suite, goal completion, criterion acceptance, production release or identity/auth/consent change is claimed.",
+        "Initial Mac F browser-attempt-01 and browser-review.json and historical Linux receipts remain untouched under their original source bindings."
+      ],
+      "native_CLI_retirement_is_not_proved_by_browser": true
+    },
+    "aggregate_directed": {
+      "status": "verified_scoped_directed_not_full",
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/g-directed-first/component-proof.json",
+        "sha256": "44454fbe99f3b945bd21ad136dc67be95ec2cde8bd911ef2e73c0b5115718908",
+        "bytes": 3676
+      },
+      "terminal": {
+        "actual_terminal_consumed": true,
+        "exec_session_id": 59316,
+        "initial_chunk": "57774c",
+        "terminal_chunk": "f642d1",
+        "driver_exit_code": 0,
+        "pytest_exit_code": 0,
+        "actual_popen_wait_returned": true,
+        "pytest_pid": 51984,
+        "runner_pid": 51978,
+        "state": "finished",
+        "counts": {
+          "tests": 653,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        "xml_time_s": 131.673,
+        "source_unchanged": true,
+        "protected_unchanged": true,
+        "runner_unchanged": true,
+        "no_timeout_or_storage_abort": true
+      },
+      "source_files": 1016,
+      "script_files": 37,
+      "exact_identity_set": true,
+      "identity_arithmetic": "602 accepted F IDs union5backend union9client union25G union12exact zone-setup auth =653; all retained",
+      "source_before_after_identical": true,
+      "protected_before_after_identical": true,
+      "binding_note": "653 aprobados sobre su snapshot original. Antes de full02 cambiaron sólo dos tests legacy de portabilidad; no cambia productoG. El delta tiene una regresión propia de48 casos, no un nuevo resultado653 ni una suma."
+    },
+    "final_owner_peer_review": {
+      "status": "approved_static_correction_with_separate_runtime_G25",
+      "review": {
+        "path": "data/autonomous-roadmap-20261102/mac-resume-20261105/g-owner-stop-fix-review.json",
+        "sha256": "2075963c9b5cf779e3372d8defe68bf9905d1d3b1e175cb84d902ae298153a8b",
+        "bytes": 2309
+      },
+      "source_sha256": "7ea7c2125bbb0823a8d2a6f002e2b25ca2810998dc0a660ecedd4604a72c6f40",
+      "prior_open_review_preserved": true,
+      "scope": [
+        "This closes the identified static epoch blocker, not an entire full-suite or hardware acceptance.",
+        "No global SDK/private-memory wipe or detached-work retirement claim.",
+        "Historical g-owner-review.json remains unchanged as evidence of the old cut."
+      ]
+    },
+    "normal_full_Mac": {
+      "proof": "data/autonomous-roadmap-20261102/mac-resume-20261105/g-native-full-attempt-02/acceptance-proof.json",
+      "proof_sha256": "620d01f627998f7947c8d01b3ad6166a26022723ec9d206c370bc4226d889c79",
+      "counts": {
+        "passed": 8392,
+        "xfailed": 1,
+        "failed": 0,
+        "errors": 0,
+        "ordinary_skips": 0,
+        "total": 8393
+      },
+      "runtime": {
+        "implementation": "cpython",
+        "version": [
+          3,
+          13,
+          18
+        ],
+        "platform": "darwin",
+        "machine": "arm64",
+        "prefix": "/Users/gabriel/Documents/Proyectos/kza/.venv"
+      },
+      "XML_duration_s": 583.548,
+      "source_files": 1016,
+      "script_files": 37,
+      "minimum_available_bytes": 220046561280,
+      "prior_F_8342_IDs_preserved": true,
+      "new_IDs": 51,
+      "known_xfail_identity": [
+        "tests.unit.nlu.test_regex_extractor",
+        "test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]"
+      ],
+      "no_timeout_or_storage_abort": true
+    }
+  },
+  "counts_not_additive": "Directed653 includes F602+5backend+9client+25G+12auth. Component58/25, fixture48 and full8393 overlap; no counts are added across runs.",
+  "first_native_Mac_full": {
+    "status": "failed_preserved_not_accepted",
+    "counts": {
+      "total": 8393,
+      "failed": 3,
+      "passed": 8389,
+      "xfailed": 1
+    },
+    "evidence": "data/autonomous-roadmap-20261102/mac-resume-20261105/g-native-full-attempt-01/first-outcome.json",
+    "classification": "Two fixture preconditions used Linux /proc/self/fd; Hermes fixture cleanup rediscovered an already-terminating child PGID. No G product delta was needed between native full attempts."
+  },
+  "Mac_fixture_replays": [
+    {
+      "attempt": 1,
+      "pytest_exit_code": 1,
+      "runner_exit_code": 1,
+      "counts": {
+        "tests": 48,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 0
+      },
+      "source_unchanged": true,
+      "exact_prior_IDs": true,
+      "timed_out": false
+    },
+    {
+      "attempt": 2,
+      "pytest_exit_code": 1,
+      "runner_exit_code": 1,
+      "counts": {
+        "tests": 48,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 0
+      },
+      "source_unchanged": true,
+      "exact_prior_IDs": true,
+      "timed_out": false
+    },
+    {
+      "attempt": 3,
+      "pytest_exit_code": 0,
+      "runner_exit_code": 0,
+      "counts": {
+        "tests": 48,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "source_unchanged": true,
+      "exact_prior_IDs": true,
+      "timed_out": false
+    }
+  ],
+  "Mac_fixture_correction": "Darwin uses /dev/fd with the same exact FD counts and retained exception. Hermes uses its recorded owned group; EPERM is accepted only after its sole original real wait(timeout3) returns. Both actual pipe closes remain mandatory. The intermediate wait0 check was too early; all outcomes are preserved, with no skipped tests or increased original budget.",
+  "checkout_bytecode": "920 ignored checkout pycs quarantined privately after first native full retained historical Linux co_filename values. Fresh Mac compilation uses unchanged interpreter flags; source and copied Linux venv untouched.",
+  "source_sha256": {
+    "scripts/zone_setup.py": "71b543a294d6505277c2f264d4ffeeaefd956a7c19abc9bc1a381b7553402a10",
+    "src/audio/multi_mic_capture.py": "7ea7c2125bbb0823a8d2a6f002e2b25ca2810998dc0a660ecedd4604a72c6f40",
+    "src/audio/native_capture_authority.py": "415af94abea337928b25c5f5cafb0106a4ea031797e0f48a3c375cf243fbda58",
+    "src/audio/zone_capture.py": "5ed0bbda11b31410a8e48636040f5dad704f99930c98ba65b5e01c6fa6c594ab",
+    "src/dashboard/auth.py": "273c07a97987cf31c6017a4fd9eb44108607302758711657c88f111054bd02f7",
+    "src/dashboard/capture_browser_api.py": "f89c7349e140a549b625a7b70fff49995f6d0f4b84f264fb12059052489c93b4",
+    "src/memory/capture_control.py": "35cf1c76175b6635992fa1ccae1594b366f09355bc533c056563e6fb95622e3c",
+    "src/memory/capture_recorders.py": "a6e8c32e6a67bb21a6e1388afb22d794f0501866d037018f718af41897bbb6ba",
+    "tests/frontend/browser_global_capture.py": "9c9341c05e5bae89e386d31e14211543b03be63f3ce95a90cf10a8ee51872c1d",
+    "tests/integration/test_capture_native_clients.py": "b94b6c5e9e06d31484a0049a73a97916ea379d4a436601b6934c4212ed30a773",
+    "tests/integration/test_collector_erasure.py": "df253eb9afd27e6e85910122ef1e35e401da55a8caca55a1b19bca8f68d0031c",
+    "tests/integration/test_hermes_process_retirement.py": "d80234e00aae85ef4aebf998d803356df5f1faf045ae622b2d97e2d3dc29b0b5",
+    "tests/integration/test_zone_capture_authority.py": "1f90d3e19932e40416df4303031ec0e5c375ec20c812977d9bd692db567cdeff",
+    "tests/mocks/zone_capture.py": "3301bde30395e21360e2217b64526481d4fc6752b675559e2e945d91effdca83",
+    "tests/unit/audio/test_native_capture_authority_client.py": "29326aedcc4c794be20b236e339ccd1a8c4780ab899c155491bacd47dfc4587b",
+    "tests/unit/dashboard/test_private_access.py": "a365e76e3a450c8b30c989ffae5e4bf5d3ff0a2053bec3538d15b58fb0c10bab"
+  },
+  "artifact_sha256": {
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/g-native-full-attempt-02/acceptance-proof.json": "620d01f627998f7947c8d01b3ad6166a26022723ec9d206c370bc4226d889c79",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/g-native-full-attempt-01/first-outcome.json": "62d38f4b852c10fbab5a30f7484013ab4321813cf1732aad1aeb2061494f1fef",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/mac-fixture-regression-attempt-03/status.json": "1ca2493d9ca560fe9b6f6c15ed2d902c27d3bf1ac7f0adaa78d2c5ba54eba3d8",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/mac-fixture-regression-attempt-03/terminal-receipt.json": "b9bcbd8732848970790903745a73b20dbf65af0d4815b5ad72c497d2a855e594",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/mac-fixture-only-source-delta-final.json": "ae6464dd8a13536f1bcd9512f4064408e4141fc8572d4fb389a2ea5fc58713c7",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/checkout-bytecode-quarantine.json": "cd558c24545c21299b2a6a3ae8e0b0444a6e04434d7c565857fc9feafb3c3a5a",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/g-baseline/baseline-proof.json": "5b8cb5a06f2d09de343c7aeaafc57bb7b0f305c0cc8b0c357766b0e4eae14f89",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/g-integration-first/initial-classification.json": "9ae8b65f4bfa41f113e2903b031465b5808206dd4ff865142a5365d699924ced",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/g-integration-second/component-proof.json": "f2d351bc59f0c9c79676b6be82cacb8a6dc95635998d4773af7fc262b8fd4aba",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/g-stale-stop-baseline/baseline-proof.json": "1e67aa2222368759687356e14272c220b48a670e8e92ed49c2ece6507980d85d",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/g-integration-third/component-proof.json": "60a4fd97e8cbd69bd0be54017f49da647c24af57fab1fe7e061a5afaf0497831",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/g-backend-client/review.json": "106e9d520e18387ecc49f9be9836486aafad3777d631664b9782e656f2f25594",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/g-owner-stop-fix-review.json": "2075963c9b5cf779e3372d8defe68bf9905d1d3b1e175cb84d902ae298153a8b",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/g-browser-review.json": "09ce0897ede88fbf1ed7255f5fc83a7ed201dd6beb20dbc45763e6d2687ec4c9",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/g-directed-first/component-proof.json": "44454fbe99f3b945bd21ad136dc67be95ec2cde8bd911ef2e73c0b5115718908",
+    "data/autonomous-roadmap-20261102/mac-resume-20261105/fd-observer-fix/review.json": "15ae6f3056b2ff865272a77d6791442d7ff25ddd847dd755d2e36286c73ecef7"
+  },
+  "roadmap_boundaries": {
+    "T023": "in_progress",
+    "T022": "in_progress",
+    "T024": "planned",
+    "criteria": "All21 not_evaluated; no criterion accepted",
+    "T020_P1_T047": "Preserved with all49 other tasks, phases, budgets and separate voice/person/account/consent/admin/capture/action authorities."
+  },
+  "delivery": {
+    "implementation_pushed": true,
+    "tracking": "Included in the commit containing this report; final push and clean-tree receipt are private checkpoint/delivery metadata.",
+    "goal": "Same goal remains incomplete; user requested pause after delivery for a new session. Confirm actual goal API state on resume."
+  },
+  "next_unit": {
+    "unit": "T023-H/manual-voice-command-capture-and-action-boundary",
+    "plan": "docs/plans/2026-11-05-manual-voice-command-continuation.json",
+    "status": "proposed_read_only_no_runtime_no_RED"
+  },
+  "limits": [
+    "Native Mac synthetic-leaf regression does not prove physical audio/USB/models/GPU/HA/mobile or production.",
+    "No SDK-private memory/allocator erasure, all-producer inventory, T024 deletion/restore or detached-work retirement acceptance.",
+    "Historical getters and already borrowed arrays retain their prior semantics. No wipe of consumer-owned payload is claimed.",
+    "No release/deployment, permission expansion or whole-goal completion."
+  ]
+}

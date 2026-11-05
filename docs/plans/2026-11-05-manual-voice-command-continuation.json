@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "status": "proposed_read_only_no_implementation_no_runtime_no_RED",
+  "suggested_unit": "T023-H/manual-voice-command-capture-and-action-boundary",
+  "priority": "Próxima entrada viva concreta ya registrada en el plan G y el inventarioQ, antes de alegar mute total; StreamingSTT permanece condicional sin caller productivo acreditado. No iniciar esta unidad antes del cierreG y la reanudación del mismo goal.",
+  "source": {
+    "path": "scripts/test_voice_command.py",
+    "sha256": "b8139922976b1ce985caba221b730889c41b7d30096307637f48d196fb8b7414",
+    "bytes": 8027,
+    "public_symbols": [
+      "record(duration,device,fs=16000)",
+      "main()",
+      "call_ha_service(domain,service,entity_id)"
+    ]
+  },
+  "navigation": "Serena overview y cuerpos record/main/call_ha_service; rg limitado a imports, lectura de .env y flags. Ningún import del script.",
+  "current_symbols": {
+    "record": "sd.rec/sd.wait de6canales; retorna view[:,0] del backing multicanal y reporta RMS.",
+    "main": "Carga Whisper crudo/BGE-M3/Chroma antes del loop; transcribe, filtra intención, consulta vectores y puede actuar HA. --no-execute evita sólo la llamada HA, no la captura ni modelos.",
+    "call_ha_service": "urllib POST con credenciales HA preexistentes; permiso de capturar no concede permiso de actuar.",
+    "module_setup": ".env se lee al importar y HOME_ASSISTANT_URL/TOKEN se resuelven al nivel de módulo. Un baseline no puede importar sin aislar explícitamente esa hoja privada."
+  },
+  "first_safe_baseline": {
+    "public_API": "record(.01,17,fs=16000)",
+    "protocol": "Subproceso aislado, mismo archivo sin editar; loader con Path.read_text intervenido sólo para la ruta exacta ROOT/.env con dos valores sintéticos y entorno sintético. No leer el .env real. sounddevice rec/wait hojas finitas con Thread/handle real y PCM6ch generado; assert retorno mono160samples, RMS y alias source→view actuales; finallyrelease+join real.",
+    "classification": "Caracterización de admisión sin binding, no bypass de DB ajena ni RED por API futura ausente. Capturar hash/sourcebeforeafter/comando/log/XML/terminal antes de editar.",
+    "not_executed": true
+  },
+  "candidate_followup_oracles": [
+    "Antes de cualquier nuevo SDK/captura debe existir autoridad explícita original y kind fijo, con denegación muted/HOME/EVALUATOR antes de la hoja viva.",
+    "Unir InputStream/read, callback/model-call/segment iteration y publicación admitida antes del ACK; conservar owner si constructor/cierre no tiene recibo. No inventar un close SDK inexistente.",
+    "Conservar canales/RMS, parámetros STT, prioridad léxica turn_off/turn_on, filtroChroma/ranking/threshold/no-results y --once/--no-execute. Los cambios de GPU/modelos no son parte de este paso.",
+    "Probar el flujo --once --no-execute con hojas SDK/vectores sintéticas, sin modelos ni HTTP HA. La rama de acción requiere revisión explícita separada: el permiso de captura y una voz/persona/account no se transforman en permisoHA.",
+    "La interacción stdin no debe esconder un dueño vivo ni bloquear silenciosamente retiro; fijar el alcance de su recibo antes de implementar."
+  ],
+  "implementation_scope_decision_pending": "Root seleccionará el alcance cohesivo y sus archivos tras revisar autoridad de acción/loop/model lifetime. No se propone ejecutar el script legacy, tocar producción o añadir roles por inferencia.",
+  "not_selected": [
+    "train_nexa/train_che_bo y acciones de servicio/despliegue",
+    "StreamingSTT condicional",
+    "T024 borrado/restauración",
+    "disposición privada de vendor/driver",
+    "aceptación física/móvil/C04/21criterios"
+  ],
+  "references": [
+    {
+      "path": "docs/plans/2026-11-05-multimic-capture-continuation.json",
+      "sha256": "50debb719a9f51ed30fd35fce4f3a43cb7c767474ee4a977c2eab5424d42fdd1",
+      "bytes": 6872
+    },
+    {
+      "path": "docs/research/2026-11-04-resource-inventory.json",
+      "sha256": "7c98e5b62e65475b564922e215cfb21dbbf3b24100a06929444f92e8f5714d48",
+      "bytes": 903574
+    }
+  ],
+  "actions_performed": "Sólo lectura focal y este diseño privado; sin imports del proyecto, modelos, SDK, runtime, tests, HA, credenciales privadas, Git ni implementación.",
+  "artifact_type": "portable_proposed_plan",
+  "unit": "T023-H/manual-voice-command-capture-and-action-boundary",
+  "next_action_spanish": "Al reanudar el mismo goal después del cierre G, revisar captura, resultados y acción en scripts/test_voice_command.py. Preparar primero un baseline público sintético y acotado sin leer la .env privada, cargar modelos ni llamar HA; después fijar una autoridad de captura explícita separada del permiso de actuar. No implementar durante el cierre de G.",
+  "source_revision_binding": "Fuente actual comprobada contra source-before de full02 G; el hash de este script permanece igual al inventarioQ y a la lectura focal anterior.",
+  "preserved_boundaries": {
+    "T022": "in_progress",
+    "T023": "in_progress",
+    "T024": "planned",
+    "all21criteria": "not_evaluated",
+    "T020_P1_T047": "unchanged",
+    "same_goal": "Reanudar el mismo objetivo según su estado real; no crear otro ni exigir una autorización nueva para trabajo ya incluido. El cierreG/pausa precede esta continuación."
+  },
+  "no_execution_or_implementation": true,
+  "publication_gate": "G verified and delivered; H remains proposed and requires source review before runtime.",
+  "handoff": "docs/runbooks/2026-11-05-mac-development-handoff.md",
+  "preceding_verified_unit": {
+    "unit": "T023-G",
+    "implementation_commit": "43b44b933d8bff8a8a8bd2bdbd4f4d5555bfc743",
+    "evidence": "docs/research/2026-11-05-zone-setup-capture-authority.json"
+  }
+}

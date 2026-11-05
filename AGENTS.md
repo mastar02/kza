@@ -7,8 +7,8 @@
 - La migración a Mac fue autorizada el 2026-11-05. En ese equipo, usar la
   cuenta habitual sin privilegios y su checkout local; confirmar usuario,
   ruta y arquitectura reales al retomar, sin reproducir la cuenta ni la ruta
-  Linux. La preparación Mac todavía requiere verificación de dependencias y
-  pruebas; consultar `docs/runbooks/2026-11-05-mac-development-handoff.md`.
+  Linux. El estado verificado de dependencias y pruebas locales en Mac está
+  registrado en `docs/runbooks/2026-11-05-mac-development-handoff.md`.
 - `kza` es la cuenta administrativa y de ejecución del servidor. Tiene UID 1000
   y pertenece a `sudo`; no usar sus privilegios para tareas de desarrollo.
 - No editar el código ni instalar dependencias en `/home/kza/kza` o

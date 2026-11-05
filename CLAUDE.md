@@ -4,8 +4,9 @@
 
 En Linux, desarrollar, probar, construir y operar Git como `yo` en
 `/home/yo/projects/kza`. La migración a Mac autorizada el 2026-11-05 permite
-trabajar con la cuenta y el checkout locales del nuevo equipo; su preparación
-y compatibilidad todavía deben verificarse. Leer primero `AGENTS.md` y
+trabajar con la cuenta y el checkout locales del nuevo equipo. El estado de
+sus dependencias, pruebas nativas y límites se registra en el handoff.
+Leer primero `AGENTS.md` y
 `docs/runbooks/2026-11-05-mac-development-handoff.md`. La cuenta `kza` es
 administrativa y de ejecución: no editar ni instalar dependencias de desarrollo
 en su despliegue. El servidor permanece bajo `kza`; las versiones se publican

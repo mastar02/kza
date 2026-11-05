@@ -1207,7 +1207,8 @@
         "f3c9d66b2f0098cf94a1634489410bba9f2b7dbf",
         "80d22351cccb42c6b9a892bd864a1a7a97508cd9",
         "05b6dfe61956c72e4967a509ffe7bc1091b3f00f",
-        "38f3912d5272be408f9d27afb74a298a54d2b5ac"
+        "38f3912d5272be408f9d27afb74a298a54d2b5ac",
+        "43b44b933d8bff8a8a8bd2bdbd4f4d5555bfc743"
       ],
       "evidence": [
         "docs/research/2026-11-04-capture-suspension-composition.json",
@@ -1229,9 +1230,12 @@
         "data/autonomous-roadmap-20261102/t023/f/evidence.json",
         "data/autonomous-roadmap-20261102/t023/f/normal-full-attempt-01/acceptance-proof.json",
         "docs/runbooks/2026-11-05-mac-development-handoff.md",
-        "docs/plans/2026-11-05-multimic-capture-continuation.json"
+        "docs/plans/2026-11-05-multimic-capture-continuation.json",
+        "docs/research/2026-11-05-zone-setup-capture-authority.json",
+        "docs/plans/2026-11-05-manual-voice-command-continuation.json",
+        "data/autonomous-roadmap-20261102/mac-resume-20261105/g-native-full-attempt-02/acceptance-proof.json"
       ],
-      "next_action": "T023-F verificada localmente: diagnóstico vivo de seis canales bajo autoridad administrativa explícita; captura, inferencia cruda, reportes y referencias Python esperan sus retornos reales antes del ACK. Pasan 602 dirigidos y una full con 8341 aprobados y una xfail conocida, sobre 1013 archivos incluidos 37 scripts sin cambios durante esa ejecución. Se conservan 8295 IDs de E y 47 nuevos. El primer fallo del bloque owner fue del observador de handle y se conserva sin llamarlo RED de producto. Los helpers históricos siguen separados; no se inventa Model.close ni memoria SDK borrada. Chromium escritorio verifica 3→2→1→0 con clientes HTTP de prueba. El usuario pidió cerrar F y pausar el mismo goal por migración a Mac; retomar según docs/runbooks/2026-11-05-mac-development-handoff.md y el plan portable docs/plans/2026-11-05-multimic-capture-continuation.json. Después continuar con: Vincular las entradas vivas test-mic y test-detection de zone_setup y MultiMicCapture a una autoridad administrativa explícita, con propiedad previa de cada stream y retiro real de callbacks, colas y reportes antes del ACK; conservar separadas la consulta de dispositivos, la reproducción sintética y los controles MA1260.. T023/T022/T024, C04 y los 21 criterios permanecen abiertos; T020/P1/T047 y autoridades separadas."
+      "next_action": "T023-G verificada localmente en Mac: MultiMicCapture y zone_setup test-mic/test-detection requieren la autoridad administrativa original; se confirma el retiro de streams, callbacks, reportes y monitor, y se protege la época nueva del stop anterior. Pasan 653 dirigidos y full Mac 8392 PASS + una xfail conocida: 8393 IDs exactos, 1016 archivos incluidos 37 scripts intactos. Se conservan la primera full fallida y todos los replays; sólo se portaron dos fixtures entre las full, sin cambiar el producto G. Chrome verifica 4→3→2→1→0 sólo como control HTTP. Cierre para otra sesión del MISMO goal: leer el handoff Mac y el informe G. H está propuesta para revisar captura frente a acción en scripts/test_voice_command.py; primero lectura y baseline aislado, sin importar .env privada ni llamar modelos o HA. T023/T022/T024/C04 y los 21 criterios siguen abiertos; T020/P1/T047 y permisos separados se conservan."
     },
     {
       "id": "T024",
@@ -2396,7 +2400,7 @@
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T023-F/policy-bound-live-wakeword-diagnostics",
+    "last_verified_unit": "T023-G/policy-bound-multimic-zone-setup",
     "user_priority_after_admin_unit": "T047"
   }
 }
