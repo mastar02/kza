@@ -5,9 +5,17 @@
 
 ## Desarrollo y despliegue acordados — 2026-10-25
 
-El desarrollo, los tests, la construcción y Git se ejecutan como `yo` en
-`/home/yo/projects/kza`. `kza` es la cuenta administrativa y de ejecución del
-servidor (UID 1000, grupo `sudo`); no se usa para desarrollar ni compilar.
+En el entorno Linux, el desarrollo, los tests, la construcción y Git se
+ejecutan como `yo` en `/home/yo/projects/kza`. `kza` es la cuenta administrativa
+y de ejecución del servidor (UID 1000, grupo `sudo`); no se usa para desarrollar
+ni compilar.
+
+El 2026-11-05 se autorizó trasladar el entorno de trabajo a una Mac con cuenta
+y checkout locales propios. Esta autorización no equivale a una instalación
+Mac verificada ni modifica producción. La construcción y validación operativa
+de releases conservan el flujo Linux actual hasta verificar una alternativa
+compatible. La continuidad está en el
+[traspaso a Mac](../runbooks/2026-11-05-mac-development-handoff.md).
 
 El servidor, los servicios y sus datos continúan bajo `kza`. La publicación se
 hace al preparar una release. Mientras se desarrolla bajo `yo`, se conserva la

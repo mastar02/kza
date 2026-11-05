@@ -2,8 +2,11 @@
 
 ## Flujo de trabajo acordado — 2026-10-25
 
-Desarrollar, probar, construir y operar Git como `yo` en
-`/home/yo/projects/kza`. Leer primero `AGENTS.md`. La cuenta `kza` es
+En Linux, desarrollar, probar, construir y operar Git como `yo` en
+`/home/yo/projects/kza`. La migración a Mac autorizada el 2026-11-05 permite
+trabajar con la cuenta y el checkout locales del nuevo equipo; su preparación
+y compatibilidad todavía deben verificarse. Leer primero `AGENTS.md` y
+`docs/runbooks/2026-11-05-mac-development-handoff.md`. La cuenta `kza` es
 administrativa y de ejecución: no editar ni instalar dependencias de desarrollo
 en su despliegue. El servidor permanece bajo `kza`; las versiones se publican
 allí al hacer una release. Los archivos de la versión instalada se conservan

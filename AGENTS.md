@@ -2,8 +2,13 @@
 
 ## Cuenta y directorio de desarrollo
 
-- Desarrollar, revisar, probar, construir, commitear y pushear como usuario `yo`,
-  desde `/home/yo/projects/kza`.
+- En el entorno Linux, desarrollar, revisar, probar, construir, commitear y
+  pushear como usuario `yo`, desde `/home/yo/projects/kza`.
+- La migración a Mac fue autorizada el 2026-11-05. En ese equipo, usar la
+  cuenta habitual sin privilegios y su checkout local; confirmar usuario,
+  ruta y arquitectura reales al retomar, sin reproducir la cuenta ni la ruta
+  Linux. La preparación Mac todavía requiere verificación de dependencias y
+  pruebas; consultar `docs/runbooks/2026-11-05-mac-development-handoff.md`.
 - `kza` es la cuenta administrativa y de ejecución del servidor. Tiene UID 1000
   y pertenece a `sudo`; no usar sus privilegios para tareas de desarrollo.
 - No editar el código ni instalar dependencias en `/home/kza/kza` o

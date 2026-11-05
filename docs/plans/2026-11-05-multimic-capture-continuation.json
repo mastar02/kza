@@ -1,0 +1,97 @@
+{
+  "status": "proposed_read_only_no_runtime_no_RED",
+  "unit": "T023-G/MultiMicCapture-zone-setup-live-inputs",
+  "next_action_spanish": "Vincular las entradas vivas test-mic y test-detection de zone_setup y MultiMicCapture a una autoridad administrativa expl\u00edcita, con propiedad previa de cada stream y retiro real de callbacks, colas y reportes antes del ACK; conservar separadas la consulta de dispositivos, la reproducci\u00f3n sint\u00e9tica y los controles MA1260.",
+  "handoff": "No implementar G durante cierre F/migraci\u00f3n Mac. Es propuesta durable para retomar en sesi\u00f3n nueva el mismo objetivo; no cerrar tarea/criterios ni reiniciar inventario.",
+  "source_sha256": {
+    "src/audio/multi_mic_capture.py": "7716120a7fa743307b138075a97872aed7dbb760bf0edf5344eb91a527d95065",
+    "scripts/zone_setup.py": "cae155253fa2918cfef4a006cfd178ec0fb6e149cdd3ed237cd4b9d4df9c94ef"
+  },
+  "source_refs": [
+    {
+      "path": "src/audio/multi_mic_capture.py",
+      "symbol": "test_microphone",
+      "lines": "297-340",
+      "facts": "sd.rec/wait sin binding; devuelve RMS/peak/success y convierte error crudo a str"
+    },
+    {
+      "path": "src/audio/multi_mic_capture.py",
+      "symbol": "start",
+      "lines": "102-131",
+      "facts": "pone runningTrue, construye stream, llama start y reci\u00e9n registra handle; fallo intermedio se loguea sin retiro"
+    },
+    {
+      "path": "src/audio/multi_mic_capture.py",
+      "symbol": "_create_callback",
+      "lines": "133-187",
+      "facts": "running gate \u00fanico, RMS/buffer circular, copia AudioChunk/queue y callback externo; falta recibo de callback admitido y fence final de publicaci\u00f3n"
+    },
+    {
+      "path": "src/audio/multi_mic_capture.py",
+      "symbol": "stop",
+      "lines": "189-201",
+      "facts": "stop/close default, absorbe errores ordinarios y borra mapa de handles"
+    },
+    {
+      "path": "scripts/zone_setup.py",
+      "symbol": "cmd_test_mic",
+      "lines": "41-65",
+      "facts": "ruta p\u00fablica llama test_microphone y publica DTO"
+    },
+    {
+      "path": "scripts/zone_setup.py",
+      "symbol": "cmd_test_detection",
+      "lines": "121-194",
+      "facts": "crea configs/ZoneManager, captura.start, publica niveles/zone y finally stop; no locator/credencial/capture policy"
+    },
+    {
+      "path": "scripts/zone_setup.py",
+      "symbol": "main",
+      "lines": "264-345",
+      "facts": "ambas ramas vivas se despachan desde CLI; otras ramas deben conservar autoridad propia sin heredar permiso de captura"
+    }
+  ],
+  "coherent_scope": [
+    "Los dos comandos de entrada real y sus APIs p\u00fablicas MultiMicCapture, no s\u00f3lo un holder externo al CLI",
+    "Autoridad original admin:manage con nuevo kind/namespace fijo revisado, separado de browser/calibration/training/diagnostics; incluir count nativo",
+    "Adquirir ACTIVE antes de cualquier SDK/start; due\u00f1o por stream antes del constructor/start; fallo parcial retiene y drena todos los recursos conocidos",
+    "Sellar antes de parar, bloquear publicaci\u00f3n tard\u00eda al buffer/queue/callback/report, observar close estricto y actual callback/synchronous output return antes de retire remoto",
+    "Sin global sd.stop ni confianza en closed/flags despu\u00e9s de excepci\u00f3n; unreturned constructor y cleanup desconocido mantienen pendiente sin retry ciego",
+    "No tomar locks durante SDK/IO/callback externo; original caller/self-drain guard antes de esperar",
+    "No autorestart tras unmute; nueva invocaci\u00f3n/grant y epoch/source timestamp frescos; cola vieja no puede convertirse en entrada nueva",
+    "No inventar SDK close: InputStream ya tiene stop/close p\u00fablicos; model/providers/HA no son necesarios para esta unidad"
+  ],
+  "baseline_proposals": [
+    {
+      "public_API": "MultiMicCapture.test_microphone(17,.01)",
+      "safe_leaf": "m\u00f3dulo sounddevice sint\u00e9tico con rec/wait finitos, datos float32 generados y Thread real acotado; nada de micr\u00f3fono/modelos/servicios/HA",
+      "oracle": "observar admisi\u00f3n y DTO de captura sin autoridad expl\u00edcita; futuro default seguro debe negar antes SDK. No assert de m\u00e9todo nuevo ausente ni inferencia de bypass de DB ajena",
+      "cleanup": "liberar gate y unir Thread real en finally sin reset de flags/owners; la propuesta no es RED ejecutado"
+    },
+    {
+      "public_API": "MultiMicCapture([...dos MicrophoneConfig...]).start(); stop()",
+      "safe_leaf": "InputStream leaf controla Thread/callback real y puede lanzar despu\u00e9s de start delegado o en close; fixture conserva handle exacto",
+      "oracle": "retener mismo stream antes del start; detener todos/esperar callback real, y no perder handle ni declarar \u00e9xito cuando close falla. Baseline actual guarda handle despu\u00e9s de start y los borra tras error de stop/close",
+      "scope_limit": "excepci\u00f3n sint\u00e9tica demuestra obligaci\u00f3n de due\u00f1o/recibo, no fuga real del hardware PortAudio"
+    }
+  ],
+  "preserve": [
+    "RMS sqrt(mean(audio**2)), vad_threshold default .02, per-zone sample rate/channel/chunk settings",
+    "buffer circular/wraparound, levels and loudest-zone rules; no mutar arrays prestados a callers",
+    "Historial publicado conserva identidad/edad; definir cola viva/epoch al pausar/reiniciar sin prometer borrado global",
+    "DTO metrics success/rms/peak/duration/has_signal y shell exit0/1 cuando retiro est\u00e9 confirmado; errores nuevos seguros sin SDK payload",
+    "Consulta de dispositivos y tono de test-zone son ramas distintas de captura; MA1260 serial/control no obtiene permiso por el nuevo actor de captura"
+  ],
+  "unknowns": [
+    "ZoneManager constructor/transitive playback no se audit\u00f3 aqu\u00ed; pr\u00f3xima lectura focal antes de ejecutar G: src/audio/zone_manager.py::ZoneManager.__init__ para confirmar participantes de cmd_test_detection. No asumir ausencia de recursos por no ver InputStream en este archivo.",
+    "Contrato de callbacks/AudioChunk cedidos a consumidores exige no liberar payload prestado como si propio; inventario de copias/TTL/borrado sigue T022/T024",
+    "Actual autoridad/namespace y tests de loopback deben dise\u00f1arse antes de atribuir una pol\u00edtica Dashboard espec\u00edfica al API hoy no ligado"
+  ],
+  "remaining_unselected": [
+    "scripts/test_voice_command.py sigue captura y acci\u00f3n HA separadas: no ejecutar ni mezclar autoridad de captura con permiso de actuar",
+    "train_nexa/train_che_bo legacy siguen con captura y acciones de servicio: no ejecutar ni reiniciar producci\u00f3n",
+    "StreamingSTT activaci\u00f3n condicional no resuelta",
+    "Productores hist\u00f3ricos/WAV/sint\u00e9ticos no se reclasifican como captura viva por este plan"
+  ],
+  "criteria": "Sin implementaci\u00f3n/Git/runtime ni aceptaci\u00f3n T023/C04/T022/T024/goal/all-producers."
+}

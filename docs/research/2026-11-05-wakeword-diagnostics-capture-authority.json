@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "unit": "T023-F",
+  "task_ids": [
+    "T023"
+  ],
+  "criterion_ids": [
+    "C04"
+  ],
+  "status": "verified_local_policy_bound_wakeword_diagnostics_scope",
+  "baseline_revision": "be32294784e9374cbc3713b5859f46066091f934",
+  "implementation_commit": "38f3912d5272be408f9d27afb74a298a54d2b5ac",
+  "sources": {
+    "scripts/diagnose_wakeword.py": "e009aa1fcfc50aeb911a28b3f0bcf5c6ce2448980fb7a7bb21f0c39147335a53",
+    "src/audio/native_capture_authority.py": "26d77556b703fb00c4e8ab3adadb60be21c26a1dfdacce8f526d702018d50030",
+    "src/dashboard/auth.py": "170de07b1091bdb9e12125ca294143c4aecb48018278e0637f43a1457349e541",
+    "src/dashboard/capture_browser_api.py": "b395e463482fa98077929fbc8149075521f61784405d0c61730a91b01f9dd3b8",
+    "src/memory/capture_control.py": "da1a112f747fb7e8c2ae4802014db76faaefbcca4f9440c23a1dcae3036865af",
+    "src/memory/capture_recorders.py": "b3e5eedd8989cc613c8559562d3e1bf60b3b2013859acbf79acb7c837f2dd339",
+    "src/wakeword/live_capture.py": "06e06dfc658f87544e45d689b5377b5260bc04d247cac4d19dcbec0613d150ab",
+    "tests/frontend/browser_global_capture.py": "2cd92e37c8ac3066db5c16e40a65cc369f920d0f547714cea2a141d727b11717",
+    "tests/integration/test_capture_native_clients.py": "78075cd7ad8b254f150294bfae4a8959d84e3f47a00064e7176c9497a7adf2e7",
+    "tests/integration/test_diagnostic_capture_authority.py": "c20ea28fc878822ff067ac985f99b97a6079eb80049ee71fe731a7f9deb997f7",
+    "tests/mocks/wakeword_diagnostics.py": "c21a48f859777d1ab3a65e3723e09885736531fe7adbbc4c7097955302a13000",
+    "tests/unit/audio/test_native_capture_authority_client.py": "1ff8011821e9e58964ec5b302e21dc19c8897dd2441f1c8dd0c62cc556705c0f",
+    "tests/unit/dashboard/test_private_access.py": "522dc121e905127266016a2f9f3a7dd331699a1e2ef0320b80c1bcb9ca3f31da",
+    "tests/unit/wakeword/test_live_diagnostics.py": "d198ad99d8e2f03655fae792e16c71010afb4a199076973c2e46d04937c3e522"
+  },
+  "change": "Standalone diagnose_wakeword main now requires explicit original administrative authority before live input/model acquisition and owns all reports derived from that invocation.",
+  "authority": "Original admin:manage; fixed wakeword_diagnostics and /api/capture/native/wakeword-diagnostics/. HOME/EVALUATOR/voice/person/account permissions do not imply admin. Retire-only capability plus Origin after logout grants no registration, read, activation or resume authority.",
+  "native_order": [
+    "Reserve, activate and monitor before a known owned six-channel InputStream at16000Hz/device9; read blocks up to1280, strict same-stream stop/close, no global rec/wait/stop.",
+    "Close the actual input before raw Model construction; retain each synchronous constructor, predict and admitted scalar report through actual return.",
+    "Own/release Python Model references, observing actual destructor return; no invented Model.close/reset/dispose or vendor-native shutdown receipt.",
+    "Drop owned PCM/model/report references, join the real monitor, then explicitly retire the remote producer. Constructor/close uncertainty stays pending; permission resume never auto-restarts."
+  ],
+  "protected_semantics": "Defaults16000Hz/4seconds/device9/6channels/1280frames; RMS/peak/marker/argmax; hey_jarvis/onnx; normalized/scaledfloat32 inputs and conditional best-channel variant; max/mean/stabletop5/timestamps are protected by original baseline and both actual integration branches.",
+  "historical_helpers": "analyze_channels supplied arrays with emit and run_openwakeword supplied arrays with capture=None remain distinct from new microphone activation; no blanket mute prohibition on historical analysis.",
+  "cli": {
+    "checks": {
+      "passed": 3,
+      "checks": [
+        {
+          "args": [
+            "--help"
+          ],
+          "exit_code": 0,
+          "log": "data/autonomous-roadmap-20261102/t023/f/cli-checks/00.log"
+        },
+        {
+          "args": [],
+          "exit_code": 2,
+          "log": "data/autonomous-roadmap-20261102/t023/f/cli-checks/01.log"
+        },
+        {
+          "args": [
+            "--dashboard-url",
+            "http://127.0.0.1:9",
+            "--token-env",
+            "KZA_DIAGNOSTIC_ABSENT"
+          ],
+          "exit_code": 2,
+          "log": "data/autonomous-roadmap-20261102/t023/f/cli-checks/02.log"
+        }
+      ]
+    },
+    "scope": "Real help0, missingURL2 and explicitly missingcredential2; no SDK/HTTP capture opened. These are parser checks, not additional full test IDs."
+  },
+  "reference_scope": "Python weakrefs/destructor and actual synchronous/native fixture returns do not prove hidden SDK aliases, allocator memory, physical device closure or erasure.",
+  "counts": {
+    "directed_passed": 602,
+    "new_explicit_cases": 35,
+    "new_dynamic_private_auth": 12,
+    "new_total_IDs": 47,
+    "prior_E_IDs_preserved": 8295
+  },
+  "counts_not_additive": "Backend 53, client 31, integration 16 and accepted owner 16 (8 E plus 8 F) overlap directed/full and are not added. Historical baseline 1 is not a bypass RED or extra final coverage.",
+  "subgroups": {
+    "backend": {
+      "session_id": 14520,
+      "terminal_consumed": true,
+      "real_exit_code": 0,
+      "passed": 53,
+      "failed": 0,
+      "errors": 0,
+      "skips": 0,
+      "XML_duration_s": 17.361,
+      "xml_sha256": "91d63dd723edc3848fa267847973ac90d3385bc47bab98fb681af1be93f768e9",
+      "log_sha256": "4c2d9f40422ce5618135e50f636b3c2f78f4b5ddea7fd6a942f00174e0e213a5",
+      "ruff": "5changedfiles exit0",
+      "first_outcome": "all53 passed first attempt; no retry/failure/RED claimed",
+      "full": "not run"
+    },
+    "client": {
+      "session_id": 93707,
+      "runner_terminal_exit_code": 0,
+      "terminal_observed_by": "ambient_audit",
+      "first_focused_attempt": true,
+      "tests_passed": 31,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xml_duration_s": 0.677,
+      "pytest_log_duration_s": 0.69,
+      "composition": "D14 + E10 + F7, not additive to any later integration/full count"
+    },
+    "integration": {
+      "passed": 16,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "XML_seconds": 39.227,
+      "log_seconds": 39.24
+    },
+    "owner": {
+      "accepted_focused_attempt": "attempt-02",
+      "session_id": 53377,
+      "runner_terminal_exit_code": 0,
+      "terminal_observed_by": "ambient_audit",
+      "tests_passed": 16,
+      "composition": "8 unchanged E owner cases plus 8 diagnostic cases; these counts overlap later directed/full suites.",
+      "xml_duration_s": 0.847,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "historical_baseline_passed": 1
+  },
+  "initial_owner_outcome": "First owner 10 PASS/6 FAIL was a test observer reading _thread after close cleared it. The same production source passed 16 after retaining and checking the original native handle. Source/log/XML and observer correction are preserved; no product RED or assertion/budget relaxation claimed.",
+  "normal_full": {
+    "counts": {
+      "passed": 8341,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfailed": 1
+    },
+    "total": 8342,
+    "duration_seconds": 851.448,
+    "source_files": 1013,
+    "script_files": 37,
+    "source_snapshot_sha256": "8a19cf1fcff24a78d7b95085344d36892205e15c54234bf32268e94bc1ced26e",
+    "minimum_available_bytes": 63994355712
+  },
+  "normal_full_proof": "data/autonomous-roadmap-20261102/t023/f/normal-full-attempt-01/acceptance-proof.json",
+  "genuine_original_policy_bypass_RED_count": 0,
+  "historical_scope": "Original main() admitted synthetic six-channel capture, raw model calls and scalar reports without an authority locator. No unrelated SQLite DB was used or presented as a policy bypass.",
+  "browser": "Approved desktop Chromium/React/HTTP observes native3→2→1→0: partial retirement never permits total ACK or resume; all three retirements permit ACK and explicit administrative resume. Native UI clients are HTTP fixtures, not tools/hardware; mobile remains observation only.",
+  "next_unit": "Vincular las entradas vivas test-mic y test-detection de zone_setup y MultiMicCapture a una autoridad administrativa explícita, con propiedad previa de cada stream y retiro real de callbacks, colas y reportes antes del ACK; conservar separadas la consulta de dispositivos, la reproducción sintética y los controles MA1260.",
+  "artifacts": {
+    "data/autonomous-roadmap-20261102/t023/f/normal-full-attempt-01/acceptance-proof.json": "14d81c6c5e813bc98f54801fc3239e802ee1910439357f2b8a935f72394eaf30",
+    "data/autonomous-roadmap-20261102/t023/f/full-review.json": "f522bb235e982a581d69a69eda5dd1545b72c1eabec0487ee704e31dbb4ae97a",
+    "data/autonomous-roadmap-20261102/t023/f/owner-unit-review.json": "19f492d4fd8e410a8e69d48bdf66862477434120dc8b8e7f69003b02a832ede1",
+    "data/autonomous-roadmap-20261102/t023/f/live-owner-review.json": "e070c9121a344f65a22e43bfba6a709454e38f61b763be0eaff72b8ef7411c53",
+    "data/autonomous-roadmap-20261102/t023/f/next-boundary-plan.json": "50debb719a9f51ed30fd35fce4f3a43cb7c767474ee4a977c2eab5424d42fdd1",
+    "data/autonomous-roadmap-20261102/t023/f/opening.json": "2d9f9fd8a934e45faec2269912b855733a759d6e82ed3b6745a5892612e5895c",
+    "data/autonomous-roadmap-20261102/t023/f/baseline/terminal-receipt.json": "0f98f64be9ec40807d408346bc6472f50f9c596d0dbdc436150706fb530c038e",
+    "data/autonomous-roadmap-20261102/t023/f/integration-review.json": "32d35af28f20cd0a74fc112feb7c808bab75c7be6633e59eb51784af0b7f98f7",
+    "data/autonomous-roadmap-20261102/t023/f/integration-first/inputs.json": "b54df13550777ec09552da279030bcfc859bf32727f985bfcd8e8e015ddde12d",
+    "data/autonomous-roadmap-20261102/t023/f/backend-notes.json": "39b55307650290c067c94dbebe1d6e769e7e5eaf41bd77a074861a85efe741e2",
+    "data/autonomous-roadmap-20261102/t023/f/client-tests/review.json": "0f3a0ae8b02d8973a96de3cb3ee16300accd4b9fcd735866671f6580bf5bff61",
+    "data/autonomous-roadmap-20261102/t023/f/client-preservation-proof.json": "36ced25f863d8f0e3785dde15ff28ce89da0c8298d65f11312c315a14d217536",
+    "data/autonomous-roadmap-20261102/t023/f/diagnostic-owner-tests/observer-correction.json": "535803160ef8a6286629e43fd0885602be2653bbdd2797ada78de2669138b8ef",
+    "data/autonomous-roadmap-20261102/t023/f/browser/review.json": "8d023fbdaf60cb36c071280827dabf64224e3470ca83f3aac05cd0047a0ca718",
+    "data/autonomous-roadmap-20261102/t023/f/cli-checks/status.json": "a4074b2d5b6dfd8dab2f4dd693a9b691eefed7d94e0f24d5588569831310b46b",
+    "data/autonomous-roadmap-20261102/t023/f/finalizer-preflight-review.json": "213935c3c295bcc347c6cc7fe08460c3aa6cf23d7b5a3ea125764b8fb4d08d81",
+    "data/autonomous-roadmap-20261102/t023/f/mac-handoff-preflight-review.json": "611cc0dfad8f247e9b3d90e93f5c4f354e4a121457fea5fab97e45c3eb1e7dc5",
+    "data/autonomous-roadmap-20261102/t023/f/mac-handoff-finalization.json": "be30f11e7d2623920b496ee6031b4cf85dd2092054689ef45606242f6e364a9e",
+    "data/autonomous-roadmap-20261102/t023/f/cli-checks/00.log": "b8ca5084d6edc6718a874a2649110ad5d9eb8f2beb159017cd88ac3ae30d15c3",
+    "data/autonomous-roadmap-20261102/t023/f/cli-checks/01.log": "4870044efee1ef21020cef224528adcf9181ae446ce73e0952f408b59c7ea5b8",
+    "data/autonomous-roadmap-20261102/t023/f/cli-checks/02.log": "61be641cfad707abd8d6986b2b1c1d4e52678aedba7f8ce397c4ee260c3c6f33"
+  },
+  "migration_handoff": {
+    "user_requested_finish_F_then_pause_same_goal": true,
+    "document": "docs/runbooks/2026-11-05-mac-development-handoff.md",
+    "portable_next_plan": "docs/plans/2026-11-05-multimic-capture-continuation.json",
+    "Mac_environment_verified": false,
+    "G_implemented_or_baseline_run": false
+  },
+  "limits": [
+    "Selected cooperative invocation only: synthetic SDK/device/model leaves with actual HTTP/SQLite, native fixture handles and Python-reference receipts.",
+    "No Model.close, hidden SDK/native allocation/wipe, physical capture or all-producer inventory claim.",
+    "T023 stays in_progress; T022 inventory, T024 erasure/restore, C04 and all 21 criteria remain open.",
+    "Other 49 tasks, phases/budgets, T020/P1/T047 and voice/person/account/consent/permissions remain unchanged."
+  ]
+}
