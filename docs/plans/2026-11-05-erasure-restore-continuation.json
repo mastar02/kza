@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "proposed_next_unit_not_implemented",
+  "status": "first_scope_verified_local_more_T024_required",
   "goal": "docs/plans/2026-11-02-autonomous-roadmap.md",
   "baseline_commit": "3874ffc8ddeadcb231f48ee1eee02ed7dfdd5828",
   "reconciliation": {
@@ -64,5 +64,13 @@
     "Extend the matrix to semantic facts/index, context/event/suggestion/diagnostic/stream/browser/voice targets, CLI durable artifacts, legacy/quarantine/raw exports/adapters and runtime/data rollback before claiming C04 complete.",
     "Compatible real-data/runtime copy rehearsal and physical four-input/iPhone/HA observations remain separately controlled work; local synthetic tests cannot replace them.",
     "C05 exact candidate artifact/dependency/rollback checks and included known-xfail resolution remain open; a normal suite with one known xfail is not C05 acceptance."
-  ]
+  ],
+  "delivery": {
+    "path": "docs/research/2026-11-05-multistore-restore-rehearsal.json",
+    "sha256": "e7e456ada740f1c631af374da91c6aca199383ecb69479a75f7b3899ae3d6ee7"
+  },
+  "next_continuation": {
+    "path": "docs/plans/2026-11-05-integrated-restore-continuation.json",
+    "sha256": "c2f42b87adda94621d405b59e71b5b03e3e9bd7d21d131e78fb0f017317ea9d6"
+  }
 }

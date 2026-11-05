@@ -1,0 +1,401 @@
+{
+  "schema_version": 1,
+  "candidate": "T024-B/all-participant-restore-and-inventory-characterization",
+  "status": "proposed_next_unit_not_implemented",
+  "start_gate": "Accept A replay/directed/full and publish code+tracking before freezing B; root pins resulting commit and rechecks these current source hashes.",
+  "goal_status": "T024 remains in_progress; all21 criteria remain open.",
+  "main_finding": "Current public builders supply nine real participant drivers. Aggregate completion is correctly impossible today: producers is unregistered, and diagnostics/streams/voices have additional deliberately unresolved inventory targets. These are real required obligations, not missing-API RED and not removable test inconvenience.",
+  "source_inventory": [
+    {
+      "path": "src/memory/privacy_services.py",
+      "sha256": "8e92221b4dbcecaf08d481f39e4cdbdfb6733ad4d4c0f8407e16b265180430e0",
+      "symbols": [
+        "PrivacyServices.initialize",
+        "PrivacyServices.begin_close"
+      ]
+    },
+    {
+      "path": "src/memory/erasure_journal.py",
+      "sha256": "c13cf52015291aa70e734c96110c5da0eaebf764f3efe7032d86cdd8ca3eb555",
+      "symbols": [
+        "ErasureParticipant",
+        "ErasureJournal.recover",
+        "ErasureJournal._snapshot",
+        "ErasureJournal.claim",
+        "ErasureJournal.finish"
+      ]
+    },
+    {
+      "path": "src/memory/erasure_coordinator.py",
+      "sha256": "e2ee9cc7be2da955cb8905383aa006b13629c20f156077d786ab948d3cdca805",
+      "symbols": [
+        "ErasureCoordinator.register",
+        "ErasureCoordinator._reconcile"
+      ]
+    },
+    {
+      "path": "src/memory/index_deletions.py",
+      "sha256": "f9d3cd1415d8a6d5e9a1c5e785a215f75e2724cace4d8cda3304424e4a81b703",
+      "symbols": [
+        "IndexDeletionQueue.recover",
+        "IndexDeletionQueue.pending_count",
+        "IndexDeletionQueue.finish"
+      ]
+    },
+    {
+      "path": "src/memory/index_erasure.py",
+      "sha256": "fabce074e0de7c7870480b55238c5bca428b24936fe855f7952d3cc916d0d8de",
+      "symbols": [
+        "build_erasure_services",
+        "PolicyIndexEraser._open",
+        "PolicyIndexEraser._clean"
+      ]
+    },
+    {
+      "path": "src/ambient/erasure.py",
+      "sha256": "e3eb198f7dd0dcc7cc3e06a116d70fff51e785de48d034d183e8fcf8b55a316d",
+      "symbols": [
+        "build_capture_erasure",
+        "CaptureEraser.attach",
+        "CaptureEraser.clean"
+      ]
+    },
+    {
+      "path": "src/training/collector_erasure.py",
+      "sha256": "730737d76a6e084ce4ab22c6e23896ef28601c7fd2b867d97e67204122ae0384",
+      "symbols": [
+        "build_collector_erasure",
+        "CollectorEraser._targets",
+        "CollectorEraser._page"
+      ]
+    },
+    {
+      "path": "src/wakeword/clip_store.py",
+      "sha256": "e66bb1dad47c2ffbfc59e58f59db8f343b2342938c3af15f822c0ae78fc383b8",
+      "symbols": [
+        "build_wake_clip_store",
+        "WakeClipStore.publish"
+      ]
+    },
+    {
+      "path": "src/orchestrator/context_erasure.py",
+      "sha256": "4b49eaffc11b8eb59c72c112eac8b6777d1d1415c96268cda5aba92927a914d1",
+      "symbols": [
+        "build_context_erasure",
+        "ContextEraser.attach_manager",
+        "ContextEraser.clean"
+      ]
+    },
+    {
+      "path": "src/analytics/erasure.py",
+      "sha256": "e47b0d26614a2eebe04d0e72e69f3d4d6ce31c4ef0455c5054913eceda7c7c8c",
+      "symbols": [
+        "build_event_erasure",
+        "EventEraser.clean"
+      ]
+    },
+    {
+      "path": "src/analytics/suggestion_erasure.py",
+      "sha256": "11c73c854c09ede5c21416db76c85a4511d3e737fcf5f04fd9c8417aaf532236",
+      "symbols": [
+        "build_suggestion_erasure",
+        "SuggestionEraser.attach_engine",
+        "SuggestionEraser.attach_router",
+        "SuggestionEraser.clean"
+      ]
+    },
+    {
+      "path": "src/obs/diagnostic_erasure.py",
+      "sha256": "442a561698c1fdc1b86fd8f0acae7ea1a986081227228a8c91e452eb8a70e78d",
+      "symbols": [
+        "build_diagnostic_services",
+        "DiagnosticServices.clean"
+      ]
+    },
+    {
+      "path": "src/dashboard/live_erasure.py",
+      "sha256": "c16febb9eff1fc481991727135083ff4d12b1788bb90e9d54dd6420d8a080bbe",
+      "symbols": [
+        "build_live_services",
+        "LiveStreamEraser.clean"
+      ]
+    },
+    {
+      "path": "src/users/voice_registry.py",
+      "sha256": "6654ebd4a88d4a07701296db3c083a1a55297fe9fea6271eda4be66e7ede6ae6",
+      "symbols": [
+        "build_voice_registry",
+        "VoiceRegistry.register_encoder",
+        "VoiceRegistry.clean"
+      ]
+    },
+    {
+      "path": "src/pipeline/audio_loop.py",
+      "sha256": "711768b4ead34dcad49ef4d197e8f685e4340609be00e60d5f0acf2dde386757",
+      "symbols": [
+        "AudioLoop.conversation_busy",
+        "AudioLoop.prune_private"
+      ]
+    },
+    {
+      "path": "src/pipeline/multi_room_audio_loop.py",
+      "sha256": "e85d456e6a3c157dc05a878fc8c1a07a19dfeb2f7664f904bce2e4b5252086a6",
+      "symbols": [
+        "MultiRoomAudioLoop.conversation_busy",
+        "MultiRoomAudioLoop.prune_private"
+      ]
+    },
+    {
+      "path": "src/pipeline/command_processor.py",
+      "sha256": "28ffe0e9bc933b5a78b82fdf7621171241965fd34a72101b95efb330f597932c",
+      "symbols": [
+        "CommandProcessor.conversation_busy",
+        "CommandProcessor.prune_private"
+      ]
+    },
+    {
+      "path": "src/ambient/transcriber.py",
+      "sha256": "d52eeeb4f02d7bfdc16cc7527deea25add229e1634eb2bea90e7ace15cf8c860",
+      "symbols": [
+        "AmbientTranscriber.conversation_busy",
+        "AmbientTranscriber.prune_private"
+      ]
+    },
+    {
+      "path": "src/main.py",
+      "sha256": "4b5329bd5275416e8b672a4d1301d8988ec69153ad03ba6c85c3b4e8aa8e26a4",
+      "symbols": [
+        "factory erasure wiring lines658-688",
+        "build_live_services wiring line1781"
+      ]
+    }
+  ],
+  "ten_participant_matrix": [
+    {
+      "participant": "producers",
+      "current_driver": "No production ErasureCoordinator registration/target found by focused current src search; journal preserves unregistered placeholder.",
+      "restart": "Runtime producers are not persistent payload receipts; old admitted work must retain the old authority lease until real exit.",
+      "baseline": "Construct actual AudioLoop/CommandProcessor/AmbientTranscriber with controlled external leaves; hold sourced native job through revocation/observer cancellation; measure conversation_busy/prune and inability to acquire new writer lease. Preserve unregistered journal obligation.",
+      "completion_gate": "A real coverage-aware producer barrier/driver and durable graph inventory must be implemented/reviewed before this participant may return a journal receipt. Do not infer no producers from absent registration."
+    },
+    {
+      "participant": "captures",
+      "builder": "build_capture_erasure",
+      "driver": "CaptureEraser.clean",
+      "restart": "A candidate now adds captures to ErasureJournal.recover reset; accept A first.",
+      "payload": "AmbientStore rows/intents, FLAC and pending deletions; same original source, 48h max and real unlink."
+    },
+    {
+      "participant": "contexts",
+      "builder": "build_context_erasure",
+      "driver": "ContextEraser.clean",
+      "restart": "ErasureJournal.recover reset.",
+      "payload": "Real ContextManager/ShortTermMemory/persister snapshots attached to driver; source-bound histories/summaries and files, unrelated context preserved."
+    },
+    {
+      "participant": "semantic_index",
+      "builder": "build_erasure_services",
+      "driver": "PolicyIndexEraser.clean plus IndexMaintenance",
+      "restart": "Already handled separately by IndexDeletionQueue.recover in the same leased PrivacyServices.initialize: reopen per-target policy_index_deletions AND semantic_index complete erasure_steps. Do not add speculative duplicate reset.",
+      "payload": "Real temp chromadb.PersistentClient collection, deterministic explicit embeddings/no model; ledger fact IDs/tombstones retained, restore only policy collection data and preserve unrelated vector."
+    },
+    {
+      "participant": "events",
+      "builder": "build_event_erasure",
+      "driver": "EventEraser.clean",
+      "restart": "ErasureJournal.recover reset.",
+      "payload": "Real EventLogger policy-v1 SQLite rows with exact source dependencies and durable registered historical path."
+    },
+    {
+      "participant": "diagnostics",
+      "builder": "build_diagnostic_services",
+      "driver": "DiagnosticServices.clean supports v2 local target only.",
+      "restart": "ErasureJournal.recover reset.",
+      "payload": "Real local MetricsEmitter/catalog and physical JSONL rotation; no remote destination.",
+      "inventory_block": "Builder also registers v1 unresolved_diagnostic_inventory, unsupported by driver; application/SDK/unversioned/remote log coverage stays blocked even if local v2 completes."
+    },
+    {
+      "participant": "collectors",
+      "builder": "build_wake_clip_store -> build_collector_erasure",
+      "driver": "CollectorEraser.clean",
+      "restart": "ErasureJournal.recover reset and callback-local cursor reset.",
+      "payload": "Conversation AND STT descendants, wake clips, managed training export with recorded parent links, actual files and immutable payload rows in shared authority DB; exact source/deadline/consent. Legacy roots audited for real empty/unknown state, never fake acknowledged."
+    },
+    {
+      "participant": "streams",
+      "builder": "build_live_services",
+      "driver": "LiveStreamEraser.clean supports v1/v3/v4.",
+      "restart": "ErasureJournal.recover reset.",
+      "payload": "Real LiveEventBus/LiveReceiptStore and browser authority; real bounded send/clear/ACK lifecycle with synthetic transport leaf, durable restored ticket must remain pending until current receiver clear.",
+      "inventory_block": "Builder also registers unsupported v2 unresolved_stream_inventory. Synthetic browser protocol cannot certify all real browser/client copies."
+    },
+    {
+      "participant": "suggestions",
+      "builder": "build_suggestion_erasure",
+      "driver": "SuggestionEraser.clean",
+      "restart": "ErasureJournal.recover reset.",
+      "payload": "Real SuggestionStore/engine/router attachment; source-bound local proposals plus runtime generation/TTS/delivery work using deterministic gated leaves."
+    },
+    {
+      "participant": "voices",
+      "builder": "build_voice_registry",
+      "driver": "VoiceRegistry.clean supports v1.",
+      "restart": "ErasureJournal.recover reset.",
+      "payload": "Real registry and SQLite voice ledger; deterministic registered Encoder leaf, raw wave/text/fingerprint and reviewed profile relationships with original sources. No account permissions generated.",
+      "inventory_block": "Builder also registers unsupported v2 unresolved_voice_inventory; local v1 is not complete external SDK/raw/legacy voice inventory."
+    }
+  ],
+  "baseline_concrete": {
+    "new_test_scope": "One isolated integration graph under tmp_path with one PrivacyServices and owner built via build_erasure_services; use all public participant builders, one source lineage spanning all named descendants, and an unrelated live lineage. Keep every builder-registered target/version. No full main startup, hardware, model weights or actual network.",
+    "temporary_config": "Explicit temp paths for privacy DB, ambient DB/audio, chroma, context roots, events, suggestions, diagnostics, every collector/legacy/adapters root and browser authority. Do not use any Linux/default deployment path.",
+    "cases": [
+      {
+        "id": "B0_real_builder_inventory_truth",
+        "steps": "Seed all supported local families through real stores/writers, retain a source-bound producer operation, request authenticated erasure, reconcile all drivers. Record registered targets, versions, step outcomes and actual row/file/callback effects.",
+        "oracle": "The nine supported local driver families can independently prove physical/runtime cleanup. Aggregate remains blocked/pending for exactly uncovered producer/inventory obligations plus any actual live browser/native work. No callback returns ErasureResult(True) on behalf of a missing participant."
+      },
+      {
+        "id": "B1_restored_nine_families_recheck",
+        "steps": "Snapshot consistent selected payload data/files before erasure; finish every supported local receipt, close actual owners/lease, restore only known participant data behind those receipts, retain current tombstones/targets/journal. Rebuild same public graph. Hold actual semantic index delete and one physical unlink; let other drivers finish.",
+        "oracle": "Eight shared recover resets plus separate semantic IndexDeletionQueue.recover produce nine real rechecks. Held selected steps remain pending until their actual native return and exact claim/version ACK. Restored revoked data is unavailable to readers/indexers; no late resurrection, extended expiry or new training consent. Unrelated data stays identical. Aggregate never hides unresolved inventory."
+      },
+      {
+        "id": "B2_producer_lease_and_unknown_inventory",
+        "steps": "Cancel observer while real sourced producer work is held; attempt second PrivacyServices initialization, then release actual work and close old owners. Include an unattributed legacy payload/offline receiver obligation.",
+        "oracle": "Old writer lease remains until real exit; new lease fails while old work lives, succeeds only after actual cleanup; stale claims cannot ACK new generation. Unknown payload/offline receiver remains explicit and foreign bytes are not deleted to force completion."
+      }
+    ],
+    "first_execution_rule": "Characterization can pass without any production change. Do not require a manufactured RED from absent drivers. If a concrete contract failure appears in this integrated graph, archive it and repair its observed boundary only."
+  },
+  "route_to_true_aggregate_complete": [
+    "First map the actual producer graph, native descendants and source scopes into a coverage-aware real coordinator driver; ordinary lack of APIs does not prove it retired. Exercise all registered real instances and unknown/no-lineage negative cases.",
+    "Resolve each deliberately unresolved diagnostic/stream/voice inventory through explicit supported evidence/driver coverage: original roots/raw/legacy/remote clients and SDK-owned copies need a real audit/retirement protocol. Preserve historical target obligations; no deleting or manually finishing guard rows, accepting an unsupported version, or repurposing unresolved guard as unconditional success.",
+    "Only after all required target obligations have supported real drivers and actual cleanup/receiver acknowledgements, run the same integrated restoration/cancellation harness and require aggregate complete iff every target of every one of the ten participants is complete. Reintroducing any held/unknown target must reopen/prevent that aggregate.",
+    "No new Restore API is required: controlled data-only snapshot/restore with preserved authority and registered provenance is the mechanism. Full runtime/data rollback remains separate acceptance work."
+  ],
+  "permitted_synthetic_leaves": [
+    "Fixed synthetic PCM, text, UUID source lineage and clock; deterministic STT/embedding/speaker/compaction/TTS model leaves with real owner callbacks/futures. No actual model weights/downloads/GPU.",
+    "Use actual temp SQLite/files/unlink/fsync and actual Chroma SDK with explicit deterministic embeddings; MemoryClient helper wraps a real PersistentClient, not a fake erasure driver.",
+    "ASGI/HTTPX/socket/browser transport leaf may be synthetic and bounded to exercise real bus/ticket/server ACK handling. Label it as local protocol evidence, never a physical browser copy retirement proof.",
+    "Gates around actual native file/index/encoder operations may hold/cancel observers; fixture release/join never substitutes for product receipt."
+  ],
+  "forbidden_shortcuts": [
+    "No fake completion callbacks for any of ten participants, no dropping unsupported builder targets, no journal/tombstone SQL edits or old authority DB restoration.",
+    "Do not compose existing graph fixtures that each own a separate privacy DB; reuse/adapt their seed/leaf helpers inside one shared authority graph.",
+    "Do not label known-empty targets as populated coverage: seed real payloads in every supported local family and prove actual removal; retain real audit for intentionally empty legacy roots."
+  ],
+  "fixture_and_prior_evidence": [
+    {
+      "path": "tests/mocks/memory_graph.py",
+      "sha256": "2fafe04ea26614168ef76a62c0aed081bb7582de71ff0c6421a41981d45db3c5",
+      "symbols": [
+        "MemoryClient",
+        "SyntheticEmbedding",
+        "Clock"
+      ]
+    },
+    {
+      "path": "tests/mocks/collector_erasure.py",
+      "sha256": "7e013429925653671d1c0142f8c9424bb2bb2c93d07ba90f49fd955d27b63b25",
+      "symbols": [
+        "configuration",
+        "CollectorGraph.add"
+      ]
+    },
+    {
+      "path": "tests/mocks/voice_registry.py",
+      "sha256": "3b3cf64ec1ba4d9b1d3796db5e2c51f0a132bdac6d73b28ab7e9ac3d45673f76",
+      "symbols": [
+        "Encoder",
+        "seed",
+        "idle"
+      ]
+    },
+    {
+      "path": "tests/integration/test_context_erasure.py",
+      "sha256": "e27e14eb98b9e40b0ca6adc812df980aa808fdc75f21a7eeae4ed82c7a9cff96",
+      "symbols": [
+        "graph",
+        "test_completed_context_receipts_are_rechecked_after_restored_file_on_leased_restart"
+      ]
+    },
+    {
+      "path": "tests/integration/test_event_erasure.py",
+      "sha256": "e2f088d7df9afdb005d0a5086cc054a6b548fa3880ab5e7d7c1e4146187926d4",
+      "symbols": [
+        "graph",
+        "seed_event",
+        "test_leased_restart_reopens_completed_receipt_for_restored_event_row"
+      ]
+    },
+    {
+      "path": "tests/integration/test_suggestion_erasure.py",
+      "sha256": "add32aa9ccd660af5b7efc4cf08a2509a1a603fc6e6e737222ab8f777b0a915c",
+      "symbols": [
+        "graph",
+        "seed",
+        "test_disabled_analytics_cleans_historical_target_and_restored_completed_rows"
+      ]
+    },
+    {
+      "path": "tests/integration/test_diagnostic_erasure.py",
+      "sha256": "8dcac53300e1c79efa6b7d946c31a844d3f7143dd3b103239a16d2d004dbb496",
+      "symbols": [
+        "graph",
+        "test_restored_diagnostic_catalog_reopens_previously_completed_receipt"
+      ]
+    },
+    {
+      "path": "tests/integration/test_live_stream_receipts.py",
+      "sha256": "848e666dcc1edd256df526425801010f67562a3412bd15a7689236112fda41c6",
+      "symbols": [
+        "graph",
+        "test_unacknowledged_client_survives_restart_and_only_its_new_clear_settles_it",
+        "test_restored_ticket_reopens_previously_completed_local_step"
+      ]
+    },
+    {
+      "path": "tests/integration/test_voice_registry.py",
+      "sha256": "424b5ee1698f10fc78f667620f29e390b8e399266e9f63cbf163f556aa09eea5",
+      "symbols": [
+        "test_restored_voice_rows_reopen_receipts_and_cannot_override_current_tombstones"
+      ]
+    },
+    {
+      "path": "tests/integration/test_erasure_coordinator.py",
+      "sha256": "09a49a0eebec5e1f03eb2080b38eccd4204230b9312ec56ed9fcc1ce927dce6f",
+      "symbols": [
+        "test_real_index_batch_cursor_survives_restart_and_rechecks_old_receipts"
+      ]
+    },
+    {
+      "path": "tests/integration/test_multistore_restore.py",
+      "sha256": "9b0c6af91cf5260563a65ff4dd3ffd5a660c98f3bb1c8d262b77e99f4ab68065",
+      "symbols": [
+        "graph",
+        "restore_data",
+        "HeldUnlink"
+      ]
+    },
+    {
+      "path": "tests/integration/test_privacy_authority.py",
+      "sha256": "b8a531d7888c05432250d638e1bb3aa0dacc3a844260d922e3d5f5dca631886e",
+      "symbols": [
+        "test_shared_authority_keeps_lease_until_timed_out_native_borrower_actually_finishes"
+      ]
+    }
+  ],
+  "still_pending_beyond_local_B": [
+    "Complete raw/legacy/quarantine/export/adapter copy registration and explicit original training purpose; private SDK/allocator/browser copies cannot be claimed wiped by local deletion.",
+    "Real browser/page/OS receiver clearing, offline clients, remote diagnostic collectors, original application/SDK logs, external source device effects and required hardware integrations.",
+    "Compatible real-data/runtime/data rollback with preserved authority, exact artifact/dependency and C05 included-known-xfail requirements.",
+    "C04 all-participant complete inventory and physical acceptance; B local synthetic success cannot close C04/C05 or any of21 criteria alone. Interactive PC validation, when needed, remains delegated to Terra."
+  ],
+  "review_execution": "Static source/Serena/fixture inspection only; no pytest/collection, project import, service, actual SDK execution, hardware, Git writes or product/test/doc changes. This proposal is the sole write.",
+  "goal": "docs/plans/2026-11-02-autonomous-roadmap.md",
+  "baseline_commit": "71971584430adbbaae425923d92f4a23a9ce7f25",
+  "previous_delivery": {
+    "path": "docs/research/2026-11-05-multistore-restore-rehearsal.json",
+    "sha256": "e7e456ada740f1c631af374da91c6aca199383ecb69479a75f7b3899ae3d6ee7"
+  }
+}

@@ -1,0 +1,235 @@
+{
+  "schema_version": 1,
+  "unit": "T024-A/compatible-multistore-erasure-restore-rehearsal",
+  "status": "verified_local_first_scope_within_open_T024",
+  "baseline_revision": "658a8e0c0d550f0e1db5d8ec3cc38939f2061a55",
+  "summary_spanish": "El arranque con lease revalida los recibos de capturas. Una restauración compatible ya no conserva un recibo completo antes del retorno real de la limpieza física.",
+  "environment": {
+    "user": "gabriel",
+    "checkout": "/Users/gabriel/Documents/Proyectos/kza",
+    "platform": "macOS26.6.1 arm64",
+    "python": "CPython3.13.18 .venv nativa"
+  },
+  "evidence_root": "data/autonomous-roadmap-20261102/t024/a",
+  "scope": {
+    "selected_participants": [
+      "captures",
+      "collectors"
+    ],
+    "descendants": "Captura FLAC y registro de conversación gestionado de la misma fuente; una fuente ajena conserva archivos, filas y vencimiento. No nueva cobertura STT.",
+    "authority": "Un PrivacyServices/journal/lease; MemoryReviewer explícito. Sin inferir voz/persona/cuenta/roles/consentimiento.",
+    "aggregate": "Los participantes reales no suministrados siguen blocked/pending; no callbacks falsos de complete ni aceptación agregada."
+  },
+  "restore_protocol": [
+    "SQLite backup consistente, restaurado en archivo existente y directorios registrados con identidad conservada.",
+    "Sólo wake_clips_v1/conversation_turns_v1 y sus archivos; nunca privacy.db completo. Digest del resto de tablas de autoridad inmutable durante restore, manteniendo tombstones, operaciones, targets, claims, actor, fechas y deadlines.",
+    "Path.unlink real retenido con Event; finally libera antes de cerrar el grafo y el cierre drena el callable real. Timeout no cuenta como retiro.",
+    "Sólo el caso de lectura controla el scheduler CaptureRetention.start; filas y ambos archivos existen antes y después de lecturas denegadas. Los demás casos mantienen retención real.",
+    "Raíz legacy registrada con payload opaco sin fuente y versión2 no soportada quedan pendientes y conservan bytes. No prueba nueva de raíz reemplazada entre generaciones."
+  ],
+  "production_change": {
+    "symbol": "ErasureJournal.recover",
+    "change": "Añade captures al reset de recibos durante startup bajo lease.",
+    "preservation": "Normalizar esa única lista restaura el AST original entero; comentario actualizado. initialize sigue una recuperación por lease, finish conserva claim/token/version. Sin cambios de DSP, frontend, otros drivers o permisos."
+  },
+  "validation": {
+    "original": {
+      "tests": 6,
+      "passed": 4,
+      "failed": 2,
+      "genuine_RED": 1,
+      "fixture_failure": 1,
+      "XML_duration_s": 1.303,
+      "classification": "Recibo capture complete con unlink retenido; lectura del fixture después de owner.aclose usa disk_worker correctamente cerrado.",
+      "terminal": {
+        "session": 26901,
+        "chunk": "95dadd",
+        "exit": 1
+      },
+      "path": "baseline-attempt-01/status.json"
+    },
+    "fixture_correction": "Misma comparación de bytes/SQL/TTL extraída; API antes de cierre y almacenamiento después. Mismos6IDs, barreras y presupuestos; originales conservados.",
+    "component": {
+      "passed": 6,
+      "same6_IDs": true,
+      "XML_duration_s": 1.087,
+      "proof": "integration-attempt-01/component-proof.json"
+    },
+    "full_collection": {
+      "count": 8536,
+      "exact_nodeids": true,
+      "terminal": {
+        "session": 57373,
+        "chunk": "fe4a9f",
+        "exit": 0
+      }
+    },
+    "directed": {
+      "accepted_within_scope": true,
+      "observed_at_utc": "2026-11-05T21:36:47.192881+00:00",
+      "scope": "native Mac offline local fixtures; no physical acceptance or whole-goal completion",
+      "terminal": {
+        "session_id": 49371,
+        "chunk": "3d8da0",
+        "exit_code": 0,
+        "consumed_by": "root"
+      },
+      "mode": "directed",
+      "tests": 589,
+      "passed": 589,
+      "known_xfailed": 0,
+      "failures": 0,
+      "errors": 0,
+      "ordinary_skips": 0,
+      "XML_duration_s": 26.285,
+      "known_xfail": [],
+      "exact_expected_ids": true,
+      "source_files": 1028,
+      "script_files": 37,
+      "source_unchanged": true,
+      "protected_files": 13,
+      "protected_unchanged": true,
+      "actual_wait_returned": true,
+      "minimum_available_bytes": 191637626880,
+      "artifacts": [
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/a/directed-attempt-01/full-status.json",
+          "sha256": "5c3d538d3fb3202f79bc55a6fab1f1aae011a568ee088e3981a40e6209bb37d5",
+          "bytes": 5253
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/a/directed-attempt-01/full.xml",
+          "sha256": "8ed175363fdf24ceb714b8c9417d144cf44dc239cbe8adef7ecffa787e033d05",
+          "bytes": 93716
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/a/directed-attempt-01/full.log",
+          "sha256": "3f37910391573db4e182d3654807d8a50f8913230315d089130aaee5e82a6840",
+          "bytes": 81013
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/a/directed-attempt-01/source-before.json",
+          "sha256": "7ecfed78d451193e553eeeaf57958310bf98763a5b5dae589c462707c8f9cc84",
+          "bytes": 155133
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/a/directed-attempt-01/source-after.json",
+          "sha256": "7ecfed78d451193e553eeeaf57958310bf98763a5b5dae589c462707c8f9cc84",
+          "bytes": 155133
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/a/directed-attempt-01/protected-before.json",
+          "sha256": "a800192f7491f8ca42669016bf906b4602d5ceaed0ed2e11337110fb4f3080af",
+          "bytes": 1924
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/a/directed-attempt-01/protected-after.json",
+          "sha256": "a800192f7491f8ca42669016bf906b4602d5ceaed0ed2e11337110fb4f3080af",
+          "bytes": 1924
+        }
+      ],
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/t024/a/directed-attempt-01/acceptance-proof.json",
+        "sha256": "677d93df6ed0beb57ae34db3144e7e5da577cc6e208c376376d00098f0773724"
+      }
+    },
+    "full": {
+      "accepted_within_scope": true,
+      "observed_at_utc": "2026-11-05T21:48:25.376987+00:00",
+      "scope": "native Mac offline local fixtures; no physical acceptance or whole-goal completion",
+      "terminal": {
+        "session_id": 77991,
+        "chunk": "4ec3c0",
+        "exit_code": 0,
+        "consumed_by": "root"
+      },
+      "mode": "full",
+      "tests": 8536,
+      "passed": 8535,
+      "known_xfailed": 1,
+      "failures": 0,
+      "errors": 0,
+      "ordinary_skips": 0,
+      "XML_duration_s": 673.755,
+      "known_xfail": [
+        [
+          "tests.unit.nlu.test_regex_extractor",
+          "test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]",
+          {
+            "type": "pytest.xfail",
+            "message": "limitación documentada del regex puro"
+          }
+        ]
+      ],
+      "exact_expected_ids": true,
+      "source_files": 1028,
+      "script_files": 37,
+      "source_unchanged": true,
+      "protected_files": 13,
+      "protected_unchanged": true,
+      "actual_wait_returned": true,
+      "minimum_available_bytes": 187227852800,
+      "artifacts": [
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/a/full-normal-attempt-01/full-status.json",
+          "sha256": "e39f4ecf6e3ce9681dc7ac721e84bc41c73a82e6b2b9d7e6adcf9997268aef04",
+          "bytes": 1956
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/a/full-normal-attempt-01/full.xml",
+          "sha256": "9d933e90eea61146f16c43b5e241b265cd6302d4ae208355141a041e8326c85f",
+          "bytes": 2369682
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/a/full-normal-attempt-01/full.log",
+          "sha256": "9099bd9b8dd433e424a82cb34487e7e568034e710925d579cad3f081f890c007",
+          "bytes": 2175370
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/a/full-normal-attempt-01/source-before.json",
+          "sha256": "7ecfed78d451193e553eeeaf57958310bf98763a5b5dae589c462707c8f9cc84",
+          "bytes": 155133
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/a/full-normal-attempt-01/source-after.json",
+          "sha256": "7ecfed78d451193e553eeeaf57958310bf98763a5b5dae589c462707c8f9cc84",
+          "bytes": 155133
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/a/full-normal-attempt-01/protected-before.json",
+          "sha256": "a800192f7491f8ca42669016bf906b4602d5ceaed0ed2e11337110fb4f3080af",
+          "bytes": 1924
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/a/full-normal-attempt-01/protected-after.json",
+          "sha256": "a800192f7491f8ca42669016bf906b4602d5ceaed0ed2e11337110fb4f3080af",
+          "bytes": 1924
+        }
+      ],
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/t024/a/full-normal-attempt-01/acceptance-proof.json",
+        "sha256": "59dff841e00a751d6781b989f6d9760e1b2266cc97b77b981bfd77b1c25b7396"
+      }
+    },
+    "identity": "J8530 IDs intactos+6 nuevos. Dirigida583 existentes+6=589; sin renombres/retiradas.",
+    "guards": {
+      "source_files": 1028,
+      "scripts": 37,
+      "protected": 13
+    },
+    "static_review": "contract-review-addendum.json",
+    "lint": "first-correction/ruff.log",
+    "warnings": "DeprecationWarning existente datetime.utcnow en src/core/logging.py:129, mismo sitio/mensaje en J; logs conservados, sin ocultar ni aceptar C05."
+  },
+  "limits": [
+    "SQLite/SoundFile/files y workers reales sobre datos sintéticos en Mac; sin .env/modelos/GPU/HA/servicios/release.",
+    "No nueva prueba de STT, índice semántico, agregado de10participantes, navegador, SDK privado, raw/legacy/export ni rollback runtime/datos reales.",
+    "T024 sigue in_progress; T022/T023 y21criterios abiertos. Mismo goal activo e incompleto. Pruebas interactivas de PC delegadas a Terra."
+  ],
+  "implementation_commit": "71971584430adbbaae425923d92f4a23a9ce7f25",
+  "source_sha256": {
+    "src/memory/erasure_journal.py": "c13cf52015291aa70e734c96110c5da0eaebf764f3efe7032d86cdd8ca3eb555",
+    "tests/integration/test_multistore_restore.py": "9b0c6af91cf5260563a65ff4dd3ffd5a660c98f3bb1c8d262b77e99f4ab68065"
+  },
+  "verified_at_utc": "2026-11-05T21:48:51.227951+00:00"
+}

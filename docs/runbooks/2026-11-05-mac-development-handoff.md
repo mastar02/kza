@@ -6,24 +6,23 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 ## Punto de reanudación
 
-La unidad **T023-J quedó verificada localmente en Mac**. El mismo goal sigue **activo e incompleto**. Usar la `.venv` nativa existente y no repetir tandas cerradas sin una razón nueva.
+La unidad **T024-A quedó verificada localmente en Mac**. El mismo goal sigue **activo e incompleto**. Usar la `.venv` nativa y no repetir tandas cerradas sin una razón nueva.
 
 | Dato | Estado actual |
 | --- | --- |
 | Entorno | `gabriel`, `/Users/gabriel/Documents/Proyectos/kza`, macOS 26.6.1 arm64, CPython 3.13.18 |
-| Código J | `3874ffc8ddeadcb231f48ee1eee02ed7dfdd5828` |
-| Baseline original J | 2 PASS + 2 RED reales: ACK anterior con actor nativo aún vivo; cleanup del fixture lo une después |
-| Integración J | 14 PASS; primer 13/1 y corrección explícita conservados |
-| Regresión J | 219 PASS; primer 215/4 y correcciones de no admisión/hooks conservados |
-| Dirigida J | 1205 PASS; XML 182.901 s |
-| Full normal J | **8529 PASS + una xfail conocida**, 8530 IDs exactos |
-| Fuentes | 1027 archivos incluidos 37 scripts y 12 protegidos intactos durante las tandas amplias |
-| Identidades | I8516 − dos nombres antiguos + dos renombres documentados + 14 casos nuevos |
+| Código T024-A | `71971584430adbbaae425923d92f4a23a9ce7f25` |
+| Baseline original A | 4 PASS + un RED genuino + un fallo del fixture; ambos preservados y clasificados |
+| Integración A | 6 PASS; mismos seis IDs y presupuestos |
+| Dirigida A | 589 PASS; XML 26.285 s |
+| Full normal A | **8535 PASS + una xfail conocida**, 8536 IDs exactos; XML 673.755 s |
+| Fuentes | 1028 archivos de fuentes/pruebas/útiles, incluidos 37 scripts; además 13 archivos protegidos intactos |
+| Identidades | Todos los 8530 IDs de J más seis nuevos; sin renombres ni retiradas |
 | Delegación | Hasta ocho agentes activos en total según plazas; pruebas interactivas de PC con `gpt-6.1-terra` |
-| Próxima unidad | T024-A: ensayo de borrado y restauración compatible entre almacenes registrados |
+| Próxima unidad | T024-B: restauración integrada e inventario de los diez participantes, con drivers reales |
 | Tracking | Este commit; verificar SHA y publicación al retomar |
 
-T022/T023 siguen `in_progress`, T024 `planned` y los 21 criterios `not_evaluated`. T020/P1/T047, fases, presupuestos y permisos separados se conservan. Leer el [informe J](../research/2026-11-05-production-input-close-receipts.json), la [reconciliación de copias](../research/2026-11-05-capture-copy-reconciliation.json) y la [continuación T024-A](../plans/2026-11-05-erasure-restore-continuation.json). Sin release o cambios de producción.
+T022/T023/T024 siguen `in_progress` y los 21 criterios `not_evaluated`. T020/P1/T047, fases, presupuestos y permisos separados se conservan. Leer el [informe A](../research/2026-11-05-multistore-restore-rehearsal.json) y la [continuación B](../plans/2026-11-05-integrated-restore-continuation.json). Sin release ni cambios de producción.
 
 ## Referencia histórica del cierre Linux F
 
@@ -229,16 +228,24 @@ Cada handle devuelto y conocido recibe una llamada estricta a stop y close, incl
 
 Quedan archivados el baseline original, los fallos iniciales y sus correcciones, sin cambiar los 14 oráculos nuevos ni las cuatro regresiones originales. Dos antiguos oráculos de reintento se migran expresamente al contrato real del SDK. Las pruebas usan SDK/actores sintéticos; no acreditan hardware, memoria privada del SDK, borrado universal ni C04/C05.
 
+## Restauración conjunta y recibos de capturas — T024-A
+
+El journal reabre también capturas durante el arranque con lease. El baseline reprodujo un recibo completo con unlink real retenido tras restaurar datos compatibles. El segundo fallo era una lectura del fixture después del cierre correcto de su worker; se preserva la comparación de almacenamiento y se comprueban APIs antes del cierre. No se cambian seis identidades, barreras ni tiempos.
+
+El ensayo comparte una autoridad para captura FLAC y conversación gestionada, restaura sólo datos mediante backup SQLite y filas de payload, y conserva tombstones, actor, operación, targets, fechas y vencimientos. La fuente ajena mantiene archivos y filas. Un caso controla el scheduler para demostrar lecturas denegadas con datos todavía presentes; los demás conservan retención real. La limpieza retenida se libera antes del cierre y se espera su retorno real.
+
+Esto no acredita STT nuevo ni un agregado completo. Productores y los inventarios deliberadamente pendientes de diagnósticos, streams y voces siguen abiertos; no retirar esos targets ni simular sus recibos. El índice semántico ya tiene su propio recovery. El warning existente del logger por datetime.utcnow y la xfail conocida no se ocultan ni aceptan C05.
+
 ## Prompt para la sesión nueva
 
-> Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff, el informe J, la reconciliación de copias y la continuación T024-A. Confirmá API del goal, checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro objetivo ni marques éste completo.
-> J quedó verificada: baseline original 2 PASS/2 RED, finales 14/219/1205 PASS y full 8529 PASS + una xfail conocida, 8530 IDs exactos. Usá la `.venv` nativa; no recrees dependencias ni repitas tandas sin razón nueva. Hasta ocho agentes totales según plazas; interacción de PC delegada a Terra.
-> Comenzá T024-A con ledger/tombstones actuales y descendientes gestionados, mediante builders/journal reales. Conservá desconocidos pendientes y datos ajenos intactos; no inventes RestoreAPI ni tomes cierre SDK como borrado. T022/T023/T024 y los 21 criterios siguen abiertos; T020/P1/T047 y permisos separados se conservan. Producción/releases mantienen su alcance separado.
+> Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff, el informe T024-A y la continuación T024-B. Confirmá API del goal, checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro objetivo ni marques éste completo.
+> A quedó verificada: originales 4 PASS/un RED genuino/un fallo del fixture; finales 6/589 PASS y full 8535 PASS + una xfail conocida, 8536 IDs exactos. Usá la `.venv` nativa; no recrees dependencias ni repitas tandas sin razón nueva. Hasta ocho agentes totales según plazas; interacción de PC delegada a Terra.
+> Comenzá B con los diez participantes y sus builders reales, misma autoridad y snapshots de datos compatibles. Conservá obligaciones unresolved, desconocidos, tombstones y datos ajenos; ningún callback ficticio ni eliminación de targets puede fabricar complete. T022/T023/T024 y los 21 criterios siguen abiertos; T020/P1/T047 y permisos separados se conservan. Producción/releases mantienen su alcance separado.
 
 ## Lista de cierre y reanudación
 
-- [x] F/Linux, bootstrap Mac, G, H e I conservados con recibos propios.
-- [x] J, primeras pruebas/fallos/correcciones y 14/219/1205/full con evidencia local.
-- [x] Código J, tracking y handoff guardados; verificar publicación y HEAD al retomar.
+- [x] Linux y unidades G/H/I/J conservados con recibos propios.
+- [x] T024-A con baseline original, correcciones y 6/589/full documentados.
+- [x] Código, tracking y handoff guardados; verificar publicación y HEAD al retomar.
 - [x] Mismo goal activo, sin nueva petición de pausa ni criterios físicos aceptados.
-- [ ] Confirmar estado/Git y comenzar T024-A según continuación, sin repetir trabajo cerrado.
+- [ ] Confirmar estado/Git y comenzar T024-B según continuación, sin repetir A.

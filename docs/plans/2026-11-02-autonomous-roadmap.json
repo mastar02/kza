@@ -1188,9 +1188,10 @@
         "data/autonomous-roadmap-20261102/t022/x/evidence.json",
         "data/autonomous-roadmap-20261102/t022/x/normal-full-attempt-01/acceptance-proof.json",
         "docs/research/2026-11-05-production-input-close-receipts.json",
-        "docs/research/2026-11-05-capture-copy-reconciliation.json"
+        "docs/research/2026-11-05-capture-copy-reconciliation.json",
+        "docs/research/2026-11-05-multistore-restore-rehearsal.json"
       ],
-      "next_action": "T023-J verificada localmente: cierre nativo estricto por handle conocido, UNKNOWN persistente sin retry/ACK/reapertura y no admisión explícita recuperable. Baseline original2PASS/2RED, primer J14 13/1 y219 215/4 conservados; finales14/219/1205PASS y full8529PASS+una xfail conocida sobre8530IDs exactos,1027fuentes/37scripts/12protegidos estables. Dos renombres explícitos de oráculos retry. Leer informe J y reconciliación de productores/copias; próxima unidad T024-A según continuación. T022/T023 y21criterios siguen abiertos; T020/P1/T047, autoridades, presupuestos y producción se conservan."
+      "next_action": "T023-J y T024-A verificadas localmente: cierre nativo estricto y revalidación de recibos de capturas tras restore compatible, con fuente ajena preservada. Leer sus informes y continuar T024-B con los diez participantes y drivers reales. Productores e inventarios unresolved siguen pendientes; no inferir borrado agregado ni cierre de T022/T023, no repetir tandas sin motivo nuevo. T020/P1/T047, permisos y presupuestos se conservan."
     },
     {
       "id": "T023",
@@ -1247,9 +1248,10 @@
         "docs/plans/2026-11-05-global-capture-followup.json",
         "data/autonomous-roadmap-20261102/t023/i/full-normal-attempt-01/acceptance-proof.json",
         "docs/research/2026-11-05-production-input-close-receipts.json",
-        "docs/research/2026-11-05-capture-copy-reconciliation.json"
+        "docs/research/2026-11-05-capture-copy-reconciliation.json",
+        "docs/research/2026-11-05-multistore-restore-rehearsal.json"
       ],
-      "next_action": "T023-J verificada localmente: cierre nativo estricto por handle conocido, UNKNOWN persistente sin retry/ACK/reapertura y no admisión explícita recuperable. Baseline original2PASS/2RED, primer J14 13/1 y219 215/4 conservados; finales14/219/1205PASS y full8529PASS+una xfail conocida sobre8530IDs exactos,1027fuentes/37scripts/12protegidos estables. Dos renombres explícitos de oráculos retry. Leer informe J y reconciliación de productores/copias; próxima unidad T024-A según continuación. T022/T023 y21criterios siguen abiertos; T020/P1/T047, autoridades, presupuestos y producción se conservan."
+      "next_action": "T023-J y T024-A verificadas localmente: cierre nativo estricto y revalidación de recibos de capturas tras restore compatible, con fuente ajena preservada. Leer sus informes y continuar T024-B con los diez participantes y drivers reales. Productores e inventarios unresolved siguen pendientes; no inferir borrado agregado ni cierre de T022/T023, no repetir tandas sin motivo nuevo. T020/P1/T047, permisos y presupuestos se conservan."
     },
     {
       "id": "T024",
@@ -1265,12 +1267,17 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [
-        "docs/plans/2026-11-05-erasure-restore-continuation.json"
+      "status": "in_progress",
+      "implementation_commits": [
+        "71971584430adbbaae425923d92f4a23a9ce7f25"
       ],
-      "next_action": "Preparar baseline T024-A con ledger/tombstones actuales y dos descendientes gestionados; ensayar restauración compatible detrás de recibos con builders/journal reales y actor retenido. Conservar desconocidos/raíces reemplazadas pendientes y fuente ajena intacta; no inventar RestoreAPI ni declarar SDK borrado. Leer continuación y pruebas existentes antes de diseñar."
+      "evidence": [
+        "docs/plans/2026-11-05-erasure-restore-continuation.json",
+        "docs/research/2026-11-05-multistore-restore-rehearsal.json",
+        "docs/plans/2026-11-05-integrated-restore-continuation.json",
+        "data/autonomous-roadmap-20261102/t024/a/full-normal-attempt-01/acceptance-proof.json"
+      ],
+      "next_action": "T024-A verificada localmente: fuente única con captura/conversación y restore de datos detrás de recibos, sin retroceder tombstones; 6/589 PASS y full8535 PASS+una xfail conocida sobre8536IDs exactos,1028fuentes/37scripts/13protegidos intactos. Original4PASS/1RED genuino/1fallo de fixture y correcciones conservados. Continuar T024-B con inventario de los10 participantes y drivers reales; productores e inventarios unresolved siguen visibles/pending. No fabricar complete ni borrar targets para obtenerlo. C04/C05 y21criterios abiertos; leer continuación."
     },
     {
       "id": "T025",
@@ -2416,7 +2423,7 @@
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T023-J/production-native-input-close-receipts",
+    "last_verified_unit": "T024-A/compatible-multistore-erasure-restore-rehearsal",
     "user_priority_after_admin_unit": "T047"
   }
 }
