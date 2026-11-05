@@ -37,6 +37,7 @@ def _private_routes():
                 ("POST", "/api/capture/recorders/retire"),
                 ("POST", "/api/capture/native/calibration/retire"),
                 ("POST", "/api/capture/native/wakeword-training/retire"),
+                ("POST", "/api/capture/native/wakeword-diagnostics/retire"),
             }:
                 continue
             yield method, path

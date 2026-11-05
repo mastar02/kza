@@ -13,7 +13,7 @@ import requests
 from src.audio import native_capture_authority as common
 from src.audio.native_capture_authority import (
     CalibrationAuthorityClient, NativeCaptureAuthorityClient,
-    WakewordTrainingAuthorityClient,
+    WakewordDiagnosticsAuthorityClient, WakewordTrainingAuthorityClient,
 )
 from tests.unit.tools.test_calibration_authority_client import (
     ADMIN_TOKEN, CAPABILITY, Protocol, URL,
@@ -27,10 +27,12 @@ class NativeProtocol(Protocol):
     def __init__(self):
         super().__init__()
         self.reply_kind = 'wakeword_training'
+        self.namespace = 'wakeword-training'
+        self.wrong_kind = 'calibration'
         self.wrong_action = None
 
     def send(self, request, **kwargs):
-        assert request.url.startswith(URL + '/api/capture/native/wakeword-training/')
+        assert request.url.startswith(URL + '/api/capture/native/' + self.namespace + '/')
         assert request.headers['Origin'] == URL
         action = request.url.rsplit('/', 1)[-1]
         body = json.loads(request.body or b'{}')
@@ -43,7 +45,7 @@ class NativeProtocol(Protocol):
         if action == 'poll':
             self.poll_entered.set()
             assert self.poll_release.wait(3)
-        kind = 'calibration' if action == self.wrong_action else self.reply_kind
+        kind = self.wrong_kind if action == self.wrong_action else self.reply_kind
         payload = ({'token': CAPABILITY, 'kind': kind, 'state': 'reserved',
                     'capture_allowed': False, 'generation': 1} if action == 'register'
                    else {'retired': True} if action == 'retire'
@@ -59,6 +61,13 @@ class NativeProtocol(Protocol):
 def client(protocol):
     return WakewordTrainingAuthorityClient(URL, ADMIN_TOKEN, poll_interval_s=.01,
                                            session_factory=protocol.session)
+
+
+def diagnostics_client(protocol):
+    protocol.namespace = 'wakeword-diagnostics'
+    protocol.reply_kind = 'wakeword_diagnostics'
+    return WakewordDiagnosticsAuthorityClient(URL, ADMIN_TOKEN, poll_interval_s=.01,
+                                              session_factory=protocol.session)
 
 
 def test_wakeword_fixed_namespace_original_actor_and_token_only_retirement():
@@ -81,6 +90,59 @@ def test_wakeword_fixed_namespace_original_actor_and_token_only_retirement():
         assert all(session.trust_env is False for session in protocol.sessions)
     finally:
         authority.close()
+
+
+def test_diagnostics_fixed_namespace_original_actor_and_token_only_retirement():
+    protocol = NativeProtocol()
+    authority = diagnostics_client(protocol)
+    stopped = threading.Event()
+    assert type(authority) is WakewordDiagnosticsAuthorityClient
+    assert not isinstance(authority, (CalibrationAuthorityClient, WakewordTrainingAuthorityClient))
+    try:
+        authority.register()
+        assert authority.current() is False
+        authority.activate()
+        assert authority.current() is True
+        protocol.allowed = False
+        authority.start_monitor(stopped.set)
+        assert stopped.wait(3)
+        authority.stop_monitor()
+        assert authority.current() is False
+        authority.retire()
+        assert protocol.calls[:2] == ['register', 'activate']
+        assert 'poll' in protocol.calls
+        assert protocol.calls[-1] == 'retire'
+        assert all(session.trust_env is False for session in protocol.sessions)
+    finally:
+        authority.close()
+
+
+@pytest.mark.parametrize('wrong_kind', ['calibration', 'wakeword_training'])
+@pytest.mark.parametrize('action', ['register', 'activate'])
+def test_other_namespace_response_cannot_grant_diagnostics_capture(action, wrong_kind):
+    protocol = NativeProtocol()
+    authority = diagnostics_client(protocol)
+    protocol.wrong_kind = wrong_kind
+    protocol.wrong_action = action
+    try:
+        if action == 'activate':
+            authority.register()
+        with pytest.raises(RuntimeError) as caught:
+            getattr(authority, action)()
+        assert ADMIN_TOKEN not in str(caught.value)
+        assert CAPABILITY not in str(caught.value)
+        assert URL not in str(caught.value)
+        assert authority.current() is False
+        assert 'poll' not in protocol.calls
+    finally:
+        authority.close()
+    assert 'retire' not in protocol.calls
+
+
+@pytest.mark.parametrize('kind', ['calibration', 'wakeword_training'])
+def test_diagnostics_fixed_wrapper_cannot_accept_another_kind(kind):
+    with pytest.raises(TypeError):
+        WakewordDiagnosticsAuthorityClient(URL, ADMIN_TOKEN, kind=kind)
 
 
 @pytest.mark.parametrize('action', ['register', 'activate'])

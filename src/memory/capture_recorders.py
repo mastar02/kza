@@ -72,7 +72,7 @@ class CaptureRecorders:
                 "SELECT token_hash, state, kind FROM capture_browser_recorders").fetchall()
             records = {str(row[0]): RecorderState(row[1]) for row in rows}
             kinds = {str(row[0]): str(row[2]) for row in rows}
-            if any(kind not in ("browser", "calibration", "wakeword_training") for kind in kinds.values()):
+            if any(kind not in ("browser", "calibration", "wakeword_training", "wakeword_diagnostics") for kind in kinds.values()):
                 raise RuntimeError("capture_recorder_kind_unconfirmed")
             with self._lock:
                 self._records = records
@@ -126,7 +126,7 @@ class CaptureRecorders:
 
     @staticmethod
     def _validate_kind(kind: str) -> None:
-        if kind not in ("browser", "calibration", "wakeword_training"):
+        if kind not in ("browser", "calibration", "wakeword_training", "wakeword_diagnostics"):
             raise ValueError("capture_recorder_kind_denied")
 
     def _require_kind(self, key: str, kind: str) -> None:

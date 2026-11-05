@@ -404,7 +404,8 @@ class CaptureControl:
         recorders_pending = self.recorders.pending()
         browsers = self.recorders.pending(kind='browser')
         native_clients = (self.recorders.pending(kind='calibration')
-                          + self.recorders.pending(kind='wakeword_training'))
+                          + self.recorders.pending(kind='wakeword_training')
+                          + self.recorders.pending(kind='wakeword_diagnostics'))
         return {'revision': self._revision, 'target_muted': self._target,
                 'persisted_muted': self._persisted, 'phase': self._phase,
                 'ingress_sealed': self._sealed, 'supported': bool(self._supported),

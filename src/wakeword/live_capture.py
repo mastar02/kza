@@ -5,7 +5,10 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from src.audio.native_capture_authority import WakewordTrainingAuthorityClient
+from src.audio.native_capture_authority import (
+    WakewordDiagnosticsAuthorityClient,
+    WakewordTrainingAuthorityClient,
+)
 
 _ACTIVE: set[LiveWakewordCapture] = set()
 _FAILED: set[LiveWakewordCapture] = set()
@@ -24,7 +27,10 @@ class LiveWakewordCapture:
     """
 
     def __init__(self, authority: WakewordTrainingAuthorityClient) -> None:
-        if not isinstance(authority, WakewordTrainingAuthorityClient):
+        self._initialize_authority(authority, WakewordTrainingAuthorityClient)
+
+    def _initialize_authority(self, authority: Any, expected_type: type) -> None:
+        if not isinstance(authority, expected_type):
             raise RuntimeError("wakeword_capture_authority_required")
         self.authority = authority
         self.stop = threading.Event()
@@ -183,6 +189,9 @@ class LiveWakewordCapture:
         self.require_current()
         return self._detector
 
+    def _release_owned_resources(self) -> None:
+        """Release any additional owned Python references after native drains."""
+
     def _finish(self, prior_error: BaseException | None) -> None:
         with self._condition:
             self.seal()
@@ -211,6 +220,7 @@ class LiveWakewordCapture:
         if not self._callbacks and self._detector is not None:
             if attempt(self._detector.close, uncertain=True):
                 self._detector = None
+        attempt(self._release_owned_resources, uncertain=True)
         failures.extend(self._callback_failures)
         self._callback_failures.clear()
         monitor_done = attempt(self.authority.stop_monitor)
@@ -231,3 +241,59 @@ class LiveWakewordCapture:
     def __exit__(self, exc_type: Any, error: BaseException | None, tb: Any) -> bool:
         self._finish(error)
         return False
+
+
+class LiveWakewordDiagnosticsCapture(LiveWakewordCapture):
+    """Own diagnostic calls and Python model references without an SDK wipe claim."""
+
+    def __init__(self, authority: WakewordDiagnosticsAuthorityClient) -> None:
+        self._initialize_authority(authority, WakewordDiagnosticsAuthorityClient)
+        self._raw_model: Any = None
+        self._model_release_entered = False
+
+    def own_python_model(self, factory: Callable[[], Any]) -> Any:
+        """Retain even a late model result; an unreturned constructor is unknown."""
+        self.require_current()
+        if self._raw_model is not None or self._uncertain:
+            raise RuntimeError("wakeword_diagnostic_model_still_owned")
+        self._model_release_entered = False
+        try:
+            self._raw_model = factory()
+        except BaseException:
+            self._uncertain = True
+            raise
+        if self._raw_model is None:
+            self._uncertain = True
+            raise RuntimeError("wakeword_diagnostic_model_unconfirmed")
+        self.require_current()
+        return self._raw_model
+
+    def release_python_model(self) -> None:
+        """Observe owned Python reference release, without inventing Model.close."""
+        if self._model_release_entered:
+            if self._raw_model is not None:
+                raise RuntimeError("wakeword_diagnostic_release_unconfirmed")
+            return
+        if self._raw_model is None:
+            return
+        self._model_release_entered = True
+        try:
+            self._raw_model = None
+        except BaseException:
+            self._uncertain = True
+            raise
+
+    def _release_owned_resources(self) -> None:
+        self.release_python_model()
+
+    @staticmethod
+    def model_failure(error: BaseException) -> BaseException:
+        """Retain no native traceback, PCM or model through a failed SDK call."""
+        if isinstance(error, Exception):
+            return RuntimeError("wakeword_diagnostic_model_failed")
+        if isinstance(error, KeyboardInterrupt):
+            return KeyboardInterrupt()
+        if isinstance(error, SystemExit):
+            code = error.code
+            return SystemExit(code if code is None or type(code) is int else 1)
+        return BaseException("wakeword_diagnostic_model_failed")
