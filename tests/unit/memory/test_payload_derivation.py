@@ -759,3 +759,295 @@ async def test_qualified_history_cannot_exclude_real_manual_export_component(tmp
         assert set(excluded) == {key}
         assert excluded[key]["identity"] == [row[name] for name in tables[table]["primary_key"]]
     assert snapshots.verify_snapshot(ordinary) == ordinary.manifest
+
+
+def test_catalog_reservation_rejection_precedes_clone_and_ram_entry(tmp_path, monkeypatch):
+    """Inject a rejected reservation; no capability or close receipt is issued."""
+    from scripts.stage_runtime import AdmissionController
+    from src.memory import copy_catalog, state_journal_derivation
+
+    ordinary, latest = _image(tmp_path, "O"), _image(tmp_path, "N")
+    destination = tmp_path / "R"
+    plan = payload.plan_payload_cut(ordinary, latest, now=NOW, layout=_layout(destination))
+    # Source validation has its own real-binding negative above. Isolate the
+    # subsequent rejection boundary without manufacturing a successful binding.
+    monkeypatch.setattr(state_journal_derivation, "_source", lambda *args, **kwargs: None)
+
+    def reject(*args, **kwargs):
+        assert not destination.exists() and str(destination) not in payload._INCOMPLETE
+        raise OSError("catalog reservation unavailable")
+
+    def forbidden_clone(*args):
+        pytest.fail("clone dispatched after a rejected catalog reservation")
+
+    monkeypatch.setattr(copy_catalog, "reserve_copy", reject)
+    monkeypatch.setattr(payload, "_clone_latest", forbidden_clone)
+    with AdmissionController(tmp_path / "stage") as controller:
+        with pytest.raises(OSError, match="catalog reservation unavailable"):
+            payload.materialize_derived_state(plan, destination, controller=controller)
+    assert not destination.exists() and str(destination) not in payload._INCOMPLETE
+
+
+@pytest.mark.parametrize("distinct_physical_root", [False, True])
+def test_catalog_refs_deduplicate_only_the_complete_snapshot_descriptor(
+        tmp_path, monkeypatch, distinct_physical_root):
+    """Inspect a rejected reservation, never mint a closed-binding capability."""
+    from shutil import copytree
+
+    from scripts.stage_runtime import AdmissionController
+    from src.memory import copy_catalog, state_journal_derivation
+
+    ordinary = _image(tmp_path, "O")
+    if distinct_physical_root:
+        root = tmp_path / "O-physical-copy"
+        copytree(ordinary.snapshot_root, root)
+        latest = snapshots.ClosedStateSnapshot(root, ordinary.source_binding_id,
+            ordinary.source_binding, ordinary.manifest)
+    else:
+        latest = ordinary
+    destination = tmp_path / "R"
+    plan = payload.plan_payload_cut(ordinary, latest, now=NOW, layout=_layout(destination))
+    observed = []
+
+    def reject(controller, kind, target, latest_binding_id, source_binding_ids, *, source_snapshot_refs):
+        assert kind == "derived_state" and target == destination and not destination.exists()
+        assert latest_binding_id == ordinary.source_binding_id
+        assert source_binding_ids == (ordinary.source_binding_id,)
+        observed.extend(source_snapshot_refs)
+        assert len(observed) == (2 if distinct_physical_root else 1)
+        assert all(reference["source_binding_id"] == ordinary.source_binding_id for reference in observed)
+        assert all(reference["manifest_sha256"] == ordinary.manifest_sha256 for reference in observed)
+        if distinct_physical_root:
+            assert observed[0]["snapshot_root"] != observed[1]["snapshot_root"]
+            assert observed[0]["root_identity"] != observed[1]["root_identity"]
+        raise OSError("catalog reservation deliberately rejected")
+
+    monkeypatch.setattr(state_journal_derivation, "_source", lambda *args, **kwargs: None)
+    monkeypatch.setattr(copy_catalog, "reserve_copy", reject)
+    with AdmissionController(tmp_path / "stage") as controller:
+        with pytest.raises(OSError, match="catalog reservation deliberately rejected"):
+            payload.materialize_derived_state(plan, destination, controller=controller)
+    assert observed and not destination.exists() and str(destination) not in payload._INCOMPLETE
+    assert snapshots.verify_snapshot(ordinary) == ordinary.manifest
+    assert snapshots.verify_snapshot(latest) == latest.manifest
+
+
+@pytest.mark.parametrize("catalog_failure", [False, True])
+def test_partial_clone_notifies_catalog_before_local_record(tmp_path, monkeypatch, catalog_failure):
+    """Observe caller failure propagation only, without issuing admission/SDK ACKs."""
+    from scripts.stage_runtime import AdmissionController
+    from src.memory import copy_catalog, state_journal_derivation
+
+    ordinary, latest = _image(tmp_path, "O"), _image(tmp_path, "N")
+    destination = tmp_path / "R"
+    plan = payload.plan_payload_cut(ordinary, latest, now=NOW, layout=_layout(destination))
+    events = []
+    failure_record = tmp_path / "observed-failure.json"
+
+    class FailureObserver:
+        # This fault observer deliberately has no SDK, prepared or cleanup API.
+        def create_root(self):
+            assert events == ["reserve"]
+            destination.mkdir()
+            events.append("root")
+
+        def extent(self, relative, *, family, representation):
+            assert (relative, family, representation) == (".", "managed_payload", "derived_state")
+            events.append("extent")
+
+        def failed(self, code):
+            assert code == "OSError"
+            assert not (destination / ".kza-payload-preparation.json").exists()
+            assert any(path.is_file() for path in destination.rglob("*"))
+            failure_record.write_text(json.dumps({"code": code, "cleanup": "pending", "serving": False}))
+            events.append("failed")
+            if catalog_failure:
+                raise OSError("catalog failure marker unavailable")
+
+    def observe_reservation(*args, **kwargs):
+        assert not destination.exists()
+        events.append("reserve")
+        return FailureObserver()
+
+    actual_write = payload._atomic_file
+    writes = 0
+
+    def fail_after_first_copy(path, raw):
+        nonlocal writes
+        assert events == ["reserve", "root", "extent"]
+        writes += 1
+        if writes == 2:
+            raise OSError("second clone write failed")
+        actual_write(path, raw)
+
+    monkeypatch.setattr(state_journal_derivation, "_source", lambda *args, **kwargs: None)
+    monkeypatch.setattr(copy_catalog, "reserve_copy", observe_reservation)
+    monkeypatch.setattr(payload, "_atomic_file", fail_after_first_copy)
+    try:
+        with AdmissionController(tmp_path / "stage") as controller:
+            if catalog_failure:
+                with pytest.raises(BaseExceptionGroup) as caught:
+                    payload.materialize_derived_state(plan, destination, controller=controller)
+                assert [str(error) for error in caught.value.exceptions] == [
+                    "second clone write failed", "catalog failure marker unavailable"]
+            else:
+                with pytest.raises(OSError, match="second clone write failed"):
+                    payload.materialize_derived_state(plan, destination, controller=controller)
+        assert json.loads(failure_record.read_text()) == {"code": "OSError", "cleanup": "pending", "serving": False}
+        assert events == ["reserve", "root", "extent", "failed"]
+        assert payload._INCOMPLETE[str(destination)]["phase"] == "failed"
+        assert writes == 2
+    finally:
+        # The observer never entered an SDK or owned native work. Its copied
+        # bytes remain in place; this removes only this test's RAM observation.
+        payload._INCOMPLETE.pop(str(destination), None)
+
+
+def test_rejected_catalog_sdk_entry_never_dispatches_factory(tmp_path):
+    calls = []
+
+    class RejectEntry:
+        def extent(self, relative, *, family, representation):
+            assert (relative, family, representation) == ("index", "semantic_index", "sdk_work")
+            return object()
+
+        def sdk_enter(self, extent, *, sdk_version):
+            raise OSError("SDK entry was not persisted")
+
+    def forbidden_factory(**kwargs):
+        calls.append(kwargs)
+        pytest.fail("SDK constructor dispatched without durable entry")
+
+    cut = payload.IndexCut("index", "derivation_policy_v1", payload.importlib.metadata.version("chromadb"),
+        True, (), ())
+    reservation = {"sdk": []}
+    with pytest.raises(OSError, match="SDK entry was not persisted"):
+        payload._apply_indexes(SimpleNamespace(indexes=(cut,)), tmp_path, reservation, forbidden_factory,
+            operation=RejectEntry())
+    owner, = reservation["sdk"]
+    assert not calls and owner["client"] is None
+    assert not owner["entered"] and not owner["close_attempted"] and not owner["close_returned"]
+
+
+def test_ownership_publication_failure_after_prepared_is_recorded_without_finish(tmp_path, monkeypatch):
+    """Fault-observe publication only; no runtime, controller-close or SDK ACK is issued."""
+    from scripts.stage_runtime import AdmissionController, validate_target_ownership
+    from src.memory import copy_catalog, state_journal_derivation
+    from src.memory.erasure_journal import ErasureParticipant
+    from src.memory.state_journal_derivation import JournalDerivationReceipt
+
+    ordinary, latest = _image(tmp_path, "O"), _image(tmp_path, "N")
+    destination = tmp_path / "R"
+    plan = payload.plan_payload_cut(ordinary, latest, now=NOW, layout=_layout(destination))
+    sidecar = destination / ".kza-target-ownership.json"
+    blocked = snapshots._json({"schema_version": 1, "source_bindings": [], "owned_targets": [],
+        "delegated_targets": [], "historical_targets": []}) + b"\n"
+    failure_record = tmp_path / "publication-failure.json"
+    events = []
+
+    class PublicationObserver:
+        def create_root(self):
+            destination.mkdir()
+
+        def extent(self, relative, *, family, representation):
+            assert (relative, family, representation) == (".", "managed_payload", "derived_state")
+
+        def prepared(self, record_path):
+            assert sidecar.read_bytes() == blocked
+            record = json.loads(record_path.read_bytes())
+            assert record["phase"] == "materialized" and record["sdk_close_returns"] == 0
+            assert record["serving"] is False and record["retained_copy_cleanup_ack"] is False
+            events.append("prepared")
+
+        def finish(self):
+            events.append("finish")
+            pytest.fail("publication failure must not finish preparation")
+
+        def failed(self, code):
+            assert events == ["prepared", "publication_failed"] and sidecar.read_bytes() == blocked
+            assert code == "OSError"
+            failure_record.write_text(json.dumps({"code": code, "cleanup": "pending", "serving": False}))
+            events.append("failed")
+
+    def qualify(*args, **kwargs):
+        # Real target registration and a blocked policy exercise publication.
+        # The receipt is local preparation data, with no closure capability.
+        ledger = FactLedger(str(destination / PRIVACY), clock=lambda: NOW)
+        ledger.initialize()
+        try:
+            registered = ledger.erasures.register_target(ErasureParticipant.COLLECTORS, 1,
+                {"kind": "wake_clips", "root": str(destination / "data/graph/wake")})
+        finally:
+            ledger.close()
+        sidecar.write_bytes(blocked)
+        return JournalDerivationReceipt(latest.source_binding_id, destination, PRIVACY,
+            "0"*64, tmp_path / "unissued-history.json", (), {}, (registered,), {})
+
+    actual_write = payload._atomic_file
+
+    def fail_ownership(path, raw):
+        if path == sidecar:
+            assert json.loads(raw)["owned_targets"]
+            assert events == ["prepared"]
+            events.append("publication_failed")
+            raise OSError("ownership publication unavailable")
+        actual_write(path, raw)
+
+    monkeypatch.setattr(state_journal_derivation, "_source", lambda *args, **kwargs: None)
+    monkeypatch.setattr(state_journal_derivation, "qualify_and_register_derived_journal", qualify)
+    monkeypatch.setattr(copy_catalog, "reserve_copy", lambda *args, **kwargs: PublicationObserver())
+    monkeypatch.setattr(payload, "_atomic_file", fail_ownership)
+    try:
+        with AdmissionController(tmp_path / "stage") as controller:
+            with pytest.raises(OSError, match="ownership publication unavailable"):
+                payload.materialize_derived_state(plan, destination, controller=controller)
+        assert events == ["prepared", "publication_failed", "failed"]
+        assert json.loads(failure_record.read_text()) == {"code": "OSError", "cleanup": "pending", "serving": False}
+        assert sidecar.read_bytes() == blocked
+        assert payload._INCOMPLETE[str(destination)]["phase"] == "failed"
+        binding = {"state_root": str(destination), "ownership_sha256": hashlib.sha256(blocked).hexdigest()}
+        with pytest.raises(ValueError, match="runtime_admission_active_inventory_mismatch"):
+            validate_target_ownership(tmp_path, binding)
+    finally:
+        # No SDK handle or native task was entered by this fault observer.
+        payload._INCOMPLETE.pop(str(destination), None)
+
+
+def test_catalog_prepared_rejection_keeps_real_ownership_blocked(tmp_path):
+    from scripts.stage_runtime import validate_target_ownership
+    from src.memory.erasure_journal import ErasureParticipant
+    from src.memory.state_journal_derivation import JournalDerivationReceipt
+
+    ordinary, latest = _image(tmp_path, "O"), _image(tmp_path, "N")
+    destination = tmp_path / "R"
+    plan = payload.plan_payload_cut(ordinary, latest, now=NOW, layout=_layout(destination))
+    payload._clone_latest(plan, destination)
+    ledger = FactLedger(str(destination / PRIVACY), clock=lambda: NOW)
+    ledger.initialize()
+    try:
+        registered = ledger.erasures.register_target(ErasureParticipant.COLLECTORS, 1,
+            {"kind": "wake_clips", "root": str(destination / "data/graph/wake")})
+    finally:
+        ledger.close()
+    sidecar = destination / ".kza-target-ownership.json"
+    blocked = snapshots._json({"schema_version": 1, "source_bindings": [], "owned_targets": [],
+        "delegated_targets": [], "historical_targets": []}) + b"\n"
+    sidecar.write_bytes(blocked)
+    journal = JournalDerivationReceipt(latest.source_binding_id, destination, PRIVACY,
+        "0"*64, tmp_path / "unissued-history.json", (), {}, (registered,), {})
+
+    class RejectPrepared:
+        def prepared(self, record_path):
+            assert sidecar.read_bytes() == blocked
+            record = json.loads(record_path.read_bytes())
+            assert record["phase"] == "materialized" and not record["serving"]
+            assert record["sdk_close_returns"] == 0 and not record["retained_copy_cleanup_ack"]
+            raise OSError("catalog prepared record unavailable")
+
+    with pytest.raises(OSError, match="catalog prepared record unavailable"):
+        payload._finish_prepared_payload(plan, destination, journal, {"sdk": []}, None,
+            operation=RejectPrepared())
+    assert sidecar.read_bytes() == blocked
+    binding = {"state_root": str(destination), "ownership_sha256": hashlib.sha256(blocked).hexdigest()}
+    with pytest.raises(ValueError, match="runtime_admission_active_inventory_mismatch"):
+        validate_target_ownership(tmp_path, binding)

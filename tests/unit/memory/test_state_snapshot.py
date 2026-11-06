@@ -259,3 +259,152 @@ def test_copied_but_unreferenced_archive_cannot_expand_history(tmp_path):
     image, digest, _ = _history_image(tmp_path, referenced=False)
     with pytest.raises(ValueError, match="state_snapshot_history_unreferenced"):
         snapshots.read_history_archive(image, digest)
+
+
+@pytest.mark.parametrize("failure", ["extent", "sdk_entry"])
+def test_catalog_persistence_failure_precedes_sdk_dispatch_and_retains_copies(tmp_path, monkeypatch, failure):
+    """A rejected private export seam supplies no admission or close capability."""
+    import chromadb
+
+    raw, work = tmp_path / "raw", tmp_path / ".work/sdk"
+    (raw / "index").mkdir(parents=True)
+    (raw / "index/sentinel").write_bytes(b"opaque copied bytes; SDK must not open")
+    events = []
+    original_copy = shutil.copytree
+
+    class RejectedCatalogWrite:
+        def extent(self, relative, *, family, representation):
+            events.append(("extent", relative, family, representation))
+            if failure == "extent":
+                raise OSError("synthetic-extent-persistence-failure")
+            return object()
+
+        def sdk_enter(self, extent, *, sdk_version):
+            assert events[-1][0] == "copy"
+            events.append(("sdk_entry", sdk_version))
+            raise OSError("synthetic-sdk-entry-persistence-failure")
+
+    def observed_copy(source, destination, **kwargs):
+        assert events[0][0] == "extent"
+        events.append(("copy", str(destination)))
+        return original_copy(source, destination, **kwargs)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("SDK constructor ran after a rejected durable entry")
+
+    monkeypatch.setattr(shutil, "copytree", observed_copy)
+    monkeypatch.setattr(chromadb, "PersistentClient", forbidden)
+    descriptor = {"relative_path": "index", "collection": "snapshot_policy_v1", "present": True}
+    with pytest.raises(OSError, match="synthetic-.*-persistence-failure"):
+        snapshots._export_indexes(raw, [descriptor],
+            {"sdk_versions": {"chromadb": importlib.metadata.version("chromadb")}}, work,
+            copy_operation=RejectedCatalogWrite())
+    copied = work / hashlib.sha256(b"index").hexdigest() / "sentinel"
+    assert copied.exists() is (failure == "sdk_entry")
+    if copied.exists():
+        assert copied.read_bytes() == (raw / "index/sentinel").read_bytes()
+
+
+def test_catalog_failure_record_error_does_not_hide_local_incomplete_copy(tmp_path):
+    destination = tmp_path / "image"
+    destination.mkdir()
+    payload = b"incomplete local bytes"
+    (destination / "partial").write_bytes(payload)
+    (destination / "manifest.json").write_bytes(b"unpublished image metadata")
+
+    class FailedCatalog:
+        def failed(self, code):
+            assert code == "snapshot_failed"
+            raise OSError("synthetic-catalog-write-failure")
+
+    errors = snapshots._record_snapshot_failure(FailedCatalog(), destination,
+        snapshots._identity(destination), "a" * 64)
+    assert len(errors) == 1 and type(errors[0]) is OSError
+    assert not (destination / "manifest.json").exists()
+    assert (destination / "manifest.incomplete.json").read_bytes() == b"unpublished image metadata"
+    assert (destination / "partial").read_bytes() == payload
+    assert json.loads((destination / "incomplete.json").read_text()) == {
+        "schema_version": 1, "source_binding_id": "a" * 64, "status": "incomplete"}
+
+
+def test_constructor_uncertainty_attempts_owned_close_and_keeps_both_errors(tmp_path, monkeypatch):
+    """Only rejection is exercised; no SDK or successful-close receipt is fabricated."""
+    import chromadb
+
+    raw, work = tmp_path / "raw", tmp_path / ".work/sdk"
+    (raw / "index").mkdir(parents=True)
+    (raw / "index/sentinel").write_bytes(b"retained uncertain copy")
+    events = []
+
+    class UnknownEntry:
+        def construct(self, factory, *args, **kwargs):
+            events.append("construct")
+            raise OSError("synthetic-constructor-not-returned")
+
+        def close(self):
+            events.append("close_attempt")
+            raise RuntimeError("synthetic-unknown-owner")
+
+    class RejectedExport:
+        def extent(self, relative, *, family, representation):
+            events.append("extent")
+            return object()
+
+        def sdk_enter(self, extent, *, sdk_version):
+            events.append("sdk_entry")
+            return UnknownEntry()
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("constructor must remain rejected")
+
+    monkeypatch.setattr(chromadb, "PersistentClient", forbidden)
+    with pytest.raises(BaseExceptionGroup) as caught:
+        snapshots._export_indexes(raw, [{"relative_path": "index", "present": True}],
+            {"sdk_versions": {"chromadb": importlib.metadata.version("chromadb")}}, work,
+            copy_operation=RejectedExport())
+    assert events == ["extent", "sdk_entry", "construct", "close_attempt"]
+    assert [str(error) for error in caught.value.exceptions] == [
+        "synthetic-constructor-not-returned", "synthetic-unknown-owner"]
+    assert (work / hashlib.sha256(b"index").hexdigest() / "sentinel").read_bytes() == b"retained uncertain copy"
+
+
+def test_local_failure_record_error_does_not_skip_catalog_unknown_or_remove_bytes(tmp_path, monkeypatch):
+    destination = tmp_path / "image"
+    destination.mkdir()
+    (destination / "partial").write_bytes(b"retained bytes")
+    attempted = []
+
+    class FailureObserver:
+        def failed(self, code):
+            attempted.append(code)
+
+    def rejected_write(*args, **kwargs):
+        raise OSError("synthetic-local-write-failure")
+
+    monkeypatch.setattr(snapshots, "_write", rejected_write)
+    errors = snapshots._record_snapshot_failure(FailureObserver(), destination,
+        snapshots._identity(destination), "a" * 64)
+    assert attempted == ["snapshot_failed"]
+    assert len(errors) == 1 and type(errors[0]) is OSError
+    assert (destination / "partial").read_bytes() == b"retained bytes"
+
+
+@pytest.mark.parametrize("created", [False, True])
+def test_failure_bookkeeping_never_writes_unowned_or_replaced_root(tmp_path, created):
+    destination = tmp_path / "image"
+    destination.mkdir()
+    identity = snapshots._identity(destination) if created else None
+    if created:
+        destination.rename(tmp_path / "retained-image")
+        destination.mkdir()
+    attempts = []
+
+    class FailureObserver:
+        def failed(self, code):
+            attempts.append(code)
+
+    errors = snapshots._record_snapshot_failure(FailureObserver(), destination, identity, "a" * 64)
+    assert attempts == ["snapshot_failed"] and list(destination.iterdir()) == []
+    assert len(errors) == int(created)
+    if errors:
+        assert str(errors[0]) == "state_snapshot_destination_changed"

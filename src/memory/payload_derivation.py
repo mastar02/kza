@@ -1315,7 +1315,7 @@ def _sdk_records(collection):
     return sorted(records, key=lambda row: row["id"])
 
 
-def _apply_indexes(plan, destination, reservation, factory):
+def _apply_indexes(plan, destination, reservation, factory, *, operation=None):
     present = [cut for cut in plan.indexes if cut.present]
     if not present:
         return
@@ -1329,24 +1329,38 @@ def _apply_indexes(plan, destination, reservation, factory):
     for cut in present:
         grouped.setdefault(cut.destination_relative, []).append(cut)
     for relative, cuts in sorted(grouped.items()):
-        owner = {"entered": True, "client": None, "close_attempted": False, "close_returned": False}
+        owner = {"entered": False, "client": None, "close_attempted": False, "close_returned": False}
         reservation["sdk"].append(owner)
-        owner["client"] = factory(path=str(destination / relative), settings=Settings(anonymized_telemetry=False))
+        entry = None
+        if operation is not None:
+            extent = operation.extent(relative, family="semantic_index", representation="sdk_work")
+            entry = operation.sdk_enter(extent, sdk_version=cuts[0].sdk_version)
+            owner["catalog_entry"] = entry
         primary = None
         try:
+            arguments = {"path": str(destination / relative), "settings": Settings(anonymized_telemetry=False)}
+            owner["entered"] = True
+            owner["client"] = factory(**arguments) if entry is None else entry.construct(factory, **arguments)
             _edit_collection(owner["client"], cuts)
         except BaseException as error:
             primary = error
         finally:
-            owner["close_attempted"] = True
-            try:
-                owner["client"].close()
-            except BaseException as cleanup:
-                if primary is not None:
-                    raise BaseExceptionGroup("payload SDK operation and close failed", [primary, cleanup])
-                raise
-            owner["close_returned"] = True
-            owner["client"] = None
+            # construct retains an acquired handle before persisting its return.
+            # Its close must still run when that persistence raised, even though
+            # the caller never received the handle. Uncertain returns stay sealed.
+            if entry is not None or owner["client"] is not None:
+                owner["close_attempted"] = True
+                try:
+                    if entry is None:
+                        owner["client"].close()
+                    else:
+                        entry.close()
+                except BaseException as cleanup:
+                    if primary is not None:
+                        raise BaseExceptionGroup("payload SDK operation and close failed", [primary, cleanup])
+                    raise
+                owner["close_returned"] = True
+                owner["client"] = None
         if primary is not None:
             raise primary
 
@@ -1410,12 +1424,12 @@ def _prepared_ownership(destination, journal):
     return path, blocked, _json(qualified) + b"\n"
 
 
-def _finish_prepared_payload(plan, destination, journal, reservation, sdk_client_factory):
+def _finish_prepared_payload(plan, destination, journal, reservation, sdk_client_factory, *, operation=None):
     ownership, blocked, qualified = _prepared_ownership(destination, journal)
     _apply_tables(plan, destination, journal)
     _apply_files(plan, destination)
     _publish_diagnostics(plan, destination)
-    _apply_indexes(plan, destination, reservation, sdk_client_factory)
+    _apply_indexes(plan, destination, reservation, sdk_client_factory, operation=operation)
     _require(all(owner["close_returned"] and owner["client"] is None for owner in reservation["sdk"]),
         "payload_sdk_retirement_unconfirmed")
     audit = _relocation_audit(plan, journal)
@@ -1429,7 +1443,11 @@ def _finish_prepared_payload(plan, destination, journal, reservation, sdk_client
         "serving": False, "journal": journal.to_dict(), "relocation_audit": list(audit),
         "sdk_close_returns": len(reservation["sdk"]), "retained_copy_cleanup_ack": False}
     _atomic_file(record, _json(value) + b"\n")
+    if operation is not None:
+        operation.prepared(record)
     _atomic_file(ownership, qualified)
+    if operation is not None:
+        operation.finish()
     return DerivedState(destination, plan.plan_sha256, journal.history_sha256,
         dict(journal.target_id_map), event_targets, dict(journal.event_dependency_target_map), audit, record)
 
@@ -1441,6 +1459,7 @@ def materialize_derived_state(plan: PayloadCutPlan, destination: Path, *, contro
     Failure leaves its preparation record and incomplete ownership sealed. A
     successful return is preparation evidence, not admission or copy erasure.
     """
+    from src.memory.copy_catalog import reserve_copy
     from src.memory.state_journal_derivation import _source, _stage, qualify_and_register_derived_journal
     _require(type(plan) is PayloadCutPlan and isinstance(destination, Path)
         and destination == plan.layout.destination_root, "payload_destination_mismatch")
@@ -1458,17 +1477,40 @@ def materialize_derived_state(plan: PayloadCutPlan, destination: Path, *, contro
             _require(importlib.metadata.version("chromadb") == cut.sdk_version, "payload_sdk_version_changed")
     key = str(destination)
     _require(key not in _INCOMPLETE, "payload_previous_preparation_unconfirmed")
-    reservation = {"phase": "preparing", "sdk": []}
+    refs = []
+    for snapshot in (plan.ordinary, plan.latest):
+        info = snapshot.snapshot_root.stat()
+        reference = {"source_binding_id": snapshot.source_binding_id,
+            "snapshot_root": str(snapshot.snapshot_root),
+            "root_identity": {"device": info.st_dev, "inode": info.st_ino},
+            "manifest_sha256": snapshot.manifest_sha256}
+        if reference not in refs:
+            refs.append(reference)
+    operation = reserve_copy(controller, "derived_state", destination, plan.latest.source_binding_id,
+        tuple(dict.fromkeys(snapshot.source_binding_id for snapshot in (plan.ordinary, plan.latest))),
+        source_snapshot_refs=tuple(refs))
+    reservation = {"phase": "preparing", "sdk": [], "catalog": operation}
     _INCOMPLETE[key] = reservation
-    _clone_latest(plan, destination)
-    record = destination / ".kza-payload-preparation.json"
-    _atomic_file(record, _json({"schema_version": 1, "plan_sha256": plan.plan_sha256,
-        "phase": "preparing", "serving": False}) + b"\n")
-    proof = _exclusion_proof(plan, destination)
-    journal = qualify_and_register_derived_journal(controller, plan.latest, destination,
-        privacy_relative=plan.layout.privacy_relative, target_relocations=plan.layout.target_relocations,
-        ordinary_snapshot=plan.ordinary, payload_cut_proof=proof, keep_blocked=True)
-    result = _finish_prepared_payload(plan, destination, journal, reservation, sdk_client_factory)
+    try:
+        operation.create_root()
+        operation.extent(".", family="managed_payload", representation="derived_state")
+        _clone_latest(plan, destination)
+        record = destination / ".kza-payload-preparation.json"
+        _atomic_file(record, _json({"schema_version": 1, "plan_sha256": plan.plan_sha256,
+            "phase": "preparing", "serving": False}) + b"\n")
+        proof = _exclusion_proof(plan, destination)
+        journal = qualify_and_register_derived_journal(controller, plan.latest, destination,
+            privacy_relative=plan.layout.privacy_relative, target_relocations=plan.layout.target_relocations,
+            ordinary_snapshot=plan.ordinary, payload_cut_proof=proof, keep_blocked=True)
+        result = _finish_prepared_payload(plan, destination, journal, reservation, sdk_client_factory,
+            operation=operation)
+    except BaseException as error:
+        reservation["phase"] = "failed"
+        try:
+            operation.failed(type(error).__name__)
+        except BaseException as catalog_error:
+            raise BaseExceptionGroup("payload preparation and catalog failure", [error, catalog_error]) from None
+        raise
     reservation["phase"] = "materialized"
     del _INCOMPLETE[key]
     return result

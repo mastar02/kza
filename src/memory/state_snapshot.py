@@ -233,7 +233,15 @@ def _sdk_json(value):
     raise ValueError("state_snapshot_unsupported_sdk_value")
 
 
-def _export_indexes(raw: Path, descriptors: list[dict], binding: dict, work: Path) -> list[dict]:
+def _close_export_sdk(entry, client) -> None:
+    if entry is not None:
+        entry.close()
+    elif client is not None:
+        client.close()
+
+
+def _export_indexes(raw: Path, descriptors: list[dict], binding: dict, work: Path, *,
+                    copy_operation=None) -> list[dict]:
     """Only this function imports SDK code, after all source/path preflight."""
     expected = binding["sdk_versions"].get("chromadb")
     if any(item["present"] for item in descriptors):
@@ -252,9 +260,18 @@ def _export_indexes(raw: Path, descriptors: list[dict], binding: dict, work: Pat
                     "fields": ["ids", "documents", "metadatas", "embeddings"], "records": []})
             continue
         private = work / hashlib.sha256(relative.encode()).hexdigest()
+        extent = None
+        if copy_operation is not None:
+            extent = copy_operation.extent(".work/sdk/" + private.name,
+                family="semantic_index", representation="sdk_work")
         shutil.copytree(raw / _relative(relative), private, symlinks=False)
-        client = chromadb.PersistentClient(path=str(private), settings=Settings(anonymized_telemetry=False))
+        sdk_entry = (copy_operation.sdk_enter(extent, sdk_version=expected)
+                     if copy_operation is not None else None)
+        client = None
         try:
+            client = (sdk_entry.construct(chromadb.PersistentClient, path=str(private),
+                        settings=Settings(anonymized_telemetry=False)) if sdk_entry is not None else
+                      chromadb.PersistentClient(path=str(private), settings=Settings(anonymized_telemetry=False)))
             for entry in entries:
                 collection = client.get_collection(name=entry["collection"], embedding_function=None)
                 payload = collection.get(include=["documents", "metadatas", "embeddings"])
@@ -284,8 +301,15 @@ def _export_indexes(raw: Path, descriptors: list[dict], binding: dict, work: Pat
                 records.sort(key=lambda item: item["id"])
                 exports.append({**entry, "metadata": _sdk_json(collection.metadata), "sdk_version": expected,
                     "fields": ["ids", "documents", "metadatas", "embeddings"], "records": records})
-        finally:
-            client.close()
+        except BaseException as original:
+            try:
+                _close_export_sdk(sdk_entry, client)
+            except BaseException as cleanup:
+                raise BaseExceptionGroup("state snapshot SDK export retirement unconfirmed",
+                                         [original, cleanup]) from None
+            raise
+        else:
+            _close_export_sdk(sdk_entry, client)
         shutil.rmtree(private)
     return exports
 
@@ -451,6 +475,30 @@ def _verify_files(root: Path, files: dict, *, manifest_present: bool) -> None:
             raise ValueError("state_snapshot_file_changed")
 
 
+def _record_snapshot_failure(operation, destination: Path, root_identity: dict | None,
+                             source_binding_id: str) -> list:
+    """Attempt independent durable and local failure records without losing errors."""
+    failures = []
+    try:
+        operation.failed("snapshot_failed")
+    except BaseException as error:
+        failures.append(error)
+    if root_identity is None:
+        return failures
+    try:
+        if (destination.resolve(strict=True) != destination or destination.is_symlink()
+                or _identity(destination) != root_identity):
+            raise ValueError("state_snapshot_destination_changed")
+        manifest_path = destination / "manifest.json"
+        if manifest_path.exists():
+            os.replace(manifest_path, destination / "manifest.incomplete.json")
+        _write(destination / "incomplete.json", _json({"schema_version": 1,
+               "source_binding_id": source_binding_id, "status": "incomplete"}) + b"\n")
+    except BaseException as error:
+        failures.append(error)
+    return failures
+
+
 def snapshot_closed_state(controller: "AdmissionController", binding_id: str,
                           destination: Path) -> ClosedStateSnapshot:
     """Capture a source-qualified image while the caller retains admission.
@@ -459,6 +507,8 @@ def snapshot_closed_state(controller: "AdmissionController", binding_id: str,
     published before public SDK close and a second closed-source verification.
     Cross-store crash atomicity and payload reconciliation are separate work.
     """
+    from src.memory.copy_catalog import reserve_copy
+
     stage = _stage()
     root = Path(controller.root)
     binding = stage.verify_closed_binding(root, binding_id)
@@ -469,10 +519,22 @@ def snapshot_closed_state(controller: "AdmissionController", binding_id: str,
             or destination.is_relative_to(root / "slots")):
         raise ValueError("state_snapshot_unsafe_destination")
     inventory = _inventory(source)
-    destination.mkdir(mode=0o700)
-    work = destination / ".work"
-    work.mkdir(mode=0o700)
+    if destination.exists() or destination.is_symlink():
+        raise FileExistsError(destination)
+    head = stage.read_admission_head(root)
+    operation = reserve_copy(controller, "snapshot", destination, head["binding_id"], (binding_id,))
+    root_identity = None
     try:
+        created = operation.create_root()
+        if created != destination:
+            raise ValueError("state_snapshot_destination_changed")
+        root_identity = _identity(destination)
+        for relative, representation in ((".work/raw", "raw"), ("state", "state"),
+                ("blobs", "blob"), ("history", "history_archive"), ("manifest.json", "manifest"),
+                ("manifest.incomplete.json", "manifest"), ("incomplete.json", "preparation")):
+            operation.extent(relative, family="managed_payload", representation=representation)
+        work = destination / ".work"
+        work.mkdir(mode=0o700)
         raw = work / "raw"
         raw.mkdir(mode=0o700)
         for relative in sorted(inventory):
@@ -512,7 +574,7 @@ def snapshot_closed_state(controller: "AdmissionController", binding_id: str,
                                          "size": copied.stat().st_size, "kind": kind}
         for relative in binding["store_roots"]:
             (destination / "state" / relative).mkdir(parents=True, exist_ok=True, mode=0o700)
-        exports = _export_indexes(raw, descriptors, binding, work / "sdk")
+        exports = _export_indexes(raw, descriptors, binding, work / "sdk", copy_operation=operation)
         if stage.verify_closed_binding(root, binding_id) != binding or _inventory(source) != inventory:
             raise ValueError("state_snapshot_source_changed")
         proof = _read_json(root / "admission" / "closures" / (binding_id + ".json"))
@@ -532,12 +594,13 @@ def snapshot_closed_state(controller: "AdmissionController", binding_id: str,
         _write(destination / "manifest.json", _json(manifest) + b"\n")
         snapshot = ClosedStateSnapshot(destination, binding_id, binding, manifest)
         verify_snapshot(snapshot)
+        if stage.verify_closed_binding(root, binding_id) != binding or _inventory(source) != inventory:
+            raise ValueError("state_snapshot_source_changed")
+        operation.prepared(destination / "manifest.json")
+        operation.finish()
         return snapshot
-    except BaseException:
-        # In particular, a failed SDK close retains its work tree for recovery.
-        manifest_path = destination / "manifest.json"
-        if manifest_path.exists():
-            os.replace(manifest_path, destination / "manifest.incomplete.json")
-        _write(destination / "incomplete.json", _json({"schema_version": 1,
-               "source_binding_id": binding_id, "status": "incomplete"}) + b"\n")
+    except BaseException as original:
+        failures = _record_snapshot_failure(operation, destination, root_identity, binding_id)
+        if failures:
+            raise BaseExceptionGroup("state snapshot failure persistence unconfirmed", [original, *failures]) from None
         raise
