@@ -108,7 +108,7 @@
     "disk_floor_MiB": 512
   },
   "delegation": "Up to8 active agents including coordinator, subject to actual session slots (4 here). PC browser/desktop interaction requires gpt-6.1-terra subagent; root owns runtime/Git and reviews evidence.",
-  "remaining": "Implement the typed current-authority checkpoint BLOB retirement owner using f487f40 baseline16BLOBs/49refs (1S_only,3shared,12retained). Real S-only withdrawal must retain shared/U/manual and original history pins. Baseline68unit+1opt-in compiled+1original regression PASS is lineage only, no cleanup ACK. Global registration/owners, genuine SDK close failure, F1/T024/all21 criteria/goal remain open.",
+  "remaining": "Pausa solicitada por usuario tras534PASS y wait consumido. Al reanudar: verificar HEAD/origin y ejecutar primero la integración compilada de checkpoint BLOB cleanup con runner native preparado y HEAD vigente; luego baseline/default, colección9085 y full1500. No repetir componentes salvo cambio/fallo nuevo. Borrado compilado, ACKscope/F1/T024/21criterios/goal todavía no probados; última full sigue dd637f7. Ver docs/runbooks/2026-11-06-goal-pause-checkpoint.md.",
   "prerequisite_progress": {
     "report": "docs/research/2026-11-06-runtime-admission-foundation.json",
     "implementation_commit": "80b47f55716e980b93a7312b6732de0611e3e2e0",
@@ -186,10 +186,17 @@
         "path": "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/acceptance-proof.json",
         "sha256": "4af869e3cb0befdbaeca8b8973744eb28b9f5b4fd24973d8e59a812a8117468d"
       },
-      "status": "planned",
+      "status": "implemented_components_verified_native_pending",
       "required_result": "Actually withdraw the proven S-only checkpoint BLOB under explicit current authority; preserve shared/U/manual bytes, original checkpoint JSON identities/pins and source IDs/TTL. Recheck in a fresh inert reader with truthful retirement evidence; a no-op or process wait is not a cleanup receipt.",
       "boundary": "Scope the typed phase_checkpoint representation explicitly. Historical checkpoint rows, digests, locators and retrospective observations grant no mutation/admission capability. Unknown lineage or ownership remains blocked; preserve every other raw/audit/legacy obligation and aggregate=False.",
-      "remaining": "Global copy census/owners, genuine public/native SDK close failure, legacy migration, exact guards and field acceptance remain open."
+      "remaining": "Global copy census/owners, genuine public/native SDK close failure, legacy migration, exact guards and field acceptance remain open.",
+      "product_revision": "e1caf6dd9568c28454b8d1a0b8e98d4a4679ee0a",
+      "test_revision": "e1bcdb6070156487c9e66db0b4be8be937b0eee1",
+      "component_evidence": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/component-acceptance-proof.json",
+        "sha256": "c21a2d526c8553ce73d50a4f608e3c0fad52de7106713f0c2f73b41ee31c4055"
+      },
+      "next_action": "Pausa solicitada por usuario tras534PASS y wait consumido. Al reanudar: verificar HEAD/origin y ejecutar primero la integración compilada de checkpoint BLOB cleanup con runner native preparado y HEAD vigente; luego baseline/default, colección9085 y full1500. No repetir componentes salvo cambio/fallo nuevo. Borrado compilado, ACKscope/F1/T024/21criterios/goal todavía no probados; última full sigue dd637f7. Ver docs/runbooks/2026-11-06-goal-pause-checkpoint.md."
     },
     "nominal_constructor_failure": {
       "revision": "180ce95ff0b6d141da1cdf81633ae9a791c08988",
@@ -305,6 +312,41 @@
       "F1_delivered": false,
       "goal_complete": false,
       "production_changed": false
+    },
+    "checkpoint_retirement_progress": {
+      "status": "implemented_components_verified_native_pending_pause_requested",
+      "product_revision": "e1caf6dd9568c28454b8d1a0b8e98d4a4679ee0a",
+      "test_revision": "e1bcdb6070156487c9e66db0b4be8be937b0eee1",
+      "component_proof": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/component-acceptance-proof.json",
+        "sha256": "c21a2d526c8553ce73d50a4f608e3c0fad52de7106713f0c2f73b41ee31c4055"
+      },
+      "components": "534PASS,534exactIDs;XML106.631s/summary106.66s;runner69327/pytest69330;actualwait0consumed;1084source/37scripts/34protected unchanged",
+      "first_attempt": "533PASS+1FAIL; incorrect test stage alias and expected dict parameter ID corrected test-only; original failed evidence and inputs retained",
+      "parser": "Promoted pure-stdlib reader into src/memory/checkpoint_lineage.py;81unit cases. Current authority cleanup has29unit cases. Unknown DTO ancestry/source/locator and unavailable/shared reference conflicts remain blocked. Parser grants remain False.",
+      "owner": "New src/memory/checkpoint_cleanup.py: actual controller/current closed F/tombstone, original registered inventory and four binding pins, journal/CAS before unlink, exact FD/file pins, fsync/real close, cancellation drain, scoped receipt only.",
+      "review": "Static parser/owner/integration reviews passed; actual compiled cleanup runtime is not yet verified.",
+      "pending": [
+        "native1:tests/integration/test_checkpoint_blob_cleanup.py",
+        "baseline1:tests/integration/test_checkpoint_binary_lineage.py",
+        "default1:tests/integration/test_compiled_material_reconciliation.py",
+        "full collection9085exactIDs, then full1500s; same known regex xfail only"
+      ],
+      "raw_export": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/raw-export/components-components-attempt-02-manifest.json",
+        "sha256": "359686b1cf44143ea34ccd3530da83e517d9172047c51b715d550ca2a79f5c4e",
+        "files": 8040,
+        "symlinks": 299,
+        "bytes": 327653762
+      },
+      "own_runtimes_pending": [],
+      "pause_requested_by_user": true,
+      "cleanup_ack": false,
+      "aggregate_copy_complete": false,
+      "F1_delivered": false,
+      "goal_complete": false,
+      "production_changed": false
     }
-  }
+  },
+  "pause_requested_by_user": true
 }

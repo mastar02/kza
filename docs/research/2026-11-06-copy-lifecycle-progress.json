@@ -2,10 +2,10 @@
   "schema_version": 1,
   "task": "T024-F1",
   "unit": "durable-copy-catalog foundation",
-  "status": "typed_binary_lineage_verified_local_overall_in_progress",
+  "status": "checkpoint_retirement_components_verified_native_pending_user_pause",
   "goal_complete": false,
   "F1_delivered": false,
-  "revision": "a2c6f4c085bc867782cadcf162894ab17fbef374",
+  "revision": "e1caf6dd9568c28454b8d1a0b8e98d4a4679ee0a",
   "implementation": [
     "External content-free catalog reserves a copy before creating payload, then pins physical identity and records extents. Controller FD, live lease, closed HEAD and sealed authority are revalidated.",
     "Immutable events and CAS head keep preparation provenance. Crash recovery exposes verified prefix or initial uncommitted metadata as UNKNOWN and blocked; it never recreates a capability.",
@@ -13,7 +13,8 @@
     "Nominal Chroma factory, acquired handle and public close are observed; uncertainty remains irreversible. Preparation is recorded before ownership publication; finish releases the capability only afterward.",
     "Snapshot/payload registration remains. V1 HEAD/binding/ticket formats remain unchanged; explicit pre-store invalidation gates now reject fenced copy paths, including replaced directory inodes.",
     "CollectorCopyCleanup validates current authority, tombstone, exact copy/catalog/root identity and CAS before collector-only mutation. A durable immutable fence precedes mutation and blocks later admission, snapshot use and destination reuse.",
-    "Owned native work survives observer cancellation; SQLite checkpoint/actual close and file directory fsync precede the scoped receipt. U/manual coparents and current F are preserved."
+    "Owned native work survives observer cancellation; SQLite checkpoint/actual close and file directory fsync precede the scoped receipt. U/manual coparents and current F are preserved.",
+    "Checkpoint S-only BLOB owner and production stdlib lineage reader implemented;534 components PASS. Compiled retirement, baseline/default and new full not executed at user-requested pause; no new scoped cleanup receipt or aggregate ACK claimed."
   ],
   "verified": {
     "catalog_foundation_at_2cd": {
@@ -258,7 +259,8 @@
     "94b83f1920537fa7a0d416eeccfbb9cbb4ac12af",
     "180ce95ff0b6d141da1cdf81633ae9a791c08988",
     "dd637f704a463dc0ebd8479af4a8763deab4c375",
-    "a2c6f4c085bc867782cadcf162894ab17fbef374"
+    "a2c6f4c085bc867782cadcf162894ab17fbef374",
+    "e1caf6dd9568c28454b8d1a0b8e98d4a4679ee0a"
   ],
   "warnings": {
     "scope_revision": "dd637f704a463dc0ebd8479af4a8763deab4c375",
@@ -301,6 +303,10 @@
     "binary_lineage": {
       "path": "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/acceptance-proof.json",
       "sha256": "4af869e3cb0befdbaeca8b8973744eb28b9f5b4fd24973d8e59a812a8117468d"
+    },
+    "checkpoint_retirement_components": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/component-acceptance-proof.json",
+      "sha256": "c21a2d526c8553ce73d50a4f608e3c0fad52de7106713f0c2f73b41ee31c4055"
     }
   },
   "next_concrete_units": [
@@ -312,10 +318,17 @@
         "path": "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/acceptance-proof.json",
         "sha256": "4af869e3cb0befdbaeca8b8973744eb28b9f5b4fd24973d8e59a812a8117468d"
       },
-      "status": "planned",
+      "status": "implemented_components_verified_native_pending",
       "required_result": "Actually withdraw the proven S-only checkpoint BLOB under explicit current authority; preserve shared/U/manual bytes, original checkpoint JSON identities/pins and source IDs/TTL. Recheck in a fresh inert reader with truthful retirement evidence; a no-op or process wait is not a cleanup receipt.",
       "boundary": "Scope the typed phase_checkpoint representation explicitly. Historical checkpoint rows, digests, locators and retrospective observations grant no mutation/admission capability. Unknown lineage or ownership remains blocked; preserve every other raw/audit/legacy obligation and aggregate=False.",
-      "remaining": "Global copy census/owners, genuine public/native SDK close failure, legacy migration, exact guards and field acceptance remain open."
+      "remaining": "Global copy census/owners, genuine public/native SDK close failure, legacy migration, exact guards and field acceptance remain open.",
+      "product_revision": "e1caf6dd9568c28454b8d1a0b8e98d4a4679ee0a",
+      "test_revision": "e1bcdb6070156487c9e66db0b4be8be937b0eee1",
+      "component_evidence": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/component-acceptance-proof.json",
+        "sha256": "c21a2d526c8553ce73d50a4f608e3c0fad52de7106713f0c2f73b41ee31c4055"
+      },
+      "next_action": "Pausa solicitada por usuario tras534PASS y wait consumido. Al reanudar: verificar HEAD/origin y ejecutar primero la integración compilada de checkpoint BLOB cleanup con runner native preparado y HEAD vigente; luego baseline/default, colección9085 y full1500. No repetir componentes salvo cambio/fallo nuevo. Borrado compilado, ACKscope/F1/T024/21criterios/goal todavía no probados; última full sigue dd637f7. Ver docs/runbooks/2026-11-06-goal-pause-checkpoint.md."
     },
     {
       "priority": 2,
@@ -477,7 +490,7 @@
     "full_forensic_index_sha256": "0920c1704a98cebc6823d30fe833d7105f4adaab64e60c7f16a70af10cf53561",
     "full_repro_receipt_sha256": "638b66a891a96cd685573a61caeb25660aeecf8810d30aee3ce0277fcb3b70fd"
   },
-  "test_evidence_revision": "f487f40e891fd3ec5e0e092f45cee49cd85d8201",
+  "test_evidence_revision": "e1bcdb6070156487c9e66db0b4be8be937b0eee1",
   "close_failure_feasibility_review": {
     "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/close-failure-feasibility.json",
     "sha256": "356b46ddd907cb20dfd1dff94328f5f366234ff002836f87d331b3cb49149c25"
@@ -574,5 +587,41 @@
     "F1_delivered": false,
     "goal_complete": false,
     "production_changed": false
-  }
+  },
+  "checkpoint_retirement_progress": {
+    "status": "implemented_components_verified_native_pending_pause_requested",
+    "product_revision": "e1caf6dd9568c28454b8d1a0b8e98d4a4679ee0a",
+    "test_revision": "e1bcdb6070156487c9e66db0b4be8be937b0eee1",
+    "component_proof": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/component-acceptance-proof.json",
+      "sha256": "c21a2d526c8553ce73d50a4f608e3c0fad52de7106713f0c2f73b41ee31c4055"
+    },
+    "components": "534PASS,534exactIDs;XML106.631s/summary106.66s;runner69327/pytest69330;actualwait0consumed;1084source/37scripts/34protected unchanged",
+    "first_attempt": "533PASS+1FAIL; incorrect test stage alias and expected dict parameter ID corrected test-only; original failed evidence and inputs retained",
+    "parser": "Promoted pure-stdlib reader into src/memory/checkpoint_lineage.py;81unit cases. Current authority cleanup has29unit cases. Unknown DTO ancestry/source/locator and unavailable/shared reference conflicts remain blocked. Parser grants remain False.",
+    "owner": "New src/memory/checkpoint_cleanup.py: actual controller/current closed F/tombstone, original registered inventory and four binding pins, journal/CAS before unlink, exact FD/file pins, fsync/real close, cancellation drain, scoped receipt only.",
+    "review": "Static parser/owner/integration reviews passed; actual compiled cleanup runtime is not yet verified.",
+    "pending": [
+      "native1:tests/integration/test_checkpoint_blob_cleanup.py",
+      "baseline1:tests/integration/test_checkpoint_binary_lineage.py",
+      "default1:tests/integration/test_compiled_material_reconciliation.py",
+      "full collection9085exactIDs, then full1500s; same known regex xfail only"
+    ],
+    "raw_export": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/raw-export/components-components-attempt-02-manifest.json",
+      "sha256": "359686b1cf44143ea34ccd3530da83e517d9172047c51b715d550ca2a79f5c4e",
+      "files": 8040,
+      "symlinks": 299,
+      "bytes": 327653762
+    },
+    "own_runtimes_pending": [],
+    "pause_requested_by_user": true,
+    "cleanup_ack": false,
+    "aggregate_copy_complete": false,
+    "F1_delivered": false,
+    "goal_complete": false,
+    "production_changed": false
+  },
+  "pause_requested_by_user": true,
+  "resume_runbook": "docs/runbooks/2026-11-06-goal-pause-checkpoint.md"
 }

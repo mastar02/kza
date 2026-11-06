@@ -6,9 +6,11 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 ## Punto de reanudación
 
-**T024-F1 sigue en curso.** `f487f40` verifica el baseline binario S/U/manual/shared con 68 unitarias y dos integraciones compiladas PASS; es una unidad de pruebas, sin borrado ni cambios de código de producción. El próximo paso es el owner real de retirada de BLOBs bajo autoridad vigente.
+**Pausa solicitada por el usuario. T024-F1 sigue incompleto.** El owner de retirada de BLOBs está implementado en `e1caf6d`; la corrección de prueba `e1bcdb6` pasó **534 componentes**, con534 IDs exactos,1084 fuentes/37 scripts/34 protegidos intactos. Wait del runner69327/pytest69330 y espera de herramienta consumidos; no quedan procesos propios pendientes.
 
-`dd637f7` registra observaciones retrospectivas de tres raíces existentes, sin conceder admisión ni limpieza. Pasaron **423 componentes**, **una integración compilada** y la full de **8971 PASS más la misma xfail conocida**, 8972 IDs exactos. El mismo goal permanece **activo e incompleto**; T024-F0 es la última unidad completa verificada.
+**Todavía no se ejecutaron** la integración compilada del owner, sus regresiones baseline/default ni la nueva full9085. Al reanudar, empezar por el runner `checkpoint-retirement/native/native-validation-runner.py`; no repetir componentes sin un cambio o fallo nuevo. El detalle y los comandos exactos están en [el checkpoint de pausa](2026-11-06-goal-pause-checkpoint.md).
+
+`dd637f7` registra observaciones retrospectivas de tres raíces existentes, sin conceder admisión ni limpieza. Pasaron **423 componentes**, **una integración compilada** y la full de **8971 PASS más la misma xfail conocida**, 8972 IDs exactos. El mismo goal permanece **incompleto**, con pausa solicitada al cerrar; T024-F0 es la última unidad completa verificada.
 
 La corrección posterior `a2c6f4c` limita los registros a16MiB canónicos incluyendo LF antes de escribir. Pasaron36 pruebas de protocolo y1 integración compilada con un intent mayor que la cota real. La full anterior corresponde a `dd637f7`; no se repitió por esta corrección acotada.
 
@@ -16,7 +18,8 @@ La corrección posterior `a2c6f4c` limita los registros a16MiB canónicos incluy
 | --- | --- |
 | Entorno | `gabriel`, `/Users/gabriel/Documents/Proyectos/kza`, macOS 26.6.1 arm64, CPython 3.13.18 |
 | Rama | `recovery/production-2026-10-25`; verificar HEAD/origin al retomar |
-| Implementación F1 | `a2c6f4c085bc867782cadcf162894ab17fbef374`, publicado; base del registro `dd637f704a463dc0ebd8479af4a8763deab4c375` |
+| Implementación actual | Owner e1caf6d + prueba e1bcdb6 publicados;534 componentes PASS/XML106.631 s, integración compilada/full pendientes |
+| Registro anterior | a2c6f4c publicado sobre dd637f7; conserva sus verificaciones históricas |
 | Componentes del registro | 423 PASS; XML122.807 s, en dd637f7 |
 | Integración del registro | 1 PASS; XML123.490 s; observer4675/reader4933, wait0 |
 | Corrección de cota | a2c6f4c:36 PASS/XML0.585 s y1 compilada PASS/XML254.001 s; observer68940/reader69253, wait0 |
@@ -25,7 +28,7 @@ La corrección posterior `a2c6f4c` limita los registros a16MiB canónicos incluy
 | Última full | dd637f7:8971 PASS + misma xfail,8972 IDs; XML1436.609 s; fuentes1078/scripts37/protegidos34 intactos durante la ejecución |
 | Warnings de la full | 66285 ocurrencias;15 firmas conocidas,ninguna nueva o ausente en el resumen; sin supresión |
 | Baseline binario | f487f40:68 PASS/XML0.463 s; opt-in1 PASS/XML75.123 s; original1 PASS/XML89.367 s;16 BLOBs/49 refs,1 S-only/3 shared/12 retained |
-| Pendientes | Owner real de retirada de BLOBs; owners y cobertura global; SDK close real, migraciones, guards y campo |
+| Pendientes inmediatos | Native owner1, baseline1, default1, colección9085 y full1500; después cobertura/owners globales, SDK close real, migraciones, guards y campo |
 | Delegación | Hasta ocho agentes según plazas; PC interactiva con subagente `gpt-6.1-terra` |
 
 T021/T022/T023/T024 siguen `in_progress`; los 21 criterios permanecen `not_evaluated`. Se conservan los demás estados, presupuestos y permisos separados. Leer el [reporte actual](../research/2026-11-06-copy-lifecycle-progress.json) y la [continuación](../plans/2026-11-06-copy-lifecycle-continuation.json). Preparación y `finish()` no confirman limpieza: el catálogo V1 sigue bloqueado. Los dos recibos nuevos pertenecen sólo a `collector_rows_files_v1`; las otras representaciones y el ACK agregado siguen pendientes. Sin release ni cambios en producción.
@@ -362,11 +365,15 @@ Evidencia local: `data/autonomous-roadmap-20261102/t024/f1/binary-lineage/accept
 
 Siguiente: implementar retirada real del S-only bajo autoridad vigente, preservando shared/U/manual y JSON históricos con sus pins originales. El análisis de lineage y las observaciones no son permisos de escritura ni recibos de limpieza. Cobertura global, SDK close real, legacy, campo, F1/T024 y los 21 criterios siguen abiertos. Última unidad completa: T024-F0. Sin release ni cambios en producción.
 
+## Pausa solicitada después de componentes del owner
+
+La prueba inicial tuvo533 PASS+1 FAIL por un seam de test que parcheaba un alias distinto de stage; también se corrigió un ID de parámetro dict. `e1bcdb6` modifica sólo el test: el fallo se inyecta en el companion real después del evento durable y antes de HEAD. El segundo intento pasó534/534 exactos; primera evidencia fallida e inputs preservados. Las revisiones estáticas de parser/owner/integración no encontraron blockers.
+
+Prueba local: `data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/component-acceptance-proof.json`, SHA `c21a2d526c8553ce73d50a4f608e3c0fad52de7106713f0c2f73b41ee31c4055`. La exportación conserva8040 archivos/299 symlinks/327653762 bytes, manifest SHA `359686b1cf44143ea34ccd3530da83e517d9172047c51b715d550ca2a79f5c4e`. Código/documentación se suben a Git; datos sintéticos crudos y checkpoint permanecen locales e ignorados. No se afirma retirada compilada, ACK nuevo ni nueva full. Última unidad completa:T024-F0; última full:dd637f7.
+
 ## Prompt para la sesión nueva
 
-> Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff y `docs/research/2026-11-06-copy-lifecycle-progress.json`. Confirmá goal/checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro goal ni marques éste completo.
-> Registrodd637f7 publicado:423 componentes+1 compilada PASS y8971 PASS más la misma xfail conocida/8972 IDs en su full. Corrección posteriora2c6f4c publicada:36 protocolo+1 compilada PASS para la cota16MiB. La full sigue en dd637f7; no afirmar una full nueva de la corrección. Esperas consumidas; guardas1078/37/34 intactas en sus corridas;15 firmas previas de warnings. Máximo ocho agentes según plazas; navegador/escritorio de PC siempre delegado a `gpt-6.1-terra`.
-> Baseline f487f40 publicado:68 unitarias+1 opt-in compilada+1 regresión original PASS;16 BLOBs/49 refs,1 S-only/3 shared/12 retained,0 blocked; guardas1081/37/34 intactas. Próximo: `docs/plans/2026-11-06-copy-lifecycle-continuation.json`: owner real de retirada de BLOBs bajo autoridad vigente. El corpus histórico dd637 tenía14 BLOBs/43 refs sin S; el fixture nuevo sí acredita un S-only, pero todavía no lo borra. Una operación sin retirada no cierra el requisito. Conservar defaults/oráculos/IDs/pins/TTL y datos compartidos/manuales. Tres observaciones son metadata no-serving, sin grants ni ACK; dos recibos collector tampoco confirman limpieza agregada. SDK close real, censo/owners globales, legacy y campo siguen abiertos. Mantener voz-persona separado de permisos. T021–T024/21criterios/goal incompletos; sin release/producción/campo.
+Usar el prompt y la secuencia exacta de [2026-11-06-goal-pause-checkpoint.md](2026-11-06-goal-pause-checkpoint.md). Retomar el objetivo completo `docs/plans/2026-11-02-autonomous-roadmap.md` desde el owner implementado con534 componentes PASS; empezar por su integración compilada, sin repetir trabajo cerrado ni marcar F1/T024/21criterios/goal completos. Reanudar el registro heredado; si un hilo nuevo no tiene goal, mantener el mismo objetivo y vincular el checkpoint previo. Hasta ocho agentes según plazas; PC interactiva con Terra.
 
 ## Lista de cierre y reanudación
 

@@ -1,0 +1,74 @@
+# Pausa y continuidad exacta del goal de KZA
+
+## Estado al cerrar
+
+Pausa solicitada explícitamente por el usuario el 2026-11-06, después de terminar el trabajo en ejecución. El objetivo completo sigue siendo `docs/plans/2026-11-02-autonomous-roadmap.md`; no está completado. Registro original: `01a19a89-8daf-7cf2-9116-d58d90e4e45a`. Confirmar el estado devuelto por la API del goal y el checkpoint privado al reanudar.
+
+- Checkout: `/Users/gabriel/Documents/Proyectos/kza`, usuario `gabriel`, macOS arm64, CPython 3.13.18 en `.venv`.
+- Rama: `recovery/production-2026-10-25`. Implementación: `e1caf6dd9568c28454b8d1a0b8e98d4a4679ee0a`. Corrección de prueba: `e1bcdb6070156487c9e66db0b4be8be937b0eee1`. El commit posterior de este handoff cambia sólo documentación; verificar HEAD/origin al retomar.
+- Unidad actual: `T024-F1/current-authority-checkpoint-BLOB-retirement-owner` implementada, componentes verificados, integración compilada y full pendientes.
+- Última unidad completa: T024-F0. T021–T024 continúan `in_progress`; estados globales 11 `verified_local`, 4 `in_progress`, 35 `planned`; los 21 criterios siguen `not_evaluated`.
+- No quedan pruebas, compilaciones ni procesos propios pendientes. Los subagentes terminaron y quedaron QUIET. No iniciar nuevamente un proceso por encontrar un lock o un archivo de estado antiguo.
+- Sin release ni cambios en producción. Máximo acordado de ocho agentes, sujeto a plazas de la sesión; navegador/escritorio de PC siempre con subagente `gpt-6.1-terra`. Voz/persona continúa separado de permisos.
+
+## Qué está implementado y qué está probado
+
+El lector tipado pasó de `tests/mocks/checkpoint_binary_lineage.py` a `src/memory/checkpoint_lineage.py`. Usa sólo stdlib, reconstruye las fuentes originales de O y verifica cada referencia y el inventario completo. Su mapa de BLOBs ausentes describe pins suministrados; nunca concede autoridad ni ACK. Tiene 81 pruebas, incluidas las 68 anteriores.
+
+`src/memory/checkpoint_cleanup.py` agrega el owner separado: controlador/HEAD/F sellado y tombstone real, inventario registrado y cuatro bindings originales, claim/CAS y journal antes del unlink, identidad/SHA/tamaño del archivo, fsync y cierre real, cancelación con drenaje y recibo limitado a `checkpoint_blobs_s_only_v1`. Los compartidos/U/manual y JSON históricos deben conservarse; el ACK agregado permanece bloqueado. Tiene 29 pruebas.
+
+Pasaron **534 componentes, 534 IDs exactos**, en `e1bcdb6`: XML106.631 s, resumen106.66 s; runner69327/pytest69330; wait real0 y espera de herramienta consumida. Fuentes1084/scripts37/protegidos34 intactos durante la corrida. Revisiones estáticas del parser, owner e integración sin blockers.
+
+La primera corrida dio533 PASS+1 FAIL. El test parcheaba un alias distinto del módulo de stage usado por producción; se corrigió para fallar realmente después de escribir el evento y antes de publicar HEAD. También se corrigió un ID parametrizado a `purported2`. No cambió el producto. La evidencia original fallida y sus inputs están conservados y no se presentan como PASS.
+
+La integración nueva `tests/integration/test_checkpoint_blob_cleanup.py` está escrita y revisada, **todavía no ejecutada**. Tampoco se ejecutaron sus regresiones baseline/default ni la nueva full9085. Por eso no se acredita todavía un borrado compilado ni un recibo real de esta unidad.
+
+La última full sigue siendo `dd637f7`:8971 PASS+la misma xfail conocida/8972 IDs. El baseline anterior `f487f40` sí pasó68 unitarias+1 integración binaria+1 regresión original, con16 BLOBs/49 referencias:1 S-only,3 compartidos,12 retenidos. Conservar esa evidencia como antecedente, sin atribuirla al owner nuevo.
+
+## Evidencia y checkpoint
+
+- Estado privado: `data/autonomous-roadmap-20261102/checkpoint.json`.
+- Prueba de componentes: `data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/component-acceptance-proof.json`, SHA `c21a2d526c8553ce73d50a4f608e3c0fad52de7106713f0c2f73b41ee31c4055`.
+- Corrida válida: `checkpoint-retirement/components/components-attempt-02/{full-status.json,full.xml,full.log,source-before.json,source-after.json,protected-before.json,protected-after.json}`.
+- Corrida fallida: `checkpoint-retirement/components/components-attempt-01/`, incluidos inputs originales archivados.
+- Export de componentes: `checkpoint-retirement/raw-export/components-components-attempt-02-manifest.json`, SHA `359686b1cf44143ea34ccd3530da83e517d9172047c51b715d550ca2a79f5c4e`;8040 archivos/299 symlinks/327653762 bytes. Originales y copias tienen iguales contenidos.
+- Revisiones: `checkpoint-retirement/{parser-review.json,owner-review.json,integration-review.json}`.
+- Reporte público: `docs/research/2026-11-06-copy-lifecycle-progress.json` y continuación `docs/plans/2026-11-06-copy-lifecycle-continuation.json`.
+
+Los paths abreviados de evidencia son relativos a `data/autonomous-roadmap-20261102/t024/f1/`. Esa evidencia está ignorada y permanece local: Git transporta código y documentación, no los datos crudos. En otro equipo, transferirla o verificar expresamente qué falta antes de afirmar que se dispone del mismo checkpoint. Los originales externos de componentes están en `/private/tmp/kza-checkpoint-retire-20261106-b4b2/components-02/rawrun`; hay copia verificada en el checkout.
+
+## Primer comando al reanudar
+
+Confirmar primero instrucciones, goal, usuario/ruta/arquitectura, rama, HEAD/origin, cambios ajenos y ausencia de procesos propios vivos. Serena reconoce KZA pero su LSP Python falla por PATH sin uv/uvx; no afirmar que funciona ni reparar configuración como efecto lateral. `initial_instructions` una vez por sesión y `mem:core` cuando exista; fallback enfocado acordado.
+
+No repetir las534 pruebas sin un cambio o fallo nuevo. La siguiente acción concreta es ejecutar el test compilado del owner usando el HEAD vigente como `new_revision`; el runner exige que coincida exactamente. No usar el commit antiguo de producto como HEAD si ya existe el commit de documentación.
+
+```sh
+KZA_RECONCILIATION_REVISION="$(git rev-parse HEAD)" \
+KZA_CHECKPOINT_RETIREMENT_BASETEMP=/private/tmp/kza-checkpoint-retire-resume-20261106-r1/native/rawrun \
+.venv/bin/python data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/native/native-validation-runner.py \
+  --mode directed \
+  --output data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/native/native-attempt-01 \
+  --expected-source-count 1084
+```
+
+El basetemp debe ser absoluto, externo al checkout y nuevo; el output también debe ser nuevo. Si existen, inspeccionarlos y elegir otra ruta/attempt, sin borrar evidencia. Límites:300s por dirigido,1500s full; preflight5GiB y piso512MiB. Consumir siempre el handle real de la herramienta y el wait del proceso; timeout/kill nunca implican ACK. Sólo una ejecución SDK a la vez; fuentes y documentos protegidos quietos durante cada corrida.
+
+## Secuencia pendiente exacta
+
+1. `native`:1 ID, `test_compiled_checkpoint_cleanup_unlinks_only_withdrawn_blob_and_preserves_historical_pins`. Debe probar1 unlink real del S-only, cancelación/drenaje sin recibo prematuro, JSON/otros BLOB/F iguales, idempotencia y lector nuevo del parser `.pyc` fijado al release sin SDK/DTOs de aplicación. No aceptar una operación sin retirada como éxito.
+2. `baseline`:1 ID de `tests/integration/test_checkpoint_binary_lineage.py`. Usar su runner en `checkpoint-retirement/baseline/`, basetemp externo separado y output `baseline-attempt-01`.
+3. `default`:1 ID de `tests/integration/test_compiled_material_reconciliation.py`. Usar su runner en `checkpoint-retirement/default/`, basetemp externo separado y output `default-attempt-01`.
+4. Colección completa: runner `checkpoint-retirement/full/collection-runner.py`, `--mode full --collect-only`, output `full/collection-attempt-01` y basetemp externo distinto. Manifiestos preparados:9085 IDs exactos,8972 originales conservados y113 añadidos. No actualizar expected para esconder una discrepancia.
+5. Full: runner `checkpoint-retirement/full/native-validation-runner.py`, `--mode full`, output `full/full-attempt-01`, basetemp externo nuevo y1084 fuentes esperadas. Mantener1500s y la única xfail regex conocida; guardar logs completos y comparar warnings.
+6. Preservar cada caso cerrado con `checkpoint-retirement/preserve-raw.py <ruta-absoluta-full-status.json>` después de wait real; generar evidencia/revisión, actualizar reportes, roadmap sólo camposT024, handoff y checkpoint. Commit/push al cerrar. Si hay fallos, conservarlos, corregir la causa y usar intentos nuevos; no cambiar pins ni testigos históricos para hacer pasar el caso.
+
+Todos los runners usan `KZA_RECONCILIATION_REVISION` y `KZA_CHECKPOINT_RETIREMENT_BASETEMP`. Preparados y pendientes no significa ejecutados. Tras esta unidad siguen pendientes censo/owners globales, fallo real de cierre SDK, migración legacy, guards y aceptación física. No cerrar F1/T024/criterios/goal por pruebas acotadas.
+
+## Prompt para pegar en la sesión nueva
+
+Retomá el goal con objetivo exacto `docs/plans/2026-11-02-autonomous-roadmap.md`, pausado por mi pedido. Continuá desde `/Users/gabriel/Documents/Proyectos/kza`. Leé AGENTS.md, CLAUDE.md, `docs/runbooks/2026-11-06-goal-pause-checkpoint.md`, el checkpoint privado y la continuación indicada. Confirmá goal/API, usuario/ruta/arquitectura, rama, HEAD/origin, cambios ajenos y procesos; no reinicies trabajo por archivos de estado viejos.
+
+Quedamos con producto `e1caf6d` y corrección de prueba `e1bcdb6` publicados:534 componentes PASS, guardas1084/37/34 intactas y todas las esperas consumidas. La implementación de retirada de BLOBs está lista, pero su integración compilada, baseline/default y full9085 aún no se ejecutaron. La próxima acción es el runner `checkpoint-retirement/native/native-validation-runner.py`, con HEAD vigente y un basetemp externo nuevo; después seguir la secuencia del runbook. No repetir componentes sin motivo, no afirmar borrado/ACK/full nueva y no marcar el goal completo.
+
+Reanudá el registro existente si la sesión lo hereda. Si el hilo nuevo no tiene ningún goal, creá uno con el mismo objetivo completo y vinculá este checkpoint y el registro original; no inventes un subgoal ni reinicies el roadmap. Si ya hay otro goal activo, informá la diferencia antes de sustituirlo. Hasta ocho agentes según plazas; PC interactiva siempre con Terra. Sin release/producción, y voz/persona separado de permisos.
