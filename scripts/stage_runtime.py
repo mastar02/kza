@@ -222,6 +222,142 @@ def _require_copy_not_invalidated(root: Path, state_root: Path) -> None:
             raise ValueError("runtime_admission_copy_invalidated")
 
 
+def _read_copy_observation(directory: Path, root: Path, *, allow_orphans: bool = False) -> tuple[dict, dict, dict]:
+    """Validate a historical observation, without granting any capability."""
+    def require(condition):
+        if not condition:
+            raise ValueError("runtime_admission_copy_observation_unknown")
+
+    def read(path):
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size <= 16*1024*1024)
+            raw = stream.read()
+        value = json.loads(raw)
+        require(type(value) is dict and _canonical_json(value) + b"\n" == raw)
+        return value, hashlib.sha256(raw).hexdigest()
+
+    def digest(value):
+        return type(value) is str and re.fullmatch("[0-9a-f]{64}", value) is not None
+
+    def physical(value):
+        return (type(value) is dict and set(value) == {"device", "inode"}
+                and type(value["device"]) is int and value["device"] >= 0
+                and type(value["inode"]) is int and value["inode"] > 0)
+
+    def relative(value):
+        return (type(value) is str and bool(value) and not Path(value).is_absolute()
+                and "\x00" not in value and ".." not in Path(value).parts and Path(value).as_posix() == value)
+
+    _safe_directory(directory)
+    require(re.fullmatch("[0-9a-f]{32}", directory.name) is not None)
+    intent, intent_sha = read(directory / "intent.json")
+    require(set(intent) == {"schema_version", "observation_id", "kind", "authority", "admission_root",
+        "admission_identity", "observed_root", "parent_identity", "root_identity", "extents",
+        "source_binding_ids", "existing_copy", "before_first_byte"})
+    require(type(intent["schema_version"]) is int and intent["schema_version"] == 1
+        and intent["observation_id"] == directory.name
+        and type(intent["kind"]) is str and intent["kind"] in {"forensic_audit", "phase_checkpoint", "failed_work"}
+        and intent["before_first_byte"] is False and intent["admission_root"] == str(root)
+        and physical(intent["admission_identity"]) and intent["admission_identity"] == _identity(root)
+        and physical(intent["root_identity"]) and physical(intent["parent_identity"]))
+    observed = intent["observed_root"]
+    require(type(observed) is str and Path(observed).is_absolute()
+        and Path(observed).resolve(strict=False) == Path(observed))
+    authority = intent["authority"]
+    require(type(authority) is dict and set(authority) == _HEAD_KEYS
+        and type(authority["schema_version"]) is int and authority["schema_version"] == 1
+        and type(authority["generation"]) is int and authority["generation"] >= 1
+        and digest(authority["binding_id"]) and authority["status"] == "closed" and authority["run_id"] is None)
+    refs = intent["source_binding_ids"]
+    require(type(refs) is list and len(set(refs)) == len(refs) and all(digest(v) for v in refs))
+    existing = intent["existing_copy"]
+    require(existing is None or type(existing) is dict and set(existing) == {"copy_id", "revision", "record_sha256"}
+        and type(existing["copy_id"]) is str and re.fullmatch("[0-9a-f]{32}", existing["copy_id"])
+        and type(existing["revision"]) is int and existing["revision"] >= 1 and digest(existing["record_sha256"]))
+    extents = intent["extents"]
+    require(type(extents) is list and bool(extents))
+    families = {"managed_payload", "semantic_index", "ambient_capture", "collectors", "contexts",
+        "events", "suggestions", "diagnostics", "voices", "streams", "history", "authority"}
+    representations = {"raw", "state", "sqlite", "sdk_work", "blob", "logical_export", "manifest",
+        "preparation", "history_archive", "derived_state"}
+    for extent in extents:
+        require(type(extent) is dict and set(extent) == {"relative", "family", "representation", "source_sha256"}
+            and relative(extent["relative"])
+            and type(extent["family"]) is str and extent["family"] in families
+            and type(extent["representation"]) is str and extent["representation"] in representations
+            and (extent["source_sha256"] is None or digest(extent["source_sha256"])))
+    require(len({e["relative"] for e in extents}) == len(extents))
+    head, _ = read(directory / "head.json")
+    require(set(head) == {"schema_version", "observation_id", "revision", "sha256"}
+        and type(head["schema_version"]) is int and head["schema_version"] == 1
+        and head["observation_id"] == directory.name and type(head["revision"]) is int
+        and head["revision"] in {1, 2} and digest(head["sha256"]))
+    revision, expected, names, selected = head["revision"], head["sha256"], {"intent.json", "head.json"}, None
+    while revision:
+        name = f"{revision:012d}-{expected}.json"
+        event, actual = read(directory / name)
+        names.add(name)
+        require(actual == expected and set(event) == {"schema_version", "observation_id", "revision",
+            "previous_sha256", "intent_sha256", "phase", "inventory", "inventory_sha256"}
+            and type(event["schema_version"]) is int and event["schema_version"] == 1
+            and type(event["revision"]) is int and event["revision"] == revision
+            and event["observation_id"] == directory.name and event["intent_sha256"] == intent_sha)
+        if revision == 1:
+            require(event["previous_sha256"] is None and event["phase"] == "intent"
+                and event["inventory"] is None and event["inventory_sha256"] is None)
+        else:
+            inventory = event["inventory"]
+            require(digest(event["previous_sha256"]) and event["phase"] == "observed"
+                and type(inventory) is dict and bool(inventory)
+                and event["inventory_sha256"] == hashlib.sha256(_canonical_json(inventory)).hexdigest())
+            for name, item in inventory.items():
+                require(relative(name) and name != "." and type(item) is dict
+                    and set(item) == {"sha256", "size", "identity"} and digest(item["sha256"])
+                    and type(item["size"]) is int and item["size"] >= 0 and physical(item["identity"]))
+            covered = set()
+            for extent in extents:
+                path = extent["relative"]
+                matches = {name for name in inventory if path == "." or name == path or Path(name).is_relative_to(path)}
+                require(bool(matches))
+                if extent["source_sha256"] is not None:
+                    require(path in inventory and inventory[path]["sha256"] == extent["source_sha256"])
+                covered.update(matches)
+            require(covered == set(inventory))
+        if selected is None:
+            selected = event
+        expected, revision = event["previous_sha256"], revision - 1
+    actual_names = {p.name for p in directory.iterdir()}
+    require(allow_orphans or actual_names == names)
+    if allow_orphans:
+        head = dict(head, uncommitted_entries=sorted(actual_names - names))
+    return intent, selected, head
+
+
+def _require_copy_not_observed(root: Path, state_root: Path) -> None:
+    """Deny adoption of any historical observed locator before store access."""
+    parent = root
+    for part in ("admission", "copy-observations", "v1"):
+        parent = parent / part
+        try:
+            if parent.is_symlink():
+                raise ValueError
+            if not parent.exists():
+                return
+            _safe_directory(parent)
+        except (OSError, ValueError):
+            raise ValueError("runtime_admission_copy_observation_unknown") from None
+    for directory in sorted(parent.iterdir()):
+        try:
+            intent, _, _ = _read_copy_observation(directory, root)
+        except (OSError, ValueError, TypeError, KeyError, OverflowError):
+            raise ValueError("runtime_admission_copy_observation_unknown") from None
+        observed = Path(intent["observed_root"])
+        if state_root.is_relative_to(observed) or observed.is_relative_to(state_root):
+            raise ValueError("runtime_admission_copy_observed")
+
+
 def _atomic_record(path: Path, value: dict, *, immutable: bool = False) -> None:
     _safe_directory(path.parent, create=True)
     raw = _canonical_json(value) + b"\n"
@@ -771,6 +907,8 @@ def _validate_target_record(target: dict) -> None:
 def _binding_snapshot(root: Path, name: str) -> dict:
     runtime, state, manifest = _checked_slot(root, name)
     _require_copy_not_invalidated(root, state)
+    _require_copy_not_observed(root, state)
+    _require_copy_not_observed(root, runtime)
     _assert_writers_closed(state)
     roots, schemas, versions = _state_layout(state)
     ownership = state / ".kza-target-ownership.json"
@@ -1594,6 +1732,7 @@ def validate_admission_ticket(state_root: Path, ticket: dict | str, *, check_sta
     root = _safe_directory(Path(ticket["admission_root"]))
     state = _safe_directory(Path(state_root).resolve(strict=True))
     _require_copy_not_invalidated(root, state)
+    _require_copy_not_observed(root, state)
     marker = _read_json(state / _MARKER)
     if marker != {"schema_version": 1, "admission_root": str(root),
                   "binding_id": ticket["binding_id"], "state_root": str(state)}:
@@ -1616,6 +1755,7 @@ def validate_admission_ticket(state_root: Path, ticket: dict | str, *, check_sta
     binding = read_binding(root, ticket["binding_id"])
     if binding["state_root"] != str(state):
         raise ValueError("runtime_admission_state_mismatch")
+    _require_copy_not_observed(root, Path(binding["runtime_root"]))
     _check_roots(binding)
     runtime, checked_state, _ = _checked_slot(root, binding["slot"])
     if str(runtime) != binding["runtime_root"] or checked_state != state:

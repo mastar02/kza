@@ -287,7 +287,7 @@ def _append(directory, record, expected):
     return head
 
 
-def _authority(controller, latest_binding_id=None):
+def _controller_lease(controller, latest_binding_id=None):
     from src.core.runtime_admission import _stage
 
     stage = _stage()
@@ -315,8 +315,13 @@ def _authority(controller, latest_binding_id=None):
         and type(head.get("generation")) is int and head["generation"] >= 1, "closed_head")
     if latest_binding_id is not None:
         _require(_hash(latest_binding_id) and head["binding_id"] == latest_binding_id, "authority_changed")
+    return stage, root, head, fd, _identity(root / ".admission.lock")
+
+
+def _authority(controller, latest_binding_id=None):
+    stage, root, head, fd, identity = _controller_lease(controller, latest_binding_id)
     binding = stage.verify_closed_binding(root, head["binding_id"])
-    return stage, root, head, binding, fd, _identity(root / ".admission.lock")
+    return stage, root, head, binding, fd, identity
 
 
 def _snapshot_refs(root, refs, bindings):
@@ -329,6 +334,7 @@ def _snapshot_refs(root, refs, bindings):
         path = _directory(Path(ref["snapshot_root"]))
         from src.core.runtime_admission import _stage
         _stage()._require_copy_not_invalidated(root, path)
+        _stage()._require_copy_not_observed(root, path)
         _require(_identity(path) == ref["root_identity"], "snapshot_changed")
         # The canonical manifest digest is provenance only. It does not replace
         # current controller authority or the caller's full snapshot preflight.
@@ -370,6 +376,7 @@ def _destination(destination, root, source_roots):
     _directory(destination.parent)
     from src.core.runtime_admission import _stage
     _stage()._require_copy_not_invalidated(root, destination)
+    _stage()._require_copy_not_observed(root, destination)
     for source in (root / "admission", *source_roots):
         _require(not destination.is_relative_to(source) and not source.is_relative_to(destination), "destination_overlap")
     if destination.exists():
