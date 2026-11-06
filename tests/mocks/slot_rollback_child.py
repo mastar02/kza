@@ -227,12 +227,12 @@ async def _seed(args, control, guard, e):
     import pytest
     from tests.mocks import application_restore as replay
     from tests.mocks.memory_graph import Clock, MemoryClient
-    from tests.mocks.restore_application_graph import application_graph
+    from tests.mocks.managed_slot_graph import managed_application_graph
     from tests.mocks.restore_preservation import assert_manual_sentinels, seed_manual_sentinels
     clock, patch = Clock(time.time()), pytest.MonkeyPatch()
     marker = len(MemoryClient._created)
     try:
-        async with application_graph(Path(args.state_root), patch, clock) as graph:
+        async with managed_application_graph(Path(args.state_root), patch, clock, control=control) as graph:
             e._graph_contract(graph, replay)
             subject, foreign = await replay.seed_all(graph)
             sources = await replay.manual_voice_inputs(graph, foreign)
@@ -316,7 +316,7 @@ async def _candidate(args, control, guard, e):
     from tests.mocks import integrated_restore as data_helpers
     from tests.mocks.memory_graph import Clock, MemoryClient
     from tests.mocks.producer_erasure_graph import NativeGate
-    from tests.mocks.restore_application_graph import application_graph
+    from tests.mocks.managed_slot_graph import managed_application_graph
     checkpoint = _checkpoint_path(args, control)
     saved, seed_sha = _read_bag(e, checkpoint, control, "seed")
     old_root, root = Path(saved["old_root"]), Path(args.state_root)
@@ -333,7 +333,7 @@ async def _candidate(args, control, guard, e):
     subject_gate, unrelated_gate = NativeGate(), NativeGate()
     marker = len(MemoryClient._created)
     try:
-        async with application_graph(root, patch, clock,
+        async with managed_application_graph(root, patch, clock, control=control,
                 subject_gate=subject_gate, unrelated_gate=unrelated_gate) as graph:
             e._graph_contract(graph, replay)
             subject, foreign = saved["subject"], saved["foreign"]

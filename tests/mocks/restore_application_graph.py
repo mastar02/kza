@@ -295,7 +295,8 @@ async def _bundle(graph, root, clock, config, models, home, requests, clients,
 
 @asynccontextmanager
 async def application_graph(root, monkeypatch, clock, *, gates=(),
-                            subject_gate=None, unrelated_gate=None, before_voices=None):
+                            subject_gate=None, unrelated_gate=None, before_voices=None,
+                            configuration_factory=None, application_builder=None):
     """Construct actual main owners and close them before loopback leaves leave."""
     releases = (*gates, *((subject_gate,) if subject_gate is not None else ()),
         *((unrelated_gate,) if unrelated_gate is not None else ()))
@@ -331,8 +332,10 @@ async def application_graph(root, monkeypatch, clock, *, gates=(),
             async with offline_home() as (home_url, home), local_models() as (model_url, requests):
                 stack = AsyncExitStack()
                 try:
-                    config = configuration(root, home_url, model_url)
-                    graph = await main_module.build_application(config, shutdown=stack, factories=factories)
+                    configure = configuration_factory or configuration
+                    config = configure(root, home_url, model_url)
+                    builder = application_builder or main_module.build_application
+                    graph = await builder(config, shutdown=stack, factories=factories)
                     assert isinstance(graph, ApplicationGraph)
                     assert {part.value for part in graph.erasure_services._drivers} == PARTICIPANTS
                     assert graph.erasure_services.privacy is graph.producer_erasure.privacy is graph.privacy

@@ -104,7 +104,7 @@ def copied_targets(root: Path, old_root: Path) -> list[dict]:
     return records
 
 
-def _result(path, mode, process, control, manifest, checkpoint):
+def _result(path, mode, process_pid, control, manifest, checkpoint):
     result = json.loads(path.read_text())
     fields = {"schema_version", "unit", "mode", "source_commit", "runtime_root", "state_root",
         "pid", "checkpoint_sha256", "candidate_checkpoint_sha256", "module_origins", "sys_flags",
@@ -113,7 +113,7 @@ def _result(path, mode, process, control, manifest, checkpoint):
             or result["unit"] != "T024-F1/privacy-safe-runtime-state-rollback"):
         raise compiled.CompiledRestoreFailure("slot_child_result_schema")
     if (result["mode"] != mode or result["source_commit"] != control["source_commit"]
-            or result["pid"] != process.pid or result["runtime_root"] != control["runtime_root"]
+            or result["pid"] != process_pid or result["runtime_root"] != control["runtime_root"]
             or result["state_root"] != control["state_root"] or result["checkpoint_sha256"] != _sha(checkpoint)):
         raise compiled.CompiledRestoreFailure("slot_child_result_identity")
     candidate = checkpoint.with_name("candidate-state.json")
@@ -155,7 +155,8 @@ def _result(path, mode, process, control, manifest, checkpoint):
     return result
 
 
-def _phase(mode, *, control, control_path, island, checkpoint, evidence, deadline, manifest):
+def _phase(mode, *, control, control_path, island, checkpoint, evidence, deadline, manifest,
+           controller=None, slot=None):
     available = deadline - time.monotonic() - CLEANUP_SECONDS
     if available <= 0:
         raise compiled.CompiledRestoreFailure("slot_parent_deadline_before_child")
@@ -175,14 +176,32 @@ def _phase(mode, *, control, control_path, island, checkpoint, evidence, deadlin
     with (evidence / (mode + "-stdout.log")).open("x") as out, (
             evidence / (mode + "-stderr.log")).open("x") as err:
         try:
-            process = subprocess.Popen(command, cwd=control["runtime_root"], env=compiled._environment(),
-                stdin=subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True)
-            record.update(pid=process.pid, owned_pgid=process.pid)
-            code = compiled._wait(process, budget, record)
+            if mode != "inspect-old":
+                from scripts.stage_runtime import read_admission_head, verify_closed_binding
+
+                if controller is None or slot is None:
+                    raise compiled.CompiledRestoreFailure("slot_managed_controller_required")
+                completed = controller.run(slot, command, timeout=budget,
+                    env=compiled._environment(), stdout=out, stderr=err)
+                head = read_admission_head(controller.root)
+                verify_closed_binding(controller.root, head["binding_id"])
+                closure_path = controller.root / "admission/closures" / (head["binding_id"] + ".json")
+                closure = json.loads(closure_path.read_text())
+                child_pid = closure["child_pid"]
+                code = completed.returncode
+                record.update(pid=child_pid, actual_wait_returned=True,
+                    wait_owner="AdmissionController.run communicate+Popen.wait",
+                    closed_binding_id=head["binding_id"], closure_sha256=_sha(closure_path))
+            else:
+                process = subprocess.Popen(command, cwd=control["runtime_root"], env=compiled._environment(),
+                    stdin=subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True)
+                record.update(pid=process.pid, owned_pgid=process.pid)
+                code = compiled._wait(process, budget, record)
+                child_pid = process.pid
             record["exit_code"] = code
             if code != 0:
                 raise compiled.CompiledRestoreFailure("slot_child_exit_nonzero:" + mode)
-            result = _result(result_path, mode, process, control, manifest, checkpoint)
+            result = _result(result_path, mode, child_pid, control, manifest, checkpoint)
             record["completed"] = True
         except BaseException as error:
             primary = error
@@ -256,6 +275,9 @@ def _control_pair(repo, runtimes, roots, island, island_files, evidence, artifac
 def _prepare(task, evidence, repo, revision):
     from scripts.build_runtime import build_runtime
     from scripts.stage_runtime import activate_slot, prepare_slot
+    from tests.mocks.managed_slot_graph import canonical_template
+    from tests.mocks.restore_application_graph import configuration
+    import yaml
 
     archive = task / "runtime.tar.gz"
     manifest = build_runtime(repo, archive, revision=revision)
@@ -264,10 +286,12 @@ def _prepare(task, evidence, repo, revision):
             or manifest["entrypoint"] != ["python", "-m", "src.main"]
             or manifest["external_paths"] != ["config", "data", "models", "logs"]):
         raise compiled.CompiledRestoreFailure("slot_artifact_identity")
+    staging = task / "staging"
     empty = task / "empty-state"
     for name in ("config", "data"):
         (empty / name).mkdir(mode=0o700, parents=True)
-    staging = task / "staging"
+    raw_config = canonical_template(staging / "slots/old/state/data/graph", configuration)
+    (empty / "config/settings.yaml").write_text(yaml.safe_dump(raw_config, sort_keys=False))
     assert prepare_slot(archive, staging, "old", empty) == manifest
     assert activate_slot(staging, "old") is None
     runtimes = {name: (staging / "slots" / name / "runtime").resolve()
@@ -284,7 +308,24 @@ def _prepare(task, evidence, repo, revision):
         raise ValueError("slot_child_missing_or_redirected")
     island_files[CHILD] = _sha(entry)
     (island / CHILD).write_bytes(entry.read_bytes())
-    if len(island_files) != 20 or any(_sha(island / name) != digest for name, digest in island_files.items()):
+    managed = "tests/mocks/managed_slot_graph.py"
+    (island / managed).write_bytes((repo / managed).read_bytes())
+    island_files[managed] = _sha(island / managed)
+    bridge_revision = "80b47f55716e980b93a7312b6732de0611e3e2e0"
+    bridge_archive = task / "admission-runtime.tar.gz"
+    bridge_manifest = build_runtime(repo, bridge_archive, revision=bridge_revision)
+    bridge_stage = task / "admission-staging"
+    prepare_slot(bridge_archive, bridge_stage, "bridge", empty)
+    bridge_runtime = bridge_stage / "slots/bridge/runtime"
+    for relative in ("release.json", "src/core/runtime_admission.pyc",
+                     "src/memory/runtime_closure.pyc", "scripts/stage_runtime.pyc"):
+        target = island / "bridge" / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((bridge_runtime / relative).read_bytes())
+        island_files["bridge/" + relative] = _sha(target)
+    compiled._export_file(bridge_archive, evidence / "admission-runtime.tar.gz")
+    compiled.write_json(evidence / "admission-release.json", bridge_manifest)
+    if len(island_files) != 25 or any(_sha(island / name) != digest for name, digest in island_files.items()):
         raise compiled.CompiledRestoreFailure("slot_island_hash_inventory")
     compiled.write_json(evidence / "fixture-closure.json", closure)
     exchange = task / "exchange"
@@ -293,11 +334,20 @@ def _prepare(task, evidence, repo, revision):
     controls = _control_pair(repo, runtimes, roots, island, island_files, evidence, artifact, revision)
     return {"archive": archive, "manifest": manifest, "staging": staging, "runtimes": runtimes,
         "roots": roots, "artifact": artifact, "island": island, "island_files": island_files,
-        "controls": controls, "checkpoint": checkpoint, "helper_modules": len(closure)}
+        "controls": controls, "checkpoint": checkpoint, "helper_modules": len(closure),
+        "bridge_runtime": bridge_runtime, "bridge_manifest": bridge_manifest,
+        "bridge_archive": bridge_archive, "bridge_archive_sha256": _sha(bridge_archive)}
 
 
 def _exercise(prepared, proof, repo, evidence, deadline):
-    from scripts.stage_runtime import activate_slot, prepare_slot
+    from scripts.stage_runtime import AdmissionController
+
+    with AdmissionController(prepared["staging"]) as controller:
+        return _exercise_managed(prepared, proof, repo, evidence, deadline, controller)
+
+
+def _exercise_managed(prepared, proof, repo, evidence, deadline, controller):
+    from scripts.stage_runtime import prepare_slot, read_admission_head
 
     manifest, roots = prepared["manifest"], prepared["roots"]
     runtimes, checkpoint = prepared["runtimes"], prepared["checkpoint"]
@@ -307,11 +357,12 @@ def _exercise(prepared, proof, repo, evidence, deadline):
         control, control_path = prepared["controls"][branch]
         result, receipt = _phase(mode, control=control, control_path=control_path,
             island=prepared["island"], checkpoint=checkpoint, evidence=evidence,
-            deadline=deadline, manifest=manifest)
+            deadline=deadline, manifest=manifest, controller=controller, slot=branch)
         proof["phases"][mode] = receipt
         return result
 
     seed = run("seed", "old")
+    source_binding = read_admission_head(controller.root)["binding_id"]
     seed_sha = _sha(checkpoint)
     proof["stage"] = "offline_copy_preflight"
     old_before = offline_state(roots["old"])
@@ -327,7 +378,9 @@ def _exercise(prepared, proof, repo, evidence, deadline):
     compiled.write_json(evidence / "copied-target-inventory-before-Graph.json", inventory)
     compiled.write_json(evidence / "candidate-before-Graph.json", copied_before)
     assert offline_state(roots["old"]) == old_before
-    assert activate_slot(prepared["staging"], "candidate") == "slots/old/runtime"
+    delegated = [row["id"] for row in inventory if row["absolute_paths"]]
+    controller.authorize_target_delegation(roots["candidate"].parents[1], source_binding, delegated)
+    assert controller.activate("candidate") == "slots/old/runtime"
     candidate = run("candidate", "candidate")
     assert _sha(checkpoint) == seed_sha
     old_after = offline_state(roots["old"])
@@ -336,7 +389,7 @@ def _exercise(prepared, proof, repo, evidence, deadline):
     proof["stage"] = "stale_old_selection"
     rejected = None
     try:
-        previous = activate_slot(prepared["staging"], "old")
+        previous = controller.activate("old")
         assert previous == "slots/candidate/runtime"
         assert (prepared["staging"] / "current").resolve(strict=True) == runtimes["old"]
     except ValueError as error:
@@ -350,8 +403,15 @@ def _exercise(prepared, proof, repo, evidence, deadline):
     assert compiled._artifact_hashes(runtimes["old"], manifest) == prepared["artifact"]
     assert compiled._artifact_hashes(runtimes["candidate"], manifest) == candidate_artifact
     assert _sha(prepared["archive"]) == proof["archive_sha256"] == _sha(evidence / "runtime.tar.gz")
-    assert all(_sha(repo / name) == digest == _sha(prepared["island"] / name)
+    assert all(_sha(prepared["island"] / name) == digest
         for name, digest in prepared["island_files"].items())
+    assert all(_sha(repo / name) == digest for name, digest in prepared["island_files"].items()
+        if not name.startswith("bridge/"))
+    assert _sha(prepared["bridge_archive"]) == prepared["bridge_archive_sha256"]
+    assert _sha(evidence / "admission-runtime.tar.gz") == prepared["bridge_archive_sha256"]
+    for name in ("release.json", "src/core/runtime_admission.pyc",
+                 "src/memory/runtime_closure.pyc", "scripts/stage_runtime.pyc"):
+        assert _sha(prepared["bridge_runtime"] / name) == prepared["island_files"]["bridge/" + name]
     proof.update(execution_complete=True, all_actual_child_waits_returned_zero=True,
         original_state_logically_unchanged=old_after == old_before,
         stale_activation_rejection=rejected, observations={"seed": seed["observations"],
@@ -394,6 +454,8 @@ def exercise_slot_rollback(tmp_path: Path) -> dict:
             raise ValueError("slot_fixture_requires_cpython313_venv")
         prepared = _prepare(task, evidence, repo, revision)
         proof.update(archive_sha256=_sha(prepared["archive"]), release_sha256=prepared["artifact"]["release.json"],
+            bridge_source_commit=prepared["bridge_manifest"]["git_commit"],
+            bridge_archive_sha256=prepared["bridge_archive_sha256"],
             helper_modules=prepared["helper_modules"], island_files=len(prepared["island_files"]),
             original_roots={name: str(root) for name, root in prepared["roots"].items()},
             script_hashes={name: _sha(repo / name) for name in ("scripts/build_runtime.py", "scripts/stage_runtime.py")})
