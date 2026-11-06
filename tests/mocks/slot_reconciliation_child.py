@@ -91,7 +91,9 @@ async def append_ordinary(g, point, sources):
     if point not in POINTS:
         raise ValueError("unknown_reconciliation_data_point")
     spec = POINTS[point]
-    primary = sources[0]
+    # Each actual acquisition uses one of the three IDs declared in O. Their
+    # original conversation and fixed 48-hour deadlines remain unchanged.
+    primary = sources[{"O": 0, "N": 1, "N-only": 2}[point]]
     scope = (primary,)
     assert g.privacy.sources_available(sources)
     label, tag = spec["label"], spec["tag"]
