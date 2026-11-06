@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "unit": "T024-D/application-graph-compatible-data-restore",
-  "status": "proposed_next_unit_not_implemented",
+  "status": "verified_local_public_graph_restore_not_whole_T024",
   "authorization": "Continuacion propuesta dentro del goal activo. Root debe cerrar C con evidencia y commit antes de iniciar D; esta investigacion no ejecuta ni autoriza nuevos runtimes/product edits.",
   "objective": "Ensayo offline integrado de restauracion de payload compatible usando dos generaciones reales de ApplicationGraph construido por src.main.build_application, una autoridad/coordinator compartidos en cada generacion, las nueve familias B mas productor C, sin revertir decisiones manuales o permisos vigentes.",
   "source_refs": [
@@ -398,5 +398,13 @@
     "bytes": 38669
   },
   "execution_authorization": "Continue within the existing active goal after C publication, without requesting another user approval for its authorized scope.",
-  "start_gate": "Publish C code+tracking, confirm current source, then freeze D. Keep all three unresolved guards and acceptance criteria open."
+  "start_gate": "Publish C code+tracking, confirm current source, then freeze D. Keep all three unresolved guards and acceptance criteria open.",
+  "execution_result": {
+    "implementation_commit": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+    "report": "docs/research/2026-11-05-application-graph-restore.json",
+    "component": "2 PASS",
+    "directed": "1213 PASS",
+    "full": "8579 PASS + same known xfail/8580 exact IDs",
+    "next_plan": "docs/plans/2026-11-05-bytecode-graph-restore-continuation.json"
+  }
 }

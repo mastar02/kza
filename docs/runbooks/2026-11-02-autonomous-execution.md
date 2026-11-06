@@ -2908,3 +2908,11 @@ El builder registra PRODUCERS v1 estable con inventario nominal de roles/modelos
 C0 original: 1 PASS; primer feature: 34 PASS / 1 fallo de fixture FK, corregido sin schema/IDs/tiempos distintos. Final: 39 PASS, dirigida: 1087 PASS y full: 8577 PASS + misma xfail conocida sobre 8578 IDs exactos, XML 664.551 s. Fuentes: 1035; scripts: 37; protegidos: 18, estables. Código `59853442ccb367f1ba78cd838f587c8098f7fc82`. [Informe](../research/2026-11-05-producer-erasure-barrier.json) y [continuación D](../plans/2026-11-05-full-graph-restore-continuation.json).
 
 El child UNKNOWN sólo prueba recibo pendiente y contención del proceso, no limpieza física. Tres guards, T024/C04/C05 y21 criterios siguen abiertos. Sin release ni cambio de producción. Máximo ocho agentes según plazas; PC interactiva delegada a Terra.
+
+## Restauración por ApplicationGraph público — T024-D
+
+Dos grafos públicos consecutivos comparten estado temporal estable, con autoridad/coordinador únicos por generación, diez drivers y nueve familias S/U. La retirada de S espera su retorno nativo mientras U continúa. Replay compatible conserva decisiones manuales/permisos actuales, filas mixtas, archivos, SDK lógico y vencimientos originales. El testigo G1 valida linaje sin restaurar fact_sources ni autoridad. Graph2 tiene nueva lease/inventario, rechaza claims viejos y S antes del backend; vector/unlink no completan sus pasos antes del retorno real.
+
+Dos fallos originales de fixture preservados: reloj fijo y expectativa de fact_sources eliminadas por diseño. Final2 PASS; dirigida1213 PASS; full8579 PASS+misma xfail/8580 IDs exactos, XML 661.398 s. Fuentes1039/scripts37/protegidos20 estables. Código `9b3170294eb69a53dd27b63949c09a63a2efed54`. [Informe D](../research/2026-11-05-application-graph-restore.json) y [continuación E](../plans/2026-11-05-bytecode-graph-restore-continuation.json).
+
+No atomicidad multi-store ante crash ni borrado de copias desconocidas. Tres guards, T024/C04/C05 y21 criterios siguen abiertos. Sin release ni cambio de producción. Hasta ocho agentes según plazas; PC interactiva delegada a Terra.

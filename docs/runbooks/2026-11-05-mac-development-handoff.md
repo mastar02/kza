@@ -6,25 +6,24 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 ## Punto de reanudación
 
-La unidad **T024-C quedó verificada localmente en Mac**. El mismo goal sigue **activo e incompleto**. Usar la `.venv` nativa y conservar los ensayos cerrados.
+La unidad **T024-D quedó verificada localmente en Mac**. El mismo goal sigue **activo e incompleto**. Usar la `.venv` nativa y conservar los ensayos cerrados.
 
 | Dato | Estado actual |
 | --- | --- |
 | Entorno | `gabriel`, `/Users/gabriel/Documents/Proyectos/kza`, macOS 26.6.1 arm64, CPython 3.13.18 |
-| Código C | `59853442ccb367f1ba78cd838f587c8098f7fc82` |
-| C0 original | 1 PASS antes del feature; sin presumir un RED |
-| Primer feature | 34 PASS/1 fallo de fixture por FK; originales y corrección preservados |
-| Componente final | 39 PASS, incluidos cuatro casos ambient reales tras revisión |
-| Dirigida C | 1087 PASS; XML 125.334 s |
-| Full normal C | **8577 PASS + la misma xfail conocida**, 8578 IDs exactos; XML 664.551 s |
-| Fuentes | 1035 entradas, 37 scripts y 18 protegidos intactos durante las tandas |
-| Identidades | B8539 intactas más 39; sin renombres ni retiradas |
-| Alcance | Barrera nominal por conversación; tres guards unresolved siguen pendientes |
+| Código D | `9b3170294eb69a53dd27b63949c09a63a2efed54`; sólo cuatro archivos de pruebas/helpers, sin cambios de producto |
+| Originales | 1 PASS/1 fallo de reloj de fixture; luego 1 PASS/1 fallo del contrato de linaje de fixture; ambos preservados |
+| Componente final | 2 PASS; XML 8.616 s |
+| Dirigida D | 1213 PASS; XML 136.772 s |
+| Full normal D | **8579 PASS + la misma xfail conocida**, 8580 IDs exactos; XML 661.398 s |
+| Fuentes | 1039 entradas, 37 scripts y 20 protegidos intactos durante las tandas |
+| Identidades | C8578 intactas más dos; sin renombres ni retiradas |
+| Alcance | Dos ApplicationGraph públicos, diez drivers y replay compatible; tres guards unresolved pendientes |
 | Delegación | Hasta ocho agentes totales según plazas; PC interactiva con subagente `gpt-6.1-terra` |
-| Próxima unidad | T024-D: restore compatible con ApplicationGraph público y diez drivers |
+| Próxima unidad | T024-E: mismo grafo desde artefacto bytecode exacto, fuera del checkout y con ruta de estado estable |
 | Tracking | Este commit; verificar SHA y publicación al retomar |
 
-T021/T022/T023/T024 siguen `in_progress` y los 21 criterios `not_evaluated`. T020/P1/T047, fases, presupuestos y permisos separados se conservan. Leer el [informe C](../research/2026-11-05-producer-erasure-barrier.json) y la [continuación D](../plans/2026-11-05-full-graph-restore-continuation.json). A y B conservan sus informes. Sin release ni cambios de producción.
+T021/T022/T023/T024 siguen `in_progress` y los 21 criterios `not_evaluated`. T020/P1/T047, fases, presupuestos y permisos separados se conservan. Leer el [informe D](../research/2026-11-05-application-graph-restore.json) y la [continuación E](../plans/2026-11-05-bytecode-graph-restore-continuation.json). A/B/C conservan sus informes. Sin release ni cambios de producción.
 
 ## Referencia histórica del cierre Linux F
 
@@ -254,16 +253,22 @@ S se retira mientras U sigue dentro de STT real, sin pausa global ni renovar sus
 
 El primer fallo intentaba crear un estado prohibido por FK. El test comprueba rechazo y petición válida, conservando IDs/schema/tiempos. Tras revisión, se corrigió autoridad anidada ambient y se verificó con cuatro casos reales. El child UNKNOWN mantiene pendiente el recibo y la lease; su salida sólo contiene el proceso, sin acreditar retirada del SDK. Tres guards, C04/C05, warnings y xfail conocida siguen abiertos.
 
+## Restauración por el grafo público — T024-D
+
+Dos generaciones de `build_application`, diez drivers y nueve familias de payload S/U. El productor S espera su retorno real mientras U continúa. La nueva lease reabre recibos; inventario nuevo, claim viejo rechazado y S revocado bloqueado antes del backend. VoiceLedger oculta S con BLOB presente antes de construir voces; vector/unlink reales retienen sus pasos hasta retornar.
+
+Se conserva toda fila vigente, incluidas tablas mixtas, perfil confirmado, link/unlink por CAS, deletion fence, grupo, hecho confirmado, respuestas de sugerencias, persona y credencial HOME sin permisos de revisión. El testigo G1 conserva linaje de índice sin restaurar fact_sources, autoridad ni ACK. El preflight rechaza conflictos deterministas antes de escribir payload; no acredita atomicidad ante un crash entre stores. Tres guards y criterios siguen abiertos.
+
 ## Prompt para la sesión nueva
 
-> Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff, el informe T024-C y la continuación T024-D. Confirmá API del goal, checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro objetivo ni marques éste completo.
-> C quedó verificada localmente: 39/1087 PASS y full: 8577 PASS + la misma xfail conocida, 8578 IDs exactos. Usá la `.venv` nativa; no recrees dependencias ni repitas tandas sin razón nueva. Hasta ocho agentes según plazas; PC interactiva con un subagente Terra.
-> Continuá D con ApplicationGraph público, su único coordinador/autoridad, diez drivers y restore sólo de payloads compatibles. Conservá decisiones/permisos manuales, fuentes ajenas, claims y tres guards unresolved; no fabriques complete ni retrocedas autoridad. T021/T022/T023/T024 y los 21 criterios siguen abiertos; T020/P1/T047 se conservan. Producción/releases mantienen su alcance separado.
+> Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff, el informe T024-D y la continuación T024-E. Confirmá API del goal, checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro objetivo ni marques éste completo.
+> D quedó verificada localmente: 2/1213 PASS y full8579 PASS + la misma xfail conocida,8580 IDs exactos. Usá la `.venv` nativa; no recrees dependencias ni repitas tandas sin razón nueva. Hasta ocho agentes según plazas; PC interactiva con un subagente Terra.
+> Continuá E desde el artefacto exacto commiteado, fuera del checkout, dos generaciones y la misma ruta temporal estable. No simules rollback entre versiones/roots. Conservá decisiones/permisos manuales, fuentes ajenas, claims y tres guards unresolved. T021/T022/T023/T024 y los21 criterios siguen abiertos; T020/P1/T047 se conservan. Sin release ni cambios en producción.
 
 ## Lista de cierre y reanudación
 
 - [x] Linux y unidades G/H/I/J conservados con recibos propios.
-- [x] T024-A/B conservadas y T024-C con C0, primer fallo, corrección y sus 39 casos, dirigida de 1087 y suite completa documentados.
+- [x] T024-A/B/C conservadas y T024-D con originales, correcciones, dos casos, dirigida de 1213 y suite completa documentados.
 - [x] Código, tracking y handoff guardados; verificar publicación y HEAD al retomar.
 - [x] Mismo goal activo, sin nueva petición de pausa ni criterios físicos aceptados.
-- [ ] Confirmar estado/Git y comenzar T024-D según continuación, sin repetir unidades cerradas.
+- [ ] Confirmar estado/Git y comenzar T024-E según continuación, sin repetir unidades cerradas.

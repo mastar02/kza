@@ -1,0 +1,292 @@
+{
+  "schema_version": 1,
+  "unit": "T024-D/application-graph-compatible-data-restore",
+  "status": "verified_local_public_graph_restore_within_open_T024",
+  "baseline_revision": "e3c3e257c7750beacc717d28e455f90a35e99d2f",
+  "summary_spanish": "Dos generaciones del ApplicationGraph público, diez drivers y nueve familias de payload, con replay compatible limitado y conservación de decisiones manuales y permisos actuales.",
+  "product_code_change": false,
+  "production_changed": false,
+  "deployment": "Sin release ni cambios en el servidor.",
+  "evidence_root": "data/autonomous-roadmap-20261102/t024/d",
+  "implementation": {
+    "public_graph": "Los dos grafos se construyen con main.build_application. Se sustituyen sólo hojas nativas controladas de CPU y servicios HTTP locales sintéticos; SQLite, SoundFile, Chroma y los propietarios de aplicación son reales.",
+    "producers": "S se borra mientras S/U tienen operaciones nativas; el recibo de S espera su retorno real y U sigue retenido. Graph2 utiliza inventario y lease nuevos; rechaza el viejo claim y la admisión de S revocado antes del backend.",
+    "restore": "Sólo payload S automático, con IDs, rutas, linaje y vencimientos originales. Testigo G1 independiente conserva registros exactos del SDK, revisiones y fuentes originales; preflight valida tombstones, facts eliminados, revisión nueva y recibos/descriptor actuales sin restaurar fact_sources. Se comparan todas las filas actuales, incluidas tablas mixtas, archivos e índice lógico.",
+    "manual": "Perfil confirmado con tres capturas U, link/unlink/link por CAS, corrección de grupo, perfil eliminado con deletion fence, hecho confirmado, respuestas de sugerencias, persona y credencial HOME actual. Revisar voz no concede autoridad para vincular personas; HOME no adquiere permisos de revisión.",
+    "gates": "El borrado real del SDK y unlink real permanecen retenidos en el orden efectivo de startup. Cancelar el observador no acredita el retorno nativo. Antes de construir voces, VoiceLedger filtra S con BLOB y transcripción aún presentes; comprobaciones autenticadas sólo tras crear la autoridad actual."
+  },
+  "first_execution": "Baseline original 1 PASS/1 timeout de fixture: reloj D fijo no alcanzaba retry del journal; corregido sólo el observador nuevo. Siguiente intento 1 PASS/1 rechazo del preflight de fixture: fact_sources desaparece por borrado real; se requiere testigo independiente anterior. Ambos resultados y cierres reales se conservan.",
+  "validation": {
+    "state": "verified_within_local_D_scope",
+    "component": {
+      "state": "finished",
+      "pytest_exit_code": 0,
+      "actual_Popen_wait_returned": true,
+      "pytest_pid": 12394,
+      "runner_pid": 12393,
+      "timed_out": false,
+      "kill_errno": null,
+      "elapsed_s": 10.604646416002652,
+      "counts": {
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "XML_duration_s": 8.616,
+      "nodes": [
+        {
+          "name": "test_public_graph_replay_keeps_current_authority_and_waits_for_native_returns",
+          "classname": "tests.integration.test_application_restore",
+          "outcome": "passed",
+          "message": null
+        },
+        {
+          "name": "test_snapshot_conflicting_with_current_manual_decisions_is_rejected_before_any_write",
+          "classname": "tests.integration.test_application_restore",
+          "outcome": "passed",
+          "message": null
+        }
+      ],
+      "source_unchanged": true,
+      "protected_unchanged": true,
+      "source_entries": 1039,
+      "script_entries": 37,
+      "scope": "T024-D public application graph compatible data restore and current manual authority preservation; timeout containment never counts as actual retirement, physical erasure or whole-goal success.",
+      "artifacts": {
+        "run.py": {
+          "sha256": "a1e5fc872af3c92831c36fedd90c884bcf7207d978758da5e94ac43d329c60a8",
+          "bytes": 6699
+        },
+        "command.json": {
+          "sha256": "70a63a7b5280d57b0de59d923ec5f9dd5bae0ff2e163cb8f9c078ac616a65407",
+          "bytes": 888
+        },
+        "source-before.json": {
+          "sha256": "85d3e13028f6e3be0c26cb3c3186c0a68a227b78e8b96b3b1c5df6bd5d812074",
+          "bytes": 156825
+        },
+        "source-after.json": {
+          "sha256": "85d3e13028f6e3be0c26cb3c3186c0a68a227b78e8b96b3b1c5df6bd5d812074",
+          "bytes": 156825
+        },
+        "protected-before.json": {
+          "sha256": "f4d7abbaa3f66709ee81c32ae02fe8e0c3f05377e5ea0611d9f58607aadb810a",
+          "bytes": 2291
+        },
+        "protected-after.json": {
+          "sha256": "f4d7abbaa3f66709ee81c32ae02fe8e0c3f05377e5ea0611d9f58607aadb810a",
+          "bytes": 2291
+        },
+        "pytest.log": {
+          "sha256": "becb4d14950f5ca43f8b084e5b82686ac6e0e0bc45940622c3fe40ce94f54595",
+          "bytes": 1258
+        },
+        "junit.xml": {
+          "sha256": "02f10f85732f403c11cfb9dc799220a0e7921d7604f2368b63bb98677e94136f",
+          "bytes": 601
+        }
+      },
+      "runner_exit_code": 0
+    },
+    "component_terminal": {
+      "session": 18331,
+      "chunk": "7a095d",
+      "exit_code": 0
+    },
+    "directed": {
+      "accepted_within_scope": true,
+      "observed_at_utc": "2026-11-06T00:55:28.154342+00:00",
+      "scope": "T024-D native Mac local fixture composition; all acceptance criteria and T024 remain open",
+      "terminal": {
+        "session": 97692,
+        "chunk": "c5bafa",
+        "exit_code": 0
+      },
+      "mode": "directed",
+      "tests": 1213,
+      "passed": 1213,
+      "known_xfailed": 0,
+      "failures": 0,
+      "errors": 0,
+      "ordinary_skips": 0,
+      "known_xfail": [],
+      "XML_duration_s": 136.772,
+      "exact_expected_ids": true,
+      "source_files": 1039,
+      "script_files": 37,
+      "source_unchanged": true,
+      "protected_files": 20,
+      "protected_unchanged": true,
+      "actual_wait_returned": true,
+      "minimum_available_bytes": 200438693888,
+      "artifacts": {
+        "full-status.json": "8ec8c426de3c56d3123d2a8122b74cb60db3983809969c9b34343e41e321e685",
+        "full.xml": "9daa9742cea539369ec10623c9dc5501999eae245f3842ff0e289d2fcdce56bc",
+        "full.log": "c3489d1217a318d068bc6617797106e5c007afc82cd6ef965ab861870ef0c0fd",
+        "source-before.json": "bb6c0cc1bcfd7409f5a4085d18036dad1c691c2916aa5d89335d2c9793d75022",
+        "source-after.json": "bb6c0cc1bcfd7409f5a4085d18036dad1c691c2916aa5d89335d2c9793d75022",
+        "protected-before.json": "23101a3fbebde4b0fd8ea9e5216df87638826be1e0abde030915d8b31f9a871e",
+        "protected-after.json": "23101a3fbebde4b0fd8ea9e5216df87638826be1e0abde030915d8b31f9a871e",
+        "storage-telemetry.json": "50181c658754295f99ce2b085d048ceee4f8ec073795042ffd45ab44f43621ba"
+      }
+    },
+    "full": {
+      "accepted_within_scope": true,
+      "observed_at_utc": "2026-11-06T01:07:20.597024+00:00",
+      "scope": "T024-D native Mac local fixture composition; all acceptance criteria and T024 remain open",
+      "terminal": {
+        "session": 82648,
+        "chunk": "daeec7",
+        "exit_code": 0
+      },
+      "mode": "full",
+      "tests": 8580,
+      "passed": 8579,
+      "known_xfailed": 1,
+      "failures": 0,
+      "errors": 0,
+      "ordinary_skips": 0,
+      "known_xfail": [
+        [
+          "tests.unit.nlu.test_regex_extractor",
+          "test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]",
+          {
+            "type": "pytest.xfail",
+            "message": "limitación documentada del regex puro"
+          }
+        ]
+      ],
+      "XML_duration_s": 661.398,
+      "exact_expected_ids": true,
+      "source_files": 1039,
+      "script_files": 37,
+      "source_unchanged": true,
+      "protected_files": 20,
+      "protected_unchanged": true,
+      "actual_wait_returned": true,
+      "minimum_available_bytes": 198216675328,
+      "artifacts": {
+        "full-status.json": "32c4fd9722b137118e2642f3e609cbaa70abc47c444aa1d91af00f99ce25fda0",
+        "full.xml": "b11f4fe2842ee3176636bd2db390d9c67e91b07bac6b8ef188394dc4979aa30a",
+        "full.log": "4999cb9a56e20ccba84b9d0dc1e71f2878c4f06a90eee52ed93e62bc0bad19b7",
+        "source-before.json": "bb6c0cc1bcfd7409f5a4085d18036dad1c691c2916aa5d89335d2c9793d75022",
+        "source-after.json": "bb6c0cc1bcfd7409f5a4085d18036dad1c691c2916aa5d89335d2c9793d75022",
+        "protected-before.json": "23101a3fbebde4b0fd8ea9e5216df87638826be1e0abde030915d8b31f9a871e",
+        "protected-after.json": "23101a3fbebde4b0fd8ea9e5216df87638826be1e0abde030915d8b31f9a871e",
+        "storage-telemetry.json": "9d117c0ce52e54cec10c4cfef85bbe22dd3b2207b8e5cd1ac966e8880fa5c8e0"
+      }
+    },
+    "warnings": {
+      "baseline": "C accepted full8578",
+      "old_C_location_signatures": [
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/_methods.py:132: RuntimeWarning: overflow encountered in reduce",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in scalar divide",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/fromnumeric.py:3824: RuntimeWarning: Mean of empty slice",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/torch/jit/_serialization.py:176: DeprecationWarning: `torch.jit.load` is deprecated. Please switch to `torch.export`.",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/uvicorn/protocols/websockets/websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/websockets/legacy/server.py:1178: DeprecationWarning: remove second argument of ws_handler",
+        "/Users/gabriel/Documents/Proyectos/kza/src/alerts/alert_manager.py:321: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+        "/Users/gabriel/Documents/Proyectos/kza/src/core/logging.py:129: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+        "<string>:8: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+        "tests/integration/test_async_conversation_generation.py:149: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_async_conversation_generation.py:45: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_owned_voice_responses.py:236: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_response_deadlines.py:441: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_voice_service_lifecycle.py:165: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')"
+      ],
+      "new_D_location_signatures": [
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/_methods.py:132: RuntimeWarning: overflow encountered in reduce",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in scalar divide",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/fromnumeric.py:3824: RuntimeWarning: Mean of empty slice",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/torch/jit/_serialization.py:176: DeprecationWarning: `torch.jit.load` is deprecated. Please switch to `torch.export`.",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/uvicorn/protocols/websockets/websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/websockets/legacy/server.py:1178: DeprecationWarning: remove second argument of ws_handler",
+        "/Users/gabriel/Documents/Proyectos/kza/src/alerts/alert_manager.py:321: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+        "/Users/gabriel/Documents/Proyectos/kza/src/core/logging.py:129: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+        "<string>:8: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+        "tests/integration/test_async_conversation_generation.py:149: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_async_conversation_generation.py:45: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_owned_voice_responses.py:236: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_response_deadlines.py:441: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_voice_service_lifecycle.py:165: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')"
+      ],
+      "new_signatures": [],
+      "absent_prior_signatures": [],
+      "all_location_signature_count": 15,
+      "occurrences_D": 63113,
+      "suppressed": false,
+      "C05_accepted": false,
+      "evidence": {
+        "C_warning_comparison_sha256": "287d497af194c332aebc1a8ad504401d6d12dc877b8e1f81fd6de879c8c10ea1",
+        "D_full_log_sha256": "4999cb9a56e20ccba84b9d0dc1e71f2878c4f06a90eee52ed93e62bc0bad19b7"
+      }
+    },
+    "independent_runtime_review": {
+      "path": "data/autonomous-roadmap-20261102/t024/d/independent-runtime-review.json",
+      "sha256": "65ddeb5e2839792fc2dc5a5759cbb16e02695f42ec0daef7ab3b8f8e49dc7117",
+      "bytes": 20661
+    },
+    "identities": "C8578 retained plus2; directed C1087 union124 prior cases plus2. Counts overlap and are not summed.",
+    "guards": {
+      "source_entries": 1039,
+      "scripts": 37,
+      "protected": 20,
+      "all_unchanged_during_runs": true
+    }
+  },
+  "limits": [
+    "Preflight acredita rechazo de incompatibilidades deterministas antes de escribir payload; no atomicidad ante un crash entre SQLite, archivos y SDK.",
+    "No se restauran decisiones ni hechos/propuestas del ledger de memoria, consentimientos, tombstones, journal, claims, ACK, auth/person rows, runtime/generaciones ni sqlite_sequence. El payload permitido sí incluye sugerencias automáticas pending de S; sus respuestas manuales vigentes se conservan.",
+    "diagnostics v1, streams v2 y voices v2 mantienen sus tres guards unresolved; no se declara aggregate complete ni borrado físico de SDK desconocido.",
+    "T021/T022/T023/T024, C04/C05 y los 21 criterios conservan su estado abierto. La evidencia es local en Mac con datos sintéticos; sin aceptación física."
+  ],
+  "implementation_commit": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+  "source_sha256": {
+    "tests/mocks/restore_application_graph.py": "94d6426e4e25637ecd0182587d70ece489fcdabace44f217ee47fdd36f6e8a2f",
+    "tests/mocks/restore_preservation.py": "09ad56c26f0c8ef0484a80a30ae06898df2cc95c48cab5f191e2833d7bde0e80",
+    "tests/mocks/application_restore.py": "3411e2783132223e6f0a414bc9a6c785df4f48268ac22ccf4dd87cc414df8ce7",
+    "tests/integration/test_application_restore.py": "c4b33b53c5a6d1e7e849603a83844a8c0084058f205418e6bb8c95a7a3f9198f"
+  },
+  "verified_at_utc": "2026-11-06T01:11:43.138366+00:00",
+  "next_unit_plan": "docs/plans/2026-11-05-bytecode-graph-restore-continuation.json",
+  "evidence": {
+    "baseline": {
+      "path": "data/autonomous-roadmap-20261102/t024/d/baseline-attempt-01/status.json",
+      "sha256": "4b680101a87a4b24a0c0f8776fc27aaa86a0eebbea88d53ae1a72f0c56af0841",
+      "bytes": 2255
+    },
+    "first_retry": {
+      "path": "data/autonomous-roadmap-20261102/t024/d/feature-attempt-01/status.json",
+      "sha256": "3798696a66348105bbb501df3bb39f3a93dbbfef6203ff18646a105d68376209",
+      "bytes": 2321
+    },
+    "fixture_diagnosis": {
+      "path": "data/autonomous-roadmap-20261102/t024/d/fixture-diagnosis-confirmed.json",
+      "sha256": "bed5346d70f9687e19ab35a14a35da162a86c50bc0187f17e896ffa866332a8f",
+      "bytes": 1833
+    },
+    "manual_contract": {
+      "path": "data/autonomous-roadmap-20261102/t024/d/manual-restore-contract.json",
+      "sha256": "bfe2760f3bc05d6e878f19f5b4f0c2ffa6d4f4386f78be556fbf416fbe42e7d0",
+      "bytes": 34349
+    },
+    "fixture_design": {
+      "path": "data/autonomous-roadmap-20261102/t024/d/graph-fixture-design.json",
+      "sha256": "97d422302c3704c8ada07792102369d6951d4dd9becd1c3845a22faaa582de68",
+      "bytes": 24747
+    },
+    "suite_proposal": {
+      "path": "data/autonomous-roadmap-20261102/t024/d/suite-proposal.json",
+      "sha256": "47625b0cb9cf5123e0e31ced9146b56b610b55906d6d1fdd335a851f3eeb441d",
+      "bytes": 17804
+    },
+    "final_static": {
+      "path": "data/autonomous-roadmap-20261102/t024/d/final-witness-static-attempt-01/status.json",
+      "sha256": "d475aa203863103438aca125d4d3e0703b9e2045bd1d05da6bc7388482016a83",
+      "bytes": 458
+    }
+  }
+}

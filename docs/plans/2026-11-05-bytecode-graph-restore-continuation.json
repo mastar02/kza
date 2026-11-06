@@ -1,0 +1,240 @@
+{
+  "schema_version": 1,
+  "candidate": "T024-E/committed-bytecode-public-graph-replay",
+  "status": "proposed_next_unit_not_implemented",
+  "start_gate": "Root must finish D directed/full acceptance, classify preserved fixture corrections and publish source+tracking first. Then freeze the exact accepted D commit. D component2PASS alone is insufficient; this proposal does not start E.",
+  "objective": "Run the actual public ApplicationGraph from the exact committed CPython3.13 artifact outside checkout, without src.py, through two generations sharing one stable temporary state root, compatible payload replay and current authority. Advance a local exact-artifact boundary of C05; do not claim versioned runtime/data rollback or SDK wipes.",
+  "task_review": [
+    {
+      "id": "T021",
+      "title": "Recuperar HA/WS con backoff acotado y estado veraz",
+      "status": "in_progress",
+      "criteria": [
+        "C06",
+        "C20"
+      ]
+    },
+    {
+      "id": "T022",
+      "title": "Cerrar inventario de SDK, productores, copias y recursos nativos",
+      "status": "in_progress",
+      "criteria": [
+        "C03",
+        "C04"
+      ]
+    },
+    {
+      "id": "T023",
+      "title": "Completar mute global durable y reactivación autenticada sin voz",
+      "status": "in_progress",
+      "criteria": [
+        "C04"
+      ]
+    },
+    {
+      "id": "T024",
+      "title": "Ensayar borrado y restauración sin resurrección de datos retirados",
+      "status": "in_progress",
+      "criteria": [
+        "C04",
+        "C05"
+      ]
+    }
+  ],
+  "gap": {
+    "current": "D composes10 drivers, producers, manual decisions and replay through public Graph source. Existing test_stage_runtime imports compiled main and exercises many compiled managers, while slot rollback test uses a small SQLite memories table. Neither is the same D public10-driver Graph composition from the current accepted artifact.",
+    "revision": "build_runtime reads a selected committed Git revision, not worktree changes. A full before a new source commit does not automatically validate that new compiled candidate. Explicit accepted-D revision and release.json/files/module-origin hashes close that evidence gap.",
+    "baseline": "This is a new composition characterization with existing APIs and can PASS initially. Never manufacture RED from missing fixture imports, unsupported fake leaves, source path leakage or API absence."
+  },
+  "retrieval": {
+    "Serena": "Focused overview/find_symbol on build_runtime, stage_runtime and existing tests; source owner symbols from prior scoped review.",
+    "Markdown": "ctx outline/doc DEPLOYMENT Construccion del artefacto, compiled-runtime Rollback conservando ambos estados, H3 Decisiones y alcance/Trabajo restante.",
+    "RAG": "rag projects confirmed exact key kza and checkout path. Scoped rag search --project kza --top4 failed Connection refused; no Ollama/index/tunnel started. Conclusions use current source, not missing hits.",
+    "decisions": "No ADR ID invented. Current deployment/runbook/H3 decisions below are source evidence. Historical H3 Trabajo restante still says producers incomplete; published C/source supersede that stale status, while retention/manual-authority decisions remain binding."
+  },
+  "decision_refs": [
+    {
+      "path": "docs/architecture/DEPLOYMENT.md",
+      "sha256": "eb23f7f38e557850fe5ad0e09d73a97d7aaa8063a4f77dd4f1098fabdde2535b",
+      "section_or_symbols": "Construccion del artefacto: committed revision, reproducible source-free CPython3.13 bytecode, external state/models/config"
+    },
+    {
+      "path": "docs/runbooks/2026-10-28-compiled-runtime.md",
+      "sha256": "4c161e88cc7babaddfef5088335a64660e731bd52043a3e600f42c12ef73e154",
+      "section_or_symbols": "Rollback conservando ambos estados: keep original and new state separate, no unreviewed copy over original"
+    },
+    {
+      "path": "docs/plans/2026-10-26-h3-memory-privacy.md",
+      "sha256": "4de4be21a659e2e2b13b0e8913146457d51aa438ddd9c69967b93c1a8de18ca7",
+      "section_or_symbols": "Decisiones y alcance: original capture TTL, authenticated permanent review, legacy quarantine; no resurrection on restore"
+    },
+    {
+      "path": "docs/plans/2026-11-05-global-capture-followup.json",
+      "sha256": "1e2b353468514fb43fc3b1c935d058f328155c3fa1e504735af6ff3dfd3c0bc6",
+      "section_or_symbols": "Do not invent unused producers; complete required C04 evidence, preserve unknown external-copy obligations"
+    },
+    {
+      "path": "docs/plans/2026-11-05-full-graph-restore-continuation.json",
+      "sha256": "07c952c49c1e19b780649231c2f098e3e92671bde510cae07522c721526e6a64",
+      "section_or_symbols": "D public Graph and current manual authority",
+      "captured_pre_D_publication_sha256": "88023a50ddcf6043cfaa1e6bd6341a3c9382017191789c96ba25de4c2f5fbeee"
+    },
+    {
+      "path": "docs/research/2026-11-05-producer-erasure-barrier.json",
+      "sha256": "bbcfd204a8b5d8f4a37e3105ffdc956d17d63f308b1118754f197601992b08d5",
+      "section_or_symbols": "C local producer receipt and3 unresolved guards"
+    },
+    {
+      "path": "docs/plans/2026-11-02-autonomous-roadmap.json",
+      "sha256": "0ea8894d745e058e9ead0eccfefece1f3115cd3de49a5542aaef7af6964bb0cc",
+      "section_or_symbols": "T021/T022/T023/T024 and all21 criteria open",
+      "captured_pre_D_publication_sha256": "2fe07cb3b4fad7019da2a35442e6974320b8020da20fa52af54cd372916f82ba"
+    }
+  ],
+  "source_refs": [
+    {
+      "path": "scripts/build_runtime.py",
+      "sha256": "bfe0d1dc6749c313bb5fc3ad3b5849b37b2c2a87551f5dd0e5f9a7068e4e69a0",
+      "section_or_symbols": "build_runtime(repo,output,revision); committed blobs only; release.json/files hashes/python_magic"
+    },
+    {
+      "path": "scripts/stage_runtime.py",
+      "sha256": "41a16960425325e99f2f6f1beeccd66077fe565bc29f802d5c3f83728c0e2461",
+      "section_or_symbols": "prepare_slot/activate_slot/_validate_manifest; explicit staging root and paired private state"
+    },
+    {
+      "path": "tests/unit/tools/test_build_runtime.py",
+      "sha256": "0ccd8c2b88b24633391040ae1616987de29b05e3f9e5905b9db6758499b3a826",
+      "section_or_symbols": "source exclusion, reproducibility and overwrite refusal"
+    },
+    {
+      "path": "tests/unit/tools/test_stage_runtime.py",
+      "sha256": "20e25c5f48eb9ce81be6eaba0b47ade9cfcf47ba6754e40abe8647e311212408",
+      "section_or_symbols": "test_promote_and_rollback_restore_runtime_and_sqlite; test_compiled_main_and_frontend_outside_checkout"
+    },
+    {
+      "path": "src/main.py",
+      "sha256": "c3f16a85c26729dc8dcf980ac41b1a522deaf62a78a146609872425c1db2506a",
+      "section_or_symbols": "build_application"
+    },
+    {
+      "path": "src/application.py",
+      "sha256": "2468b4f9ed9711a6fc2bb0a12c72b725097a8764ccaf2620ea14a4743289f26d",
+      "section_or_symbols": "ApplicationGraph/ApplicationFactories"
+    },
+    {
+      "path": "src/memory/producer_erasure.py",
+      "sha256": "651014fde3fd488a0f4f36cace82ed4c3c47753affaed176af89552af39f2296",
+      "section_or_symbols": "ProducerInventory/build_producer_erasure"
+    },
+    {
+      "path": "src/obs/diagnostic_erasure.py",
+      "sha256": "442a561698c1fdc1b86fd8f0acae7ea1a986081227228a8c91e452eb8a70e78d",
+      "section_or_symbols": "diagnostic unresolved inventoryv1"
+    },
+    {
+      "path": "src/dashboard/live_erasure.py",
+      "sha256": "c16febb9eff1fc481991727135083ff4d12b1788bb90e9d54dd6420d8a080bbe",
+      "section_or_symbols": "stream unresolved inventoryv2"
+    },
+    {
+      "path": "src/users/voice_registry.py",
+      "sha256": "6654ebd4a88d4a07701296db3c083a1a55297fe9fea6271eda4be66e7ede6ae6",
+      "section_or_symbols": "voice unresolved inventoryv2"
+    },
+    {
+      "path": "tests/mocks/restore_application_graph.py",
+      "sha256": "94d6426e4e25637ecd0182587d70ece489fcdabace44f217ee47fdd36f6e8a2f",
+      "section_or_symbols": "D public Graph leaves/current ReaderBinding/close"
+    },
+    {
+      "path": "tests/mocks/application_restore.py",
+      "sha256": "3411e2783132223e6f0a414bc9a6c785df4f48268ac22ccf4dd87cc414df8ce7",
+      "section_or_symbols": "D replay witness and domain helpers"
+    },
+    {
+      "path": "tests/mocks/restore_preservation.py",
+      "sha256": "09ad56c26f0c8ef0484a80a30ae06898df2cc95c48cab5f191e2833d7bde0e80",
+      "section_or_symbols": "D current manual state/preflight/witness"
+    },
+    {
+      "path": "tests/integration/test_application_restore.py",
+      "sha256": "c4b33b53c5a6d1e7e849603a83844a8c0084058f205418e6bb8c95a7a3f9198f",
+      "section_or_symbols": "D two-generation Graph cases; broad acceptance still pending at proposal"
+    }
+  ],
+  "bounded_execution_proposed": {
+    "build": "Root native .venv CPython3.13 runs build_runtime(repo,archive,revision=<accepted-D-code-commit>) into task-owned temp outside checkout. No existing output overwrite; record archive/release.json/git_commit/python_magic/files hashes.",
+    "stage": "prepare_slot(archive,private_staging_root,name,empty_synthetic_offline_state) and activate_slot(staging_root,name). Populate state only AFTER staging. No production paths/accounts/services/systemctl/release or private .env copy.",
+    "isolation": "Owned subprocess with cwd=selected runtime, isolated sys.path. Hash-pin/copy only needed fixture modules into a separate harness package outside checkout/runtime with NO src package. Every loaded src.* origin must end .pyc under selected runtime; no parent imported src or source checkout path permitted. Dependency site-packages are external, allowed and pinned.",
+    "graph": "All ApplicationGraph, PrivacyServices/coordinator/driver/model-owner classes come from same compiled artifact. Reuse accepted D CPU/loopback/SDK leaves; real public build_application, no SimpleNamespace graph or fake done callback.",
+    "stable_data": "One stable physical slot/state/data root across generation1, offline replay and generation2. Root/inode/schema/SDK metadata witness must match. Never move copied absolute erasure descriptors to another slot and pretend compatibility.",
+    "scope": "Initially one new positive two-generation compiled composition. Keep existing archive checksum/ABI/unsafe path/slot rollback tests, rather than duplicating them without new failure."
+  },
+  "first_baseline": {
+    "tentative_case": "tests/integration/test_compiled_application_restore.py::test_committed_bytecode_graph_preserves_current_authority_after_replay (proposal name only; accepted ID pending actual root XML)",
+    "steps": [
+      "Freeze accepted D source+tests/dependencies and build/stage exact artifact; verify manifest/no src.py and record CPython/architecture.",
+      "Child1 imports src.main.build_application only from selected .pyc. Construct real10-driver Graph with D synthetic CPU/HTTP leaves and real SQLite/Chroma public closes.",
+      "Populate bounded S/U payload and current manual voice/group/person/suggestion/auth sentinels. Native S retirement only completes after true return while U can continue; all3 guards keep aggregate incomplete.",
+      "Release gates in finally, wait Graph/native/SDK drains, writer lease release and actual process exit. No unknown timeout/child termination counted as physical ACK.",
+      "With no live owner, replay only compatible selected S payload through accepted D witness/preflight, preserving current tombstones/manual/roles/ACK authority; do not rollback privacy.db.",
+      "Child2 starts SAME artifact and SAME physical state root under fresh lease. Inventory/owners new; old claim denied; S never readmitted. Observe restored payload hidden before cleanup, real unlink/vector returns before local receipts, U/manual/TTL/bytes preserved and all3 guards pending.",
+      "Wait actual child2 closure/exit; artifact hashes unchanged; collect structured proof/module origins/terminals and root full safeguards. Parent source tests and child traces are complementary, not summed as independent case totals."
+    ],
+    "oracles": [
+      "exact accepted D commit in release.json; all runtime manifest hashes match",
+      "every src.* module .pyc under selected runtime, source checkout absent",
+      "actual10 drivers and same authority/coordinator per generation, new lease/owners across generations",
+      "current manual and source tombstone state preserved; S denied, U unaffected, zero HA effects",
+      "no false aggregate complete or SDK wipe claim; UNKNOWN remains pending",
+      "actual terminal exit and SDK/lease drain, not only controller/Task.done/pointer status"
+    ],
+    "failure_classification": "Bad copied fixture closure, wrong SDK leaf, wrong candidate revision or leaked sys.path is fixture/preparation failure. Missing committed runtime module/asset or changed real erasure behavior from correctly isolated artifact is a concrete package/product candidate after preserving the original oracle."
+  },
+  "why_not_versioned_slot_rollback_yet": {
+    "risk": "D locators/witness pin absolute paths and root dev/inode. Blind copy to another slot can leave persisted historical erasure targets pointing to the retained old state. Slot activation alone cannot establish safe reconciliation.",
+    "boundary": "E selects one slot and reopens it; true rollback across code/data versions or relocated roots stays pending. Existing small SQLite rollback proof remains intact, without being promoted to full privacy-state acceptance.",
+    "future": "A later versioned rollback needs explicit compatible schema/location reconciliation that preserves latest deletion/manual authority while retaining both original and new states, as current runbook requires."
+  },
+  "selection_and_identity": "Retain every accepted D full/directed ID without renames/removals. Relevant existing paths are test_build_runtime.py, test_stage_runtime.py, test_application_graph.py, test_producer_erasure_graph.py and accepted test_application_restore.py. Root derives actual expected union from D manifests+E XML; no full count or pass status inferred now.",
+  "three_guards": [
+    {
+      "participant": "diagnostics",
+      "version": 1,
+      "limit": "Numeric local catalog does not inventory application/SDK/remote logs."
+    },
+    {
+      "participant": "streams",
+      "version": 2,
+      "limit": "Current synthetic peer ReaderBinding/ACK does not certify all browser/OS/peer copies."
+    },
+    {
+      "participant": "voices",
+      "version": 2,
+      "limit": "Local registered observations do not certify legacy/private encoder/model copies."
+    }
+  ],
+  "remaining_task_limits": {
+    "T021": "Resistant transport owner >60s and C06/C20 recovery/staleness remain open; packaging does not turn timeout/closed descriptor into real exit.",
+    "T022": "Complete SDK/copy inventory and C03 timing/physical acceptance remain open.",
+    "T023": "Durable mute software is preserved; field4inputs/SDK copy/reset/reactivation C04 not inferred.",
+    "T024": "Exact source-free artifact boundary only. True versioned runtime/data rollback, compatible real-data migration, knownxfail/warnings and all21 criteria stay unaccepted."
+  },
+  "limits": [
+    "Proposal only. No build/stage/activate/import/runtime/SDK/collection/tests/Git/source/docs action performed; only this private JSON written.",
+    "D component2PASS was reported by root; directed/full still pending while proposal written. E cannot start before D published.",
+    "No new permissions, field work, production deployment/accounts/services or private data. Local Mac offline synthetic leaves only.",
+    "No PC interaction proposed; future PC/browser actions must be delegated to Terra under AGENTS. Physical iPhone/HA/audio/SDK acceptance remains separate.",
+    "Active goal continues; T021/T022/T023/T024/C04/C05/21 criteria remain open."
+  ],
+  "unit": "T024-E/committed-bytecode-public-graph-replay",
+  "baseline_revision": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+  "goal": "docs/plans/2026-11-02-autonomous-roadmap.md",
+  "previous_evidence": {
+    "path": "docs/research/2026-11-05-application-graph-restore.json",
+    "sha256": "ad37c01d07f934e7bee7f7f8ad7e75b985372e922a421f32028b6382a26d7088",
+    "bytes": 18855
+  },
+  "execution_authorization": "Continue the same active authorized goal after D source+tracking publication; no release or production action."
+}
