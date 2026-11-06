@@ -22,6 +22,8 @@ from src.application import (
     HermesReasonerOwner as _HermesReasonerOwner,
 )
 from src.core.owned_work import OwnedBlockingWork
+from src.core.runtime_admission import seal_runtime_configuration, verify_runtime_admission
+from src.core.state_configuration import ConfigurationChanges
 from src.core.settings_schema import (
     DEFAULT_LOCAL_LLM_GATEWAY,
     check_unresolved_env_vars,
@@ -365,6 +367,10 @@ async def build_application(
     Returns:
         The same graph run by main, with operational startup and warmup deferred.
     """
+    config = seal_runtime_configuration(config)
+    admission = await asyncio.to_thread(verify_runtime_admission, config)
+    if admission is not None:
+        admission.install_on(shutdown)
     factories = factories or ApplicationFactories()
 
     # Verificar Home Assistant
@@ -383,6 +389,7 @@ async def build_application(
     # Register authority ownership before every consumer. Opening the private
     # database is deferred until construction reaches the dashboard boundary.
     dashboard_authority = None
+    configuration_changes = None
     user_manager = None
     if config.get("dashboard", {}).get("enabled", True):
         auth_config = config.get("dashboard", {}).get("auth", {})
@@ -392,6 +399,9 @@ async def build_application(
             account_provider=lambda: None if user_manager is None else user_manager.active_accounts(),
         )
         shutdown.push_async_callback(dashboard_authority.aclose)
+        if admission is not None:
+            configuration_changes = ConfigurationChanges(dashboard_authority, admission)
+            configuration_changes.install_on(shutdown)
 
     # Home Assistant Client
     ha_client = (factories.ha_client or HomeAssistantClient)(
@@ -1903,6 +1913,7 @@ async def build_application(
         home_services=home_services, home_capabilities=home_capabilities, list_manager=list_manager,
         reminder_manager=reminder_manager, routine_scheduler=routine_scheduler,
         dashboard=dashboard, dashboard_authority=dashboard_authority,
+        configuration_changes=configuration_changes,
         models=ApplicationModels(stt, tts, chroma, speaker_identifier, emotion_detector),
         warmup_models=_warmup_models, presence_detector=presence_detector,
         ambient_path=ambient_path, nightly_trainer=nightly_trainer,
@@ -1925,6 +1936,11 @@ async def build_application(
         privacy=privacy_services, owner=erasure_services, graph=graph, coverage=coverage,
     )
     shutdown.push_async_callback(graph.producer_erasure.aclose)
+    if configuration_changes is not None:
+        configuration_changes.attach_graph(graph)
+    if admission is not None:
+        admission.attach_graph(graph)
+        await asyncio.to_thread(admission.revalidate)
     return graph
 
 

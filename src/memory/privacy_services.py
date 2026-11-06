@@ -14,6 +14,7 @@ import threading
 from weakref import WeakMethod
 
 from src.core.owned_work import ClosePhase, OwnedBlockingWork, WorkCloseTimeout, observe_native
+from src.core.runtime_admission import verify_privacy_admission
 from src.memory.fact_ledger import FactLedger, MemoryOrigin, MemorySource
 from src.memory.sources import CaptureScopes
 
@@ -45,6 +46,7 @@ class PrivacyServices:
         with self._lock:
             if self._closed:
                 raise RuntimeError("privacy_closed")
+            verify_privacy_admission(self.ledger.path)
             if self.ledger.path != ":memory:" and self._lease is None:
                 path = Path(self.ledger.path)
                 path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)

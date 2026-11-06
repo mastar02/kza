@@ -16,6 +16,7 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from src.core.state_configuration import ConfigurationChanges
     from src.dashboard.api import DashboardAPI
     from src.dashboard.authority import DashboardAuthority
     from src.home_assistant.ha_client import HomeAssistantClient
@@ -259,6 +260,7 @@ class ApplicationGraph:
     erasure_services: ErasureCoordinator | None = field(default=None, repr=False)
     producer_coverage: ProducerCoverage | None = field(default=None, repr=False)
     producer_erasure: ProducersEraser | None = field(default=None, repr=False)
+    configuration_changes: ConfigurationChanges | None = field(default=None, repr=False)
     _run_entered: bool = field(default=False, init=False, repr=False)
 
     async def warmup(self) -> None:
