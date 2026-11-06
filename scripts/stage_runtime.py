@@ -36,6 +36,7 @@ _TICKET_KEYS = {"schema_version", "admission_root", "binding_id", "generation", 
                 "lease_fd", "lease_identity", "controller_pid"}
 _MARKER = ".kza-state-binding.json"
 _CLOSED_RESOURCES = {"graph_closed", "privacy_closed", "sdk_closed", "native_closed"}
+_manual_components_module = None
 _PROTECTED_TABLES = frozenset({
     "conversation_tombstones", "conversation_erasures", "voice_profiles", "voice_profile_sources",
     "voice_review_requests", "voice_profile_people", "voice_group_requests",
@@ -202,6 +203,8 @@ def _cas_head(root: Path, expected: dict | None, binding_id: str, status: str,
         raise ValueError("runtime_admission_head_changed")
     head = {"schema_version": 1, "generation": 1 if expected is None else expected["generation"] + 1,
             "binding_id": binding_id, "status": status, "run_id": run_id}
+    if status == "closed":
+        _verify_manual_head(root, head, read_binding(root, binding_id))
     _atomic_record(root / "admission" / "head.json", head)
     return head
 
@@ -867,6 +870,295 @@ def validate_target_ownership(root: Path, binding: dict, *, allow_new_local: boo
                 raise ValueError("runtime_admission_foreign_target")
 
 
+def _manual_module():
+    """Load the stdlib contract only in parent paths, outside V1 bridges."""
+    global _manual_components_module
+    if _manual_components_module is None:
+        own = Path(__file__).resolve()
+        suffix = ".pyc" if own.suffix == ".pyc" else ".py"
+        path = own.parents[1] / ("src/memory/manual_components" + suffix)
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("runtime_admission_manual_contract_missing")
+        name = "_kza_manual_components_" + hashlib.sha256(str(path).encode()).hexdigest()[:16]
+        spec = importlib.util.spec_from_file_location(name, path)
+        if spec is None or spec.loader is None:
+            raise ValueError("runtime_admission_manual_contract_missing")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(name, None)
+            raise
+        _manual_components_module = module
+    return _manual_components_module
+
+
+def _manual_owner(root: Path, binding: dict, target: dict):
+    module = _manual_module()
+    state = Path(binding["state_root"])
+    descriptor = target["descriptor"]
+    directory = Path(descriptor["root"])
+    owner = binding
+    if not directory.is_relative_to(state):
+        policy = _read_json(state / ".kza-target-ownership.json")
+        if target["id"] not in policy["delegated_targets"]:
+            raise ValueError("privacy_authority_stale")
+        _validate_delegated_target(root, state, target, policy["source_bindings"])
+        candidates = {}
+        for record in _delegation_records(root, state):
+            if (record["source_binding"] not in policy["source_bindings"]
+                    or record["destination_identity"] != _identity(state)
+                    or record["targets"].get(target["id"]) != target):
+                continue
+            source = read_binding(root, record["source_binding"])
+            source_state = Path(source["state_root"])
+            if (not directory.is_relative_to(source_state)
+                    or _binding_snapshot(root, source["slot"]) != source
+                    or _digest(_closure_proof(root, record["source_binding"])) != record["source_close_sha256"]
+                    or _target_inventory(source_state).get(target["id"]) != target):
+                continue
+            if _read_json(source_state / _MARKER).get("binding_id") == record["source_binding"]:
+                candidates[record["source_binding"]] = source
+        if len(candidates) != 1:
+            raise ValueError("runtime_admission_manual_owner_ambiguous")
+        owner = next(iter(candidates.values()))
+    return module.CollectorOwner(target["id"], descriptor["kind"], directory,
+        Path(owner["state_root"]), owner["state_identity"], _digest(owner))
+
+
+def _manual_capture(root: Path, binding: dict) -> dict:
+    """Read typed collector rows and explicitly owned files, never SDK data."""
+    module = _manual_module()
+    validate_target_ownership(root, binding)
+    state = Path(binding["state_root"])
+    tables = ("wake_clips_v1", "stt_corrections_v1", "conversation_turns_v1",
+              "conversation_export_parents_v1")
+    stores = {}
+    for relative, projection in binding["authority"]["projection"]["tables"].items():
+        names = set(projection["schema_contract_v1"]["columns"])
+        if not names.intersection(tables):
+            continue
+        if not set(tables) <= names:
+            raise ValueError("runtime_admission_manual_schema")
+        with _database_image(state / relative) as db:
+            stores[relative] = {name: [dict(row) for row in db.execute("SELECT * FROM " + _quote(name))]
+                                for name in tables}
+    inventory = _target_inventory(state)
+    used = set()
+    for store in stores.values():
+        protected = module.protected_collector_records(store)
+        used.update(row["target_id"] for row in store["wake_clips_v1"] if row["id"] in protected)
+    owners = {}
+    for identity in used:
+        target = inventory.get(identity)
+        if (target is None or target["participant"] != "collectors" or target["version"] != 1
+                or set(target["descriptor"]) != {"kind", "root"}
+                or target["descriptor"]["kind"] not in {
+                    "wake_clips", "stt_corrections", "conversations", "conversation_exports"}):
+            raise ValueError("runtime_admission_manual_owner_missing")
+        owners[identity] = _manual_owner(root, binding, target)
+    return module.capture_manual_components(state, stores, owners)
+
+
+def _manual_mapping(source: dict, candidate: dict) -> dict:
+    """Derive actual target substitutions from two accredited captures."""
+    if set(source["stores"]) != set(candidate["stores"]):
+        raise ValueError("privacy_authority_stale")
+    mapping = {}
+    for relative, store in source["stores"].items():
+        before, after = store["clips"], candidate["stores"][relative]["clips"]
+        if set(before) != set(after):
+            raise ValueError("privacy_authority_stale")
+        for identity, row in before.items():
+            old, new = row["locator"], after[identity]["locator"]
+            if any(old[key] != new[key] for key in ("kind", "relative_root")):
+                raise ValueError("privacy_authority_stale")
+            if old["target_id"] != new["target_id"]:
+                if old["target_id"] in mapping and mapping[old["target_id"]] != new["target_id"]:
+                    raise ValueError("privacy_authority_stale")
+                mapping[old["target_id"]] = new["target_id"]
+    return mapping
+
+
+def _require_manual_equivalent(source: dict, candidate: dict) -> None:
+    module = _manual_module()
+    try:
+        equivalent = module.equivalent_manual_components(source, candidate,
+            target_relocations=_manual_mapping(source, candidate))
+    except module.ManualComponentError:
+        raise ValueError("privacy_authority_stale") from None
+    if not equivalent:
+        raise ValueError("privacy_authority_stale")
+
+
+def _manual_head_path(root: Path, head: dict) -> Path:
+    return root / "admission" / "manual-components" / "heads" / (_digest(head) + ".json")
+
+
+def _manual_head_shape(head: dict, status: str) -> bool:
+    return (type(head) is dict and set(head) == _HEAD_KEYS
+            and type(head["schema_version"]) is int and head["schema_version"] == 1
+            and type(head["generation"]) is int and head["generation"] >= 1
+            and type(head["binding_id"]) is str and re.fullmatch("[0-9a-f]{64}", head["binding_id"]) is not None
+            and head["status"] == status
+            and (head["run_id"] is None if status == "closed" else type(head["run_id"]) is str
+                 and re.fullmatch("[0-9a-f]{32}", head["run_id"]) is not None))
+
+
+def _manual_receipt_proof(root: Path, proof: dict) -> None:
+    """Verify retained evidence without asserting a new wait or native close."""
+    if (type(proof) is not dict
+            or set(proof) != {"schema_version", "binding_id", "running_head", "receipt_sha256", "child_pid"}
+            or type(proof["schema_version"]) is not int or proof["schema_version"] != 1
+            or type(proof["child_pid"]) is not int or proof["child_pid"] <= 0):
+        raise ValueError("runtime_admission_manual_close_proof")
+    running = proof["running_head"]
+    if not _manual_head_shape(running, "running") or running["generation"] < 2:
+        raise ValueError("runtime_admission_manual_close_proof")
+    path = root / "admission" / "receipts" / (running["run_id"] + ".json")
+    expected = {"schema_version": 1, "binding_id": running["binding_id"],
+                "generation": running["generation"], "run_id": running["run_id"],
+                "child_pid": proof["child_pid"], "status": "closed",
+                "resources": dict.fromkeys(_CLOSED_RESOURCES, True)}
+    if (_canonical_json(_read_json(path)) != _canonical_json(expected)
+            or hashlib.sha256(path.read_bytes()).hexdigest() != proof["receipt_sha256"]):
+        raise ValueError("runtime_admission_manual_close_proof")
+
+
+def _manual_closed_head(proof: dict) -> dict:
+    return {"schema_version": 1, "generation": proof["running_head"]["generation"] + 1,
+            "binding_id": proof["binding_id"], "status": "closed", "run_id": None}
+
+
+def _read_manual_seal(root: Path, identity: str) -> dict:
+    if type(identity) is not str or re.fullmatch("[0-9a-f]{64}", identity) is None:
+        raise ValueError("runtime_admission_manual_seal_schema")
+    record = _read_json(root / "admission" / "manual-components" / "seals" / (identity + ".json"))
+    if (set(record) != {"schema_version", "binding_id", "closure_proof", "closed_head", "capture"}
+            or type(record["schema_version"]) is not int or record["schema_version"] != 1
+            or _digest(record) != identity
+            or type(record["closure_proof"]) is not dict or type(record["capture"]) is not dict):
+        raise ValueError("runtime_admission_manual_seal_schema")
+    _manual_receipt_proof(root, record["closure_proof"])
+    if (record["closure_proof"]["binding_id"] != record["binding_id"]
+            or not _manual_head_shape(record["closed_head"], "closed")
+            or _canonical_json(record["closed_head"]) != _canonical_json(_manual_closed_head(record["closure_proof"]))):
+        raise ValueError("runtime_admission_manual_seal_schema")
+    binding = read_binding(root, record["binding_id"])
+    if (record["capture"].get("state_root") != binding["state_root"]
+            or record["capture"].get("state_identity") != binding["state_identity"]):
+        raise ValueError("runtime_admission_manual_seal_schema")
+    return record
+
+
+def _read_manual_head(root: Path, head: dict) -> dict:
+    if not _manual_head_shape(head, "closed"):
+        raise ValueError("runtime_admission_manual_companion_schema")
+    try:
+        record = _read_json(_manual_head_path(root, head))
+    except FileNotFoundError:
+        raise ValueError("runtime_admission_manual_legacy_unsealed") from None
+    if (set(record) != {"schema_version", "head", "kind", "capture", "authority_seal", "previous"}
+            or type(record["schema_version"]) is not int or record["schema_version"] != 1
+            or _canonical_json(record["head"]) != _canonical_json(head)
+            or head["status"] != "closed" or head["run_id"] is not None
+            or type(record["capture"]) is not dict
+            or record["kind"] not in {"bootstrap", "selection", "closure"}):
+        raise ValueError("runtime_admission_manual_companion_schema")
+    binding = read_binding(root, head["binding_id"])
+    if (record["capture"].get("state_root") != binding["state_root"]
+            or record["capture"].get("state_identity") != binding["state_identity"]):
+        raise ValueError("runtime_admission_manual_companion_schema")
+    if record["kind"] == "bootstrap":
+        if (head["generation"] != 1 or record["previous"] is not None
+                or record["authority_seal"] is not None or _has_authority(binding)
+                or record["capture"].get("stores") != {}):
+            raise ValueError("runtime_admission_manual_bootstrap_invalid")
+        return record
+    previous = record["previous"]
+    if (type(previous) is not dict or set(previous) != {"head_sha256", "companion_sha256"}
+            or any(type(value) is not str or re.fullmatch("[0-9a-f]{64}", value) is None
+                   for value in previous.values())):
+        raise ValueError("runtime_admission_manual_companion_schema")
+    path = root / "admission" / "manual-components" / "heads" / (previous["head_sha256"] + ".json")
+    prior = _read_json(path)
+    if (type(prior.get("schema_version")) is not int or prior["schema_version"] != 1
+            or not _manual_head_shape(prior.get("head"), "closed")
+            or _digest(prior) != previous["companion_sha256"] or _digest(prior["head"]) != previous["head_sha256"]):
+        raise ValueError("runtime_admission_manual_companion_changed")
+    if record["kind"] == "selection":
+        if (prior["head"]["generation"] + 1 != head["generation"]
+                or record["authority_seal"] != prior["authority_seal"]):
+            raise ValueError("runtime_admission_manual_companion_changed")
+        if record["authority_seal"] is None:
+            if prior["kind"] not in {"bootstrap", "selection"} or _has_authority(binding):
+                raise ValueError("runtime_admission_manual_bootstrap_invalid")
+            _require_manual_equivalent(prior["capture"], record["capture"])
+            return record
+    seal = _read_manual_seal(root, record["authority_seal"])
+    if record["kind"] == "closure":
+        running = seal["closure_proof"]["running_head"]
+        if (_canonical_json(seal["closed_head"]) != _canonical_json(head)
+                or _canonical_json(seal["capture"]) != _canonical_json(record["capture"])
+                or running["generation"] != prior["head"]["generation"] + 1
+                or running["binding_id"] != prior["head"]["binding_id"]):
+            raise ValueError("runtime_admission_manual_companion_changed")
+    _require_manual_equivalent(seal["capture"], record["capture"])
+    return record
+
+
+def _verify_manual_head(root: Path, head: dict, binding: dict) -> dict:
+    record = _read_manual_head(root, head)
+    if _digest(binding) != head["binding_id"]:
+        raise ValueError("privacy_authority_stale")
+    module = _manual_module()
+    try:
+        module.verify_manual_components(_manual_capture(root, binding), record["capture"])
+    except module.ManualComponentError:
+        raise ValueError("privacy_authority_stale") from None
+    if _binding_snapshot(root, binding["slot"]) != binding:
+        raise ValueError("privacy_authority_stale")
+    return record
+
+
+def _prepare_manual_head(root: Path, expected: dict | None, binding: dict, *,
+                         previous: dict | None, proof: dict | None = None) -> dict:
+    """Write immutable metadata before its corresponding V1 CLOSED CAS."""
+    if expected is not None and not _manual_head_shape(expected, "running" if proof is not None else "closed"):
+        raise ValueError("runtime_admission_manual_companion_schema")
+    head = {"schema_version": 1, "generation": 1 if expected is None else expected["generation"] + 1,
+            "binding_id": _digest(binding), "status": "closed", "run_id": None}
+    capture = _manual_capture(root, binding)
+    if _binding_snapshot(root, binding["slot"]) != binding:
+        raise ValueError("privacy_authority_stale")
+    reference = None if previous is None else {
+        "head_sha256": _digest(previous["head"]), "companion_sha256": _digest(previous)}
+    if proof is not None:
+        _manual_receipt_proof(root, proof)
+        if (_canonical_json(head) != _canonical_json(_manual_closed_head(proof)) or previous is None
+                or _canonical_json(expected) != _canonical_json(proof["running_head"])):
+            raise ValueError("runtime_admission_manual_close_proof")
+        seal = {"schema_version": 1, "binding_id": _digest(binding), "closure_proof": proof,
+                "closed_head": head, "capture": capture}
+        seal_id = _digest(seal)
+        _atomic_record(root / "admission" / "manual-components" / "seals" / (seal_id + ".json"), seal, immutable=True)
+        kind = "closure"
+    elif previous is None:
+        if expected is not None or _has_authority(binding) or capture["stores"]:
+            raise ValueError("runtime_admission_manual_legacy_unsealed")
+        kind, seal_id = "bootstrap", None
+    else:
+        if _canonical_json(expected) != _canonical_json(previous["head"]):
+            raise ValueError("runtime_admission_head_changed")
+        _require_manual_equivalent(previous["capture"], capture)
+        kind, seal_id = "selection", previous["authority_seal"]
+    record = {"schema_version": 1, "head": head, "kind": kind, "capture": capture,
+              "authority_seal": seal_id, "previous": reference}
+    _atomic_record(_manual_head_path(root, head), record, immutable=True)
+    return record
+
+
 def _publish_selection(root: Path, name: str) -> str | None:
     current = root / "current"
     previous = os.readlink(current) if current.is_symlink() else None
@@ -917,6 +1209,11 @@ def verify_closed_binding(root: Path, binding_id: str) -> dict:
         raise ValueError("runtime_admission_marker_mismatch")
     _closure_proof(root, binding_id)
     validate_target_ownership(root, binding)
+    _verify_manual_head(root, head, read_binding(root, head["binding_id"]))
+    closed_head = _manual_closed_head(_closure_proof(root, binding_id))
+    record = _verify_manual_head(root, closed_head, binding)
+    if record["kind"] != "closure":
+        raise ValueError("runtime_admission_manual_close_proof")
     return binding
 
 
@@ -938,6 +1235,7 @@ def _authorize_target_delegation(root: Path, destination_state: Path, source_bin
     if head is None or head["status"] != "closed" or head["binding_id"] != source_binding:
         raise ValueError("runtime_admission_delegation_source_not_current")
     source = verify_closed_binding(root, source_binding)
+    source_manual = _verify_manual_head(root, head, source)
     proof = _closure_proof(root, source_binding)
     state = _safe_directory(Path(destination_state).resolve(strict=True))
     if state.parent.parent != root / "slots" or state.name != "state" or str(state) == source["state_root"]:
@@ -991,6 +1289,7 @@ def _authorize_target_delegation(root: Path, destination_state: Path, source_bin
     _atomic_record(policy_path, policy)
     destination = _binding_snapshot(root, state.parent.name)
     validate_target_ownership(root, destination)
+    _prepare_manual_head(root, head, source, previous=source_manual)
     _cas_head(root, head, source_binding, "closed")
     return capability
 
@@ -1342,10 +1641,12 @@ class AdmissionController:
             if head is None or head["status"] != "closed" or head["binding_id"] != latest_binding_id:
                 raise ValueError("privacy_authority_stale")
             source = verify_closed_binding(self.root, latest_binding_id)
+            source_manual = _verify_manual_head(self.root, head, source)
             candidate = _binding_snapshot(self.root, _slot_name(name))
             if candidate["state_root"] == source["state_root"]:
                 raise ValueError("privacy_authority_stale")
             validate_target_ownership(self.root, candidate)
+            _require_manual_equivalent(source_manual["capture"], _manual_capture(self.root, candidate))
             if not _derived_authority_equivalent(self.root, source, candidate, target_relocations):
                 raise ValueError("privacy_authority_stale")
             if (_binding_snapshot(self.root, source["slot"]) != source
@@ -1374,15 +1675,20 @@ class AdmissionController:
                 latest = read_binding(self.root, head["binding_id"])
                 if _binding_snapshot(self.root, latest["slot"]) != latest:
                     raise ValueError("privacy_authority_stale")
+                latest_manual = _verify_manual_head(self.root, head, latest)
             else:
                 current = _current_slot(self.root)
                 latest = _binding_snapshot(self.root, current) if current is not None else binding
+                latest_manual = None
             is_managed = managed or head is not None or _has_authority(binding) or _has_authority(latest)
             if is_managed:
                 if latest["authority"]["digest"] != binding["authority"]["digest"]:
                     if head is None or not _validate_derived_capability(self.root, head, latest, binding):
                         raise ValueError("privacy_authority_stale")
                 identity = _store_binding(self.root, binding)
+                if head is None and _has_authority(latest):
+                    raise ValueError("runtime_admission_manual_legacy_unsealed")
+                _prepare_manual_head(self.root, head, binding, previous=latest_manual)
                 _write_marker(self.root, identity, binding)
                 _cas_head(self.root, head, identity, "closed")
             return _publish_selection(self.root, name)
@@ -1403,6 +1709,7 @@ class AdmissionController:
             head = read_admission_head(root)
             binding = read_binding(root, head["binding_id"])
             validate_target_ownership(root, binding)
+            previous_manual = _verify_manual_head(root, head, binding)
             run_id = uuid4().hex
             running = _cas_head(root, head, head["binding_id"], "running", run_id)
         ticket = {"schema_version": 1, "admission_root": str(root),
@@ -1442,6 +1749,7 @@ class AdmissionController:
                          "receipt_sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
                          "child_pid": process.pid}
                 _atomic_record(root / "admission" / "closures" / (identity + ".json"), proof)
+                _prepare_manual_head(root, running, closed, previous=previous_manual, proof=proof)
                 _write_marker(root, identity, closed)
                 _cas_head(root, running, identity, "closed")
             return subprocess.CompletedProcess(command, returncode, output, error)
