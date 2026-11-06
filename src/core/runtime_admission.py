@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
+from contextvars import Context
 import copy
 import hashlib
 import importlib.util
@@ -13,7 +14,7 @@ from pathlib import Path
 import stat
 import sys
 import threading
-from types import ModuleType
+from types import MethodType, ModuleType
 
 MARKER = ".kza-state-binding.json"
 TICKET_ENV = "KZA_RUNTIME_ADMISSION"
@@ -146,6 +147,71 @@ def _check_serving_paths(config: dict, state: Path) -> None:
     inspect(config)
 
 
+async def _construction_return(task: asyncio.Task):
+    """Consume an actual owned return before propagating observer cancellation."""
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+        except BaseException:
+            break
+    try:
+        result = task.result()
+    except BaseException as error:
+        if cancelled and not isinstance(error, asyncio.CancelledError):
+            raise BaseExceptionGroup("runtime admission construction failed during cancellation",
+                                     [error, asyncio.CancelledError()]) from None
+        raise
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
+class _DiagnosticConstruction:
+    """Serialize final admission with the nominal historical writer's lease."""
+
+    def __init__(self, graph):
+        from src.core.owned_work import OwnedBlockingWork
+        from src.memory.erasure_coordinator import CleanupDriver, ErasureCoordinator
+        from src.memory.erasure_journal import ErasureParticipant
+        from src.obs.diagnostic_erasure import DiagnosticServices
+
+        self.graph, self.privacy = graph, graph.privacy
+        self.coordinator = graph.erasure_services
+        if (type(self.coordinator) is not ErasureCoordinator
+                or self.coordinator.privacy is not self.privacy):
+            raise RuntimeError("runtime_admission_diagnostic_owner_changed")
+        self.participant = ErasureParticipant.DIAGNOSTICS
+        self.driver = self.coordinator._drivers.get(self.participant)
+        if type(self.driver) is not CleanupDriver or self.driver.versions != frozenset({2}):
+            raise RuntimeError("runtime_admission_diagnostic_owner_changed")
+        self.callback = self.driver.callback
+        self.owner = getattr(self.callback, "__self__", None)
+        if (type(self.callback) is not MethodType or type(self.owner) is not DiagnosticServices
+                or self.callback.__func__ is not DiagnosticServices.clean
+                or self.owner.privacy is not self.privacy
+                or type(self.owner._lock) is not asyncio.Lock
+                or type(self.owner._disk) is not OwnedBlockingWork):
+            raise RuntimeError("runtime_admission_diagnostic_owner_changed")
+        self.lock, self.disk = self.owner._lock, self.owner._disk
+        self.verify()
+
+    def verify(self):
+        if (self.graph.privacy is not self.privacy
+                or self.graph.erasure_services is not self.coordinator
+                or self.coordinator.privacy is not self.privacy
+                or self.coordinator.journal is not self.privacy.ledger.erasures
+                or self.coordinator._drivers.get(self.participant) is not self.driver
+                or self.driver.callback is not self.callback
+                or self.owner.privacy is not self.privacy
+                or self.owner._lock is not self.lock or self.owner._disk is not self.disk
+                or self.coordinator._closed or self.owner._closed or self.disk.status()["closed"]):
+            raise RuntimeError("runtime_admission_diagnostic_owner_changed")
+        self.privacy.require_available()
+
+
 class RuntimeAdmission:
     """Observe an actual owned-stack drain before recording closure."""
 
@@ -162,6 +228,8 @@ class RuntimeAdmission:
         self._closure_failed = False
         self._stop_original = None
         self._stop_observer = None
+        self._diagnostic_construction = None
+        self._construction_revalidation: asyncio.Task | None = None
 
     @property
     def state_root(self) -> Path:
@@ -193,6 +261,7 @@ class RuntimeAdmission:
             raise RuntimeError("runtime_admission_effective_config_changed")
         if self._shutdown is None:
             raise RuntimeError("runtime_admission_stack_not_installed")
+        diagnostics = _DiagnosticConstruction(graph)
         original = graph._stop_services
         if (getattr(original, "__self__", None) is not graph
                 or getattr(original, "__func__", None) is not expected._stop_services):
@@ -201,6 +270,7 @@ class RuntimeAdmission:
         self._stop_observer = self._observe_service_stop
         graph._stop_services = self._stop_observer
         self._closure_witness = _companion("src/memory/runtime_closure").RuntimeClosureWitness.capture(graph)
+        self._diagnostic_construction = diagnostics
         self._graph = graph
         self._shutdown.push_async_exit(self._before_owned_close)
 
@@ -243,6 +313,33 @@ class RuntimeAdmission:
             Path(self._binding["state_root"]), self._ticket, check_state=False)
         if binding != self._binding:
             raise RuntimeError("runtime_admission_binding_changed")
+
+    async def revalidate_constructed(self) -> None:
+        """Keep historical repair excluded until final native validation returns.
+
+        This neither closes maintenance nor suppresses foreign writer locks.
+        The construction Task owns the lock independently of its observers.
+        """
+        guard = self._diagnostic_construction
+        if self._graph is None or guard is None:
+            raise RuntimeError("runtime_admission_public_graph_required")
+        current = asyncio.current_task()
+        if current is self._construction_revalidation or current in guard.owner._operations:
+            raise RuntimeError("runtime_admission_construction_reentrant")
+        guard.verify()
+        previous = self._construction_revalidation
+        if previous is None or previous.done() and not previous.cancelled() and previous.exception() is None:
+            async def execute():
+                async with guard.lock:
+                    guard.verify()
+                    drain = asyncio.create_task(guard.disk.drain_admitted(), context=Context())
+                    await _construction_return(drain)
+                    guard.verify()
+                    validation = asyncio.create_task(asyncio.to_thread(self.revalidate), context=Context())
+                    await _construction_return(validation)
+                    guard.verify()
+            self._construction_revalidation = asyncio.create_task(execute(), context=Context())
+        await _construction_return(self._construction_revalidation)
 
     async def _after_owned_close(self, exc_type, exc, traceback) -> bool:
         # The stack passes the outcome of every earlier resource exit. Partial
@@ -340,5 +437,5 @@ async def build_compatible_application(
     admission.install_on(shutdown)
     graph = await builder(config, shutdown=shutdown, factories=factories)
     admission.attach_graph(graph)
-    await asyncio.to_thread(admission.revalidate)
+    await admission.revalidate_constructed()
     return graph

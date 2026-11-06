@@ -1940,7 +1940,7 @@ async def build_application(
         configuration_changes.attach_graph(graph)
     if admission is not None:
         admission.attach_graph(graph)
-        await asyncio.to_thread(admission.revalidate)
+        await admission.revalidate_constructed()
     return graph
 
 

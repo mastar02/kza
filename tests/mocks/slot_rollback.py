@@ -457,7 +457,11 @@ def exercise_slot_rollback(tmp_path: Path) -> dict:
     try:
         if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 13) or sys.prefix == sys.base_prefix:
             raise ValueError("slot_fixture_requires_cpython313_venv")
-        prepared = _prepare(task, evidence, repo, revision)
+        # Keep the older application/data regression, with the current
+        # production security bridge and its independently pinned provenance.
+        bridge_revision = subprocess.check_output(["git", "rev-parse", "HEAD"],
+            cwd=repo, text=True).strip()
+        prepared = _prepare(task, evidence, repo, revision, bridge_revision=bridge_revision)
         proof.update(archive_sha256=_sha(prepared["archive"]), release_sha256=prepared["artifact"]["release.json"],
             bridge_source_commit=prepared["bridge_manifest"]["git_commit"],
             bridge_archive_sha256=prepared["bridge_archive_sha256"],
