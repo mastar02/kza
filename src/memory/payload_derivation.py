@@ -18,6 +18,7 @@ import tempfile
 from typing import Mapping
 
 from src.memory.fact_ledger import MemorySource
+from src.memory.manual_components import collector_manual_closure
 from src.memory.state_snapshot import ClosedStateSnapshot, read_blob, verify_snapshot
 
 
@@ -271,17 +272,9 @@ def _validate_cut_proof_shape(proof):
 
 def _protected_collector_records(tables):
     """Return the indivisible latest manual/export component, without I/O."""
-    protected = {row["id"] for row in tables.get("stt_corrections_v1", {}).get("rows", ())}
-    protected.update(row["id"] for row in tables.get("conversation_turns_v1", {}).get("rows", ())
-        if row["quality"] != "unmarked")
-    parents = tables.get("conversation_export_parents_v1", {}).get("rows", ())
-    while True:
-        closure = (protected
-            | {row["export_id"] for row in parents if row["parent_id"] in protected}
-            | {row["parent_id"] for row in parents if row["export_id"] in protected})
-        if closure == protected:
-            return protected
-        protected = closure
+    return collector_manual_closure(tables.get("stt_corrections_v1", {}).get("rows", ()),
+        tables.get("conversation_turns_v1", {}).get("rows", ()),
+        tables.get("conversation_export_parents_v1", {}).get("rows", ()))
 
 
 def _proof_source_rows(proof, source):
