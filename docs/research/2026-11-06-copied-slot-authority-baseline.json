@@ -1,0 +1,194 @@
+{
+  "schema_version": 1,
+  "unit": "T024-F1/privacy-safe-runtime-state-rollback",
+  "milestone": "original two-root baseline before product changes",
+  "status": "reproduced_unfixed",
+  "observed_at_utc": "2026-11-06T04:33:03.020547+00:00",
+  "goal": "docs/plans/2026-11-02-autonomous-roadmap.md",
+  "goal_status": "active_incomplete",
+  "baseline_revision": "fdf9922d5f39b9e2f1c93504e6ca7ad4e8f255b2",
+  "test_implementation_commit": "263e7458204c226aebfc64758831743bbd9f6119",
+  "source_sha256": {
+    "tests/mocks/slot_rollback.py": "1306804d6c6b05374bade4d23f609b9e459b6f0244ef1c03fab1db3972b5d1a9",
+    "tests/mocks/slot_rollback_child.py": "4c966b73b19a511d75526199904067dffedbc654adf35afb9c0f70b9fb853802",
+    "tests/integration/test_compiled_slot_rollback.py": "1ab86dabab6400d71d4dfda0f89ffd3683abd4700bf3c0c9b94f4b6c89e244a3"
+  },
+  "product_code_change": false,
+  "production_changed": false,
+  "release_performed": false,
+  "summary_spanish": "El primer ensayo real reproduce una selección de estado viejo sin cuatro decisiones de autoridad vigentes. Los tres procesos terminan correctamente; candidato, U, manuales y retornos nativos pasan sus comprobaciones. La regresión nueva sigue fallando y requiere corrección de producto; F1/T024/C05 no están entregados.",
+  "runtime": {
+    "account": "gabriel",
+    "checkout": "/Users/gabriel/Documents/Proyectos/kza",
+    "architecture": "arm64",
+    "CPython": "3.13.18",
+    "magic": "f30d0d0a"
+  },
+  "artifact": {
+    "source_commit": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+    "archive_sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635",
+    "files": 436,
+    "pyc_files": 378,
+    "same_runtime_both_roots": true,
+    "cross_version_rollback_executed": false
+  },
+  "original_execution": {
+    "terminal": {
+      "session": 92514,
+      "chunk": "988876",
+      "exit_code": 1
+    },
+    "counts": {
+      "tests": 1,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "XML_duration_s": 14.43,
+    "pytest_summary_duration_s": 14.44,
+    "error_stage": "privacy_oracle",
+    "failure": "selected_old_state_lost_latest_authority",
+    "source_count": 1046,
+    "script_count": 37,
+    "protected_count": 27,
+    "source_unchanged": true,
+    "protected_unchanged": true,
+    "actual_child_waits": {
+      "seed": {
+        "pid": 28711,
+        "exit_code": 0,
+        "actual_wait_returned": true,
+        "containment_only": false,
+        "module_count": 277
+      },
+      "candidate": {
+        "pid": 28774,
+        "exit_code": 0,
+        "actual_wait_returned": true,
+        "containment_only": false,
+        "module_count": 277
+      },
+      "inspect-old": {
+        "pid": 28782,
+        "exit_code": 0,
+        "actual_wait_returned": true,
+        "containment_only": false,
+        "module_count": 269
+      }
+    },
+    "observations": {
+      "seed": {
+        "consent_current": true,
+        "foreign_source_exact": true,
+        "manual_current": true,
+        "reader_namespace": "aa5ac53eac9d5c41728f251f30018ab0d7e2dda78720d08e69c7255db5b83992",
+        "sources_live": true,
+        "ten_drivers": true
+      },
+      "candidate": {
+        "consent_current": true,
+        "foreign_payload_preserved": true,
+        "foreign_source_exact": true,
+        "historical_targets_retained": true,
+        "manual_current": true,
+        "offline_inventory_before_graph": true,
+        "producer_completed_while_U_held": true,
+        "reader_namespace_changed": true,
+        "source_revoked": true,
+        "three_guards_pending": true
+      },
+      "inspect-old": {
+        "consent_current": true,
+        "latest_account_permission_present": false,
+        "latest_credential_revocation_present": false,
+        "latest_profile_deletion_present": false,
+        "latest_tombstone_present": false,
+        "old_U_preserved": true,
+        "old_manual_preserved": true
+      }
+    },
+    "no_fixture_error_or_timeout": true,
+    "original": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/original-attempt-01/original-RED-receipt.json",
+      "sha256": "a06c9d0bd5020a73cbf8c0a0e3933922183cdcf2c9ce374676c60f65caca02ce",
+      "bytes": 202991
+    }
+  },
+  "method": [
+    "Real build_runtime/prepare_slot/activate_slot and two distinct physical state roots outside source checkout.",
+    "Two fresh public compiled Graph processes plus a third read-only SQL/SDK probe; 277/277/269 src modules all hashlisted pyc. Probe constructs no Graph, reader or privacy writer.",
+    "Snapshot old logical SQL/files and inventory copied immutable historical descriptors before candidate construction, because initialization already performs recovery/maintenance.",
+    "Candidate uses public profile deletion, credential revocation and account permission APIs, then real producer retirement/erasure with U held, exact source TTL and actual SDK/lease close.",
+    "Final privacy assertion runs only after all phases exit0; no witness relabeling, invented ACK or historical-target deletion."
+  ],
+  "actual_boundary": {
+    "old_U_and_manual_preserved": true,
+    "old_missing_latest_authorities": [
+      "conversation tombstone",
+      "profile deletion fence",
+      "credential revocation",
+      "account permission reduction"
+    ],
+    "consent": "Unchanged explicit deny input; no consent-withdrawal transition was tested.",
+    "no_served_leak_claim": "Old selection and missing latest authority were observed before constructing any old reader or Graph; no real user login or served S request was attempted.",
+    "known_historical_S_cleanup": "Selected old derived S files/rows were physically cleaned through registered historical locations. This is not automatically a bug. Old U/manual remained exact; SDK probe queried U only, so old S SDK deletion is not claimed."
+  },
+  "independent_reviews": {
+    "runtime": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/independent-original-review.json",
+      "sha256": "fc7d8f73788db3cfab945c3db892a2696d2cb0b4f86c9bae4e1860c970fea764",
+      "bytes": 16700
+    },
+    "historical_paths": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/historical-path-characterization.json",
+      "sha256": "aff8f3d9e45914bef0bc2b8c83604b849686e70c79400d70389fe8289499afde",
+      "bytes": 44351
+    },
+    "source_and_identities": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/source-and-identity-review.json",
+      "sha256": "59e3765863a8d0079066daa436acaecea62a62de5b777496db2cb3ccc9acb8f5",
+      "bytes": 10626
+    },
+    "parent_static": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/parent-static-review.json",
+      "sha256": "8772e21bfc5f5138200ded80b21782459ea3abcf905e014876d0139076c7312c",
+      "bytes": 8011
+    },
+    "contract": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/source-contract-review.json",
+      "sha256": "7eed53123ad4ea605367fb960e3b19c45acbe874791dce174941ec04cb407479",
+      "bytes": 23136
+    },
+    "candidate_pair": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/candidate-pair-review.json",
+      "sha256": "3e4259639c7c78806b1b6f2e667828a25e6c8a9d7d6b9c2f50b42040d852c597",
+      "bytes": 51273
+    }
+  },
+  "version_pair_gate": "A719/C598 have real source changes but old startup does not revalidate completed producer receipts; full compatibility is not established. Later reachable C sources inspected through baseline are identical. Same9b was used solely to isolate the two-root defect. A genuine compatible code pair and positive rollback remain mandatory.",
+  "test_scope": {
+    "current_required_regression": "1 FAIL, unfixed; no new xfail or skip",
+    "last_full_observation": "F0:8584 PASS + same known xfail/8585 exact identities, before adding this failing regression.",
+    "future_identity_union_only": {
+      "directed": 1235,
+      "full": 8586,
+      "executed": false,
+      "accepted": false
+    },
+    "AST_and_Ruff": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/static-attempt-01/status.json",
+      "sha256": "5b25ffa78c748fb2237cd8256f93f6d7fd37ae0834e03ca260338f30bf7a9278",
+      "bytes": 630
+    }
+  },
+  "retained_limits": [
+    "Full positive compatible code AND material data rollback, followed by forward recovery, is still required.",
+    "This original selected-latest-or-refusal gate is not the future positive R/forward scenario. Preserve it and add separate coverage.",
+    "diagnostics1/streams2/voices2 remain pending; no aggregate erasure completion.",
+    "T021/T022/T023/T024 remain in_progress; all21 criteria not_evaluated; known regex xfail, warnings and field/hardware gates remain open.",
+    "No production, release, services, real credentials/models/GPU/HA/hardware or interactive PC tests."
+  ],
+  "private_evidence": "data/autonomous-roadmap-20261102/t024/f1; runtime archives/logs/SQLite remain local and excluded from Git.",
+  "archival_scope": "982-file raw-case copy preserves observed bytes/links and origin metadata. It is an archive, not a relocated runnable runtime or a witness valid for a different root.",
+  "next_plan": "docs/plans/2026-11-06-slot-authority-reconciliation-continuation.json"
+}

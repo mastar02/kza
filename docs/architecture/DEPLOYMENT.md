@@ -152,6 +152,12 @@ warnings y la publicación sin sobrescritura. El requisito de reproducibilidad
 sigue vigente para cada plataforma soportada. Ver el [alcance probado y sus
 límites](../research/2026-11-06-compiler-process-reproducibility.json).
 
+El baseline local T024-F1 confirmó que `prepare_slot`/`activate_slot` aún permiten
+seleccionar un estado viejo sin cuatro decisiones de autoridad actuales. La
+integridad del artefacto y el emparejamiento de rutas no prueban un rollback
+seguro de datos y permisos. La regresión nueva sigue fallando, sin corrección de
+producto; ver [evidencia y continuación](../research/2026-11-06-copied-slot-authority-baseline.json).
+
 Es bytecode para CPython 3.13, no un ejecutable nativo ni una barrera contra
 descompilación. Requiere el intérprete y las dependencias del entorno de
 ejecución. Ver [py_compile](https://docs.python.org/3.13/library/py_compile.html)

@@ -1274,7 +1274,8 @@
         "59853442ccb367f1ba78cd838f587c8098f7fc82",
         "9b3170294eb69a53dd27b63949c09a63a2efed54",
         "b2dc68d3297e5f22bd81372d9388e100c61107e7",
-        "3babff8aaa7dc8c5f87a5255e198a149ecfe718d"
+        "3babff8aaa7dc8c5f87a5255e198a149ecfe718d",
+        "263e7458204c226aebfc64758831743bbd9f6119"
       ],
       "evidence": [
         "docs/plans/2026-11-05-erasure-restore-continuation.json",
@@ -1295,9 +1296,12 @@
         "data/autonomous-roadmap-20261102/t024/e/full-normal-attempt-01/acceptance-proof.json",
         "docs/research/2026-11-06-compiler-process-reproducibility.json",
         "docs/plans/2026-11-06-privacy-safe-slot-rollback-continuation.json",
-        "data/autonomous-roadmap-20261102/t024/f0/full-normal-attempt-01/acceptance-proof.json"
+        "data/autonomous-roadmap-20261102/t024/f0/full-normal-attempt-01/acceptance-proof.json",
+        "docs/research/2026-11-06-copied-slot-authority-baseline.json",
+        "docs/plans/2026-11-06-slot-authority-reconciliation-continuation.json",
+        "data/autonomous-roadmap-20261102/t024/f1/original-attempt-01/original-RED-receipt.json"
       ],
-      "next_action": "F0 verificada localmente: RED original conservado; green4 y matriz6 con bytes iguales; dirigida1234 PASS, full8584 PASS+misma xfail/8585 IDs exactos;1043 fuentes/37 scripts/25 protegidos estables. Continuar F1: seleccionar versiones por diferencias reales de fuente/API y compatibilidad; baseline de dos estados antes de cambios, luego rollback positivo y recuperación manteniendo autoridad vigente. T024/C04/C05/21 criterios y tres guards siguen abiertos."
+      "next_action": "F1 original reproduce RED genuino sin fix de producto: 1FAIL/XML14.430 tras3hijos wait0; fuentes1046/scripts37/protegidos27 estables. Candidate/U/manual/currentproducer/exactguards pasan; old admite selección sin tombstone S, borrado de perfil, revocación de credencial ni reducción de permiso. Conservar gate original; implementar head/admisión/ownership y derivación R positiva de código+datos con latestauthority, luego Fforward con revisión protegida posterior a R. No entregar sólo rechazo ni alias latest. Regresión requerida aún falla; última full F0 es anterior. T024/C04/C05/21criterios y tres guards siguen abiertos."
     },
     {
       "id": "T025",

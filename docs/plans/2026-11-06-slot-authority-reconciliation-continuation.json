@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "unit": "T024-F1/privacy-safe-runtime-state-rollback",
+  "status": "implementation_required_after_genuine_original_RED",
+  "goal": "docs/plans/2026-11-02-autonomous-roadmap.md",
+  "goal_status": "active_incomplete",
+  "baseline_test_commit": "263e7458204c226aebfc64758831743bbd9f6119",
+  "baseline_report": "docs/research/2026-11-06-copied-slot-authority-baseline.json",
+  "authorization": "Continue the same active goal locally. No production/release/field actions. Preserve original attempts and source/authority boundaries.",
+  "observed_problem": "Original old selection succeeds after current candidate withdraws S/profile/credential/account permission. All three children close and exit0; the final authority assertion fails. This is product RED, not a missing-method fixture error.",
+  "first_action": "Design and implement the reviewed admission head/controller lifetime and explicit copy ownership/derivation contract. Keep original negative admission regression unchanged and add a distinct positive code+data R/forward scenario.",
+  "original_regression_boundary": "Reject stale old-state selection before pointer or store mutation, or prove selected authority current. This original gate preserves O manual state and is not itself the R reconciliation test, where latest profile deletion must win.",
+  "required_contract": {
+    "stable_binding": "A new versioned immutable binding names exact compiled manifest/code commit, selected state identity/generation, per-store schemas/SDK versions and canonical root device/inode identities. Durable IDs are nominal, not Python object identities. Preserve existing artifact integrity checks; arbitrary symlinks bypassing same-slot checks are not a contract.",
+    "current_authority_fence": "A durable monotonic head outside stale copied branches identifies the sole current admitted authority generation/branch. It is not selected by mtime, largest wall-clock timestamp or whichever copied ledger opens first. New binding admission must compare-and-swap that head and revalidate before and after construction/admission.",
+    "writer_lifetime": "A controller exclusion lease spans all known branch admissions and the whole actual selected child lifetime, in addition to per-ledger PrivacyServices lease. Serialize stop/derive/activate/start; do not release the global admission fence before native/SDK/SQLite drain and actual child exit. Timeout/UNKNOWN stays non-serving/pending, with no forward admission inferred from kill.",
+    "ownership_manifest": "For every known copy/target and payload file, declare branch, logical store/family, canonical root, physical identity and current cleanup owner. Inherited descriptors are observations, not authority for the new branch to write any historical location automatically. Unknown versions/roots or ambiguous ownership block serving before any store opens.",
+    "historical_targets": "Do not edit descriptors under their old hashed IDs or delete target history. A relocated store gets a new legitimate target/step and explicit derivation edge; original branch target history and all known-copy obligations remain durably inventoried. Runtime drivers receive owned current targets or explicit delegated cleanup authority, not implicit cross-branch capabilities.",
+    "retained_state_policy": "Retain O/N roots and audit/version evidence without copying N over O. Retention is not permission to keep revoked payload indefinitely: explicit current-authority cleanup may mutate a declared retained managed copy with real receipts. If bytes are required sealed/immutable, its S copy remains known/pending/non-serving until allowed cleanup; never claim aggregate physical completion. This policy must be explicit before full F acceptance.",
+    "protected_authority": "Latest S tombstones/deleted fact revisions, profile-deletion fences, manual voice/group/person decisions/CAS, manual facts/suggestion responses, account-role/credential/session withdrawals and consent all win. No automatic INSERT/REPLACE authority merge, old-role import, actor DTO resurrection or voice-derived permission grant.",
+    "producer_claims": "Current binding must preserve C producer inventory/nominal owner and leased startup revalidation. Old claim/version/cursor/COMPLETE is not evidence for a new runtime lease; actual current native return is required. Current Graph getter/aliases/roots must still match sealed bindings.",
+    "compatibility": "Exact source/behavior difference, code ABI and all store schema/API/security invariants must be declared and positively tested. DDL equality alone cannot make an older producer-startup gap compatible. Incompatible code rejects before mutation, but that negative gate is not delivery.",
+    "publication": "Publish a complete code+state binding through one atomic control pointer after all staging/preflight evidence succeeds. Multi-store preparation happens non-serving; no cross-SQL/files/SDK crash atomicity is claimed. Partial derived copies stay tracked and non-serving, never disappear from inventory as a fake cleanup."
+  },
+  "complete_positive_design": {
+    "name": "Same-schema derived data rollback with latest protected authority, followed by derived forward recovery",
+    "why_not_latest_alias": "Running old code on the unchanged latest physical state is a useful bounded prerequisite only. It does not roll data back and must not be reported as full runtime/data rollback.",
+    "inputs": "A verified compatible old/new code pair with real observable selected-source behavior, exact O pre-upgrade and N latest snapshots, known-copy ownership catalog, latest protected-authority witness and current closed-owner evidence.",
+    "rollback_R": [
+      "Keep O and N originals retained/non-serving. Create a separately identified non-serving R derivation; never overwrite either original or relabel its witness.",
+      "Choose a real older data point for ordinary eligible U payload from O, while taking protected authority/manual/account/consent from latest N. Preflight every mixed row, source dependency, conflict, path and SDK version before any payload write. If no safe plan exists, reject without claiming the positive unit complete.",
+      "Use explicit per-store export/import/relocation mappings into R and fresh actual local targets; preserve original historical inventories externally/as qualified history rather than erasing them to fit R. Existing test restore helpers cannot silently become a production authority merger.",
+      "Discard/exclude revoked/expired/incompatible S payload from serving R and require real cleanup for any staged managed S copy. Keep unchanged eligible source IDs/capture times/expiry; do not create fresh provenance to make old payload admissible.",
+      "Admit R under the latest head/fence, launch exact older compatible bytecode through actual public Graph, then verify real ten drivers/current authority, data readers, native leases and original browser protocol. Close normally and actually wait."
+    ],
+    "mandatory_material_data_oracle": "Before upgrade, U has ordinary non-manual markerO. N has markerN and an additional nonprotected post-cut item. Rollback R must actually expose the declared older data point and exclude the N-only item, while current N manual facts/profiles/person/account/consent and all S fences remain exact. This distinguishes data rollback from an unchanged latest-state alias.",
+    "forward_F": [
+      "During the positive R run, make a genuine additional protected revision/withdrawal through current public authority, so forward recovery cannot merely select stale saved N authority.",
+      "After full close/exit, derive F from the selected N ordinary data point plus latest protected authority from R, with the same explicit ownership/reconciliation rules. Retain original O/N and R evidence; no blind copy over originals.",
+      "Admit newer compatible bytecode/Graph on F, prove selected forward data and post-rollback protected decisions, reject S before model/reader exposure, preserve eligible U TTL and complete normal owner/SDK/lease close and actual wait."
+    ],
+    "minimum_coverage": "All declared managed payload/store families and mixed protected domains must be represented, or an explicit narrower subunit remains a prerequisite rather than full F. Keep diagnostics1/streams2/voices2 unresolved; no aggregate false-complete from stubs or ignored copies.",
+    "implementation_gap": "Current prepare/activate/copy APIs alone cannot perform this derivation, global authority fencing or explicit path ownership. That is a source-backed design gap, not a runtime RED or absence-of-API test. A reviewed purpose-built offline derivation/admission capability is needed after the original baseline.",
+    "acceptance_boundary": "Latest-state code binding alone, incompatible-code rejection, pointer switching or read-only smoke checks cannot replace this positive compatible-data rollback plus forward recovery. No F1/T024/C05 completion asserted here."
+  },
+  "version_pair_gate": "Retain a genuine C-capable baseline as older runtime. The eventual fix must provide relevant actual consumed source/API/behavior changes and explicit persisted-schema/security compatibility. Do not manufacture a difference, use tests-only commits, distinct archive hashes, or packaged-but-unexecuted code as rollback behavior proof. Positively exercise older public Graph plus forward recovery; incompatible-code rejection alone remains insufficient.",
+  "existing_cleanup_obligation": "Known S copies remain cleanup obligations. O/N originals and audit evidence are retained with explicit per-copy ownership/current-authority delegation; historical target descriptors and IDs remain immutable. Unknown or sealed/non-cleanable copies stay known/pending/non-serving. Do not infer unbounded data-retention permission, silently delete target history, or claim aggregate erasure completion.",
+  "protected_domains": [
+    "S tombstones and deleted fact revisions",
+    "latest manual voice/group/person and profile-deletion CAS fences",
+    "manual confirmed facts and suggestion responses",
+    "account role/credential/session withdrawals separately from voice-person identity",
+    "latest consent, including an actual transition in positive coverage",
+    "eligible U source IDs/capture times/expiry<=48h and full declared payload/SDK fields",
+    "current producer startup inventory, claims, browser namespace/ACK and actual native returns"
+  ],
+  "minimum_positive_evidence": [
+    "Exact real semantic code pair and closed O/N with material ordinary data markerO/markerN plus N-only item.",
+    "R exposes the declared older eligible ordinary data point, excludes N-only data, preserves latest N protected authority and rejects S before readers/models.",
+    "During R, make a real new protected revision through public current authority, then close SDK/SQLite/native owners and actually wait.",
+    "Derived F runs newer code with selected forward data AND the post-R protected revision, not stale saved N authority.",
+    "All declared managed families are represented; incomplete coverage is a prerequisite only, never full F/T024/C05."
+  ],
+  "prohibited_shortcuts": [
+    "latest-state alias as full data rollback",
+    "negative-only admission as full delivery",
+    "manual INSERT/REPLACE authority merge or actor DTO resurrection",
+    "relabeling old physical-root witnesses/target hashes",
+    "fresh provenance/TTL to admit old payload",
+    "forced native/SDK/lease success or ignored historical copies"
+  ],
+  "baseline_source_reviews": {
+    "runtime": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/independent-original-review.json",
+      "sha256": "fc7d8f73788db3cfab945c3db892a2696d2cb0b4f86c9bae4e1860c970fea764",
+      "bytes": 16700
+    },
+    "historical_paths": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/historical-path-characterization.json",
+      "sha256": "aff8f3d9e45914bef0bc2b8c83604b849686e70c79400d70389fe8289499afde",
+      "bytes": 44351
+    },
+    "source_and_identities": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/source-and-identity-review.json",
+      "sha256": "59e3765863a8d0079066daa436acaecea62a62de5b777496db2cb3ccc9acb8f5",
+      "bytes": 10626
+    },
+    "parent_static": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/parent-static-review.json",
+      "sha256": "8772e21bfc5f5138200ded80b21782459ea3abcf905e014876d0139076c7312c",
+      "bytes": 8011
+    },
+    "contract": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/source-contract-review.json",
+      "sha256": "7eed53123ad4ea605367fb960e3b19c45acbe874791dce174941ec04cb407479",
+      "bytes": 23136
+    },
+    "candidate_pair": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/candidate-pair-review.json",
+      "sha256": "3e4259639c7c78806b1b6f2e667828a25e6c8a9d7d6b9c2f50b42040d852c597",
+      "bytes": 51273
+    }
+  },
+  "budgets": {
+    "component_s": 300,
+    "broad_s": 1500,
+    "disk_preflight_GiB": 5,
+    "disk_floor_MiB": 512
+  },
+  "delegation": "Up to8 active agents including coordinator, subject to actual session slots (4 here). PC browser/desktop interaction requires gpt-6.1-terra subagent; root owns runtime/Git and reviews evidence.",
+  "remaining": "F1 remains in_progress and the new required regression currently fails. T021/T022/T023/T024, all21 criteria, exact diagnostics1/streams2/voices2 guards, known regex xfail/warnings and field gates remain open."
+}

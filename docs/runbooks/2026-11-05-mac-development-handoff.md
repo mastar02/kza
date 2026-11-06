@@ -6,26 +6,29 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 ## Punto de reanudación
 
-La unidad **T024-F0 quedó verificada localmente en Mac**. El mismo goal sigue **activo e incompleto**. Usar la `.venv` nativa y conservar los ensayos cerrados.
+**T024-F1 está en curso: el primer baseline reprodujo una falla de autoridad y sigue sin corrección de producto.** T024-F0 permanece verificada localmente. El mismo goal sigue **activo e incompleto**. Usar la `.venv` nativa y conservar los ensayos cerrados.
 
 | Dato | Estado actual |
 | --- | --- |
 | Entorno | `gabriel`, `/Users/gabriel/Documents/Proyectos/kza`, macOS 26.6.1 arm64, CPython 3.13.18 |
 | Implementación F0 | `3babff8aaa7dc8c5f87a5255e198a149ecfe718d`; builder y cuatro pruebas de regresión |
 | Artefacto comparado | Revisión D `9b3170294eb69a53dd27b63949c09a63a2efed54`;436 archivos/378pyc |
-| RED preservado | Variación por `sys.intern` reproducida antes del fix; parsear/retener sin internado conserva bytes |
-| Primer green | 4 PASS; XML24.557 s; caso original y worker intactos |
-| Matriz independiente | Seis builds con bytes iguales; semillas0/1 y contexto limpio/internado |
+| Tests F1 | `263e7458204c226aebfc64758831743bbd9f6119`; tres archivos nuevos, sin cambio de producto |
+| Original F1 | **1 FAIL genuino**, XML14.430 s; tres hijos con wait real0; fallo final por autoridad vieja seleccionada |
+| Autoridad F1 | Faltan tombstone S, borrado de perfil, revocación de credencial y reducción de permiso; U/manual preservados |
+| RED F0 preservado | Variación por `sys.intern` reproducida antes del fix; parsear/retener sin internado conserva bytes |
+| Green F0 | 4 PASS; XML24.557 s; caso original y worker intactos |
+| Matriz F0 | Seis builds con bytes iguales; semillas0/1 y contexto limpio/internado |
 | Dirigida F0 | 1234 PASS; XML 243.031 s |
-| Full F0 | **8584 PASS + misma xfail conocida**,8585 IDs exactos; XML 689.339 s |
-| Guardas | 1043 fuentes,37 scripts y25 protegidos intactos durante las tandas |
-| Warnings | 15 firmas pytest iguales a E; UserWarning Chroma del hijo conservado aparte |
-| Alcance | Prerrequisito de build entre procesos para source/ABI/contextos probados; rollback runtime/datos pendiente |
+| Última full, F0 | **8584 PASS + misma xfail conocida**,8585 IDs exactos; XML689.339 s; anterior a la regresión nueva F1 |
+| Guardas del original F1 | 1046 fuentes,37 scripts y27 protegidos intactos; tres archivos nuevos con un caso respecto a F0 |
+| Warnings F0 | 15 firmas pytest iguales a E; UserWarning Chroma del hijo conservado aparte |
+| Alcance actual | Misma versión compilada y dos estados; selección vieja reproducida antes de abrir lectores; sin rollback versionado positivo |
 | Delegación | Hasta ocho agentes según plazas; PC interactiva con subagente `gpt-6.1-terra` |
-| Próxima unidad | F1: versiones compatibles, baseline de dos estados y rollback con autoridad vigente |
+| Próxima acción | F1: corregir admisión/derivación y agregar rollback positivo de código y datos, más recuperación hacia adelante |
 | Tracking | Este commit; verificar SHA/publicación al retomar |
 
-T021/T022/T023/T024 siguen `in_progress`;21 criterios `not_evaluated`. Tres guards, C04/C05, warnings y xfail siguen abiertos. T020/P1/T047, presupuestos y permisos separados se conservan. Leer [informe F0](../research/2026-11-06-compiler-process-reproducibility.json) y [continuación F1](../plans/2026-11-06-privacy-safe-slot-rollback-continuation.json). Sin release ni cambios en producción.
+T021/T022/T023/T024 siguen `in_progress`;21 criterios `not_evaluated`. Tres guards, C04/C05, warnings y xfail siguen abiertos. T020/P1/T047, presupuestos y permisos separados se conservan. Leer [baseline F1 sin corregir](../research/2026-11-06-copied-slot-authority-baseline.json) y [continuación de implementación](../plans/2026-11-06-slot-authority-reconciliation-continuation.json). La regresión nueva es requerida y actualmente falla; no se ejecutó ni aceptó una full con ella. Sin release ni cambios en producción.
 
 ## Referencia histórica del cierre Linux F
 
@@ -273,17 +276,26 @@ El contracaso original queda preservado: `sys.intern` altera los bytes en dos m�
 
 Primer green4 PASS, matriz original de seis builds reproducibles, dirigida1234 PASS y full8584 PASS+misma xfail/8585 IDs exactos. Los cuatro archivos de cada regresión y el artefacto del grafo compilado coinciden también entre tandas. Cabeceras y campos comparados de los378pyc coinciden con la salida anterior, con dos diferencias binarias; esa comparación estructural limitada no reemplaza el oráculo ni prueba equivalencia universal. F1 conserva la obligación de rollback positivo entre versiones con autoridad y datos vigentes, más recuperación hacia adelante.
 
+## Copia de slot y autoridad vigente — T024-F1, baseline
+
+El original ejecutó `build_runtime`, `prepare_slot`, `activate_slot`, dos grafos públicos desde bytecode y un inspector SQL/SDK sin grafo ni lectores. Los tres hijos terminaron con wait real0; 277/277/269 módulos src provinieron del manifest. Se conservaron U, manuales, TTL y retornos nativos, con guards diagnostics1/streams2/voices2 pendientes. El fallo final ocurre porque se admite seleccionar el estado viejo sin cuatro decisiones actuales: tombstone S, perfil borrado, credencial revocada y permiso reducido. Consentimiento deny se mantuvo como input; no se probó una transición de revocación de consentimiento ni una fuga servida por un lector viejo.
+
+La limpieza por rutas históricas eliminó derivados conocidos de S sin alterar U/manual; eso no se clasifica automáticamente como bug. El SDK viejo sólo se consultó para U. El archivo privado de 982 entradas conserva datos y metadatos del ensayo como evidencia, no como runtime relocalizado ni testigo válido para otra raíz. Original1 FAIL/XML14.430 s, sin cambio de producto y sin xfail nuevo; revisión independiente confirma el RED. La última full aceptada sigue siendo F0, anterior a este test requerido que falla.
+
+Conservar este gate de rechazo de selección vieja separado del positivo futuro R/forward. R debe exponer un punto ordinario anterior real con autoridad/manual/permisos/consentimiento latest; luego F debe recuperar datos hacia adelante conservando una revisión protegida nueva hecha en R. No basta alias al estado latest, rechazo de código incompatible ni un cambio de puntero. El par A719/C598 inspeccionado no acredita compatibilidad completa por revalidación de recibos de productores; hace falta un par semántico compatible real.
+
 ## Prompt para la sesión nueva
 
-> Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff, el informe T024-F0 y la continuación T024-F1. Confirmá goal/checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro goal ni marques éste completo.
-> F0: green4, seis builds reproducibles, dirigida1234 PASS; full8584 PASS+misma xfail/8585 IDs exactos. Usá la `.venv` nativa; no repitas tandas sin causa nueva. Hasta ocho agentes según plazas; navegador/escritorio de PC delegado a subagente Terra.
-> Comenzá F1 seleccionando commits con diferencias reales de fuente/API y compatibilidad explícita. Preservá primero el baseline de dos raíces y sus descriptores originales; luego diseñá rollback positivo de runtime con tombstones, decisiones manuales, consentimientos y permisos vigentes, y recuperación hacia adelante. No relabelar testigos D entre roots/inodos distintos ni aceptar sólo un rechazo. T021/T022/T023/T024 y21 criterios siguen abiertos. Sin release/producción/campo.
+> Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff, el baseline F1 y su continuación de reconciliación. Confirmá goal/checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro goal ni marques éste completo.
+> F1 original: 1 FAIL real/XML14.430 s después de tres hijos wait0; faltan cuatro decisiones latest al seleccionar old. Test requerido sin corregir, fuentes1046/scripts37/protegidos27 intactos. F0 permanece verificada: última full8584 PASS+misma xfail/8585 IDs, anterior a este test. No repitas ensayos cerrados sin causa nueva. Hasta ocho agentes según plazas; navegador/escritorio de PC delegado a subagente Terra.
+> Continuá la corrección F1: head monotónico fuera de las ramas, exclusión durante todo el lifetime, ownership histórico explícito y derivación no servida. Conservá el gate original y agregá positivo de código Y datos R con autoridad latest, seguido por F con decisiones posteriores a R. No relabelar testigos, fusionar autoridad por SQL ni dar por entregado sólo un rechazo o alias latest. T021/T022/T023/T024 y21 criterios siguen abiertos. Sin release/producción/campo.
 
 ## Lista de cierre y reanudación
 
 - [x] Linux y unidades G/H/I/J conservados con recibos propios.
 - [x] T024-A/B/C/D conservadas y T024-E con original1, dirigida1230, full y limitaciones documentados.
 - [x] T024-F0: RED original, green4, matriz6, dirigida/full y revisión independiente conservados.
+- [x] F1 original: RED genuino, tres cierres/waits0, archivo privado y revisión independiente conservados; sin fix de producto.
 - [x] Código, tracking y handoff guardados; verificar publicación y HEAD al retomar.
 - [x] Mismo goal activo, sin nueva petición de pausa ni criterios físicos aceptados.
-- [ ] Confirmar estado/Git y comenzar T024-F1 según continuación, sin repetir unidades cerradas.
+- [ ] Corregir F1 y verificar rollback positivo de código/datos más recuperación; la regresión nueva sigue fallando.
