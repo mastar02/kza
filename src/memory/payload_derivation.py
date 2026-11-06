@@ -269,8 +269,24 @@ def _validate_cut_proof_shape(proof):
         seen.add(item["relative_path"])
 
 
+def _protected_collector_records(tables):
+    """Return the indivisible latest manual/export component, without I/O."""
+    protected = {row["id"] for row in tables.get("stt_corrections_v1", {}).get("rows", ())}
+    protected.update(row["id"] for row in tables.get("conversation_turns_v1", {}).get("rows", ())
+        if row["quality"] != "unmarked")
+    parents = tables.get("conversation_export_parents_v1", {}).get("rows", ())
+    while True:
+        closure = (protected
+            | {row["export_id"] for row in parents if row["parent_id"] in protected}
+            | {row["parent_id"] for row in parents if row["export_id"] in protected})
+        if closure == protected:
+            return protected
+        protected = closure
+
+
 def _proof_source_rows(proof, source):
     """The exclusion describes real ordinary rows of N, never authority rows."""
+    collector_closures = {}
     for item in proof["removed_rows"]:
         database = source.manifest["databases"].get(item["database"])
         _require(type(database) is dict, "payload_cut_history_database_unknown")
@@ -288,9 +304,9 @@ def _proof_source_rows(proof, source):
         elif name == "utterances":
             _require(row["distilled"] == 0, "payload_cut_history_manual_row")
         elif name in {"wake_clips_v1", "conversation_turns_v1", "conversation_export_parents_v1"}:
-            protected = {value["id"] for value in tables.get("stt_corrections_v1", {}).get("rows", ())}
-            protected.update(value["id"] for value in tables.get("conversation_turns_v1", {}).get("rows", ())
-                if value["quality"] != "unmarked")
+            if item["database"] not in collector_closures:
+                collector_closures[item["database"]] = _protected_collector_records(tables)
+            protected = collector_closures[item["database"]]
             identity = row["export_id"] if name == "conversation_export_parents_v1" else row["id"]
             _require(identity not in protected, "payload_cut_history_manual_row")
         elif name == "suggestions_policy_v1":
@@ -590,20 +606,7 @@ def _select_captures(old, new, selected, policy):
 def _select_collectors(old, new, selected, policy, related):
     if "wake_clips_v1" not in new:
         return
-    protected = {row["id"] for row in new.get("stt_corrections_v1", {}).get("rows", ())}
-    protected |= {row["id"] for row in new.get("conversation_turns_v1", {}).get("rows", ())
-        if row["quality"] != "unmarked"}
-    parents = new.get("conversation_export_parents_v1", {}).get("rows", ())
-    while True:
-        # An export containing a manual parent is an indivisible reviewed
-        # derivative. Keep that export and all its parents from latest, then
-        # continue through any other exports sharing those parents.
-        closure = (protected
-            | {row["export_id"] for row in parents if row["parent_id"] in protected}
-            | {row["parent_id"] for row in parents if row["export_id"] in protected})
-        if closure == protected:
-            break
-        protected = closure
+    protected = _protected_collector_records(new)
     current = {row["id"]: row for row in new["wake_clips_v1"]["rows"]}
     _require(protected <= current.keys(), "payload_manual_clip_closure_missing")
     for identity in protected:

@@ -77,9 +77,13 @@ def _image(tmp_path, name, *, statements=(), seed=None, diagnostic_seed=None):
             "partition INTEGER,bytes INTEGER);CREATE TABLE lineage(record_id TEXT,conversation_id TEXT,"
             "PRIMARY KEY(record_id,conversation_id));CREATE TABLE state(key TEXT PRIMARY KEY,value INTEGER);")
             .replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS "))
-    root = tmp_path / (name + "-image")
+    return _snapshot_codec(source, tmp_path / (name + "-image"), (PRIVACY, DIAGNOSTICS))
+
+
+def _snapshot_codec(source, root, database_paths, *, indexed=True):
+    """Pin real table bytes for codec tests, without an admission capability."""
     databases, files, schemas, contracts = {}, {}, {}, {}
-    for relative in (PRIVACY, DIAGNOSTICS):
+    for relative in database_paths:
         copied = root / "state" / relative
         snapshots._backup(source / relative, copied)
         database = snapshots._database(copied, root)
@@ -100,7 +104,7 @@ def _image(tmp_path, name, *, statements=(), seed=None, diagnostic_seed=None):
         "files": files, "databases": databases, "index_exports": [{"source_path": str(source / "data/graph/chroma"),
             "relative_path": "data/graph/chroma", "collection": "unit_policy_v1", "present": False,
             "metadata": None, "sdk_version": None, "fields": ["ids", "documents", "metadatas", "embeddings"],
-            "records": []}]}
+            "records": []}] if indexed else []}
     (root / "manifest.json").write_bytes(snapshots._json(manifest) + b"\n")
     return snapshots.ClosedStateSnapshot(root, identity, binding, manifest)
 
@@ -300,32 +304,37 @@ def test_exact_sdk_records_and_real_public_close_after_cut(tmp_path):
         client.close()
 
 
-def _cut_history(latest, ordinary, row, *, row_hash=None, mutate=None):
+def _cut_history(latest, ordinary, row, *, row_hash=None, mutate=None,
+                 table="events_policy_v1", family="events", target_records=None):
     """Hash-qualified image codec fixture, never an admission capability."""
     descriptor = {"path": str(payload._root(ordinary) / "data/graph/events.db"), "table": "events_policy_v1"}
     target = hashlib.sha256(json.dumps(["events", 1,
         json.dumps(descriptor, sort_keys=True, separators=(",", ":"))]).encode()).hexdigest()
+    keys = ordinary.manifest["databases"][PRIVACY]["tables"][table]["primary_key"]
+    targets = ([{"id": target, "participant": "events", "version": 1, "descriptor": descriptor}]
+        if target_records is None else target_records)
     proof = {"schema_version": 1, "kind": "ordinary_payload_cut",
         "ordinary_binding_id": ordinary.source_binding_id, "ordinary_manifest_sha256": ordinary.manifest_sha256,
         "latest_binding_id": ordinary.source_binding_id, "latest_manifest_sha256": ordinary.manifest_sha256,
         "plan_sha256": hashlib.sha256(b"codec-only synthetic plan, not an admission proof").hexdigest(),
         "destination_root": latest.source_binding["state_root"],
         "destination_identity": latest.source_binding["state_identity"],
-        "removed_rows": [{"database": PRIVACY, "table": "events_policy_v1", "primary_key": ["id"],
-            "identity": [row["id"]], "row_sha256": row_hash or payload._digest(row), "family": "events"}],
+        "removed_rows": [{"database": PRIVACY, "table": table, "primary_key": list(keys),
+            "identity": [row[key] for key in keys], "row_sha256": row_hash or payload._digest(row), "family": family}],
         "removed_files": []}
     if mutate is not None:
         mutate(proof)
     archive = {"schema_version": 1, "source_binding": ordinary.source_binding_id,
         "source_binding_record": ordinary.source_binding, "snapshot_manifest_sha256": ordinary.manifest_sha256,
         "current_execution_grant": False,
-        "targets": [{"id": target, "participant": "events", "version": 1, "descriptor": descriptor}],
+        "targets": targets,
         "payload_cut_proof": proof}
     raw = snapshots._json(archive) + b"\n"
     sha = hashlib.sha256(raw).hexdigest()
-    reference = {"source_binding": ordinary.source_binding_id, "target_id": target, "archive_sha256": sha}
+    references = [{"source_binding": ordinary.source_binding_id, "target_id": item["id"], "archive_sha256": sha}
+        for item in targets]
     ownership = {"schema_version": 1, "source_bindings": [ordinary.source_binding_id],
-        "owned_targets": [], "delegated_targets": [], "historical_targets": [reference]}
+        "owned_targets": [], "delegated_targets": [], "historical_targets": references}
     policy = snapshots._json(ownership) + b"\n"
     manifest = json.loads(json.dumps(latest.manifest))
     binding = dict(latest.source_binding, ownership_sha256=hashlib.sha256(policy).hexdigest())
@@ -339,7 +348,7 @@ def _cut_history(latest, ordinary, row, *, row_hash=None, mutate=None):
         path.write_bytes(value)
         manifest["files"][key] = {"sha256": hashlib.sha256(value).hexdigest(), "size": len(value), "kind": kind}
     manifest["history_archives"] = {sha: {"path": archive_key, "sha256": sha, "size": len(raw),
-        "source_binding": ordinary.source_binding_id, "references": [reference], "source_path": "/absent-original",
+        "source_binding": ordinary.source_binding_id, "references": references, "source_path": "/absent-original",
         "source_identity": None}}
     (latest.snapshot_root / "manifest.json").write_bytes(snapshots._json(manifest) + b"\n")
     return snapshots.ClosedStateSnapshot(latest.snapshot_root, identity, binding, manifest)
@@ -670,3 +679,83 @@ async def test_real_mixed_export_and_all_parents_stay_indivisible_in_R_and_F(tmp
             table = point.manifest["databases"][PRIVACY]["tables"]
             actual = [row for row in table["conversation_export_parents_v1"]["rows"] if row["export_id"] == export_id]
             assert sorted(actual, key=payload._json) == sorted(edges, key=payload._json)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("table,record,denied", [
+    ("wake_clips_v1", "mixed_export", True),
+    ("wake_clips_v1", "mixed_parent", True),
+    ("conversation_turns_v1", "mixed_parent", True),
+    ("conversation_export_parents_v1", "mixed_parent", True),
+    ("conversation_export_parents_v1", "manual_parent", True),
+    ("wake_clips_v1", "ordinary_export", False),
+    ("conversation_export_parents_v1", "ordinary_parent", False),
+])
+async def test_qualified_history_cannot_exclude_real_manual_export_component(tmp_path, table, record, denied):
+    """Exact qualified codec proof, without manufacturing a runtime close ACK."""
+    from tests.mocks.conversations import graph
+    source = tmp_path / "N-source"
+    async with graph(source / "data/graph") as g:
+        mixed_parent = await g.add(user_input="Mixed unmarked input", assistant_response="Mixed unmarked output")
+        old_manual = await g.add(user_input="Manual input", assistant_response="Manual output")
+        views = await g.collector.get_turns()
+        try:
+            selected = next(view for view in views if view.id == old_manual)
+            assert await g.collector.mark_response(selected, "corrected", "Manual correction",
+                sources=(g.base.source(),))
+        finally:
+            for view in views:
+                view.clear()
+        views = await g.collector.get_turns()
+        try:
+            selected, = (view for view in views if view.quality.value == "corrected")
+            manual_parent = selected.id
+            assert manual_parent != old_manual and selected.available
+        finally:
+            for view in views:
+                view.clear()
+        mixed = await g.collector.export_for_training(str(source / "data/graph/exports"), only_marked=False)
+        assert mixed is not None
+        try:
+            assert mixed.available
+            mixed_export = mixed.id
+        finally:
+            mixed.clear()
+        cursor = max(row["sequence"] for row in await g.base.rows())
+        ordinary_parent = await g.add(user_input="Independent ordinary input", assistant_response="Independent ordinary output")
+        ordinary_export = await g.collector.export_for_training(str(source / "data/graph/exports"),
+            only_marked=False, after_sequence=cursor)
+        assert ordinary_export is not None
+        try:
+            assert ordinary_export.available
+            ordinary_export_id = ordinary_export.id
+        finally:
+            ordinary_export.clear()
+    assert not g.privacy.resource_status()["writer_lease"]
+    # Snapshot only after actual fixture owners have closed. These image DTOs
+    # are data codecs; they cannot be used as admitted controller witnesses.
+    ordinary = _snapshot_codec(source, tmp_path / "N-image", (PRIVACY,), indexed=False)
+    latest = _image(tmp_path, "R")
+    tables = ordinary.manifest["databases"][PRIVACY]["tables"]
+    edges = tables["conversation_export_parents_v1"]["rows"]
+    assert {row["parent_id"] for row in edges if row["export_id"] == mixed_export} == {manual_parent, mixed_parent}
+    assert {row["parent_id"] for row in edges if row["export_id"] == ordinary_export_id} == {ordinary_parent}
+    identities = {"mixed_export": mixed_export, "mixed_parent": mixed_parent,
+        "manual_parent": manual_parent, "ordinary_export": ordinary_export_id, "ordinary_parent": ordinary_parent}
+    if table == "conversation_export_parents_v1":
+        export_id = ordinary_export_id if record == "ordinary_parent" else mixed_export
+        row, = (item for item in tables[table]["rows"]
+            if item["export_id"] == export_id and item["parent_id"] == identities[record])
+    else:
+        row, = (item for item in tables[table]["rows"] if item["id"] == identities[record])
+    targets = [dict(item, descriptor=json.loads(item["descriptor"])) for item in tables["erasure_targets"]["rows"]]
+    latest = _cut_history(latest, ordinary, row, table=table, family="collectors", target_records=targets)
+    if denied:
+        with pytest.raises(ValueError, match="payload_cut_history_manual_row"):
+            payload._qualified_exclusions(ordinary, latest)
+    else:
+        excluded = payload._qualified_exclusions(ordinary, latest)
+        key = (PRIVACY, table, payload._digest(row))
+        assert set(excluded) == {key}
+        assert excluded[key]["identity"] == [row[name] for name in tables[table]["primary_key"]]
+    assert snapshots.verify_snapshot(ordinary) == ordinary.manifest
