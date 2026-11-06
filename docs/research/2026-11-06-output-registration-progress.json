@@ -1,0 +1,538 @@
+{
+  "schema_version": 1,
+  "task": "T024",
+  "unit": "destination-registration-v1-lists-reminders",
+  "implementation_revision": "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54",
+  "scope": "La matriz contiene32 obligaciones o categorías de inventario; no demuestra que existan exactamente32 writers individuales. Esta unidad registra dos familias de stores, listas y recordatorios; quedan30 categorías de la matriz sin cubrir, además del universo anidado, lazy, offline, externo y no clasificado que debe reconciliarse.",
+  "implementation": [
+    "actual installed factory-instance admission provenance; managed None/path/env downgrade denied through process lifetime",
+    "bounded lifecycle journal and exact lexical/canonical destination attachment",
+    "original SQLite/store owners retained under publication faults and cancellation/timeout",
+    "fresh release-pinned closed-controller reader grants no capability"
+  ],
+  "evidence": {
+    "audit": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/audit-full-03.json",
+      "sha256": "d163271f9f848332f64a30005d500c9cc838176a67c08d0bf0bf5079a637266f"
+    },
+    "components": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/component-acceptance-proof.json",
+      "sha256": "023ef0da2e0259a528350f46db203da183108e0d67dca82d8381fb47bb3ddeec"
+    },
+    "native": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/native-acceptance-proof.json",
+      "sha256": "6aba130dc3e0f62fe845462e4c70c41d2230f6c11468ab220b312bce799c19ed"
+    },
+    "commit_mapping": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/component-commit-mapping.json",
+      "sha256": "2fd8876ddf40f09d012d04bac055713132a8f49147b5c76fdbb4096ad1ab351d"
+    },
+    "test_only_commit_mapping": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/test-only-commit-mapping.json",
+      "sha256": "1b2b78bbe4e0406be365e90ce62a11c6820a4a5bcc9f5e38e19f768779d57c30"
+    },
+    "focused": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/focused-acceptance-proof.json",
+      "sha256": "9cce30fbec9646863b2d8f91a362431563b6190f65bf5e181257072f7961e0e5"
+    },
+    "artifact_manifest": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/validation-artifact-manifest-03.json",
+      "sha256": "e07a1751c7a37ad709e07f11e34594d61f74922d7f4abd93df5c47fecda01381"
+    },
+    "forensic_exports": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/forensic-exports-review-03.json",
+      "sha256": "cdb66f6f46ed50f93141268d4246ba6fa003d620e8f6ba03c3ec522062db7aac"
+    },
+    "raw_export": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/raw-export/full-attempt-03-manifest.json",
+      "sha256": "cc8c01f30c60f7b8a7a7edca86cff7bccae459857de9abd78a73cd1214eae85b"
+    },
+    "full": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/acceptance-proof.json",
+      "sha256": "5a36a61f00e01ffb9472c78a745f08fb40e1e0631d390fefdaae14cd1f831e87"
+    },
+    "failed_full_01_preservation": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/failed-attempt-01-preservation.json",
+      "sha256": "fee6b909fc68b5da178e1b14178184e6ab80be2149576f1e3c3a2a47580fd00e"
+    },
+    "failed_full_02_preservation": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/failed-attempt-02-preservation.json",
+      "sha256": "d31eae779ba09995cdce87da31a826d5611b2251f0b0b927628b40a18bb090f7"
+    },
+    "focused_verifier_terminal": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/focused-verifier-terminal.json",
+      "sha256": "2a5eb4a8c6ecc96f1c6d4ced3206e9a99e8e706e4f448fa14efd557365123d88"
+    },
+    "next_batch_design": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-design-v2.json",
+      "sha256": "62c0d4f584067fa1b84c20f64d1dbfe017f792db26c0486f8aa682df45e5f143"
+    },
+    "next_batch_review": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-v2-review.json",
+      "sha256": "caf900b8a6839e577a60ed02e3902f61e7429e319203b2aba774f7fd7a35e89b"
+    },
+    "next_batch_patch": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-draft-v2/candidate.patch",
+      "sha256": "e98e58d39b93aa87942f4a27b0c8df7f3f04bb2f09a044411cf3204d63b40e56"
+    },
+    "next_batch_intent": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-draft-v2/intent.json",
+      "sha256": "17ff29cc92f22cd0a764bd49c7bf54a5a9da0ca949dd72f29726cd8e155aae73"
+    },
+    "next_batch_static_review": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-draft-v2/independent-v2-review.json",
+      "sha256": "416aa4c477e0fd1208b2bf11bfc52ff433a11c403494a52e614059fbf0b28222"
+    }
+  },
+  "components": {
+    "tests": 165,
+    "passed": 165,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "checks": 26,
+    "XML_seconds": 19.571,
+    "tested_base_head": "63c7cf88c74cdf54bb7e377f49c1411ac255078e",
+    "candidate_content_mapped_to_commit": "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54",
+    "accepted_attempt": "components-attempt-02",
+    "attempts": {
+      "components-attempt-01": {
+        "counts": {
+          "tests": 165,
+          "passed": 164,
+          "failures": 1,
+          "errors": 0,
+          "skipped": 0
+        },
+        "XML_seconds": 18.813,
+        "terminal": {
+          "runner_exit_code": 1,
+          "pytest_exit_code": 1,
+          "runner_pid": 59876,
+          "pytest_pid": 59899,
+          "source_revision": "63c7cf88c74cdf54bb7e377f49c1411ac255078e",
+          "schema_version": 1,
+          "actual_tool_return_consumed": true,
+          "tool_session": 63975,
+          "tool_chunk": "c0b6c7",
+          "tool_exit_code": 1,
+          "observed_at_utc": "2026-11-06T21:47:09.208291+00:00"
+        },
+        "status": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/components/components-attempt-01/full-status.json",
+          "sha256": "c57655ed5ec2098c0bd49789798ca9f3c98f8e8cae09e27443efc8325e90f0e0"
+        },
+        "raw_export": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/raw-export/components-components-attempt-01-manifest.json",
+          "sha256": "289276f666f0f1dc5671a1bf2552c835308cb0fce105cc75aba951dc0c4ae601",
+          "files": 823,
+          "symlinks": 98,
+          "bytes": 28961714,
+          "source_copy_manifest_exact": true
+        },
+        "minimum_available_bytes": 98332168192
+      },
+      "components-attempt-02": {
+        "counts": {
+          "tests": 165,
+          "passed": 165,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        "XML_seconds": 19.571,
+        "terminal": {
+          "runner_exit_code": 0,
+          "pytest_exit_code": 0,
+          "runner_pid": 62696,
+          "pytest_pid": 62724,
+          "source_revision": "63c7cf88c74cdf54bb7e377f49c1411ac255078e",
+          "schema_version": 1,
+          "actual_tool_return_consumed": true,
+          "tool_session": 7542,
+          "tool_chunk": "c21fe5",
+          "tool_exit_code": 0,
+          "observed_at_utc": "2026-11-06T21:48:26.070317+00:00"
+        },
+        "status": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/components/components-attempt-02/full-status.json",
+          "sha256": "bc6827768f63b001a300f76e796090230e8ae9df53bbd79ca058499f660aa748"
+        },
+        "raw_export": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/raw-export/components-components-attempt-02-manifest.json",
+          "sha256": "bdbb8dffc25cdbc234d42d23ca0632b05c4209a54ad6cd0866907a8bdd0b5497",
+          "files": 823,
+          "symlinks": 98,
+          "bytes": 28971318,
+          "source_copy_manifest_exact": true
+        },
+        "minimum_available_bytes": 97025929216
+      }
+    },
+    "carry_forward_to": "66951c5e0abf7fc661f57092e36338e397481bde",
+    "rerun_at_test_fix_revision": false,
+    "carry_forward_mapping": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/test-only-commit-mapping.json",
+      "sha256": "1b2b78bbe4e0406be365e90ce62a11c6820a4a5bcc9f5e38e19f768779d57c30"
+    },
+    "first_attempt": {
+      "passed": 164,
+      "failed": 1,
+      "accepted": false,
+      "preserved": true,
+      "correction": "Only the test create_list invocation changed; product and sentinel assertion unchanged."
+    }
+  },
+  "native": {
+    "tests": 1,
+    "passed": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "revision": "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54",
+    "checks": 44,
+    "XML_seconds": 126.93,
+    "actual_terminal": {
+      "runner_exit_code": 0,
+      "pytest_exit_code": 0,
+      "runner_pid": 65960,
+      "pytest_pid": 65968,
+      "source_revision": "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54",
+      "schema_version": 1,
+      "actual_tool_return_consumed": true,
+      "tool_session": 79006,
+      "tool_chunk": "3d14bd",
+      "tool_exit_code": 0,
+      "observed_at_utc": "2026-11-06T21:52:15.996257+00:00"
+    },
+    "epochs": [
+      "N",
+      "F"
+    ],
+    "registrations": 4,
+    "preexisting_copied_databases": true,
+    "reader": {
+      "pid": 69331,
+      "actual_wait_returned": true,
+      "exit_code": 0,
+      "mode": "fresh isolated process acquires closed AdmissionController; no inherited runtime ticket replay",
+      "script_sha256": "f9aad7effb04a41034b882d7f88e84b8bca8cc48f2589f83640ff0b63b3738d7",
+      "module_count": 44,
+      "unchanged_head_state": true,
+      "completed_run_metadata_rejected_before_connect": true
+    },
+    "historical_first_byte_registration_proven": false,
+    "retroactive_adoption": false,
+    "carry_forward_to": "66951c5e0abf7fc661f57092e36338e397481bde",
+    "rerun_at_test_fix_revision": false,
+    "carry_forward_mapping": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/test-only-commit-mapping.json",
+      "sha256": "1b2b78bbe4e0406be365e90ce62a11c6820a4a5bcc9f5e38e19f768779d57c30"
+    }
+  },
+  "full": {
+    "revision": "66951c5e0abf7fc661f57092e36338e397481bde",
+    "implementation_revision": "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54",
+    "accepted_attempt": "full-attempt-03",
+    "expected_ids": 9126,
+    "old_ids": 9085,
+    "new_ids": 41,
+    "removed_ids": 0,
+    "focused_added_ids": 0,
+    "collection": "exact PASS",
+    "state": "finished",
+    "result": "9125 PASS + same known regex xfail",
+    "XML_seconds": 1302.131,
+    "summary_seconds": 1302.33,
+    "actual_terminal": "36106/10be8d",
+    "actual_wait_consumed": true,
+    "exact_expected_ids": true,
+    "guards_during_run": "1086 source, 37 scripts, 34 protected files unchanged",
+    "evidence": "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/acceptance-proof.json"
+  },
+  "coverage": {
+    "required_inventory_categories": 32,
+    "registered_store_families": [
+      "lists",
+      "reminders"
+    ],
+    "remaining_categories_per_run": 30,
+    "individual_writer_count_proven": false
+  },
+  "limitations": [
+    "En los recorridos N/F, las bases de listas y recordatorios ya existían como estado copiado. El journal conserva existing_identity y acredita registro antes de que este owner abra la base. No demuestra registro anterior al primer byte histórico, no adopta retroactivamente copias legacy y no concede capacidad de limpieza ni cleanup ACK.",
+    "El registro es observación de destinos, no una nueva autoridad de escritura privada, consentimiento o borrado. FactLedger, ProducerScopes y los owners nativos existentes permanecen como autoridades de sus operaciones. native_identity es observación del inode del pathname en el retorno real, no fstat del FD interno de SQLite.",
+    "No new genuine live-ticket generation/inherited-lease mutation negative: component validator mock and real closed-run replay are distinct evidence.",
+    "O/R legacy protocols lack these registrations; no fabricated observation/adoption."
+  ],
+  "remaining": "Continuar registro de productores/destinos y censo global tras el primer hito local de listas/recordatorios. La matriz contiene 32 categorías u obligaciones, dos familias de stores instrumentadas y 30 categorías sin cubrir; no acredita 32 writers individuales ni el universo completo. El segundo parche privado v2 para privacidad, sesiones/dashboard, rutinas, eventos y sugerencias tiene revisión estática sin bloqueos de código abiertos en el alcance revisado; sigue sin aplicar ni ejecutar, sin aceptación runtime. Revalidar pins originales antes de aplicarlo y recopilar IDs exactos para las validaciones dirigidas, compiladas y full pendientes. Reutilizar las autoridades y owners nativos existentes, dispatch real y snapshot acotado. Después reconciliar representaciones/sujetos/recibos y productores anidados, lazy, offline, externos o desconocidos. Mantener pendientes cierre SDK genuino, migración legacy, guards diagnostics1/streams2/voices2 y aceptación física. No repetir evidencia cerrada sin cambio, fallo o incertidumbre nueva.",
+  "next_action": "Continuar registro de productores/destinos y censo global tras el primer hito local de listas/recordatorios. La matriz contiene 32 categorías u obligaciones, dos familias de stores instrumentadas y 30 categorías sin cubrir; no acredita 32 writers individuales ni el universo completo. El segundo parche privado v2 para privacidad, sesiones/dashboard, rutinas, eventos y sugerencias tiene revisión estática sin bloqueos de código abiertos en el alcance revisado; sigue sin aplicar ni ejecutar, sin aceptación runtime. Revalidar pins originales antes de aplicarlo y recopilar IDs exactos para las validaciones dirigidas, compiladas y full pendientes. Reutilizar las autoridades y owners nativos existentes, dispatch real y snapshot acotado. Después reconciliar representaciones/sujetos/recibos y productores anidados, lazy, offline, externos o desconocidos. Mantener pendientes cierre SDK genuino, migración legacy, guards diagnostics1/streams2/voices2 y aceptación física. No repetir evidencia cerrada sin cambio, fallo o incertidumbre nueva.",
+  "cleanup_ack": false,
+  "capability": false,
+  "global_inventory_complete": false,
+  "aggregate_copy_complete": false,
+  "F1_delivered": false,
+  "goal_complete": false,
+  "production_changed": false,
+  "status": "verified_local_two_store_families_full_regression_global_census_incomplete",
+  "date": "2026-11-06",
+  "test_evidence_revision": "66951c5e0abf7fc661f57092e36338e397481bde",
+  "test_only_fix": {
+    "revision": "66951c5e0abf7fc661f57092e36338e397481bde",
+    "parent_revision": "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54",
+    "changed_paths": [
+      "tests/integration/test_context_privacy.py"
+    ],
+    "old_test_sha256": "5cf938d06cb1ceadc23694330d42d0a7503bc8e3b5472068f06afc12c7e5a873",
+    "new_test_sha256": "3007bedd6375bdecea60d1d2497a9b3aa802aad5334ecb54c83a3331e8e4418a",
+    "product_changed": false,
+    "test_ids_added": 0,
+    "mapping": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/test-only-commit-mapping.json",
+      "sha256": "1b2b78bbe4e0406be365e90ce62a11c6820a4a5bcc9f5e38e19f768779d57c30"
+    },
+    "behavior": "Only the saturation case cancels and awaits the actual services.maintenance task before the existing native-work drain. It retains the task/owners, allows only CancelledError, and preserves eight real workers, cache identity/capacity assertions and timeouts. All other context tests retain normal maintenance.",
+    "focused": {
+      "revision": "66951c5e0abf7fc661f57092e36338e397481bde",
+      "counts": {
+        "errors": 0,
+        "expected": 26,
+        "failures": 0,
+        "passed": 26,
+        "skipped": 0,
+        "tests": 26
+      },
+      "checks": 67,
+      "durations": {
+        "junit_seconds": 2.37,
+        "pytest_summary_seconds": 2.38,
+        "testcase_sum_seconds": 1.76
+      },
+      "actual_terminal": {
+        "actual_tool_return_consumed": true,
+        "observed_at_utc": "2026-11-06T22:58:50.928454+00:00",
+        "pytest_exit_code": 0,
+        "pytest_pid": 67782,
+        "runner_exit_code": 0,
+        "runner_pid": 67779,
+        "schema_version": 1,
+        "source_revision": "66951c5e0abf7fc661f57092e36338e397481bde",
+        "tool_chunk": "78ec04",
+        "tool_exit_code": 0,
+        "tool_session": 78590
+      },
+      "warnings": {
+        "occurrences": 162,
+        "signature": "src/core/logging.py:129: DeprecationWarning: datetime.datetime.utcnow() is deprecated",
+        "signature_count": 1
+      },
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/focused-acceptance-proof.json",
+        "sha256": "9cce30fbec9646863b2d8f91a362431563b6190f65bf5e181257072f7961e0e5"
+      },
+      "adds_full_ids": 0
+    }
+  },
+  "failed_full_attempts": [
+    {
+      "accepted": false,
+      "core_evidence": [
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/full-attempt-01/full-status.json",
+          "sha256": "a472d2a6005c21ca4be9cb51aa30e8c3a31bb7867ad3c7e8c7abb74e6ff0174c"
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/full-attempt-01/root-terminal.json",
+          "sha256": "3626f9b7fe4b818b5fc2731cffba6272d49d451469ef96fda8bede527baaa2b2"
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/full-attempt-01/full.xml",
+          "sha256": "a4de863c12286d45a450eb0953e915b95dcaa0dd5822fbfda2642f23cc446649"
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/full-attempt-01/full.log",
+          "sha256": "3bf66e86506e7731af8bcb7fe0c2a4c8d28dee95d614eb69c25b08ef73fdd353"
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/full-attempt-01/source-before.json",
+          "sha256": "3beefe01c6e984432216a6d19f203ff516c27c625d3a9f0f7db40c8730923740"
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/full-attempt-01/source-after.json",
+          "sha256": "3beefe01c6e984432216a6d19f203ff516c27c625d3a9f0f7db40c8730923740"
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/full-attempt-01/protected-before.json",
+          "sha256": "103c68aa9f1ad76d65a9a857ce1056c3aac7288129a8c318d649109c5ca322d3"
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/full-attempt-01/protected-after.json",
+          "sha256": "103c68aa9f1ad76d65a9a857ce1056c3aac7288129a8c318d649109c5ca322d3"
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/full-attempt-01/storage-telemetry.json",
+          "sha256": "b6f9a9dfad29a9009966a521af493356b06fae3ece7fb0b07ecd0777301073ea"
+        }
+      ],
+      "diagnosis": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/deadline-diagnosis.json",
+        "sha256": "27850c0cff1b5fc6c0d6d80ba48e2b2cb50fe0fb2e3cdc5bb1eb0656e16adf01"
+      },
+      "export_review": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/failed-export-review.json",
+        "sha256": "bc37085afd2939faccb778bdac4b5297059512ecab8ced7232a7ab3c23c8e942"
+      },
+      "raw_export": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/raw-export/full-full-attempt-01-manifest.json",
+        "sha256": "191190c58e1412b1cab39e8ae9ecd73828eee188ae0f5b8be061aa79613b5214"
+      },
+      "raw_tree_rescanned_by_assembler": false,
+      "reason": "deadline; runner 1 / pytest -2 despite printed pass counts",
+      "attempt": "full-attempt-01",
+      "revision": "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54",
+      "actual_terminal": {
+        "schema_version": 1,
+        "session_id": 21117,
+        "chunk_id": "40ff09",
+        "exit_code": 1,
+        "actual_tool_return_consumed": true,
+        "source_revision": "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54",
+        "observed_at_utc": "2026-11-06T22:19:40.186376+00:00",
+        "runner_pid": 71664,
+        "pytest_pid": 71669,
+        "runner_exit_code": 1,
+        "pytest_exit_code": -2,
+        "abort_reason": "deadline"
+      }
+    },
+    {
+      "accepted": false,
+      "core_evidence": [
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/full-attempt-02/full-status.json",
+          "sha256": "a56c3166400d27edd69c9993ba652283c18c72d1fe6a298ed2287769020513f9"
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/full-attempt-02/root-terminal.json",
+          "sha256": "c66d9d1131b912c7a0107c538d2da575b1720eca9c8d5130958b1895a95c3a75"
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/full-attempt-02/full.xml",
+          "sha256": "3614d23d744133aa212ec35608512738f98112716f088058ad073944cd513d70"
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/full-attempt-02/full.log",
+          "sha256": "852c43b0704b7f830e87e13e39999ea43142fd28426690bf054680a497714b39"
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/full-attempt-02/observed-junit.json",
+          "sha256": "122b0d39dacb1dd0996f5f3657693d325e161fc154d87b15678ec272bdafbdb0"
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/full-attempt-02/source-before.json",
+          "sha256": "3beefe01c6e984432216a6d19f203ff516c27c625d3a9f0f7db40c8730923740"
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/full-attempt-02/source-after.json",
+          "sha256": "3beefe01c6e984432216a6d19f203ff516c27c625d3a9f0f7db40c8730923740"
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/full-attempt-02/protected-before.json",
+          "sha256": "103c68aa9f1ad76d65a9a857ce1056c3aac7288129a8c318d649109c5ca322d3"
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/full-attempt-02/protected-after.json",
+          "sha256": "103c68aa9f1ad76d65a9a857ce1056c3aac7288129a8c318d649109c5ca322d3"
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/full-attempt-02/storage-telemetry.json",
+          "sha256": "1f38d518b0566e8a994e079d2d6af4ed738f388a8706e8bfd99189a0f89b5dfa"
+        }
+      ],
+      "diagnosis": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/context-capacity-failure-review.json",
+        "sha256": "9bfe2a54de64c99321bb47e841737b3e970a8cac0e3f221ecbc512e98bcd5405"
+      },
+      "export_review": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/failed-export-review-02.json",
+        "sha256": "fcb5ae8884a22287006468eea2bc5ea7280c9fbfaba00878bc96b071e467ecee"
+      },
+      "raw_export": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/raw-export/full-full-attempt-02-manifest.json",
+        "sha256": "9c791042bcfcebc798e90ddb224cdffe7f127a6abfe0e3b33ed576e7325af1e8"
+      },
+      "raw_tree_rescanned_by_assembler": false,
+      "reason": "cached-context saturation setup capacity race; runner1/pytest1",
+      "attempt": "full-attempt-02",
+      "revision": "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54",
+      "actual_terminal": {
+        "runner_pid": 24407,
+        "pytest_pid": 24411,
+        "runner_exit_code": 1,
+        "pytest_exit_code": 1,
+        "source_revision": "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54",
+        "schema_version": 1,
+        "actual_tool_return_consumed": true,
+        "tool_session": 24131,
+        "tool_chunk": "820428",
+        "tool_exit_code": 1,
+        "observed_at_utc": "2026-11-06T22:45:55.012481+00:00"
+      }
+    }
+  ],
+  "controlled_diagnostic": {
+    "actual_terminal": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/context-capacity-repro/actual-terminal.json",
+      "sha256": "d3569b4dd824db00f3ba5bb06d2ca5a54cca42c47d4fa4dd5977042bdfb3c03e"
+    },
+    "historical_timeline_established": false,
+    "review": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/full/context-capacity-repro/review.json",
+      "sha256": "3f3dc0d297bd19e4107c75f230183b2590e14759a3253990e9bd966ead6627bc"
+    },
+    "checks": 14,
+    "scope": "One controlled run on unchanged source demonstrates a possible maintenance/admission interleaving; it does not establish the historical full-attempt-02 timeline."
+  },
+  "warnings": {
+    "absent_signatures": [],
+    "known_signatures": 15,
+    "new_signatures": [],
+    "occurrences": 66527,
+    "suppressed": false
+  },
+  "next_batch": {
+    "status": "private_unapplied_unexecuted_draft_static_review_complete",
+    "accepted": false,
+    "applied": false,
+    "runtime_acceptance": false,
+    "design": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-design-v2.json",
+      "sha256": "62c0d4f584067fa1b84c20f64d1dbfe017f792db26c0486f8aa682df45e5f143"
+    },
+    "design_review": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-v2-review.json",
+      "sha256": "caf900b8a6839e577a60ed02e3902f61e7429e319203b2aba774f7fd7a35e89b"
+    },
+    "candidate_patch": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-draft-v2/candidate.patch",
+      "sha256": "e98e58d39b93aa87942f4a27b0c8df7f3f04bb2f09a044411cf3204d63b40e56"
+    },
+    "intent": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-draft-v2/intent.json",
+      "sha256": "17ff29cc92f22cd0a764bd49c7bf54a5a9da0ca949dd72f29726cd8e155aae73"
+    },
+    "independent_static_review": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-draft-v2/independent-v2-review.json",
+      "sha256": "416aa4c477e0fd1208b2bf11bfc52ff433a11c403494a52e614059fbf0b28222"
+    },
+    "open_static_source_blockers": [],
+    "remaining_runtime_and_coverage_gaps": [
+      "All draft assertions are unexecuted; static closure does not establish runtime acceptance. Root must validate original pins, collect exact identities and run directed/native/full checks after explicit application authorization.",
+      "Shared managed() fixture stubs admission.revalidate/_verified_admissions across unit cases. These exercise real services/native calls under synthetic admission; decoder_authority_seam adds reader-only binding/receipt stubs. Module docstring claiming authority stubs only in decoder tests is too narrow.",
+      "Real closed-controller mixed v1/v2 history acceptance and unknown/malformed history must remain distinct from decoder unit seams. Existing compiled scenario is unchanged from first draft and unexecuted for either draft.",
+      "Actual SDK native close failure remains unproven; original timeout/drain cases do not establish close-failure lifetime.",
+      "Poisoned final rotation cancellation/drain should be included in runtime validation; new poisoning test covers successful actual rotation and final-operation rejection while generic foundation tests cover retained native ownership.",
+      "Snapshot fixture absent-table/read-failure and exact descriptor boundary cases from foundation review remain additional meaningful negative coverage."
+    ]
+  }
+}

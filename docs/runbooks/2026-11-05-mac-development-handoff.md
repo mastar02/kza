@@ -6,24 +6,24 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 ## Punto de reanudación
 
-**Goal reanudado; retirada S-only verificada localmente, T024-F1 incompleto.** El owner `e1caf6d` y la corrección de prueba `e1bcdb6` conservan sus534 componentes PASS. Sobre `1571300` pasaron native/baseline/default, colección9085 exactos y full9084 PASS+la misma xfail conocida. Todas las esperas reales fueron consumidas; no quedan pruebas o compilaciones pendientes de esta unidad.
+**Registro de destinos listas/recordatorios verificado localmente; censo global y T024-F1 incompletos.** Implementación `ef8bc6d`: 165 componentes y 1 recorrido compilado aceptados en su revisión original. Corrección exclusiva de prueba `66951c5`: 26 pruebas dirigidas y full del intento 03 aceptadas. Los intentos full 01 y 02 en `ef8bc6d` siguen rechazados y conservados; el sondeo controlado demuestra una intercalación posible, sin afirmar la cronología histórica del fallo.
 
-El owner se ejecutó en el proceso padre bajo autoridad del F compilado; el proceso nuevo ejecutó el parser `.pyc` fijado al release. Hubo un unlink real S-only con recibo acotado,15 BLOBs conservados y cuatro checkpoints históricos intactos. No se afirma ejecución del owner dentro del hijo compilado ni ACK agregado. Ver [reanudación verificada](2026-11-06-goal-pause-checkpoint.md) para evidencia, límites y el antecedente de pausa.
+Se registran dos familias de stores dentro de una matriz de 32 categorías u obligaciones; quedan 30 categorías sin cubrir. En N/F las bases ya existían: se acredita registro antes de abrirlas este owner, sin adopción retroactiva ni ACK. Ver el [reporte actual](../research/2026-11-06-output-registration-progress.json).
 
 | Dato | Estado actual |
 | --- | --- |
 | Entorno | `gabriel`, `/Users/gabriel/Documents/Proyectos/kza`, macOS26.6.1 arm64, CPython3.13.18 |
 | Rama | `recovery/production-2026-10-25`; verificar HEAD/origin al retomar |
-| Producto y pruebas | Owner e1caf6d + test e1bcdb6; validación1571300,534 componentes previos sin repetir |
-| Dirigidos | Native1 PASS/XML105.293s; baseline1 PASS/XML86.204s; default1 PASS/XML98.851s |
-| Última full | 1571300:9084 PASS + misma xfail,9085 IDs; XML1377.596s/resumen1377.89s;1084 fuentes/37 scripts/34 protegidos intactos |
-| Warnings | 65933 ocurrencias;15 firmas previas idénticas,ninguna nueva o ausente; sin supresión |
-| Exportación full | 37483 archivos,2512 symlinks y1 FIFO inerte de prueba; originales/copias exactos; fallo inicial del exportador conservado |
-| Antecedentes | dd637f7:8971 PASS+xfail/8972 IDs; corrección de cota a2c6f4c y baseline f487f40 conservados en sus secciones históricas |
-| Pendiente inmediato | Registro previo de productores/destinos y censo global; diseño/revisión privados en checkpoint-retirement. Sin repetir validaciones cerradas salvo cambio/fallo nuevo |
+| Producto | Registro de destinos `ef8bc6d`; 165 componentes y 1 recorrido compilado conservan esa revisión |
+| Corrección de prueba | `66951c5`, sólo test_context_privacy; producto/scripts intactos y 26 PASS / 67 comprobaciones |
+| Última full | `66951c5`, intento 03: 9125 PASS + misma xfail / 9126 IDs; XML 1302.131 s/resumen 1302.33 s; 1086 fuentes/37 scripts/34 protegidos intactos |
+| Warnings full | 66527 ocurrencias; 15 firmas previas idénticas, sin nuevas, ausentes ni supresión |
+| Exportación full | 37831 archivos, 2533 enlaces y 1 FIFO inerte; originales/copias exactos |
+| Antecedente | Retirada S-only `1571300`: 534 componentes y native/baseline/default/full 9085 verificados; evidencia histórica conservada |
+| Pendiente inmediato | Censo global; segundo parche privado v2 revisado estáticamente, sin aplicar/ejecutar ni aceptación runtime; revalidar originales y completar validaciones |
 | Delegación | Hasta ocho agentes según plazas; PC interactiva con subagente `gpt-6.1-terra` |
 
-T021/T022/T023/T024 siguen `in_progress`; los21 criterios permanecen `not_evaluated` y T024-F0 sigue siendo la última unidad completa. Leer el [reporte actual](../research/2026-11-06-copy-lifecycle-progress.json) y la [continuación](../plans/2026-11-06-copy-lifecycle-continuation.json). Los recibos `collector_rows_files_v1` y `checkpoint_blobs_s_only_v1` cubren sólo sus representaciones y extents exactos: censo/owners globales, cierre SDK genuino, migración legacy, guards y ACK agregado siguen pendientes. Voz/persona permanece separado de permisos; sin release ni cambios en producción.
+T021/T022/T023/T024 siguen `in_progress`; los 21 criterios permanecen `not_evaluated` y T024-F0 es la última unidad completa. Leer el [reporte global](../research/2026-11-06-copy-lifecycle-progress.json) y la [continuación](../plans/2026-11-06-copy-lifecycle-continuation.json). Censo/owners globales, cierre SDK genuino, migración legacy, guards y ACK agregado pendientes. Voz/persona separado de permisos; sin release ni cambios en producción.
 
 ## Referencia histórica del cierre Linux F
 
@@ -373,13 +373,29 @@ El owner de producción se ejecutó en el proceso padre bajo autoridad del F com
 
 Evidencia local ignorada: `data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/directed-acceptance-proof.json` (38checks) y `full/acceptance-proof.json`, SHA `ea1e34ae479bd3dc33d22ae0ab02ee5f58be6644efeb92845034aea46790cbb3` (audit31checks). La exportación conserva37483 archivos/2512 symlinks/1 FIFO/1888537903bytes, con originales y copias exactos. El exportador inicial rechazó el FIFO inerte de una prueba negativa antes de copiar; se conservó ese fallo y una variante limitada a su path/tipo/permisos lo reprodujo sin abrirlo ni leerlo. No fue fallo de la suite ni motivó repetirla.
 
-La siguiente unidad es registrar productores/destinos antes de abrir/escribir en el grafo real, reutilizando autoridad, permisos y owners existentes. Diseño privado `checkpoint-retirement/next-census-design-v2.json` y revisión `checkpoint-retirement/v2-review.json`: journal acotado, primera integración listas/recordatorios y matriz completa de32 obligaciones. Resolver las cuatro precisiones de revisión al implementar; dos stores no equivalen a censo global. No repetir estas pruebas sin cambio o fallo nuevo.
+La unidad seleccionada en aquel hito fue registrar productores/destinos antes de abrir/escribir en el grafo real, reutilizando autoridad, permisos y owners existentes. Diseño privado `checkpoint-retirement/next-census-design-v2.json` y revisión `checkpoint-retirement/v2-review.json`: journal acotado, primera integración listas/recordatorios y matriz completa de32 obligaciones. Resolver las cuatro precisiones de revisión al implementar; dos stores no equivalen a censo global. No repetir estas pruebas sin cambio o fallo nuevo.
 
 F1/T024 siguen incompletos: censo y owners globales, fallo genuino de cierre SDK, migración legacy, guards diagnostics1/streams2/voices2 y aceptación física pendientes. Última unidad completa:T024-F0; T021–T024 in_progress y21 criterios not_evaluated. Goal activo; voz/persona separado de permisos; sin release ni cambios en producción.
 
+## Registro de destinos listas/recordatorios — primer hito local
+
+Registro durable de destinos de listas/recordatorios implementado en `ef8bc6d` y verificado localmente. Los 165 componentes pasaron (XML 19.571 s; 26 comprobaciones), con correspondencia exacta del candidato probado al commit. El primer intento 164 PASS + 1 FAIL por una llamada incorrecta de la prueba se conserva; sólo esa llamada se corrigió. El recorrido compilado pasó 1 prueba (XML 126.93 s; 44 comprobaciones), con cuatro registros N/F y lector nuevo fijado al release. Esas pruebas conservan su alcance `ef8bc6d`; no se afirma que se hayan repetido en `66951c5`.
+
+La corrección `66951c5` cambia sólo `tests/integration/test_context_privacy.py`: el caso de saturación cancela y espera la tarea real de mantenimiento, conserva sus owners y drena el trabajo nativo antes de ocupar los ocho slots. Mantiene ocho workers reales, identidad de caché, comprobaciones de capacidad y timeouts; los demás casos conservan mantenimiento normal. La correspondencia exacta acredita producto y scripts sin cambios. Pasaron 26 pruebas dirigidas (XML 2.37 s/resumen 2.38 s), terminal `78590/78ec04` exit 0 y auditoría de 67 comprobaciones. Son un subconjunto de la full; no agregan IDs.
+
+La full aceptada es el intento 03 en `66951c5`: 9125 PASS + la misma xfail regex conocida, 9126 IDs exactos (9085 previos + 41 nuevos), XML 1302.131 s/resumen 1302.33 s, terminal real `36106/10be8d` exit 0. Se respetó el límite fijo de 1500 s; 1086 fuentes / 37 scripts / 34 protegidos intactos. Hubo 66527 warnings y 15 firmas previas idénticas, sin firmas nuevas, ausentes ni supresión.
+
+Los dos intentos full anteriores en `ef8bc6d` permanecen rechazados y conservados. El 01 (`21117/40ff09`, runner 1/pytest -2) excedió el límite durante la limpieza final, aunque imprimió 9125 PASS + xfail. El 02 (`24131/820428`, runner 1/pytest 1) terminó con 9124 PASS + 1 FAIL + xfail: falló la preparación de saturación antes de llegar a la aserción de identidad de caché. Un único sondeo controlado sobre código sin cambios pasó 14 comprobaciones y demostró una intercalación posible con mantenimiento; no reconstruye la cronología histórica de ese fallo. Las exportaciones exactas y los diagnósticos de ambos intentos se conservan.
+
+Las bases N/F ya existían como estado copiado: el registro ocurrió antes de abrirlas este owner, no antes del primer byte histórico. El journal no concede autoridad, adopción retroactiva ni cleanup ACK; los owners originales conservan apertura, trabajo y cierre reales. La matriz tiene 32 categorías u obligaciones: dos familias instrumentadas y 30 categorías sin cubrir, además de huecos anidados/lazy/offline/externos/desconocidos. No prueba un total de 32 writers individuales.
+
+Evidencia: [reporte de registro](../research/2026-11-06-output-registration-progress.json) y `data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/acceptance-proof.json`, SHA `5a36a61f00e01ffb9472c78a745f08fb40e1e0631d390fefdaae14cd1f831e87`. La auditoría full tiene 49 comprobaciones. Su exportación conserva 37831 archivos, 2533 enlaces y 1 FIFO inerte, con originales/copias exactos según el verificador consumido. El retiro S-only previo conserva su propia evidencia histórica: owner en el padre bajo autoridad del F compilado; hijo nuevo con parser `.pyc` fijado al release. No se atribuye ejecución del owner al hijo ni un ACK agregado.
+
+Siguiente bloque: continuar el censo global. El segundo parche privado v2 para privacidad, sesiones/dashboard, rutinas, eventos y sugerencias tiene revisión estática independiente sin bloqueos de código abiertos en su alcance, pero sigue sin aplicar ni ejecutar y sin aceptación runtime. Sus pins de parche, intención y revisión figuran en el reporte. Revalidar los originales antes de aplicarlo, recopilar IDs exactos y ejecutar las validaciones dirigidas, compiladas y full pendientes, conservando los huecos explícitos de cobertura. T024-F1 y T024 siguen incompletos; T024-F0 es la última unidad completa. T021–T024 siguen in_progress y los 21 criterios not_evaluated. Cierre SDK genuino, migración legacy, guards diagnostics1/streams2/voices2 y aceptación física pendientes. Voz/persona separado de permisos; sin release ni cambios de producción.
+
 ## Prompt para la sesión nueva
 
-Retomar el objetivo completo `docs/plans/2026-11-02-autonomous-roadmap.md`, leyendo el checkpoint privado y la sección de reanudación del [runbook](2026-11-06-goal-pause-checkpoint.md). La retirada S-only y full9085 están verificadas; continuar el registro de productores/destinos y censo global, sin repetir pruebas cerradas. Verificar HEAD/origin y procesos reales antes de actuar. Mantener F1/T024/21criterios/goal abiertos, hasta ocho agentes según plazas y PC interactiva con Terra.
+Retomar el objetivo completo `docs/plans/2026-11-02-autonomous-roadmap.md`, leyendo el checkpoint privado y el [runbook](2026-11-06-goal-pause-checkpoint.md). La retirada S-only y el primer registro listas/recordatorios están verificados localmente. Implementación ef8bc6d, corrección exclusiva de prueba 66951c5, full aceptada del intento 03; los dos intentos anteriores y el sondeo controlado conservan su alcance. Continuar productores/destinos y censo global: 32 categorías, dos familias instrumentadas y 30 sin cubrir. El segundo parche privado v2 de cinco familias tiene revisión estática sin bloqueos de código abiertos en su alcance; sigue sin aplicar ni ejecutar y sin aceptación runtime. Revalidar pins originales antes de aplicar, recopilar IDs y completar validaciones dirigidas/compiladas/full pendientes. Verificar HEAD/origin y procesos reales antes de actuar. Mantener F1/T024/21 criterios/goal abiertos, hasta ocho agentes según plazas y PC interactiva con Terra.
 
 ## Lista de cierre y reanudación
 
