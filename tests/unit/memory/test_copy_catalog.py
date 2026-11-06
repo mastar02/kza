@@ -372,3 +372,44 @@ def test_current_snapshot_identity_cannot_be_relabelled_after_directory_replacem
     changed = (dict(refs[0], root_identity=catalog._identity(snapshot)),)
     with pytest.raises(catalog.CopyCatalogError, match="snapshot_not_catalog_prepared"):
         catalog._snapshot_refs(root, changed, {"1"*64: {}})
+
+
+@pytest.mark.parametrize("phase", ["handle_returned", "close_entered"])
+def test_interrupted_sdk_metadata_publication_keeps_committed_owner_unknown(tmp_path, record, phase):
+    """Protocol bytes only: no real handle, close_returned or admission ACK is issued."""
+    path = directory(tmp_path, record)
+    head = catalog._append(path, record, None)
+    destination = Path(record["destination"])
+    destination.mkdir()
+    sentinel = destination / "retained"
+    sentinel.write_bytes(b"unconfirmed SDK copy remains owned and unserved")
+    extent = {"relative": ".", "family": "semantic_index", "representation": "sdk_work"}
+    extent_id = catalog._sha(catalog._json(extent))
+    sdk_id = uuid4().hex
+    current = dict(record, preparation="writing", root_identity=catalog._identity(destination),
+        extents={extent_id: extent}, sdk={sdk_id: {
+            "extent": extent_id, "sdk_version": "0.0.0", "phase": "not_entered"}})
+    head = catalog._append(path, current, head)
+    current = deepcopy(current)
+    current["sdk"][sdk_id]["phase"] = "constructor_entered"
+    head = catalog._append(path, current, head)
+    if phase == "close_entered":
+        current = deepcopy(current)
+        current["sdk"][sdk_id]["phase"] = "handle_returned"
+        head = catalog._append(path, current, head)
+    committed_phase = current["sdk"][sdk_id]["phase"]
+    committed_head = (path / "head.json").read_bytes()
+    uncommitted = deepcopy(current)
+    uncommitted["sdk"][sdk_id]["phase"] = phase
+    catalog._append(path, uncommitted, head)
+    # Represent interruption after durable event write but before HEAD became
+    # durable. Recovery must neither promote this event nor repair the files.
+    (path / "head.json").write_bytes(committed_head)
+    before = {entry.name: entry.read_bytes() for entry in path.iterdir()}
+    recovered = catalog._recover_record(path)
+    assert recovered["preparation"] == "unknown" and recovered["finished"] is False
+    assert recovered["catalog_error"] == "uncommitted_events" and recovered["capability"] is False
+    assert recovered["sdk"][sdk_id]["phase"] == committed_phase
+    assert recovered["cleanup"] == {"phase": "blocked", "owner": None, "receipt": None}
+    assert {entry.name: entry.read_bytes() for entry in path.iterdir()} == before
+    assert sentinel.read_bytes() == b"unconfirmed SDK copy remains owned and unserved"
