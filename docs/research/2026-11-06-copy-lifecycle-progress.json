@@ -2,7 +2,7 @@
   "schema_version": 1,
   "task": "T024-F1",
   "unit": "durable-copy-catalog foundation",
-  "status": "checkpoint_retirement_components_verified_native_pending_user_pause",
+  "status": "checkpoint_retirement_verified_local_full_regression_F1_incomplete",
   "goal_complete": false,
   "F1_delivered": false,
   "revision": "e1caf6dd9568c28454b8d1a0b8e98d4a4679ee0a",
@@ -226,27 +226,26 @@
     }
   ],
   "full": {
-    "revision": "dd637f704a463dc0ebd8479af4a8763deab4c375",
-    "expected_ids": 8972,
-    "old_ids": 8936,
-    "new_ids": 36,
+    "revision": "15713004e88c4551c608c294696bd7123c77b1fa",
+    "expected_ids": 9085,
+    "old_ids": 8972,
+    "new_ids": 113,
     "removed_ids": 0,
     "collection": "exact PASS",
     "state": "finished",
-    "result": "8971 PASS + same known regex xfail",
-    "XML_seconds": 1436.609,
-    "summary_seconds": 1436.96,
-    "actual_terminal": "23640/602035",
+    "result": "9084 PASS + same known regex xfail",
+    "XML_seconds": 1377.596,
+    "summary_seconds": 1377.89,
+    "actual_terminal": "33902/5ca693",
     "actual_wait_consumed": true,
     "exact_expected_ids": true,
-    "guards_during_run": "1078 source,37 scripts,34 protected files unchanged",
-    "evidence": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/acceptance-proof.json",
-    "later_bounds_fix": "a2c6f4c validated36protocol+1compiled; no full rerun for this narrow correction"
+    "guards_during_run": "1084 source,37 scripts,34 protected files unchanged",
+    "evidence": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/full/acceptance-proof.json"
   },
   "open": [
     "Genuine public/native SDK close failure remains unverified. One nominal missing-tenant constructor exception before handle is verified; other failure modes are not inferred.",
     "semantic index/opaque and logical exports, ambient capture, contexts/events/suggestions/diagnostics/voice/stream payload and remaining snapshots/source roots/work/BLOB copies are not erased by collector_rows_files_v1. CatalogV1 preparation still records cleanup blocked; the separate collector receipt does not change that into an aggregate ACK.",
-    "The retrospective registry covers three existing regular roots in this scenario, not a global census or cleanup ownership. Other forensic/audit/checkpoint/BLOB/legacy copies require explicit registration and real erasure owners. The opt-in test baseline now proves one S-exclusive BLOB; its actual retirement owner remains unimplemented. Observations never grant SDK/cleanup/admission or claim pre-byte reservation.",
+    "Retrospective registry covers three roots, not global census. One S-only checkpoint BLOB now actually retired with scoped owner receipt; historical JSON/shared/U/manual and other copies remain. Global producer/destination/representation census and erasure owners remain required; observations never grant capability.",
     "Legacy HEAD without manual companion and old unregistered snapshot adoption remain explicit rejection until a scoped migration exists; no manual companion, binding or target descriptor may be fabricated.",
     "Current scenario preserves U/manual rows/files and current F authority. Keep latest consent, credentials, roles, voice/group/person CAS decisions and tombstones; voice-person association remains separate from account permissions. No automatic old-authority SQL merge or TTL renewal is authorized.",
     "diagnostics1/streams2/voices2 stay pending. T021-T024/all21/physical field acceptance remain open; local Mac source/CPU evidence is not field or UI acceptance."
@@ -263,8 +262,8 @@
     "e1caf6dd9568c28454b8d1a0b8e98d4a4679ee0a"
   ],
   "warnings": {
-    "scope_revision": "dd637f704a463dc0ebd8479af4a8763deab4c375",
-    "occurrences": 66285,
+    "scope_revision": "15713004e88c4551c608c294696bd7123c77b1fa",
+    "occurrences": 65933,
     "known_signatures": 15,
     "new_summary_signatures": 0,
     "absent_prior_summary_signatures": 0,
@@ -279,20 +278,20 @@
     "scope_at_revision": "2cdbe51 historical foundation counts; new scoped evidence is reconciled separately"
   },
   "independent_full_audit": {
-    "path": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/audit.json",
-    "sha256": "24f42c26f0f4a746fb9c974ce2790a19ca29f83d92b84559152c6fee7f1fc9e5",
-    "checks": 19,
-    "issues": []
+    "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/full/audit.json",
+    "sha256": "dbd34456936b4d5c2deec583a969ec892829022e281703052b2d80db5543364a",
+    "checks": 31,
+    "issues": 0
   },
   "last_fully_accepted_unit": "T024-F0",
   "evidence": {
     "component": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup/component-acceptance-proof.json",
     "compiled_cleanup": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-native/acceptance-proof.json",
-    "full": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/acceptance-proof.json",
-    "full_proof_sha256": "02de81ad907a0078d915c538614d47ba30c75e53d9c3b1265ee4c611ab3b3035",
-    "canonical_artifact_manifest": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/validation-artifact-manifest.json",
-    "full_forensic_index": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/forensic-exports-01.json",
-    "full_forensic_index_sha256": "3ea906da363d2128914fe60d77b508e8e9c598b8a3e21ee23ff2391f606246f3",
+    "full": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/full/acceptance-proof.json",
+    "full_proof_sha256": "ea1e34ae479bd3dc33d22ae0ab02ee5f58be6644efeb92845034aea46790cbb3",
+    "canonical_artifact_manifest": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/full/validation-artifact-manifest-01.json",
+    "full_forensic_index": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/full/forensic-exports-review-01.json",
+    "full_forensic_index_sha256": "62b1309912b4c520d0ebbce136bae8f411b1230393e0f6b27529167a90f78112",
     "nominal_constructor_failure": {
       "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/acceptance-proof.json",
       "sha256": "8e75a037e6e2fef244c10bd03ecfe09b6db01de2c80aee962f9fdcdf77b50941"
@@ -307,28 +306,26 @@
     "checkpoint_retirement_components": {
       "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/component-acceptance-proof.json",
       "sha256": "c21a2d526c8553ce73d50a4f608e3c0fad52de7106713f0c2f73b41ee31c4055"
+    },
+    "checkpoint_retirement_directed": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/directed-acceptance-proof.json",
+      "sha256": "105312e9283f188be7cbeb23fc77749a33a6bd7905f4dae5603bc035972642a8"
     }
   },
   "next_concrete_units": [
     {
       "priority": 1,
-      "unit": "current_authority_checkpoint_BLOB_retirement_owner",
-      "baseline_revision": "f487f40e891fd3ec5e0e092f45cee49cd85d8201",
-      "baseline_evidence": {
-        "path": "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/acceptance-proof.json",
-        "sha256": "4af869e3cb0befdbaeca8b8973744eb28b9f5b4fd24973d8e59a812a8117468d"
+      "unit": "runtime_producer_destination_registration_and_global_census",
+      "status": "planned_global_requirement_preserved",
+      "design": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/next-census-design-v2.json",
+        "sha256": "75111f7352462833bfc366066b3e00db2abc9794288c2fa386d582cd1cb907bd"
       },
-      "status": "implemented_components_verified_native_pending",
-      "required_result": "Actually withdraw the proven S-only checkpoint BLOB under explicit current authority; preserve shared/U/manual bytes, original checkpoint JSON identities/pins and source IDs/TTL. Recheck in a fresh inert reader with truthful retirement evidence; a no-op or process wait is not a cleanup receipt.",
-      "boundary": "Scope the typed phase_checkpoint representation explicitly. Historical checkpoint rows, digests, locators and retrospective observations grant no mutation/admission capability. Unknown lineage or ownership remains blocked; preserve every other raw/audit/legacy obligation and aggregate=False.",
-      "remaining": "Global copy census/owners, genuine public/native SDK close failure, legacy migration, exact guards and field acceptance remain open.",
-      "product_revision": "e1caf6dd9568c28454b8d1a0b8e98d4a4679ee0a",
-      "test_revision": "e1bcdb6070156487c9e66db0b4be8be937b0eee1",
-      "component_evidence": {
-        "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/component-acceptance-proof.json",
-        "sha256": "c21a2d526c8553ce73d50a4f608e3c0fad52de7106713f0c2f73b41ee31c4055"
+      "review": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/v2-review.json",
+        "sha256": "a32b652669a1149f789c04d403ad7a822a7df3a3e271bfdab8f31c175efcdd36"
       },
-      "next_action": "Pausa solicitada por usuario tras534PASS y wait consumido. Al reanudar: verificar HEAD/origin y ejecutar primero la integración compilada de checkpoint BLOB cleanup con runner native preparado y HEAD vigente; luego baseline/default, colección9085 y full1500. No repetir componentes salvo cambio/fallo nuevo. Borrado compilado, ACKscope/F1/T024/21criterios/goal todavía no probados; última full sigue dd637f7. Ver docs/runbooks/2026-11-06-goal-pause-checkpoint.md."
+      "next_action": "Implementar registro durable de productores/destinos en el grafo real antes de abrir/escribir, reutilizando RuntimeAdmission, FactLedger y owners existentes. Seguir next-census-design-v2.json y v2-review.json: distinguir attachment previo y evento active posterior, impedir bypass managed con None, observar cierre real y respetar parentesco del ticket. Comenzar journal acotado y listas/recordatorios; conservar explícitas las32 obligaciones restantes para completar censo global. Fallo genuino de cierre SDK, migración legacy, guards y campo siguen abiertos. No repetir534 ni full9085 sin cambio/fallo nuevo."
     },
     {
       "priority": 2,
@@ -375,6 +372,24 @@
       "exact_expected_ids": true,
       "guards_during_run": "1074 source,37 scripts,34 protected files unchanged",
       "evidence": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-full/acceptance-proof.json"
+    },
+    {
+      "revision": "dd637f704a463dc0ebd8479af4a8763deab4c375",
+      "expected_ids": 8972,
+      "old_ids": 8936,
+      "new_ids": 36,
+      "removed_ids": 0,
+      "collection": "exact PASS",
+      "state": "finished",
+      "result": "8971 PASS + same known regex xfail",
+      "XML_seconds": 1436.609,
+      "summary_seconds": 1436.96,
+      "actual_terminal": "23640/602035",
+      "actual_wait_consumed": true,
+      "exact_expected_ids": true,
+      "guards_during_run": "1078 source,37 scripts,34 protected files unchanged",
+      "evidence": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/acceptance-proof.json",
+      "later_bounds_fix": "a2c6f4c validated36protocol+1compiled; no full rerun for this narrow correction"
     }
   ],
   "completed_local_units": [
@@ -474,6 +489,34 @@
         "path": "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/acceptance-proof.json",
         "sha256": "4af869e3cb0befdbaeca8b8973744eb28b9f5b4fd24973d8e59a812a8117468d"
       }
+    },
+    {
+      "priority": 1,
+      "unit": "current_authority_checkpoint_BLOB_retirement_owner",
+      "baseline_revision": "f487f40e891fd3ec5e0e092f45cee49cd85d8201",
+      "baseline_evidence": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/acceptance-proof.json",
+        "sha256": "4af869e3cb0befdbaeca8b8973744eb28b9f5b4fd24973d8e59a812a8117468d"
+      },
+      "status": "verified_local_within_checkpoint_blob_scope",
+      "required_result": "Actually withdraw the proven S-only checkpoint BLOB under explicit current authority; preserve shared/U/manual bytes, original checkpoint JSON identities/pins and source IDs/TTL. Recheck in a fresh inert reader with truthful retirement evidence; a no-op or process wait is not a cleanup receipt.",
+      "boundary": "Scope the typed phase_checkpoint representation explicitly. Historical checkpoint rows, digests, locators and retrospective observations grant no mutation/admission capability. Unknown lineage or ownership remains blocked; preserve every other raw/audit/legacy obligation and aggregate=False.",
+      "remaining": "Global copy census/owners, genuine public/native SDK close failure, legacy migration, exact guards and field acceptance remain open.",
+      "product_revision": "e1caf6dd9568c28454b8d1a0b8e98d4a4679ee0a",
+      "test_revision": "e1bcdb6070156487c9e66db0b4be8be937b0eee1",
+      "component_evidence": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/component-acceptance-proof.json",
+        "sha256": "c21a2d526c8553ce73d50a4f608e3c0fad52de7106713f0c2f73b41ee31c4055"
+      },
+      "next_action": "Implementar registro durable de productores/destinos en el grafo real antes de abrir/escribir, reutilizando RuntimeAdmission, FactLedger y owners existentes. Seguir next-census-design-v2.json y v2-review.json: distinguir attachment previo y evento active posterior, impedir bypass managed con None, observar cierre real y respetar parentesco del ticket. Comenzar journal acotado y listas/recordatorios; conservar explícitas las32 obligaciones restantes para completar censo global. Fallo genuino de cierre SDK, migración legacy, guards y campo siguen abiertos. No repetir534 ni full9085 sin cambio/fallo nuevo.",
+      "directed_proof": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/directed-acceptance-proof.json",
+        "sha256": "105312e9283f188be7cbeb23fc77749a33a6bd7905f4dae5603bc035972642a8"
+      },
+      "full_proof": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/full/acceptance-proof.json",
+        "sha256": "ea1e34ae479bd3dc33d22ae0ab02ee5f58be6644efeb92845034aea46790cbb3"
+      }
     }
   ],
   "remaining_requirements_review": {
@@ -488,7 +531,37 @@
     "canonical_artifact_manifest": "data/autonomous-roadmap-20261102/t024/f1/copy-full/validation-artifact-manifest.json",
     "full_forensic_index": "data/autonomous-roadmap-20261102/t024/f1/copy-full/forensic-exports-01.json",
     "full_forensic_index_sha256": "0920c1704a98cebc6823d30fe833d7105f4adaab64e60c7f16a70af10cf53561",
-    "full_repro_receipt_sha256": "638b66a891a96cd685573a61caeb25660aeecf8810d30aee3ce0277fcb3b70fd"
+    "full_repro_receipt_sha256": "638b66a891a96cd685573a61caeb25660aeecf8810d30aee3ce0277fcb3b70fd",
+    "before_checkpoint_retirement_validation": {
+      "component": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup/component-acceptance-proof.json",
+      "compiled_cleanup": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-native/acceptance-proof.json",
+      "full": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/acceptance-proof.json",
+      "full_proof_sha256": "02de81ad907a0078d915c538614d47ba30c75e53d9c3b1265ee4c611ab3b3035",
+      "canonical_artifact_manifest": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/validation-artifact-manifest.json",
+      "full_forensic_index": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/forensic-exports-01.json",
+      "full_forensic_index_sha256": "3ea906da363d2128914fe60d77b508e8e9c598b8a3e21ee23ff2391f606246f3",
+      "nominal_constructor_failure": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/acceptance-proof.json",
+        "sha256": "8e75a037e6e2fef244c10bd03ecfe09b6db01de2c80aee962f9fdcdf77b50941"
+      },
+      "observation_component": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/components/acceptance-proof.json",
+      "observation_compiled": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/native/acceptance-proof.json",
+      "record_bounds": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/bounds/acceptance-proof.json",
+      "binary_lineage": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/acceptance-proof.json",
+        "sha256": "4af869e3cb0befdbaeca8b8973744eb28b9f5b4fd24973d8e59a812a8117468d"
+      },
+      "checkpoint_retirement_components": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/component-acceptance-proof.json",
+        "sha256": "c21a2d526c8553ce73d50a4f608e3c0fad52de7106713f0c2f73b41ee31c4055"
+      }
+    },
+    "independent_full_audit_before_checkpoint_retirement": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/audit.json",
+      "sha256": "24f42c26f0f4a746fb9c974ce2790a19ca29f83d92b84559152c6fee7f1fc9e5",
+      "checks": 19,
+      "issues": []
+    }
   },
   "test_evidence_revision": "e1bcdb6070156487c9e66db0b4be8be937b0eee1",
   "close_failure_feasibility_review": {
@@ -581,7 +654,7 @@
       "path": "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/raw-export-manifest.json",
       "sha256": "be59a807cfba26ba1ffd796c9892c21dce71ea2e59ed8fc7f6b06cd48cbf0ce4"
     },
-    "full_scope": "Latest full remains dd637f7:8971 PASS+same known xfail/8972 exactIDs. No new full for this test-only unit.",
+    "full_scope": "Historical baseline at f487f40: last full then dd637f7/8972. Current full after owner is1571300/9085; see checkpoint_retirement_progress.full_proof.",
     "cleanup_ack": false,
     "aggregate_copy_complete": false,
     "F1_delivered": false,
@@ -589,7 +662,7 @@
     "production_changed": false
   },
   "checkpoint_retirement_progress": {
-    "status": "implemented_components_verified_native_pending_pause_requested",
+    "status": "verified_local_checkpoint_blob_scope_full_regression",
     "product_revision": "e1caf6dd9568c28454b8d1a0b8e98d4a4679ee0a",
     "test_revision": "e1bcdb6070156487c9e66db0b4be8be937b0eee1",
     "component_proof": {
@@ -600,12 +673,13 @@
     "first_attempt": "533PASS+1FAIL; incorrect test stage alias and expected dict parameter ID corrected test-only; original failed evidence and inputs retained",
     "parser": "Promoted pure-stdlib reader into src/memory/checkpoint_lineage.py;81unit cases. Current authority cleanup has29unit cases. Unknown DTO ancestry/source/locator and unavailable/shared reference conflicts remain blocked. Parser grants remain False.",
     "owner": "New src/memory/checkpoint_cleanup.py: actual controller/current closed F/tombstone, original registered inventory and four binding pins, journal/CAS before unlink, exact FD/file pins, fsync/real close, cancellation drain, scoped receipt only.",
-    "review": "Static parser/owner/integration reviews passed; actual compiled cleanup runtime is not yet verified.",
+    "review": "Static reviews plus directed38checks and full31checks passed; raw exports exact including one narrowly reviewed negative-test FIFO.",
     "pending": [
-      "native1:tests/integration/test_checkpoint_blob_cleanup.py",
-      "baseline1:tests/integration/test_checkpoint_binary_lineage.py",
-      "default1:tests/integration/test_compiled_material_reconciliation.py",
-      "full collection9085exactIDs, then full1500s; same known regex xfail only"
+      "global producer/destination/representation census and remaining owners",
+      "genuine public/native SDK close failure",
+      "explicit legacy migration",
+      "diagnostics1/streams2/voices2 guards",
+      "field acceptance"
     ],
     "raw_export": {
       "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/raw-export/components-components-attempt-02-manifest.json",
@@ -615,13 +689,33 @@
       "bytes": 327653762
     },
     "own_runtimes_pending": [],
-    "pause_requested_by_user": true,
+    "pause_requested_by_user": false,
     "cleanup_ack": false,
     "aggregate_copy_complete": false,
     "F1_delivered": false,
     "goal_complete": false,
-    "production_changed": false
+    "production_changed": false,
+    "validation_revision": "15713004e88c4551c608c294696bd7123c77b1fa",
+    "directed_proof": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/directed-acceptance-proof.json",
+      "sha256": "105312e9283f188be7cbeb23fc77749a33a6bd7905f4dae5603bc035972642a8"
+    },
+    "full_proof": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/full/acceptance-proof.json",
+      "sha256": "ea1e34ae479bd3dc33d22ae0ab02ee5f58be6644efeb92845034aea46790cbb3"
+    },
+    "scope": "Production cleanup owner executed in parent under actual current compiled F authority; fresh child executed release-pinned checkpoint_lineage.pyc without SDK/application DTO imports. One actual S-only unlink,15 retained blobs,4 historical checkpoints preserved; cancellation/drain/idempotent scoped receipt. No claim that cleanup owner ran in compiled child.",
+    "scoped_checkpoint_blob_receipt": "checkpoint_blobs_s_only_v1 only; general cleanup_ack remains false",
+    "forensic_exports": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/full/forensic-exports-review-01.json",
+      "sha256": "62b1309912b4c520d0ebbce136bae8f411b1230393e0f6b27529167a90f78112"
+    }
   },
-  "pause_requested_by_user": true,
-  "resume_runbook": "docs/runbooks/2026-11-06-goal-pause-checkpoint.md"
+  "pause_requested_by_user": false,
+  "resume_runbook": "docs/runbooks/2026-11-06-goal-pause-checkpoint.md",
+  "historical_pause": {
+    "requested_after_components": true,
+    "revoked_by": "Explicit resume in user attachment; original pause runbook retained"
+  },
+  "next_action": "Implementar registro durable de productores/destinos en el grafo real antes de abrir/escribir, reutilizando RuntimeAdmission, FactLedger y owners existentes. Seguir next-census-design-v2.json y v2-review.json: distinguir attachment previo y evento active posterior, impedir bypass managed con None, observar cierre real y respetar parentesco del ticket. Comenzar journal acotado y listas/recordatorios; conservar explícitas las32 obligaciones restantes para completar censo global. Fallo genuino de cierre SDK, migración legacy, guards y campo siguen abiertos. No repetir534 ni full9085 sin cambio/fallo nuevo."
 }

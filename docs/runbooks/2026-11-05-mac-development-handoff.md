@@ -6,32 +6,24 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 ## Punto de reanudación
 
-**Pausa solicitada por el usuario. T024-F1 sigue incompleto.** El owner de retirada de BLOBs está implementado en `e1caf6d`; la corrección de prueba `e1bcdb6` pasó **534 componentes**, con534 IDs exactos,1084 fuentes/37 scripts/34 protegidos intactos. Wait del runner69327/pytest69330 y espera de herramienta consumidos; no quedan procesos propios pendientes.
+**Goal reanudado; retirada S-only verificada localmente, T024-F1 incompleto.** El owner `e1caf6d` y la corrección de prueba `e1bcdb6` conservan sus534 componentes PASS. Sobre `1571300` pasaron native/baseline/default, colección9085 exactos y full9084 PASS+la misma xfail conocida. Todas las esperas reales fueron consumidas; no quedan pruebas o compilaciones pendientes de esta unidad.
 
-**Todavía no se ejecutaron** la integración compilada del owner, sus regresiones baseline/default ni la nueva full9085. Al reanudar, empezar por el runner `checkpoint-retirement/native/native-validation-runner.py`; no repetir componentes sin un cambio o fallo nuevo. El detalle y los comandos exactos están en [el checkpoint de pausa](2026-11-06-goal-pause-checkpoint.md).
-
-`dd637f7` registra observaciones retrospectivas de tres raíces existentes, sin conceder admisión ni limpieza. Pasaron **423 componentes**, **una integración compilada** y la full de **8971 PASS más la misma xfail conocida**, 8972 IDs exactos. El mismo goal permanece **incompleto**, con pausa solicitada al cerrar; T024-F0 es la última unidad completa verificada.
-
-La corrección posterior `a2c6f4c` limita los registros a16MiB canónicos incluyendo LF antes de escribir. Pasaron36 pruebas de protocolo y1 integración compilada con un intent mayor que la cota real. La full anterior corresponde a `dd637f7`; no se repitió por esta corrección acotada.
+El owner se ejecutó en el proceso padre bajo autoridad del F compilado; el proceso nuevo ejecutó el parser `.pyc` fijado al release. Hubo un unlink real S-only con recibo acotado,15 BLOBs conservados y cuatro checkpoints históricos intactos. No se afirma ejecución del owner dentro del hijo compilado ni ACK agregado. Ver [reanudación verificada](2026-11-06-goal-pause-checkpoint.md) para evidencia, límites y el antecedente de pausa.
 
 | Dato | Estado actual |
 | --- | --- |
-| Entorno | `gabriel`, `/Users/gabriel/Documents/Proyectos/kza`, macOS 26.6.1 arm64, CPython 3.13.18 |
+| Entorno | `gabriel`, `/Users/gabriel/Documents/Proyectos/kza`, macOS26.6.1 arm64, CPython3.13.18 |
 | Rama | `recovery/production-2026-10-25`; verificar HEAD/origin al retomar |
-| Implementación actual | Owner e1caf6d + prueba e1bcdb6 publicados;534 componentes PASS/XML106.631 s, integración compilada/full pendientes |
-| Registro anterior | a2c6f4c publicado sobre dd637f7; conserva sus verificaciones históricas |
-| Componentes del registro | 423 PASS; XML122.807 s, en dd637f7 |
-| Integración del registro | 1 PASS; XML123.490 s; observer4675/reader4933, wait0 |
-| Corrección de cota | a2c6f4c:36 PASS/XML0.585 s y1 compilada PASS/XML254.001 s; observer68940/reader69253, wait0 |
-| Versiones materiales | O/R: aplicación9b; N/F y puente:dd637f7 en registro,a2c6f4c en la corrección posterior |
-| Alcance de observación | Checkpoints+BLOB18 archivos, audit20, SDK fallido2; IDs/pins y catálogo original intactos. Seis denegaciones por proceso, dos negativos HEAD/FD. No Chroma importado en observer/reader |
-| Última full | dd637f7:8971 PASS + misma xfail,8972 IDs; XML1436.609 s; fuentes1078/scripts37/protegidos34 intactos durante la ejecución |
-| Warnings de la full | 66285 ocurrencias;15 firmas conocidas,ninguna nueva o ausente en el resumen; sin supresión |
-| Baseline binario | f487f40:68 PASS/XML0.463 s; opt-in1 PASS/XML75.123 s; original1 PASS/XML89.367 s;16 BLOBs/49 refs,1 S-only/3 shared/12 retained |
-| Pendientes inmediatos | Native owner1, baseline1, default1, colección9085 y full1500; después cobertura/owners globales, SDK close real, migraciones, guards y campo |
+| Producto y pruebas | Owner e1caf6d + test e1bcdb6; validación1571300,534 componentes previos sin repetir |
+| Dirigidos | Native1 PASS/XML105.293s; baseline1 PASS/XML86.204s; default1 PASS/XML98.851s |
+| Última full | 1571300:9084 PASS + misma xfail,9085 IDs; XML1377.596s/resumen1377.89s;1084 fuentes/37 scripts/34 protegidos intactos |
+| Warnings | 65933 ocurrencias;15 firmas previas idénticas,ninguna nueva o ausente; sin supresión |
+| Exportación full | 37483 archivos,2512 symlinks y1 FIFO inerte de prueba; originales/copias exactos; fallo inicial del exportador conservado |
+| Antecedentes | dd637f7:8971 PASS+xfail/8972 IDs; corrección de cota a2c6f4c y baseline f487f40 conservados en sus secciones históricas |
+| Pendiente inmediato | Registro previo de productores/destinos y censo global; diseño/revisión privados en checkpoint-retirement. Sin repetir validaciones cerradas salvo cambio/fallo nuevo |
 | Delegación | Hasta ocho agentes según plazas; PC interactiva con subagente `gpt-6.1-terra` |
 
-T021/T022/T023/T024 siguen `in_progress`; los 21 criterios permanecen `not_evaluated`. Se conservan los demás estados, presupuestos y permisos separados. Leer el [reporte actual](../research/2026-11-06-copy-lifecycle-progress.json) y la [continuación](../plans/2026-11-06-copy-lifecycle-continuation.json). Preparación y `finish()` no confirman limpieza: el catálogo V1 sigue bloqueado. Los dos recibos nuevos pertenecen sólo a `collector_rows_files_v1`; las otras representaciones y el ACK agregado siguen pendientes. Sin release ni cambios en producción.
+T021/T022/T023/T024 siguen `in_progress`; los21 criterios permanecen `not_evaluated` y T024-F0 sigue siendo la última unidad completa. Leer el [reporte actual](../research/2026-11-06-copy-lifecycle-progress.json) y la [continuación](../plans/2026-11-06-copy-lifecycle-continuation.json). Los recibos `collector_rows_files_v1` y `checkpoint_blobs_s_only_v1` cubren sólo sus representaciones y extents exactos: censo/owners globales, cierre SDK genuino, migración legacy, guards y ACK agregado siguen pendientes. Voz/persona permanece separado de permisos; sin release ni cambios en producción.
 
 ## Referencia histórica del cierre Linux F
 
@@ -367,13 +359,27 @@ Siguiente: implementar retirada real del S-only bajo autoridad vigente, preserva
 
 ## Pausa solicitada después de componentes del owner
 
+Este apartado conserva el estado histórico de la pausa; la reanudación verificada figura a continuación.
+
 La prueba inicial tuvo533 PASS+1 FAIL por un seam de test que parcheaba un alias distinto de stage; también se corrigió un ID de parámetro dict. `e1bcdb6` modifica sólo el test: el fallo se inyecta en el companion real después del evento durable y antes de HEAD. El segundo intento pasó534/534 exactos; primera evidencia fallida e inputs preservados. Las revisiones estáticas de parser/owner/integración no encontraron blockers.
 
 Prueba local: `data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/component-acceptance-proof.json`, SHA `c21a2d526c8553ce73d50a4f608e3c0fad52de7106713f0c2f73b41ee31c4055`. La exportación conserva8040 archivos/299 symlinks/327653762 bytes, manifest SHA `359686b1cf44143ea34ccd3530da83e517d9172047c51b715d550ca2a79f5c4e`. Código/documentación se suben a Git; datos sintéticos crudos y checkpoint permanecen locales e ignorados. No se afirma retirada compilada, ACK nuevo ni nueva full. Última unidad completa:T024-F0; última full:dd637f7.
 
+## Reanudación verificada del owner — 2026-11-06
+
+Se consumieron las esperas reales de native (`47477/7b16b9`), baseline (`95923/59a726`), default (`51938/44d8a5`), colección (`2310/473933`) y full (`33902/5ca693`), todas con exit 0, sobre `15713004e88c4551c608c294696bd7123c77b1fa`. No se repitieron los534 componentes. Native/baseline/default pasaron1+1+1; colección9085 exactos y full9084 PASS+la misma xfail regex conocida, XML1377.596s/resumen1377.89s. Guardas1084fuentes/37scripts/34protegidos intactas;65933 warnings,15 firmas idénticas a las previas, sin nuevas ni supresión.
+
+El owner de producción se ejecutó en el proceso padre bajo autoridad del F compilado; el hijo nuevo cargó el parser `checkpoint_lineage.pyc` fijado al release. Se verificó un unlink real S-only,15 BLOBs conservados, cuatro checkpoints históricos intactos, cancelación con drenaje y recibo idempotente limitado a `checkpoint_blobs_s_only_v1`. No se acredita que el owner haya corrido dentro del hijo compilado ni un ACK agregado.
+
+Evidencia local ignorada: `data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/directed-acceptance-proof.json` (38checks) y `full/acceptance-proof.json`, SHA `ea1e34ae479bd3dc33d22ae0ab02ee5f58be6644efeb92845034aea46790cbb3` (audit31checks). La exportación conserva37483 archivos/2512 symlinks/1 FIFO/1888537903bytes, con originales y copias exactos. El exportador inicial rechazó el FIFO inerte de una prueba negativa antes de copiar; se conservó ese fallo y una variante limitada a su path/tipo/permisos lo reprodujo sin abrirlo ni leerlo. No fue fallo de la suite ni motivó repetirla.
+
+La siguiente unidad es registrar productores/destinos antes de abrir/escribir en el grafo real, reutilizando autoridad, permisos y owners existentes. Diseño privado `checkpoint-retirement/next-census-design-v2.json` y revisión `checkpoint-retirement/v2-review.json`: journal acotado, primera integración listas/recordatorios y matriz completa de32 obligaciones. Resolver las cuatro precisiones de revisión al implementar; dos stores no equivalen a censo global. No repetir estas pruebas sin cambio o fallo nuevo.
+
+F1/T024 siguen incompletos: censo y owners globales, fallo genuino de cierre SDK, migración legacy, guards diagnostics1/streams2/voices2 y aceptación física pendientes. Última unidad completa:T024-F0; T021–T024 in_progress y21 criterios not_evaluated. Goal activo; voz/persona separado de permisos; sin release ni cambios en producción.
+
 ## Prompt para la sesión nueva
 
-Usar el prompt y la secuencia exacta de [2026-11-06-goal-pause-checkpoint.md](2026-11-06-goal-pause-checkpoint.md). Retomar el objetivo completo `docs/plans/2026-11-02-autonomous-roadmap.md` desde el owner implementado con534 componentes PASS; empezar por su integración compilada, sin repetir trabajo cerrado ni marcar F1/T024/21criterios/goal completos. Reanudar el registro heredado; si un hilo nuevo no tiene goal, mantener el mismo objetivo y vincular el checkpoint previo. Hasta ocho agentes según plazas; PC interactiva con Terra.
+Retomar el objetivo completo `docs/plans/2026-11-02-autonomous-roadmap.md`, leyendo el checkpoint privado y la sección de reanudación del [runbook](2026-11-06-goal-pause-checkpoint.md). La retirada S-only y full9085 están verificadas; continuar el registro de productores/destinos y censo global, sin repetir pruebas cerradas. Verificar HEAD/origin y procesos reales antes de actuar. Mantener F1/T024/21criterios/goal abiertos, hasta ocho agentes según plazas y PC interactiva con Terra.
 
 ## Lista de cierre y reanudación
 
@@ -383,4 +389,4 @@ Usar el prompt y la secuencia exacta de [2026-11-06-goal-pause-checkpoint.md](20
 - [x] F1 original: RED genuino, tres cierres/waits0, archivo privado y revisión independiente conservados; sin fix de producto.
 - [x] Código, tracking y handoff guardados; verificar publicación y HEAD al retomar.
 - [x] Mismo goal activo, sin nueva petición de pausa ni criterios físicos aceptados.
-- [ ] Corregir F1 y verificar rollback positivo de código/datos más recuperación; la regresión nueva sigue fallando.
+- [ ] Completar F1: censo y owners globales, cierre SDK genuino, migración legacy y guards pendientes; los avances locales anteriores no cierran esa aceptación.

@@ -1,5 +1,19 @@
 # Pausa y continuidad exacta del goal de KZA
 
+## Reanudación verificada del owner — 2026-11-06
+
+Se consumieron las esperas reales de native (`47477/7b16b9`), baseline (`95923/59a726`), default (`51938/44d8a5`), colección (`2310/473933`) y full (`33902/5ca693`), todas con exit 0, sobre `15713004e88c4551c608c294696bd7123c77b1fa`. No se repitieron los534 componentes. Native/baseline/default pasaron1+1+1; colección9085 exactos y full9084 PASS+la misma xfail regex conocida, XML1377.596s/resumen1377.89s. Guardas1084fuentes/37scripts/34protegidos intactas;65933 warnings,15 firmas idénticas a las previas, sin nuevas ni supresión.
+
+El owner de producción se ejecutó en el proceso padre bajo autoridad del F compilado; el hijo nuevo cargó el parser `checkpoint_lineage.pyc` fijado al release. Se verificó un unlink real S-only,15 BLOBs conservados, cuatro checkpoints históricos intactos, cancelación con drenaje y recibo idempotente limitado a `checkpoint_blobs_s_only_v1`. No se acredita que el owner haya corrido dentro del hijo compilado ni un ACK agregado.
+
+Evidencia local ignorada: `data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/directed-acceptance-proof.json` (38checks) y `full/acceptance-proof.json`, SHA `ea1e34ae479bd3dc33d22ae0ab02ee5f58be6644efeb92845034aea46790cbb3` (audit31checks). La exportación conserva37483 archivos/2512 symlinks/1 FIFO/1888537903bytes, con originales y copias exactos. El exportador inicial rechazó el FIFO inerte de una prueba negativa antes de copiar; se conservó ese fallo y una variante limitada a su path/tipo/permisos lo reprodujo sin abrirlo ni leerlo. No fue fallo de la suite ni motivó repetirla.
+
+La siguiente unidad es registrar productores/destinos antes de abrir/escribir en el grafo real, reutilizando autoridad, permisos y owners existentes. Diseño privado `checkpoint-retirement/next-census-design-v2.json` y revisión `checkpoint-retirement/v2-review.json`: journal acotado, primera integración listas/recordatorios y matriz completa de32 obligaciones. Resolver las cuatro precisiones de revisión al implementar; dos stores no equivalen a censo global. No repetir estas pruebas sin cambio o fallo nuevo.
+
+F1/T024 siguen incompletos: censo y owners globales, fallo genuino de cierre SDK, migración legacy, guards diagnostics1/streams2/voices2 y aceptación física pendientes. Última unidad completa:T024-F0; T021–T024 in_progress y21 criterios not_evaluated. Goal activo; voz/persona separado de permisos; sin release ni cambios en producción.
+
+Los apartados siguientes conservan el checkpoint histórico de la pausa. Sus comandos y pendientes ya ejecutados no son la siguiente acción vigente.
+
 ## Estado al cerrar
 
 Pausa solicitada explícitamente por el usuario el 2026-11-06, después de terminar el trabajo en ejecución. El objetivo completo sigue siendo `docs/plans/2026-11-02-autonomous-roadmap.md`; no está completado. Registro original: `01a19a89-8daf-7cf2-9116-d58d90e4e45a`. Confirmar el estado devuelto por la API del goal y el checkpoint privado al reanudar.
@@ -37,7 +51,7 @@ La última full sigue siendo `dd637f7`:8971 PASS+la misma xfail conocida/8972 ID
 
 Los paths abreviados de evidencia son relativos a `data/autonomous-roadmap-20261102/t024/f1/`. Esa evidencia está ignorada y permanece local: Git transporta código y documentación, no los datos crudos. En otro equipo, transferirla o verificar expresamente qué falta antes de afirmar que se dispone del mismo checkpoint. Los originales externos de componentes están en `/private/tmp/kza-checkpoint-retire-20261106-b4b2/components-02/rawrun`; hay copia verificada en el checkout.
 
-## Primer comando al reanudar
+## Primer comando al reanudar — histórico, ya ejecutado
 
 Confirmar primero instrucciones, goal, usuario/ruta/arquitectura, rama, HEAD/origin, cambios ajenos y ausencia de procesos propios vivos. Serena reconoce KZA pero su LSP Python falla por PATH sin uv/uvx; no afirmar que funciona ni reparar configuración como efecto lateral. `initial_instructions` una vez por sesión y `mem:core` cuando exista; fallback enfocado acordado.
 
@@ -54,7 +68,7 @@ KZA_CHECKPOINT_RETIREMENT_BASETEMP=/private/tmp/kza-checkpoint-retire-resume-202
 
 El basetemp debe ser absoluto, externo al checkout y nuevo; el output también debe ser nuevo. Si existen, inspeccionarlos y elegir otra ruta/attempt, sin borrar evidencia. Límites:300s por dirigido,1500s full; preflight5GiB y piso512MiB. Consumir siempre el handle real de la herramienta y el wait del proceso; timeout/kill nunca implican ACK. Sólo una ejecución SDK a la vez; fuentes y documentos protegidos quietos durante cada corrida.
 
-## Secuencia pendiente exacta
+## Secuencia pendiente exacta — histórica, ya ejecutada
 
 1. `native`:1 ID, `test_compiled_checkpoint_cleanup_unlinks_only_withdrawn_blob_and_preserves_historical_pins`. Debe probar1 unlink real del S-only, cancelación/drenaje sin recibo prematuro, JSON/otros BLOB/F iguales, idempotencia y lector nuevo del parser `.pyc` fijado al release sin SDK/DTOs de aplicación. No aceptar una operación sin retirada como éxito.
 2. `baseline`:1 ID de `tests/integration/test_checkpoint_binary_lineage.py`. Usar su runner en `checkpoint-retirement/baseline/`, basetemp externo separado y output `baseline-attempt-01`.
@@ -65,7 +79,7 @@ El basetemp debe ser absoluto, externo al checkout y nuevo; el output también d
 
 Todos los runners usan `KZA_RECONCILIATION_REVISION` y `KZA_CHECKPOINT_RETIREMENT_BASETEMP`. Preparados y pendientes no significa ejecutados. Tras esta unidad siguen pendientes censo/owners globales, fallo real de cierre SDK, migración legacy, guards y aceptación física. No cerrar F1/T024/criterios/goal por pruebas acotadas.
 
-## Prompt para pegar en la sesión nueva
+## Prompt histórico de reanudación
 
 Retomá el goal con objetivo exacto `docs/plans/2026-11-02-autonomous-roadmap.md`, pausado por mi pedido. Continuá desde `/Users/gabriel/Documents/Proyectos/kza`. Leé AGENTS.md, CLAUDE.md, `docs/runbooks/2026-11-06-goal-pause-checkpoint.md`, el checkpoint privado y la continuación indicada. Confirmá goal/API, usuario/ruta/arquitectura, rama, HEAD/origin, cambios ajenos y procesos; no reinicies trabajo por archivos de estado viejos.
 

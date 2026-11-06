@@ -1343,9 +1343,11 @@
         "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/acceptance-proof.json",
         "data/autonomous-roadmap-20261102/t024/f1/copy-observation/bounds/acceptance-proof.json",
         "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/acceptance-proof.json",
-        "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/component-acceptance-proof.json"
+        "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/component-acceptance-proof.json",
+        "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/directed-acceptance-proof.json",
+        "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/full/acceptance-proof.json"
       ],
-      "next_action": "Pausa solicitada por usuario tras534PASS y wait consumido. Al reanudar: verificar HEAD/origin y ejecutar primero la integración compilada de checkpoint BLOB cleanup con runner native preparado y HEAD vigente; luego baseline/default, colección9085 y full1500. No repetir componentes salvo cambio/fallo nuevo. Borrado compilado, ACKscope/F1/T024/21criterios/goal todavía no probados; última full sigue dd637f7. Ver docs/runbooks/2026-11-06-goal-pause-checkpoint.md."
+      "next_action": "Implementar registro durable de productores/destinos en el grafo real antes de abrir/escribir, reutilizando RuntimeAdmission, FactLedger y owners existentes. Seguir next-census-design-v2.json y v2-review.json: distinguir attachment previo y evento active posterior, impedir bypass managed con None, observar cierre real y respetar parentesco del ticket. Comenzar journal acotado y listas/recordatorios; conservar explícitas las32 obligaciones restantes para completar censo global. Fallo genuino de cierre SDK, migración legacy, guards y campo siguen abiertos. No repetir534 ni full9085 sin cambio/fallo nuevo."
     },
     {
       "id": "T025",

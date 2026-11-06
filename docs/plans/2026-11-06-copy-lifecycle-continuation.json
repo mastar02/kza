@@ -93,7 +93,7 @@
     "History/DTO cannot authorize copy/cleanup.",
     "Cleanup cancellation retains owned work until actual return without premature ACK."
   ],
-  "next_action": "Pausa solicitada por usuario tras534PASS y wait consumido. Al reanudar: verificar HEAD/origin y ejecutar primero la integración compilada de checkpoint BLOB cleanup con runner native preparado y HEAD vigente; luego baseline/default, colección9085 y full1500. No repetir componentes salvo cambio/fallo nuevo. Borrado compilado, ACKscope/F1/T024/21criterios/goal todavía no probados; última full sigue dd637f7. Ver docs/runbooks/2026-11-06-goal-pause-checkpoint.md.",
+  "next_action": "Implementar registro durable de productores/destinos en el grafo real antes de abrir/escribir, reutilizando RuntimeAdmission, FactLedger y owners existentes. Seguir next-census-design-v2.json y v2-review.json: distinguir attachment previo y evento active posterior, impedir bypass managed con None, observar cierre real y respetar parentesco del ticket. Comenzar journal acotado y listas/recordatorios; conservar explícitas las32 obligaciones restantes para completar censo global. Fallo genuino de cierre SDK, migración legacy, guards y campo siguen abiertos. No repetir534 ni full9085 sin cambio/fallo nuevo.",
   "foundation_progress": {
     "report": "docs/research/2026-11-06-copy-lifecycle-progress.json",
     "implementation_commit": "2cdbe51f0d3c897e98cc1d2ace7edc0aaed9240f",
@@ -108,23 +108,17 @@
   "next_concrete_units": [
     {
       "priority": 1,
-      "unit": "current_authority_checkpoint_BLOB_retirement_owner",
-      "baseline_revision": "f487f40e891fd3ec5e0e092f45cee49cd85d8201",
-      "baseline_evidence": {
-        "path": "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/acceptance-proof.json",
-        "sha256": "4af869e3cb0befdbaeca8b8973744eb28b9f5b4fd24973d8e59a812a8117468d"
+      "unit": "runtime_producer_destination_registration_and_global_census",
+      "status": "planned_global_requirement_preserved",
+      "design": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/next-census-design-v2.json",
+        "sha256": "75111f7352462833bfc366066b3e00db2abc9794288c2fa386d582cd1cb907bd"
       },
-      "status": "implemented_components_verified_native_pending",
-      "required_result": "Actually withdraw the proven S-only checkpoint BLOB under explicit current authority; preserve shared/U/manual bytes, original checkpoint JSON identities/pins and source IDs/TTL. Recheck in a fresh inert reader with truthful retirement evidence; a no-op or process wait is not a cleanup receipt.",
-      "boundary": "Scope the typed phase_checkpoint representation explicitly. Historical checkpoint rows, digests, locators and retrospective observations grant no mutation/admission capability. Unknown lineage or ownership remains blocked; preserve every other raw/audit/legacy obligation and aggregate=False.",
-      "remaining": "Global copy census/owners, genuine public/native SDK close failure, legacy migration, exact guards and field acceptance remain open.",
-      "product_revision": "e1caf6dd9568c28454b8d1a0b8e98d4a4679ee0a",
-      "test_revision": "e1bcdb6070156487c9e66db0b4be8be937b0eee1",
-      "component_evidence": {
-        "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/component-acceptance-proof.json",
-        "sha256": "c21a2d526c8553ce73d50a4f608e3c0fad52de7106713f0c2f73b41ee31c4055"
+      "review": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/v2-review.json",
+        "sha256": "a32b652669a1149f789c04d403ad7a822a7df3a3e271bfdab8f31c175efcdd36"
       },
-      "next_action": "Pausa solicitada por usuario tras534PASS y wait consumido. Al reanudar: verificar HEAD/origin y ejecutar primero la integración compilada de checkpoint BLOB cleanup con runner native preparado y HEAD vigente; luego baseline/default, colección9085 y full1500. No repetir componentes salvo cambio/fallo nuevo. Borrado compilado, ACKscope/F1/T024/21criterios/goal todavía no probados; última full sigue dd637f7. Ver docs/runbooks/2026-11-06-goal-pause-checkpoint.md."
+      "next_action": "Implementar registro durable de productores/destinos en el grafo real antes de abrir/escribir, reutilizando RuntimeAdmission, FactLedger y owners existentes. Seguir next-census-design-v2.json y v2-review.json: distinguir attachment previo y evento active posterior, impedir bypass managed con None, observar cierre real y respetar parentesco del ticket. Comenzar journal acotado y listas/recordatorios; conservar explícitas las32 obligaciones restantes para completar censo global. Fallo genuino de cierre SDK, migración legacy, guards y campo siguen abiertos. No repetir534 ni full9085 sin cambio/fallo nuevo."
     },
     {
       "priority": 2,
@@ -300,25 +294,52 @@
         "path": "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/acceptance-proof.json",
         "sha256": "4af869e3cb0befdbaeca8b8973744eb28b9f5b4fd24973d8e59a812a8117468d"
       }
+    },
+    {
+      "priority": 1,
+      "unit": "current_authority_checkpoint_BLOB_retirement_owner",
+      "baseline_revision": "f487f40e891fd3ec5e0e092f45cee49cd85d8201",
+      "baseline_evidence": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/acceptance-proof.json",
+        "sha256": "4af869e3cb0befdbaeca8b8973744eb28b9f5b4fd24973d8e59a812a8117468d"
+      },
+      "status": "verified_local_within_checkpoint_blob_scope",
+      "required_result": "Actually withdraw the proven S-only checkpoint BLOB under explicit current authority; preserve shared/U/manual bytes, original checkpoint JSON identities/pins and source IDs/TTL. Recheck in a fresh inert reader with truthful retirement evidence; a no-op or process wait is not a cleanup receipt.",
+      "boundary": "Scope the typed phase_checkpoint representation explicitly. Historical checkpoint rows, digests, locators and retrospective observations grant no mutation/admission capability. Unknown lineage or ownership remains blocked; preserve every other raw/audit/legacy obligation and aggregate=False.",
+      "remaining": "Global copy census/owners, genuine public/native SDK close failure, legacy migration, exact guards and field acceptance remain open.",
+      "product_revision": "e1caf6dd9568c28454b8d1a0b8e98d4a4679ee0a",
+      "test_revision": "e1bcdb6070156487c9e66db0b4be8be937b0eee1",
+      "component_evidence": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/component-acceptance-proof.json",
+        "sha256": "c21a2d526c8553ce73d50a4f608e3c0fad52de7106713f0c2f73b41ee31c4055"
+      },
+      "next_action": "Implementar registro durable de productores/destinos en el grafo real antes de abrir/escribir, reutilizando RuntimeAdmission, FactLedger y owners existentes. Seguir next-census-design-v2.json y v2-review.json: distinguir attachment previo y evento active posterior, impedir bypass managed con None, observar cierre real y respetar parentesco del ticket. Comenzar journal acotado y listas/recordatorios; conservar explícitas las32 obligaciones restantes para completar censo global. Fallo genuino de cierre SDK, migración legacy, guards y campo siguen abiertos. No repetir534 ni full9085 sin cambio/fallo nuevo.",
+      "directed_proof": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/directed-acceptance-proof.json",
+        "sha256": "105312e9283f188be7cbeb23fc77749a33a6bd7905f4dae5603bc035972642a8"
+      },
+      "full_proof": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/full/acceptance-proof.json",
+        "sha256": "ea1e34ae479bd3dc33d22ae0ab02ee5f58be6644efeb92845034aea46790cbb3"
+      }
     }
   ],
   "latest_local_full": {
-    "revision": "dd637f704a463dc0ebd8479af4a8763deab4c375",
-    "expected_ids": 8972,
-    "old_ids": 8936,
-    "new_ids": 36,
+    "revision": "15713004e88c4551c608c294696bd7123c77b1fa",
+    "expected_ids": 9085,
+    "old_ids": 8972,
+    "new_ids": 113,
     "removed_ids": 0,
     "collection": "exact PASS",
     "state": "finished",
-    "result": "8971 PASS + same known regex xfail",
-    "XML_seconds": 1436.609,
-    "summary_seconds": 1436.96,
-    "actual_terminal": "23640/602035",
+    "result": "9084 PASS + same known regex xfail",
+    "XML_seconds": 1377.596,
+    "summary_seconds": 1377.89,
+    "actual_terminal": "33902/5ca693",
     "actual_wait_consumed": true,
     "exact_expected_ids": true,
-    "guards_during_run": "1078 source,37 scripts,34 protected files unchanged",
-    "evidence": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/acceptance-proof.json",
-    "later_bounds_fix": "a2c6f4c validated36protocol+1compiled; no full rerun for this narrow correction"
+    "guards_during_run": "1084 source,37 scripts,34 protected files unchanged",
+    "evidence": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/full/acceptance-proof.json"
   },
   "nominal_constructor_failure_progress": {
     "revision": "180ce95ff0b6d141da1cdf81633ae9a791c08988",
@@ -442,7 +463,7 @@
       "path": "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/raw-export-manifest.json",
       "sha256": "be59a807cfba26ba1ffd796c9892c21dce71ea2e59ed8fc7f6b06cd48cbf0ce4"
     },
-    "full_scope": "Latest full remains dd637f7:8971 PASS+same known xfail/8972 exactIDs. No new full for this test-only unit.",
+    "full_scope": "Historical baseline at f487f40: last full then dd637f7/8972. Current full after owner is1571300/9085; see checkpoint_retirement_progress.full_proof.",
     "cleanup_ack": false,
     "aggregate_copy_complete": false,
     "F1_delivered": false,
@@ -450,7 +471,7 @@
     "production_changed": false
   },
   "checkpoint_retirement_progress": {
-    "status": "implemented_components_verified_native_pending_pause_requested",
+    "status": "verified_local_checkpoint_blob_scope_full_regression",
     "product_revision": "e1caf6dd9568c28454b8d1a0b8e98d4a4679ee0a",
     "test_revision": "e1bcdb6070156487c9e66db0b4be8be937b0eee1",
     "component_proof": {
@@ -461,12 +482,13 @@
     "first_attempt": "533PASS+1FAIL; incorrect test stage alias and expected dict parameter ID corrected test-only; original failed evidence and inputs retained",
     "parser": "Promoted pure-stdlib reader into src/memory/checkpoint_lineage.py;81unit cases. Current authority cleanup has29unit cases. Unknown DTO ancestry/source/locator and unavailable/shared reference conflicts remain blocked. Parser grants remain False.",
     "owner": "New src/memory/checkpoint_cleanup.py: actual controller/current closed F/tombstone, original registered inventory and four binding pins, journal/CAS before unlink, exact FD/file pins, fsync/real close, cancellation drain, scoped receipt only.",
-    "review": "Static parser/owner/integration reviews passed; actual compiled cleanup runtime is not yet verified.",
+    "review": "Static reviews plus directed38checks and full31checks passed; raw exports exact including one narrowly reviewed negative-test FIFO.",
     "pending": [
-      "native1:tests/integration/test_checkpoint_blob_cleanup.py",
-      "baseline1:tests/integration/test_checkpoint_binary_lineage.py",
-      "default1:tests/integration/test_compiled_material_reconciliation.py",
-      "full collection9085exactIDs, then full1500s; same known regex xfail only"
+      "global producer/destination/representation census and remaining owners",
+      "genuine public/native SDK close failure",
+      "explicit legacy migration",
+      "diagnostics1/streams2/voices2 guards",
+      "field acceptance"
     ],
     "raw_export": {
       "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/raw-export/components-components-attempt-02-manifest.json",
@@ -476,13 +498,52 @@
       "bytes": 327653762
     },
     "own_runtimes_pending": [],
-    "pause_requested_by_user": true,
+    "pause_requested_by_user": false,
     "cleanup_ack": false,
     "aggregate_copy_complete": false,
     "F1_delivered": false,
     "goal_complete": false,
-    "production_changed": false
+    "production_changed": false,
+    "validation_revision": "15713004e88c4551c608c294696bd7123c77b1fa",
+    "directed_proof": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/directed-acceptance-proof.json",
+      "sha256": "105312e9283f188be7cbeb23fc77749a33a6bd7905f4dae5603bc035972642a8"
+    },
+    "full_proof": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/full/acceptance-proof.json",
+      "sha256": "ea1e34ae479bd3dc33d22ae0ab02ee5f58be6644efeb92845034aea46790cbb3"
+    },
+    "scope": "Production cleanup owner executed in parent under actual current compiled F authority; fresh child executed release-pinned checkpoint_lineage.pyc without SDK/application DTO imports. One actual S-only unlink,15 retained blobs,4 historical checkpoints preserved; cancellation/drain/idempotent scoped receipt. No claim that cleanup owner ran in compiled child.",
+    "scoped_checkpoint_blob_receipt": "checkpoint_blobs_s_only_v1 only; general cleanup_ack remains false",
+    "forensic_exports": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/full/forensic-exports-review-01.json",
+      "sha256": "62b1309912b4c520d0ebbce136bae8f411b1230393e0f6b27529167a90f78112"
+    }
   },
-  "pause_requested_by_user": true,
-  "resume_runbook": "docs/runbooks/2026-11-06-goal-pause-checkpoint.md"
+  "pause_requested_by_user": false,
+  "resume_runbook": "docs/runbooks/2026-11-06-goal-pause-checkpoint.md",
+  "historical_pause": {
+    "requested_after_components": true,
+    "revoked_by": "Explicit resume in user attachment; original pause runbook retained"
+  },
+  "previous_full_runs": [
+    {
+      "revision": "dd637f704a463dc0ebd8479af4a8763deab4c375",
+      "expected_ids": 8972,
+      "old_ids": 8936,
+      "new_ids": 36,
+      "removed_ids": 0,
+      "collection": "exact PASS",
+      "state": "finished",
+      "result": "8971 PASS + same known regex xfail",
+      "XML_seconds": 1436.609,
+      "summary_seconds": 1436.96,
+      "actual_terminal": "23640/602035",
+      "actual_wait_consumed": true,
+      "exact_expected_ids": true,
+      "guards_during_run": "1078 source,37 scripts,34 protected files unchanged",
+      "evidence": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/acceptance-proof.json",
+      "later_bounds_fix": "a2c6f4c validated36protocol+1compiled; no full rerun for this narrow correction"
+    }
+  ]
 }
