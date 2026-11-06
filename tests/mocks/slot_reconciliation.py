@@ -75,7 +75,7 @@ def derive_branch(controller, ordinary, latest, slot, *, now):
     return derived, identity
 
 
-def prepare_case(task, evidence, repo, new_revision):
+def prepare_case(task, evidence, repo, new_revision, *, copy_cleanup_seed=False):
     """Build exact old/new artifacts and declare four independent physical roots."""
     from scripts.build_runtime import build_runtime
     from scripts.stage_runtime import prepare_slot
@@ -83,6 +83,8 @@ def prepare_case(task, evidence, repo, new_revision):
     from tests.mocks import slot_rollback as original
     import yaml
 
+    if type(copy_cleanup_seed) is not bool:
+        raise ValueError("reconciliation_cleanup_seed_flag")
     if re.fullmatch("[0-9a-f]{40}", new_revision) is None:
         raise ValueError("reconciliation_exact_new_commit_required")
     # The older application stays genuine OLD code. Its security bridge uses
@@ -111,6 +113,8 @@ def prepare_case(task, evidence, repo, new_revision):
     controls, runtimes, roots, manifests = {}, {}, {}, {}
     plan = {"schema_version": 1, "unit": "T024-F1/material-code-data-reconciliation",
         "controls": {}, "outputs": {}}
+    if copy_cleanup_seed:
+        plan["copy_cleanup_seed"] = True
     common = dict(prepared["controls"]["old"][0])
     common["island_files"] = prepared["island_files"]
     for branch, (slot, artifact, revision, release) in specs.items():
@@ -261,7 +265,8 @@ def assert_material_point(expected, actual, reference, *, source_state, destinat
         assert expected[family] == actual[family], ("material_payload_changed", family)
 
 
-def exercise_material_reconciliation(task, evidence, repo, *, new_revision):
+def exercise_material_reconciliation(task, evidence, repo, *, new_revision,
+                                     before_advance_n=None, copy_cleanup_seed=False):
     """Execute real code/data rollback and forward recovery with retained inputs."""
     import time
     from scripts.stage_runtime import AdmissionController
@@ -276,7 +281,9 @@ def exercise_material_reconciliation(task, evidence, repo, *, new_revision):
     assert not task.is_relative_to(repo) and not repo.is_relative_to(task)
     snapshots = task / "closed-snapshots"
     snapshots.mkdir(mode=0o700)
-    prepared = prepare_case(task, evidence, repo, new_revision)
+    if before_advance_n is not None and not callable(before_advance_n):
+        raise ValueError("reconciliation_before_advance_hook")
+    prepared = prepare_case(task, evidence, repo, new_revision, copy_cleanup_seed=copy_cleanup_seed)
     settings = (prepared["full_roots"]["O"].parents[1] / "config/settings.yaml").read_bytes()
     proof = {"schema_version": 1, "unit": "T024-F1/material-code-data-reconciliation",
         "complete": False, "F1_delivered": False, "goal_complete": False,
@@ -304,6 +311,8 @@ def exercise_material_reconciliation(task, evidence, repo, *, new_revision):
             receipt_O = phase(controller, "O", "seed-O")
             seed = load("O", "seed-O")
             image_O = snapshot_closed_state(controller, receipt_O["closed_binding_id"], snapshots / "O")
+            if before_advance_n is not None:
+                before_advance_n(controller, prepared, image_O, seed)
             state_N = prepared["full_roots"]["N"].parents[1]
             clear_fresh_placeholder(state_N, settings)
             derived_N, _ = derive_branch(controller, image_O, image_O, "candidate", now=seed["clock_now"])

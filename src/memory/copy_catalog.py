@@ -327,6 +327,8 @@ def _snapshot_refs(root, refs, bindings):
             and ref["source_binding_id"] in bindings and _hash(ref["manifest_sha256"])
             and type(ref["snapshot_root"]) is str and _identity_shape(ref["root_identity"]), "snapshot_refs")
         path = _directory(Path(ref["snapshot_root"]))
+        from src.core.runtime_admission import _stage
+        _stage()._require_copy_not_invalidated(root, path)
         _require(_identity(path) == ref["root_identity"], "snapshot_changed")
         # The canonical manifest digest is provenance only. It does not replace
         # current controller authority or the caller's full snapshot preflight.
@@ -366,6 +368,8 @@ def _destination(destination, root, source_roots):
     _require(isinstance(destination, Path) and destination.is_absolute()
         and destination.resolve(strict=False) == destination, "destination")
     _directory(destination.parent)
+    from src.core.runtime_admission import _stage
+    _stage()._require_copy_not_invalidated(root, destination)
     for source in (root / "admission", *source_roots):
         _require(not destination.is_relative_to(source) and not source.is_relative_to(destination), "destination_overlap")
     if destination.exists():

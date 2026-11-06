@@ -25,7 +25,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 
 _HEAD_KEYS = {"schema_version", "generation", "binding_id", "status", "run_id"}
@@ -147,6 +147,79 @@ def _read_json(path: Path) -> dict:
     if type(value) is not dict:
         raise ValueError("runtime_admission_record_schema")
     return value
+
+
+def _require_copy_not_invalidated(root: Path, state_root: Path) -> None:
+    """Reject historical copy invalidations before opening any payload store.
+
+    A fence records an earlier invalidation; its HEAD never grants execution
+    and need not equal today's HEAD. The immutable binding format is unchanged.
+    """
+    directory = root / "admission/copy-cleanup/v1/fences"
+    parent = root
+    for component in ("admission", "copy-cleanup", "v1", "fences"):
+        parent = parent / component
+        if parent.is_symlink():
+            raise ValueError("runtime_admission_copy_fence_unknown")
+        if not parent.exists():
+            return
+        try:
+            _safe_directory(parent)
+        except (OSError, ValueError):
+            raise ValueError("runtime_admission_copy_fence_unknown") from None
+    keys = {"schema_version", "scope", "copy_id", "catalog_revision", "catalog_record_sha256",
+            "admission_root", "admission_identity", "destination", "root_identity", "authority_head",
+            "operation_id", "conversation_id", "layout_sha256", "claim_id", "status"}
+
+    def physical(value):
+        return (type(value) is dict and set(value) == {"device", "inode"}
+                and type(value["device"]) is int and value["device"] >= 0
+                and type(value["inode"]) is int and value["inode"] > 0)
+
+    for path in sorted(directory.iterdir()):
+        try:
+            if not re.fullmatch(r"[0-9a-f]{32}\.json", path.name):
+                raise ValueError
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(descriptor, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 16384:
+                    raise ValueError
+                raw = stream.read()
+            value = json.loads(raw)
+            if type(value) is not dict or set(value) != keys or _canonical_json(value) + b"\n" != raw:
+                raise ValueError
+            if (type(value["schema_version"]) is not int or value["schema_version"] != 1
+                    or value["scope"] != "collector_rows_files_v1" or value["status"] != "invalidated"
+                    or value["copy_id"] != path.stem
+                    or type(value["catalog_revision"]) is not int or value["catalog_revision"] < 1
+                    or any(type(value[key]) is not str or not re.fullmatch("[0-9a-f]{64}", value[key])
+                           for key in ("catalog_record_sha256", "layout_sha256"))
+                    or type(value["claim_id"]) is not str or not re.fullmatch("[0-9a-f]{32}", value["claim_id"])
+                    or value["admission_root"] != str(root)
+                    or not physical(value["admission_identity"])
+                    or value["admission_identity"] != _identity(root)
+                    or not physical(value["root_identity"])):
+                raise ValueError
+            for key in ("operation_id", "conversation_id"):
+                if type(value[key]) is not str or str(UUID(value[key])) != value[key]:
+                    raise ValueError
+            destination = value["destination"]
+            if (type(destination) is not str or not Path(destination).is_absolute()
+                    or Path(destination).resolve(strict=False) != Path(destination)):
+                raise ValueError
+            head = value["authority_head"]
+            if (type(head) is not dict or set(head) != _HEAD_KEYS
+                    or type(head["schema_version"]) is not int or head["schema_version"] != 1
+                    or type(head["generation"]) is not int or head["generation"] < 1
+                    or type(head["binding_id"]) is not str or not re.fullmatch("[0-9a-f]{64}", head["binding_id"])
+                    or head["status"] != "closed" or head["run_id"] is not None):
+                raise ValueError
+        except (OSError, ValueError, TypeError, KeyError, OverflowError):
+            raise ValueError("runtime_admission_copy_fence_unknown") from None
+        # Replacing a directory at this locator must not evade invalidation.
+        if destination == str(state_root):
+            raise ValueError("runtime_admission_copy_invalidated")
 
 
 def _atomic_record(path: Path, value: dict, *, immutable: bool = False) -> None:
@@ -697,6 +770,7 @@ def _validate_target_record(target: dict) -> None:
 
 def _binding_snapshot(root: Path, name: str) -> dict:
     runtime, state, manifest = _checked_slot(root, name)
+    _require_copy_not_invalidated(root, state)
     _assert_writers_closed(state)
     roots, schemas, versions = _state_layout(state)
     ownership = state / ".kza-target-ownership.json"
@@ -1519,6 +1593,7 @@ def validate_admission_ticket(state_root: Path, ticket: dict | str, *, check_sta
     ticket = _ticket_value(ticket)
     root = _safe_directory(Path(ticket["admission_root"]))
     state = _safe_directory(Path(state_root).resolve(strict=True))
+    _require_copy_not_invalidated(root, state)
     marker = _read_json(state / _MARKER)
     if marker != {"schema_version": 1, "admission_root": str(root),
                   "binding_id": ticket["binding_id"], "state_root": str(state)}:

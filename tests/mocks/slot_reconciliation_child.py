@@ -361,7 +361,49 @@ def read_phase_bag(e, path, source_control, mode):
     return payload, hashlib.sha256(raw).hexdigest()
 
 
-async def seed_ordinary_O(args, control, guard, e):
+async def seed_cleanup_exports(g, subject, foreign):
+    """Add an actual mixed export and an independent surviving manual export."""
+    clip_rows = await asyncio.to_thread(rows, g.root / "privacy.db", "wake_clips_v1")
+    turns = await asyncio.to_thread(rows, g.root / "privacy.db", "conversation_turns_v1")
+    keyed = {row["id"]: row for row in clip_rows}
+    s_turn, = (row for row in turns if row["id"] in subject.clip_ids)
+    u_turn, = (row for row in turns if row["id"] in foreign.clip_ids)
+    assert s_turn["quality"] == u_turn["quality"] == "good"
+    pairs = await g.stt.get_training_pairs()
+    try:
+        correction, = (view for view in pairs if view.id in foreign.clip_ids)
+        u_correction = correction.id
+        await g.stt.mark_used([correction])
+    finally:
+        for view in pairs:
+            view.clear()
+    mixed = await g.conversations.export_for_training(g.targets["exports"].root,
+        only_marked=True, limit=32)
+    assert mixed is not None
+    try:
+        assert mixed.available
+        mixed_id = mixed.id
+    finally:
+        mixed.clear()
+    survivor = await g.conversations.export_for_training(g.targets["exports"].root,
+        only_marked=True, limit=1, after_sequence=keyed[u_turn["id"]]["sequence"] - 1)
+    assert survivor is not None
+    try:
+        assert survivor.available
+        survivor_id = survivor.id
+    finally:
+        survivor.clear()
+    parents = await asyncio.to_thread(rows, g.root / "privacy.db", "conversation_export_parents_v1")
+    assert {row["parent_id"] for row in parents if row["export_id"] == mixed_id} == {s_turn["id"], u_turn["id"]}
+    assert {row["parent_id"] for row in parents if row["export_id"] == survivor_id} == {u_turn["id"]}
+    correction_rows = await asyncio.to_thread(rows, g.root / "privacy.db", "stt_corrections_v1")
+    assert next(row for row in correction_rows if row["id"] == u_correction)["used"] == 1
+    return {"s_turn_id": s_turn["id"], "u_turn_id": u_turn["id"],
+        "u_correction_id": u_correction, "mixed_export_id": mixed_id, "u_only_export_id": survivor_id,
+        "S_source": subject.source.to_dict(), "U_source": foreign.source.to_dict()}
+
+
+async def seed_ordinary_O(args, control, guard, e, *, copy_cleanup_seed=False):
     """Create real O data and separate manual sentinels before any upgrade."""
     from dataclasses import replace
     import time
@@ -402,6 +444,8 @@ async def seed_ordinary_O(args, control, guard, e):
                 "manual": manual, "ordinary_sources": sources, "O": reference,
                 "O_observed": observed,
                 "forward_guard": {"identity": forward_guard.identity, "token": forward_guard.token}}
+            if copy_cleanup_seed:
+                payload["copy_cleanup"] = await seed_cleanup_exports(g, subject, foreign)
             guard.audit()
         MemoryClient.close_since(marker)
         resources = _resources(g)
@@ -694,7 +738,9 @@ def phase_inputs(e, args, control):
         raise ValueError("reconciliation_phase_inputs_location")
     raw = path.read_bytes()
     plan = json.loads(raw)
-    if (type(plan) is not dict or set(plan) != {"schema_version", "unit", "controls", "outputs"}
+    base_fields = {"schema_version", "unit", "controls", "outputs"}
+    if (type(plan) is not dict or set(plan) not in (base_fields, base_fields | {"copy_cleanup_seed"})
+            or type(plan.get("copy_cleanup_seed", False)) is not bool
             or plan["schema_version"] != 1
             or plan["unit"] != "T024-F1/material-code-data-reconciliation"
             or set(plan["controls"]) != {"O", "N", "R", "F"}
@@ -756,7 +802,8 @@ def reconciliation_main():
 
     async def run():
         if args.mode == "seed-O":
-            return await seed_ordinary_O(args, control, guard, e)
+            return await seed_ordinary_O(args, control, guard, e,
+                copy_cleanup_seed=plan.get("copy_cleanup_seed", False))
         common = {"seed_control": controls["O"], "seed_path": plan["outputs"]["O"],
             "latest_control": controls["N"], "latest_path": plan["outputs"]["N"]}
         if args.mode == "advance-N":
