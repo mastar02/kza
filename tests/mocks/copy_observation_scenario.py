@@ -114,6 +114,17 @@ with stage.AdmissionController(admission) as controller:
     finally:
         controller._descriptor = actual_fd
         os.close(duplicate)
+    # Exercise the actual 16MiB producer ceiling with valid canonical
+    # descriptors, before any namespace/payload mutation or receipt exists.
+    oversized = tuple(ObservedExtent('oversized-%06d-' % index + 'x' * 150,
+        'history', 'raw') for index in range(75000))
+    try:
+        observe_existing_copy(controller, kind=spec['kind'], existing_root=Path(spec['path']),
+            latest_binding_id=control['sentinel']['binding_id'], extents=oversized)
+    except ValueError as error:
+        assert str(error) == 'copy_catalog_observation_record_size', str(error)
+    else:
+        raise AssertionError('An oversized intent cannot publish a usable observation')
     assert not namespace.exists() and copy_catalog._inventory(admission / 'admission') == before
     assert_unchanged(controller)
     receipts = []
@@ -134,6 +145,7 @@ with stage.AdmissionController(admission) as controller:
     no_sdk_modules()
     result = {'pid': os.getpid(), 'complete': True, 'scope': 'retrospective metadata only',
         'receipts': receipts, 'recovered': recovered, 'negative_authority': negatives,
+        'oversized_intent_rejected_before_namespace': True,
         'admission_denials': denials, 'state_sentinel': control['sentinel'],
         'catalog_inventory_unchanged': True, 'module_origins': audit_origins(),
         'SDK_opened': False, 'cleanup_ack': False, 'graph_closure_ack': False,
@@ -275,6 +287,7 @@ def exercise_copy_observation(task, evidence, repo, *, new_revision):
         observed = json.loads(observed_path.read_text())
         assert observed["complete"] is True and len(observed["receipts"]) == 3
         assert observed["SDK_opened"] is False and len(observed["negative_authority"]) == 2
+        assert observed["oversized_intent_rejected_before_namespace"] is True
         report["observer"] = observed
         with AdmissionController(admission) as controller:
             assert _sentinel(controller) == control["sentinel"]

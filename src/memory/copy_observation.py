@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from scripts.stage_runtime import AdmissionController
 
 KINDS = frozenset({"forensic_audit", "phase_checkpoint", "failed_work"})
+MAX_RECORD_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,7 @@ def _shape_intent(intent):
         catalog._relative(extent["relative"])
         _require("\x00" not in extent["relative"], "relative_path")
     _require(len({e["relative"] for e in extents}) == len(extents), "extents")
+    _require(len(catalog._json(intent)) + 1 <= MAX_RECORD_BYTES, "record_size")
 
 
 def _publish(directory, intent, inventory, expected):
@@ -129,6 +131,7 @@ def _publish(directory, intent, inventory, expected):
         "phase": "intent" if inventory is None else "observed", "inventory": inventory,
         "inventory_sha256": None if inventory is None else catalog._sha(catalog._json(inventory))}
     raw = catalog._json(event) + b"\n"
+    _require(len(raw) <= MAX_RECORD_BYTES, "record_size")
     digest = catalog._sha(raw)
     catalog._write_new(directory / f"{revision:012d}-{digest}.json", raw)
     head = {"schema_version": 1, "observation_id": intent["observation_id"], "revision": revision, "sha256": digest}

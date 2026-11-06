@@ -389,3 +389,29 @@ def test_child_gate_denies_observed_state_even_without_state_revalidation(observ
     # negative ticket never supplies an inherited lease or successful admission.
     with pytest.raises(ValueError, match="^runtime_admission_copy_observed$"):
         stage.validate_admission_ticket(payload, ticket, check_state=check_state)
+
+
+def test_oversized_event_keeps_readable_intent_without_publishing_a_receipt(observation, monkeypatch):
+    root, payload, directory, intent = observation
+    assert observations.MAX_RECORD_BYTES == 16 * 1024 * 1024
+    # Protocol-only metadata fixture: the public API still requires a real
+    # sealed controller, exercised by the compiled integration.
+    intent["extents"] = [{"relative": ".", "family": "history", "representation": "raw", "source_sha256": None}]
+    (directory / "intent.json").write_bytes(catalog._json(intent) + b"\n")
+    first = observations._publish(directory, intent, None, None)
+    retained = (payload / "retained.bin").read_bytes()
+    item = catalog._inventory(payload)["retained.bin"]
+    inventory = {f"part-{index:04d}.bin": dict(item) for index in range(100)}
+    before = {p.name: p.read_bytes() for p in directory.iterdir()}
+    monkeypatch.setattr(observations, "MAX_RECORD_BYTES", 2048)
+    assert len(catalog._json(intent)) + 1 <= 2048
+    with pytest.raises(catalog.CopyCatalogError, match="^copy_catalog_observation_record_size$"):
+        observations._publish(directory, intent, inventory, first)
+    assert {p.name: p.read_bytes() for p in directory.iterdir()} == before
+    recovered = observations._recover(directory)
+    assert recovered["phase"] == "unknown" and recovered["revision"] == 1
+    assert recovered["record_sha256"] == first["sha256"] and recovered["inventory"] is None
+    assert recovered["capability"] is False and recovered["cleanup"]["receipt"] is None
+    assert (payload / "retained.bin").read_bytes() == retained
+    with pytest.raises(ValueError, match="^runtime_admission_copy_observed$"):
+        stage._require_copy_not_observed(root, payload)
