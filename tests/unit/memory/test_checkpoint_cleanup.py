@@ -17,6 +17,7 @@ import pytest
 
 from scripts import stage_runtime as stage
 from src.core.owned_work import OwnedBlockingWork
+from src.core.runtime_admission import _stage
 from src.memory import checkpoint_cleanup as cleanup
 
 
@@ -279,14 +280,24 @@ def test_crash_after_event_before_head_preserves_committed_prefix_without_repair
     first = protocol(sample)
     head = cleanup._append(directory, first, None)
     original = (directory / "head.json").read_bytes()
+    attempted = []
 
-    def unavailable(*_args, **_kwargs):
+    def unavailable(path, value, **_kwargs):
+        assert path == directory / "head.json" and value["revision"] == 2
+        assert path.read_bytes() == original
+        events = list(directory.glob("000000000002-*.json"))
+        assert len(events) == 1
+        event = json.loads(events[0].read_text())
+        assert event["state"]["phase"] == "running" and event["previous"] == head["sha256"]
+        assert events[0].name == "000000000002-" + digest(events[0].read_bytes()) + ".json"
+        attempted.append(value)
         raise OSError("synthetic head publication fault")
 
     with monkeypatch.context() as patch:
-        patch.setattr(stage, "_atomic_record", unavailable)
+        patch.setattr(_stage(), "_atomic_record", unavailable)
         with pytest.raises(OSError):
             cleanup._append(directory, dict(first, phase="running", native_started=True), head)
+    assert len(attempted) == 1
     saved, actual, orphans = cleanup._read_state(directory)
     assert saved == first and actual == head and len(orphans) == 1
     assert (directory / "head.json").read_bytes() == original
