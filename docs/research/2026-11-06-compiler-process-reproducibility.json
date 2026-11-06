@@ -1,0 +1,713 @@
+{
+  "schema_version": 1,
+  "unit": "T024-F0/artifact-build-process-independence",
+  "status": "verified_local_prerequisite_only",
+  "verified_at_utc": "2026-11-06T03:37:36.313384+00:00",
+  "goal": "docs/plans/2026-11-02-autonomous-roadmap.md",
+  "goal_status": "active_incomplete",
+  "production_changed": false,
+  "release_performed": false,
+  "baseline_revision": "cd099fc059d4a6708a0a9441666e005b8f0c460c",
+  "implementation_commit": "3babff8aaa7dc8c5f87a5255e198a149ecfe718d",
+  "source_sha256": {
+    "scripts/build_runtime.py": "45f9ab260c6ce98e80f67100914302cf0e013bc743ebce79f2aa2af9edf20930",
+    "tests/unit/tools/test_build_runtime_process_reproducibility.py": "3fa9682b1a85334010d1ab6f07dbab78986e1ae8e7b45bd03c390b83c1994676"
+  },
+  "artifact_revision": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+  "runtime": {
+    "user": "gabriel",
+    "checkout": "/Users/gabriel/Documents/Proyectos/kza",
+    "architecture": "arm64",
+    "macOS": "26.6.1",
+    "CPython": "3.13.18",
+    "magic": "f30d0d0a"
+  },
+  "summary_spanish": "El builder compila en un proceso nuevo con semilla fija y conserva la igualdad binaria real frente al estado de internado del llamador. RED original preservado; cuatro pruebas nuevas, dirigida y full verificadas. F0 no cierra el rollback runtime/datos ni T024/C05.",
+  "original_counterexample": {
+    "builder_sha256": "bfe0d1dc6749c313bb5fc3ad3b5849b37b2c2a87551f5dd0e5f9a7068e4e69a0",
+    "first_matrix": "Six independently waited builds: seed0/seed1 clean repeats agree, seed0 sys.intern repeats differ from clean in two pyc plus release.json. Raw archive equality fails.",
+    "matched_control": "The same AST parsing and retained strings without sys.intern yield clean bytes; explicit interning changes two modules. This is causal for this bounded intervention, not a complete account of every E variation or CPython marshal internals.",
+    "tracked_RED": "Original test executed before product fix: one genuine failure at exact archive-byte equality, all four setup/build workers returned zero. Source/worker/AST identity retained after adding three API cases.",
+    "original_receipt": {
+      "path": "data/autonomous-roadmap-20261102/t024/f0/original-red-attempt-01/original-red-receipt.json",
+      "sha256": "a7659c35366518e0c9a9fef6beec0c0fa0768c68d153c31e4dc814da3450c9bf",
+      "bytes": 752
+    },
+    "baseline_result": {
+      "path": "data/autonomous-roadmap-20261102/t024/f0/baseline-experiment-01/result.json",
+      "sha256": "bb7137711993cdc1912d1d762981c0c62d9b5d47acbf04213de23ccb247738d0",
+      "bytes": 1413
+    },
+    "matched_control_result": {
+      "path": "data/autonomous-roadmap-20261102/t024/f0/parse-control-experiment-01/result.json",
+      "sha256": "0d06ffa885bf8370fc1a870a0413cb38503cdfea035d78ff1f12b123d4dfce4f",
+      "bytes": 1413
+    }
+  },
+  "implementation": {
+    "public_API": "build_runtime(repo, output, revision=HEAD) and CLI selection/refusal remain; Git/assets/manifests/atomic no-overwrite publication stay in parent.",
+    "compiler": "One fresh literal sys.executable -P -S -B worker per build, PYTHONHASHSEED=0, private staged sources, standard py_compile opt0 and UNCHECKED_HASH; no marshal/CodeType/constant rewrite.",
+    "lifetime": "subprocess.run drains both pipes, has a 60s timeout and reaps the worker; worker inherits outer process group. Outer receipts attest their own real waits, not a separately instrumented nested compiler wait.",
+    "protocol": "Closed JSON request/response with ABI/source/output checks; parent validates pyc magic, flags, source hash, inventory and content before publication.",
+    "diagnostics": "Native parser errors return as PyCompileError. Ordered compiler warnings are re-emitted through caller filters. Fatal warning uses a fresh native diagnostic compile to preserve SyntaxError details before publication.",
+    "static_corrections_before_runtime": [
+      "PyCompileError fourth argument is msg.",
+      "Omit warn_explicit module keyword rather than passing None, which suppresses warnings in this CPython.",
+      "Fatal SyntaxWarning filtering must preserve native SyntaxError location fields."
+    ]
+  },
+  "validation": {
+    "first_green": {
+      "path": "data/autonomous-roadmap-20261102/t024/f0/green-attempt-01/status.json",
+      "sha256": "d82649d4f6be0f2403f25b3f066308bb28f4ead8926b57ac04bff5b78a8ada9c",
+      "bytes": 2671
+    },
+    "first_green_counts": "4 PASS, XML24.557s, actual terminal41216/626c94 exit0",
+    "unchanged_six_build_matrix": {
+      "path": "data/autonomous-roadmap-20261102/t024/f0/post-fix-experiment-01/result.json",
+      "sha256": "6a348e3705324ad77d278fbb744e3c5fb34b21cf6ab8bc3a0916c44002ca1db3",
+      "bytes": 1227
+    },
+    "postfix_archive_sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635",
+    "oracle": "Exact complete raw archive bytes; no normalized PASS oracle.",
+    "API_cases": [
+      "invalid syntax preserves native PyCompileError details and no publication",
+      "SyntaxWarning reaches caller with native category/message/file/line",
+      "caller error filter preserves native SyntaxError/PyCompileError and no publication"
+    ],
+    "directed": {
+      "accepted_within_scope": true,
+      "observed_at_utc": "2026-11-06T03:23:30.719187+00:00",
+      "scope": "T024-F0 build prerequisite with E retained; F1 runtime/data rollback, T024/C05 and all21 criteria remain open",
+      "terminal": {
+        "session": 88701,
+        "chunk": "a4269b",
+        "exit_code": 0
+      },
+      "mode": "directed",
+      "tests": 1234,
+      "passed": 1234,
+      "known_xfailed": 0,
+      "failures": 0,
+      "errors": 0,
+      "ordinary_skips": 0,
+      "known_xfail": [],
+      "XML_duration_s": 243.031,
+      "exact_expected_ids": true,
+      "source_files": 1043,
+      "script_files": 37,
+      "source_unchanged": true,
+      "protected_files": 25,
+      "protected_unchanged": true,
+      "actual_wait_returned": true,
+      "minimum_available_bytes": 196426780672,
+      "artifacts": {
+        "full-status.json": "39da4c63a61c703fc26eab227a679fdd2ec51d8860080b4e08f1e01deffc50df",
+        "full.xml": "527bff6d520c9d8fb89968594a95c464d2e7b228b00c1e9f01e4842ae5387134",
+        "full.log": "ae911a36966a741d3dcf5d1978bb6ed1da4e4195de4af70f0af22568d1ab95ba",
+        "source-before.json": "32ae0471648255197638e6c04268105524cbd95dfde8682bc654b70862ab3258",
+        "source-after.json": "32ae0471648255197638e6c04268105524cbd95dfde8682bc654b70862ab3258",
+        "protected-before.json": "3f863bd5b7afe9a27d5d1864b2370b63e9047d19abf6231335df802c435c7938",
+        "protected-after.json": "3f863bd5b7afe9a27d5d1864b2370b63e9047d19abf6231335df802c435c7938",
+        "storage-telemetry.json": "fec0afcf31251a6469507a92db86595e7eac29694ae793ae3ed9c3f946e1453c"
+      },
+      "compiled_artifact": {
+        "source_commit": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+        "files": 436,
+        "archive_sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635",
+        "release_sha256": "0a2836554d8bdc29502becada2ed3c896769b589b1314691199682b839fc816d",
+        "parent_proof": "data/autonomous-roadmap-20261102/t024/f0/directed-attempt-01/child-evidence/attempt-1c5e5bbd41f3451ebe669b8fd8094677/parent-proof.json",
+        "parent_proof_sha256": "7a57ab26ed4511fd125f9d8b750ddc339a4128fffee68565442eaeb1ab5d33b4",
+        "phases": {
+          "generate": {
+            "pid": 13982,
+            "actual_wait_returned": true,
+            "exit_code": 0,
+            "modules": 277,
+            "checkpoint_sha256": "0b88875e5bee7fe6a971711a8f12e9ff30bbaedf29b1466a23f5f1cb1c313e0b",
+            "result_sha256": "9beefa5ddb1dfc28601f551777d54ab7c1cd65728e18d458bfae83fbff2ce30c",
+            "receipt_sha256": "fb89db3d6bd710e32f9e451e9556675e2dcd2461104d7a50053dff8fcb1f5a89"
+          },
+          "replay": {
+            "pid": 14010,
+            "actual_wait_returned": true,
+            "exit_code": 0,
+            "modules": 277,
+            "checkpoint_sha256": "0b88875e5bee7fe6a971711a8f12e9ff30bbaedf29b1466a23f5f1cb1c313e0b",
+            "result_sha256": "ac700bfedf52b35069f812d99d3927dd0dd81e1d49f173a750a9b1e3a3587ee3",
+            "receipt_sha256": "98d036b1609e0940e57a99f903cb2e6b1f0203868d1cf5304e8b1f8d36a0e4d1"
+          }
+        },
+        "warning_scope": "Raw child stderr is separate from pytest warning signatures; do not infer no new global warnings."
+      },
+      "F0_regression": {
+        "scope": "Raw byte equality in this run; normalization is never a pass oracle",
+        "source_commit": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+        "builder_sha256": "45f9ab260c6ce98e80f67100914302cf0e013bc743ebce79f2aa2af9edf20930",
+        "source_raw_case": "/private/var/folders/ng/22lhf94s3hvb4vcx_kqp5k280000gn/T/pytest-of-gabriel/pytest-75/test_archive_bytes_reproduce_a0",
+        "source_comparison_mtime": 1793935204.8600507,
+        "run_started_utc": "2026-11-06T03:16:02.006992+00:00",
+        "copied_raw_case": "data/autonomous-roadmap-20261102/t024/f0/directed-attempt-01/raw-case",
+        "comparison_sha256": "75388d116a754b9e0b63e98f1deb2bd0f92ebdaf57e1467472d437aa94e81873",
+        "raw_files": {
+          "comparison.json": {
+            "sha256": "75388d116a754b9e0b63e98f1deb2bd0f92ebdaf57e1467472d437aa94e81873",
+            "bytes": 1136
+          },
+          "seed-0-intern/stderr.log": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "seed-0-intern/runtime.tar.gz": {
+            "sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635",
+            "bytes": 4258672
+          },
+          "seed-0-intern/worker-result.json": {
+            "sha256": "f3b90e6d8af50932f1371977405034992a47bd743dee59e2ee83c10390064664",
+            "bytes": 47189
+          },
+          "seed-0-intern/stdout.log": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "seed-0-intern/receipt.json": {
+            "sha256": "37ff71bb93f2a3e129da9479ab3f473421e0b8cd825bcf418aac20bc70f31905",
+            "bytes": 1586
+          },
+          "seed-1-intern/stderr.log": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "seed-1-intern/runtime.tar.gz": {
+            "sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635",
+            "bytes": 4258672
+          },
+          "seed-1-intern/worker-result.json": {
+            "sha256": "d821d2ae94392592b785c6e25e12b0cc2d7b84ac8c29005b4729140430a4cbf5",
+            "bytes": 47189
+          },
+          "seed-1-intern/stdout.log": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "seed-1-intern/receipt.json": {
+            "sha256": "fa41c4c021b9c7d3e0867759f2fa4ab530a37cc06f4644d02a83f99379820d8c",
+            "bytes": 1586
+          },
+          "seed-0-clean/stderr.log": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "seed-0-clean/runtime.tar.gz": {
+            "sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635",
+            "bytes": 4258672
+          },
+          "seed-0-clean/worker-result.json": {
+            "sha256": "315b3c3b5fe727e0386b9963b9df2a0e18b02705591bf3118f2580710f7cfc67",
+            "bytes": 47186
+          },
+          "seed-0-clean/stdout.log": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "seed-0-clean/receipt.json": {
+            "sha256": "574d7dd3f267e4037700af6bf7f6725729354378f9697838969c789125df586a",
+            "bytes": 1583
+          },
+          "seed-1-clean/stderr.log": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "seed-1-clean/runtime.tar.gz": {
+            "sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635",
+            "bytes": 4258672
+          },
+          "seed-1-clean/worker-result.json": {
+            "sha256": "91585ade78abaa3aac355a7ec935f23903c1049438493c118382bda8926238c6",
+            "bytes": 47186
+          },
+          "seed-1-clean/stdout.log": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "seed-1-clean/receipt.json": {
+            "sha256": "89d52986290e83c19106de79c4b9067c5ec0e2e0e3e4c3a185f77377624f3906",
+            "bytes": 1583
+          }
+        },
+        "workers": {
+          "seed-0-clean": {
+            "pid": 14049,
+            "actual_wait_returned": true,
+            "exit_code": 0,
+            "seed": "0",
+            "context": "clean",
+            "python_version": [
+              3,
+              13,
+              18
+            ],
+            "executable": "/Users/gabriel/Documents/Proyectos/kza/.venv/bin/python",
+            "architecture": "arm64",
+            "magic": "f30d0d0a",
+            "flags": {
+              "no_site": 1,
+              "safe_path": true,
+              "ignore_environment": 0,
+              "hash_randomization": 0
+            },
+            "interned_string_count": 0,
+            "source_commit": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+            "archive_sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635"
+          },
+          "seed-0-intern": {
+            "pid": 14571,
+            "actual_wait_returned": true,
+            "exit_code": 0,
+            "seed": "0",
+            "context": "intern",
+            "python_version": [
+              3,
+              13,
+              18
+            ],
+            "executable": "/Users/gabriel/Documents/Proyectos/kza/.venv/bin/python",
+            "architecture": "arm64",
+            "magic": "f30d0d0a",
+            "flags": {
+              "no_site": 1,
+              "safe_path": true,
+              "ignore_environment": 0,
+              "hash_randomization": 0
+            },
+            "interned_string_count": 627,
+            "source_commit": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+            "archive_sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635"
+          },
+          "seed-1-clean": {
+            "pid": 15068,
+            "actual_wait_returned": true,
+            "exit_code": 0,
+            "seed": "1",
+            "context": "clean",
+            "python_version": [
+              3,
+              13,
+              18
+            ],
+            "executable": "/Users/gabriel/Documents/Proyectos/kza/.venv/bin/python",
+            "architecture": "arm64",
+            "magic": "f30d0d0a",
+            "flags": {
+              "no_site": 1,
+              "safe_path": true,
+              "ignore_environment": 0,
+              "hash_randomization": 1
+            },
+            "interned_string_count": 0,
+            "source_commit": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+            "archive_sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635"
+          },
+          "seed-1-intern": {
+            "pid": 15584,
+            "actual_wait_returned": true,
+            "exit_code": 0,
+            "seed": "1",
+            "context": "intern",
+            "python_version": [
+              3,
+              13,
+              18
+            ],
+            "executable": "/Users/gabriel/Documents/Proyectos/kza/.venv/bin/python",
+            "architecture": "arm64",
+            "magic": "f30d0d0a",
+            "flags": {
+              "no_site": 1,
+              "safe_path": true,
+              "ignore_environment": 0,
+              "hash_randomization": 1
+            },
+            "interned_string_count": 627,
+            "source_commit": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+            "archive_sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635"
+          }
+        },
+        "archive_sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635",
+        "all_four_raw_archives_byte_equal": true,
+        "compiled_graph_archive_byte_equal": true
+      }
+    },
+    "full": {
+      "accepted_within_scope": true,
+      "observed_at_utc": "2026-11-06T03:33:22.279224+00:00",
+      "scope": "T024-F0 build prerequisite with E retained; F1 runtime/data rollback, T024/C05 and all21 criteria remain open",
+      "terminal": {
+        "session": 90288,
+        "chunk": "955f21",
+        "exit_code": 0
+      },
+      "mode": "full",
+      "tests": 8585,
+      "passed": 8584,
+      "known_xfailed": 1,
+      "failures": 0,
+      "errors": 0,
+      "ordinary_skips": 0,
+      "known_xfail": [
+        [
+          "tests.unit.nlu.test_regex_extractor",
+          "test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]",
+          {
+            "type": "pytest.xfail",
+            "message": "limitación documentada del regex puro"
+          }
+        ]
+      ],
+      "XML_duration_s": 689.339,
+      "exact_expected_ids": true,
+      "source_files": 1043,
+      "script_files": 37,
+      "source_unchanged": true,
+      "protected_files": 25,
+      "protected_unchanged": true,
+      "actual_wait_returned": true,
+      "minimum_available_bytes": 195273506816,
+      "artifacts": {
+        "full-status.json": "8786689dbdc1194e46f8d151be557bac481f89a98b2aa7ef764108fc9c2ae338",
+        "full.xml": "876d08f3bee521303a52a7af0861cac8fd8f8a56da2378c58e9eb43f638a3a46",
+        "full.log": "d3bc9e8761f7612bcbb02c0f7e6afde32e12a030d895e00dff42efc7958e2a46",
+        "source-before.json": "32ae0471648255197638e6c04268105524cbd95dfde8682bc654b70862ab3258",
+        "source-after.json": "32ae0471648255197638e6c04268105524cbd95dfde8682bc654b70862ab3258",
+        "protected-before.json": "3f863bd5b7afe9a27d5d1864b2370b63e9047d19abf6231335df802c435c7938",
+        "protected-after.json": "3f863bd5b7afe9a27d5d1864b2370b63e9047d19abf6231335df802c435c7938",
+        "storage-telemetry.json": "52955e7bd1078ae7d4cc678b888745017793cd7a98138e18f8ce564dd341c53b"
+      },
+      "compiled_artifact": {
+        "source_commit": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+        "files": 436,
+        "archive_sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635",
+        "release_sha256": "0a2836554d8bdc29502becada2ed3c896769b589b1314691199682b839fc816d",
+        "parent_proof": "data/autonomous-roadmap-20261102/t024/f0/full-normal-attempt-01/child-evidence/attempt-1e954225673e489885261b59769f4050/parent-proof.json",
+        "parent_proof_sha256": "a22ec898832cf429fb5e23dab34d6907e1fe8e6f99b25c5f78ae9e36165c340e",
+        "phases": {
+          "generate": {
+            "pid": 17948,
+            "actual_wait_returned": true,
+            "exit_code": 0,
+            "modules": 277,
+            "checkpoint_sha256": "49cfc2e2611479c60b3afb574730615bf70495f55620d73be18f231cbd3da30c",
+            "result_sha256": "c752c4c7334b8d30746591b159fe20f0a01af87c55c82947321a0c4f9e3de67c",
+            "receipt_sha256": "d2e4cebd1f91db1220ebd9c9695422c0c46b82c154e047977900f61257d4c43a"
+          },
+          "replay": {
+            "pid": 17972,
+            "actual_wait_returned": true,
+            "exit_code": 0,
+            "modules": 277,
+            "checkpoint_sha256": "49cfc2e2611479c60b3afb574730615bf70495f55620d73be18f231cbd3da30c",
+            "result_sha256": "73196662159dbdb29833d3ecf2661b880916ee7d6db0d31db015dd50dcd9f5e4",
+            "receipt_sha256": "0e54e5d3aa884edcb2cdb520e97583e92c20906a38b33235fde211c62d7e504b"
+          }
+        },
+        "warning_scope": "Raw child stderr is separate from pytest warning signatures; do not infer no new global warnings."
+      },
+      "F0_regression": {
+        "scope": "Raw byte equality in this run; normalization is never a pass oracle",
+        "source_commit": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+        "builder_sha256": "45f9ab260c6ce98e80f67100914302cf0e013bc743ebce79f2aa2af9edf20930",
+        "source_raw_case": "/private/var/folders/ng/22lhf94s3hvb4vcx_kqp5k280000gn/T/pytest-of-gabriel/pytest-77/test_archive_bytes_reproduce_a0",
+        "source_comparison_mtime": 1793935896.9379687,
+        "run_started_utc": "2026-11-06T03:21:37.843458+00:00",
+        "copied_raw_case": "data/autonomous-roadmap-20261102/t024/f0/full-normal-attempt-01/raw-case",
+        "comparison_sha256": "3a0662ccfff9bd061d4b5a146d40ea2db4f65418054dcf722fbf05f131b55fc5",
+        "raw_files": {
+          "comparison.json": {
+            "sha256": "3a0662ccfff9bd061d4b5a146d40ea2db4f65418054dcf722fbf05f131b55fc5",
+            "bytes": 1135
+          },
+          "seed-0-intern/stderr.log": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "seed-0-intern/runtime.tar.gz": {
+            "sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635",
+            "bytes": 4258672
+          },
+          "seed-0-intern/worker-result.json": {
+            "sha256": "f3b90e6d8af50932f1371977405034992a47bd743dee59e2ee83c10390064664",
+            "bytes": 47189
+          },
+          "seed-0-intern/stdout.log": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "seed-0-intern/receipt.json": {
+            "sha256": "269bd2278ba62e57671508b2af32a82402ba1949bdcf8782164b8f6161f2c95c",
+            "bytes": 1586
+          },
+          "seed-1-intern/stderr.log": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "seed-1-intern/runtime.tar.gz": {
+            "sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635",
+            "bytes": 4258672
+          },
+          "seed-1-intern/worker-result.json": {
+            "sha256": "d821d2ae94392592b785c6e25e12b0cc2d7b84ac8c29005b4729140430a4cbf5",
+            "bytes": 47189
+          },
+          "seed-1-intern/stdout.log": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "seed-1-intern/receipt.json": {
+            "sha256": "bf5e9ab94f0072c580cc448cf0f3418997305e43acf4dcd3706b211b7385a4fd",
+            "bytes": 1586
+          },
+          "seed-0-clean/stderr.log": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "seed-0-clean/runtime.tar.gz": {
+            "sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635",
+            "bytes": 4258672
+          },
+          "seed-0-clean/worker-result.json": {
+            "sha256": "315b3c3b5fe727e0386b9963b9df2a0e18b02705591bf3118f2580710f7cfc67",
+            "bytes": 47186
+          },
+          "seed-0-clean/stdout.log": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "seed-0-clean/receipt.json": {
+            "sha256": "80641750b829f9c3d9a6d768ef6eb12f9a7582ff30089c39363deb139d155db6",
+            "bytes": 1583
+          },
+          "seed-1-clean/stderr.log": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "seed-1-clean/runtime.tar.gz": {
+            "sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635",
+            "bytes": 4258672
+          },
+          "seed-1-clean/worker-result.json": {
+            "sha256": "91585ade78abaa3aac355a7ec935f23903c1049438493c118382bda8926238c6",
+            "bytes": 47186
+          },
+          "seed-1-clean/stdout.log": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "seed-1-clean/receipt.json": {
+            "sha256": "b31ce72494fc83b828fb86d1f6b202ba0ffe5728152ea800ba931509c056a23c",
+            "bytes": 1583
+          }
+        },
+        "workers": {
+          "seed-0-clean": {
+            "pid": 19467,
+            "actual_wait_returned": true,
+            "exit_code": 0,
+            "seed": "0",
+            "context": "clean",
+            "python_version": [
+              3,
+              13,
+              18
+            ],
+            "executable": "/Users/gabriel/Documents/Proyectos/kza/.venv/bin/python",
+            "architecture": "arm64",
+            "magic": "f30d0d0a",
+            "flags": {
+              "no_site": 1,
+              "safe_path": true,
+              "ignore_environment": 0,
+              "hash_randomization": 0
+            },
+            "interned_string_count": 0,
+            "source_commit": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+            "archive_sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635"
+          },
+          "seed-0-intern": {
+            "pid": 19913,
+            "actual_wait_returned": true,
+            "exit_code": 0,
+            "seed": "0",
+            "context": "intern",
+            "python_version": [
+              3,
+              13,
+              18
+            ],
+            "executable": "/Users/gabriel/Documents/Proyectos/kza/.venv/bin/python",
+            "architecture": "arm64",
+            "magic": "f30d0d0a",
+            "flags": {
+              "no_site": 1,
+              "safe_path": true,
+              "ignore_environment": 0,
+              "hash_randomization": 0
+            },
+            "interned_string_count": 627,
+            "source_commit": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+            "archive_sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635"
+          },
+          "seed-1-clean": {
+            "pid": 20385,
+            "actual_wait_returned": true,
+            "exit_code": 0,
+            "seed": "1",
+            "context": "clean",
+            "python_version": [
+              3,
+              13,
+              18
+            ],
+            "executable": "/Users/gabriel/Documents/Proyectos/kza/.venv/bin/python",
+            "architecture": "arm64",
+            "magic": "f30d0d0a",
+            "flags": {
+              "no_site": 1,
+              "safe_path": true,
+              "ignore_environment": 0,
+              "hash_randomization": 1
+            },
+            "interned_string_count": 0,
+            "source_commit": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+            "archive_sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635"
+          },
+          "seed-1-intern": {
+            "pid": 20834,
+            "actual_wait_returned": true,
+            "exit_code": 0,
+            "seed": "1",
+            "context": "intern",
+            "python_version": [
+              3,
+              13,
+              18
+            ],
+            "executable": "/Users/gabriel/Documents/Proyectos/kza/.venv/bin/python",
+            "architecture": "arm64",
+            "magic": "f30d0d0a",
+            "flags": {
+              "no_site": 1,
+              "safe_path": true,
+              "ignore_environment": 0,
+              "hash_randomization": 1
+            },
+            "interned_string_count": 627,
+            "source_commit": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+            "archive_sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635"
+          }
+        },
+        "archive_sha256": "e81f999d6b4ba943856df25b6f47cb89ac49d3cd4c3017a426e9d5a4400f3635",
+        "all_four_raw_archives_byte_equal": true,
+        "compiled_graph_archive_byte_equal": true
+      }
+    },
+    "suite_identity": {
+      "path": "data/autonomous-roadmap-20261102/t024/f0/suite-identity-review.json",
+      "sha256": "8925b8ad5a283f6c65609a9e7757e0153da7b46f52f34fb6aeb11fcf03de305a",
+      "bytes": 5313
+    },
+    "static_product_check": {
+      "path": "data/autonomous-roadmap-20261102/t024/f0/product-static-attempt-01/status.json",
+      "sha256": "fc06615d6590dfb5573a19c215dd3aa71037ed5e85fccf59fb0fc5811b717c09",
+      "bytes": 278
+    },
+    "static_API_test_check": {
+      "path": "data/autonomous-roadmap-20261102/t024/f0/api-tests-static-attempt-01/status.json",
+      "sha256": "41f6b4d5aaba9e95c8e3de158998b6a7809621806a5101c149cc9c1c36a91066",
+      "bytes": 311
+    },
+    "input_guards": "1043 source files,37 scripts,25 protected files unchanged during both broad runs; exact E directed1230/full8581 plus four actual new IDs, no removals or renames.",
+    "independent_component_review": {
+      "path": "data/autonomous-roadmap-20261102/t024/f0/independent-component-review.json",
+      "sha256": "c1b75ab7589b974cf28a4e449322b0f265159e459cda93f03ae6f61a0d54ba02",
+      "bytes": 32930
+    },
+    "independent_directed_review": {
+      "path": "data/autonomous-roadmap-20261102/t024/f0/independent-directed-review.json",
+      "sha256": "43fe9b08db2c7e5ce98e91ae00fb13c7f5a8e9581c26695c782c70bdb8b343f8",
+      "bytes": 17701
+    },
+    "independent_runtime_review": {
+      "path": "data/autonomous-roadmap-20261102/t024/f0/independent-runtime-review.json",
+      "sha256": "bf52a9a6df8c94756891210e1a554a901394f21be32da75d276c8e9877075196",
+      "bytes": 21133
+    }
+  },
+  "structural_comparison": {
+    "evidence": {
+      "path": "data/autonomous-roadmap-20261102/t024/f0/compiled-semantics-comparison.json",
+      "sha256": "0f33538b0df0edc4e2a62efc44a15eb737b732d9e055da7b76263463499eabd2",
+      "bytes": 1990535
+    },
+    "result": "Baseline clean vs fixed compiler output differs in two pyc and release hashes. All378 pyc headers16 and recursively compared typed code fields/constants match; frozenset type/values retained.",
+    "limit": "Metadata-only marshal.loads, never executed/imported src. This comparison ignores intern/reference sharing and serialized frozenset ordering and proves neither binary equality nor universal behavioral equivalence.",
+    "analysis_warning": "Inspecting legacy co_lnotab emitted a visible DeprecationWarning in the metadata helper, separate from product/test warnings."
+  },
+  "warnings": {
+    "baseline": "E accepted full8581",
+    "old_E_location_signatures": [
+      "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/_methods.py:132: RuntimeWarning: overflow encountered in reduce",
+      "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in scalar divide",
+      "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/fromnumeric.py:3824: RuntimeWarning: Mean of empty slice",
+      "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/torch/jit/_serialization.py:176: DeprecationWarning: `torch.jit.load` is deprecated. Please switch to `torch.export`.",
+      "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/uvicorn/protocols/websockets/websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated",
+      "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions",
+      "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/websockets/legacy/server.py:1178: DeprecationWarning: remove second argument of ws_handler",
+      "/Users/gabriel/Documents/Proyectos/kza/src/alerts/alert_manager.py:321: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+      "/Users/gabriel/Documents/Proyectos/kza/src/core/logging.py:129: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+      "<string>:8: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+      "tests/integration/test_async_conversation_generation.py:149: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+      "tests/integration/test_async_conversation_generation.py:45: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+      "tests/integration/test_owned_voice_responses.py:236: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+      "tests/integration/test_response_deadlines.py:441: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+      "tests/integration/test_voice_service_lifecycle.py:165: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')"
+    ],
+    "new_F0_location_signatures": [
+      "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/_methods.py:132: RuntimeWarning: overflow encountered in reduce",
+      "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in scalar divide",
+      "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/fromnumeric.py:3824: RuntimeWarning: Mean of empty slice",
+      "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/torch/jit/_serialization.py:176: DeprecationWarning: `torch.jit.load` is deprecated. Please switch to `torch.export`.",
+      "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/uvicorn/protocols/websockets/websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated",
+      "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions",
+      "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/websockets/legacy/server.py:1178: DeprecationWarning: remove second argument of ws_handler",
+      "/Users/gabriel/Documents/Proyectos/kza/src/alerts/alert_manager.py:321: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+      "/Users/gabriel/Documents/Proyectos/kza/src/core/logging.py:129: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+      "<string>:8: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+      "tests/integration/test_async_conversation_generation.py:149: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+      "tests/integration/test_async_conversation_generation.py:45: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+      "tests/integration/test_owned_voice_responses.py:236: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+      "tests/integration/test_response_deadlines.py:441: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+      "tests/integration/test_voice_service_lifecycle.py:165: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')"
+    ],
+    "new_signatures": [],
+    "absent_prior_signatures": [],
+    "all_location_signature_count": 15,
+    "occurrences_F0": 62826,
+    "suppressed": false,
+    "C05_accepted": false,
+    "scope": "Displayed pytest warning locations only; compiled-child Chroma warning retained separately.",
+    "evidence": {
+      "E_warning_comparison_sha256": "2de616c0995533d0e62b5725644abda7148e4e31d3f71d07be599c87587752c7",
+      "F0_full_log_sha256": "d3bc9e8761f7612bcbb02c0f7e6afde32e12a030d895e00dff42efc7958e2a46"
+    }
+  },
+  "warnings_scope": "Pytest displayed signatures are compared to E. Raw compiled-child Chroma UserWarning about synthetic embedding reconstruction remains separately retained; no global no-warning claim.",
+  "limits": [
+    "Verified bounded native CPython3.13.18 arm64 process/context matrix, not every platform/compiler/version or all possible caller modifications.",
+    "Two public compiled Graph processes still use one unchanged physical state root per run. No cross-version runtime/data rollback has run.",
+    "F1 latest privacy authority, copied historical paths, positive compatible older-runtime rollback and forward recovery remain required.",
+    "T021/T022/T023/T024 remain in_progress; all21 acceptance criteria not_evaluated. C04/C05, same known regex xfail, warnings and diagnostics1/streams2/voices2 guards remain open.",
+    "No real models, GPU, audio/hardware/HA, production paths, release, service restarts or secrets accessed."
+  ],
+  "evidence_root": "data/autonomous-roadmap-20261102/t024/f0",
+  "next_unit_plan": "docs/plans/2026-11-06-privacy-safe-slot-rollback-continuation.json"
+}

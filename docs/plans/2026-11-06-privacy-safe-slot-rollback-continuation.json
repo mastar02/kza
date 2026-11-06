@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "unit": "T024-F1/privacy-safe-runtime-state-rollback",
+  "status": "next_unit_baseline_not_executed",
+  "goal": "docs/plans/2026-11-02-autonomous-roadmap.md",
+  "goal_status": "active_incomplete",
+  "baseline_revision": "3babff8aaa7dc8c5f87a5255e198a149ecfe718d",
+  "F0_status": "Local build-process prerequisite verified; full F/T024/C05 acceptance remains open.",
+  "prior_detailed_plan": {
+    "path": "docs/plans/2026-11-05-privacy-safe-slot-rollback-continuation.json",
+    "sha256": "17ec3fdbf31b2df0123cd764e1e0f8c9f644ffb592c24ebcb213ee706e514be5"
+  },
+  "F0_report": "docs/research/2026-11-06-compiler-process-reproducibility.json",
+  "authorization": "Continue existing active goal locally; no production/release/field actions. Keep original/new states and original failing attempts.",
+  "first_action": "Choose exact canonical Git commits with relevant SOURCE/API/behavior differences and declared compatible schemas, using current source. Different archive hashes alone cannot establish version rollback. Then execute the original two-root characterization before product changes.",
+  "baseline_before_product_change": [
+    "Build/stage pinned compatible compiled code with real build_runtime/prepare_slot into synthetic old state; activate while stopped. Seed S/U and manual/voice/person/account/consent sentinels through public Graph. Capture exact physical roots, descriptors, SDK rows and protected logical state; close owners/native SDK/lease and wait for child exit.",
+    "Offline prepare_slot(candidate,state_source=old_slot/state) copies into a distinct branch. Preserve original state and record copied historical absolute descriptors without relabeling witnesses. Candidate serving roots must be explicit before any write.",
+    "Read-only inventory branch ownership and all historical cleanup paths. Under synthetic fixtures only, characterize whether candidate S deletion reaches old branch, retaining the untouched baseline and actual native producer/eraser/SDK close receipts.",
+    "After stop/real exit, compare both branches, U exact and latest manual/person/account/consent decisions. Select old only while stopped; inspect stale authority before constructing readers. Preserve actual RED or fixture errors distinctly.",
+    "Do not weaken D/E physical lineage checks, delete historical target rows, insert success callbacks, overwrite original data or treat a symlink switch as serving proof."
+  ],
+  "bounded_design_after_baseline": [
+    "Review immutable runtime-to-latest-physical-state binding, exact code/state/schema compatibility, a latest-authority fence outside stale branches, stopped admission and single real writer lease.",
+    "Retain both original branch states and pre-rollback latest snapshot. Earlier compatible code must positively run through public Graph against latest S tombstone/manual/U, close normally, then forward recover. Incompatible code rejects before mutation; negative-only rejection is insufficient.",
+    "Keep voice-person linkage distinct from account/credential/session permissions. Current deletion/consent/manual authorities win without an automatic cross-authority SQL merge."
+  ],
+  "retained_requirements": [
+    "Full versioned runtime/data rollback and no resurrection",
+    "S tombstones/deleted facts/profile fences",
+    "U payload/SDK/source TTL<=48h unchanged",
+    "Manual voice/group/person authority and separately scoped account permissions",
+    "Real native producer/SDK/lease close and actual waits",
+    "diagnostics1/streams2/voices2 unresolved guards",
+    "Same known xfail/warnings and all21 criteria remain open"
+  ],
+  "budgets": {
+    "component_s": 300,
+    "broad_s": 1500,
+    "disk_preflight_GiB": 5,
+    "disk_floor_MiB": 512
+  },
+  "delegation": "Up to8 active agents including root, limited by actual session slots (currently4). Browser/desktop PC interaction must use gpt-6.1-terra subagent; root defines checks and reviews evidence.",
+  "tools": "Serena language server unavailable (uv/uvx PATH); use reported scoped rg/AST/ctx fallback. RAG kza unavailable; no indexing, server startup or scope expansion.",
+  "scope_limit": "This prerequisite/continuation does not close T024/C04/C05 or full data migration. No production, models, hardware or secrets."
+}

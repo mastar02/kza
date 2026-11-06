@@ -1273,7 +1273,8 @@
         "f5b846a538a71a386da68ca72b7fa35d619754b1",
         "59853442ccb367f1ba78cd838f587c8098f7fc82",
         "9b3170294eb69a53dd27b63949c09a63a2efed54",
-        "b2dc68d3297e5f22bd81372d9388e100c61107e7"
+        "b2dc68d3297e5f22bd81372d9388e100c61107e7",
+        "3babff8aaa7dc8c5f87a5255e198a149ecfe718d"
       ],
       "evidence": [
         "docs/plans/2026-11-05-erasure-restore-continuation.json",
@@ -1291,9 +1292,12 @@
         "data/autonomous-roadmap-20261102/t024/d/full-normal-attempt-01/acceptance-proof.json",
         "docs/research/2026-11-05-compiled-application-restore.json",
         "docs/plans/2026-11-05-privacy-safe-slot-rollback-continuation.json",
-        "data/autonomous-roadmap-20261102/t024/e/full-normal-attempt-01/acceptance-proof.json"
+        "data/autonomous-roadmap-20261102/t024/e/full-normal-attempt-01/acceptance-proof.json",
+        "docs/research/2026-11-06-compiler-process-reproducibility.json",
+        "docs/plans/2026-11-06-privacy-safe-slot-rollback-continuation.json",
+        "data/autonomous-roadmap-20261102/t024/f0/full-normal-attempt-01/acceptance-proof.json"
       ],
-      "next_action": "E verificada localmente: original1/1230 PASS, full8580 PASS+misma xfail/8581 IDs exactos;1042 fuentes/37 scripts/22 protegidos estables. Dos procesos por ensayo usan el mismo bytecode9b y estado físico estable. Warning Chroma sintético y variación de5pyc entre builds documentados. Continuar F: F0 reproducibilidad entre procesos con oracle binario intacto antes de comparar versiones, luego baseline y rollback seguro de runtime/datos con autoridad vigente. Tres guards y T024/C04/C05/21 criterios siguen abiertos."
+      "next_action": "F0 verificada localmente: RED original conservado; green4 y matriz6 con bytes iguales; dirigida1234 PASS, full8584 PASS+misma xfail/8585 IDs exactos;1043 fuentes/37 scripts/25 protegidos estables. Continuar F1: seleccionar versiones por diferencias reales de fuente/API y compatibilidad; baseline de dos estados antes de cambios, luego rollback positivo y recuperación manteniendo autoridad vigente. T024/C04/C05/21 criterios y tres guards siguen abiertos."
     },
     {
       "id": "T025",
@@ -2439,7 +2443,7 @@
     "last_verified_phase": "P1",
     "last_verified_task": "T020",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T024-E/committed-bytecode-public-graph-replay",
+    "last_verified_unit": "T024-F0/artifact-build-process-independence",
     "user_priority_after_admin_unit": "T047"
   }
 }

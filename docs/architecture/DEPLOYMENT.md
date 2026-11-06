@@ -140,12 +140,17 @@ seleccionable con `--revision`) y conserva el SHA en `release.json`. Compila los
 módulos a `.pyc` importables sin fuentes y agrega los recursos del frontend.
 Excluye configuración, `.env`, dependencias, modelos, datos, tests y Git. No
 reemplaza un archivo de salida existente. La construcción debe producir el mismo
-archivo para el mismo commit y versión de CPython. El ensayo local T024-E en Mac
-detectó diferencias de SHA entre construcciones independientes de la misma
-revisión: cinco `.pyc` por comparación, con headers y campos de código/constantes
-canónicos iguales. La causa y la reproducibilidad binaria entre procesos siguen
-pendientes; el artefacto concreto de cada ensayo permaneció íntegro durante sus
-dos ejecuciones. Ver la [evidencia y los límites de E](../research/2026-11-05-compiled-application-restore.json).
+archivo para el mismo commit y versión de CPython. El ensayo T024-E detectó
+diferencias entre procesos de la misma revisión; esa
+[evidencia histórica](../research/2026-11-05-compiled-application-restore.json)
+se conserva. T024-F0 reprodujo un contracaso por el estado de internado del
+llamador y separó ese efecto del parseo y la retención de cadenas. El builder
+ahora compila en un proceso nuevo con `PYTHONHASHSEED=0`, `py_compile` estándar
+y comprobación de ABI e inventario. El archivo completo coincide byte por byte
+en la matriz y tandas verificadas con CPython 3.13.18 arm64; conserva errores,
+warnings y la publicación sin sobrescritura. El requisito de reproducibilidad
+sigue vigente para cada plataforma soportada. Ver el [alcance probado y sus
+límites](../research/2026-11-06-compiler-process-reproducibility.json).
 
 Es bytecode para CPython 3.13, no un ejecutable nativo ni una barrera contra
 descompilación. Requiere el intérprete y las dependencias del entorno de
