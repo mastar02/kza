@@ -75,7 +75,8 @@ def derive_branch(controller, ordinary, latest, slot, *, now):
     return derived, identity
 
 
-def prepare_case(task, evidence, repo, new_revision, *, copy_cleanup_seed=False):
+def prepare_case(task, evidence, repo, new_revision, *, copy_cleanup_seed=False,
+                 binary_lineage_seed=False):
     """Build exact old/new artifacts and declare four independent physical roots."""
     from scripts.build_runtime import build_runtime
     from scripts.stage_runtime import prepare_slot
@@ -85,6 +86,8 @@ def prepare_case(task, evidence, repo, new_revision, *, copy_cleanup_seed=False)
 
     if type(copy_cleanup_seed) is not bool:
         raise ValueError("reconciliation_cleanup_seed_flag")
+    if type(binary_lineage_seed) is not bool:
+        raise ValueError("reconciliation_binary_lineage_seed_flag")
     if re.fullmatch("[0-9a-f]{40}", new_revision) is None:
         raise ValueError("reconciliation_exact_new_commit_required")
     # The older application stays genuine OLD code. Its security bridge uses
@@ -115,6 +118,8 @@ def prepare_case(task, evidence, repo, new_revision, *, copy_cleanup_seed=False)
         "controls": {}, "outputs": {}}
     if copy_cleanup_seed:
         plan["copy_cleanup_seed"] = True
+    if binary_lineage_seed:
+        plan["binary_lineage_seed"] = True
     common = dict(prepared["controls"]["old"][0])
     common["island_files"] = prepared["island_files"]
     for branch, (slot, artifact, revision, release) in specs.items():
@@ -266,7 +271,8 @@ def assert_material_point(expected, actual, reference, *, source_state, destinat
 
 
 def exercise_material_reconciliation(task, evidence, repo, *, new_revision,
-                                     before_advance_n=None, copy_cleanup_seed=False):
+                                     before_advance_n=None, copy_cleanup_seed=False,
+                                     binary_lineage_seed=False):
     """Execute real code/data rollback and forward recovery with retained inputs."""
     import time
     from scripts.stage_runtime import AdmissionController
@@ -283,7 +289,8 @@ def exercise_material_reconciliation(task, evidence, repo, *, new_revision,
     snapshots.mkdir(mode=0o700)
     if before_advance_n is not None and not callable(before_advance_n):
         raise ValueError("reconciliation_before_advance_hook")
-    prepared = prepare_case(task, evidence, repo, new_revision, copy_cleanup_seed=copy_cleanup_seed)
+    prepared = prepare_case(task, evidence, repo, new_revision, copy_cleanup_seed=copy_cleanup_seed,
+        binary_lineage_seed=binary_lineage_seed)
     settings = (prepared["full_roots"]["O"].parents[1] / "config/settings.yaml").read_bytes()
     proof = {"schema_version": 1, "unit": "T024-F1/material-code-data-reconciliation",
         "complete": False, "F1_delivered": False, "goal_complete": False,

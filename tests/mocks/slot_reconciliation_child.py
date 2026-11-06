@@ -403,8 +403,113 @@ async def seed_cleanup_exports(g, subject, foreign):
         "S_source": subject.source.to_dict(), "U_source": foreign.source.to_dict()}
 
 
-async def seed_ordinary_O(args, control, guard, e, *, copy_cleanup_seed=False):
+def _binary_correction_row(path, identifier):
+    """Select one admitted correction; never read other conversations' text."""
+    path = Path(path)
+    assert path.is_file() and not path.is_symlink()
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+        db.row_factory = sqlite3.Row
+        selected = db.execute("SELECT * FROM stt_corrections_v1 WHERE id=?", (identifier,)).fetchone()
+        return None if selected is None else dict(selected)
+
+
+async def read_binary_lineage(g, reference):
+    """Read actual WAVs through source-scoped leases; never recover revoked S."""
+    import hashlib
+    from src.memory.fact_ledger import MemorySource
+    from src.wakeword.clip_store import clip_sources
+
+    assert reference["schema_version"] == 1
+    clips = {row["id"]: row for row in await asyncio.to_thread(
+        rows, g.root / "privacy.db", "wake_clips_v1")}
+    target, output = g.targets["stt"], {}
+    for role, ref in reference["records"].items():
+        sources = ref["sources"]
+        assert type(sources) is tuple and len(sources) == 1 and type(sources[0]) is MemorySource
+        row, correction = clips.get(ref["id"]), None
+        if row is not None:
+            assert row["target_id"] == target.id and row["bucket"] == "stt_correction"
+            assert clip_sources(row["sources_json"]) == sources
+            assert row["captured_at"] == min(source.captured_at for source in sources)
+            assert 0 < row["expires_at"] <= min(source.expires_at for source in sources)
+            if "original_row" in ref:
+                assert all(row[name] == ref["original_row"][name] for name in (
+                    "id", "bucket", "sources_json", "captured_at", "expires_at", "published"))
+        raw = None
+        with g.clips.reading(target, sources) as admitted:
+            if admitted:
+                correction = await asyncio.to_thread(_binary_correction_row,
+                    g.root / "privacy.db", ref["id"])
+                assert row is not None and correction is not None and row["published"] == 1
+                raw = (Path(target.root) / "policy_v1" / (ref["id"] + ".wav")).read_bytes()
+                assert raw[:4] == b"RIFF" and raw[8:12] == b"WAVE"
+                if "sha256" in ref["file_locator"]:
+                    assert hashlib.sha256(raw).hexdigest() == ref["file_locator"]["sha256"]
+                    assert len(raw) == ref["file_locator"]["size"]
+        if role == "U_shared_manual":
+            assert admitted and correction is not None and correction["used"] == 1
+        # After S withdrawal only lineage metadata may remain. No S file or
+        # correction text is read through an old locator/checkpoint as fallback.
+        output[role] = {"id": ref["id"], "sources": sources, "available": bool(admitted),
+            "current_file_locator": {"root": target.root, "target_id": target.id,
+                "relative": "policy_v1/" + ref["id"] + ".wav"},
+            "collectors": {"rows": [] if row is None else [row],
+                "files": {} if raw is None else {ref["id"]: raw},
+                "correction_rows": [] if not admitted or correction is None else [correction]}}
+    return output
+
+
+async def seed_binary_lineage(g, subject, foreign):
+    """Create real S-private/S-shared/U-manual records with independent lineage."""
+    import hashlib
+    import numpy as np
+
+    private = np.linspace(-.61, .61, 16000, dtype=np.float32)
+    shared = np.tile(np.asarray([.47, -.47, .13, -.13], dtype=np.float32), 4000)
+    inputs = (("S_private", private, subject.source), ("S_shared", shared, subject.source),
+        ("U_shared_manual", shared, foreign.source))
+    identities = {}
+    for role, audio, source in inputs:
+        identifier = await g.stt.add_correction(audio=audio, original_text=role + " binary original",
+            corrected_text=role + " binary correction", sources=(source,), correction_sources=(source,))
+        assert identifier is not None
+        identities[role] = identifier
+    assert len(set(identities.values())) == 3
+    views = await g.stt.get_training_pairs()
+    try:
+        by_id = {view.id: view for view in views}
+        for role, _, source in inputs:
+            view = by_id[identities[role]]
+            assert view.available and view.sources == (source,) and view.expires_at <= source.expires_at
+        await g.stt.mark_used([by_id[identities["U_shared_manual"]]])
+    finally:
+        for view in views:
+            view.clear()
+    target = g.targets["stt"]
+    reference = {"schema_version": 1, "records": {role: {"id": identities[role], "sources": (source,),
+        "row_locator": {"database_path": str(g.root / "privacy.db"), "table": "wake_clips_v1",
+            "id": identities[role], "target_id": target.id},
+        "correction_row_locator": {"database_path": str(g.root / "privacy.db"),
+            "table": "stt_corrections_v1", "id": identities[role]},
+        "file_locator": {"root": target.root, "relative": "policy_v1/" + identities[role] + ".wav",
+            "target_id": target.id}} for role, _, source in inputs}}
+    observed = await read_binary_lineage(g, reference)
+    raw = {role: record["collectors"]["files"][record["id"]] for role, record in observed.items()}
+    assert raw["S_private"] != raw["S_shared"] == raw["U_shared_manual"]
+    assert all(record["available"] for record in observed.values())
+    for role, record in observed.items():
+        reference["records"][role]["original_row"] = record["collectors"]["rows"][0]
+        reference["records"][role]["file_locator"].update(
+            sha256=hashlib.sha256(raw[role]).hexdigest(), size=len(raw[role]))
+    private = shared = inputs = audio = raw = None
+    return reference, observed
+
+
+async def seed_ordinary_O(args, control, guard, e, *, copy_cleanup_seed=False,
+                          binary_lineage_seed=False):
     """Create real O data and separate manual sentinels before any upgrade."""
+    if type(binary_lineage_seed) is not bool:
+        raise ValueError("reconciliation_binary_lineage_seed_flag")
     from dataclasses import replace
     import time
     from uuid import uuid4
@@ -446,6 +551,8 @@ async def seed_ordinary_O(args, control, guard, e, *, copy_cleanup_seed=False):
                 "forward_guard": {"identity": forward_guard.identity, "token": forward_guard.token}}
             if copy_cleanup_seed:
                 payload["copy_cleanup"] = await seed_cleanup_exports(g, subject, foreign)
+            if binary_lineage_seed:
+                payload["binary_lineage"], payload["binary_observed"] = await seed_binary_lineage(g, subject, foreign)
             guard.audit()
         MemoryClient.close_since(marker)
         resources = _resources(g)
@@ -502,6 +609,11 @@ async def advance_ordinary_N(args, control, guard, e, *, source_control, source_
             pending = changes.queue_consent_withdrawal(replay.root_lease(g))
             assert pending.previous_consent is True and pending.next_generation_only is True
             assert changes.receipt is None
+            binary_observed = (await read_binary_lineage(g, saved["binary_lineage"])
+                if "binary_lineage" in saved else None)
+            if binary_observed is not None:
+                assert not binary_observed["S_private"]["available"]
+                assert not binary_observed["S_shared"]["available"]
             guard.audit()
         assert subject_gate.returned.is_set() and unrelated_gate.returned.is_set()
         assert subject_gate.completed.is_set() and unrelated_gate.completed.is_set()
@@ -516,6 +628,8 @@ async def advance_ordinary_N(args, control, guard, e, *, source_control, source_
             "N": ordinary_N, "N_only": ordinary_new, "N_observed": observed,
             "N_only_observed": observed_new, "decisions": decisions, "operation": operation,
             "steps": steps, "consent_transition": asdict(receipt), "mixed_sentinels": mixed}
+        if binary_observed is not None:
+            payload.update(binary_lineage=saved["binary_lineage"], binary_observed=binary_observed)
         digest = write_phase_bag(e, Path(args.checkpoint), control, "advance-N", payload)
         return resources, digest
     finally:
@@ -673,12 +787,19 @@ async def observe_rollback_R(args, control, guard, e, *, seed_control, seed_path
             assert authority.resolve(extra["token"]) is None
             assert not [r for r in await asyncio.to_thread(rows, authority.path, "credentials")
                 if r["id"] == extra["identity"]]
+            binary_observed = (await read_binary_lineage(g, seed["binary_lineage"])
+                if "binary_lineage" in seed else None)
+            if binary_observed is not None:
+                assert not binary_observed["S_private"]["available"]
+                assert not binary_observed["S_shared"]["available"]
             guard.audit()
         MemoryClient.close_since(marker)
         resources = _resources(g)
-        digest = write_phase_bag(e, Path(args.checkpoint), control, "rollback-R",
-            {"clock_now": clock.now, "O_source_sha256": seed_sha, "N_source_sha256": latest_sha,
-             "R_observed": observed, "post_R_revoked_credential": extra["identity"]})
+        payload = {"clock_now": clock.now, "O_source_sha256": seed_sha, "N_source_sha256": latest_sha,
+            "R_observed": observed, "post_R_revoked_credential": extra["identity"]}
+        if binary_observed is not None:
+            payload.update(binary_lineage=seed["binary_lineage"], binary_observed=binary_observed)
+        digest = write_phase_bag(e, Path(args.checkpoint), control, "rollback-R", payload)
         return resources, digest
     finally:
         MemoryClient.close_since(marker)
@@ -717,13 +838,20 @@ async def observe_forward_F(args, control, guard, e, *, seed_control, seed_path,
                 if r["id"] == rollback["post_R_revoked_credential"]]
             observed = await read_ordinary(g, latest["N"], publish=True)
             observed_new = await read_ordinary(g, latest["N_only"], publish=True)
+            binary_observed = (await read_binary_lineage(g, seed["binary_lineage"])
+                if "binary_lineage" in seed else None)
+            if binary_observed is not None:
+                assert not binary_observed["S_private"]["available"]
+                assert not binary_observed["S_shared"]["available"]
             guard.audit()
         MemoryClient.close_since(marker)
         resources = _resources(g)
-        digest = write_phase_bag(e, Path(args.checkpoint), control, "forward-F",
-            {"clock_now": clock.now, "O_source_sha256": seed_sha, "N_source_sha256": latest_sha,
-             "R_source_sha256": rollback_sha, "F_observed": observed, "F_N_only_observed": observed_new,
-             "post_R_revoked_credential": rollback["post_R_revoked_credential"]})
+        payload = {"clock_now": clock.now, "O_source_sha256": seed_sha, "N_source_sha256": latest_sha,
+            "R_source_sha256": rollback_sha, "F_observed": observed, "F_N_only_observed": observed_new,
+            "post_R_revoked_credential": rollback["post_R_revoked_credential"]}
+        if binary_observed is not None:
+            payload.update(binary_lineage=seed["binary_lineage"], binary_observed=binary_observed)
+        digest = write_phase_bag(e, Path(args.checkpoint), control, "forward-F", payload)
         return resources, digest
     finally:
         MemoryClient.close_since(marker)
@@ -739,8 +867,10 @@ def phase_inputs(e, args, control):
     raw = path.read_bytes()
     plan = json.loads(raw)
     base_fields = {"schema_version", "unit", "controls", "outputs"}
-    if (type(plan) is not dict or set(plan) not in (base_fields, base_fields | {"copy_cleanup_seed"})
-            or type(plan.get("copy_cleanup_seed", False)) is not bool
+    optional_flags = {"copy_cleanup_seed", "binary_lineage_seed"}
+    if (type(plan) is not dict or not base_fields <= set(plan)
+            or not set(plan) <= base_fields | optional_flags
+            or any(type(plan.get(flag, False)) is not bool for flag in optional_flags)
             or plan["schema_version"] != 1
             or plan["unit"] != "T024-F1/material-code-data-reconciliation"
             or set(plan["controls"]) != {"O", "N", "R", "F"}
@@ -803,7 +933,8 @@ def reconciliation_main():
     async def run():
         if args.mode == "seed-O":
             return await seed_ordinary_O(args, control, guard, e,
-                copy_cleanup_seed=plan.get("copy_cleanup_seed", False))
+                copy_cleanup_seed=plan.get("copy_cleanup_seed", False),
+                binary_lineage_seed=plan.get("binary_lineage_seed", False))
         common = {"seed_control": controls["O"], "seed_path": plan["outputs"]["O"],
             "latest_control": controls["N"], "latest_path": plan["outputs"]["N"]}
         if args.mode == "advance-N":
