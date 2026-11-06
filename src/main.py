@@ -369,8 +369,10 @@ async def build_application(
     """
     config = seal_runtime_configuration(config)
     admission = await asyncio.to_thread(verify_runtime_admission, config)
+    destination_registration = None
     if admission is not None:
         admission.install_on(shutdown)
+        destination_registration = await admission.begin_destination_registration(config)
     factories = factories or ApplicationFactories()
 
     # Verificar Home Assistant
@@ -793,6 +795,8 @@ async def build_application(
     reminders_config = config.get("reminders", {})
     list_store = ListStore(lists_config.get("db_path", "./data/lists.db"))
     shutdown.push_async_callback(list_store.close)
+    if destination_registration is not None:
+        await destination_registration.register_store(list_store, "lists")
     await list_store.initialize()
     list_manager = ListManager(store=list_store, ha_client=ha_client, config=lists_config)
 
@@ -800,6 +804,8 @@ async def build_application(
     reminder_store = ReminderStore(reminders_config.get("db_path", "./data/reminders.db"),
                                    on_created=reminder_wake_event.set)
     shutdown.push_async_callback(reminder_store.close)
+    if destination_registration is not None:
+        await destination_registration.register_store(reminder_store, "reminders")
     await reminder_store.initialize()
     reminder_manager = ReminderManager(store=reminder_store, config=reminders_config, home_actions=home_action_service)
     reminder_scheduler = None  # Created after presence_detector is ready

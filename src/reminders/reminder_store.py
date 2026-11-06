@@ -13,6 +13,9 @@ import aiosqlite
 
 from src.core.owned_work import ClosePhase, WorkCloseTimeout
 from src.core.sqlite_work import AuthorityGuard, SQLiteWork
+from src.memory.output_registration import (
+    DestinationRegistration, before_store_open, store_open_returned, store_close_returned,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +70,10 @@ class Reminder:
 class ReminderStore:
     """Async SQLite store for reminder CRUD operations."""
 
-    def __init__(self, db_path: str, *, on_created: Callable[[], None] | None = None):
+    def __init__(self, db_path: str, *, on_created: Callable[[], None] | None = None,
+                 registration: "DestinationRegistration | None" = None) -> None:
         self._db_path = db_path
+        self._destination_registration = registration
         self._db: aiosqlite.Connection | None = None
         self._on_created = on_created
         self._work: SQLiteWork | None = None
@@ -88,6 +93,7 @@ class ReminderStore:
             if self._closing is not None and not self._closing.done():
                 raise RuntimeError("reminder_store_closing")
             self._closing = None
+            await before_store_open(self, "reminders", self._db_path, self._destination_registration)
             self._db = await aiosqlite.connect(self._db_path)
             if self._closing is not None:
                 raise RuntimeError("reminder_store_closing")
@@ -121,6 +127,7 @@ class ReminderStore:
                 db.execute("UPDATE reminder_home_actions SET status = 'uncertain', "
                            "reason = 'interrupted_send' WHERE status = 'sending'")
             await self._work.write(schema)
+            await store_open_returned(self)
             self._initialized = True
             logger.info("ReminderStore initialized at %s", self._db_path)
 
@@ -178,6 +185,8 @@ class ReminderStore:
                         self._initialized = False
                     if self._work is work:
                         self._work = None
+                    if database is not None:
+                        await store_close_returned(self)
 
             self._closing = asyncio.create_task(finish(), context=Context())
             def observed(done):

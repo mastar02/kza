@@ -15,6 +15,10 @@ import stat
 import sys
 import threading
 from types import MethodType, ModuleType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.memory.output_registration import DestinationRegistrationCoordinator
 
 MARKER = ".kza-state-binding.json"
 TICKET_ENV = "KZA_RUNTIME_ADMISSION"
@@ -22,6 +26,8 @@ _guard = threading.RLock()
 _companions: dict[str, ModuleType] = {}
 _verified_runs: set[tuple[str, str]] = set()
 _installed_runs: set[str] = set()
+# Exact factory provenance; installed entries stay managed until process exit.
+_verified_admissions: dict[object, bool] = {}
 
 
 def _companion(relative: str) -> ModuleType:
@@ -230,6 +236,7 @@ class RuntimeAdmission:
         self._stop_observer = None
         self._diagnostic_construction = None
         self._construction_revalidation: asyncio.Task | None = None
+        self._output_registration = None
 
     @property
     def state_root(self) -> Path:
@@ -247,7 +254,14 @@ class RuntimeAdmission:
             _installed_runs.add(run)
             self._installed = True
             self._shutdown = shutdown
+            if self in _verified_admissions:
+                _verified_admissions[self] = True
         shutdown.push_async_exit(self._after_owned_close)
+
+    async def begin_destination_registration(self, config: dict) -> DestinationRegistrationCoordinator:
+        """Register producer destinations without replacing source/close authority."""
+        from src.memory.output_registration import begin_registration
+        return await begin_registration(self, config, self._shutdown)
 
     def attach_graph(self, graph) -> None:
         """Attach the actual public graph after successful construction."""
@@ -396,9 +410,11 @@ def verify_runtime_admission(config: dict, *, runtime_root: Path | None = None) 
     _check_serving_paths(config, state)
     # Detect a private-file change during decoding before the first constructor.
     _stage().validate_admission_ticket(state, ticket, check_state=True)
+    admission = RuntimeAdmission(ticket, binding, path, digest)
     with _guard:
         _verified_runs.add((ticket["run_id"], ticket["binding_id"]))
-    return RuntimeAdmission(ticket, binding, path, digest)
+        _verified_admissions[admission] = False
+    return admission
 
 
 def verify_privacy_admission(path: str | Path) -> None:

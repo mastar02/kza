@@ -467,6 +467,95 @@ def _recover_compiled_catalog(task, evidence):
     (evidence / "catalog-recovery.json").write_text(json.dumps(recovered, indent=2) + "\n")
 
 
+_RECOVER_OUTPUT_REGISTRATION = """
+import asyncio, hashlib, json, os, sys
+from pathlib import Path
+runtime, admission, evidence = map(Path, sys.argv[1:])
+sys.path.insert(0, str(runtime))
+from src.core.runtime_admission import _stage
+from src.memory import output_registration, copy_catalog
+from src.lists.list_store import ListStore
+from src.reminders.reminder_store import ReminderStore
+import aiosqlite
+stage = _stage()
+assert Path(output_registration.__file__).suffix == '.pyc'
+assert Path(output_registration.__file__).resolve().is_relative_to(runtime)
+assert Path(stage.__file__).suffix == '.pyc'
+with stage.AdmissionController(admission) as controller:
+    before_head = stage.read_admission_head(admission)
+    current = stage.read_binding(admission, before_head['binding_id'])
+    before_state = copy_catalog._inventory(Path(current['state_root']))
+    manifest = json.loads((runtime / 'release.json').read_text())
+    assert hashlib.sha256((runtime / 'release.json').read_bytes()).hexdigest() == current['release_sha256']
+    expected = {}
+    for mode in ('advance-N', 'forward-F'):
+        parent = json.loads((evidence / (mode + '-parent-receipt.json')).read_text())
+        closure_path = admission / 'admission/closures' / (parent['closed_binding_id'] + '.json')
+        assert hashlib.sha256(closure_path.read_bytes()).hexdigest() == parent['closure_sha256']
+        running = json.loads(closure_path.read_text())['running_head']
+        expected[running['run_id']] = (running['binding_id'], running['generation'])
+    records = output_registration.read_output_inventory(controller)
+    assert {r['run_id']: (r['header']['binding_id'], r['header']['generation']) for r in records} == expected
+    assert len(records) == 2, records
+    assert all(r['phase'] == 'observed' for r in records)
+    assert all(r['journal']['revision'] == 10 for r in records)
+    assert all(set(r['stores']) == {'lists', 'reminders'} for r in records)
+    assert all(s['phase'] == 'closed' for r in records for s in r['stores'].values())
+    assert all(len(r['required_producers']) == 32 and len(r['uncovered_producers']) == 30 for r in records)
+    assert all(r['capability'] is False and r['global_inventory_complete'] is False
+        and r['aggregate_copy_complete'] is False for r in records)
+    assert all(r['configuration']['effective_digest'] == 'observed_only' for r in records)
+    receipts = [stage._read_json(admission / 'admission/receipts' / (r['run_id'] + '.json')) for r in records]
+    assert all(r['child_pid'] != os.getpid() for r in receipts)
+    # A completed real run and serialized registration metadata grant no new
+    # open. This fresh process has a closed-controller lease, not a replayed
+    # direct-child runtime ticket.
+    connects = []
+    original_connect = aiosqlite.connect
+    aiosqlite.connect = lambda *a, **k: connects.append(True)
+    async def rejected_replay():
+        for record in records:
+            for name, state in record['stores'].items():
+                store_type = ListStore if name == 'lists' else ReminderStore
+                store = store_type(state['plan']['path'], registration=state)
+                try:
+                    await store.initialize()
+                except (ValueError, RuntimeError):
+                    pass
+                else:
+                    raise AssertionError('Completed run metadata admitted a native connection')
+                assert store._db is None
+        assert connects == []
+    try:
+        asyncio.run(rejected_replay())
+    finally:
+        aiosqlite.connect = original_connect
+    assert output_registration.read_output_inventory(controller) == records
+    assert stage.read_admission_head(admission) == before_head
+    assert copy_catalog._inventory(Path(current['state_root'])) == before_state
+    module_hashes = {}
+    for name, module in tuple(sys.modules.items()):
+        if name == 'src' or name.startswith('src.'):
+            origin = Path(module.__file__).resolve()
+            assert origin.suffix == '.pyc' and origin.is_relative_to(runtime)
+            relative = str(origin.relative_to(runtime))
+            digest = hashlib.sha256(origin.read_bytes()).hexdigest()
+            assert manifest['files'][relative] == digest
+            module_hashes[name] = digest
+print(json.dumps({'pid': os.getpid(), 'module': output_registration.__file__,
+    'stage_module': stage.__file__, 'module_hashes': module_hashes, 'unchanged_head_state': True, 'run_ids': sorted(r['run_id'] for r in records),
+    'stores_closed': 4, 'required_producers': 32, 'uncovered_per_run': 30,
+    'completed_run_metadata_rejected_before_connect': True,
+    'capability': False, 'global_inventory_complete': False, 'aggregate_copy_complete': False}))
+"""
+
+
+def _recover_compiled_output_registration(task, evidence):
+    runtime = (task / "staging/slots/forward/runtime").resolve(strict=True)
+    return _run_catalog_child(_RECOVER_OUTPUT_REGISTRATION, runtime, task / "staging",
+        evidence, "output-registration-recovery", evidence)
+
+
 def test_compiled_material_rollback_and_forward_preserve_latest_authority(tmp_path):
     repo = Path(__file__).resolve().parents[2]
     revision = os.environ.get("KZA_RECONCILIATION_REVISION") or subprocess.check_output(
@@ -477,6 +566,7 @@ def test_compiled_material_rollback_and_forward_preserve_latest_authority(tmp_pa
     evidence.mkdir(mode=0o700, parents=True)
     proof = exercise_material_reconciliation(tmp_path, evidence.resolve(), repo, new_revision=revision)
     assert proof["complete"] is True
+    _recover_compiled_output_registration(tmp_path.resolve(), evidence.resolve())
     _recover_compiled_catalog(tmp_path.resolve(), evidence.resolve())
     _probe_compiled_sdk_metadata_faults(tmp_path.resolve(), evidence.resolve())
     _probe_compiled_sdk_constructor_failure(tmp_path.resolve(), evidence.resolve())

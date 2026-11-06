@@ -11,6 +11,9 @@ import aiosqlite
 
 from src.core.owned_work import ClosePhase, WorkCloseTimeout
 from src.core.sqlite_work import AuthorityGuard, SQLiteWork
+from src.memory.output_registration import (
+    DestinationRegistration, before_store_open, store_open_returned, store_close_returned,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +57,9 @@ def _generate_id() -> str:
 class ListStore:
     """SQLite-backed storage for lists and their items."""
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, *, registration: "DestinationRegistration | None" = None) -> None:
         self._db_path = db_path
+        self._destination_registration = registration
         self._db: aiosqlite.Connection | None = None
         self._work: SQLiteWork | None = None
         self._closing: asyncio.Task | None = None
@@ -71,6 +75,7 @@ class ListStore:
             if self._closing is not None and not self._closing.done():
                 raise RuntimeError("list_store_closing")
             self._closing = None
+            await before_store_open(self, "lists", self._db_path, self._destination_registration)
             self._db = await aiosqlite.connect(self._db_path)
             if self._closing is not None:
                 raise RuntimeError("list_store_closing")
@@ -94,6 +99,7 @@ class ListStore:
                     )
                 """)
             await self._work.write(schema)
+            await store_open_returned(self)
             logger.info("ListStore initialized at %s", self._db_path)
 
     async def close(self) -> None:
@@ -113,6 +119,8 @@ class ListStore:
                         self._db = None
                     if self._work is work:
                         self._work = None
+                    if database is not None:
+                        await store_close_returned(self)
 
             self._closing = asyncio.create_task(finish(), context=Context())
             def observed(done):
