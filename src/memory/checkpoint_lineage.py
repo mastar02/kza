@@ -95,6 +95,7 @@ def normalize_wire(value):
             return ref
         if kind == "dto":
             _require(set(node) == {"k", "n", "v"} and type(node["n"]) is str, "dto_tag")
+            _require(type(node["v"]) is dict and node["v"].get("k") == "dict", "dto_field_wire")
             fields = decode(node["v"], pointer + "/v", depth + 1)
             _require(type(fields) is dict, "dto_fields")
             valid = set(fields) == DTO_FIELDS.get(node["n"])
@@ -310,9 +311,56 @@ def classify_blobs(references):
     return output
 
 
+def _unavailable(value):
+    if value is None:
+        return {}
+    _require(type(value) is dict, "retirement_evidence")
+    for digest, pin in value.items():
+        _require(_hash(digest) and type(pin) is dict and set(pin) == {"size", "identity"}
+            and type(pin["size"]) is int and 0 <= pin["size"] <= 16 * 1024 * 1024
+            and type(pin["identity"]) is dict and set(pin["identity"]) == {"device", "inode"}
+            and all(type(v) is int and v >= 0 for v in pin["identity"].values()), "retirement_evidence")
+    return value
+
+
+def checkpoint_source_scope(path: Path, *, expected_sha256: str) -> dict:
+    """Extract original typed O sources without constructing application DTOs.
+
+    Args:
+        path: Canonical original O checkpoint.
+        expected_sha256: External original pin, never a hash adopted from input.
+
+    Returns:
+        Typed original source anchors and disjoint conversation scopes as data.
+    """
+    _require(_hash(expected_sha256), "checkpoint_pin")
+    raw, _ = _read(path, 64 * 1024 * 1024)
+    _require(_sha(raw) == expected_sha256, "checkpoint_pin")
+    document = _load(raw)
+    _require(type(document) is dict and set(document) == PIN_FIELDS | {"schema_version", "payload", "blob_manifest"}
+        and type(document["schema_version"]) is int and document["schema_version"] == 1
+        and document["unit"] == "T024-F1/material-code-data-reconciliation"
+        and document["mode"] == "seed-O", "scope_envelope")
+    root, tags, _ = normalize_wire(document["payload"])
+    _require(type(root) is dict and tags.get(id(root)) is None, "scope_root")
+    subject, foreign, ordinary = root.get("subject"), root.get("foreign"), root.get("ordinary_sources")
+    _require(type(subject) is dict and type(foreign) is dict
+        and tags.get(id(subject)) == tags.get(id(foreign)) == ("Cohort", True)
+        and type(ordinary) in (tuple, list) and tags.get(id(ordinary)) is None, "scope_cohorts")
+    anchors = (subject.get("source"), foreign.get("source"), *ordinary)
+    _require(all(type(source) is dict and tags.get(id(source)) == ("MemorySource", True)
+        and _source(source) for source in anchors), "scope_sources")
+    withdrawn = anchors[0]["conversation_id"]
+    _require(all(source["conversation_id"] != withdrawn for source in anchors[1:]), "scope_overlap")
+    _require(len({source["capture_id"] for source in anchors}) == len(anchors), "scope_duplicate")
+    return {"source_anchors": anchors, "withdrawn_conversation_id": withdrawn,
+        "preserved_conversation_ids": tuple(sorted({source["conversation_id"] for source in anchors[1:]}))}
+
+
 def analyze_checkpoint(path: Path, blob_root: Path, *, expected_sha256: str, expected_pins: dict,
                        source_anchors: tuple[dict, ...], withdrawn_conversation_id: str,
-                       preserved_conversation_ids: tuple[str, ...]) -> dict:
+                       preserved_conversation_ids: tuple[str, ...],
+                       unavailable_blobs: dict[str, dict] | None = None) -> dict:
     """Verify one checkpoint; only the four-branch API closes shared inventory."""
     _require(_hash(expected_sha256) and type(expected_pins) is dict and set(expected_pins) == PIN_FIELDS, "external_pins")
     _require(type(source_anchors) is tuple and type(preserved_conversation_ids) is tuple, "source_scope")
@@ -322,6 +370,7 @@ def analyze_checkpoint(path: Path, blob_root: Path, *, expected_sha256: str, exp
             and len(set(ids)) == len(ids), "source_scope")
     except (ValueError, TypeError, AttributeError) as error:
         raise ValueError("binary_lineage_source_scope") from error
+    unavailable_blobs = _unavailable(unavailable_blobs)
     raw, identity = _read(path, 64 * 1024 * 1024)
     _require(_sha(raw) == expected_sha256, "checkpoint_pin")
     document = _load(raw)
@@ -341,6 +390,18 @@ def analyze_checkpoint(path: Path, blob_root: Path, *, expected_sha256: str, exp
     _require(blob_root.is_absolute() and blob_root.is_dir() and blob_root.resolve(strict=True) == blob_root, "blob_root")
     root_info, physical = blob_root.stat(), {}
     for digest, size in manifest.items():
+        if digest in unavailable_blobs:
+            pin = unavailable_blobs[digest]
+            _require(pin["size"] == size, "retirement_size")
+            try:
+                (blob_root / (digest + ".bin")).lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                raise ValueError("binary_lineage_retirement_still_present")
+            physical[digest] = {"path": str(blob_root / (digest + ".bin")), "size": size,
+                "identity": dict(pin["identity"]), "available": False, "supplied_retirement_pins": True}
+            continue
         data, file_identity = _read(blob_root / (digest + ".bin"), 16*1024*1024)
         _require(len(data) == size and _sha(data) == digest, "blob_pin")
         physical[digest] = {"path": str(blob_root / (digest + ".bin")), "size": size, "identity": file_identity}
@@ -353,6 +414,9 @@ def analyze_checkpoint(path: Path, blob_root: Path, *, expected_sha256: str, exp
     for ref in references:
         ref.update(checkpoint_sha256=expected_sha256, checkpoint=str(path), mode=document["mode"],
             manifest_sha256=_sha(_json(manifest)), physical=physical[ref["sha256"]])
+    classified = classify_blobs(references)
+    _require(all(classified[digest]["classification"] == "S_only"
+        for digest in set(unavailable_blobs) & set(manifest)), "retirement_source_scope")
     link_keys = {"O_source_sha256", "N_source_sha256", "R_source_sha256"}
     links = {key: root[key] for key in link_keys if key in root}
     expected_keys = {"seed-O": set(), "advance-N": {"O_source_sha256"},
@@ -360,14 +424,16 @@ def analyze_checkpoint(path: Path, blob_root: Path, *, expected_sha256: str, exp
     _require(set(links) == expected_keys and all(_hash(v) for v in links.values()), "parent_link_fields")
     return {"checkpoint": str(path), "checkpoint_sha256": expected_sha256, "checkpoint_identity": identity,
         "pins": expected_pins, "manifest": manifest, "manifest_sha256": _sha(_json(manifest)),
-        "references": references, "blobs": classify_blobs(references), "parent_links": links,
+        "references": references, "blobs": classified, "parent_links": links,
         "complete_reference_scope": False, "deletion_authorized": False, "cleanup_ack": False}
 
 
 def analyze_checkpoints(checkpoints: dict, blob_root: Path, *, source_anchors: tuple[dict, ...],
-                        withdrawn_conversation_id: str, preserved_conversation_ids: tuple[str, ...]) -> dict:
+                        withdrawn_conversation_id: str, preserved_conversation_ids: tuple[str, ...],
+                        unavailable_blobs: dict[str, dict] | None = None) -> dict:
     """Close four-branch physical/reference inventory without mutation/grants."""
     _require(type(checkpoints) is dict and set(checkpoints) == {"O", "N", "R", "F"}, "checkpoint_set")
+    unavailable_blobs = _unavailable(unavailable_blobs)
     reports, manifest, references = {}, {}, []
     modes = {"O": "seed-O", "N": "advance-N", "R": "rollback-R", "F": "forward-F"}
     for branch in ("O", "N", "R", "F"):
@@ -375,7 +441,7 @@ def analyze_checkpoints(checkpoints: dict, blob_root: Path, *, source_anchors: t
         _require(type(spec) is dict and set(spec) == {"path", "expected_sha256", "expected_pins"}, "checkpoint_spec")
         report = analyze_checkpoint(blob_root=blob_root, source_anchors=source_anchors,
             withdrawn_conversation_id=withdrawn_conversation_id,
-            preserved_conversation_ids=preserved_conversation_ids, **spec)
+            preserved_conversation_ids=preserved_conversation_ids, unavailable_blobs=unavailable_blobs, **spec)
         _require(report["pins"]["mode"] == modes[branch], "checkpoint_mode")
         expected_links = {key + "_source_sha256": prior["checkpoint_sha256"] for key, prior in reports.items()}
         _require(report["parent_links"] == expected_links, "parent_link_pin")
@@ -387,7 +453,12 @@ def analyze_checkpoints(checkpoints: dict, blob_root: Path, *, source_anchors: t
     _require(reports["O"]["pins"]["source_commit"] == reports["R"]["pins"]["source_commit"]
         and reports["N"]["pins"]["source_commit"] == reports["F"]["pins"]["source_commit"]
         and reports["O"]["pins"]["source_commit"] != reports["N"]["pins"]["source_commit"], "code_pair")
-    _require({p.name for p in blob_root.iterdir()} == {digest + ".bin" for digest in manifest}, "physical_inventory_closure")
+    _require(set(unavailable_blobs) <= set(manifest), "retirement_manifest")
+    classified = classify_blobs(references)
+    _require(all(classified[digest]["classification"] == "S_only"
+        for digest in unavailable_blobs), "retirement_source_scope")
+    _require({p.name for p in blob_root.iterdir()} == {digest + ".bin"
+        for digest in set(manifest) - set(unavailable_blobs)}, "physical_inventory_closure")
     return {"schema_version": 1, "checkpoints": reports, "manifest": manifest,
-        "references": references, "blobs": classify_blobs(references), "complete_reference_scope": True,
+        "references": references, "blobs": classified, "complete_reference_scope": True,
         "deletion_authorized": False, "cleanup_ack": False, "capability": False}

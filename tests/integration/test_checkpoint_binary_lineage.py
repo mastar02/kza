@@ -7,7 +7,7 @@ import subprocess
 from uuid import uuid4
 
 from tests.integration.test_compiled_material_reconciliation import _run_catalog_child
-from tests.mocks.checkpoint_binary_lineage import PIN_FIELDS, analyze_checkpoints, normalize_wire
+from src.memory.checkpoint_lineage import PIN_FIELDS, analyze_checkpoints, normalize_wire
 from tests.mocks.compiled_restore import write_json
 from tests.mocks.slot_reconciliation import exercise_material_reconciliation
 
@@ -133,7 +133,7 @@ def test_compiled_binary_source_lineage_distinguishes_withdrawn_shared_and_manua
             "subject": subject, "preserved": preserved, "report_sha256": hashlib.sha256(_canonical(report)).hexdigest()}
         path = evidence / "binary-lineage-reader-control.json"
         write_json(path, control)
-        helper = repo / "tests/mocks/checkpoint_binary_lineage.py"
+        helper = repo / "src/memory/checkpoint_lineage.py"
         result = _run_catalog_child(_INERT_READER, task / "staging/slots/forward/runtime", task / "staging",
             evidence, "binary-lineage-inert-reader", path, _sha(path), helper, _sha(helper))
         reader = json.loads(result.read_text())

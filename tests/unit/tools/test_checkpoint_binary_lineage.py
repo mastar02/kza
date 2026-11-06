@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 
-from tests.mocks import checkpoint_binary_lineage as lineage
+from src.memory import checkpoint_lineage as lineage
 
 
 def canonical(value):
@@ -532,3 +532,100 @@ def test_only_global_analysis_rejects_bytes_unreferenced_by_any_branch(corpus):
     with pytest.raises(ValueError, match="^binary_lineage_physical_inventory_closure$"):
         aggregate(corpus, specs)
     assert (corpus["blobs"] / (orphan["sha256"] + ".bin")).read_bytes() == b"globally unreferenced retained bytes"
+
+
+def scope_payload(corpus):
+    def cohort(source_value):
+        fields = {key: None for key in lineage.DTO_FIELDS["Cohort"]}
+        fields["source"] = {"k": "dto", "n": "MemorySource", "v": dictionary(**source_value)}
+        return {"k": "dto", "n": "Cohort", "v": dictionary(**fields)}
+
+    return dictionary(subject=cohort(corpus["S"]), foreign=cohort(corpus["U"]), ordinary_sources=sequence())
+
+
+@pytest.mark.parametrize("problem", [None, "pin", "plain-cohort", "unknown-source", "overlap"])
+def test_original_source_scope_requires_pinned_typed_cohorts(corpus, problem):
+    payload = scope_payload(corpus)
+    if problem == "plain-cohort":
+        payload["v"][0][1] = payload["v"][0][1]["v"]
+    elif problem == "unknown-source":
+        fields = payload["v"][0][1]["v"]["v"]
+        next(pair[1] for pair in fields if pair[0] == "source")["n"] = "UnknownSource"
+    elif problem == "overlap":
+        payload["v"][1][1] = deepcopy(payload["v"][0][1])
+    spec = checkpoint(corpus, payload, observed=False)
+    kwargs = {"path": spec["path"], "expected_sha256": "a" * 64 if problem == "pin" else spec["expected_sha256"]}
+    if problem:
+        with pytest.raises(ValueError, match="^binary_lineage_"):
+            lineage.checkpoint_source_scope(**kwargs)
+    else:
+        assert lineage.checkpoint_source_scope(**kwargs) == {
+            "source_anchors": (corpus["S"], corpus["U"]),
+            "withdrawn_conversation_id": corpus["S"]["conversation_id"],
+            "preserved_conversation_ids": (corpus["U"]["conversation_id"],)}
+
+
+def retirement_checkpoints(corpus):
+    subject, retained = binary(corpus, b"S only original bytes"), binary(corpus, b"U original bytes")
+    specs = {}
+    for branch in ("O", "N", "R", "F"):
+        payload = collector(retained, [corpus["U"]])
+        if branch == "O":
+            subject_wire = collector(subject, [corpus["S"]])
+            destination, extra = payload["v"][0][1], subject_wire["v"][0][1]
+            for pair, added in zip(destination["v"], extra["v"]):
+                pair[1]["v"].extend(added[1]["v"])
+        links = {key + "_source_sha256": spec["expected_sha256"] for key, spec in specs.items()}
+        specs[branch] = checkpoint(corpus, payload, branch=branch, links=links)
+    report = aggregate(corpus, specs)
+    reference = next(r for r in report["references"] if r["sha256"] == subject["sha256"])
+    return subject, retained, specs, {subject["sha256"]: {
+        "size": reference["size"], "identity": reference["physical"]["identity"]}}
+
+
+def test_retired_physical_scope_preserves_all_original_references_without_grant(corpus):
+    subject, retained, specs, retired = retirement_checkpoints(corpus)
+    originals = {key: value["path"].read_bytes() for key, value in specs.items()}
+    (corpus["blobs"] / (subject["sha256"] + ".bin")).unlink()
+    with pytest.raises(FileNotFoundError):
+        aggregate(corpus, specs)
+    report = lineage.analyze_checkpoints(specs, corpus["blobs"],
+        source_anchors=(corpus["S"], corpus["U"]), unavailable_blobs=retired, **corpus["scope"])
+    assert report["complete_reference_scope"] is True and report["deletion_authorized"] is False
+    assert report["capability"] is False and report["cleanup_ack"] is False
+    assert report["blobs"][subject["sha256"]]["classification"] == "S_only"
+    missing = [r for r in report["references"] if r["sha256"] == subject["sha256"]]
+    assert len(missing) == 1 and missing[0]["physical"]["available"] is False
+    assert report["blobs"][retained["sha256"]]["classification"] == "retained"
+    assert originals == {key: value["path"].read_bytes() for key, value in specs.items()}
+    assert (corpus["blobs"] / (retained["sha256"] + ".bin")).read_bytes() == b"U original bytes"
+
+
+@pytest.mark.parametrize("problem", ["present", "size", "identity", "unknown-digest", "retained-U", "symlink"])
+def test_retirement_metadata_cannot_hide_present_unrelated_or_unpinned_bytes(corpus, problem):
+    subject, retained, specs, retired = retirement_checkpoints(corpus)
+    path = corpus["blobs"] / (subject["sha256"] + ".bin")
+    if problem != "present":
+        path.unlink()
+    if problem == "size":
+        retired[subject["sha256"]]["size"] += 1
+    elif problem == "identity":
+        retired[subject["sha256"]]["identity"]["inode"] = True
+    elif problem == "unknown-digest":
+        retired["f" * 64] = deepcopy(retired[subject["sha256"]])
+    elif problem == "retained-U":
+        u_path = corpus["blobs"] / (retained["sha256"] + ".bin")
+        info = u_path.stat()
+        retired[retained["sha256"]] = {"size": info.st_size, "identity": {"device": info.st_dev, "inode": info.st_ino}}
+        u_path.unlink()
+    elif problem == "symlink":
+        path.symlink_to(corpus["root"] / "nonexistent")
+    with pytest.raises(ValueError, match="^binary_lineage_"):
+        lineage.analyze_checkpoints(specs, corpus["blobs"],
+            source_anchors=(corpus["S"], corpus["U"]), unavailable_blobs=retired, **corpus["scope"])
+
+
+def test_nested_DTO_wire_cannot_erase_unknown_ancestry_annotations():
+    inner = {"k": "dto", "n": "Unknown", "v": dictionary(value=1)}
+    with pytest.raises(ValueError, match="^binary_lineage_dto_field_wire$"):
+        lineage.normalize_wire({"k": "dto", "n": "MemorySource", "v": inner})
