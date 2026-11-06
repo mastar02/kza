@@ -85,7 +85,10 @@ def prepare_case(task, evidence, repo, new_revision):
 
     if re.fullmatch("[0-9a-f]{40}", new_revision) is None:
         raise ValueError("reconciliation_exact_new_commit_required")
-    prepared = original._prepare(task, evidence, repo, original.REVISION)
+    # The older application stays genuine OLD code. Its security bridge uses
+    # the exact current production closure observer, with independent provenance.
+    prepared = original._prepare(task, evidence, repo, original.REVISION,
+        bridge_revision=new_revision)
     settings = prepared["runtimes"]["old"].parent / "state/config/settings.yaml"
     value = yaml.safe_load(settings.read_text())
     value["reasoner"]["destination"] = "cloud"
@@ -278,6 +281,8 @@ def exercise_material_reconciliation(task, evidence, repo, *, new_revision):
     proof = {"schema_version": 1, "unit": "T024-F1/material-code-data-reconciliation",
         "complete": False, "F1_delivered": False, "goal_complete": False,
         "complete_scope": "material scenario only; guards, broad checks and independent review remain separate",
+        "security_bridge_revision": prepared["bridge_manifest"]["git_commit"],
+        "security_bridge_archive_sha256": prepared["bridge_archive_sha256"],
         "code_pair": {branch: control[0]["source_commit"]
             for branch, control in prepared["full_controls"].items()}, "phases": {}, "derivations": {}}
 

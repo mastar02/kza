@@ -272,13 +272,17 @@ def _control_pair(repo, runtimes, roots, island, island_files, evidence, artifac
     return controls
 
 
-def _prepare(task, evidence, repo, revision):
+def _prepare(task, evidence, repo, revision, *,
+             bridge_revision="80b47f55716e980b93a7312b6732de0611e3e2e0"):
     from scripts.build_runtime import build_runtime
     from scripts.stage_runtime import activate_slot, prepare_slot
     from tests.mocks.managed_slot_graph import canonical_template
     from tests.mocks.restore_application_graph import configuration
     import yaml
 
+    if (type(bridge_revision) is not str or len(bridge_revision) != 40
+            or any(value not in "0123456789abcdef" for value in bridge_revision)):
+        raise ValueError("slot_exact_bridge_commit_required")
     archive = task / "runtime.tar.gz"
     manifest = build_runtime(repo, archive, revision=revision)
     if (manifest["git_commit"] != revision or manifest["python_magic"] != importlib.util.MAGIC_NUMBER.hex()
@@ -311,9 +315,10 @@ def _prepare(task, evidence, repo, revision):
     managed = "tests/mocks/managed_slot_graph.py"
     (island / managed).write_bytes((repo / managed).read_bytes())
     island_files[managed] = _sha(island / managed)
-    bridge_revision = "80b47f55716e980b93a7312b6732de0611e3e2e0"
     bridge_archive = task / "admission-runtime.tar.gz"
     bridge_manifest = build_runtime(repo, bridge_archive, revision=bridge_revision)
+    if bridge_manifest["git_commit"] != bridge_revision:
+        raise compiled.CompiledRestoreFailure("slot_bridge_commit_mismatch")
     bridge_stage = task / "admission-staging"
     prepare_slot(bridge_archive, bridge_stage, "bridge", empty)
     bridge_runtime = bridge_stage / "slots/bridge/runtime"
