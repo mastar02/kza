@@ -182,9 +182,7 @@ asyncio.run(main())
 
 @pytest.mark.parametrize("mode", ["normal-original", "abandoned-post-store"])
 def test_real_router_native_future_never_retains_abandoned_sdk_error(mode):
-    root = Path(__file__).resolve()
-    while root.name != "kza" and root.parent != root:
-        root = root.parent
+    root = Path(__file__).resolve().parents[2]
     source = textwrap.dedent(_CHILD).replace("__MODE__", repr(mode))
     result = subprocess.run(
         [sys.executable, "-c", source], cwd=root, text=True,
