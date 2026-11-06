@@ -108,7 +108,7 @@
     "disk_floor_MiB": 512
   },
   "delegation": "Up to8 active agents including coordinator, subject to actual session slots (4 here). PC browser/desktop interaction requires gpt-6.1-terra subagent; root owns runtime/Git and reviews evidence.",
-  "remaining": "F1 remains in_progress. Collector-only normal/cancel cleanup has two scoped receipts; last full8935PASS+same xfail/8936 at94b83. Test-only180ce95 verifies a genuine missing-tenant constructor exception under compiled F and fresh reader;2 compiled regressions PASS. Other representations/aggregate ACK, genuine SDK close failure, retrospective forensic/checkpoint/BLOB inventory, legacy migration, exact guards and field acceptance remain open.",
+  "remaining": "F1 in_progress:3existing checkpoint/audit/failedSDK roots observed/non-serving, not global census or cleanup. Full8971PASS+same xfail/8972 atdd637; producer16MiB fixa2 validated36protocol+1compiled afterward. Next binaryS/U/manual/shared typed lineage fixture (current14BLOBs/43refs have no S). GenuineSDKclose failure, real owners/aggregate ACK, legacy migration, exact guards and field acceptance remain open.",
   "prerequisite_progress": {
     "report": "docs/research/2026-11-06-runtime-admission-foundation.json",
     "implementation_commit": "80b47f55716e980b93a7312b6732de0611e3e2e0",
@@ -155,41 +155,45 @@
   },
   "copy_catalog_progress": {
     "report": "docs/research/2026-11-06-copy-lifecycle-progress.json",
-    "implementation_commit": "94b83f1920537fa7a0d416eeccfbb9cbb4ac12af",
-    "status": "collector_representation_verified_local_overall_in_progress",
+    "implementation_commit": "a2c6f4c085bc867782cadcf162894ab17fbef374",
+    "status": "retrospective_observation_verified_local_overall_in_progress",
     "F1_delivered": false,
     "latest_local_full": {
-      "expected_ids": 8936,
-      "old_ids": 8890,
-      "new_ids": 46,
+      "revision": "dd637f704a463dc0ebd8479af4a8763deab4c375",
+      "expected_ids": 8972,
+      "old_ids": 8936,
+      "new_ids": 36,
       "removed_ids": 0,
       "collection": "exact PASS",
       "state": "finished",
-      "result": "8935 PASS + same known regex xfail",
-      "XML_seconds": 976.955,
-      "summary_seconds": 977.19,
-      "actual_terminal": "47866/01c152",
+      "result": "8971 PASS + same known regex xfail",
+      "XML_seconds": 1436.609,
+      "summary_seconds": 1436.96,
+      "actual_terminal": "23640/602035",
       "actual_wait_consumed": true,
       "exact_expected_ids": true,
-      "guards_during_run": "1074 source,37 scripts,34 protected files unchanged",
-      "evidence": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-full/acceptance-proof.json"
+      "guards_during_run": "1078 source,37 scripts,34 protected files unchanged",
+      "evidence": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/acceptance-proof.json",
+      "later_bounds_fix": "a2c6f4c validated36protocol+1compiled; no full rerun for this narrow correction"
     },
     "sdk_marker_faults": "verified with real owner; genuine SDK failures still open",
     "collector_cleanup_scope": "collector_rows_files_v1 only; two receipts; aggregate=False",
     "next_action": {
-      "baseline": "Reject stale DTO/history/current-HEAD mismatch without writes. A valid registration can only produce known/pending/non-serving observation, no SDK/cleanup receipt.",
-      "boundary": "Legacy HEAD without manual companion remains a separate migration/rejection problem, not an implicitly created companion.",
-      "exact_seams": [
-        "Explicit retrospective registration under actual current controller/HEAD and existing root/inventory; never claim before-first-byte registration for existing bytes.",
-        "Enumerate phase checkpoints/BLOB, forensic/audit and failed work representations separately, preserving original identities."
-      ],
-      "files": [
-        "src/memory/copy_catalog.py",
-        "tests/mocks/slot_reconciliation_child.py",
-        "private forensic-export boundary"
-      ],
       "priority": 1,
-      "unit": "truthful_retrospective_representation_inventory"
+      "unit": "typed_binary_S_U_manual_shared_lineage_baseline",
+      "evidence": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/blob-baseline-facts.json",
+        "sha256": "e58dc48d77e3b2eab8ee8b6556556ab7bc42bcf5132789f91d3c328cf29673a7"
+      },
+      "facts": "14distinct BLOBs/43typed refs:7manual+36preserved ordinary,2shared digests; no withdrawn-S binary proven",
+      "baseline": "Opt-in real public binary acquisition/collector fixture for S,U/manual,shared. Preserve all original default oracles, IDs/pins/TTL. Verify typed source/row/file/voice-to-checkpoint BLOB joins before an erasure owner; no filename/content/digest-only heuristics.",
+      "required_result": "Prove S-exclusive and shared/U/manual binary refs first; subsequent current-authority cleaner must actually withdraw S while retaining shared/U/manual and historical JSON identities/pins. A no-op owner cannot prove withdrawal.",
+      "files": [
+        "tests/mocks/slot_reconciliation_child.py",
+        "tests/mocks/slot_reconciliation.py",
+        "tests/integration/test_copy_observation.py"
+      ],
+      "baseline_fact_revision": "dd637f704a463dc0ebd8479af4a8763deab4c375"
     },
     "nominal_constructor_failure": {
       "revision": "180ce95ff0b6d141da1cdf81633ae9a791c08988",
@@ -209,13 +213,20 @@
         "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/raw-export-manifest.json",
         "sha256": "9c1a543320ca76a1e27b05b6e5a0c131e4d99ccbd1b62f1daa3f38a5d3f30973"
       },
-      "last_full": "8935PASS+same xfail/8936 at94b83; no full rerun for test-only extension",
       "independent_native_review": {
         "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/material/independent-review.json",
         "sha256": "51843b289129c97bc937ea43773a5b5577adac1d85637b76fb8b21491e7aa193",
         "checks": 22,
         "issues": []
-      }
+      },
+      "historical_milestone": "180ce95 constructor cut; current broad evidence is reported separately",
+      "full_at_milestone": "8935PASS+same xfail/8936 at94b83; no full rerun for test-only extension"
+    },
+    "retrospective_observation": {
+      "report": "docs/research/2026-11-06-copy-lifecycle-progress.json",
+      "revision": "a2c6f4c085bc867782cadcf162894ab17fbef374",
+      "roots": 3,
+      "no_grant": true
     }
   }
 }

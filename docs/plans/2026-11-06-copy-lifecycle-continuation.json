@@ -93,7 +93,7 @@
     "History/DTO cannot authorize copy/cleanup.",
     "Cleanup cancellation retains owned work until actual return without premature ACK."
   ],
-  "next_action": "Implement truthful retrospective observation/registration of existing forensic/checkpoint/BLOB copies under actual current authority. Preserve identities; existing bytes cannot be labelled reserved-before-first-byte, and observation grants no SDK/cleanup/admission permission. Genuine SDK close failure remains open; no supported public failure seam was demonstrated by local source review. F1/T024/all criteria remain incomplete.",
+  "next_action": "Prove opt-in real binary S/U/manual/shared checkpoint lineage: current14BLOBs/43refs have no withdrawn-S binary. Preserve original defaults/IDs/pins/TTL and shared/manual data. Then implement actual current-authority cleanup; a no-op owner is not withdrawal. Three-root metadata observations do not close global registration/cleanup; genuine SDK close failure, F1/T024/all21 criteria/goal remain open.",
   "foundation_progress": {
     "report": "docs/research/2026-11-06-copy-lifecycle-progress.json",
     "implementation_commit": "2cdbe51f0d3c897e98cc1d2ace7edc0aaed9240f",
@@ -107,19 +107,21 @@
   },
   "next_concrete_units": [
     {
-      "baseline": "Reject stale DTO/history/current-HEAD mismatch without writes. A valid registration can only produce known/pending/non-serving observation, no SDK/cleanup receipt.",
-      "boundary": "Legacy HEAD without manual companion remains a separate migration/rejection problem, not an implicitly created companion.",
-      "exact_seams": [
-        "Explicit retrospective registration under actual current controller/HEAD and existing root/inventory; never claim before-first-byte registration for existing bytes.",
-        "Enumerate phase checkpoints/BLOB, forensic/audit and failed work representations separately, preserving original identities."
-      ],
-      "files": [
-        "src/memory/copy_catalog.py",
-        "tests/mocks/slot_reconciliation_child.py",
-        "private forensic-export boundary"
-      ],
       "priority": 1,
-      "unit": "truthful_retrospective_representation_inventory"
+      "unit": "typed_binary_S_U_manual_shared_lineage_baseline",
+      "evidence": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/blob-baseline-facts.json",
+        "sha256": "e58dc48d77e3b2eab8ee8b6556556ab7bc42bcf5132789f91d3c328cf29673a7"
+      },
+      "facts": "14distinct BLOBs/43typed refs:7manual+36preserved ordinary,2shared digests; no withdrawn-S binary proven",
+      "baseline": "Opt-in real public binary acquisition/collector fixture for S,U/manual,shared. Preserve all original default oracles, IDs/pins/TTL. Verify typed source/row/file/voice-to-checkpoint BLOB joins before an erasure owner; no filename/content/digest-only heuristics.",
+      "required_result": "Prove S-exclusive and shared/U/manual binary refs first; subsequent current-authority cleaner must actually withdraw S while retaining shared/U/manual and historical JSON identities/pins. A no-op owner cannot prove withdrawal.",
+      "files": [
+        "tests/mocks/slot_reconciliation_child.py",
+        "tests/mocks/slot_reconciliation.py",
+        "tests/integration/test_copy_observation.py"
+      ],
+      "baseline_fact_revision": "dd637f704a463dc0ebd8479af4a8763deab4c375"
     },
     {
       "priority": 2,
@@ -253,23 +255,42 @@
         "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/acceptance-proof.json",
         "sha256": "8e75a037e6e2fef244c10bd03ecfe09b6db01de2c80aee962f9fdcdf77b50941"
       }
+    },
+    {
+      "baseline": "Reject stale DTO/history/current-HEAD mismatch without writes. A valid registration can only produce known/pending/non-serving observation, no SDK/cleanup receipt.",
+      "boundary": "Legacy HEAD without manual companion remains a separate migration/rejection problem, not an implicitly created companion.",
+      "exact_seams": [
+        "Explicit retrospective registration under actual current controller/HEAD and existing root/inventory; never claim before-first-byte registration for existing bytes.",
+        "Enumerate phase checkpoints/BLOB, forensic/audit and failed work representations separately, preserving original identities."
+      ],
+      "files": [
+        "src/memory/copy_catalog.py",
+        "tests/mocks/slot_reconciliation_child.py",
+        "private forensic-export boundary"
+      ],
+      "priority": 1,
+      "unit": "truthful_retrospective_representation_inventory",
+      "status": "verified_local_three_roots_metadata_only_not_global_coverage",
+      "revision": "a2c6f4c085bc867782cadcf162894ab17fbef374"
     }
   ],
   "latest_local_full": {
-    "expected_ids": 8936,
-    "old_ids": 8890,
-    "new_ids": 46,
+    "revision": "dd637f704a463dc0ebd8479af4a8763deab4c375",
+    "expected_ids": 8972,
+    "old_ids": 8936,
+    "new_ids": 36,
     "removed_ids": 0,
     "collection": "exact PASS",
     "state": "finished",
-    "result": "8935 PASS + same known regex xfail",
-    "XML_seconds": 976.955,
-    "summary_seconds": 977.19,
-    "actual_terminal": "47866/01c152",
+    "result": "8971 PASS + same known regex xfail",
+    "XML_seconds": 1436.609,
+    "summary_seconds": 1436.96,
+    "actual_terminal": "23640/602035",
     "actual_wait_consumed": true,
     "exact_expected_ids": true,
-    "guards_during_run": "1074 source,37 scripts,34 protected files unchanged",
-    "evidence": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-full/acceptance-proof.json"
+    "guards_during_run": "1078 source,37 scripts,34 protected files unchanged",
+    "evidence": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/acceptance-proof.json",
+    "later_bounds_fix": "a2c6f4c validated36protocol+1compiled; no full rerun for this narrow correction"
   },
   "nominal_constructor_failure_progress": {
     "revision": "180ce95ff0b6d141da1cdf81633ae9a791c08988",
@@ -289,12 +310,33 @@
       "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/raw-export-manifest.json",
       "sha256": "9c1a543320ca76a1e27b05b6e5a0c131e4d99ccbd1b62f1daa3f38a5d3f30973"
     },
-    "last_full": "8935PASS+same xfail/8936 at94b83; no full rerun for test-only extension",
     "independent_native_review": {
       "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/material/independent-review.json",
       "sha256": "51843b289129c97bc937ea43773a5b5577adac1d85637b76fb8b21491e7aa193",
       "checks": 22,
       "issues": []
-    }
+    },
+    "historical_milestone": "180ce95 constructor cut; current broad evidence is reported separately",
+    "full_at_milestone": "8935PASS+same xfail/8936 at94b83; no full rerun for test-only extension"
+  },
+  "retrospective_observation_progress": {
+    "revision": "a2c6f4c085bc867782cadcf162894ab17fbef374",
+    "report": "docs/research/2026-11-06-copy-lifecycle-progress.json",
+    "scope": "verified_local_three_existing_regular_roots",
+    "proofs": {
+      "component": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/components/acceptance-proof.json",
+        "sha256": "1f461a90915341a416fb854d7f8253524716d74a9efa39fd92315b9c13544f0e"
+      },
+      "compiled": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/native/acceptance-proof.json",
+        "sha256": "c41c74c2c1d5bb58c4a612b3f66dd5c895db95352328e0f62332745dcea2092a"
+      },
+      "bounds": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/bounds/acceptance-proof.json",
+        "sha256": "a7275be3f841efd922bc7c1a54059b56730a4c3415c1f4dc63721ade3b978649"
+      }
+    },
+    "no_cleanup_or_admission_grant": true
   }
 }

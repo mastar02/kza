@@ -2,10 +2,10 @@
   "schema_version": 1,
   "task": "T024-F1",
   "unit": "durable-copy-catalog foundation",
-  "status": "collector_representation_verified_local_overall_in_progress",
+  "status": "retrospective_observation_verified_local_overall_in_progress",
   "goal_complete": false,
   "F1_delivered": false,
-  "revision": "94b83f1920537fa7a0d416eeccfbb9cbb4ac12af",
+  "revision": "a2c6f4c085bc867782cadcf162894ab17fbef374",
   "implementation": [
     "External content-free catalog reserves a copy before creating payload, then pins physical identity and records extents. Controller FD, live lease, closed HEAD and sealed authority are revalidated.",
     "Immutable events and CAS head keep preparation provenance. Crash recovery exposes verified prefix or initial uncommitted metadata as UNKNOWN and blocked; it never recreates a capability.",
@@ -127,13 +127,68 @@
         "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/raw-export-manifest.json",
         "sha256": "9c1a543320ca76a1e27b05b6e5a0c131e4d99ccbd1b62f1daa3f38a5d3f30973"
       },
-      "last_full": "8935PASS+same xfail/8936 at94b83; no full rerun for test-only extension",
       "independent_native_review": {
         "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/material/independent-review.json",
         "sha256": "51843b289129c97bc937ea43773a5b5577adac1d85637b76fb8b21491e7aa193",
         "checks": 22,
         "issues": []
-      }
+      },
+      "historical_milestone": "180ce95 constructor cut; current broad evidence is reported separately",
+      "full_at_milestone": "8935PASS+same xfail/8936 at94b83; no full rerun for test-only extension"
+    },
+    "retrospective_copy_observation": {
+      "revision": "a2c6f4c085bc867782cadcf162894ab17fbef374",
+      "registry_base_revision": "dd637f704a463dc0ebd8479af4a8763deab4c375",
+      "status": "verified_local_three_existing_regular_roots",
+      "registration": "Actual sealed current controller/FD/HEAD/lease; durable retrospective intent before scanning. Never a pre-copy reservation.",
+      "recovery": "Lease+closed HEAD metadata only, no seal grant; valid prefix preserved UNKNOWN on interruption/orphan.",
+      "non_serving": "Ancestor/descendant state+runtime locators denied before stores, tickets even check_state=False, snapshot refs and destinations. V1 formats unchanged.",
+      "lineage_complete": false,
+      "SDK_retirement_confirmed": false,
+      "cleanup": {
+        "phase": "blocked",
+        "owner": null,
+        "receipt": null
+      },
+      "roots": "checkpoint+BLOB18files / closed audit20files / failedSDK2files linked to original unchanged copy ID",
+      "base_validation": "dd637f7:423 components/XML122.807/root60154-a3b35c;1 compiled/XML123.490/root9167-05f423;guards1078/37/34 intact",
+      "bounds_validation": "a2c6f4c:36protocol/XML0.585/root32966-dd8c09;1compiled/XML254.001/root56678-3f1de5;guards1078/37/34 intact",
+      "record_ceiling_bytes_with_LF": 16777216,
+      "oversized_intent": "75000 canonical descriptors; array alone18450001bytes rejected before namespace; oversized event retains readable intent/no receipt (explicit2KiB unit seam)",
+      "proofs": {
+        "component": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/components/acceptance-proof.json",
+          "sha256": "1f461a90915341a416fb854d7f8253524716d74a9efa39fd92315b9c13544f0e"
+        },
+        "compiled": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/native/acceptance-proof.json",
+          "sha256": "c41c74c2c1d5bb58c4a612b3f66dd5c895db95352328e0f62332745dcea2092a"
+        },
+        "bounds": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/bounds/acceptance-proof.json",
+          "sha256": "a7275be3f841efd922bc7c1a54059b56730a4c3415c1f4dc63721ade3b978649"
+        }
+      },
+      "reviews": {
+        "component": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/components/independent-review.json",
+          "sha256": "0fde6d9191e380b65750cda1ffd3c7c23d974f63788c0952f13657907453a719"
+        },
+        "compiled": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/native/independent-review.json",
+          "sha256": "cebd95fbfa674dba98c5fad18c7e2dc22ab008743ea2fde525668b3e88643b55"
+        },
+        "bounds": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/bounds/independent-review.json",
+          "sha256": "b3464414b259980bc1b3e16b38fe8925d2c434ac3f3de9c1ed33e10991e665e4"
+        },
+        "V1": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/v1-compatibility-review.json",
+          "sha256": "4434dd0f0142be1e6e7abe76f4a582b3cdb61fae76cab7359dd1fa6dfea29fe6"
+        }
+      },
+      "aggregate_copy_complete": false,
+      "F1_delivered": false
     }
   },
   "material_proofs": [
@@ -170,25 +225,27 @@
     }
   ],
   "full": {
-    "expected_ids": 8936,
-    "old_ids": 8890,
-    "new_ids": 46,
+    "revision": "dd637f704a463dc0ebd8479af4a8763deab4c375",
+    "expected_ids": 8972,
+    "old_ids": 8936,
+    "new_ids": 36,
     "removed_ids": 0,
     "collection": "exact PASS",
     "state": "finished",
-    "result": "8935 PASS + same known regex xfail",
-    "XML_seconds": 976.955,
-    "summary_seconds": 977.19,
-    "actual_terminal": "47866/01c152",
+    "result": "8971 PASS + same known regex xfail",
+    "XML_seconds": 1436.609,
+    "summary_seconds": 1436.96,
+    "actual_terminal": "23640/602035",
     "actual_wait_consumed": true,
     "exact_expected_ids": true,
-    "guards_during_run": "1074 source,37 scripts,34 protected files unchanged",
-    "evidence": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-full/acceptance-proof.json"
+    "guards_during_run": "1078 source,37 scripts,34 protected files unchanged",
+    "evidence": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/acceptance-proof.json",
+    "later_bounds_fix": "a2c6f4c validated36protocol+1compiled; no full rerun for this narrow correction"
   },
   "open": [
     "Genuine public/native SDK close failure remains unverified. One nominal missing-tenant constructor exception before handle is verified; other failure modes are not inferred.",
     "semantic index/opaque and logical exports, ambient capture, contexts/events/suggestions/diagnostics/voice/stream payload and remaining snapshots/source roots/work/BLOB copies are not erased by collector_rows_files_v1. CatalogV1 preparation still records cleanup blocked; the separate collector receipt does not change that into an aggregate ACK.",
-    "Pre-existing forensic/audit exports, DataCodec phase checkpoints/BLOBs and legacy uncatalogued copies require explicit current-authority retrospective observation/ownership. Hash manifests preserve evidence but do not grant production cleanup or pretend reservation preceded existing bytes.",
+    "The retrospective registry covers three existing regular roots in this scenario, not a global census or cleanup ownership. Other forensic/audit/checkpoint/BLOB/legacy copies require explicit registration and real erasure owners. Current BLOB baseline has no S-exclusive binary; establish typed S/U/manual/shared lineage first. Observations never grant SDK/cleanup/admission or claim pre-byte reservation.",
     "Legacy HEAD without manual companion and old unregistered snapshot adoption remain explicit rejection until a scoped migration exists; no manual companion, binding or target descriptor may be fabricated.",
     "Current scenario preserves U/manual rows/files and current F authority. Keep latest consent, credentials, roles, voice/group/person CAS decisions and tombstones; voice-person association remains separate from account permissions. No automatic old-authority SQL merge or TTL renewal is authorized.",
     "diagnostics1/streams2/voices2 stay pending. T021-T024/all21/physical field acceptance remain open; local Mac source/CPU evidence is not field or UI acceptance."
@@ -199,10 +256,13 @@
     "2cdbe51f0d3c897e98cc1d2ace7edc0aaed9240f",
     "ae40a75913afd2979852c4102f80fbce8b1840e8",
     "94b83f1920537fa7a0d416eeccfbb9cbb4ac12af",
-    "180ce95ff0b6d141da1cdf81633ae9a791c08988"
+    "180ce95ff0b6d141da1cdf81633ae9a791c08988",
+    "dd637f704a463dc0ebd8479af4a8763deab4c375",
+    "a2c6f4c085bc867782cadcf162894ab17fbef374"
   ],
   "warnings": {
-    "occurrences": 65759,
+    "scope_revision": "dd637f704a463dc0ebd8479af4a8763deab4c375",
+    "occurrences": 66285,
     "known_signatures": 15,
     "new_summary_signatures": 0,
     "absent_prior_summary_signatures": 0,
@@ -217,40 +277,45 @@
     "scope_at_revision": "2cdbe51 historical foundation counts; new scoped evidence is reconciled separately"
   },
   "independent_full_audit": {
-    "path": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-full/audit.json",
-    "sha256": "bd982cf1bbe4c909061628b4e9d6d7edfb9e29ac038754269ef66f25817e6110",
-    "checks": 25,
+    "path": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/audit.json",
+    "sha256": "24f42c26f0f4a746fb9c974ce2790a19ca29f83d92b84559152c6fee7f1fc9e5",
+    "checks": 19,
     "issues": []
   },
   "last_fully_accepted_unit": "T024-F0",
   "evidence": {
     "component": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup/component-acceptance-proof.json",
     "compiled_cleanup": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-native/acceptance-proof.json",
-    "full": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-full/acceptance-proof.json",
-    "full_proof_sha256": "15ef618c1f9c7ab7dd8f1f1fc3e795c75973d61ee44c974e1d37656a26bf65dd",
-    "canonical_artifact_manifest": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-full/validation-artifact-manifest.json",
-    "full_forensic_index": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-full/forensic-exports-01.json",
-    "full_forensic_index_sha256": "23f99afa0c32c1bc1a924486a2d80893e874e3e25bfd3fda17d0559e6468ddf2",
+    "full": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/acceptance-proof.json",
+    "full_proof_sha256": "02de81ad907a0078d915c538614d47ba30c75e53d9c3b1265ee4c611ab3b3035",
+    "canonical_artifact_manifest": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/validation-artifact-manifest.json",
+    "full_forensic_index": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/forensic-exports-01.json",
+    "full_forensic_index_sha256": "3ea906da363d2128914fe60d77b508e8e9c598b8a3e21ee23ff2391f606246f3",
     "nominal_constructor_failure": {
       "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/acceptance-proof.json",
       "sha256": "8e75a037e6e2fef244c10bd03ecfe09b6db01de2c80aee962f9fdcdf77b50941"
-    }
+    },
+    "observation_component": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/components/acceptance-proof.json",
+    "observation_compiled": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/native/acceptance-proof.json",
+    "record_bounds": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/bounds/acceptance-proof.json"
   },
   "next_concrete_units": [
     {
-      "baseline": "Reject stale DTO/history/current-HEAD mismatch without writes. A valid registration can only produce known/pending/non-serving observation, no SDK/cleanup receipt.",
-      "boundary": "Legacy HEAD without manual companion remains a separate migration/rejection problem, not an implicitly created companion.",
-      "exact_seams": [
-        "Explicit retrospective registration under actual current controller/HEAD and existing root/inventory; never claim before-first-byte registration for existing bytes.",
-        "Enumerate phase checkpoints/BLOB, forensic/audit and failed work representations separately, preserving original identities."
-      ],
-      "files": [
-        "src/memory/copy_catalog.py",
-        "tests/mocks/slot_reconciliation_child.py",
-        "private forensic-export boundary"
-      ],
       "priority": 1,
-      "unit": "truthful_retrospective_representation_inventory"
+      "unit": "typed_binary_S_U_manual_shared_lineage_baseline",
+      "evidence": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/blob-baseline-facts.json",
+        "sha256": "e58dc48d77e3b2eab8ee8b6556556ab7bc42bcf5132789f91d3c328cf29673a7"
+      },
+      "facts": "14distinct BLOBs/43typed refs:7manual+36preserved ordinary,2shared digests; no withdrawn-S binary proven",
+      "baseline": "Opt-in real public binary acquisition/collector fixture for S,U/manual,shared. Preserve all original default oracles, IDs/pins/TTL. Verify typed source/row/file/voice-to-checkpoint BLOB joins before an erasure owner; no filename/content/digest-only heuristics.",
+      "required_result": "Prove S-exclusive and shared/U/manual binary refs first; subsequent current-authority cleaner must actually withdraw S while retaining shared/U/manual and historical JSON identities/pins. A no-op owner cannot prove withdrawal.",
+      "files": [
+        "tests/mocks/slot_reconciliation_child.py",
+        "tests/mocks/slot_reconciliation.py",
+        "tests/integration/test_copy_observation.py"
+      ],
+      "baseline_fact_revision": "dd637f704a463dc0ebd8479af4a8763deab4c375"
     },
     {
       "priority": 2,
@@ -281,6 +346,22 @@
       "actual_terminal": "4339/fa1df1",
       "actual_wait_consumed": true,
       "evidence": "data/autonomous-roadmap-20261102/t024/f1/copy-full/acceptance-proof.json"
+    },
+    {
+      "expected_ids": 8936,
+      "old_ids": 8890,
+      "new_ids": 46,
+      "removed_ids": 0,
+      "collection": "exact PASS",
+      "state": "finished",
+      "result": "8935 PASS + same known regex xfail",
+      "XML_seconds": 976.955,
+      "summary_seconds": 977.19,
+      "actual_terminal": "47866/01c152",
+      "actual_wait_consumed": true,
+      "exact_expected_ids": true,
+      "guards_during_run": "1074 source,37 scripts,34 protected files unchanged",
+      "evidence": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-full/acceptance-proof.json"
     }
   ],
   "completed_local_units": [
@@ -338,6 +419,23 @@
         "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/acceptance-proof.json",
         "sha256": "8e75a037e6e2fef244c10bd03ecfe09b6db01de2c80aee962f9fdcdf77b50941"
       }
+    },
+    {
+      "baseline": "Reject stale DTO/history/current-HEAD mismatch without writes. A valid registration can only produce known/pending/non-serving observation, no SDK/cleanup receipt.",
+      "boundary": "Legacy HEAD without manual companion remains a separate migration/rejection problem, not an implicitly created companion.",
+      "exact_seams": [
+        "Explicit retrospective registration under actual current controller/HEAD and existing root/inventory; never claim before-first-byte registration for existing bytes.",
+        "Enumerate phase checkpoints/BLOB, forensic/audit and failed work representations separately, preserving original identities."
+      ],
+      "files": [
+        "src/memory/copy_catalog.py",
+        "tests/mocks/slot_reconciliation_child.py",
+        "private forensic-export boundary"
+      ],
+      "priority": 1,
+      "unit": "truthful_retrospective_representation_inventory",
+      "status": "verified_local_three_roots_metadata_only_not_global_coverage",
+      "revision": "a2c6f4c085bc867782cadcf162894ab17fbef374"
     }
   ],
   "remaining_requirements_review": {
@@ -354,7 +452,7 @@
     "full_forensic_index_sha256": "0920c1704a98cebc6823d30fe833d7105f4adaab64e60c7f16a70af10cf53561",
     "full_repro_receipt_sha256": "638b66a891a96cd685573a61caeb25660aeecf8810d30aee3ce0277fcb3b70fd"
   },
-  "test_evidence_revision": "180ce95ff0b6d141da1cdf81633ae9a791c08988",
+  "test_evidence_revision": "a2c6f4c085bc867782cadcf162894ab17fbef374",
   "close_failure_feasibility_review": {
     "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/close-failure-feasibility.json",
     "sha256": "356b46ddd907cb20dfd1dff94328f5f366234ff002836f87d331b3cb49149c25"
@@ -365,5 +463,9 @@
       "sha256": "8e4affbc89ffaa7a4c1c099a3105b15a13c05b88f3142b483d5496611a73cd72"
     },
     "reason": "Initial auditor compared inventory-only hash with whole-sentinel hash. Corrected operand matches pinned executed canonical(sentinel); same52file F sentinel agrees across marker probes, constructor and reader. No test/runtime/oracle changed."
+  },
+  "binary_baseline_facts": {
+    "path": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/blob-baseline-facts.json",
+    "sha256": "e58dc48d77e3b2eab8ee8b6556556ab7bc42bcf5132789f91d3c328cf29673a7"
   }
 }

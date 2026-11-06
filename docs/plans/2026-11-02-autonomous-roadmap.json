@@ -1293,7 +1293,9 @@
         "2cdbe51f0d3c897e98cc1d2ace7edc0aaed9240f",
         "ae40a75913afd2979852c4102f80fbce8b1840e8",
         "94b83f1920537fa7a0d416eeccfbb9cbb4ac12af",
-        "180ce95ff0b6d141da1cdf81633ae9a791c08988"
+        "180ce95ff0b6d141da1cdf81633ae9a791c08988",
+        "dd637f704a463dc0ebd8479af4a8763deab4c375",
+        "a2c6f4c085bc867782cadcf162894ab17fbef374"
       ],
       "evidence": [
         "docs/plans/2026-11-05-erasure-restore-continuation.json",
@@ -1332,9 +1334,13 @@
         "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup/component-acceptance-proof.json",
         "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-native/acceptance-proof.json",
         "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-full/acceptance-proof.json",
-        "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/acceptance-proof.json"
+        "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/acceptance-proof.json",
+        "data/autonomous-roadmap-20261102/t024/f1/copy-observation/components/acceptance-proof.json",
+        "data/autonomous-roadmap-20261102/t024/f1/copy-observation/native/acceptance-proof.json",
+        "data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/acceptance-proof.json",
+        "data/autonomous-roadmap-20261102/t024/f1/copy-observation/bounds/acceptance-proof.json"
       ],
-      "next_action": "F1: test-only180ce95 verifica fallo real constructor Chroma por tenant inexistente antes de handle, F/U/manual exactos y lector compilado recuperando mismoID UNKNOWN/blocked/sin capacidad/receipt;44protocol y2compilados PASS. Collector94b83 preservado; última full8935PASS+misma xfail/8936 en94b83, sin repetir full test-only. Próximo: inventario retrospectivo forense/checkpoints/BLOB bajo autoridad vigente sin grants ni falsa reserva previa. Fallo real SDKclose sigue abierto sin seam público demostrado; agregado/F1/T024/C04/C05/21criterios/goal incompletos. Sin release."
+      "next_action": "F1:dd637 observa3raíces checkpoint/BLOB/audit/SDKUNKNOWN sin grant/adopción;423componentes+1compilado PASS yfull8971PASS+misma xfail/8972. Cota16MiB posteriora2 validada36protocol+1compilado; no full nueva. Próximo: fixtureopt-in binarioS/U/manual/shared con joins tipados (14BLOBs/43refs actuales no prueban S retirado), luego ownersreales preservando compartidos/U/manual eIDs/pins/TTL. Registro no es censo global/cleanup. SDKclose real/agregado/migración/F1/T024/C04/C05/21criterios/goal abiertos; sin release."
     },
     {
       "id": "T025",

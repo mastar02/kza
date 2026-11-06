@@ -6,22 +6,23 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 ## Punto de reanudación
 
-**T024-F1 sigue en curso.** La revisión `94b83f1` agrega limpieza selectiva del collector en copias retenidas y un bloqueo durable de admisión. Pasaron **388 pruebas de componentes**, **una integrada de limpieza normal/cancelada** y la full de **8935 PASS más la misma xfail conocida**, 8936 IDs exactos. El mismo goal permanece **activo e incompleto**; T024-F0 es la última unidad completa verificada.
+**T024-F1 sigue en curso.** `dd637f7` registra observaciones retrospectivas de tres raíces existentes, sin conceder admisión ni limpieza. Pasaron **423 componentes**, **una integración compilada** y la full de **8971 PASS más la misma xfail conocida**, 8972 IDs exactos. El mismo goal permanece **activo e incompleto**; T024-F0 es la última unidad completa verificada.
 
-El avance posterior `180ce95` modifica sólo el ensayo compilado: verifica una excepción real del constructor nominal Chroma antes de entregar un handle, y la recuperación UNKNOWN desde otro proceso. Pasaron44 pruebas de protocolo y2 regresiones compiladas; la última full sigue correspondiendo a `94b83f1`.
+La corrección posterior `a2c6f4c` limita los registros a16MiB canónicos incluyendo LF antes de escribir. Pasaron36 pruebas de protocolo y1 integración compilada con un intent mayor que la cota real. La full anterior corresponde a `dd637f7`; no se repitió por esta corrección acotada.
 
 | Dato | Estado actual |
 | --- | --- |
 | Entorno | `gabriel`, `/Users/gabriel/Documents/Proyectos/kza`, macOS 26.6.1 arm64, CPython 3.13.18 |
 | Rama | `recovery/production-2026-10-25`; verificar HEAD/origin al retomar |
-| Implementación F1 | `94b83f1920537fa7a0d416eeccfbb9cbb4ac12af`, publicado; markers SDK en `ae40a75`; ensayo de constructor en `180ce95` |
-| Componentes | 388 PASS; XML97.858 s; identidades exactas |
-| Integrada de limpieza | 1 PASS; XML92.128 s; cuatro cierres Graph y lector compilado nuevo, todos con wait0 |
-| Versiones materiales | O/R: aplicación9b; N/F y puente:94b83f1 en collector,180ce95 en el ensayo posterior de constructor |
-| Alcance de limpieza | Dos copias: por copia 5 registros,2 exports,5 archivos retirados;9 registros ajenos preservados. Owner ejecutado en padre fuente bajo autoridad F compilada; lector nuevo comprueba recibos y2 denegaciones de admisión |
-| Full actual | 8935 PASS + misma xfail,8936 IDs; XML976.955 s; fuentes1074/scripts37/protegidos34 intactos durante la ejecución |
-| Warnings | 65759 ocurrencias;15 firmas conocidas,ninguna nueva o ausente en el resumen; sin supresión |
-| Pendientes | Fallo real de cierre SDK; demás representaciones y ACK agregado; inventario retrospectivo y migraciones |
+| Implementación F1 | `a2c6f4c085bc867782cadcf162894ab17fbef374`, publicado; base del registro `dd637f704a463dc0ebd8479af4a8763deab4c375` |
+| Componentes del registro | 423 PASS; XML122.807 s, en dd637f7 |
+| Integración del registro | 1 PASS; XML123.490 s; observer4675/reader4933, wait0 |
+| Corrección de cota | a2c6f4c:36 PASS/XML0.585 s y1 compilada PASS/XML254.001 s; observer68940/reader69253, wait0 |
+| Versiones materiales | O/R: aplicación9b; N/F y puente:dd637f7 en registro,a2c6f4c en la corrección posterior |
+| Alcance de observación | Checkpoints+BLOB18 archivos, audit20, SDK fallido2; IDs/pins y catálogo original intactos. Seis denegaciones por proceso, dos negativos HEAD/FD. No Chroma importado en observer/reader |
+| Última full | dd637f7:8971 PASS + misma xfail,8972 IDs; XML1436.609 s; fuentes1078/scripts37/protegidos34 intactos durante la ejecución |
+| Warnings de la full | 66285 ocurrencias;15 firmas conocidas,ninguna nueva o ausente en el resumen; sin supresión |
+| Pendientes | Fixture binario S/U/manual/shared con lineage tipado; owners reales y cobertura global; SDK close real, migraciones, guards y campo |
 | Delegación | Hasta ocho agentes según plazas; PC interactiva con subagente `gpt-6.1-terra` |
 
 T021/T022/T023/T024 siguen `in_progress`; los 21 criterios permanecen `not_evaluated`. Se conservan los demás estados, presupuestos y permisos separados. Leer el [reporte actual](../research/2026-11-06-copy-lifecycle-progress.json) y la [continuación](../plans/2026-11-06-copy-lifecycle-continuation.json). Preparación y `finish()` no confirman limpieza: el catálogo V1 sigue bloqueado. Los dos recibos nuevos pertenecen sólo a `collector_rows_files_v1`; las otras representaciones y el ACK agregado siguen pendientes. Sin release ni cambios en producción.
@@ -336,11 +337,23 @@ El lector nuevo encuentra el mismo ID, SHA del registro e inventario físico par
 
 Evidencia local: `data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/acceptance-proof.json`, SHA `8e75a037e6e2fef244c10bd03ecfe09b6db01de2c80aee962f9fdcdf77b50941`. Dos casos físicos conservados con manifest SHA `9c1a543320ca76a1e27b05b6e5a0c131e4d99ccbd1b62f1daa3f38a5d3f30973`. El fallo real de cierre sigue abierto: la revisión local no demostró una vía pública soportada para provocarlo sin sustituir métodos o forzar estado. Continuar con el inventario retrospectivo bajo autoridad vigente, conservando esa obligación pendiente.
 
+## Observaciones retrospectivas y cota de registros — T024-F1
+
+`dd637f7` añade `copy_observation`: validación de controlador/FD/HEAD sellado vigente, intent durable antes del escaneo y dos eventos inmutables con CAS en `admission/copy-observations/v1`. Los bytes ya existían: `before_first_byte=False`, `capability=False`, lineage incompleto y limpieza bloqueada. El registro no crea payload, ni prepara, migra o borra la copia. Conserva el ID del SDK fallido y todos los pins originales. La recuperación de metadatos requiere lease real y HEAD cerrado; no abre stores ni afirma sellado del payload.
+
+Las rutas observadas y sus ancestros/descendientes quedan fuera de admisión, tanto para state como runtime, tickets con `check_state=False`, referencias de snapshot y destinos nuevos. Un cambio de inode no elude la denegación histórica. Un intent incompleto o un evento no publicado conserva UNKNOWN/prefijo validado, sin reparación automática ni ACK. Los formatos V1 y la barrera previa de limpieza se conservan.
+
+El caso compilado cubre tres raíces regulares existentes y un lector nuevo, con F/U/manual y catálogo original exactos. No equivale a un censo de copias ni a owners de borrado. La full dd637f7 pasó8972 IDs, con8971 PASS y la única xfail conocida; auditoría sin incidencias y15 firmas de warnings anteriores. Evidencia local: `data/autonomous-roadmap-20261102/t024/f1/copy-observation/full/acceptance-proof.json`, SHA `02de81ad907a0078d915c538614d47ba30c75e53d9c3b1265ee4c611ab3b3035`. Seis casos físicos preservados, manifest SHA `3ea906da363d2128914fe60d77b508e8e9c598b8a3e21ee23ff2391f606246f3`.
+
+Después se corrigió una diferencia productor/lector: `a2c6f4c` rechaza intent/evento canónico+LF mayor que16MiB antes de publicar. El intent de75.000 descriptores ocupa18.450.001 bytes sólo en el array y se rechazó antes del namespace. Un test de protocolo con seam2KiB conserva rev1 sin evento2/recibo; las tres observaciones normales siguen funcionando. Evidencia36+1: `copy-observation/bounds/acceptance-proof.json`, SHA `a7275be3f841efd922bc7c1a54059b56730a4c3415c1f4dc63721ade3b978649`. Estas verificaciones posteriores no se presentan como una full de a2c6f4c.
+
+El análisis del caso nativo dd637f7 encontró14 BLOBs y43 referencias tipadas:7 manuales y36 de otra conversación preservada, con dos digests compartidos; ninguna acredita un binario de S retirado. Primero agregar un fixture opt-in con adquisición binaria pública S/U/manual/shared y probar los joins tipados. No aceptar como retirada un owner que no tenga ningún BLOB S elegible. Mantener abiertos SDK close real, cobertura/owners agregados, migración legacy, guards y los21 criterios.
+
 ## Prompt para la sesión nueva
 
 > Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff y `docs/research/2026-11-06-copy-lifecycle-progress.json`. Confirmá goal/checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro goal ni marques éste completo.
-> Código94b83f1 publicado:388 PASS componentes,1 PASS integrada collector y8935 PASS más la misma xfail conocida en8936 IDs exactos. Markers SDK ae40 verificados en44 unidades+2 compiladas. Esperas reales consumidas; fuentes1074/scripts37/protegidos34 intactos durante la full;15 firmas de warnings conocidas. No repetir ensayos cerrados sin causa nueva. Máximo ocho agentes según plazas; navegador/escritorio de PC siempre delegado a `gpt-6.1-terra`.
-> Ensayo posterior180ce95 publicado:44 protocolo+2 compiladas PASS, excepción real de constructor por tenant inexistente antes de handle y lector nuevo UNKNOWN. No afirmar full nueva ni cierre interno del SDK. Próximo: seguir `docs/plans/2026-11-06-copy-lifecycle-continuation.json` e inventariar retrospectivamente copias forenses/checkpoints/BLOB bajo autoridad actual; la observación no recrea grants ni pretende una reserva anterior a bytes ya existentes. El fallo real SDK close sigue abierto sin vía pública demostrada. Dos recibos collector no confirman limpieza agregada. Mantener identidades/targets/pins, oracle original, proveniencia/TTL, autoridad latest, voz-persona y permisos separados. T021–T024 y los21 criterios siguen abiertos. Sin release/producción/campo.
+> Registrodd637f7 publicado:423 componentes+1 compilada PASS y8971 PASS más la misma xfail conocida/8972 IDs en su full. Corrección posteriora2c6f4c publicada:36 protocolo+1 compilada PASS para la cota16MiB. La full sigue en dd637f7; no afirmar una full nueva de la corrección. Esperas consumidas; guardas1078/37/34 intactas en sus corridas;15 firmas previas de warnings. Máximo ocho agentes según plazas; navegador/escritorio de PC siempre delegado a `gpt-6.1-terra`.
+> Próximo: `docs/plans/2026-11-06-copy-lifecycle-continuation.json`: fixture opt-in binario S/U/manual/shared y joins tipados antes del cleaner. Los14 BLOBs/43 refs actuales no prueban binarios S; una operación sin retirada no cierra el requisito. Conservar defaults/oráculos/IDs/pins/TTL y datos compartidos/manuales. Tres observaciones son metadata no-serving, sin grants ni ACK; dos recibos collector tampoco confirman limpieza agregada. SDK close real, censo/owners globales, legacy y campo siguen abiertos. Mantener voz-persona separado de permisos. T021–T024/21criterios/goal incompletos; sin release/producción/campo.
 
 ## Lista de cierre y reanudación
 
