@@ -1290,7 +1290,9 @@
         "d8532663482a292449e719d7188317c70bba5e24",
         "df88b56277af3c6108c29f46b48411ab2db248fa",
         "3fc5ac61cba2ecaba7a3df4b61dda84c44ce63fc",
-        "2cdbe51f0d3c897e98cc1d2ace7edc0aaed9240f"
+        "2cdbe51f0d3c897e98cc1d2ace7edc0aaed9240f",
+        "ae40a75913afd2979852c4102f80fbce8b1840e8",
+        "94b83f1920537fa7a0d416eeccfbb9cbb4ac12af"
       ],
       "evidence": [
         "docs/plans/2026-11-05-erasure-restore-continuation.json",
@@ -1324,9 +1326,13 @@
         "data/autonomous-roadmap-20261102/t024/f1/broad-construction-3fc/acceptance-proof.json",
         "docs/research/2026-11-06-copy-lifecycle-progress.json",
         "data/autonomous-roadmap-20261102/t024/f1/copy-material/native-attempt-01/acceptance-proof.json",
-        "data/autonomous-roadmap-20261102/t024/f1/copy-full/acceptance-proof.json"
+        "data/autonomous-roadmap-20261102/t024/f1/copy-full/acceptance-proof.json",
+        "data/autonomous-roadmap-20261102/t024/f1/sdk-marker/acceptance-review.json",
+        "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup/component-acceptance-proof.json",
+        "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-native/acceptance-proof.json",
+        "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-full/acceptance-proof.json"
       ],
-      "next_action": "F1: catálogo durable en2cdbe51 verificado localmente:343 PASS componentes,2 PASS compilados+lector nuevo6copias/6retornosSDK yfull8889 PASS+misma xfail/8890 IDs. Próximo: fallos reales de persistencia SDK bajo capacidad viva; luego owner de limpieza selectivaS conU/manual intactos e inventario retrospectivo. Cleanup sigueblocked ownerNone; F1/T024/C04/C05/21criterios/goal abiertos. Sin release."
+      "next_action": "F1:94b83f1 tiene owner collector_rows_files_v1 y fences durables;388 componentes y1 integrado PASS, limpieza normal/cancelada de2copias preservando U/manual y F, lector compilado nuevo;full8935PASS+misma xfail/8936 IDs. ae40 cubre2fallos de markers SDK con close real, no fallos nativos SDK. Próximo: excepción real constructor nominal antes de handle; luego fallo real de close e inventario retrospectivo/migración. Otras representaciones/ACK agregado/F1/T024/C04/C05/21criterios/goal siguen abiertos. Sin release."
     },
     {
       "id": "T025",

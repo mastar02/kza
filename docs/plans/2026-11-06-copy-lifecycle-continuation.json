@@ -93,7 +93,7 @@
     "History/DTO cannot authorize copy/cleanup.",
     "Cleanup cancellation retains owned work until actual return without premature ACK."
   ],
-  "next_action": "Execute actual SDK marker-fault unit under live compiled capability, preserving real close/UNKNOWN and U/manual evidence; then implement a versioned typed selective cleanup owner and truthful retrospective registration. Keep original scope and every open requirement.",
+  "next_action": "First prove one genuine nominal SDK constructor exception before handle return using an absent tenant in an independent extent under current F; keep UNKNOWN/unfinished/blocked and verify in a fresh compiled reader. Then genuine close failure and truthful retrospective inventory. Collector-only normal/cancel evidence does not close aggregate cleanup/F1/T024 or any criterion.",
   "foundation_progress": {
     "report": "docs/research/2026-11-06-copy-lifecycle-progress.json",
     "implementation_commit": "2cdbe51f0d3c897e98cc1d2ace7edc0aaed9240f",
@@ -102,37 +102,31 @@
     "full": "8889 PASS+same regex xfail/8890 IDs/XML881.008",
     "cleanup_owner": null,
     "cleanup_ack": false,
-    "scope": "Public snapshot/materializer registration and metadata recovery; not aggregate copy cleanup or F1 delivery."
+    "scope": "Public snapshot/materializer registration and metadata recovery; not aggregate copy cleanup or F1 delivery.",
+    "historical_revision_scope": "2cd foundation; its global cleanup field never grants aggregate cleanup"
   },
   "next_concrete_units": [
     {
-      "baseline": "Use the existing closed F fixture/current controller in a fresh owned compiled child. Reserve an actual SDK extent, inject only the metadata boundary fault, retain/close the real owner in finally, consume actual child wait, and use a new compiled reader to require the same copy ID UNKNOWN/unfinished/blocked/no capability/no cleanup receipt. Verify protected authority and U/manual sentinels unchanged.",
-      "boundary": "A concrete test unit for existing production code; not cleanup implementation/F1 delivery. Actual native SDK close failure remains separate if these marker faults do not cause it.",
-      "exact_seams": [
-        "One-shot copy_catalog._append persistence rejection at SDK phase handle_returned after the exact nominal PersistentClient actually returned.",
-        "One-shot rejection at close_entered; the retained actual public close must still run. Keep constructor and Client.close code unchanged."
-      ],
+      "basis": "The published SDK constructor/close fault obligation remains open after metadata-marker probes; this keeps the original requirement rather than redefining cleanup completion.",
+      "boundary": "A public SDK constructor error is distinct from an _append metadata error. A successful new case closes only that declared constructor-error path; actual public/native close failure still needs its own genuine, accurately labelled evidence. Unsupported fixture seams are not a feature RED.",
       "files": [
         "tests/integration/test_compiled_material_reconciliation.py",
         "tests/unit/memory/test_copy_catalog.py"
       ],
-      "priority": 1,
-      "unit": "actual_SDK_marker_faults_under_live_capability"
+      "first_baseline": "Reuse the closed current F fixture in one fresh owned compiled child. Under a real AdmissionController reserve an independent SDK extent and call the exact nominal PersistentClient with a syntactically valid but absent tenant on that new local store. Require a real SDK exception before a handle returns; do not wrap/replace PersistentClient, Client.close or force internal closed flags.",
+      "oracles": [
+        "Observe actual nominal constructor entry/exception; retain any actual returned owner and close only if one really exists. An unreturned handle remains UNKNOWN, never an invented close receipt.",
+        "Consume actual process wait and then read the same copy ID with another compiled current-authority reader: UNKNOWN/unfinished/blocked/capability=False/no cleanup ACK. Timeout/kill is containment, not acceptance.",
+        "Keep current F head/binding and the complete U/manual/protected state sentinel unchanged; preserve the original material/marker/collector tests and every original ID."
+      ],
+      "unit": "one_actual_nominal_SDK_constructor_failure_before_handle_return",
+      "priority": 1
     },
     {
-      "baseline": "One registered mixed S/U/manual copy: demand actual selective S withdrawal and exact U/manual preservation, then cancellation while work is held followed by finally release/real return. This is a future owner baseline, not an API-missing RED now.",
-      "boundary": "Historical snapshot invalidation/manifests must be explicit. Never rewrite old target IDs/descriptors/pins or erase a whole mixed copy merely to make S absent.",
-      "exact_seams": [
-        "Separate versioned claim keyed by immutable copy_id, exact catalog revision/current HEAD/FD/root identity; do not rewrite finished preparation history.",
-        "A nominal supported owner for one representation, with actual return/physical evidence; uncertain/unreviewed copies stay blocked."
-      ],
-      "files": [
-        "src/memory/copy_catalog.py",
-        "new typed cleanup-owner module",
-        "tests/integration/test_compiled_material_reconciliation.py"
-      ],
       "priority": 2,
-      "unit": "one_typed_current_authority_copy_cleanup_owner"
+      "unit": "genuine_public_or_native_SDK_close_failure",
+      "status": "open",
+      "boundary": "A marker persistence failure is not an actual SDK close failure. Use a supported genuine failure path, retain any actual owner and uncertainty; no replacement close, forced flags or timeout/kill ACK."
     },
     {
       "baseline": "Reject stale DTO/history/current-HEAD mismatch without writes. A valid registration can only produce known/pending/non-serving observation, no SDK/cleanup receipt.",
@@ -149,5 +143,122 @@
       "priority": 3,
       "unit": "truthful_retrospective_representation_inventory"
     }
-  ]
+  ],
+  "sdk_marker_progress": {
+    "revision": "ae40a75913afd2979852c4102f80fbce8b1840e8",
+    "unit_tests": 44,
+    "compiled_tests": 2,
+    "compiled_XML_seconds": 140.734,
+    "actual_terminal": "21648/5b8d4f",
+    "scope": "Real nominal Chroma constructor/public close retained through handle_returned and close_entered metadata faults; not genuine SDK constructor/close failure",
+    "same_copy_recovered": "UNKNOWN/unfinished/blocked/capability=False/no cleanup receipt",
+    "review": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-marker/acceptance-review.json",
+      "sha256": "1a86f6c16d1f85b6277989dfd507ce303f9b2376de572fcdca462c26fddd5369"
+    }
+  },
+  "collector_cleanup_progress": {
+    "revision": "94b83f1920537fa7a0d416eeccfbb9cbb4ac12af",
+    "components": {
+      "tests": 388,
+      "result": "PASS",
+      "XML_seconds": 97.858,
+      "actual_terminal": "98410/87cbfc",
+      "proof": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup/component-acceptance-proof.json"
+    },
+    "native": {
+      "tests": 1,
+      "result": "PASS",
+      "XML_seconds": 92.128,
+      "actual_terminal": "81332/482aac",
+      "proof": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-native/acceptance-proof.json"
+    },
+    "scope": "collector_rows_files_v1 in two retained inactive derived copies; owner executes in source parent under actual compiled F authority; fresh compiled reader validates metadata and denies admission",
+    "per_copy_removed": {
+      "records": 5,
+      "exports": 2,
+      "files": 5
+    },
+    "per_copy_preserved_records": 9,
+    "U_manual_and_current_F_preserved": true,
+    "cancelled_observer": "No receipt before native return; retained task/lease drains before local receipt",
+    "catalog_preparation": "Immutable V1 history stays cleanup=blocked; separate versioned claim and permanent invalidation fence",
+    "representation_complete": true,
+    "aggregate_copy_complete": false,
+    "other_representations": "blocked",
+    "guards_during_component_and_native": "1074 source,37 scripts,34 protected files unchanged",
+    "independent_component_review": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup/independent-component-review.json",
+      "sha256": "a3117cbe54cd3c61c4f9615b669f35536fbf9daeea6432f9fc4263e5a0a65bdd"
+    },
+    "independent_native_review": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-native/independent-native-review.json",
+      "sha256": "81a0789d049bff47b82e7b4bdc4e392ccc1ecfbbccb296fbd1dcf58675d51920"
+    },
+    "source_reviews": [
+      {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup/final-fence-review.json",
+        "sha256": "e44157acf952ec7a15846b83d91b935584fca98b0746b4b20878fea7ea1dfecc"
+      },
+      {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup/final-ownership-review.json",
+        "sha256": "f898e22c01b31ae9d90ae0f12041a81e7f0c891b7762dff8120a6a54de3768f9"
+      },
+      {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup/final-retirement-review.json",
+        "sha256": "900767601a6f68cfcdb8d68564fbdf1d694366dd9ff309ddeeda6ec289a49d92"
+      }
+    ]
+  },
+  "completed_local_units": [
+    {
+      "baseline": "Use the existing closed F fixture/current controller in a fresh owned compiled child. Reserve an actual SDK extent, inject only the metadata boundary fault, retain/close the real owner in finally, consume actual child wait, and use a new compiled reader to require the same copy ID UNKNOWN/unfinished/blocked/no capability/no cleanup receipt. Verify protected authority and U/manual sentinels unchanged.",
+      "boundary": "A concrete test unit for existing production code; not cleanup implementation/F1 delivery. Actual native SDK close failure remains separate if these marker faults do not cause it.",
+      "exact_seams": [
+        "One-shot copy_catalog._append persistence rejection at SDK phase handle_returned after the exact nominal PersistentClient actually returned.",
+        "One-shot rejection at close_entered; the retained actual public close must still run. Keep constructor and Client.close code unchanged."
+      ],
+      "files": [
+        "tests/integration/test_compiled_material_reconciliation.py",
+        "tests/unit/memory/test_copy_catalog.py"
+      ],
+      "priority": 1,
+      "unit": "actual_SDK_marker_faults_under_live_capability",
+      "status": "verified_within_metadata_fault_scope",
+      "revision": "ae40a75913afd2979852c4102f80fbce8b1840e8"
+    },
+    {
+      "baseline": "One registered mixed S/U/manual copy: demand actual selective S withdrawal and exact U/manual preservation, then cancellation while work is held followed by finally release/real return. This is a future owner baseline, not an API-missing RED now.",
+      "boundary": "Historical snapshot invalidation/manifests must be explicit. Never rewrite old target IDs/descriptors/pins or erase a whole mixed copy merely to make S absent.",
+      "exact_seams": [
+        "Separate versioned claim keyed by immutable copy_id, exact catalog revision/current HEAD/FD/root identity; do not rewrite finished preparation history.",
+        "A nominal supported owner for one representation, with actual return/physical evidence; uncertain/unreviewed copies stay blocked."
+      ],
+      "files": [
+        "src/memory/copy_catalog.py",
+        "new typed cleanup-owner module",
+        "tests/integration/test_compiled_material_reconciliation.py"
+      ],
+      "priority": 2,
+      "unit": "one_typed_current_authority_copy_cleanup_owner",
+      "status": "verified_within_collector_representation_scope",
+      "revision": "94b83f1920537fa7a0d416eeccfbb9cbb4ac12af"
+    }
+  ],
+  "latest_local_full": {
+    "expected_ids": 8936,
+    "old_ids": 8890,
+    "new_ids": 46,
+    "removed_ids": 0,
+    "collection": "exact PASS",
+    "state": "finished",
+    "result": "8935 PASS + same known regex xfail",
+    "XML_seconds": 976.955,
+    "summary_seconds": 977.19,
+    "actual_terminal": "47866/01c152",
+    "actual_wait_consumed": true,
+    "exact_expected_ids": true,
+    "guards_during_run": "1074 source,37 scripts,34 protected files unchanged",
+    "evidence": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-full/acceptance-proof.json"
+  }
 }

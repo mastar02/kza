@@ -6,23 +6,23 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 ## Punto de reanudación
 
-**T024-F1 sigue en curso.** La revisión `2cdbe51` registra las copias de snapshot/materialización antes de escribir datos y recupera sus metadatos sin recrear permisos. Pasaron **343 pruebas de componentes**, **dos regresiones compiladas** y la full de **8889 PASS más la misma xfail conocida**, 8890 IDs exactos. El mismo goal permanece **activo e incompleto**; T024-F0 es la última unidad completa verificada.
+**T024-F1 sigue en curso.** La revisión `94b83f1` agrega limpieza selectiva del collector en copias retenidas y un bloqueo durable de admisión. Pasaron **388 pruebas de componentes**, **una integrada de limpieza normal/cancelada** y la full de **8935 PASS más la misma xfail conocida**, 8936 IDs exactos. El mismo goal permanece **activo e incompleto**; T024-F0 es la última unidad completa verificada.
 
 | Dato | Estado actual |
 | --- | --- |
 | Entorno | `gabriel`, `/Users/gabriel/Documents/Proyectos/kza`, macOS 26.6.1 arm64, CPython 3.13.18 |
 | Rama | `recovery/production-2026-10-25`; verificar HEAD/origin al retomar |
-| Implementación F1 | `2cdbe51f0d3c897e98cc1d2ace7edc0aaed9240f`, publicado |
-| Componentes | 343 PASS; XML97.361 s; identidades exactas |
-| Compilados | 2 PASS; XML135.797 s; original y O/N/R/F con lector nuevo |
-| Versiones materiales | O/R: aplicación9b; N/F y puente de seguridad:2cdbe51 |
-| Recuperación | Nuevo proceso desde `.pyc`: seis copias prepared+finished, seis retornos SDK; factory prestada rechazada sin dispatch ni ACK de limpieza |
-| Full actual | 8889 PASS + misma xfail,8890 IDs; XML881.008 s; fuentes1068/scripts37/protegidos33 intactos |
-| Warnings | 65986 ocurrencias;15 firmas conocidas,ninguna nueva en el resumen; sin supresión |
-| Pendientes | Fallos reales de markers SDK bajo capacidad viva; owner de limpieza selectiva S preservando U/manual; inventario retrospectivo y migraciones |
+| Implementación F1 | `94b83f1920537fa7a0d416eeccfbb9cbb4ac12af`, publicado; markers SDK en `ae40a75` |
+| Componentes | 388 PASS; XML97.858 s; identidades exactas |
+| Integrada de limpieza | 1 PASS; XML92.128 s; cuatro cierres Graph y lector compilado nuevo, todos con wait0 |
+| Versiones materiales | O/R: aplicación9b; N/F y puente de seguridad:94b83f1 |
+| Alcance de limpieza | Dos copias: por copia 5 registros,2 exports,5 archivos retirados;9 registros ajenos preservados. Owner ejecutado en padre fuente bajo autoridad F compilada; lector nuevo comprueba recibos y2 denegaciones de admisión |
+| Full actual | 8935 PASS + misma xfail,8936 IDs; XML976.955 s; fuentes1074/scripts37/protegidos34 intactos durante la ejecución |
+| Warnings | 65759 ocurrencias;15 firmas conocidas,ninguna nueva o ausente en el resumen; sin supresión |
+| Pendientes | Fallos reales de constructor/cierre SDK; demás representaciones y ACK agregado; inventario retrospectivo y migraciones |
 | Delegación | Hasta ocho agentes según plazas; PC interactiva con subagente `gpt-6.1-terra` |
 
-T021/T022/T023/T024 siguen `in_progress`; los 21 criterios permanecen `not_evaluated`. Se conservan los demás estados, presupuestos y permisos separados. Leer el [reporte actual](../research/2026-11-06-copy-lifecycle-progress.json) y la [continuación](../plans/2026-11-06-copy-lifecycle-continuation.json). Preparación y `finish()` no confirman limpieza: sus registros siguen bloqueados sin owner de borrado. Sin release ni cambios en producción.
+T021/T022/T023/T024 siguen `in_progress`; los 21 criterios permanecen `not_evaluated`. Se conservan los demás estados, presupuestos y permisos separados. Leer el [reporte actual](../research/2026-11-06-copy-lifecycle-progress.json) y la [continuación](../plans/2026-11-06-copy-lifecycle-continuation.json). Preparación y `finish()` no confirman limpieza: el catálogo V1 sigue bloqueado. Los dos recibos nuevos pertenecen sólo a `collector_rows_files_v1`; las otras representaciones y el ACK agregado siguen pendientes. Sin release ni cambios en producción.
 
 ## Referencia histórica del cierre Linux F
 
@@ -308,17 +308,29 @@ Las full de f550 y df88 fallaron y se conservan como tales. La colección nueva 
 
 ## Catálogo durable de copias — T024-F1, base local
 
+Este apartado conserva el hito histórico `2cdbe51`; el avance posterior se registra a continuación.
+
 `2cdbe51` agrega el catálogo externo antes del primer byte, identidad física, eventos inmutables y CAS. Los snapshots usados por el materializador requieren su captura externa prepared+finished; un DTO o manifest local no concede permiso. La incertidumbre del SDK es persistente y la capacidad se libera con `finish()` después de la última publicación.
 
 El corte local pasó343 componentes, dos regresiones compiladas y8890 casos generales con la única xfail conocida. Un proceso nuevo cargó `copy_catalog.pyc`, leyó seis copias finalizadas y comprobó seis retornos SDK. Otro probe dentro de ese lector rechazó una factory que devolvía un cliente Chroma real prestado, sin invocarla ni confirmar limpieza. Casos físicos, metadatos, warnings y testigos se conservan con hashes; los archivos temporales antiguos ausentes no se reconstruyen.
 
 F1 sigue abierto. El catálogo mantiene `cleanup=blocked, owner=None`; faltan owner y recibos de limpieza efectiva, más evidencia de fallos reales SDK bajo la capacidad nueva e inventario de copias retrospectivas/forenses. La retirada de S debe preservar exactamente U/manual y tratar la invalidez de snapshots históricos sin reescribir IDs ni pins. Ver el [reporte y requisitos pendientes](../research/2026-11-06-copy-lifecycle-progress.json).
 
+## Limpieza selectiva de copias — T024-F1, avance local
+
+`ae40a75` verificó fallos de persistencia en `handle_returned` y `close_entered` con constructor y cierre públicos reales:44 unidades PASS y2 compiladas PASS/XML140.734 s. Un lector nuevo recuperó los mismos IDs como UNKNOWN, sin permiso ni recibo de limpieza. Son fallos de markers, no fallos reales del constructor o cierre del SDK.
+
+`94b83f1` incorpora `CollectorCopyCleanup`, claims CAS separados del catálogo y fences inmutables anteriores a la mutación. Bloquea admisión, referencias de snapshot y reutilización de la ruta invalidada, incluso con otro inode. Conserva los formatos V1 y los IDs/pins históricos. La cancelación del observador no libera la tarea, lease ni recursos nativos antes del retorno y cierre reales.
+
+El escenario integrado registra ocho copias y limpia la representación collector de dos copias derivadas inactivas, en ejecución normal y cancelada. Retira S y exports dependientes sin retirar copadres U; conserva filas, archivos manuales y autoridad F. Un lector compilado nuevo comprueba ambos recibos y rechaza ambas admisiones. No equivale a borrar índices semánticos, snapshots, BLOBs, copias forenses ni otras representaciones.
+
+Pasaron388 componentes,1 integrada y la full8936 con8935 PASS y la única xfail conocida. Las esperas reales fueron consumidas; la auditoría full pasó25 checks, sin firmas nuevas de warnings. Evidencia local ignorada por Git en `data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-full/`: `acceptance-proof.json` SHA `15ef618c1f9c7ab7dd8f1f1fc3e795c75973d61ee44c974e1d37656a26bf65dd`, auditoría SHA `bd982cf1bbe4c909061628b4e9d6d7edfb9e29ac038754269ef66f25817e6110` y cinco casos físicos con manifest SHA `23f99afa0c32c1bc1a924486a2d80893e874e3e25bfd3fda17d0559e6468ddf2`. Los exports son evidencia histórica, sin permiso de admisión o limpieza. El código y los documentos se suben; estos datos privados permanecen locales.
+
 ## Prompt para la sesión nueva
 
 > Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff y `docs/research/2026-11-06-copy-lifecycle-progress.json`. Confirmá goal/checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro goal ni marques éste completo.
-> Código2cdbe51 publicado:343 PASS componentes,2 PASS compilados y8889 PASS más la misma xfail conocida en8890 IDs exactos. Esperas reales consumidas; fuentes1068/scripts37/protegidos33 intactos;15 firmas de warnings conocidas. No repetir ensayos cerrados sin causa nueva. Máximo ocho agentes según plazas; navegador/escritorio de PC siempre delegado a Terra.
-> Próximo: seguir `docs/plans/2026-11-06-copy-lifecycle-continuation.json`. Primero fallos de persistencia en `handle_returned` y `close_entered` con cliente real/capacidad viva y lector compilado nuevo; cerrar el owner real en finally sin producir ACK desde flags o timeouts. Luego owner versionado de limpieza selectiva S, preservación U/manual e inventario retrospectivo explícito. Historia no concede ejecución ni retención indefinida. Mantener targets, oracle original, proveniencia/TTL, autoridad latest y permisos separados. T021–T024 y los21 criterios siguen abiertos. Sin release/producción/campo.
+> Código94b83f1 publicado:388 PASS componentes,1 PASS integrada collector y8935 PASS más la misma xfail conocida en8936 IDs exactos. Markers SDK ae40 verificados en44 unidades+2 compiladas. Esperas reales consumidas; fuentes1074/scripts37/protegidos34 intactos durante la full;15 firmas de warnings conocidas. No repetir ensayos cerrados sin causa nueva. Máximo ocho agentes según plazas; navegador/escritorio de PC siempre delegado a `gpt-6.1-terra`.
+> Próximo: seguir `docs/plans/2026-11-06-copy-lifecycle-continuation.json`. Primero excepción real del constructor nominal Chroma antes de retornar handle, usando un tenant inexistente en un extent independiente bajo autoridad F actual; conservar UNKNOWN/unfinished/blocked y verificarlo con lector compilado nuevo. Los fallos de markers no cubren esto ni un fallo nativo de close. Después cierre SDK real fallido, inventario retrospectivo y migraciones explícitas. Dos recibos collector no confirman limpieza agregada. Historia no concede ejecución ni retención indefinida. Mantener targets, oracle original, proveniencia/TTL, autoridad latest, voz-persona y permisos separados. T021–T024 y los21 criterios siguen abiertos. Sin release/producción/campo.
 
 ## Lista de cierre y reanudación
 
