@@ -1,5 +1,6 @@
 """Transactional SQLite definitions and durable execution receipts."""
 
+from src.memory import output_registration_v2 as output_registration
 import asyncio
 from collections.abc import Callable
 from contextvars import Context
@@ -85,6 +86,7 @@ class RoutineStore:
             if self._closing is not None and not self._closing.done():
                 raise RuntimeError("routine_store_closing")
             self._closing = None
+            await output_registration.before_routine_open(self)
             self._db = await aiosqlite.connect(self._db_path)
             if self._closing is not None:
                 raise RuntimeError("routine_store_closing")
@@ -102,6 +104,11 @@ class RoutineStore:
                     if statement.strip():
                         db.execute(statement)
             await self._work.write(schema)
+            try:
+                await output_registration.async_ready(self)
+            except BaseException:
+                self._work.begin_close()
+                raise
             self._initialized = True
 
     async def close(self) -> None:
@@ -121,6 +128,7 @@ class RoutineStore:
                         self._initialized = False
                     if self._work is work:
                         self._work = None
+                    await output_registration.owner_closed(self, connection=database)
             self._closing = asyncio.create_task(finish(), context=Context())
             def observed(done):
                 if not done.cancelled():

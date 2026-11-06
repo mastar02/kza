@@ -1,5 +1,6 @@
 """Cleanup-only access to existing policy event tables and source metadata."""
 
+from src.memory import output_registration_v2 as output_registration
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 import json
@@ -31,16 +32,19 @@ def existing_event_database(descriptor: dict):
     """Yield an existing policy table transaction, without creation or migration."""
     validate_event_descriptor(descriptor)
     path = Path(descriptor["path"])
+    output_registration.history_before(path, "events")
     try:
         path.stat()
     except FileNotFoundError:
+        output_registration.observe_history(path, "events", "file_absent")
         yield None
         return
-    with closing(sqlite3.connect(path.as_uri() + "?mode=rw", uri=True)) as db, db:
+    with output_registration.native_connection(None, path, sqlite3.connect, path.as_uri() + "?mode=rw", uri=True, kind="events") as db, db:
         table = db.execute(
             "SELECT type FROM sqlite_master WHERE name='events_policy_v1'"
         ).fetchone()
         if table is None:
+            output_registration.observe_history(path, "events", "representation_absent")
             yield None
             return
         if table[0] != "table":
@@ -48,6 +52,7 @@ def existing_event_database(descriptor: dict):
         db.execute("BEGIN IMMEDIATE")
         if db.execute("SELECT 1 FROM events_policy_v1 WHERE id<=0 LIMIT 1").fetchone():
             raise ValueError("unknown_event_row_id")
+        output_registration.observe_history(path, "events", "supported")
         yield db
 
 

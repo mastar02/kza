@@ -3,6 +3,7 @@ Suggestion Engine Module
 Genera sugerencias de automatizacion basadas en patrones detectados.
 """
 
+from src.memory import output_registration_v2 as output_registration
 import logging
 import math
 from dataclasses import dataclass
@@ -63,7 +64,8 @@ class SuggestionEngine:
         pattern_analyzer: PatternAnalyzer = None,
         suggestions_path: str = "./data/suggestions.json",
         llm_reasoner = None,
-        ha_client = None
+        ha_client = None,
+        output_reservation: output_registration.ConstructorReservation | None = None,
     ):
         self.event_logger = event_logger
         self.pattern_analyzer = pattern_analyzer or PatternAnalyzer(event_logger)
@@ -71,7 +73,7 @@ class SuggestionEngine:
         self.llm = llm_reasoner
         self.ha = ha_client
         
-        self.store = SuggestionStore(event_logger, suggestions_path)
+        self.store = SuggestionStore(event_logger, suggestions_path, output_reservation=output_reservation)
         self._clock = self.store.policy.clock
 
     def _project(self, record: SuggestionRecord) -> Suggestion:

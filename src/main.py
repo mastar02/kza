@@ -4,6 +4,7 @@ Home Assistant Voice Control
 Entry point principal
 """
 
+from src.memory import output_registration_v2 as output_registration
 import asyncio
 from collections.abc import Callable
 from contextlib import AsyncExitStack
@@ -401,6 +402,7 @@ async def build_application(
             account_provider=lambda: None if user_manager is None else user_manager.active_accounts(),
         )
         shutdown.push_async_callback(dashboard_authority.aclose)
+        await output_registration.attach_output(dashboard_authority, "authority_sessions")
         if admission is not None:
             configuration_changes = ConfigurationChanges(dashboard_authority, admission)
             configuration_changes.install_on(shutdown)
@@ -782,7 +784,7 @@ async def build_application(
 
         pattern_analyzer = PatternAnalyzer(event_logger)
 
-        suggestion_engine = await event_logger.acall(SuggestionEngine,
+        suggestion_engine = await output_registration.construct_suggestions(event_logger, SuggestionEngine,
             event_logger=event_logger,
             pattern_analyzer=pattern_analyzer,
             suggestions_path=analytics_config.get("suggestions_path", "./data/suggestions.json"),
@@ -1944,6 +1946,7 @@ async def build_application(
     shutdown.push_async_callback(graph.producer_erasure.aclose)
     if configuration_changes is not None:
         configuration_changes.attach_graph(graph)
+    await output_registration.composed(destination_registration)
     if admission is not None:
         admission.attach_graph(graph)
         await admission.revalidate_constructed()

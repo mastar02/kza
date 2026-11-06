@@ -1,5 +1,6 @@
 """Read-only retirement checks for registered event metadata, without a logger."""
 
+from src.memory import output_registration_v2 as output_registration
 from contextlib import ExitStack, closing
 from dataclasses import dataclass
 from enum import StrEnum
@@ -53,12 +54,14 @@ class EventEvidenceReader:
         path = Path(descriptor["path"])
         if path.is_symlink():
             return None
+        output_registration.history_before(path, "events")
         try:
             path.stat()
         except FileNotFoundError:
+            output_registration.observe_history(path, "events", "file_absent")
             return None
         db = self._stack.enter_context(
-            closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=0.05))
+            output_registration.native_connection(None, path, sqlite3.connect, path.as_uri() + "?mode=ro", uri=True, timeout=0.05, kind="events")
         )
         db.row_factory = sqlite3.Row
         db.execute("BEGIN")
@@ -68,6 +71,7 @@ class EventEvidenceReader:
             ).fetchone()
             is None
         ):
+            output_registration.observe_history(path, "events", "representation_absent")
             return None
         columns = db.execute("PRAGMA table_info(events_policy_v1)").fetchall()
         required = {
@@ -89,7 +93,9 @@ class EventEvidenceReader:
             c["name"] == "id" and c["type"].upper() == "INTEGER" and c["pk"] == 1
             for c in columns
         ):
+            output_registration.observe_history(path, "events", "representation_corrupt_or_unsupported")
             return None
+        output_registration.observe_history(path, "events", "supported")
         self._databases[target] = db
         return db
 

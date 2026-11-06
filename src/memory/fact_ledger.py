@@ -6,6 +6,7 @@ an index: its documents and metadata never authorize memory use or retention.
 
 from __future__ import annotations
 
+from src.memory import output_registration_v2 as output_registration
 import math
 import hashlib
 import json
@@ -261,7 +262,9 @@ class FactLedger:
         """Create the private ledger without importing legacy documents."""
         with self._lock:
             if self._db is not None:
+                output_registration.borrowed_ledger(self)
                 return
+            output_registration.before_ledger_open(self)
             self._authority_available = False
             self._voice_person_proof.invalidate()
             db = None
@@ -271,7 +274,9 @@ class FactLedger:
                     descriptor = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
                     os.close(descriptor)
                     os.chmod(self.path, 0o600)
+                output_registration.before_ledger_open(self)
                 db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
+                output_registration.ledger_connected(self, db)
                 db.row_factory = sqlite3.Row
                 db.execute("PRAGMA foreign_keys=ON")
                 db.execute("PRAGMA secure_delete=ON")
@@ -307,7 +312,13 @@ class FactLedger:
                 self._db = None
                 self._authority_available = False
                 if db is not None:
-                    db.close()
+                    try:
+                        db.close()
+                    except BaseException:
+                        output_registration.ledger_close_failed(self, db)
+                        raise
+                    else:
+                        output_registration.ledger_closed(self, db)
                 raise
 
     @property
@@ -421,7 +432,13 @@ class FactLedger:
             self._authority_available = False
             self._voice_person_proof.invalidate()
             if self._db is not None:
-                self._db.close()
+                try:
+                    self._db.close()
+                except BaseException:
+                    output_registration.ledger_close_failed(self, self._db)
+                    raise
+                else:
+                    output_registration.ledger_closed(self, self._db)
                 self._db = None
 
     @contextmanager

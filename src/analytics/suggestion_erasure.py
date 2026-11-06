@@ -1,5 +1,6 @@
 """Durable proposal cleanup and actual pre-marker producer/voice read barriers."""
 
+from src.memory import output_registration_v2 as output_registration
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
@@ -14,7 +15,7 @@ from src.analytics.suggestion_storage import (
     cleanup_suggestions,
     suggestion_descriptor,
 )
-from src.core.owned_work import OwnedBlockingWork
+from src.core.owned_work import OwnedBlockingWork, observe_native
 from src.memory.erasure_coordinator import ErasureCoordinator
 from src.memory.erasure_journal import ErasureParticipant, ErasureResult, ErasureStep
 from src.memory.privacy_services import PrivacyServices
@@ -64,7 +65,7 @@ class SuggestionEraser:
 
     async def _offload(self, function, *args, **kwargs):
         return await asyncio.get_running_loop().run_in_executor(
-            self._executor, copy_context().run, partial(function, *args, **kwargs)
+            self._executor, copy_context().run, partial(observe_native, function, *args, **kwargs)
         )
 
     def attach_engine(self, engine: SuggestionEngine) -> None:
@@ -146,7 +147,7 @@ class SuggestionEraser:
         if step.participant is not ErasureParticipant.SUGGESTIONS or step.version != 1:
             raise ValueError("unsupported_suggestion_target")
         targets = await self.privacy.acall(
-            self.privacy.ledger.erasures.targets, ErasureParticipant.SUGGESTIONS
+            output_registration.target_rows, self.privacy.ledger, ErasureParticipant.SUGGESTIONS
         )
         if not any(
             target["id"] == step.target_id
@@ -172,8 +173,8 @@ class SuggestionEraser:
             if not pending:
                 self._barriers.pop(step.operation_id, None)
             return ErasureResult(pending == 0, pending_count=pending)
-        return await self._disk.run(
-            cleanup_suggestions,
+        return await output_registration.run_registered(
+            self, self._disk, cleanup_suggestions,
             ledger,
             step.descriptor,
             step.conversation_id,
@@ -196,6 +197,7 @@ class SuggestionEraser:
                     await asyncio.sleep(0.005)
                 self._barriers.clear()
                 await asyncio.to_thread(self._executor.shutdown, wait=True)
+                await output_registration.owner_closed(self)
 
             self._closing = asyncio.create_task(finish())
         return self._closing
@@ -217,12 +219,18 @@ async def build_suggestion_erasure(
             target,
         )
     driver = SuggestionEraser(privacy, retention_days=config.get("analytics", {}).get("retention_days", 90))
-    owner.register(
-        ErasureParticipant.SUGGESTIONS,
-        driver.clean,
-        versions=frozenset({1}),
-        begin_close=driver.begin_close,
-    )
+    try:
+        owner.register(
+            ErasureParticipant.SUGGESTIONS,
+            driver.clean,
+            versions=frozenset({1}),
+            begin_close=driver.begin_close,
+        )
+    except BaseException:
+        driver.begin_close()
+        raise
+    await output_registration.attach_output(driver, "suggestions", role="eraser")
+    await output_registration.attach_output(driver.retention, "suggestions", role="retention")
     await driver.retention.refresh()
     driver.retention.start()
     return driver

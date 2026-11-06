@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 import hashlib
 import json
 import math
 import re
 from uuid import UUID, uuid4
+from typing import NoReturn
 
 
 class ErasureParticipant(StrEnum):
@@ -48,6 +49,7 @@ CREATE TABLE IF NOT EXISTS conversation_erasures (
 CREATE TABLE IF NOT EXISTS erasure_targets (
   id TEXT PRIMARY KEY, participant TEXT NOT NULL, version INTEGER NOT NULL, descriptor TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_erasure_target_participant_id ON erasure_targets(participant, id);
 CREATE TABLE IF NOT EXISTS erasure_steps (
   operation_id TEXT NOT NULL REFERENCES conversation_erasures(id), participant TEXT NOT NULL,
   target_id TEXT NOT NULL, version INTEGER NOT NULL, state TEXT NOT NULL,
@@ -93,11 +95,173 @@ class ErasureResult:
             raise ValueError("erasure_complete_with_pending_work")
 
 
+MAX_TARGET_SNAPSHOT_ENTRIES = 256
+MAX_TARGET_DESCRIPTOR_BYTES = 8192
+_TARGET_PARTICIPANTS = frozenset({ErasureParticipant.EVENTS, ErasureParticipant.SUGGESTIONS})
+
+
+@dataclass(frozen=True, slots=True)
+class TargetRegistryEntry:
+    """A bounded original-row observation, never a destination capability."""
+
+    id: str
+    participant: ErasureParticipant
+    version: int | None
+    descriptor_json: str | None = field(repr=False)
+    status: str
+    opaque_digest: str | None = None
+
+    @property
+    def descriptor(self) -> dict | None:
+        """Return a fresh value; callers cannot mutate the frozen observation."""
+        return None if self.descriptor_json is None else json.loads(self.descriptor_json)
+
+
+@dataclass(frozen=True, eq=False, slots=True)
+class TargetRegistrySnapshot:
+    """One bounded SQL snapshot with its actual in-memory ledger provenance."""
+
+    ledger: object = field(repr=False)
+    lifecycle_generation: int
+    participants: tuple[ErasureParticipant, ...]
+    entries: tuple[TargetRegistryEntry, ...]
+    digest: str
+    status: str
+
+    def __reduce_ex__(self, protocol: int) -> NoReturn:
+        raise TypeError("target_registry_snapshot_not_serializable")
+
+
+def _snapshot_arguments(participants, limit):
+    if (type(participants) is not tuple or len(participants) != len(_TARGET_PARTICIPANTS)
+            or any(type(p) is not ErasureParticipant or p not in _TARGET_PARTICIPANTS for p in participants)
+            or set(participants) != _TARGET_PARTICIPANTS
+            or type(limit) is not int or not 1 <= limit <= MAX_TARGET_SNAPSHOT_ENTRIES):
+        raise ValueError("invalid_target_snapshot_scope")
+    return tuple(sorted(participants, key=lambda p: p.value))
+
+
+def _bounded_target_entry(row, participant):
+    # This projection contains only bounded prefixes and scalar lengths. An
+    # opaque digest identifies that projection, not unread oversized bytes.
+    projected = [value.hex() if isinstance(value, bytes) else value for value in row]
+    raw = json.dumps(projected, separators=(",", ":"), allow_nan=False).encode()
+    opaque = hashlib.sha256(raw).hexdigest()
+    id_type, id_size, id_raw, participant_type, participant_size, participant_raw, version_type, version, version_raw, descriptor_type, descriptor_size, descriptor_raw = row
+    oversized = (id_size is not None and id_size > 64
+                 or participant_size is not None and participant_size > 32
+                 or descriptor_size is not None and descriptor_size > MAX_TARGET_DESCRIPTOR_BYTES)
+    try:
+        if (id_type != "text" or id_size != 64 or type(id_raw) is not bytes
+                or participant_type != "text" or participant_size is None or participant_size > 32
+                or type(participant_raw) is not bytes or version_type != "integer"
+                or type(version) is not int or version < 1 or descriptor_type != "text"
+                or type(descriptor_raw) is not bytes or descriptor_size is None
+                or descriptor_size > MAX_TARGET_DESCRIPTOR_BYTES):
+            raise ValueError("invalid_registered_target_row")
+        identity = id_raw.decode("ascii")
+        if re.fullmatch("[0-9a-f]{64}", identity) is None or participant_raw.decode("ascii") != participant.value:
+            raise ValueError("invalid_registered_target_identity")
+        encoded = descriptor_raw.decode("utf-8")
+        descriptor = json.loads(encoded)
+        if type(descriptor) is not dict:
+            raise ValueError("invalid_registered_target_descriptor")
+        canonical = json.dumps(descriptor, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        # Match _register_target exactly, including its outer JSON encoding.
+        expected = hashlib.sha256(json.dumps([participant.value, version, canonical]).encode()).hexdigest()
+        if canonical != encoded or expected != identity:
+            raise ValueError("registered_target_identity_mismatch")
+        return TargetRegistryEntry(identity, participant, version, canonical,
+                                   "registered" if version == 1 else "unsupported_version"), raw
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        return TargetRegistryEntry("opaque:" + opaque, participant, None, None,
+                                   "oversized" if oversized else "corrupt", opaque), raw
+
+
 class ErasureJournal:
     """Use the leased ledger transaction for intent, targets, claims and receipts."""
 
     def __init__(self, ledger):
         self.ledger = ledger
+
+    def target_snapshot(
+        self,
+        participants: tuple[ErasureParticipant, ...] = (
+            ErasureParticipant.EVENTS, ErasureParticipant.SUGGESTIONS,
+        ),
+        *, limit: int = MAX_TARGET_SNAPSHOT_ENTRIES,
+    ) -> TargetRegistrySnapshot:
+        """Observe bounded target rows in one original authority transaction.
+
+        A complete observation is not a dispatch grant. Final admission must
+        join it to the actual owner/native invocation under the same ledger.
+        Existing transaction callers use _target_snapshot_db, not this method.
+        """
+        participants = _snapshot_arguments(participants, limit)
+        with self.ledger._lock:
+            generation = self.ledger._lifecycle_generation
+            if self.ledger._db is None or not self.ledger.authority_available:
+                return self._unavailable_target_snapshot(participants, generation)
+            if self.ledger._db.in_transaction:
+                raise RuntimeError("target_snapshot_requires_single_transaction")
+            try:
+                with self.ledger._transaction() as db:
+                    return self._target_snapshot_db(db, participants, limit=limit)
+            except Exception:
+                # The original transaction owns rollback/authority recovery.
+                # Failure is explicit, never an apparently complete empty set.
+                return self._unavailable_target_snapshot(participants, generation)
+
+    def _unavailable_target_snapshot(self, participants, generation):
+        raw = json.dumps(["unavailable", generation, [p.value for p in participants]],
+                         separators=(",", ":")).encode()
+        return TargetRegistrySnapshot(self.ledger, generation, participants, (),
+                                      hashlib.sha256(raw).hexdigest(), "unavailable")
+
+    def _target_snapshot_db(
+        self, db, participants: tuple[ErasureParticipant, ...], *, limit: int = MAX_TARGET_SNAPSHOT_ENTRIES,
+    ) -> TargetRegistrySnapshot:
+        """Read within one existing original transaction, without nested BEGIN."""
+        participants = _snapshot_arguments(participants, limit)
+        if (db is not self.ledger._db or not db.in_transaction
+                or not self.ledger._lock._is_owned()):
+            raise ValueError("target_snapshot_requires_original_transaction")
+        generation = self.ledger._lifecycle_generation
+        digest = hashlib.sha256(json.dumps(
+            [generation, [p.value for p in participants]], separators=(",", ":"),
+        ).encode())
+        entries = []
+        status = "complete"
+        for participant in participants:
+            remaining = limit - len(entries)
+            # CASE avoids materializing a malformed non-integer version;
+            # all text/blob projections are bounded before Python sees them.
+            rows = db.execute("""
+                SELECT typeof(id), length(CAST(id AS BLOB)), substr(CAST(id AS BLOB),1,65),
+                       typeof(participant), length(CAST(participant AS BLOB)), substr(CAST(participant AS BLOB),1,33),
+                       typeof(version), CASE WHEN typeof(version)='integer' THEN version ELSE NULL END,
+                       substr(CAST(version AS BLOB),1,33), typeof(descriptor),
+                       length(CAST(descriptor AS BLOB)), substr(CAST(descriptor AS BLOB),1,8193)
+                FROM erasure_targets WHERE participant=? ORDER BY id LIMIT ?
+            """, (participant.value, remaining + 1))
+            try:
+                for row in rows:
+                    entry, raw = _bounded_target_entry(row, participant)
+                    digest.update(len(raw).to_bytes(8, "big"))
+                    digest.update(raw)
+                    if len(entries) == limit:
+                        status = "overflow"
+                        break
+                    entries.append(entry)
+                    if entry.status in ("corrupt", "oversized"):
+                        status = "corrupt"
+            finally:
+                rows.close()
+            if status == "overflow":
+                break
+        digest.update(status.encode("ascii"))
+        return TargetRegistrySnapshot(self.ledger, generation, participants,
+                                      tuple(entries), digest.hexdigest(), status)
 
     def ensure_operation(self, db, conversation_id: str, actor) -> str:
         """Record intent in the same transaction as its conversation tombstone."""

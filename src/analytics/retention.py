@@ -1,5 +1,6 @@
 """Always-on, bounded event TTL maintenance over registered historical databases."""
 
+from src.memory import output_registration_v2 as output_registration
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
@@ -14,7 +15,7 @@ from src.analytics.event_storage import (
     sweep_events,
     validate_event_descriptor,
 )
-from src.core.owned_work import OwnedBlockingWork
+from src.core.owned_work import OwnedBlockingWork, observe_native
 from src.memory.erasure_journal import ErasureParticipant
 from src.memory.privacy_services import PrivacyServices
 
@@ -68,7 +69,7 @@ class EventRetention:
 
     async def _offload(self, function, *args, **kwargs):
         return await asyncio.get_running_loop().run_in_executor(
-            self._executor, copy_context().run, partial(function, *args, **kwargs)
+            self._executor, copy_context().run, partial(observe_native, function, *args, **kwargs)
         )
 
     def notify(self, database: str) -> None:
@@ -87,7 +88,7 @@ class EventRetention:
 
     async def _run(self, target: dict, cursor: int) -> SweepOutcome:
         try:
-            receipt = await self._work.run(
+            receipt = await output_registration.run_registered(self, self._work,
                 sweep_events,
                 target["descriptor"],
                 cursor,
@@ -140,7 +141,7 @@ class EventRetention:
         if self._closed:
             return
         targets = await self.privacy.acall(
-            self.privacy.ledger.erasures.targets, ErasureParticipant.EVENTS
+            output_registration.target_rows, self.privacy.ledger, ErasureParticipant.EVENTS
         )
         for target in targets:
             key = target["id"]
@@ -255,6 +256,7 @@ class EventRetention:
                 self._active.clear()
                 await self._work.begin_close()
                 await asyncio.to_thread(self._executor.shutdown, wait=True)
+                await output_registration.owner_closed(self)
 
             self._closing = asyncio.create_task(finish())
         return self._closing

@@ -1,5 +1,6 @@
 """Construction boundary for persistent routines using Casa's shared dependencies."""
 
+from src.memory import output_registration_v2 as output_registration
 import asyncio
 
 from src.home_assistant.home_actions import HomeActionService
@@ -28,6 +29,7 @@ async def build_routine_scheduler(
     """
     store = RoutineStore(db_path)
     try:
+        await output_registration.attach_output(store, "routines")
         await store.initialize()
         executor = RoutineExecutor(ha_client=ha_client, home_actions=home_actions, store=store)
         return RoutineScheduler(executor, ha_client=ha_client, store=store, timezone=timezone)

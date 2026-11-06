@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from src.memory import output_registration_v2 as output_registration
 import asyncio
 from contextlib import closing
 from contextvars import Context
@@ -612,6 +613,8 @@ class DashboardAuthority:
                     result = await self.commands._run_locked(args[0])
                 else:
                     state = await self._run_transaction(action,args,guard)
+                    if action == "initialize":
+                        await output_registration.async_ready(self)
                     result = self._publish_state(state)
                 with self._state_lock:
                     self._release_task_mutation_locked(asyncio.current_task())
@@ -631,6 +634,7 @@ class DashboardAuthority:
                 args = guard = None
 
     def _open(self) -> None:
+        output_registration.before_native(self, self.path)
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         lease = self.path.with_name(self.path.name + ".lease")
         fd = os.open(lease, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -652,6 +656,7 @@ class DashboardAuthority:
         self._lease_fd = fd
 
     def _transaction(self, action: str, args: tuple, guard: Callable[[], bool] | None):
+        output_registration.dashboard_operation(self, action, args, guard)
         if action == "initialize":
             self._open()
         if self._lease_fd is None:
@@ -661,7 +666,7 @@ class DashboardAuthority:
             raise PermissionError("dashboard_authority_revoked")
         from src.dashboard.credential_journal import migrate_schema, read_attempts, read_metadata, validate_history
         now = self._now()
-        with closing(sqlite3.connect(self.path, timeout=1)) as db, db:
+        with output_registration.native_connection(self, self.path, sqlite3.connect, self.path, timeout=1) as db, db:
             db.row_factory = sqlite3.Row
             db.execute("BEGIN IMMEDIATE")
             if action == "initialize":
@@ -981,8 +986,9 @@ class DashboardAuthority:
                     self._observe_legacy()
                     args = self._observed_digest, self._observed_epoch
                     final = OwnedBlockingWork(capacity=1)
+                    output_registration.final_worker(self, final, args)
                     try:
-                        await final.run(self._transaction, "rotate", args, None)
+                        await output_registration.run_final_rotation(self, final, args)
                     finally:
                         finish = final.begin_close()
                         while not finish.done():
@@ -996,5 +1002,6 @@ class DashboardAuthority:
                 if self._lease_fd is not None:
                     fd, self._lease_fd = self._lease_fd, None
                     os.close(fd)
+            await output_registration.owner_closed(self)
             if cancelled:
                 raise asyncio.CancelledError

@@ -1,5 +1,6 @@
 """Always-on privacy authority, independent of semantic memory availability."""
 
+from src.memory import output_registration_v2 as output_registration
 import asyncio
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -46,6 +47,7 @@ class PrivacyServices:
         with self._lock:
             if self._closed:
                 raise RuntimeError("privacy_closed")
+            output_registration.before_native(self, self.ledger.path)
             verify_privacy_admission(self.ledger.path)
             if self.ledger.path != ":memory:" and self._lease is None:
                 path = Path(self.ledger.path)
@@ -61,7 +63,8 @@ class PrivacyServices:
             if not self._ready:
                 self.ledger.erasures.recover()
                 self.ledger.index_deletions.recover()
-                self._ready = True
+                if not output_registration.native_ready(self):
+                    self._ready = True
 
     def require_available(self) -> None:
         """Reject consumers until the leased authority is ready, or once closing."""
@@ -88,6 +91,8 @@ class PrivacyServices:
         """Run privacy I/O in its own bounded, retained worker scope."""
         if function != self.initialize:
             self.require_available()
+        if function == self.initialize:
+            return await output_registration.initialize_owned(self, self._work, function, *args, **kwargs)
         return await self._work.run(function, *args, **kwargs)
 
     def sources_available(self, sources: tuple[MemorySource, ...]) -> bool:
@@ -157,9 +162,19 @@ class PrivacyServices:
                 self._close_phase = ClosePhase.DRAIN
                 await asyncio.gather(*drains)
                 self._close_phase = ClosePhase.RESOURCES
-                await self._close_work.run(self._close_resources)
-                await self._close_work.begin_close()
+                publication_failure = None
+                try:
+                    await output_registration.final_registry(self)
+                except BaseException as error:
+                    publication_failure = error
+                try:
+                    await self._close_work.run(self._close_resources)
+                finally:
+                    await self._close_work.begin_close()
+                await output_registration.owner_closed(self)
                 self._close_phase = ClosePhase.COMPLETE
+                if publication_failure is not None:
+                    raise publication_failure
             self._closing = asyncio.create_task(finish(),context=Context())
         return self._closing
 
@@ -190,6 +205,7 @@ async def build_privacy_services(config: dict, *, shutdown: AsyncExitStack, cloc
     services = PrivacyServices(path,
         clock=clock, automatic_days=settings.get("automatic_retention_days", 30))
     shutdown.push_async_callback(services.aclose)
+    await output_registration.attach_output(services, "privacy_authority")
     await services.acall(services.initialize)
     services.start()
     return services

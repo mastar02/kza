@@ -1,5 +1,6 @@
 """Cleanup-only access to registered proposal metadata, never to message text."""
 
+from src.memory import output_registration_v2 as output_registration
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 import json
@@ -45,17 +46,20 @@ def existing_suggestion_database(descriptor: dict):
     path = Path(descriptor["path"])
     if path.is_symlink():
         raise ValueError("redirected_suggestion_target")
+    output_registration.history_before(path, "suggestions")
     try:
         path.stat()
     except FileNotFoundError:
+        output_registration.observe_history(path, "suggestions", "file_absent")
         yield None
         return
-    with closing(sqlite3.connect(path.as_uri() + "?mode=rw", uri=True)) as db, db:
+    with output_registration.native_connection(None, path, sqlite3.connect, path.as_uri() + "?mode=rw", uri=True, kind="suggestions") as db, db:
         db.execute("BEGIN IMMEDIATE")
         table = db.execute(
             "SELECT type FROM sqlite_master WHERE name='suggestions_policy_v1'"
         ).fetchone()
         if table is None:
+            output_registration.observe_history(path, "suggestions", "representation_absent")
             yield None
             return
         if table[0] != "table":
@@ -80,6 +84,7 @@ def existing_suggestion_database(descriptor: dict):
             for column in columns
         ):
             raise ValueError("unknown_suggestion_schema")
+        output_registration.observe_history(path, "suggestions", "supported")
         yield db
 
 

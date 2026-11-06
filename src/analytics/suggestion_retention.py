@@ -1,5 +1,6 @@
 """Always-on, bounded proposal TTL maintenance over registered historical sidecars."""
 
+from src.memory import output_registration_v2 as output_registration
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
@@ -20,7 +21,7 @@ from src.analytics.suggestion_storage import (
 )
 from src.analytics.event_storage import validate_event_descriptor
 from src.analytics.event_evidence import event_target_id
-from src.core.owned_work import OwnedBlockingWork
+from src.core.owned_work import OwnedBlockingWork, observe_native
 from src.memory.erasure_journal import ErasureParticipant
 from src.memory.privacy_services import PrivacyServices
 
@@ -86,7 +87,7 @@ class SuggestionRetention:
 
     async def _offload(self, function, *args, **kwargs):
         return await asyncio.get_running_loop().run_in_executor(
-            self._executor, copy_context().run, partial(function, *args, **kwargs)
+            self._executor, copy_context().run, partial(observe_native, function, *args, **kwargs)
         )
 
     def notify(self, database: str | None = None) -> None:
@@ -111,10 +112,7 @@ class SuggestionRetention:
         try:
 
             def read():
-                rows = self.privacy.ledger.erasures.targets(
-                    ErasureParticipant.SUGGESTIONS
-                )
-                events = self.privacy.ledger.erasures.targets(ErasureParticipant.EVENTS)
+                rows, events = output_registration.target_groups(self.privacy.ledger)
                 return self.privacy.ledger.clock(), (rows, events)
 
             return await self.privacy.acall(read)
@@ -174,7 +172,7 @@ class SuggestionRetention:
 
     async def _run(self, target: dict, cursor) -> SweepOutcome:
         try:
-            receipt = await self._work.run(
+            receipt = await output_registration.run_registered(self, self._work,
                 sweep_suggestions,
                 self.privacy.ledger,
                 target["descriptor"],
@@ -369,6 +367,7 @@ class SuggestionRetention:
                     await asyncio.gather(self._registry_task, return_exceptions=True)
                 await self._work.begin_close()
                 await asyncio.to_thread(self._executor.shutdown, wait=True)
+                await output_registration.owner_closed(self)
 
             self._closing = asyncio.create_task(finish())
         return self._closing

@@ -3,11 +3,13 @@
 import asyncio
 from collections import deque
 from contextvars import Context, ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 import math
 from collections.abc import Callable
 import time
+import threading
+from typing import NoReturn
 
 
 class ClosePhase(StrEnum):
@@ -61,17 +63,123 @@ class WorkTiming:
 _TIMING: ContextVar[WorkTiming | None] = ContextVar('owned_work_timing',default=None)
 
 
+@dataclass(frozen=True, eq=False, slots=True)
+class NativeExecution:
+    """Identity of one actual invocation; fields alone never grant admission."""
+
+    work: "OwnedBlockingWork" = field(repr=False)
+    function: Callable = field(repr=False)
+    task: asyncio.Task = field(repr=False)
+    parent_sequence: asyncio.Task | None = field(default=None, repr=False)
+
+    @property
+    def retained_task(self) -> asyncio.Task:
+        """Return the original task whose admission owns this invocation."""
+        return self.task if self.parent_sequence is None else self.parent_sequence
+
+    def __reduce_ex__(self, protocol: int) -> NoReturn:
+        raise TypeError("native_execution_not_serializable")
+
+
+@dataclass
+class _NativeState:
+    binding: NativeExecution
+    thread_id: int | None = None
+    executing_loop: asyncio.AbstractEventLoop | None = None
+    executing_task: asyncio.Task | None = None
+    entered: bool = False
+
+
+_NATIVE_EXECUTION: ContextVar[NativeExecution | None] = ContextVar(
+    "owned_work_native_execution", default=None,
+)
+_NATIVE_LOCK = threading.RLock()
+
+
+def _executing_loop():
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
+def _executing_task():
+    try:
+        return asyncio.current_task()
+    except RuntimeError:
+        return None
+
+
+def validate_native_execution(
+    binding: NativeExecution | None, *, work: "OwnedBlockingWork | None" = None,
+    function: Callable | None = None,
+) -> bool:
+    """Validate actual task/work/thread membership, not a copied context token."""
+    if type(binding) is not NativeExecution or _NATIVE_EXECUTION.get() is not binding:
+        return False
+    with _NATIVE_LOCK:
+        owner = binding.work
+        state = owner._native_executions.get(id(binding))
+        return bool(
+            state is not None and state.binding is binding and state.entered
+            and state.thread_id == threading.get_ident()
+            and state.executing_loop is _executing_loop()
+            and state.executing_task is _executing_task()
+            and (work is None or owner is work)
+            and (function is None or binding.function is function)
+            and binding.retained_task in owner._tasks
+            and not binding.task.done() and not binding.retained_task.done()
+        )
+
+
+def current_native_execution() -> NativeExecution | None:
+    """Locate the actual current invocation while its native callback runs."""
+    binding = _NATIVE_EXECUTION.get()
+    return binding if validate_native_execution(binding) else None
+
+
+def _enter_native(binding, function):
+    if type(binding) is not NativeExecution or binding.function is not function:
+        return False
+    with _NATIVE_LOCK:
+        state = binding.work._native_executions.get(id(binding))
+        executing_task = _executing_task()
+        if (state is None or state.binding is not binding or state.entered
+                or executing_task is not None and executing_task is not binding.task
+                or binding.retained_task not in binding.work._tasks
+                or binding.task.done() or binding.retained_task.done()):
+            return False
+        state.thread_id = threading.get_ident()
+        state.executing_loop = _executing_loop()
+        state.executing_task = executing_task
+        state.entered = True
+        return True
+
+
+def _leave_native(binding):
+    if type(binding) is NativeExecution:
+        with _NATIVE_LOCK:
+            state = binding.work._native_executions.get(id(binding))
+            if state is not None and state.binding is binding:
+                binding.work._native_executions.pop(id(binding), None)
+
+
 def observe_native(function: Callable, *args, **kwargs):
     """Observe one real synchronous invocation without changing its arguments."""
     timing = _TIMING.get()
-    if timing is None or timing.native_started is not None:
-        return function(*args,**kwargs)
-    timing.native_started = time.monotonic()
+    owns_timing = timing is not None and timing.native_started is None
+    binding = _NATIVE_EXECUTION.get()
+    owns_execution = _enter_native(binding, function)
+    if owns_timing:
+        timing.native_started = time.monotonic()
     try:
         return function(*args,**kwargs)
     finally:
-        timing.native_finished = time.monotonic()
-        timing = function = args = kwargs = None
+        if owns_timing:
+            timing.native_finished = time.monotonic()
+        if owns_execution:
+            _leave_native(binding)
+        timing = binding = function = args = kwargs = None
 
 
 async def _observed_thread(function, *args, **kwargs):
@@ -107,21 +215,43 @@ class OwnedBlockingWork:
         self._closing: asyncio.Task | None = None
         self._timings: dict[asyncio.Task,WorkTiming] = {}
         self._history = deque(maxlen=capacity)
+        self._native_executions: dict[int, _NativeState] = {}
+
+    def _native_binding(self, function, task, parent_sequence=None):
+        retained = task if parent_sequence is None else parent_sequence
+        with _NATIVE_LOCK:
+            if retained not in self._tasks or retained.done():
+                raise RuntimeError("native_execution_not_retained")
+            if len(self._native_executions) >= self._capacity:
+                raise RuntimeError("native_execution_capacity")
+            binding = NativeExecution(self, function, task, parent_sequence)
+            self._native_executions[id(binding)] = _NativeState(binding)
+            return binding
 
     async def _execute(self, timing, function, args, kwargs):
         token = _TIMING.set(timing)
-        timing.dispatched = time.monotonic()
+        binding = native_token = None
         try:
+            # _retain must publish ownership before even an eager worker starts.
+            await asyncio.sleep(0)
+            binding = self._native_binding(function, asyncio.current_task())
+            native_token = _NATIVE_EXECUTION.set(binding)
+            timing.dispatched = time.monotonic()
+            # Preserve the exact callable seen by existing private workers.
             return await self._worker(function,*args,**kwargs)
         finally:
+            _leave_native(binding)
+            if native_token is not None:
+                _NATIVE_EXECUTION.reset(native_token)
             timing.finished = time.monotonic()
             _TIMING.reset(token)
-            function, args, kwargs = None, (), {}
+            binding, function, args, kwargs = None, None, (), {}
 
     async def _execute_async(self, timing, function, args, kwargs):
         # A coordinator is not a native invocation. Its native timing is unknown;
         # nested service owners retain their own actual invocation observations.
         token = _TIMING.set(None)
+        native_token = _NATIVE_EXECUTION.set(None)
         timing.dispatched = time.monotonic()
         try:
             # Even an eager task factory must register ownership before a step.
@@ -130,7 +260,18 @@ class OwnedBlockingWork:
         finally:
             timing.finished = time.monotonic()
             _TIMING.reset(token)
+            _NATIVE_EXECUTION.reset(native_token)
             function, args, kwargs = None, (), {}
+
+    async def _execute_native_step(self, parent_sequence, function, args, kwargs):
+        binding = self._native_binding(function, asyncio.current_task(), parent_sequence)
+        token = _NATIVE_EXECUTION.set(binding)
+        try:
+            return await self._worker(function, *args, **kwargs)
+        finally:
+            _leave_native(binding)
+            _NATIVE_EXECUTION.reset(token)
+            binding, function, args, kwargs = None, None, (), {}
 
     def _retain(self, function: Callable, args: tuple, kwargs: dict, *, asynchronous: bool = False) -> asyncio.Task:
         operation = task = None
@@ -184,7 +325,9 @@ class OwnedBlockingWork:
         try:
             if asyncio.current_task() not in self._tasks:
                 raise RuntimeError("blocking_work_step_not_owned")
-            task = asyncio.create_task(self._worker(function, *args, **kwargs))
+            task = asyncio.create_task(self._execute_native_step(
+                asyncio.current_task(), function, args, kwargs,
+            ))
             cancelled = False
             while not task.done():
                 try:

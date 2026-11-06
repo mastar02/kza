@@ -1,11 +1,12 @@
 """Bounded cleanup of registered policy event databases, without legacy edits."""
 
+from src.memory import output_registration_v2 as output_registration
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from functools import partial
 
-from src.core.owned_work import OwnedBlockingWork
+from src.core.owned_work import OwnedBlockingWork, observe_native
 from src.analytics.event_storage import (
     event_descriptor,
     event_sources,
@@ -32,7 +33,7 @@ class EventEraser:
 
     async def _offload(self, function, *args, **kwargs):
         return await asyncio.get_running_loop().run_in_executor(
-            self._executor, copy_context().run, partial(function, *args, **kwargs)
+            self._executor, copy_context().run, partial(observe_native, function, *args, **kwargs)
         )
 
     def _clean(self, step: ErasureStep) -> ErasureResult:
@@ -41,7 +42,7 @@ class EventEraser:
         if step.participant is not ErasureParticipant.EVENTS or step.version != 1:
             raise ValueError("unsupported_event_target")
         validate_event_descriptor(descriptor)
-        targets = ledger.erasures.targets(ErasureParticipant.EVENTS)
+        targets = output_registration.target_rows(ledger, ErasureParticipant.EVENTS)
         if not any(
             row["id"] == step.target_id
             and row["version"] == step.version
@@ -87,7 +88,7 @@ class EventEraser:
 
     async def clean(self, step: ErasureStep) -> ErasureResult:
         """Retain actual SQLite completion if the coordinator observer is cancelled."""
-        return await self._work.run(self._clean, step)
+        return await output_registration.run_registered(self, self._work, self._clean, step)
 
     def begin_close(self) -> asyncio.Task:
         """Drain actual batches before shutting down their private native pool."""
@@ -99,6 +100,7 @@ class EventEraser:
                 await retention
                 await drain
                 await asyncio.to_thread(self._executor.shutdown, wait=True)
+                await output_registration.owner_closed(self)
 
             self._closing = asyncio.create_task(finish())
         return self._closing
@@ -121,11 +123,17 @@ async def build_event_erasure(
     driver = EventEraser(
         privacy, retention_days=config.get("analytics", {}).get("retention_days", 90)
     )
-    owner.register(
-        ErasureParticipant.EVENTS,
-        driver.clean,
-        versions=frozenset({1}),
-        begin_close=driver.begin_close,
-    )
+    try:
+        owner.register(
+            ErasureParticipant.EVENTS,
+            driver.clean,
+            versions=frozenset({1}),
+            begin_close=driver.begin_close,
+        )
+    except BaseException:
+        driver.begin_close()
+        raise
+    await output_registration.attach_output(driver, "events", role="eraser")
+    await output_registration.attach_output(driver.retention, "events", role="retention")
     driver.retention.start()
     return driver

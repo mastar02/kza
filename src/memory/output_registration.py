@@ -143,7 +143,7 @@ def _head(directory, previous, value):
     _fsync(directory)
 
 
-def _chain(directory):
+def _chain_v1(directory):
     _namespace_size(directory.parent)
     _directory(directory)
     header, header_raw = _read(directory / "epoch.json")
@@ -242,6 +242,16 @@ def _nominal(store, producer):
     from src.lists.list_store import ListStore
     from src.reminders.reminder_store import ReminderStore
     return type(store) is {"lists": ListStore, "reminders": ReminderStore}.get(producer)
+
+
+def _chain(directory):
+    header, _ = _read(directory / "epoch.json")
+    if header.get("schema_version") == 1:
+        return _chain_v1(directory)
+    if header.get("schema_version") == 2:
+        from src.memory.output_registration_v2 import chain
+        return chain(directory)
+    raise RuntimeError("output_registration_schema")
 
 
 @dataclass(frozen=True)
@@ -481,7 +491,8 @@ async def begin_registration(
         and (admission._ticket["run_id"], admission._ticket["binding_id"]) in _verified_runs
         and _config_digest(config) == admission._config_digest, "actual_admission")
     admission.revalidate()
-    coordinator = DestinationRegistrationCoordinator(admission, config, key=_KEY)
+    from src.memory.output_registration_v2 import OutputRegistrationV2
+    coordinator = OutputRegistrationV2(admission, config, key=_KEY)
     admission._output_registration = coordinator
     _ACTIVE.add(coordinator)
     shutdown.push_async_callback(coordinator.aclose)
@@ -522,38 +533,6 @@ async def store_close_returned(store: ListStore | ReminderStore) -> None:
 
 
 def read_output_inventory(controller: object) -> tuple[dict, ...]:
-    """Recover bounded observations under the existing closed controller lease."""
-    from src.memory.copy_catalog import _controller_lease
-    stage, root, head, _, _ = _controller_lease(controller)
-    namespace = root / "admission/output-inventory/v1/runs"
-    if not namespace.exists():
-        return ()
-    namespace_identity = _directory(namespace)
-    _namespace_size(namespace)
-    entries = sorted(namespace.iterdir())
-    results = []
-    for directory in entries:
-        value = {"run_id": directory.name, "phase": "unknown", "capability": False,
-            "global_inventory_complete": False, "aggregate_copy_complete": False,
-            "required_producers": list(PRODUCERS), "uncovered_producers": list(PRODUCERS)}
-        try:
-            header, journal, states, _ = _chain(directory)
-            binding = stage.read_binding(root, header["binding_id"])
-            _require(binding["state_root"] == header["state_root"]
-                and binding["state_identity"] == header["state_identity"], "binding")
-            receipt = stage._read_json(root / "admission/receipts" / (header["run_id"] + ".json"))
-            _require(receipt["run_id"] == header["run_id"] and receipt["binding_id"] == header["binding_id"]
-                and receipt["generation"] == header["generation"] and receipt["status"] == "closed"
-                and set(receipt["resources"]) == stage._CLOSED_RESOURCES
-                and all(v is True for v in receipt["resources"].values()), "run_receipt")
-            raw_config = binding["authority"]["projection"]["configuration"].get("config/settings.yaml")
-            _require(type(raw_config) is str and re.fullmatch("[0-9a-f]{64}", raw_config), "configuration_binding")
-            value.update(header=header, journal=journal, stores=states, phase="observed",
-                configuration={"raw_sha256": raw_config, "effective_digest": "observed_only"},
-                uncovered_producers=[p for p in PRODUCERS if p not in states or states[p]["phase"] != "closed"])
-        except (OSError, ValueError, TypeError, KeyError, RuntimeError):
-            pass
-        results.append(value)
-    _require(_directory(namespace) == namespace_identity and sorted(namespace.iterdir()) == entries
-        and _controller_lease(controller)[2] == head, "authority_changed")
-    return tuple(results)
+    """Recover immutable v1 and v2 observations without cross-version promotion."""
+    from src.memory.output_registration_v2 import read_inventory
+    return read_inventory(controller)

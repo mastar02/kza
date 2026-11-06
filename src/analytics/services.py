@@ -1,5 +1,6 @@
 """Runtime construction of the private event policy and its owned cleanup."""
 
+from src.memory import output_registration_v2 as output_registration
 from contextlib import AsyncExitStack
 
 from src.analytics.event_logger import EventLogger
@@ -27,6 +28,7 @@ async def build_event_logger(config: dict, *, shutdown: AsyncExitStack,
     shutdown.push_async_callback(events.aclose)
     if privacy is not None:
         privacy.add_borrower(events.begin_close)
+    await output_registration.attach_output(events, "events")
     await events.acall(events.initialize)
     if retention is None:
         events.start()

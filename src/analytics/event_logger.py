@@ -3,6 +3,7 @@ Event Logger Module
 Registra todos los eventos de domotica para analisis de patrones.
 """
 
+from src.memory import output_registration_v2 as output_registration
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import Context,copy_context
@@ -155,7 +156,9 @@ class EventLogger:
             if self._work.status()["closed"]:
                 raise RuntimeError("event_logger_closed")
             if self._initialized:
+                output_registration.borrowed_events(self)
                 return
+            output_registration.before_native(self, self.db_path)
             if self.source_policy is not None:
                 self.source_policy.initialize()
             descriptor = event_descriptor(self.db_path)
@@ -169,11 +172,12 @@ class EventLogger:
             os.close(descriptor)
             os.chmod(self.db_path, 0o600)
             self._init_db()
-            self._initialized = True
+            if not output_registration.native_ready(self):
+                self._initialized = True
 
     def _init_db(self):
         """Inicializar esquema de base de datos"""
-        with closing(sqlite3.connect(self.db_path)) as conn, conn:
+        with output_registration.native_connection(self, self.db_path, sqlite3.connect, self.db_path) as conn, conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS events_policy_v1 (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -254,7 +258,7 @@ class EventLogger:
     @contextmanager
     def _connect(self):
         self.initialize()
-        with closing(sqlite3.connect(self.db_path)) as db, db:
+        with output_registration.native_connection(self, self.db_path, sqlite3.connect, self.db_path) as db, db:
             db.create_function("policy_now", 0, self._clock)
             db.create_function("event_unrevoked", 2, self._unrevoked)
             db.create_function("event_text_available", 2, self._text_available)
@@ -744,7 +748,10 @@ class EventLogger:
 
     async def acall(self, function, *args, **kwargs):
         """Run actual disk work in the tracked native scope."""
-        return await self._work.run(function, *args, **kwargs)
+        with output_registration.event_call(self, function):
+            if function == self.initialize:
+                return await output_registration.initialize_owned(self, self._work, function, *args, **kwargs)
+            return await self._work.run(function, *args, **kwargs)
 
     async def _offload(self, function, *args, **kwargs):
         return await asyncio.get_running_loop().run_in_executor(self._executor,
@@ -809,6 +816,7 @@ class EventLogger:
                     self._executor.shutdown(wait=False)
                     while any(thread.is_alive() for thread in tuple(self._executor._threads)):
                         await asyncio.sleep(.005)
+                await output_registration.owner_closed(self)
                 self._close_phase = ClosePhase.COMPLETE
             self._closing = asyncio.create_task(finish(),context=Context())
         return self._closing

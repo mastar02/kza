@@ -1,5 +1,6 @@
 """Private policy proposals; legacy JSON is never read, replaced or attributed."""
 
+from src.memory import output_registration_v2 as output_registration
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -62,8 +63,10 @@ class SuggestionStore:
     resolves the exact events again. No in-memory cache can refill a revoked row.
     """
 
-    def __init__(self, events: EventLogger, legacy_path: str | Path):
+    def __init__(self, events: EventLogger, legacy_path: str | Path, *,
+                 output_reservation: output_registration.ConstructorReservation | None = None) -> None:
         self.events = events
+        output_registration.enter_suggestions(self, output_reservation)
         self.retention_notify = None
         self.policy = events.source_policy
         if self.policy is None or not self.policy.authority_available:
@@ -81,6 +84,7 @@ class SuggestionStore:
         self.policy.erasures.register_target(
             ErasureParticipant.SUGGESTIONS, 1, self.descriptor
         )
+        output_registration.before_native(self, self.path)
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
         os.close(fd)
@@ -103,7 +107,7 @@ class SuggestionStore:
 
     @contextmanager
     def _connect(self):
-        with closing(sqlite3.connect(self.path)) as db, db:
+        with output_registration.native_connection(self, self.path, sqlite3.connect, self.path) as db, db:
             db.row_factory = sqlite3.Row
             yield db
 
