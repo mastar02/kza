@@ -13,6 +13,7 @@ import hashlib
 import importlib.util
 import importlib.metadata
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -1006,6 +1007,195 @@ def _current_slot(root: Path) -> str | None:
     return _slot_name(resolved.parent.name)
 
 
+def _remapped_suggestion_projection(source_columns: list, source_rows: list,
+                                    candidate_columns: list, candidate_rows: list,
+                                    evidence_targets: dict, source_events: dict,
+                                    candidate_events: dict) -> dict:
+    """Pure exact comparison with one typed locator substitution, no policy edit."""
+    if source_columns != candidate_columns:
+        raise ValueError("privacy_authority_stale")
+    if (type(evidence_targets) is not dict or any(type(key) is not str or type(value) is not str
+            or re.fullmatch("[0-9a-f]{64}", key) is None or re.fullmatch("[0-9a-f]{64}", value) is None
+            for key, value in evidence_targets.items())):
+        raise ValueError("privacy_authority_stale")
+    columns = set(item.split(":")[0] for item in _TABLE_COLUMNS["suggestions_policy_v1"].split())
+    if set(source_columns) != columns:
+        raise ValueError("privacy_authority_stale")
+    source = {row["id"]: row for row in source_rows}
+    candidate = {row["id"]: row for row in candidate_rows}
+    if (len(source) != len(source_rows) or len(candidate) != len(candidate_rows)
+            or set(source) != set(candidate)):
+        raise ValueError("privacy_authority_stale")
+    hashes = []
+    for identity, original in source.items():
+        current = candidate[identity]
+        if set(original) != columns or set(current) != columns:
+            raise ValueError("privacy_authority_stale")
+        before, after = json.loads(original["evidence_json"]), json.loads(current["evidence_json"])
+        if type(before) is not list or type(after) is not list or not before or len(before) != len(after):
+            raise ValueError("privacy_authority_stale")
+        remapped, seen, seen_events, seen_targets = [], set(), set(), set()
+        for evidence in before:
+            if (type(evidence) is not dict or set(evidence) != {"target_id", "event_id", "revision", "expires_at"}
+                    or evidence["target_id"] not in evidence_targets
+                    or type(evidence["event_id"]) is not int or not 0 < evidence["event_id"] <= 2**63 - 1
+                    or type(evidence["revision"]) is not str
+                    or re.fullmatch("[0-9a-f]{64}", evidence["revision"]) is None
+                    or type(evidence["expires_at"]) not in (int, float)
+                    or not math.isfinite(evidence["expires_at"])):
+                raise ValueError("privacy_authority_stale")
+            old_key = (evidence["target_id"], evidence["event_id"])
+            new_target = evidence_targets[evidence["target_id"]]
+            new_key = (new_target, evidence["event_id"])
+            if (old_key in seen or evidence["event_id"] in seen_events
+                    or old_key not in source_events or new_key not in candidate_events):
+                raise ValueError("privacy_authority_stale")
+            seen.add(old_key)
+            seen_events.add(evidence["event_id"])
+            seen_targets.add(evidence["target_id"])
+            if _digest({key: _typed(value) for key, value in source_events[old_key].items()}) != _digest(
+                    {key: _typed(value) for key, value in candidate_events[new_key].items()}):
+                raise ValueError("privacy_authority_stale")
+            remapped.append({**evidence, "target_id": new_target})
+        if len(seen_targets) != 1 or _canonical_json(remapped) != _canonical_json(after):
+            raise ValueError("privacy_authority_stale")
+        expected = dict(original)
+        # Syntax is accepted only after the complete typed JSON value matched.
+        expected["evidence_json"] = current["evidence_json"]
+        if _canonical_json(expected) != _canonical_json(current):
+            raise ValueError("privacy_authority_stale")
+        hashes.append(_digest([_typed(expected[column]) for column in source_columns]))
+    return {"columns": source_columns, "row_hashes": sorted(hashes)}
+
+
+def _protected_suggestions(binding: dict) -> dict:
+    stores = {}
+    state = Path(binding["state_root"])
+    for relative, schema in binding["authority"]["projection"]["tables"].items():
+        if "suggestions_policy_v1" not in schema:
+            continue
+        with _database_image(state / relative) as db:
+            cursor = db.execute("SELECT * FROM suggestions_policy_v1 "
+                                "WHERE status!='pending' OR snooze_until IS NOT NULL")
+            stores[relative] = ([column[0] for column in cursor.description], [dict(row) for row in cursor])
+    return stores
+
+
+def _event_target_owner(root: Path, binding: dict, target: dict) -> dict:
+    path = Path(target["descriptor"]["path"])
+    if path.is_relative_to(Path(binding["state_root"])):
+        return binding
+    state = Path(binding["state_root"])
+    policy = _read_json(state / ".kza-target-ownership.json")
+    if target["id"] not in policy["delegated_targets"]:
+        raise ValueError("privacy_authority_stale")
+    _validate_delegated_target(root, state, target, policy["source_bindings"])
+    for record in _delegation_records(root, state):
+        if (record["targets"].get(target["id"]) == target
+                and record["source_binding"] in policy["source_bindings"]
+                and record["destination_identity"] == _identity(state)):
+            owner = read_binding(root, record["source_binding"])
+            marker = _read_json(Path(owner["state_root"]) / _MARKER)
+            if (marker.get("binding_id") != record["source_binding"]
+                    or not path.is_relative_to(Path(owner["state_root"]))
+                    or _digest(_closure_proof(root, record["source_binding"])) != record["source_close_sha256"]):
+                continue
+            return verify_closed_binding(root, record["source_binding"])
+    raise ValueError("privacy_authority_stale")
+
+
+def _event_relocation_data(root: Path, source: dict, candidate: dict, target_relocations: dict) -> tuple:
+    if (type(target_relocations) is not dict or not target_relocations
+            or any(type(key) is not str or type(value) is not str
+                   for key, value in target_relocations.items())):
+        raise ValueError("privacy_authority_stale")
+    source_targets = _target_inventory(Path(source["state_root"]))
+    candidate_targets = _target_inventory(Path(candidate["state_root"]))
+    evidence_targets, source_events, candidate_events = {}, {}, {}
+    for old, new in target_relocations.items():
+        before, after = source_targets.get(old), candidate_targets.get(new)
+        if (before is None or after is None or before["participant"] != "events"
+                or after["participant"] != "events" or before["version"] != 1 or after["version"] != 1
+                or set(before["descriptor"]) != {"path", "table"}
+                or set(after["descriptor"]) != {"path", "table"}
+                or before["descriptor"]["table"] != "events_policy_v1"
+                or after["descriptor"]["table"] != "events_policy_v1"):
+            raise ValueError("privacy_authority_stale")
+        owner = _event_target_owner(root, source, before)
+        original, destination = Path(before["descriptor"]["path"]), Path(after["descriptor"]["path"])
+        source_root, candidate_root = Path(owner["state_root"]), Path(candidate["state_root"])
+        if (not destination.is_relative_to(candidate_root) or destination.resolve() != destination
+                or original.resolve() != original or not original.is_relative_to(source_root)):
+            raise ValueError("privacy_authority_stale")
+        relative = original.relative_to(source_root).as_posix()
+        if (destination.relative_to(candidate_root).as_posix() != relative
+                or relative not in owner["schemas"] or relative not in candidate["schemas"]
+                or owner["schemas"][relative] != candidate["schemas"][relative]
+                or source["schemas"].get(relative) != candidate["schemas"][relative]):
+            raise ValueError("privacy_authority_stale")
+        latest_path = Path(source["state_root"]) / relative
+        latest_descriptor = {"path": str(latest_path), "table": "events_policy_v1"}
+        if not any(row["participant"] == "events" and row["version"] == 1
+                   and row["descriptor"] == latest_descriptor for row in source_targets.values()):
+            raise ValueError("privacy_authority_stale")
+        old_evidence, new_evidence = _digest(before["descriptor"]), _digest(after["descriptor"])
+        evidence_targets[old_evidence] = new_evidence
+        rows = []
+        for path in (original, latest_path, destination):
+            with _database_image(path) as db:
+                rows.append({row["id"]: dict(row) for row in db.execute("SELECT * FROM events_policy_v1")})
+        for identity, row in rows[0].items():
+            if rows[1].get(identity) == row:
+                source_events[(old_evidence, identity)] = row
+        for identity, row in rows[2].items():
+            candidate_events[(new_evidence, identity)] = row
+    return evidence_targets, source_events, candidate_events
+
+
+def _derived_authority_equivalent(root: Path, source: dict, candidate: dict, target_relocations: dict) -> bool:
+    mapping, before_events, after_events = _event_relocation_data(root, source, candidate, target_relocations)
+    before, after = _protected_suggestions(source), _protected_suggestions(candidate)
+    if set(before) != set(after):
+        raise ValueError("privacy_authority_stale")
+    expected = json.loads(_canonical_json(source["authority"]["projection"]))
+    for relative, (columns, rows) in before.items():
+        target_columns, target_rows = after[relative]
+        projection = _remapped_suggestion_projection(columns, rows, target_columns, target_rows,
+                                                     mapping, before_events, after_events)
+        expected["tables"][relative]["suggestions_policy_v1"] = projection
+    return candidate["authority"] == {"schema_version": 1, "digest": _digest(expected), "projection": expected}
+
+
+def _derived_capability_record(root: Path, head: dict, source: dict, candidate: dict,
+                                target_relocations: dict) -> dict:
+    identity = _digest(candidate)
+    closure = root / "admission" / "closures" / (head["binding_id"] + ".json")
+    _closure_proof(root, head["binding_id"])
+    return {"schema_version": 1, "admission_root": str(root), "source_head": head,
+            "source_binding_id": head["binding_id"], "source_closure_sha256": hashlib.sha256(closure.read_bytes()).hexdigest(),
+            "candidate_binding_id": identity, "candidate_state_root": candidate["state_root"],
+            "candidate_state_identity": candidate["state_identity"], "target_relocations": target_relocations}
+
+
+def _validate_derived_capability(root: Path, head: dict, source: dict, candidate: dict) -> bool:
+    path = root / "admission" / "derived-authority" / (_digest(candidate) + ".json")
+    try:
+        _safe_directory(path.parent)
+        record = _read_json(path)
+        mapping = record["target_relocations"]
+        if _canonical_json(record) != _canonical_json(_derived_capability_record(root, head, source, candidate, mapping)):
+            return False
+        if verify_closed_binding(root, head["binding_id"]) != source:
+            return False
+        if not _derived_authority_equivalent(root, source, candidate, mapping):
+            return False
+        return (_binding_snapshot(root, source["slot"]) == source
+                and _binding_snapshot(root, candidate["slot"]) == candidate
+                and read_admission_head(root) == head)
+    except (FileNotFoundError, ValueError, KeyError, TypeError):
+        return False
+
+
 def _ticket_value(ticket: dict | str) -> dict:
     if type(ticket) is str:
         ticket = json.loads(ticket)
@@ -1139,6 +1329,34 @@ class AdmissionController:
         with _locked_root(self.root):
             return _authorize_target_delegation(self.root, destination_state, source_binding, target_ids)
 
+    def authorize_derived_state(self, name: str, latest_binding_id: str, *,
+                                target_relocations: dict[str, str]) -> str:
+        """Authorize only exact protected event-evidence locator substitutions.
+
+        Returns the candidate binding identity. The external capability changes
+        no binding/projection format, pointer, actor, expiry or current head.
+        """
+        self._require_lease()
+        with _locked_root(self.root):
+            head = read_admission_head(self.root)
+            if head is None or head["status"] != "closed" or head["binding_id"] != latest_binding_id:
+                raise ValueError("privacy_authority_stale")
+            source = verify_closed_binding(self.root, latest_binding_id)
+            candidate = _binding_snapshot(self.root, _slot_name(name))
+            if candidate["state_root"] == source["state_root"]:
+                raise ValueError("privacy_authority_stale")
+            validate_target_ownership(self.root, candidate)
+            if not _derived_authority_equivalent(self.root, source, candidate, target_relocations):
+                raise ValueError("privacy_authority_stale")
+            if (_binding_snapshot(self.root, source["slot"]) != source
+                    or _binding_snapshot(self.root, candidate["slot"]) != candidate
+                    or read_admission_head(self.root) != head):
+                raise ValueError("privacy_authority_stale")
+            identity = _store_binding(self.root, candidate)
+            record = _derived_capability_record(self.root, head, source, candidate, target_relocations)
+            _atomic_record(self.root / "admission" / "derived-authority" / (identity + ".json"), record)
+            return identity
+
     def activate(self, name: str, *, expected_head: dict | None = None,
                  managed: bool = False) -> str | None:
         """Select a compatible closed state, rejecting stale authority first."""
@@ -1162,7 +1380,8 @@ class AdmissionController:
             is_managed = managed or head is not None or _has_authority(binding) or _has_authority(latest)
             if is_managed:
                 if latest["authority"]["digest"] != binding["authority"]["digest"]:
-                    raise ValueError("privacy_authority_stale")
+                    if head is None or not _validate_derived_capability(self.root, head, latest, binding):
+                        raise ValueError("privacy_authority_stale")
                 identity = _store_binding(self.root, binding)
                 _write_marker(self.root, identity, binding)
                 _cas_head(self.root, head, identity, "closed")
