@@ -2,7 +2,7 @@
   "schema_version": 1,
   "task": "T024-F1",
   "unit": "durable-copy-catalog foundation",
-  "status": "retrospective_observation_verified_local_overall_in_progress",
+  "status": "typed_binary_lineage_verified_local_overall_in_progress",
   "goal_complete": false,
   "F1_delivered": false,
   "revision": "a2c6f4c085bc867782cadcf162894ab17fbef374",
@@ -245,7 +245,7 @@
   "open": [
     "Genuine public/native SDK close failure remains unverified. One nominal missing-tenant constructor exception before handle is verified; other failure modes are not inferred.",
     "semantic index/opaque and logical exports, ambient capture, contexts/events/suggestions/diagnostics/voice/stream payload and remaining snapshots/source roots/work/BLOB copies are not erased by collector_rows_files_v1. CatalogV1 preparation still records cleanup blocked; the separate collector receipt does not change that into an aggregate ACK.",
-    "The retrospective registry covers three existing regular roots in this scenario, not a global census or cleanup ownership. Other forensic/audit/checkpoint/BLOB/legacy copies require explicit registration and real erasure owners. Current BLOB baseline has no S-exclusive binary; establish typed S/U/manual/shared lineage first. Observations never grant SDK/cleanup/admission or claim pre-byte reservation.",
+    "The retrospective registry covers three existing regular roots in this scenario, not a global census or cleanup ownership. Other forensic/audit/checkpoint/BLOB/legacy copies require explicit registration and real erasure owners. The opt-in test baseline now proves one S-exclusive BLOB; its actual retirement owner remains unimplemented. Observations never grant SDK/cleanup/admission or claim pre-byte reservation.",
     "Legacy HEAD without manual companion and old unregistered snapshot adoption remain explicit rejection until a scoped migration exists; no manual companion, binding or target descriptor may be fabricated.",
     "Current scenario preserves U/manual rows/files and current F authority. Keep latest consent, credentials, roles, voice/group/person CAS decisions and tombstones; voice-person association remains separate from account permissions. No automatic old-authority SQL merge or TTL renewal is authorized.",
     "diagnostics1/streams2/voices2 stay pending. T021-T024/all21/physical field acceptance remain open; local Mac source/CPU evidence is not field or UI acceptance."
@@ -297,25 +297,25 @@
     },
     "observation_component": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/components/acceptance-proof.json",
     "observation_compiled": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/native/acceptance-proof.json",
-    "record_bounds": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/bounds/acceptance-proof.json"
+    "record_bounds": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/bounds/acceptance-proof.json",
+    "binary_lineage": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/acceptance-proof.json",
+      "sha256": "4af869e3cb0befdbaeca8b8973744eb28b9f5b4fd24973d8e59a812a8117468d"
+    }
   },
   "next_concrete_units": [
     {
       "priority": 1,
-      "unit": "typed_binary_S_U_manual_shared_lineage_baseline",
-      "evidence": {
-        "path": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/blob-baseline-facts.json",
-        "sha256": "e58dc48d77e3b2eab8ee8b6556556ab7bc42bcf5132789f91d3c328cf29673a7"
+      "unit": "current_authority_checkpoint_BLOB_retirement_owner",
+      "baseline_revision": "f487f40e891fd3ec5e0e092f45cee49cd85d8201",
+      "baseline_evidence": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/acceptance-proof.json",
+        "sha256": "4af869e3cb0befdbaeca8b8973744eb28b9f5b4fd24973d8e59a812a8117468d"
       },
-      "facts": "14distinct BLOBs/43typed refs:7manual+36preserved ordinary,2shared digests; no withdrawn-S binary proven",
-      "baseline": "Opt-in real public binary acquisition/collector fixture for S,U/manual,shared. Preserve all original default oracles, IDs/pins/TTL. Verify typed source/row/file/voice-to-checkpoint BLOB joins before an erasure owner; no filename/content/digest-only heuristics.",
-      "required_result": "Prove S-exclusive and shared/U/manual binary refs first; subsequent current-authority cleaner must actually withdraw S while retaining shared/U/manual and historical JSON identities/pins. A no-op owner cannot prove withdrawal.",
-      "files": [
-        "tests/mocks/slot_reconciliation_child.py",
-        "tests/mocks/slot_reconciliation.py",
-        "tests/integration/test_copy_observation.py"
-      ],
-      "baseline_fact_revision": "dd637f704a463dc0ebd8479af4a8763deab4c375"
+      "status": "planned",
+      "required_result": "Actually withdraw the proven S-only checkpoint BLOB under explicit current authority; preserve shared/U/manual bytes, original checkpoint JSON identities/pins and source IDs/TTL. Recheck in a fresh inert reader with truthful retirement evidence; a no-op or process wait is not a cleanup receipt.",
+      "boundary": "Scope the typed phase_checkpoint representation explicitly. Historical checkpoint rows, digests, locators and retrospective observations grant no mutation/admission capability. Unknown lineage or ownership remains blocked; preserve every other raw/audit/legacy obligation and aggregate=False.",
+      "remaining": "Global copy census/owners, genuine public/native SDK close failure, legacy migration, exact guards and field acceptance remain open."
     },
     {
       "priority": 2,
@@ -436,6 +436,31 @@
       "unit": "truthful_retrospective_representation_inventory",
       "status": "verified_local_three_roots_metadata_only_not_global_coverage",
       "revision": "a2c6f4c085bc867782cadcf162894ab17fbef374"
+    },
+    {
+      "priority": 1,
+      "unit": "typed_binary_S_U_manual_shared_lineage_baseline",
+      "evidence": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/blob-baseline-facts.json",
+        "sha256": "e58dc48d77e3b2eab8ee8b6556556ab7bc42bcf5132789f91d3c328cf29673a7"
+      },
+      "facts": "Historical dd637 baseline14BLOBs/43refs had no S; new opt-in f487 baseline16BLOBs/49refs proves1S_only,3shared,12retained and no blocked refs.",
+      "baseline": "Opt-in real public binary acquisition/collector fixture for S,U/manual,shared. Preserve all original default oracles, IDs/pins/TTL. Verify typed source/row/file/voice-to-checkpoint BLOB joins before an erasure owner; no filename/content/digest-only heuristics.",
+      "required_result": "Prove S-exclusive and shared/U/manual binary refs first; subsequent current-authority cleaner must actually withdraw S while retaining shared/U/manual and historical JSON identities/pins. A no-op owner cannot prove withdrawal.",
+      "files": [
+        "tests/mocks/slot_reconciliation_child.py",
+        "tests/mocks/slot_reconciliation.py",
+        "tests/mocks/checkpoint_binary_lineage.py",
+        "tests/unit/tools/test_checkpoint_binary_lineage.py",
+        "tests/integration/test_checkpoint_binary_lineage.py"
+      ],
+      "baseline_fact_revision": "dd637f704a463dc0ebd8479af4a8763deab4c375",
+      "status": "verified_local_lineage_only",
+      "revision": "f487f40e891fd3ec5e0e092f45cee49cd85d8201",
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/acceptance-proof.json",
+        "sha256": "4af869e3cb0befdbaeca8b8973744eb28b9f5b4fd24973d8e59a812a8117468d"
+      }
     }
   ],
   "remaining_requirements_review": {
@@ -452,7 +477,7 @@
     "full_forensic_index_sha256": "0920c1704a98cebc6823d30fe833d7105f4adaab64e60c7f16a70af10cf53561",
     "full_repro_receipt_sha256": "638b66a891a96cd685573a61caeb25660aeecf8810d30aee3ce0277fcb3b70fd"
   },
-  "test_evidence_revision": "a2c6f4c085bc867782cadcf162894ab17fbef374",
+  "test_evidence_revision": "f487f40e891fd3ec5e0e092f45cee49cd85d8201",
   "close_failure_feasibility_review": {
     "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/close-failure-feasibility.json",
     "sha256": "356b46ddd907cb20dfd1dff94328f5f366234ff002836f87d331b3cb49149c25"
@@ -467,5 +492,87 @@
   "binary_baseline_facts": {
     "path": "data/autonomous-roadmap-20261102/t024/f1/copy-observation/blob-baseline-facts.json",
     "sha256": "e58dc48d77e3b2eab8ee8b6556556ab7bc42bcf5132789f91d3c328cf29673a7"
+  },
+  "binary_lineage_progress": {
+    "revision": "f487f40e891fd3ec5e0e092f45cee49cd85d8201",
+    "status": "verified_local_lineage_baseline_only",
+    "implementation_scope": "Tests and opt-in synthetic fixture only; no production code changed.",
+    "proof": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/acceptance-proof.json",
+      "sha256": "4af869e3cb0befdbaeca8b8973744eb28b9f5b4fd24973d8e59a812a8117468d"
+    },
+    "verification": {
+      "default": {
+        "actual_wait_returned": true,
+        "exact_expected_ids": true,
+        "exit_code": 0,
+        "protected": 34,
+        "protected_unchanged": true,
+        "pytest_pid": 38305,
+        "runner_pid": 38302,
+        "scripts": 37,
+        "source_files": 1081,
+        "source_unchanged": true,
+        "status_path": "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/default/default-attempt-01/full-status.json",
+        "status_sha256": "60f6c8124eb9e4fc01fbcf67374605f61b975c01d0dc24f8c4c3f28f9aa0b075",
+        "tests": 1,
+        "xml_seconds": 89.367
+      },
+      "native": {
+        "actual_wait_returned": true,
+        "exact_expected_ids": true,
+        "exit_code": 0,
+        "protected": 34,
+        "protected_unchanged": true,
+        "pytest_pid": 35953,
+        "runner_pid": 35948,
+        "scripts": 37,
+        "source_files": 1081,
+        "source_unchanged": true,
+        "status_path": "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/native/native-attempt-01/full-status.json",
+        "status_sha256": "2c8bf826e75d70a0879a1a0b39a6784a431084c28018b13b97fdaf5dbcd8532a",
+        "tests": 1,
+        "xml_seconds": 75.123
+      },
+      "unit": {
+        "actual_wait_returned": true,
+        "exact_expected_ids": true,
+        "exit_code": 0,
+        "protected": 34,
+        "protected_unchanged": true,
+        "pytest_pid": 35749,
+        "runner_pid": 35746,
+        "scripts": 37,
+        "source_files": 1081,
+        "source_unchanged": true,
+        "status_path": "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/unit/unit-attempt-01/full-status.json",
+        "status_sha256": "ca1eb9eb0ad16eb32d0084228ea5f351f512ef777050c54dcbfc0e34a1b95281",
+        "tests": 68,
+        "xml_seconds": 0.463
+      }
+    },
+    "binary_scope": {
+      "blobs": 16,
+      "references": 49,
+      "S_only": 1,
+      "shared": 3,
+      "retained": 12,
+      "blocked": 0,
+      "manual_references": 7
+    },
+    "acquisition": "Three actual public STT corrections: S-private, S-shared and U-shared marked used. Original MemorySource IDs/times/TTL and ordinary/manual default oracles preserved.",
+    "parser": "Stdlib inert wire parser; exact external checkpoint/control/parent pins and complete four-branch manifest union. Family joins restricted to original observed namespaces/modes; unknown DTO ancestry or SQL source/row/locator conflicts block the digest. Each reference is joined before digest union.",
+    "reader": "Fresh isolated process37894, actual wait0, same report SHA; no application/SDK imports or application DTO instantiation.",
+    "current_authority": "Current F HEAD/state inventory unchanged; retrospective exchange observation remains capability=False/before_first_byte=False/non-serving.",
+    "raw_export_manifest": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/binary-lineage/raw-export-manifest.json",
+      "sha256": "be59a807cfba26ba1ffd796c9892c21dce71ea2e59ed8fc7f6b06cd48cbf0ce4"
+    },
+    "full_scope": "Latest full remains dd637f7:8971 PASS+same known xfail/8972 exactIDs. No new full for this test-only unit.",
+    "cleanup_ack": false,
+    "aggregate_copy_complete": false,
+    "F1_delivered": false,
+    "goal_complete": false,
+    "production_changed": false
   }
 }

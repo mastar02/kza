@@ -6,7 +6,9 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 ## Punto de reanudación
 
-**T024-F1 sigue en curso.** `dd637f7` registra observaciones retrospectivas de tres raíces existentes, sin conceder admisión ni limpieza. Pasaron **423 componentes**, **una integración compilada** y la full de **8971 PASS más la misma xfail conocida**, 8972 IDs exactos. El mismo goal permanece **activo e incompleto**; T024-F0 es la última unidad completa verificada.
+**T024-F1 sigue en curso.** `f487f40` verifica el baseline binario S/U/manual/shared con 68 unitarias y dos integraciones compiladas PASS; es una unidad de pruebas, sin borrado ni cambios de código de producción. El próximo paso es el owner real de retirada de BLOBs bajo autoridad vigente.
+
+`dd637f7` registra observaciones retrospectivas de tres raíces existentes, sin conceder admisión ni limpieza. Pasaron **423 componentes**, **una integración compilada** y la full de **8971 PASS más la misma xfail conocida**, 8972 IDs exactos. El mismo goal permanece **activo e incompleto**; T024-F0 es la última unidad completa verificada.
 
 La corrección posterior `a2c6f4c` limita los registros a16MiB canónicos incluyendo LF antes de escribir. Pasaron36 pruebas de protocolo y1 integración compilada con un intent mayor que la cota real. La full anterior corresponde a `dd637f7`; no se repitió por esta corrección acotada.
 
@@ -22,7 +24,8 @@ La corrección posterior `a2c6f4c` limita los registros a16MiB canónicos incluy
 | Alcance de observación | Checkpoints+BLOB18 archivos, audit20, SDK fallido2; IDs/pins y catálogo original intactos. Seis denegaciones por proceso, dos negativos HEAD/FD. No Chroma importado en observer/reader |
 | Última full | dd637f7:8971 PASS + misma xfail,8972 IDs; XML1436.609 s; fuentes1078/scripts37/protegidos34 intactos durante la ejecución |
 | Warnings de la full | 66285 ocurrencias;15 firmas conocidas,ninguna nueva o ausente en el resumen; sin supresión |
-| Pendientes | Fixture binario S/U/manual/shared con lineage tipado; owners reales y cobertura global; SDK close real, migraciones, guards y campo |
+| Baseline binario | f487f40:68 PASS/XML0.463 s; opt-in1 PASS/XML75.123 s; original1 PASS/XML89.367 s;16 BLOBs/49 refs,1 S-only/3 shared/12 retained |
+| Pendientes | Owner real de retirada de BLOBs; owners y cobertura global; SDK close real, migraciones, guards y campo |
 | Delegación | Hasta ocho agentes según plazas; PC interactiva con subagente `gpt-6.1-terra` |
 
 T021/T022/T023/T024 siguen `in_progress`; los 21 criterios permanecen `not_evaluated`. Se conservan los demás estados, presupuestos y permisos separados. Leer el [reporte actual](../research/2026-11-06-copy-lifecycle-progress.json) y la [continuación](../plans/2026-11-06-copy-lifecycle-continuation.json). Preparación y `finish()` no confirman limpieza: el catálogo V1 sigue bloqueado. Los dos recibos nuevos pertenecen sólo a `collector_rows_files_v1`; las otras representaciones y el ACK agregado siguen pendientes. Sin release ni cambios en producción.
@@ -349,11 +352,21 @@ Después se corrigió una diferencia productor/lector: `a2c6f4c` rechaza intent/
 
 El análisis del caso nativo dd637f7 encontró14 BLOBs y43 referencias tipadas:7 manuales y36 de otra conversación preservada, con dos digests compartidos; ninguna acredita un binario de S retirado. Primero agregar un fixture opt-in con adquisición binaria pública S/U/manual/shared y probar los joins tipados. No aceptar como retirada un owner que no tenga ningún BLOB S elegible. Mantener abiertos SDK close real, cobertura/owners agregados, migración legacy, guards y los21 criterios.
 
+## Lineage binario S/U/manual/shared — T024-F1, baseline local
+
+`f487f40e891fd3ec5e0e092f45cee49cd85d8201` agrega únicamente pruebas y un fixture opt-in: tres correcciones STT públicas con audio real sintético, S privado, S compartido y U compartido marcado usado. Conserva fuentes, IDs, fechas, TTL y los oráculos originales. El analizador stdlib interpreta el wire sin crear DTOs de aplicación; verifica pins externos, los cuatro checkpoints originales, cada join de fuente/fila/archivo y la unión completa del directorio. Bloquea DTOs desconocidos, namespaces ajenos, fuentes SQL mal formadas y localizadores conflictivos antes de clasificar por digest.
+
+Pasaron 68 unitarias, una integración opt-in y el recorrido original compilado, con 1081 fuentes/37 scripts/34 protegidos intactos en cada corrida. El caso nuevo contiene 16 BLOBs/49 referencias: 1 S-only,3 shared,12 retained,0 blocked; las 7 referencias manuales se conservan. El lector 37894 terminó con wait0 y el mismo informe sin importar aplicación/SDK. F y su inventario permanecen iguales; el registro retrospectivo del exchange no concede capacidad. No se borró el BLOB S. La full sigue siendo dd637f7; no se repitió para esta unidad de pruebas.
+
+Evidencia local: `data/autonomous-roadmap-20261102/t024/f1/binary-lineage/acceptance-proof.json`, SHA `4af869e3cb0befdbaeca8b8973744eb28b9f5b4fd24973d8e59a812a8117468d`. Exportación de los dos casos sintéticos con manifest SHA `be59a807cfba26ba1ffd796c9892c21dce71ea2e59ed8fc7f6b06cd48cbf0ce4`; 5517 archivos/24 symlinks, originales y copias iguales. Los datos crudos están ignorados y no se suben a Git. No quedan procesos propios pendientes.
+
+Siguiente: implementar retirada real del S-only bajo autoridad vigente, preservando shared/U/manual y JSON históricos con sus pins originales. El análisis de lineage y las observaciones no son permisos de escritura ni recibos de limpieza. Cobertura global, SDK close real, legacy, campo, F1/T024 y los 21 criterios siguen abiertos. Última unidad completa: T024-F0. Sin release ni cambios en producción.
+
 ## Prompt para la sesión nueva
 
 > Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff y `docs/research/2026-11-06-copy-lifecycle-progress.json`. Confirmá goal/checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro goal ni marques éste completo.
 > Registrodd637f7 publicado:423 componentes+1 compilada PASS y8971 PASS más la misma xfail conocida/8972 IDs en su full. Corrección posteriora2c6f4c publicada:36 protocolo+1 compilada PASS para la cota16MiB. La full sigue en dd637f7; no afirmar una full nueva de la corrección. Esperas consumidas; guardas1078/37/34 intactas en sus corridas;15 firmas previas de warnings. Máximo ocho agentes según plazas; navegador/escritorio de PC siempre delegado a `gpt-6.1-terra`.
-> Próximo: `docs/plans/2026-11-06-copy-lifecycle-continuation.json`: fixture opt-in binario S/U/manual/shared y joins tipados antes del cleaner. Los14 BLOBs/43 refs actuales no prueban binarios S; una operación sin retirada no cierra el requisito. Conservar defaults/oráculos/IDs/pins/TTL y datos compartidos/manuales. Tres observaciones son metadata no-serving, sin grants ni ACK; dos recibos collector tampoco confirman limpieza agregada. SDK close real, censo/owners globales, legacy y campo siguen abiertos. Mantener voz-persona separado de permisos. T021–T024/21criterios/goal incompletos; sin release/producción/campo.
+> Baseline f487f40 publicado:68 unitarias+1 opt-in compilada+1 regresión original PASS;16 BLOBs/49 refs,1 S-only/3 shared/12 retained,0 blocked; guardas1081/37/34 intactas. Próximo: `docs/plans/2026-11-06-copy-lifecycle-continuation.json`: owner real de retirada de BLOBs bajo autoridad vigente. El corpus histórico dd637 tenía14 BLOBs/43 refs sin S; el fixture nuevo sí acredita un S-only, pero todavía no lo borra. Una operación sin retirada no cierra el requisito. Conservar defaults/oráculos/IDs/pins/TTL y datos compartidos/manuales. Tres observaciones son metadata no-serving, sin grants ni ACK; dos recibos collector tampoco confirman limpieza agregada. SDK close real, censo/owners globales, legacy y campo siguen abiertos. Mantener voz-persona separado de permisos. T021–T024/21criterios/goal incompletos; sin release/producción/campo.
 
 ## Lista de cierre y reanudación
 
