@@ -6,23 +6,23 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 ## Punto de reanudación
 
-**T024-F1 sigue en curso.** La revisión `3fc5ac6` tiene 21 pruebas de construcción y dos regresiones compiladas aprobadas. La full general terminó con **8832 PASS y la misma xfail conocida**, 8833 IDs exactos, XML865.081 s. El mismo goal permanece **activo e incompleto** y T024-F0 es la última unidad completa verificada.
+**T024-F1 sigue en curso.** La revisión `2cdbe51` registra las copias de snapshot/materialización antes de escribir datos y recupera sus metadatos sin recrear permisos. Pasaron **343 pruebas de componentes**, **dos regresiones compiladas** y la full de **8889 PASS más la misma xfail conocida**, 8890 IDs exactos. El mismo goal permanece **activo e incompleto**; T024-F0 es la última unidad completa verificada.
 
 | Dato | Estado actual |
 | --- | --- |
 | Entorno | `gabriel`, `/Users/gabriel/Documents/Proyectos/kza`, macOS 26.6.1 arm64, CPython 3.13.18 |
 | Rama | `recovery/production-2026-10-25`; verificar HEAD/origin al retomar |
-| Implementación F1 | Hasta `3fc5ac61cba2ecaba7a3df4b61dda84c44ce63fc`, publicado |
-| Construcción | 21 PASS; XML6.374 s; espera real consumida |
-| Compilados | 2 PASS; XML100.917 s; original y recorrido O/N/R/F |
-| Versiones materiales | O/R: aplicación9b; N/F:3fc5ac6; puente de seguridad3fc5ac6 independiente |
-| Full F1 actual | 3fc5ac6:8832 PASS + misma xfail,8833 IDs; fuentes1066/scripts37/protegidos31 intactos |
-| Full F1 anteriores | f550: dos fallos; df88: un fallo. Ambos resultados fallidos se conservan |
-| Full F0 histórica | 8584 PASS + misma xfail conocida,8585 IDs; anterior a F1 |
-| Pendiente concreto | Registrar cada copia antes del primer byte y acreditar limpieza/recuperación; guards pendientes |
+| Implementación F1 | `2cdbe51f0d3c897e98cc1d2ace7edc0aaed9240f`, publicado |
+| Componentes | 343 PASS; XML97.361 s; identidades exactas |
+| Compilados | 2 PASS; XML135.797 s; original y O/N/R/F con lector nuevo |
+| Versiones materiales | O/R: aplicación9b; N/F y puente de seguridad:2cdbe51 |
+| Recuperación | Nuevo proceso desde `.pyc`: seis copias prepared+finished, seis retornos SDK; factory prestada rechazada sin dispatch ni ACK de limpieza |
+| Full actual | 8889 PASS + misma xfail,8890 IDs; XML881.008 s; fuentes1068/scripts37/protegidos33 intactos |
+| Warnings | 65986 ocurrencias;15 firmas conocidas,ninguna nueva en el resumen; sin supresión |
+| Pendientes | Fallos reales de markers SDK bajo capacidad viva; owner de limpieza selectiva S preservando U/manual; inventario retrospectivo y migraciones |
 | Delegación | Hasta ocho agentes según plazas; PC interactiva con subagente `gpt-6.1-terra` |
 
-T021/T022/T023/T024 siguen `in_progress`; los 21 criterios permanecen `not_evaluated`. Se conservan los demás estados, presupuestos y permisos separados. Leer el [reporte actual](../research/2026-11-06-manual-authority-progress.json) y la [continuación](../plans/2026-11-06-slot-authority-reconciliation-continuation.json). El oracle original y su RED histórico están preservados. Sin release ni cambios en producción.
+T021/T022/T023/T024 siguen `in_progress`; los 21 criterios permanecen `not_evaluated`. Se conservan los demás estados, presupuestos y permisos separados. Leer el [reporte actual](../research/2026-11-06-copy-lifecycle-progress.json) y la [continuación](../plans/2026-11-06-copy-lifecycle-continuation.json). Preparación y `finish()` no confirman limpieza: sus registros siguen bloqueados sin owner de borrado. Sin release ni cambios en producción.
 
 ## Referencia histórica del cierre Linux F
 
@@ -298,17 +298,27 @@ La suite de componentes terminó con **90 PASS**, XML1.910 s, wait real 32760/72
 
 ## Autoridad manual y construcción — T024-F1, avance local
 
+Registro histórico hasta `3fc5ac6`; consultar el avance vigente del catálogo en la sección siguiente.
+
 Los commits posteriores a `d574075` agregan el clasificador histórico de exports manuales, componentes tipados sin copiar contenido, sellos externos de autoridad manual y testigos de cierre de HA/Auth/captura con propietarios reales. Los contratos V1 no cambian; un HEAD anterior sin sello falla cerrado y todavía no tiene migrador.
 
 La barrera de construcción en `3fc5ac6` mantiene excluido el mantenimiento histórico de diagnósticos hasta el retorno real de la validación nativa. La cancelación espera ese retorno y los escritores ajenos siguen rechazados. Pasaron 21 pruebas de construcción y dos regresiones compiladas con la aplicación anterior y el puente actualizado. O/N/R/F registra cuatro cierres y wait0 reales; esto acredita el escenario declarado.
 
 Las full de f550 y df88 fallaron y se conservan como tales. La colección nueva retiene sus 8823 IDs y agrega diez, sin quitar casos. La full nueva terminó con8832 PASS y la misma xfail conocida,8833 IDs exactos; las15 firmas de warnings se mantienen. También falta un catálogo durable antes del primer byte para todas las copias y sus obligaciones de limpieza/recuperación. El case físico temporal de un ensayo d853 anterior fue retirado por pytest; sólo se conservan sus recibos y logs. Los cases nuevos de3fc se exportan con su procedencia, sin reconstruir testigos anteriores. Ver el [reporte actual](../research/2026-11-06-manual-authority-progress.json).
 
+## Catálogo durable de copias — T024-F1, base local
+
+`2cdbe51` agrega el catálogo externo antes del primer byte, identidad física, eventos inmutables y CAS. Los snapshots usados por el materializador requieren su captura externa prepared+finished; un DTO o manifest local no concede permiso. La incertidumbre del SDK es persistente y la capacidad se libera con `finish()` después de la última publicación.
+
+El corte local pasó343 componentes, dos regresiones compiladas y8890 casos generales con la única xfail conocida. Un proceso nuevo cargó `copy_catalog.pyc`, leyó seis copias finalizadas y comprobó seis retornos SDK. Otro probe dentro de ese lector rechazó una factory que devolvía un cliente Chroma real prestado, sin invocarla ni confirmar limpieza. Casos físicos, metadatos, warnings y testigos se conservan con hashes; los archivos temporales antiguos ausentes no se reconstruyen.
+
+F1 sigue abierto. El catálogo mantiene `cleanup=blocked, owner=None`; faltan owner y recibos de limpieza efectiva, más evidencia de fallos reales SDK bajo la capacidad nueva e inventario de copias retrospectivas/forenses. La retirada de S debe preservar exactamente U/manual y tratar la invalidez de snapshots históricos sin reescribir IDs ni pins. Ver el [reporte y requisitos pendientes](../research/2026-11-06-copy-lifecycle-progress.json).
+
 ## Prompt para la sesión nueva
 
-> Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff y `docs/research/2026-11-06-manual-authority-progress.json`. Confirmá goal/checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro goal ni marques éste completo.
-> Código publicado hasta3fc5ac6:21 PASS construcción y2 PASS compilados; OLD9b/NEW3fc5ac6, puente independiente3fc5ac6. Las full previas fallaron y se conservan. La nueva full3fc aprobó8832 casos y conserva la misma xfail conocida,8833 IDs exactos, sin nuevas firmas de warnings. No repetir ensayos cerrados sin causa nueva. Máximo ocho agentes según plazas; navegador/escritorio de PC siempre delegado a Terra.
-> Próxima subunidad: catálogo durable de copias antes del primer byte, propietario actual de limpieza y recuperación de parciales/SDK inciertos. Historia no concede ejecución ni retención indefinida; sealed/materialized no equivale a ACK. Mantener los targets, el oracle original, proveniencia/TTL, autoridad latest y permisos separados. T021–T024 y los21 criterios siguen abiertos. Sin release/producción/campo.
+> Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff y `docs/research/2026-11-06-copy-lifecycle-progress.json`. Confirmá goal/checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro goal ni marques éste completo.
+> Código2cdbe51 publicado:343 PASS componentes,2 PASS compilados y8889 PASS más la misma xfail conocida en8890 IDs exactos. Esperas reales consumidas; fuentes1068/scripts37/protegidos33 intactos;15 firmas de warnings conocidas. No repetir ensayos cerrados sin causa nueva. Máximo ocho agentes según plazas; navegador/escritorio de PC siempre delegado a Terra.
+> Próximo: seguir `docs/plans/2026-11-06-copy-lifecycle-continuation.json`. Primero fallos de persistencia en `handle_returned` y `close_entered` con cliente real/capacidad viva y lector compilado nuevo; cerrar el owner real en finally sin producir ACK desde flags o timeouts. Luego owner versionado de limpieza selectiva S, preservación U/manual e inventario retrospectivo explícito. Historia no concede ejecución ni retención indefinida. Mantener targets, oracle original, proveniencia/TTL, autoridad latest y permisos separados. T021–T024 y los21 criterios siguen abiertos. Sin release/producción/campo.
 
 ## Lista de cierre y reanudación
 

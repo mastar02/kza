@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "unit": "T024-F1/durable-copy-lifecycle",
-  "status": "planned_not_implemented",
+  "status": "in_progress_foundation_verified_local",
   "goal": "docs/plans/2026-11-02-autonomous-roadmap.md",
   "goal_complete": false,
   "basis": [
@@ -93,5 +93,61 @@
     "History/DTO cannot authorize copy/cleanup.",
     "Cleanup cancellation retains owned work until actual return without premature ACK."
   ],
-  "next_action": "Implement catalog/fault tests, integrate snapshot/materializer, then exact compiled/broad validation. This plan alone proves no lifecycle coverage."
+  "next_action": "Execute actual SDK marker-fault unit under live compiled capability, preserving real close/UNKNOWN and U/manual evidence; then implement a versioned typed selective cleanup owner and truthful retrospective registration. Keep original scope and every open requirement.",
+  "foundation_progress": {
+    "report": "docs/research/2026-11-06-copy-lifecycle-progress.json",
+    "implementation_commit": "2cdbe51f0d3c897e98cc1d2ace7edc0aaed9240f",
+    "component": "343 PASS/XML97.361",
+    "compiled": "2 PASS/XML135.797 incl fresh compiled recovery and real borrowed factory rejection",
+    "full": "8889 PASS+same regex xfail/8890 IDs/XML881.008",
+    "cleanup_owner": null,
+    "cleanup_ack": false,
+    "scope": "Public snapshot/materializer registration and metadata recovery; not aggregate copy cleanup or F1 delivery."
+  },
+  "next_concrete_units": [
+    {
+      "baseline": "Use the existing closed F fixture/current controller in a fresh owned compiled child. Reserve an actual SDK extent, inject only the metadata boundary fault, retain/close the real owner in finally, consume actual child wait, and use a new compiled reader to require the same copy ID UNKNOWN/unfinished/blocked/no capability/no cleanup receipt. Verify protected authority and U/manual sentinels unchanged.",
+      "boundary": "A concrete test unit for existing production code; not cleanup implementation/F1 delivery. Actual native SDK close failure remains separate if these marker faults do not cause it.",
+      "exact_seams": [
+        "One-shot copy_catalog._append persistence rejection at SDK phase handle_returned after the exact nominal PersistentClient actually returned.",
+        "One-shot rejection at close_entered; the retained actual public close must still run. Keep constructor and Client.close code unchanged."
+      ],
+      "files": [
+        "tests/integration/test_compiled_material_reconciliation.py",
+        "tests/unit/memory/test_copy_catalog.py"
+      ],
+      "priority": 1,
+      "unit": "actual_SDK_marker_faults_under_live_capability"
+    },
+    {
+      "baseline": "One registered mixed S/U/manual copy: demand actual selective S withdrawal and exact U/manual preservation, then cancellation while work is held followed by finally release/real return. This is a future owner baseline, not an API-missing RED now.",
+      "boundary": "Historical snapshot invalidation/manifests must be explicit. Never rewrite old target IDs/descriptors/pins or erase a whole mixed copy merely to make S absent.",
+      "exact_seams": [
+        "Separate versioned claim keyed by immutable copy_id, exact catalog revision/current HEAD/FD/root identity; do not rewrite finished preparation history.",
+        "A nominal supported owner for one representation, with actual return/physical evidence; uncertain/unreviewed copies stay blocked."
+      ],
+      "files": [
+        "src/memory/copy_catalog.py",
+        "new typed cleanup-owner module",
+        "tests/integration/test_compiled_material_reconciliation.py"
+      ],
+      "priority": 2,
+      "unit": "one_typed_current_authority_copy_cleanup_owner"
+    },
+    {
+      "baseline": "Reject stale DTO/history/current-HEAD mismatch without writes. A valid registration can only produce known/pending/non-serving observation, no SDK/cleanup receipt.",
+      "boundary": "Legacy HEAD without manual companion remains a separate migration/rejection problem, not an implicitly created companion.",
+      "exact_seams": [
+        "Explicit retrospective registration under actual current controller/HEAD and existing root/inventory; never claim before-first-byte registration for existing bytes.",
+        "Enumerate phase checkpoints/BLOB, forensic/audit and failed work representations separately, preserving original identities."
+      ],
+      "files": [
+        "src/memory/copy_catalog.py",
+        "tests/mocks/slot_reconciliation_child.py",
+        "private forensic-export boundary"
+      ],
+      "priority": 3,
+      "unit": "truthful_retrospective_representation_inventory"
+    }
+  ]
 }

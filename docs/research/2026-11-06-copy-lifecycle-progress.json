@@ -1,0 +1,183 @@
+{
+  "schema_version": 1,
+  "task": "T024-F1",
+  "unit": "durable-copy-catalog foundation",
+  "status": "foundation_verified_local_overall_in_progress",
+  "goal_complete": false,
+  "F1_delivered": false,
+  "revision": "2cdbe51f0d3c897e98cc1d2ace7edc0aaed9240f",
+  "implementation": [
+    "External content-free catalog reserves a copy before creating payload, then pins physical identity and records extents. Controller FD, live lease, closed HEAD and sealed authority are revalidated.",
+    "Immutable events and CAS head keep preparation provenance. Crash recovery exposes verified prefix or initial uncommitted metadata as UNKNOWN and blocked; it never recreates a capability.",
+    "Snapshot inputs require the external prepared and finished capture pin. Local manifest/DTO changes cannot replace it.",
+    "Nominal Chroma factory, acquired handle and public close are observed; uncertainty remains irreversible. Preparation is recorded before ownership publication; finish releases the capability only afterward.",
+    "Snapshot and payload APIs use the catalog. Existing V1 scripts, privacy oracle and original material harness are unchanged."
+  ],
+  "verified": {
+    "components": {
+      "tests": 343,
+      "result": "PASS",
+      "XML_seconds": 97.361,
+      "actual_terminal": "72125/b3fd33",
+      "evidence": "data/autonomous-roadmap-20261102/t024/f1/copy-lifecycle/component-attempt-01"
+    },
+    "compiled": {
+      "tests": 2,
+      "result": "PASS",
+      "XML_seconds": 135.797,
+      "actual_terminal": "11007/864070",
+      "evidence": "data/autonomous-roadmap-20261102/t024/f1/copy-material/native-attempt-01"
+    },
+    "guards": "1068 source,37 scripts,33 protected files unchanged in both runs",
+    "fresh_compiled_recovery": {
+      "pid": 59758,
+      "prepared_and_finished_copies": 6,
+      "sdk_close_returns": 6,
+      "borrowed_factory_rejected_before_dispatch": true,
+      "retained_probe": "8b4ca6080c944cc58545886d94974e87",
+      "capability": false,
+      "cleanup_ack": false,
+      "graph_closure_ack": false
+    }
+  },
+  "material_proofs": [
+    {
+      "proof": "data/autonomous-roadmap-20261102/t024/f1/copy-material/child-evidence/attempt-78d2216f4a854258b179974a60086a7b/material-parent-proof.json",
+      "sha256": "5527ef9cf2b84a1b16454405097bdface94e7d529fd7a3a54b971d0ad0594b68",
+      "phases": {
+        "O": {
+          "pid": 59596,
+          "exit_code": 0,
+          "actual_wait_returned": true,
+          "module_count": 277
+        },
+        "N": {
+          "pid": 59655,
+          "exit_code": 0,
+          "actual_wait_returned": true,
+          "module_count": 279
+        },
+        "R": {
+          "pid": 59669,
+          "exit_code": 0,
+          "actual_wait_returned": true,
+          "module_count": 277
+        },
+        "F": {
+          "pid": 59733,
+          "exit_code": 0,
+          "actual_wait_returned": true,
+          "module_count": 279
+        }
+      },
+      "complete": true
+    }
+  ],
+  "full": {
+    "expected_ids": 8890,
+    "old_ids": 8833,
+    "new_ids": 57,
+    "removed_ids": 0,
+    "collection": "exact PASS",
+    "state": "finished",
+    "tool_session": 4339,
+    "runner_pid": 64540,
+    "pytest_pid": 64544,
+    "result": "8889 PASS + same known regex xfail",
+    "exact_expected_ids": true,
+    "XML_seconds": 881.008,
+    "summary_seconds": 881.17,
+    "actual_terminal": "4339/fa1df1",
+    "actual_wait_consumed": true,
+    "evidence": "data/autonomous-roadmap-20261102/t024/f1/copy-full/acceptance-proof.json"
+  },
+  "open": [
+    "Cleanup remains blocked with owner=None and no actual cleanup driver or erasure ACK.",
+    "Audit/checkpoint/forensic representations are preserved with manifests, but their production lifecycle registration and cleanup ownership are not covered by this foundation.",
+    "Existing unsealed HEAD or legacy unregistered snapshots require explicit migration; they are not adopted as execution permission.",
+    "Actual SDK constructor/close fault paths under a granted catalog capability need stronger runtime evidence beyond protocol/seam units.",
+    "Physical field gates, exact diagnostics1/streams2/voices2 guards,T021-T024 and all21 criteria remain open."
+  ],
+  "production_changed": false,
+  "date": "2026-11-06",
+  "implementation_commits": [
+    "2cdbe51f0d3c897e98cc1d2ace7edc0aaed9240f"
+  ],
+  "warnings": {
+    "occurrences": 65986,
+    "known_signatures": 15,
+    "new_summary_signatures": 0,
+    "suppressed": false,
+    "standalone_note": "The two-test run displayed the existing Chroma synthetic-embedding warning; its earlier raw SDK provenance is preserved. It is not an extra warning signature in this full."
+  },
+  "requirements_audit": {
+    "path": "data/autonomous-roadmap-20261102/t024/f1/copy-lifecycle/requirements-current-evidence.json",
+    "sha256": "05e6d6d46c4a40f404325f164c2c952fe5984e3623155e441d2b569d61fcf773",
+    "proved_within_scope": 11,
+    "partial": 5,
+    "missing": 0
+  },
+  "independent_full_audit": {
+    "path": "data/autonomous-roadmap-20261102/t024/f1/copy-full/audit.json",
+    "sha256": "7d2f6d003bf0ea6eaa86ef776db3e1e3cfb13a04831cb0197b69c18097d915b1",
+    "checks": 25,
+    "issues": []
+  },
+  "last_fully_accepted_unit": "T024-F0",
+  "evidence": {
+    "component": "data/autonomous-roadmap-20261102/t024/f1/copy-lifecycle/component-attempt-01/acceptance-proof.json",
+    "compiled": "data/autonomous-roadmap-20261102/t024/f1/copy-material/native-attempt-01/acceptance-proof.json",
+    "full": "data/autonomous-roadmap-20261102/t024/f1/copy-full/acceptance-proof.json",
+    "full_proof_sha256": "40921241e537cb739c6f7341691b11d2864caad2e90fc9003b0c4c4f2c16bd41",
+    "canonical_artifact_manifest": "data/autonomous-roadmap-20261102/t024/f1/copy-full/validation-artifact-manifest.json",
+    "full_forensic_index": "data/autonomous-roadmap-20261102/t024/f1/copy-full/forensic-exports-01.json",
+    "full_forensic_index_sha256": "0920c1704a98cebc6823d30fe833d7105f4adaab64e60c7f16a70af10cf53561",
+    "full_repro_receipt_sha256": "638b66a891a96cd685573a61caeb25660aeecf8810d30aee3ce0277fcb3b70fd"
+  },
+  "next_concrete_units": [
+    {
+      "baseline": "Use the existing closed F fixture/current controller in a fresh owned compiled child. Reserve an actual SDK extent, inject only the metadata boundary fault, retain/close the real owner in finally, consume actual child wait, and use a new compiled reader to require the same copy ID UNKNOWN/unfinished/blocked/no capability/no cleanup receipt. Verify protected authority and U/manual sentinels unchanged.",
+      "boundary": "A concrete test unit for existing production code; not cleanup implementation/F1 delivery. Actual native SDK close failure remains separate if these marker faults do not cause it.",
+      "exact_seams": [
+        "One-shot copy_catalog._append persistence rejection at SDK phase handle_returned after the exact nominal PersistentClient actually returned.",
+        "One-shot rejection at close_entered; the retained actual public close must still run. Keep constructor and Client.close code unchanged."
+      ],
+      "files": [
+        "tests/integration/test_compiled_material_reconciliation.py",
+        "tests/unit/memory/test_copy_catalog.py"
+      ],
+      "priority": 1,
+      "unit": "actual_SDK_marker_faults_under_live_capability"
+    },
+    {
+      "baseline": "One registered mixed S/U/manual copy: demand actual selective S withdrawal and exact U/manual preservation, then cancellation while work is held followed by finally release/real return. This is a future owner baseline, not an API-missing RED now.",
+      "boundary": "Historical snapshot invalidation/manifests must be explicit. Never rewrite old target IDs/descriptors/pins or erase a whole mixed copy merely to make S absent.",
+      "exact_seams": [
+        "Separate versioned claim keyed by immutable copy_id, exact catalog revision/current HEAD/FD/root identity; do not rewrite finished preparation history.",
+        "A nominal supported owner for one representation, with actual return/physical evidence; uncertain/unreviewed copies stay blocked."
+      ],
+      "files": [
+        "src/memory/copy_catalog.py",
+        "new typed cleanup-owner module",
+        "tests/integration/test_compiled_material_reconciliation.py"
+      ],
+      "priority": 2,
+      "unit": "one_typed_current_authority_copy_cleanup_owner"
+    },
+    {
+      "baseline": "Reject stale DTO/history/current-HEAD mismatch without writes. A valid registration can only produce known/pending/non-serving observation, no SDK/cleanup receipt.",
+      "boundary": "Legacy HEAD without manual companion remains a separate migration/rejection problem, not an implicitly created companion.",
+      "exact_seams": [
+        "Explicit retrospective registration under actual current controller/HEAD and existing root/inventory; never claim before-first-byte registration for existing bytes.",
+        "Enumerate phase checkpoints/BLOB, forensic/audit and failed work representations separately, preserving original identities."
+      ],
+      "files": [
+        "src/memory/copy_catalog.py",
+        "tests/mocks/slot_reconciliation_child.py",
+        "private forensic-export boundary"
+      ],
+      "priority": 3,
+      "unit": "truthful_retrospective_representation_inventory"
+    }
+  ]
+}
