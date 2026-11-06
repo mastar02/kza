@@ -33,13 +33,24 @@ class Reasoner:
 
 
 @asynccontextmanager
-async def graph(tmp_path):
+async def graph(tmp_path, *, quiesce_maintenance=False):
     clock, reasoner = Clock(), Reasoner()
     async with AsyncExitStack() as stack:
         services = await build_memory_services({'memory': {
             'privacy_db_path': str(tmp_path/'privacy.db'),
             'preferences_path': str(tmp_path/'preferences.json')}}, shutdown=stack,
             chroma_client=MemoryClient(tmp_path/'chroma'), clock=clock)
+        if quiesce_maintenance:
+            # The saturation case reserves all slots for its own native blockers.
+            # The caller still drains retained native work before filling them.
+            maintenance = services.maintenance
+            assert maintenance is not None
+            maintenance.cancel()
+            try:
+                await maintenance
+            except asyncio.CancelledError:
+                pass
+            assert maintenance.cancelled()
         policy = services.manager.long_term.ledger
         persister = ContextPersister(tmp_path/'contexts', source_policy=policy, clock=clock)
         manager = ContextManager(persister=persister, source_policy=policy, clock=clock,
@@ -347,7 +358,7 @@ async def test_failed_atomic_write_and_unlink_leave_a_cleanup_retry(tmp_path, mo
 
 
 async def test_cached_context_needs_no_native_slot_when_all_workers_are_occupied(tmp_path):
-    async with graph(tmp_path) as (manager, _, memory, _, _):
+    async with graph(tmp_path, quiesce_maintenance=True) as (manager, _, memory, _, _):
         existing = await manager.aget_or_create('test_user')
         await wait_for(lambda: memory.resource_status()['operations'] == 0)
         release = threading.Event()
