@@ -399,9 +399,14 @@ class _Policy:
                     self.sources[key] = encoded
                     self.conversations.setdefault(source.conversation_id, {})[key] = source
 
-    def live(self, sources):
+    def activity(self, sources):
+        """Snapshot equivalent of FactLedger.activity_sources_available.
+
+        This does not authorize audio or text past a capture's raw deadline.
+        Only the numeric diagnostic branch pairs it with its own row expiry.
+        """
         for source in sources:
-            if not source.captured_at <= self.now < source.expires_at or source.conversation_id in self.revoked:
+            if source.conversation_id in self.revoked:
                 return False
             for dependency in source.fact_dependencies:
                 fact = self.facts.get(dependency.fact_id)
@@ -411,6 +416,9 @@ class _Policy:
                         or dependency.expires_at is not None and dependency.expires_at <= self.now):
                     return False
         return True
+
+    def live(self, sources):
+        return all(source.captured_at <= self.now < source.expires_at for source in sources) and self.activity(sources)
 
     def row_live(self, row, *, sources=None):
         if sources is None:
@@ -710,16 +718,18 @@ def _select_diagnostics(old, new, selected, policy, related):
     def eligible(row):
         from src.obs.metrics_emitter import project_diagnostic
         body = json.loads(row["payload"])
-        _require(project_diagnostic(body) == body and row["partition"] in (0, 1)
-            and _number(row["born"]) and row["born"] <= policy.now,
+        _require(project_diagnostic(body) == body and type(row["partition"]) is int and row["partition"] in (0, 1)
+            and _number(row["born"]) and _number(row["expires"])
+            and row["born"] < row["expires"] and row["born"] <= policy.now,
             "payload_diagnostic_record_invalid")
         conversations = by_id.get(row["id"], set())
         _require(bool(conversations), "payload_diagnostic_lineage_missing")
         _require(all(identity in policy.conversations for identity in conversations),
             "payload_diagnostic_source_unknown")
         sources = tuple(source for identity in conversations for source in policy.conversations[identity].values())
-        _require(row["expires"] <= min(source.expires_at for source in sources), "payload_deadline_renewal")
-        return policy.row_live(row, sources=sources)
+        # Numeric metadata has the store's anchored retention, commonly 90d.
+        # Neither reuse the raw 48h cap nor renew born/expires at derivation.
+        return policy.now < row["expires"] and policy.activity(sources)
 
     selected["metrics"] = _ordinary(old["metrics"], new["metrics"], eligible, now=policy.now,
         policy=policy, table="metrics")
@@ -1374,6 +1384,55 @@ def _relocation_audit(plan, journal):
     return tuple(sorted(audit, key=_json))
 
 
+def _prepared_ownership(destination, journal):
+    """Build the eventual policy in memory; preparation remains inadmissible."""
+    from src.memory.state_journal_derivation import JournalDerivationReceipt
+    _require(type(journal) is JournalDerivationReceipt and journal.destination_state == destination,
+        "payload_journal_receipt_mismatch")
+    path = destination / ".kza-target-ownership.json"
+    _require(path.resolve(strict=True) == path and not path.is_symlink(), "payload_preparation_redirected")
+    blocked = path.read_bytes()
+    policy = json.loads(blocked)
+    _require(type(policy) is dict and set(policy) == {"schema_version", "source_bindings", "owned_targets",
+        "delegated_targets", "historical_targets"} and type(policy["schema_version"]) is int
+        and policy["schema_version"] == 1 and policy["owned_targets"] == [] and policy["delegated_targets"] == [],
+        "payload_preparation_not_blocked")
+    registered = journal.registered_target_ids
+    _require(bool(registered) and len(registered) == len(set(registered)) and all(_sha_token(item) for item in registered),
+        "payload_journal_receipt_mismatch")
+    database = destination / _relative(journal.privacy_relative)
+    _require(database.resolve(strict=True) == database, "payload_destination_redirected")
+    with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as db:
+        actual = {row[0] for row in db.execute("SELECT id FROM erasure_targets")}
+    _require(actual == set(registered), "payload_journal_receipt_mismatch")
+    qualified = dict(policy, owned_targets=sorted(registered))
+    return path, blocked, _json(qualified) + b"\n"
+
+
+def _finish_prepared_payload(plan, destination, journal, reservation, sdk_client_factory):
+    ownership, blocked, qualified = _prepared_ownership(destination, journal)
+    _apply_tables(plan, destination, journal)
+    _apply_files(plan, destination)
+    _publish_diagnostics(plan, destination)
+    _apply_indexes(plan, destination, reservation, sdk_client_factory)
+    _require(all(owner["close_returned"] and owner["client"] is None for owner in reservation["sdk"]),
+        "payload_sdk_retirement_unconfirmed")
+    audit = _relocation_audit(plan, journal)
+    privacy = next(item for item in plan.layout.database_relocations
+        if item.destination_relative == plan.layout.privacy_relative)
+    active_latest = _targets(plan.latest, privacy.latest_relative)
+    event_targets = {old: new for old, new in journal.event_target_id_map.items() if old in active_latest}
+    _require(ownership.read_bytes() == blocked, "payload_preparation_changed")
+    record = destination / ".kza-payload-preparation.json"
+    value = {"schema_version": 1, "plan_sha256": plan.plan_sha256, "phase": "materialized",
+        "serving": False, "journal": journal.to_dict(), "relocation_audit": list(audit),
+        "sdk_close_returns": len(reservation["sdk"]), "retained_copy_cleanup_ack": False}
+    _atomic_file(record, _json(value) + b"\n")
+    _atomic_file(ownership, qualified)
+    return DerivedState(destination, plan.plan_sha256, journal.history_sha256,
+        dict(journal.target_id_map), event_targets, dict(journal.event_dependency_target_map), audit, record)
+
+
 def materialize_derived_state(plan: PayloadCutPlan, destination: Path, *, controller,
                               sdk_client_factory=None) -> DerivedState:
     """Prepare a non-serving state at its FINAL locator under the controller lease.
@@ -1407,25 +1466,8 @@ def materialize_derived_state(plan: PayloadCutPlan, destination: Path, *, contro
     proof = _exclusion_proof(plan, destination)
     journal = qualify_and_register_derived_journal(controller, plan.latest, destination,
         privacy_relative=plan.layout.privacy_relative, target_relocations=plan.layout.target_relocations,
-        ordinary_snapshot=plan.ordinary, payload_cut_proof=proof)
-    ownership = destination / ".kza-target-ownership.json"
-    qualified = ownership.read_bytes()
-    blocked = json.loads(qualified)
-    blocked["owned_targets"] = []
-    _atomic_file(ownership, _json(blocked) + b"\n")
-    _apply_tables(plan, destination, journal)
-    _apply_files(plan, destination)
-    _publish_diagnostics(plan, destination)
-    _apply_indexes(plan, destination, reservation, sdk_client_factory)
-    audit = _relocation_audit(plan, journal)
-    active_latest = _targets(plan.latest, privacy.latest_relative)
-    event_targets = {old: new for old, new in journal.event_target_id_map.items() if old in active_latest}
-    value = {"schema_version": 1, "plan_sha256": plan.plan_sha256, "phase": "materialized",
-        "serving": False, "journal": journal.to_dict(), "relocation_audit": list(audit),
-        "sdk_close_returns": len(reservation["sdk"]), "retained_copy_cleanup_ack": False}
-    _atomic_file(record, _json(value) + b"\n")
-    _atomic_file(ownership, qualified)
+        ordinary_snapshot=plan.ordinary, payload_cut_proof=proof, keep_blocked=True)
+    result = _finish_prepared_payload(plan, destination, journal, reservation, sdk_client_factory)
     reservation["phase"] = "materialized"
     del _INCOMPLETE[key]
-    return DerivedState(destination, plan.plan_sha256, journal.history_sha256,
-        dict(journal.target_id_map), event_targets, dict(journal.event_dependency_target_map), audit, record)
+    return result

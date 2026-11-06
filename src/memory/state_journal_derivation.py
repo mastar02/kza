@@ -337,8 +337,22 @@ class JournalDerivationReceipt:
                 "acknowledges_retained_copy_cleanup": False}
 
 
+def _publish_ownership(stage, root, state, policy, records, *, keep_blocked):
+    """Keep material preparation non-admissible until its caller finishes it."""
+    _require(type(keep_blocked) is bool, "keep_blocked")
+    registered = tuple(sorted(target["id"] for target in records))
+    _require(stage._target_inventory(state) == {target["id"]: target for target in records},
+             "active_inventory_changed")
+    publication = dict(policy, owned_targets=[] if keep_blocked else list(registered))
+    stage._atomic_record(state / ".kza-target-ownership.json", publication)
+    if not keep_blocked:
+        binding = stage._binding_snapshot(root, state.parent.name)
+        stage.validate_target_ownership(root, binding)
+    return registered
+
+
 def _qualify_locked(controller, latest_snapshot, destination_state, *, privacy_relative,
-                    target_relocations, ordinary_snapshot, payload_cut_proof):
+                    target_relocations, ordinary_snapshot, payload_cut_proof, keep_blocked):
     from src.memory.fact_ledger import FactLedger
 
     stage = _stage()
@@ -412,10 +426,8 @@ def _qualify_locked(controller, latest_snapshot, destination_state, *, privacy_r
                 ledger.close()
             _require(stage.read_admission_head(root) == head, "head_changed")
             _source(stage, root, latest_snapshot, privacy_relative, latest=True)
-        policy["owned_targets"] = sorted(target["id"] for target in records)
-        stage._atomic_record(existing_policy, policy)
-        binding = stage._binding_snapshot(root, state.parent.name)
-        stage.validate_target_ownership(root, binding)
+        registered = _publish_ownership(stage, root, state, policy, records,
+                                       keep_blocked=keep_blocked)
     except BaseException as error:
         if preparing:
             try:
@@ -427,24 +439,29 @@ def _qualify_locked(controller, latest_snapshot, destination_state, *, privacy_r
     return JournalDerivationReceipt(latest_snapshot.source_binding_id, state, privacy_relative,
         latest_archive[1], latest_archive[2],
         tuple((identity, digest, str(location)) for identity, digest, location, _ in archives),
-        target_id_map, tuple(policy["owned_targets"]), pending, event_ids, evidence_ids)
+        target_id_map, registered, pending, event_ids, evidence_ids)
 
 
 def qualify_and_register_derived_journal(controller, latest_snapshot, destination_state, *,
                                          privacy_relative: str, target_relocations: Mapping,
                                          ordinary_snapshot=None,
-                                         payload_cut_proof=None) -> JournalDerivationReceipt:
+                                         payload_cut_proof=None,
+                                         keep_blocked: bool = False) -> JournalDerivationReceipt:
     """Archive whole history and register local work under controller exclusion.
 
     Destination is a non-serving exact latest-state clone. The optional older
     image proves additional target IDs in selected payload. Neither history nor
-    this receipt acknowledges retained copies. No child is launched here.
+    this receipt acknowledges retained copies. No child is launched here. With
+    keep_blocked, the real ownership sidecar keeps its active inventory empty;
+    the caller must finish all payload/SDK work before publishing registered IDs.
     """
     stage = _stage()
     controller._require_lease()
+    _require(type(keep_blocked) is bool, "keep_blocked")
     root = Path(controller.root).resolve(strict=True)
     stage._require_root_lease(root)
     with stage._locked_root(root):
         return _qualify_locked(controller, latest_snapshot, destination_state,
             privacy_relative=privacy_relative, target_relocations=target_relocations,
-            ordinary_snapshot=ordinary_snapshot, payload_cut_proof=payload_cut_proof)
+            ordinary_snapshot=ordinary_snapshot, payload_cut_proof=payload_cut_proof,
+            keep_blocked=keep_blocked)

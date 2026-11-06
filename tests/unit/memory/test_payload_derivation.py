@@ -14,7 +14,7 @@ import pytest
 
 from src.memory import payload_derivation as payload
 from src.memory import state_snapshot as snapshots
-from src.memory.fact_ledger import FactLedger, MemoryReviewer
+from src.memory.fact_ledger import FactDependency, FactLedger, MemoryReviewer
 from tests.mocks.memory_sources import memory_source
 
 
@@ -56,22 +56,27 @@ CREATE TABLE live_delivery_lineage(id TEXT PRIMARY KEY);
 """
 
 
-def _image(tmp_path, name, *, statements=(), seed=None):
+def _image(tmp_path, name, *, statements=(), seed=None, diagnostic_seed=None):
     source = tmp_path / (name + "-source")
     (source / "data/graph").mkdir(parents=True)
     ledger = FactLedger(str(source / PRIVACY), clock=lambda: NOW)
     ledger.initialize()
-    if seed is not None:
-        seed(ledger)
-    ledger.close()
+    try:
+        if seed is not None:
+            seed(ledger)
+        if diagnostic_seed is not None:
+            diagnostic_seed(ledger, source / "data/graph/metrics.jsonl")
+    finally:
+        ledger.close()
     with closing(sqlite3.connect(source / PRIVACY)) as db, db:
         db.executescript(EXTRA_SCHEMA.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS "))
         for sql, values in statements:
             db.execute(sql, values)
     with closing(sqlite3.connect(source / DIAGNOSTICS)) as db, db:
-        db.executescript("CREATE TABLE metrics(id TEXT PRIMARY KEY,born REAL,expires REAL,payload TEXT,"
+        db.executescript(("CREATE TABLE metrics(id TEXT PRIMARY KEY,born REAL,expires REAL,payload TEXT,"
             "partition INTEGER,bytes INTEGER);CREATE TABLE lineage(record_id TEXT,conversation_id TEXT,"
             "PRIMARY KEY(record_id,conversation_id));CREATE TABLE state(key TEXT PRIMARY KEY,value INTEGER);")
+            .replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS "))
     root = tmp_path / (name + "-image")
     databases, files, schemas, contracts = {}, {}, {}, {}
     for relative in (PRIVACY, DIAGNOSTICS):
@@ -466,3 +471,121 @@ def test_sdk_close_error_after_real_release_keeps_unconfirmed_receipt(tmp_path, 
     assert owner["close_attempted"] and not owner["close_returned"]
     # The delegate really closed. No retry and no assertion that this error
     # means the SDK is still alive; only its public receipt is unconfirmed.
+
+
+@pytest.mark.parametrize("condition", ["retained", "revoked", "dependency_deleted", "metadata_expired"])
+def test_real_numeric_diagnostics_keep_anchored_90d_and_activity_authority(tmp_path, condition):
+    from src.obs.diagnostic_store import DiagnosticStore
+    from src.obs.metrics_emitter import project_diagnostic
+    original_source = memory_source(now=NOW-1)
+    parent_source = memory_source(now=NOW-1)
+    sources, parents, records = [], [], []
+    def seed(ledger):
+        parent = ledger.store("Synthetic diagnostic dependency", "fact", .9, (parent_source,))
+        source = original_source
+        if condition == "dependency_deleted":
+            source = replace(source, fact_dependencies=(FactDependency(parent.id, parent.revision, parent.expires_at),))
+        if sources:
+            assert sources[0] == source and parents[0] == parent.id
+        else:
+            sources.append(source)
+            parents.append(parent.id)
+        ledger.store("Synthetic diagnostic source metadata", "fact", .9, (source,))
+    def publish(ledger, path):
+        store = DiagnosticStore(path, clock=lambda: NOW, retention_days=90, rotate_bytes=1024*1024,
+            project=project_diagnostic, policy=ledger)
+        try:
+            if not records:
+                admitted = store.record({"event_type": "request", "success": True, "total_ms": 12.,
+                    "text": "raw synthetic transcript", "user_id": "synthetic-user", "secret": "synthetic-secret"},
+                    (sources[0],))
+                assert admitted is not None
+                records.append(admitted)
+            publication = store.append(records[0])
+            assert publication is not None
+            assert publication.expires_at == records[0].recorded_at + 90*86400
+            assert publication.expires_at > sources[0].expires_at
+            assert set(records[0].payload) == {"event_type", "diagnostic_schema", "success", "total_ms"}
+            assert "raw synthetic" not in path.read_text() and "synthetic-secret" not in path.read_text()
+        finally:
+            store.close()
+        assert store.status()["writer_lease"] is False
+    ordinary = _image(tmp_path, "O", seed=seed, diagnostic_seed=publish)
+    def latest_publish(ledger, path):
+        publish(ledger, path)
+        if condition == "revoked":
+            ledger.delete_conversation(sources[0].conversation_id, MemoryReviewer("synthetic-reviewer"))
+        elif condition == "dependency_deleted":
+            ledger.delete_fact(parents[0], MemoryReviewer("synthetic-reviewer"))
+    latest = _image(tmp_path, "N", seed=seed, diagnostic_seed=latest_publish)
+    admitted = records[0]
+    now = admitted.expires_at if condition == "metadata_expired" else sources[0].expires_at + 1
+    policy = payload._Policy(ordinary, latest, ordinary.manifest["databases"][PRIVACY],
+        latest.manifest["databases"][PRIVACY], now)
+    policy.database = DIAGNOSTICS
+    selected = payload._select_database(ordinary.manifest["databases"][DIAGNOSTICS],
+        latest.manifest["databases"][DIAGNOSTICS], policy)
+    authority = FactLedger(str(payload._root(latest) / PRIVACY), clock=lambda: now)
+    authority.initialize()
+    checker = DiagnosticStore(tmp_path / "never-opened.jsonl", clock=lambda: now, retention_days=90,
+        rotate_bytes=1024*1024, project=project_diagnostic, policy=authority)
+    try:
+        assert policy.activity(tuple(sources)) == checker.available(tuple(sources))
+        assert policy.live(tuple(sources)) is False
+        assert bool(selected["metrics"]) is (condition == "retained")
+        if condition == "retained":
+            image, = selected["metrics"].values()
+            assert image.values["born"] == admitted.recorded_at
+            assert image.values["expires"] == admitted.expires_at == NOW + 90*86400
+            assert json.loads(image.values["payload"]) == admitted.payload
+            lineage, = selected["lineage"].values()
+            assert lineage.values == {"record_id": admitted.identifier, "conversation_id": sources[0].conversation_id}
+            assert sources[0].capture_id == original_source.capture_id and sources[0].expires_at == original_source.expires_at
+    finally:
+        checker.close()
+        authority.close()
+
+
+@pytest.mark.parametrize("failure_phase", ["qualification_receipt", "payload_beforeimage"])
+def test_failed_preparation_keeps_real_sidecar_inadmissible(tmp_path, failure_phase):
+    """Exercise preparation below admission, without manufacturing close ACKs."""
+    from scripts.stage_runtime import validate_target_ownership
+    from src.memory.erasure_journal import ErasureParticipant
+    from src.memory.state_journal_derivation import JournalDerivationReceipt
+    ordinary, latest = _image(tmp_path, "O"), _image(tmp_path, "N")
+    destination = tmp_path / "R"
+    plan = payload.plan_payload_cut(ordinary, latest, now=NOW, layout=_layout(destination))
+    payload._clone_latest(plan, destination)
+    ledger = FactLedger(str(destination / PRIVACY), clock=lambda: NOW)
+    ledger.initialize()
+    try:
+        registered = ledger.erasures.register_target(ErasureParticipant.COLLECTORS, 1,
+            {"kind": "wake_clips", "root": str(destination / "data/graph/wake")})
+    finally:
+        ledger.close()
+    # Real registered SQL and a physical blocked sidecar. This preparation DTO
+    # grants no controller run, writer closure, SDK return or cleanup receipt.
+    sidecar = destination / ".kza-target-ownership.json"
+    blocked = snapshots._json({"schema_version": 1, "source_bindings": [], "owned_targets": [],
+        "delegated_targets": [], "historical_targets": []}) + b"\n"
+    sidecar.write_bytes(blocked)
+    journal = JournalDerivationReceipt(latest.source_binding_id, destination, PRIVACY,
+        "0"*64, tmp_path / "unissued-history.json", (), {}, (registered,), {})
+    if failure_phase == "qualification_receipt":
+        journal = replace(journal, registered_target_ids=("1"*64,))
+        code = "payload_journal_receipt_mismatch"
+    else:
+        # An unaccounted payload write after qualification must fail the real
+        # SQLite beforeimage check, while the registered inventory stays sealed.
+        source = memory_source(now=NOW-1)
+        sql, values = _event_statement(json.dumps([source.to_dict()]), source.expires_at)
+        with closing(sqlite3.connect(destination / PRIVACY)) as db, db:
+            db.execute(sql, values)
+        code = "payload_destination_payload_changed"
+    with pytest.raises(ValueError, match=code):
+        payload._finish_prepared_payload(plan, destination, journal, {"sdk": []}, None)
+    assert sidecar.read_bytes() == blocked
+    binding = {"state_root": str(destination), "ownership_sha256": hashlib.sha256(blocked).hexdigest()}
+    with pytest.raises(ValueError, match="runtime_admission_active_inventory_mismatch"):
+        validate_target_ownership(tmp_path, binding)
+    assert not (destination / ".kza-payload-preparation.json").exists()

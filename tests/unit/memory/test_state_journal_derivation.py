@@ -7,6 +7,7 @@ from dataclasses import FrozenInstanceError
 import hashlib
 import json
 from pathlib import Path
+import sqlite3
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -112,6 +113,30 @@ def test_missing_clip_relocation_rolls_back_the_whole_transaction(journal, tmp_p
         derivation._replace_current(journal.ledger, records, mapping)
     assert derivation._projection(journal.ledger._db) == before
     assert not journal.ledger._db.execute("PRAGMA foreign_key_check").fetchall()
+
+
+def test_blocked_preparation_keeps_real_sidecar_non_admissible(journal, tmp_path):
+    state, mapping, records = _local(journal, tmp_path)
+    state.mkdir(mode=0o700)
+    derivation._replace_current(journal.ledger, records, mapping)
+    destination = sqlite3.connect(state / "privacy.db")
+    try:
+        journal.ledger._db.backup(destination)
+    finally:
+        destination.close()
+    policy = {"schema_version": 1, "source_bindings": [], "owned_targets": [],
+        "delegated_targets": [], "historical_targets": []}
+    registered = derivation._publish_ownership(stage, tmp_path, state, policy, records,
+                                               keep_blocked=True)
+    path = state / ".kza-target-ownership.json"
+    assert json.loads(path.read_bytes()) == policy
+    assert registered and set(registered) == set(stage._target_inventory(state))
+    assert json.loads(path.read_bytes())["owned_targets"] == []
+    # This is an actual inventory check, not an admission/SDK-close receipt.
+    binding = {"state_root": str(state),
+        "ownership_sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+    with pytest.raises(ValueError, match="runtime_admission_active_inventory_mismatch"):
+        stage.validate_target_ownership(tmp_path, binding)
 
 
 def test_foreign_target_cannot_be_relabelled_as_derived_local(journal, tmp_path):
