@@ -1,12 +1,13 @@
 """Observe graph-owned retirement without reviving a closed authority.
 
 This module can be loaded under a trusted bridge alias while ``src`` belongs to
-an older C-compatible artifact. It only observes that artifact's nominal owners;
-it never patches their ledger, methods, namespace or close outcomes.
+an older C-compatible artifact. It observes that artifact's nominal owners and
+delegates observed acquisition/close calls without changing their outcomes.
 """
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import threading
 from types import MethodType
@@ -132,6 +133,7 @@ _EDGES = (
     "_store", "store", "_stt", "_tagger", "_voice_registry", "_identifier",
     "_archiver", "_tap", "_room_states", "_inputs", "audio_manager",
     "wake_detector", "_wake_models", "_wake_factory", "_http_lifecycle",
+    "ha_client", "dashboard", "authority",
     "_router_session", "kokoro", "qwen3", "_stop_services",
 )
 _MEMBERS = ("_borrowers", "_drivers", "_routers", "_managers", "_engines", "_writers",
@@ -285,6 +287,257 @@ class _Pins:
                      and _member_tokens(container) == tokens, "membership_changed")
 
 
+class _HAClosure:
+    """Retain the actual owned session and its public close return."""
+
+    def __init__(self, owner):
+        import aiohttp
+        from src.home_assistant.ha_client import HomeAssistantClient
+
+        _require(type(owner) is HomeAssistantClient, "unsupported_ha_owner")
+        original = owner._ensure_session
+        _require(type(original) is MethodType and original.__func__ is HomeAssistantClient._ensure_session
+                 and owner._session_owned and not owner._closed, "ha_binding_changed")
+        self.owner, self._original = owner, original
+        self.session = None
+        self.failed = self.close_returned = False
+        self._session_type = aiohttp.ClientSession
+        self._close_owner = owner.close
+        _require(type(self._close_owner) is MethodType
+                 and self._close_owner.__func__ is HomeAssistantClient.close,
+                 "ha_binding_changed")
+        self._observe_session()
+        self._observer = self._ensure_session
+        owner._ensure_session = self._observer
+
+    def _observe_session(self):
+        session = self.owner._session
+        if session is None:
+            _require(self.session is None, "ha_session_changed")
+            return
+        _require(type(session) is self._session_type and self.owner._session_owned,
+                 "unsupported_ha_session")
+        if self.session is not None:
+            _require(session is self.session and session.close is self._session_close_observer,
+                     "ha_session_changed")
+            return
+        _require(not session.closed, "ha_session_prior_close_unobserved")
+        original = session.close
+        _require(type(original) is MethodType and original.__func__ is self._session_type.close,
+                 "ha_session_close_changed")
+        self.session, self._session_close = session, original
+        self._session_close_observer = self._close_session
+        session.close = self._session_close_observer
+
+    async def _ensure_session(self):
+        try:
+            self.before_close()
+            result = await self._original()
+            self._observe_session()
+            _require(result is self.session, "ha_session_changed")
+            return result
+        except BaseException:
+            if not self.owner._closed:
+                self.failed = True
+            raise
+
+    async def _close_session(self):
+        try:
+            result = await self._session_close()
+            _require(self.session.closed is True, "ha_session_close_unconfirmed")
+            self.close_returned = True
+            return result
+        except BaseException:
+            self.failed = True
+            raise
+
+    def before_close(self):
+        _require(not self.failed and self.owner._ensure_session is self._observer
+                 and _same_edge(self.owner.close, self._close_owner), "ha_binding_changed")
+        self._observe_session()
+
+    def verify_closed(self):
+        self.before_close()
+        owner = self.owner
+        _require(owner._closed and _finished(owner._close_task)
+                 and not owner._owned_sockets and not owner._sdk_retirements
+                 and not owner._socket_close_tasks and not owner._transport_tasks
+                 and not owner._ws_open_tasks and not owner._state_sync_running
+                 and owner._calls_recovery_timer is None
+                 and not any(owner._state_projection_tasks.values())
+                 and _finished(owner._state_projection_close)
+                 and owner._state_projection_work.status()["closed"]
+                 and owner._state_projection_work.status()["operations"] == 0,
+                 "ha_not_closed")
+        _require(self.session is None or self.close_returned and self.session.closed is True,
+                 "ha_public_close_unconfirmed")
+        return self.session is not None
+
+
+class _AuthorityClosure:
+    """Observe the nominal authority's actual native drain and writer release."""
+
+    def __init__(self, graph):
+        from src.core.owned_work import OwnedBlockingWork
+        from src.dashboard.authority import DashboardAuthority
+
+        self.graph, self.owner = graph, graph.dashboard_authority
+        if self.owner is None:
+            _require(not graph.config.get("dashboard", {}).get("enabled", True),
+                     "authority_owner_missing")
+            return
+        owner = self.owner
+        _require(type(owner) is DashboardAuthority and type(owner._work) is OwnedBlockingWork,
+                 "unsupported_authority_owner")
+        _require(not owner._closed and not owner._failed and owner._closing is None
+                 and not owner._work.status()["closed"], "authority_owner_not_fresh")
+        _require(graph.dashboard is None or graph.dashboard.authority is owner,
+                 "authority_binding_changed")
+        self.work, self.close = owner._work, owner.aclose
+        _require(type(self.close) is MethodType and self.close.__func__ is DashboardAuthority.aclose,
+                 "authority_binding_changed")
+        self.fd = owner._lease_fd
+        self.identity = None if self.fd is None else os.fstat(self.fd)
+
+    def before_close(self):
+        if self.owner is None:
+            return
+        _require(self.graph.dashboard_authority is self.owner
+                 and (self.graph.dashboard is None or self.graph.dashboard.authority is self.owner)
+                 and self.owner._work is self.work and _same_edge(self.owner.aclose, self.close),
+                 "authority_binding_changed")
+        if self.fd is None and self.owner._lease_fd is not None:
+            self.fd = self.owner._lease_fd
+            self.identity = os.fstat(self.fd)
+        _require(self.owner._lease_fd == self.fd, "authority_lease_changed")
+        _require(self.fd is not None or not self.owner._ready, "authority_acquisition_unconfirmed")
+        if self.fd is not None:
+            try:
+                current = os.fstat(self.fd)
+            except OSError:
+                raise RuntimeClosureError("runtime_closure_authority_lease_changed") from None
+            _require((current.st_dev, current.st_ino) ==
+                     (self.identity.st_dev, self.identity.st_ino), "authority_lease_changed")
+
+    def verify_closed(self):
+        owner = self.owner
+        if owner is None:
+            return False
+        _require(self.graph.dashboard_authority is owner
+                 and (self.graph.dashboard is None or self.graph.dashboard.authority is owner)
+                 and owner._work is self.work and _same_edge(owner.aclose, self.close)
+                 and owner._closed and not owner._failed and _finished(owner._closing)
+                 and not owner._tasks and owner._lease_fd is None
+                 and self.work.status()["closed"] and self.work.status()["operations"] == 0
+                 and _finished(self.work._closing), "authority_not_closed")
+        if self.fd is not None:
+            try:
+                current = os.fstat(self.fd)
+            except OSError:
+                current = None
+            _require(current is None or (current.st_dev, current.st_ino) !=
+                     (self.identity.st_dev, self.identity.st_ino), "authority_lease_retained")
+        return self.fd is not None
+
+
+class _CaptureClosure:
+    """Drain permissions while Auth and Privacy still serve retirement."""
+
+    def __init__(self, graph):
+        from src.ambient.audio_archive import AudioArchiver
+        from src.ambient.erasure import CaptureEraser
+        from src.core.owned_work import OwnedBlockingWork
+        from src.memory.capture_control import CaptureControl
+        from src.memory.capture_recorders import CaptureRecorders
+
+        self.graph, self.control = graph, graph.capture_control
+        control = self.control
+        _require(type(control) is CaptureControl and control.privacy is graph.privacy
+                 and type(control.recorders) is CaptureRecorders
+                 and control.recorders._privacy is graph.privacy, "unsupported_capture_owner")
+        self.recorders, self.policy = control.recorders, control._policy_work
+        self.recorder_work = self.recorders._work
+        self.enrollment = control._enrollment_work
+        _require(type(self.recorder_work) is OwnedBlockingWork
+                 and type(self.policy) is OwnedBlockingWork
+                 and (self.enrollment is None or type(self.enrollment) is OwnedBlockingWork),
+                 "unsupported_capture_work")
+        self.driver = graph.producer_coverage.capture_erasure
+        _require(type(self.driver) is CaptureEraser and self.driver.privacy is graph.privacy,
+                 "unsupported_archive_owner")
+        self.archivers = tuple(self.driver._archivers)
+        _require(all(type(owner) is AudioArchiver for owner in self.archivers),
+                 "unsupported_archive_owner")
+        self.archive_stores = tuple(owner._store for owner in self.archivers)
+        self.uploads = ()
+        self.before_close()
+
+    def before_close(self):
+        control = self.control
+        _require(self.graph.capture_control is control and control.recorders is self.recorders
+                 and control.privacy is self.graph.privacy
+                 and self.recorders._privacy is self.graph.privacy
+                 and self.recorders._work is self.recorder_work
+                 and control._policy_work is self.policy
+                 and control._enrollment_work is self.enrollment
+                 and self.graph.producer_coverage.capture_erasure is self.driver
+                 and len(self.driver._archivers) == len(self.archivers)
+                 and all(left is right for left, right in zip(self.driver._archivers, self.archivers)),
+                 "capture_binding_changed")
+        _require(all(owner._privacy is self.graph.privacy and owner._store is store
+                     and store.source_policy is self.graph.privacy.ledger
+                     for owner, store in zip(self.archivers, self.archive_stores)),
+                 "archive_binding_changed")
+        _require(control._supported and control._native_supported and not control._seal_failed,
+                 "unsupported_capture_owner")
+        for loop in {self.graph.pipeline.audio_loop, self.graph.fallback_audio_loop}:
+            _require(not any(getattr(loop, name, ()) for name in
+                ("_xvf_by_room", "_direction_room_ids", "_direction_observers", "_direction_retired",
+                 "_direction_join_tasks", "_direction_opening", "_xvf_pause_joins")),
+                "unsupported_auxiliary_native")
+
+    async def pre_close(self):
+        from src.memory.capture_control import CaptureUploadLease
+
+        self.before_close()
+        self.uploads = tuple(self.control._uploads)
+        _require(all(type(lease) is CaptureUploadLease and lease._control is self.control
+                     for lease in self.uploads), "unsupported_upload_owner")
+        _require(all(lease.task is not asyncio.current_task() for lease in self.uploads),
+                 "capture_shutdown_reentrant")
+        self.control._seal()
+        self.before_close()
+        await asyncio.gather(self.recorders.drain(), self.control._drain_uploads())
+        tasks = tuple(lease.task for lease in self.uploads if lease.task is not None)
+        if tasks:
+            await asyncio.gather(*(asyncio.shield(task) for task in tasks))
+        _require(self.recorders.pending() == 0 and not self.control._uploads,
+                 "capture_permissions_pending")
+
+    def verify_closed(self):
+        self.before_close()
+        control = self.control
+        _require(control._closed and control._sealed and control._phase == "closed"
+                 and _finished(control._closing) and not control._uploads
+                 and self.recorders._closed and self.recorders._sealed
+                 and self.recorders.pending() == 0
+                 and self.recorder_work.status()["closed"]
+                 and self.recorder_work.status()["operations"] == 0
+                 and _finished(self.recorder_work._closing)
+                 and self.policy.status()["closed"] and self.policy.status()["operations"] == 0
+                 and _finished(self.policy._closing),
+                 "capture_not_closed")
+        _require(all(lease._retired and (lease.task is None or _finished(lease.task))
+                     for lease in self.uploads), "upload_return_unconfirmed")
+        if self.enrollment is not None:
+            _require(self.enrollment.status()["closed"] and not self.enrollment.status()["operations"],
+                     "enrollment_not_closed")
+        _require(self.driver._closed and _finished(self.driver._closing)
+                 and all(owner._closed and _finished(owner._closing)
+                         and not owner.snapshot_operations() for owner in self.archivers),
+                 "archive_not_closed")
+
+
 class RuntimeClosureWitness:
     """Pin live C ownership, then observe its actual normal retirement."""
 
@@ -339,6 +592,9 @@ class RuntimeClosureWitness:
                            wake_owner=graph.wake_models)
         self._models = tuple(inventory._models)
         self._wake_models = tuple(graph.wake_models._models.values())
+        self._ha = _HAClosure(graph.ha_client)
+        self._authority = _AuthorityClosure(graph)
+        self._capture = _CaptureClosure(graph)
         _require(inventory.verify().valid, "inventory_invalid")
         return self
 
@@ -349,6 +605,9 @@ class RuntimeClosureWitness:
             return
         try:
             self._pins.verify()
+            self._ha.before_close()
+            self._authority.before_close()
+            await self._capture.pre_close()
             self._chroma_construction.before_close()
             _require(self._memory is None or self._memory._client is self._memory_client,
                      "sdk_binding_changed")
@@ -408,12 +667,18 @@ class RuntimeClosureWitness:
                          and memory["client_closed"] and not memory["client_close_failed"]
                          and not memory["building"] and not memory["closing"]
                          and self._memory._client is self._memory_client, "memory_not_closed")
+            ha_opened = self._ha.verify_closed()
+            authority_opened = self._authority.verify_closed()
+            self._capture.verify_closed()
             return {"schema_version": 1, "bindings_unchanged": True,
                     "model_owners_closed": True, "graph_closed": True,
                     "privacy_closed": True, "sdk_closed": True, "native_closed": True,
                     "model_owner_count": len(self._owners), "model_count": len(self._models),
-                    "sdk_owner_count": 1 + int(self._memory is not None),
+                    "sdk_owner_count": 2 + int(self._memory is not None),
                     "chroma_opened": chroma_opened, "chroma_never_opened": not chroma_opened,
+                    "ha_session_acquired": ha_opened, "ha_never_acquired": not ha_opened,
+                    "authority_lease_acquired": authority_opened,
+                    "capture_permissions_retired": True,
                     "input_owner_count": len({self._graph.pipeline.audio_loop,
                                               self._graph.fallback_audio_loop})}
         except BaseException:
