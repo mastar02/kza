@@ -22,15 +22,25 @@ NOW = 1000.0
 PRIVACY = "data/graph/privacy.db"
 DIAGNOSTICS = "data/graph/metrics.jsonl.sqlite3"
 EXTRA_SCHEMA = """
-CREATE TABLE utterances(id TEXT PRIMARY KEY,capture_id TEXT,conversation_id TEXT,
- expires_at REAL,distilled INTEGER,audio_path TEXT,text_expires_at REAL,text_json TEXT);
-CREATE TABLE capture_conversations(id TEXT PRIMARY KEY,started REAL);
+CREATE TABLE utterances(id INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL,
+ t0 REAL NOT NULL,t1 REAL NOT NULL,text TEXT NOT NULL,speaker TEXT NOT NULL DEFAULT 'unknown',
+ speaker_confidence REAL NOT NULL DEFAULT 0,azimuth REAL,azimuth_stability REAL NOT NULL DEFAULT 0,
+ source TEXT NOT NULL DEFAULT 'unknown',confidence REAL,no_speech_prob REAL,vad_prob REAL,
+ lang TEXT,lang_prob REAL,lang_ok INTEGER,during_tts INTEGER NOT NULL DEFAULT 0,
+ distilled INTEGER NOT NULL DEFAULT 0,text_empty INTEGER NOT NULL DEFAULT 0,audio_path TEXT,
+ capture_id TEXT,expires_at REAL,conversation_id TEXT,created_at REAL NOT NULL);
+CREATE TABLE capture_conversations(id TEXT PRIMARY KEY,room_id TEXT NOT NULL,
+ started_at REAL NOT NULL,last_seen_at REAL NOT NULL);
 CREATE TABLE wake_clips_v1(sequence INTEGER PRIMARY KEY,id TEXT UNIQUE,target_id TEXT,
  bucket TEXT,room_id TEXT,score REAL,sources_json TEXT,captured_at REAL,expires_at REAL,published INTEGER);
 CREATE TABLE stt_corrections_v1(id TEXT PRIMARY KEY,corrected_text TEXT,user_id TEXT,used INTEGER);
 CREATE TABLE conversation_turns_v1(id TEXT PRIMARY KEY,quality TEXT);
 CREATE TABLE conversation_export_parents_v1(export_id TEXT,parent_id TEXT,PRIMARY KEY(export_id,parent_id));
-CREATE TABLE events_policy_v1(id INTEGER PRIMARY KEY,sources_json TEXT,expires_at REAL);
+CREATE TABLE events_policy_v1(id INTEGER PRIMARY KEY AUTOINCREMENT,timestamp REAL NOT NULL,
+ event_type TEXT NOT NULL,entity_id TEXT NOT NULL,action TEXT NOT NULL,user_id TEXT,user_name TEXT,
+ trigger_phrase TEXT,context_json TEXT,hour INTEGER,minute INTEGER,weekday INTEGER,is_weekend INTEGER,
+ time_of_day TEXT,sources_json TEXT NOT NULL,metrics_json TEXT NOT NULL,expires_at REAL NOT NULL,
+ text_expires_at REAL);
 CREATE TABLE suggestions_policy_v1(id TEXT PRIMARY KEY,status TEXT,snooze_until REAL,
  sources_json TEXT,expires_at REAL,evidence_json TEXT,pattern_json TEXT);
 CREATE TABLE voice_fingerprints(id TEXT PRIMARY KEY,sources_json TEXT,expires_at REAL,
@@ -99,6 +109,12 @@ def _layout(destination):
         (payload.IndexRelocation("data/graph/chroma", "data/graph/chroma", "data/graph/chroma", "unit_policy_v1"),), {})
 
 
+def _event_statement(encoded, expiry):
+    return ("INSERT INTO events_policy_v1(id,timestamp,event_type,entity_id,action,sources_json,"
+        "metrics_json,expires_at,text_expires_at) VALUES(1,999,'command','light.synthetic','turn_on',?,'{}',?,?)",
+        (encoded, expiry, expiry))
+
+
 def test_public_planner_is_read_only_and_deterministic_without_sdk(tmp_path, monkeypatch):
     ordinary, latest = _image(tmp_path, "O"), _image(tmp_path, "N")
     destination = tmp_path / "R"
@@ -165,15 +181,42 @@ def test_ordinary_missing_row_needs_qualified_cut_not_just_same_source():
         payload._ordinary(table, dict(table, rows=[]), lambda row: True, now=NOW, policy=policy, table="events")
 
 
-def test_shortened_latest_deadlines_are_never_renewed():
+def test_shortened_latest_deadlines_are_never_renewed(tmp_path):
+    from src.analytics.event_storage import event_descriptor, sweep_events
     source = memory_source(now=NOW-1)
-    row = {"sources_json": json.dumps([source.to_dict()]), "expires_at": source.expires_at,
-        "text_expires_at": source.expires_at, "text_json": "ordinary transcript"}
-    latest = dict(row, expires_at=NOW+20, text_expires_at=NOW-1)
-    cut = payload._blend(row, latest, NOW)
-    assert cut["expires_at"] == NOW+20
-    assert cut["text_expires_at"] == NOW-1 and cut["text_json"] is None
-    assert json.loads(cut["sources_json"]) == [source.to_dict()]
+    statements = (_event_statement(json.dumps([source.to_dict()]), source.expires_at),
+        ("UPDATE events_policy_v1 SET user_id='synthetic-account',user_name='Raw synthetic name',"
+            "trigger_phrase='Raw synthetic phrase',context_json=?,metrics_json=? WHERE id=1",
+            ('{"spoken":"raw synthetic context"}', '{"latency_ms":12}')))
+    ordinary = _image(tmp_path, "O", statements=statements)
+    row, = ordinary.manifest["databases"][PRIVACY]["tables"]["events_policy_v1"]["rows"]
+    ledger = FactLedger(str(payload._root(ordinary) / PRIVACY), clock=lambda: NOW)
+    ledger.initialize()
+    try:
+        for ordinal, deadline in enumerate((NOW-1, NOW, NOW+5)):
+            latest = dict(row, expires_at=NOW+20, text_expires_at=deadline)
+            oracle = tmp_path / ("oracle-" + str(ordinal) + ".db")
+            snapshots._backup(payload._root(ordinary) / PRIVACY, oracle)
+            with closing(sqlite3.connect(oracle)) as db, db:
+                db.execute("UPDATE events_policy_v1 SET expires_at=?,text_expires_at=? WHERE id=1",
+                    (latest["expires_at"], latest["text_expires_at"]))
+            sweep = sweep_events(event_descriptor(oracle), 0, ledger, 90)
+            with closing(sqlite3.connect(oracle)) as db:
+                db.row_factory = sqlite3.Row
+                expected = dict(db.execute("SELECT * FROM events_policy_v1 WHERE id=1").fetchone())
+            cut = payload._blend(row, latest, NOW, table="events_policy_v1")
+            assert cut == expected
+            assert cut["expires_at"] == NOW+20 and cut["text_expires_at"] == deadline
+            assert sweep.scrubbed == int(deadline <= NOW)
+            if deadline <= NOW:
+                assert cut["trigger_phrase"] is None and cut["user_name"] is None
+                assert cut["context_json"] == cut["metrics_json"]
+            else:
+                assert cut["trigger_phrase"] == row["trigger_phrase"] and cut["context_json"] == row["context_json"]
+            assert cut["timestamp"] == row["timestamp"] and cut["user_id"] == "synthetic-account"
+            assert json.loads(cut["sources_json"]) == [source.to_dict()]
+    finally:
+        ledger.close()
 
 
 def test_real_tombstone_blocks_raw_capture_and_retains_deleted_fact(tmp_path):
@@ -183,9 +226,11 @@ def test_real_tombstone_blocks_raw_capture_and_retains_deleted_fact(tmp_path):
     def revoke(ledger):
         seed(ledger)
         ledger.delete_conversation(source.conversation_id, MemoryReviewer("synthetic-reviewer"))
-    capture = (("INSERT INTO utterances VALUES('capture',?,?,?,0,NULL,?,?)",
-        (source.capture_id, source.conversation_id, source.expires_at, source.expires_at, "historical raw text")),
-        ("INSERT INTO capture_conversations VALUES(?,?)", (source.conversation_id, source.captured_at)))
+    capture = (("INSERT INTO utterances(id,room_id,t0,t1,text,capture_id,expires_at,conversation_id,created_at)"
+        " VALUES(1,'synthetic-room',?,?,'historical raw text',?,?,?,?)",
+        (source.captured_at, NOW, source.capture_id, source.expires_at, source.conversation_id, source.captured_at)),
+        ("INSERT INTO capture_conversations VALUES(?,'synthetic-room',?,?)",
+            (source.conversation_id, source.captured_at, NOW)))
     ordinary = _image(tmp_path, "O", statements=capture, seed=seed)
     latest = _image(tmp_path, "N", statements=capture, seed=revoke)
     selected, policy = _select(ordinary, latest)
@@ -201,7 +246,7 @@ def test_same_capture_id_with_changed_scope_is_not_relabelled(tmp_path):
     altered = source.to_dict()
     altered["expires_at"] -= 1
     def event(encoded):
-        return (("INSERT INTO events_policy_v1 VALUES(1,?,?)", (encoded, NOW+50)),)
+        return (_event_statement(encoded, NOW+50),)
     ordinary = _image(tmp_path, "O", statements=event(original))
     latest = _image(tmp_path, "N", statements=event(json.dumps([altered])))
     with pytest.raises(ValueError, match="payload_source_identity_changed"):
@@ -298,8 +343,8 @@ def _cut_history(latest, ordinary, row, *, row_hash=None, mutate=None):
 @pytest.mark.parametrize("qualified", [True, False])
 def test_forward_absence_requires_exact_row_from_binding_pinned_archive(tmp_path, qualified):
     source = memory_source(now=NOW-1)
-    ordinary = _image(tmp_path, "N", statements=(("INSERT INTO events_policy_v1 VALUES(1,?,?)",
-        (json.dumps([source.to_dict()]), source.expires_at)),))
+    ordinary = _image(tmp_path, "N", statements=(
+        _event_statement(json.dumps([source.to_dict()]), source.expires_at),))
     latest = _image(tmp_path, "R")
     row, = ordinary.manifest["databases"][PRIVACY]["tables"]["events_policy_v1"]["rows"]
     latest = _cut_history(latest, ordinary, row, row_hash=None if qualified else "0"*64)
@@ -322,8 +367,8 @@ def test_forward_absence_requires_exact_row_from_binding_pinned_archive(tmp_path
 ])
 def test_qualified_archive_cannot_supply_incomplete_or_out_of_scope_cut(tmp_path, mutation, code):
     source = memory_source(now=NOW-1)
-    ordinary = _image(tmp_path, "N", statements=(("INSERT INTO events_policy_v1 VALUES(1,?,?)",
-        (json.dumps([source.to_dict()]), source.expires_at)),))
+    ordinary = _image(tmp_path, "N", statements=(
+        _event_statement(json.dumps([source.to_dict()]), source.expires_at),))
     latest = _image(tmp_path, "R")
     row, = ordinary.manifest["databases"][PRIVACY]["tables"]["events_policy_v1"]["rows"]
     def mutate(proof):
@@ -353,8 +398,7 @@ def test_qualified_archive_cannot_supply_incomplete_or_out_of_scope_cut(tmp_path
 def test_forward_context_uses_pinned_N_bytes_when_R_absence_is_qualified(tmp_path, monkeypatch):
     from src.orchestrator.context_persister import ContextPersister
     source = memory_source(now=NOW-1)
-    event = (("INSERT INTO events_policy_v1 VALUES(1,?,?)",
-        (json.dumps([source.to_dict()]), source.expires_at)),)
+    event = (_event_statement(json.dumps([source.to_dict()]), source.expires_at),)
     ordinary, latest = _image(tmp_path, "N", statements=event), _image(tmp_path, "R", statements=event)
     persister = ContextPersister(payload._root(ordinary) / "data/graph/contexts", clock=lambda: NOW)
     document = {"version": 3, "user_id": "N_only", "user_name": "Synthetic user", "last_seen": NOW-1,

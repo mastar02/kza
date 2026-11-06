@@ -449,7 +449,7 @@ def _images(table, source):
         for row in table["rows"]}
 
 
-def _blend(row, current, now):
+def _blend(row, current, now, *, table):
     value = dict(row)
     for name in ("expires_at", "text_expires_at", "expires"):
         old, new = value.get(name), current.get(name)
@@ -458,9 +458,15 @@ def _blend(row, current, now):
     for name in ("suggested_profile", "suggested_revision", "similarity"):
         if name in value:
             value[name] = current[name]
-    if _number(value.get("text_expires_at")) and value["text_expires_at"] <= now:
-        if "text_json" in value:
-            value["text_json"] = None
+    if table == "events_policy_v1":
+        _require({"text_expires_at", "trigger_phrase", "user_name", "context_json", "metrics_json"}
+            <= value.keys(), "payload_event_text_schema_invalid")
+        deadline = value["text_expires_at"]
+        _require(deadline is None or _number(deadline), "payload_event_text_deadline_invalid")
+        if deadline is not None and deadline <= now:
+            value["trigger_phrase"] = None
+            value["user_name"] = None
+            value["context_json"] = value["metrics_json"]
     return value
 
 
@@ -473,7 +479,7 @@ def _ordinary(old, new, predicate, *, protected=(), now, policy, table):
     for key, row in older.items():
         if key in result or not predicate(row):
             continue
-        candidate = _blend(row, current.get(key) or policy.absent(table, row), now)
+        candidate = _blend(row, current.get(key) or policy.absent(table, row), now, table=table)
         if predicate(candidate):
             result[key] = RowImage("ordinary", candidate)
     return result
