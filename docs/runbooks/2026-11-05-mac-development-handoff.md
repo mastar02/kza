@@ -6,24 +6,26 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 ## Punto de reanudación
 
-La unidad **T024-D quedó verificada localmente en Mac**. El mismo goal sigue **activo e incompleto**. Usar la `.venv` nativa y conservar los ensayos cerrados.
+La unidad **T024-E quedó verificada localmente en Mac**. El mismo goal sigue **activo e incompleto**. Usar la `.venv` nativa y conservar los ensayos cerrados.
 
 | Dato | Estado actual |
 | --- | --- |
 | Entorno | `gabriel`, `/Users/gabriel/Documents/Proyectos/kza`, macOS 26.6.1 arm64, CPython 3.13.18 |
-| Código D | `9b3170294eb69a53dd27b63949c09a63a2efed54`; sólo cuatro archivos de pruebas/helpers, sin cambios de producto |
-| Originales | 1 PASS/1 fallo de reloj de fixture; luego 1 PASS/1 fallo del contrato de linaje de fixture; ambos preservados |
-| Componente final | 2 PASS; XML 8.616 s |
-| Dirigida D | 1213 PASS; XML 136.772 s |
-| Full normal D | **8579 PASS + la misma xfail conocida**, 8580 IDs exactos; XML 661.398 s |
-| Fuentes | 1039 entradas, 37 scripts y 20 protegidos intactos durante las tandas |
-| Identidades | C8578 intactas más dos; sin renombres ni retiradas |
-| Alcance | Dos ApplicationGraph públicos, diez drivers y replay compatible; tres guards unresolved pendientes |
-| Delegación | Hasta ocho agentes totales según plazas; PC interactiva con subagente `gpt-6.1-terra` |
-| Próxima unidad | T024-E: mismo grafo desde artefacto bytecode exacto, fuera del checkout y con ruta de estado estable |
-| Tracking | Este commit; verificar SHA y publicación al retomar |
+| Código de pruebas E | `b2dc68d3297e5f22bd81372d9388e100c61107e7`; tres archivos nuevos, sin cambio de producto |
+| Artefacto ejecutado | Revisión D `9b3170294eb69a53dd27b63949c09a63a2efed54`;436 archivos/378pyc |
+| Original E | 1 PASS en el primer intento; XML15.520 s, sin fixes de fuente para pasar |
+| Procesos compilados | Dos exec nuevos por ensayo,277 módulos src .pyc por hijo, waits reales0 |
+| Dirigida E | 1230 PASS; XML 229.802 s |
+| Full E | **8580 PASS + misma xfail conocida**,8581 IDs exactos; XML 669.945 s |
+| Guardas | 1042 fuentes,37 scripts y22 protegidos intactos durante las tandas |
+| Warnings | 15 firmas pytest iguales a D; UserWarning Chroma del hijo documentado aparte |
+| Límite de build | Misma9b produjo5pyc distintos entre builds, con headers/campos canónicos iguales; causa y bitreproducibilidad abiertas |
+| Alcance | Mismo artefacto y raíz física por par; no rollback entre versiones/estados |
+| Delegación | Hasta ocho agentes según plazas; PC interactiva con subagente `gpt-6.1-terra` |
+| Próxima unidad | F: primero F0 build reproducible entre procesos; luego rollback runtime/datos sin retroceder autoridad |
+| Tracking | Este commit; verificar SHA/publicación al retomar |
 
-T021/T022/T023/T024 siguen `in_progress` y los 21 criterios `not_evaluated`. T020/P1/T047, fases, presupuestos y permisos separados se conservan. Leer el [informe D](../research/2026-11-05-application-graph-restore.json) y la [continuación E](../plans/2026-11-05-bytecode-graph-restore-continuation.json). A/B/C conservan sus informes. Sin release ni cambios de producción.
+T021/T022/T023/T024 siguen `in_progress`;21 criterios `not_evaluated`. Tres guards, C04/C05, warnings y xfail siguen abiertos. T020/P1/T047, presupuestos y permisos separados se conservan. Leer [informe E](../research/2026-11-05-compiled-application-restore.json) y [continuación F](../plans/2026-11-05-privacy-safe-slot-rollback-continuation.json). Sin release ni cambios en producción.
 
 ## Referencia histórica del cierre Linux F
 
@@ -259,16 +261,22 @@ Dos generaciones de `build_application`, diez drivers y nueve familias de payloa
 
 Se conserva toda fila vigente, incluidas tablas mixtas, perfil confirmado, link/unlink por CAS, deletion fence, grupo, hecho confirmado, respuestas de sugerencias, persona y credencial HOME sin permisos de revisión. El testigo G1 conserva linaje de índice sin restaurar fact_sources, autoridad ni ACK. El preflight rechaza conflictos deterministas antes de escribir payload; no acredita atomicidad ante un crash entre stores. Tres guards y criterios siguen abiertos.
 
+## Grafo desde bytecode en procesos nuevos — T024-E
+
+Un archivo compilado exacto por ensayo, dos intérpretes nuevos `-I -S -B` y una sola raíz física de estado. Imports src restringidos al manifest .pyc;18 helpers y entry separados, sin conftest/src fuente/.env. JSON tipado/blobs por hash conserva el testigo D sin transportar objetos vivos. Ambos grafos públicos ejercitan diez drivers, nueve familias, fuentes/manuales/permisos vigentes y retornos nativos reales; tres guards impiden aggregate complete.
+
+Original1 PASS, dirigida1230 PASS y full8580 PASS+misma xfail/8581 IDs. Warning Chroma del embedding sintético conservado. Entre builds de la misma revisión hay5pyc distintos con headers/campos de código canónicos iguales; causa pendiente, sin prometer igualdad binaria. La construcción reproducible sigue siendo requisito y F0 la investiga antes del rollback entre versiones. La corrección de un NameError del generador privado de recibos no cambió fuentes ni repitió pruebas.
+
 ## Prompt para la sesión nueva
 
-> Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff, el informe T024-D y la continuación T024-E. Confirmá API del goal, checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro objetivo ni marques éste completo.
-> D quedó verificada localmente: 2/1213 PASS y full8579 PASS + la misma xfail conocida,8580 IDs exactos. Usá la `.venv` nativa; no recrees dependencias ni repitas tandas sin razón nueva. Hasta ocho agentes según plazas; PC interactiva con un subagente Terra.
-> Continuá E desde el artefacto exacto commiteado, fuera del checkout, dos generaciones y la misma ruta temporal estable. No simules rollback entre versiones/roots. Conservá decisiones/permisos manuales, fuentes ajenas, claims y tres guards unresolved. T021/T022/T023/T024 y los21 criterios siguen abiertos; T020/P1/T047 se conservan. Sin release ni cambios en producción.
+> Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff, el informe T024-E y la continuación T024-F. Confirmá goal/checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro goal ni marques éste completo.
+> E original1/1230 PASS, full8580 PASS+misma xfail/8581 IDs exactos. Usá la `.venv` nativa; no repitas tandas sin causa nueva. Hasta ocho agentes según plazas; PC interactiva delegada a Terra.
+> Comenzá F0 con compilaciones independientes controladas de commit/ABI exactos: la reproducibilidad binaria sigue requerida y está abierta. No atribuyas causa a hashseed/interning sin evidencia ni normalices la comparación para obtener PASS. Después continúa el baseline y rollback seguro de runtime/datos: permisos, decisiones manuales y tombstones vigentes deben sobrevivir. E no prueba ese rollback; no relabelar testigos D entre roots/inodos distintos. T021/T022/T023/T024 y21 criterios siguen abiertos. Sin release/producción/campo.
 
 ## Lista de cierre y reanudación
 
 - [x] Linux y unidades G/H/I/J conservados con recibos propios.
-- [x] T024-A/B/C conservadas y T024-D con originales, correcciones, dos casos, dirigida de 1213 y suite completa documentados.
+- [x] T024-A/B/C/D conservadas y T024-E con original1, dirigida1230, full y limitaciones documentados.
 - [x] Código, tracking y handoff guardados; verificar publicación y HEAD al retomar.
 - [x] Mismo goal activo, sin nueva petición de pausa ni criterios físicos aceptados.
-- [ ] Confirmar estado/Git y comenzar T024-E según continuación, sin repetir unidades cerradas.
+- [ ] Confirmar estado/Git y comenzar T024-F según continuación, sin repetir unidades cerradas.

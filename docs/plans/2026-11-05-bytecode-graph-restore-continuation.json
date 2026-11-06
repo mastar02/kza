@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "candidate": "T024-E/committed-bytecode-public-graph-replay",
-  "status": "proposed_next_unit_not_implemented",
+  "status": "verified_local_exact_artifact_graph_replay_not_whole_T024",
   "start_gate": "Root must finish D directed/full acceptance, classify preserved fixture corrections and publish source+tracking first. Then freeze the exact accepted D commit. D component2PASS alone is insufficient; this proposal does not start E.",
   "objective": "Run the actual public ApplicationGraph from the exact committed CPython3.13 artifact outside checkout, without src.py, through two generations sharing one stable temporary state root, compatible payload replay and current authority. Advance a local exact-artifact boundary of C05; do not claim versioned runtime/data rollback or SDK wipes.",
   "task_review": [
@@ -236,5 +236,13 @@
     "sha256": "ad37c01d07f934e7bee7f7f8ad7e75b985372e922a421f32028b6382a26d7088",
     "bytes": 18855
   },
-  "execution_authorization": "Continue the same active authorized goal after D source+tracking publication; no release or production action."
+  "execution_authorization": "Continue the same active authorized goal after D source+tracking publication; no release or production action.",
+  "execution_result": {
+    "implementation_commit": "b2dc68d3297e5f22bd81372d9388e100c61107e7",
+    "report": "docs/research/2026-11-05-compiled-application-restore.json",
+    "component": "original1 PASS/15.52s",
+    "directed": "1230 PASS",
+    "full": "8580 PASS + same known xfail/8581 exact IDs",
+    "next_plan": "docs/plans/2026-11-05-privacy-safe-slot-rollback-continuation.json"
+  }
 }

@@ -2916,3 +2916,9 @@ Dos grafos públicos consecutivos comparten estado temporal estable, con autorid
 Dos fallos originales de fixture preservados: reloj fijo y expectativa de fact_sources eliminadas por diseño. Final2 PASS; dirigida1213 PASS; full8579 PASS+misma xfail/8580 IDs exactos, XML 661.398 s. Fuentes1039/scripts37/protegidos20 estables. Código `9b3170294eb69a53dd27b63949c09a63a2efed54`. [Informe D](../research/2026-11-05-application-graph-restore.json) y [continuación E](../plans/2026-11-05-bytecode-graph-restore-continuation.json).
 
 No atomicidad multi-store ante crash ni borrado de copias desconocidas. Tres guards, T024/C04/C05 y21 criterios siguen abiertos. Sin release ni cambio de producción. Hasta ocho agentes según plazas; PC interactiva delegada a Terra.
+
+## Grafo compilado en procesos nuevos — T024-E
+
+Revisión exacta9b compilada y staged fuera del checkout, dos exec `-I -S -B`,436 archivos/378pyc,277 módulos src .pyc por hijo. Se conserva estado físico y autoridad vigente al cerrar Graph1, restaurar sólo payload compatible y abrir Graph2. Código de pruebas `b2dc68d3297e5f22bd81372d9388e100c61107e7`. Original1 PASS15.520s; dirigida1230 PASS; full8580 PASS+misma xfail/8581 IDs, XML669.945s. Guardas1042/37/22 intactas; revisión independiente sin bloqueos de alcance.
+
+Warnings pytest15 firmas iguales, Chroma UserWarning del hijo aparte. Mismo commit produjo hashes distintos en5pyc entre builds; headers y campos canónicos iguales no prueban bitreproducibilidad ni equivalencia universal. La construcción reproducible permanece requerida; F0 conserva oracle binario y diagnostica causa antes de comparar versiones. El rollback de runtime/datos y autoridad sigue pendiente. [Informe E](../research/2026-11-05-compiled-application-restore.json), [continuación F](../plans/2026-11-05-privacy-safe-slot-rollback-continuation.json). Tres guards, T024/C04/C05 y21 criterios abiertos; sin producción ni campo; PC con Terra.

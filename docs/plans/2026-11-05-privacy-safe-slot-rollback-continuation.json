@@ -1,0 +1,249 @@
+{
+  "schema_version": 1,
+  "candidate": "T024-F / explicit privacy-safe runtime/state rollback boundary",
+  "status": "proposed_next_unit_not_implemented",
+  "publication_gate": "Publish E and retain its original evidence before authorizing F. This proposal does not change T024/C04/C05/21 criteria status.",
+  "E_reported_context": {
+    "reporter": "root",
+    "original": "1 PASS, 15.52 seconds, no fixture fixes or product changes",
+    "directed_1230": "running when proposal assigned",
+    "full_8581": "conditional follow-up, not independently observed here"
+  },
+  "requirement": {
+    "T024": "Deletion plus compatible restoration without reviving withdrawn data.",
+    "C05": "Exact CPython3.13 candidate outside sources plus runtime/data rollback; no failing or xfailed included requirements.",
+    "runbook": "Retain old and new states. Do not copy new data over the original; post-cut changes need explicit reconciliation.",
+    "E_boundary": "Two fresh compiled processes reopening one unchanged physical state location. E does not cross paired slot state roots or code versions."
+  },
+  "concrete_gaps": [
+    {
+      "id": "stale_state_activation",
+      "source": "scripts/stage_runtime.py:activate_slot",
+      "observed_source_fact": "Verifies archive integrity and same-slot data/config links, then atomically changes current. It does not inspect a current/latest privacy authority, tombstones, manual revisions or credential withdrawals in the previously active state.",
+      "consequence_to_test": "Selecting old intentionally selects old data too; an old state from before S revocation can lack its tombstone and later manual/account/consent decisions. Successful symlink rollback is insufficient proof of privacy-safe serving.",
+      "classification": "Source-backed missing cross-state reconciliation contract; no runtime RED claimed."
+    },
+    {
+      "id": "copied_historical_roots",
+      "source": "prepare_slot -> _copy_private_tree; ErasureJournal._register_target; CaptureEraser.clean; PolicyIndexEraser._open",
+      "observed_source_fact": "Offline state uses copytree without semantic path migration. Erasure target IDs hash full descriptors, including absolute paths. Capture cleanup opens the registered historical db_path/audio_dir; semantic cleanup opens the registered historical SDK path/collection and deletes records there.",
+      "consequence_to_test": "A copied candidate ledger can retain cleanup authority for old-slot stores. An S deletion in the candidate may therefore reach the old state, even before rollback. Conversely, simply dropping those historical targets would abandon known copies. Branch preservation and historical cleanup need an explicit ownership/reconciliation decision.",
+      "classification": "The historical-path cleaners intentionally honor registered locations. The missing proof is safe branch-copy semantics, not a claim that all historical cleanup is erroneous."
+    },
+    {
+      "id": "D_witness_not_relocatable",
+      "source": "validate_restore_locator; capture_index_lineage",
+      "observed_source_fact": "Accepted replay pins original root, physical directory identities, SDK schema/version/collection and exact canonical target descriptor/record lineage.",
+      "consequence_to_test": "A witness from slot A cannot be relabeled for B. Skipping inode/root checks, editing target_id/descriptor or restoring fact_sources/authority to make it pass would weaken D rather than demonstrate migration."
+    }
+  ],
+  "first_baseline_before_product_change": {
+    "purpose": "Characterize both stale authority selection and writes through copied historical paths with real APIs on synthetic roots, preserving the original attempt and classifying product vs fixture errors.",
+    "sequence": [
+      "Build/stage a pinned compatible compiled candidate using build_runtime and prepare_slot into a new temporary old slot with empty synthetic config/data; activate_slot(old). No production paths, .env, service or model-weight access.",
+      "Use public build_application via the accepted compiled child/helper closure to seed old Graph S/U, all original live/expired capture/feedback patterns and context payloads. Capture root identities, descriptors, real SDK get() and logical protected snapshots; close owners, SDK and writer lease, wait for child exit.",
+      "With both states offline, prepare_slot(candidate, state_source=old_slot/state) to exercise the actual independent-copy API. Record exact original/new roots and descriptor inventories without rewriting them. Candidate configuration must be explicitly resolved to its new serving roots; copied absolute locators are retained as observed data, not silently relabeled.",
+      "Before destructive work, read-only verify every resolved serving path and historical erasure target belongs to its declared branch or explicitly allowed historical store. Record any cross-branch descriptor as a characterization result. There must be no live old-slot writer.",
+      "In an isolated child on candidate state, make current manual voice confirmation/group/person-link and account/consent decisions through seed_manual_sentinels/current Graph authority, then revoke S using owner.request(conversation_id, memory_actor(g)); native scope observation may reuse erase_with_real_producer. Keep U active and compare source TTL <=48h exactly.",
+      "After real close/exit, compare original old-state logical SQLite fields/files and actual SDK records against its captured baseline, plus candidate current authority/manual/U. This distinguishes copied-root cleanup reaching old from stale-state selection. Preserve any failure before changing the oracle.",
+      "Call activate_slot(old) only while stopped. Before constructing readers, inspect whether old selected state includes latest S tombstone and manual/account/consent/deletion fences. The required future behavior is rejection before serving or an explicit successful reconciled state, never reader-visible S. A source-only prediction is not reported as a reproduced RED."
+    ],
+    "existing_APIs": [
+      "scripts.build_runtime.build_runtime / scripts.stage_runtime.prepare_slot / activate_slot",
+      "public main.build_application and accepted source-free bootstrap/helpers",
+      "Graph.erasure_services.request; FactLedger.delete_conversation through current MemoryReviewer",
+      "capture_preservation/assert_preserved plus actual SDK get()",
+      "seed_manual_sentinels/assert_manual_sentinels and Graph2 current authority",
+      "ErasureJournal.targets/snapshot/is_current_claim; no manual success callbacks"
+    ],
+    "baseline_assertions": [
+      "Original/new state ownership is explicit before any write.",
+      "Old preserved branch cannot be modified accidentally by a copied cleanup descriptor.",
+      "A stale old state cannot serve S or undo manual/person/account/consent decisions after selection.",
+      "Closed SDK/lease/native return precedes selection and next child.",
+      "Three unresolved guards remain pending, with U exact and no aggregate completion."
+    ],
+    "no_runtime_yet": true
+  },
+  "bounded_recommended_alternative": {
+    "name": "Rollback code against the latest compatible physical state, with explicit state binding and retained old/new snapshots",
+    "why": "The immediate privacy obligation is preserving latest authority while changing executable code. Keeping its canonical state root avoids inventing an authority merge or pretending D witnesses survive relocation. Current paired-slot API cannot express this safely; it is a new capability requiring an explicit reviewed contract.",
+    "new_capability_to_design": [
+      "An immutable runtime-to-state binding descriptor naming the selected code manifest and exact existing state root/identity/schema, rather than arbitrary symlinks or disabled validation.",
+      "Stopped admission, exact compatibility preflight and a latest-authority fence outside stale copied branches; selecting a stale binding cannot erase the fence.",
+      "Single real writer lease for that physical state; code rollback must not run old and new owners concurrently.",
+      "Record and retain both original branch states plus pre-rollback latest snapshot. Do not overwrite old original with new and do not merge authorities by INSERT/REPLACE.",
+      "A positive public-Graph run of an explicitly chosen older compatible compiled code version with latest S tombstone/manual/U, followed by forward recovery and normal close. Incompatible code must reject before mutation, but that negative case alone is not delivery."
+    ],
+    "candidate_pair_gate": "Identify exact canonical Git commits with relevant actual SOURCE/API/behavior differences and a declared compatible schema. Distinct pyc or archive SHA values alone are not evidence of a behaviorally different version: E observed binary build variation with identical canonicalized code fields. Preserve a real positive rollback+forward recovery requirement; do not use a negative-only gate as delivery.",
+    "not_final_acceptance_substitute": "This can close a bounded code/state-binding prerequisite only after a real positive rollback and recovery. It cannot close full versioned data migration, T024, C05, the known xfail or the three unresolved guards.",
+    "candidate_pair_gate_original": "Before promising a versioned acceptance case, identify two exact reproducible commits with relevant actual compiled code differences and a declared compatible schema/API. Two manifests with different commit strings but identical source payloads do not prove behavioral version rollback. No suitable pair was asserted from a search absence; selecting it is a required next-unit prerequisite."
+  },
+  "larger_alternative_not_recommended_as_first_slice": {
+    "name": "Third derived reconciled branch for old-runtime plus old-state semantics",
+    "required_before_activation": [
+      "Explicit per-store path and SDK relocation mapping with original witnesses retained.",
+      "Current tombstones/manual/auth/consent/person/profile deletion authority wins; no automatic resurrection of manual mixed rows.",
+      "No copying latest databases over the original; both original branches remain retained and non-serving.",
+      "Complete collision/schema/lineage preflight before deterministic mutations, then physical cleanup and exact public-reader oracles.",
+      "Historical path ownership must distinguish sealed retained branch from active historical cleanup locations; neither deleting target rows nor permanent pending counts as successful reconciliation."
+    ],
+    "reason_to_defer": "It crosses all persisted location and authority contracts at once. The smaller code/latest-state binding is easier to verify without inventing cross-authority SQL privileges."
+  },
+  "protected_domains": [
+    "S tombstones and deleted fact revisions",
+    "manual voice profiles/group corrections and deleted-profile fence",
+    "voice-person association revisions separate from account permissions",
+    "account role/credential/session revocation and consent",
+    "suggestion responses and confirmed manual facts",
+    "U full sources/persistent payload/SDK rows",
+    "current claims, browser namespace/ACK and immutable target descriptors",
+    "diagnostics1/streams2/voices2 unresolved guards"
+  ],
+  "limits": [
+    "No F implementation or execution authorized by this artifact.",
+    "No production release, account/service action, secrets or hardware.",
+    "No crash-atomicity claim across SQL/files/SDK.",
+    "Do not accept a smoke import, symlink switch or permanent fail-closed result as final rollback delivery.",
+    "RAG project kza was resolved to this checkout; query failed connection refused, so only current cited sources inform this proposal. No index/service changes were made."
+  ],
+  "references": [
+    {
+      "path": "docs/plans/2026-11-02-autonomous-roadmap.json",
+      "sha256": "1e832e4dd551e0a5c7243efb97f0071d930130674540b3554ff248c22a324bac",
+      "focused_references": [
+        "C05.target",
+        "T024"
+      ],
+      "captured_before_E_publication_sha256": "0ea8894d745e058e9ead0eccfefece1f3115cd3de49a5542aaef7af6964bb0cc"
+    },
+    {
+      "path": "docs/plans/2026-11-05-bytecode-graph-restore-continuation.json",
+      "sha256": "25a134f962ab40a1976b3c5b2e6734240a97b93e22f82eca100a035726a045b0",
+      "focused_references": [
+        "objective",
+        "why_not_versioned_slot_rollback_yet"
+      ],
+      "captured_before_E_publication_sha256": "a1e9c9b7bbd720e6da40fe5f1fa1a45d52ef3f0a53df06ed86aca4f8b31ec194"
+    },
+    {
+      "path": "docs/runbooks/2026-10-28-compiled-runtime.md",
+      "sha256": "4c161e88cc7babaddfef5088335a64660e731bd52043a3e600f42c12ef73e154",
+      "focused_references": [
+        "Rollback conservando ambos estados, lines 168-193"
+      ]
+    },
+    {
+      "path": "docs/architecture/DEPLOYMENT.md",
+      "sha256": "f55f9b9d04ac93f73b26ad17de8287080efc367740b67e8e4a3237b1baee805f",
+      "focused_references": [
+        "Construcción del artefacto, lines 107-149"
+      ],
+      "captured_before_E_publication_sha256": "eb23f7f38e557850fe5ad0e09d73a97d7aaa8063a4f77dd4f1098fabdde2535b"
+    },
+    {
+      "path": "scripts/stage_runtime.py",
+      "sha256": "41a16960425325e99f2f6f1beeccd66077fe565bc29f802d5c3f83728c0e2461",
+      "focused_references": [
+        "prepare_slot:82-130",
+        "activate_slot:133-183",
+        "_copy_private_tree:72-79"
+      ]
+    },
+    {
+      "path": "tests/unit/tools/test_stage_runtime.py",
+      "sha256": "20e25c5f48eb9ce81be6eaba0b47ade9cfcf47ba6754e40abe8647e311212408",
+      "focused_references": [
+        "test_promote_and_rollback_restore_runtime_and_sqlite:41-71"
+      ]
+    },
+    {
+      "path": "src/memory/erasure_journal.py",
+      "sha256": "fbb6a6755b0f227a3991fd86cd3ee3446414609e80b5f50eb9832f1fbd919783",
+      "focused_references": [
+        "ErasureJournal._register_target:151-166",
+        "recover:124-140",
+        "request:168-174"
+      ]
+    },
+    {
+      "path": "src/memory/fact_ledger.py",
+      "sha256": "9cbeb387db63cfb783d005260b2c85326b5e065f113e509a1bb636f5862c5b09",
+      "focused_references": [
+        "FactLedger.delete_conversation:668-681"
+      ]
+    },
+    {
+      "path": "src/ambient/erasure.py",
+      "sha256": "e3eb198f7dd0dcc7cc3e06a116d70fff51e785de48d034d183e8fcf8b55a316d",
+      "focused_references": [
+        "CaptureEraser.clean:67-99"
+      ]
+    },
+    {
+      "path": "src/memory/index_erasure.py",
+      "sha256": "fabce074e0de7c7870480b55238c5bca428b24936fe855f7952d3cc916d0d8de",
+      "focused_references": [
+        "PolicyIndexEraser._open:50-75",
+        "_delete_rows:92-99"
+      ]
+    },
+    {
+      "path": "src/orchestrator/context_erasure.py",
+      "sha256": "4b49eaffc11b8eb59c72c112eac8b6777d1d1415c96268cda5aba92927a914d1",
+      "focused_references": [
+        "ContextEraser.clean:100-122"
+      ]
+    },
+    {
+      "path": "tests/mocks/restore_preservation.py",
+      "sha256": "09ad56c26f0c8ef0484a80a30ae06898df2cc95c48cab5f191e2833d7bde0e80",
+      "focused_references": [
+        "validate_restore_locator:593-627",
+        "capture_index_lineage:305-340",
+        "capture_preservation:403-430",
+        "assert_manual_sentinels:192-223"
+      ]
+    },
+    {
+      "path": "tests/mocks/application_restore.py",
+      "sha256": "3411e2783132223e6f0a414bc9a6c785df4f48268ac22ccf4dd87cc414df8ce7",
+      "focused_references": [
+        "erase_with_real_producer:396-440",
+        "settle:443-458",
+        "snapshot_payload:278-300"
+      ]
+    },
+    {
+      "path": "tests/mocks/restore_application_graph.py",
+      "sha256": "94d6426e4e25637ecd0182587d70ece489fcdabace44f217ee47fdd36f6e8a2f",
+      "focused_references": [
+        "configuration:131-156",
+        "application_graph:296-350"
+      ]
+    },
+    {
+      "path": "tests/mocks/compiled_restore_child.py",
+      "sha256": "0c1313185f20f6983aa0a463ff00060784f6f21ad6e5d4a3c00a8395ad966010",
+      "focused_references": [
+        "generate/replay, fixed physical state proof only"
+      ]
+    }
+  ],
+  "known_build_variation_followup": {
+    "evidence": "data/autonomous-roadmap-20261102/t024/e/artifact-differences.json",
+    "requirement": "Before claiming cross-process build reproducibility, run a bounded controlled compiler-process baseline for the same selected Git commit and native ABI. Preserve raw byte equality as its own oracle, investigate hashseed/interning as hypotheses only, and do not normalize away original failures to obtain PASS.",
+    "priority": "Required first prerequisite F0 before cross-version artifact comparisons: DEPLOYMENT.md explicitly requires the same commit/CPython to produce the same archive. Preserve this requirement, establish a controlled independent-process baseline, classify/fix the real cause, and validate byte equality without normalizing the oracle. Privacy-safe runtime/data rollback remains the full F/C05 objective afterward.",
+    "source_requirement": "docs/architecture/DEPLOYMENT.md#construcción-del-artefacto"
+  },
+  "unit": "T024-F/privacy-safe-runtime-state-rollback",
+  "baseline_revision": "b2dc68d3297e5f22bd81372d9388e100c61107e7",
+  "goal": "docs/plans/2026-11-02-autonomous-roadmap.md",
+  "previous_evidence": {
+    "path": "docs/research/2026-11-05-compiled-application-restore.json",
+    "sha256": "09f546318c8906fa1a836e9879464bd0617947e5b08fbc63c18d48732fb09e93",
+    "bytes": 24896
+  },
+  "execution_authorization": "Continue the same active goal after E publication; begin controlled F0 reproducibility baseline, then reviewed local privacy rollback baseline. No production/release/field authorization.",
+  "first_action": "F0: reproduce independent-process byte variation using exact committed source/ABI, retain byte-equality oracle and diagnose cause before any version comparison. Then preserve the full runtime/data privacy rollback objective."
+}

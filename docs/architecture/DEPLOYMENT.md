@@ -139,8 +139,13 @@ La construcción toma únicamente la revisión commiteada (`HEAD` por defecto,
 seleccionable con `--revision`) y conserva el SHA en `release.json`. Compila los
 módulos a `.pyc` importables sin fuentes y agrega los recursos del frontend.
 Excluye configuración, `.env`, dependencias, modelos, datos, tests y Git. No
-reemplaza un archivo de salida existente. El mismo commit produce el mismo
-archivo con la misma versión de CPython.
+reemplaza un archivo de salida existente. La construcción debe producir el mismo
+archivo para el mismo commit y versión de CPython. El ensayo local T024-E en Mac
+detectó diferencias de SHA entre construcciones independientes de la misma
+revisión: cinco `.pyc` por comparación, con headers y campos de código/constantes
+canónicos iguales. La causa y la reproducibilidad binaria entre procesos siguen
+pendientes; el artefacto concreto de cada ensayo permaneció íntegro durante sus
+dos ejecuciones. Ver la [evidencia y los límites de E](../research/2026-11-05-compiled-application-restore.json).
 
 Es bytecode para CPython 3.13, no un ejecutable nativo ni una barrera contra
 descompilación. Requiere el intérprete y las dependencias del entorno de

@@ -1,0 +1,384 @@
+{
+  "schema_version": 1,
+  "unit": "T024-E/committed-bytecode-public-graph-replay",
+  "status": "verified_local_exact_artifact_graph_replay_with_open_C05",
+  "baseline_revision": "e3819b0b29a74b17da3bb31c68da9115f90b000d",
+  "artifact_revision": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+  "summary_spanish": "Dos procesos nuevos ejecutan ApplicationGraph público desde el mismo artefacto bytecode del commit D aceptado, fuera del checkout, con estado físico estable y restauración limitada que conserva autoridad y decisiones manuales actuales.",
+  "product_code_change": false,
+  "production_changed": false,
+  "deployment": "Ensayo local en Mac; sin release ni acciones sobre el servidor.",
+  "evidence_root": "data/autonomous-roadmap-20261102/t024/e",
+  "implementation": {
+    "artifact": "build_runtime compila la revisión comprometida explícita; prepare_slot y activate_slot verifican y seleccionan un slot temporal fuera del checkout. Runtime y estado permanecen en la misma ruta física entre generaciones. Se conservan archivo tar.gz, release.json y hashes antes/después.",
+    "isolation": "Dos Popen/exec nuevos con el ejecutable literal de la .venv y flags -I -S -B. Sólo se añaden roots de dependencias declaradas; no se activa site ni se ejecutan .pth. Bootstrap de stdlib instala guard de importación y tripwires de audio/modelos antes de importar helpers o src.",
+    "namespace": "Cada import de src debe ser un módulo .pyc real, incluido en el manifest y con hash/magic correctos. El guard devuelve ese spec sin fallback a fuentes; audit final comprueba módulos y sys.path. Esto verifica un experimento controlado, no un sandbox frente a código hostil.",
+    "harness": "Se copian 18 módulos de apoyo hash-pinned y el entry del hijo a una isla separada. No se copia conftest.py, src fuente ni .env. El padre usa los scripts de empaquetado del checkout; sus imports no cuentan como prueba del runtime compilado.",
+    "transport": "JSON con tipos/DTOs permitidos y blobs por hash conserva tuples, BLOBs, fuentes y testigo de índice. No cruza grafos, clientes, callbacks, tareas, locks ni objetos de autoridad. El padre no deserializa DTOs src. La segunda fase hace replay offline antes de construir Graph2.",
+    "domain": "Se repiten los oráculos D de nueve familias S/U y diez drivers. S espera su retorno nativo mientras U continúa; Graph2 rechaza el claim viejo y S antes del backend, oculta S con raw voice BLOB presente y espera delete/unlink reales. Se conservan fuentes/vencimientos, filas mixtas y decisiones manuales de perfil, grupo, persona, unlink/deletion, memoria, sugerencias y HOME.",
+    "lifecycle": "El padre limita el ensayo completo a 240 s y cada fase a 100 s o al tiempo restante con reserva de cierre. Cada grupo de procesos es propio y se obtiene Popen.wait real. Un timeout o señal deja el caso fallido y sólo acredita contención. Graph/SDK/lease deben cerrar antes del recibo aceptado.",
+    "slot": "Se comparan targets físicos, textos de enlaces e identidades dev/inode de current/config/data antes/después; los bytes del artefacto, control e isla permanecen iguales. La evidencia exportada no se usa como directorio de ejecución."
+  },
+  "first_baseline": {
+    "outcome": "1 PASS original, sin fallos ni cambios de fuente para conseguirlo",
+    "XML_duration_s": 15.52,
+    "terminal": {
+      "session": 69692,
+      "chunk": "8b3c36",
+      "exit_code": 0
+    },
+    "genuine_product_RED": 0,
+    "observed_artifact_files": 436,
+    "observed_pyc_files": 378,
+    "observed_src_modules_per_child": 277
+  },
+  "validation": {
+    "state": "verified_within_local_E_scope",
+    "component": {
+      "state": "finished",
+      "pytest_exit_code": 0,
+      "actual_Popen_wait_returned": true,
+      "pytest_pid": 39751,
+      "runner_pid": 39749,
+      "timed_out": false,
+      "kill_errno": null,
+      "elapsed_s": 16.64418995899905,
+      "counts": {
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "XML_duration_s": 15.52,
+      "nodes": [
+        {
+          "name": "test_committed_bytecode_graph_preserves_current_authority_after_replay",
+          "classname": "tests.integration.test_compiled_application_restore",
+          "outcome": "passed",
+          "message": null
+        }
+      ],
+      "source_unchanged": true,
+      "protected_unchanged": true,
+      "source_entries": 1042,
+      "script_entries": 37,
+      "scope": "T024-E exact committed bytecode public graph replay across two fresh processes; timeout containment never counts as actual retirement, physical erasure or whole-goal success.",
+      "artifacts": {
+        "run.py": {
+          "sha256": "375d730f9d950ce36ff26fb071b4f1eeee4ffd1991313ddd85a361607e828b0e",
+          "bytes": 6845
+        },
+        "command.json": {
+          "sha256": "96b0bd592e2beab178ebf1d7d1511772f7ddf9c923f7ad9f2db355c35756b5be",
+          "bytes": 1138
+        },
+        "source-before.json": {
+          "sha256": "b10fc9bdb186d7638cedf3a5af28887b08cbf321cfd185ecdf993379495254c7",
+          "bytes": 157289
+        },
+        "source-after.json": {
+          "sha256": "b10fc9bdb186d7638cedf3a5af28887b08cbf321cfd185ecdf993379495254c7",
+          "bytes": 157289
+        },
+        "protected-before.json": {
+          "sha256": "760a23fda903b112070f03cb9014580f99016bad893290f1e8940ebf9ffc8c12",
+          "bytes": 2556
+        },
+        "protected-after.json": {
+          "sha256": "760a23fda903b112070f03cb9014580f99016bad893290f1e8940ebf9ffc8c12",
+          "bytes": 2556
+        },
+        "pytest.log": {
+          "sha256": "7ac231a9ae6ba6eb7da71c6cc708766402561b9d6503ff870b7debea47498123",
+          "bytes": 710
+        },
+        "junit.xml": {
+          "sha256": "6fb1d052bbac7c51f903116436d0a7f8b367d4200eb40bce6975c6d0cb2aef5f",
+          "bytes": 433
+        }
+      },
+      "runner_exit_code": 0
+    },
+    "directed": {
+      "accepted_within_scope": true,
+      "observed_at_utc": "2026-11-06T01:53:44.142730+00:00",
+      "scope": "T024-E native Mac local fixture composition; all acceptance criteria and T024 remain open",
+      "terminal": {
+        "session": 24599,
+        "chunk": "3c15f7",
+        "exit_code": 0
+      },
+      "mode": "directed",
+      "tests": 1230,
+      "passed": 1230,
+      "known_xfailed": 0,
+      "failures": 0,
+      "errors": 0,
+      "ordinary_skips": 0,
+      "known_xfail": [],
+      "XML_duration_s": 229.802,
+      "exact_expected_ids": true,
+      "source_files": 1042,
+      "script_files": 37,
+      "source_unchanged": true,
+      "protected_files": 22,
+      "protected_unchanged": true,
+      "actual_wait_returned": true,
+      "minimum_available_bytes": 196538531840,
+      "artifacts": {
+        "full-status.json": "567429f1c38f9b37a5eff6314129e0042306c493f1299f451be36fed2c1c3cb8",
+        "full.xml": "e866f90a57cd550722f9c9e5a55bbc4969de4e8615ee2aa3327c00b1b82f9476",
+        "full.log": "791d52ccc3069ecb5bf2c711e4b67597b2767a3babb47ed2c598374008d6120a",
+        "source-before.json": "bdd051ef71dc846b017d02f8744411362715f005ed48363a890950c5a05d848f",
+        "source-after.json": "bdd051ef71dc846b017d02f8744411362715f005ed48363a890950c5a05d848f",
+        "protected-before.json": "92e31cd1c6b3b59a52cd603ca8b69fe18d121b00a547d4ffe201d2d380582ddf",
+        "protected-after.json": "92e31cd1c6b3b59a52cd603ca8b69fe18d121b00a547d4ffe201d2d380582ddf",
+        "storage-telemetry.json": "e79dadbe3ccde2803cd5065a0cb59444546c17493257377307f8ded80f10ff0d"
+      },
+      "compiled_artifact": {
+        "source_commit": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+        "files": 436,
+        "archive_sha256": "24218de106ea02ff36ee7b4c0c1fdc3842d0c3b089636404a79a5f9c70a1a496",
+        "release_sha256": "46d8a87b2278f5cdb71035fbae0548bf7b7443849857cafa3627e6b98a5af027",
+        "parent_proof": "data/autonomous-roadmap-20261102/t024/e/directed-attempt-01/child-evidence/attempt-96b0f15448ac4de2b7e3436de6a8b381/parent-proof.json",
+        "parent_proof_sha256": "de0ca6cfeeb9a99c33ed49f51ce15b12b313d2cdbc2f99a1c5bfad46fdcdfea6",
+        "phases": {
+          "generate": {
+            "pid": 46621,
+            "actual_wait_returned": true,
+            "exit_code": 0,
+            "modules": 277,
+            "checkpoint_sha256": "d800e46ca897715234a9c76422714ab634100d4267526a80d06248b9381174e9",
+            "result_sha256": "94b5650fd4ce059eedaea2fb0d1b595e895db3dd1d7a88f413c5b0e4a2ce5d08",
+            "receipt_sha256": "2d01a4fd67e8ad16aeece87b42c8635dd0be87467ff2f8b61048df2420a03e13"
+          },
+          "replay": {
+            "pid": 46648,
+            "actual_wait_returned": true,
+            "exit_code": 0,
+            "modules": 277,
+            "checkpoint_sha256": "d800e46ca897715234a9c76422714ab634100d4267526a80d06248b9381174e9",
+            "result_sha256": "4957bb8fc70c543a319b7c370526d475628f0ed25de6d7279598a03206c42c96",
+            "receipt_sha256": "753ae429d72d74d5305bdff36c384a4b93bf7275cdac651b0bd83a5f44d5a6d6"
+          }
+        },
+        "warning_scope": "Raw child stderr is separate from pytest warning signatures; do not infer no new global warnings."
+      }
+    },
+    "full": {
+      "accepted_within_scope": true,
+      "observed_at_utc": "2026-11-06T02:05:54.313150+00:00",
+      "scope": "T024-E native Mac local fixture composition; all acceptance criteria and T024 remain open",
+      "terminal": {
+        "session": 21496,
+        "chunk": "937c02",
+        "exit_code": 0
+      },
+      "mode": "full",
+      "tests": 8581,
+      "passed": 8580,
+      "known_xfailed": 1,
+      "failures": 0,
+      "errors": 0,
+      "ordinary_skips": 0,
+      "known_xfail": [
+        [
+          "tests.unit.nlu.test_regex_extractor",
+          "test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]",
+          {
+            "type": "pytest.xfail",
+            "message": "limitación documentada del regex puro"
+          }
+        ]
+      ],
+      "XML_duration_s": 669.945,
+      "exact_expected_ids": true,
+      "source_files": 1042,
+      "script_files": 37,
+      "source_unchanged": true,
+      "protected_files": 22,
+      "protected_unchanged": true,
+      "actual_wait_returned": true,
+      "minimum_available_bytes": 196499062784,
+      "artifacts": {
+        "full-status.json": "52ac543826d004e708026f6507ff87411cae9aa85c0f812a2109cf1ff5ea3028",
+        "full.xml": "fbcba651391911670ae1f43a04bb386d08964798d08b1e0c352762a9c4216be2",
+        "full.log": "9eb7bb629b6ce74de717e2d5eb904a8089aeaa282bd10cd51ac5844364dd7fd7",
+        "source-before.json": "bdd051ef71dc846b017d02f8744411362715f005ed48363a890950c5a05d848f",
+        "source-after.json": "bdd051ef71dc846b017d02f8744411362715f005ed48363a890950c5a05d848f",
+        "protected-before.json": "92e31cd1c6b3b59a52cd603ca8b69fe18d121b00a547d4ffe201d2d380582ddf",
+        "protected-after.json": "92e31cd1c6b3b59a52cd603ca8b69fe18d121b00a547d4ffe201d2d380582ddf",
+        "storage-telemetry.json": "b2ff206176ea33b2d71dbeaefa861204cd65cb5ae20c306e6d488ad275e4539f"
+      },
+      "compiled_artifact": {
+        "source_commit": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+        "files": 436,
+        "archive_sha256": "f522b3e9c7cf02e1bfdd67cc742a39ff67a8f0c482511b6d37385651b6c2b01f",
+        "release_sha256": "f822c4194fe994005750ff8e1d6b78710b807a7cb0071dd32e7caaf01eefa5b0",
+        "parent_proof": "data/autonomous-roadmap-20261102/t024/e/full-normal-attempt-01/child-evidence/attempt-8c3e89abc73d4835bd7b551a01765f7c/parent-proof.json",
+        "parent_proof_sha256": "77cd9b587def4f34ce71d514635f4b4942c4977b5e520ebe9b2fdf0bfc4e7bd2",
+        "phases": {
+          "generate": {
+            "pid": 48109,
+            "actual_wait_returned": true,
+            "exit_code": 0,
+            "modules": 277,
+            "checkpoint_sha256": "07e49b332a144f4c5f4da080257f140179fbdfa374f85cf70c15c9f91d9e758e",
+            "result_sha256": "a82538ac83ffaec07e88cc501e303ed8a5efab07194fcbb6286d440354288164",
+            "receipt_sha256": "aeefb3e8355c362dd200cd88a2ff7878af5f547b1f704ddf68d148872e10f36c"
+          },
+          "replay": {
+            "pid": 48178,
+            "actual_wait_returned": true,
+            "exit_code": 0,
+            "modules": 277,
+            "checkpoint_sha256": "07e49b332a144f4c5f4da080257f140179fbdfa374f85cf70c15c9f91d9e758e",
+            "result_sha256": "276d22753a44c5fd1f1a4cf1891de7eb879eee245c832f16cb37d0cdc4d41a70",
+            "receipt_sha256": "a7a2fd8599f7593e3f55aa6c2928914e49e1503e628cf614d7803d478d1c7964"
+          }
+        },
+        "warning_scope": "Raw child stderr is separate from pytest warning signatures; do not infer no new global warnings."
+      }
+    },
+    "pytest_warnings": {
+      "baseline": "D accepted full8580",
+      "old_D_location_signatures": [
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/_methods.py:132: RuntimeWarning: overflow encountered in reduce",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in scalar divide",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/fromnumeric.py:3824: RuntimeWarning: Mean of empty slice",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/torch/jit/_serialization.py:176: DeprecationWarning: `torch.jit.load` is deprecated. Please switch to `torch.export`.",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/uvicorn/protocols/websockets/websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/websockets/legacy/server.py:1178: DeprecationWarning: remove second argument of ws_handler",
+        "/Users/gabriel/Documents/Proyectos/kza/src/alerts/alert_manager.py:321: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+        "/Users/gabriel/Documents/Proyectos/kza/src/core/logging.py:129: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+        "<string>:8: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+        "tests/integration/test_async_conversation_generation.py:149: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_async_conversation_generation.py:45: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_owned_voice_responses.py:236: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_response_deadlines.py:441: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_voice_service_lifecycle.py:165: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')"
+      ],
+      "new_E_location_signatures": [
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/_methods.py:132: RuntimeWarning: overflow encountered in reduce",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in scalar divide",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/fromnumeric.py:3824: RuntimeWarning: Mean of empty slice",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/torch/jit/_serialization.py:176: DeprecationWarning: `torch.jit.load` is deprecated. Please switch to `torch.export`.",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/uvicorn/protocols/websockets/websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/websockets/legacy/server.py:1178: DeprecationWarning: remove second argument of ws_handler",
+        "/Users/gabriel/Documents/Proyectos/kza/src/alerts/alert_manager.py:321: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+        "/Users/gabriel/Documents/Proyectos/kza/src/core/logging.py:129: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+        "<string>:8: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+        "tests/integration/test_async_conversation_generation.py:149: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_async_conversation_generation.py:45: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_owned_voice_responses.py:236: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_response_deadlines.py:441: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_voice_service_lifecycle.py:165: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')"
+      ],
+      "new_signatures": [],
+      "absent_prior_signatures": [],
+      "all_location_signature_count": 15,
+      "occurrences_E": 62935,
+      "suppressed": false,
+      "C05_accepted": false,
+      "evidence": {
+        "D_warning_comparison_sha256": "50bc1c5aea5b2b8274f7e91b97e4748760ea1f90f846e7bb72a37d1d63256c43",
+        "E_full_log_sha256": "9eb7bb629b6ce74de717e2d5eb904a8089aeaa282bd10cd51ac5844364dd7fd7"
+      }
+    },
+    "independent_runtime_review": {
+      "path": "data/autonomous-roadmap-20261102/t024/e/independent-runtime-review.json",
+      "sha256": "4dbedbf8b612a6148dc4b2a04d4874eb8a782d73460df966d79e89f8c4a2f886",
+      "bytes": 42693
+    },
+    "source_guard": {
+      "entries": 1042,
+      "scripts": 37,
+      "protected": 22,
+      "unchanged_during_all_runs": true
+    },
+    "identities": "D8580 retained plus1; directed D1213+16 existing build/stage+1. Counts overlap; do not sum them.",
+    "child_warning": "One real Chroma UserWarning in replay stderr of each compiled case; raw logs retained, not suppressed."
+  },
+  "warnings_scope": "Las firmas de warnings de pytest y stderr de los hijos se evalúan por separado. Replay conserva un UserWarning real de Chroma al no reconstruir la función de embedding sintética; restore_payload suministra explícitamente SyntheticEmbedding y sus oráculos de índice/U pasan. No se suprime ni se presenta como validación de configuraciones de modelos reales.",
+  "limits": [
+    "Mismo artefacto y misma ruta de estado en dos procesos; no acredita rollback entre versiones, slots o esquemas de datos.",
+    "La entrada ejercitada es el builder público de ApplicationGraph; no certifica el daemon completo con dispositivos reales.",
+    "Hojas CPU/modelos y HTTP de prueba son sintéticos; SQLite, Chroma, SoundFile, propietarios y cierres ejercitados son reales. Sin carga de pesos, GPU, HA real ni interacción de PC.",
+    "Replay acredita preflight de incompatibilidades deterministas y payload permitido; no atomicidad ante crash entre stores ni rollback de autoridad/ACK.",
+    "diagnostics v1, streams v2 y voices v2 siguen unresolved. T021/T022/T023/T024, C04/C05, xfail/warnings y21 criterios de aceptación permanecen abiertos."
+  ],
+  "artifact_build_variation": {
+    "status": "observed_cross_build_binary_variation_cause_open",
+    "evidence": "data/autonomous-roadmap-20261102/t024/e/artifact-differences.json",
+    "reader": "native CPython3.13 metadata only; no decoded code executed",
+    "observed": "Same9b manifest paths/ABI, but archive/release and5pyc hashes differ baseline-to-directed and baseline-to-full. Headers and recursive code fields/canonical constant values compare equal. Byte-for-byte reproducibility and universal semantic equivalence are not established.",
+    "boundary": "Each individual E archive remained unchanged and both children within that run used that exact archive. The limitation is retained for C05 follow-up, not hidden or relabeled as a failure of this two-generation test."
+  },
+  "implementation_commit": "b2dc68d3297e5f22bd81372d9388e100c61107e7",
+  "source_sha256": {
+    "tests/mocks/compiled_restore.py": "063e130a797fcbfe42c433126697eaeaede0b27aab737d55b2e3d114008a8473",
+    "tests/mocks/compiled_restore_child.py": "0c1313185f20f6983aa0a463ff00060784f6f21ad6e5d4a3c00a8395ad966010",
+    "tests/integration/test_compiled_application_restore.py": "dc607b5a2acd816129ca89743ad4291d6f3bae6f1c9f092bf21f728ebf79ec09"
+  },
+  "next_unit_plan": "docs/plans/2026-11-05-privacy-safe-slot-rollback-continuation.json",
+  "verified_at_utc": "2026-11-06T02:18:30.955518+00:00",
+  "evidence": {
+    "artifact_contract": {
+      "path": "data/autonomous-roadmap-20261102/t024/e/artifact-contract.json",
+      "sha256": "27681899dba657aa8dc829363310ce2abe75566f43c4b2259c576653cdf88fcf",
+      "bytes": 17514
+    },
+    "state_contract": {
+      "path": "data/autonomous-roadmap-20261102/t024/e/process-state-contract.json",
+      "sha256": "8da634dc628184aea618b8d47a4871f08673f55ff0a4615686b21ba643d04baa",
+      "bytes": 11278
+    },
+    "parent_design": {
+      "path": "data/autonomous-roadmap-20261102/t024/e/parent-harness-design.json",
+      "sha256": "1ebf977e49c8859b6ff9d441d74e91bfe039e93bf52d93a2c24f337ae43006b6",
+      "bytes": 13572
+    },
+    "root_decisions": {
+      "path": "data/autonomous-roadmap-20261102/t024/e/root-decisions.json",
+      "sha256": "8f9f3ab67ece2e54f2555c18c596a2a53a5b16b7c217064a4265778c94acfc28",
+      "bytes": 2651
+    },
+    "helper_closure": {
+      "path": "data/autonomous-roadmap-20261102/t024/e/helper-closure-at-start.json",
+      "sha256": "6cdeedc3162064b6e606973f53d4055f32ca3963873029a9ccb580625564a6cc",
+      "bytes": 5064
+    },
+    "static": {
+      "path": "data/autonomous-roadmap-20261102/t024/e/final-static-attempt-01/status.json",
+      "sha256": "751635522255e1d742e0418b5303ad5d73f743037a80145e5eec333434f59f41",
+      "bytes": 648
+    },
+    "independent_static": {
+      "path": "data/autonomous-roadmap-20261102/t024/e/static-contract-review.json",
+      "sha256": "638616d5000789da3094b033ff252cc97c71efe8bd7e696a506849c5549a2940",
+      "bytes": 12501
+    },
+    "suite_union": {
+      "path": "data/autonomous-roadmap-20261102/t024/e/suite-proposal.json",
+      "sha256": "1e74327872f09d85b905afd1da055932a68ec072e220f64e132a656fe744009e",
+      "bytes": 17671
+    },
+    "tracking_review": {
+      "path": "data/autonomous-roadmap-20261102/t024/e/tracking-review.json",
+      "sha256": "fa66d49ed4fe5f9a435b19a5dc87040ab4d22e72e0e373449208e81be8a5b50f",
+      "bytes": 6281
+    },
+    "artifact_variation": {
+      "path": "data/autonomous-roadmap-20261102/t024/e/artifact-differences.json",
+      "sha256": "9206462ddcca2f4e2ae2bd51c93aa494b1bd54c3147885ed316a63f98d35260f",
+      "bytes": 7184
+    },
+    "metadata_only_correction": {
+      "path": "data/autonomous-roadmap-20261102/t024/e/acceptance-metadata-attempt-01.json",
+      "sha256": "77d3dd73a4b5347710d6dda54b50a13001bdbcc82ee8b7ee2cc24e275baf5e3e",
+      "bytes": 446
+    }
+  }
+}
