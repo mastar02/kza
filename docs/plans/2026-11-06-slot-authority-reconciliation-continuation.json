@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
   "unit": "T024-F1/privacy-safe-runtime-state-rollback",
-  "status": "implementation_required_after_genuine_original_RED",
+  "status": "implementation_in_progress_admission_prerequisite_checked",
   "goal": "docs/plans/2026-11-02-autonomous-roadmap.md",
   "goal_status": "active_incomplete",
   "baseline_test_commit": "263e7458204c226aebfc64758831743bbd9f6119",
   "baseline_report": "docs/research/2026-11-06-copied-slot-authority-baseline.json",
   "authorization": "Continue the same active goal locally. No production/release/field actions. Preserve original attempts and source/authority boundaries.",
   "observed_problem": "Original old selection succeeds after current candidate withdraws S/profile/credential/account permission. All three children close and exit0; the final authority assertion fails. This is product RED, not a missing-method fixture error.",
-  "first_action": "Design and implement the reviewed admission head/controller lifetime and explicit copy ownership/derivation contract. Keep original negative admission regression unchanged and add a distinct positive code+data R/forward scenario.",
+  "first_action": "Resume from80b47f5 source admission prerequisites/112PASS. Implement production closed-state snapshot and pure payload-cut/materialization with qualified derived journal; adapt original harness to actual managed lifetime without weakening its oracle, then execute distinct compiled code+data R/forward scenarios.",
   "original_regression_boundary": "Reject stale old-state selection before pointer or store mutation, or prove selected authority current. This original gate preserves O manual state and is not itself the R reconciliation test, where latest profile deletion must win.",
   "required_contract": {
     "stable_binding": "A new versioned immutable binding names exact compiled manifest/code commit, selected state identity/generation, per-store schemas/SDK versions and canonical root device/inode identities. Durable IDs are nominal, not Python object identities. Preserve existing artifact integrity checks; arbitrary symlinks bypassing same-slot checks are not a contract.",
@@ -108,5 +108,13 @@
     "disk_floor_MiB": 512
   },
   "delegation": "Up to8 active agents including coordinator, subject to actual session slots (4 here). PC browser/desktop interaction requires gpt-6.1-terra subagent; root owns runtime/Git and reviews evidence.",
-  "remaining": "F1 remains in_progress and the new required regression currently fails. T021/T022/T023/T024, all21 criteria, exact diagnostics1/streams2/voices2 guards, known regex xfail/warnings and field gates remain open."
+  "remaining": "F1 remains in_progress. Original genuine RED is retained; managed harness adaptation and compiled NEW/OLD positive lifetime/derived R/forward F have not been executed. T021/T022/T023/T024, all21 criteria, exact diagnostics1/streams2/voices2 guards, known regex xfail/warnings and field gates remain open.",
+  "prerequisite_progress": {
+    "report": "docs/research/2026-11-06-runtime-admission-foundation.json",
+    "implementation_commit": "80b47f55716e980b93a7312b6732de0611e3e2e0",
+    "directed": "112 PASS/XML79.374s; actualwait50473 exit0; source1054/scripts37/protected29 unchanged",
+    "scope": "Source admission/closure prerequisites only. No compiled NEW/OLD managed positive, derived R or forward F acceptance.",
+    "original_gate": "Three original263e files unchanged; originalRED retained; lifecycle harness adaptation still required.",
+    "next": "Production snapshot/cut/materialize/journal, compiled old-code R and newer-code F with latest protected revisions; retain exact guards."
+  }
 }

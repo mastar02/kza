@@ -6,7 +6,7 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 ## Punto de reanudación
 
-**T024-F1 está en curso: el primer baseline reprodujo una falla de autoridad y sigue sin corrección de producto.** T024-F0 permanece verificada localmente. El mismo goal sigue **activo e incompleto**. Usar la `.venv` nativa y conservar los ensayos cerrados.
+**T024-F1 sigue en curso: la base de admisión/cierre tiene 112 pruebas dirigidas aprobadas; el rollback completo aún no está demostrado.** T024-F0 permanece como última unidad completa verificada localmente. El mismo goal sigue **activo e incompleto**. Usar la `.venv` nativa y conservar los ensayos cerrados.
 
 | Dato | Estado actual |
 | --- | --- |
@@ -14,6 +14,7 @@ para retomar el mismo goal con su roadmap y evidencias.
 | Implementación F0 | `3babff8aaa7dc8c5f87a5255e198a149ecfe718d`; builder y cuatro pruebas de regresión |
 | Artefacto comparado | Revisión D `9b3170294eb69a53dd27b63949c09a63a2efed54`;436 archivos/378pyc |
 | Tests F1 | `263e7458204c226aebfc64758831743bbd9f6119`; tres archivos nuevos, sin cambio de producto |
+| Base de admisión F1 | `80b47f55716e980b93a7312b6732de0611e3e2e0`; 112 PASS/XML79.374 s, sólo prerrequisitos de fuente |
 | Original F1 | **1 FAIL genuino**, XML14.430 s; tres hijos con wait real0; fallo final por autoridad vieja seleccionada |
 | Autoridad F1 | Faltan tombstone S, borrado de perfil, revocación de credencial y reducción de permiso; U/manual preservados |
 | RED F0 preservado | Variación por `sys.intern` reproducida antes del fix; parsear/retener sin internado conserva bytes |
@@ -23,12 +24,12 @@ para retomar el mismo goal con su roadmap y evidencias.
 | Última full, F0 | **8584 PASS + misma xfail conocida**,8585 IDs exactos; XML689.339 s; anterior a la regresión nueva F1 |
 | Guardas del original F1 | 1046 fuentes,37 scripts y27 protegidos intactos; tres archivos nuevos con un caso respecto a F0 |
 | Warnings F0 | 15 firmas pytest iguales a E; UserWarning Chroma del hijo conservado aparte |
-| Alcance actual | Misma versión compilada y dos estados; selección vieja reproducida antes de abrir lectores; sin rollback versionado positivo |
+| Alcance actual | Baseline original intacto; admisión, ownership y testigos de cierre en fuente; sin positivo gestionado compilado ni derivación R/F |
 | Delegación | Hasta ocho agentes según plazas; PC interactiva con subagente `gpt-6.1-terra` |
 | Próxima acción | F1: corregir admisión/derivación y agregar rollback positivo de código y datos, más recuperación hacia adelante |
 | Tracking | Este commit; verificar SHA/publicación al retomar |
 
-T021/T022/T023/T024 siguen `in_progress`;21 criterios `not_evaluated`. Tres guards, C04/C05, warnings y xfail siguen abiertos. T020/P1/T047, presupuestos y permisos separados se conservan. Leer [baseline F1 sin corregir](../research/2026-11-06-copied-slot-authority-baseline.json) y [continuación de implementación](../plans/2026-11-06-slot-authority-reconciliation-continuation.json). La regresión nueva es requerida y actualmente falla; no se ejecutó ni aceptó una full con ella. Sin release ni cambios en producción.
+T021/T022/T023/T024 siguen `in_progress`;21 criterios `not_evaluated`. Tres guards, C04/C05, warnings y xfail siguen abiertos. T020/P1/T047, presupuestos y permisos separados se conservan. Leer [baseline F1](../research/2026-11-06-copied-slot-authority-baseline.json), [prerrequisito de admisión](../research/2026-11-06-runtime-admission-foundation.json) y [continuación de implementación](../plans/2026-11-06-slot-authority-reconciliation-continuation.json). Se conserva el RED genuino original; su harness aún debe adaptarse al lifetime gestionado. No se ejecutó ni aceptó una full con los cambios nuevos. Sin release ni cambios en producción.
 
 ## Referencia histórica del cierre Linux F
 
@@ -284,10 +285,18 @@ La limpieza por rutas históricas eliminó derivados conocidos de S sin alterar 
 
 Conservar este gate de rechazo de selección vieja separado del positivo futuro R/forward. R debe exponer un punto ordinario anterior real con autoridad/manual/permisos/consentimiento latest; luego F debe recuperar datos hacia adelante conservando una revisión protegida nueva hecha en R. No basta alias al estado latest, rechazo de código incompatible ni un cambio de puntero. El par A719/C598 inspeccionado no acredita compatibilidad completa por revalidación de recibos de productores; hace falta un par semántico compatible real.
 
+## Admisión y cierre de slots — T024-F1, prerrequisito
+
+El commit `80b47f55716e980b93a7312b6732de0611e3e2e0` agrega head monotónico, bindings, lease durante todo el hijo, delegaciones históricas explícitas y admisión antes de DI/SQLite. La retirada intenta siempre cleanup y wait aunque falle la escritura de UNKNOWN. La configuración efectiva queda ligada al YAML canónico; la retirada de consentimiento sólo se encola para la generación siguiente, sin afirmar revocación de políticas cacheadas en vivo.
+
+La dirigida terminó con **112 PASS**, XML79.374 s, wait real del PID50473 y fuentes1054/scripts37/protegidos29 intactos. AST/Ruff pasan. El intento previo se conserva: 105 PASS/5 FAIL por exigir Chroma abierto antes del warmup; se corrigió observando su constructor real. Los casos distinguen owner nunca abierto de cliente adquirido y cerrado mediante el SDK público. Los tres archivos del original263e siguen idénticos.
+
+Esto verifica prerrequisitos en fuente. Los checks compilados legacy usaron HEAD9d76555, anterior a estos módulos. Faltan el lifetime positivo NEW/OLD compilado, el cierre explícito de HA/Auth/capture auxiliares, la escritura/consumo exitosos del consentimiento siguiente y la derivación material R/F. Si AudioLoop pierde una identidad lazy antes del stop-seam, se rechaza el cierre. El helper de reconciliación sigue parcial, sin coordinador ni prueba positiva ejecutada. Ver [alcance y evidencia](../research/2026-11-06-runtime-admission-foundation.json).
+
 ## Prompt para la sesión nueva
 
 > Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff, el baseline F1 y su continuación de reconciliación. Confirmá goal/checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro goal ni marques éste completo.
-> F1 original: 1 FAIL real/XML14.430 s después de tres hijos wait0; faltan cuatro decisiones latest al seleccionar old. Test requerido sin corregir, fuentes1046/scripts37/protegidos27 intactos. F0 permanece verificada: última full8584 PASS+misma xfail/8585 IDs, anterior a este test. No repitas ensayos cerrados sin causa nueva. Hasta ocho agentes según plazas; navegador/escritorio de PC delegado a subagente Terra.
+> F1 original: 1 FAIL real/XML14.430 s después de tres hijos wait0; faltan cuatro decisiones latest al seleccionar old. Sus tres archivos siguen intactos. Prerrequisito80b47f5:112 PASS/XML79.374, fuentes1054/scripts37/protegidos29 estables; sólo fuente, sin positivo gestionado compilado/R/F. Leé el reporte de admisión y adaptá el harness original al controller real sin rebajar el oracle. F0 permanece verificada: última full8584 PASS+misma xfail/8585 IDs, anterior al test F1. No repitas ensayos cerrados sin causa nueva. Hasta ocho agentes según plazas; navegador/escritorio de PC delegado a subagente Terra.
 > Continuá la corrección F1: head monotónico fuera de las ramas, exclusión durante todo el lifetime, ownership histórico explícito y derivación no servida. Conservá el gate original y agregá positivo de código Y datos R con autoridad latest, seguido por F con decisiones posteriores a R. No relabelar testigos, fusionar autoridad por SQL ni dar por entregado sólo un rechazo o alias latest. T021/T022/T023/T024 y21 criterios siguen abiertos. Sin release/producción/campo.
 
 ## Lista de cierre y reanudación

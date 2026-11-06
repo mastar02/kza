@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "task": "T024-F1",
+  "status": "source_admission_prerequisite_checked_full_F1_pending",
+  "goal_complete": false,
+  "F1_delivered": false,
+  "environment": {
+    "user": "gabriel",
+    "checkout": "/Users/gabriel/Documents/Proyectos/kza",
+    "platform": "macOS arm64",
+    "python": "CPython 3.13.18 native .venv",
+    "branch": "recovery/production-2026-10-25"
+  },
+  "implementation": [
+    "External monotonic head and immutable code/state binding; controller lease covers the actual child lifetime.",
+    "A closed resource receipt and actual process wait are required. Signal, timeout and missing receipt remain unknown. Metadata-write failure still attempts child retirement.",
+    "Historical target delegation requires exact closed source proof and destination identity. History is not execution permission.",
+    "Managed graph and PrivacyServices reject missing admission before private constructors, SQLite or writer lease creation.",
+    "Canonical effective configuration and explicit serving paths are checked before construction. Managed caller configuration is copied.",
+    "Closure witness pins reviewed ownership and requires positive SDK/native terminal proof. Stop observation failure retains cleanup and stays unconfirmed.",
+    "Consent withdrawal queues only a next-generation change, with a current admin actor and configuration CAS; canonical RAW YAML is written after owned exits."
+  ],
+  "coverage_limits": [
+    "Source-level prerequisites only: no compiled NEW/OLD compatibility execution, managed positive lifetime, derived R or forward F acceptance.",
+    "Witness observes ChromaSync/MemoryServices, six model owners, inputs, response and privacy. HA HTTP/WS, DashboardAuthority and auxiliary capture handles depend on actual exit callbacks/errors; they lack a separate terminal witness.",
+    "AudioLoop can begin retirement before Graph._stop_services. Lost lazy wake identity must fail closed; general operational compatibility remains unaccepted.",
+    "Original copied-slot gate and final privacy oracle are unchanged. The managed lifecycle harness still needs adaptation; the original genuine RED remains immutable.",
+    "No production closed-state snapshot/payload-cut materializer or derived journal has been delivered. The reconciliation test helper has no coordinator and is unexecuted.",
+    "No release, production change, real HA, real models/GPU or hardware operation.",
+    "Configuration withdrawal tests exercise denial, pending intent and CAS inputs; no successful managed write followed by a new generation consuming false has been executed.",
+    "Legacy compiled-slot checks built committed HEAD9d76555; they do not establish compiled execution of these uncommitted new admission modules."
+  ],
+  "preserved": {
+    "original_gate_commit": "263e7458204c226aebfc64758831743bbd9f6119",
+    "original_result": "1 FAIL genuine; XML14.430s; three actual child waits exit0",
+    "last_verified_unit": "T024-F0",
+    "last_full_result": "F0:8584 PASS + same known xfail /8585 exact IDs, before adding the F1 regression",
+    "roadmap": "T021/T022/T023/T024 remain in_progress; all21 criteria remain not_evaluated."
+  },
+  "next_action": "Retain original RED; implement closed snapshot and pure payload cut/materialization, source-qualified R journal, old-code R with older ordinary data and latest authority, a genuine additional R protected revision and newer-code forward F recovery, then exact pending guards.",
+  "checks_so_far": {
+    "initial_directed": "16 PASS, XML53.249s, before the additional implementation",
+    "foundation_attempt_01": "105 PASS/5 FAIL, exact110IDs, XML79.248s, actualwait46425 exit1; failure sdk_handle_unconfirmed at cold Chroma capture",
+    "failed_attempt_scope": "Source1054/scripts37/protected29 unchanged; no timeout/containment; original gate files hash-identical to263e."
+  },
+  "implementation_commit": "80b47f55716e980b93a7312b6732de0611e3e2e0",
+  "checks": {
+    "directed": {
+      "junit_counts": {
+        "tests": 112,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "xml_seconds": [
+        79.374
+      ],
+      "pytest_pid": 50473,
+      "actual_wait_returned": true,
+      "source_files": 1054,
+      "script_files": 37,
+      "protected_files": 29,
+      "source_unchanged": true,
+      "protected_unchanged": true,
+      "minimum_available_bytes": 192214126592,
+      "abort_reason": null,
+      "AST": "PASS",
+      "Ruff": "PASS"
+    },
+    "proof": "data/autonomous-roadmap-20261102/t024/f1/repair/foundation-unit-attempt-02/acceptance-proof.json",
+    "original_gate_unchanged": true,
+    "full_suite_with_new_code_executed": false,
+    "directed_paths": [
+      "tests/unit/core/test_runtime_admission.py",
+      "tests/unit/core/test_state_configuration.py",
+      "tests/unit/memory/test_runtime_closure.py",
+      "tests/unit/tools/test_stage_runtime_admission.py",
+      "tests/unit/tools/test_stage_runtime.py",
+      "tests/integration/test_application_graph.py",
+      "tests/integration/test_privacy_initialization_retirement.py::test_repeated_close_observations_keep_initialized_native_return_owned",
+      "tests/integration/test_privacy_authority.py::test_cancelled_initialization_keeps_cleanup_registered_until_native_exit",
+      "tests/integration/test_privacy_authority.py::test_privacy_only_factory_does_not_import_chroma_or_load_preferences",
+      "tests/integration/test_privacy_authority.py::test_shared_authority_keeps_lease_until_timed_out_native_borrower_actually_finishes",
+      "tests/integration/test_stt_executor_factory_retirement.py::test_thread_exit_receipt_precedes_graph_dependency_and_authority_retirement"
+    ]
+  },
+  "source_pins": {
+    "scripts/stage_runtime.py": "e7806d89de593d01e7436cd3b3110fc9fc203c3740014b2f646b1bcc5ebce5db",
+    "src/application.py": "55a182296437d684705f733d915099cf485accc1fec85daa213d007428f2ad20",
+    "src/main.py": "7d034c7b5aa72160fd294f82f2eacc9a2671e4aa8473758d535b773c582656e8",
+    "src/memory/privacy_services.py": "920e079df355be422da679a7d0856ef76842c53ed6b149b812ad895ec105f37e",
+    "src/core/runtime_admission.py": "4abdba134ae3dadadd30a78cff7bddef349a1d60802e04ee4ed116118b7829af",
+    "src/core/state_configuration.py": "a425c10a4942bef114dd789aab57f5f82b84a7284558b31338dce8ea81affead",
+    "src/memory/runtime_closure.py": "ba1a2538af2bccc99bda2afaf50a448baae59b31860cd195458f0d0a99691e4a",
+    "tests/mocks/slot_reconciliation_child.py": "f8b5fe57a909722e6d71491fdc89c07bedba410e471402914b2185a564f07558",
+    "tests/unit/core/test_runtime_admission.py": "6c86df86e9df615768f98f21e5eedb8c4720b9d3ca6bc7047c81c4e55c1e1ac7",
+    "tests/unit/core/test_state_configuration.py": "cdf2b25e09a790b31a826c84be21492e64ca05fbc8c493b22187e711f2d4511d",
+    "tests/unit/memory/test_runtime_closure.py": "e92944452102762bc009900c5d3a528d6dbf40a44d04ddff95d1c55b82df1657",
+    "tests/unit/tools/test_stage_runtime_admission.py": "554d3be1a30ff13bcbf68968b13b348eb17cbb56fea147cef3b812aee3f62e43"
+  },
+  "reviews": [
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/runtime-stage-foundation-review.json",
+      "sha256": "1a94c720dc86ea21c915d79468c22d8a2c51a07d1a068a5754756f6702e0e8fc",
+      "scope": "static focused; not fullF1 acceptance"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/runtime-stop-seam-review.json",
+      "sha256": "4e06911b86e8199ded91a6aebf804565977e7cb887a5c7a0efb03f368168eb45",
+      "scope": "static focused; not fullF1 acceptance"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/runtime-closure-deferred-sdk-readiness.json",
+      "sha256": "aa40bb6d044a67f8b480de0924d7e661b5708c281a58d9f1823377ea28873e08",
+      "scope": "static focused; not fullF1 acceptance"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/runtime-deferred-sdk-peer-review.json",
+      "sha256": "7f02e512e4af9e211e97a499f3f55981cc3dd416463483a17bcdd9e905b30aa4",
+      "scope": "static focused; not fullF1 acceptance"
+    }
+  ]
+}
