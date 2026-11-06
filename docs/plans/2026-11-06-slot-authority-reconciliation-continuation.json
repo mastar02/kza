@@ -108,7 +108,7 @@
     "disk_floor_MiB": 512
   },
   "delegation": "Up to8 active agents including coordinator, subject to actual session slots (4 here). PC browser/desktop interaction requires gpt-6.1-terra subagent; root owns runtime/Git and reviews evidence.",
-  "remaining": "F1 remains in_progress. Public copies retain durable preparation/recovery. Collector-only normal/cancel cleanup and two scoped receipts are verified under current authority; latest local full8935PASS+same knownxfail/8936. Other representations and aggregate cleanup ACK, genuine SDK constructor/close failures, forensic/checkpoint retrospective inventory, legacy migration, exact guards and field acceptance remain open. Metadata-marker faults are covered, not genuine SDK failures.",
+  "remaining": "F1 remains in_progress. Collector-only normal/cancel cleanup has two scoped receipts; last full8935PASS+same xfail/8936 at94b83. Test-only180ce95 verifies a genuine missing-tenant constructor exception under compiled F and fresh reader;2 compiled regressions PASS. Other representations/aggregate ACK, genuine SDK close failure, retrospective forensic/checkpoint/BLOB inventory, legacy migration, exact guards and field acceptance remain open.",
   "prerequisite_progress": {
     "report": "docs/research/2026-11-06-runtime-admission-foundation.json",
     "implementation_commit": "80b47f55716e980b93a7312b6732de0611e3e2e0",
@@ -177,20 +177,45 @@
     "sdk_marker_faults": "verified with real owner; genuine SDK failures still open",
     "collector_cleanup_scope": "collector_rows_files_v1 only; two receipts; aggregate=False",
     "next_action": {
-      "basis": "The published SDK constructor/close fault obligation remains open after metadata-marker probes; this keeps the original requirement rather than redefining cleanup completion.",
-      "boundary": "A public SDK constructor error is distinct from an _append metadata error. A successful new case closes only that declared constructor-error path; actual public/native close failure still needs its own genuine, accurately labelled evidence. Unsupported fixture seams are not a feature RED.",
+      "baseline": "Reject stale DTO/history/current-HEAD mismatch without writes. A valid registration can only produce known/pending/non-serving observation, no SDK/cleanup receipt.",
+      "boundary": "Legacy HEAD without manual companion remains a separate migration/rejection problem, not an implicitly created companion.",
+      "exact_seams": [
+        "Explicit retrospective registration under actual current controller/HEAD and existing root/inventory; never claim before-first-byte registration for existing bytes.",
+        "Enumerate phase checkpoints/BLOB, forensic/audit and failed work representations separately, preserving original identities."
+      ],
       "files": [
-        "tests/integration/test_compiled_material_reconciliation.py",
-        "tests/unit/memory/test_copy_catalog.py"
+        "src/memory/copy_catalog.py",
+        "tests/mocks/slot_reconciliation_child.py",
+        "private forensic-export boundary"
       ],
-      "first_baseline": "Reuse the closed current F fixture in one fresh owned compiled child. Under a real AdmissionController reserve an independent SDK extent and call the exact nominal PersistentClient with a syntactically valid but absent tenant on that new local store. Require a real SDK exception before a handle returns; do not wrap/replace PersistentClient, Client.close or force internal closed flags.",
-      "oracles": [
-        "Observe actual nominal constructor entry/exception; retain any actual returned owner and close only if one really exists. An unreturned handle remains UNKNOWN, never an invented close receipt.",
-        "Consume actual process wait and then read the same copy ID with another compiled current-authority reader: UNKNOWN/unfinished/blocked/capability=False/no cleanup ACK. Timeout/kill is containment, not acceptance.",
-        "Keep current F head/binding and the complete U/manual/protected state sentinel unchanged; preserve the original material/marker/collector tests and every original ID."
-      ],
-      "unit": "one_actual_nominal_SDK_constructor_failure_before_handle_return",
-      "priority": 1
+      "priority": 1,
+      "unit": "truthful_retrospective_representation_inventory"
+    },
+    "nominal_constructor_failure": {
+      "revision": "180ce95ff0b6d141da1cdf81633ae9a791c08988",
+      "status": "verified_local_one_missing_tenant_constructor_case",
+      "scope": "Exact nominal PersistentClient/tenant lookup raises NotFoundError before handle; SDK internals remain UNKNOWN",
+      "unit_regression": "44PASS/XML0.395;56922/128d9f;protocol/product source unchanged; final integration trace changed afterward",
+      "compiled_regressions": "2PASS/XML138.932;54571/cb9c7f;1074source/37scripts/34protected unchanged; IDs unchanged",
+      "constructor_pid": 60483,
+      "reader_pid": 60489,
+      "recovered": "same copy ID/record hash/inventory; UNKNOWN/unfinished/blocked/capability=False/no receipt; F/U/manual exact",
+      "SDK_internal_retirement_confirmed": false,
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/acceptance-proof.json",
+        "sha256": "8e75a037e6e2fef244c10bd03ecfe09b6db01de2c80aee962f9fdcdf77b50941"
+      },
+      "raw_exports": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/raw-export-manifest.json",
+        "sha256": "9c1a543320ca76a1e27b05b6e5a0c131e4d99ccbd1b62f1daa3f38a5d3f30973"
+      },
+      "last_full": "8935PASS+same xfail/8936 at94b83; no full rerun for test-only extension",
+      "independent_native_review": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/material/independent-review.json",
+        "sha256": "51843b289129c97bc937ea43773a5b5577adac1d85637b76fb8b21491e7aa193",
+        "checks": 22,
+        "issues": []
+      }
     }
   }
 }

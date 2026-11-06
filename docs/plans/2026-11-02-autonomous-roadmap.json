@@ -1292,7 +1292,8 @@
         "3fc5ac61cba2ecaba7a3df4b61dda84c44ce63fc",
         "2cdbe51f0d3c897e98cc1d2ace7edc0aaed9240f",
         "ae40a75913afd2979852c4102f80fbce8b1840e8",
-        "94b83f1920537fa7a0d416eeccfbb9cbb4ac12af"
+        "94b83f1920537fa7a0d416eeccfbb9cbb4ac12af",
+        "180ce95ff0b6d141da1cdf81633ae9a791c08988"
       ],
       "evidence": [
         "docs/plans/2026-11-05-erasure-restore-continuation.json",
@@ -1330,9 +1331,10 @@
         "data/autonomous-roadmap-20261102/t024/f1/sdk-marker/acceptance-review.json",
         "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup/component-acceptance-proof.json",
         "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-native/acceptance-proof.json",
-        "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-full/acceptance-proof.json"
+        "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-full/acceptance-proof.json",
+        "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/acceptance-proof.json"
       ],
-      "next_action": "F1:94b83f1 tiene owner collector_rows_files_v1 y fences durables;388 componentes y1 integrado PASS, limpieza normal/cancelada de2copias preservando U/manual y F, lector compilado nuevo;full8935PASS+misma xfail/8936 IDs. ae40 cubre2fallos de markers SDK con close real, no fallos nativos SDK. Próximo: excepción real constructor nominal antes de handle; luego fallo real de close e inventario retrospectivo/migración. Otras representaciones/ACK agregado/F1/T024/C04/C05/21criterios/goal siguen abiertos. Sin release."
+      "next_action": "F1: test-only180ce95 verifica fallo real constructor Chroma por tenant inexistente antes de handle, F/U/manual exactos y lector compilado recuperando mismoID UNKNOWN/blocked/sin capacidad/receipt;44protocol y2compilados PASS. Collector94b83 preservado; última full8935PASS+misma xfail/8936 en94b83, sin repetir full test-only. Próximo: inventario retrospectivo forense/checkpoints/BLOB bajo autoridad vigente sin grants ni falsa reserva previa. Fallo real SDKclose sigue abierto sin seam público demostrado; agregado/F1/T024/C04/C05/21criterios/goal incompletos. Sin release."
     },
     {
       "id": "T025",

@@ -108,6 +108,32 @@
           "sha256": "900767601a6f68cfcdb8d68564fbdf1d694366dd9ff309ddeeda6ec289a49d92"
         }
       ]
+    },
+    "nominal_SDK_constructor_failure": {
+      "revision": "180ce95ff0b6d141da1cdf81633ae9a791c08988",
+      "status": "verified_local_one_missing_tenant_constructor_case",
+      "scope": "Exact nominal PersistentClient/tenant lookup raises NotFoundError before handle; SDK internals remain UNKNOWN",
+      "unit_regression": "44PASS/XML0.395;56922/128d9f;protocol/product source unchanged; final integration trace changed afterward",
+      "compiled_regressions": "2PASS/XML138.932;54571/cb9c7f;1074source/37scripts/34protected unchanged; IDs unchanged",
+      "constructor_pid": 60483,
+      "reader_pid": 60489,
+      "recovered": "same copy ID/record hash/inventory; UNKNOWN/unfinished/blocked/capability=False/no receipt; F/U/manual exact",
+      "SDK_internal_retirement_confirmed": false,
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/acceptance-proof.json",
+        "sha256": "8e75a037e6e2fef244c10bd03ecfe09b6db01de2c80aee962f9fdcdf77b50941"
+      },
+      "raw_exports": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/raw-export-manifest.json",
+        "sha256": "9c1a543320ca76a1e27b05b6e5a0c131e4d99ccbd1b62f1daa3f38a5d3f30973"
+      },
+      "last_full": "8935PASS+same xfail/8936 at94b83; no full rerun for test-only extension",
+      "independent_native_review": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/material/independent-review.json",
+        "sha256": "51843b289129c97bc937ea43773a5b5577adac1d85637b76fb8b21491e7aa193",
+        "checks": 22,
+        "issues": []
+      }
     }
   },
   "material_proofs": [
@@ -160,7 +186,7 @@
     "evidence": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-full/acceptance-proof.json"
   },
   "open": [
-    "A genuine SDK constructor error before handle return, and a genuine public/native close failure under a live copy capability. Metadata-marker errors and borrowed-factory rejection do not satisfy these.",
+    "Genuine public/native SDK close failure remains unverified. One nominal missing-tenant constructor exception before handle is verified; other failure modes are not inferred.",
     "semantic index/opaque and logical exports, ambient capture, contexts/events/suggestions/diagnostics/voice/stream payload and remaining snapshots/source roots/work/BLOB copies are not erased by collector_rows_files_v1. CatalogV1 preparation still records cleanup blocked; the separate collector receipt does not change that into an aggregate ACK.",
     "Pre-existing forensic/audit exports, DataCodec phase checkpoints/BLOBs and legacy uncatalogued copies require explicit current-authority retrospective observation/ownership. Hash manifests preserve evidence but do not grant production cleanup or pretend reservation preceded existing bytes.",
     "Legacy HEAD without manual companion and old unregistered snapshot adoption remain explicit rejection until a scoped migration exists; no manual companion, binding or target descriptor may be fabricated.",
@@ -172,7 +198,8 @@
   "implementation_commits": [
     "2cdbe51f0d3c897e98cc1d2ace7edc0aaed9240f",
     "ae40a75913afd2979852c4102f80fbce8b1840e8",
-    "94b83f1920537fa7a0d416eeccfbb9cbb4ac12af"
+    "94b83f1920537fa7a0d416eeccfbb9cbb4ac12af",
+    "180ce95ff0b6d141da1cdf81633ae9a791c08988"
   ],
   "warnings": {
     "occurrences": 65759,
@@ -203,31 +230,13 @@
     "full_proof_sha256": "15ef618c1f9c7ab7dd8f1f1fc3e795c75973d61ee44c974e1d37656a26bf65dd",
     "canonical_artifact_manifest": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-full/validation-artifact-manifest.json",
     "full_forensic_index": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-full/forensic-exports-01.json",
-    "full_forensic_index_sha256": "23f99afa0c32c1bc1a924486a2d80893e874e3e25bfd3fda17d0559e6468ddf2"
+    "full_forensic_index_sha256": "23f99afa0c32c1bc1a924486a2d80893e874e3e25bfd3fda17d0559e6468ddf2",
+    "nominal_constructor_failure": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/acceptance-proof.json",
+      "sha256": "8e75a037e6e2fef244c10bd03ecfe09b6db01de2c80aee962f9fdcdf77b50941"
+    }
   },
   "next_concrete_units": [
-    {
-      "basis": "The published SDK constructor/close fault obligation remains open after metadata-marker probes; this keeps the original requirement rather than redefining cleanup completion.",
-      "boundary": "A public SDK constructor error is distinct from an _append metadata error. A successful new case closes only that declared constructor-error path; actual public/native close failure still needs its own genuine, accurately labelled evidence. Unsupported fixture seams are not a feature RED.",
-      "files": [
-        "tests/integration/test_compiled_material_reconciliation.py",
-        "tests/unit/memory/test_copy_catalog.py"
-      ],
-      "first_baseline": "Reuse the closed current F fixture in one fresh owned compiled child. Under a real AdmissionController reserve an independent SDK extent and call the exact nominal PersistentClient with a syntactically valid but absent tenant on that new local store. Require a real SDK exception before a handle returns; do not wrap/replace PersistentClient, Client.close or force internal closed flags.",
-      "oracles": [
-        "Observe actual nominal constructor entry/exception; retain any actual returned owner and close only if one really exists. An unreturned handle remains UNKNOWN, never an invented close receipt.",
-        "Consume actual process wait and then read the same copy ID with another compiled current-authority reader: UNKNOWN/unfinished/blocked/capability=False/no cleanup ACK. Timeout/kill is containment, not acceptance.",
-        "Keep current F head/binding and the complete U/manual/protected state sentinel unchanged; preserve the original material/marker/collector tests and every original ID."
-      ],
-      "unit": "one_actual_nominal_SDK_constructor_failure_before_handle_return",
-      "priority": 1
-    },
-    {
-      "priority": 2,
-      "unit": "genuine_public_or_native_SDK_close_failure",
-      "status": "open",
-      "boundary": "A marker persistence failure is not an actual SDK close failure. Use a supported genuine failure path, retain any actual owner and uncertainty; no replacement close, forced flags or timeout/kill ACK."
-    },
     {
       "baseline": "Reject stale DTO/history/current-HEAD mismatch without writes. A valid registration can only produce known/pending/non-serving observation, no SDK/cleanup receipt.",
       "boundary": "Legacy HEAD without manual companion remains a separate migration/rejection problem, not an implicitly created companion.",
@@ -240,8 +249,18 @@
         "tests/mocks/slot_reconciliation_child.py",
         "private forensic-export boundary"
       ],
-      "priority": 3,
+      "priority": 1,
       "unit": "truthful_retrospective_representation_inventory"
+    },
+    {
+      "priority": 2,
+      "unit": "genuine_public_or_native_SDK_close_failure",
+      "status": "open_no_supported_failure_seam_demonstrated",
+      "boundary": "A marker persistence failure is not an actual SDK close failure. Use a supported genuine failure path, retain any actual owner and uncertainty; no replacement close, forced flags or timeout/kill ACK.",
+      "feasibility_review": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/close-failure-feasibility.json",
+        "sha256": "356b46ddd907cb20dfd1dff94328f5f366234ff002836f87d331b3cb49149c25"
+      }
     }
   ],
   "previous_full_runs": [
@@ -297,6 +316,28 @@
       "unit": "one_typed_current_authority_copy_cleanup_owner",
       "status": "verified_within_collector_representation_scope",
       "revision": "94b83f1920537fa7a0d416eeccfbb9cbb4ac12af"
+    },
+    {
+      "basis": "The published SDK constructor/close fault obligation remains open after metadata-marker probes; this keeps the original requirement rather than redefining cleanup completion.",
+      "boundary": "A public SDK constructor error is distinct from an _append metadata error. A successful new case closes only that declared constructor-error path; actual public/native close failure still needs its own genuine, accurately labelled evidence. Unsupported fixture seams are not a feature RED.",
+      "files": [
+        "tests/integration/test_compiled_material_reconciliation.py",
+        "tests/unit/memory/test_copy_catalog.py"
+      ],
+      "first_baseline": "Reuse the closed current F fixture in one fresh owned compiled child. Under a real AdmissionController reserve an independent SDK extent and call the exact nominal PersistentClient with a syntactically valid but absent tenant on that new local store. Require a real SDK exception before a handle returns; do not wrap/replace PersistentClient, Client.close or force internal closed flags.",
+      "oracles": [
+        "Observe actual nominal constructor entry/exception; retain any actual returned owner and close only if one really exists. An unreturned handle remains UNKNOWN, never an invented close receipt.",
+        "Consume actual process wait and then read the same copy ID with another compiled current-authority reader: UNKNOWN/unfinished/blocked/capability=False/no cleanup ACK. Timeout/kill is containment, not acceptance.",
+        "Keep current F head/binding and the complete U/manual/protected state sentinel unchanged; preserve the original material/marker/collector tests and every original ID."
+      ],
+      "unit": "one_actual_nominal_SDK_constructor_failure_before_handle_return",
+      "priority": 1,
+      "status": "verified_local_one_missing_tenant_case",
+      "revision": "180ce95ff0b6d141da1cdf81633ae9a791c08988",
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/acceptance-proof.json",
+        "sha256": "8e75a037e6e2fef244c10bd03ecfe09b6db01de2c80aee962f9fdcdf77b50941"
+      }
     }
   ],
   "remaining_requirements_review": {
@@ -312,5 +353,17 @@
     "full_forensic_index": "data/autonomous-roadmap-20261102/t024/f1/copy-full/forensic-exports-01.json",
     "full_forensic_index_sha256": "0920c1704a98cebc6823d30fe833d7105f4adaab64e60c7f16a70af10cf53561",
     "full_repro_receipt_sha256": "638b66a891a96cd685573a61caeb25660aeecf8810d30aee3ce0277fcb3b70fd"
+  },
+  "test_evidence_revision": "180ce95ff0b6d141da1cdf81633ae9a791c08988",
+  "close_failure_feasibility_review": {
+    "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/close-failure-feasibility.json",
+    "sha256": "356b46ddd907cb20dfd1dff94328f5f366234ff002836f87d331b3cb49149c25"
+  },
+  "SDK_constructor_audit_correction": {
+    "first_review": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/material/independent-review-first.json",
+      "sha256": "8e4affbc89ffaa7a4c1c099a3105b15a13c05b88f3142b483d5496611a73cd72"
+    },
+    "reason": "Initial auditor compared inventory-only hash with whole-sentinel hash. Corrected operand matches pinned executed canonical(sentinel); same52file F sentinel agrees across marker probes, constructor and reader. No test/runtime/oracle changed."
   }
 }

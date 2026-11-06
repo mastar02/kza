@@ -93,7 +93,7 @@
     "History/DTO cannot authorize copy/cleanup.",
     "Cleanup cancellation retains owned work until actual return without premature ACK."
   ],
-  "next_action": "First prove one genuine nominal SDK constructor exception before handle return using an absent tenant in an independent extent under current F; keep UNKNOWN/unfinished/blocked and verify in a fresh compiled reader. Then genuine close failure and truthful retrospective inventory. Collector-only normal/cancel evidence does not close aggregate cleanup/F1/T024 or any criterion.",
+  "next_action": "Implement truthful retrospective observation/registration of existing forensic/checkpoint/BLOB copies under actual current authority. Preserve identities; existing bytes cannot be labelled reserved-before-first-byte, and observation grants no SDK/cleanup/admission permission. Genuine SDK close failure remains open; no supported public failure seam was demonstrated by local source review. F1/T024/all criteria remain incomplete.",
   "foundation_progress": {
     "report": "docs/research/2026-11-06-copy-lifecycle-progress.json",
     "implementation_commit": "2cdbe51f0d3c897e98cc1d2ace7edc0aaed9240f",
@@ -107,28 +107,6 @@
   },
   "next_concrete_units": [
     {
-      "basis": "The published SDK constructor/close fault obligation remains open after metadata-marker probes; this keeps the original requirement rather than redefining cleanup completion.",
-      "boundary": "A public SDK constructor error is distinct from an _append metadata error. A successful new case closes only that declared constructor-error path; actual public/native close failure still needs its own genuine, accurately labelled evidence. Unsupported fixture seams are not a feature RED.",
-      "files": [
-        "tests/integration/test_compiled_material_reconciliation.py",
-        "tests/unit/memory/test_copy_catalog.py"
-      ],
-      "first_baseline": "Reuse the closed current F fixture in one fresh owned compiled child. Under a real AdmissionController reserve an independent SDK extent and call the exact nominal PersistentClient with a syntactically valid but absent tenant on that new local store. Require a real SDK exception before a handle returns; do not wrap/replace PersistentClient, Client.close or force internal closed flags.",
-      "oracles": [
-        "Observe actual nominal constructor entry/exception; retain any actual returned owner and close only if one really exists. An unreturned handle remains UNKNOWN, never an invented close receipt.",
-        "Consume actual process wait and then read the same copy ID with another compiled current-authority reader: UNKNOWN/unfinished/blocked/capability=False/no cleanup ACK. Timeout/kill is containment, not acceptance.",
-        "Keep current F head/binding and the complete U/manual/protected state sentinel unchanged; preserve the original material/marker/collector tests and every original ID."
-      ],
-      "unit": "one_actual_nominal_SDK_constructor_failure_before_handle_return",
-      "priority": 1
-    },
-    {
-      "priority": 2,
-      "unit": "genuine_public_or_native_SDK_close_failure",
-      "status": "open",
-      "boundary": "A marker persistence failure is not an actual SDK close failure. Use a supported genuine failure path, retain any actual owner and uncertainty; no replacement close, forced flags or timeout/kill ACK."
-    },
-    {
       "baseline": "Reject stale DTO/history/current-HEAD mismatch without writes. A valid registration can only produce known/pending/non-serving observation, no SDK/cleanup receipt.",
       "boundary": "Legacy HEAD without manual companion remains a separate migration/rejection problem, not an implicitly created companion.",
       "exact_seams": [
@@ -140,8 +118,18 @@
         "tests/mocks/slot_reconciliation_child.py",
         "private forensic-export boundary"
       ],
-      "priority": 3,
+      "priority": 1,
       "unit": "truthful_retrospective_representation_inventory"
+    },
+    {
+      "priority": 2,
+      "unit": "genuine_public_or_native_SDK_close_failure",
+      "status": "open_no_supported_failure_seam_demonstrated",
+      "boundary": "A marker persistence failure is not an actual SDK close failure. Use a supported genuine failure path, retain any actual owner and uncertainty; no replacement close, forced flags or timeout/kill ACK.",
+      "feasibility_review": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/close-failure-feasibility.json",
+        "sha256": "356b46ddd907cb20dfd1dff94328f5f366234ff002836f87d331b3cb49149c25"
+      }
     }
   ],
   "sdk_marker_progress": {
@@ -243,6 +231,28 @@
       "unit": "one_typed_current_authority_copy_cleanup_owner",
       "status": "verified_within_collector_representation_scope",
       "revision": "94b83f1920537fa7a0d416eeccfbb9cbb4ac12af"
+    },
+    {
+      "basis": "The published SDK constructor/close fault obligation remains open after metadata-marker probes; this keeps the original requirement rather than redefining cleanup completion.",
+      "boundary": "A public SDK constructor error is distinct from an _append metadata error. A successful new case closes only that declared constructor-error path; actual public/native close failure still needs its own genuine, accurately labelled evidence. Unsupported fixture seams are not a feature RED.",
+      "files": [
+        "tests/integration/test_compiled_material_reconciliation.py",
+        "tests/unit/memory/test_copy_catalog.py"
+      ],
+      "first_baseline": "Reuse the closed current F fixture in one fresh owned compiled child. Under a real AdmissionController reserve an independent SDK extent and call the exact nominal PersistentClient with a syntactically valid but absent tenant on that new local store. Require a real SDK exception before a handle returns; do not wrap/replace PersistentClient, Client.close or force internal closed flags.",
+      "oracles": [
+        "Observe actual nominal constructor entry/exception; retain any actual returned owner and close only if one really exists. An unreturned handle remains UNKNOWN, never an invented close receipt.",
+        "Consume actual process wait and then read the same copy ID with another compiled current-authority reader: UNKNOWN/unfinished/blocked/capability=False/no cleanup ACK. Timeout/kill is containment, not acceptance.",
+        "Keep current F head/binding and the complete U/manual/protected state sentinel unchanged; preserve the original material/marker/collector tests and every original ID."
+      ],
+      "unit": "one_actual_nominal_SDK_constructor_failure_before_handle_return",
+      "priority": 1,
+      "status": "verified_local_one_missing_tenant_case",
+      "revision": "180ce95ff0b6d141da1cdf81633ae9a791c08988",
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/acceptance-proof.json",
+        "sha256": "8e75a037e6e2fef244c10bd03ecfe09b6db01de2c80aee962f9fdcdf77b50941"
+      }
     }
   ],
   "latest_local_full": {
@@ -260,5 +270,31 @@
     "exact_expected_ids": true,
     "guards_during_run": "1074 source,37 scripts,34 protected files unchanged",
     "evidence": "data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-full/acceptance-proof.json"
+  },
+  "nominal_constructor_failure_progress": {
+    "revision": "180ce95ff0b6d141da1cdf81633ae9a791c08988",
+    "status": "verified_local_one_missing_tenant_constructor_case",
+    "scope": "Exact nominal PersistentClient/tenant lookup raises NotFoundError before handle; SDK internals remain UNKNOWN",
+    "unit_regression": "44PASS/XML0.395;56922/128d9f;protocol/product source unchanged; final integration trace changed afterward",
+    "compiled_regressions": "2PASS/XML138.932;54571/cb9c7f;1074source/37scripts/34protected unchanged; IDs unchanged",
+    "constructor_pid": 60483,
+    "reader_pid": 60489,
+    "recovered": "same copy ID/record hash/inventory; UNKNOWN/unfinished/blocked/capability=False/no receipt; F/U/manual exact",
+    "SDK_internal_retirement_confirmed": false,
+    "proof": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/acceptance-proof.json",
+      "sha256": "8e75a037e6e2fef244c10bd03ecfe09b6db01de2c80aee962f9fdcdf77b50941"
+    },
+    "raw_exports": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/raw-export-manifest.json",
+      "sha256": "9c1a543320ca76a1e27b05b6e5a0c131e4d99ccbd1b62f1daa3f38a5d3f30973"
+    },
+    "last_full": "8935PASS+same xfail/8936 at94b83; no full rerun for test-only extension",
+    "independent_native_review": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/material/independent-review.json",
+      "sha256": "51843b289129c97bc937ea43773a5b5577adac1d85637b76fb8b21491e7aa193",
+      "checks": 22,
+      "issues": []
+    }
   }
 }

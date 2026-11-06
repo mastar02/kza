@@ -8,18 +8,20 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 **T024-F1 sigue en curso.** La revisión `94b83f1` agrega limpieza selectiva del collector en copias retenidas y un bloqueo durable de admisión. Pasaron **388 pruebas de componentes**, **una integrada de limpieza normal/cancelada** y la full de **8935 PASS más la misma xfail conocida**, 8936 IDs exactos. El mismo goal permanece **activo e incompleto**; T024-F0 es la última unidad completa verificada.
 
+El avance posterior `180ce95` modifica sólo el ensayo compilado: verifica una excepción real del constructor nominal Chroma antes de entregar un handle, y la recuperación UNKNOWN desde otro proceso. Pasaron44 pruebas de protocolo y2 regresiones compiladas; la última full sigue correspondiendo a `94b83f1`.
+
 | Dato | Estado actual |
 | --- | --- |
 | Entorno | `gabriel`, `/Users/gabriel/Documents/Proyectos/kza`, macOS 26.6.1 arm64, CPython 3.13.18 |
 | Rama | `recovery/production-2026-10-25`; verificar HEAD/origin al retomar |
-| Implementación F1 | `94b83f1920537fa7a0d416eeccfbb9cbb4ac12af`, publicado; markers SDK en `ae40a75` |
+| Implementación F1 | `94b83f1920537fa7a0d416eeccfbb9cbb4ac12af`, publicado; markers SDK en `ae40a75`; ensayo de constructor en `180ce95` |
 | Componentes | 388 PASS; XML97.858 s; identidades exactas |
 | Integrada de limpieza | 1 PASS; XML92.128 s; cuatro cierres Graph y lector compilado nuevo, todos con wait0 |
-| Versiones materiales | O/R: aplicación9b; N/F y puente de seguridad:94b83f1 |
+| Versiones materiales | O/R: aplicación9b; N/F y puente:94b83f1 en collector,180ce95 en el ensayo posterior de constructor |
 | Alcance de limpieza | Dos copias: por copia 5 registros,2 exports,5 archivos retirados;9 registros ajenos preservados. Owner ejecutado en padre fuente bajo autoridad F compilada; lector nuevo comprueba recibos y2 denegaciones de admisión |
 | Full actual | 8935 PASS + misma xfail,8936 IDs; XML976.955 s; fuentes1074/scripts37/protegidos34 intactos durante la ejecución |
 | Warnings | 65759 ocurrencias;15 firmas conocidas,ninguna nueva o ausente en el resumen; sin supresión |
-| Pendientes | Fallos reales de constructor/cierre SDK; demás representaciones y ACK agregado; inventario retrospectivo y migraciones |
+| Pendientes | Fallo real de cierre SDK; demás representaciones y ACK agregado; inventario retrospectivo y migraciones |
 | Delegación | Hasta ocho agentes según plazas; PC interactiva con subagente `gpt-6.1-terra` |
 
 T021/T022/T023/T024 siguen `in_progress`; los 21 criterios permanecen `not_evaluated`. Se conservan los demás estados, presupuestos y permisos separados. Leer el [reporte actual](../research/2026-11-06-copy-lifecycle-progress.json) y la [continuación](../plans/2026-11-06-copy-lifecycle-continuation.json). Preparación y `finish()` no confirman limpieza: el catálogo V1 sigue bloqueado. Los dos recibos nuevos pertenecen sólo a `collector_rows_files_v1`; las otras representaciones y el ACK agregado siguen pendientes. Sin release ni cambios en producción.
@@ -326,11 +328,19 @@ El escenario integrado registra ocho copias y limpia la representación collecto
 
 Pasaron388 componentes,1 integrada y la full8936 con8935 PASS y la única xfail conocida. Las esperas reales fueron consumidas; la auditoría full pasó25 checks, sin firmas nuevas de warnings. Evidencia local ignorada por Git en `data/autonomous-roadmap-20261102/t024/f1/selective-cleanup-full/`: `acceptance-proof.json` SHA `15ef618c1f9c7ab7dd8f1f1fc3e795c75973d61ee44c974e1d37656a26bf65dd`, auditoría SHA `bd982cf1bbe4c909061628b4e9d6d7edfb9e29ac038754269ef66f25817e6110` y cinco casos físicos con manifest SHA `23f99afa0c32c1bc1a924486a2d80893e874e3e25bfd3fda17d0559e6468ddf2`. Los exports son evidencia histórica, sin permiso de admisión o limpieza. El código y los documentos se suben; estos datos privados permanecen locales.
 
+## Constructor SDK sin handle — T024-F1, avance local
+
+`180ce95ff0b6d141da1cdf81633ae9a791c08988` conserva los oráculos anteriores y agrega dos procesos compilados al escenario F cerrado. El constructor nominal consulta un tenant válido pero inexistente y propaga el mismo `NotFoundError`; el trace observa cero handles y cero llamadas a `Client.close`. Su `return None` corresponde al desenrollado de la excepción. No se reemplazaron factory, cierre ni flags internos.
+
+El lector nuevo encuentra el mismo ID, SHA del registro e inventario físico parcial, con UNKNOWN/unfinished/blocked, sin capacidad o receipt. F/U/manual permanecen exactos. Los dos procesos retornaron wait0; eso no confirma retiro interno del SDK. Pasaron44 pruebas de protocolo/XML0.395 s y2 compiladas/XML138.932 s, con guardas1074/37/34 intactas durante la corrida compilada. Las44 unidades precedieron el último cambio del trace de integración; el código de producto y las unidades no cambiaron. No se repitió la full por esta extensión de prueba.
+
+Evidencia local: `data/autonomous-roadmap-20261102/t024/f1/sdk-constructor/acceptance-proof.json`, SHA `8e75a037e6e2fef244c10bd03ecfe09b6db01de2c80aee962f9fdcdf77b50941`. Dos casos físicos conservados con manifest SHA `9c1a543320ca76a1e27b05b6e5a0c131e4d99ccbd1b62f1daa3f38a5d3f30973`. El fallo real de cierre sigue abierto: la revisión local no demostró una vía pública soportada para provocarlo sin sustituir métodos o forzar estado. Continuar con el inventario retrospectivo bajo autoridad vigente, conservando esa obligación pendiente.
+
 ## Prompt para la sesión nueva
 
 > Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff y `docs/research/2026-11-06-copy-lifecycle-progress.json`. Confirmá goal/checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro goal ni marques éste completo.
 > Código94b83f1 publicado:388 PASS componentes,1 PASS integrada collector y8935 PASS más la misma xfail conocida en8936 IDs exactos. Markers SDK ae40 verificados en44 unidades+2 compiladas. Esperas reales consumidas; fuentes1074/scripts37/protegidos34 intactos durante la full;15 firmas de warnings conocidas. No repetir ensayos cerrados sin causa nueva. Máximo ocho agentes según plazas; navegador/escritorio de PC siempre delegado a `gpt-6.1-terra`.
-> Próximo: seguir `docs/plans/2026-11-06-copy-lifecycle-continuation.json`. Primero excepción real del constructor nominal Chroma antes de retornar handle, usando un tenant inexistente en un extent independiente bajo autoridad F actual; conservar UNKNOWN/unfinished/blocked y verificarlo con lector compilado nuevo. Los fallos de markers no cubren esto ni un fallo nativo de close. Después cierre SDK real fallido, inventario retrospectivo y migraciones explícitas. Dos recibos collector no confirman limpieza agregada. Historia no concede ejecución ni retención indefinida. Mantener targets, oracle original, proveniencia/TTL, autoridad latest, voz-persona y permisos separados. T021–T024 y los21 criterios siguen abiertos. Sin release/producción/campo.
+> Ensayo posterior180ce95 publicado:44 protocolo+2 compiladas PASS, excepción real de constructor por tenant inexistente antes de handle y lector nuevo UNKNOWN. No afirmar full nueva ni cierre interno del SDK. Próximo: seguir `docs/plans/2026-11-06-copy-lifecycle-continuation.json` e inventariar retrospectivamente copias forenses/checkpoints/BLOB bajo autoridad actual; la observación no recrea grants ni pretende una reserva anterior a bytes ya existentes. El fallo real SDK close sigue abierto sin vía pública demostrada. Dos recibos collector no confirman limpieza agregada. Mantener identidades/targets/pins, oracle original, proveniencia/TTL, autoridad latest, voz-persona y permisos separados. T021–T024 y los21 criterios siguen abiertos. Sin release/producción/campo.
 
 ## Lista de cierre y reanudación
 
