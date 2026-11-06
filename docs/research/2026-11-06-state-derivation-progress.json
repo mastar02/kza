@@ -1,0 +1,168 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "task": "T024-F1",
+  "status": "material_scenario_verified_admission_followup_pending",
+  "goal_complete": false,
+  "F1_delivered": false,
+  "commits": {
+    "managed_harness": "4f88ac91138bdb875ef9432464707d6c1aa1fce7",
+    "derivation_APIs": "36cc99c2348eb5e4fd044a13e93ae9f5a46e488f",
+    "raw_event_TTL_fix": "c30b12c045edfbc5abf0c9258609afdf7e497bcf",
+    "numeric_retention_and_blocked_preparation": "8a05398a1190d8e0a985de43bd7aae2d6c1d4526",
+    "fixture_distinct_original_capture_ids": "3c4590236cc6d61aa97a0cb70640873517821d89",
+    "manual_export_closure": "d5740758bd8a44f99d0cd5e0131cd2e3e3a0adbd"
+  },
+  "verified": [
+    "Original privacy oracle unchanged; managed two-state old9b application plus compiled80b bridge rejects stale selection with privacy_authority_stale after three actual child waits0.",
+    "Source API components90 PASS/XML1.910 after numeric90d, blocked-preparation and manual-export closure fixes. Actual wait32760/722db9 consumed;1064 source/scripts37/protected30 unchanged. Earlier shared113PASS precede payload corrections.",
+    "Production snapshot API captured closed O/N with actual SDK get/close on copies; original bytes/head unchanged. O image is post-candidate cleanup, not untouched pre-upgrade data.",
+    "Separate old9b compiled material O fixture created/read all nine families and initial consentTrue through actual canonical configuration; child/source receipt/wait confirmed.",
+    "Initial independent static production review reported no blocker at its pins; native03 subsequently exposed a missing protected-export closure case. That review does not supersede actual native failure.",
+    "Compiled material scenario O/N/R/F passed one exact integration test, XML43.690s, actual terminal37103/04e71d consumed. Four different physical states and PIDs87468/87479/87488/87494 each returned0 with closed binding; imported compiled module counts277/279/277/279.",
+    "O/R execute real9b317029 code; N/F execute reald5740758 code. OLD uses the qualified compiled80b admission bridge; newer native graph consumes runtime_admission/state_configuration. No source fallback or manufactured tests-only code difference.",
+    "R exposes eligible ordinary O data and excludes N/N-only ordinary payload across semantic/captures/collectors/contexts/events/suggestions/diagnostics/voices/streams while retaining latest manual/identity/permission decisions.",
+    "N queues next-generation consent withdrawal; actual R and F configurations consume False. R makes an additional real credential withdrawal and F preserves it while restoring selected N/N-only ordinary data. The scenario checks withdrawn S is rejected before STT/HTTP counters advance.",
+    "Independent harness preflight review at exact final helper pins reported no additional harness blocker, with payload self-approval and universal F1 acceptance explicitly excluded."
+  ],
+  "implementation": [
+    "Closed-state snapshot with SQLite backup, BLOB codec, copied SDK exports and ownership-qualified external history.",
+    "Nine-family read-only payload plan and non-serving materializer preserving latest protected decisions.",
+    "Fresh local journal targets and queues with immutable qualified old history; separate journal/event/evidence target maps.",
+    "Typed authority admission permits only proven event-evidence locator relocation and preserves every other protected value.",
+    "A binding-qualified ordinary-cut history proof distinguishes intentional R exclusions from privacy withdrawals during forward recovery.",
+    "Numeric diagnostics retain original born/expires with typed public numeric projection and latest activity revocation/dependencies; raw acquisition deadlines remain enforced for raw data.",
+    "Journal qualification keeps active ownership inventory empty throughout payload/SDK preparation; final inventory publication follows successful cuts and public SDK closure.",
+    "A latest reviewed export and all of its parent records stay indivisible through payload rollback/forward selection. Real collector/SQLite table regression checks complete mixed-parent closure with original rows and deadlines."
+  ],
+  "open": [
+    "Admission V1 protected projection does not independently bind the marked-export/parent closure. Keep V1 and compiled80b compatibility intact; design and test an explicit compatible guard before universal F1 acceptance.",
+    "Historical cut-proof row classification also needs the complete manual export/parent closure; the corrected fresh selector no longer emits such exclusions, but older qualified proof inputs need a dedicated negative regression.",
+    "No broad full suite has run on these changes. Last full observation remains F0:8584PASS+the same known regexxfail/8585IDs, before F1 additions. A private1500s broad runner is prepared but not executed.",
+    "Universal native owner witnesses for HA/Auth/auxiliary capture remain a separate review. Per-child resources.native_gates_returned is True onlyN and nullO/R/F; null is not a native ACK. Four actual controller waits and closed bindings are independently recorded.",
+    "Exact diagnostics1/streams2/voices2 guards, T021/T022/T023/T024, all21 criteria and field gates remain open. No release/production/hardware/realHA operation."
+  ],
+  "evidence": [
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/managed/native-attempt-03/full-status.json",
+      "sha256": "366ddef0d1c4bcff27e396cba45cbc1ae22da01130cac367da28014850fc76b5"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/managed/harness-peer-review.json",
+      "sha256": "185111c57b42fba49bba7c3fc8023b743ce88f86589d01b214a0c70d0e42fc0f"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/managed/snapshot-peer-review.json",
+      "sha256": "d9c9229336cbeb2d056e77d49e2ebede0b4e7508b8c4d24e2ace07d7f8362e76"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/managed/snapshot-probe-native-02/status.json",
+      "sha256": "31cddb36dd7b7ce11d0baf15022cf46b921c9b50875a964b169cf62c1738c19a"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/managed/seed-material-native-02/status.json",
+      "sha256": "f411ed302f8772831d3bb7f18384ec405bf0c749047a839b954e635af6d685b6"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/derivation/component-attempt-03/full-status.json",
+      "sha256": "278d29381f1c3c77a57b5f97f0c040fd0b4c55e08ab4bdc4c067ebb49ada7130"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/regression/directed-attempt-01/full-status.json",
+      "sha256": "c9ecb85bc2001daaa5bd2dd1b508a6d16cabbcbbfdf3b99c5e2e30f28690c689"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/derivation/authority-snapshot-peer-review.json",
+      "sha256": "df099685a8c5c516897cbd780084a27df5c1e5a5dd21ebd244d2080e006aa7c5"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/material/native-attempt-01/first-failure-classification.json",
+      "sha256": "40396980d4da80a650909991e139f179ddf0bef0f1251a32a0ed154c21b8b62b"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/derivation/component-attempt-04/full-status.json",
+      "sha256": "82e78ccfae158181457f5adaa07127a730dbd139bc5125c309c26b81c5def669"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/derivation/production-peer-review.json",
+      "sha256": "f6ce55a12cf9784114e8055670f8adadad6fcf9a1530395856436dd16bbb3156"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/material/native-attempt-02/full-status.json",
+      "sha256": "dfa5391f08a29ad6e47daa172dc44f3833af5e4cfa1a2f4735b871796b6e8098"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/material/native-attempt-03/full-status.json",
+      "sha256": "6d9b29e4ca8c13c0e5402cfeaed75bb30d17f2adc9b5d17e8c753ab305d926f9"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/material/native-attempt-03/failure-classification.json",
+      "sha256": "e191f11c5784a3b489a5a5b9782c018694aa4ee4ef6f4055f1cdbee15c1c7004"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/derivation/component-attempt-05/full-status.json",
+      "sha256": "0263d45fd0e762aca48b8f1c5324810c4249ed6911c5fd882afbe786ef775db1"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/derivation/component-attempt-06/full-status.json",
+      "sha256": "2262c83e1d80865de6d77ea8c478c3370d55be8080711b9a1f3d3ce9a41ae664"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/material/native-attempt-04/full-status.json",
+      "sha256": "76de8f8a9cf848513e60337a1ca834cfbecdebbb1bc93f3878369854fcb8d539"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/material/child-evidence/attempt-c5007e892ae440baab70959029019e50/material-parent-proof.json",
+      "sha256": "0865476a3d1f85ee2cda0d725a1e7dd176933c208a81ec0988aa6fb795f3f05a"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/material/harness-independent-review.json",
+      "sha256": "ae6a22cca83019d4896386f6d5d7046ea73ca16e01838995b9a706074408aec5"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/derivation/export-closure-peer-review.json",
+      "sha256": "ee52ef40572acb313c2cc5b6ed9e3c772968b00c84992ce66a463836ef572007"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/material/native-attempt-04/acceptance-proof.json",
+      "sha256": "882f5bd2cfe7fc2c94167a8f4c03073fc5c208aff00d32e9e7f3e07c40db5478"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/derivation/roadmap-progress-preservation.json",
+      "sha256": "939166bd89a9020c13330cd9f40d1eab45e8de9f797789fe61c6deedecaab8d4"
+    }
+  ],
+  "material_native": {
+    "revision": "d5740758bd8a44f99d0cd5e0131cd2e3e3a0adbd",
+    "old_revision": "9b3170294eb69a53dd27b63949c09a63a2efed54",
+    "bridge_revision": "80b47f55716e980b93a7312b6732de0611e3e2e0",
+    "pytest": {
+      "passed": 1,
+      "failures": 0,
+      "warnings": 1,
+      "xml_seconds": 43.69
+    },
+    "tool_session": 37103,
+    "terminal_chunk": "04e71d",
+    "actual_wait_returned": true,
+    "source_files": 1064,
+    "script_files": 37,
+    "protected_files": 30,
+    "all_pins_unchanged": true,
+    "minimum_available_bytes": 190232125440,
+    "families": [
+      "semantic",
+      "captures",
+      "collectors",
+      "contexts",
+      "events",
+      "suggestions",
+      "diagnostics",
+      "voices",
+      "streams"
+    ],
+    "four_child_waits_zero": true,
+    "F1_delivered": false,
+    "goal_complete": false
+  }
+}

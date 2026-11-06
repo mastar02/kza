@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "unit": "T024-F1/privacy-safe-runtime-state-rollback",
-  "status": "implementation_in_progress_admission_prerequisite_checked",
+  "status": "material_scenario_verified_admission_followup_pending",
   "goal": "docs/plans/2026-11-02-autonomous-roadmap.md",
   "goal_status": "active_incomplete",
   "baseline_test_commit": "263e7458204c226aebfc64758831743bbd9f6119",
@@ -108,7 +108,7 @@
     "disk_floor_MiB": 512
   },
   "delegation": "Up to8 active agents including coordinator, subject to actual session slots (4 here). PC browser/desktop interaction requires gpt-6.1-terra subagent; root owns runtime/Git and reviews evidence.",
-  "remaining": "F1 remains in_progress. Original genuine RED is retained; managed harness adaptation and compiled NEW/OLD positive lifetime/derived R/forward F have not been executed. T021/T022/T023/T024, all21 criteria, exact diagnostics1/streams2/voices2 guards, known regex xfail/warnings and field gates remain open.",
+  "remaining": "F1 remains in_progress. Genuine originalRED retained; managed original oracle unchanged, adapted admission gate green; production snapshots/cuts/materializer and compiled material O/N/R/F now pass. Universal admission/manual historical-proof coverage, broad suite and exact guards remain open; no T024/C04/C05/goal acceptance.",
   "prerequisite_progress": {
     "report": "docs/research/2026-11-06-runtime-admission-foundation.json",
     "implementation_commit": "80b47f55716e980b93a7312b6732de0611e3e2e0",
@@ -116,5 +116,23 @@
     "scope": "Source admission/closure prerequisites only. No compiled NEW/OLD managed positive, derived R or forward F acceptance.",
     "original_gate": "Three original263e files unchanged; originalRED retained; lifecycle harness adaptation still required.",
     "next": "Production snapshot/cut/materialize/journal, compiled old-code R and newer-code F with latest protected revisions; retain exact guards."
+  },
+  "derivation_progress": {
+    "report": "docs/research/2026-11-06-state-derivation-progress.json",
+    "implementation_commits": {
+      "managed_harness": "4f88ac91138bdb875ef9432464707d6c1aa1fce7",
+      "derivation_APIs": "36cc99c2348eb5e4fd044a13e93ae9f5a46e488f",
+      "raw_event_TTL_fix": "c30b12c045edfbc5abf0c9258609afdf7e497bcf",
+      "numeric_retention_and_blocked_preparation": "8a05398a1190d8e0a985de43bd7aae2d6c1d4526",
+      "fixture_distinct_original_capture_ids": "3c4590236cc6d61aa97a0cb70640873517821d89",
+      "manual_export_closure": "d5740758bd8a44f99d0cd5e0131cd2e3e3a0adbd"
+    },
+    "components": "90PASS/XML1.910,1064source/scripts37/protected30 unchanged,actualwait32760/722db9",
+    "material_scenario": "1PASS/XML43.690,OLD9b/NEWd574,4distinctstates/4wait0/9families; scenario only, F1false",
+    "next": [
+      "Complete manual export/parent historical cut-proof classifier and negative regression.",
+      "Specify compatible admission protection for that closure without silently changing V1 or old compiled bridge.",
+      "Then broad checks, remaining exact guards and universal owner review."
+    ]
   }
 }

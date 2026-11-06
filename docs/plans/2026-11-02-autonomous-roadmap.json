@@ -1276,7 +1276,13 @@
         "b2dc68d3297e5f22bd81372d9388e100c61107e7",
         "3babff8aaa7dc8c5f87a5255e198a149ecfe718d",
         "263e7458204c226aebfc64758831743bbd9f6119",
-        "80b47f55716e980b93a7312b6732de0611e3e2e0"
+        "80b47f55716e980b93a7312b6732de0611e3e2e0",
+        "4f88ac91138bdb875ef9432464707d6c1aa1fce7",
+        "36cc99c2348eb5e4fd044a13e93ae9f5a46e488f",
+        "c30b12c045edfbc5abf0c9258609afdf7e497bcf",
+        "8a05398a1190d8e0a985de43bd7aae2d6c1d4526",
+        "3c4590236cc6d61aa97a0cb70640873517821d89",
+        "d5740758bd8a44f99d0cd5e0131cd2e3e3a0adbd"
       ],
       "evidence": [
         "docs/plans/2026-11-05-erasure-restore-continuation.json",
@@ -1302,9 +1308,11 @@
         "docs/plans/2026-11-06-slot-authority-reconciliation-continuation.json",
         "data/autonomous-roadmap-20261102/t024/f1/original-attempt-01/original-RED-receipt.json",
         "docs/research/2026-11-06-runtime-admission-foundation.json",
-        "data/autonomous-roadmap-20261102/t024/f1/repair/foundation-unit-attempt-02/acceptance-proof.json"
+        "data/autonomous-roadmap-20261102/t024/f1/repair/foundation-unit-attempt-02/acceptance-proof.json",
+        "docs/research/2026-11-06-state-derivation-progress.json",
+        "data/autonomous-roadmap-20261102/t024/f1/material/child-evidence/attempt-c5007e892ae440baab70959029019e50/material-parent-proof.json"
       ],
-      "next_action": "F1: prerrequisito de admisión/cierre implementado 80b47f5 y112PASS dirigidos/XML79.374; sólofuente, sinaceptaciónF1. Conservar original263e/RED y adaptar harness a lifetime gestionado. Falta snapshot/cut/materialización R con journal propio; rollback real de código+datos con autoridad latest, revisión protegida adicional enR y recuperaciónF. Sin fullnueva; últimafullF0anterior. T024/C04/C05/21criterios y tresguards siguen abiertos."
+      "next_action": "F1:90PASS componentes y escenario compilado O/N/R/F1PASS/XML43.690 con9familias; código9b/d574 y4cierres/wait0 reales. Sigue in_progress: cerrar protección de exports manuales en admisión V1 compatible conbridge80b y clasificador histórico de cutproof; luego full/guardias/revisión universal. Última fullF0 anterior; no aceptación T024/C04/C05/21criterios ni release."
     },
     {
       "id": "T025",
