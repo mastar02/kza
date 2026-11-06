@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "unit": "T024-F1/durable-copy-lifecycle",
+  "status": "planned_not_implemented",
+  "goal": "docs/plans/2026-11-02-autonomous-roadmap.md",
+  "goal_complete": false,
+  "basis": [
+    "docs/research/2026-11-06-manual-authority-progress.json",
+    "data/autonomous-roadmap-20261102/t024/f1/followup/requirements-current-evidence-audit.json"
+  ],
+  "problem": "Snapshot records are destination-local. Payload cloning starts before its local preparation record, while incomplete SDK ownership is partly RAM-only. Qualified history records roots/manifests but does not cover cleanup/recovery for every physical representation.",
+  "preserved": [
+    "V1 contracts and original privacy oracle",
+    "Current protected decisions, original targets, provenance and TTL",
+    "Existing qualification and nonserving guards",
+    "No release/production/realHA/models/hardware/personal data operations"
+  ],
+  "authorization": {
+    "entry": "Live AdmissionController under _locked_root; capability is process-local and nonserializable.",
+    "checks": [
+      "Controller FD matches current .admission.lock header; PID/type/physical identity match and _require_root_lease checks flock.",
+      "Closed HEAD equals latest_binding_id; validate binding/closure/manual companion.",
+      "Canonical destination parent with pinned physical identity; reject symlink/overlap with admission or source/current states. Inactive final derived state may be under slots.",
+      "Qualified snapshots keep root identity and manifest SHA; DTO/history is provenance, never a grant."
+    ]
+  },
+  "reservation": {
+    "location": "admission/copies outside copied trees",
+    "ordering": "Persist/fsync reservation before creating destination; create empty root, pin and persist its identity, then permit payload bytes. Represent crash before identity attachment.",
+    "fields": [
+      "copy_id/kind",
+      "authority HEAD/epoch",
+      "source bindings/snapshot roots/identities/SHAs",
+      "destination parent/root identities",
+      "stable cleanup owner/scope",
+      "representation extents",
+      "revision/preparation state",
+      "SDK entries/returns",
+      "cleanup state/actual receipts"
+    ],
+    "representations": [
+      "raw",
+      "state/SQLite",
+      "SDKwork",
+      "BLOB",
+      "logical exports/manifest/preparation",
+      "audit/checkpoint/forensic copies"
+    ],
+    "content": "IDs, locators, hashes only; no text/audio/vectors."
+  },
+  "seams": {
+    "snapshot_closed_state": "Reserve before destination.mkdir/_copy. Register SDK work before copytree and constructor. Publish preparation after realclose/finalsourcecheck/verifiedmanifest.",
+    "materialize_derived_state": "Reserve before _INCOMPLETE/_clone_latest. Pass operation into SDK path; publish preparation after actualcloses before enabling ownedtargets."
+  },
+  "states": {
+    "preparation": [
+      "reserved",
+      "writing",
+      "prepared",
+      "failed",
+      "unknown"
+    ],
+    "sdk": [
+      "not_entered",
+      "constructor_entered",
+      "handle_returned",
+      "close_entered",
+      "close_returned",
+      "unknown"
+    ],
+    "cleanup": [
+      "pending",
+      "blocked",
+      "claimed",
+      "running",
+      "complete"
+    ],
+    "rules": [
+      "PREPARED is not CLEANED. Persist entry before dispatch and return only after actual return.",
+      "Retain actual handles. Constructor/close/persistence uncertainty stays UNKNOWN; PID death/freeflock/timeout/kill never ACK.",
+      "Recovery reads external records without RAM/local incomplete files. New operation requires current authority and exact identity.",
+      "Cleanup claim binds current HEAD/lease/scope/revision. Completion requires implemented owner, actual return and physical verification; otherwise blocked/pending.",
+      "Pre-existing copies require honest retrospective registration, never a claim of before-first-byte registration. Legacy HEAD migration is separate."
+    ]
+  },
+  "minimum_tests": [
+    "Reservation failure leaves no payload.",
+    "Crash around reservation/root/identity remains recoverable.",
+    "Clone failure leaves durable owner/extents before local record.",
+    "SDK ctor/close uncertainty retains files and blocks.",
+    "Recovery independent of RAM/process liveness.",
+    "Changed HEAD/FD/physical identities rejects.",
+    "History/DTO cannot authorize copy/cleanup.",
+    "Cleanup cancellation retains owned work until actual return without premature ACK."
+  ],
+  "next_action": "Implement catalog/fault tests, integrate snapshot/materializer, then exact compiled/broad validation. This plan alone proves no lifecycle coverage."
+}

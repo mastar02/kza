@@ -1318,9 +1318,11 @@
         "data/autonomous-roadmap-20261102/t024/f1/repair/foundation-unit-attempt-02/acceptance-proof.json",
         "docs/research/2026-11-06-state-derivation-progress.json",
         "data/autonomous-roadmap-20261102/t024/f1/material/child-evidence/attempt-c5007e892ae440baab70959029019e50/material-parent-proof.json",
-        "docs/research/2026-11-06-manual-authority-progress.json"
+        "docs/research/2026-11-06-manual-authority-progress.json",
+        "docs/plans/2026-11-06-copy-lifecycle-continuation.json",
+        "data/autonomous-roadmap-20261102/t024/f1/broad-construction-3fc/acceptance-proof.json"
       ],
-      "next_action": "F1: admisión manual durable y testigos reales de cierre implementados; barrera de construcción 21 PASS y regresiones compiladas original + O/N/R/F 2 PASS en3fc5ac6. Fulls previas fallidas conservadas; nueva colección8833 exacta, full pendiente. Próximo: catálogo durable de cada copia antes del primer byte y propietario de limpieza/recuperación; legacyHEAD sin sello falla cerrado. T024/C04/C05/21criterios y goal siguen incompletos; sin release."
+      "next_action": "F1:3fc5ac6 con21 PASS construcción,2 PASS compilados y full8832 PASS+misma xfail/8833 IDs; guardas1066/37/31 intactas. Próximo: docs/plans/2026-11-06-copy-lifecycle-continuation.json, catálogo durable antes del primer byte, propietario de limpieza/recuperación y migración legacy. T024/C04/C05/21criterios y goal siguen incompletos; sin release."
     },
     {
       "id": "T025",

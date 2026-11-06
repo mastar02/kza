@@ -6,7 +6,7 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 ## Punto de reanudación
 
-**T024-F1 sigue en curso.** La revisión `3fc5ac6` tiene 21 pruebas de construcción y dos regresiones compiladas aprobadas. La colección general contiene 8833 casos exactos; su ejecución general está en curso; verificar el resultado en el checkpoint al retomar. El mismo goal permanece **activo e incompleto** y T024-F0 es la última unidad completa verificada.
+**T024-F1 sigue en curso.** La revisión `3fc5ac6` tiene 21 pruebas de construcción y dos regresiones compiladas aprobadas. La full general terminó con **8832 PASS y la misma xfail conocida**, 8833 IDs exactos, XML865.081 s. El mismo goal permanece **activo e incompleto** y T024-F0 es la última unidad completa verificada.
 
 | Dato | Estado actual |
 | --- | --- |
@@ -16,9 +16,10 @@ para retomar el mismo goal con su roadmap y evidencias.
 | Construcción | 21 PASS; XML6.374 s; espera real consumida |
 | Compilados | 2 PASS; XML100.917 s; original y recorrido O/N/R/F |
 | Versiones materiales | O/R: aplicación9b; N/F:3fc5ac6; puente de seguridad3fc5ac6 independiente |
-| Últimas full F1 | f550: dos fallos; df88: un fallo. Ambos resultados se conservan; no son full aprobadas |
-| Última full aceptada | F0:8584 PASS + misma xfail conocida,8585 IDs; anterior a F1 |
-| Pendiente concreto | Registrar cada copia antes del primer byte y acreditar limpieza/recuperación; full y guards pendientes |
+| Full F1 actual | 3fc5ac6:8832 PASS + misma xfail,8833 IDs; fuentes1066/scripts37/protegidos31 intactos |
+| Full F1 anteriores | f550: dos fallos; df88: un fallo. Ambos resultados fallidos se conservan |
+| Full F0 histórica | 8584 PASS + misma xfail conocida,8585 IDs; anterior a F1 |
+| Pendiente concreto | Registrar cada copia antes del primer byte y acreditar limpieza/recuperación; guards pendientes |
 | Delegación | Hasta ocho agentes según plazas; PC interactiva con subagente `gpt-6.1-terra` |
 
 T021/T022/T023/T024 siguen `in_progress`; los 21 criterios permanecen `not_evaluated`. Se conservan los demás estados, presupuestos y permisos separados. Leer el [reporte actual](../research/2026-11-06-manual-authority-progress.json) y la [continuación](../plans/2026-11-06-slot-authority-reconciliation-continuation.json). El oracle original y su RED histórico están preservados. Sin release ni cambios en producción.
@@ -287,6 +288,8 @@ Ese reporte verifica prerrequisitos en fuente. Sus checks compilados legacy usar
 
 ## Derivación y recorrido material — T024-F1, hito local
 
+Registro histórico hasta `d574075`; el avance vigente figura en la sección siguiente y en el reporte actual.
+
 Los commits `4f88ac9`, `36cc99c`, `c30b12c`, `8a05398`, `3c45902` y `d574075` implementan el harness gestionado, snapshots cerrados, selección/materialización de nueve familias y journal local con historia calificada. El oracle original se conserva; el harness adaptado rechaza la autoridad stale. No fusionar autoridad con SQL ni renovar fuentes o vencimientos.
 
 La suite de componentes terminó con **90 PASS**, XML1.910 s, wait real 32760/722db9. El recorrido compilado **O/N/R/F pasó**, XML43.690 s, wait real 37103/04e71d: cuatro estados físicos, código 9b en O/R y d574 en N/F, bridge80b para OLD, cuatro hijos con wait0 y 277/279/277/279 orígenes bytecode. R conserva decisiones latest y F conserva una revocación adicional hecha en R; ambos consumen el consentimiento `False` de la generación siguiente. Fuentes1064/scripts37/protegidos30 intactos. Se conservan los fallos previos: retención numérica, captura repetida del fixture y export manual omitido; sus correcciones no rebajaron los controles.
@@ -299,12 +302,12 @@ Los commits posteriores a `d574075` agregan el clasificador histórico de export
 
 La barrera de construcción en `3fc5ac6` mantiene excluido el mantenimiento histórico de diagnósticos hasta el retorno real de la validación nativa. La cancelación espera ese retorno y los escritores ajenos siguen rechazados. Pasaron 21 pruebas de construcción y dos regresiones compiladas con la aplicación anterior y el puente actualizado. O/N/R/F registra cuatro cierres y wait0 reales; esto acredita el escenario declarado.
 
-Las full de f550 y df88 fallaron y se conservan como tales. La colección nueva retiene sus 8823 IDs y agrega diez, sin quitar casos. La full nueva está en curso; aún no tiene resultado. También falta un catálogo durable antes del primer byte para todas las copias y sus obligaciones de limpieza/recuperación. El case físico temporal de un ensayo d853 anterior fue retirado por pytest; sólo se conservan sus recibos y logs. Los cases nuevos de3fc se exportan con su procedencia, sin reconstruir testigos anteriores. Ver el [reporte actual](../research/2026-11-06-manual-authority-progress.json).
+Las full de f550 y df88 fallaron y se conservan como tales. La colección nueva retiene sus 8823 IDs y agrega diez, sin quitar casos. La full nueva terminó con8832 PASS y la misma xfail conocida,8833 IDs exactos; las15 firmas de warnings se mantienen. También falta un catálogo durable antes del primer byte para todas las copias y sus obligaciones de limpieza/recuperación. El case físico temporal de un ensayo d853 anterior fue retirado por pytest; sólo se conservan sus recibos y logs. Los cases nuevos de3fc se exportan con su procedencia, sin reconstruir testigos anteriores. Ver el [reporte actual](../research/2026-11-06-manual-authority-progress.json).
 
 ## Prompt para la sesión nueva
 
 > Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff y `docs/research/2026-11-06-manual-authority-progress.json`. Confirmá goal/checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro goal ni marques éste completo.
-> Código publicado hasta3fc5ac6:21 PASS construcción y2 PASS compilados; OLD9b/NEW3fc5ac6, puente independiente3fc5ac6. Las full previas fallaron; colección8833 exacta, verificar si la nueva full ya terminó en el checkpoint. No repetir ensayos cerrados sin causa nueva. Máximo ocho agentes según plazas; navegador/escritorio de PC siempre delegado a Terra.
+> Código publicado hasta3fc5ac6:21 PASS construcción y2 PASS compilados; OLD9b/NEW3fc5ac6, puente independiente3fc5ac6. Las full previas fallaron y se conservan. La nueva full3fc aprobó8832 casos y conserva la misma xfail conocida,8833 IDs exactos, sin nuevas firmas de warnings. No repetir ensayos cerrados sin causa nueva. Máximo ocho agentes según plazas; navegador/escritorio de PC siempre delegado a Terra.
 > Próxima subunidad: catálogo durable de copias antes del primer byte, propietario actual de limpieza y recuperación de parciales/SDK inciertos. Historia no concede ejecución ni retención indefinida; sealed/materialized no equivale a ACK. Mantener los targets, el oracle original, proveniencia/TTL, autoridad latest y permisos separados. T021–T024 y los21 criterios siguen abiertos. Sin release/producción/campo.
 
 ## Lista de cierre y reanudación

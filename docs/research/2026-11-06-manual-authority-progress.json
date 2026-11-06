@@ -51,18 +51,26 @@
     },
     {
       "revision": "3fc5ac6",
-      "state": "running",
+      "state": "finished",
       "expected_ids": 8833,
       "ids": "8823prior+10new/0removed; sameknownregexxfail.",
       "runner_pid": 82310,
       "pytest_pid": 82323,
       "tool_session": 7331,
-      "actual_wait_consumed": false,
-      "evidence_origin": "/private/tmp/kza-f1-construction-3fc5ac6-20261106/data/autonomous-roadmap-20261102/t024/f1/full/full-attempt-01/"
+      "actual_wait_consumed": true,
+      "evidence_origin": "/private/tmp/kza-f1-construction-3fc5ac6-20261106/data/autonomous-roadmap-20261102/t024/f1/full/full-attempt-01/",
+      "result": "8832 PASS + same known regex xfail / 8833 exact IDs",
+      "xml_seconds": 865.081,
+      "summary_seconds": 865.32,
+      "terminal_chunk": "bc7769",
+      "exit_code": 0,
+      "accepted_within_local_scope": true,
+      "evidence": "data/autonomous-roadmap-20261102/t024/f1/broad-construction-3fc/acceptance-proof.json",
+      "evidence_sha256": "2ef380961cfb139b1cde885ce0ac1820fe447f13cae5b28e4a0369adfd9a51c3"
     }
   ],
   "last_fully_accepted_unit": "T024-F0",
-  "last_accepted_full": "8584PASS+knownregexxfail/8585IDs beforeF1",
+  "last_accepted_full": "8832 PASS + same known regex xfail / 8833 exact IDs at3fc5ac6; local full tests only, F1 incomplete",
   "requirements_audit": "11proved within scenarios/5partial/0missing; data/autonomous-roadmap-20261102/t024/f1/followup/requirements-current-evidence-audit.json",
   "open": [
     "Durable per-copy registration beforefirstbyte and cleanup/recovery ownership remain incomplete. History alreadyrecords qualifiedsnapshotroots/manifests; gap covers snapshot-to-qualification interval,failedclone,SDKwork,BLOB/logicalexports,audit/checkpoint/forensiccopies. Partialcopies remainednonserving; cleanupobligation is unresolved.",
@@ -85,6 +93,23 @@
       "originals_preserved": true,
       "cleanup_ack": false,
       "limits": "Historical d853 physical case absent. Original3fc has two Graph closures plus read-only inspector wait0; three historical S file differences caused by delegated cleanup are preserved, never relabelled as a new seal."
+    },
+    "full_audit": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/broad-construction-3fc/audit.json",
+      "sha256": "e2ae15e68e80c454108a239b29dd58796873b942c2f25194011d90853e927ae8"
+    },
+    "broad_raw_cases": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/broad-construction-3fc",
+      "case_files": 4141,
+      "case_symlinks": 18,
+      "case_receipt_sha256": "73b404aee771cb26ac0e33ddf228893b104a8747be8626847b23834f4d50394d",
+      "compiled_files": 515,
+      "compiled_symlinks": 3,
+      "compiled_receipt_sha256": "c695a58a83d8dde65d47c6e7788db113dd386867774e4b78e4edabe040dff534",
+      "repro_files": 115,
+      "repro_receipt_sha256": "e09b3251194478aa38bd55aff1e792ddec5825557ffc6061868be0f923425f5e",
+      "full_and_collection_entries": 88,
+      "cleanup_ack": false
     }
   },
   "delegation": "Maximum8 includingcoordinator, subject tosessionavailability(4current). PCbrowser/desktop tests require gpt-6.1-terra; these checksCLI/synthetic only.",
@@ -104,5 +129,13 @@
     "evidence": "data/autonomous-roadmap-20261102/t024/f1/diagnostic-flock/isolated-output/conclusion.json",
     "sha256": "68df8714072b4a46fdb0d69ec3a7e1e58c91ea7e9f97b9556e5acac8921d3510"
   },
-  "review": "Independent source peer and documentary peer found no material blocker; stale first_action in continuation corrected to current copy-catalog continuation."
+  "review": "Independent source peer and documentary peer found no material blocker; stale first_action in continuation corrected to current copy-catalog continuation.",
+  "warnings": {
+    "known_signatures": 15,
+    "occurrences": 65796,
+    "new_signatures": 0,
+    "scope": "Displayed pytest signatures with verified physical venv aliases and byte-identical project sources; raw child SDK stderr retained separately.",
+    "suppressed": false
+  },
+  "next_plan": "docs/plans/2026-11-06-copy-lifecycle-continuation.json"
 }
