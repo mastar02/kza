@@ -261,6 +261,139 @@ print(json.dumps({'pid': os.getpid(), 'copies': selected, 'module_origins': orig
 """
 
 
+_SDK_CONSTRUCTOR_FAILURE_COMPILED = _CATALOG_CHILD_BOOTSTRAP + """
+import importlib.metadata
+import chromadb
+from chromadb.api.client import AdminClient, Client
+from chromadb.config import Settings
+from chromadb.errors import NotFoundError
+constructor, public_close = chromadb.PersistentClient, Client.close
+constructor_code, close_code = constructor.__code__, public_close.__code__
+events, handles, errors = [], [], []
+lookup_code = AdminClient.get_tenant.__code__
+lookup_events, lookup_errors = [], []
+
+def trace(frame, event, value):
+    if frame.f_code is lookup_code:
+        if event == 'call':
+            lookup_events.append(['call', frame.f_locals['name']])
+        elif event == 'exception':
+            lookup_events.append(['exception', value[0].__name__])
+            lookup_errors.append(value[1])
+        elif event == 'return':
+            lookup_events.append(['return', type(value).__name__])
+        return trace
+    if frame.f_code not in (constructor_code, close_code):
+        return None
+    name = 'constructor' if frame.f_code is constructor_code else 'public_close'
+    if event == 'exception':
+        events.append([name, event, value[0].__name__])
+        errors.append(value[1])
+    elif event == 'return':
+        events.append([name, event, type(value).__name__])
+        if type(value) is Client:
+            handles.append(value)
+    elif event == 'call':
+        events.append([name, event])
+    return trace
+
+with stage.AdmissionController(admission) as controller:
+    sentinel = state_sentinel(controller)
+    operation = copy_catalog.reserve_copy(controller, 'snapshot',
+        admission.parent / 'catalog-sdk-constructor-failure',
+        sentinel['binding_id'], (sentinel['binding_id'],))
+    operation.create_root()
+    extent = operation.extent('index', family='semantic_index', representation='sdk_work')
+    operation.extent('probe.json', family='managed_payload', representation='preparation')
+    record_path = operation.destination / 'probe.json'
+    record_path.write_text(json.dumps({'kind': 'genuine_sdk_constructor_failure'}))
+    tenant = 'kza_absent_tenant_' + operation.copy_id
+    entry = operation.sdk_enter(extent, sdk_version=importlib.metadata.version('chromadb'))
+    failure, previous_trace = None, sys.gettrace()
+    sys.settrace(trace)
+    try:
+        try:
+            entry.construct(constructor, path=str(extent.path), tenant=tenant,
+                settings=Settings(anonymized_telemetry=False))
+        except BaseException as error:
+            failure = error
+        finally:
+            # Only an actual returned owner can receive public retirement.
+            if handles:
+                entry.close()
+    finally:
+        sys.settrace(previous_trace)
+    assert type(failure) is NotFoundError and errors == [failure], repr(failure)
+    assert lookup_errors == [failure] and lookup_events == [
+        ['call', tenant], ['exception', 'NotFoundError'], ['return', 'NoneType']], lookup_events
+    assert not handles and events == [['constructor', 'call'],
+        ['constructor', 'exception', 'NotFoundError'], ['constructor', 'return', 'NoneType']], events
+    assert chromadb.PersistentClient is constructor and constructor.__code__ is constructor_code
+    assert Client.close is public_close and public_close.__code__ is close_code
+    assert (extent.path / 'chroma.sqlite3').is_file()
+    for action in (lambda: operation.prepared(record_path), operation.finish):
+        try:
+            action()
+        except copy_catalog.CopyCatalogError:
+            pass
+        else:
+            raise AssertionError('An SDK exception cannot confirm preparation/retirement')
+    operation.failed('SDKConstructorError')
+    pending = next(record for record in copy_catalog.recover_copies(controller)
+        if record['copy_id'] == operation.copy_id)
+    assert pending['preparation'] == 'unknown' and pending['finished'] is False
+    assert pending['capability'] is False
+    assert pending['cleanup'] == {'phase': 'blocked', 'owner': None, 'receipt': None}
+    sdk, = pending['sdk'].values()
+    assert sdk['phase'] == 'unknown' and state_sentinel(controller) == sentinel
+    result = {'pid': os.getpid(), 'copy_id': operation.copy_id,
+        'fault_kind': 'actual_nominal_constructor_exception_before_handle_return',
+        'exception_kind': type(failure).__name__, 'tenant': tenant, 'events': events,
+        'tenant_lookup_events': lookup_events,
+        'returned_handles': 0, 'public_close_calls': 0, 'sdk_internal_retirement_confirmed': False,
+        'state_sentinel': sentinel, 'copy_record_sha256': pending['record_sha256'],
+        'copy_inventory': copy_catalog._inventory(operation.destination),
+        'module_origins': audit_origins(), 'cleanup_ack': False, 'graph_closure_ack': False}
+print(json.dumps(result, sort_keys=True))
+"""
+
+
+_VERIFY_SDK_CONSTRUCTOR_FAILURE_COMPILED = _CATALOG_CHILD_BOOTSTRAP + """
+probe = json.loads(Path(sys.argv[3]).read_text())
+assert probe['pid'] != os.getpid() and probe['actual_wait_returned'] is True
+assert probe['exit_code'] == 0 and probe['containment_only'] is False
+assert probe['fault_kind'] == 'actual_nominal_constructor_exception_before_handle_return'
+assert probe['exception_kind'] == 'NotFoundError' and probe['returned_handles'] == 0
+assert probe['tenant_lookup_events'] == [['call', probe['tenant']],
+    ['exception', 'NotFoundError'], ['return', 'NoneType']]
+assert probe['public_close_calls'] == 0 and probe['sdk_internal_retirement_confirmed'] is False
+with stage.AdmissionController(admission) as controller:
+    sentinel = state_sentinel(controller)
+    assert probe['state_sentinel'] == sentinel
+    record, = (record for record in copy_catalog.recover_copies(controller)
+        if record['copy_id'] == probe['copy_id'])
+    assert record['record_sha256'] == probe['copy_record_sha256']
+    assert record['preparation'] == 'unknown' and record['finished'] is False
+    assert record['capability'] is False
+    assert record['cleanup'] == {'phase': 'blocked', 'owner': None, 'receipt': None}
+    assert record['authority'] == sentinel['head']
+    destination = Path(record['destination'])
+    assert copy_catalog._identity(destination) == record['root_identity']
+    assert copy_catalog._inventory(destination) == probe['copy_inventory']
+    assert (destination / 'index/chroma.sqlite3').is_file()
+    sdk, = record['sdk'].values()
+    assert sdk['phase'] == 'unknown' and state_sentinel(controller) == sentinel
+    result = {'pid': os.getpid(), 'copy_id': record['copy_id'],
+        'record_sha256': record['record_sha256'], 'preparation': record['preparation'],
+        'finished': record['finished'], 'sdk_phase': sdk['phase'],
+        'cleanup': record['cleanup'], 'capability': False,
+        'state_inventory_sha256': hashlib.sha256(canonical(sentinel)).hexdigest(),
+        'module_origins': audit_origins(), 'sdk_internal_retirement_confirmed': False,
+        'cleanup_ack': False, 'graph_closure_ack': False}
+print(json.dumps(result, sort_keys=True))
+"""
+
+
 def _run_catalog_child(script, runtime, admission, evidence, name, *arguments):
     """Keep actual wait evidence separate from SDK/native cleanup claims."""
     command = [sys.executable, "-I", "-B", "-c", script, str(runtime), str(admission), *map(str, arguments)]
@@ -310,6 +443,15 @@ def _probe_compiled_sdk_metadata_faults(task, evidence):
         "catalog-sdk-fault-recovery", *probes)
 
 
+def _probe_compiled_sdk_constructor_failure(task, evidence):
+    runtime = (task / "staging/slots/forward/runtime").resolve(strict=True)
+    admission = (task / "staging").resolve(strict=True)
+    probe = _run_catalog_child(_SDK_CONSTRUCTOR_FAILURE_COMPILED, runtime, admission, evidence,
+        "catalog-sdk-constructor-failure")
+    _run_catalog_child(_VERIFY_SDK_CONSTRUCTOR_FAILURE_COMPILED, runtime, admission, evidence,
+        "catalog-sdk-constructor-failure-recovery", probe)
+
+
 def _recover_compiled_catalog(task, evidence):
     runtime = (task / "staging/slots/forward/runtime").resolve(strict=True)
     completed = subprocess.run(
@@ -337,3 +479,4 @@ def test_compiled_material_rollback_and_forward_preserve_latest_authority(tmp_pa
     assert proof["complete"] is True
     _recover_compiled_catalog(tmp_path.resolve(), evidence.resolve())
     _probe_compiled_sdk_metadata_faults(tmp_path.resolve(), evidence.resolve())
+    _probe_compiled_sdk_constructor_failure(tmp_path.resolve(), evidence.resolve())
