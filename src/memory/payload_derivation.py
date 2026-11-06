@@ -595,7 +595,12 @@ def _select_collectors(old, new, selected, policy, related):
         if row["quality"] != "unmarked"}
     parents = new.get("conversation_export_parents_v1", {}).get("rows", ())
     while True:
-        closure = protected | {row["parent_id"] for row in parents if row["export_id"] in protected}
+        # An export containing a manual parent is an indivisible reviewed
+        # derivative. Keep that export and all its parents from latest, then
+        # continue through any other exports sharing those parents.
+        closure = (protected
+            | {row["export_id"] for row in parents if row["parent_id"] in protected}
+            | {row["parent_id"] for row in parents if row["export_id"] in protected})
         if closure == protected:
             break
         protected = closure

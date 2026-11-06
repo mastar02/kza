@@ -589,3 +589,84 @@ def test_failed_preparation_keeps_real_sidecar_inadmissible(tmp_path, failure_ph
     with pytest.raises(ValueError, match="runtime_admission_active_inventory_mismatch"):
         validate_target_ownership(tmp_path, binding)
     assert not (destination / ".kza-payload-preparation.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_real_mixed_export_and_all_parents_stay_indivisible_in_R_and_F(tmp_path):
+    """Real collector output; table replay below admission, not a fake Graph."""
+    from pathlib import Path
+    from tests.mocks.conversations import graph
+    async with graph(tmp_path / "live") as g:
+        async def image(name, database=None):
+            root = tmp_path / name
+            path = root / PRIVACY
+            def copy():
+                snapshots._backup(Path(database or g.privacy.ledger.path), path)
+                return snapshots._database(path, root)
+            data = await g.privacy.acall(copy)
+            # A data-only codec view, without any closed-state capability.
+            return SimpleNamespace(snapshot_root=root, manifest={"databases": {PRIVACY: data}})
+        assert await g.add(user_input="O ordinary input", assistant_response="O ordinary output")
+        ordinary = await image("O")
+        cursor = max(row["sequence"] for row in ordinary.manifest["databases"][PRIVACY]["tables"]["wake_clips_v1"]["rows"])
+        mixed_id = await g.add(user_input="N mixed unmarked input", assistant_response="N mixed unmarked output")
+        old_manual = await g.add(user_input="N reviewed input", assistant_response="N reviewed output")
+        views = await g.collector.get_turns()
+        try:
+            manual_view = next(view for view in views if view.id == old_manual)
+            assert await g.collector.mark_response(manual_view, "corrected", "Latest manual correction",
+                sources=(g.base.source(),))
+        finally:
+            for view in views:
+                view.clear()
+        views = await g.collector.get_turns()
+        try:
+            manual, = (view for view in views if view.quality.value == "corrected")
+            manual_id = manual.id
+            assert manual_id != old_manual and manual.correction == "Latest manual correction"
+            assert next(view for view in views if view.id == mixed_id).quality.value == "unmarked"
+        finally:
+            for view in views:
+                view.clear()
+        exported = await g.collector.export_for_training(str(tmp_path / "live/exports"),
+            only_marked=False, after_sequence=cursor)
+        assert exported is not None
+        try:
+            assert exported.available
+            export_id, export_path = exported.id, Path(exported.output_path)
+            export_bytes = export_path.read_bytes()
+            assert b"Latest manual correction" in export_bytes and b"N mixed unmarked output" in export_bytes
+        finally:
+            exported.clear()
+        latest = await image("N")
+        n_tables = latest.manifest["databases"][PRIVACY]["tables"]
+        edges = [row for row in n_tables["conversation_export_parents_v1"]["rows"] if row["export_id"] == export_id]
+        assert {row["parent_id"] for row in edges} == {manual_id, mixed_id}
+        original_rows = {row["id"]: row for row in n_tables["wake_clips_v1"]["rows"]}
+        async def replay(older, current, name):
+            before = current.manifest["databases"][PRIVACY]
+            policy = payload._Policy(older, current, older.manifest["databases"][PRIVACY], before, g.clock.now)
+            policy.database = PRIVACY
+            selected = payload._select_database(older.manifest["databases"][PRIVACY], before, policy)
+            clips = {item.values["id"]: item.values for item in selected["wake_clips_v1"].values()}
+            assert {export_id, manual_id, mixed_id} <= clips.keys()
+            for identity in (export_id, manual_id, mixed_id):
+                assert clips[identity] == original_rows[identity]
+            selected_edges = [item.values for item in selected["conversation_export_parents_v1"].values()
+                if item.values["export_id"] == export_id]
+            assert sorted(selected_edges, key=payload._json) == sorted(edges, key=payload._json)
+            output = await image(name, current.snapshot_root / PRIVACY)
+            cuts = tuple(payload.TableCut(PRIVACY, table, tuple(before["tables"][table]["primary_key"]),
+                tuple(before["tables"][table]["rows"]), tuple(values.values())) for table, values in selected.items())
+            targets = {row["id"]: row["id"] for row in before["tables"]["erasure_targets"]["rows"]}
+            codec_plan = SimpleNamespace(tables=cuts, ordinary=older, latest=current)
+            journal_map = SimpleNamespace(target_id_map=targets, event_dependency_target_map={})
+            await g.privacy.acall(payload._apply_tables, codec_plan, output.snapshot_root, journal_map)
+            return await image(name + "-result", output.snapshot_root / PRIVACY)
+        rollback = await replay(ordinary, latest, "R")
+        forward = await replay(latest, rollback, "F")
+        assert export_path.read_bytes() == export_bytes
+        for point in (rollback, forward):
+            table = point.manifest["databases"][PRIVACY]["tables"]
+            actual = [row for row in table["conversation_export_parents_v1"]["rows"] if row["export_id"] == export_id]
+            assert sorted(actual, key=payload._json) == sorted(edges, key=payload._json)
