@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "unit": "T024-C: productores por conversación",
-  "status": "proposed_next_unit_not_implemented",
+  "status": "verified_local_producer_barrier_not_whole_T024",
   "created_at_utc": "2026-11-05T22:39:48.020669+00:00",
   "objective": "Dar un recibo local de PRODUCERS sólo cuando el grafo real y su autoridad estén acreditados y no quede trabajo de la conversación ni afinidad desconocida; conservar el trabajo ajeno.",
   "evidence": {
@@ -149,5 +149,13 @@
   "independent_review": "j_retirement_review: no design blocker; stable durable descriptor vs ephemeral binding, live-DI replacement checks and real unrelated gated work clarified by root before publication.",
   "C0_stage_candidate": "Current CommandProcessor creates ProducerScopes.operation from the exact producer_context sources and has no unresolved read reservation at its STT stage. Use real process_command calls for S and U with distinct synthetic input and independent native gates. U may queue on the actual shared model lock while S is held; after S returns, require U actually enters and remains held while busy(S) becomes false. Preserve source tuples, expiry and U output; clean both gates before owner close.",
   "goal": "docs/plans/2026-11-02-autonomous-roadmap.md",
-  "start_gate": "Publish B tests+tracking, then root verifies current source and freezes a concrete producer contract/test cut. B characterization is not complete aggregate erasure."
+  "start_gate": "Publish B tests+tracking, then root verifies current source and freezes a concrete producer contract/test cut. B characterization is not complete aggregate erasure.",
+  "execution_result": {
+    "implementation_commit": "59853442ccb367f1ba78cd838f587c8098f7fc82",
+    "report": "docs/research/2026-11-05-producer-erasure-barrier.json",
+    "component": "39 PASS",
+    "directed": "1087 PASS",
+    "full": "8577 PASS + same known xfail/8578 exact IDs",
+    "next_plan": "docs/plans/2026-11-05-full-graph-restore-continuation.json"
+  }
 }

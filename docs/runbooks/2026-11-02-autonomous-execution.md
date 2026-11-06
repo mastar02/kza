@@ -2900,3 +2900,11 @@ Los primeros intentos fallaron por contar una revisión expirada de feedback y e
 Pruebas B: 3 PASS, dirigida 844 PASS y full 8538 PASS + la misma xfail conocida sobre 8539 IDs exactos; XML 633.320 s. 1030 entradas/37 scripts/16 protegidos estables; retorno real del proceso y pruebas de identidad archivados. Código `f5b846a538a71a386da68ca72b7fa35d619754b1`. [Informe](../research/2026-11-05-integrated-restore-characterization.json) y [siguiente unidad](../plans/2026-11-05-producer-erasure-continuation.json).
 
 T024/C04/C05 y los 21 criterios siguen abiertos. Sin release ni cambio de producción. La interacción de PC se delega a Terra; máximo acordado de ocho agentes, sujeto a plazas.
+
+## Barrera de productores por conversación — T024-C
+
+El builder registra PRODUCERS v1 estable con inventario nominal de roles/modelos/borrowers/delegates. Revalida DI/autoridad/claim; reemplazos observados invalidan y UNKNOWN queda pendiente. Lease nueva reabre prueba, misma lease no. S termina con U aún en STT nativo, sin mute global. Wake lazy se registra antes de load y Hermes mantiene cuerpo/alias al reubicar su owner. Wrappers ambient comparten ledger/registry comprobados.
+
+C0 original: 1 PASS; primer feature: 34 PASS / 1 fallo de fixture FK, corregido sin schema/IDs/tiempos distintos. Final: 39 PASS, dirigida: 1087 PASS y full: 8577 PASS + misma xfail conocida sobre 8578 IDs exactos, XML 664.551 s. Fuentes: 1035; scripts: 37; protegidos: 18, estables. Código `59853442ccb367f1ba78cd838f587c8098f7fc82`. [Informe](../research/2026-11-05-producer-erasure-barrier.json) y [continuación D](../plans/2026-11-05-full-graph-restore-continuation.json).
+
+El child UNKNOWN sólo prueba recibo pendiente y contención del proceso, no limpieza física. Tres guards, T024/C04/C05 y21 criterios siguen abiertos. Sin release ni cambio de producción. Máximo ocho agentes según plazas; PC interactiva delegada a Terra.

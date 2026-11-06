@@ -1,0 +1,402 @@
+{
+  "schema_version": 1,
+  "unit": "T024-D/application-graph-compatible-data-restore",
+  "status": "proposed_next_unit_not_implemented",
+  "authorization": "Continuacion propuesta dentro del goal activo. Root debe cerrar C con evidencia y commit antes de iniciar D; esta investigacion no ejecuta ni autoriza nuevos runtimes/product edits.",
+  "objective": "Ensayo offline integrado de restauracion de payload compatible usando dos generaciones reales de ApplicationGraph construido por src.main.build_application, una autoridad/coordinator compartidos en cada generacion, las nueve familias B mas productor C, sin revertir decisiones manuales o permisos vigentes.",
+  "source_refs": [
+    {
+      "path": "src/main.py",
+      "sha256": "c3f16a85c26729dc8dcf980ac41b1a522deaf62a78a146609872425c1db2506a",
+      "symbols": [
+        "build_application"
+      ]
+    },
+    {
+      "path": "src/application.py",
+      "sha256": "2468b4f9ed9711a6fc2bb0a12c72b725097a8764ccaf2620ea14a4743289f26d",
+      "symbols": [
+        "ApplicationFactories",
+        "ApplicationGraph",
+        "HermesReasonerOwner"
+      ]
+    },
+    {
+      "path": "src/memory/producer_erasure.py",
+      "sha256": "651014fde3fd488a0f4f36cace82ed4c3c47753affaed176af89552af39f2296",
+      "symbols": [
+        "ProducerInventory.from_graph/_read/_used_models/verify",
+        "ProducersEraser.clean",
+        "build_producer_erasure"
+      ]
+    },
+    {
+      "path": "src/memory/privacy_services.py",
+      "sha256": "8e92221b4dbcecaf08d481f39e4cdbdfb6733ad4d4c0f8407e16b265180430e0",
+      "symbols": [
+        "build_privacy_services",
+        "PrivacyServices.initialize/begin_close"
+      ]
+    },
+    {
+      "path": "src/memory/erasure_journal.py",
+      "sha256": "fbb6a6755b0f227a3991fd86cd3ee3446414609e80b5f50eb9832f1fbd919783",
+      "symbols": [
+        "ErasureJournal.recover/is_current_claim/finish"
+      ]
+    },
+    {
+      "path": "src/memory/index_deletions.py",
+      "sha256": "f9d3cd1415d8a6d5e9a1c5e785a215f75e2724cace4d8cda3304424e4a81b703",
+      "symbols": [
+        "IndexDeletionQueue.recover"
+      ]
+    },
+    {
+      "path": "src/memory/services.py",
+      "sha256": "c7c993c87999be7b4409dc0a6b866d9947e4cea9e5cf390cdb86990ec9a9ed60",
+      "symbols": [
+        "build_memory_services"
+      ]
+    },
+    {
+      "path": "src/memory/long_term.py",
+      "sha256": "7fae3dfe28d84077f87080a9e8b913c54496d356499ab9b5c3bbcb2d5d75bb8e",
+      "symbols": [
+        "LongTermMemory.initialize/astore_fact/reconcile"
+      ]
+    },
+    {
+      "path": "src/ambient/transcriber.py",
+      "sha256": "d52eeeb4f02d7bfdc16cc7527deea25add229e1634eb2bea90e7ace15cf8c860",
+      "symbols": [
+        "build_ambient_path",
+        "AmbientPath"
+      ]
+    },
+    {
+      "path": "src/users/speaker_identifier.py",
+      "sha256": "a97dc6ba71e4678a9551e84c690dbf7585615a7b980280161b039a7e8d3b45ed",
+      "symbols": [
+        "SpeakerIdentifier.get_embedding"
+      ]
+    },
+    {
+      "path": "src/users/voice_registry.py",
+      "sha256": "6654ebd4a88d4a07701296db3c083a1a55297fe9fea6271eda4be66e7ede6ae6",
+      "symbols": [
+        "VoiceRegistry.observe/register_encoder"
+      ]
+    },
+    {
+      "path": "src/users/voice_ledger.py",
+      "sha256": "49e522c1987fe76f7b5405cb9df3cb0a34c96dba48a4cdcbd003937dbc6b058f",
+      "symbols": [
+        "VoiceLedger.snapshot/review_capture/confirm/delete_profile"
+      ]
+    },
+    {
+      "path": "src/users/voice_people.py",
+      "sha256": "ea4f8dbdfb5ad019c0898cecc5511d0c37fea4efb83b530fd8be02afdab32a02",
+      "symbols": [
+        "VoicePersonLinks.set_person/unlink_profile"
+      ]
+    },
+    {
+      "path": "src/memory/voice_schema.py",
+      "sha256": "af2a54a82273b82459ee4653d10edd5d48e9cdf8364d596c0092c68e145228e6",
+      "symbols": [
+        "VOICE_SCHEMA",
+        "initialize_voice_people_schema"
+      ]
+    },
+    {
+      "path": "src/dashboard/authority.py",
+      "sha256": "3d748264435942a64100298f6d614949bc40cf3b6db5f578b0d0c5e3050248fb",
+      "symbols": [
+        "DashboardAuthority.resolve",
+        "DashboardLease.reader_binding"
+      ]
+    },
+    {
+      "path": "src/dashboard/live_receipts.py",
+      "sha256": "7eaa552b23620bcc9df8e3b82ec75a6be66bf03676ccecdf093f0fdce4955442",
+      "symbols": [
+        "LIVE_RECEIPT_SCHEMA",
+        "LiveReceiptStore._recover/hello/reset_ack/ack"
+      ]
+    },
+    {
+      "path": "src/analytics/suggestion_store.py",
+      "sha256": "fceed95d947cbb2b867d8c7f59ae9638336b5820a84291964fa5180696d3f40e",
+      "symbols": [
+        "SuggestionStore.respond"
+      ]
+    },
+    {
+      "path": "src/orchestrator/context_persister.py",
+      "sha256": "125a6f583e798426921aefd9d1d62120997c29ad93cdf6fc9880f075dc435695",
+      "symbols": [
+        "ContextPersister.__init__/save"
+      ]
+    },
+    {
+      "path": "tests/mocks/producer_erasure_graph.py",
+      "sha256": "f6353a0552410ef93382059a9f8b15b797d165f1f1f3d7c75af8d10b3a098296",
+      "symbols": [
+        "nominal_factories",
+        "real_ambient_application",
+        "construction_sdk_guards",
+        "launch"
+      ]
+    },
+    {
+      "path": "tests/mocks/integrated_restore.py",
+      "sha256": "cd83d4aff620eba515ddbedaebb272103bd23c72ef5b24944d0ca6d6f16ea5c3",
+      "symbols": [
+        "seed_cohort/seed_patterns",
+        "snapshot_payload/selected_shared/restore_payload/authority_digest",
+        "BrowserPeer"
+      ]
+    },
+    {
+      "path": "tests/integration/test_memory_sdk_lifetime.py",
+      "sha256": "7478861f0580363c5261d6530c1c9d7e96997d448d769a38658c9ce1a7e84a1f",
+      "symbols": [
+        "Client",
+        "Factory"
+      ]
+    },
+    {
+      "path": "tests/mocks/memory_graph.py",
+      "sha256": "2fafe04ea26614168ef76a62c0aed081bb7582de71ff0c6421a41981d45db3c5",
+      "symbols": [
+        "MemoryClient",
+        "SyntheticEmbedding"
+      ]
+    },
+    {
+      "path": "tests/mocks/application_graph.py",
+      "sha256": "59a151ce92a1b3701d7bba8a5f1d8874d59eaf621528cf2552e86725dd06bdfc",
+      "symbols": [
+        "offline_config",
+        "offline_home"
+      ]
+    },
+    {
+      "path": "tests/integration/test_integrated_restore.py",
+      "sha256": "f5b3e6e967dd3f1f2ec645950e206fceb960b4c012351c2b02d6f7672550c0fd",
+      "symbols": [
+        "test_restored_nine_families_wait_for_two_actual_native_operations"
+      ]
+    },
+    {
+      "path": "tests/integration/test_producer_erasure_graph.py",
+      "sha256": "e612a2335aee40858ad58d284c1a40c03feac8457c9d76ab497c7c53bc88dcff",
+      "symbols": [
+        "test_producer_receipt_completes_for_s_while_actual_u_stt_remains_held",
+        "test_real_ambient_adapters_require_shared_policy_and_registry"
+      ]
+    }
+  ],
+  "contracts": [
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/b/voice-stream-restore-contract.json",
+      "sha256": "966f633152bb47d43a3553a33e6e68efd47ba60d8538a5d08f8df841dbcf91f7"
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/b/producer-contract-proposal.json",
+      "sha256": "19a823d2987c07202e4ac171d3a8f33ef9e3a4547bfaea92b8ab5d7a3402616d"
+    }
+  ],
+  "graph_contract": {
+    "public_assembly": "await build_application(config, shutdown=AsyncExitStack(), factories=ApplicationFactories(...)); assert type/isinstance ApplicationGraph y VoicePipeline nominales. El fixture devuelve ese objeto real, no SimpleNamespace que suplanta Graph/pipeline/owners.",
+    "same_authority": [
+      "g.erasure_services.privacy is g.privacy",
+      "g.producer_erasure.privacy is g.privacy",
+      "g.pipeline.memory.long_term.ledger is g.privacy.ledger",
+      "g.ambient_path.store.source_policy is g.privacy.ledger",
+      "Cada driver real viene de g.erasure_services._drivers; misma instancia no segundo build_erasure_services ni registro manual de success."
+    ],
+    "ten_registered_participants": [
+      "producers",
+      "semantic_index",
+      "captures",
+      "contexts",
+      "events",
+      "suggestions",
+      "collectors",
+      "diagnostics",
+      "streams",
+      "voices"
+    ],
+    "assertions": "Verificar set exacto de diez participantes y nominal driver callback.__self__ del builder. inventory.verify().valid antes de admitir payload/trabajos y despues de primera adopcion lazy legitima. No reemplazar inventory/clean/conversation_busy/prune_private por callbacks sinteticos.",
+    "live_reachability": {
+      "semantic_memory": "g.pipeline.memory.long_term y .short_term; g.pipeline.request_router.memory mismo manager. No confundir g.models.chroma (indice domotico ChromaSync) con memory index.",
+      "ambient": "g.ambient_path.store; g.ambient_path.transcriber._archiver real creado por main; transcriber._stt._stt y _tagger._identifier ya registrados en model owners.",
+      "collectors": "g.producer_coverage.collectors (STTCorrectionCollector y ConversationCollector); MultiRoomAudioLoop._wake_clip_writer ya construido cuando rooms.wake_word.capture_clips.enabled. Reusar store/targets de esos owners; no agregar writer nuevo tras sellar inventario.",
+      "context": "g.pipeline._orchestrator.context_manager y .persister reales; manager adjunto al ContextEraser de coverage.",
+      "analytics": "g.pipeline.request_router.event_logger y .suggestion_engine, compartidos con drivers reales.",
+      "diagnostics": "g.pipeline.request_router.metrics_emitter, mismo emitter de DiagnosticServices registrado; flush y catalog real.",
+      "streams": "g.pipeline._event_bus y driver LiveStreamEraser; reader_binding de g.dashboard_authority actual, no autoridad paralela.",
+      "voices": "g.voice_registry y su ledger; usar encoder SpeakerIdentifier real del ambient tagger que ya fue registrado, no Encoder foreign agregado a un inventario sellado.",
+      "producers": "g.pipeline.command_processor + g.producer_erasure, fallback real conservado y roles ambient/orchestrator nominales."
+    }
+  },
+  "configuration_and_allowed_leaves": {
+    "config": "Todo bajo tmp_path; rooms.enabled y una synthetic-room con mic descriptor de fixture, ambient.enabled, keep_audio.enabled y min_free_mb=0, memory.enabled, analytics.enabled y observability.enabled; training STT/conversations/export paths y wake capture_clips habilitados; nightly/real speaker main/emotion/dashboard server start deshabilitados. Dashboard authority real puede estar habilitada sin escuchar HTTP.",
+    "ambient": "Partir de real_ambient_application de C, Parakeet CPU y quality disabled. Se puede construir distiller real con memory.enabled y shadow_mode false sin iniciarlo ni invocar chat; gate real es store_fact_fn presente y not shadow. No fingir que distill.enabled controla esa rama.",
+    "models": "ParakeetSTT/KokoroTTS/WakeWordDetector/SpeakerIdentifier nominales con leaves CPU sinteticos; no pesos ni GPU. Mantener lifecycle/admission/leases/native ownership reales. Para voces, backend encode_batch CPU (torch tensor determinista) del identifier ambient; no sustituir get_embedding/VoiceRegistry.observe/ledger.put por returns constantes.",
+    "SDK": "PersistentClient/SQLite/archivos reales y datos sinteticos. Adaptador de embedding determinista como tests.integration.test_memory_sdk_lifetime.Client/Factory o MemoryClient, acotado a ruta memory.chroma_path. No reset SDK ni fake collection/del/close receipt.",
+    "HTTP": "Context persister en main exige compactor real y HttpReasoner.load hace conexion/model probe. Usar endpoint HTTP local sintetico que responda listado/modelo/completion, precedente de pruebas HttpReasoner; declarar destino/consentimiento correctos sin red externa. No sustituir Compactor/ContextManager por stubs.",
+    "clock": "Main no expone reloj en ApplicationFactories. Si hace falta B seed_patterns con saltos, wrapper test-only forwarding de main.build_privacy_services debe delegar 1:1 al builder real pasando su argumento publico clock=Clock; no fabricar PrivacyServices ni modificar autoridad despues de sello. Los descendientes reales derivan de ledger.clock. Alternativa: ajustar el seed para reloj real sin sleeps largos, pero no editar timestamps SQL para fingir evidencia de patrones.",
+    "operational_boundary": "No iniciar ApplicationGraph.run/warmup/ambient_path.start/dispositivos/modelos pesados para poblar payload. Invocar APIs de dominio reales y trabajos CommandProcessor bajo producer_context como C. Esto prueba ensamblaje/lifecycle offline, no aceptacion hardware/audio operativo completo."
+  },
+  "payload_population": [
+    {
+      "family": "semantic_index",
+      "API": "g.pipeline.memory.long_term.astore_fact(..., sources=(S,)); indice SDK real con SyntheticEmbedding; get real por fact id.",
+      "payload": "Contenido/embedding indexado; autoridad fact ledger y tombstones quedan fuera restore."
+    },
+    {
+      "family": "captures",
+      "API": "AmbientStore.add(AmbientUtterance con capture_id/conversation_id/captured_at/expires_at), archiver.write y store.set_audio_path/read_audio reales.",
+      "payload": "utterances+capture_conversations seleccionados, WAV exacto y TTL original."
+    },
+    {
+      "family": "collectors",
+      "API": "writer.submit, stt.add_correction, conversation.add_turn/mark_response y export_for_training sobre targets existentes del grafo.",
+      "payload": "wake/STT/turn/export y cuatro familias de lineage; no registrar writers extras despues de sello."
+    },
+    {
+      "family": "contexts",
+      "API": "context_manager.aget_or_create/add_turn y manager._offload(persister.save, context) reales; short_term.add_turn.",
+      "payload": "policy_v3 JSON con summary_sources y turnos, sin nueva autoridad/callback exito."
+    },
+    {
+      "family": "events",
+      "API": "event_logger.acall(log,...) con fuentes y evidencia temporal real; seed_patterns B solo adaptado a reloj compartido.",
+      "payload": "events_policy_v1 seleccionado y deadlines exactos."
+    },
+    {
+      "family": "suggestions",
+      "API": "suggestion_engine.generate_suggestions sobre eventos reales y prepare/create real.",
+      "payload": "propuestas S automaticas pending, no snapshot de decisiones U accepted/rejected/snoozed."
+    },
+    {
+      "family": "diagnostics",
+      "API": "metrics_emitter.emit_request(...sources=...) y flush real.",
+      "payload": "catalog metrics/lineage + JSONL rotado seleccionado, conservando guard externo v1."
+    },
+    {
+      "family": "voices",
+      "API": "g.voice_registry.observe(identifier ambient registrado, audio sintetico, sources, transcript y provenance real si la hay); esperar jobs reales y revisar BLOB/transcript.",
+      "payload": "fingerprints, sources, review WAV/transcript/metadatos y grupos automaticos completos no conflictivos conforme allowlist B; no perfiles confirmados/manual/person-link."
+    },
+    {
+      "family": "streams",
+      "API": "bus.browser_stream+subscribe+publish con ReaderBinding de g.dashboard_authority, hello/reset/reset_ack/receipt/ACK reales sobre queues WebSocket sinteticas.",
+      "payload": "live_deliveries+sources+lineage originales. Nunca conexiones/reset/runtime/generacion/namespace reescritos."
+    },
+    {
+      "family": "producers",
+      "API": "C NativeGate+launch sobre CommandProcessor real con S y U conocidos, cancelacion observador, dependencia nativa y retorno real.",
+      "payload": "Scopes en memoria no se restauran. El recibo persistido se reabre en nueva lease y exige un inventario/owners frescos de Graph nuevo."
+    }
+  ],
+  "manual_authority_preservation": {
+    "sequence": "Despues del snapshot de payload S, crear o actualizar sentinelas manuales actuales usando APIs de autoridad: perfil U confirmado con >=3 capturas distintas, revision/delete de perfil y/o person-link/unlink actual; sugerencia U respondida accepted/rejected/snoozed; credencial household sin voz/person permisos si se incluye auth. Capturar estado vigente justo antes del restore, no estado antiguo del snapshot.",
+    "never_restore": [
+      "facts/proposals/consentimientos/tombstones/erasure targets/claims/receipts ni privacy.db completo",
+      "voice_profiles, voice_profile_sources, voice_review_requests, voice_group_requests/request_lineage y voice_profile_people",
+      "auth_meta/credentials/sessions/dashboard auth DB, users/person catalog ni permisos",
+      "live_connections, live_resets, runtime_id/generaciones/ACK ni sqlite_sequence"
+    ],
+    "mixed_rows": "Allowlist B solo para claves S ausentes y grupos automaticos sin manual request/conflicto. Ademas de digest de tablas no-payload, comparar columnas/revisiones/estado/razon de TODA fila existente en tablas mixtas (grupos, suggestions status/snooze, fingerprint suggestion links, collector revisions). No excluir una tabla entera del digest y asumir que sus decisiones quedaron protegidas.",
+    "voice_person": "Una voz confirmada/asociada no concede household/admin/people/voice review. Usar VoiceReviewer.from_dashboard y VoicePersonLinks.set_person con actor actual en casos de permisos; no inferir autorizacion por nombre/embedding/profile. Registrar y comparar las revisiones de unlink/deletion y auth/person rows actuales antes/despues.",
+    "collision": "INSERT columnas explicitas para claves ausentes, nunca REPLACE/UPDATE de decision existente. Si PK/lineage/revision/decision manual actual colisiona, rechazar snapshot compatible atomicamente y conservar bytes/filas autoridad exactos; no forzar reconstruccion de prueba faltante."
+  },
+  "restore_and_replay": {
+    "before_restore": "Solicitar erasure(S) al mismo g.erasure_services, permitir solo recibos locales reales; liberar cada gate en finally dentro del contexto Graph antes de stack.aclose. Observar native retorno y cerrar todas refs SDK/owners y ambas autoridades. Comprobar lease libre y que segundo writer no entra durante close retenido.",
+    "restore": "Test-only data replay de columnas/filas/archivos/vector payload S allowlisted usando SQLite foreign_keys ON y SDK version exacta; mismos root dev/inode/schema/model metadata, source ids/captured_at/expires_at/paths/lineage/seq. Comparar digest de autoridad vigente y sentinelas manuales antes/despues. No crear RestoreAPI ni cambiar permisos para hacerlo pasar.",
+    "new_graph": "Construir Graph2 por build_application real con misma config y ficheros; PrivacyServices2/ledger2/coordinator2 nuevos objetos bajo nueva lease, conservando identidad durable del journal/operation. Inventory2 from_graph fresco y valid; no copiar sello/old driver ni reusar refs Graph1.",
+    "receipt_recheck": "PrivacyServices.initialize corre ErasureJournal.recover para producers y otros ocho participantes bajo _ready false. IndexDeletionQueue.recover reabre semantic_index complete y deletion obligations; no atribuir semantic reset a la lista de ErasureJournal. Viejo claim/token no puede is_current_claim/finish; mismo lease initialize/reconcile no reabre ni crea otro target productores.",
+    "barriers": "Retener unlink WAV/collector real y delete vector SDK real, mas nuevo productor S en generacion2 si fuente actual puede admitirse antes revocacion. No intentar admitir S ya tombstoned: para productor tras restart usar comprobacion inventario y receipt reabierto, o nuevo S2 valido como control independiente. Viejo S debe ser rechazado por admission, no crear trabajo retroactivo.",
+    "readers_with_payload_present": "Main carece hook before_voices B. Usar observacion test-only forwarding alrededor del builder real build_voice_registry (sin sustituir su retorno): recibir el MISMO privacy, leer rows payload presentes via privacy.acall y VoiceLedger real, verificar snapshot/review bloqueados por tombstone, luego await builder original. Guardar identidad para comparar con Graph2. Si se bloquea SQLite worker en delete no encolar lector detras del mismo gate: el observer ocurre antes, o usar API cuyo worker no queda bloqueado.",
+    "stream_recheck": "Peer con mismo client historico solo si reader namespace actual resulta realmente compatible por autoridad persistida. Ejecutar hello/reset/ACK real sin reescribir owner_namespace/connection_id/tickets. Si decision/auth actual cambia namespace o no hay peer acreditado, streams local pendiente es el resultado honesto; no aceptar ACK viejo ni forzar complete."
+  },
+  "first_baseline_concrete": {
+    "initial_scope": "Uno o dos nuevos casos de composicion en un archivo integrado con helper dedicado, todos por public ApplicationGraph. No producto inicialmente; no tratar ausencia de seam de fixture como RED.",
+    "case1": "Graph1 pobla todas las familias S/U mediante sus propietarios reales; snapshot data-only; sentinelas manuales vigentes; erasure S mientras nativeS/U reales retenidos; comprobar productores complete solo al retornar S y U continua, resto local cleanup real y tres guards impiden aggregatecomplete.",
+    "case2": "Tras cierre real/lease libre, restituir payload S compatible y abrir Graph2 real; lector fuenteS negado con bytes presentes, recibos reabiertos bajo nueva lease, vector/unlink bloquean sus pasos hasta retorno real; completar solo los targets locales acreditados; autoridad/manual/Ubytes/TTL exactos preservados. Acreditar oldclaims rechazados e inventory2 fresco; nunca admitir S revocado para inventar un productor.",
+    "negative_contract": "Colision de payload con revision/manual decision existente o metadata/version/root incompatible rechaza restore sin rollback; no rebajar guards ni exigir falsa aggregatecomplete.",
+    "root_validation": "Root fija baseline commit y guardas despues de cerrar C, revisa oraculos antes runtime, recoge IDs reales y union exacta del baseline aceptado. Budgets y fixture defects se clasifican sin cambiar schema/protocolo para salvar fixtures."
+  },
+  "concrete_gaps_and_bounded_resolution": [
+    {
+      "gap": "B integrated_graph fabrica SimpleNamespace y registra solo9 drivers; C application fixture actual deshabilita memoria/analitica/diagnosticos/archiver.",
+      "resolution": "Componer config y leaves en public build_application, alcanzar owners existentes por Graph; no adjuntar piezas equivalentes fuera del sello."
+    },
+    {
+      "gap": "Memory main no expone chroma_client en ApplicationFactories; default embedding descargaria pesos.",
+      "resolution": "Adaptador externo por ruta con SDK real+SyntheticEmbedding como precedente Client/Factory; mantener build_memory_services real y su close ownership."
+    },
+    {
+      "gap": "Main persistence requiere Compactor y su HTTP model probe.",
+      "resolution": "Endpoint local real como leaf HTTP; configurar cloud/local policy correctamente. No activar Hermes subprocess ni pesos."
+    },
+    {
+      "gap": "Voice Encoder B foreign no acredita inventario nominal C.",
+      "resolution": "Reusar SpeakerIdentifier ambient nominal registrado y sustituir solo backend CPU encode_batch; conservar _speaker lifecycle y registry job. No registrar extra encoder tras sello."
+    },
+    {
+      "gap": "BrowserPeer B depende bus.test_reader/autoridad aparte.",
+      "resolution": "Helper D recibe ReaderBinding real de Graph.dashboard_authority y mantiene hello/reset/ACK, cliente/namespace historicos. No crear segundo DashboardAuthority."
+    },
+    {
+      "gap": "Reloj B seed_patterns no se inyecta directamente en main.",
+      "resolution": "Forwarding test clock del argumento publico build_privacy_services antes construccion, o seed API compatible con reloj real; sin editar SQL de eventos ni resetear clock despues del sello."
+    },
+    {
+      "gap": "Lector pre-builder de voces no expuesto public como callback en main.",
+      "resolution": "Spy observador que delega al builder real y comprueba mismo authority objeto; no nuevo producto API ni falso builder."
+    }
+  ],
+  "guards_and_open_evidence": {
+    "preserved_unresolved_targets": [
+      {
+        "participant": "diagnostics",
+        "version": 1
+      },
+      {
+        "participant": "streams",
+        "version": 2
+      },
+      {
+        "participant": "voices",
+        "version": 2
+      }
+    ],
+    "aggregate": "Con los tres guards unresolved no hay recibo agregado complete. D solo acredita cada target local real tras su retorno y el estado global honesto; no remover targets ni callbacks always-done.",
+    "still_pending": [
+      "Inventario raw/legacy/historicos externos y exports ajenos al subconjunto compatible",
+      "Copias browser reales y dispositivos, SDK privados/modelbuffers que no retornan proof nominal",
+      "Rollback runtime/data integral, release/despliegue/backuprestore completo y fallos de storage reales",
+      "C04/C05 y21 criterios del goal; D no cierra ninguno por si sola"
+    ]
+  },
+  "limits": [
+    "Propuesta solamente, sin editar producto/tests/docs/Git, sin imports de proyecto/pytest/collection/runtime/UI.",
+    "No implementacion ni nueva API de restauracion; wrappers propuestos conservan builders reales y solo hojas/clock/observacion de fixture.",
+    "Fuentes/hashes son instantanea de C en curso, no baseline aceptado D. Root debe cerrar C primero."
+  ],
+  "baseline_revision": "59853442ccb367f1ba78cd838f587c8098f7fc82",
+  "goal": "docs/plans/2026-11-02-autonomous-roadmap.md",
+  "previous_evidence": {
+    "path": "docs/research/2026-11-05-producer-erasure-barrier.json",
+    "sha256": "bbcfd204a8b5d8f4a37e3105ffdc956d17d63f308b1118754f197601992b08d5",
+    "bytes": 38669
+  },
+  "execution_authorization": "Continue within the existing active goal after C publication, without requesting another user approval for its authorized scope.",
+  "start_gate": "Publish C code+tracking, confirm current source, then freeze D. Keep all three unresolved guards and acceptance criteria open."
+}

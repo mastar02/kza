@@ -1,0 +1,743 @@
+{
+  "schema_version": 1,
+  "unit": "T024-C/per-conversation-producer-inventory-and-barrier",
+  "status": "verified_local_runtime_producer_barrier_within_open_T024",
+  "draft_created_at_utc": "2026-11-05T23:50:38.653395+00:00",
+  "baseline_revision": "4fe13c300ff31eafbb8717f000ac4f5603eac6cf",
+  "implementation_commit": "59853442ccb367f1ba78cd838f587c8098f7fc82",
+  "source_sha256": {
+    "src/memory/producer_erasure.py": "651014fde3fd488a0f4f36cace82ed4c3c47753affaed176af89552af39f2296",
+    "src/memory/erasure_journal.py": "fbb6a6755b0f227a3991fd86cd3ee3446414609e80b5f50eb9832f1fbd919783",
+    "src/main.py": "c3f16a85c26729dc8dcf980ac41b1a522deaf62a78a146609872425c1db2506a",
+    "src/application.py": "2468b4f9ed9711a6fc2bb0a12c72b725097a8764ccaf2620ea14a4743289f26d",
+    "src/pipeline/audio_manager.py": "36a850b5dc16c39845607e6590ed66a56b864eec564ce45a24688b3293094dbf",
+    "tests/integration/test_producer_erasure_boundary.py": "4fa70cccd2abac2c0f5891c81fde03df165f25393e2b097fbd0db3ae8902f30a",
+    "tests/unit/memory/test_producer_claims.py": "081df6ecc85f5ffb238684dc80b5c367fde40b8a10a367af7d0bacd4cc600b7b",
+    "tests/integration/test_producer_erasure_graph.py": "e612a2335aee40858ad58d284c1a40c03feac8457c9d76ab497c7c53bc88dcff",
+    "tests/mocks/producer_erasure_graph.py": "f6353a0552410ef93382059a9f8b15b797d165f1f1f3d7c75af8d10b3a098296"
+  },
+  "verified_at_utc": "2026-11-06T00:01:51.054127+00:00",
+  "summary_spanish": "El runtime registra PRODUCERS con inventario nominal revalidado. La limpieza de S espera su trabajo real y permite que U continúe. C quedó verificada localmente con39/1087 PASS y full8577 PASS+misma xfail/8578 IDs exactos; T024 y todos los criterios de aceptación siguen abiertos.",
+  "environment": {
+    "username": "gabriel",
+    "checkout": "/Users/gabriel/Documents/Proyectos/kza",
+    "platform": "macOS26.6.1 arm64",
+    "python": "native CPython3.13.18 .venv",
+    "network": "Sólo transportes y servidores loopback sintéticos de los fixtures; sin servicios externos.",
+    "models": "Adaptadores nominales con hojas CPU sintéticas; sin pesos, micrófonos ni SDK de inferencia reales."
+  },
+  "production_change": false,
+  "product_code_change": true,
+  "deployment": "Sin release, instalación ni cambios de servicios de producción.",
+  "evidence_root": "data/autonomous-roadmap-20261102/t024/c",
+  "scope": {
+    "roles": [
+      "active_capture_loop",
+      "command_processor",
+      "ambient_transcriber",
+      "ambient_distiller",
+      "orchestrator_queue"
+    ],
+    "fallback": "El AudioLoop fallback construido también se conserva y se acredita aunque otro loop sea el seleccionado.",
+    "model_owners": [
+      "stt_executors",
+      "tts_models",
+      "speaker_models",
+      "wake_models",
+      "http_reasoners",
+      "hermes_reasoners"
+    ],
+    "delegates": [
+      "RequestRouter",
+      "ResponseHandler",
+      "ContextManager/ContextEraser",
+      "SuggestionEngine/SuggestionEraser",
+      "CaptureEraser/AudioArchiver",
+      "WakeClipStore/CollectorEraser",
+      "LiveEventBus/LiveStreamEraser",
+      "VoiceRegistry"
+    ],
+    "authority": "Una PrivacyServices, su FactLedger y el ErasureCoordinator real expuesto por ApplicationGraph.erasure_services. Los objetos nominales y aliases se comparan por identidad con la DI viva; igualdad de ruta SQLite no acredita autoridad.",
+    "disabled": "Un rol ausente sólo es legítimo cuando la configuración resuelta y la rama real lo deshabilitan. Un ambient requerido pero no construido conserva inventario desconocido.",
+    "local_receipt": "El participante PRODUCERS puede terminar para S mientras U conocido, con reads=0 y dependencias vigentes, sigue dentro de su llamada nativa real.",
+    "aggregate": "El agregado sigue incompleto: se conservan los guards diagnostics v1, streams v2 y voices v2. El recibo local no absorbe sus copias ni decisiones."
+  },
+  "implementation": {
+    "stable_target": {
+      "participant": "producers",
+      "version": 1,
+      "descriptor": {
+        "kind": "runtime_producers",
+        "protocol": 1
+      }
+    },
+    "target_limit": "El descriptor durable no guarda IDs de objetos, PID, UUID de runtime, lease ni timestamps. La acreditación de objetos y generación es local y se revalida.",
+    "claim": "is_current_claim exige DTO nominal, tipos exactos, descriptor registrado canónico y coincidencia de operación/conversación/participante/target/versión/estado running/token/attempt/cursor con tombstone comprometido. El adaptador revalida al entrar y antes de terminar; finish mantiene la guarda atómica del token.",
+    "sticky_drift": "Una deriva observada de binding invalida el sello de forma persistente en esa instancia. Restaurar referencias anteriores no vuelve a sellar el inventario ni habilita ACK automático.",
+    "retirement": "Prune y observación se aplican sólo a propietarios nominales. Caller cancelado, timeout, Event, Task.done, puntero NULL o intento de close terminado no son por sí solos un recibo de retiro. Afinidad desconocida, reads pendientes, fallos/reset inciertos o Native UNKNOWN conservan la obligación.",
+    "lease_recovery": "PrivacyServices.initialize recupera recibos producers al adquirir una nueva lease; initialize repetido sobre la misma instancia lista no reabre complete ni emite otro claim. Claims de attempts/leases anteriores no pueden reconocer el intento actual.",
+    "lazy_wake": "AudioManager publica y registra el WakeWordDetector real bajo el mismo RLock antes de model.load; SDK constructor/carga y close quedan fuera del lock. La primera adopción lazy acreditada es válida; una sustitución posterior observada invalida el inventario y ambos modelos siguen bajo su dueño.",
+    "hermes_rehome": "El cuerpo de _HermesReasonerOwner se trasladó a application.HermesReasonerOwner; main conserva el alias del llamador. El recibo AST de runtime-binding-adjustments acredita el cuerpo equivalente y evita identidades duplicadas según modo de import.",
+    "ambient": "AmbientSTT y SpeakerTagger deben ser nominales; ambos _source_policy son exactamente privacy.ledger y el tagger usa exactamente graph.voice_registry. Se conservan los registros de modelos, borrowers y adjuntos reales.",
+    "errors": "Los errores retenidos de binding son códigos literales de primera parte, sin mensajes arbitrarios de SDK ni payload privado. inventory_unknown, stale_claim y authority_unconfirmed son cursores de protocolo; no incluyen conversación, audio, texto o rutas privadas."
+  },
+  "validation": {
+    "original_baseline": {
+      "state": "finished",
+      "tests": 1,
+      "passed": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "XML_duration_s": 0.429,
+      "pytest_exit_code": 0,
+      "runner_exit_code": 0,
+      "actual_Popen_wait_returned": true,
+      "source_files": 1031,
+      "script_files": 37,
+      "source_unchanged": true,
+      "protected_unchanged": true,
+      "terminal": {
+        "session": 73031,
+        "chunk": "43db36",
+        "exit_code": 0,
+        "observed_by": "root"
+      },
+      "status": {
+        "path": "data/autonomous-roadmap-20261102/t024/c/baseline-attempt-01/status.json",
+        "sha256": "7e1dcd8b73b7a14eac875015936330883b7e44f50418ad893c8a36dc336a21b5",
+        "bytes": 1949
+      },
+      "XML": {
+        "path": "data/autonomous-roadmap-20261102/t024/c/baseline-attempt-01/junit.xml",
+        "sha256": "c68accf409231010d045ce1d3542310a789d13c2d0f6efef1726253b19d60439",
+        "bytes": 426
+      }
+    },
+    "baseline_classification": "C0 fue una caracterización PASS con APIs existentes antes de la nueva capacidad; no es un RED por ausencia de API ni una prueba de limpieza física.",
+    "original_attempts": [
+      {
+        "run": {
+          "state": "finished",
+          "tests": 35,
+          "passed": 34,
+          "failures": 1,
+          "errors": 0,
+          "skipped": 0,
+          "XML_duration_s": 11.683,
+          "pytest_exit_code": 1,
+          "runner_exit_code": 1,
+          "actual_Popen_wait_returned": true,
+          "source_files": 1035,
+          "script_files": 37,
+          "source_unchanged": true,
+          "protected_unchanged": true,
+          "terminal": {
+            "session": 84204,
+            "chunk": "2a0845",
+            "exit_code": 1,
+            "observed_by": "root"
+          },
+          "status": {
+            "path": "data/autonomous-roadmap-20261102/t024/c/feature-attempt-01/status.json",
+            "sha256": "d61426fb8a8747c4cadef2d285cbd8b2f5d8e24d4c765450f420b44e0b89cf08",
+            "bytes": 9454
+          },
+          "XML": {
+            "path": "data/autonomous-roadmap-20261102/t024/c/feature-attempt-01/junit.xml",
+            "sha256": "6c60382f85dabd357e36eef6ee40ac06da9de5916f3b8b9fb4bc1e893160830e",
+            "bytes": 7495
+          }
+        },
+        "classification": "34 PASS y un fallo de preparación del fixture, no RED de producto. El FK de conversation_erasures a conversation_tombstones rechazó ensure_operation sin marker antes del oráculo is_current_claim.",
+        "correction": "El mismo ID ahora comprueba el rechazo FK real, fuente vigente y ausencia de claims due; luego ejerce request/claim públicos como control positivo. Sin cambios de producto, schema, IDs ni presupuestos.",
+        "classification_ref": {
+          "path": "data/autonomous-roadmap-20261102/t024/c/fixture-correction-01/classification.json",
+          "sha256": "2d79db7837957923b35daaf4310a972d2fe70426c8e936a1564d668ff0c1d46f",
+          "bytes": 870
+        }
+      },
+      {
+        "run": {
+          "state": "finished",
+          "tests": 35,
+          "passed": 35,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "XML_duration_s": 10.572,
+          "pytest_exit_code": 0,
+          "runner_exit_code": 0,
+          "actual_Popen_wait_returned": true,
+          "source_files": 1035,
+          "script_files": 37,
+          "source_unchanged": true,
+          "protected_unchanged": true,
+          "terminal": {
+            "session": 90656,
+            "chunk": "1183f3",
+            "exit_code": 0,
+            "observed_by": "root"
+          },
+          "status": {
+            "path": "data/autonomous-roadmap-20261102/t024/c/feature-attempt-02/status.json",
+            "sha256": "17014a3c67d24b77952c0be96a76446a15f48706228170c63f6d43e28109dae7",
+            "bytes": 9403
+          },
+          "XML": {
+            "path": "data/autonomous-roadmap-20261102/t024/c/feature-attempt-02/junit.xml",
+            "sha256": "ecfcd26e99ba9603a5d23f10a45d353ff23feb169cbe9b7b8890aa8459fb2891",
+            "bytes": 5916
+          }
+        },
+        "classification": "Replay de los mismos35 IDs tras la corrección del fixture."
+      },
+      {
+        "run": {
+          "state": "finished",
+          "tests": 39,
+          "passed": 39,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "XML_duration_s": 11.258,
+          "pytest_exit_code": 0,
+          "runner_exit_code": 0,
+          "actual_Popen_wait_returned": true,
+          "source_files": 1035,
+          "script_files": 37,
+          "source_unchanged": true,
+          "protected_unchanged": true,
+          "terminal": {
+            "session": 8718,
+            "chunk": "8bed90",
+            "exit_code": 0,
+            "observed_by": "root"
+          },
+          "status": {
+            "path": "data/autonomous-roadmap-20261102/t024/c/feature-ambient-attempt-01/status.json",
+            "sha256": "667edf420a299a79e3e848cf29425f997fc547cb145d8d24219f8395581dcdb7",
+            "bytes": 10290
+          },
+          "XML": {
+            "path": "data/autonomous-roadmap-20261102/t024/c/feature-ambient-attempt-01/junit.xml",
+            "sha256": "eb7069a1a2da28bbbb16252936a95d3c89dfedbbcca6ddb6c1ebc97c7d79c3ce",
+            "bytes": 6575
+          }
+        },
+        "classification": "Se añadieron cuatro casos ambient reales: shared y tres políticas/registry ajenos. El hallazgo previo fue estático; no se adjudica un RED anterior no reproducido."
+      }
+    ],
+    "component": {
+      "tests": 39,
+      "passed": 39,
+      "failures": 0,
+      "errors": 0,
+      "XML_duration_s": 11.258,
+      "groups": {
+        "C0": 1,
+        "journal_protocol": 22,
+        "real_application_graph": 16
+      },
+      "groups_form_one_union": true,
+      "prior35_preserved": true
+    },
+    "full_collection": {
+      "tests": 8578,
+      "pytest_exit_code": 0,
+      "runner_exit_code": 0,
+      "exact_expected_ids": true,
+      "source_unchanged": true,
+      "protected_unchanged": true,
+      "status": {
+        "path": "data/autonomous-roadmap-20261102/t024/c/collection-attempt-01/full-status.json",
+        "sha256": "592189f506be3ff9762564c61fed30d441e0f936f266bd486df344e8b4fbfc59",
+        "bytes": 1793
+      }
+    },
+    "directed": {
+      "accepted_within_scope": true,
+      "observed_at_utc": "2026-11-05T23:45:26.183591+00:00",
+      "scope": "native Mac offline local fixtures; no physical acceptance or whole-goal completion",
+      "terminal": {
+        "session_id": 64383,
+        "chunk": "1a0f43",
+        "exit_code": 0,
+        "consumed_by": "root"
+      },
+      "mode": "directed",
+      "tests": 1087,
+      "passed": 1087,
+      "known_xfailed": 0,
+      "failures": 0,
+      "errors": 0,
+      "ordinary_skips": 0,
+      "XML_duration_s": 125.334,
+      "known_xfail": [],
+      "exact_expected_ids": true,
+      "source_files": 1035,
+      "script_files": 37,
+      "source_unchanged": true,
+      "protected_files": 18,
+      "protected_unchanged": true,
+      "actual_wait_returned": true,
+      "minimum_available_bytes": 208321220608,
+      "artifacts": [
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/c/directed-attempt-01/full-status.json",
+          "sha256": "33372a7c92769afec48306f0ca95ac6d0ea31f80594646b89bfd299e9e2d7ae3",
+          "bytes": 8409
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/c/directed-attempt-01/full.xml",
+          "sha256": "e3d4f9ea4d0198cef53125dacd6e1a21a9b28d340325aabfc88c64b0d9e52296",
+          "bytes": 243346
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/c/directed-attempt-01/full.log",
+          "sha256": "c81ff5afb601d25d9e1279dc37514cc3732fb7ef3cc8639bcd90bab10bbd8714",
+          "bytes": 220200
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/c/directed-attempt-01/source-before.json",
+          "sha256": "170e35dae307985a47f066515345bd423c046affe5625557dd30bf67ae0e97a1",
+          "bytes": 156215
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/c/directed-attempt-01/source-after.json",
+          "sha256": "170e35dae307985a47f066515345bd423c046affe5625557dd30bf67ae0e97a1",
+          "bytes": 156215
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/c/directed-attempt-01/protected-before.json",
+          "sha256": "d50e6814a74527bfda28aa6087b7b46a0e42c7636c9c8223788842279dc11696",
+          "bytes": 2751
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/c/directed-attempt-01/protected-after.json",
+          "sha256": "d50e6814a74527bfda28aa6087b7b46a0e42c7636c9c8223788842279dc11696",
+          "bytes": 2751
+        }
+      ]
+    },
+    "full": {
+      "accepted_within_scope": true,
+      "observed_at_utc": "2026-11-05T23:57:17.743723+00:00",
+      "scope": "native Mac offline local fixtures; no physical acceptance or whole-goal completion",
+      "terminal": {
+        "session_id": 46202,
+        "chunk": "f35d80",
+        "exit_code": 0,
+        "consumed_by": "root"
+      },
+      "mode": "full",
+      "tests": 8578,
+      "passed": 8577,
+      "known_xfailed": 1,
+      "failures": 0,
+      "errors": 0,
+      "ordinary_skips": 0,
+      "XML_duration_s": 664.551,
+      "known_xfail": [
+        [
+          "tests.unit.nlu.test_regex_extractor",
+          "test_known_limitations[Nexa apag\\xe1 la luz del escritorio y de la cocina-ellipsis_verb_omission]",
+          {
+            "type": "pytest.xfail",
+            "message": "limitación documentada del regex puro"
+          }
+        ]
+      ],
+      "exact_expected_ids": true,
+      "source_files": 1035,
+      "script_files": 37,
+      "source_unchanged": true,
+      "protected_files": 18,
+      "protected_unchanged": true,
+      "actual_wait_returned": true,
+      "minimum_available_bytes": 205487329280,
+      "artifacts": [
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/c/full-normal-attempt-01/full-status.json",
+          "sha256": "6d21a61b7478237a96979b93b7252766b78ec247483b1d5ad81349e4b853a0f9",
+          "bytes": 1957
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/c/full-normal-attempt-01/full.xml",
+          "sha256": "b3ca834079c95d8d944dc8810d45db22f32d873ae2d9f28f090eb497a1198468",
+          "bytes": 2376443
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/c/full-normal-attempt-01/full.log",
+          "sha256": "df54e7878c9618701bc80364b3af56825bafcd71cc8083aedbc62d9f7bf1c772",
+          "bytes": 2181284
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/c/full-normal-attempt-01/source-before.json",
+          "sha256": "170e35dae307985a47f066515345bd423c046affe5625557dd30bf67ae0e97a1",
+          "bytes": 156215
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/c/full-normal-attempt-01/source-after.json",
+          "sha256": "170e35dae307985a47f066515345bd423c046affe5625557dd30bf67ae0e97a1",
+          "bytes": 156215
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/c/full-normal-attempt-01/protected-before.json",
+          "sha256": "d50e6814a74527bfda28aa6087b7b46a0e42c7636c9c8223788842279dc11696",
+          "bytes": 2751
+        },
+        {
+          "path": "data/autonomous-roadmap-20261102/t024/c/full-normal-attempt-01/protected-after.json",
+          "sha256": "d50e6814a74527bfda28aa6087b7b46a0e42c7636c9c8223788842279dc11696",
+          "bytes": 2751
+        }
+      ]
+    },
+    "full_status": "verified_within_local_C_scope",
+    "independent_full_review": {
+      "path": "data/autonomous-roadmap-20261102/t024/c/independent-runtime-review.json",
+      "sha256": "814e728d2bd53ac510fe2f97a121733cbfd4cfc7153ec3cbf1d374075658b4e9",
+      "bytes": 15948
+    },
+    "identities": {
+      "legacy_directed": 1048,
+      "new_union": 39,
+      "directed_union": 1087,
+      "previous_B_full": 8539,
+      "collected_full_union": 8578,
+      "removed_ids": [],
+      "renamed_ids": [],
+      "proof": {
+        "path": "data/autonomous-roadmap-20261102/t024/c/ambient-suite-preparation-proof.json",
+        "sha256": "a109c2b1e975cbd1a836929b9c79dc799f0e39fe881013d3f21318ad29ce041d",
+        "bytes": 1120
+      },
+      "note": "C0,39 componentes,1087 dirigidos y full se solapan; sus conteos no se suman como ejecuciones independientes."
+    },
+    "guards": {
+      "source_entries": 1035,
+      "scripts": 37,
+      "protected": 18,
+      "all_unchanged_during_runs": true
+    },
+    "static": {
+      "AST": "passed",
+      "ruff_exit": 0,
+      "ref": {
+        "path": "data/autonomous-roadmap-20261102/t024/c/root-static-attempt-03/status.json",
+        "sha256": "008a0b6564b4cf37f0b2020e7b5ac6b2b88a4aea0fe870866e625fd0300903d5",
+        "bytes": 1036
+      }
+    },
+    "review": {
+      "binding": {
+        "path": "data/autonomous-roadmap-20261102/t024/c/runtime-binding-adjustments.json",
+        "sha256": "aded246ee493cf41fb74d9d0b8bfee6344abf9feb1b5dcd26aff21688749eccd",
+        "bytes": 2423
+      },
+      "lazy_wake": {
+        "path": "data/autonomous-roadmap-20261102/t024/c/lazy-wake-review.json",
+        "sha256": "9c77e91f2f28008eba81816be1626b6a796dcbc914c316500b802a691ab7c43b",
+        "bytes": 6507
+      },
+      "literal_error_metadata": {
+        "path": "data/autonomous-roadmap-20261102/t024/c/root-static-error-metadata/review.json",
+        "sha256": "3a720de3f83ca01b5b71c1cb4d11f525b384e8ba0cdc96e3d0836ec2f43abb86",
+        "bytes": 383
+      },
+      "ambient_authority": {
+        "path": "data/autonomous-roadmap-20261102/t024/c/contract-review-addendum.json",
+        "sha256": "638a77a05500c35cc35a6238444134d2ecbcfa8d3f1b7cb72b0b94abd1e030bf",
+        "bytes": 8938
+      },
+      "limits": "Las auditorías estáticas y la revisión independiente de full acreditan sólo el alcance local declarado, sin aceptación de T024/C04/C05."
+    },
+    "warnings": {
+      "baseline": "B full8539 accepted",
+      "old_B_location_signatures": [
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/_methods.py:132: RuntimeWarning: overflow encountered in reduce",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in scalar divide",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/fromnumeric.py:3824: RuntimeWarning: Mean of empty slice",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/torch/jit/_serialization.py:176: DeprecationWarning: `torch.jit.load` is deprecated. Please switch to `torch.export`.",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/uvicorn/protocols/websockets/websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/websockets/legacy/server.py:1178: DeprecationWarning: remove second argument of ws_handler",
+        "/Users/gabriel/Documents/Proyectos/kza/src/alerts/alert_manager.py:321: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+        "/Users/gabriel/Documents/Proyectos/kza/src/core/logging.py:129: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+        "<string>:8: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+        "tests/integration/test_async_conversation_generation.py:149: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_async_conversation_generation.py:45: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_owned_voice_responses.py:236: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_response_deadlines.py:441: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_voice_service_lifecycle.py:165: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')"
+      ],
+      "new_C_location_signatures": [
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/_methods.py:132: RuntimeWarning: overflow encountered in reduce",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in scalar divide",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/numpy/_core/fromnumeric.py:3824: RuntimeWarning: Mean of empty slice",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/torch/jit/_serialization.py:176: DeprecationWarning: `torch.jit.load` is deprecated. Please switch to `torch.export`.",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/uvicorn/protocols/websockets/websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions",
+        "/Users/gabriel/Documents/Proyectos/kza/.venv/lib/python3.13/site-packages/websockets/legacy/server.py:1178: DeprecationWarning: remove second argument of ws_handler",
+        "/Users/gabriel/Documents/Proyectos/kza/src/alerts/alert_manager.py:321: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+        "/Users/gabriel/Documents/Proyectos/kza/src/core/logging.py:129: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+        "<string>:8: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
+        "tests/integration/test_async_conversation_generation.py:149: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_async_conversation_generation.py:45: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_owned_voice_responses.py:236: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_response_deadlines.py:441: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')",
+        "tests/integration/test_voice_service_lifecycle.py:165: PytestWarning: record_property is incompatible with junit_family 'xunit2' (use 'legacy' or 'xunit1')"
+      ],
+      "new_signatures": [],
+      "absent_prior_signatures": [],
+      "all_location_signature_count": 15,
+      "occurrences_C": 61734,
+      "suppressed": false,
+      "C05_accepted": false
+    },
+    "independent_runtime_review": {
+      "path": "data/autonomous-roadmap-20261102/t024/c/independent-runtime-review.json",
+      "sha256": "814e728d2bd53ac510fe2f97a121733cbfd4cfc7153ec3cbf1d374075658b4e9",
+      "bytes": 15948
+    },
+    "full_evidence_directory": "data/autonomous-roadmap-20261102/t024/c/full-normal-attempt-01"
+  },
+  "evidence": [
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/checkpoint-before-start.json",
+      "sha256": "70109e75165548c9e2abd259de4216618d569e83787dfd3259977e2267eaf7ce",
+      "bytes": 14886
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/producer-adapter-design.json",
+      "sha256": "cf12e81a033e58805d831c1be1d5d18b50a6e12f025ab0c1ba77e0ab62f3cba8",
+      "bytes": 10870
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/runtime-binding-design.json",
+      "sha256": "7c16b94ff7d1ca2a330734c422820fedfbbb4f0b6ba784b9696e66b7523a3987",
+      "bytes": 14062
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/runtime-binding-adjustments.json",
+      "sha256": "aded246ee493cf41fb74d9d0b8bfee6344abf9feb1b5dcd26aff21688749eccd",
+      "bytes": 2423
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/lazy-wake-review.json",
+      "sha256": "9c77e91f2f28008eba81816be1626b6a796dcbc914c316500b802a691ab7c43b",
+      "bytes": 6507
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/root-static-error-metadata/review.json",
+      "sha256": "3a720de3f83ca01b5b71c1cb4d11f525b384e8ba0cdc96e3d0836ec2f43abb86",
+      "bytes": 383
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/contract-review-addendum.json",
+      "sha256": "638a77a05500c35cc35a6238444134d2ecbcfa8d3f1b7cb72b0b94abd1e030bf",
+      "bytes": 8938
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/fixture-correction-01/classification.json",
+      "sha256": "2d79db7837957923b35daaf4310a972d2fe70426c8e936a1564d668ff0c1d46f",
+      "bytes": 870
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/ambient-suite-preparation-proof.json",
+      "sha256": "a109c2b1e975cbd1a836929b9c79dc799f0e39fe881013d3f21318ad29ce041d",
+      "bytes": 1120
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/suite-proposal.json",
+      "sha256": "c387ed3bba09ed34e4455298f89d7f25de474784d119a60f2263bb503ad7937a",
+      "bytes": 20751
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/suite-preparation-proof.json",
+      "sha256": "57447a4cdf989c8ddcc5ccdf0591c6af1682be2864d01f0b3b9fa4092b8cf238",
+      "bytes": 5405
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/root-static-attempt-03/status.json",
+      "sha256": "008a0b6564b4cf37f0b2020e7b5ac6b2b88a4aea0fe870866e625fd0300903d5",
+      "bytes": 1036
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/root-static-attempt-03/ruff.log",
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+      "bytes": 19
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/ambient-static-attempt-01/status.json",
+      "sha256": "4427d51341dd9002205e5729c8e4ad10e2af020e9507956eebf054b110a6c20f",
+      "bytes": 461
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/validation-profile.json",
+      "sha256": "c2b3c42f8defb7cadbac574ce48b0fa9740676b6ed93bbb4051f76e0c065f8ee",
+      "bytes": 514871
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/collection-attempt-01/full-status.json",
+      "sha256": "592189f506be3ff9762564c61fed30d441e0f936f266bd486df344e8b4fbfc59",
+      "bytes": 1793
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/collection-attempt-01/collection-nodeids.json",
+      "sha256": "9c077c7d2f21e094a33c2d6ab6e9638cfe2d23ba97fa4fac9340110c64facc2a",
+      "bytes": 2092226
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/directed-attempt-01/acceptance-proof.json",
+      "sha256": "6bc4ca4736dc840d76bdfcf7f7982a744348384cf3d5d9914af6aa01875505bd",
+      "bytes": 2226
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/baseline-attempt-01/command.json",
+      "sha256": "7b28b02a56ef8a51df8dd49ce56fb48ea8a4e030f0325b3ef599f82bdf4036ef",
+      "bytes": 895
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/baseline-attempt-01/pytest.log",
+      "sha256": "6080ce320946ea890c9a84f623c5ca212ce88e7de4f27cc7c924f19cbc6fcdad",
+      "bytes": 1441
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/baseline-attempt-01/source-before.json",
+      "sha256": "a1756bff2998bb31ecdbc1b1e555f54f237f48abbfdd4779b636fab42ec69f84",
+      "bytes": 155603
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/baseline-attempt-01/source-after.json",
+      "sha256": "a1756bff2998bb31ecdbc1b1e555f54f237f48abbfdd4779b636fab42ec69f84",
+      "bytes": 155603
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/baseline-attempt-01/protected-before.json",
+      "sha256": "8653e0cc2e56a82e21b1835436805ca29ea0285511ff3c4ca6461e48f2bc142b",
+      "bytes": 2031
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/baseline-attempt-01/protected-after.json",
+      "sha256": "8653e0cc2e56a82e21b1835436805ca29ea0285511ff3c4ca6461e48f2bc142b",
+      "bytes": 2031
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/feature-attempt-01/command.json",
+      "sha256": "be6a13edbecf0591c2cd8f2c3c16cb213908e5c6ef5587b225bd46cb491fffd8",
+      "bytes": 1000
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/feature-attempt-01/pytest.log",
+      "sha256": "e1863133fbad561ed923dfe171095d066a672f3bdc5b88d4153fdf68d3d0375b",
+      "bytes": 3758
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/feature-attempt-01/source-before.json",
+      "sha256": "8255d47b2c44cd9b088c9f16fbf8889f0d2d77ca4bbab7bc86cdcc351c22fe1e",
+      "bytes": 156215
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/feature-attempt-01/source-after.json",
+      "sha256": "8255d47b2c44cd9b088c9f16fbf8889f0d2d77ca4bbab7bc86cdcc351c22fe1e",
+      "bytes": 156215
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/feature-attempt-01/protected-before.json",
+      "sha256": "8653e0cc2e56a82e21b1835436805ca29ea0285511ff3c4ca6461e48f2bc142b",
+      "bytes": 2031
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/feature-attempt-01/protected-after.json",
+      "sha256": "8653e0cc2e56a82e21b1835436805ca29ea0285511ff3c4ca6461e48f2bc142b",
+      "bytes": 2031
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/feature-attempt-02/command.json",
+      "sha256": "a0cd15e6a370edc0a4e63b6c4c5070a6772e63a7526100044d0f33d72e21d857",
+      "bytes": 1000
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/feature-attempt-02/pytest.log",
+      "sha256": "45359a326d047a07090701be794bc8e5d2d7956da039a31755010a623d429c05",
+      "bytes": 1540
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/feature-attempt-02/source-before.json",
+      "sha256": "923459ad7b7591f0f51b7b90bc05cf3a0eb1cc4040212ff342f7e7e4f2046b2f",
+      "bytes": 156215
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/feature-attempt-02/source-after.json",
+      "sha256": "923459ad7b7591f0f51b7b90bc05cf3a0eb1cc4040212ff342f7e7e4f2046b2f",
+      "bytes": 156215
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/feature-attempt-02/protected-before.json",
+      "sha256": "8653e0cc2e56a82e21b1835436805ca29ea0285511ff3c4ca6461e48f2bc142b",
+      "bytes": 2031
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/feature-attempt-02/protected-after.json",
+      "sha256": "8653e0cc2e56a82e21b1835436805ca29ea0285511ff3c4ca6461e48f2bc142b",
+      "bytes": 2031
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/feature-ambient-attempt-01/command.json",
+      "sha256": "3acb18f3c7819e4b5131f858c3b1c6e6d29e2e532846afa56a1b1f56f5240144",
+      "bytes": 1008
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/feature-ambient-attempt-01/pytest.log",
+      "sha256": "22e58d8550354ffe33a25b3367439ad2fc9004faa00c5723eddea836744cf169",
+      "bytes": 1548
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/feature-ambient-attempt-01/source-before.json",
+      "sha256": "1f52ec77021d735c59d4fa75b18b965e37b9a41e9a6d5f979f665da933bd96cf",
+      "bytes": 156215
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/feature-ambient-attempt-01/source-after.json",
+      "sha256": "1f52ec77021d735c59d4fa75b18b965e37b9a41e9a6d5f979f665da933bd96cf",
+      "bytes": 156215
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/feature-ambient-attempt-01/protected-before.json",
+      "sha256": "8653e0cc2e56a82e21b1835436805ca29ea0285511ff3c4ca6461e48f2bc142b",
+      "bytes": 2031
+    },
+    {
+      "path": "data/autonomous-roadmap-20261102/t024/c/feature-ambient-attempt-01/protected-after.json",
+      "sha256": "8653e0cc2e56a82e21b1835436805ca29ea0285511ff3c4ca6461e48f2bc142b",
+      "bytes": 2031
+    }
+  ],
+  "limits": [
+    "El recibo PRODUCERS es local al inventario nominal acreditado y a la conversación. No certifica erasure de SDK opacos, modelos externos, logs remotos, buffers de navegador/OS/peers o copias manuales.",
+    "P local complete con U real retenido no equivale a aggregate complete. unresolved_diagnostic_inventory v1, unresolved_stream_inventory v2 y unresolved_voice_inventory v2 permanecen independientes y sin resolver.",
+    "El child de OwnedInputStream demuestra UNKNOWN persistente, retención, lease activa y ausencia de ACK aun con puntero NULL; os._exit sólo contiene el fixture aislado y no demuestra retiro ni wipe físico.",
+    "Las pruebas journal finish(True) son exclusivamente de protocolo. No registran callbacks falsos de limpieza ni acreditan eliminación de productores físicos.",
+    "Los cuatro casos ambient nuevos acreditan construcción/autoridad nominal sin iniciar transcriber/VAD ni cargar pesos; las guardas SDK no sustituyen los adaptadores. No se presenta un fallo runtime previo que no se ejecutó.",
+    "No se concede permiso por voz, similitud o asociación persona/cuenta. Se conservan separadas la revisión de borrado, captura, revisión de voz, vínculo de cuenta y ejecución de acciones.",
+    "Sin deployment, modelos reales, micrófonos, HA externo, lectura de .env privada ni modificación de datos de producción.",
+    "T024 permanece in_progress; C04, C05 y los21 criterios siguen abiertos. El objetivo activo no está completo. Commit de implementación, full aceptada, próxima unidadD y tracking final serán incorporados por root.",
+    "La evidencia nueva retiene trabajo nativo de CommandProcessor y un callback de entrada; construye ambient real sin arrancar sus trabajadores. La declaración de cinco roles, fallback y seis model owners es el contrato del inventario configurado, no prueba de actividad simultánea de cada rol ni de SDK externos."
+  ],
+  "preserved_boundaries": {
+    "T024": "in_progress",
+    "C04": "open",
+    "C05": "open",
+    "criteria_total": 21,
+    "criteria_accepted_by_this_unit": 0,
+    "goal_status_reported_by_coordinator": "active",
+    "objective_complete": false,
+    "permissions_separated": true,
+    "roadmap_criteria_or_scope_changed_here": false
+  },
+  "next_unit_plan": "docs/plans/2026-11-05-full-graph-restore-continuation.json",
+  "production_changed": false,
+  "draft_authoring_history": "Sólo este JSON privado. Sin pruebas, colección, imports del producto, Git ni cambios de fuente o documentación pública."
+}
