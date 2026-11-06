@@ -6,30 +6,22 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 ## Punto de reanudación
 
-**T024-F1 sigue en curso: la base de admisión/cierre tiene 112 pruebas dirigidas aprobadas; el rollback completo aún no está demostrado.** T024-F0 permanece como última unidad completa verificada localmente. El mismo goal sigue **activo e incompleto**. Usar la `.venv` nativa y conservar los ensayos cerrados.
+**T024-F1 sigue en curso.** La revisión `3fc5ac6` tiene 21 pruebas de construcción y dos regresiones compiladas aprobadas. La colección general contiene 8833 casos exactos; su ejecución general está en curso; verificar el resultado en el checkpoint al retomar. El mismo goal permanece **activo e incompleto** y T024-F0 es la última unidad completa verificada.
 
 | Dato | Estado actual |
 | --- | --- |
 | Entorno | `gabriel`, `/Users/gabriel/Documents/Proyectos/kza`, macOS 26.6.1 arm64, CPython 3.13.18 |
-| Implementación F0 | `3babff8aaa7dc8c5f87a5255e198a149ecfe718d`; builder y cuatro pruebas de regresión |
-| Artefacto comparado | Revisión D `9b3170294eb69a53dd27b63949c09a63a2efed54`;436 archivos/378pyc |
-| Tests F1 | `263e7458204c226aebfc64758831743bbd9f6119`; tres archivos nuevos, sin cambio de producto |
-| Base de admisión F1 | `80b47f55716e980b93a7312b6732de0611e3e2e0`; 112 PASS/XML79.374 s, sólo prerrequisitos de fuente |
-| Original F1 | **1 FAIL genuino**, XML14.430 s; tres hijos con wait real0; fallo final por autoridad vieja seleccionada |
-| Autoridad F1 | Faltan tombstone S, borrado de perfil, revocación de credencial y reducción de permiso; U/manual preservados |
-| RED F0 preservado | Variación por `sys.intern` reproducida antes del fix; parsear/retener sin internado conserva bytes |
-| Green F0 | 4 PASS; XML24.557 s; caso original y worker intactos |
-| Matriz F0 | Seis builds con bytes iguales; semillas0/1 y contexto limpio/internado |
-| Dirigida F0 | 1234 PASS; XML 243.031 s |
-| Última full, F0 | **8584 PASS + misma xfail conocida**,8585 IDs exactos; XML689.339 s; anterior a la regresión nueva F1 |
-| Guardas del original F1 | 1046 fuentes,37 scripts y27 protegidos intactos; tres archivos nuevos con un caso respecto a F0 |
-| Warnings F0 | 15 firmas pytest iguales a E; UserWarning Chroma del hijo conservado aparte |
-| Alcance actual | Baseline original intacto; admisión, ownership y testigos de cierre en fuente; sin positivo gestionado compilado ni derivación R/F |
+| Rama | `recovery/production-2026-10-25`; verificar HEAD/origin al retomar |
+| Implementación F1 | Hasta `3fc5ac61cba2ecaba7a3df4b61dda84c44ce63fc`, publicado |
+| Construcción | 21 PASS; XML6.374 s; espera real consumida |
+| Compilados | 2 PASS; XML100.917 s; original y recorrido O/N/R/F |
+| Versiones materiales | O/R: aplicación9b; N/F:3fc5ac6; puente de seguridad3fc5ac6 independiente |
+| Últimas full F1 | f550: dos fallos; df88: un fallo. Ambos resultados se conservan; no son full aprobadas |
+| Última full aceptada | F0:8584 PASS + misma xfail conocida,8585 IDs; anterior a F1 |
+| Pendiente concreto | Registrar cada copia antes del primer byte y acreditar limpieza/recuperación; full y guards pendientes |
 | Delegación | Hasta ocho agentes según plazas; PC interactiva con subagente `gpt-6.1-terra` |
-| Próxima acción | F1: corregir admisión/derivación y agregar rollback positivo de código y datos, más recuperación hacia adelante |
-| Tracking | Este commit; verificar SHA/publicación al retomar |
 
-T021/T022/T023/T024 siguen `in_progress`;21 criterios `not_evaluated`. Tres guards, C04/C05, warnings y xfail siguen abiertos. T020/P1/T047, presupuestos y permisos separados se conservan. Leer [baseline F1](../research/2026-11-06-copied-slot-authority-baseline.json), [prerrequisito de admisión](../research/2026-11-06-runtime-admission-foundation.json) y [continuación de implementación](../plans/2026-11-06-slot-authority-reconciliation-continuation.json). Se conserva el RED genuino original; su harness aún debe adaptarse al lifetime gestionado. No se ejecutó ni aceptó una full con los cambios nuevos. Sin release ni cambios en producción.
+T021/T022/T023/T024 siguen `in_progress`; los 21 criterios permanecen `not_evaluated`. Se conservan los demás estados, presupuestos y permisos separados. Leer el [reporte actual](../research/2026-11-06-manual-authority-progress.json) y la [continuación](../plans/2026-11-06-slot-authority-reconciliation-continuation.json). El oracle original y su RED histórico están preservados. Sin release ni cambios en producción.
 
 ## Referencia histórica del cierre Linux F
 
@@ -301,11 +293,19 @@ La suite de componentes terminó con **90 PASS**, XML1.910 s, wait real 32760/72
 
 **F1 sigue abierto.** La proyección de admisión V1 y el clasificador histórico de cutproof todavía no abarcan por sí solos el cierre export/padres manuales. No cambiar V1 silenciosamente: el bridge80b recaptura el binding. Faltan cobertura negativa y checks generales/guardias; última fullF0 permanece8584PASS+xfail conocida, anterior aF1. `native_gates_returned=null` en O/R/F no cuenta como ACK universal. T021–T024 y los 21 criterios no cambian. Ver [reporte con alcance y evidencia](../research/2026-11-06-state-derivation-progress.json).
 
+## Autoridad manual y construcción — T024-F1, avance local
+
+Los commits posteriores a `d574075` agregan el clasificador histórico de exports manuales, componentes tipados sin copiar contenido, sellos externos de autoridad manual y testigos de cierre de HA/Auth/captura con propietarios reales. Los contratos V1 no cambian; un HEAD anterior sin sello falla cerrado y todavía no tiene migrador.
+
+La barrera de construcción en `3fc5ac6` mantiene excluido el mantenimiento histórico de diagnósticos hasta el retorno real de la validación nativa. La cancelación espera ese retorno y los escritores ajenos siguen rechazados. Pasaron 21 pruebas de construcción y dos regresiones compiladas con la aplicación anterior y el puente actualizado. O/N/R/F registra cuatro cierres y wait0 reales; esto acredita el escenario declarado.
+
+Las full de f550 y df88 fallaron y se conservan como tales. La colección nueva retiene sus 8823 IDs y agrega diez, sin quitar casos. La full nueva está en curso; aún no tiene resultado. También falta un catálogo durable antes del primer byte para todas las copias y sus obligaciones de limpieza/recuperación. El case físico temporal de un ensayo d853 anterior fue retirado por pytest; sólo se conservan sus recibos y logs. Los cases nuevos de3fc se exportan con su procedencia, sin reconstruir testigos anteriores. Ver el [reporte actual](../research/2026-11-06-manual-authority-progress.json).
+
 ## Prompt para la sesión nueva
 
-> Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff y el reporte `docs/research/2026-11-06-state-derivation-progress.json`. Confirmá goal/checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro goal ni marques éste completo.
-> Hito F1: componentes 90 PASS y primer material O/N/R/F 1 PASS/XML43.690 en d574075, cuatro procesos wait0/cerrados; bridge80b para OLD9b y NEWd574 real. Sus controles no equivalen a aceptación universal. No repetir ensayos cerrados sin causa nueva. Máximo ocho agentes según plazas; navegador/escritorio de PC siempre delegado a un subagente Terra.
-> Próximo: completar clasificador histórico de exports/padres manuales y su regresión negativa, diseñar garantía de admisión compatible con V1/bridge80b, luego full/guardias y revisión universal de cierres. Conservá original RED, oracle, proveniencia/TTL y autoridad latest. No reetiquetar testigos ni dar por entregado sólo rechazo, alias latest o un positivo aislado. T021/T022/T023/T024 y los 21 criterios siguen abiertos. Sin release/producción/campo.
+> Retomá el MISMO goal activo e incompleto de `docs/plans/2026-11-02-autonomous-roadmap.md`. Leé AGENTS.md, CLAUDE.md, este handoff y `docs/research/2026-11-06-manual-authority-progress.json`. Confirmá goal/checkpoint, usuario/ruta/arquitectura, rama, HEAD/origin y cambios ajenos. No crees otro goal ni marques éste completo.
+> Código publicado hasta3fc5ac6:21 PASS construcción y2 PASS compilados; OLD9b/NEW3fc5ac6, puente independiente3fc5ac6. Las full previas fallaron; colección8833 exacta, verificar si la nueva full ya terminó en el checkpoint. No repetir ensayos cerrados sin causa nueva. Máximo ocho agentes según plazas; navegador/escritorio de PC siempre delegado a Terra.
+> Próxima subunidad: catálogo durable de copias antes del primer byte, propietario actual de limpieza y recuperación de parciales/SDK inciertos. Historia no concede ejecución ni retención indefinida; sealed/materialized no equivale a ACK. Mantener los targets, el oracle original, proveniencia/TTL, autoridad latest y permisos separados. T021–T024 y los21 criterios siguen abiertos. Sin release/producción/campo.
 
 ## Lista de cierre y reanudación
 

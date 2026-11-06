@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-06",
+  "task": "T024-F1",
+  "status": "in_progress",
+  "goal_complete": false,
+  "F1_delivered": false,
+  "revision": "3fc5ac61cba2ecaba7a3df4b61dda84c44ce63fc",
+  "previous_report": "docs/research/2026-11-06-state-derivation-progress.json",
+  "implementation": [
+    "Historical manual export/parent cut-proof regression; shared typed content-free component projection; durable external closed-state manual authority companions. V1 binding/ticket/receipt unchanged.",
+    "Real HA/Auth/capture owner retirement checks. Construction Diagnostics lock/drain barrier retained until actual native revalidation return, including cancellation. Foreignwriter rejection retained.",
+    "Original OLD9b application/data/privacyoracle unchanged; security bridge independently pinned to current3fc5ac6. Unsealed legacyHEAD failsclosed; no migrationworker."
+  ],
+  "verified": {
+    "units": {
+      "tests": 21,
+      "result": "PASS",
+      "xml_seconds": 6.374,
+      "actual_terminal": "70045/092ed3",
+      "runner_pid": 66852,
+      "pytest_pid": 66855,
+      "evidence": "data/autonomous-roadmap-20261102/t024/f1/construction/unit-attempt-01/"
+    },
+    "compiled": {
+      "tests": 2,
+      "result": "PASS",
+      "xml_seconds": 100.917,
+      "actual_terminal": "97774/7d2acd",
+      "runner_pid": 69287,
+      "pytest_pid": 69290,
+      "evidence": "data/autonomous-roadmap-20261102/t024/f1/construction-material/native-attempt-01/"
+    },
+    "guards": "Both runs1066source/37scripts/31protected unchanged; AST/Ruff and independent peerRO passed.",
+    "material": "O/N/R/F OLD9b/NEW3fc5ac6, securitybridge3fc5ac6; four distinctclosedstates,4actualwait0 PIDs71013/71154/71253/71265,277/279/277/279bytecodeorigins. Material52.651sec; originalregressionXML48.024sec."
+  },
+  "full_observations": [
+    {
+      "revision": "f550f01",
+      "result": "8765PASS+knownregexxfail+2FAIL/8768IDs",
+      "xml_seconds": 787.889,
+      "cause": "Router subprocess cwd depended on directorybasename; fixeddf88. Failedfull staysfailed.",
+      "evidence": "data/autonomous-roadmap-20261102/t024/f1/broad-f550/"
+    },
+    {
+      "revision": "df88b56",
+      "result": "8821PASS+knownregexxfail+1FAIL/8823IDs",
+      "xml_seconds": 805.335,
+      "cause": "OLD9b/bridge80 construction collided with actual historicalwriter; newbridge/barrier compiled2 nowpasses.",
+      "evidence": "data/autonomous-roadmap-20261102/t024/f1/broad-final-df88/"
+    },
+    {
+      "revision": "3fc5ac6",
+      "state": "running",
+      "expected_ids": 8833,
+      "ids": "8823prior+10new/0removed; sameknownregexxfail.",
+      "runner_pid": 82310,
+      "pytest_pid": 82323,
+      "tool_session": 7331,
+      "actual_wait_consumed": false,
+      "evidence_origin": "/private/tmp/kza-f1-construction-3fc5ac6-20261106/data/autonomous-roadmap-20261102/t024/f1/full/full-attempt-01/"
+    }
+  ],
+  "last_fully_accepted_unit": "T024-F0",
+  "last_accepted_full": "8584PASS+knownregexxfail/8585IDs beforeF1",
+  "requirements_audit": "11proved within scenarios/5partial/0missing; data/autonomous-roadmap-20261102/t024/f1/followup/requirements-current-evidence-audit.json",
+  "open": [
+    "Durable per-copy registration beforefirstbyte and cleanup/recovery ownership remain incomplete. History alreadyrecords qualifiedsnapshotroots/manifests; gap covers snapshot-to-qualification interval,failedclone,SDKwork,BLOB/logicalexports,audit/checkpoint/forensiccopies. Partialcopies remainednonserving; cleanupobligation is unresolved.",
+    "Historicald853 physicalpytestcase removed;40exact receipts/logfiles remain. New3fc physicalcases exported withprovenance. Never reconstruct orrelabel oldwitnesses.",
+    "LegacyunsealedHEAD migrationworker absent. Exactdiagnostics1/streams2/voices2guards,T021/T022/T023/T024,21criteria andfieldgates open. No release/production/hardware/realHA changes."
+  ],
+  "evidence": {
+    "materialproof": "data/autonomous-roadmap-20261102/t024/f1/construction-material/child-evidence/attempt-2f36ab22a13d4d39b668f66cd87ea35d/material-parent-proof.json",
+    "materialproof_sha256": "171f48becd2f768c6fc2521da075e38833d8e933a435f46314068eb7a72d9cda",
+    "originalproof_sha256": "96603618cd1d85bd5ced09f639c03c45ea0e3309a5750d1ff3b48bf0cb8b7746",
+    "V1_AST": "data/autonomous-roadmap-20261102/t024/f1/followup/v1-compatibility-ast-proof.final.json",
+    "forensic_exports": {
+      "path": "data/autonomous-roadmap-20261102/t024/f1/construction-material/forensic-exports-01.json",
+      "sha256": "e1d71db0c6a4e7059657e755916eb41cfcfe81f26af2a7755904bf8cdf0d4ba9",
+      "d853_files": 40,
+      "material3fc_files": 2671,
+      "material3fc_symlinks": 11,
+      "original3fc_files": 1488,
+      "original3fc_symlinks": 7,
+      "originals_preserved": true,
+      "cleanup_ack": false,
+      "limits": "Historical d853 physical case absent. Original3fc has two Graph closures plus read-only inspector wait0; three historical S file differences caused by delegated cleanup are preserved, never relabelled as a new seal."
+    }
+  },
+  "delegation": "Maximum8 includingcoordinator, subject tosessionavailability(4current). PCbrowser/desktop tests require gpt-6.1-terra; these checksCLI/synthetic only.",
+  "implementation_commits": [
+    "8cd30f68fc0136d01dc16e864e8fdae6870927a0",
+    "f2d3e5bbf61f90c7e0e8d50f29ad7b2ceb6528a9",
+    "f550f014fce42ce5558c4cbd4f49698973333a04",
+    "78a3db6018e83af9b34cf42e7dfbd3f50e6dc329",
+    "d8532663482a292449e719d7188317c70bba5e24",
+    "df88b56277af3c6108c29f46b48411ab2db248fa",
+    "3fc5ac61cba2ecaba7a3df4b61dda84c44ce63fc"
+  ],
+  "diagnostic_observation": {
+    "scope": "Controlled old bridge80 diagnostic; no acceptance or closure ACK",
+    "result": "1FAIL/XML40.152; real historical EX flock and validation BlockingIOError at same dev/inode, then realunlock/return",
+    "limitation": "Direct tool terminal became unavailable after agent compaction; status is secondary evidence, not direct owned terminal consumption.",
+    "evidence": "data/autonomous-roadmap-20261102/t024/f1/diagnostic-flock/isolated-output/conclusion.json",
+    "sha256": "68df8714072b4a46fdb0d69ec3a7e1e58c91ea7e9f97b9556e5acac8921d3510"
+  },
+  "review": "Independent source peer and documentary peer found no material blocker; stale first_action in continuation corrected to current copy-catalog continuation."
+}

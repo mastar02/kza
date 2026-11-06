@@ -1282,7 +1282,14 @@
         "c30b12c045edfbc5abf0c9258609afdf7e497bcf",
         "8a05398a1190d8e0a985de43bd7aae2d6c1d4526",
         "3c4590236cc6d61aa97a0cb70640873517821d89",
-        "d5740758bd8a44f99d0cd5e0131cd2e3e3a0adbd"
+        "d5740758bd8a44f99d0cd5e0131cd2e3e3a0adbd",
+        "8cd30f68fc0136d01dc16e864e8fdae6870927a0",
+        "f2d3e5bbf61f90c7e0e8d50f29ad7b2ceb6528a9",
+        "f550f014fce42ce5558c4cbd4f49698973333a04",
+        "78a3db6018e83af9b34cf42e7dfbd3f50e6dc329",
+        "d8532663482a292449e719d7188317c70bba5e24",
+        "df88b56277af3c6108c29f46b48411ab2db248fa",
+        "3fc5ac61cba2ecaba7a3df4b61dda84c44ce63fc"
       ],
       "evidence": [
         "docs/plans/2026-11-05-erasure-restore-continuation.json",
@@ -1310,9 +1317,10 @@
         "docs/research/2026-11-06-runtime-admission-foundation.json",
         "data/autonomous-roadmap-20261102/t024/f1/repair/foundation-unit-attempt-02/acceptance-proof.json",
         "docs/research/2026-11-06-state-derivation-progress.json",
-        "data/autonomous-roadmap-20261102/t024/f1/material/child-evidence/attempt-c5007e892ae440baab70959029019e50/material-parent-proof.json"
+        "data/autonomous-roadmap-20261102/t024/f1/material/child-evidence/attempt-c5007e892ae440baab70959029019e50/material-parent-proof.json",
+        "docs/research/2026-11-06-manual-authority-progress.json"
       ],
-      "next_action": "F1:90PASS componentes y escenario compilado O/N/R/F1PASS/XML43.690 con9familias; código9b/d574 y4cierres/wait0 reales. Sigue in_progress: cerrar protección de exports manuales en admisión V1 compatible conbridge80b y clasificador histórico de cutproof; luego full/guardias/revisión universal. Última fullF0 anterior; no aceptación T024/C04/C05/21criterios ni release."
+      "next_action": "F1: admisión manual durable y testigos reales de cierre implementados; barrera de construcción 21 PASS y regresiones compiladas original + O/N/R/F 2 PASS en3fc5ac6. Fulls previas fallidas conservadas; nueva colección8833 exacta, full pendiente. Próximo: catálogo durable de cada copia antes del primer byte y propietario de limpieza/recuperación; legacyHEAD sin sello falla cerrado. T024/C04/C05/21criterios y goal siguen incompletos; sin release."
     },
     {
       "id": "T025",
