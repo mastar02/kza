@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from contextvars import Context, ContextVar
 from dataclasses import dataclass
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -71,6 +72,13 @@ class _Owner:
     final_sequence: asyncio.Task | None = None
     native_identity: dict | None = None
     initialized_execution: object | None = None
+
+
+@dataclass(eq=False, frozen=True)
+class _HistoricalGrant:
+    entry: object
+    plan_json: bytes
+    scope_json: bytes | None
 
 
 @dataclass(eq=False, frozen=True)
@@ -278,9 +286,82 @@ def _physical_shape(path: str | Path, plan: dict, *, expected_identity: dict | N
         base._require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1, "destination_changed")
 
 
+def _target_record(entry: object) -> dict:
+    return {"id": entry.id, "participant": entry.participant.value,
+            "version": entry.version, "descriptor": entry.descriptor}
+
+
+def _scope_shape(scope: dict, state: Path) -> Path:
+    """Check the tagged observation's shape; this grants no execution authority."""
+    base._require(type(scope) is dict and set(scope) == {
+        "scope_schema_version", "source_binding", "delegation_sha256", "source_close_sha256",
+        "source_state_root", "source_state_identity"}
+        and type(scope["scope_schema_version"]) is int and scope["scope_schema_version"] == 1
+        and all(type(scope[key]) is str and re.fullmatch("[0-9a-f]{64}", scope[key])
+                for key in ("source_binding", "delegation_sha256", "source_close_sha256"))
+        and base._identity_shape(scope["source_state_identity"]), "delegated_scope")
+    root = _canonical_path(scope["source_state_root"])
+    base._require(root != state, "delegated_scope")
+    return root
+
+
+def _historical_plan(admission: object, entry: object) -> tuple[dict, bytes | None, bytes | None]:
+    """Plan an exact local target or one selected by verified delegation."""
+    descriptor, producer = entry.descriptor, entry.participant.value
+    path, state = Path(descriptor["path"]).absolute(), admission.state_root
+    if path.is_relative_to(state):
+        return _plan(producer, "historical", path, state), None, None
+    scope_json, policy_json = admission._plan_historical_target(_target_record(entry))
+    scope = json.loads(scope_json)
+    source = _scope_shape(scope, state)
+    plan = _plan(producer, "historical", path, source)
+    base._require(plan["path"] == descriptor["path"], "delegated_scope")
+    return plan, scope_json, policy_json
+
+
+def _policy_shape(event: dict) -> bytes:
+    base._require(set(event) == {"kind", "scope_schema_version", "ownership_sha256", "policy",
+        "revision", "previous_sha256"} and event["kind"] == "delegation_policy"
+        and type(event["scope_schema_version"]) is int and event["scope_schema_version"] == 1
+        and type(event["ownership_sha256"]) is str
+        and re.fullmatch("[0-9a-f]{64}", event["ownership_sha256"]), "delegated_policy")
+    policy = event["policy"]
+    base._require(type(policy) is dict and set(policy) == {"schema_version", "source_bindings",
+        "owned_targets", "delegated_targets", "historical_targets"}
+        and type(policy["schema_version"]) is int and policy["schema_version"] == 1
+        and all(type(policy[key]) is list for key in ("source_bindings", "owned_targets", "delegated_targets", "historical_targets")), "delegated_policy")
+    raw = base._encoded(policy)
+    base._require(base._sha(raw) == event["ownership_sha256"], "delegated_policy")
+    return raw
+
+
 def _observation_shape(event: dict, state: Path, owners: dict, targets: set) -> None:
     common = {"kind", "revision", "previous_sha256"}
     kind = event["kind"]
+    if kind == "delegation_policy":
+        _policy_shape(event)
+        return
+    if kind == "delegated_target":
+        # V2's explicit extension. The old target form remains current-state
+        # only, and older readers reject this discriminator as unknown.
+        source = _scope_shape(event["scope"], state)
+        local = dict(event)
+        del local["scope"]
+        local["kind"] = "target"
+        base._require(event.get("status") in {"attached", "final_registry_observation"}
+            and "plan" in event and event.get("owner") in owners, "delegated_scope")
+        owner = owners[event["owner"]]["plan"]
+        if event["status"] == "attached":
+            producer = event["plan"].get("producer")
+            base._require(owner.get("role") in {"eraser", "retention"}
+                and owner.get("producer") in {"events", "suggestions"}
+                and (producer == "events" or owner["producer"] == producer == "suggestions")
+                and event.get("borrowed_reader") is (owner["producer"] == "suggestions" and producer == "events"), "delegated_scope")
+        else:
+            base._require(event["owner"] == "privacy_authority"
+                and event["physical_status"] == "not_dispatched_by_final_observation", "delegated_scope")
+        _observation_shape(local, source, owners, targets)
+        return
     if kind == "composition":
         base._require(set(event) == common | {"instrumented", "global_inventory_complete", "aggregate_copy_complete"}
             and event["instrumented"] == sorted(_SELECTED)
@@ -361,7 +442,7 @@ def chain(directory: Path) -> tuple[dict, dict, dict, int]:
             by_revision[revision] = path
     base._require(len(paths) == head["revision"] + 2 and len(by_revision) == head["revision"], "orphan")
     previous, total, states = base._sha(raw_header), len(raw_header) + len(raw_head), {}
-    targets = set()
+    targets, policy_seen = set(), False
     for revision in range(1, head["revision"] + 1):
         path = by_revision[revision]
         event, raw = base._read(path)
@@ -380,6 +461,11 @@ def chain(directory: Path) -> tuple[dict, dict, dict, int]:
             states[key] = {"phase": phase, "plan": plan, "native_identity": event["native_identity"],
                            "revision": revision, "sha256": digest}
         else:
+            if event["kind"] == "delegation_policy":
+                base._require(not policy_seen, "delegated_policy")
+                policy_seen = True
+            if event["kind"] == "delegated_target":
+                base._require(policy_seen, "delegated_policy")
             _observation_shape(event, state, states, targets)
         previous = digest
     base._require(previous == head["sha256"] and total <= base.MAX_RUN_BYTES, "head")
@@ -399,6 +485,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         self._by_instance: dict[int, _Owner] = {}
         self._targets: dict[str, dict] = {}
         self._observations: dict[tuple, tuple] = {}
+        self._delegation_policy_json: bytes | None = None
         self._open_extents: dict[int, tuple] = {}
         self._opening_extents = 0
         self._dispatches = WeakKeyDictionary()
@@ -887,44 +974,77 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                 from src.analytics.event_storage import validate_event_descriptor
                 from src.analytics.suggestion_storage import validate_suggestion_descriptor
                 (validate_event_descriptor if producer == "events" else validate_suggestion_descriptor)(descriptor)
-                plan = await self._disk.run(_plan, producer, "historical", descriptor["path"], self.admission.state_root)
+                plan, scope_json, policy_json = await self._disk.run(_historical_plan, self.admission, entry)
             except (ValueError, RuntimeError, OSError):
                 await self._run(self._record, {"kind": "target", "owner": binding.key, "id": entry.id,
                     "status": "unbound_or_unsupported", "opaque_digest": entry.opaque_digest})
                 continue
             if binding.producer == "events" and producer != "events":
                 continue
-            if plan["path"] in grants and grants[plan["path"]][0].id != entry.id:
+            if plan["path"] in grants and grants[plan["path"]].entry.id != entry.id:
                 _reject("target_path_conflict", self)
-            grants[plan["path"]] = (entry, plan)
-            await self._run(self._record, {"kind": "target", "owner": binding.key, "id": entry.id,
-                "status": "attached", "plan": plan, "borrowed_reader": binding.producer == "suggestions" and producer == "events"})
+            grants[plan["path"]] = _HistoricalGrant(entry, base._encoded(plan), scope_json)
+            record = {"kind": "target", "owner": binding.key, "id": entry.id,
+                "status": "attached", "plan": plan, "borrowed_reader": binding.producer == "suggestions" and producer == "events"}
+            if scope_json is not None:
+                await self._run(self._record_historical_policy, policy_json)
+                record.update(kind="delegated_target", scope=json.loads(scope_json))
+            await self._run(self._record, record)
         await self._run(self._record, {"kind": "registry", "owner": binding.key, "digest": snapshot.digest, "status": "complete"})
         binding.registry_state = (snapshot, tuple(grants.items()))
         binding.grants, binding.snapshot = grants, snapshot
         return snapshot
+
+    def _record_historical_policy(self, policy_json: bytes) -> None:
+        """Publish the exact running policy once; no event becomes a grant."""
+        with self._lock:
+            base._require(type(policy_json) is bytes
+                and base._sha(policy_json) == self.admission._binding["ownership_sha256"], "delegated_policy")
+            if self._delegation_policy_json is not None:
+                base._require(self._delegation_policy_json == policy_json, "delegated_policy")
+                return
+            policy = json.loads(policy_json)
+            base._require(base._encoded(policy) == policy_json, "delegated_policy")
+            self._record({"kind": "delegation_policy", "scope_schema_version": 1,
+                "ownership_sha256": base._sha(policy_json), "policy": policy})
+            self._delegation_policy_json = policy_json
 
     def _join(self, binding: _Owner, physical: str, registry_state: tuple, execution: object) -> _Operation:
         previous, pairs = registry_state
         grants = dict(pairs)
         if physical not in grants:
             _reject("target_unregistered", self)
+        grant = grants[physical]
+        self._history_scope(grant, execution)
         ledger = binding.instance.privacy.ledger
         with ledger._transaction() as db:
             snapshot = ledger.erasures._target_snapshot_db(db, previous.participants, limit=256)
             if snapshot.status != "complete" or snapshot.digest != previous.digest or snapshot.lifecycle_generation != previous.lifecycle_generation:
                 raise RegistryChanged("output_registry_changed")
-            expected, _ = grants[physical]
+            expected = grant.entry
             if not any(e.id == expected.id and e.participant is expected.participant and e.version == expected.version
                        and e.descriptor_json == expected.descriptor_json for e in snapshot.entries):
                 _reject("target_unregistered", self)
             admission = _Operation(execution, binding, previous, pairs)
         return admission
 
-    def _history_path(self, path: str | Path, plan: dict) -> None:
+    def _history_scope(self, grant: _HistoricalGrant, execution: object) -> Path:
+        if grant.scope_json is None:
+            return self.admission.state_root
         try:
-            _plan_shape(plan, self.admission.state_root)
-            base._require(str(Path(path).absolute()) == plan["path"], "destination_changed")
+            observed, policy_json = self.admission._native_historical_target(execution, _target_record(grant.entry))
+            base._require(observed == grant.scope_json, "delegated_scope")
+            base._require(policy_json == self._delegation_policy_json, "delegated_policy")
+            return _scope_shape(json.loads(observed), self.admission.state_root)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            _reject("target_unregistered", self)
+
+    def _history_path(self, path: str | Path, grant: _HistoricalGrant, execution: object) -> None:
+        source = self._history_scope(grant, execution)
+        plan = json.loads(grant.plan_json)
+        try:
+            _plan_shape(plan, source)
+            base._require(str(Path(path).absolute()) == plan["path"] == grant.entry.descriptor["path"], "destination_changed")
             _physical_shape(path, plan, expected_identity=plan["existing_identity"], allow_absent=True)
         except (OSError, RuntimeError, ValueError):
             _reject("destination_changed", self)
@@ -941,7 +1061,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                 raise OutputNotReady("output_registration_waiting")
             admission = self._join(binding, physical, registry_state, execution)
             _OPERATION.set(admission)
-        self._history_path(supplied, dict(admission.grants)[physical][1])
+        self._history_path(supplied, dict(admission.grants)[physical], execution)
         return admission
 
     def observation_entry(self, path: str | Path, kind: str) -> _Owner:
@@ -1207,6 +1327,106 @@ def observe_history(path: str | Path, kind: str, state: str) -> None:
         _reject("required")
 
 
+def _read_scope_record(path: Path) -> tuple[dict, bytes]:
+    """Read new scope metadata once through stable nofollow directory FDs."""
+    path = _canonical_path(str(path))
+    limit = 16 * 1024 * 1024  # Preserve the original stage metadata limit.
+    descriptors, parents = [], []
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+    def directory_identity(info: os.stat_result) -> tuple:
+        base._require(stat.S_ISDIR(info.st_mode), "delegated_record")
+        return info.st_dev, info.st_ino, info.st_mode
+    def file_identity(info: os.stat_result) -> tuple:
+        base._require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1, "delegated_record")
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink, info.st_size,
+                info.st_mtime_ns, info.st_ctime_ns)
+    try:
+        current = os.open(path.anchor, directory_flags)
+        descriptors.append(current)
+        root_identity = directory_identity(os.fstat(current))
+        for name in path.parts[1:-1]:
+            child = os.open(name, directory_flags, dir_fd=current)
+            descriptors.append(child)
+            identity = directory_identity(os.fstat(child))
+            base._require(directory_identity(os.stat(name, dir_fd=current, follow_symlinks=False)) == identity, "delegated_record")
+            parents.append((current, name, child, identity))
+            current = child
+        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=current)
+        descriptors.append(descriptor)
+        before = file_identity(os.fstat(descriptor))
+        base._require(before[4] <= limit, "delegated_record")
+        chunks, size = [], 0
+        while size <= limit:
+            block = os.read(descriptor, min(65536, limit + 1 - size))
+            if not block:
+                break
+            chunks.append(block)
+            size += len(block)
+        raw = b"".join(chunks)
+        base._require(len(raw) <= limit and len(raw) == before[4]
+            and file_identity(os.fstat(descriptor)) == before
+            and file_identity(os.stat(path.name, dir_fd=current, follow_symlinks=False)) == before,
+            "delegated_record")
+        for parent, name, child, identity in parents:
+            base._require(directory_identity(os.fstat(child)) == identity
+                and directory_identity(os.stat(name, dir_fd=parent, follow_symlinks=False)) == identity, "delegated_record")
+        base._require(directory_identity(os.fstat(descriptors[0])) == root_identity
+            and directory_identity(os.stat(path.anchor, follow_symlinks=False)) == root_identity, "delegated_record")
+        value = json.loads(raw)
+        base._require(type(value) is dict, "delegated_record")
+        return value, raw
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _read_delegated_observation(stage: object, root: Path, binding: dict, event: dict, policy_json: bytes) -> bytes:
+    """Join a closed observation to this controller's actual immutable records."""
+    state, scope = Path(binding["state_root"]), event["scope"]
+    source_root = _scope_shape(scope, state)
+    policy = json.loads(policy_json)
+    base._require(set(policy) == {"schema_version", "source_bindings", "owned_targets",
+        "delegated_targets", "historical_targets"}
+        and type(policy["schema_version"]) is int and policy["schema_version"] == 1
+        and all(type(policy[key]) is list for key in ("source_bindings", "owned_targets", "delegated_targets", "historical_targets"))
+        and hashlib.sha256(policy_json).hexdigest() == binding["ownership_sha256"]
+        and event["id"] in policy["delegated_targets"] and event["id"] not in policy["owned_targets"]
+        and scope["source_binding"] in policy["source_bindings"], "delegated_scope")
+    record, _ = _read_scope_record(root / "admission/delegations" / (scope["delegation_sha256"] + ".json"))
+    base._require(set(record) == {"schema_version", "destination_state", "destination_identity",
+        "source_binding", "source_close_sha256", "targets"} and record["schema_version"] == 1
+        and stage._digest(record) == scope["delegation_sha256"]
+        and record["destination_state"] == str(state)
+        and record["destination_identity"] == binding["state_identity"] == stage._identity(stage._safe_directory(state))
+        and record["source_binding"] == scope["source_binding"]
+        and record["source_close_sha256"] == scope["source_close_sha256"], "delegated_scope")
+    target = record["targets"][event["id"]]
+    stage._validate_target_record(target)
+    plan = event["plan"]
+    base._require(set(target) == {"id", "participant", "version", "descriptor"}
+        and target["id"] == event["id"] and target["version"] == 1
+        and target["participant"] == plan["producer"] and plan["role"] == "historical"
+        and target["descriptor"]["path"] == plan["path"] == plan["configured_path"], "delegated_scope")
+    if event["status"] == "final_registry_observation":
+        base._require(event["participant"] == target["participant"] and event["version"] == target["version"], "delegated_scope")
+    source, _ = _read_scope_record(root / "admission/bindings" / (scope["source_binding"] + ".json"))
+    stage._validate_binding_record(scope["source_binding"], source)
+    base._require(source["state_root"] == str(source_root)
+        and source["state_identity"] == scope["source_state_identity"] == stage._identity(stage._safe_directory(source_root)), "delegated_scope")
+    marker, _ = _read_scope_record(source_root / stage._MARKER)
+    base._require(marker.get("binding_id") == scope["source_binding"], "delegated_scope")
+    proof, _ = _read_scope_record(root / "admission/closures" / (scope["source_binding"] + ".json"))
+    running = stage._validate_closure_header(scope["source_binding"], proof)
+    base._require(type(running["run_id"]) is str and re.fullmatch("[0-9a-f]{32}", running["run_id"]), "delegated_scope")
+    receipt, receipt_raw = _read_scope_record(root / "admission/receipts" / (running["run_id"] + ".json"))
+    stage._validate_closure_receipt(proof, receipt)
+    stage._validate_closure_digest(proof, hashlib.sha256(receipt_raw).hexdigest())
+    base._require(stage._digest(proof) == scope["source_close_sha256"], "delegated_scope")
+    _plan_shape(plan, source_root)
+    return stage._canonical_json({"policy": policy, "record": record, "source": source,
+                                  "marker": marker, "proof": proof})
+
+
 def read_inventory(controller: object) -> tuple[dict, ...]:
     from src.memory.copy_catalog import _controller_lease
     stage, root, head, _, _ = _controller_lease(controller)
@@ -1253,10 +1473,18 @@ def read_inventory(controller: object) -> tuple[dict, ...]:
                     for path in sorted(directory.iterdir()):
                         if re.fullmatch(r"\d{12}-[0-9a-f]{64}\.json", path.name):
                             event, _ = base._read(path)
-                            if event["kind"] in {"target", "physical", "registry", "composition"}:
+                            if event["kind"] in {"target", "delegated_target", "delegation_policy", "physical", "registry", "composition"}:
                                 material.append(event)
+                    policies = [event for event in material if event["kind"] == "delegation_policy"]
+                    policy_json = _policy_shape(policies[0]) if policies else None
+                    if policy_json is not None:
+                        base._require(base._sha(policy_json) == binding["ownership_sha256"], "delegated_policy")
+                    delegated = [(event, _read_delegated_observation(stage, root, binding, event, policy_json))
+                        for event in material if event["kind"] == "delegated_target"]
                     recovered["material_observations"] = tuple(material)
                     base._require(chain(directory)[:3] == (header, journal, states), "journal_changed")
+                    for event, observation in delegated:
+                        base._require(_read_delegated_observation(stage, root, binding, event, policy_json) == observation, "authority_changed")
             except (ValueError, RuntimeError, OSError, KeyError, TypeError):
                 value["reason"] = "invalid_or_unfinished_history"
             else:
@@ -1399,8 +1627,10 @@ async def final_registry(privacy: object) -> None:
                 from src.analytics.suggestion_storage import validate_suggestion_descriptor
                 validate = validate_event_descriptor if entry.participant.value == "events" else validate_suggestion_descriptor
                 validate(descriptor)
-                record["plan"] = await coordinator._disk.run(_plan, entry.participant.value,
-                    "historical", descriptor["path"], coordinator.admission.state_root)
+                record["plan"], scope_json, policy_json = await coordinator._disk.run(_historical_plan, coordinator.admission, entry)
+                if scope_json is not None:
+                    await coordinator._run(coordinator._record_historical_policy, policy_json)
+                    record.update(kind="delegated_target", scope=json.loads(scope_json))
                 record["physical_status"] = "not_dispatched_by_final_observation"
             except (ValueError, RuntimeError, OSError):
                 record["physical_status"] = "unbound_or_unsupported"

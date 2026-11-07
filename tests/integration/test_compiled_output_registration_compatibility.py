@@ -236,7 +236,7 @@ def _exercise(task: Path, evidence: Path, repo: Path, revision: str) -> dict:
             assert first["result"]["observations"]["header"]["run_id"] != second["result"]["observations"]["header"]["run_id"]
             head = read_admission_head(controller.root)
             expectation = {"head": head, "runs": [phase["result"]["observations"] for phase in (first, second)],
-                           "malformed_run_id": "0" * 32}
+                           "malformed_run_id": "0" * 32, "delegation": proof["delegation"]}
             assert all(value["header"]["run_id"] != expectation["malformed_run_id"] for value in expectation["runs"])
             expectation_path = evidence / "reader-expectation.json"
             compiled.write_json(expectation_path, expectation)

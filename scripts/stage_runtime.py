@@ -455,6 +455,13 @@ def _cas_head(root: Path, expected: dict | None, binding_id: str, status: str,
     return head
 
 
+def _validate_binding_record(binding_id: str, binding: dict) -> dict:
+    """Validate the original content-addressed binding after its caller reads it."""
+    if set(binding) != _BINDING_KEYS or binding["schema_version"] != 1 or _digest(binding) != binding_id:
+        raise ValueError("runtime_admission_binding_schema")
+    return binding
+
+
 def read_binding(root: Path, binding_id: str) -> dict:
     """Read an immutable canonical code/state descriptor by its content identity."""
     root = Path(root).resolve(strict=True)
@@ -463,9 +470,7 @@ def read_binding(root: Path, binding_id: str) -> dict:
     path = root / "admission" / "bindings" / (binding_id + ".json")
     _safe_directory(path.parent)
     binding = _read_json(path)
-    if set(binding) != _BINDING_KEYS or binding["schema_version"] != 1 or _digest(binding) != binding_id:
-        raise ValueError("runtime_admission_binding_schema")
-    return binding
+    return _validate_binding_record(binding_id, binding)
 
 
 def _typed(value: object) -> object:
@@ -1142,24 +1147,40 @@ def _check_roots(binding: dict) -> None:
             raise ValueError("runtime_admission_store_replaced")
 
 
-def _closure_proof(root: Path, binding_id: str) -> dict:
-    proof = _read_json(root / "admission" / "closures" / (binding_id + ".json"))
+def _validate_closure_header(binding_id: str, proof: dict) -> dict:
+    """Validate the original closure shape without reading external state."""
     if (set(proof) != {"schema_version", "binding_id", "running_head", "receipt_sha256", "child_pid"}
             or proof["schema_version"] != 1 or proof["binding_id"] != binding_id
             or type(proof["running_head"]) is not dict
             or set(proof["running_head"]) != _HEAD_KEYS
             or proof["running_head"]["status"] != "running"):
         raise ValueError("runtime_admission_source_close_proof")
+    return proof["running_head"]
+
+
+def _validate_closure_receipt(proof: dict, receipt: dict) -> None:
+    """Keep the exact original closed-resource receipt comparison shared."""
     running = proof["running_head"]
-    receipt_path = root / "admission" / "receipts" / (running["run_id"] + ".json")
-    receipt = _read_json(receipt_path)
     expected = {"schema_version": 1, "binding_id": running["binding_id"],
                 "generation": running["generation"], "run_id": running["run_id"],
                 "child_pid": proof["child_pid"], "status": "closed",
                 "resources": dict.fromkeys(_CLOSED_RESOURCES, True)}
-    if (receipt != expected
-            or hashlib.sha256(receipt_path.read_bytes()).hexdigest() != proof["receipt_sha256"]):
+    if receipt != expected:
         raise ValueError("runtime_admission_source_close_proof")
+
+
+def _validate_closure_digest(proof: dict, receipt_sha256: str) -> None:
+    if receipt_sha256 != proof["receipt_sha256"]:
+        raise ValueError("runtime_admission_source_close_proof")
+
+
+def _closure_proof(root: Path, binding_id: str) -> dict:
+    proof = _read_json(root / "admission" / "closures" / (binding_id + ".json"))
+    running = _validate_closure_header(binding_id, proof)
+    receipt_path = root / "admission" / "receipts" / (running["run_id"] + ".json")
+    receipt = _read_json(receipt_path)
+    _validate_closure_receipt(proof, receipt)
+    _validate_closure_digest(proof, hashlib.sha256(receipt_path.read_bytes()).hexdigest())
     return proof
 
 

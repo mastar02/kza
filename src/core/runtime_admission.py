@@ -409,6 +409,66 @@ class RuntimeAdmission:
             raise RuntimeError("runtime_admission_native_owner")
         self._revalidate_live(snapshot)
 
+    def _historical_target_scope(self, snapshot: object, target: dict) -> tuple[bytes, bytes]:
+        """Project one previously verified delegated target, never a root grant."""
+        stage = _stage()
+        try:
+            stage._validate_target_record(target)
+            ownership = json.loads(snapshot.ownership_json)
+            selected = ownership["delegations"][target["id"]]
+            record, source = selected["record"], selected["source"]
+            if (target["participant"] not in {"events", "suggestions"}
+                    or type(ownership["policy"]["schema_version"]) is not int
+                    or ownership["policy"]["schema_version"] != 1
+                    or ownership["targets"].get(target["id"]) != target
+                    or record["targets"].get(target["id"]) != target
+                    or target["id"] not in ownership["policy"]["delegated_targets"]
+                    or record["source_binding"] not in ownership["policy"]["source_bindings"]
+                    or record["destination_state"] != str(self.state_root)
+                    or record["destination_identity"] != self._binding["state_identity"]
+                    or stage._digest(source) != record["source_binding"]
+                    or selected["marker"].get("binding_id") != record["source_binding"]
+                    or stage._digest(selected["proof"]) != record["source_close_sha256"]):
+                raise RuntimeError("runtime_admission_target_scope")
+            path, root = Path(target["descriptor"]["path"]), Path(source["state_root"])
+            if root == self.state_root or not path.is_relative_to(root) or path == root:
+                raise RuntimeError("runtime_admission_target_scope")
+            policy_json = stage._canonical_json(ownership["policy"]) + b"\n"
+            if hashlib.sha256(policy_json).hexdigest() != self._binding["ownership_sha256"]:
+                raise RuntimeError("runtime_admission_target_scope")
+            scope_json = stage._canonical_json({
+                "scope_schema_version": 1, "source_binding": record["source_binding"],
+                "delegation_sha256": stage._digest(record),
+                "source_close_sha256": record["source_close_sha256"],
+                "source_state_root": source["state_root"],
+                "source_state_identity": source["state_identity"],
+            })
+            return scope_json, policy_json
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            raise RuntimeError("runtime_admission_target_scope") from exc
+
+    def _plan_historical_target(self, target: dict) -> tuple[bytes, bytes]:
+        """Return a live planning observation without granting native access."""
+        if _verified_admissions.get(self) is not True:
+            raise RuntimeError("runtime_admission_target_scope")
+        snapshot = self._validation_snapshot
+        if snapshot is None:
+            raise RuntimeError("runtime_admission_validation_missing")
+        self._revalidate_live(snapshot)
+        return self._historical_target_scope(snapshot, target)
+
+    def _native_historical_target(self, execution: object, target: dict) -> tuple[bytes, bytes]:
+        """Join one exact target to this actual invocation's issued snapshot."""
+        from src.core.owned_work import validate_native_execution
+        if _verified_admissions.get(self) is not True or not validate_native_execution(execution):
+            raise RuntimeError("runtime_admission_native_owner")
+        with _guard:
+            snapshot = self._native_validations.get(execution)
+        if snapshot is None:
+            raise RuntimeError("runtime_admission_native_owner")
+        self._revalidate_live(snapshot)
+        return self._historical_target_scope(snapshot, target)
+
     async def revalidate_constructed(self) -> None:
         """Keep historical repair excluded until final native validation returns.
 

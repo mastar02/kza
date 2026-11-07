@@ -132,6 +132,35 @@ def _read(args: argparse.Namespace) -> dict:
             if value["version"] == "v2":
                 _require(len(value["instrumented_producers"]) == 7
                          and len(value["partial_producers"]) == 5, "instrumented_is_not_covered")
+                policies = [event for event in value["material_observations"] if event["kind"] == "delegation_policy"]
+                _require(len(policies) == 1 and policies[0]["scope_schema_version"] == 1,
+                         "single_original_running_policy")
+                policy = policies[0]
+                _require(hashlib.sha256(stage._canonical_json(policy["policy"]) + b"\n").hexdigest()
+                         == policy["ownership_sha256"] == binding["ownership_sha256"],
+                         "original_running_policy_hash")
+                delegated = [event for event in value["material_observations"]
+                             if event["kind"] == "delegated_target" and event["status"] == "attached"]
+                _require({event["plan"]["producer"] for event in delegated} == {"events", "suggestions"},
+                         "both_historical_families_registered")
+                actual = expectation["delegation"]
+                record = stage._read_json(controller.root / "admission/delegations" / (actual["id"] + ".json"))
+                source = stage.read_binding(controller.root, actual["source_closed_binding"])
+                closure = stage._closure_proof(controller.root, actual["source_closed_binding"])
+                for event in delegated:
+                    scope = event["scope"]
+                    target = record["targets"][event["id"]]
+                    _require(event["id"] in actual["target_ids"]
+                             and scope["scope_schema_version"] == 1
+                             and scope["delegation_sha256"] == actual["id"] == stage._digest(record)
+                             and scope["source_binding"] == actual["source_closed_binding"]
+                             and scope["source_close_sha256"] == stage._digest(closure)
+                             and scope["source_state_root"] == source["state_root"]
+                             and scope["source_state_identity"] == source["state_identity"]
+                             and record["destination_state"] == header["state_root"] == actual["destination_state"]
+                             and event["plan"]["path"] == target["descriptor"]["path"]
+                             and event["plan"]["producer"] == target["participant"],
+                             "actual_delegated_target_source_and_close_join")
         unknown = [value for value in values if value["phase"] == "unknown"]
         if args.mode == "read-valid":
             _require(len(values) == 2 and not unknown, "valid_exact_histories")
