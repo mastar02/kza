@@ -1,8 +1,12 @@
-"""Real SQLite owner tests; ticket validation alone is a synthetic unit seam."""
+"""Real SQLite owners with synthetic admission validation and verified-instance seams.
+
+The managed fixture stubs revalidation and the verified admission registry;
+compiled scenarios separately establish real admission ancestry.
+"""
 from __future__ import annotations
 
 import asyncio
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
 from pathlib import Path
 import sqlite3
 import threading
@@ -58,6 +62,26 @@ async def managed(tmp_path, monkeypatch, *, analytics_enabled=True, dashboard_en
                 raise
 
 
+def assert_failed_registry_cleanup(
+    owner: registration.OutputRegistrationV2,
+    privacy: PrivacyServices,
+    error: BaseException,
+) -> None:
+    """Verify the exact poisoned-epoch error after the original owners drained."""
+    assert type(error) is registration.OutputRegistrationError
+    assert str(error) == "output_registration_registry_unavailable"
+    assert owner._failed
+    for closing in (privacy._closing, owner._closing):
+        assert closing is not None and closing.done() and not closing.cancelled()
+        assert closing.exception() is error
+    assert privacy._closed and privacy.ledger._db is None
+    assert not privacy.ledger.authority_available and privacy._lease is None
+    assert not any(thread.is_alive() for thread in privacy._executor._threads)
+    for work in (privacy._work, privacy._close_work, owner._disk):
+        status = work.status()
+        assert status["closed"] and status["operations"] == 0
+    assert not owner._open_extents and not owner._opening_extents
+
 def observations(owner):
     return [base._read(p)[0] for p in sorted(owner._directory.glob("[0-9]*.json"))]
 
@@ -65,36 +89,47 @@ def observations(owner):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("family", ["privacy_authority", "authority_sessions", "routines", "events"])
 async def test_attachment_fault_prevents_real_owner_file_and_lease_creation(tmp_path, monkeypatch, family):
-    async with managed(tmp_path, monkeypatch) as (owner, stack, config):
-        if family == "privacy_authority":
-            store = PrivacyServices(config["memory"]["privacy_db_path"])
-            initialize = lambda: store.acall(store.initialize)
-            path, close = Path(store.ledger.path), store.aclose
-        elif family == "authority_sessions":
-            store = DashboardAuthority(config["dashboard"]["auth"]["db_path"])
-            initialize, path, close = store.initialize, store.path, store.aclose
-        elif family == "routines":
-            store = RoutineStore(config["routines"]["db_path"])
-            initialize, path, close = store.initialize, Path(store._db_path), store.close
-        else:
-            store = EventLogger(config["analytics"]["events_db"])
-            initialize = lambda: store.acall(store.initialize)
-            path, close = store.db_path, store.aclose
-        stack.push_async_callback(close)
-        original = base._head
-        def fail_attachment(directory, previous, value):
-            if value["revision"] == 2:
-                raise OSError("synthetic attachment fault")
-            return original(directory, previous, value)
-        monkeypatch.setattr(base, "_head", fail_attachment)
-        with pytest.raises(OSError):
-            await registration.attach_output(store, family)
-        before = {p.name: p.read_bytes() for p in owner._directory.iterdir()}
-        with pytest.raises(RuntimeError):
-            await initialize()
-        assert not path.exists()
-        assert not tuple(path.parent.glob(path.name + "*"))
-        assert {p.name: p.read_bytes() for p in owner._directory.iterdir()} == before
+    body_completed = False
+    expected_cleanup = family == "privacy_authority"
+    cleanup_context = (pytest.raises(registration.OutputRegistrationError,
+        match="^output_registration_registry_unavailable$") if expected_cleanup else nullcontext())
+    with cleanup_context as cleanup:
+        async with managed(tmp_path, monkeypatch) as (owner, stack, config):
+            if family == "privacy_authority":
+                store = PrivacyServices(config["memory"]["privacy_db_path"])
+                initialize = lambda: store.acall(store.initialize)
+                path, close = Path(store.ledger.path), store.aclose
+            elif family == "authority_sessions":
+                store = DashboardAuthority(config["dashboard"]["auth"]["db_path"])
+                initialize, path, close = store.initialize, store.path, store.aclose
+            elif family == "routines":
+                store = RoutineStore(config["routines"]["db_path"])
+                initialize, path, close = store.initialize, Path(store._db_path), store.close
+            else:
+                store = EventLogger(config["analytics"]["events_db"])
+                initialize = lambda: store.acall(store.initialize)
+                path, close = store.db_path, store.aclose
+            stack.push_async_callback(close)
+            original = base._head
+            def fail_attachment(directory, previous, value):
+                if value["revision"] == 2:
+                    raise OSError("synthetic attachment fault")
+                return original(directory, previous, value)
+            monkeypatch.setattr(base, "_head", fail_attachment)
+            with pytest.raises(OSError):
+                await registration.attach_output(store, family)
+            before = {p.name: p.read_bytes() for p in owner._directory.iterdir()}
+            with pytest.raises(RuntimeError):
+                await initialize()
+            assert not path.exists()
+            assert not tuple(path.parent.glob(path.name + "*"))
+            assert {p.name: p.read_bytes() for p in owner._directory.iterdir()} == before
+            if expected_cleanup:
+                assert owner._failed
+            body_completed = True
+    assert body_completed
+    if expected_cleanup:
+        assert_failed_registry_cleanup(owner, store, cleanup.value)
 
 
 @pytest.mark.asyncio
@@ -165,42 +200,68 @@ async def test_suggestion_constructor_requires_real_reserved_dispatch_and_borrow
         assert not hasattr(engine.store, "begin_close")
         await events.aclose()
         assert base._chain(owner._directory)[2]["suggestions"]["phase"] == "closed"
-        assert not owner._open_extents
+        database = privacy.ledger._db
+        assert database is not None and privacy._lease is not None
+        assert set(owner._open_extents) == {id(database)}
+        extent = owner._open_extents[id(database)]
+        assert extent[0] is owner._roles["privacy_authority"]
+        assert extent[0].instance is privacy and extent[2] is database
+        assert database.execute("SELECT 1").fetchone()[0] == 1
+        assert events._closing.done() and events._closing.exception() is None
+        assert not owner._opening_extents
+        await privacy.aclose()
+        assert privacy._closing.done() and privacy._closing.exception() is None
+        assert privacy.ledger._db is None and privacy._lease is None
+        assert not owner._open_extents and not owner._opening_extents
 
 
 @pytest.mark.asyncio
 async def test_unreserved_suggestion_constructor_rejected_before_register_or_file(tmp_path, monkeypatch):
-    async with managed(tmp_path, monkeypatch) as (owner, stack, config):
-        privacy = await build_privacy_services(config, shutdown=stack)
-        events = await build_event_logger(config, shutdown=stack, privacy=privacy)
-        before = await privacy.acall(privacy.ledger.erasures.target_snapshot)
-        path = config["analytics"]["suggestions_path"]
-        with pytest.raises(RuntimeError, match="constructor_reservation"):
-            await events.acall(SuggestionStore, events, path)
-        assert not tuple(Path(path).parent.glob(Path(path).name + "*"))
-        # The failed epoch is deliberately sealed, so inspect the original live
-        # SQLite connection without asking it to reopen through managed gates.
-        rows = privacy.ledger._db.execute("SELECT count(*) FROM erasure_targets").fetchone()[0]
-        assert rows == len(before.entries)
+    body_completed = False
+    with pytest.raises(registration.OutputRegistrationError,
+            match="^output_registration_registry_unavailable$") as cleanup:
+        async with managed(tmp_path, monkeypatch) as (owner, stack, config):
+            privacy = await build_privacy_services(config, shutdown=stack)
+            events = await build_event_logger(config, shutdown=stack, privacy=privacy)
+            before = await privacy.acall(privacy.ledger.erasures.target_snapshot)
+            path = config["analytics"]["suggestions_path"]
+            with pytest.raises(RuntimeError, match="constructor_reservation"):
+                await events.acall(SuggestionStore, events, path)
+            assert not tuple(Path(path).parent.glob(Path(path).name + "*"))
+            # The failed epoch is deliberately sealed, so inspect the original live
+            # SQLite connection without asking it to reopen through managed gates.
+            rows = privacy.ledger._db.execute("SELECT count(*) FROM erasure_targets").fetchone()[0]
+            assert rows == len(before.entries)
+            assert owner._failed
+            body_completed = True
+    assert body_completed
+    assert_failed_registry_cleanup(owner, privacy, cleanup.value)
 
 
 @pytest.mark.asyncio
 async def test_same_worker_unadmitted_callable_cannot_open_events(tmp_path, monkeypatch):
-    async with managed(tmp_path, monkeypatch) as (owner, stack, config):
-        privacy = await build_privacy_services(config, shutdown=stack)
-        events = await build_event_logger(config, shutdown=stack, privacy=privacy)
-        connections = []
-        connect = sqlite3.connect
-        def observed(*args, **kwargs):
-            connections.append(args[0])
-            return connect(*args, **kwargs)
-        monkeypatch.setattr(sqlite3, "connect", observed)
-        def foreign():
-            with events._connect():
-                raise AssertionError("foreign callback reached native database")
-        with pytest.raises(RuntimeError, match="native_owner"):
-            await events._work.run(foreign)
-        assert connections == []
+    body_completed = False
+    with pytest.raises(registration.OutputRegistrationError,
+            match="^output_registration_registry_unavailable$") as cleanup:
+        async with managed(tmp_path, monkeypatch) as (owner, stack, config):
+            privacy = await build_privacy_services(config, shutdown=stack)
+            events = await build_event_logger(config, shutdown=stack, privacy=privacy)
+            connections = []
+            connect = sqlite3.connect
+            def observed(*args, **kwargs):
+                connections.append(args[0])
+                return connect(*args, **kwargs)
+            monkeypatch.setattr(sqlite3, "connect", observed)
+            def foreign():
+                with events._connect():
+                    raise AssertionError("foreign callback reached native database")
+            with pytest.raises(RuntimeError, match="native_owner"):
+                await events._work.run(foreign)
+            assert connections == []
+            assert owner._failed
+            body_completed = True
+    assert body_completed
+    assert_failed_registry_cleanup(owner, privacy, cleanup.value)
 
 
 @pytest.mark.asyncio
@@ -293,29 +354,40 @@ async def test_registry_change_between_publication_and_dispatch_retries_once_the
     from src.memory.erasure_coordinator import ErasureCoordinator
     from src.memory.erasure_journal import ErasureParticipant
     monkeypatch.setattr(EventRetention, "start", lambda self: None)
-    async with managed(tmp_path, monkeypatch) as (owner, stack, config):
-        privacy = await build_privacy_services(config, shutdown=stack)
-        erasures = ErasureCoordinator(privacy)
-        stack.push_async_callback(erasures.aclose)
-        driver = await build_event_erasure(config, privacy=privacy, owner=erasures)
-        descriptor = event_descriptor(config["analytics"]["events_db"])
-        rows = await privacy.acall(privacy.ledger.erasures.target_snapshot)
-        identity = next(e.id for e in rows.entries if e.descriptor == descriptor)
-        actual_worker = driver.retention._work._worker
-        dispatches = []
-        async def racing_worker(function, *args, **kwargs):
-            dispatches.append(function)
-            if len(dispatches) <= changes:
-                path = Path(descriptor["path"]).with_name(f"new-root-{len(dispatches)}.db")
-                await privacy.acall(privacy.ledger.erasures.register_target, ErasureParticipant.EVENTS, 1, event_descriptor(path))
-            return await actual_worker(function, *args, **kwargs)
-        monkeypatch.setattr(driver.retention._work, "_worker", racing_worker)
-        outcome = await driver.retention._run({"id": identity, "version": 1, "descriptor": descriptor}, 0)
-        assert len(dispatches) == 2
-        assert (outcome.error is None) is (changes == 1)
-        assert owner._failed is (changes == 2)
-        assert not Path(descriptor["path"]).exists()
-        assert not tuple(Path(descriptor["path"]).parent.glob("new-root-*"))
+    body_completed = False
+    expected_cleanup = changes == 2
+    cleanup_context = (pytest.raises(registration.OutputRegistrationError,
+        match="^output_registration_registry_unavailable$") if expected_cleanup else nullcontext())
+    with cleanup_context as cleanup:
+        async with managed(tmp_path, monkeypatch) as (owner, stack, config):
+            privacy = await build_privacy_services(config, shutdown=stack)
+            erasures = ErasureCoordinator(privacy)
+            stack.push_async_callback(erasures.aclose)
+            driver = await build_event_erasure(config, privacy=privacy, owner=erasures)
+            descriptor = event_descriptor(config["analytics"]["events_db"])
+            rows = await privacy.acall(privacy.ledger.erasures.target_snapshot)
+            identity = next(e.id for e in rows.entries if e.descriptor == descriptor)
+            actual_worker = driver.retention._work._worker
+            dispatches = []
+            async def racing_worker(function, *args, **kwargs):
+                dispatches.append(function)
+                if len(dispatches) <= changes:
+                    path = Path(descriptor["path"]).with_name(f"new-root-{len(dispatches)}.db")
+                    await privacy.acall(privacy.ledger.erasures.register_target, ErasureParticipant.EVENTS, 1, event_descriptor(path))
+                return await actual_worker(function, *args, **kwargs)
+            monkeypatch.setattr(driver.retention._work, "_worker", racing_worker)
+            outcome = await driver.retention._run({"id": identity, "version": 1, "descriptor": descriptor}, 0)
+            assert len(dispatches) == 2
+            assert (outcome.error is None) is (changes == 1)
+            assert owner._failed is (changes == 2)
+            assert not Path(descriptor["path"]).exists()
+            assert not tuple(Path(descriptor["path"]).parent.glob("new-root-*"))
+            if expected_cleanup:
+                assert owner._failed
+            body_completed = True
+    assert body_completed
+    if expected_cleanup:
+        assert_failed_registry_cleanup(owner, privacy, cleanup.value)
 
 
 @pytest.mark.asyncio
@@ -374,24 +446,31 @@ async def test_original_eraser_close_is_registered_before_attachment_can_fail(tm
     from src.analytics.erasure import build_event_erasure
     from src.memory.erasure_coordinator import ErasureCoordinator
     from src.memory.erasure_journal import ErasureParticipant
-    async with managed(tmp_path, monkeypatch) as (owner, stack, config):
-        privacy = await build_privacy_services(config, shutdown=stack)
-        erasures = ErasureCoordinator(privacy)
-        stack.push_async_callback(erasures.aclose)
-        original = registration.attach_output
-        observed = []
-        async def fail(owner_to_attach, producer, *, role="primary"):
-            if role == "eraser":
-                assert erasures._drivers[ErasureParticipant.EVENTS].callback.__self__ is owner_to_attach
-                assert any(close.__self__ is owner_to_attach for close in erasures._resources)
-                observed.append(owner_to_attach)
-                raise OSError("attachment unavailable")
-            return await original(owner_to_attach, producer, role=role)
-        monkeypatch.setattr(registration, "attach_output", fail)
-        with pytest.raises(OSError):
-            await build_event_erasure(config, privacy=privacy, owner=erasures)
-        await erasures.aclose()
-        assert observed[0]._closing.done() and observed[0].retention._closing.done()
+    body_completed = False
+    with pytest.raises(registration.OutputRegistrationError,
+            match="^output_registration_registry_unavailable$") as cleanup:
+        async with managed(tmp_path, monkeypatch) as (owner, stack, config):
+            privacy = await build_privacy_services(config, shutdown=stack)
+            erasures = ErasureCoordinator(privacy)
+            stack.push_async_callback(erasures.aclose)
+            original = registration.attach_output
+            observed = []
+            async def fail(owner_to_attach, producer, *, role="primary"):
+                if role == "eraser":
+                    assert erasures._drivers[ErasureParticipant.EVENTS].callback.__self__ is owner_to_attach
+                    assert any(close.__self__ is owner_to_attach for close in erasures._resources)
+                    observed.append(owner_to_attach)
+                    raise OSError("attachment unavailable")
+                return await original(owner_to_attach, producer, role=role)
+            monkeypatch.setattr(registration, "attach_output", fail)
+            with pytest.raises(OSError):
+                await build_event_erasure(config, privacy=privacy, owner=erasures)
+            await erasures.aclose()
+            assert observed[0]._closing.done() and observed[0].retention._closing.done()
+            assert owner._failed
+            body_completed = True
+    assert body_completed
+    assert_failed_registry_cleanup(owner, privacy, cleanup.value)
 
 
 def legacy_epoch(owner):
@@ -446,8 +525,11 @@ async def test_total_capacity_counts_legacy_and_unknown_bytes_before_new_open(tm
         assert not Path(store._db_path).exists()
         assert {str(p.relative_to(owner._namespace)): p.read_bytes()
                 for p in owner._namespace.rglob("*") if p.is_file()} == before
-        with pytest.raises(RuntimeError, match="epoch_incomplete"):
+        assert owner._failed
+        with pytest.raises(registration.OutputRegistrationError,
+                match="^output_registration_registry_unavailable$") as cleanup:
             await stack.__aexit__(RuntimeError, RuntimeError("capacity exhausted"), None)
+        assert_failed_registry_cleanup(owner, privacy, cleanup.value)
         with pytest.raises(sqlite3.ProgrammingError):
             database.execute("SELECT 1")
 
@@ -498,7 +580,10 @@ async def test_native_initializer_returns_before_active_and_failed_publication_p
         assert not (store._ready if family == "privacy_authority" else store._initialized)
         if family == "privacy_authority":
             assert store.ledger._db is not None and store._lease is not None
-        with pytest.raises(RuntimeError, match="epoch_incomplete"):
+        assert owner._failed
+        with pytest.raises(registration.OutputRegistrationError,
+                match="^output_registration_registry_unavailable$") as cleanup:
             await stack.__aexit__(OSError, OSError("publication failed"), None)
+        assert_failed_registry_cleanup(owner, (store if family == "privacy_authority" else privacy), cleanup.value)
         assert store._closing.done() and not owner._open_extents
         assert not any(thread.is_alive() for thread in store._executor._threads)

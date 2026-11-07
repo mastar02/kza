@@ -1,8 +1,13 @@
-"""Directed draft-review regressions; source authority is stubbed only in decoder tests."""
+"""Real service regressions using the shared synthetic managed-admission fixture.
+
+Decoder tests additionally stub receipt and immutable binding validation.
+These unit cases do not establish compiled admission ancestry.
+"""
 from __future__ import annotations
 
 import asyncio
 import copy
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -21,7 +26,9 @@ from src.memory import output_registration as base
 from src.memory import output_registration_v2 as registration
 from src.memory.privacy_services import PrivacyServices, build_privacy_services
 from src.routines.routine_store import RoutineStore
-from tests.unit.memory.test_output_registration_families import managed, observations, legacy_epoch
+from tests.unit.memory.test_output_registration_families import (
+    assert_failed_registry_cleanup, managed, observations, legacy_epoch,
+)
 
 
 def rewrite_events(directory: Path, events: list[dict]) -> None:
@@ -176,36 +183,47 @@ def mutate_extent(path: Path, mutation: str) -> None:
 @pytest.mark.parametrize("family", ["privacy_authority", "authority_sessions", "routines", "events"])
 @pytest.mark.parametrize("mutation", ["directory", "fifo", "hardlink", "existing_extra_link", "sidecar_symlink"])
 async def test_changed_extent_is_rejected_before_any_store_connector(tmp_path, monkeypatch, family, mutation):
-    async with managed(tmp_path, monkeypatch) as (owner, stack, config):
-        if family == "privacy_authority":
-            store = PrivacyServices(config["memory"]["privacy_db_path"])
-            path, close = Path(store.ledger.path), store.aclose
-            initialize = lambda: store.acall(store.initialize)
-        elif family == "authority_sessions":
-            store = DashboardAuthority(config["dashboard"]["auth"]["db_path"])
-            path, close, initialize = store.path, store.aclose, store.initialize
-        elif family == "routines":
-            store = RoutineStore(config["routines"]["db_path"])
-            path, close, initialize = Path(store._db_path), store.close, store.initialize
-        else:
-            store = EventLogger(config["analytics"]["events_db"])
-            path, close = store.db_path, store.aclose
-            initialize = lambda: store.acall(store.initialize)
-        stack.push_async_callback(close)
-        if mutation == "existing_extra_link":
-            path.touch()
-        await registration.attach_output(store, family)
-        mutate_extent(path, mutation)
-        connects = []
-        def forbidden(*args, **kwargs):
-            connects.append(True)
-            raise AssertionError("unsafe extent reached connector")
-        monkeypatch.setattr(sqlite3, "connect", forbidden)
-        monkeypatch.setattr(aiosqlite, "connect", forbidden)
-        with pytest.raises(RuntimeError, match="destination_changed"):
-            await initialize()
-        assert connects == []
-        assert owner._failed
+    body_completed = False
+    expected_cleanup = family == "privacy_authority"
+    cleanup_context = (pytest.raises(registration.OutputRegistrationError,
+        match="^output_registration_registry_unavailable$") if expected_cleanup else nullcontext())
+    with cleanup_context as cleanup:
+        async with managed(tmp_path, monkeypatch) as (owner, stack, config):
+            if family == "privacy_authority":
+                store = PrivacyServices(config["memory"]["privacy_db_path"])
+                path, close = Path(store.ledger.path), store.aclose
+                initialize = lambda: store.acall(store.initialize)
+            elif family == "authority_sessions":
+                store = DashboardAuthority(config["dashboard"]["auth"]["db_path"])
+                path, close, initialize = store.path, store.aclose, store.initialize
+            elif family == "routines":
+                store = RoutineStore(config["routines"]["db_path"])
+                path, close, initialize = Path(store._db_path), store.close, store.initialize
+            else:
+                store = EventLogger(config["analytics"]["events_db"])
+                path, close = store.db_path, store.aclose
+                initialize = lambda: store.acall(store.initialize)
+            stack.push_async_callback(close)
+            if mutation == "existing_extra_link":
+                path.touch()
+            await registration.attach_output(store, family)
+            mutate_extent(path, mutation)
+            connects = []
+            def forbidden(*args, **kwargs):
+                connects.append(True)
+                raise AssertionError("unsafe extent reached connector")
+            monkeypatch.setattr(sqlite3, "connect", forbidden)
+            monkeypatch.setattr(aiosqlite, "connect", forbidden)
+            with pytest.raises(RuntimeError, match="destination_changed"):
+                await initialize()
+            assert connects == []
+            assert owner._failed
+            if expected_cleanup:
+                assert owner._failed
+            body_completed = True
+    assert body_completed
+    if expected_cleanup:
+        assert_failed_registry_cleanup(owner, store, cleanup.value)
 
 
 @pytest.mark.asyncio
@@ -217,30 +235,37 @@ async def test_historical_mutation_after_snapshot_is_rejected_before_connect(tmp
     from src.memory.erasure_coordinator import ErasureCoordinator
     from src.memory.erasure_journal import ErasureParticipant
     monkeypatch.setattr(EventRetention, "start", lambda self: None)
-    async with managed(tmp_path, monkeypatch) as (owner, stack, config):
-        privacy = await build_privacy_services(config, shutdown=stack)
-        erasures = ErasureCoordinator(privacy)
-        stack.push_async_callback(erasures.aclose)
-        path = Path(config["analytics"]["events_db"])
-        if mutation == "existing_extra_link":
-            path.touch()
-        driver = await build_event_erasure(config, privacy=privacy, owner=erasures)
-        descriptor = event_descriptor(path)
-        snapshot = await privacy.acall(privacy.ledger.erasures.target_snapshot)
-        identity = next(e.id for e in snapshot.entries if e.participant is ErasureParticipant.EVENTS and e.descriptor == descriptor)
-        actual_worker = driver.retention._work._worker
-        async def changed_after_refresh(function, *args, **kwargs):
-            mutate_extent(path, mutation)
-            return await actual_worker(function, *args, **kwargs)
-        monkeypatch.setattr(driver.retention._work, "_worker", changed_after_refresh)
-        connects = []
-        def forbidden(*args, **kwargs):
-            connects.append(True)
-            raise AssertionError("historical mutation reached connect")
-        monkeypatch.setattr(sqlite3, "connect", forbidden)
-        outcome = await driver.retention._run({"id": identity, "version": 1, "descriptor": descriptor}, 0)
-        assert outcome.error is not None and owner._failed
-        assert connects == []
+    body_completed = False
+    with pytest.raises(registration.OutputRegistrationError,
+            match="^output_registration_registry_unavailable$") as cleanup:
+        async with managed(tmp_path, monkeypatch) as (owner, stack, config):
+            privacy = await build_privacy_services(config, shutdown=stack)
+            erasures = ErasureCoordinator(privacy)
+            stack.push_async_callback(erasures.aclose)
+            path = Path(config["analytics"]["events_db"])
+            if mutation == "existing_extra_link":
+                path.touch()
+            driver = await build_event_erasure(config, privacy=privacy, owner=erasures)
+            descriptor = event_descriptor(path)
+            snapshot = await privacy.acall(privacy.ledger.erasures.target_snapshot)
+            identity = next(e.id for e in snapshot.entries if e.participant is ErasureParticipant.EVENTS and e.descriptor == descriptor)
+            actual_worker = driver.retention._work._worker
+            async def changed_after_refresh(function, *args, **kwargs):
+                mutate_extent(path, mutation)
+                return await actual_worker(function, *args, **kwargs)
+            monkeypatch.setattr(driver.retention._work, "_worker", changed_after_refresh)
+            connects = []
+            def forbidden(*args, **kwargs):
+                connects.append(True)
+                raise AssertionError("historical mutation reached connect")
+            monkeypatch.setattr(sqlite3, "connect", forbidden)
+            outcome = await driver.retention._run({"id": identity, "version": 1, "descriptor": descriptor}, 0)
+            assert outcome.error is not None and owner._failed
+            assert connects == []
+            assert owner._failed
+            body_completed = True
+    assert body_completed
+    assert_failed_registry_cleanup(owner, privacy, cleanup.value)
 
 
 @pytest.mark.asyncio
@@ -251,49 +276,56 @@ async def test_post_admission_new_root_cannot_join_the_existing_native_operation
     from src.memory.erasure_coordinator import ErasureCoordinator
     from src.memory.erasure_journal import ErasureParticipant
     monkeypatch.setattr(retention.EventRetention, "start", lambda self: None)
-    async with managed(tmp_path, monkeypatch) as (owner, stack, config):
-        privacy = await build_privacy_services(config, shutdown=stack)
-        erasures = ErasureCoordinator(privacy)
-        stack.push_async_callback(erasures.aclose)
-        first = Path(config["analytics"]["events_db"])
-        late = first.with_name("late-existing.db")
-        for path in (first, late):
-            with sqlite3.connect(path) as database:
-                database.execute("CREATE TABLE legacy(value TEXT)")
-        late_before = late.read_bytes()
-        driver = await build_event_erasure(config, privacy=privacy, owner=erasures)
-        first_descriptor, late_descriptor = event_descriptor(first), event_descriptor(late)
-        entered, release = threading.Event(), threading.Event()
-        opened = []
-        actual_connect = sqlite3.connect
-        def counted(*args, **kwargs):
-            opened.append(args[0])
-            return actual_connect(*args, **kwargs)
-        monkeypatch.setattr(sqlite3, "connect", counted)
-        def two_roots(*args):
-            with existing_event_database(first_descriptor):
-                pass
-            entered.set()
-            if not release.wait(5):
-                raise TimeoutError("test did not register late target")
-            with existing_event_database(late_descriptor):
-                raise AssertionError("post-admission root entered an old operation")
-        monkeypatch.setattr(retention, "sweep_events", two_roots)
-        operation = asyncio.create_task(registration.run_registered(driver.retention,
-            driver.retention._work, retention.sweep_events))
-        try:
-            assert await asyncio.to_thread(entered.wait, 3)
-            await privacy.acall(privacy.ledger.erasures.register_target,
-                ErasureParticipant.EVENTS, 1, late_descriptor)
-            release.set()
-            with pytest.raises(RuntimeError, match="target_unregistered"):
-                await operation
-        finally:
-            release.set()
-            await asyncio.gather(operation, return_exceptions=True)
-        assert len(opened) == 1 and str(first) in opened[0]
-        assert late.read_bytes() == late_before and owner._failed
-        assert len(owner._open_extents) == 1  # Only the original live privacy ledger remains.
+    body_completed = False
+    with pytest.raises(registration.OutputRegistrationError,
+            match="^output_registration_registry_unavailable$") as cleanup:
+        async with managed(tmp_path, monkeypatch) as (owner, stack, config):
+            privacy = await build_privacy_services(config, shutdown=stack)
+            erasures = ErasureCoordinator(privacy)
+            stack.push_async_callback(erasures.aclose)
+            first = Path(config["analytics"]["events_db"])
+            late = first.with_name("late-existing.db")
+            for path in (first, late):
+                with sqlite3.connect(path) as database:
+                    database.execute("CREATE TABLE legacy(value TEXT)")
+            late_before = late.read_bytes()
+            driver = await build_event_erasure(config, privacy=privacy, owner=erasures)
+            first_descriptor, late_descriptor = event_descriptor(first), event_descriptor(late)
+            entered, release = threading.Event(), threading.Event()
+            opened = []
+            actual_connect = sqlite3.connect
+            def counted(*args, **kwargs):
+                opened.append(args[0])
+                return actual_connect(*args, **kwargs)
+            monkeypatch.setattr(sqlite3, "connect", counted)
+            def two_roots(*args):
+                with existing_event_database(first_descriptor):
+                    pass
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("test did not register late target")
+                with existing_event_database(late_descriptor):
+                    raise AssertionError("post-admission root entered an old operation")
+            monkeypatch.setattr(retention, "sweep_events", two_roots)
+            operation = asyncio.create_task(registration.run_registered(driver.retention,
+                driver.retention._work, retention.sweep_events))
+            try:
+                assert await asyncio.to_thread(entered.wait, 3)
+                await privacy.acall(privacy.ledger.erasures.register_target,
+                    ErasureParticipant.EVENTS, 1, late_descriptor)
+                release.set()
+                with pytest.raises(RuntimeError, match="target_unregistered"):
+                    await operation
+            finally:
+                release.set()
+                await asyncio.gather(operation, return_exceptions=True)
+            assert len(opened) == 1 and str(first) in opened[0]
+            assert late.read_bytes() == late_before and owner._failed
+            assert len(owner._open_extents) == 1
+            assert owner._failed
+            body_completed = True
+    assert body_completed
+    assert_failed_registry_cleanup(owner, privacy, cleanup.value)  # Only the original live privacy ledger remains.
 
 
 @pytest.mark.asyncio
@@ -386,20 +418,31 @@ async def test_duplicate_run_versions_and_unknown_namespace_never_keep_positive_
 @pytest.mark.asyncio
 @pytest.mark.parametrize("family,suffix", [("privacy_authority", ".lock"), ("authority_sessions", ".lease")])
 async def test_changed_lease_path_is_rejected_before_lease_or_database_open(tmp_path, monkeypatch, family, suffix):
-    async with managed(tmp_path, monkeypatch) as (owner, stack, config):
-        if family == "privacy_authority":
-            store = PrivacyServices(config["memory"]["privacy_db_path"])
-            path = Path(store.ledger.path)
-            initialize = lambda: store.acall(store.initialize)
-        else:
-            store = DashboardAuthority(config["dashboard"]["auth"]["db_path"])
-            path, initialize = store.path, store.initialize
-        stack.push_async_callback(store.aclose)
-        await registration.attach_output(store, family)
-        Path(str(path) + suffix).symlink_to(path.with_name("foreign-lease"))
-        connects = []
-        monkeypatch.setattr(sqlite3, "connect", lambda *a, **k: connects.append(True))
-        with pytest.raises(RuntimeError, match="destination_changed"):
-            await initialize()
-        assert connects == [] and not path.exists()
-        assert getattr(store, "_lease", None) is None and getattr(store, "_lease_fd", None) is None
+    body_completed = False
+    expected_cleanup = family == "privacy_authority"
+    cleanup_context = (pytest.raises(registration.OutputRegistrationError,
+        match="^output_registration_registry_unavailable$") if expected_cleanup else nullcontext())
+    with cleanup_context as cleanup:
+        async with managed(tmp_path, monkeypatch) as (owner, stack, config):
+            if family == "privacy_authority":
+                store = PrivacyServices(config["memory"]["privacy_db_path"])
+                path = Path(store.ledger.path)
+                initialize = lambda: store.acall(store.initialize)
+            else:
+                store = DashboardAuthority(config["dashboard"]["auth"]["db_path"])
+                path, initialize = store.path, store.initialize
+            stack.push_async_callback(store.aclose)
+            await registration.attach_output(store, family)
+            Path(str(path) + suffix).symlink_to(path.with_name("foreign-lease"))
+            connects = []
+            monkeypatch.setattr(sqlite3, "connect", lambda *a, **k: connects.append(True))
+            with pytest.raises(RuntimeError, match="destination_changed"):
+                await initialize()
+            assert connects == [] and not path.exists()
+            assert getattr(store, "_lease", None) is None and getattr(store, "_lease_fd", None) is None
+            if expected_cleanup:
+                assert owner._failed
+            body_completed = True
+    assert body_completed
+    if expected_cleanup:
+        assert_failed_registry_cleanup(owner, store, cleanup.value)
