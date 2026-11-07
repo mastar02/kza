@@ -13,10 +13,13 @@ import sqlite3
 import stat
 import threading
 from types import MethodType
+from weakref import WeakKeyDictionary
 from typing import Callable, Iterator, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from src.core.runtime_admission import RuntimeAdmission
+    from src.lists.list_store import ListStore
+    from src.reminders.reminder_store import ReminderStore
     from src.memory.erasure_journal import ErasureParticipant, TargetRegistrySnapshot
 
 from src.memory import output_registration as base
@@ -27,6 +30,7 @@ _OPERATION: ContextVar[object | None] = ContextVar("output_operation", default=N
 
 _MAX_VERSIONS = 32
 _MAX_OPEN_EXTENTS = 512
+_MAX_NATIVE_WITNESSES = 128
 _SELECTED = frozenset({"lists", "reminders", "privacy_authority", "authority_sessions", "routines", "events", "suggestions"})
 _PHASES = {
     "intent": {None}, "attached": {"intent"}, "opening": {"attached"},
@@ -397,6 +401,8 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         self._observations: dict[tuple, tuple] = {}
         self._open_extents: dict[int, tuple] = {}
         self._opening_extents = 0
+        self._dispatches = WeakKeyDictionary()
+        self._dispatch_lock = threading.RLock()
         self._reservations: dict[int, ConstructorReservation] = {}
         self._constructor_returns: dict[int, object] = {}
         self._expected.update({
@@ -412,11 +418,72 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                           "privacy_authority": True, "routines": True}
 
     def _current(self) -> None:
-        super()._current()
+        # Metadata carries no opening grant. Full validation is performed at
+        # explicit admission boundaries, never beneath this journal lock.
+        base._require(self.admission._output_registration is self and not self._failed, "coordinator")
+        self.admission._revalidate_live()
+        self._current_pins()
         if self._namespace.exists():
             for version in self._namespace.iterdir():
                 base._require(version.name in {"v1", "v2"} and version.is_dir()
                     and (version / "runs").is_dir(), "unsupported_version")
+
+    async def register_store(self, store: ListStore | ReminderStore, producer: str) -> base.DestinationRegistration:
+        """Keep inherited list/reminder attachment behind full validation."""
+        await self._run(self.admission.revalidate)
+        return await super().register_store(store, producer)
+
+    def _opening(self, handle: base.DestinationRegistration, store: object,
+                 producer: str, path: str) -> None:
+        # Both inherited async SQLite owners open outside OwnedBlockingWork.
+        # Validate before entering the original coordinator critical section.
+        self.admission.revalidate()
+        super()._opening(handle, store, producer, path)
+
+    def _preflight(self, execution: object) -> None:
+        """Validate a recognized original callback before it acquires native locks."""
+        roles = tuple(self._roles.values())
+        allowed = tuple(binding for binding in roles
+            if binding.work is execution.work and self._call_allowed(binding, execution))
+        final = tuple(binding for binding in roles
+            if binding.final_work is execution.work and self._call_allowed(binding, execution)
+            and execution.parent_sequence is binding.final_sequence
+            and execution.parent_sequence is not None)
+        # Ordinary already-open privacy reads/writes and owner cleanup keep
+        # their existing behavior; they acquire no connection-opening grant.
+        if not allowed and not final:
+            return
+        try:
+            with self._dispatch_lock:
+                for previous in tuple(self._dispatches):
+                    if previous.task.done():
+                        del self._dispatches[previous]
+                if len(self._dispatches) >= _MAX_NATIVE_WITNESSES:
+                    _reject("native_capacity", self)
+            if final:
+                for binding in final:
+                    self._close_binding(binding.instance)
+                    if binding.instance._closing is None or binding.instance._closing.done():
+                        _reject("close_owner", self)
+            else:
+                self._live()
+            self.admission._preflight_native(execution)
+            if not final:
+                self._current()
+            with self._dispatch_lock:
+                if len(self._dispatches) >= _MAX_NATIVE_WITNESSES:
+                    _reject("native_capacity", self)
+                self._dispatches[execution] = allowed + final
+        except BaseException:
+            self._failed = True
+            raise
+
+    def _dispatch(self, binding: _Owner, execution: object) -> None:
+        with self._dispatch_lock:
+            admitted = self._dispatches.get(execution, ())
+        if not any(item is binding for item in admitted):
+            _reject("native_owner", self)
+        self.admission._revalidate_native(execution)
 
     def _start(self):
         with self._lock:
@@ -522,6 +589,9 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         # Retain exact original owner before the first fallible await.
         self._roles[key] = self._by_instance[id(owner)] = binding
         owner._output_coordinator = self
+        if work is not None:
+            work._install_native_preflight(self, self._preflight)
+        await self._run(self.admission.revalidate)
         plan = await self._run(_plan, producer, role, path, self.admission.state_root)
         handle = base.DestinationRegistration(self, owner, key, path or "")
         self._handles[key] = (handle, plan)
@@ -570,7 +640,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             and validate_native_execution(execution, work=binding.final_work))
         try:
             if final_rotation:
-                self.admission.revalidate()
+                self._dispatch(binding, execution)
                 self._close_binding(binding.instance)
             else:
                 self._current()
@@ -585,6 +655,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             allowed = self._call_allowed(binding, execution)
         if not allowed or binding.phase not in {"attached", "opening", "active"}:
             _reject("native_owner", self)
+        self._dispatch(binding, execution)
         plan = self._handles[binding.key][1]
         physical = str(Path(path).resolve(strict=False))
         if history:
@@ -651,6 +722,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             _reject("initialization_owner", self)
         plan = self._handles[binding.key][1]
         def opening() -> None:
+            self.admission.revalidate()
             self._current()
             _physical_shape(owner._db_path, plan, expected_identity=plan["existing_identity"],
                 allow_absent=plan["existing_identity"] is None)
@@ -679,6 +751,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                 or args != (owner._observed_digest, owner._observed_epoch)):
             _reject("close_owner", self)
         binding.final_work, binding.final_args = work, args
+        work._install_native_preflight(self, self._preflight)
 
     def dashboard_operation(self, owner: object, action: str, args: tuple, guard: object) -> None:
         """A final worker may only persist the exact already-owned rotation fence."""
@@ -753,6 +826,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         from src.analytics.suggestion_storage import suggestion_descriptor
         if str(Path(path).absolute()) != str(Path(self._expected["suggestions"]).absolute()):
             _reject("configured_path", self)
+        await self._run(self.admission.revalidate)
         plan = await self._run(_plan, "suggestions", "primary", suggestion_descriptor(path)["path"], self.admission.state_root)
         await self._run(self._append, "suggestions", "intent", plan)
         reservation = ConstructorReservation(self, events, path)
@@ -769,7 +843,12 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         execution = current_native_execution()
         if not validate_native_execution(execution, work=parent.work, function=SuggestionEngine):
             _reject("constructor_owner", self)
+        self._dispatch(parent, execution)
         binding = _Owner(store, "suggestions", "primary", "suggestions", self._constructor_plan["path"], parent.work, grants={})
+        # Only the original reserved constructor can join its actual child to
+        # this already-validated invocation; no late historical grants change.
+        with self._dispatch_lock:
+            self._dispatches[execution] = self._dispatches[execution] + (binding,)
         self._roles["suggestions"] = self._by_instance[id(store)] = binding
         store._output_coordinator = self
         handle = base.DestinationRegistration(self, store, "suggestions", reservation.path)

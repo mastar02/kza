@@ -16,12 +16,14 @@ import sys
 import threading
 from types import MethodType, ModuleType
 from typing import TYPE_CHECKING
+from weakref import WeakKeyDictionary
 
 if TYPE_CHECKING:
     from src.memory.output_registration import DestinationRegistrationCoordinator
 
 MARKER = ".kza-state-binding.json"
 TICKET_ENV = "KZA_RUNTIME_ADMISSION"
+_MAX_NATIVE_WITNESSES = 128
 _guard = threading.RLock()
 _companions: dict[str, ModuleType] = {}
 _verified_runs: set[tuple[str, str]] = set()
@@ -97,7 +99,15 @@ def _validate_path(path: str | Path, *, initial: bool) -> tuple[dict, dict] | No
         return None
     if ticket is None:
         raise RuntimeError("runtime_admission_ticket_missing")
-    binding = _stage().validate_admission_ticket(state, ticket, check_state=initial)
+    with _guard:
+        admitted = [item for item, installed in _verified_admissions.items()
+            if installed and item._ticket == ticket and item.state_root == state]
+    if len(admitted) == 1 and not initial:
+        admission = admitted[0]
+        admission.revalidate()
+        binding = admission._binding
+    else:
+        binding = _stage().validate_admission_ticket(state, ticket, check_state=initial)
     return ticket, binding
 
 
@@ -237,6 +247,9 @@ class RuntimeAdmission:
         self._diagnostic_construction = None
         self._construction_revalidation: asyncio.Task | None = None
         self._output_registration = None
+        self._validation_lock = threading.RLock()
+        self._validation_snapshot = None
+        self._native_validations = WeakKeyDictionary()
 
     @property
     def state_root(self) -> Path:
@@ -322,11 +335,56 @@ class RuntimeAdmission:
             raise BaseExceptionGroup("runtime admission stop unconfirmed", failures)
 
     def revalidate(self) -> None:
-        """Check the live head/lease while allowing legitimate row writes."""
-        binding = _stage().validate_admission_ticket(
-            Path(self._binding["state_root"]), self._ticket, check_state=False)
+        """Complete the original full validation before a new native invocation."""
+        with self._validation_lock:
+            snapshot = _stage().admission_validation_snapshot(self.state_root, self._ticket)
+            binding = _stage().validate_admission_live(self.state_root, self._ticket, snapshot)
+            if binding != self._binding:
+                raise RuntimeError("runtime_admission_binding_changed")
+            self._validation_snapshot = snapshot
+
+    def _revalidate_live(self, snapshot: object | None = None) -> None:
+        """Check live authority without acquiring SQL, writer probes, or full mutex."""
+        observation = snapshot
+        if observation is None:
+            from src.core.owned_work import current_native_execution
+            execution = current_native_execution()
+            with _guard:
+                observation = (self._native_validations.get(execution)
+                    if execution is not None else None)
+            if observation is None:
+                observation = self._validation_snapshot
+        if observation is None:
+            raise RuntimeError("runtime_admission_validation_missing")
+        binding = _stage().validate_admission_live(self.state_root, self._ticket, observation)
         if binding != self._binding:
             raise RuntimeError("runtime_admission_binding_changed")
+
+    def _preflight_native(self, execution: object) -> None:
+        from src.core.owned_work import validate_native_execution
+        if _verified_admissions.get(self) is not True or not validate_native_execution(execution):
+            raise RuntimeError("runtime_admission_native_owner")
+        with self._validation_lock:
+            with _guard:
+                for previous in tuple(self._native_validations):
+                    if previous.task.done():
+                        del self._native_validations[previous]
+                if len(self._native_validations) >= _MAX_NATIVE_WITNESSES:
+                    raise RuntimeError("runtime_admission_native_capacity")
+            self.revalidate()
+            snapshot = self._validation_snapshot
+            with _guard:
+                self._native_validations[execution] = snapshot
+
+    def _revalidate_native(self, execution: object) -> None:
+        from src.core.owned_work import validate_native_execution
+        if _verified_admissions.get(self) is not True or not validate_native_execution(execution):
+            raise RuntimeError("runtime_admission_native_owner")
+        with _guard:
+            snapshot = self._native_validations.get(execution)
+        if snapshot is None:
+            raise RuntimeError("runtime_admission_native_owner")
+        self._revalidate_live(snapshot)
 
     async def revalidate_constructed(self) -> None:
         """Keep historical repair excluded until final native validation returns.
@@ -418,18 +476,34 @@ def verify_runtime_admission(config: dict, *, runtime_root: Path | None = None) 
 
 
 def verify_privacy_admission(path: str | Path) -> None:
-    """Recheck a managed lease immediately before private SQLite can open."""
+    """Recheck the original lease; entered initializers reuse their full preflight."""
+    from src.core.owned_work import current_native_execution
+    from src.memory.output_registration_v2 import OutputRegistrationV2
+    execution = current_native_execution()
     ticket = _ticket()
     with _guard:
+        admitted = [item for item, installed in _verified_admissions.items()
+            if installed and item._ticket == ticket
+            and type(item._output_registration) is OutputRegistrationV2]
         key = None if ticket is None else (ticket.get("run_id"), ticket.get("binding_id"))
         initial = key not in _verified_runs
-    verified = _validate_path(path, initial=initial)
-    if verified is not None:
+    if len(admitted) == 1:
+        admission = admitted[0]
+        if initial or _marker_for(path) != admission.state_root:
+            raise RuntimeError("runtime_admission_state_unbound")
+        # A managed V2 initializer is already under the privacy owner's lock.
+        # Missing/replayed dispatch proof fails here; it never starts a scan.
+        admission._revalidate_native(execution)
+        binding = admission._binding
+    else:
+        verified = _validate_path(path, initial=initial)
+        if verified is None:
+            return
         ticket, binding = verified
-        if Path(__file__).resolve().parents[2] != Path(binding["runtime_root"]).resolve():
-            raise RuntimeError("runtime_admission_code_root_changed")
-        with _guard:
-            _verified_runs.add((ticket["run_id"], ticket["binding_id"]))
+    if Path(__file__).resolve().parents[2] != Path(binding["runtime_root"]).resolve():
+        raise RuntimeError("runtime_admission_code_root_changed")
+    with _guard:
+        _verified_runs.add((ticket["run_id"], ticket["binding_id"]))
 
 
 def seal_runtime_configuration(config: dict) -> dict:

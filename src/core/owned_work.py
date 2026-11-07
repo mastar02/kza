@@ -63,7 +63,7 @@ class WorkTiming:
 _TIMING: ContextVar[WorkTiming | None] = ContextVar('owned_work_timing',default=None)
 
 
-@dataclass(frozen=True, eq=False, slots=True)
+@dataclass(frozen=True, eq=False, slots=True, weakref_slot=True)
 class NativeExecution:
     """Identity of one actual invocation; fields alone never grant admission."""
 
@@ -173,6 +173,11 @@ def observe_native(function: Callable, *args, **kwargs):
     if owns_timing:
         timing.native_started = time.monotonic()
     try:
+        # Entered provenance is already live, and _NATIVE_LOCK is released.
+        # This hook must finish before the original callback can acquire a
+        # ledger or SQLite lock. Its failure still runs original cleanup.
+        if owns_execution and binding.work._native_preflight is not None:
+            binding.work._native_preflight(binding)
         return function(*args,**kwargs)
     finally:
         if owns_timing:
@@ -216,6 +221,18 @@ class OwnedBlockingWork:
         self._timings: dict[asyncio.Task,WorkTiming] = {}
         self._history = deque(maxlen=capacity)
         self._native_executions: dict[int, _NativeState] = {}
+        self._native_preflight_owner: object | None = None
+        self._native_preflight: Callable[[NativeExecution], None] | None = None
+
+    def _install_native_preflight(
+        self, owner: object, callback: Callable[[NativeExecution], None],
+    ) -> None:
+        """Install one observer on this original owner, without changing dispatch."""
+        if self._native_preflight_owner is owner:
+            return
+        if self._native_preflight_owner is not None or self._closed:
+            raise RuntimeError("native_preflight_owner_changed")
+        self._native_preflight_owner, self._native_preflight = owner, callback
 
     def _native_binding(self, function, task, parent_sequence=None):
         retained = task if parent_sequence is None else parent_sequence

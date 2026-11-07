@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 from uuid import UUID, uuid4
 
 
@@ -113,6 +114,37 @@ _TABLE_COLUMNS = {
     "legacy_quarantine_batches_v1": "id:TEXT snapshot_sha256:TEXT selection_sha256:TEXT collection_id:TEXT imported_at:TEXT records:INTEGER",
     "legacy_quarantine_records_v1": "batch_id:TEXT record_id:TEXT state:TEXT document:TEXT metadata_json:TEXT vector:BLOB encoding:TEXT digest:TEXT",
 }
+
+
+_ADMISSION_VALIDATION_LOCK = threading.RLock()
+
+
+class _AdmissionValidationSnapshot(tuple):
+    """Immutable observations from a complete scan, never an execution grant.
+
+    The installed RuntimeAdmission retains the exact issued object and binds it
+    to its actual NativeExecution. A structurally similar object is not a
+    substitute for that provenance. Nested metadata is canonical bytes.
+    """
+
+    __slots__ = ()
+
+    def __new__(cls, ticket_json: bytes, binding_json: bytes, ownership_json: bytes) -> "_AdmissionValidationSnapshot":
+        if any(type(value) is not bytes for value in (ticket_json, binding_json, ownership_json)):
+            raise TypeError("runtime_admission_validation_snapshot")
+        return tuple.__new__(cls, (ticket_json, binding_json, ownership_json))
+
+    @property
+    def ticket_json(self) -> bytes:
+        return self[0]
+
+    @property
+    def binding_json(self) -> bytes:
+        return self[1]
+
+    @property
+    def ownership_json(self) -> bytes:
+        return self[2]
 
 
 def _canonical_json(value: object) -> bytes:
@@ -659,19 +691,20 @@ def _state_layout(state: Path) -> tuple[dict, dict, dict]:
 
 
 def _assert_writers_closed(state: Path) -> None:
-    descriptors = []
-    try:
-        for path in sorted(state.rglob("*")):
-            if path.is_file() and path.name.endswith((".lock", ".lease")):
-                descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
-                descriptors.append(descriptor)
-                try:
-                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    raise ValueError("runtime_admission_writer_active") from None
-    finally:
-        for descriptor in descriptors:
-            os.close(descriptor)
+    with _ADMISSION_VALIDATION_LOCK:
+        descriptors = []
+        try:
+            for path in sorted(state.rglob("*")):
+                if path.is_file() and path.name.endswith((".lock", ".lease")):
+                    descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+                    descriptors.append(descriptor)
+                    try:
+                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        raise ValueError("runtime_admission_writer_active") from None
+        finally:
+            for descriptor in descriptors:
+                os.close(descriptor)
 
 
 def _slot_name(name: str) -> str:
@@ -981,7 +1014,7 @@ def _delegation_records(root: Path, state: Path):
             yield record
 
 
-def _validate_delegated_target(root: Path, state: Path, target: dict, sources: list) -> None:
+def _validate_delegated_target(root: Path, state: Path, target: dict, sources: list) -> dict:
     for record in _delegation_records(root, state):
         if (set(record) != {"schema_version", "destination_state", "destination_identity",
                            "source_binding", "source_close_sha256", "targets"}
@@ -1009,15 +1042,43 @@ def _validate_delegated_target(root: Path, state: Path, target: dict, sources: l
             path = Path(value)
             if not path.is_relative_to(Path(source["state_root"])) or path.resolve() != path:
                 raise ValueError("runtime_admission_delegation_foreign_source")
-        return
+        return {"record": record, "source": source, "marker": marker, "proof": proof}
     raise ValueError("runtime_admission_delegation_missing")
 
 
-def validate_target_ownership(root: Path, binding: dict, *, allow_new_local: bool = False) -> None:
+def _validate_ownership_history(root: Path, policy: dict) -> None:
+    sources = policy["source_bindings"]
+    seen = set()
+    for item in policy["historical_targets"]:
+        if (type(item) is not dict or set(item) != {"source_binding", "target_id", "archive_sha256"}
+                or item["source_binding"] not in sources or type(item["target_id"]) is not str
+                or type(item["archive_sha256"]) is not str
+                or re.fullmatch("[0-9a-f]{64}", item["archive_sha256"]) is None):
+            raise ValueError("runtime_admission_history_schema")
+        key = (item["source_binding"], item["target_id"], item["archive_sha256"])
+        if key in seen:
+            raise ValueError("runtime_admission_history_duplicate")
+        seen.add(key)
+        archive_path = root / "admission" / "history" / (item["archive_sha256"] + ".json")
+        archive = _read_json(archive_path)
+        if (hashlib.sha256(archive_path.read_bytes()).hexdigest() != item["archive_sha256"]
+                or archive.get("schema_version") != 1
+                or archive.get("source_binding") != item["source_binding"]
+                or type(archive.get("targets")) is not list
+                or not any(type(target) is dict and target.get("id") == item["target_id"]
+                           for target in archive["targets"])):
+            raise ValueError("runtime_admission_history_mismatch")
+
+
+def _target_ownership_validation(
+    root: Path, binding: dict, *, allow_new_local: bool = False, capture: bool = False,
+) -> dict:
     """Reject foreign active paths; historical journals confer no execution grant."""
     root = _safe_directory(Path(root).resolve(strict=True))
     state = _safe_directory(Path(binding["state_root"]))
     targets = _target_inventory(state)
+    policy = None
+    delegations = {}
     path = state / ".kza-target-ownership.json"
     if binding["ownership_sha256"] is None:
         if path.exists() or path.is_symlink():
@@ -1054,32 +1115,21 @@ def validate_target_ownership(root: Path, binding: dict, *, allow_new_local: boo
             raise ValueError("runtime_admission_active_inventory_mismatch")
         owned |= extras
         for identity in delegated:
-            _validate_delegated_target(root, state, targets[identity], sources)
-        seen = set()
-        for item in policy["historical_targets"]:
-            if (type(item) is not dict or set(item) != {"source_binding", "target_id", "archive_sha256"}
-                    or item["source_binding"] not in sources or type(item["target_id"]) is not str
-                    or type(item["archive_sha256"]) is not str
-                    or re.fullmatch("[0-9a-f]{64}", item["archive_sha256"]) is None):
-                raise ValueError("runtime_admission_history_schema")
-            key = (item["source_binding"], item["target_id"], item["archive_sha256"])
-            if key in seen:
-                raise ValueError("runtime_admission_history_duplicate")
-            seen.add(key)
-            archive_path = root / "admission" / "history" / (item["archive_sha256"] + ".json")
-            archive = _read_json(archive_path)
-            if (hashlib.sha256(archive_path.read_bytes()).hexdigest() != item["archive_sha256"]
-                    or archive.get("schema_version") != 1
-                    or archive.get("source_binding") != item["source_binding"]
-                    or type(archive.get("targets")) is not list
-                    or not any(type(target) is dict and target.get("id") == item["target_id"]
-                               for target in archive["targets"])):
-                raise ValueError("runtime_admission_history_mismatch")
+            delegations[identity] = _validate_delegated_target(root, state, targets[identity], sources)
+        _validate_ownership_history(root, policy)
     for identity in owned:
         for value in _descriptor_paths(targets[identity]["descriptor"]):
             path = Path(value)
             if not path.is_relative_to(state) or path.resolve() != path:
                 raise ValueError("runtime_admission_foreign_target")
+    return {"targets": targets, "policy": policy, "delegations": delegations,
+            "delegation_records": list(_delegation_records(root, state)) if capture and delegations else []}
+
+
+def validate_target_ownership(root: Path, binding: dict, *, allow_new_local: bool = False) -> None:
+    """Reject foreign active paths; historical journals confer no execution grant."""
+    with _ADMISSION_VALIDATION_LOCK:
+        _target_ownership_validation(root, binding, allow_new_local=allow_new_local)
 
 
 def _manual_module():
@@ -1726,8 +1776,8 @@ def _ticket_value(ticket: dict | str) -> dict:
     return ticket
 
 
-def validate_admission_ticket(state_root: Path, ticket: dict | str, *, check_state: bool = True) -> dict:
-    """Validate a live inherited controller lease before creating any services."""
+def _admission_ticket_core(state_root: Path, ticket: dict | str) -> tuple[Path, Path, dict]:
+    """Check current inherited authority and code/root identity without SQLite."""
     ticket = _ticket_value(ticket)
     root = _safe_directory(Path(ticket["admission_root"]))
     state = _safe_directory(Path(state_root).resolve(strict=True))
@@ -1762,10 +1812,146 @@ def validate_admission_ticket(state_root: Path, ticket: dict | str, *, check_sta
         raise ValueError("runtime_admission_code_mismatch")
     if hashlib.sha256((runtime / "release.json").read_bytes()).hexdigest() != binding["release_sha256"]:
         raise ValueError("runtime_admission_release_changed")
-    if check_state and _binding_snapshot(root, binding["slot"]) != binding:
-        raise ValueError("privacy_authority_stale")
-    validate_target_ownership(root, binding, allow_new_local=not check_state)
+    return root, state, binding
+
+
+def _validate_source_binding_metadata(root: Path, source: dict) -> None:
+    """Recheck immutable source identity without reopening its databases."""
+    runtime, state, manifest = _checked_slot(root, source["slot"])
+    _require_copy_not_invalidated(root, state)
+    _require_copy_not_observed(root, state)
+    _require_copy_not_observed(root, runtime)
+    if str(runtime) != source["runtime_root"] or str(state) != source["state_root"]:
+        raise ValueError("runtime_admission_code_mismatch")
+    _check_roots(source)
+    if (hashlib.sha256((runtime / "release.json").read_bytes()).hexdigest() != source["release_sha256"]
+            or manifest["git_commit"] != source["code_commit"]
+            or manifest["python_magic"] != source["python_magic_hex"]):
+        raise ValueError("runtime_admission_release_changed")
+    ownership = state / ".kza-target-ownership.json"
+    if ownership.is_symlink():
+        raise ValueError("runtime_admission_ownership_redirected")
+    if source["ownership_sha256"] is None:
+        if ownership.exists():
+            raise ValueError("runtime_admission_ownership_changed")
+    else:
+        _read_json(ownership)
+        if hashlib.sha256(ownership.read_bytes()).hexdigest() != source["ownership_sha256"]:
+            raise ValueError("runtime_admission_ownership_changed")
+
+
+def _validate_ownership_metadata(root: Path, binding: dict, ownership: dict) -> None:
+    """Recheck pinned metadata; inventory content was scanned before native entry."""
+    state = _safe_directory(Path(binding["state_root"]))
+    path = state / ".kza-target-ownership.json"
+    policy = ownership["policy"]
+    targets, delegations = ownership["targets"], ownership["delegations"]
+    if binding["ownership_sha256"] is None:
+        if path.exists() or path.is_symlink() or policy is not None or delegations:
+            raise ValueError("runtime_admission_ownership_changed")
+    else:
+        if (_read_json(path) != policy
+                or hashlib.sha256(path.read_bytes()).hexdigest() != binding["ownership_sha256"]):
+            raise ValueError("runtime_admission_ownership_changed")
+        for identity in policy["source_bindings"]:
+            read_binding(root, identity)
+        _validate_ownership_history(root, policy)
+    if delegations:
+        # Do not select a different record or infer another grant during a live
+        # operation. The selected records came from the complete validator.
+        records = list(_delegation_records(root, state))
+        if records != ownership["delegation_records"]:
+            raise ValueError("runtime_admission_delegation_changed")
+        checked_sources = set()
+        for identity, selected in delegations.items():
+            record = selected["record"]
+            target = targets[identity]
+            if (record not in records or record["destination_identity"] != _identity(state)
+                    or record["source_binding"] not in policy["source_bindings"]
+                    or record["targets"].get(identity) != target):
+                raise ValueError("runtime_admission_delegation_target_changed")
+            source_id = record["source_binding"]
+            source = read_binding(root, source_id)
+            if source != selected["source"]:
+                raise ValueError("runtime_admission_delegation_changed")
+            if source_id not in checked_sources:
+                marker = _read_json(Path(source["state_root"]) / _MARKER)
+                if marker != selected["marker"] or marker.get("binding_id") != source_id:
+                    raise ValueError("runtime_admission_marker_mismatch")
+                _validate_source_binding_metadata(root, source)
+                proof = _closure_proof(root, source_id)
+                if proof != selected["proof"] or _digest(proof) != record["source_close_sha256"]:
+                    raise ValueError("runtime_admission_source_close_proof")
+                checked_sources.add(source_id)
+            elif _digest(selected["proof"]) != record["source_close_sha256"]:
+                raise ValueError("runtime_admission_source_close_proof")
+            for value in _descriptor_paths(target["descriptor"]):
+                target_path = Path(value)
+                if not target_path.is_relative_to(Path(source["state_root"])) or target_path.resolve() != target_path:
+                    raise ValueError("runtime_admission_delegation_foreign_source")
+    for identity in set(targets) - set(delegations):
+        for value in _descriptor_paths(targets[identity]["descriptor"]):
+            target_path = Path(value)
+            if not target_path.is_relative_to(state) or target_path.resolve() != target_path:
+                raise ValueError("runtime_admission_foreign_target")
+
+
+def admission_validation_snapshot(state_root: Path, ticket: dict | str) -> _AdmissionValidationSnapshot:
+    """Capture complete runtime validation before acquiring material locks.
+
+    Args:
+        state_root: State belonging to the inherited controller admission.
+        ticket: The actual installed admission ticket.
+
+    Returns:
+        Immutable observations for the installed owner's retained operation.
+        This value alone is not a capability or a substitute for full admission.
+    """
+    with _ADMISSION_VALIDATION_LOCK:
+        value = _ticket_value(ticket)
+        root, state, binding = _admission_ticket_core(state_root, value)
+        ownership = _target_ownership_validation(root, binding, allow_new_local=True, capture=True)
+        snapshot = _AdmissionValidationSnapshot(
+            _canonical_json(value), _canonical_json(binding), _canonical_json(ownership))
+        # Join mutable HEAD and metadata observations again after the full scan.
+        validate_admission_live(state, value, snapshot)
+        return snapshot
+
+
+def validate_admission_live(
+    state_root: Path, ticket: dict | str, snapshot: _AdmissionValidationSnapshot,
+) -> dict:
+    """Recheck inherited authority and pinned metadata without SQLite or probes.
+
+    Args:
+        state_root: The exact admitted state.
+        ticket: The original installed admission ticket.
+        snapshot: The exact full-validation result retained by RuntimeAdmission
+            and bound there to its original native execution. DTO shape alone
+            grants nothing; this helper cannot admit a new native operation.
+
+    Returns:
+        The current immutable binding after checking its live metadata.
+    """
+    if type(snapshot) is not _AdmissionValidationSnapshot:
+        raise ValueError("runtime_admission_validation_snapshot")
+    value = _ticket_value(ticket)
+    root, state, binding = _admission_ticket_core(state_root, value)
+    if (_canonical_json(value) != snapshot.ticket_json
+            or _canonical_json(binding) != snapshot.binding_json):
+        raise ValueError("runtime_admission_validation_changed")
+    _validate_ownership_metadata(root, binding, json.loads(snapshot.ownership_json))
     return binding
+
+
+def validate_admission_ticket(state_root: Path, ticket: dict | str, *, check_state: bool = True) -> dict:
+    """Validate a live inherited controller lease before creating any services."""
+    with _ADMISSION_VALIDATION_LOCK:
+        root, state, binding = _admission_ticket_core(state_root, ticket)
+        if check_state and _binding_snapshot(root, binding["slot"]) != binding:
+            raise ValueError("privacy_authority_stale")
+        validate_target_ownership(root, binding, allow_new_local=not check_state)
+        return binding
 
 
 def write_admission_receipt(ticket: dict | str, resources: dict) -> Path:

@@ -289,12 +289,16 @@ class DestinationRegistrationCoordinator:
     def _current(self):
         _require(self.admission._output_registration is self and not self._failed, "coordinator")
         self.admission.revalidate()
+        self._current_pins()
+
+    def _current_pins(self) -> None:
+        """Check the original coordinator and durable epoch without admission I/O."""
+        _require(self.admission._output_registration is self and not self._failed, "coordinator")
         if self._directory_identity is not None:
             _require(_directory(self._directory) == self._directory_identity, "namespace_changed")
         if self._epoch_identity is not None:
-            path = self._directory / "epoch.json"
-            _require(_identity(path) == self._epoch_identity
-                and _read(path)[0] == self._epoch, "epoch_changed")
+            _require(_identity(self._directory / "epoch.json") == self._epoch_identity
+                and _read(self._directory / "epoch.json")[0] == self._epoch, "epoch_changed")
 
     def _start(self):
         with self._lock:

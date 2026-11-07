@@ -46,6 +46,10 @@ async def managed(tmp_path, monkeypatch, *, analytics_enabled=True, dashboard_en
     admission = runtime_admission.RuntimeAdmission(ticket, {"state_root": str(state)},
         config["memory"]["privacy_db_path"], runtime_admission._config_digest(config))
     monkeypatch.setattr(admission, "revalidate", lambda: None)
+    # This fixture supplies synthetic authority only; actual native execution
+    # issuance, owner identity, opening and retained-close guards remain real.
+    admission._validation_snapshot = object()
+    monkeypatch.setattr(admission, "_revalidate_live", lambda snapshot=None: None)
     monkeypatch.setattr(runtime_admission, "_verified_runs", {(ticket["run_id"], ticket["binding_id"])})
     monkeypatch.setattr(runtime_admission, "_verified_admissions", {admission: False})
     monkeypatch.setattr(base, "_ACTIVE", set())
