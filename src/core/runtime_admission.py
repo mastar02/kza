@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from contextlib import AsyncExitStack
+from contextlib import AbstractContextManager, AsyncExitStack, nullcontext
 from contextvars import Context
 import copy
 import hashlib
@@ -57,6 +57,29 @@ def _companion(relative: str) -> ModuleType:
 
 def _stage() -> ModuleType:
     return _companion("scripts/stage_runtime")
+
+
+def diagnostic_history_validation_gate(path: str | Path) -> AbstractContextManager[object]:
+    """Serialize a historical writer with the actual companion's full probes.
+
+    This is scheduling only: neither a marker, ticket nor this gate validates
+    authority or permits a writer. The original operation must keep its own
+    policy and native lifetime checks. Call only inside its blocking worker,
+    before opening the store, and retain the gate through its original close.
+
+    Args:
+        path: The original historical diagnostic destination.
+
+    Returns:
+        The actual full-validator mutex for a managed process or destination;
+        an inert context for an unmanaged operation. Installed provenance stays
+        sticky even if the ticket or marker is later removed.
+    """
+    with _guard:
+        installed = any(run in _installed_runs for run, _ in _verified_runs)
+    if installed or TICKET_ENV in os.environ or _marker_for(path) is not None:
+        return _stage()._ADMISSION_VALIDATION_LOCK
+    return nullcontext()
 
 
 def _marker_for(path: str | Path) -> Path | None:

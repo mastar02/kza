@@ -47,11 +47,15 @@ def local_metadata(tmp_path, monkeypatch):
     binding = {"state_root": str(state), "ownership_sha256": None, "slot": "unit"}
     ticket = _ticket(root)
 
-    def core(actual_state, actual_ticket):
+    def core(actual_state, actual_ticket, *, artifacts=None):
         assert Path(actual_state) == state and actual_ticket == ticket
         return root, state, copy.deepcopy(binding)
 
     monkeypatch.setattr(stage, "_admission_ticket_core", core)
+    # These fixtures isolate authority metadata; real code-tree coverage is in
+    # test_live_artifact_integrity, using a supported built runtime.
+    monkeypatch.setattr(stage, "_admission_ticket_live_core",
+                        lambda state, ticket, artifacts: core(state, ticket))
     return root, state, binding, ticket
 
 
@@ -158,12 +162,13 @@ def delegated_metadata(tmp_path, monkeypatch):
                  "delegations": {target["id"]: selected}, "delegation_records": [record]}
     scan_calls = []
 
-    def full(actual_root, actual_binding, *, allow_new_local, capture):
+    def full(actual_root, actual_binding, *, allow_new_local, capture, artifacts):
         assert actual_root == root and actual_binding == binding and allow_new_local and capture
         scan_calls.append("synthetic full-validation observation")
+        artifacts[str(runtime)] = {"unit_metadata_seam": True}
         return copy.deepcopy(ownership)
 
-    def core(actual_state, actual_ticket):
+    def core(actual_state, actual_ticket, *, artifacts=None):
         assert Path(actual_state) == state and actual_ticket == ticket
         return root, state, copy.deepcopy(binding)
 
@@ -171,13 +176,27 @@ def delegated_metadata(tmp_path, monkeypatch):
         assert actual_root == root and slot == "source"
         return runtime, source_state, copy.deepcopy(manifest)
 
+    def artifact_read(actual_runtime, relative, observation):
+        # This fixture isolates mutable authority metadata, not artifact bytes.
+        # Read the real release record so its existing mutation oracle remains.
+        assert actual_runtime == runtime and relative == "release.json"
+        assert observation == {"unit_metadata_seam": True}
+        return (runtime / relative).read_bytes()
+
     def close_observation(actual_root, binding_id):
         assert actual_root == root and binding_id == source_id
         return copy.deepcopy(proof)
 
     monkeypatch.setattr(stage, "_admission_ticket_core", core)
+    # These fixtures isolate authority metadata; real code-tree coverage is in
+    # test_live_artifact_integrity, using a supported built runtime.
+    monkeypatch.setattr(stage, "_admission_ticket_live_core",
+                        lambda state, ticket, artifacts: core(state, ticket))
     monkeypatch.setattr(stage, "_target_ownership_validation", full)
     monkeypatch.setattr(stage, "_checked_slot", checked_slot)
+    monkeypatch.setattr(stage, "_checked_slot_live",
+                        lambda root, slot, artifacts: checked_slot(root, slot))
+    monkeypatch.setattr(stage, "_artifact_read", artifact_read)
     monkeypatch.setattr(stage, "_closure_proof", close_observation)
     snapshot = stage.admission_validation_snapshot(state, ticket)
     assert scan_calls == ["synthetic full-validation observation"]

@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 
 from src.core.owned_work import OwnedBlockingWork
+from src.core.runtime_admission import diagnostic_history_validation_gate
 from src.memory.erasure_journal import ErasureParticipant, ErasureResult, ErasureStep
 from src.obs.diagnostic_store import DiagnosticStore
 from src.obs.metrics_emitter import DiagnosticFailure, MetricsEmitter, project_diagnostic
@@ -50,7 +51,8 @@ class DiagnosticServices:
 
     def _invoke_history(self, path, conversation):
         try:
-            return self._history_operation(path, conversation)
+            with diagnostic_history_validation_gate(path):
+                return self._history_operation(path, conversation)
         except (Exception, asyncio.CancelledError):
             return DiagnosticFailure.FAILED
 

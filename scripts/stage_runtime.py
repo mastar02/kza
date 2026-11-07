@@ -129,10 +129,11 @@ class _AdmissionValidationSnapshot(tuple):
 
     __slots__ = ()
 
-    def __new__(cls, ticket_json: bytes, binding_json: bytes, ownership_json: bytes) -> "_AdmissionValidationSnapshot":
-        if any(type(value) is not bytes for value in (ticket_json, binding_json, ownership_json)):
+    def __new__(cls, ticket_json: bytes, binding_json: bytes, ownership_json: bytes,
+                artifacts_json: bytes) -> "_AdmissionValidationSnapshot":
+        if any(type(value) is not bytes for value in (ticket_json, binding_json, ownership_json, artifacts_json)):
             raise TypeError("runtime_admission_validation_snapshot")
-        return tuple.__new__(cls, (ticket_json, binding_json, ownership_json))
+        return tuple.__new__(cls, (ticket_json, binding_json, ownership_json, artifacts_json))
 
     @property
     def ticket_json(self) -> bytes:
@@ -145,6 +146,10 @@ class _AdmissionValidationSnapshot(tuple):
     @property
     def ownership_json(self) -> bytes:
         return self[2]
+
+    @property
+    def artifacts_json(self) -> bytes:
+        return self[3]
 
 
 def _canonical_json(value: object) -> bytes:
@@ -817,14 +822,161 @@ def prepare_slot(archive: Path, root: Path, name: str, state_source: Path) -> di
     return manifest
 
 
-def _checked_slot(root: Path, name: str) -> tuple[Path, Path, dict]:
+def _artifact_stat(info: os.stat_result, *, ancestor: bool = False) -> list[int]:
+    """Observe identity; only code-tree objects also pin mutation metadata."""
+    identity = [info.st_dev, info.st_ino, info.st_mode]
+    return identity if ancestor else identity + [
+        info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+
+
+def _artifact_ancestors(runtime: Path) -> dict:
+    # Shared ancestors (including /private/tmp) legitimately gain siblings.
+    # Their physical identity matters; their timestamps do not describe code.
+    result = {}
+    for parent in reversed(runtime.parents):
+        info = parent.lstat()
+        if not stat.S_ISDIR(info.st_mode):
+            raise ValueError("runtime_admission_artifact_changed")
+        result[str(parent)] = _artifact_stat(info, ancestor=True)
+    return result
+
+
+def _artifact_tree(runtime: Path, expected: dict | None = None) -> dict:
+    """Capture code metadata, or compare a pinned tree without listing it anew.
+
+    Directory FDs keep every traversal on the observed physical tree. Symlink
+    entries are lexical observations only: mutable state targets are not read.
+    Parent ctime/mtime detects additions, including inside empty directories.
+    """
+    ancestors = _artifact_ancestors(runtime)
+    entries = {}
+    children = {}
+    if expected is not None:
+        if ancestors != expected["ancestors"]:
+            raise ValueError("runtime_admission_artifact_changed")
+        for relative in expected["entries"]:
+            if relative != ".":
+                parent = str(PurePosixPath(relative).parent)
+                children.setdefault(parent, []).append(PurePosixPath(relative).name)
+
+    def record(relative: str, info: os.stat_result, link: str | None = None) -> None:
+        value = {"stat": _artifact_stat(info), "link": link}
+        if expected is not None and expected["entries"].get(relative) != value:
+            raise ValueError("runtime_admission_artifact_changed")
+        entries[relative] = value
+
+    def visit(descriptor: int, relative: str) -> None:
+        before = os.fstat(descriptor)
+        record(relative, before)
+        names = os.listdir(descriptor) if expected is None else children.get(relative, [])
+        for name in sorted(names):
+            child = name if relative == "." else relative + "/" + name
+            info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if stat.S_ISDIR(info.st_mode):
+                nested = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+                try:
+                    if _artifact_stat(os.fstat(nested)) != _artifact_stat(info):
+                        raise ValueError("runtime_admission_artifact_changed")
+                    visit(nested, child)
+                finally:
+                    os.close(nested)
+            elif stat.S_ISREG(info.st_mode):
+                record(child, info)
+            elif stat.S_ISLNK(info.st_mode) and child in {"config", "data", ".env"}:
+                record(child, info, os.readlink(name, dir_fd=descriptor))
+            else:
+                raise ValueError("runtime_admission_artifact_changed")
+        if _artifact_stat(os.fstat(descriptor)) != _artifact_stat(before):
+            raise ValueError("runtime_admission_artifact_changed")
+
+    descriptor = os.open(runtime, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        visit(descriptor, ".")
+        if _artifact_stat(runtime.lstat()) != entries["."]["stat"]:
+            raise ValueError("runtime_admission_artifact_changed")
+    finally:
+        os.close(descriptor)
+    result = {"ancestors": ancestors, "entries": entries}
+    if _artifact_ancestors(runtime) != ancestors or (expected is not None and result != expected):
+        raise ValueError("runtime_admission_artifact_changed")
+    return result
+
+
+def _artifact_read(runtime: Path, relative: str, observation: dict) -> bytes:
+    """Read the same nofollow leaf whose metadata brackets full validation."""
+    descriptors = []
+    directories = []
+    try:
+        descriptor = os.open(runtime, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        descriptors.append(descriptor)
+        directories.append((descriptor, "."))
+        parent = PurePosixPath(".")
+        for component in PurePosixPath(relative).parts[:-1]:
+            descriptor = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+            descriptors.append(descriptor)
+            parent /= component
+            directories.append((descriptor, str(parent)))
+        for directory, name in directories:
+            if _artifact_stat(os.fstat(directory)) != observation["entries"][name]["stat"]:
+                raise ValueError("runtime_admission_artifact_changed")
+        leaf = PurePosixPath(relative).name
+        descriptor = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directories[-1][0])
+        descriptors.append(descriptor)
+        expected = observation["entries"][relative]["stat"]
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or _artifact_stat(before) != expected:
+            raise ValueError("runtime_admission_artifact_changed")
+        if relative == "release.json" and before.st_size > 16 * 1024 * 1024:
+            raise ValueError("runtime_admission_unsafe_record")
+        with os.fdopen(os.dup(descriptor), "rb") as stream:
+            value = stream.read()
+        if (_artifact_stat(os.fstat(descriptor)) != expected
+                or _artifact_stat(os.stat(leaf, dir_fd=directories[-1][0], follow_symlinks=False)) != expected):
+            raise ValueError("runtime_admission_artifact_changed")
+        for directory, name in directories:
+            if _artifact_stat(os.fstat(directory)) != observation["entries"][name]["stat"]:
+                raise ValueError("runtime_admission_artifact_changed")
+        if (_artifact_stat(runtime.lstat()) != observation["entries"]["."]["stat"]
+                or _artifact_ancestors(runtime) != observation["ancestors"]):
+            raise ValueError("runtime_admission_artifact_changed")
+        return value
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _checked_slot_live(root: Path, name: str, artifacts: dict) -> tuple[Path, Path, dict]:
+    """Use only a prior full observation; changes never refresh it in place."""
+    target = root / "slots" / _slot_name(name)
+    runtime = target / "runtime"
+    observation = artifacts.get(str(runtime))
+    if observation is None:
+        raise ValueError("runtime_admission_artifact_missing")
+    _artifact_tree(runtime, observation)
+    manifest = json.loads(_artifact_read(runtime, "release.json", observation))
+    if type(manifest) is not dict:
+        raise ValueError("runtime_admission_record_schema")
+    for directory in ("config", "data"):
+        if ((runtime / directory).resolve() != target / "state" / directory
+                or not (runtime / directory).is_dir()):
+            raise ValueError("Runtime and state do not belong to the same slot")
+    if (runtime / ".env").is_symlink() and (runtime / ".env").resolve() != target / "state" / ".env":
+        raise ValueError("Environment does not belong to the same slot")
+    return runtime, _safe_directory(target / "state"), manifest
+
+
+def _checked_slot(root: Path, name: str, *, artifacts: dict | None = None) -> tuple[Path, Path, dict]:
     """Validate installed code and same-slot roots without selecting the slot."""
     name = _slot_name(name)
     target = root / "slots" / name
     if target.resolve(strict=True) != target:
         raise ValueError("Slot must not redirect to another directory")
     runtime = target / "runtime"
-    manifest = _read_json(runtime / "release.json")
+    observation = _artifact_tree(runtime) if artifacts is not None else None
+    manifest = (_read_json(runtime / "release.json") if observation is None
+                else json.loads(_artifact_read(runtime, "release.json", observation)))
+    if type(manifest) is not dict:
+        raise ValueError("runtime_admission_record_schema")
     files = {}
     for filename in manifest["files"]:
         path = PurePosixPath(filename)
@@ -833,7 +985,8 @@ def _checked_slot(root: Path, name: str) -> tuple[Path, Path, dict]:
         installed = runtime / filename
         if installed.resolve() != installed or installed.suffix == ".py":
             raise ValueError("Installed runtime integrity mismatch")
-        files[filename] = installed.read_bytes()
+        files[filename] = (installed.read_bytes() if observation is None
+                           else _artifact_read(runtime, filename, observation))
     _validate_manifest(manifest, files)
     expected = set(files) | {"release.json", "config", "data"}
     if (runtime / ".env").is_symlink():
@@ -848,7 +1001,14 @@ def _checked_slot(root: Path, name: str) -> tuple[Path, Path, dict]:
         if ((runtime / directory).resolve() != target / "state" / directory
                 or not (runtime / directory).is_dir()):
             raise ValueError("Runtime and state do not belong to the same slot")
-    return runtime, _safe_directory(target / "state"), manifest
+    state = _safe_directory(target / "state")
+    if observation is not None:
+        _artifact_tree(runtime, observation)
+        previous = artifacts.get(str(runtime))
+        if previous is not None and previous != observation:
+            raise ValueError("runtime_admission_artifact_changed")
+        artifacts[str(runtime)] = observation
+    return runtime, state, manifest
 
 
 def _descriptor_paths(value: object):
@@ -937,8 +1097,9 @@ def _validate_target_record(target: dict) -> None:
             raise ValueError("runtime_admission_unsupported_target")
 
 
-def _binding_snapshot(root: Path, name: str) -> dict:
-    runtime, state, manifest = _checked_slot(root, name)
+def _binding_snapshot(root: Path, name: str, *, artifacts: dict | None = None) -> dict:
+    runtime, state, manifest = (_checked_slot(root, name) if artifacts is None
+                                else _checked_slot(root, name, artifacts=artifacts))
     _require_copy_not_invalidated(root, state)
     _require_copy_not_observed(root, state)
     _require_copy_not_observed(root, runtime)
@@ -948,7 +1109,8 @@ def _binding_snapshot(root: Path, name: str) -> dict:
     if ownership.is_symlink():
         raise ValueError("runtime_admission_ownership_redirected")
     return {"schema_version": 1, "slot": name, "runtime_root": str(runtime), "state_root": str(state),
-            "release_sha256": hashlib.sha256((runtime / "release.json").read_bytes()).hexdigest(),
+            "release_sha256": hashlib.sha256((runtime / "release.json").read_bytes() if artifacts is None
+                else _artifact_read(runtime, "release.json", artifacts[str(runtime)])).hexdigest(),
             "code_commit": manifest["git_commit"], "python_magic_hex": manifest["python_magic"],
             "state_identity": _identity(state), "store_roots": roots, "schemas": schemas,
             "sdk_versions": versions, "authority": capture_state_authority(state),
@@ -1014,7 +1176,8 @@ def _delegation_records(root: Path, state: Path):
             yield record
 
 
-def _validate_delegated_target(root: Path, state: Path, target: dict, sources: list) -> dict:
+def _validate_delegated_target(root: Path, state: Path, target: dict, sources: list,
+                               *, artifacts: dict | None = None) -> dict:
     for record in _delegation_records(root, state):
         if (set(record) != {"schema_version", "destination_state", "destination_identity",
                            "source_binding", "source_close_sha256", "targets"}
@@ -1030,7 +1193,9 @@ def _validate_delegated_target(root: Path, state: Path, target: dict, sources: l
         marker = _read_json(Path(source["state_root"]) / _MARKER)
         if marker.get("binding_id") != record["source_binding"]:
             continue
-        if _binding_snapshot(root, source["slot"]) != source:
+        observed = (_binding_snapshot(root, source["slot"]) if artifacts is None
+                    else _binding_snapshot(root, source["slot"], artifacts=artifacts))
+        if observed != source:
             continue
         proof = _closure_proof(root, record["source_binding"])
         if _digest(proof) != record["source_close_sha256"]:
@@ -1072,6 +1237,7 @@ def _validate_ownership_history(root: Path, policy: dict) -> None:
 
 def _target_ownership_validation(
     root: Path, binding: dict, *, allow_new_local: bool = False, capture: bool = False,
+    artifacts: dict | None = None,
 ) -> dict:
     """Reject foreign active paths; historical journals confer no execution grant."""
     root = _safe_directory(Path(root).resolve(strict=True))
@@ -1115,7 +1281,9 @@ def _target_ownership_validation(
             raise ValueError("runtime_admission_active_inventory_mismatch")
         owned |= extras
         for identity in delegated:
-            delegations[identity] = _validate_delegated_target(root, state, targets[identity], sources)
+            delegations[identity] = (_validate_delegated_target(root, state, targets[identity], sources)
+                if artifacts is None else _validate_delegated_target(
+                    root, state, targets[identity], sources, artifacts=artifacts))
         _validate_ownership_history(root, policy)
     for identity in owned:
         for value in _descriptor_paths(targets[identity]["descriptor"]):
@@ -1776,8 +1944,8 @@ def _ticket_value(ticket: dict | str) -> dict:
     return ticket
 
 
-def _admission_ticket_core(state_root: Path, ticket: dict | str) -> tuple[Path, Path, dict]:
-    """Check current inherited authority and code/root identity without SQLite."""
+def _admission_ticket_metadata(state_root: Path, ticket: dict | str) -> tuple[Path, Path, dict]:
+    """Check actual mutable inherited authority and roots on every call."""
     ticket = _ticket_value(ticket)
     root = _safe_directory(Path(ticket["admission_root"]))
     state = _safe_directory(Path(state_root).resolve(strict=True))
@@ -1807,24 +1975,45 @@ def _admission_ticket_core(state_root: Path, ticket: dict | str) -> tuple[Path, 
         raise ValueError("runtime_admission_state_mismatch")
     _require_copy_not_observed(root, Path(binding["runtime_root"]))
     _check_roots(binding)
-    runtime, checked_state, _ = _checked_slot(root, binding["slot"])
+    return root, state, binding
+
+
+def _admission_ticket_core(state_root: Path, ticket: dict | str, *,
+                           artifacts: dict | None = None) -> tuple[Path, Path, dict]:
+    """Keep full code-byte validation for every new admission/invocation."""
+    root, state, binding = _admission_ticket_metadata(state_root, ticket)
+    runtime, checked_state, _ = (_checked_slot(root, binding["slot"]) if artifacts is None
+        else _checked_slot(root, binding["slot"], artifacts=artifacts))
     if str(runtime) != binding["runtime_root"] or checked_state != state:
         raise ValueError("runtime_admission_code_mismatch")
-    if hashlib.sha256((runtime / "release.json").read_bytes()).hexdigest() != binding["release_sha256"]:
+    if hashlib.sha256((runtime / "release.json").read_bytes() if artifacts is None
+                else _artifact_read(runtime, "release.json", artifacts[str(runtime)])).hexdigest() != binding["release_sha256"]:
         raise ValueError("runtime_admission_release_changed")
     return root, state, binding
 
 
-def _validate_source_binding_metadata(root: Path, source: dict) -> None:
+def _admission_ticket_live_core(state_root: Path, ticket: dict | str,
+                                artifacts: dict) -> tuple[Path, Path, dict]:
+    """Join fresh mutable authority to code observed by this full validation."""
+    root, state, binding = _admission_ticket_metadata(state_root, ticket)
+    runtime, checked_state, _ = _checked_slot_live(root, binding["slot"], artifacts)
+    if str(runtime) != binding["runtime_root"] or checked_state != state:
+        raise ValueError("runtime_admission_code_mismatch")
+    if hashlib.sha256(_artifact_read(runtime, "release.json", artifacts[str(runtime)])).hexdigest() != binding["release_sha256"]:
+        raise ValueError("runtime_admission_release_changed")
+    return root, state, binding
+
+
+def _validate_source_binding_metadata(root: Path, source: dict, artifacts: dict) -> None:
     """Recheck immutable source identity without reopening its databases."""
-    runtime, state, manifest = _checked_slot(root, source["slot"])
+    runtime, state, manifest = _checked_slot_live(root, source["slot"], artifacts)
     _require_copy_not_invalidated(root, state)
     _require_copy_not_observed(root, state)
     _require_copy_not_observed(root, runtime)
     if str(runtime) != source["runtime_root"] or str(state) != source["state_root"]:
         raise ValueError("runtime_admission_code_mismatch")
     _check_roots(source)
-    if (hashlib.sha256((runtime / "release.json").read_bytes()).hexdigest() != source["release_sha256"]
+    if (hashlib.sha256(_artifact_read(runtime, "release.json", artifacts[str(runtime)])).hexdigest() != source["release_sha256"]
             or manifest["git_commit"] != source["code_commit"]
             or manifest["python_magic"] != source["python_magic_hex"]):
         raise ValueError("runtime_admission_release_changed")
@@ -1840,7 +2029,7 @@ def _validate_source_binding_metadata(root: Path, source: dict) -> None:
             raise ValueError("runtime_admission_ownership_changed")
 
 
-def _validate_ownership_metadata(root: Path, binding: dict, ownership: dict) -> None:
+def _validate_ownership_metadata(root: Path, binding: dict, ownership: dict, artifacts: dict) -> None:
     """Recheck pinned metadata; inventory content was scanned before native entry."""
     state = _safe_directory(Path(binding["state_root"]))
     path = state / ".kza-target-ownership.json"
@@ -1878,7 +2067,7 @@ def _validate_ownership_metadata(root: Path, binding: dict, ownership: dict) -> 
                 marker = _read_json(Path(source["state_root"]) / _MARKER)
                 if marker != selected["marker"] or marker.get("binding_id") != source_id:
                     raise ValueError("runtime_admission_marker_mismatch")
-                _validate_source_binding_metadata(root, source)
+                _validate_source_binding_metadata(root, source, artifacts)
                 proof = _closure_proof(root, source_id)
                 if proof != selected["proof"] or _digest(proof) != record["source_close_sha256"]:
                     raise ValueError("runtime_admission_source_close_proof")
@@ -1909,10 +2098,12 @@ def admission_validation_snapshot(state_root: Path, ticket: dict | str) -> _Admi
     """
     with _ADMISSION_VALIDATION_LOCK:
         value = _ticket_value(ticket)
-        root, state, binding = _admission_ticket_core(state_root, value)
-        ownership = _target_ownership_validation(root, binding, allow_new_local=True, capture=True)
+        artifacts = {}
+        root, state, binding = _admission_ticket_core(state_root, value, artifacts=artifacts)
+        ownership = _target_ownership_validation(root, binding, allow_new_local=True, capture=True, artifacts=artifacts)
         snapshot = _AdmissionValidationSnapshot(
-            _canonical_json(value), _canonical_json(binding), _canonical_json(ownership))
+            _canonical_json(value), _canonical_json(binding), _canonical_json(ownership),
+            _canonical_json(artifacts))
         # Join mutable HEAD and metadata observations again after the full scan.
         validate_admission_live(state, value, snapshot)
         return snapshot
@@ -1936,11 +2127,12 @@ def validate_admission_live(
     if type(snapshot) is not _AdmissionValidationSnapshot:
         raise ValueError("runtime_admission_validation_snapshot")
     value = _ticket_value(ticket)
-    root, state, binding = _admission_ticket_core(state_root, value)
+    artifacts = json.loads(snapshot.artifacts_json)
+    root, state, binding = _admission_ticket_live_core(state_root, value, artifacts)
     if (_canonical_json(value) != snapshot.ticket_json
             or _canonical_json(binding) != snapshot.binding_json):
         raise ValueError("runtime_admission_validation_changed")
-    _validate_ownership_metadata(root, binding, json.loads(snapshot.ownership_json))
+    _validate_ownership_metadata(root, binding, json.loads(snapshot.ownership_json), artifacts)
     return binding
 
 
