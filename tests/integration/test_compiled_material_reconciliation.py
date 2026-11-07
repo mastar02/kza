@@ -574,6 +574,22 @@ def test_compiled_material_rollback_and_forward_preserve_latest_authority(tmp_pa
     evidence.mkdir(mode=0o700, parents=True)
     proof = exercise_material_reconciliation(tmp_path, evidence.resolve(), repo, new_revision=revision)
     assert proof["complete"] is True
+    privacy = "data/graph/privacy.db"
+    index = {"type": "index", "name": "idx_erasure_target_participant_id",
+        "tbl_name": "erasure_targets",
+        "sql": "CREATE INDEX idx_erasure_target_participant_id ON erasure_targets(participant, id)"}
+    images = {branch: json.loads((tmp_path / "closed-snapshots" / branch / "manifest.json").read_text())
+        for branch in ("O", "N", "R")}
+    assert not any(row["name"] == index["name"] for row in images["O"]["databases"][privacy]["schema"])
+    for branch in ("N", "R"):
+        assert [row for row in images[branch]["databases"][privacy]["schema"]
+            if row["name"] == index["name"]] == [index]
+    # F has a genuine closed binding rather than another snapshot directory.
+    # Its exact schema digest must retain the same latest index after forward
+    # materialization and the original compiled application's owned close.
+    final_binding = json.loads((tmp_path / "staging/admission/bindings" /
+        (proof["phases"]["F"]["closed_binding_id"] + ".json")).read_text())
+    assert final_binding["schemas"][privacy] == images["N"]["source_binding"]["schemas"][privacy]
     _recover_compiled_output_registration(tmp_path.resolve(), evidence.resolve())
     _recover_compiled_catalog(tmp_path.resolve(), evidence.resolve())
     _probe_compiled_sdk_metadata_faults(tmp_path.resolve(), evidence.resolve())

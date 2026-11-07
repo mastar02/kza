@@ -1007,6 +1007,21 @@ def _validate_evidence(cuts, targets, snapshots, layout):
                     == dependency, "payload_event_revision_or_lineage_changed")
 
 
+def _privacy_lookup_index_added(ordinary: list[dict], latest: list[dict]) -> bool:
+    """Recognize only the additive lookup index introduced for target snapshots.
+
+    Each source schema is already authenticated by _database_contract. This
+    compatibility rule does not normalize those schemas or change the latest
+    schema that materialization must clone exactly.
+    """
+    index = {"type": "index", "name": "idx_erasure_target_participant_id",
+        "tbl_name": "erasure_targets",
+        "sql": "CREATE INDEX idx_erasure_target_participant_id ON erasure_targets(participant, id)"}
+    return (not any(row["name"] == index["name"] for row in ordinary)
+        and latest.count(index) == 1
+        and [row for row in latest if row != index] == ordinary)
+
+
 def plan_payload_cut(ordinary: ClosedStateSnapshot, latest: ClosedStateSnapshot, *, now: float,
                      layout: DerivationLayout) -> PayloadCutPlan:
     """Deterministic read-only preflight of pinned inputs; no SDK or destination I/O."""
@@ -1046,7 +1061,10 @@ def plan_payload_cut(ordinary: ClosedStateSnapshot, latest: ClosedStateSnapshot,
                     for value in row.values():
                         if type(value) is dict:
                             read_blob(snapshot, value)
-        _require(old["schema"] == new["schema"] and old["application_id"] == new["application_id"]
+        compatible_schema = (old["schema"] == new["schema"] or
+            mapping.destination_relative == layout.privacy_relative
+            and _privacy_lookup_index_added(old["schema"], new["schema"]))
+        _require(compatible_schema and old["application_id"] == new["application_id"]
             and old["user_version"] == new["user_version"], "payload_database_schema_changed")
         for name in ("pending_audio_deletions", "audio_write_intents", "quarantines", "staged"):
             _require(not new["tables"].get(name, {}).get("rows"), "payload_store_obligations_unresolved")
