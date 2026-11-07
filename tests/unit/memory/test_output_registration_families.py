@@ -246,6 +246,22 @@ async def test_same_worker_unadmitted_callable_cannot_open_events(tmp_path, monk
         async with managed(tmp_path, monkeypatch) as (owner, stack, config):
             privacy = await build_privacy_services(config, shutdown=stack)
             events = await build_event_logger(config, shutdown=stack, privacy=privacy)
+            # Keep this global connector spy specific to the foreign dispatch.
+            # The real maintenance loop may already have admitted native work.
+            maintenance, work = events._maintenance, events._work
+            database, lease = privacy.ledger._db, privacy._lease
+            assert maintenance is not None and database is not None and lease is not None
+            maintenance.cancel()
+            async with asyncio.timeout(1):
+                await asyncio.gather(maintenance, return_exceptions=True)
+                await work.drain_admitted()
+            assert events._maintenance is maintenance and maintenance.cancelled()
+            assert events._work is work and events._initialized and events._closing is None
+            assert not work.status()["closed"] and work.status()["operations"] == 0
+            assert owner._roles["events"].instance is events and owner._roles["events"].work is work
+            assert privacy.ledger._db is database and privacy._lease == lease
+            assert privacy._ready and privacy._closing is None and events.source_policy is privacy.ledger
+            assert not owner._failed
             connections = []
             connect = sqlite3.connect
             def observed(*args, **kwargs):
