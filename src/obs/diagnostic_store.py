@@ -1,6 +1,6 @@
 """Durable deadlines and recoverable JSONL projections for numeric diagnostics."""
 
-from contextlib import closing
+from contextlib import ExitStack, closing
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import fcntl
@@ -10,6 +10,7 @@ import math
 import os
 from pathlib import Path
 import sqlite3
+import stat
 import tempfile
 import threading
 from uuid import UUID, uuid4, uuid5, NAMESPACE_URL
@@ -57,6 +58,7 @@ class DiagnosticStore:
         self._lock = threading.RLock()
         self._lease = None
         self._initialized = False
+        self._projection_pending = True
         self._closed = False
         self._status = {'ready': False, 'rows': 0, 'quarantines': 0, 'next_at': None}
 
@@ -228,7 +230,8 @@ class DiagnosticStore:
                 conversation_id TEXT NOT NULL, PRIMARY KEY(record_id,conversation_id));
             CREATE INDEX IF NOT EXISTS diagnostic_conversation ON lineage(conversation_id);
         ''')
-        db.execute('PRAGMA user_version=2')
+        if version != 2:
+            db.execute('PRAGMA user_version=2')
         if db.execute('PRAGMA foreign_key_check').fetchone():
             raise ValueError('invalid_diagnostic_lineage')
         for (conversation,) in db.execute('SELECT DISTINCT conversation_id FROM lineage'):
@@ -258,8 +261,8 @@ class DiagnosticStore:
         if changed:
             self._set(db, 'dirty', 1)
         self._cleanup_staged(db)
-        # Rebuild on restart; the catalog, not the old cache, grants visibility.
-        self._set(db, 'dirty', 1)
+        # On restart, verify projections against the catalog after expiry.
+        # A clean cache alone never satisfies the pending verification.
         db.commit()
         self._initialized = True
 
@@ -283,9 +286,94 @@ class DiagnosticStore:
                     self._set(db, 'dirty', 1)
         db.commit()
 
+    def _projection_matches(self, db: sqlite3.Connection) -> bool:
+        """Compare both stable projections with canonical catalog rows in chunks."""
+        def fingerprint(info: os.stat_result) -> tuple[int, ...]:
+            return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+                    info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+        def directory_identity(info: os.stat_result) -> tuple[int, ...]:
+            return info.st_dev, info.st_ino, info.st_mode
+
+        parent = self.path.parent.absolute()
+        physical_parent = parent.resolve(strict=True)
+        parent_before = physical_parent.lstat()
+        if not stat.S_ISDIR(parent_before.st_mode):
+            raise RuntimeError('diagnostic_projection_parent_changed')
+        paths = (self.path, self.path.with_suffix(self.path.suffix+'.1'))
+        with ExitStack() as resources:
+            parent_fd = os.open(physical_parent,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            resources.callback(os.close, parent_fd)
+            expected_parent = directory_identity(parent_before)
+            if directory_identity(os.fstat(parent_fd)) != expected_parent:
+                raise RuntimeError('diagnostic_projection_parent_changed')
+            leaves = []
+            for path in paths:
+                try:
+                    observed = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    leaves.append((path.name, None, None))
+                    continue
+                if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
+                    raise RuntimeError('diagnostic_projection_unsafe')
+                # NONBLOCK also covers replacement by a FIFO between stat and open.
+                descriptor = os.open(path.name,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+                resources.callback(os.close, descriptor)
+                if fingerprint(os.fstat(descriptor)) != fingerprint(observed):
+                    raise RuntimeError('diagnostic_projection_changed')
+                leaves.append((path.name, descriptor, observed))
+            matches, active_bytes = True, 0
+            for partition, (_name, descriptor, _observed) in enumerate(leaves):
+                partition_matches = descriptor is not None
+                for identifier, born, expiry, payload in db.execute(
+                        'SELECT id,born,expires,payload FROM metrics WHERE partition=? ORDER BY born,id',
+                        (partition,)):
+                    expected = (self._line(identifier, born, expiry, json.loads(payload))+'\n').encode('utf-8')
+                    if partition == 0:
+                        active_bytes += len(expected)
+                    offset = 0
+                    while partition_matches and offset < len(expected):
+                        length = min(65536, len(expected)-offset)
+                        chunk = os.read(descriptor, length)
+                        if not chunk or chunk != expected[offset:offset+len(chunk)]:
+                            partition_matches = False
+                        else:
+                            offset += len(chunk)
+                if partition_matches and os.read(descriptor, 1):
+                    partition_matches = False
+                matches = matches and partition_matches
+            matches = matches and self._meta(db, 'active_bytes') == active_bytes
+            # Directory timestamps may change for unrelated siblings. Physical
+            # routing and every inspected leaf must still name the same objects.
+            if (parent.resolve(strict=True) != physical_parent
+                    or directory_identity(parent.stat()) != expected_parent
+                    or directory_identity(os.fstat(parent_fd)) != expected_parent):
+                raise RuntimeError('diagnostic_projection_parent_changed')
+            for name, descriptor, observed in leaves:
+                try:
+                    current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    current = None
+                if observed is None:
+                    if current is not None:
+                        raise RuntimeError('diagnostic_projection_changed')
+                elif (current is None or fingerprint(current) != fingerprint(observed)
+                        or fingerprint(os.fstat(descriptor)) != fingerprint(observed)):
+                    raise RuntimeError('diagnostic_projection_changed')
+            return matches
+
     def _publish(self, db):
         if not self._meta(db, 'dirty'):
-            return
+            if not self._projection_pending:
+                return
+            if self._projection_matches(db):
+                self._projection_pending = False
+                return
+            self._set(db, 'dirty', 1)
+            db.commit()
+        self._projection_pending = True
         for partition, target in ((0, self.path), (1, self.path.with_suffix(self.path.suffix+'.1'))):
             fd, name = tempfile.mkstemp(prefix='.diag-', suffix='.tmp', dir=self.path.parent)
             stage = Path(name)
@@ -311,6 +399,7 @@ class DiagnosticStore:
         self._set(db, 'active_bytes', self.path.stat().st_size)
         self._set(db, 'dirty', 0)
         db.commit()
+        self._projection_pending = False
 
     def _snapshot(self, db):
         count, next_at = db.execute('SELECT COUNT(*),MIN(expires) FROM metrics').fetchone()
