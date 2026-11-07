@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "unit": "T024-F1/durable-copy-lifecycle",
-  "status": "in_progress_foundation_verified_local",
+  "status": "in_progress_paused_by_user_current_full_failed",
   "goal": "docs/plans/2026-11-02-autonomous-roadmap.md",
   "goal_complete": false,
   "basis": [
@@ -93,7 +93,7 @@
     "History/DTO cannot authorize copy/cleanup.",
     "Cleanup cancellation retains owned work until actual return without premature ACK."
   ],
-  "next_action": "Continuar registro de productores/destinos y censo global tras el primer hito local de listas/recordatorios. La matriz contiene 32 categorías u obligaciones, dos familias de stores instrumentadas y 30 categorías sin cubrir; no acredita 32 writers individuales ni el universo completo. El segundo parche privado v2 para privacidad, sesiones/dashboard, rutinas, eventos y sugerencias tiene revisión estática sin bloqueos de código abiertos en el alcance revisado; sigue sin aplicar ni ejecutar, sin aceptación runtime. Revalidar pins originales antes de aplicarlo y recopilar IDs exactos para las validaciones dirigidas, compiladas y full pendientes. Reutilizar las autoridades y owners nativos existentes, dispatch real y snapshot acotado. Después reconciliar representaciones/sujetos/recibos y productores anidados, lazy, offline, externos o desconocidos. Mantener pendientes cierre SDK genuino, migración legacy, guards diagnostics1/streams2/voices2 y aceptación física. No repetir evidencia cerrada sin cambio, fallo o incertidumbre nueva.",
+  "next_action": "Diagnosticar y corregir con evidencia las seis fallas de liberación de referencias privadas de la full c0e82df; investigar por separado el consumo del plazo de1500s y el parser JUnit interrumpido. Preservar los oráculos y límites; no iniciar cuentas ni ejecutar helpers de aceptación del intento fallido. Tras una corrección revisada, usar revisión/inputs/attempt/basetemp nuevos y validación pertinente. El roadmap completo sigue pendiente.",
   "foundation_progress": {
     "report": "docs/research/2026-11-06-copy-lifecycle-progress.json",
     "implementation_commit": "2cdbe51f0d3c897e98cc1d2ace7edc0aaed9240f",
@@ -118,51 +118,49 @@
         "path": "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/v2-review.json",
         "sha256": "a32b652669a1149f789c04d403ad7a822a7df3a3e271bfdab8f31c175efcdd36"
       },
-      "next_action": "Continuar registro de productores/destinos y censo global tras el primer hito local de listas/recordatorios. La matriz contiene 32 categorías u obligaciones, dos familias de stores instrumentadas y 30 categorías sin cubrir; no acredita 32 writers individuales ni el universo completo. El segundo parche privado v2 para privacidad, sesiones/dashboard, rutinas, eventos y sugerencias tiene revisión estática sin bloqueos de código abiertos en el alcance revisado; sigue sin aplicar ni ejecutar, sin aceptación runtime. Revalidar pins originales antes de aplicarlo y recopilar IDs exactos para las validaciones dirigidas, compiladas y full pendientes. Reutilizar las autoridades y owners nativos existentes, dispatch real y snapshot acotado. Después reconciliar representaciones/sujetos/recibos y productores anidados, lazy, offline, externos o desconocidos. Mantener pendientes cierre SDK genuino, migración legacy, guards diagnostics1/streams2/voices2 y aceptación física. No repetir evidencia cerrada sin cambio, fallo o incertidumbre nueva.",
+      "next_action": "Diagnosticar y corregir con evidencia las seis fallas de liberación de referencias privadas de la full c0e82df; investigar por separado el consumo del plazo de1500s y el parser JUnit interrumpido. Preservar los oráculos y límites; no iniciar cuentas ni ejecutar helpers de aceptación del intento fallido. Tras una corrección revisada, usar revisión/inputs/attempt/basetemp nuevos y validación pertinente. El roadmap completo sigue pendiente.",
       "completed_first_slice": "docs/research/2026-11-06-output-registration-progress.json",
       "coverage": {
-        "required_inventory_categories": 32,
-        "registered_store_families": [
+        "inventory_categories": 32,
+        "instrumented_families": 7,
+        "closed_primary_registration_families": [
           "lists",
           "reminders"
         ],
-        "remaining_categories_per_run": 30,
-        "individual_writer_count_proven": false
+        "partial_families": 5,
+        "uncovered_categories": 30
       },
       "next_batch": {
-        "status": "private_unapplied_unexecuted_draft_static_review_complete",
-        "accepted": false,
+        "status": "accounts_design_reviewed_not_implemented",
         "applied": false,
         "runtime_acceptance": false,
-        "design": {
-          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-design-v2.json",
-          "sha256": "62c0d4f584067fa1b84c20f64d1dbfe017f792db26c0486f8aa682df45e5f143"
+        "references": {
+          "next-accounts-concrete-design.json": {
+            "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-accounts-concrete-design.json",
+            "sha256": "fee543db51bae3bcfad67889c94b81a67ed6131efe11c2c82a237d94ce21744a"
+          },
+          "next-accounts-own-temp-identity-addendum.json": {
+            "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-accounts-own-temp-identity-addendum.json",
+            "sha256": "2580aef43ce7318ae10d075a8c8637e11fbafaa543f503ee1e1c2d5818dd83c8"
+          },
+          "next-accounts-fdopen-failure-clarification.json": {
+            "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-accounts-fdopen-failure-clarification.json",
+            "sha256": "5af657d6548efb5454f0c5a140e1e49fc3ff9c5d08ac5da31b675559d1c1d948"
+          },
+          "next-accounts-addenda-independent-review.json": {
+            "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-accounts-addenda-independent-review.json",
+            "sha256": "d222958a7e13aa4b2b733efc76b536b4205d27526928b9706bc05fde8b49f723"
+          },
+          "next-accounts-writer-callsite-census.json": {
+            "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-accounts-writer-callsite-census.json",
+            "sha256": "39668acd7bd5e4292fe5603754622506bfd2675fbc3fd0a003575ced382a9e02"
+          },
+          "next-accounts-compiled-three-version-plan.json": {
+            "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-accounts-compiled-three-version-plan.json",
+            "sha256": "bce670cc6373bb1711cf106d49145b170473adeceedb56ff5f31dd496bfb1970"
+          }
         },
-        "design_review": {
-          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-v2-review.json",
-          "sha256": "caf900b8a6839e577a60ed02e3902f61e7429e319203b2aba774f7fd7a35e89b"
-        },
-        "candidate_patch": {
-          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-draft-v2/candidate.patch",
-          "sha256": "e98e58d39b93aa87942f4a27b0c8df7f3f04bb2f09a044411cf3204d63b40e56"
-        },
-        "intent": {
-          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-draft-v2/intent.json",
-          "sha256": "17ff29cc92f22cd0a764bd49c7bf54a5a9da0ca949dd72f29726cd8e155aae73"
-        },
-        "independent_static_review": {
-          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-draft-v2/independent-v2-review.json",
-          "sha256": "416aa4c477e0fd1208b2bf11bfc52ff433a11c403494a52e614059fbf0b28222"
-        },
-        "open_static_source_blockers": [],
-        "remaining_runtime_and_coverage_gaps": [
-          "All draft assertions are unexecuted; static closure does not establish runtime acceptance. Root must validate original pins, collect exact identities and run directed/native/full checks after explicit application authorization.",
-          "Shared managed() fixture stubs admission.revalidate/_verified_admissions across unit cases. These exercise real services/native calls under synthetic admission; decoder_authority_seam adds reader-only binding/receipt stubs. Module docstring claiming authority stubs only in decoder tests is too narrow.",
-          "Real closed-controller mixed v1/v2 history acceptance and unknown/malformed history must remain distinct from decoder unit seams. Existing compiled scenario is unchanged from first draft and unexecuted for either draft.",
-          "Actual SDK native close failure remains unproven; original timeout/drain cases do not establish close-failure lifetime.",
-          "Poisoned final rotation cancellation/drain should be included in runtime validation; new poisoning test covers successful actual rotation and final-operation rejection while generic foundation tests cover retained native ownership.",
-          "Snapshot fixture absent-table/read-failure and exact descriptor boundary cases from foundation review remain additional meaningful negative coverage."
-        ]
+        "blocked_until_current_slice_repaired": true
       }
     },
     {
@@ -650,8 +648,8 @@
       "sha256": "62b1309912b4c520d0ebbce136bae8f411b1230393e0f6b27529167a90f78112"
     }
   },
-  "pause_requested_by_user": false,
-  "resume_runbook": "docs/runbooks/2026-11-06-goal-pause-checkpoint.md",
+  "pause_requested_by_user": true,
+  "resume_runbook": "docs/runbooks/2026-11-07-session-handoff.md",
   "historical_pause": {
     "requested_after_components": true,
     "revoked_by": "Explicit resume in user attachment; original pause runbook retained"
@@ -694,84 +692,300 @@
     }
   ],
   "output_registration_progress": {
-    "status": "verified_local_two_store_families_full_regression_global_census_incomplete",
-    "implementation_revision": "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54",
-    "test_evidence_revision": "66951c5e0abf7fc661f57092e36338e397481bde",
-    "public_report": "docs/research/2026-11-06-output-registration-progress.json",
-    "public_report_sha256": "aa2ed888dba87353a831a9d6c39c9c61e87ec42426dc4a27beb80c27205b56b7",
+    "schema_version": 1,
+    "status": "paused_by_user_current_v2_full_failed",
+    "implementation_revision": "c0e82df85012d6805e882276dfa29366516945b2",
+    "test_evidence_revision": "c0e82df85012d6805e882276dfa29366516945b2",
+    "implemented": true,
+    "local_unit_accepted": false,
+    "goal_status": "paused",
+    "pause_requested_by_user": true,
+    "resume_runbook": "docs/runbooks/2026-11-07-session-handoff.md",
     "components": {
-      "tests": 165,
-      "passed": 165,
-      "revision": "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54",
-      "proof": {
-        "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/component-acceptance-proof.json",
-        "sha256": "023ef0da2e0259a528350f46db203da183108e0d67dca82d8381fb47bb3ddeec"
+      "accepted_within_scope": true,
+      "counts": {
+        "tests": 91,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "passed": 91,
+        "prior_ids": 61,
+        "new_ids": 30
+      },
+      "XML_seconds": 4.405,
+      "actual_terminal": {
+        "actual_tool_session": 90635,
+        "session_id": 90635,
+        "terminal_chunk": "4d817e",
+        "chunk_id": "4d817e",
+        "exit_code": 0,
+        "consumed": true,
+        "tests": 91,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "passed": 91
+      },
+      "review": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-validation/diagnostic-noop-validation-round-01/component-outcome-review.json",
+        "sha256": "f8a5925ba4919a00cc0cedcbb2d37263c4acfae47ba999097ad851e538a3f4d6"
       }
     },
     "native": {
-      "tests": 1,
-      "passed": 1,
-      "revision": "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54",
+      "accepted_within_scope": true,
+      "counts": {
+        "errors": 0,
+        "expected": 2,
+        "failed": 0,
+        "passed": 2,
+        "skipped": 0
+      },
+      "XML_seconds": 234.335,
+      "gates": [
+        "N01",
+        "N02",
+        "N03",
+        "N04",
+        "N05",
+        "N06",
+        "N07",
+        "N08",
+        "N09",
+        "N10"
+      ],
       "proof": {
-        "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/native-acceptance-proof.json",
-        "sha256": "6aba130dc3e0f62fe845462e4c70c41d2230f6c11468ab220b312bce799c19ed"
-      }
-    },
-    "test_only_fix": {
-      "revision": "66951c5e0abf7fc661f57092e36338e397481bde",
-      "product_changed": false,
-      "focused_tests": 26,
-      "focused_passed": 26,
-      "proof": {
-        "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/focused-acceptance-proof.json",
-        "sha256": "9cce30fbec9646863b2d8f91a362431563b6190f65bf5e181257072f7961e0e5"
+        "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-validation/diagnostic-noop-validation-round-01/native-attempt-01/native-acceptance-proof.json",
+        "sha256": "5cc9319026e1a9b22541faea7faf2d1d8de9e153dcf09e7cd88002c3bc761369"
+      },
+      "root_review": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-validation/diagnostic-noop-validation-round-01/native-attempt-01/native-root-acceptance-review.json",
+        "sha256": "d2f443d81d4a914aeb91e70b3728cd4d2e7c9845095ce7344de02b8ed00dc096"
       }
     },
     "full": {
-      "revision": "66951c5e0abf7fc661f57092e36338e397481bde",
-      "implementation_revision": "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54",
-      "accepted_attempt": "full-attempt-03",
-      "expected_ids": 9126,
-      "old_ids": 9085,
-      "new_ids": 41,
-      "removed_ids": 0,
-      "focused_added_ids": 0,
-      "collection": "exact PASS",
-      "state": "finished",
-      "result": "9125 PASS + same known regex xfail",
-      "XML_seconds": 1302.131,
-      "summary_seconds": 1302.33,
-      "actual_terminal": "36106/10be8d",
-      "actual_wait_consumed": true,
-      "exact_expected_ids": true,
-      "guards_during_run": "1086 source, 37 scripts, 34 protected files unchanged",
-      "evidence": "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/acceptance-proof.json"
-    },
-    "full_proof": {
-      "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/acceptance-proof.json",
-      "sha256": "5a36a61f00e01ffb9472c78a745f08fb40e1e0631d390fefdaae14cd1f831e87"
+      "accepted": false,
+      "revision": "c0e82df85012d6805e882276dfa29366516945b2",
+      "attempt": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-validation/diagnostic-noop-validation-round-01/full-attempt-01",
+      "expected_complete_ids": 9382,
+      "reported_passed": 5620,
+      "reported_failed": 6,
+      "warnings": 61216,
+      "XML_seconds": 1500.43,
+      "summary_seconds": 1500.89,
+      "deadline_s": 1500,
+      "pytest_exit_code": 2,
+      "runner_exit_code": 1,
+      "actual_terminal": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-validation/diagnostic-noop-validation-round-01/full-attempt-01/root-terminal.json",
+        "sha256": "8de28301b02b155c3c07f6192262ec7406f53a95c125644b76f8225aabc8ef78"
+      },
+      "reason": "deadline; six earlier privacy/lifetime failures also present",
+      "named_XML_cases": 5626,
+      "unnamed_interrupted_XML_cases": 1,
+      "raw_export_naive_no_failure_nodes": 5621,
+      "count_note": "The extra unnamed interrupted XML element is not a PASS. Original raw export remains unchanged; correct identified/log outcome is5620PASS+6FAIL, incomplete9382suite.",
+      "diagnosis": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-validation/diagnostic-noop-validation-round-01/failed-full-handoff-review.json",
+        "sha256": "6009dcb19c2680ecafa2757c0c9c7f00d53f6b5b548556b92d6fd4f29b316e9d"
+      },
+      "raw_export": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-validation/diagnostic-noop-validation-round-01/raw-export/full-attempt-01-manifest.json",
+        "sha256": "765113e5c0c30a309b0f84aa6ac3fb6048fc53698407d4f647825605559895f1"
+      },
+      "raw_export_terminal": {
+        "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-validation/diagnostic-noop-validation-round-01/full-attempt-01/raw-export-terminal.json",
+        "sha256": "89d3530c88e3a3e019eddf8ebb96d2a6e746b288052d24161ebe0e0acb74c5ab"
+      }
     },
     "coverage": {
-      "required_inventory_categories": 32,
-      "registered_store_families": [
+      "inventory_categories": 32,
+      "instrumented_families": 7,
+      "closed_primary_registration_families": [
         "lists",
         "reminders"
       ],
-      "remaining_categories_per_run": 30,
-      "individual_writer_count_proven": false
+      "partial_families": 5,
+      "uncovered_categories": 30
     },
-    "preserved_failures": [
-      "Component attempt 01: 164 PASS + 1 test-call failure; the corrected attempt passed 165. Details and pins remain in public_report.components.",
-      "Full attempt 01: rejected after the unchanged 1500-second deadline, despite printed passing counts.",
-      "Full attempt 02: rejected with one cached-context setup failure. Both full attempts and exact exports remain in public_report.failed_full_attempts."
-    ],
-    "controlled_diagnostic": "The 14-check probe proves a possible maintenance interleaving, not the historical full02 timeline; details remain in public_report.controlled_diagnostic.",
-    "carry_forward": "The original 165 components and native1 keep their ef8 revision; exact unchanged-product/single-test mapping carries them forward to the 669 full. The focused26 add no test IDs.",
-    "scope_limits": "N/F databases pre-existed; registration precedes this owner opening them, not their historical first byte. No retroactive adoption or aggregate erasure acceptance.",
+    "next_batch": {
+      "status": "accounts_design_reviewed_not_implemented",
+      "applied": false,
+      "runtime_acceptance": false,
+      "references": {
+        "next-accounts-concrete-design.json": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-accounts-concrete-design.json",
+          "sha256": "fee543db51bae3bcfad67889c94b81a67ed6131efe11c2c82a237d94ce21744a"
+        },
+        "next-accounts-own-temp-identity-addendum.json": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-accounts-own-temp-identity-addendum.json",
+          "sha256": "2580aef43ce7318ae10d075a8c8637e11fbafaa543f503ee1e1c2d5818dd83c8"
+        },
+        "next-accounts-fdopen-failure-clarification.json": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-accounts-fdopen-failure-clarification.json",
+          "sha256": "5af657d6548efb5454f0c5a140e1e49fc3ff9c5d08ac5da31b675559d1c1d948"
+        },
+        "next-accounts-addenda-independent-review.json": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-accounts-addenda-independent-review.json",
+          "sha256": "d222958a7e13aa4b2b733efc76b536b4205d27526928b9706bc05fde8b49f723"
+        },
+        "next-accounts-writer-callsite-census.json": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-accounts-writer-callsite-census.json",
+          "sha256": "39668acd7bd5e4292fe5603754622506bfd2675fbc3fd0a003575ced382a9e02"
+        },
+        "next-accounts-compiled-three-version-plan.json": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-accounts-compiled-three-version-plan.json",
+          "sha256": "bce670cc6373bb1711cf106d49145b170473adeceedb56ff5f31dd496bfb1970"
+        }
+      },
+      "blocked_until_current_slice_repaired": true
+    },
+    "next_action": "Diagnosticar y corregir con evidencia las seis fallas de liberación de referencias privadas de la full c0e82df; investigar por separado el consumo del plazo de1500s y el parser JUnit interrumpido. Preservar los oráculos y límites; no iniciar cuentas ni ejecutar helpers de aceptación del intento fallido. Tras una corrección revisada, usar revisión/inputs/attempt/basetemp nuevos y validación pertinente. El roadmap completo sigue pendiente.",
     "cleanup_ack": false,
+    "capability": false,
     "global_inventory_complete": false,
     "aggregate_copy_complete": false,
     "F1_delivered": false,
-    "goal_complete": false
-  }
+    "goal_complete": false,
+    "production_changed": false,
+    "public_report": "docs/research/2026-11-06-output-registration-progress.json",
+    "public_report_sha256": "0669d8f7d045d64793fc233ecfe1d37bebfb5582fc9ae237b949ad83251d5e9a"
+  },
+  "historical": {
+    "before_session_closeout_20261107": {
+      "status": "in_progress_foundation_verified_local",
+      "next_action": "Continuar registro de productores/destinos y censo global tras el primer hito local de listas/recordatorios. La matriz contiene 32 categorías u obligaciones, dos familias de stores instrumentadas y 30 categorías sin cubrir; no acredita 32 writers individuales ni el universo completo. El segundo parche privado v2 para privacidad, sesiones/dashboard, rutinas, eventos y sugerencias tiene revisión estática sin bloqueos de código abiertos en el alcance revisado; sigue sin aplicar ni ejecutar, sin aceptación runtime. Revalidar pins originales antes de aplicarlo y recopilar IDs exactos para las validaciones dirigidas, compiladas y full pendientes. Reutilizar las autoridades y owners nativos existentes, dispatch real y snapshot acotado. Después reconciliar representaciones/sujetos/recibos y productores anidados, lazy, offline, externos o desconocidos. Mantener pendientes cierre SDK genuino, migración legacy, guards diagnostics1/streams2/voices2 y aceptación física. No repetir evidencia cerrada sin cambio, fallo o incertidumbre nueva.",
+      "output_registration_progress": {
+        "status": "verified_local_two_store_families_full_regression_global_census_incomplete",
+        "implementation_revision": "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54",
+        "test_evidence_revision": "66951c5e0abf7fc661f57092e36338e397481bde",
+        "public_report": "docs/research/2026-11-06-output-registration-progress.json",
+        "public_report_sha256": "aa2ed888dba87353a831a9d6c39c9c61e87ec42426dc4a27beb80c27205b56b7",
+        "components": {
+          "tests": 165,
+          "passed": 165,
+          "revision": "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54",
+          "proof": {
+            "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/component-acceptance-proof.json",
+            "sha256": "023ef0da2e0259a528350f46db203da183108e0d67dca82d8381fb47bb3ddeec"
+          }
+        },
+        "native": {
+          "tests": 1,
+          "passed": 1,
+          "revision": "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54",
+          "proof": {
+            "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/native-acceptance-proof.json",
+            "sha256": "6aba130dc3e0f62fe845462e4c70c41d2230f6c11468ab220b312bce799c19ed"
+          }
+        },
+        "test_only_fix": {
+          "revision": "66951c5e0abf7fc661f57092e36338e397481bde",
+          "product_changed": false,
+          "focused_tests": 26,
+          "focused_passed": 26,
+          "proof": {
+            "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/focused-acceptance-proof.json",
+            "sha256": "9cce30fbec9646863b2d8f91a362431563b6190f65bf5e181257072f7961e0e5"
+          }
+        },
+        "full": {
+          "revision": "66951c5e0abf7fc661f57092e36338e397481bde",
+          "implementation_revision": "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54",
+          "accepted_attempt": "full-attempt-03",
+          "expected_ids": 9126,
+          "old_ids": 9085,
+          "new_ids": 41,
+          "removed_ids": 0,
+          "focused_added_ids": 0,
+          "collection": "exact PASS",
+          "state": "finished",
+          "result": "9125 PASS + same known regex xfail",
+          "XML_seconds": 1302.131,
+          "summary_seconds": 1302.33,
+          "actual_terminal": "36106/10be8d",
+          "actual_wait_consumed": true,
+          "exact_expected_ids": true,
+          "guards_during_run": "1086 source, 37 scripts, 34 protected files unchanged",
+          "evidence": "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/acceptance-proof.json"
+        },
+        "full_proof": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/acceptance-proof.json",
+          "sha256": "5a36a61f00e01ffb9472c78a745f08fb40e1e0631d390fefdaae14cd1f831e87"
+        },
+        "coverage": {
+          "required_inventory_categories": 32,
+          "registered_store_families": [
+            "lists",
+            "reminders"
+          ],
+          "remaining_categories_per_run": 30,
+          "individual_writer_count_proven": false
+        },
+        "preserved_failures": [
+          "Component attempt 01: 164 PASS + 1 test-call failure; the corrected attempt passed 165. Details and pins remain in public_report.components.",
+          "Full attempt 01: rejected after the unchanged 1500-second deadline, despite printed passing counts.",
+          "Full attempt 02: rejected with one cached-context setup failure. Both full attempts and exact exports remain in public_report.failed_full_attempts."
+        ],
+        "controlled_diagnostic": "The 14-check probe proves a possible maintenance interleaving, not the historical full02 timeline; details remain in public_report.controlled_diagnostic.",
+        "carry_forward": "The original 165 components and native1 keep their ef8 revision; exact unchanged-product/single-test mapping carries them forward to the 669 full. The focused26 add no test IDs.",
+        "scope_limits": "N/F databases pre-existed; registration precedes this owner opening them, not their historical first byte. No retroactive adoption or aggregate erasure acceptance.",
+        "cleanup_ack": false,
+        "global_inventory_complete": false,
+        "aggregate_copy_complete": false,
+        "F1_delivered": false,
+        "goal_complete": false
+      },
+      "next_batch": {
+        "status": "private_unapplied_unexecuted_draft_static_review_complete",
+        "accepted": false,
+        "applied": false,
+        "runtime_acceptance": false,
+        "design": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-design-v2.json",
+          "sha256": "62c0d4f584067fa1b84c20f64d1dbfe017f792db26c0486f8aa682df45e5f143"
+        },
+        "design_review": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-v2-review.json",
+          "sha256": "caf900b8a6839e577a60ed02e3902f61e7429e319203b2aba774f7fd7a35e89b"
+        },
+        "candidate_patch": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-draft-v2/candidate.patch",
+          "sha256": "e98e58d39b93aa87942f4a27b0c8df7f3f04bb2f09a044411cf3204d63b40e56"
+        },
+        "intent": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-draft-v2/intent.json",
+          "sha256": "17ff29cc92f22cd0a764bd49c7bf54a5a9da0ca949dd72f29726cd8e155aae73"
+        },
+        "independent_static_review": {
+          "path": "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-draft-v2/independent-v2-review.json",
+          "sha256": "416aa4c477e0fd1208b2bf11bfc52ff433a11c403494a52e614059fbf0b28222"
+        },
+        "open_static_source_blockers": [],
+        "remaining_runtime_and_coverage_gaps": [
+          "All draft assertions are unexecuted; static closure does not establish runtime acceptance. Root must validate original pins, collect exact identities and run directed/native/full checks after explicit application authorization.",
+          "Shared managed() fixture stubs admission.revalidate/_verified_admissions across unit cases. These exercise real services/native calls under synthetic admission; decoder_authority_seam adds reader-only binding/receipt stubs. Module docstring claiming authority stubs only in decoder tests is too narrow.",
+          "Real closed-controller mixed v1/v2 history acceptance and unknown/malformed history must remain distinct from decoder unit seams. Existing compiled scenario is unchanged from first draft and unexecuted for either draft.",
+          "Actual SDK native close failure remains unproven; original timeout/drain cases do not establish close-failure lifetime.",
+          "Poisoned final rotation cancellation/drain should be included in runtime validation; new poisoning test covers successful actual rotation and final-operation rejection while generic foundation tests cover retained native ownership.",
+          "Snapshot fixture absent-table/read-failure and exact descriptor boundary cases from foundation review remain additional meaningful negative coverage."
+        ]
+      },
+      "coverage": {
+        "required_inventory_categories": 32,
+        "registered_store_families": [
+          "lists",
+          "reminders"
+        ],
+        "remaining_categories_per_run": 30,
+        "individual_writer_count_proven": false
+      }
+    }
+  },
+  "goal_status": "paused",
+  "current_implementation_revision": "c0e82df85012d6805e882276dfa29366516945b2",
+  "session_handoff": {
+    "path": "data/autonomous-roadmap-20261102/session-closeout-20261107/handoff.json",
+    "sha256": "04a24a8662fa6669cb821c1c24a6e04e91eee139433488c3ed9d4bf21558eb30"
+  },
+  "historical_full_scope": "Existing full/latest_local_full and earlier revision evidence remain the last accepted V1 milestone at66951c5; current failed attempt is under output_registration_progress.full."
 }

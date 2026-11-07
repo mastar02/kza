@@ -1,6 +1,12 @@
 # Pausa y continuidad exacta del goal de KZA
 
-## Registro de destinos verificado — estado actual
+## Cierre actual — 2026-11-07
+
+**Sesión cerrada y goal pausado por pedido del usuario.** Producto `c0e82df` publicado; 91 pruebas dirigidas y 2 nativas aceptadas dentro de su alcance. La full de 9382 casos quedó incompleta: 5620 PASS + 6 FAIL, corte por deadline de 1500 s, terminal `19778/77d9b6` exit 1. Exportación `81344/a50ea3` consumida; no quedan ejecuciones pendientes. La última full aceptada sigue siendo el hito histórico V1 de `66951c5`.
+
+Leer [2026-11-07-session-handoff.md](2026-11-07-session-handoff.md) para evidencia, seis fallas, límites y prompt de goal nuevo. Primero reparar la liberación de referencias privadas y revisar el presupuesto de la suite; cuentas/V3 sigue sólo en diseño. Siete familias instrumentadas, dos registros primarios cerrados, cinco parciales y 30/32 obligaciones pendientes; sin ACK, release ni cambios de producción.
+
+## Registro de destinos V1 — estado histórico ef8/669
 
 Registro durable de destinos de listas/recordatorios implementado en `ef8bc6d` y verificado localmente. Los 165 componentes pasaron (XML 19.571 s; 26 comprobaciones), con correspondencia exacta del candidato probado al commit. El primer intento 164 PASS + 1 FAIL por una llamada incorrecta de la prueba se conserva; sólo esa llamada se corrigió. El recorrido compilado pasó 1 prueba (XML 126.93 s; 44 comprobaciones), con cuatro registros N/F y lector nuevo fijado al release. Esas pruebas conservan su alcance `ef8bc6d`; no se afirma que se hayan repetido en `66951c5`.
 
@@ -30,7 +36,7 @@ F1/T024 siguen incompletos: censo y owners globales, fallo genuino de cierre SDK
 
 Los apartados siguientes conservan el checkpoint histórico de la pausa. Sus comandos y pendientes ya ejecutados no son la siguiente acción vigente.
 
-## Estado al cerrar
+## Estado histórico al pausar el 2026-11-06
 
 Pausa solicitada explícitamente por el usuario el 2026-11-06, después de terminar el trabajo en ejecución. El objetivo completo sigue siendo `docs/plans/2026-11-02-autonomous-roadmap.md`; no está completado. Registro original: `01a19a89-8daf-7cf2-9116-d58d90e4e45a`. Confirmar el estado devuelto por la API del goal y el checkpoint privado al reanudar.
 

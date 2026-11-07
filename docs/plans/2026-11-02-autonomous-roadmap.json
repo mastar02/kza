@@ -1300,7 +1300,17 @@
         "e1caf6dd9568c28454b8d1a0b8e98d4a4679ee0a",
         "e1bcdb6070156487c9e66db0b4be8be937b0eee1",
         "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54",
-        "66951c5e0abf7fc661f57092e36338e397481bde"
+        "66951c5e0abf7fc661f57092e36338e397481bde",
+        "014b422b0a1585ffd810c01577b2e57e6a9a6604",
+        "dfb1fcb1c04d1fa322ec717c7be417eac5492501",
+        "b17a88e3803648f42e919bd65e466b77e740dfdd",
+        "2a9480c4f0024f8cd69e15ce3fcfdab3ec917d8a",
+        "b9b0b203186f878f9577d7ba837bb87f73d13056",
+        "659554eccf03561fde1825461ec7c1e25efae904",
+        "431e44eafa9abe36d8ac958a64e9430553771da1",
+        "b42d731dcec17a21f7844c2b2df538b0bec7e13b",
+        "cdd3c84ecb142854dae4a616afde9ba4952ae9e5",
+        "c0e82df85012d6805e882276dfa29366516945b2"
       ],
       "evidence": [
         "docs/plans/2026-11-05-erasure-restore-continuation.json",
@@ -1353,9 +1363,12 @@
         "data/autonomous-roadmap-20261102/t024/f1/output-registration/native-acceptance-proof.json",
         "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/acceptance-proof.json",
         "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/focused-acceptance-proof.json",
-        "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/test-only-commit-mapping.json"
+        "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/test-only-commit-mapping.json",
+        "docs/runbooks/2026-11-07-session-handoff.md",
+        "data/autonomous-roadmap-20261102/session-closeout-20261107/handoff.json",
+        "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-validation/diagnostic-noop-validation-round-01/failed-full-handoff-review.json"
       ],
-      "next_action": "Continuar registro de productores/destinos y censo global tras el primer hito local de listas/recordatorios. La matriz contiene 32 categorías u obligaciones, dos familias de stores instrumentadas y 30 categorías sin cubrir; no acredita 32 writers individuales ni el universo completo. El segundo parche privado v2 para privacidad, sesiones/dashboard, rutinas, eventos y sugerencias tiene revisión estática sin bloqueos de código abiertos en el alcance revisado; sigue sin aplicar ni ejecutar, sin aceptación runtime. Revalidar pins originales antes de aplicarlo y recopilar IDs exactos para las validaciones dirigidas, compiladas y full pendientes. Reutilizar las autoridades y owners nativos existentes, dispatch real y snapshot acotado. Después reconciliar representaciones/sujetos/recibos y productores anidados, lazy, offline, externos o desconocidos. Mantener pendientes cierre SDK genuino, migración legacy, guards diagnostics1/streams2/voices2 y aceptación física. No repetir evidencia cerrada sin cambio, fallo o incertidumbre nueva."
+      "next_action": "Diagnosticar y corregir con evidencia las seis fallas de liberación de referencias privadas de la full c0e82df; investigar por separado el consumo del plazo de1500s y el parser JUnit interrumpido. Preservar los oráculos y límites; no iniciar cuentas ni ejecutar helpers de aceptación del intento fallido. Tras una corrección revisada, usar revisión/inputs/attempt/basetemp nuevos y validación pertinente. El roadmap completo sigue pendiente."
     },
     {
       "id": "T025",

@@ -6,24 +6,9 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 ## Punto de reanudación
 
-**Registro de destinos listas/recordatorios verificado localmente; censo global y T024-F1 incompletos.** Implementación `ef8bc6d`: 165 componentes y 1 recorrido compilado aceptados en su revisión original. Corrección exclusiva de prueba `66951c5`: 26 pruebas dirigidas y full del intento 03 aceptadas. Los intentos full 01 y 02 en `ef8bc6d` siguen rechazados y conservados; el sondeo controlado demuestra una intercalación posible, sin afirmar la cronología histórica del fallo.
+**Sesión cerrada y goal pausado por pedido del usuario.** Producto `c0e82df` publicado; 91 pruebas dirigidas y 2 nativas aceptadas dentro de su alcance. La full de 9382 casos quedó incompleta: 5620 PASS + 6 FAIL, corte por deadline de 1500 s, terminal `19778/77d9b6` exit 1. Exportación `81344/a50ea3` consumida; no quedan ejecuciones pendientes. La última full aceptada sigue siendo el hito histórico V1 de `66951c5`.
 
-Se registran dos familias de stores dentro de una matriz de 32 categorías u obligaciones; quedan 30 categorías sin cubrir. En N/F las bases ya existían: se acredita registro antes de abrirlas este owner, sin adopción retroactiva ni ACK. Ver el [reporte actual](../research/2026-11-06-output-registration-progress.json).
-
-| Dato | Estado actual |
-| --- | --- |
-| Entorno | `gabriel`, `/Users/gabriel/Documents/Proyectos/kza`, macOS26.6.1 arm64, CPython3.13.18 |
-| Rama | `recovery/production-2026-10-25`; verificar HEAD/origin al retomar |
-| Producto | Registro de destinos `ef8bc6d`; 165 componentes y 1 recorrido compilado conservan esa revisión |
-| Corrección de prueba | `66951c5`, sólo test_context_privacy; producto/scripts intactos y 26 PASS / 67 comprobaciones |
-| Última full | `66951c5`, intento 03: 9125 PASS + misma xfail / 9126 IDs; XML 1302.131 s/resumen 1302.33 s; 1086 fuentes/37 scripts/34 protegidos intactos |
-| Warnings full | 66527 ocurrencias; 15 firmas previas idénticas, sin nuevas, ausentes ni supresión |
-| Exportación full | 37831 archivos, 2533 enlaces y 1 FIFO inerte; originales/copias exactos |
-| Antecedente | Retirada S-only `1571300`: 534 componentes y native/baseline/default/full 9085 verificados; evidencia histórica conservada |
-| Pendiente inmediato | Censo global; segundo parche privado v2 revisado estáticamente, sin aplicar/ejecutar ni aceptación runtime; revalidar originales y completar validaciones |
-| Delegación | Hasta ocho agentes según plazas; PC interactiva con subagente `gpt-6.1-terra` |
-
-T021/T022/T023/T024 siguen `in_progress`; los 21 criterios permanecen `not_evaluated` y T024-F0 es la última unidad completa. Leer el [reporte global](../research/2026-11-06-copy-lifecycle-progress.json) y la [continuación](../plans/2026-11-06-copy-lifecycle-continuation.json). Censo/owners globales, cierre SDK genuino, migración legacy, guards y ACK agregado pendientes. Voz/persona separado de permisos; sin release ni cambios en producción.
+Leer [2026-11-07-session-handoff.md](2026-11-07-session-handoff.md) para evidencia, seis fallas, límites y prompt de goal nuevo. Primero reparar la liberación de referencias privadas y revisar el presupuesto de la suite; cuentas/V3 sigue sólo en diseño. Siete familias instrumentadas, dos registros primarios cerrados, cinco parciales y 30/32 obligaciones pendientes; sin ACK, release ni cambios de producción.
 
 ## Referencia histórica del cierre Linux F
 
@@ -377,7 +362,7 @@ La unidad seleccionada en aquel hito fue registrar productores/destinos antes de
 
 F1/T024 siguen incompletos: censo y owners globales, fallo genuino de cierre SDK, migración legacy, guards diagnostics1/streams2/voices2 y aceptación física pendientes. Última unidad completa:T024-F0; T021–T024 in_progress y21 criterios not_evaluated. Goal activo; voz/persona separado de permisos; sin release ni cambios en producción.
 
-## Registro de destinos listas/recordatorios — primer hito local
+## Registro de destinos listas/recordatorios — hito histórico V1
 
 Registro durable de destinos de listas/recordatorios implementado en `ef8bc6d` y verificado localmente. Los 165 componentes pasaron (XML 19.571 s; 26 comprobaciones), con correspondencia exacta del candidato probado al commit. El primer intento 164 PASS + 1 FAIL por una llamada incorrecta de la prueba se conserva; sólo esa llamada se corrigió. El recorrido compilado pasó 1 prueba (XML 126.93 s; 44 comprobaciones), con cuatro registros N/F y lector nuevo fijado al release. Esas pruebas conservan su alcance `ef8bc6d`; no se afirma que se hayan repetido en `66951c5`.
 
@@ -395,7 +380,7 @@ Siguiente bloque: continuar el censo global. El segundo parche privado v2 para p
 
 ## Prompt para la sesión nueva
 
-Retomar el objetivo completo `docs/plans/2026-11-02-autonomous-roadmap.md`, leyendo el checkpoint privado y el [runbook](2026-11-06-goal-pause-checkpoint.md). La retirada S-only y el primer registro listas/recordatorios están verificados localmente. Implementación ef8bc6d, corrección exclusiva de prueba 66951c5, full aceptada del intento 03; los dos intentos anteriores y el sondeo controlado conservan su alcance. Continuar productores/destinos y censo global: 32 categorías, dos familias instrumentadas y 30 sin cubrir. El segundo parche privado v2 de cinco familias tiene revisión estática sin bloqueos de código abiertos en su alcance; sigue sin aplicar ni ejecutar y sin aceptación runtime. Revalidar pins originales antes de aplicar, recopilar IDs y completar validaciones dirigidas/compiladas/full pendientes. Verificar HEAD/origin y procesos reales antes de actuar. Mantener F1/T024/21 criterios/goal abiertos, hasta ocho agentes según plazas y PC interactiva con Terra.
+Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.
 
 ## Lista de cierre y reanudación
 
@@ -404,5 +389,5 @@ Retomar el objetivo completo `docs/plans/2026-11-02-autonomous-roadmap.md`, leye
 - [x] T024-F0: RED original, green4, matriz6, dirigida/full y revisión independiente conservados.
 - [x] F1 original: RED genuino, tres cierres/waits0, archivo privado y revisión independiente conservados; sin fix de producto.
 - [x] Código, tracking y handoff guardados; verificar publicación y HEAD al retomar.
-- [x] Mismo goal activo, sin nueva petición de pausa ni criterios físicos aceptados.
+- [x] Goal anterior pausado por pedido del usuario, no completado; sesión nueva con goal nuevo y criterios físicos pendientes.
 - [ ] Completar F1: censo y owners globales, cierre SDK genuino, migración legacy y guards pendientes; los avances locales anteriores no cierran esa aceptación.
