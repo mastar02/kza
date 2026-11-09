@@ -1,4 +1,4 @@
-"""Isolated real-graph and closed-controller phases for v1/v2 compatibility."""
+"""Isolated real-graph and closed-controller phases for V1 and current (V3) compatibility."""
 
 import argparse
 import asyncio
@@ -30,6 +30,49 @@ def _bootstrap_module():
     return module
 
 
+async def _account_admin(graph: object) -> dict:
+    """Create, update and delete one synthetic non-admin account through the real app.
+
+    Uses the existing synthetic fixture root token and the original login,
+    routes and admin owner; nothing seeds or mutates the UserManager directly.
+    """
+    from httpx import ASGITransport, AsyncClient
+    from tests.mocks.restore_application_graph import TOKEN
+
+    dashboard = graph.dashboard
+    users = dashboard.user_manager
+    _require(dashboard is not None and users is not None and users.voice_review_managed is True,
+             "account_admin_owner")
+    path = Path(users.data_path)
+    before = set(users._users)
+
+    def on_disk() -> dict:
+        return {row["user_id"]: row["permission_level"] for row in json.loads(path.read_text())["users"]}
+
+    async with AsyncClient(transport=ASGITransport(app=dashboard.app), base_url="http://testserver") as client:
+        login = await client.post("/api/admin/auth/login", json={"token": TOKEN})
+        _require(login.status_code == 200, "account_admin_login")
+        created = await client.post("/api/admin/users",
+                                    json={"name": "Synthetic Compat Guest", "permission_level": "guest"})
+        _require(created.status_code == 200, "account_admin_create")
+        user_id = created.json()["user_id"]
+        _require(set(users._users) == before | {user_id} and user_id not in before, "account_create_ram")
+        level = users._users[user_id].permission_level
+        _require(level.name == "GUEST" and on_disk()[user_id] == level.value, "account_create_file")
+        updated = await client.put(f"/api/admin/users/{user_id}/permissions", json={"permission_level": "teen"})
+        _require(updated.status_code == 200, "account_admin_update")
+        level = users._users[user_id].permission_level
+        _require(level.name == "TEEN" and on_disk()[user_id] == level.value, "account_update_file_ram")
+        deleted = await client.delete(f"/api/admin/users/{user_id}")
+        _require(deleted.status_code == 200, "account_admin_delete")
+        _require(set(users._users) == before and user_id not in on_disk(), "account_delete_file_ram")
+    info = os.lstat(path)
+    return {"operations": ["create", "update", "delete"], "statuses": [created.status_code,
+            updated.status_code, deleted.status_code], "accounts_before": len(before),
+            "accounts_after": len(users._users),
+            "final_identity": {"device": info.st_dev, "inode": info.st_ino}}
+
+
 async def _graph(args: argparse.Namespace, control: dict, guard: object) -> dict:
     import pytest
     import src.main as main
@@ -45,12 +88,14 @@ async def _graph(args: argparse.Namespace, control: dict, guard: object) -> dict
     ticket = runtime_admission._ticket()
     _require(type(ticket) is dict, "actual_ticket_missing")
     _require(Path(ticket["admission_root"]).resolve() == Path(args.admission_root), "ticket_root")
-    version = 1 if args.mode == "graph-v1" else 2
+    version = {"graph-v1": 1, "graph-v3": 3}[args.mode]
     patch, marker = pytest.MonkeyPatch(), len(MemoryClient._created)
     try:
         async with managed_application_graph(Path(args.state_root), patch, Clock(time.time()),
                                              control=control) as bundle:
             _require(bundle.graph.privacy is bundle.privacy, "original_privacy_owner")
+            # Plan step 5: only the current V3 graph exercises the account publisher.
+            admin = await _account_admin(bundle.graph) if version == 3 else None
             guard.audit()
         MemoryClient.close_since(marker)
         resources = _resources(bundle)
@@ -63,18 +108,35 @@ async def _graph(args: argparse.Namespace, control: dict, guard: object) -> dict
         _require(header["state_root"] == str(Path(args.state_root).parents[1]), "epoch_state")
         _require(all(stores[name]["phase"] == "closed" for name in ("lists", "reminders")),
                  "original_store_close")
-        other = 2 if version == 1 else 1
-        _require(not (directory.parents[2] / f"v{other}/runs" / ticket["run_id"]).exists(),
-                 "writer_did_not_change_version")
+        for other in {1, 2, 3} - {version}:
+            _require(not (directory.parents[2] / f"v{other}/runs" / ticket["run_id"]).exists(),
+                     "writer_did_not_change_version")
         if version == 1:
             _require("src.memory.output_registration_v2" not in sys.modules, "old_writer_replaced")
+        if version < 3:
+            # The genuine historical releases never load the V3 codec.
+            _require("src.memory.output_registration_v3" not in sys.modules, "historical_writer_promoted")
+        if version == 3:
+            _require("src.memory.output_registration_v3" in sys.modules, "current_v3_writer")
+            accounts = stores.get("accounts", {})
+            events = [event for event in (output_registration._read(path)[0]
+                                          for path in sorted(directory.glob("[0-9]*.json")))
+                      if event["kind"] == "account_publisher"]
+            _require([event["phase"] for event in events] == ["intent", "attached", "opening", "drained"],
+                     "account_publisher_phases")
+            _require(accounts.get("phase") == "drained" and events[-1]["aggregate"] == accounts["aggregate"] == {
+                "attempts": 3, "committed_replacements": 3, "clean_failed_attempts": 0,
+                "last_committed_identity": admin["final_identity"], "native_drain_returned": True,
+                "open_temp_count": 0, "cleanup_uncertain": False}, "account_publisher_drained")
+            raw = b"".join(path.read_bytes() for path in sorted(directory.iterdir()) if path.is_file())
+            _require(b"Synthetic Compat Guest" not in raw and b"teen" not in raw, "account_journal_private")
         receipt_path = Path(args.admission_root) / "admission/receipts" / (ticket["run_id"] + ".json")
         receipt = json.loads(receipt_path.read_text())
         _require(receipt["child_pid"] == os.getpid() and receipt["status"] == "closed",
                  "real_child_receipt")
         _require(all(receipt[key] == header[key] for key in ("run_id", "binding_id", "generation")),
                  "receipt_epoch_join")
-        return {"version": f"v{version}", "header": header, "journal": journal,
+        return {"version": f"v{version}", "header": header, "journal": journal, "account_admin": admin,
                 "resources": resources, "receipt": receipt, "receipt_sha256": _sha(receipt_path),
                 "factory": "src.main.build_application", "bridge_supplied_writer": False,
                 "fixture_scope": "actual managed graph plus original _bundle initialization and original owned close"}
@@ -105,7 +167,7 @@ def _read(args: argparse.Namespace) -> dict:
         values = read_output_inventory(controller)
         observed = [value for value in values if value["phase"] == "observed"]
         _require(len(observed) == 2, "both_real_histories")
-        _require({value["version"] for value in observed} == {"v1", "v2"}, "mixed_versions")
+        _require(sorted(value["version"] for value in observed) == ["v1", "v3"], "mixed_versions")
         for expected in expectation["runs"]:
             matched = [value for value in observed if value["run_id"] == expected["header"]["run_id"]]
             _require(len(matched) == 1, "unique_run")
@@ -129,9 +191,12 @@ def _read(args: argparse.Namespace) -> dict:
                      "closed_registered_stores")
             _require(len(value["required_producers"]) == 32 and len(value["uncovered_producers"]) == 30,
                      "partial_scope_preserved")
-            if value["version"] == "v2":
-                _require(len(value["instrumented_producers"]) == 7
-                         and len(value["partial_producers"]) == 5, "instrumented_is_not_covered")
+            if value["version"] == "v3":
+                # V3 adds exactly the account publisher family to the seven V2 families.
+                _require(len(value["instrumented_producers"]) == 8 and len(value["partial_producers"]) == 6
+                         and "accounts" in value["instrumented_producers"]
+                         and "accounts" in value["partial_producers"], "instrumented_is_not_covered")
+                _require(value["stores"]["accounts"]["phase"] == "drained", "v3_account_publisher_drained")
                 policies = [event for event in value["material_observations"] if event["kind"] == "delegation_policy"]
                 _require(len(policies) == 1 and policies[0]["scope_schema_version"] == 1,
                          "single_original_running_policy")
@@ -143,7 +208,7 @@ def _read(args: argparse.Namespace) -> dict:
                              if event["kind"] == "delegated_target" and event["status"] == "attached"]
                 _require({event["plan"]["producer"] for event in delegated} == {"events", "suggestions"},
                          "both_historical_families_registered")
-                actual = expectation["delegation"]
+                actual = expectation["delegations"][value["version"]]
                 record = stage._read_json(controller.root / "admission/delegations" / (actual["id"] + ".json"))
                 source = stage.read_binding(controller.root, actual["source_closed_binding"])
                 closure = stage._closure_proof(controller.root, actual["source_closed_binding"])
@@ -165,12 +230,13 @@ def _read(args: argparse.Namespace) -> dict:
         if args.mode == "read-valid":
             _require(len(values) == 2 and not unknown, "valid_exact_histories")
         else:
-            _require(len(values) == 4 and len(unknown) == 2, "negative_exact_histories")
+            _require(len(values) == 5 and len(unknown) == 3, "negative_exact_histories")
             _require(any(value.get("version") == "v999" and value["reason"] == "unsupported_version"
                          for value in unknown), "unknown_version_refused")
-            _require(any(value.get("run_id") == expectation["malformed_run_id"]
-                         and value["reason"] == "invalid_or_unfinished_history" for value in unknown),
-                     "malformed_known_version_refused")
+            for version, run_id in expectation["malformed_runs"].items():
+                _require([value.get("version") for value in unknown if value.get("run_id") == run_id
+                          and value["reason"] == "invalid_or_unfinished_history"] == [version],
+                         "malformed_known_version_refused")
             _require(all(field not in value for value in unknown
                          for field in ("header", "stores", "journal", "configuration", "material_observations")),
                      "unknown_has_no_positive_projection")
@@ -179,7 +245,9 @@ def _read(args: argparse.Namespace) -> dict:
                  "observation_is_not_authority")
         after = stage.read_admission_head(controller.root)
         _require(after == before, "reader_changed_head")
+    versions = {value["run_id"]: value["version"] for value in observed}
     return {"histories": values, "head_before": before, "head_after": after,
+            "version_by_run": versions,
             "graph_constructed": False, "inherited_ticket": False,
             "controller_module": str(stage_path), "controller_sha256": _sha(stage_path),
             "controller_loader": type(stage.__spec__.loader).__name__}
@@ -188,7 +256,7 @@ def _read(args: argparse.Namespace) -> dict:
 def _main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", required=True,
-                        choices=("graph-v1", "graph-v2", "read-valid", "read-invalid"))
+                        choices=("graph-v1", "graph-v3", "read-valid", "read-invalid"))
     for flag in ("control", "runtime", "state-root", "evidence-root", "admission-root"):
         parser.add_argument("--" + flag, required=True)
     parser.add_argument("--expectation")

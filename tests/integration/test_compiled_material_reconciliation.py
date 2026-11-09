@@ -498,16 +498,20 @@ with stage.AdmissionController(admission) as controller:
     assert {r['run_id']: (r['header']['binding_id'], r['header']['generation']) for r in records} == expected
     assert len(records) == 2, records
     assert all(r['phase'] == 'observed' for r in records)
-    assert all(r['version'] == 'v2' and r['header']['schema_version'] == 2 for r in records)
+    # Runs written by the compiled current HEAD use the reviewed V3 grammar.
+    assert all(r['version'] == 'v3' and r['header']['schema_version'] == 3 for r in records)
     assert all(r['journal']['revision'] > 10 for r in records)
     expected_owners = {'lists', 'reminders', 'privacy_authority', 'authority_sessions', 'routines',
-        'events', 'events.eraser', 'events.retention', 'suggestions', 'suggestions.eraser', 'suggestions.retention'}
+        'events', 'events.eraser', 'events.retention', 'suggestions', 'suggestions.eraser', 'suggestions.retention',
+        'accounts'}
     assert all(set(r['stores']) == expected_owners for r in records)
     assert all(set(r['instrumented_producers']) == {'lists', 'reminders', 'privacy_authority',
-        'authority_sessions', 'routines', 'events', 'suggestions'} for r in records)
+        'authority_sessions', 'routines', 'events', 'suggestions', 'accounts'} for r in records)
     assert all(set(r['partial_producers']) == {'privacy_authority', 'authority_sessions', 'routines',
-        'events', 'suggestions'} and r['material_observations'] for r in records)
-    assert all(s['phase'] == 'closed' for r in records for s in r['stores'].values())
+        'events', 'suggestions', 'accounts'} and r['material_observations'] for r in records)
+    # SQLite owners close; the atomic account publisher's terminal is its real drain.
+    assert all(s['phase'] == ('drained' if name == 'accounts' else 'closed')
+        for r in records for name, s in r['stores'].items())
     assert all(len(r['required_producers']) == 32 and len(r['uncovered_producers']) == 30 for r in records)
     assert all(r['capability'] is False and r['global_inventory_complete'] is False
         and r['aggregate_copy_complete'] is False for r in records)
@@ -552,7 +556,7 @@ with stage.AdmissionController(admission) as controller:
             module_hashes[name] = digest
 print(json.dumps({'pid': os.getpid(), 'module': output_registration.__file__,
     'stage_module': stage.__file__, 'module_hashes': module_hashes, 'unchanged_head_state': True, 'run_ids': sorted(r['run_id'] for r in records),
-    'stores_closed': 22, 'instrumented_per_run': 7, 'required_producers': 32, 'uncovered_per_run': 30,
+    'stores_closed': 22, 'account_publishers_drained': 2, 'instrumented_per_run': 8, 'required_producers': 32, 'uncovered_per_run': 30,
     'completed_run_metadata_rejected_before_connect': True,
     'capability': False, 'global_inventory_complete': False, 'aggregate_copy_complete': False}))
 """

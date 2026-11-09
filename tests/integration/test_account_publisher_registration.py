@@ -10,13 +10,16 @@ from __future__ import annotations
 import asyncio
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import partial
+import io
 import os
 from pathlib import Path
 import threading
 from types import SimpleNamespace
 from uuid import uuid4
+import wave
 
 from httpx import ASGITransport, AsyncClient
+import numpy as np
 import pytest
 
 from src.core import runtime_admission
@@ -39,7 +42,7 @@ def _voice_links():
 
 
 @asynccontextmanager
-async def account_graph(tmp_path, monkeypatch, token, *, attach=True):
+async def account_graph(tmp_path, monkeypatch, token, *, attach=True, speaker=None):
     root, state = tmp_path / "admission-root", tmp_path / "state"
     (root / "admission").mkdir(parents=True)
     data = state / "data"
@@ -74,7 +77,8 @@ async def account_graph(tmp_path, monkeypatch, token, *, attach=True):
         users = UserManager(config["speaker_id"]["users_path"], voice_registry=_voice_links(),
                             retirement_proof=authority.users_retired)
         await authority.initialize()
-        api = DashboardAPI(authority=authority, user_manager=users)
+        api = DashboardAPI(authority=authority, user_manager=users, speaker_identifier=speaker,
+                           speaker_model_lock=None if speaker is None else threading.Lock())
         stack.push_async_callback(api.stop)
         if attach:
             await owner.attach_accounts(users, api)
@@ -602,6 +606,86 @@ async def test_read_only_construction_and_last_seen_never_touch_account_disk_or_
         assert users.set_voice_embedding(user_id, object()) is False
         assert Path(users.data_path).read_bytes() == before and journal_bytes(graph.owner) == journal
         assert not graph.owner._failed
+
+
+def _wav(seconds=1.0, rate=16000):
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(rate)
+        audio.writeframes(b"\x01\x00" * int(seconds * rate))
+    return buffer.getvalue()
+
+
+# Legacy voice enrollment is outside account_admin_entry's admitted functions
+# (add_user/update_user). With V3 accounts attached, the managed review guard
+# must refuse the route before any native work or catalog publication.
+async def test_legacy_enrollment_route_is_refused_before_saving_with_accounts_attached(
+    tmp_path, monkeypatch, dashboard_auth,
+):
+    speaker = SimpleNamespace(calls=[], create_enrollment_embedding=lambda arrays: (
+        speaker.calls.append(len(arrays)), np.ones(192, dtype=np.float32))[1])
+    async with account_graph(tmp_path, monkeypatch, token(dashboard_auth), speaker=speaker) as graph:
+        owner, users = graph.owner, graph.users
+        assert users.voice_review_managed is True and owner._accounts.manager is users
+        assert (await create(graph, PRIVATE[0])).status_code == 200
+        user_id = next(iter(users._users))
+        path = Path(users.data_path)
+        before, journal, ram = path.read_bytes(), journal_bytes(owner), dict(users._users)
+        events = account_events(owner)
+        calls, original = [], users.set_voice_embedding
+
+        def spy(*args, **kwargs):
+            calls.append(args[0] if args else kwargs.get("user_id"))
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(users, "set_voice_embedding", spy)
+        files = [("samples", (f"s{index}.wav", _wav(), "audio/wav")) for index in range(3)]
+        response = await graph.client.post(f"/api/admin/users/{user_id}/enroll", files=files)
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"] == "voice_profile_review_required"
+        assert calls == [] and speaker.calls == []
+        assert graph.api.admin_work.status()["operations"] == 0
+        assert path.read_bytes() == before and users._users == ram
+        assert journal_bytes(owner) == journal and account_events(owner) == events
+        assert not owner._failed and temporaries(graph) == []
+        await graph.api.stop()
+        await close(graph)
+        assert owner._closing.done() and owner._closing.exception() is None
+        assert [event["phase"] for event in account_events(owner)] == ["intent", "attached", "opening", "drained"]
+        assert base._chain(owner._directory)[2]["accounts"]["phase"] == "drained"
+
+
+# The native catalog edit itself refuses managed voice publication: inside the
+# real admin work, set_voice_embedding changes nothing and never saves.
+async def test_managed_set_voice_embedding_inside_admin_work_returns_false_without_write(
+    tmp_path, monkeypatch, dashboard_auth,
+):
+    async with account_graph(tmp_path, monkeypatch, token(dashboard_auth)) as graph:
+        owner, users = graph.owner, graph.users
+        assert (await create(graph, PRIVATE[0])).status_code == 200
+        user_id = next(iter(users._users))
+        path = Path(users.data_path)
+        before, journal, ram = path.read_bytes(), journal_bytes(owner), dict(users._users)
+        events, saves, original = account_events(owner), [], users._save
+
+        def save(*args, **kwargs):
+            saves.append(True)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(users, "_save", save)
+        changed = await native_work.run_admin_work(graph.api.admin_work, lambda: True, users.set_voice_embedding,
+                                                   user_id, np.ones(192, dtype=np.float32))
+        assert changed is False and saves == []
+        assert path.read_bytes() == before and users._users == ram
+        assert users._users[user_id].voice_embedding is None
+        assert journal_bytes(owner) == journal and account_events(owner) == events
+        assert not owner._failed and temporaries(graph) == []
+        await graph.api.stop()
+        await close(graph)
+        assert owner._closing.done() and owner._closing.exception() is None
+        assert base._chain(owner._directory)[2]["accounts"]["phase"] == "drained"
 
 
 # Graph re-pin: the composed ApplicationGraph exposes the publisher only through

@@ -1,4 +1,11 @@
-"""Real v1 and v2 graph histories remain readable under their original authority."""
+"""Real V1 and current (V3) graph histories share their original closed controller.
+
+The read-only V1 release and the current V3 writer (HEAD) each write a genuine
+history under one controller. No V2 writer was ever released (production
+b0866e8 does not contain c0e82df), and V2/V3 copies cannot coexist without
+multi-hop delegation; see accounts-v3/compiled/plan-deviation.json. A V2
+namespace is still exercised as malformed input that must fail closed.
+"""
 
 import hashlib
 import json
@@ -17,6 +24,9 @@ OLD_REVISION = "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54"
 PRODUCT_REFERENCE = "014b422b0a1585ffd810c01577b2e57e6a9a6604"
 CHILD = "tests/mocks/output_registration_compatibility_child.py"
 PARENT_SECONDS = 240
+# Raised 55 -> 120 s (user-authorized 2026-11-09): graph-v3 with plan step 5
+# measured ~66 s; see accounts-v3/compiled/plan-deviation.json "budget".
+GRAPH_PHASE_SECONDS = 120
 
 
 def _sha(path: Path) -> str:
@@ -36,12 +46,14 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def _control(prepared: dict, branch: str, manifest: dict, evidence: Path) -> tuple[dict, Path]:
-    # _prepare's initial controls describe the old release for both slots. Make
+    # _prepare's initial controls describe the old release for its slots. Make
     # fresh controls with the exact new island closure and each actual artifact.
-    value = dict(prepared["controls"][branch][0])
+    runtime = prepared["runtimes"][branch]
+    value = dict(prepared["controls"]["old"][0])
     value.update(island_files=dict(prepared["island_files"]),
+                 runtime_root=str(runtime), state_root=str(runtime.parent / "state/data/graph"),
                  source_commit=manifest["git_commit"],
-                 release_sha256=_sha(prepared["runtimes"][branch] / "release.json"))
+                 release_sha256=_sha(runtime / "release.json"))
     path = evidence / ("compatibility-" + branch + "-control.json")
     compiled.write_json(path, value)
     return value, path
@@ -73,10 +85,11 @@ def _result(evidence: Path, mode: str, pid: int, control: dict, manifest: dict) 
         assert manifest["files"][value["relative_origin"]] == value["sha256"]
     writer = result["module_origins"]["src.memory.output_registration"]
     assert writer["relative_origin"] == "src/memory/output_registration.pyc"
-    if mode == "graph-v1":
-        assert "src.memory.output_registration_v2" not in result["module_origins"]
-    else:
-        assert "src.memory.output_registration_v2" in result["module_origins"]
+    # No release may load a newer journal codec than the format it writes; the
+    # current reader is the only non-writer and decodes every known version.
+    loads_v3 = mode in {"graph-v3", "read-valid", "read-invalid"}
+    assert ("src.memory.output_registration_v2" in result["module_origins"]) is (mode != "graph-v1")
+    assert ("src.memory.output_registration_v3" in result["module_origins"]) is loads_v3
     if mode.startswith("read-"):
         observed = result["observations"]
         assert observed["controller_module"] == str(Path(control["runtime_root"]) / "scripts/stage_runtime.pyc")
@@ -90,7 +103,7 @@ def _graph_phase(controller: object, prepared: dict, branch: str, mode: str,
     from scripts.stage_runtime import read_admission_head, verify_closed_binding
 
     control, control_path = control_pair
-    budget = min(55, deadline - time.monotonic() - 20)
+    budget = min(GRAPH_PHASE_SECONDS, deadline - time.monotonic() - 20)
     assert budget > 0
     command = _command(mode, prepared, control, control_path, evidence)
     record = {"command": command, "budget_s": budget, "actual_wait_returned": False,
@@ -177,13 +190,26 @@ def _exercise(task: Path, evidence: Path, repo: Path, revision: str) -> dict:
     started = time.monotonic()
     deadline = started + PARENT_SECONDS
     assert not task.is_relative_to(repo) and not repo.is_relative_to(task)
-    proof = {"schema_version": 1, "unit": "T024-F1/real-mixed-v1-v2-output-registration",
+    # Explicit per-branch mapping: graph mode -> (slot, release, journal version).
+    releases = {"graph-v1": ("old", OLD_REVISION, "v1"), "graph-v3": ("candidate", revision, "v3")}
+    proof = {"schema_version": 1, "unit": "T024-F1/real-mixed-v1-v3-output-registration",
              "complete": False, "source_revision": revision, "old_revision": OLD_REVISION,
              "product_reference": PRODUCT_REFERENCE, "parent_budget_s": PARENT_SECONDS,
+             "release_by_mode": {mode: {"slot": slot, "revision": commit, "journal_version": version}
+                                 for mode, (slot, commit, version) in releases.items()},
              "global_inventory_complete": False, "aggregate_copy_complete": False,
              "cleanup_ack": False, "F1_delivered": False, "goal_complete": False,
-             "phases": {}, "scope": "Two real managed graph closures and current compiled closed-controller mixed reader"}
+             "phases": {}, "phase_elapsed_s": {},
+             "scope": "Two real managed graph closures (V1, current V3) and current compiled closed-controller mixed reader"}
     primary = None
+
+    def timed(name, call, *args):
+        began = time.monotonic()
+        try:
+            return call(*args)
+        finally:
+            proof["phase_elapsed_s"][name] = round(time.monotonic() - began, 3)
+
     try:
         before_tree = _git(repo, "ls-tree", "-r", PRODUCT_REFERENCE, "--", "src", "scripts")
         current_tree = _git(repo, "ls-tree", "-r", revision, "--", "src", "scripts")
@@ -193,13 +219,18 @@ def _exercise(task: Path, evidence: Path, repo: Path, revision: str) -> dict:
             "current_src_scripts_tree_sha256": hashlib.sha256(current_tree.encode()).hexdigest(),
             "src_scripts_equal": before_tree == current_tree,
             "scope": "Observed equality for this validation; future legitimate product changes still run the behavioral regression"}
-        prepared = slots._prepare(task, evidence, repo, OLD_REVISION, bridge_revision=revision)
+        prepared = timed("prepare", lambda: slots._prepare(task, evidence, repo, OLD_REVISION, bridge_revision=revision))
         entry = repo / CHILD
         assert entry.is_file() and not entry.is_symlink()
         (prepared["island"] / CHILD).write_bytes(entry.read_bytes())
         prepared["island_files"][CHILD] = _sha(entry)
         assert len(prepared["island_files"]) == 26
         compiled.write_json(evidence / "compatibility-island.json", prepared["island_files"])
+        # The current release is the genuine V3 writer; the old one has no V2/V3 codec.
+        assert "src/memory/output_registration_v3.pyc" in prepared["bridge_manifest"]["files"]
+        assert not {"src/memory/output_registration_v2.pyc",
+                    "src/memory/output_registration_v3.pyc"} & set(prepared["manifest"]["files"])
+        manifests = {"old": prepared["manifest"], "candidate": prepared["bridge_manifest"]}
         old_control = _control(prepared, "old", prepared["manifest"], evidence)
         proof["archives"] = {
             "old": {"revision": OLD_REVISION, "sha256": _sha(prepared["archive"]),
@@ -208,10 +239,11 @@ def _exercise(task: Path, evidence: Path, repo: Path, revision: str) -> dict:
                         "release_sha256": _sha(prepared["bridge_runtime"] / "release.json")}}
         proof["build_calls"] = 2
         with AdmissionController(prepared["staging"]) as controller:
-            first = _graph_phase(controller, prepared, "old", "graph-v1", old_control,
-                                 prepared["manifest"], evidence, deadline)
+            first = timed("graph-v1", _graph_phase, controller, prepared, "old", "graph-v1", old_control,
+                          prepared["manifest"], evidence, deadline)
             proof["phases"]["graph-v1"] = first
-            v1_root = prepared["staging"] / "admission/output-inventory/v1"
+            namespace = prepared["staging"] / "admission/output-inventory"
+            v1_root = namespace / "v1"
             v1_before = _tree(v1_root)
             old_state = prepared["runtimes"]["old"].parent / "state"
             state_before = _tree(old_state)
@@ -229,57 +261,91 @@ def _exercise(task: Path, evidence: Path, repo: Path, revision: str) -> dict:
             proof["delegation"] = {"id": delegation, "source_closed_binding": source_binding,
                                    "destination_state": str(new_state), "target_ids": delegated}
             current_control = _control(prepared, "candidate", prepared["bridge_manifest"], evidence)
-            second = _graph_phase(controller, prepared, "candidate", "graph-v2", current_control,
-                                  prepared["bridge_manifest"], evidence, deadline)
-            proof["phases"]["graph-v2"] = second
+            second = timed("graph-v3", _graph_phase, controller, prepared, "candidate", "graph-v3", current_control,
+                           prepared["bridge_manifest"], evidence, deadline)
+            proof["phases"]["graph-v3"] = second
             assert _tree(v1_root) == v1_before and _tree(old_state) == state_before
-            assert first["result"]["observations"]["header"]["run_id"] != second["result"]["observations"]["header"]["run_id"]
+            phases = {"graph-v1": first, "graph-v3": second}
+            # Plan step 5: only the current V3 graph ran authenticated create/update/delete
+            # through the real dashboard app; the V1 release never touched accounts.
+            admin = {mode: phase["result"]["observations"].get("account_admin") for mode, phase in phases.items()}
+            assert admin["graph-v1"] is None
+            assert admin["graph-v3"]["operations"] == ["create", "update", "delete"]
+            assert admin["graph-v3"]["statuses"] == [200, 200, 200]
+            assert admin["graph-v3"]["accounts_after"] == admin["graph-v3"]["accounts_before"]
+            proof["account_admin_graph_v3"] = admin["graph-v3"]
+            run_ids = {mode: phase["result"]["observations"]["header"]["run_id"] for mode, phase in phases.items()}
+            assert len(set(run_ids.values())) == 2
+            # Each real run exists only under its own writer's version namespace.
+            assert sorted(path.name for path in namespace.iterdir()) == ["v1", "v3"]
+            for mode, run_id in run_ids.items():
+                assert phases[mode]["result"]["observations"]["version"] == releases[mode][2]
+                assert [version for version in ("v1", "v2", "v3")
+                        if (namespace / version / "runs" / run_id).exists()] == [releases[mode][2]]
+            assert sorted(path.name for path in (namespace / "v3/runs").iterdir()) == [run_ids["graph-v3"]]
             head = read_admission_head(controller.root)
-            expectation = {"head": head, "runs": [phase["result"]["observations"] for phase in (first, second)],
-                           "malformed_run_id": "0" * 32, "delegation": proof["delegation"]}
-            assert all(value["header"]["run_id"] != expectation["malformed_run_id"] for value in expectation["runs"])
+            expectation = {"head": head, "runs": [phase["result"]["observations"] for phase in phases.values()],
+                           "malformed_runs": {"v2": "0" * 32, "v3": "1" * 32},
+                           "delegations": {"v3": proof["delegation"]}}
+            assert not set(expectation["malformed_runs"].values()) & set(run_ids.values())
             expectation_path = evidence / "reader-expectation.json"
             compiled.write_json(expectation_path, expectation)
         # Acquire a new actual compiled controller in a fresh process only after
         # the parent's original lease has closed; no inherited run ticket.
         authority_before = _tree(prepared["staging"] / "admission")
         closed_states = {branch: _tree(runtime.parent / "state") for branch, runtime in prepared["runtimes"].items()}
-        positive = _reader_phase(prepared, "read-valid", current_control, prepared["bridge_manifest"],
-                                 evidence, expectation_path, deadline)
+        positive = timed("read-valid", _reader_phase, prepared, "read-valid", current_control,
+                         prepared["bridge_manifest"], evidence, expectation_path, deadline)
         proof["phases"]["read-valid"] = positive
+        version_by_run = {run_ids[mode]: releases[mode][2] for mode in releases}
+        assert positive["result"]["observations"]["version_by_run"] == version_by_run
         assert _tree(prepared["staging"] / "admission") == authority_before
         assert _tree(v1_root) == v1_before
-        namespace = prepared["staging"] / "admission/output-inventory"
         # These are explicitly malformed data in this fresh fixture. They carry
-        # no fabricated header, binding, receipt, delegation or capability.
+        # no fabricated header, binding, receipt, delegation or capability. No V2
+        # writer ran, so its namespace is created here only as refused input.
         (namespace / "v999").mkdir(mode=0o700)
-        (namespace / "v2/runs" / expectation["malformed_run_id"]).mkdir(mode=0o700)
+        (namespace / "v2").mkdir(mode=0o700)
+        (namespace / "v2/runs").mkdir(mode=0o700)
+        for version, run_id in expectation["malformed_runs"].items():
+            (namespace / version / "runs" / run_id).mkdir(mode=0o700)
         injected = _tree(prepared["staging"] / "admission")
         assert set(injected) - set(authority_before) == {
-            "output-inventory/v999", "output-inventory/v2/runs/" + expectation["malformed_run_id"]}
+            "output-inventory/v999", "output-inventory/v2", "output-inventory/v2/runs",
+            "output-inventory/v2/runs/" + expectation["malformed_runs"]["v2"],
+            "output-inventory/v3/runs/" + expectation["malformed_runs"]["v3"]}
         assert all(injected[key] == value for key, value in authority_before.items())
         compiled.write_json(evidence / "negative-injection.json", {
-            "unknown_version": "v999", "malformed_v2_run": expectation["malformed_run_id"],
+            "unknown_version": "v999", "malformed_runs": expectation["malformed_runs"],
             "original_entries_unchanged": True, "receipt_or_authority_fabricated": False})
-        negative = _reader_phase(prepared, "read-invalid", current_control, prepared["bridge_manifest"],
-                                 evidence, expectation_path, deadline)
+        negative = timed("read-invalid", _reader_phase, prepared, "read-invalid", current_control,
+                         prepared["bridge_manifest"], evidence, expectation_path, deadline)
         proof["phases"]["read-invalid"] = negative
+        assert negative["result"]["observations"]["version_by_run"] == version_by_run
         assert _tree(prepared["staging"] / "admission") == injected
         assert _tree(v1_root) == v1_before
+        assert sorted(prepared["runtimes"]) == ["candidate", "old"]
         for branch, runtime in prepared["runtimes"].items():
             assert _tree(runtime.parent / "state") == closed_states[branch]
-            manifest = prepared["manifest"] if branch == "old" else prepared["bridge_manifest"]
-            compiled._artifact_hashes(runtime, manifest)
+            compiled._artifact_hashes(runtime, manifests[branch])
         assert all(_sha(prepared["island"] / name) == digest for name, digest in prepared["island_files"].items())
         assert _sha(prepared["archive"]) == proof["archives"]["old"]["sha256"]
         assert _sha(prepared["bridge_archive"]) == proof["archives"]["current"]["sha256"]
         assert time.monotonic() <= deadline
-        proof.update(complete=True, real_v1_read_only_compatibility=True, real_v2_history_observed=True,
+        writer_codecs = {mode: sorted(name for name in phases[mode]["result"]["module_origins"]
+                                      if name.startswith("src.memory.output_registration_v"))
+                         for mode in releases}
+        assert writer_codecs == {"graph-v1": [],
+                                 "graph-v3": ["src.memory.output_registration_v2",
+                                              "src.memory.output_registration_v3"]}
+        proof.update(complete=True, real_v1_read_only_compatibility=True, real_v3_history_observed=True,
                      original_v1_bytes_unchanged=True, closed_authority_unchanged_by_readers=True,
                      unknown_and_malformed_fail_closed=True, actual_child_waits=4,
-                     scope_counts={"inventory_categories": 32, "instrumented_families": 7,
+                     cross_version_promotion=False, writer_codecs_by_mode=writer_codecs,
+                     journal_version_by_run=version_by_run,
+                     scope_counts={"inventory_categories": 32, "instrumented_families": 8,
                                    "closed_primary_registration_families": ["lists", "reminders"],
-                                   "partial_families": 5, "uncovered_categories": 30})
+                                   "partial_families": 6, "uncovered_categories": 30})
         return proof
     except BaseException as error:
         primary = error

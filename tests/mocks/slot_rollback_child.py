@@ -292,7 +292,13 @@ async def _current_manual_decisions(graph, saved):
     def current():
         if not actor.current(frozenset({"admin:manage"})):
             raise PermissionError("slot_account_authority_revoked")
-    changed, _ = await asyncio.to_thread(users.update_user, manual.user_id,
+    # Same mutation through the original observed admin owner, exactly as the
+    # update_user_permissions route does (run_admin_work + boolean session lease).
+    from src.dashboard.native_work import run_admin_work
+    dashboard = graph.graph.dashboard
+    _require(dashboard is not None and dashboard.user_manager is users, "slot_account_admin_owner")
+    changed, _ = await run_admin_work(dashboard.admin_work,
+        lambda: actor.current(frozenset({"admin:manage"})), users.update_user, manual.user_id,
         permission_level=PermissionLevel.GUEST, before_save=current)
     _require(changed, "slot_current_account_not_committed")
     user = await asyncio.to_thread(users.get_user, manual.user_id, before_read=current)
