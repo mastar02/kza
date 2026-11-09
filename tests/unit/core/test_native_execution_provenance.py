@@ -280,3 +280,56 @@ async def test_cancelled_observer_late_native_failure_releases_owned_task_and_in
         if collector_was_enabled:
             gc.enable()
         await work.aclose()
+
+
+@pytest.mark.asyncio
+async def test_exception_group_member_frames_holding_binding_are_released():
+    """Group members are walked too: a member raised by a frame that holds the
+    binding, wrapped without context, must not keep the owned task alive."""
+    entered, release = threading.Event(), threading.Event()
+    payload = _PrivateInput()
+    payload_ref = weakref.ref(payload)
+    task_refs = []
+
+    def native(value):
+        assert value is payload_ref()
+        del value
+        entered.set()
+        assert release.wait(3)
+
+        def admitted_check():
+            execution = current_native_execution()  # held by the raising frame
+            task_refs.append(weakref.ref(execution.task))
+            raise RuntimeError("synthetic_member_failure")
+
+        member = None
+        try:
+            admitted_check()
+        except RuntimeError as error:
+            member = error
+        # Raised outside the handler: the member is in no __cause__/__context__
+        # chain, only in the group's ``exceptions``.
+        group = ExceptionGroup("synthetic_group", [member])
+        member = None
+        raise group
+
+    work = OwnedBlockingWork(capacity=1)
+    collector_was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        observer = asyncio.create_task(work.run(native, payload))
+        del payload
+        await _until(entered.is_set)
+        observer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await observer
+        release.set()
+        await _until(lambda: not work._tasks)
+        observer = None
+        assert len(task_refs) == 1 and task_refs[0]() is None
+        assert payload_ref() is None
+    finally:
+        release.set()
+        if collector_was_enabled:
+            gc.enable()
+        await work.aclose()

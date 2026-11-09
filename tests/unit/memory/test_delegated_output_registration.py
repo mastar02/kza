@@ -9,15 +9,17 @@ The compiled compatibility scenario remains the real authority-ancestry oracle.
 from __future__ import annotations
 
 import asyncio
-from contextlib import closing
+from contextlib import closing, nullcontext
 from copy import deepcopy
 from contextvars import copy_context
+import gc
 import hashlib
 import json
 from pathlib import Path
 import sqlite3
 import threading
 from types import SimpleNamespace
+import weakref
 
 import pytest
 
@@ -463,3 +465,82 @@ async def test_scope_projection_refuses_inconsistent_selected_observation(tmp_pa
         assert not owner._failed
         _privacy_is_only_open_extent(owner, graph.privacy)
     _driver_is_closed(graph)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["admit", "preflight", "to_thread_body"])
+async def test_failed_history_native_call_releases_owned_task_by_refcount(tmp_path, monkeypatch, failure):
+    """A failed admitted history call must not keep its owned task in a cycle.
+
+    The binding is the task's completion witness. Native frames that held the
+    binding (``execution`` locals, closure cells, ``_Operation``) and remain in
+    the stored exception traceback, or ``_OPERATION`` captured by the worker's
+    copied context, closed ``binding -> task -> exception -> traceback`` cycles
+    that retained native arguments (paths, cursors, subjects). Automatic
+    collection is suspended; nothing is collected explicitly. Done witnesses are
+    pruned exactly as the next preflight would.
+    """
+    collector_was_enabled = gc.isenabled()
+    gc.disable()
+    captured, operations = [], []
+    poisoned = failure != "to_thread_body"
+    try:
+        expected = (pytest.raises(registration.OutputRegistrationError, match="registry_unavailable")
+                    if poisoned else nullcontext())
+        with expected:
+            async with managed(tmp_path, monkeypatch) as (owner, stack, config):
+                graph = await _graph(owner, stack, config, tmp_path, monkeypatch)
+                work = graph.driver.retention._work
+                issue = OwnedBlockingWork._native_binding
+
+                def capture(self, function, task, parent_sequence=None):
+                    binding = issue(self, function, task, parent_sequence)
+                    if self is work:
+                        captured.extend((weakref.ref(binding), weakref.ref(binding.task)))
+                    return binding
+
+                monkeypatch.setattr(OwnedBlockingWork, "_native_binding", capture)
+                join = registration.OutputRegistrationV2._join
+
+                def observed_join(self, *args):
+                    operation = join(self, *args)
+                    operations.append(weakref.ref(operation))
+                    return operation
+
+                monkeypatch.setattr(registration.OutputRegistrationV2, "_join", observed_join)
+                if failure == "admit":
+                    shape = registration._physical_shape
+
+                    def changed_shape(path, plan, **kwargs):
+                        if registration._OPERATION.get() is not None:
+                            raise ValueError("synthetic_destination_changed")
+                        return shape(path, plan, **kwargs)
+
+                    monkeypatch.setattr(registration, "_physical_shape", changed_shape)
+                elif failure == "preflight":
+                    def changed_authority():
+                        if current_native_execution() is not None:
+                            raise RuntimeError("synthetic_authority_changed")
+
+                    monkeypatch.setattr(owner.admission, "revalidate", changed_authority)
+                else:
+                    # Default OwnedBlockingWork worker instead of the owner's _offload.
+                    monkeypatch.setattr(work, "_worker", owned_work._observed_thread)
+                    with closing(sqlite3.connect(graph.path)) as db, db:
+                        db.execute("""INSERT INTO events_policy_v1 (timestamp,event_type,entity_id,action,
+                            context_json,sources_json,metrics_json,expires_at)
+                            VALUES (5,'synthetic','unit','test','{}','[]','{}',1)""")
+                outcome = await graph.driver.retention._run(graph.target, 0)
+                assert outcome.error is not None
+                outcome = None
+                await asyncio.sleep(0)
+                assert captured and not work._tasks
+                for witnesses in (owner._dispatches, owner.admission._native_validations):
+                    for done in [entry for entry in witnesses if entry.task.done()]:
+                        del witnesses[done]
+                done = None
+                assert all(reference() is None for reference in captured)
+                assert all(reference() is None for reference in operations)
+    finally:
+        if collector_was_enabled:
+            gc.enable()

@@ -14,6 +14,7 @@ import sqlite3
 import stat
 import threading
 from types import MethodType
+import weakref
 from weakref import WeakKeyDictionary
 from typing import Callable, Iterator, Any, TYPE_CHECKING
 
@@ -83,7 +84,10 @@ class _HistoricalGrant:
 
 @dataclass(eq=False, frozen=True)
 class _Operation:
-    execution: object
+    # Weak: this lives in the native thread's copied Context, which a failed
+    # call's traceback can keep alive (to_thread frame). A strong binding here
+    # closes Context -> binding -> task -> exception -> traceback -> Context.
+    execution: weakref.ref
     owner: _Owner
     snapshot: object
     grants: tuple
@@ -1025,7 +1029,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             if not any(e.id == expected.id and e.participant is expected.participant and e.version == expected.version
                        and e.descriptor_json == expected.descriptor_json for e in snapshot.entries):
                 _reject("target_unregistered", self)
-            admission = _Operation(execution, binding, previous, pairs)
+            admission = _Operation(weakref.ref(execution), binding, previous, pairs)
         return admission
 
     def _history_scope(self, grant: _HistoricalGrant, execution: object) -> Path:
@@ -1051,7 +1055,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
 
     def _admit_history(self, binding: _Owner, physical: str, execution: object, supplied: str | Path) -> _Operation:
         previous = _OPERATION.get()
-        if isinstance(previous, _Operation) and previous.execution is execution:
+        if isinstance(previous, _Operation) and execution is not None and previous.execution() is execution:
             if previous.owner is not binding or not any(path == physical for path, _ in previous.grants):
                 _reject("target_unregistered", self)
             admission = previous
@@ -1068,7 +1072,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         admission = _OPERATION.get()
         execution = current_native_execution()
         physical = str(Path(path).resolve(strict=False))
-        if not isinstance(admission, _Operation) or admission.execution is not execution:
+        if not isinstance(admission, _Operation) or execution is None or admission.execution() is not execution:
             _reject("target_operation", self)
         binding = admission.owner
         if not validate_native_execution(execution, work=binding.work) or not self._call_allowed(binding, execution):

@@ -9,6 +9,7 @@ import math
 from collections.abc import Callable
 import time
 import threading
+import traceback
 from typing import NoReturn
 
 
@@ -195,6 +196,33 @@ def _leave_native(binding):
                 binding.work._native_executions.pop(id(binding), None)
 
 
+def _release_failed_frames(error: BaseException) -> None:
+    """Drop locals of the finished native frames held by ``error``'s tracebacks.
+
+    The owned task stores ``error`` and the binding keeps that task as its
+    completion witness, so any finished native frame (also in a chained
+    ``__cause__``/``__context__`` or an exception-group member) that still
+    holds the binding closes a cycle which also retains the native arguments.
+    Tracebacks, line numbers and the exception objects are unchanged.
+
+    Relies on CPython >= 3.13 (the runtime artifact target): ``frame.clear()``
+    raises ``RuntimeError`` for executing or suspended frames, which
+    ``traceback.clear_frames`` skips, so no live generator or other thread's
+    frame is closed or altered. Older interpreters would close suspended
+    generators here.
+    """
+    pending, seen = [error], set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        traceback.clear_frames(current.__traceback__)
+        pending += [current.__cause__, current.__context__]
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+
+
 def observe_native(function: Callable, *args, **kwargs):
     """Observe one real synchronous invocation without changing its arguments."""
     timing = _TIMING.get()
@@ -202,6 +230,7 @@ def observe_native(function: Callable, *args, **kwargs):
     slot = _NATIVE_EXECUTION.get()
     binding = None if slot is None else slot.binding
     owns_execution = _enter_native(binding, function)
+    failure = None
     if owns_timing:
         timing.native_started = time.monotonic()
     try:
@@ -211,6 +240,9 @@ def observe_native(function: Callable, *args, **kwargs):
         if owns_execution and binding.work._native_preflight is not None:
             binding.work._native_preflight(binding)
         return function(*args,**kwargs)
+    except BaseException as error:
+        failure = error
+        raise
     finally:
         if owns_timing:
             timing.native_finished = time.monotonic()
@@ -219,7 +251,11 @@ def observe_native(function: Callable, *args, **kwargs):
             # The left binding can no longer validate; revoke it from every
             # copied context before the result or exception propagates.
             _revoke_slot(slot, binding)
-        timing = slot = binding = function = args = kwargs = None
+            # Only after the admission window closed: finalizers of released
+            # locals then run outside it, as they did when frames died later.
+            if failure is not None:
+                _release_failed_frames(failure)
+        timing = slot = binding = function = args = kwargs = failure = None
 
 
 async def _observed_thread(function, *args, **kwargs):
