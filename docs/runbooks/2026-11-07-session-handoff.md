@@ -65,3 +65,7 @@ Después de una corrección revisada, validá con revisión/inputs/attempt/baset
 
 Hasta ocho agentes según plazas; pruebas interactivas de PC siempre con Terra. Voz/persona separado de permisos. Sin release, cambios de producción ni índices RAG como efecto secundario. Guardá y subí los cambios autorizados por unidad.
 ```
+
+## Reanudación en Claude Code — 2026-11-09
+
+El trabajo continúa en Claude Code sobre la misma rama. Las seis fallas tienen causa demostrada: ciclos de retención introducidos en `014b422`. Se corrigieron en `743efd3` y `740ca42`, con las pruebas de regresión y la verificación local descritas en el [handoff Mac](2026-11-05-mac-development-handoff.md#ciclos-de-retención-de-la-full-fallida--t024-f1-reparación-local). Falta la validación fresca round-02, con intentos nativos separados, full con `--deselect` y límites originales. No se ejecutaron helpers de aceptación del intento fallido. Cuentas/V3 sigue detrás de la aceptación de esta unidad; se conserva la prioridad T047.
