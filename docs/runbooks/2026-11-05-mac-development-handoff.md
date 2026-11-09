@@ -403,6 +403,47 @@ Limpieza de disco autorizada por el usuario: se borraron sólo 18 raíces `/priv
 
 Siguiente: el usuario autorizó preparar, **sin instalar**, un paquete candidato de release. Incluye artefacto reproducible, manifiesto, riesgos, respaldos y rollback; la instalación queda a decisión del usuario y la ejecuta el operador. Después siguen cuentas/V3 conservando la prioridad T047.
 
+Paquete preparado sobre `8b1575f`, reproducible desde un clon independiente. Veredicto **NO-GO**: el rollback a `63ea8d3` rompe tablas nuevas, y los recordatorios migran a `scope='private'` mientras el scheduler sólo dispara compartidos. Falta además una herramienta de publicación propia y un ensayo sobre una copia del estado de producción. Ver `data/release-candidates/8b1575f/risk-analysis.md`.
+
+## Cuentas/V3 — publicador del catálogo de cuentas, aceptado
+
+El registro de salida de producción escribe ahora la gramática V3. Contiene las familias V2 con sus comprobaciones V2 intactas, más el publicador `UserManager` de cuentas y un evento `composition`. El publicador se registra adjunto (`attach_accounts`) con el panel encendido, o como `disabled` sin panel. Los clientes V2 explícitos siguen escribiendo y leyendo V2. El decodificador V3 nunca reintenta un V3 mal formado como V2.
+
+- `922b80c`: implementación.
+  - `UserManager._save` admite la escritura antes de reservar el temporal. Transfiere el descriptor en dos etapas (`FileIO`, luego el wrapper de texto) para cerrarlo exactamente una vez, y borra sólo su temporal probado.
+  - Las llamadas de administración se observan con su función y argumentos originales.
+  - Los dos tests que esperaban V2 se migraron a V3 con autorización del usuario, sin cambiar aserciones.
+- `5569b92`: corrige el pin de `composed(graph)`. `ApplicationGraph` no tiene `user_manager`; la comprobación pedía ese campo y rechazaba todo arranque real con panel. Ahora se fija a `graph.dashboard` (y a su `user_manager`), o a `None` sin panel. Lo detectaron los tests compilados, y un test de deriva protege el campo.
+- `dae7c2d`: migración de los escenarios compilados.
+  - **Compatibilidad:** prueba V1 (`ef8bc6d`) más V3 bajo un mismo controlador, con alta, cambio de permiso y baja reales por el panel dentro de `graph-v3`. El plan pedía también una rama V2 fijada, pero no es ejecutable. `activate` rechaza autoridad vieja (`privacy_authority_stale`, `stage_runtime.py:2299-2301`) y no existe delegación multi-salto. Además `b0866e8` no contiene ni `ef8bc6d` ni `c0e82df`, así que V2 nunca se publicó. El usuario eligió V1+V3, y el V1 del test es un fixture de compatibilidad, no el estado previo real del servidor.
+  - **Límite:** el de fase de grafo de ese nodo pasó de 55 a 120 s, autorizado por el usuario. `graph-v3` con el paso 5 mide unos 77 s. Los demás límites no cambian.
+  - **Reconciliación de material:** espera V3 con `accounts` exacto. Su hijo cambia el permiso por `run_admin_work`, igual que la ruta real.
+
+Hallazgos descartados con evidencia:
+- **Cambio de permiso en el grafo compilado:** no se cuelga. Responde en 1,76 s y el proceso completo sale con exit 0.
+- **Alta de voz por el panel con cuentas adjuntas:** no escribe nada. Responde 409, y `set_voice_embedding` devuelve sin cambios porque `voice_review_managed` es verdadero.
+- **Doble cierre del descriptor:** el riesgo existía en el diseño de la primera ronda y se reprodujo en CPython 3.13.18. La transferencia en dos etapas lo evita.
+
+Validación fresca round-03 en `dae7c2d`, sin ampliar límites de la ronda y arrancando cada suite con carga de 1 minuto menor que 10.
+- **Partición:** 9459 IDs exactos y disjuntos: los 9388 de round-02 más 71 nuevos.
+- **Resultados:**
+  - Component: 173 PASS.
+  - Nativas 01–07: 1 PASS cada una, entre 55 y 181 s de 300.
+  - Full: 9451 PASS más la xfail regex conocida, 0 FAIL, en 823,5 s de 1500.
+- **Revisión del coordinador:**
+  - lo observado coincide con lo recolectado en los 9 modos;
+  - 27 eventos de carga, sin solapamientos y sin arranques con carga ≥ 10;
+  - árbol limpio y `HEAD == @{upstream}`.
+
+**Unidad aceptada dentro de su alcance**: `.../accounts-v3-validation-round-03/acceptance-proof.json`. La nota de desvíos está en `data/autonomous-roadmap-20261102/t024/f1/accounts-v3/compiled/plan-deviation.json`. No acepta F1, T024, H6 ni el runtime, y no implica release.
+
+Quedan abiertos:
+- **Márgenes de tiempo:** `graph-v3` mide unos 77–99 s contra 120. La nativa de material mide 141–236 s contra 300.
+- **Avisos de ruff:** los dos F401 preexistentes.
+- **Release:** el paso real desde `b0866e8` sigue siendo un bloqueante del paquete candidato.
+
+Siguiente: retomar el roadmap con la prioridad T047. T047 está `verified_local`; hay que precisar qué falta para aceptarla.
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.
