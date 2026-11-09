@@ -412,12 +412,12 @@ El registro de salida de producción escribe ahora la gramática V3. Contiene la
 - `922b80c`: implementación.
   - `UserManager._save` admite la escritura antes de reservar el temporal. Transfiere el descriptor en dos etapas (`FileIO`, luego el wrapper de texto) para cerrarlo exactamente una vez, y borra sólo su temporal probado.
   - Las llamadas de administración se observan con su función y argumentos originales.
-  - Los dos tests que esperaban V2 se migraron a V3 con autorización del usuario, sin cambiar aserciones.
+  - Los dos tests que esperaban V2 se migraron a V3 con autorización del usuario. Cambian los valores esperados: el decoder pasa a V3 y `schema_version` de 2 a 3. No se quitó ni se debilitó ninguna aserción.
 - `5569b92`: corrige el pin de `composed(graph)`. `ApplicationGraph` no tiene `user_manager`; la comprobación pedía ese campo y rechazaba todo arranque real con panel. Ahora se fija a `graph.dashboard` (y a su `user_manager`), o a `None` sin panel. Lo detectaron los tests compilados, y un test de deriva protege el campo.
 - `dae7c2d`: migración de los escenarios compilados.
   - **Compatibilidad:** prueba V1 (`ef8bc6d`) más V3 bajo un mismo controlador, con alta, cambio de permiso y baja reales por el panel dentro de `graph-v3`. El plan pedía también una rama V2 fijada, pero no es ejecutable. `activate` rechaza autoridad vieja (`privacy_authority_stale`, `stage_runtime.py:2299-2301`) y no existe delegación multi-salto. Además `b0866e8` no contiene ni `ef8bc6d` ni `c0e82df`, así que V2 nunca se publicó. El usuario eligió V1+V3, y el V1 del test es un fixture de compatibilidad, no el estado previo real del servidor.
-  - **Límite:** el de fase de grafo de ese nodo pasó de 55 a 120 s, autorizado por el usuario. `graph-v3` con el paso 5 mide unos 77 s. Los demás límites no cambian.
-  - **Reconciliación de material:** espera V3 con `accounts` exacto. Su hijo cambia el permiso por `run_admin_work`, igual que la ruta real.
+  - **Límite:** el de fase de grafo de ese nodo pasó de 55 a 120 s, autorizado por el usuario. `graph-v3` con el paso 5 mide unos 77 s. Es un límite aflojado dentro de la suite validada. Los demás límites no cambian.
+  - **Reconciliación de material:** pasa a esperar V3 en lugar de V2, `schema_version` 3 y el dueño `accounts` en cada conjunto, con igualdades exactas. `accounts` termina en `drained` y el resto de los dueños en `closed`. Su hijo cambia el permiso por `run_admin_work`, igual que la ruta real.
 
 Hallazgos descartados con evidencia:
 - **Cambio de permiso en el grafo compilado:** no se cuelga. Responde en 1,76 s y el proceso completo sale con exit 0.
@@ -435,7 +435,7 @@ Validación fresca round-03 en `dae7c2d`, sin ampliar límites de la ronda y arr
   - 27 eventos de carga, sin solapamientos y sin arranques con carga ≥ 10;
   - árbol limpio y `HEAD == @{upstream}`.
 
-**Unidad aceptada dentro de su alcance**: `.../accounts-v3-validation-round-03/acceptance-proof.json`. La nota de desvíos está en `data/autonomous-roadmap-20261102/t024/f1/accounts-v3/compiled/plan-deviation.json`. No acepta F1, T024, H6 ni el runtime, y no implica release.
+**Unidad aceptada dentro de su alcance**: `.../accounts-v3-validation-round-03/acceptance-proof.json`, con revisión independiente `independent-review.json`: `accept_within_scope`, recalculada desde los archivos crudos. `36aa8af` registró la aceptación antes de que existiera esa revisión; el commit siguiente lo corrige. La nota de desvíos está en `data/autonomous-roadmap-20261102/t024/f1/accounts-v3/compiled/plan-deviation.json`. No acepta F1, T024, H6 ni el runtime, y no implica release.
 
 Quedan abiertos:
 - **Márgenes de tiempo:** `graph-v3` mide unos 77–99 s contra 120. La nativa de material mide 141–236 s contra 300.
