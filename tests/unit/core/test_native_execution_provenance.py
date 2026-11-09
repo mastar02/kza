@@ -2,8 +2,10 @@
 
 import asyncio
 from contextvars import copy_context
+import gc
 import sqlite3
 import threading
+import weakref
 
 import pytest
 
@@ -210,4 +212,71 @@ async def test_foreign_loop_handle_on_same_native_thread_cannot_inherit_proof():
     try:
         await work.run(native)
     finally:
+        await work.aclose()
+
+
+
+class _PrivateInput:
+    """Weak-referenceable stand-in for private native input."""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sequence", [False, True], ids=["run", "native_step"])
+async def test_cancelled_observer_late_native_failure_releases_owned_task_and_input(sequence):
+    """A finished owned task must not be retained through its native binding.
+
+    The observer is cancelled while the original native call is blocked; the
+    owner keeps the task, then the call fails inside ``asyncio.to_thread``.
+    The owned task stores that exception, whose traceback holds the worker
+    frames, their private arguments and the copied thread ``Context``. Once
+    the owner drops the task, reference counting alone must release task and
+    input. Automatic collection is suspended so an incidental collector pass
+    cannot hide a reference cycle; nothing is collected explicitly.
+    """
+    entered, release = threading.Event(), threading.Event()
+    payload = _PrivateInput()
+    payload_ref = weakref.ref(payload)
+    task_refs = []
+
+    def native(value):
+        binding = current_native_execution()
+        assert binding is not None and validate_native_execution(binding, work=work)
+        assert value is payload_ref()
+        task_refs.append(weakref.ref(binding.task))
+        if sequence:
+            task_refs.append(weakref.ref(binding.parent_sequence))
+        # The callback frame is in the traceback; only the copied context and
+        # owner frames are under test, so it must not keep the binding.
+        del binding, value
+        entered.set()
+        assert release.wait(3)
+        raise RuntimeError("synthetic_late_native_failure")
+
+    async def admitted_sequence(value):
+        return await work.native_step(native, value)
+
+    work = OwnedBlockingWork(capacity=1)
+    collector_was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        if sequence:
+            observer = asyncio.create_task(work.run_async(admitted_sequence, payload))
+        else:
+            observer = asyncio.create_task(work.run(native, payload))
+        del payload
+        await _until(entered.is_set)
+        observer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await observer
+        assert payload_ref() is not None and work._tasks
+        release.set()
+        await _until(lambda: not work._tasks)
+        observer = None
+        assert len(task_refs) == (2 if sequence else 1)
+        assert all(task_ref() is None for task_ref in task_refs)
+        assert payload_ref() is None
+    finally:
+        release.set()
+        if collector_was_enabled:
+            gc.enable()
         await work.aclose()

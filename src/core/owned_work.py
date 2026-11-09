@@ -90,10 +90,41 @@ class _NativeState:
     entered: bool = False
 
 
-_NATIVE_EXECUTION: ContextVar[NativeExecution | None] = ContextVar(
+@dataclass(eq=False, slots=True)
+class _NativeSlot:
+    """Shared, revocable carrier of one binding inside every copied context.
+
+    Contexts copied while a native invocation runs (``asyncio.to_thread``,
+    executors, handles) are immutable snapshots that can outlive the call, for
+    example through a stored exception traceback. Holding the binding directly
+    in them formed an unreachable cycle: copied context -> binding -> finished
+    owned task -> stored exception -> traceback frames -> copied context, which
+    kept private native arguments and results alive until the cyclic
+    collector ran. Every copy shares this slot, so the owner revokes the
+    binding from all of them at the point where the binding stops validating.
+    """
+
+    binding: NativeExecution | None
+
+
+_NATIVE_EXECUTION: ContextVar[_NativeSlot | None] = ContextVar(
     "owned_work_native_execution", default=None,
 )
 _NATIVE_LOCK = threading.RLock()
+
+
+def _context_binding() -> NativeExecution | None:
+    slot = _NATIVE_EXECUTION.get()
+    return None if slot is None else slot.binding
+
+
+def _revoke_slot(slot: _NativeSlot | None, binding: NativeExecution | None = None) -> None:
+    """Clear ``slot`` (only if it still carries ``binding``, when given)."""
+    if slot is None:
+        return
+    with _NATIVE_LOCK:
+        if binding is None or slot.binding is binding:
+            slot.binding = None
 
 
 def _executing_loop():
@@ -115,7 +146,7 @@ def validate_native_execution(
     function: Callable | None = None,
 ) -> bool:
     """Validate actual task/work/thread membership, not a copied context token."""
-    if type(binding) is not NativeExecution or _NATIVE_EXECUTION.get() is not binding:
+    if type(binding) is not NativeExecution or _context_binding() is not binding:
         return False
     with _NATIVE_LOCK:
         owner = binding.work
@@ -134,7 +165,7 @@ def validate_native_execution(
 
 def current_native_execution() -> NativeExecution | None:
     """Locate the actual current invocation while its native callback runs."""
-    binding = _NATIVE_EXECUTION.get()
+    binding = _context_binding()
     return binding if validate_native_execution(binding) else None
 
 
@@ -168,7 +199,8 @@ def observe_native(function: Callable, *args, **kwargs):
     """Observe one real synchronous invocation without changing its arguments."""
     timing = _TIMING.get()
     owns_timing = timing is not None and timing.native_started is None
-    binding = _NATIVE_EXECUTION.get()
+    slot = _NATIVE_EXECUTION.get()
+    binding = None if slot is None else slot.binding
     owns_execution = _enter_native(binding, function)
     if owns_timing:
         timing.native_started = time.monotonic()
@@ -184,7 +216,10 @@ def observe_native(function: Callable, *args, **kwargs):
             timing.native_finished = time.monotonic()
         if owns_execution:
             _leave_native(binding)
-        timing = binding = function = args = kwargs = None
+            # The left binding can no longer validate; revoke it from every
+            # copied context before the result or exception propagates.
+            _revoke_slot(slot, binding)
+        timing = slot = binding = function = args = kwargs = None
 
 
 async def _observed_thread(function, *args, **kwargs):
@@ -247,22 +282,24 @@ class OwnedBlockingWork:
 
     async def _execute(self, timing, function, args, kwargs):
         token = _TIMING.set(timing)
-        binding = native_token = None
+        binding = native_token = slot = None
         try:
             # _retain must publish ownership before even an eager worker starts.
             await asyncio.sleep(0)
             binding = self._native_binding(function, asyncio.current_task())
-            native_token = _NATIVE_EXECUTION.set(binding)
+            slot = _NativeSlot(binding)
+            native_token = _NATIVE_EXECUTION.set(slot)
             timing.dispatched = time.monotonic()
             # Preserve the exact callable seen by existing private workers.
             return await self._worker(function,*args,**kwargs)
         finally:
             _leave_native(binding)
+            _revoke_slot(slot)
             if native_token is not None:
                 _NATIVE_EXECUTION.reset(native_token)
             timing.finished = time.monotonic()
             _TIMING.reset(token)
-            binding, function, args, kwargs = None, None, (), {}
+            binding, slot, function, args, kwargs = None, None, None, (), {}
 
     async def _execute_async(self, timing, function, args, kwargs):
         # A coordinator is not a native invocation. Its native timing is unknown;
@@ -282,13 +319,18 @@ class OwnedBlockingWork:
 
     async def _execute_native_step(self, parent_sequence, function, args, kwargs):
         binding = self._native_binding(function, asyncio.current_task(), parent_sequence)
-        token = _NATIVE_EXECUTION.set(binding)
+        slot = _NativeSlot(binding)
+        token = _NATIVE_EXECUTION.set(slot)
         try:
             return await self._worker(function, *args, **kwargs)
         finally:
             _leave_native(binding)
+            _revoke_slot(slot)
             _NATIVE_EXECUTION.reset(token)
-            binding, function, args, kwargs = None, None, (), {}
+            # This frame stays in the traceback stored by the parent sequence;
+            # keeping the parent here would make that sequence retain itself.
+            parent_sequence = binding = slot = function = None
+            args, kwargs = (), {}
 
     def _retain(self, function: Callable, args: tuple, kwargs: dict, *, asynchronous: bool = False) -> asyncio.Task:
         operation = task = None
