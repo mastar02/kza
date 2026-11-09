@@ -1368,7 +1368,7 @@
         "data/autonomous-roadmap-20261102/session-closeout-20261107/handoff.json",
         "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-validation/diagnostic-noop-validation-round-01/failed-full-handoff-review.json"
       ],
-      "next_action": "Diagnosticar y corregir con evidencia las seis fallas de liberación de referencias privadas de la full c0e82df; investigar por separado el consumo del plazo de1500s y el parser JUnit interrumpido. Preservar los oráculos y límites; no iniciar cuentas ni ejecutar helpers de aceptación del intento fallido. Tras una corrección revisada, usar revisión/inputs/attempt/basetemp nuevos y validación pertinente. El roadmap completo sigue pendiente."
+      "next_action": "Las seis fallas de la full c0e82df se corrigieron (743efd3, 740ca42; round-02 aceptada en 0fed9c4). Cuentas/V3 quedó aceptada dentro de su alcance tras round-03 en dae7c2d, con revisión independiente: 8 de 32 productores registrados. Siguiente: orden 2 del diseño de censo v2 (registrar antes de sus efectos los productores de runtime restantes), con borrador de diseño, revisión independiente, implementación y validación fresca por unidad. Preservar oráculos y límites; F1, T024 y el roadmap completo siguen pendientes."
     },
     {
       "id": "T025",
