@@ -395,7 +395,13 @@ Presupuesto de la full, investigado aparte: el orden no cambió y las seis falla
 
 Parser JUnit, aparte: el elemento anónimo de la interrupción hacía fallar `validation_runner.py:84` (`KeyError`). Se perdían conteos/IDs aunque el estado fallido se conservó. El exportador contaba 5627−6=5621 elementos como PASS. Las versiones nuevas de round-02 cuentan sólo casos con nombre, separan los no identificados y contrastan los totales declarados. Los recibos de round-01 no se tocan y sus helpers de aceptación no se ejecutaron.
 
-Evidencia privada: `data/autonomous-roadmap-20261102/t024/f1/lifetime-cycle-repair/repair-evidence.json`. Herramientas round-02: `.../next-batch-validation/lifetime-cycle-validation-round-02/README.md`. **La unidad no está aceptada** hasta completar round-02 con 0 fallas; F1 y T024 siguen incompletos.
+Validación fresca round-02 en `0fed9c4` (límites originales; sin otro pytest en paralelo). Colección exacta y partición disjunta de 9388 IDs: la full con 9381 más 7 nativas. Component dio 102 PASS. Las nativas 01–07 dieron 1 PASS cada una, entre 53 y 188 s de 300 s. La full dio 9380 PASS + la xfail regex conocida, 0 FAIL/error/no identificados, en 776,44 s de 1500 s. Las seis fallas originales pasan. Fuentes, protegidos, runner e inputs no cambiaron. Los nueve árboles crudos están exportados; la full incluye 15 FIFOs inertes. Una revisión independiente de la evidencia dio `accept_within_scope` en 7 comprobaciones. Dos firmas de warnings de terceros faltaban en round-01 sólo porque esa full se cortó al 59 %.
+
+**Unidad aceptada dentro de su alcance**: `.../lifetime-cycle-validation-round-02/acceptance-proof.json`, SHA `49ccafb39f37648d06bc7de0d8c90b2a3b8c807b36c852cf5ebef42a9cc3e54b`. Evidencia de la reparación: `data/autonomous-roadmap-20261102/t024/f1/lifetime-cycle-repair/repair-evidence.json`. No acepta F1, T024, H6 ni el runtime, y no implica release. F1 y T024 siguen incompletos.
+
+Limpieza de disco autorizada por el usuario: se borraron sólo 18 raíces `/private/tmp/kza-*` cuyos archivos coincidían por sha256 con su exportación. Las 13 parciales se conservan. El registro está en `lifetime-cycle-repair/tmp-root-cleanup.json`.
+
+Siguiente: el usuario autorizó preparar, **sin instalar**, un paquete candidato de release. Incluye artefacto reproducible, manifiesto, riesgos, respaldos y rollback; la instalación queda a decisión del usuario y la ejecuta el operador. Después siguen cuentas/V3 conservando la prioridad T047.
 
 ## Prompt para la sesión nueva
 
