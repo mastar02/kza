@@ -538,7 +538,6 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                           "privacy_authority": True, "routines": True}
         self._accounts: _AccountPublisher | None = None
         self._accounts_disabled = False
-        self._accounts_disabled_manager: object | None = None
         if self._format.schema_version == 3:
             self._expected["accounts"] = os.fspath(config.get("speaker_id", {}).get("users_path", "./data/users.json"))
             self._selected["accounts"] = self._selected["authority_sessions"]
@@ -1152,9 +1151,16 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
     async def composed(self, graph: object | None = None) -> None:
         self._live()
         if graph is not None and "accounts" in self._selected:
-            # Re-pin the composed public graph to the exact attached account owner.
-            manager = self._accounts.manager if self._accounts is not None else self._accounts_disabled_manager
-            if manager is None or getattr(graph, "user_manager", None) is not manager:
+            # Re-pin the composed public graph to the exact account owner. The
+            # ApplicationGraph exposes the publisher only through its dashboard.
+            publisher, missing = self._accounts, object()
+            dashboard = getattr(graph, "dashboard", missing)
+            if publisher is not None:
+                pinned = (dashboard is publisher.dashboard
+                          and getattr(dashboard, "user_manager", None) is publisher.manager)
+            else:
+                pinned = self._accounts_disabled and dashboard is None
+            if not pinned:
                 _reject("account_owner", self)
         for producer, selected in self._selected.items():
             if producer == "accounts":
@@ -1234,7 +1240,6 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                 self._record(event)
         await self._run(publish)
         self._accounts_disabled = True
-        self._accounts_disabled_manager = manager
 
     def _append_account(self, phase: str, plan: dict, aggregate: dict | None = None) -> None:
         from src.memory.output_registration_v3 import account_event_shape

@@ -604,24 +604,38 @@ async def test_read_only_construction_and_last_seen_never_touch_account_disk_or_
         assert not graph.owner._failed
 
 
-# Graph re-pin: the composed public graph must carry the exact attached manager.
-@pytest.mark.parametrize("graph_manager", ["attached", "foreign"])
-async def test_composition_repins_graph_user_manager_to_attached_publisher(
-    tmp_path, monkeypatch, dashboard_auth, graph_manager,
+# Graph re-pin: the composed ApplicationGraph exposes the publisher only through
+# its real ``dashboard`` field (it has no user_manager); the pin reads that field.
+@pytest.mark.parametrize("shape", ["same_dashboard", "foreign_dashboard", "no_dashboard", "swapped_manager"])
+async def test_composition_repins_graph_dashboard_to_attached_publisher(
+    tmp_path, monkeypatch, dashboard_auth, shape,
 ):
     async with account_graph(tmp_path, monkeypatch, token(dashboard_auth)) as graph:
         users = graph.users
-        manager = users if graph_manager == "attached" else UserManager(
-            str(graph.data / "users.json"), voice_registry=_voice_links())
-        public = SimpleNamespace(user_manager=manager)
-        expected = ("output_registration_composition_incomplete" if graph_manager == "attached"
+        dashboard = {"same_dashboard": graph.api, "swapped_manager": graph.api, "no_dashboard": None,
+                     "foreign_dashboard": DashboardAPI(user_manager=users)}[shape]
+        if shape == "swapped_manager":
+            monkeypatch.setattr(graph.api, "user_manager",
+                                UserManager(str(graph.data / "users.json"), voice_registry=_voice_links()))
+        public = SimpleNamespace(dashboard=dashboard)
+        expected = ("output_registration_composition_incomplete" if shape == "same_dashboard"
                     else "output_registration_account_owner")
         # Other families are not composed in this fixture; only the pin is observed.
         with pytest.raises(registration.OutputRegistrationError) as error:
             await registration.composed(graph.owner, public)
         assert str(error.value) == expected and graph.owner._failed
+        if shape == "swapped_manager":
+            monkeypatch.setattr(graph.api, "user_manager", users)
         await close(graph)
         assert_poisoned_close(graph)
+
+
+def test_application_graph_still_exposes_only_the_dashboard_field_the_pin_reads():
+    """Drift guard: a rename must fail here, not only in the compiled graph run."""
+    import dataclasses
+    from src.application import ApplicationGraph
+    names = {field.name for field in dataclasses.fields(ApplicationGraph)}
+    assert "dashboard" in names and "user_manager" not in names
 
 
 # ----------------------------------------------------------------------
@@ -683,17 +697,17 @@ async def test_disabled_publisher_is_recorded_and_composition_pins_the_same_mana
         # The pin passes; composition then stops only at the uncomposed families.
         with pytest.raises(registration.OutputRegistrationError,
                            match="^output_registration_composition_incomplete$"):
-            await registration.composed(owner, SimpleNamespace(user_manager=users))
+            await registration.composed(owner, SimpleNamespace(dashboard=None))
 
 
-async def test_disabled_publisher_rejects_composed_graph_with_another_manager(tmp_path, monkeypatch):
+async def test_disabled_publisher_rejects_composed_graph_with_a_dashboard(tmp_path, monkeypatch):
     async with disabled_graph(tmp_path, monkeypatch) as graph:
         owner = graph.owner
         await owner.accounts_disabled(graph.users)
-        other = UserManager(str(graph.data / "users.json"), voice_registry=_voice_links())
+        present = DashboardAPI(user_manager=graph.users)
         journal = journal_bytes(owner)
         with pytest.raises(registration.OutputRegistrationError, match="^output_registration_account_owner$"):
-            await registration.composed(owner, SimpleNamespace(user_manager=other))
+            await registration.composed(owner, SimpleNamespace(dashboard=present))
         assert owner._failed and journal_bytes(owner) == journal
         await close(graph)
         assert str(owner._closing.exception()) == "output_registration_epoch_incomplete"
