@@ -496,7 +496,7 @@ async def test_original_eraser_close_is_registered_before_attachment_can_fail(tm
 def legacy_epoch(owner):
     directory = owner._namespace / "v1/runs" / uuid4().hex
     directory.mkdir(parents=True)
-    header = {key: value for key, value in owner._epoch.items() if key != "selected"}
+    header = {key: value for key, value in owner._epoch.items() if key not in {"selected", "grammars"}}
     header.update(schema_version=1, run_id=directory.name, namespace_identity=base._identity(directory))
     raw = base._encoded(header)
     base._write_new(directory / "epoch.json", raw)
@@ -515,7 +515,7 @@ async def test_legacy_epoch_is_read_without_mutation_or_v2_promotion(tmp_path, m
         with pytest.raises(RuntimeError, match="header"):
             registration.chain(legacy)
         assert {p.name: p.read_bytes() for p in legacy.iterdir()} == before
-        assert base._chain(owner._directory)[0]["schema_version"] == 3
+        assert base._chain(owner._directory)[0]["schema_version"] == 4
 
 
 @pytest.mark.asyncio

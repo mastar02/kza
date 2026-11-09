@@ -499,7 +499,8 @@ def _known_format(value: object) -> _JournalFormat:
     if value is V2_FORMAT:
         return value
     from src.memory.output_registration_v3 import V3_FORMAT
-    if value is not V3_FORMAT:
+    from src.memory.output_registration_v4 import V4_FORMAT
+    if value is not V3_FORMAT and value is not V4_FORMAT:
         raise RuntimeError("output_registration_format")
     return value
 
@@ -538,9 +539,16 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                           "privacy_authority": True, "routines": True}
         self._accounts: _AccountPublisher | None = None
         self._accounts_disabled = False
-        if self._format.schema_version == 3:
+        self._configuration: _ConfigurationPublisher | None = None
+        self._configuration_disabled = False
+        if self._format.schema_version in {3, 4}:
             self._expected["accounts"] = os.fspath(config.get("speaker_id", {}).get("users_path", "./data/users.json"))
             self._selected["accounts"] = self._selected["authority_sessions"]
+        if self._format.schema_version == 4:
+            # main constructs ConfigurationChanges exactly when the dashboard is
+            # enabled under an admission; the destination is never configured.
+            self._expected["configuration"] = str(admission.state_root / "config" / "settings.yaml")
+            self._selected["configuration"] = self._selected["authority_sessions"]
 
     def _current(self) -> None:
         # Metadata carries no opening grant. Full validation is performed at
@@ -622,11 +630,19 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                 for version in self._namespace.iterdir():
                     base._require(version.name in self._format.known_versions and version.is_dir() and (version / "runs").is_dir(), "unsupported_version")
                     base._require(not (version / "runs" / ticket["run_id"]).exists(), "run_exists")
+            grammars = None
+            if self._format.schema_version >= 4:
+                from src.memory.output_registration_v4 import WRITER_GRAMMARS, refuse_unknown_grammars
+                # Never start beside a run whose declared grammar this release cannot read.
+                refuse_unknown_grammars(self._namespace / self._format.namespace_name / "runs")
+                grammars = dict(WRITER_GRAMMARS)
             header = {"schema_version": self._format.schema_version, "run_id": ticket["run_id"], "generation": ticket["generation"],
                       "binding_id": ticket["binding_id"], "config_sha256": self.admission._config_digest,
                       "state_root": str(self.admission.state_root), "state_identity": base._identity(self.admission.state_root),
                       "namespace_identity": {"device": 2**64 - 1, "inode": 2**64 - 1},
                       "producers": list(base.PRODUCERS), "selected": self._selected}
+            if grammars is not None:
+                header["grammars"] = grammars
             raw = base._encoded(header)
             reservation = len(raw) + 2 * len(base._encoded({"revision": 0, "sha256": "0"*64}))
             base._require(reservation <= base.MAX_RUN_BYTES and size + reservation <= base.MAX_TOTAL_BYTES, "capacity")
@@ -1162,7 +1178,30 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                 pinned = self._accounts_disabled and dashboard is None
             if not pinned:
                 _reject("account_owner", self)
+        if graph is not None and "configuration" in self._selected and (
+                self._configuration is not None or self._configuration_disabled):
+            # Re-pin the composed public graph to the exact configuration owner
+            # through the real ApplicationGraph fields; never a synthetic alias.
+            publisher, missing = self._configuration, object()
+            changes = getattr(graph, "configuration_changes", missing)
+            authority = getattr(graph, "dashboard_authority", missing)
+            if publisher is not None:
+                sessions = self._roles.get("authority_sessions")
+                pinned = (publisher.phase == "attached" and changes is publisher.owner
+                          and authority is publisher.authority and authority is publisher.owner._authority
+                          and sessions is not None and sessions.instance is authority
+                          and publisher.owner._graph is graph)
+            else:
+                pinned = changes is None and authority is None
+            if not pinned:
+                _reject("configuration_owner", self)
         for producer, selected in self._selected.items():
+            if producer == "configuration":
+                publisher = self._configuration
+                if (selected and (publisher is None or publisher.phase != "attached")
+                        or not selected and (publisher is not None or not self._configuration_disabled)):
+                    _reject("composition_incomplete", self)
+                continue
             if producer == "accounts":
                 publisher = self._accounts
                 if (selected and (publisher is None or publisher.phase not in {"attached", "opening"})
@@ -1198,7 +1237,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         from src.users.user_manager import UserManager
         from src.dashboard.api import DashboardAPI
         work = getattr(dashboard, "admin_work", None)
-        if (self._format.schema_version != 3 or self._selected.get("accounts") is not True
+        if (self._format.schema_version not in {3, 4} or self._selected.get("accounts") is not True
                 or self._accounts is not None or self._accounts_disabled
                 or type(manager) is not UserManager or type(dashboard) is not DashboardAPI
                 or dashboard.user_manager is not manager or manager.voice_review_managed is not True
@@ -1223,7 +1262,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
     async def accounts_disabled(self, manager: object) -> None:
         """Record an existing but unselected publisher; no worker or absence claim."""
         from src.users.user_manager import UserManager
-        if (self._format.schema_version != 3 or self._selected.get("accounts") is not False
+        if (self._format.schema_version not in {3, 4} or self._selected.get("accounts") is not False
                 or self._accounts is not None or self._accounts_disabled or type(manager) is not UserManager):
             _reject("account_owner", self)
         if str(Path(manager.legacy_path).absolute()) != str(Path(self._expected["accounts"]).absolute()):
@@ -1321,6 +1360,152 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         await self._run(publish)
         publisher.phase = "drained"
 
+    # ------------------------------------------------------------------
+    # V4 configuration publisher: the original ConfigurationChanges raw-YAML
+    # writer of <state_root>/config/settings.yaml, observed at its single
+    # shutdown write window. The coordinator never calls _commit, cancels
+    # the writer or deletes a file.
+    # ------------------------------------------------------------------
+
+    async def attach_configuration(self, owner: object, authority: object) -> None:
+        """Bind the exact installed owner before any write; record intent and attached."""
+        from src.core.state_configuration import ConfigurationChanges
+        from src.dashboard.authority import DashboardAuthority
+        sessions = self._roles.get("authority_sessions")
+        if (self._format.schema_version != 4 or self._selected.get("configuration") is not True
+                or self._configuration is not None or self._configuration_disabled
+                or type(owner) is not ConfigurationChanges or type(authority) is not DashboardAuthority
+                or owner._authority is not authority or sessions is None or sessions.instance is not authority
+                or owner._admission is not self.admission or not owner._installed or owner._closed
+                or owner._graph is not None or owner._pending is not None):
+            _reject("configuration_owner", self)
+        publisher = _ConfigurationPublisher(owner, authority)
+        # Retain the exact owner before the first fallible await.
+        self._configuration = publisher
+        owner._output_coordinator = self
+        from src.memory.output_registration_v4 import configuration_plan
+        plan = await self._run(configuration_plan, self.admission.state_root)
+        if plan["path"] != self._expected["configuration"]:
+            _reject("configured_path", self)
+        try:
+            projected = self.admission._binding["authority"]["projection"]["configuration"]["config/settings.yaml"]
+        except (KeyError, TypeError):
+            projected = None
+        if plan["initial_sha256"] != projected:
+            # Admission verified this projection; a difference is an unregistered writer.
+            _reject("configuration_binding", self)
+        await self._run(self._append_configuration, "intent", plan)
+        await self._run(self._append_configuration, "attached", plan)
+        publisher.plan = plan
+        publisher.phase = "attached"
+
+    async def configuration_disabled(self) -> None:
+        """Record the unselected publisher; the existing file stays an obligation."""
+        if (self._format.schema_version != 4 or self._selected.get("configuration") is not False
+                or self._configuration is not None or self._configuration_disabled):
+            _reject("configuration_owner", self)
+
+        def publish() -> None:
+            from src.memory.output_registration_v4 import configuration_event_shape
+            with self._lock:
+                _, _, states, _ = self._format.decode_chain(self._directory)
+                event = {"kind": "configuration_publisher", "phase": "disabled",
+                         "path": self._expected["configuration"]}
+                configuration_event_shape(event, states.get("configuration"), False,
+                                          self.admission.state_root, self._epoch["state_identity"])
+                self._record(event)
+        await self._run(publish)
+        self._configuration_disabled = True
+
+    def _append_configuration(self, phase: str, plan: dict, aggregate: dict | None = None) -> None:
+        from src.memory.output_registration_v4 import configuration_event_shape
+        with self._lock:
+            _, _, states, _ = self._format.decode_chain(self._directory)
+            event = {"kind": "configuration_publisher", "phase": phase, "plan": plan}
+            if aggregate is not None:
+                event["aggregate"] = aggregate
+            configuration_event_shape(event, states.get("configuration"), self._selected.get("configuration"),
+                                      self.admission.state_root, self._epoch["state_identity"])
+            self._record(event)
+
+    async def configuration_opening(self, owner: object) -> _ConfigurationCommit:
+        """Record opening before the writer Task and before any file side effect."""
+        try:
+            self._live()
+            publisher = self._configuration
+            if (publisher is None or publisher.owner is not owner or publisher.phase != "attached"
+                    or publisher.extent is not None or owner._pending is None):
+                _reject("configuration_owner", self)
+
+            def publish() -> None:
+                from src.memory.output_registration_v4 import configuration_plan
+                with self._lock:
+                    # The physical file must still be the attached one.
+                    if configuration_plan(self.admission.state_root) != publisher.plan:
+                        _reject("destination_changed", self)
+                    self._append_configuration("opening", publisher.plan)
+            await self._run(publish)
+            publisher.phase = "opening"
+            publisher.extent = _ConfigurationCommit(self, publisher)
+            return publisher.extent
+        except BaseException:
+            self._failed = True
+            raise
+
+    async def configuration_drained(self, owner: object, extent: _ConfigurationCommit | None,
+                                    outcome: str | None, *, graph_failed: bool = False) -> None:
+        """Called once by the owner's exit after its writer returned (or never started)."""
+        if self._failed:
+            return  # A poisoned epoch keeps its original exit but never a clean terminal.
+        publisher = self._configuration
+        if publisher is None or publisher.owner is not owner:
+            self._failed = True
+            if graph_failed:
+                return  # Keep the original construction error visible.
+            _reject("required", self)
+        if publisher.uncertain or publisher.phase not in {"attached", "opening"}:
+            self._failed = True
+            return
+        plan = publisher.plan
+        from src.memory.output_registration_v4 import CONFIGURATION_OUTCOMES
+        if extent is None:
+            pending = owner._pending is not None
+            if (publisher.phase != "attached" or publisher.extent is not None
+                    or outcome not in {"no_pending", "not_attempted_graph_failed", "refused_before_temporary"}
+                    or (outcome == "no_pending") == pending):
+                _reject("configuration_outcome", self)
+            attempts, identity, digest, temporary = 0, plan["initial_identity"], plan["initial_sha256"], None
+        else:
+            if (publisher.phase != "opening" or extent is not publisher.extent or extent.coordinator is not self
+                    or extent.state not in {"issued", "finished"}):
+                _reject("configuration_outcome", self)
+            if extent.state == "issued":
+                outcome = "refused_before_temporary"  # The owner refused before admitting the extent.
+            elif extent.confirmed:
+                outcome = "committed"
+            else:
+                outcome = "clean_failed"
+            attempts = extent.attempts
+            identity = extent.committed_identity if extent.confirmed else plan["initial_identity"]
+            digest = extent.committed_sha256 if extent.confirmed else plan["initial_sha256"]
+            temporary = extent.temporary
+        if publisher.phase not in CONFIGURATION_OUTCOMES[outcome]:
+            _reject("configuration_outcome", self)
+
+        def publish() -> None:
+            from src.memory.output_registration_v4 import configuration_observation
+            observed = configuration_observation(plan)
+            if (observed != (identity, digest)
+                    or base._directory(Path(plan["parent"])) != plan["parent_identity"]
+                    or (temporary is not None and os.path.lexists(temporary))):
+                _reject("destination_changed", self)
+            aggregate = {"outcome": outcome, "attempts": attempts, "last_committed_identity": identity,
+                         "last_committed_sha256": digest, "writer_returned": True, "open_temp_count": 0,
+                         "cleanup_uncertain": False}
+            self._append_configuration("drained", plan, aggregate)
+        await self._run(publish)
+        publisher.phase = "drained"
+
     async def aclose(self) -> None:
         if self._closing is None:
             async def finish():
@@ -1343,6 +1528,10 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                             base._require(states.get("accounts", {}).get("phase") == "drained", "epoch_incomplete")
                         if self._accounts_disabled:
                             base._require(states.get("accounts", {}).get("phase") == "disabled", "epoch_incomplete")
+                        if self._configuration is not None:
+                            base._require(states.get("configuration", {}).get("phase") == "drained", "epoch_incomplete")
+                        if self._configuration_disabled:
+                            base._require(states.get("configuration", {}).get("phase") == "disabled", "epoch_incomplete")
                 finally:
                     await self._disk.aclose()
                 base._require(not self._failed, "epoch_incomplete")
@@ -1638,7 +1827,8 @@ def read_inventory(controller: object) -> tuple[dict, ...]:
     versions = sorted(namespace.iterdir())
     results, seen = [], {}
     from src.memory.output_registration_v3 import chain as chain_v3
-    decoders = {"v1": base._chain_v1, "v2": chain, "v3": chain_v3}
+    from src.memory.output_registration_v4 import UnsupportedProducerGrammar, chain as chain_v4
+    decoders = {"v1": base._chain_v1, "v2": chain, "v3": chain_v3, "v4": chain_v4}
     for version in versions:
         if version.name not in decoders or not version.is_dir() or not (version / "runs").is_dir():
             results.append({"version": version.name, "phase": "unknown", "reason": "unsupported_version",
@@ -1663,6 +1853,10 @@ def read_inventory(controller: object) -> tuple[dict, ...]:
                     and all(v is True for v in receipt["resources"].values()), "run_receipt")
                 raw_config = binding["authority"]["projection"]["configuration"].get("config/settings.yaml")
                 base._require(type(raw_config) is str and re.fullmatch("[0-9a-f]{64}", raw_config), "configuration_binding")
+                configuration = states.get("configuration") if version.name == "v4" else None
+                if configuration is not None and configuration["plan"] is not None:
+                    # The attach-time file must be the one the admission binding projected.
+                    base._require(configuration["plan"]["initial_sha256"] == raw_config, "configuration_binding")
                 recovered.update(header=header, journal=journal, stores=states, phase="observed",
                     configuration={"raw_sha256": binding["authority"]["projection"]["configuration"].get("config/settings.yaml"),
                                    "effective_digest": "observed_only"})
@@ -1671,7 +1865,8 @@ def read_inventory(controller: object) -> tuple[dict, ...]:
                 else:
                     recovered["instrumented_producers"] = sorted({s.get("producer") or s["plan"]["producer"] for s in states.values()})
                     recovered["uncovered_producers"] = [p for p in base.PRODUCERS if p not in {"lists", "reminders"} or states.get(p, {}).get("phase") != "closed"]
-                    selected = _SELECTED | ({"accounts"} if version.name == "v3" else set())
+                    selected = _SELECTED | ({"accounts"} if version.name == "v3" else set()) | (
+                        set(header["grammars"]) if version.name == "v4" else set())
                     recovered["partial_producers"] = [p for p in sorted(selected - {"lists", "reminders"})]
                     material = []
                     for path in sorted(directory.iterdir()):
@@ -1689,6 +1884,9 @@ def read_inventory(controller: object) -> tuple[dict, ...]:
                     base._require(decode(directory)[:3] == (header, journal, states), "journal_changed")
                     for event, observation in delegated:
                         base._require(_read_delegated_observation(stage, root, binding, event, policy_json) == observation, "authority_changed")
+            except UnsupportedProducerGrammar:
+                # Typed and distinct: a newer grammar is never decoded as another one.
+                value["reason"] = "unsupported_producer_grammar"
             except (ValueError, RuntimeError, OSError, KeyError, TypeError):
                 value["reason"] = "invalid_or_unfinished_history"
             else:
@@ -2240,3 +2438,132 @@ def account_publisher(dashboard: object) -> OutputRegistrationV2 | None:
     coordinator = None if manager is None else _coordinator(manager)
     publisher = None if coordinator is None else coordinator._accounts
     return coordinator if publisher is not None and publisher.dashboard is dashboard else None
+
+
+@dataclass(eq=False)
+class _ConfigurationPublisher:
+    owner: object
+    authority: object
+    phase: str = "waiting"
+    plan: dict | None = None
+    uncertain: bool = False
+    extent: _ConfigurationCommit | None = None
+
+
+def _pair(identity: dict) -> tuple[int, int]:
+    return identity["device"], identity["inode"]
+
+
+class _ConfigurationCommit:
+    """Single-use in-memory extent of the one ConfigurationChanges._commit attempt.
+
+    Its methods run on the writer thread inside the owner's lock. They use
+    only lstat and in-memory state, never the coordinator journal lock; the
+    loop reads the extent only after the writer Task has completed.
+    """
+
+    __slots__ = ("coordinator", "publisher", "state", "attempts", "temporary", "own", "confirmed",
+                 "committed_identity", "committed_sha256", "reason")
+
+    def __init__(self, coordinator: OutputRegistrationV2, publisher: _ConfigurationPublisher) -> None:
+        self.coordinator, self.publisher = coordinator, publisher
+        self.state, self.attempts, self.temporary, self.own = "issued", 0, None, None
+        self.confirmed, self.committed_identity, self.committed_sha256 = False, None, None
+        self.reason = None
+
+    @property
+    def failure(self) -> str | None:
+        """The registration refusal this extent recorded on the writer thread, if any."""
+        return None if self.reason is None else "output_registration_" + self.reason
+
+    def __reduce_ex__(self, protocol: int):
+        raise TypeError("configuration_extent_not_serializable")
+
+    def _poison(self, reason: str) -> None:
+        self.reason = self.reason or reason
+        self.publisher.uncertain = True
+        self.coordinator._failed = True
+        raise OutputRegistrationError("output_registration_" + reason)
+
+    def before_temporary(self, owner: object, path: Path, roots: tuple, identity: tuple, digest: str) -> None:
+        """Admit the attempt before mkstemp: same owner, live epoch, the attached file."""
+        coordinator, publisher = self.coordinator, self.publisher
+        plan = publisher.plan
+        if (self.state != "issued" or owner is not publisher.owner or coordinator._failed
+                or coordinator.admission._output_registration is not coordinator
+                or publisher.phase != "opening" or publisher.uncertain
+                or str(path) != plan["path"]
+                or tuple(roots) != (_pair(plan["state_identity"]), _pair(plan["parent_identity"]))
+                or tuple(identity) != _pair(plan["initial_identity"]) or digest != plan["initial_sha256"]):
+            self.state = "refused"
+            self._poison("configuration_extent")
+        self.state, self.attempts = "temporary", 1
+
+    def before_replace(self, temporary: str, own: tuple | None, parent: tuple | None, final: tuple | None) -> None:
+        """Recheck the own temp inode, its directory and the still-original destination."""
+        plan = self.publisher.plan
+        try:
+            base._require(self.state == "temporary" and not self.coordinator._failed, "temporary_changed")
+            info = os.lstat(temporary)
+            base._require(own is not None and final is not None and parent is not None
+                and stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                and (info.st_dev, info.st_ino) == own and (info.st_size, info.st_mtime_ns) == final
+                and str(Path(temporary).parent) == plan["parent"]
+                and Path(temporary).name.startswith(plan["temporary_scope"]["prefix"])
+                and parent == _pair(plan["parent_identity"])
+                and _directory_pair(Path(temporary).parent) == parent, "temporary_changed")
+            destination = os.lstat(plan["path"])
+            base._require(stat.S_ISREG(destination.st_mode) and destination.st_nlink == 1
+                and (destination.st_dev, destination.st_ino) == _pair(plan["initial_identity"]), "temporary_changed")
+        except (OSError, RuntimeError, ValueError):
+            self.state = "refused"
+            self._poison("temporary_changed")
+        self.state, self.temporary, self.own = "replacing", temporary, own
+
+    def replaced(self, own: tuple, sha256: str) -> None:
+        """Immediately after os.replace: join the destination to the own temp inode."""
+        plan = self.publisher.plan
+        try:
+            base._require(self.state == "replacing" and own == self.own, "destination_changed")
+            info = os.lstat(plan["path"])
+            base._require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                and (info.st_dev, info.st_ino) == own
+                and _directory_pair(Path(plan["parent"])) == _pair(plan["parent_identity"]), "destination_changed")
+        except (OSError, RuntimeError, ValueError):
+            self.state = "published"
+            self._poison("destination_changed")
+        self.state, self.confirmed = "published", True
+        self.committed_identity, self.committed_sha256 = {"device": own[0], "inode": own[1]}, sha256
+
+    def finish(self, *, temporary: str | None, published: bool, durable: bool, cleanup_proven: bool) -> None:
+        """Release the extent; an unconfirmed or undurable publication, or unproven cleanup, poisons."""
+        self.temporary = temporary if temporary is not None else self.temporary
+        if published and not (self.confirmed and durable) or not published and not cleanup_proven:
+            self.reason = self.reason or ("publication_unconfirmed" if published else "cleanup_unproven")
+            self.publisher.uncertain = True
+            self.coordinator._failed = True
+        self.confirmed = self.confirmed and published and durable
+        self.state = "finished"
+
+
+async def configuration_opening(owner: object) -> _ConfigurationCommit | None:
+    """Admit the owner's single write window; None when unmanaged."""
+    if not _managed():
+        return None
+    coordinator = _coordinator(owner)
+    if coordinator is None or coordinator._configuration is None or coordinator._configuration.owner is not owner:
+        _reject("required", coordinator)
+    return await coordinator.configuration_opening(owner)
+
+
+async def configuration_drained(owner: object, extent: _ConfigurationCommit | None, outcome: str | None,
+                                *, graph_failed: bool = False) -> None:
+    """Record the owner's terminal after its writer returned; a no-op when unmanaged."""
+    if not _managed():
+        return
+    coordinator = _coordinator(owner)
+    if coordinator is None:
+        if graph_failed:
+            return
+        _reject("required")
+    await coordinator.configuration_drained(owner, extent, outcome, graph_failed=graph_failed)

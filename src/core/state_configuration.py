@@ -6,6 +6,8 @@ from contextlib import AsyncExitStack
 from contextvars import Context
 from dataclasses import dataclass
 import hashlib
+from io import BufferedWriter, FileIO
+import logging
 import os
 from pathlib import Path
 import stat
@@ -17,6 +19,9 @@ import yaml
 
 from src.core.runtime_admission import RuntimeAdmission
 from src.dashboard.authority import DashboardAuthority, DashboardLease
+from src.memory import output_registration_v2 as output_registration
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -62,6 +67,7 @@ class ConfigurationChanges:
         self._pin = None
         self._receipt = None
         self._writing = None
+        self._registration_failure = None
         self._lock = threading.RLock()
 
     @property
@@ -71,6 +77,11 @@ class ConfigurationChanges:
     @property
     def receipt(self) -> ConsentWithdrawalReceipt | None:
         return self._receipt
+
+    @property
+    def registration_failure(self) -> str | None:
+        """The output-registration failure that kept a queued change unwritten."""
+        return self._registration_failure
 
     def install_on(self, stack: AsyncExitStack) -> None:
         if not isinstance(stack, AsyncExitStack):
@@ -187,7 +198,68 @@ class ConfigurationChanges:
                 or status["close_phase"] != "complete"):
             raise RuntimeError("configuration_graph_close_unconfirmed")
 
-    def _commit(self):
+    @staticmethod
+    def _close_raw_descriptor(descriptor: int) -> tuple[int, int] | None:
+        """Observe, then close exactly once, a descriptor no file object owns yet."""
+        own = None
+        try:
+            info = os.fstat(descriptor)
+            if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                own = (info.st_dev, info.st_ino)
+        except OSError:
+            own = None
+        finally:
+            # A close failure leaves the name unproven; never retry a reusable fd.
+            os.close(descriptor)
+        return own
+
+    @staticmethod
+    def _close_raw_file(raw: FileIO) -> tuple[int, int] | None:
+        """Observe, then close through its owning FileIO, a not yet buffered file."""
+        own = None
+        try:
+            info = os.fstat(raw.fileno())
+            if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                own = (info.st_dev, info.st_ino)
+        except OSError:
+            own = None
+        finally:
+            raw.close()
+        return own
+
+    @staticmethod
+    def _owned_identity(stream) -> tuple[int, int]:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise OSError("configuration_temporary_changed")
+        return info.st_dev, info.st_ino
+
+    @staticmethod
+    def _owned_final(stream, own: tuple[int, int]) -> tuple[int, int]:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or (info.st_dev, info.st_ino) != own:
+            raise OSError("configuration_temporary_changed")
+        return info.st_size, info.st_mtime_ns
+
+    @staticmethod
+    def _remove_own_temporary(temporary: str | None, own: tuple[int, int] | None,
+                              parent: tuple[int, int]) -> bool:
+        """Unlink only the exact own allocation; a foreign or unproven name stays."""
+        if temporary is None:
+            return True
+        try:
+            info = os.lstat(temporary)
+            if info.st_nlink == 1 and stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == own:
+                directory = os.lstat(Path(temporary).parent)
+                if stat.S_ISDIR(directory.st_mode) and (directory.st_dev, directory.st_ino) == parent:
+                    os.unlink(temporary)
+                    return True
+        except FileNotFoundError:
+            return True
+        logger.warning("Configuration temporary cleanup unproven; name retained")
+        return False
+
+    def _commit(self, extent=None):
         """All native errors are returned as fixed data, not Task controls."""
         try:
             with self._lock:
@@ -200,28 +272,61 @@ class ConfigurationChanges:
                 value, _consent = self._parse(raw)
                 value.setdefault("reasoner", {}).setdefault("cloud", {})["consent"] = False
                 encoded = yaml.safe_dump(value, sort_keys=False, allow_unicode=True).encode("utf-8")
-                # Work on RAW YAML, never serialize graph.config with resolved secrets.
-                fd, temporary = tempfile.mkstemp(prefix=".consent-", dir=path.parent)
+                parent = roots[1]
+                if extent is not None:
+                    # Managed: the registered attempt is admitted before any allocation.
+                    extent.before_temporary(self, path, roots, identity, digest)
+                temporary = own = None
+                published = durable = False
                 try:
-                    with os.fdopen(fd, "wb") as stream:
+                    # Work on RAW YAML, never serialize graph.config with resolved secrets.
+                    descriptor, temporary = tempfile.mkstemp(prefix=".consent-", dir=path.parent)
+                    try:
+                        raw_file = FileIO(descriptor, "w", closefd=True)
+                    except BaseException:
+                        # Not transferred: this owner still holds the raw descriptor.
+                        own = self._close_raw_descriptor(descriptor)
+                        raise
+                    # From here the FileIO object owns the descriptor; never os.close it.
+                    try:
+                        stream = BufferedWriter(raw_file)
+                    except BaseException:
+                        own = self._close_raw_file(raw_file)
+                        raise
+                    finally:
+                        raw_file = None
+                    with stream:
+                        own = self._owned_identity(stream)
                         os.fchmod(stream.fileno(), mode)
                         stream.write(encoded)
                         stream.flush()
                         os.fsync(stream.fileno())
+                        final = self._owned_final(stream, own)
                     self._require_actor(self._actor)
                     self._admission.revalidate()
                     check = self._read()
                     if (check[0], check[1], check[2], check[5]) != self._pin:
                         raise RuntimeError("configuration_file_changed")
+                    if extent is not None:
+                        extent.before_replace(temporary, own, parent, final)
                     os.replace(temporary, path)
+                    published = True
+                    if extent is not None:
+                        extent.replaced(own, hashlib.sha256(encoded).hexdigest())
                     directory = os.open(path.parent, os.O_RDONLY)
                     try:
                         os.fsync(directory)
                     finally:
                         os.close(directory)
+                    durable = True
                 finally:
-                    if os.path.exists(temporary):
-                        os.unlink(temporary)
+                    proven = False
+                    try:
+                        proven = self._remove_own_temporary(temporary, own, parent)
+                    finally:
+                        if extent is not None:
+                            extent.finish(temporary=temporary, published=published, durable=durable,
+                                          cleanup_proven=proven)
                 receipt = ConsentWithdrawalReceipt(digest, hashlib.sha256(encoded).hexdigest())
                 return receipt, None
         except BaseException as error:
@@ -236,29 +341,107 @@ class ConfigurationChanges:
             kind = "permission" if type(error) is PermissionError else "error"
             return None, (kind, code)
 
+    def _registration_failed(self, error: BaseException | str) -> None:
+        """Record a failed registration once; the change stays unconfirmed (fail closed)."""
+        if self._registration_failure is not None:
+            return
+        message = error if type(error) is str else str(error)
+        self._registration_failure = (message if (type(error) is str or isinstance(error, RuntimeError))
+            and message.startswith("output_registration_") else "output_registration_unconfirmed")
+        logger.error("Configuration change not confirmed: output registration failed (%s); "
+                     "no closed admission receipt follows", self._registration_failure)
+
+    @staticmethod
+    async def _settle(task: asyncio.Task) -> bool:
+        """Await a retained task to completion; return whether the observer was cancelled."""
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                if not task.done():
+                    cancelled = True
+            except BaseException:
+                pass  # The task's own outcome is read by the caller.
+        return cancelled
+
+    async def _write(self, extent, errors: list) -> bool:
+        """Run the single writer Task; every failure becomes an error entry, never an early exit."""
+        writing = None
+        try:
+            writing = asyncio.to_thread(self._commit, extent)
+            # Construct the retained Task directly: a caller task factory cannot
+            # dispatch the writer and then lose its returned handle on publication.
+            self._writing = asyncio.Task(writing, context=Context())
+        except Exception as error:
+            if writing is not None:
+                writing.close()
+            errors.append(error)
+            return False
+        cancelled = await self._settle(self._writing)
+        try:
+            receipt, failure = self._writing.result()
+        except asyncio.CancelledError:
+            errors.append(RuntimeError("configuration_write_unconfirmed"))
+            return cancelled
+        except Exception as error:
+            errors.append(error)
+            return cancelled
+        self._receipt = receipt
+        if failure is not None:
+            errors.append(PermissionError(failure[1]) if failure[0] == "permission" else RuntimeError(failure[1]))
+        return cancelled
+
     async def _after_graph_close(self, exc_type, exc, traceback) -> bool:
         self._closed = True
+        errors, cancelled, extent = [], False, None
         if exc_type is not None or self._pending is None:
-            return False
-        self._require_graph_closed()
-        # Construct the retained Task directly: a caller task factory cannot
-        # dispatch the writer and then lose its returned handle on publication.
-        self._writing = asyncio.Task(asyncio.to_thread(self._commit), context=Context())
-        cancelled = False
-        while not self._writing.done():
+            outcome = "no_pending" if self._pending is None else "not_attempted_graph_failed"
+            if self._pending is not None:
+                logger.warning("Configuration change not written: an earlier owned exit failed")
+        else:
+            outcome = "refused_before_temporary"
             try:
-                await asyncio.shield(self._writing)
-            except asyncio.CancelledError:
-                cancelled = True
-        receipt, failure = self._writing.result()
-        self._receipt = receipt
+                self._require_graph_closed()
+            except Exception as error:
+                errors.append(error)
+            else:
+                try:
+                    # Registration precedes the writer Task and every file effect.
+                    extent = await output_registration.configuration_opening(self)
+                except asyncio.CancelledError:
+                    cancelled = True
+                    # The queued change is dropped unwritten; keep that visible.
+                    self._registration_failed("output_registration_opening_cancelled")
+                except Exception as error:
+                    self._registration_failed(error)
+                    errors.append(error)
+                else:
+                    outcome = None
+                    cancelled = await self._write(extent, errors)
+                    if extent is not None and extent.failure is not None:
+                        # The registration refused inside the writer (mapped there to a fixed code).
+                        self._registration_failed(extent.failure)
         self._actor = None
-        if failure is not None:
-            error = PermissionError(failure[1]) if failure[0] == "permission" else RuntimeError(failure[1])
-            if cancelled:
-                raise BaseExceptionGroup("configuration write and observer cancellation",
-                    [error, asyncio.CancelledError()])
-            raise error
+        # Exactly one terminal per exit; a failed epoch appends nothing.
+        drained = asyncio.Task(output_registration.configuration_drained(
+            self, extent, outcome, graph_failed=exc_type is not None))
+        cancelled = await self._settle(drained) or cancelled
+        try:
+            drained.result()
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception as error:
+            self._registration_failed(error)
+            errors.append(error)
+        if len(errors) > 1:
+            raise BaseExceptionGroup("configuration write and output registration",
+                errors + ([asyncio.CancelledError()] if cancelled else []))
+        if errors and cancelled:
+            raise BaseExceptionGroup("configuration write and observer cancellation",
+                [errors[0], asyncio.CancelledError()])
+        if errors:
+            raise errors[0]
         if cancelled:
             raise asyncio.CancelledError
         return False

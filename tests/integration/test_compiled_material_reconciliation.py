@@ -487,31 +487,38 @@ with stage.AdmissionController(admission) as controller:
     before_state = copy_catalog._inventory(Path(current['state_root']))
     manifest = json.loads((runtime / 'release.json').read_text())
     assert hashlib.sha256((runtime / 'release.json').read_bytes()).hexdigest() == current['release_sha256']
-    expected = {}
+    expected, modes = {}, {}
     for mode in ('advance-N', 'forward-F'):
         parent = json.loads((evidence / (mode + '-parent-receipt.json')).read_text())
         closure_path = admission / 'admission/closures' / (parent['closed_binding_id'] + '.json')
         assert hashlib.sha256(closure_path.read_bytes()).hexdigest() == parent['closure_sha256']
         running = json.loads(closure_path.read_text())['running_head']
         expected[running['run_id']] = (running['binding_id'], running['generation'])
+        modes[running['run_id']] = mode
     records = output_registration.read_output_inventory(controller)
     assert {r['run_id']: (r['header']['binding_id'], r['header']['generation']) for r in records} == expected
     assert len(records) == 2, records
     assert all(r['phase'] == 'observed' for r in records)
-    # Runs written by the compiled current HEAD use the reviewed V3 grammar.
-    assert all(r['version'] == 'v3' and r['header']['schema_version'] == 3 for r in records)
+    # Runs written by the compiled current HEAD use the extensible V4 grammar.
+    assert all(r['version'] == 'v4' and r['header']['schema_version'] == 4 for r in records)
     assert all(r['journal']['revision'] > 10 for r in records)
     expected_owners = {'lists', 'reminders', 'privacy_authority', 'authority_sessions', 'routines',
         'events', 'events.eraser', 'events.retention', 'suggestions', 'suggestions.eraser', 'suggestions.retention',
-        'accounts'}
+        'accounts', 'configuration'}
     assert all(set(r['stores']) == expected_owners for r in records)
     assert all(set(r['instrumented_producers']) == {'lists', 'reminders', 'privacy_authority',
-        'authority_sessions', 'routines', 'events', 'suggestions', 'accounts'} for r in records)
+        'authority_sessions', 'routines', 'events', 'suggestions', 'accounts', 'configuration'} for r in records)
     assert all(set(r['partial_producers']) == {'privacy_authority', 'authority_sessions', 'routines',
-        'events', 'suggestions', 'accounts'} and r['material_observations'] for r in records)
-    # SQLite owners close; the atomic account publisher's terminal is its real drain.
-    assert all(s['phase'] == ('drained' if name == 'accounts' else 'closed')
+        'events', 'suggestions', 'accounts', 'configuration'} and r['material_observations'] for r in records)
+    # SQLite owners close; the atomic account and configuration publishers' terminal is their real drain.
+    assert all(s['phase'] == ('drained' if name in {'accounts', 'configuration'} else 'closed')
         for r in records for name, s in r['stores'].items())
+    # Only advance-N queued the consent withdrawal; its registered commit is the persisted file.
+    outcomes = {modes[r['run_id']]: r['stores']['configuration']['aggregate'] for r in records}
+    assert outcomes['advance-N']['outcome'] == 'committed' and outcomes['advance-N']['attempts'] == 1
+    assert outcomes['forward-F']['outcome'] == 'no_pending' and outcomes['forward-F']['attempts'] == 0
+    assert all(r['stores']['configuration']['plan']['initial_sha256'] == r['configuration']['raw_sha256']
+        for r in records)
     assert all(len(r['required_producers']) == 32 and len(r['uncovered_producers']) == 30 for r in records)
     assert all(r['capability'] is False and r['global_inventory_complete'] is False
         and r['aggregate_copy_complete'] is False for r in records)
@@ -556,7 +563,9 @@ with stage.AdmissionController(admission) as controller:
             module_hashes[name] = digest
 print(json.dumps({'pid': os.getpid(), 'module': output_registration.__file__,
     'stage_module': stage.__file__, 'module_hashes': module_hashes, 'unchanged_head_state': True, 'run_ids': sorted(r['run_id'] for r in records),
-    'stores_closed': 22, 'account_publishers_drained': 2, 'instrumented_per_run': 8, 'required_producers': 32, 'uncovered_per_run': 30,
+    'stores_closed': 22, 'account_publishers_drained': 2, 'configuration_publishers_drained': 2,
+    'configuration_outcomes': sorted(outcome['outcome'] for outcome in outcomes.values()),
+    'instrumented_per_run': 9, 'required_producers': 32, 'uncovered_per_run': 30,
     'completed_run_metadata_rejected_before_connect': True,
     'capability': False, 'global_inventory_complete': False, 'aggregate_copy_complete': False}))
 """

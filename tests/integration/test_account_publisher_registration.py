@@ -145,7 +145,7 @@ async def test_authenticated_create_update_delete_publish_registered_file_after_
     async with account_graph(tmp_path, monkeypatch, token(dashboard_auth)) as graph:
         owner, users = graph.owner, graph.users
         path = Path(users.data_path)
-        assert owner._directory.parents[1].name == "v3"
+        assert owner._directory.parents[1].name == "v4"
         assert base._chain(owner._directory)[0]["selected"]["accounts"] is True
         plan = account_events(owner)[0]["plan"]
         assert [event["phase"] for event in account_events(owner)] == ["intent", "attached"]
@@ -762,8 +762,8 @@ async def disabled_graph(tmp_path, monkeypatch):
 
 
 def accounts_state(owner):
-    from src.memory import output_registration_v3 as registration_v3
-    return registration_v3.chain(owner._directory)[2].get("accounts")
+    from src.memory import output_registration_v4 as registration_v4
+    return registration_v4.chain(owner._directory)[2].get("accounts")
 
 
 async def test_disabled_publisher_is_recorded_and_composition_pins_the_same_manager(tmp_path, monkeypatch):
@@ -837,7 +837,7 @@ async def test_disabled_after_attach_is_rejected(tmp_path, monkeypatch, dashboar
 @pytest.mark.parametrize("malformation,code", [
     ("extra_key", "account_event"), ("relative_path", "plan"), ("selected_header", "account_event")])
 async def test_malformed_disabled_event_is_rejected_by_v3_chain(tmp_path, monkeypatch, malformation, code):
-    from src.memory import output_registration_v3 as registration_v3
+    from src.memory import output_registration_v4 as registration_v4
     async with disabled_graph(tmp_path, monkeypatch) as graph:
         owner = graph.owner
         await owner.accounts_disabled(graph.users)
@@ -862,6 +862,6 @@ async def test_malformed_disabled_event_is_rejected_by_v3_chain(tmp_path, monkey
         owner._failed = True  # Preserve the malformed evidence while closing.
         expected = "^output_registration_" + code + "$"  # "plan" is the canonical-path check.
         with pytest.raises(RuntimeError, match=expected):
-            registration_v3.chain(directory)
+            registration_v4.chain(directory)
         with pytest.raises(RuntimeError, match=expected):
             base._chain(directory)

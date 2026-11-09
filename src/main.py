@@ -406,6 +406,11 @@ async def build_application(
         if admission is not None:
             configuration_changes = ConfigurationChanges(dashboard_authority, admission)
             configuration_changes.install_on(shutdown)
+            # Registered before any write: the owner writes only at shutdown.
+            await destination_registration.attach_configuration(configuration_changes, dashboard_authority)
+    elif destination_registration is not None:
+        # The unselected publisher is recorded; its existing file stays an obligation.
+        await destination_registration.configuration_disabled()
 
     # Home Assistant Client
     ha_client = (factories.ha_client or HomeAssistantClient)(

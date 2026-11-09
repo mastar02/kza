@@ -1,4 +1,4 @@
-"""Isolated real-graph and closed-controller phases for V1 and current (V3) compatibility."""
+"""Isolated real-graph and closed-controller phases for V1 and current (V4) compatibility."""
 
 import argparse
 import asyncio
@@ -88,14 +88,14 @@ async def _graph(args: argparse.Namespace, control: dict, guard: object) -> dict
     ticket = runtime_admission._ticket()
     _require(type(ticket) is dict, "actual_ticket_missing")
     _require(Path(ticket["admission_root"]).resolve() == Path(args.admission_root), "ticket_root")
-    version = {"graph-v1": 1, "graph-v3": 3}[args.mode]
+    version = {"graph-v1": 1, "graph-current": 4}[args.mode]
     patch, marker = pytest.MonkeyPatch(), len(MemoryClient._created)
     try:
         async with managed_application_graph(Path(args.state_root), patch, Clock(time.time()),
                                              control=control) as bundle:
             _require(bundle.graph.privacy is bundle.privacy, "original_privacy_owner")
-            # Plan step 5: only the current V3 graph exercises the account publisher.
-            admin = await _account_admin(bundle.graph) if version == 3 else None
+            # Plan step 5: only the current graph exercises the account publisher.
+            admin = await _account_admin(bundle.graph) if version == 4 else None
             guard.audit()
         MemoryClient.close_since(marker)
         resources = _resources(bundle)
@@ -108,7 +108,7 @@ async def _graph(args: argparse.Namespace, control: dict, guard: object) -> dict
         _require(header["state_root"] == str(Path(args.state_root).parents[1]), "epoch_state")
         _require(all(stores[name]["phase"] == "closed" for name in ("lists", "reminders")),
                  "original_store_close")
-        for other in {1, 2, 3} - {version}:
+        for other in {1, 2, 3, 4} - {version}:
             _require(not (directory.parents[2] / f"v{other}/runs" / ticket["run_id"]).exists(),
                      "writer_did_not_change_version")
         if version == 1:
@@ -116,8 +116,14 @@ async def _graph(args: argparse.Namespace, control: dict, guard: object) -> dict
         if version < 3:
             # The genuine historical releases never load the V3 codec.
             _require("src.memory.output_registration_v3" not in sys.modules, "historical_writer_promoted")
-        if version == 3:
-            _require("src.memory.output_registration_v3" in sys.modules, "current_v3_writer")
+        if version < 4:
+            _require("src.memory.output_registration_v4" not in sys.modules, "historical_writer_promoted")
+        if version == 4:
+            # The current writer reuses the frozen V3 account grammar inside V4.
+            _require("src.memory.output_registration_v3" in sys.modules
+                     and "src.memory.output_registration_v4" in sys.modules, "current_writer_codecs")
+            _require(header["grammars"] == {"accounts": "account_publisher/1",
+                                            "configuration": "configuration_publisher/1"}, "current_grammars")
             accounts = stores.get("accounts", {})
             events = [event for event in (output_registration._read(path)[0]
                                           for path in sorted(directory.glob("[0-9]*.json")))
@@ -130,6 +136,13 @@ async def _graph(args: argparse.Namespace, control: dict, guard: object) -> dict
                 "open_temp_count": 0, "cleanup_uncertain": False}, "account_publisher_drained")
             raw = b"".join(path.read_bytes() for path in sorted(directory.iterdir()) if path.is_file())
             _require(b"Synthetic Compat Guest" not in raw and b"teen" not in raw, "account_journal_private")
+            # No withdrawal is queued in this phase: the registered owner drains no_pending.
+            configuration = stores.get("configuration", {})
+            phases = [event["phase"] for event in (output_registration._read(path)[0]
+                                                   for path in sorted(directory.glob("[0-9]*.json")))
+                      if event["kind"] == "configuration_publisher"]
+            _require(phases == ["intent", "attached", "drained"] and configuration.get("phase") == "drained"
+                     and configuration["aggregate"]["outcome"] == "no_pending", "configuration_publisher_drained")
         receipt_path = Path(args.admission_root) / "admission/receipts" / (ticket["run_id"] + ".json")
         receipt = json.loads(receipt_path.read_text())
         _require(receipt["child_pid"] == os.getpid() and receipt["status"] == "closed",
@@ -167,7 +180,7 @@ def _read(args: argparse.Namespace) -> dict:
         values = read_output_inventory(controller)
         observed = [value for value in values if value["phase"] == "observed"]
         _require(len(observed) == 2, "both_real_histories")
-        _require(sorted(value["version"] for value in observed) == ["v1", "v3"], "mixed_versions")
+        _require(sorted(value["version"] for value in observed) == ["v1", "v4"], "mixed_versions")
         for expected in expectation["runs"]:
             matched = [value for value in observed if value["run_id"] == expected["header"]["run_id"]]
             _require(len(matched) == 1, "unique_run")
@@ -191,12 +204,14 @@ def _read(args: argparse.Namespace) -> dict:
                      "closed_registered_stores")
             _require(len(value["required_producers"]) == 32 and len(value["uncovered_producers"]) == 30,
                      "partial_scope_preserved")
-            if value["version"] == "v3":
-                # V3 adds exactly the account publisher family to the seven V2 families.
-                _require(len(value["instrumented_producers"]) == 8 and len(value["partial_producers"]) == 6
-                         and "accounts" in value["instrumented_producers"]
-                         and "accounts" in value["partial_producers"], "instrumented_is_not_covered")
+            if value["version"] == "v4":
+                # V4 adds exactly the account and configuration publishers to the seven V2 families.
+                _require(len(value["instrumented_producers"]) == 9 and len(value["partial_producers"]) == 7
+                         and {"accounts", "configuration"} <= set(value["instrumented_producers"])
+                         and {"accounts", "configuration"} <= set(value["partial_producers"]),
+                         "instrumented_is_not_covered")
                 _require(value["stores"]["accounts"]["phase"] == "drained", "v3_account_publisher_drained")
+                _require(value["stores"]["configuration"]["phase"] == "drained", "configuration_publisher_drained")
                 policies = [event for event in value["material_observations"] if event["kind"] == "delegation_policy"]
                 _require(len(policies) == 1 and policies[0]["scope_schema_version"] == 1,
                          "single_original_running_policy")
@@ -230,7 +245,7 @@ def _read(args: argparse.Namespace) -> dict:
         if args.mode == "read-valid":
             _require(len(values) == 2 and not unknown, "valid_exact_histories")
         else:
-            _require(len(values) == 5 and len(unknown) == 3, "negative_exact_histories")
+            _require(len(values) == 6 and len(unknown) == 4, "negative_exact_histories")
             _require(any(value.get("version") == "v999" and value["reason"] == "unsupported_version"
                          for value in unknown), "unknown_version_refused")
             for version, run_id in expectation["malformed_runs"].items():
@@ -256,7 +271,7 @@ def _read(args: argparse.Namespace) -> dict:
 def _main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", required=True,
-                        choices=("graph-v1", "graph-v3", "read-valid", "read-invalid"))
+                        choices=("graph-v1", "graph-current", "read-valid", "read-invalid"))
     for flag in ("control", "runtime", "state-root", "evidence-root", "admission-root"):
         parser.add_argument("--" + flag, required=True)
     parser.add_argument("--expectation")
