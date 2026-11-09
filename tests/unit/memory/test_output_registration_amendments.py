@@ -24,6 +24,7 @@ from src.lists.list_store import ListStore
 from src.memory import copy_catalog
 from src.memory import output_registration as base
 from src.memory import output_registration_v2 as registration
+from src.memory import output_registration_v3 as registration_v3
 from src.memory.privacy_services import PrivacyServices, build_privacy_services
 from src.routines.routine_store import RoutineStore
 from tests.unit.memory.test_output_registration_families import (
@@ -71,7 +72,7 @@ async def test_late_recovery_failure_never_leaves_positive_observed_fields(tmp_p
         await store.close()
         controller = decoder_authority_seam(owner, monkeypatch)
         before = {p.name: p.read_bytes() for p in owner._directory.iterdir()}
-        chain, read = registration.chain, base._read
+        chain, read = registration_v3.chain, base._read
         parsed = []
         def late_chain(directory):
             if parsed and failure == "final_chain":
@@ -84,7 +85,7 @@ async def test_late_recovery_failure_never_leaves_positive_observed_fields(tmp_p
                 raise OSError("late record read failed")
             return read(path)
         with monkeypatch.context() as patch:
-            patch.setattr(registration, "chain", late_chain)
+            patch.setattr(registration_v3, "chain", late_chain)
             patch.setattr(base, "_read", late_read)
             record, = registration.read_inventory(controller)
         assert record["phase"] == "unknown" and record["reason"] == "invalid_or_unfinished_history"
@@ -115,7 +116,7 @@ async def test_valid_hash_chain_rejects_false_sqlite_identity_and_worker_claims(
         rewrite_events(owner._directory, events)
         owner._failed = True  # Preserve malformed evidence while original callbacks drain.
         with pytest.raises(RuntimeError, match="native_identity|plan"):
-            registration.chain(owner._directory)
+            registration_v3.chain(owner._directory)
         controller = decoder_authority_seam(owner, monkeypatch)
         record, = registration.read_inventory(controller)
         assert record["phase"] == "unknown" and "stores" not in record
@@ -140,7 +141,7 @@ async def test_valid_hash_chain_rejects_false_declared_plan_semantics(tmp_path, 
         rewrite_events(owner._directory, events)
         owner._failed = True
         with pytest.raises(RuntimeError, match="plan"):
-            registration.chain(owner._directory)
+            registration_v3.chain(owner._directory)
         record, = registration.read_inventory(decoder_authority_seam(owner, monkeypatch))
         assert record["phase"] == "unknown" and "stores" not in record
 
@@ -151,7 +152,7 @@ async def test_selected_disabled_worker_is_explicit_and_cannot_turn_into_sqlite_
         for producer in ("authority_sessions", "events", "suggestions"):
             plan = {"kind": "worker", "producer": producer, "role": "primary"}
             await owner._run(owner._append, producer, "disabled_never_opened", plan)
-        states = registration.chain(owner._directory)[2]
+        states = registration_v3.chain(owner._directory)[2]
         assert all(s["phase"] == "disabled_never_opened" and s["native_identity"] is None for s in states.values())
         assert not any(Path(config["analytics"]["events_db"]).parent.glob("*.db"))
         events = observations(owner)
@@ -159,7 +160,7 @@ async def test_selected_disabled_worker_is_explicit_and_cannot_turn_into_sqlite_
         rewrite_events(owner._directory, events)
         owner._failed = True
         with pytest.raises(RuntimeError, match="owner_phase"):
-            registration.chain(owner._directory)
+            registration_v3.chain(owner._directory)
 
 
 def mutate_extent(path: Path, mutation: str) -> None:
@@ -351,7 +352,7 @@ async def test_metadata_failure_does_not_skip_original_dashboard_rotation_fences
         with actual_connect(store.path) as database:
             epoch = int(database.execute("SELECT value FROM auth_meta WHERE key='legacy_epoch'").fetchone()[0])
         assert epoch > previous
-        assert registration.chain(owner._directory)[2]["authority_sessions"]["phase"] == "active"
+        assert registration_v3.chain(owner._directory)[2]["authority_sessions"]["phase"] == "active"
 
 
 @pytest.mark.asyncio

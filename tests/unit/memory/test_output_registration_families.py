@@ -515,7 +515,7 @@ async def test_legacy_epoch_is_read_without_mutation_or_v2_promotion(tmp_path, m
         with pytest.raises(RuntimeError, match="header"):
             registration.chain(legacy)
         assert {p.name: p.read_bytes() for p in legacy.iterdir()} == before
-        assert base._chain(owner._directory)[0]["schema_version"] == 2
+        assert base._chain(owner._directory)[0]["schema_version"] == 3
 
 
 @pytest.mark.asyncio

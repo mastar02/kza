@@ -28,6 +28,7 @@ from src.dashboard.admin import register_admin_routes
 from src.dashboard.auth import COOKIE_NAME, DashboardPrincipal, require_admin, require_dashboard_access, require_dashboard_session, session_guard
 from src.dashboard.authority import DashboardAuthority
 from src.dashboard.native_work import ensure_admin_work
+from src.memory import output_registration_v2 as output_registration
 from src.reminders.reminder_store import ReminderScope
 from src.dashboard.home_api import (
     LegacyHomeActionBody, execute_home_action, register_home_frontend, register_home_routes,
@@ -1105,6 +1106,11 @@ class DashboardAPI:
                 serving = None
 
             async def finish():
+                observed = output_registration.account_publisher(self)
+                if observed is not None:
+                    # Publish the original _stop_task identity first, even under
+                    # an eager task factory, before its completion observation.
+                    await asyncio.sleep(0)
                 async with AsyncExitStack() as closing:
                     closing.push_async_callback(self.app.state.observability_monitors.aclose)
                     if self._owns_home_catalog:
@@ -1112,6 +1118,9 @@ class DashboardAPI:
                     await asyncio.shield(native_drain)
                     if serving is not None:
                         await asyncio.shield(serving)
+                if observed is not None:
+                    # Only after the whole original stack exited successfully.
+                    await observed.account_publisher_drained(self)
 
             self._stop_task = asyncio.create_task(finish(), context=Context())
         stopping = self._stop_task

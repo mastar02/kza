@@ -294,6 +294,9 @@ class OwnedBlockingWork:
         self._native_executions: dict[int, _NativeState] = {}
         self._native_preflight_owner: object | None = None
         self._native_preflight: Callable[[NativeExecution], None] | None = None
+        # Exact admitted coroutine function per retained sequence task; never
+        # its arguments. Cleared by the original finished callback.
+        self._sequence_functions: dict[asyncio.Task, Callable] = {}
 
     def _install_native_preflight(
         self, owner: object, callback: Callable[[NativeExecution], None],
@@ -388,6 +391,7 @@ class OwnedBlockingWork:
 
             def finished(done):
                 self._tasks.discard(done)
+                self._sequence_functions.pop(done, None)
                 observation = self._timings.pop(done, None)
                 if observation is not None:
                     self._history.append(observation.snapshot(time.monotonic()))
@@ -395,10 +399,27 @@ class OwnedBlockingWork:
                     done.exception()
 
             task.add_done_callback(finished, context=Context())
+            if asynchronous:
+                try:
+                    # _execute_async yields before entering ``function``, so a
+                    # failed observation can still stop the retained task.
+                    self._sequence_functions[task] = function
+                except BaseException:
+                    task.cancel()
+                    raise
             return task
         finally:
             operation = task = function = None
             args, kwargs = (), {}
+
+    def _retained_sequence_function(self, task: asyncio.Task) -> Callable | None:
+        """Observe the exact function admitted for a still-retained live sequence.
+
+        This is provenance only, never a permission or dispatch token.
+        """
+        if task not in self._tasks or task.done():
+            return None
+        return self._sequence_functions.get(task)
 
     async def run_async(self, function: Callable, *args, **kwargs) -> object:
         """Retain one bounded async sequence through observer cancellation and close."""

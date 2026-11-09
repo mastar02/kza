@@ -24,6 +24,7 @@ from src.core.owned_work import OwnedBlockingWork
 from src.dashboard.native_work import (
     NativeAuthorityRetired, ensure_admin_work, require_current, run_admin_sequence, run_admin_work,
 )
+from src.memory import output_registration_v2 as output_registration
 from src.memory.producer_context import model_admission
 
 from src.dashboard.auth import (
@@ -46,6 +47,7 @@ async def _delete_account(work, current, authority, actor, user_manager, user_id
     """Retain retirement and catalog commit together through observer cancellation."""
     retired: bool | None = False
     validator = partial(require_current, current)
+    step = None
     try:
         check = await work.native_step(user_manager.check_removal, user_id, before_read=validator)
         if check.status is not RemovalStatus.ALLOWED:
@@ -61,7 +63,12 @@ async def _delete_account(work, current, authority, actor, user_manager, user_id
         if voice_registry is not None:
             await voice_registry.acall(voice_registry.ledger.people.clear_user_links,
                                       frozenset({user_id}),authority.users_retired)
-        deleted, message = await work.native_step(user_manager.remove_user, user_id, before_save=validator)
+        step = output_registration.account_delete_step(work, user_manager, user_id, validator)
+        try:
+            deleted, message = await work.native_step(user_manager.remove_user, user_id, before_save=validator)
+        finally:
+            if step is not None:
+                step.release()
         if not deleted:
             raise HTTPException(409, {"code": "user_catalog_changed", "credentials_retired": True})
         return {"ok": True, "message": message}
@@ -72,7 +79,7 @@ async def _delete_account(work, current, authority, actor, user_manager, user_id
         raise HTTPException(503, {"code": "user_catalog_unavailable",
                                   "credentials_retired": retired}) from error
     finally:
-        work = current = authority = actor = user_manager = voice_registry = validator = None
+        work = current = authority = actor = user_manager = voice_registry = validator = step = None
         user_id = None
 
 

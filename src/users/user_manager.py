@@ -15,10 +15,12 @@ from copy import deepcopy
 import json
 import logging
 import os
+import stat
 import tempfile
 import time
 from dataclasses import dataclass, field
 from enum import IntEnum
+from io import BufferedWriter, FileIO, TextIOWrapper, text_encoding
 from pathlib import Path
 from threading import RLock
 from typing import TypeVar
@@ -27,6 +29,7 @@ from uuid import uuid4
 import numpy as np
 
 from src.core.account_metadata import AccountMetadata, ActiveAccounts, RemovalCheck, RemovalStatus
+from src.memory import output_registration_v2 as output_registration
 
 
 _CatalogResult = TypeVar("_CatalogResult")
@@ -256,13 +259,37 @@ class UserManager:
                 data["schema"] = "kza-users-accounts-v1"
                 for row in data["users"]:
                     row["voice_embedding"] = None
-            self.data_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            descriptor, temporary = tempfile.mkstemp(prefix=".accounts-", dir=self.data_path.parent)
+            # A managed publisher is admitted (and its extent reserved) before
+            # any directory or temporary allocation; unmanaged use returns None.
+            extent = output_registration.before_account_save(self, before_save)
+            temporary = own = parent = final = None
+            published = False
             try:
-                with os.fdopen(descriptor, "w") as stream:
+                self.data_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                parent = self._directory_identity(self.data_path.parent)
+                descriptor, temporary = tempfile.mkstemp(prefix=".accounts-", dir=self.data_path.parent)
+                try:
+                    raw = FileIO(descriptor, "w", closefd=True)
+                except BaseException:
+                    # Not transferred: this publisher still owns the raw descriptor.
+                    own = self._close_raw_descriptor(descriptor)
+                    raise
+                # From here the FileIO object owns the descriptor; never os.close it.
+                try:
+                    # Same text semantics as the original os.fdopen(descriptor, "w").
+                    stream = TextIOWrapper(BufferedWriter(raw), encoding=text_encoding(None))
+                except BaseException:
+                    own = self._close_raw_file(raw)
+                    raise
+                finally:
+                    raw = None
+                with stream:
+                    # From here only the original file object closes the descriptor.
+                    own = self._owned_identity(stream)
                     json.dump(data, stream, indent=2)
                     stream.flush()
                     os.fsync(stream.fileno())
+                    final = self._owned_final(stream, own)
                 self._check_authority(before_save)
                 if retired and (self._retirement_proof is None or self._retirement_proof(retired) is not True):
                     raise PermissionError("account_retirement_required")
@@ -273,14 +300,88 @@ class UserManager:
                         cleared = False
                     if cleared is not True:
                         raise PermissionError("account_voice_links_retirement_required")
+                if extent is not None:
+                    extent.before_replace(temporary, own, parent, final)
                 self._check_authority(before_save)
                 os.replace(temporary, self.data_path)
                 # Approved replacement must publish without another fallible check.
                 self._users, self._account_snapshot = candidate, snapshot
                 self._version = snapshot.revision
+                published = True
+                if extent is not None:
+                    extent.replaced(own, parent)
             finally:
-                if os.path.exists(temporary):
-                    os.unlink(temporary)
+                proven = False
+                try:
+                    proven = temporary is None or self._remove_own_temporary(temporary, own, parent)
+                finally:
+                    if extent is not None:
+                        extent.finish(published=published, cleanup_proven=proven)
+
+    @staticmethod
+    def _directory_identity(path: Path) -> tuple[int, int] | None:
+        info = os.lstat(path)
+        return (info.st_dev, info.st_ino) if stat.S_ISDIR(info.st_mode) else None
+
+    @staticmethod
+    def _close_raw_descriptor(descriptor: int) -> tuple[int, int] | None:
+        """Observe, then close exactly once, a raw descriptor still owned by _save."""
+        own = None
+        try:
+            info = os.fstat(descriptor)
+            if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                own = (info.st_dev, info.st_ino)
+        except OSError:
+            own = None
+        finally:
+            # A close failure leaves the name unproven; never retry a reusable fd.
+            os.close(descriptor)
+        return own
+
+    @staticmethod
+    def _close_raw_file(raw: FileIO) -> tuple[int, int] | None:
+        """Observe, then close through its owning FileIO, a not yet wrapped file."""
+        own = None
+        try:
+            info = os.fstat(raw.fileno())
+            if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                own = (info.st_dev, info.st_ino)
+        except OSError:
+            own = None
+        finally:
+            raw.close()
+        return own
+
+    @staticmethod
+    def _owned_identity(stream) -> tuple[int, int]:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise OSError("account_temporary_changed")
+        return info.st_dev, info.st_ino
+
+    @staticmethod
+    def _owned_final(stream, own: tuple[int, int]) -> tuple[int, int]:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or (info.st_dev, info.st_ino) != own):
+            raise OSError("account_temporary_changed")
+        return info.st_size, info.st_mtime_ns
+
+    @classmethod
+    def _remove_own_temporary(cls, temporary: str, own: tuple[int, int] | None,
+                              parent: tuple[int, int] | None) -> bool:
+        """Unlink only the exact own allocation; a foreign or unproven name stays."""
+        try:
+            info = os.lstat(temporary)
+        except FileNotFoundError:
+            return True
+        if (own is None or parent is None or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or (info.st_dev, info.st_ino) != own
+                or cls._directory_identity(Path(temporary).parent) != parent):
+            logger.warning("Account temporary cleanup unproven; name retained")
+            return False
+        os.unlink(temporary)
+        return True
 
     # ==================== CRUD ====================
 
@@ -341,6 +442,7 @@ class UserManager:
     def remove_user(self, user_id: str, requesting_user: User | None = None, *,
                     before_save: Callable[[], None] | None = None) -> tuple[bool, str]:
         """Delete a catalog row only after durable credential retirement."""
+        output_registration.before_account_remove(self, user_id, requesting_user, before_save)
         def edit(users):
             result = self._removal_check(users, user_id, requesting_user)
             if result.status is not RemovalStatus.ALLOWED:

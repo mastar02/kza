@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 from contextvars import Context, ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 import os
@@ -478,12 +478,41 @@ def chain(directory: Path) -> tuple[dict, dict, dict, int]:
     return header, head, states, total
 
 
+@dataclass(frozen=True, eq=False)
+class _JournalFormat:
+    """Fixed private journal encoding policy; never a coordinator or authority."""
+    schema_version: int
+    namespace_name: str
+    known_versions: frozenset
+    selected_producers: frozenset
+    decode_chain: Callable
+
+    def __reduce_ex__(self, protocol: int):
+        raise TypeError("output_journal_format_not_serializable")
+
+
+V2_FORMAT = _JournalFormat(schema_version=2, namespace_name="v2", known_versions=frozenset({"v1", "v2"}),
+                           selected_producers=_SELECTED, decode_chain=chain)
+
+
+def _known_format(value: object) -> _JournalFormat:
+    if value is V2_FORMAT:
+        return value
+    from src.memory.output_registration_v3 import V3_FORMAT
+    if value is not V3_FORMAT:
+        raise RuntimeError("output_registration_format")
+    return value
+
+
 class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
     """Observe five additional real owner families without taking their close."""
 
-    def __init__(self, admission: RuntimeAdmission, config: dict, *, key: object) -> None:
+    def __init__(self, admission: RuntimeAdmission, config: dict, *, key: object,
+                 journal_format: _JournalFormat | None = None) -> None:
         super().__init__(admission, config, key=key)
-        self._directory = self._directory.parents[2] / "v2/runs" / admission._ticket["run_id"]
+        self._format = _known_format(V2_FORMAT if journal_format is None else journal_format)
+        self._directory = (self._directory.parents[2] / self._format.namespace_name / "runs"
+                           / admission._ticket["run_id"])
         self._namespace = self._directory.parents[2]
         self._roles: dict[str, _Owner] = {}
         self._by_instance: dict[int, _Owner] = {}
@@ -507,6 +536,12 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                           "events": bool(config.get("analytics", {}).get("enabled", True)),
                           "suggestions": bool(config.get("analytics", {}).get("enabled", True)),
                           "privacy_authority": True, "routines": True}
+        self._accounts: _AccountPublisher | None = None
+        self._accounts_disabled = False
+        self._accounts_disabled_manager: object | None = None
+        if self._format.schema_version == 3:
+            self._expected["accounts"] = os.fspath(config.get("speaker_id", {}).get("users_path", "./data/users.json"))
+            self._selected["accounts"] = self._selected["authority_sessions"]
 
     def _current(self) -> None:
         # Metadata carries no opening grant. Full validation is performed at
@@ -516,7 +551,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         self._current_pins()
         if self._namespace.exists():
             for version in self._namespace.iterdir():
-                base._require(version.name in {"v1", "v2"} and version.is_dir()
+                base._require(version.name in self._format.known_versions and version.is_dir()
                     and (version / "runs").is_dir(), "unsupported_version")
 
     async def register_store(self, store: ListStore | ReminderStore, producer: str) -> base.DestinationRegistration:
@@ -536,6 +571,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         roles = tuple(self._roles.values())
         allowed = tuple(binding for binding in roles
             if binding.work is execution.work and self._call_allowed(binding, execution))
+        allowed += self._account_owners(execution)
         final = tuple(binding for binding in roles
             if binding.final_work is execution.work and self._call_allowed(binding, execution)
             and execution.parent_sequence is binding.final_sequence
@@ -585,9 +621,9 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             size = _namespace(self._namespace, reserve_entries=6)
             if self._namespace.exists():
                 for version in self._namespace.iterdir():
-                    base._require(version.name in {"v1", "v2"} and version.is_dir() and (version / "runs").is_dir(), "unsupported_version")
+                    base._require(version.name in self._format.known_versions and version.is_dir() and (version / "runs").is_dir(), "unsupported_version")
                     base._require(not (version / "runs" / ticket["run_id"]).exists(), "run_exists")
-            header = {"schema_version": 2, "run_id": ticket["run_id"], "generation": ticket["generation"],
+            header = {"schema_version": self._format.schema_version, "run_id": ticket["run_id"], "generation": ticket["generation"],
                       "binding_id": ticket["binding_id"], "config_sha256": self.admission._config_digest,
                       "state_root": str(self.admission.state_root), "state_identity": base._identity(self.admission.state_root),
                       "namespace_identity": {"device": 2**64 - 1, "inode": 2**64 - 1},
@@ -595,7 +631,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             raw = base._encoded(header)
             reservation = len(raw) + 2 * len(base._encoded({"revision": 0, "sha256": "0"*64}))
             base._require(reservation <= base.MAX_RUN_BYTES and size + reservation <= base.MAX_TOTAL_BYTES, "capacity")
-            for part in ("output-inventory", "v2", "runs", ticket["run_id"]):
+            for part in ("output-inventory", self._format.namespace_name, "runs", ticket["run_id"]):
                 child = root / part
                 if not child.exists():
                     child.mkdir(mode=0o700)
@@ -613,7 +649,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
     def _record(self, value: dict) -> None:
         with self._lock:
             self._current()
-            _, head, _, size = chain(self._directory)
+            _, head, _, size = self._format.decode_chain(self._directory)
             value = dict(value, revision=head["revision"] + 1, previous_sha256=head["sha256"])
             raw = base._encoded(value)
             digest = base._sha(raw)
@@ -626,7 +662,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
 
     def _append(self, producer, phase, plan):
         with self._lock:
-            _, _, states, _ = chain(self._directory)
+            _, _, states, _ = self._format.decode_chain(self._directory)
             prior = states.get(producer)
             base._require(phase in _PHASES and (None if prior is None else prior["phase"]) in _PHASES[phase], "transition")
             native = None
@@ -1113,9 +1149,20 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                 self._failed = True
                 raise
 
-    async def composed(self) -> None:
+    async def composed(self, graph: object | None = None) -> None:
         self._live()
+        if graph is not None and "accounts" in self._selected:
+            # Re-pin the composed public graph to the exact attached account owner.
+            manager = self._accounts.manager if self._accounts is not None else self._accounts_disabled_manager
+            if manager is None or getattr(graph, "user_manager", None) is not manager:
+                _reject("account_owner", self)
         for producer, selected in self._selected.items():
+            if producer == "accounts":
+                publisher = self._accounts
+                if (selected and (publisher is None or publisher.phase not in {"attached", "opening"})
+                        or not selected and (publisher is not None or not self._accounts_disabled)):
+                    _reject("composition_incomplete", self)
+                continue
             binding = self._roles.get(producer)
             if not selected:
                 if binding is not None:
@@ -1132,21 +1179,165 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         for key in ("lists", "reminders"):
             if key not in self._handles:
                 _reject("composition_incomplete", self)
-        await self._run(self._record, {"kind": "composition", "instrumented": sorted(_SELECTED),
+        await self._run(self._record, {"kind": "composition", "instrumented": sorted(self._format.selected_producers),
             "global_inventory_complete": False, "aggregate_copy_complete": False})
+
+    # ------------------------------------------------------------------
+    # V3 account publisher: the original UserManager atomic JSON writer,
+    # observed through the original DashboardAPI.admin_work owner.
+    # ------------------------------------------------------------------
+
+    async def attach_accounts(self, manager: object, dashboard: object) -> None:
+        """Bind the exact dashboard publisher before serving; never take its close."""
+        from src.users.user_manager import UserManager
+        from src.dashboard.api import DashboardAPI
+        work = getattr(dashboard, "admin_work", None)
+        if (self._format.schema_version != 3 or self._selected.get("accounts") is not True
+                or self._accounts is not None or self._accounts_disabled
+                or type(manager) is not UserManager or type(dashboard) is not DashboardAPI
+                or dashboard.user_manager is not manager or manager.voice_review_managed is not True
+                or work is None or getattr(dashboard.app.state, "dashboard_admin_work", None) is not work):
+            _reject("account_owner", self)
+        if str(Path(manager.legacy_path).absolute()) != str(Path(self._expected["accounts"]).absolute()):
+            _reject("configured_path", self)
+        publisher = _AccountPublisher(manager, dashboard, work)
+        # Retain the exact publisher and install the observer before any await.
+        self._accounts = publisher
+        manager._output_coordinator = self
+        work._install_native_preflight(self, self._preflight)
+        from src.memory.output_registration_v3 import account_plan
+        await self._run(self.admission.revalidate)
+        plan = await self._run(account_plan, manager.data_path, manager.legacy_path, manager.legacy_path,
+                               self.admission.state_root)
+        await self._run(self._append_account, "intent", plan)
+        await self._run(self._append_account, "attached", plan)
+        publisher.plan, publisher.expected_identity = plan, plan["initial_identity"]
+        publisher.phase = "attached"
+
+    async def accounts_disabled(self, manager: object) -> None:
+        """Record an existing but unselected publisher; no worker or absence claim."""
+        from src.users.user_manager import UserManager
+        if (self._format.schema_version != 3 or self._selected.get("accounts") is not False
+                or self._accounts is not None or self._accounts_disabled or type(manager) is not UserManager):
+            _reject("account_owner", self)
+        if str(Path(manager.legacy_path).absolute()) != str(Path(self._expected["accounts"]).absolute()):
+            _reject("configured_path", self)
+
+        def publish() -> None:
+            from src.memory.output_registration_v3 import account_event_shape
+            with self._lock:
+                _, _, states, _ = self._format.decode_chain(self._directory)
+                event = {"kind": "account_publisher", "phase": "disabled",
+                         "configured_path": str(Path(manager.legacy_path).absolute()),
+                         "path": str(Path(manager.data_path).absolute().resolve(strict=False))}
+                account_event_shape(event, states.get("accounts"), False, self.admission.state_root)
+                self._record(event)
+        await self._run(publish)
+        self._accounts_disabled = True
+        self._accounts_disabled_manager = manager
+
+    def _append_account(self, phase: str, plan: dict, aggregate: dict | None = None) -> None:
+        from src.memory.output_registration_v3 import account_event_shape
+        with self._lock:
+            _, _, states, _ = self._format.decode_chain(self._directory)
+            event = {"kind": "account_publisher", "phase": phase, "plan": plan}
+            if aggregate is not None:
+                event["aggregate"] = aggregate
+            account_event_shape(event, states.get("accounts"), self._selected.get("accounts"),
+                                self.admission.state_root)
+            self._record(event)
+
+    def _account_physical(self, publisher: _AccountPublisher, manager: object) -> None:
+        """Cooperative gate: exact canonical leaf and its current own generation."""
+        plan = publisher.plan
+        try:
+            supplied = Path(manager.data_path)
+            base._require(plan is not None and not supplied.is_symlink()
+                and str(supplied.absolute().resolve(strict=False)) == plan["path"], "destination_changed")
+            base._require(base._directory(Path(plan["ancestor"])) == plan["parent_identity"], "destination_changed")
+            try:
+                info = supplied.lstat()
+            except FileNotFoundError:
+                base._require(publisher.expected_identity is None, "destination_changed")
+            else:
+                base._require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                    and {"device": info.st_dev, "inode": info.st_ino} == publisher.expected_identity, "destination_changed")
+        except (OSError, RuntimeError, ValueError):
+            _reject("destination_changed", self)
+
+    def _account_owners(self, execution: object) -> tuple:
+        """Recognize only an installed exact account invocation or delete step."""
+        publisher = self._accounts
+        if publisher is None or execution.work is not publisher.work:
+            return ()
+        from src.dashboard.native_work import _invoke_admin
+        from src.users.user_manager import UserManager
+        with self._dispatch_lock:
+            invocation = publisher.invocations.get(execution)
+            if invocation is not None:
+                if execution.function is not _invoke_admin or invocation.admitted:
+                    return ()
+                invocation.admitted = True
+                return (publisher,)
+            parent = execution.parent_sequence
+            step = None if parent is None else publisher.steps.get(parent)
+            function = execution.function
+            if (step is None or step.execution is not None
+                    or getattr(function, "__self__", None) is not publisher.manager
+                    or getattr(function, "__func__", None) is not UserManager.remove_user
+                    or not _delete_sequence(publisher, parent)):
+                return ()
+            step.execution = execution
+            return (publisher,)
+
+    async def account_publisher_drained(self, dashboard: object) -> None:
+        """Called by the original DashboardAPI.stop task after its stack exited."""
+        publisher = self._accounts
+        if publisher is None or publisher.dashboard is not dashboard:
+            self._failed = True
+            return
+        if asyncio.current_task() is not dashboard._stop_task:
+            _reject("close_owner", self)
+        status = publisher.work.status()
+        if not status["closed"] or status["operations"] or publisher.active is not None:
+            _reject("native_close_pending", self)
+        if self._failed or publisher.uncertain or publisher.phase not in {"attached", "opening"}:
+            # A poisoned epoch keeps its original drain but never a clean terminal.
+            self._failed = True
+            return
+
+        def publish() -> None:
+            self._account_physical(publisher, publisher.manager)
+            aggregate = {"attempts": publisher.attempts, "committed_replacements": publisher.committed,
+                         "clean_failed_attempts": publisher.clean_failed,
+                         "last_committed_identity": publisher.expected_identity,
+                         "native_drain_returned": True, "open_temp_count": 0, "cleanup_uncertain": False}
+            self._append_account("drained", publisher.plan, aggregate)
+        await self._run(publish)
+        publisher.phase = "drained"
 
     async def aclose(self) -> None:
         if self._closing is None:
             async def finish():
                 tasks = {getattr(h.store, "_closing", None) for h, _ in self._handles.values()}
+                publisher = self._accounts
+                if publisher is not None:
+                    # Observe the exact original DashboardAPI.stop owner; never call it.
+                    tasks.add(publisher.dashboard._stop_task)
                 try:
                     await asyncio.gather(*(asyncio.shield(t) for t in tasks if t is not None))
                     if self._open_extents or self._opening_extents:
                         _reject("native_close_pending", self)
+                    if publisher is not None and (publisher.dashboard._stop_task is None or publisher.active is not None):
+                        _reject("native_close_pending", self)
                     if not self._failed:
-                        _, _, states, _ = await self._run(chain, self._directory)
+                        _, _, states, _ = await self._run(self._format.decode_chain, self._directory)
                         for key in self._handles:
                             base._require(states.get(key, {}).get("phase") in {"closed", "native_failed_then_actually_closed"}, "epoch_incomplete")
+                        if publisher is not None:
+                            base._require(states.get("accounts", {}).get("phase") == "drained", "epoch_incomplete")
+                        if self._accounts_disabled:
+                            base._require(states.get("accounts", {}).get("phase") == "disabled", "epoch_incomplete")
                 finally:
                     await self._disk.aclose()
                 base._require(not self._failed, "epoch_incomplete")
@@ -1441,8 +1632,10 @@ def read_inventory(controller: object) -> tuple[dict, ...]:
     _namespace(namespace)
     versions = sorted(namespace.iterdir())
     results, seen = [], {}
+    from src.memory.output_registration_v3 import chain as chain_v3
+    decoders = {"v1": base._chain_v1, "v2": chain, "v3": chain_v3}
     for version in versions:
-        if version.name not in {"v1", "v2"} or not version.is_dir() or not (version / "runs").is_dir():
+        if version.name not in decoders or not version.is_dir() or not (version / "runs").is_dir():
             results.append({"version": version.name, "phase": "unknown", "reason": "unsupported_version",
                 "capability": False, "global_inventory_complete": False, "aggregate_copy_complete": False})
             continue
@@ -1454,7 +1647,8 @@ def read_inventory(controller: object) -> tuple[dict, ...]:
                      "required_producers": list(base.PRODUCERS), "uncovered_producers": list(base.PRODUCERS)}
             recovered = {}
             try:
-                header, journal, states, _ = (base._chain_v1 if version.name == "v1" else chain)(directory)
+                decode = decoders[version.name]
+                header, journal, states, _ = decode(directory)
                 binding = stage.read_binding(root, header["binding_id"])
                 receipt = stage._read_json(root / "admission/receipts" / (header["run_id"] + ".json"))
                 base._require(binding["state_root"] == header["state_root"] and binding["state_identity"] == header["state_identity"]
@@ -1470,9 +1664,10 @@ def read_inventory(controller: object) -> tuple[dict, ...]:
                 if version.name == "v1":
                     recovered["uncovered_producers"] = [p for p in base.PRODUCERS if p not in states or states[p]["phase"] != "closed"]
                 else:
-                    recovered["instrumented_producers"] = sorted({s["plan"]["producer"] for s in states.values()})
+                    recovered["instrumented_producers"] = sorted({s.get("producer") or s["plan"]["producer"] for s in states.values()})
                     recovered["uncovered_producers"] = [p for p in base.PRODUCERS if p not in {"lists", "reminders"} or states.get(p, {}).get("phase") != "closed"]
-                    recovered["partial_producers"] = [p for p in sorted(_SELECTED - {"lists", "reminders"})]
+                    selected = _SELECTED | ({"accounts"} if version.name == "v3" else set())
+                    recovered["partial_producers"] = [p for p in sorted(selected - {"lists", "reminders"})]
                     material = []
                     for path in sorted(directory.iterdir()):
                         if re.fullmatch(r"\d{12}-[0-9a-f]{64}\.json", path.name):
@@ -1486,7 +1681,7 @@ def read_inventory(controller: object) -> tuple[dict, ...]:
                     delegated = [(event, _read_delegated_observation(stage, root, binding, event, policy_json))
                         for event in material if event["kind"] == "delegated_target"]
                     recovered["material_observations"] = tuple(material)
-                    base._require(chain(directory)[:3] == (header, journal, states), "journal_changed")
+                    base._require(decode(directory)[:3] == (header, journal, states), "journal_changed")
                     for event, observation in delegated:
                         base._require(_read_delegated_observation(stage, root, binding, event, policy_json) == observation, "authority_changed")
             except (ValueError, RuntimeError, OSError, KeyError, TypeError):
@@ -1645,9 +1840,9 @@ async def final_registry(privacy: object) -> None:
         "digest": snapshot.digest, "status": "final_observation", "target_count": len(snapshot.entries)})
 
 
-async def composed(coordinator: OutputRegistrationV2 | None) -> None:
+async def composed(coordinator: OutputRegistrationV2 | None, graph: object | None = None) -> None:
     if coordinator is not None:
-        await coordinator.composed()
+        await coordinator.composed(graph)
 
 
 async def initialize_owned(owner: object, work: object, function: Callable, *args: Any, **kwargs: Any) -> Any:
@@ -1685,3 +1880,358 @@ async def run_final_rotation(owner: object, work: object, args: tuple) -> Any:
         binding.final_sequence = asyncio.current_task()
         return await work.native_step(owner._transaction, "rotate", args, None)
     return await work.run_async(sequence)
+
+
+# ----------------------------------------------------------------------
+# Account publisher observations. Private provenance only: route session
+# guards and before_save remain the authority; nothing here grants it.
+# ----------------------------------------------------------------------
+
+@dataclass(eq=False)
+class _AccountPublisher:
+    manager: object
+    dashboard: object
+    work: object
+    phase: str = "waiting"
+    plan: dict | None = None
+    expected_identity: dict | None = None
+    attempts: int = 0
+    committed: int = 0
+    clean_failed: int = 0
+    uncertain: bool = False
+    active: object | None = None
+    # Consumed adapter entries: weak keys, no payload, pruned after task end.
+    entries: WeakKeyDictionary = field(default_factory=WeakKeyDictionary)
+    sequences: WeakKeyDictionary = field(default_factory=WeakKeyDictionary)
+    # Ephemeral payload observations; removed in the original adapter finally.
+    invocations: dict = field(default_factory=dict)
+    steps: dict = field(default_factory=dict)
+
+
+@dataclass(eq=False, slots=True)
+class _AccountInvocation:
+    execution: object
+    manager: object
+    function: object
+    current: object
+    args: tuple
+    kwargs: dict
+    admitted: bool = False
+    saves: int = 0
+
+    def __reduce_ex__(self, protocol: int):
+        raise TypeError("account_invocation_not_serializable")
+
+
+@dataclass(eq=False, slots=True)
+class _AccountSequence:
+    function: object
+    args: tuple | None
+
+
+@dataclass(eq=False, slots=True)
+class _DeleteStep:
+    manager: object
+    user_id: object
+    validator: object
+    execution: object | None = None
+    consumed: bool = False
+    saves: int = 0
+
+    def __reduce_ex__(self, protocol: int):
+        raise TypeError("account_step_not_serializable")
+
+
+def _prune_done(mapping: WeakKeyDictionary, task_of: Callable) -> None:
+    for key in tuple(mapping):
+        if task_of(key).done():
+            del mapping[key]
+
+
+def _publisher() -> tuple[OutputRegistrationV2 | None, _AccountPublisher | None]:
+    coordinator = _coordinator()
+    return coordinator, None if coordinator is None else coordinator._accounts
+
+
+def _delete_sequence(publisher: _AccountPublisher, task: asyncio.Task) -> bool:
+    from src.dashboard.admin import _delete_account
+    from src.dashboard.native_work import _invoke_admin_sequence
+    sequence = publisher.sequences.get(task)
+    return (sequence is not None and sequence.function is _delete_account and sequence.args is not None
+            and publisher.work._retained_sequence_function(task) is _invoke_admin_sequence)
+
+
+class _AdminEntry:
+    """One consumed _invoke_admin entry; carries payload only for a real mutator."""
+
+    __slots__ = ("coordinator", "publisher", "invocation")
+
+    def __init__(self, coordinator, publisher, invocation) -> None:
+        self.coordinator, self.publisher, self.invocation = coordinator, publisher, invocation
+
+    def admit(self) -> None:
+        """Run the sole full preflight after the original guard, outside catalog locks."""
+        if self.invocation is not None:
+            self.coordinator._preflight(self.invocation.execution)
+
+    def release(self) -> None:
+        invocation, publisher, coordinator = self.invocation, self.publisher, self.coordinator
+        self.coordinator = self.publisher = self.invocation = None
+        if invocation is None:
+            return
+        with coordinator._dispatch_lock:
+            if publisher.invocations.get(invocation.execution) is invocation:
+                del publisher.invocations[invocation.execution]
+        invocation.execution = invocation.manager = invocation.function = invocation.current = None
+        invocation.args, invocation.kwargs = (), {}
+
+
+def account_admin_entry(current: Callable, function: Callable, args: tuple, kwargs: dict) -> _AdminEntry | None:
+    """Consume the one adapter entry of the actual admin_work native invocation."""
+    coordinator, publisher = _publisher()
+    if publisher is None:
+        return None
+    execution = current_native_execution()
+    if execution is None or execution.work is not publisher.work:
+        return None
+    from src.dashboard.native_work import _invoke_admin
+    from src.users.user_manager import UserManager
+    invocation = None
+    with coordinator._dispatch_lock:
+        if execution.function is not _invoke_admin:
+            _reject("account_invocation", coordinator)
+        _prune_done(publisher.entries, lambda item: item.task)
+        if execution in publisher.entries:
+            _reject("account_invocation", coordinator)
+        if len(publisher.entries) >= _MAX_NATIVE_WITNESSES:
+            _reject("native_capacity", coordinator)
+        publisher.entries[execution] = True
+        if (getattr(function, "__self__", None) is publisher.manager
+                and getattr(function, "__func__", None) in (UserManager.add_user, UserManager.update_user)):
+            invocation = _AccountInvocation(execution, publisher.manager, function, current, args, kwargs)
+            publisher.invocations[execution] = invocation
+    return _AdminEntry(coordinator, publisher, invocation)
+
+
+class _SequenceEntry:
+    __slots__ = ("coordinator", "entry")
+
+    def __init__(self, coordinator, entry) -> None:
+        self.coordinator, self.entry = coordinator, entry
+
+    def release(self) -> None:
+        coordinator, entry = self.coordinator, self.entry
+        self.coordinator = self.entry = None
+        with coordinator._dispatch_lock:
+            # The consumed marker stays until the real task ends; payload does not.
+            entry.function, entry.args = None, None
+
+
+def account_admin_sequence(function: Callable, args: tuple) -> _SequenceEntry | None:
+    """Consume the one entry of the exact retained admin sequence task."""
+    coordinator, publisher = _publisher()
+    task = asyncio.current_task()
+    if publisher is None or task is None or task not in publisher.work._tasks:
+        return None
+    try:
+        reason, entry = _sequence_entry(coordinator, publisher, task, function, args)
+    finally:
+        # A refusal is stored by this very task: keep no frame -> task cycle.
+        task = function = args = publisher = None
+    if entry is None:
+        _reject(reason, coordinator)
+    return entry
+
+
+def _sequence_entry(coordinator, publisher, task, function, args) -> tuple[str, _SequenceEntry | None]:
+    from src.dashboard.admin import _delete_account
+    from src.dashboard.native_work import _invoke_admin_sequence
+    with coordinator._dispatch_lock:
+        if publisher.work._retained_sequence_function(task) is not _invoke_admin_sequence:
+            return "account_sequence", None
+        _prune_done(publisher.sequences, lambda item: item)
+        if task in publisher.sequences:
+            return "account_sequence", None
+        if len(publisher.sequences) >= _MAX_NATIVE_WITNESSES:
+            return "native_capacity", None
+        delete = function is _delete_account
+        entry = _AccountSequence(function if delete else None, args if delete else None)
+        publisher.sequences[task] = entry
+    return "", _SequenceEntry(coordinator, entry)
+
+
+class _StepEntry:
+    __slots__ = ("coordinator", "publisher", "task", "step")
+
+    def __init__(self, coordinator, publisher, task, step) -> None:
+        self.coordinator, self.publisher, self.task, self.step = coordinator, publisher, task, step
+
+    def release(self) -> None:
+        coordinator, publisher, task, step = self.coordinator, self.publisher, self.task, self.step
+        self.coordinator = self.publisher = self.task = self.step = None
+        with coordinator._dispatch_lock:
+            if publisher.steps.get(task) is step:
+                del publisher.steps[task]
+            step.manager = step.user_id = step.validator = step.execution = None
+
+
+def account_delete_step(work: object, manager: object, user_id: object, validator: object) -> _StepEntry | None:
+    """Observe the original remove_user native_step of the retained delete sequence."""
+    coordinator, publisher = _publisher()
+    if publisher is None or work is not publisher.work:
+        return None
+    task = asyncio.current_task()
+    try:
+        entry = _delete_step(coordinator, publisher, task, work, manager, user_id, validator)
+    finally:
+        task = work = manager = user_id = validator = publisher = None
+    if entry is None:
+        _reject("account_delete_step", coordinator)
+    return entry
+
+
+def _delete_step(coordinator, publisher, task, work, manager, user_id, validator) -> _StepEntry | None:
+    from functools import partial
+    from src.dashboard.native_work import require_current
+    with coordinator._dispatch_lock:
+        sequence = None if task is None else publisher.sequences.get(task)
+        arguments = None if sequence is None else sequence.args
+        if (task is None or not _delete_sequence(publisher, task) or task in publisher.steps
+                or manager is not publisher.manager or arguments is None or len(arguments) != 7
+                or arguments[0] is not work or arguments[4] is not manager or arguments[5] is not user_id
+                or type(validator) is not partial or validator.func is not require_current
+                or len(validator.args) != 1 or validator.args[0] is not arguments[1] or validator.keywords):
+            return None
+        step = _DeleteStep(manager, user_id, validator)
+        publisher.steps[task] = step
+    return _StepEntry(coordinator, publisher, task, step)
+
+
+def before_account_remove(manager: object, user_id: object, requesting_user: object, before_save: object) -> None:
+    """Compare actual remove_user locals with the pending original step; no authority."""
+    coordinator = _coordinator(manager)
+    publisher = None if coordinator is None else coordinator._accounts
+    if publisher is None or publisher.manager is not manager:
+        return
+    execution = current_native_execution()
+    if execution is None:
+        return
+    with coordinator._dispatch_lock:
+        step = next((item for item in publisher.steps.values() if item.execution is execution), None)
+        if step is None:
+            return
+        if (step.consumed or user_id is not step.user_id or requesting_user is not None
+                or before_save is not step.validator):
+            _reject("account_delete_step", coordinator)
+        step.consumed = True
+
+
+def _directory_pair(path: Path) -> tuple | None:
+    info = os.lstat(path)
+    return (info.st_dev, info.st_ino) if stat.S_ISDIR(info.st_mode) else None
+
+
+class _AccountSave:
+    """Bounded in-memory extent of one original UserManager._save attempt."""
+
+    __slots__ = ("coordinator", "publisher", "execution", "confirmed")
+
+    def __init__(self, coordinator, publisher, execution) -> None:
+        self.coordinator, self.publisher, self.execution = coordinator, publisher, execution
+        self.confirmed = False
+
+    def before_replace(self, temporary: str, own: tuple | None, parent: tuple | None, final: tuple | None) -> None:
+        """Recheck live execution, destination generation and the own temp inode."""
+        coordinator, publisher = self.coordinator, self.publisher
+        try:
+            coordinator._dispatch(publisher, self.execution)
+            coordinator._account_physical(publisher, publisher.manager)
+            info = os.lstat(temporary)
+            base._require(own is not None and final is not None and parent is not None
+                and stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                and (info.st_dev, info.st_ino) == own and (info.st_size, info.st_mtime_ns) == final
+                and _directory_pair(Path(temporary).parent) == parent, "temporary_changed")
+        except (OSError, RuntimeError, ValueError):
+            coordinator._failed = True
+            raise OutputRegistrationError("output_registration_temporary_changed") from None
+
+    def replaced(self, own: tuple, parent: tuple | None) -> None:
+        """After original RAM publication: join the destination to the own temp inode."""
+        coordinator, publisher = self.coordinator, self.publisher
+        try:
+            info = os.lstat(publisher.manager.data_path)
+            base._require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                and (info.st_dev, info.st_ino) == own
+                and _directory_pair(Path(publisher.manager.data_path).parent) == parent, "destination_changed")
+        except (OSError, RuntimeError, ValueError):
+            publisher.uncertain = True
+            coordinator._failed = True
+            raise OutputRegistrationError("output_registration_destination_changed") from None
+        publisher.expected_identity = {"device": own[0], "inode": own[1]}
+        publisher.committed += 1
+        self.confirmed = True
+
+    def finish(self, *, published: bool, cleanup_proven: bool) -> None:
+        """Release the extent; unproven cleanup or unconfirmed publication poisons."""
+        coordinator, publisher = self.coordinator, self.publisher
+        with coordinator._dispatch_lock:
+            if publisher.active is self:
+                publisher.active = None
+            if not self.confirmed:
+                if published or not cleanup_proven:
+                    publisher.uncertain = True
+                    coordinator._failed = True
+                else:
+                    publisher.clean_failed += 1
+        self.coordinator = self.publisher = self.execution = None
+
+
+def before_account_save(manager: object, before_save: object) -> _AccountSave | None:
+    """Admit one observed managed save before mkdir/mkstemp; None when unmanaged."""
+    coordinator = _coordinator(manager)
+    if coordinator is None:
+        _unmanaged_path(manager.data_path)
+        return None
+    from src.memory.output_registration_v3 import MAX_ACCOUNT_COUNT
+    publisher = coordinator._accounts
+    execution = current_native_execution()
+    try:
+        if (publisher is None or publisher.manager is not manager or execution is None
+                or publisher.phase not in {"attached", "opening"}):
+            _reject("account_publisher", coordinator)
+        with coordinator._dispatch_lock:
+            record = publisher.invocations.get(execution)
+            if record is not None:
+                allowed = (record.admitted and record.manager is manager
+                           and record.kwargs.get("before_save") is before_save)
+            else:
+                record = next((item for item in publisher.steps.values() if item.execution is execution), None)
+                allowed = record is not None and record.consumed and record.validator is before_save
+            if not allowed or record.saves:
+                _reject("account_invocation", coordinator)
+            if publisher.active is not None or publisher.uncertain:
+                _reject("native_capacity", coordinator)
+            if publisher.attempts >= MAX_ACCOUNT_COUNT:
+                _reject("capacity", coordinator)
+            record.saves = 1
+        coordinator._dispatch(publisher, execution)
+        coordinator._account_physical(publisher, manager)
+        if publisher.phase == "attached":
+            coordinator._append_account("opening", publisher.plan)
+            publisher.phase = "opening"
+        extent = _AccountSave(coordinator, publisher, execution)
+        with coordinator._dispatch_lock:
+            publisher.active = extent
+            publisher.attempts += 1
+        return extent
+    except BaseException:
+        coordinator._failed = True
+        raise
+
+
+def account_publisher(dashboard: object) -> OutputRegistrationV2 | None:
+    """Return the coordinator observing this exact dashboard's publisher, if any."""
+    manager = getattr(dashboard, "user_manager", None)
+    coordinator = None if manager is None else _coordinator(manager)
+    publisher = None if coordinator is None else coordinator._accounts
+    return coordinator if publisher is not None and publisher.dashboard is dashboard else None

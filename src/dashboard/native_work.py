@@ -7,6 +7,7 @@ from functools import partial
 from fastapi import FastAPI
 
 from src.core.owned_work import OwnedBlockingWork
+from src.memory import output_registration_v2 as output_registration
 
 
 class NativeAuthorityRetired(PermissionError):
@@ -21,11 +22,18 @@ def require_current(current: Callable[[], bool]) -> None:
 
 def _invoke_admin(current: Callable[[], bool], function: Callable, args: tuple, kwargs: dict):
     """Release private inputs from failed worker tracebacks after completion."""
+    observed = None
     try:
+        # Consume this invocation's one adapter entry with the exact originals.
+        observed = output_registration.account_admin_entry(current, function, args, kwargs)
         require_current(current)
+        if observed is not None:
+            observed.admit()
         return function(*args, **kwargs)
     finally:
-        current = function = None
+        if observed is not None:
+            observed.release()
+        current = function = observed = None
         args, kwargs = (), {}
 
 
@@ -42,11 +50,15 @@ async def run_admin_work(owner: OwnedBlockingWork, current: Callable[[], bool],
 async def _invoke_admin_sequence(current: Callable[[], bool], function: Callable,
                                  args: tuple, kwargs: dict):
     """Retain only detached inputs through the complete admitted sequence."""
+    observed = None
     try:
+        observed = output_registration.account_admin_sequence(function, args)
         require_current(current)
         return await function(*args, **kwargs)
     finally:
-        current = function = None
+        if observed is not None:
+            observed.release()
+        current = function = observed = None
         args, kwargs = (), {}
 
 

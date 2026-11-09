@@ -251,6 +251,9 @@ def _chain(directory):
     if header.get("schema_version") == 2:
         from src.memory.output_registration_v2 import chain
         return chain(directory)
+    if header.get("schema_version") == 3:
+        from src.memory.output_registration_v3 import chain as chain_v3
+        return chain_v3(directory)
     raise RuntimeError("output_registration_schema")
 
 
@@ -496,7 +499,9 @@ async def begin_registration(
         and _config_digest(config) == admission._config_digest, "actual_admission")
     admission.revalidate()
     from src.memory.output_registration_v2 import OutputRegistrationV2
-    coordinator = OutputRegistrationV2(admission, config, key=_KEY)
+    from src.memory.output_registration_v3 import V3_FORMAT
+    # New production runs write the reviewed V3 grammar; explicit V2 clients keep V2.
+    coordinator = OutputRegistrationV2(admission, config, key=_KEY, journal_format=V3_FORMAT)
     admission._output_registration = coordinator
     _ACTIVE.add(coordinator)
     shutdown.push_async_callback(coordinator.aclose)
@@ -537,6 +542,6 @@ async def store_close_returned(store: ListStore | ReminderStore) -> None:
 
 
 def read_output_inventory(controller: object) -> tuple[dict, ...]:
-    """Recover immutable v1 and v2 observations without cross-version promotion."""
+    """Recover immutable v1, v2 and v3 observations without cross-version promotion."""
     from src.memory.output_registration_v2 import read_inventory
     return read_inventory(controller)

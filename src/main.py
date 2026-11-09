@@ -1837,7 +1837,13 @@ async def build_application(
         )
         speaker_models.add_borrower(dashboard.admin_work.begin_close)
         shutdown.push_async_callback(dashboard.stop)
+        if destination_registration is not None:
+            # Original stop is installed first; attachment failure still drains it.
+            await destination_registration.attach_accounts(user_manager, dashboard)
         logger.info(f"Dashboard API configured on {dashboard_config.get('host', '127.0.0.1')}:{dashboard_config.get('port', 9500)}")
+    elif destination_registration is not None:
+        # The real manager still read/imports accounts; no managed writer exists.
+        await destination_registration.accounts_disabled(user_manager)
 
     # ----------------------------------------------------------------
     # Nightly Training (habit learning + QLoRA)
@@ -1946,7 +1952,7 @@ async def build_application(
     shutdown.push_async_callback(graph.producer_erasure.aclose)
     if configuration_changes is not None:
         configuration_changes.attach_graph(graph)
-    await output_registration.composed(destination_registration)
+    await output_registration.composed(destination_registration, graph)
     if admission is not None:
         admission.attach_graph(graph)
         await admission.revalidate_constructed()
