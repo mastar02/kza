@@ -444,6 +444,54 @@ Quedan abiertos:
 
 Siguiente: retomar el roadmap con la prioridad T047. T047 está `verified_local`; hay que precisar qué falta para aceptarla.
 
+## Configuración/V4 — publicador de configuración en un journal V4 extensible, aceptado
+
+`2f5e657` registra el escritor `ConfigurationChanges` de `state_root/config/settings.yaml` en el journal de salida. Pasa a la gramática V4, decidida por el usuario el 2026-11-09:
+- **Tabla de gramáticas:** la cabecera declara `grammars: {productor: gramática}`, que se valida contra una tabla cerrada y sólo ampliable (`account_publisher/1`, `configuration_publisher/1`).
+- **Gramática desconocida:** se lee como `unsupported_producer_grammar`, y el escritor no arranca sobre una corrida que la contenga.
+- **Decodificadores anteriores:** V1–V3 no cambian.
+- **Productores futuros:** cada uno debe estar ya en `base.PRODUCERS`.
+
+Comportamiento del publicador:
+- **Registro:** `attach_configuration` va después de `install_on`; `configuration_disabled` se usa sin panel o sin admisión.
+- **Registro antes del archivo:** al cerrar, el registro se abre antes de la tarea escritora y de cualquier efecto sobre el archivo.
+- **Si el registro falla (cierre ante el fallo, decisión del usuario):**
+  - no se escribe `settings.yaml`;
+  - se registra `registration_failure`;
+  - no hay recibo de admisión, así que la admisión siguiente rechaza con `runtime_admission_not_closed`.
+- **Registro terminal:** exactamente uno por cierre, también si la tarea escritora no arranca o no devuelve resultado.
+- **`committed`:** exige un inodo nuevo. El hash de `settings.yaml` se comprueba al adjuntar y al leer.
+- **Qué escribe:** el escritor sólo pone `reasoner.cloud.consent = false`. Si el registro terminal falla después de `committed`, el archivo ya queda sin consentimiento.
+- **Orden de cierre:** se dedujo del orden de registro en `src/main.py`, no se midió con un test dedicado. `install_on` se apila (línea 408) antes que `http_reasoners`/`hermes_reasoners` (486/488), así que los reasoners cierran antes. En ejecución, `_require_graph_closed` exige además que privacidad haya cerrado del todo.
+
+Tests:
+- Los tests V3 se migraron a V4 y `graph-v3` se renombró `graph-current`. Esto cambia valores esperados y etiquetas internas, no node IDs.
+- Se quitaron 13 aserciones, cada una con su equivalente V4, y se agregaron 5 nuevas. Ninguna se debilitó.
+- Los 29 mutantes de la revisión del diff (R1–R9) mueren.
+
+Limitaciones conocidas:
+- **Sin caller de retiro:** hoy ningún código de producción llama a `queue_consent_withdrawal`, así que no hay retiro en vivo.
+- **`EgressPolicy` inmutable:** es `frozen`, así que el gateway sólo se apagaría desde el siguiente arranque. El usuario eligió para OQ-8 un marcador durable registrado en el journal más una compuerta en ejecución sobre `EgressPolicy.require_allowed`, que es el único punto de intercepción. Es la tarea siguiente.
+- **R8:** un `settings.yaml` con hardlink o editado entre admisión y adjunto bloquea el arranque. Un rollback a un release que no conozca una gramática nueva también lo bloquea.
+- **R9:** la nativa 06 ya no lee un historial V3 genuino. Lo cubren 12 tests no compilados.
+
+Validación fresca round-04 en `2f5e657`, con los mismos límites y una compuerta de carga de 1 minuto menor que 10 y sin otro pytest.
+- **Partición:** 9551 IDs exactos y disjuntos: los 9459 de round-03 más 92 nuevos (53 de configuración y 39 de V4), y 0 eliminados.
+- **Resultados:**
+  - Component: 275 PASS.
+  - Nativas 01–07: 1 PASS cada una, entre 46,6 y 171,1 s de 300. La 06 mide 99,3 s, frente a 98,2 s en round-03.
+  - Full: 9543 PASS más la xfail regex conocida (el mismo ID de round-03), 0 FAIL, en 801,3 s de 1500.
+- **Revisión independiente:** `independent-review.json` (`accept_within_scope`), escrita **antes** de la prueba de aceptación.
+
+Hallazgos no bloqueantes de la revisión:
+- los scripts de `root-procedure/` sólo se pueden rastrear hasta una copia en `/private/tmp`; hay que fijarlos antes de la próxima ronda;
+- el pico de carga de 242 después de native-01 no tiene evidencia de procesos guardada;
+- las colecciones no figuran en `load-observations.jsonl`.
+
+**Unidad aceptada dentro de su alcance**: `.../configuration-v4-validation-round-04/acceptance-proof.json`. No acepta F1, T024, H6 ni el runtime, y no implica release.
+
+Siguiente: OQ-8, con el marcador durable en el journal y la compuerta de egress en ejecución, y después la prioridad T047.
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.

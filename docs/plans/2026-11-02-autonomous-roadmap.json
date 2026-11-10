@@ -1368,7 +1368,7 @@
         "data/autonomous-roadmap-20261102/session-closeout-20261107/handoff.json",
         "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-validation/diagnostic-noop-validation-round-01/failed-full-handoff-review.json"
       ],
-      "next_action": "Las seis fallas de la full c0e82df se corrigieron (743efd3, 740ca42; round-02 aceptada en 0fed9c4). Cuentas/V3 quedó aceptada dentro de su alcance tras round-03 en dae7c2d, con revisión independiente: 8 de 32 productores registrados. Siguiente: orden 2 del diseño de censo v2 (registrar antes de sus efectos los productores de runtime restantes), con borrador de diseño, revisión independiente, implementación y validación fresca por unidad. Preservar oráculos y límites; F1, T024 y el roadmap completo siguen pendientes."
+      "next_action": "Las seis fallas de la full c0e82df se corrigieron (743efd3, 740ca42; round-02 aceptada en 0fed9c4). Cuentas/V3 quedó aceptada dentro de su alcance tras round-03 en dae7c2d, y configuración/V4 (journal V4 extensible) tras round-04 en 2f5e657, ambas con revisión independiente: 9 de 32 productores registrados. Siguiente: OQ-8 (marcador durable de retiro en el journal más compuerta de egress en ejecución); luego orden 2 del diseño de censo v2 (registrar antes de sus efectos los productores de runtime restantes), con borrador de diseño, revisión independiente, implementación y validación fresca por unidad. Preservar oráculos y límites; F1, T024 y el roadmap completo siguen pendientes."
     },
     {
       "id": "T025",
