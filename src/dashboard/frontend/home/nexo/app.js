@@ -25,6 +25,7 @@ const session = state.createSession();
 const roleLabels = { operator: 'Administración', home: 'Acceso de hogar', evaluator: 'Evaluación temporal' };
 let epoch = 0, poller, sessionTimer, ticker, catalog = null, clock = null, lastError = null;
 let roomId, layer = 'lights', house, logoutPending = false, authBusy = false, activeView = null;
+let staleFocus = null;
 let navigationVersion = 0, desiredView = null, accessView = null, viewsReady = true, viewDrain = Promise.resolve(true), privateSuspended = false;
 const viewIds = { home: 'home-view', actions: 'actions-view', routines: 'routines-view', memory: 'memory-view', people: 'people-view', voices: 'voices-view', access: 'access-view', evaluation: 'evaluation-view' };
 const viewHashes = { home: '#hogar', actions: '#acciones', routines: '#rutinas', memory: '#memoria', people: '#personas', voices: '#voces', access: '#accesos', evaluation: '#evaluacion' };
@@ -165,7 +166,7 @@ function retire(message = '', { endSession = true } = {}) {
   people.clear(); const accessClosing = closeAccess(), routinesClosing = closeRoutines(), memoryClosing = closeMemory();
   trackViewDrain([voices.clear(), evaluator.clear(), access.clear(), accessClosing, routinesClosing, routines.clear({ wipe: endSession }),
     memoryClosing, memory.clear({ wipe: endSession })]);
-  actions.clear(); destroyHouse(); catalog = clock = lastError = null; roomId = undefined; activeView = null;
+  actions.clear(); destroyHouse(); catalog = clock = lastError = staleFocus = null; roomId = undefined; activeView = null;
   byId('voice-connection').textContent = ''; byId('evaluation-connection').textContent = '';
   byId('view-transition-status').hidden = true;
   for (const id of ['room-list', 'room-controls', 'action-list', 'app-nav', 'rail-nav']) byId(id).replaceChildren();
@@ -214,11 +215,28 @@ function updateTemporal() {
   const observed = freshness();
   byId('connection-status').textContent = lastError ? `No se pudo actualizar. ${lastError.message}` : !catalog ? 'Consultando el catálogo…' : observed.stale ? 'El estado está vencido o no está disponible. Actualizá antes de operar.' : `Estado observado · ${Math.max(0, Math.floor(observed.ageMs / 1000))} s`;
   byId('connection-status').classList.toggle('is-stale', observed.stale);
+  const now = clock?.now();
+  for (const card of document.querySelectorAll('.device-card[data-entity-id]')) {
+    const entity = entityById(card.dataset.entityId);
+    card.dataset.observation = !observed.stale && entity && core.entityObservationCurrent(entity, now) ? 'current' : 'stale';
+  }
   for (const control of document.querySelectorAll('[data-control]')) {
     const entity = entityById(control.dataset.entityId);
     const record = actions.get(control.dataset.entityId, control.dataset.operation);
-    control.disabled = !canExecute(entity, control.dataset.operation) || record?.pending === true;
+    const disabled = !canExecute(entity, control.dataset.operation) || record?.pending === true;
+    // Disabling (stale data or a pending action) drops focus; remember it so re-enabling returns it.
+    if (disabled && !control.disabled && control === document.activeElement) staleFocus = control;
+    control.disabled = disabled;
   }
+  restoreStaleFocus();
+}
+function restoreStaleFocus() {
+  if (!staleFocus) return;
+  if (!staleFocus.isConnected) { staleFocus = null; return; }
+  const active = document.activeElement;
+  if (staleFocus.disabled || active && active !== document.body && active !== staleFocus) return;
+  const control = staleFocus; staleFocus = null;
+  control.focus({ preventScroll: true });
 }
 function updateReceipts() {
   if (!session.active()) return;
@@ -327,7 +345,8 @@ function renderCatalog() {
   if (catalog.unassigned_entities.length) addRoom(null, 'Sin ambiente', catalog.unassigned_entities.length);
   if (!rooms.length && !catalog.unassigned_entities.length) list.append(node('p', 'empty-panel', 'No hay ambientes en el catálogo.'));
   // Refreshing an observation must not discard a keyboard user's draft or focus.
-  const focused = document.activeElement?.closest('.operation-form');
+  // A control disabled by stale data keeps its draft until fresh data re-enables it.
+  const focused = document.activeElement?.closest('.operation-form') || (staleFocus?.isConnected ? staleFocus.closest('.operation-form') : null);
   const stillSelected = !focused?.closest('#room-controls') || selectedEntities().some(entity => entity.entity_id === focused.dataset.entityId);
   if (!focused || previousRoom !== roomId || !entityById(focused.dataset.entityId) || !stillSelected) renderControls();
   else updateObservedCards();
@@ -453,6 +472,8 @@ async function bootstrap() {
     const generation = session.generation();
     poller = core.createPoller({
       load: async signal => { await actions.reconcile(); return api('/api/home/catalog', { signal }); },
+      // Refresh against the earliest held expiry, not only a fixed cadence.
+      deadline: () => clock?.read().remainingMs ?? Infinity,
       onData(data) {
         if (session.generation() !== generation || !session.can('home:read')) return;
         if (![data?.rooms, data?.entities, data?.unassigned_entities].every(Array.isArray)) { lastError = new Error('El catálogo no está disponible.'); updateTemporal(); return; }
@@ -523,6 +544,9 @@ byId('rail-nav').addEventListener('scroll', railOverflow, { passive: true });
 window.addEventListener('resize', revealActiveRail);
 byId('help-button').addEventListener('click', () => byId('info-dialog').showModal());
 for (const id of ['dialog-close', 'dialog-done']) byId(id).addEventListener('click', () => byId('info-dialog').close());
+// Any focus or pointer choice by the user supersedes a focus held across stale data.
+document.addEventListener('pointerdown', () => { staleFocus = null; }, true);
+document.addEventListener('focusin', event => { if (event.target !== staleFocus) staleFocus = null; });
 document.addEventListener('keydown', event => { if (event.key === 'Escape') { document.body.classList.remove('map-expanded'); byId('expand-map').setAttribute('aria-expanded', 'false'); } });
 document.addEventListener('visibilitychange', () => {
   if (!session.active()) { if (!byId('nexo-workspace').hidden) retire('Tu sesión venció.'); return; }

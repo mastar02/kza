@@ -34,6 +34,7 @@ INSTRUMENT = """(() => {
     const path=String(input);
     if(path==='/api/admin/auth/logout'&&window.__qaFailLogout)throw new TypeError('Synthetic offline logout');
     if(path==='/api/admin/auth/logout'&&window.__qaHoldLogout)await new Promise(resolve=>window.__qaReleaseLogout=resolve);
+    if(path==='/api/home/catalog'&&window.__qaHoldCatalog){window.__qaHoldCatalog=false;await new Promise(resolve=>window.__qaReleaseCatalog=resolve);}
     const response=await fetcher(input,options);
     if(path==='/api/admin/users'&&(!options.method||options.method==='GET')&&window.__qaHoldPeople){window.__qaHoldPeople=false;await new Promise(resolve=>window.__qaReleasePeople=resolve);}
     if(path==='/api/admin/users'&&options.method==='POST'&&window.__qaHoldPeopleMutation){window.__qaHoldPeopleMutation=false;await new Promise(resolve=>window.__qaReleasePeopleMutation=resolve);}
@@ -66,6 +67,14 @@ HOME_CONTROLS = (
 # U4: no surface links to the retired legacy views or the technical panel.
 LEGACY_LINKS = ("document.querySelectorAll('a[href*=\"legacy.html\"], a[href^=\"/obs\"], a[href=\"/index.html\"], "
                 "a[href=\"/dashboard.js\"], #technical-link, #additional-tools').length")
+# Entity controls are gated by expiring observations: audit them only while the page shows data as current.
+HOME_FRESH = ("!document.querySelector('#connection-status').classList.contains('is-stale') && "
+              "[...document.querySelectorAll('.device-card[data-entity-id]')].every(card => card.dataset.observation === 'current')")
+# Records every entity card that turns stale; without a held request, any entry is a refresh-timing flicker.
+STALE_MONITOR = ("(()=>{window.__qaStale=[];new MutationObserver(records=>{for(const record of records){const card=record.target;"
+                 "if(card.dataset.observation==='stale'&&record.oldValue!=='stale')window.__qaStale.push({entity:card.dataset.entityId,"
+                 "at:Math.round(performance.now()),status:document.querySelector('#connection-status').textContent})}})"
+                 ".observe(document.body,{subtree:true,attributes:true,attributeFilter:['data-observation'],attributeOldValue:true});return true})()")
 ACTION_CONTROLS = (('#app-nav [data-view=home]', None), ('#action-list button', None), ('#refresh', None), ('#logout', None))
 PEOPLE_CONTROLS = (('#app-nav [data-view=people]', None), ('#add-person', None), ('#refresh-people', None),
                    ('#people-grid [data-person]', None), ('#logout', None))
@@ -210,6 +219,23 @@ async def main() -> None:
                     ha.states['climate.test_ac']['attributes']['temperature'] = 21
                     await page.wait_for("document.querySelector('#room-controls .device-value').textContent==='21 °C · objetivo'")
                     assert await page.evaluate("document.activeElement.name==='temperature' && document.activeElement.value==='23.5'")
+
+                    # Genuine staleness: while a catalog request is held past the observation expiry, the
+                    # climate controls are disabled and marked; fresh data re-enables them and returns focus and draft.
+                    await page.evaluate("(()=>{window.__qaHeldInput=document.querySelector('#room-controls input[name=temperature]');window.__qaHoldCatalog=true;window.__qaHeldInput.focus();window.__qaHeldInput.value='22.5';document.querySelector('#refresh').click()})()")
+                    await page.wait_for("!!window.__qaReleaseCatalog")
+                    stale_state = "(()=>{const input=window.__qaHeldInput,card=input.closest('.device-card');return input.isConnected&&input.disabled&&card.dataset.observation==='stale'&&[...card.querySelectorAll('[data-control]')].every(control=>control.disabled)&&document.querySelector('#connection-status').classList.contains('is-stale')})()"
+                    for _ in range(240):
+                        if await page.evaluate(stale_state):
+                            break
+                        await asyncio.sleep(0.05)
+                    else:
+                        raise AssertionError('held catalog did not expire the climate observation')
+                    held_focus = await page.evaluate("document.activeElement===window.__qaHeldInput?'retained':document.activeElement===document.body?'body':String(document.activeElement?.id||document.activeElement?.tagName)")
+                    await page.evaluate("window.__qaReleaseCatalog();delete window.__qaReleaseCatalog")
+                    await page.wait_for("(()=>{const input=window.__qaHeldInput;return input.isConnected&&!input.disabled&&input.closest('.device-card').dataset.observation==='current'&&!document.querySelector('#connection-status').classList.contains('is-stale')})()")
+                    assert await page.evaluate("document.activeElement===window.__qaHeldInput && window.__qaHeldInput.value==='22.5'"), 'focus and draft must return with fresh data'
+                    staleness_check = {'focus_while_stale': held_focus, 'focus_restored': True, 'draft_preserved': True}
                     await page.evaluate("(()=>{const input=document.querySelector('#room-controls input[name=temperature]');input.value='23.5';input.closest('form').requestSubmit()})()")
                     await page.wait_for("document.querySelector('#room-controls [data-receipt][data-operation=set_temperature]').dataset.status==='confirmed'")
                     assert ha.sends[-1][2:] == ("climate.test_ac", {"temperature": 23.5})
@@ -234,7 +260,8 @@ async def main() -> None:
                     await page.evaluate("document.querySelector('#app-nav [data-view=actions]').click()")
                     await page.wait_for("!document.querySelector('#actions-view').hidden")
                     assert await page.evaluate("!document.querySelector('#house-canvas canvas') && window.__qaFrames.size===0")
-                    audits = {'acciones': await audit_view(page, evidence, 'acciones', ACTION_CONTROLS, screenshot)}
+                    assert await page.evaluate(STALE_MONITOR)
+                    audits = {'acciones': await audit_view(page, evidence, 'acciones', ACTION_CONTROLS, screenshot, fresh=HOME_FRESH)}
                     await page.evaluate("history.back()")
                     await page.wait_for("!document.querySelector('#home-view').hidden && document.querySelector('#map-loading').hidden")
 
@@ -245,7 +272,10 @@ async def main() -> None:
                         await page.wait_for("!document.querySelector('#home-view').hidden && document.querySelector('#map-loading').hidden && !!document.querySelector('#house-canvas canvas') && !document.querySelector('#view-top').disabled")
 
                     motion = await reduced_motion_house(page, remount_house)
-                    audits['hogar'] = await audit_view(page, evidence, 'hogar', HOME_CONTROLS, screenshot)
+                    audits['hogar'] = await audit_view(page, evidence, 'hogar', HOME_CONTROLS, screenshot, fresh=HOME_FRESH)
+                    stale_episodes = await page.evaluate("window.__qaStale")
+                    (evidence / 'stale-episodes.json').write_text(json.dumps({'episodes': stale_episodes, 'staleness_check': staleness_check}, indent=2) + '\n')
+                    assert stale_episodes == [], f'entity observations lapsed between catalog refreshes: {stale_episodes[:5]}'
                     legacy_links = {'home-1425': await page.evaluate(LEGACY_LINKS)}
                     await page.command("Emulation.setDeviceMetricsOverride", {"width": 390, "height": 844, "deviceScaleFactor": 1, "mobile": True})
                     await asyncio.sleep(0.2)
@@ -385,7 +415,8 @@ async def main() -> None:
                     result = {"passed": True, "synthetic_fixture": True, "actual_chromium_http_login": True,
                               "roles": ["home", "evaluator", "operator"], "home_effects": len(ha.sends),
                               "webgl_illustration": webgl, "individual_sessions": True,
-                              "checks": ["bootstrap no private prefetch", "hidden bootstrap sends no catalog", "role permissions before requests", "independent light/climate typed effects", "focused drafts preserve current observed labels", "lost POST and in_progress receipt reconcile by poll without repost", "camera visual and ARIA agree", "visible model between renders", "navigation releases renderer/RAF", "320px and 390px no horizontal overflow", "operator session has no /obs link", "logout clears before pending HTTP and blocks crossed login", "failed logout stays hidden across reload", "session expires before fresh catalog"],
+                              "checks": ["bootstrap no private prefetch", "hidden bootstrap sends no catalog", "role permissions before requests", "independent light/climate typed effects", "focused drafts preserve current observed labels", "lost POST and in_progress receipt reconcile by poll without repost", "camera visual and ARIA agree", "visible model between renders", "navigation releases renderer/RAF", "320px and 390px no horizontal overflow", "operator session has no /obs link", "logout clears before pending HTTP and blocks crossed login", "failed logout stays hidden across reload", "session expires before fresh catalog", "held catalog past expiry disables and marks entity controls, fresh data restores focus and draft", "no entity observation lapses between refreshes during audits"],
+                              "staleness": {**staleness_check, "stale_episodes_during_audits": len(stale_episodes)},
                               "people_checks": ['real CRUD once per gesture', 'mutation stays pending across leave/reentry without repost', 'crossed GET keeps latest result', 'lost mutation receipt requires GET without repost', 'account level does not select dashboard role', 'cancelled confirmation has no effect', 'deletion retires every personal session', 'last admin conflict', '503 is not empty catalog', 'open dialog reports failed refresh and disables submit while preserving draft', 'names are DOM text', '320/390 reflow', 'logout clears dialog/draft/accounts before late GET under another login'],
                               "screenshots": ["home-desktop.png", "climate-desktop.png", "home-mobile.png", "people-desktop.png", "people-mobile.png"],
                               "reflow_widths": {view: sorted(audit['widths'], key=int) for view, audit in audits.items()},

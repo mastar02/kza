@@ -95,13 +95,17 @@
       stop() { active = false; clear(); }
     };
   }
+  // An entity observation is current only inside its own server-issued window.
+  function entityObservationCurrent(entity, now = Date.now()) {
+    if (!Object.prototype.hasOwnProperty.call(entity, 'observation')) return true;
+    const observation = entity.observation || {};
+    const observed = observationMillis(observation.observed_at), expires = observationMillis(observation.expires_at);
+    return ['fresh', 'partial'].includes(observation.state) && observed !== null && expires !== null && observed <= now && now < expires;
+  }
   function entityCanControl(entity, operation, stale, now = Date.now()) {
     const domain = entity.domain || entity.entity_id?.split('.')[0];
     const states = { light: ['on', 'off'], switch: ['on', 'off'], climate: Object.keys(MODE_LABELS), cover: ['open', 'closed', 'opening', 'closing'] };
-    const explicit = Object.prototype.hasOwnProperty.call(entity, 'observation');
-    const observation = entity.observation || {};
-    const observed = observationMillis(observation.observed_at), expires = observationMillis(observation.expires_at);
-    const current = !explicit || (['fresh', 'partial'].includes(observation.state) && observed !== null && expires !== null && observed <= now && now < expires);
+    const current = entityObservationCurrent(entity, now);
     return !stale && current && entity.available === true && (domain === 'scene' ? entity.state !== 'unavailable' : states[domain]?.includes(entity.state)) && Array.isArray(entity.capabilities) && entity.capabilities.includes(operation);
   }
   function createApi({ fetch: fetcher = root.fetch.bind(root), onDemo = () => {}, onUnauthorized = () => {}, timeoutMs = 12000 } = {}) {
@@ -134,13 +138,30 @@
     api.invalidateSession = () => { sessionGeneration++; };
     return api;
   }
-  function createPoller({ load, onData, onError, onInvalidate = () => {}, schedule = setTimeout, cancel = clearTimeout }) {
+  // The catalog is re-read at most every POLL_INTERVAL_MS. When the held
+  // observation expires sooner, the next read starts early enough to land
+  // before that expiry: the refresh budget is twice the slowest recent round
+  // trip (at least REFRESH_LEAD_MIN_MS). Expiry itself is never extended, so
+  // a refresh that misses the budget still leaves the data stale.
+  const POLL_INTERVAL_MS = 5000, POLL_MIN_DELAY_MS = 1000, REFRESH_LEAD_MIN_MS = 1000, ROUND_TRIP_WINDOW = 3;
+  function nextPollDelay(remainingMs, roundTripMs = 0) {
+    if (!Number.isFinite(remainingMs)) return POLL_INTERVAL_MS;
+    const lead = Math.max(REFRESH_LEAD_MIN_MS, 2 * (Number.isFinite(roundTripMs) ? roundTripMs : 0));
+    return Math.max(POLL_MIN_DELAY_MS, Math.min(POLL_INTERVAL_MS, remainingMs - lead));
+  }
+  function createPoller({ load, onData, onError, onInvalidate = () => {}, deadline = () => Infinity, now = () => root.performance.now(), schedule = setTimeout, cancel = clearTimeout }) {
     let active = false, hidden = false, busy = false, sequence = 0, accepted = 0, timer, controller;
+    const roundTrips = [];
     function clear() { if (timer !== undefined) cancel(timer); timer = undefined; }
     function invalidate() { sequence++; controller?.abort(); onInvalidate(); busy = false; clear(); }
+    function delay() {
+      let remaining;
+      try { remaining = deadline(); } catch (_) { remaining = Infinity; }
+      return nextPollDelay(remaining, Math.max(0, ...roundTrips));
+    }
     async function refresh() {
       if (!active || hidden || busy) return;
-      clear(); busy = true; const seq = ++sequence;
+      clear(); busy = true; const seq = ++sequence, started = now();
       controller = new AbortController();
       try {
         const data = await load(controller.signal);
@@ -150,7 +171,11 @@
         // A timeout abort is still a failed observation, unless this poll was invalidated.
         else if (active && !hidden && seq === sequence) onError(new Error('La consulta agotó el tiempo de espera.'));
       } finally {
-        if (seq === sequence) { busy = false; if (active && !hidden) timer = schedule(refresh, 5000); }
+        if (seq === sequence) {
+          busy = false;
+          roundTrips.push(Math.max(0, now() - started)); if (roundTrips.length > ROUND_TRIP_WINDOW) roundTrips.shift();
+          if (active && !hidden) timer = schedule(refresh, delay());
+        }
       }
     }
     return {
@@ -206,7 +231,7 @@
       clear() { generation++; records.clear(); }
     };
   }
-  const exported = { OPERATION_LABELS, OPERATION_PARAMETERS, controlFields, validControlValue, selectFreshResponse, actionLabel, effectSummary, entityCanControl, createApi, createPoller, createActionController, observationMillis, createSnapshotClock, createFreshnessTicker };
+  const exported = { OPERATION_LABELS, OPERATION_PARAMETERS, controlFields, validControlValue, selectFreshResponse, actionLabel, effectSummary, entityCanControl, entityObservationCurrent, createApi, createPoller, nextPollDelay, createActionController, observationMillis, createSnapshotClock, createFreshnessTicker };
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;
   root.HomeUI = exported;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

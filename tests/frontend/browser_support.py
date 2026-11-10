@@ -243,7 +243,17 @@ AUDIT_SCRIPT = r"""(() => {
       }
       return {scrollWidth: document.documentElement.scrollWidth, innerWidth, offenders: offenders.slice(0, 20)};
     },
-    keyControls(specs) {
+    async keyControls(specs, fresh, timeoutMs) {
+      // A view whose controls depend on an expiring observation names a freshness
+      // predicate. The check waits for it, then runs in the same task, so no
+      // refresh or expiry timer can interleave between the two.
+      let freshness = null;
+      if (fresh) {
+        const started = performance.now();
+        while (!fresh() && performance.now() - started < timeoutMs) await new Promise(resolve => setTimeout(resolve, 25));
+        freshness = {waited_ms: Math.round(performance.now() - started), current: !!fresh()};
+        if (!freshness.current) return {freshness, results: specs.map(([selector, text]) => ({control: selector + (text ? ' "' + text + '"' : ''), problem: 'observation not current after ' + timeoutMs + ' ms'}))};
+      }
       const width = document.documentElement.clientWidth;
       const results = specs.map(([selector, text]) => {
         const el = [...document.querySelectorAll(selector)].find(node => !text || (node.textContent || '').includes(text));
@@ -259,7 +269,7 @@ AUDIT_SCRIPT = r"""(() => {
         return {control: label, problem: null};
       });
       window.scrollTo(0, 0);
-      return results;
+      return {freshness, results};
     },
     targets(minimum) {
       return controls().filter(el => el.getBoundingClientRect().bottom + scrollY > 0).map(el => {
@@ -382,7 +392,8 @@ async def _keyboard(page, width: int) -> tuple[dict, list[str]]:
 
 async def audit_view(page, evidence: Path, view: str, key_controls: Sequence[tuple[str, str | None]],
                      screenshot: Callable[..., Awaitable[None]], *, widths: Sequence[int] = C08_WIDTHS,
-                     restore: tuple[int, int, bool] = (1425, 1180, False)) -> dict:
+                     restore: tuple[int, int, bool] = (1425, 1180, False), fresh: str | None = None,
+                     fresh_timeout_ms: int = 12000) -> dict:
     """Check one NEXO view at every C08 width and record C07 accessibility findings.
 
     Per width: no horizontal overflow (document and visible elements), key
@@ -398,6 +409,10 @@ async def audit_view(page, evidence: Path, view: str, key_controls: Sequence[tup
         key_controls: ``(selector, text)`` pairs; ``text`` narrows by visible text when given.
         screenshot: Harness screenshot coroutine ``(page, path, full=..., scroll_top=...)``.
         widths: CSS pixel widths to audit.
+        fresh: JS expression that is true while the view's observed data is current.
+            Key controls are checked only once it holds, in the same task; if it
+            never holds within ``fresh_timeout_ms`` every key control fails.
+        fresh_timeout_ms: Bound for that wait (the catalog request timeout).
         restore: Viewport ``(width, height, mobile)`` applied after the audit.
 
     Returns:
@@ -425,7 +440,10 @@ async def audit_view(page, evidence: Path, view: str, key_controls: Sequence[tup
         if overflow['scrollWidth'] > overflow['innerWidth']:
             local.append(f'document scrolls horizontally: scrollWidth {overflow["scrollWidth"]} > {overflow["innerWidth"]}')
         local += [f'element overflows the viewport: {item}' for item in overflow['offenders']]
-        controls = await page.evaluate('window.__kzaAudit.keyControls(' + json.dumps([list(item) for item in key_controls]) + ')')
+        predicate = 'null' if fresh is None else f'() => ({fresh})'
+        checked = await page.evaluate('window.__kzaAudit.keyControls(' + json.dumps([list(item) for item in key_controls])
+                                      + f', {predicate}, {int(fresh_timeout_ms)})')
+        controls, freshness = checked['results'], checked['freshness']
         local += [f'key control {item["control"]}: {item["problem"]}' for item in controls if item['problem']]
         shot = evidence / f'{view}-{width}.png'
         await screenshot(page, shot, full=True)
@@ -438,6 +456,7 @@ async def audit_view(page, evidence: Path, view: str, key_controls: Sequence[tup
         keyboard, keyboard_findings = await _keyboard(page, width)
         local += keyboard_findings
         report['widths'][str(width)] = {'screenshot': shot.name, 'overflow': overflow, 'key_controls': controls,
+                                        'freshness': freshness,
                                         'small_targets': small, 'keyboard': keyboard, 'findings': local}
         findings += [f'{width}px: {item}' for item in local]
     await page.command('Emulation.setDeviceMetricsOverride', {'width': restore[0], 'height': restore[1],
