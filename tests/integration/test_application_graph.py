@@ -14,11 +14,13 @@ from src.application import ApplicationFactories
 from src.home_assistant.control_policy import ActionOrigin, HomeActor
 from src.home_assistant.home_actions import HomeActionRequest
 from src.main import build_application
+from src.memory.fact_ledger import MemoryAssigner, MemoryReviewer
 from src.pipeline.command_event import CommandEvent
 from tests.mocks.application_graph import (
     OfflineEncoder, OfflineSTT, OfflineTTS, OfflineWake, offline_config, offline_home,
 )
 from tests.mocks.audio_output import AudioBackend
+from tests.mocks.memory_sources import memory_source
 from tests.mocks.speech import PCMEngine
 
 
@@ -141,8 +143,21 @@ async def test_factory_loads_canonical_accounts_without_constructing_biometric_m
                 targets = frozenset({account.user_id})
                 assert not users._retirement_proof(targets)
                 root = graph.dashboard_authority.resolve(dashboard_auth['Authorization'].split(' ', 1)[1])
+                # U3b-1b: the production proof also requires no owner row for the account.
+                privacy = graph.voice_registry.privacy
+                fact = await privacy.acall(lambda: privacy.ledger.confirm(privacy.ledger.store(
+                    "Synthetic owned fact", "fact", 1.0, (memory_source(),), proposed=True).id,
+                    MemoryReviewer("synthetic-reviewer")))
+                await privacy.acall(lambda: privacy.ledger.assign_owner(
+                    fact.id, account.user_id, fact.revision, 0, MemoryAssigner("synthetic-operator"),
+                    retired=graph.dashboard_authority.memory_owner_retired,
+                    active=graph.dashboard_authority.memory_owner_active))
                 assert await graph.dashboard_authority.retire_user(root, account.user_id)
                 await graph.voice_registry.acall(graph.voice_registry.ledger.people.reconcile)
+                assert graph.dashboard_authority.users_retired(targets)
+                assert not users._retirement_proof(targets)
+                assert await privacy.acall(privacy.ledger.clear_user_facts, targets,
+                                           graph.dashboard_authority.users_retired) == 1
                 assert users._retirement_proof(targets)
             else:
                 assert graph.dashboard is None

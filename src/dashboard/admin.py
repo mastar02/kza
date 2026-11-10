@@ -93,6 +93,13 @@ async def _delete_account(work, current, authority, actor, user_manager, user_id
         if voice_registry is not None:
             await voice_registry.acall(voice_registry.ledger.people.clear_user_links,
                                       frozenset({user_id}),authority.users_retired)
+            # D7 (U3b-1b): the person's assigned memories go with the account.
+            # Same durable-retirement proof and ledger as the voice links; the
+            # catalog save below refuses until the owner proof is clear, and
+            # a retry or the startup prune re-runs this idempotently. A refused
+            # proof (PermissionError is an OSError) maps to 503 below.
+            await voice_registry.acall(voice_registry.privacy.ledger.clear_user_facts,
+                                      frozenset({user_id}), authority.users_retired)
         step = output_registration.account_delete_step(work, user_manager, user_id, validator)
         try:
             deleted, message = await work.native_step(user_manager.remove_user, user_id, before_save=validator)

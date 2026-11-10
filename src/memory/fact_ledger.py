@@ -10,6 +10,7 @@ from src.memory import output_registration_v2 as output_registration
 import math
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -29,6 +30,8 @@ from src.memory.index_deletions import INDEX_DELETION_SCHEMA, IndexDeletionQueue
 from src.memory.voice_schema import (
     VOICE_SCHEMA, initialize_voice_people_schema, initialize_voice_review_schema,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class FactState(StrEnum):
@@ -356,6 +359,22 @@ def _scan_fact_owner_rows(db: sqlite3.Connection) -> None:
             raise RuntimeError("fact_owner_revision_mismatch")
 
 
+def _owner_people(db: sqlite3.Connection) -> frozenset[str]:
+    """Every person id referenced by an owner row; an invalid id fails closed."""
+    people = frozenset(row[0] for row in db.execute("SELECT DISTINCT person_id FROM fact_owners"))
+    if not all(_valid_person(person) for person in people):
+        raise RuntimeError("fact_owner_value_unknown")
+    return people
+
+
+def _retirement_proven(retired: Callable[[frozenset[str]], bool], identities: frozenset[str]) -> bool:
+    """Only an exact True from the durable-retirement proof counts; errors never do."""
+    try:
+        return retired(identities) is True
+    except Exception:
+        return False
+
+
 def _scope_filter(scope: object, person_id: object) -> tuple[str, tuple]:
     """Translate a required reader scope into a SQL predicate over facts.id."""
     if not isinstance(scope, str) or scope not in {item.value for item in MemoryScope}:
@@ -564,6 +583,9 @@ class FactLedger:
         self._authority_version = 0
         self._voice_projection_revision = 0
         self._voice_person_proof = VoicePersonIndex()
+        # Same content-free proof pattern for owner rows (U3b-1b): the account
+        # catalog reads it without ledger locks before removing an account.
+        self._fact_owner_proof = VoicePersonIndex()
         self._voice_group_revision = 0
         self._revocation_observers: list[WeakMethod] = []
         self.erasures = ErasureJournal(self)
@@ -597,6 +619,7 @@ class FactLedger:
             output_registration.before_ledger_open(self)
             self._authority_available = False
             self._voice_person_proof.invalidate()
+            self._fact_owner_proof.invalidate()
             db = None
             try:
                 if self.path != ":memory:":
@@ -629,6 +652,7 @@ class FactLedger:
                         db.rollback()
                         raise
                 initialize_fact_owner_schema(db)
+                owners = _owner_people(db)
                 receipts = self._read_fact_receipts(db)
                 deleted_times = dict(db.execute("SELECT conversation_id, deleted_at FROM conversation_tombstones"))
                 self._fact_receipts = receipts
@@ -637,6 +661,10 @@ class FactLedger:
                 self._db = db
                 self._lifecycle_generation += 1
                 self._authority_available = True
+                # Publish the owner proof from the SQL just validated; an outer
+                # owner transaction still pending keeps it withdrawn.
+                self._fact_owner_proof.begin(withdraw=False)
+                self._fact_owner_proof.finish(True, owners)
             except BaseException:
                 # No failed initializer may publish a connection that lets a
                 # retry skip validation, even if native close itself fails.
@@ -762,6 +790,7 @@ class FactLedger:
                 self._lifecycle_generation += 1
             self._authority_available = False
             self._voice_person_proof.invalidate()
+            self._fact_owner_proof.invalidate()
             if self._db is not None:
                 try:
                     self._db.close()
@@ -1098,7 +1127,7 @@ class FactLedger:
             if is_active is not True:
                 raise PermissionError("memory_owner_authority_unavailable")
 
-        with self._transaction(guard) as db:
+        with self._owner_transaction(guard) as db:
             fact = self._fact(db, fact_id) if type(fact_id) is str else None
             if not self._eligible(db, fact, review=True):
                 raise LookupError("memory_fact_unavailable")
@@ -1138,7 +1167,7 @@ class FactLedger:
         self._assigner(actor)
         if type(expected_owner_revision) is not int or expected_owner_revision < 0:
             raise ValueError("memory_owner_conflict")
-        with self._transaction(actor.require_current) as db:
+        with self._owner_transaction(actor.require_current, withdraw=False) as db:
             fact = self._fact(db, fact_id) if type(fact_id) is str else None
             if not self._eligible(db, fact, review=True):
                 raise LookupError("memory_fact_unavailable")
@@ -1161,7 +1190,7 @@ class FactLedger:
                 or not _valid_person(actor.person_id) or person_id != actor.person_id):
             raise PermissionError("memory_owner_actor_denied")
         actor.require_current()
-        with self._transaction(actor.require_current) as db:
+        with self._owner_transaction(actor.require_current, withdraw=False) as db:
             fact = self._fact(db, fact_id) if type(fact_id) is str else None
             if not self._eligible(db, fact, review=True):
                 return False
@@ -1190,6 +1219,99 @@ class FactLedger:
                                          "ON f.id=r.fact_id WHERE f.state!=?"),
                 owned_proposals=db.execute("SELECT COUNT(*) FROM fact_owners o JOIN facts f ON f.id=o.fact_id "
                                            "WHERE f.state=?", (FactState.PROPOSED.value,)).fetchone()[0])
+
+
+    # --- retirement participant (U3b-1b) --------------------------------------------
+
+    @contextmanager
+    def _owner_transaction(self, guard: Callable[[], None] | None = None, *, withdraw: bool = True):
+        """Run an owner writer and republish the owner proof from actual SQL.
+
+        A writer that can add owner rows withdraws the proof first (as
+        VoicePersonLinks does). After a refusal or an uncertain commit the
+        proof is rebuilt from the connection once it is outside any
+        transaction; if that read is impossible it stays unavailable.
+        """
+        self._fact_owner_proof.begin(withdraw=withdraw)
+        with self._lock:
+            known, people = False, None
+            try:
+                with self._transaction(guard) as db:
+                    yield db
+                    people = _owner_people(db)
+                known = True
+            finally:
+                if not known and self._db is not None and self._authority_available \
+                        and not self._db.in_transaction:
+                    try:
+                        people, known = _owner_people(self._db), True
+                    except Exception:
+                        people, known = None, False
+                self._fact_owner_proof.finish(known, people)
+
+    def owner_refs_cleared(self, identities: frozenset[str]) -> bool:
+        """Nonblocking proof that no owner row references these accounts.
+
+        Reads one immutable snapshot; never takes ledger or account locks, so
+        the account catalog may call it while holding its own lock.
+        """
+        snapshot = self._fact_owner_proof.snapshot
+        if type(identities) is not frozenset or len(identities) > 256:
+            return False
+        if not all(_valid_person(identity) for identity in identities):
+            return False
+        return self._authority_available and snapshot.available and not identities & snapshot.users
+
+    def clear_user_facts(self, identities: frozenset[str], retired: Callable[[frozenset[str]], bool]) -> int:
+        """Delete every fact owned by durably retired accounts (D7); never creates an owner.
+
+        ``retired(identities)`` must return exactly True before BEGIN, after
+        the body and before commit (the durable retirement, not one in
+        progress). Each owned fact goes through the ordinary ``_delete``
+        cascade: content scrubbed, dependents deleted, index delete jobs
+        queued and owner/revision rows pruned. Idempotent: a second run finds
+        no owner rows and deletes nothing. Returns the number of facts deleted.
+        """
+        if type(identities) is not frozenset or not 1 <= len(identities) <= 256:
+            raise ValueError("memory_owner_invalid_targets")
+        if not callable(retired):
+            raise PermissionError("memory_owner_retirement_required")
+        if not all(_valid_person(identity) for identity in identities):
+            raise ValueError("memory_owner_invalid_person")
+
+        def guard() -> None:
+            if not _retirement_proven(retired, identities):
+                raise PermissionError("memory_owner_retirement_required")
+
+        guard()
+        with self._owner_transaction(guard) as db:
+            _scan_fact_owner_rows(db)
+            targets = sorted(identities)
+            owned = [row[0] for row in db.execute(
+                "SELECT fact_id FROM fact_owners WHERE person_id IN (" + ",".join("?" for _ in targets)
+                + ") ORDER BY fact_id", targets)]
+            deleted = sum(self._delete(db, fact_id) for fact_id in owned)
+        if owned:
+            logger.info("[FactLedger] retired-account owner cleanup: %d owned, %d deleted", len(owned), deleted)
+        return deleted
+
+    def prune_retired_owners(self, retired: Callable[[frozenset[str]], bool]) -> int:
+        """Startup re-run: delete facts still owned by any durably retired account.
+
+        Covers a crash between the authority retirement and
+        ``clear_user_facts`` and owner rows brought back by a restore. Each
+        referenced person is checked alone with ``retired``; anything but an
+        exact True leaves that person's rows untouched (never guesses). The
+        read also republishes the owner proof from SQL. Returns facts deleted.
+        """
+        if not callable(retired):
+            raise PermissionError("memory_owner_retirement_required")
+        with self._lock:
+            with self._owner_transaction(withdraw=False) as db:
+                people = _owner_people(db)
+            targets = sorted(person for person in people if _retirement_proven(retired, frozenset({person})))
+            return sum(self.clear_user_facts(frozenset(targets[start:start + 256]), retired)
+                       for start in range(0, len(targets), 256))
 
     def snapshot(self) -> dict:
         """Read one coherent review snapshot with a server expiry clock."""

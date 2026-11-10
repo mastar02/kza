@@ -472,6 +472,34 @@ class DashboardAuthority:
             return bool(type(identities) is frozenset and self._usable()
                         and identities <= self._retired_users)
 
+
+    def memory_owner_retired(self, identities: frozenset[str]) -> bool | None:
+        """Owner-assignment check (U3b-1b): a retirement in progress already counts.
+
+        Unlike ``users_retired`` (a durable proof that is False when the
+        authority is unusable), this returns None when the answer is unknown,
+        which the fact ledger refuses as ``memory_owner_authority_unavailable``.
+        Reads only published in-memory state: no SQL, no account or ledger lock.
+        """
+        with self._state_lock:
+            if type(identities) is not frozenset or not identities or not self._usable():
+                return None
+            return bool(identities & (self._retiring_users | self._retired_users))
+
+    def memory_owner_active(self, user_id: str) -> bool | None:
+        """Owner-assignment check (U3b-1b) with ``_account_current`` semantics.
+
+        True only for a canonical active account that is neither retiring nor
+        retired; None (unknown) when the authority is unusable or the id is
+        not a string. Reads only published in-memory state.
+        """
+        if type(user_id) is not str:
+            return None
+        with self._state_lock:
+            if not self._usable():
+                return None
+            return self._account_current(user_id)
+
     def users_linkable(self, identities: frozenset[str]) -> bool:
         """Check a bounded set against one canonical snapshot, without account IO/locks."""
         if type(identities) is not frozenset or not 1 <= len(identities) <= 256:

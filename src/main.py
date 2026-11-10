@@ -323,6 +323,25 @@ async def _initialize_routines(
                 raise asyncio.CancelledError
 
 
+async def _prune_retired_memory_owners(privacy_services, dashboard_authority) -> int:
+    """Re-run the D7 retirement cascade at boot, after the authority is loaded (U3b-1b).
+
+    Deletes facts still owned by a durably retired account (a crash between
+    retirement and cleanup, or rows brought back by a restore). Failure keeps
+    the rows and is logged: assignment to such a person is already refused,
+    and account removal stays blocked by the owner proof until a retry.
+    """
+    try:
+        deleted = await privacy_services.acall(privacy_services.ledger.prune_retired_owners,
+                                               dashboard_authority.users_retired)
+    except Exception as error:
+        logger.error(f"[MemoryOwners] retired-owner prune failed at boot: {type(error).__name__}")
+        return 0
+    if deleted:
+        logger.info(f"[MemoryOwners] boot prune deleted {deleted} facts of retired accounts")
+    return deleted
+
+
 async def main():
     """Own shutdown even when construction or warmup fails before voice runs."""
     shutdown = AsyncExitStack()
@@ -759,7 +778,8 @@ async def build_application(
     user_manager = await voice_registry.load_accounts(
         speaker_config.get('users_path', './data/users.json'),
         retirement_proof=(lambda identities: dashboard_authority.users_retired(identities)
-            and voice_registry.ledger.people.user_links_cleared(identities)) if dashboard_authority is not None else None,
+            and voice_registry.ledger.people.user_links_cleared(identities)
+            and privacy_services.ledger.owner_refs_cleared(identities)) if dashboard_authority is not None else None,
     )
     voice_enrollment = None
 
@@ -1821,6 +1841,7 @@ async def build_application(
 
     if dashboard_authority is not None:
         await dashboard_authority.initialize()
+        await _prune_retired_memory_owners(privacy_services, dashboard_authority)
 
     live_event_bus = await build_live_services(config,privacy=privacy_services,
         owner=erasure_services,shutdown=shutdown)
