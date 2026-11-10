@@ -588,7 +588,7 @@ def test_compiled_main_and_frontend_outside_checkout(archive, state, tmp_path):
             "spec = {'name': 'compiled', 'description': '', 'enabled': True, 'timezone': 'America/Montevideo', 'schedule': None, 'conditions': [], 'actions': [{'entity_id': 'climate.test_ac', 'operation': 'set_temperature', 'temperature': 23.5}]}",
             "assert spec_to_dict(parse_routine_spec(spec)) == spec",
             "client = TestClient(DashboardAPI(home_enabled=True).app)",
-            "for path in ('/', '/home/home.css', '/home/home.js', '/home/request-id.js', '/home/routines.js', '/obs/src/session.js'):",
+            "for path in ('/', '/home/home.css', '/home/home.js', '/home/request-id.js', '/home/routines.js', '/home/nexo/routine-owner.js', '/home/nexo/routines.js', '/obs/src/session.js'):",
             "    assert client.get(path).status_code == 200, path",
             "os.environ.pop('KZA_DASHBOARD_TOKEN', None)",
             "assert client.get('/api/health').status_code == 503",
