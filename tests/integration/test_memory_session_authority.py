@@ -192,6 +192,8 @@ async def test_committed_review_reconciles_index_after_session_retires(
     else:
         response = await pending
         assert response.status_code == 403
+        # The delivery guard's denial: the commit above happened, so a client must treat this 403 as uncertain.
+        assert response.json() == {'detail': 'dashboard_session_retired'}
         assert 'Synthetic private preference.' not in response.text
     fact = await graph.service.acall(graph.service.ledger.get, before['id'])
     assert fact.state is FactState.CONFIRMED and fact.confirmed_by == 'dashboard-admin'

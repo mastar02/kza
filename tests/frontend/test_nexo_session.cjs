@@ -210,3 +210,34 @@ test('a response discarded after the server answered is marked as answered, not 
   await assert.rejects(result, error => error.status === 403 && error.detail === 'dashboard_session_retired' && error.sent === true && error.answered === true);
   assert.equal(retired, 0);
 });
+
+test('Memoria is visible only with memory:read and maps only the routes the view uses (F12)', async () => {
+  const session = nexo.createSession({ wall: () => 0, monotonic: () => 0 });
+  const sends = [];
+  const api = nexo.createScopedApi({ session, transport: async (path, options = {}) => { sends.push((options.method || 'GET') + ' ' + path); return {}; } });
+  const id = 'fact_' + 'a'.repeat(64);
+  const used = [['GET', '/api/memory'], ['POST', `/api/memory/proposals/${id}/confirm`], ['POST', `/api/memory/proposals/${id}/reject`], ['DELETE', `/api/memory/facts/${id}`]];
+  const unmapped = [['GET', '/api/memory/facts'], ['GET', '/api/memory/proposals'], ['POST', '/api/memory'], ['DELETE', '/api/memory'],
+    ['GET', `/api/memory/facts/${id}`], ['DELETE', `/api/memory/proposals/${id}/reject`], ['POST', `/api/memory/proposals/${id}/delete`],
+    ['POST', '/api/memory/proposals/fact_x/confirm'], ['DELETE', '/api/memory/facts/fact_' + 'A'.repeat(64)], ['PUT', `/api/memory/facts/${id}`],
+    ['POST', `/api/memory/conversations/${id}`]];
+  async function attempt(list) {
+    const before = sends.length;
+    for (const [method, path] of list) { try { await api(path, { method }); } catch (error) { assert.equal(error.sent, false, method + ' ' + path); } }
+    return sends.slice(before);
+  }
+  for (const [role, permissions] of [['home', ['home:read', 'home:control', 'routines:execute', 'tasks:personal']], ['evaluator', ['evaluation:read']]]) {
+    session.accept(identity(permissions, role));
+    assert.ok(!session.views().includes('memory'));
+    assert.deepEqual(await attempt([...used, ...unmapped]), []);
+  }
+  session.accept(identity(['memory:read'], 'operator'));
+  assert.ok(session.views().includes('memory'));
+  assert.deepEqual(await attempt(used), ['GET /api/memory']);
+  session.accept(identity(['memory:read', 'memory:review'], 'operator'));
+  assert.deepEqual(await attempt(used), used.map(([method, path]) => method + ' ' + path));
+  assert.deepEqual(await attempt(unmapped), [], 'unused memory routes stay refused locally');
+  // A voice or person link on the identity never grants memory review.
+  session.accept({ ...identity(['memory:read'], 'operator'), voice_profile: 'vp_admin', permissions_hint: ['memory:review'] });
+  assert.equal(session.can('memory:review'), false);
+});

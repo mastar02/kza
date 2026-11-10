@@ -25,7 +25,7 @@ from src.rooms.room_context import RoomConfig
 from src.routines.factory import build_routine_scheduler
 from src.routines.models import RunStatus, parse_routine_spec
 from tests.frontend.browser_nexo_home import login, screenshot
-from tests.frontend.browser_support import _press_tab, audit_view, browser_binary, browser_profile_root, evidence_directory, install_login_session
+from tests.frontend.browser_support import _press_tab, audit_view, browser_binary, browser_profile_root, evidence_directory, install_login_session, press_enter
 from tests.frontend.browser_typed_controls import Page
 from tests.integration.test_typed_home_operations import typed_graph
 
@@ -186,7 +186,7 @@ async def main() -> None:
 
                     # Operator: navigation, empty state, failed save focus, preview, create.
                     await login(page, operator.token, 'Administración')
-                    assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(n=>n.dataset.view).join(',')==='home,voices,people,actions,routines,access'")
+                    assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(n=>n.dataset.view).join(',')==='home,voices,people,actions,routines,memory,access'")
                     assert await page.evaluate("document.querySelectorAll('a[href*=\"legacy.html\"]').length===0 || ![...document.querySelectorAll('a[href*=\"legacy.html\"]')].some(a=>a.textContent.includes('Rutinas'))")
                     await click('#app-nav [data-view=routines]')
                     await page.wait_for("location.hash==='#rutinas' && !document.querySelector('#routines-view').hidden && !document.querySelector('.routines-empty').hidden")
@@ -393,6 +393,18 @@ async def main() -> None:
                     await page.wait_for(f"document.querySelector({card(main_id)}).textContent.includes('Renombrada en el servidor')")
                     assert await page.evaluate(f"document.activeElement?.dataset.key==='{main_id}:toggle'"), 'focus survives a rebuilt card'
                     checks.append('forced refresh keeps focus in the editor field (with caret) and on a rebuilt card button')
+
+                    # N1: 'Actualizar' from the keyboard keeps focus while the list is read and after it.
+                    await rule('GET', '/api/routines', 'hold')
+                    await page.evaluate("window.__qaHeld=null;document.querySelector('#routines-refresh').focus()")
+                    await press_enter(page)
+                    await page.wait_for("window.__qaHeld && document.querySelector('#routines-refresh').getAttribute('aria-disabled')==='true'")
+                    assert await page.evaluate("document.activeElement?.id==='routines-refresh'"), 'focus kept while loading'
+                    await page.evaluate('window.__qaRelease()')
+                    await page.wait_for("document.querySelector('#routines-refresh').getAttribute('aria-disabled')==='false'")
+                    await asyncio.sleep(0.2)
+                    assert await page.evaluate("document.activeElement?.id==='routines-refresh'"), 'focus kept after the refresh'
+                    checks.append('N1: keyboard Enter on Actualizar keeps focus on the button during and after the read')
 
                     audits['rutinas'] = await audit_view(page, evidence, 'rutinas', (
                         ('#app-nav [data-view=routines]', None), ('#rail-nav [data-view=access]', None), ('#routines-create', None),

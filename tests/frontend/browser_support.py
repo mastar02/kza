@@ -267,6 +267,14 @@ async def _press_tab(page) -> None:
                                                       'windowsVirtualKeyCode': 9, 'nativeVirtualKeyCode': 9})
 
 
+async def press_enter(page) -> None:
+    """Activate the focused control with a real Enter key event, as a keyboard user does."""
+    await page.command('Input.dispatchKeyEvent', {'type': 'keyDown', 'key': 'Enter', 'code': 'Enter', 'text': '\r',
+                                                  'windowsVirtualKeyCode': 13, 'nativeVirtualKeyCode': 13})
+    await page.command('Input.dispatchKeyEvent', {'type': 'keyUp', 'key': 'Enter', 'code': 'Enter',
+                                                  'windowsVirtualKeyCode': 13, 'nativeVirtualKeyCode': 13})
+
+
 async def _nameless_controls(page) -> list[str]:
     """Return interactive accessibility-tree nodes whose computed name is empty."""
     tree = await page.command('Accessibility.getFullAXTree')

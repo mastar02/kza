@@ -1,7 +1,7 @@
 /* Session and catalog presentation; voice labels never select authority. */
 (function (root) {
   'use strict';
-  const VIEWS = { home: ['home:read'], actions: ['home:read'], routines: ['home:read'], voices: ['voices:read', 'voices:review'], people: ['admin:manage'], access: ['auth:manage'], evaluation: ['evaluation:read'] };
+  const VIEWS = { home: ['home:read'], actions: ['home:read'], routines: ['home:read'], memory: ['memory:read'], voices: ['voices:read', 'voices:review'], people: ['admin:manage'], access: ['auth:manage'], evaluation: ['evaluation:read'] };
   function createSession({ wall = Date.now, monotonic = () => root.performance.now() } = {}) {
     let identity = null, deadline = 0, generation = 0;
     function clear() { identity = null; deadline = 0; generation++; }
@@ -43,6 +43,13 @@
     if ((rest === 'attempts' || /^runs\/[^/]+$/.test(rest)) && method === 'GET') return 'routines:manage';
     return null;
   }
+  // Only the routes the Memoria view uses: the read-only /facts and /proposals lists stay unmapped.
+  function memoryPermission(pathname, method) {
+    if (pathname === '/api/memory') return method === 'GET' ? 'memory:read' : null;
+    if (method === 'POST' && /^\/api\/memory\/proposals\/fact_[0-9a-f]{64}\/(?:confirm|reject)$/.test(pathname)) return 'memory:review';
+    if (method === 'DELETE' && /^\/api\/memory\/facts\/fact_[0-9a-f]{64}$/.test(pathname)) return 'memory:review';
+    return null;
+  }
   function createScopedApi({ session, transport, onRetired = () => {} }) {
     return async function api(path, options = {}) {
       const method = (options.method || 'GET').toUpperCase();
@@ -56,7 +63,7 @@
         pathname === '/api/admin/users' && ['GET', 'POST'].includes(method) ? 'admin:manage' :
         /^\/api\/admin\/users\/[^/]+\/permissions$/.test(pathname) && method === 'PUT' ? 'admin:manage' :
         /^\/api\/admin\/users\/[^/]+$/.test(pathname) && method === 'DELETE' ? ['admin:manage', 'auth:manage'] :
-        routinePermission(pathname, method);
+        routinePermission(pathname, method) || memoryPermission(pathname, method);
       const permitted = () => Boolean(permission) && (Array.isArray(permission) ? permission : [permission]).every(session.can);
       if (!publicAuth && !permitted()) {
         throw Object.assign(new Error('Este acceso no permite la operación.'), { status: 403, sent: false });
@@ -87,7 +94,7 @@
     if (entity.domain === 'climate') return `Modo ${MODE_LABELS[entity.state] || entity.state}`;
     return ({ on: 'Encendido', off: 'Apagado', open: 'Abierto', closed: 'Cerrado', opening: 'Abriendo', closing: 'Cerrando' })[entity.state] || entity.state || 'Estado desconocido';
   }
-  const exported = { createSession, createScopedApi, sessionRetired, roomEntities, entityState };
+  const exported = { createSession, createScopedApi, sessionRetired, memoryPermission, roomEntities, entityState };
   root.NexoState = exported;
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;
 })(typeof window !== 'undefined' ? window : globalThis);

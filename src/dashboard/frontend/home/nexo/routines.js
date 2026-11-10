@@ -46,7 +46,8 @@
     const side = node('div', 'identity-heading-side routines-heading-side');
     const create = button('Crear rutina', 'create', () => { editorInvoker = 'create'; void startEditor('create', replace => owner.newDraft({ replace })); }, 'identity-primary');
     create.id = 'routines-create';
-    const refresh = button('Actualizar', 'refresh', () => owner.refresh());
+    // aria-disabled instead of disabled: a disabled focused button drops keyboard focus to <body>.
+    const refresh = button('Actualizar', 'refresh', () => { if (refresh.getAttribute('aria-disabled') !== 'true') void owner.refresh(); });
     refresh.id = 'routines-refresh';
     side.append(create, refresh); heading.append(intro, side);
     const permission = node('p', 'routines-permission');
@@ -350,7 +351,7 @@
       if (!active) return;
       const state = owner.getState(), caps = state.capabilities;
       create.hidden = !caps.manage; create.disabled = Boolean(state.draft?.saving) || Boolean(state.writes.new);
-      refresh.disabled = state.list.loading;
+      refresh.setAttribute('aria-disabled', String(state.list.loading));
       permission.textContent = caps.manage ? (caps.execute ? '' : 'Tu acceso permite editar rutinas pero no ejecutarlas.') :
         'Tu acceso permite ver las rutinas y su último resultado. Crearlas, cambiarlas o ejecutarlas requiere un acceso de administración.';
       permission.hidden = !permission.textContent;
