@@ -123,7 +123,7 @@ async def _graph(args: argparse.Namespace, control: dict, guard: object) -> dict
             _require("src.memory.output_registration_v3" in sys.modules
                      and "src.memory.output_registration_v4" in sys.modules, "current_writer_codecs")
             _require(header["grammars"] == {"accounts": "account_publisher/1",
-                                            "configuration": "configuration_publisher/1"}, "current_grammars")
+                                            "configuration": "configuration_publisher/2"}, "current_grammars")
             accounts = stores.get("accounts", {})
             events = [event for event in (output_registration._read(path)[0]
                                           for path in sorted(directory.glob("[0-9]*.json")))

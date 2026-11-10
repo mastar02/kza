@@ -87,8 +87,41 @@ _TRANSIENT_PATTERNS = (
 )
 
 
+_WALK_LIMIT = 32
+
+
+def is_consent_withdrawn(exc: BaseException) -> bool:
+    """Whether a withdrawn cloud consent caused ``exc`` (bounded walk).
+
+    Follows ``__cause__``/``__context__``, exception-group members and
+    router attempt summaries (``attempts[].error_kind``), with a node budget
+    that also terminates on cycles.
+    """
+    from src.core.egress import EgressDenied
+    pending, seen = [exc], set()
+    while pending and len(seen) < _WALK_LIMIT:
+        item = pending.pop()
+        if item is None or id(item) in seen:
+            continue
+        seen.add(id(item))
+        if isinstance(item, EgressDenied) and item.args == ("cloud_consent_withdrawn",):
+            return True
+        if any(getattr(attempt, "error_kind", None) is ErrorKind.CONSENT_WITHDRAWN
+               for attempt in getattr(item, "attempts", None) or ()):
+            return True
+        if isinstance(item, BaseExceptionGroup):
+            pending.extend(item.exceptions)
+        pending.extend((item.__cause__, item.__context__))
+    return False
+
+
 def classify_error(exc: BaseException) -> ErrorKind:
     """Clasificar una exception en un ErrorKind."""
+
+    # OQ-8: un retiro de consentimiento (aunque el SDK lo envuelva) es política:
+    # se rota al siguiente candidato local sin cooldown.
+    if is_consent_withdrawn(exc):
+        return ErrorKind.CONSENT_WITHDRAWN
 
     # Idle timeout primero (es nuestro tipo, sabemos qué es)
     if isinstance(exc, IdleTimeoutError):

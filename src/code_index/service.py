@@ -11,6 +11,7 @@ from aiohttp import web
 from src.code_index.cards import CardGenerator
 from src.code_index.indexer import CodeIndexer
 from src.code_index.manifest import IndexManifest
+from src.core.egress import CloudConsentGate
 from src.core.settings_schema import DEFAULT_LOCAL_LLM_GATEWAY, is_unresolved_placeholder
 
 logger = logging.getLogger(__name__)
@@ -163,6 +164,8 @@ def build_indexer(cfg: dict, repo_root: Path, *, cloud_consent: bool = False) ->
         timeout=cards_cfg.get("timeout", 120.0),
         destination=destination,
         cloud_consent=cloud_consent,
+        # Own process (K5): this gate never sees the assistant's withdrawal.
+        consent_gate=CloudConsentGate(),
     )
 
     manifest = IndexManifest(Path(cfg["manifest_path"]))

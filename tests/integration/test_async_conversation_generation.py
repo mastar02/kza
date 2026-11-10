@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 
+from src.core.egress import CloudConsentGate
 from src.llm.reasoner import HttpReasoner
 from src.orchestrator.cancellation import CancellationReason
 from src.orchestrator.dispatcher import MultiUserOrchestrator
@@ -18,7 +19,7 @@ pytestmark = pytest.mark.asyncio
 @asynccontextmanager
 async def graph(monkeypatch, parts):
     endpoint = Endpoint(SSEBody(parts))
-    reasoner = HttpReasoner(model="configured-model", api_style="chat", cloud_consent=True)
+    reasoner = HttpReasoner(model="configured-model", api_style="chat", cloud_consent=True, consent_gate=CloudConsentGate())
     monkeypatch.setattr(reasoner, "_new_async_client", endpoint.build)
     orchestrator = MultiUserOrchestrator(None, None, None, llm=reasoner)
     assert orchestrator.dispatcher.queue is orchestrator.queue

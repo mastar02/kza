@@ -22,6 +22,7 @@ from src.application import (
     HttpReasonerOwner, SpeakerModelOwner, STTExecutorOwner, TTSModelOwner, WakeModelOwner,
     HermesReasonerOwner as _HermesReasonerOwner,
 )
+from src.core.egress import CloudConsentGate, ConsentWithdrawalSource
 from src.core.owned_work import OwnedBlockingWork
 from src.core.runtime_admission import seal_runtime_configuration, verify_runtime_admission
 from src.core.state_configuration import ConfigurationChanges
@@ -351,6 +352,39 @@ async def _run_main(shutdown: AsyncExitStack) -> None:
     await graph.run()
 
 
+def boot_consent_decision(registration) -> dict | None:
+    """The consent decision this run recorded in its journal (None when unmanaged)."""
+    return None if registration is None else getattr(registration, "effective_decision", None)
+
+
+def apply_boot_consent_decision(gate: CloudConsentGate, registration) -> None:
+    """Close the runtime gate iff the recorded boot decision keeps a withdrawal in force.
+
+    The decision is the coordinator's single source of truth (F10): it is
+    None whenever reasoner.cloud.consent is not True (settling) or no marker
+    is authoritative; ``basis`` actor or unverifiable closes the gate.
+    """
+    decision = boot_consent_decision(registration)
+    if decision is None:
+        return
+    source = (ConsentWithdrawalSource.DURABLE_MARKER if decision["basis"] == "actor"
+              else ConsentWithdrawalSource.MARKER_UNVERIFIABLE)
+    gate.withdraw(source)
+    logger.warning("[Consent] Cloud consent withdrawn at boot by the journal decision (basis=%s)",
+                   decision["basis"])
+
+
+def _reasoner_is_cloud(reasoner_config: dict, reasoner_mode: str) -> bool:
+    """m4: Hermes is always cloud; HTTP is cloud unless declared LOCAL for its endpoint."""
+    from src.llm.cloud_consent import is_cloud_endpoint
+    if reasoner_mode == "hermes_cli":
+        return True
+    if reasoner_mode != "http":
+        return False
+    return is_cloud_endpoint(reasoner_config.get("http_base_url", DEFAULT_LOCAL_LLM_GATEWAY),
+                             destination=reasoner_config.get("destination", "cloud"))
+
+
 async def build_application(
     config: dict, *, shutdown: AsyncExitStack,
     factories: ApplicationFactories | None = None,
@@ -374,6 +408,10 @@ async def build_application(
     if admission is not None:
         admission.install_on(shutdown)
         destination_registration = await admission.begin_destination_registration(config)
+    # OQ-8: one runtime gate shared by every cloud-capable client; closed now
+    # when the journal's recorded decision keeps a withdrawal in force.
+    consent_gate = CloudConsentGate()
+    apply_boot_consent_decision(consent_gate, destination_registration)
     factories = factories or ApplicationFactories()
 
     # Verificar Home Assistant
@@ -404,7 +442,7 @@ async def build_application(
         shutdown.push_async_callback(dashboard_authority.aclose)
         await output_registration.attach_output(dashboard_authority, "authority_sessions")
         if admission is not None:
-            configuration_changes = ConfigurationChanges(dashboard_authority, admission)
+            configuration_changes = ConfigurationChanges(dashboard_authority, admission, consent_gate)
             configuration_changes.install_on(shutdown)
             # Registered before any write: the owner writes only at shutdown.
             await destination_registration.attach_configuration(configuration_changes, dashboard_authority)
@@ -496,6 +534,13 @@ async def build_application(
     gate_allowed, _ = resolve_reasoner_gate(
         reasoner_config, reasoner_mode, DEFAULT_LOCAL_LLM_GATEWAY
     )
+    if consent_gate.withdrawn and _reasoner_is_cloud(reasoner_config, reasoner_mode):
+        # m4: only a cloud reasoner is withdrawn; the config dict is never mutated.
+        logger.warning(
+            "Reasoner cloud bloqueado: consentimiento retirado (registro duradero en el journal). "
+            "Para reactivarlo, el operador debe aplicar consent en settings.yaml y volver a preparar la admisión."
+        )
+        gate_allowed = False
 
     if reasoner_mode == "http":
         # The resolver labels the gateway fallback CLOUD; consumers also
@@ -517,6 +562,7 @@ async def build_application(
                 verify_ssl=reasoner_config.get("verify_ssl", True),
                 destination=reasoner_config.get("destination", "cloud"),
                 cloud_consent=reasoner_config.get("cloud", {}).get("consent", False),
+                consent_gate=consent_gate,
             )
             http_reasoners.add_model(llm)
             try:
@@ -565,6 +611,7 @@ async def build_application(
                 cloud_consent=reasoner_config.get("cloud", {}).get("consent", False),
                 model=reasoner_config.get("hermes_model"),
                 timeout_s=hermes_timeout_s,
+                consent_gate=consent_gate,
             )
             hermes_reasoners.add_model(llm)
             try:
@@ -608,6 +655,7 @@ async def build_application(
             timeout=router_config.get("timeout", 30),
             destination=router_config.get("destination", "cloud"),
             cloud_consent=reasoner_config.get("cloud", {}).get("consent", False),
+            consent_gate=consent_gate,
         )
         shutdown.push_async_callback(fast_router.aclose)
         logger.info(f"Fast router (HTTP) → {router_config.get('base_url', 'http://127.0.0.1:8101/v1')}")
@@ -1476,6 +1524,7 @@ async def build_application(
                     cloud_consent=reasoner_config.get("cloud", {}).get("consent", False),
                     model=reasoner_config.get("hermes_model"),
                     timeout_s=compaction_hermes_timeout_s,
+                    consent_gate=consent_gate,
                 )
                 hermes_reasoners.add_model(compaction_reasoner)
                 try:
@@ -1521,7 +1570,7 @@ async def build_application(
             # el resultado es byte-idéntico a la construcción de antes de este fix
             # (test_compaction_inherits_cloud_endpoint_when_gate_allows).
             compaction_endpoint = resolve_compaction_endpoint(
-                compaction_cfg, reasoner_config, gate_allowed
+                compaction_cfg, reasoner_config, gate_allowed and not consent_gate.withdrawn
             )
             compaction_reasoner = HttpReasoner(
                 base_url=compaction_endpoint.base_url,
@@ -1531,6 +1580,7 @@ async def build_application(
                 destination=compaction_endpoint.destination,
                 cloud_consent=compaction_endpoint.cloud_consent,
                 timeout=compaction_cfg.get("timeout_s", 30.0),
+                consent_gate=consent_gate,
             )
             http_reasoners.add_model(compaction_reasoner)
             try:
@@ -1839,6 +1889,8 @@ async def build_application(
             voice_registry=voice_registry,
             ambient_control=ambient_control,
             capture_control=capture_control,
+            configuration_changes=configuration_changes,
+            consent_gate=consent_gate,
         )
         speaker_models.add_borrower(dashboard.admin_work.begin_close)
         shutdown.push_async_callback(dashboard.stop)
@@ -1932,7 +1984,7 @@ async def build_application(
         home_services=home_services, home_capabilities=home_capabilities, list_manager=list_manager,
         reminder_manager=reminder_manager, routine_scheduler=routine_scheduler,
         dashboard=dashboard, dashboard_authority=dashboard_authority,
-        configuration_changes=configuration_changes,
+        configuration_changes=configuration_changes, consent_gate=consent_gate,
         models=ApplicationModels(stt, tts, chroma, speaker_identifier, emotion_detector),
         warmup_models=_warmup_models, presence_detector=presence_detector,
         ambient_path=ambient_path, nightly_trainer=nightly_trainer,

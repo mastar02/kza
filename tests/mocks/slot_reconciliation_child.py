@@ -606,7 +606,11 @@ async def advance_ordinary_N(args, control, guard, e, *, source_control, source_
             assert g.graph.dashboard_authority.resolve(saved["forward_guard"]["token"]) is not None
             changes = g.graph.configuration_changes
             assert changes is not None
-            pending = changes.queue_consent_withdrawal(replay.root_lease(g))
+            outcome = await changes.withdraw_cloud_consent(replay.root_lease(g))
+            # OQ-8: the gate closes and the marker is journaled before the queued write.
+            assert outcome.gate_closed is True and outcome.failure is None
+            assert outcome.marker.value == "durable" and g.graph.consent_gate.withdrawn is True
+            pending = outcome.pending
             assert pending.previous_consent is True and pending.next_generation_only is True
             assert changes.receipt is None
             binary_observed = (await read_binary_lineage(g, saved["binary_lineage"])

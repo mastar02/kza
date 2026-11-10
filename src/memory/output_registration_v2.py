@@ -7,6 +7,7 @@ from contextvars import Context, ContextVar
 from dataclasses import dataclass, field
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -26,6 +27,8 @@ if TYPE_CHECKING:
 
 from src.memory import output_registration as base
 from src.core.owned_work import current_native_execution, validate_native_execution
+
+logger = logging.getLogger(__name__)
 
 _CALL: ContextVar[tuple | None] = ContextVar("output_call", default=None)
 _OPERATION: ContextVar[object | None] = ContextVar("output_operation", default=None)
@@ -541,6 +544,14 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         self._accounts_disabled = False
         self._configuration: _ConfigurationPublisher | None = None
         self._configuration_disabled = False
+        # OQ-8: the boot consent decision, computed once in _start and written
+        # unchanged on this run's first configuration record.
+        reasoner = config.get("reasoner")
+        cloud = reasoner.get("cloud") if type(reasoner) is dict else None
+        self._consent_granted = type(cloud) is dict and cloud.get("consent") is True
+        self._prior_decision = None
+        self._effective_decision: dict | None = None
+        self._settled_decision: dict | None = None
         if self._format.schema_version in {3, 4}:
             self._expected["accounts"] = os.fspath(config.get("speaker_id", {}).get("users_path", "./data/users.json"))
             self._selected["accounts"] = self._selected["authority_sessions"]
@@ -549,6 +560,38 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             # enabled under an admission; the destination is never configured.
             self._expected["configuration"] = str(admission.state_root / "config" / "settings.yaml")
             self._selected["configuration"] = self._selected["authority_sessions"]
+
+    @property
+    def prior_decision(self):
+        """The reader's PriorConsentDecision for this run (None before _start or below V4)."""
+        return self._prior_decision
+
+    @property
+    def effective_decision(self) -> dict | None:
+        """Exactly the decision this run records; non-None closes the boot gate."""
+        return self._effective_decision
+
+    @property
+    def settled_decision(self) -> dict | None:
+        """A prior decision this boot superseded because consent was not granted."""
+        return self._settled_decision
+
+    def _decide_consent(self, runs: Path, run_id: str) -> None:
+        from src.memory.output_registration_v4 import prior_consent_decision
+        prior = prior_consent_decision(runs, run_id)
+        self._prior_decision = prior
+        if not self._consent_granted:
+            # Settling: no grant in the effective config clears the marker.
+            self._effective_decision = None
+            if prior.decision is not None:
+                self._settled_decision = prior.decision
+                source = prior.decision["source"]
+                logger.warning(
+                    "Consentimiento de nube: el arranque sin consentimiento asentó el retiro previo. "
+                    "Cloud consent marker settled by a boot without consent (superseded basis=%s, "
+                    "source run=%s)", prior.decision["basis"], source["run_id"])
+        else:
+            self._effective_decision = prior.decision
 
     def _current(self) -> None:
         # Metadata carries no opening grant. Full validation is performed at
@@ -636,6 +679,8 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                 # Never start beside a run whose declared grammar this release cannot read.
                 refuse_unknown_grammars(self._namespace / self._format.namespace_name / "runs")
                 grammars = dict(WRITER_GRAMMARS)
+                # OQ-8: read the authoritative decision before this run exists.
+                self._decide_consent(self._namespace / self._format.namespace_name / "runs", ticket["run_id"])
             header = {"schema_version": self._format.schema_version, "run_id": ticket["run_id"], "generation": ticket["generation"],
                       "binding_id": ticket["binding_id"], "config_sha256": self.admission._config_digest,
                       "state_root": str(self.admission.state_root), "state_identity": base._identity(self.admission.state_root),
@@ -1406,34 +1451,54 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             _reject("configuration_owner", self)
 
         def publish() -> None:
-            from src.memory.output_registration_v4 import configuration_event_shape
+            from src.memory.output_registration_v4 import configuration_event_shape_v2
             with self._lock:
                 _, _, states, _ = self._format.decode_chain(self._directory)
                 event = {"kind": "configuration_publisher", "phase": "disabled",
-                         "path": self._expected["configuration"]}
-                configuration_event_shape(event, states.get("configuration"), False,
-                                          self.admission.state_root, self._epoch["state_identity"])
+                         "path": self._expected["configuration"], "decision": self._effective_decision}
+                configuration_event_shape_v2(event, states.get("configuration"), False,
+                                             self.admission.state_root, self._epoch["state_identity"])
                 self._record(event)
         await self._run(publish)
         self._configuration_disabled = True
 
     def _append_configuration(self, phase: str, plan: dict, aggregate: dict | None = None) -> None:
-        from src.memory.output_registration_v4 import configuration_event_shape
+        from src.memory.output_registration_v4 import actor_withdrawal, configuration_event_shape_v2
         with self._lock:
             _, _, states, _ = self._format.decode_chain(self._directory)
-            event = {"kind": "configuration_publisher", "phase": phase, "plan": plan}
+            prior = states.get("configuration")
+            event = {"kind": "configuration_publisher", "phase": phase, "plan": plan,
+                     "decision": self._effective_decision}
+            if phase == "withdrawn":
+                event["withdrawal"] = actor_withdrawal(plan)
+            elif phase in {"opening", "drained"}:
+                event["withdrawal"] = None if prior is None else prior["withdrawal"]
             if aggregate is not None:
                 event["aggregate"] = aggregate
-            configuration_event_shape(event, states.get("configuration"), self._selected.get("configuration"),
-                                      self.admission.state_root, self._epoch["state_identity"])
+            configuration_event_shape_v2(event, prior, self._selected.get("configuration"),
+                                         self.admission.state_root, self._epoch["state_identity"])
             self._record(event)
+
+    async def configuration_withdrawn(self, owner: object) -> None:
+        """Durably record this run's actor withdrawal (record and HEAD fsynced) before returning."""
+        try:
+            self._live()
+            publisher = self._configuration
+            if publisher is None or publisher.owner is not owner or publisher.phase != "attached":
+                _reject("configuration_owner", self)
+            await self._run(self._append_configuration, "withdrawn", publisher.plan)
+            publisher.phase = "withdrawn"
+        except BaseException:
+            self._failed = True
+            raise
 
     async def configuration_opening(self, owner: object) -> _ConfigurationCommit:
         """Record opening before the writer Task and before any file side effect."""
         try:
             self._live()
             publisher = self._configuration
-            if (publisher is None or publisher.owner is not owner or publisher.phase != "attached"
+            # OQ-8 (M5): a shutdown write opens only after a durable actor withdrawal.
+            if (publisher is None or publisher.owner is not owner or publisher.phase != "withdrawn"
                     or publisher.extent is not None or owner._pending is None):
                 _reject("configuration_owner", self)
 
@@ -1463,14 +1528,14 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             if graph_failed:
                 return  # Keep the original construction error visible.
             _reject("required", self)
-        if publisher.uncertain or publisher.phase not in {"attached", "opening"}:
+        if publisher.uncertain or publisher.phase not in {"attached", "withdrawn", "opening"}:
             self._failed = True
             return
         plan = publisher.plan
-        from src.memory.output_registration_v4 import CONFIGURATION_OUTCOMES
+        from src.memory.output_registration_v4 import CONFIGURATION_OUTCOMES_V2 as CONFIGURATION_OUTCOMES
         if extent is None:
             pending = owner._pending is not None
-            if (publisher.phase != "attached" or publisher.extent is not None
+            if (publisher.phase not in {"attached", "withdrawn"} or publisher.extent is not None
                     or outcome not in {"no_pending", "not_attempted_graph_failed", "refused_before_temporary"}
                     or (outcome == "no_pending") == pending):
                 _reject("configuration_outcome", self)
@@ -2554,6 +2619,29 @@ async def configuration_opening(owner: object) -> _ConfigurationCommit | None:
     if coordinator is None or coordinator._configuration is None or coordinator._configuration.owner is not owner:
         _reject("required", coordinator)
     return await coordinator.configuration_opening(owner)
+
+
+async def configuration_withdrawn(owner: object) -> bool:
+    """Durably record the owner's actor withdrawal; False only for a truly unmanaged run.
+
+    Mirrors configuration_opening: a managed run with no coordinator or no
+    attached publisher for this owner refuses (and poisons), never reports
+    an unmanaged success.
+    """
+    if not _managed():
+        return False
+    coordinator = _coordinator(owner)
+    if coordinator is None or coordinator._configuration is None or coordinator._configuration.owner is not owner:
+        _reject("required", coordinator)
+    await coordinator.configuration_withdrawn(owner)
+    return True
+
+
+def configuration_withdrawal_unconfirmed(owner: object) -> None:
+    """Poison the owner's epoch: the gate closed but its marker is not confirmed."""
+    coordinator = _coordinator(owner)
+    if coordinator is not None:
+        coordinator._failed = True
 
 
 async def configuration_drained(owner: object, extent: _ConfigurationCommit | None, outcome: str | None,

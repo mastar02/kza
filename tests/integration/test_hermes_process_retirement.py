@@ -190,7 +190,7 @@ def _child(base: Path, case: str):
     try:
         reasoner = module.HermesCliReasoner(
             binary_path=str(executable), provider="synthetic", timeout_s=5,
-            cloud_consent=True,
+            cloud_consent=True, consent_gate=module.CloudConsentGate(),
         )
         with patch.object(module.subprocess, "Popen", capture_popen), \
                 patch.object(module.os, "killpg", killpg):

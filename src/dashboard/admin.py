@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Request, U
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from src.core.account_metadata import AccountMetadata, RemovalStatus
+from src.core.egress import CloudConsentGate, ConsentWithdrawalSource
 from src.core.owned_work import OwnedBlockingWork
 from src.dashboard.native_work import (
     NativeAuthorityRetired, ensure_admin_work, require_current, run_admin_sequence, run_admin_work,
@@ -41,6 +42,35 @@ from src.dashboard.auth import (
 )
 
 logger = logging.getLogger(__name__)
+
+# OQ-8: textos para el operador (UI en español).
+CLOUD_CONSENT_MESSAGES = {
+    "confirm": ("¿Retirar el consentimiento para usar la nube? El asistente dejará de enviar "
+                "consultas al razonador en la nube desde ahora."),
+    "ok_durable": "Consentimiento retirado. La nube quedó desactivada ahora y seguirá desactivada al reiniciar.",
+    "ok_unmanaged": ("La nube quedó desactivada en esta sesión. Este modo no registra el retiro: "
+                     "al reiniciar se aplicará lo que diga settings.yaml."),
+    "ok_not_durable": ("La nube quedó desactivada en esta sesión, pero no se pudo registrar de forma duradera. "
+                       "El registro de salidas queda degradado hasta reiniciar y el próximo arranque quedará "
+                       "bloqueado hasta que el operador revise el registro."),
+    "pending_write": "Retiro registrado; falta aplicarlo en settings.yaml al apagar.",
+    "pending_write_lease": ("Retiro registrado; no se podrá aplicar en settings.yaml porque la sesión de "
+                            "administración ya no es válida. Seguirá vigente por el registro."),
+    "denied": "No tenés permiso para cambiar el consentimiento.",
+}
+
+
+def _withdrawal_message(marker: str, pending: bool) -> str:
+    if marker == "registration_failed":
+        return CLOUD_CONSENT_MESSAGES["ok_not_durable"]
+    if marker == "unmanaged":
+        return CLOUD_CONSENT_MESSAGES["ok_unmanaged"]
+    text = CLOUD_CONSENT_MESSAGES["ok_durable"]
+    return text + (" " + CLOUD_CONSENT_MESSAGES["pending_write"] if pending else "")
+
+
+def _no_store(content: dict) -> JSONResponse:
+    return JSONResponse(content=content, headers={"Cache-Control": "no-store"})
 
 
 async def _delete_account(work, current, authority, actor, user_manager, user_id, voice_registry):
@@ -129,8 +159,15 @@ def register_admin_routes(
     voice_registry=None,
     admin_work: OwnedBlockingWork | None = None,
     model_lock=None,
+    configuration_changes=None,
+    consent_gate: CloudConsentGate | None = None,
 ) -> None:
-    """Registrar /api/admin/*. Llamar antes del mount de StaticFiles."""
+    """Registrar /api/admin/*. Llamar antes del mount de StaticFiles.
+
+    ``configuration_changes`` (ConfigurationChanges) and ``consent_gate``
+    enable the OQ-8 cloud-consent routes; they are reachable only through an
+    authenticated admin:manage session, never from voice, persona or tools.
+    """
     work = ensure_admin_work(app, admin_work)
     model_lock = model_lock if model_lock is not None else threading.Lock()
 
@@ -350,6 +387,57 @@ def register_admin_routes(
             raise HTTPException(500, detail={"reason": "restart_command_failed", "effect": "uncertain",
                                            "returncode": result.returncode})
         return {"ok": True, "service": name, "command_completed": True}
+
+    # ---------------- Cloud consent (OQ-8) ----------------
+
+    @router.post("/cloud-consent/withdraw", dependencies=[Depends(require_admin)])
+    async def withdraw_cloud_consent(request: Request):
+        lease = current_lease(request)
+        if lease is None:
+            raise HTTPException(403, "dashboard_session_required")
+        if configuration_changes is None:
+            if consent_gate is None:
+                raise HTTPException(503, "configuration_changes_unavailable")
+            # F13: no journal in this mode; privacy first, close the in-run gate.
+            if not lease.current(frozenset({"admin:manage"})):
+                raise HTTPException(403, CLOUD_CONSENT_MESSAGES["denied"])
+            consent_gate.withdraw(ConsentWithdrawalSource.ACTOR)
+            logger.warning("Cloud consent withdrawn in-run without a configuration owner (unmanaged)")
+            return _no_store({"gate_closed": True, "marker": "unmanaged", "pending_write": False,
+                              "failure": "configuration_changes_unavailable",
+                              "message": _withdrawal_message("unmanaged", False)})
+        try:
+            outcome = await configuration_changes.withdraw_cloud_consent(lease)
+        except PermissionError as error:
+            raise HTTPException(403, CLOUD_CONSENT_MESSAGES["denied"]) from error
+        except RuntimeError as error:
+            if str(error) in {"configuration_owner_not_open", "configuration_consent_gate_required"}:
+                raise HTTPException(409, "configuration_owner_not_open") from error
+            raise
+        marker = outcome.marker.value
+        return _no_store({"gate_closed": outcome.gate_closed, "marker": marker,
+                          "pending_write": outcome.pending is not None, "failure": outcome.failure,
+                          "message": _withdrawal_message(marker, outcome.pending is not None)})
+
+    @router.get("/cloud-consent", dependencies=[Depends(require_admin)])
+    async def cloud_consent_status(request: Request):
+        if current_lease(request) is None:
+            raise HTTPException(403, "dashboard_session_required")
+        if configuration_changes is not None:
+            status = configuration_changes.status()
+            content = {"gate_withdrawn": status.gate_withdrawn, "gate_source": status.gate_source,
+                       "boot_decision_basis": status.boot_decision_basis, "marker": status.marker,
+                       "pending_write": status.pending_write, "pending_write_cause": status.pending_write_cause,
+                       "registration_failure": status.registration_failure, "last_settled": status.last_settled}
+        else:
+            content = {"gate_withdrawn": consent_gate is not None and consent_gate.withdrawn,
+                       "gate_source": None if consent_gate is None or consent_gate.source is None
+                       else consent_gate.source.value,
+                       "boot_decision_basis": "none", "marker": None, "pending_write": False,
+                       "pending_write_cause": None, "registration_failure": None, "last_settled": None}
+        if content["pending_write_cause"] == "actor_lease_expired":
+            content["message"] = CLOUD_CONSENT_MESSAGES["pending_write_lease"]
+        return _no_store(content)
 
     app.include_router(router)
 

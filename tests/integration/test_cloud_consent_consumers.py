@@ -10,7 +10,7 @@ import pytest
 
 from src.ambient.distiller import make_local_chat_fn
 from src.code_index.cards import CardGenerator
-from src.core.egress import EgressDenied, EgressPolicy
+from src.core.egress import CloudConsentGate, EgressDenied, EgressPolicy
 from src.llm.cloud_consent import resolve_compaction_endpoint, resolve_reasoner_gate
 from src.llm.hermes_reasoner import HermesCliReasoner
 from src.llm.reasoner import FastRouter, HttpReasoner
@@ -41,7 +41,7 @@ async def test_http_reasoner_denial_covers_every_api_and_cached_sdk(url):
 
 @pytest.mark.asyncio
 async def test_revoked_consent_is_checked_again_with_a_cached_client():
-    reasoner = HttpReasoner(cloud_consent=True)
+    reasoner = HttpReasoner(cloud_consent=True, consent_gate=CloudConsentGate())
     sdk = MagicMock()
     reasoner._client = sdk
     reasoner.policy = EgressPolicy("cloud", False, reasoner.base_url)

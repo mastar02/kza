@@ -116,7 +116,9 @@ class LLMRouter:
                     # AUTH/PERMANENT — no rotamos. Propagamos.
                     raise
 
-                self._cd.record_failure(ep.id, kind)
+                if kind is not ErrorKind.CONSENT_WITHDRAWN:
+                    # Consent is policy, not endpoint health: no cooldown for it.
+                    self._cd.record_failure(ep.id, kind)
                 attempts.append(FailedAttempt(
                     endpoint_id=ep.id,
                     error_kind=kind,

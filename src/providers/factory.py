@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 
+from src.core.egress import CloudConsentGate
 from src.providers.protocols import (
     LLMProvider,
     RouterProvider,
@@ -34,12 +35,17 @@ from src.providers.remote import (
 logger = logging.getLogger(__name__)
 
 
-def _remote_config(provider_cfg: dict, *, cloud_consent: bool = False) -> RemoteProviderConfig:
-    """Build a ``RemoteProviderConfig`` from a provider config dict."""
+def _remote_config(provider_cfg: dict, *, cloud_consent: bool = False,
+                   consent_gate: CloudConsentGate | None = None) -> RemoteProviderConfig:
+    """Build a ``RemoteProviderConfig`` from a provider config dict.
+
+    A consented cloud worker requires the shared runtime ``consent_gate``.
+    """
     return RemoteProviderConfig(
         url=provider_cfg["url"],
         destination=provider_cfg.get("destination", "cloud"),
         cloud_consent=cloud_consent,
+        consent_gate=consent_gate,
         timeout=provider_cfg.get("timeout", 30.0),
         max_retries=provider_cfg.get("max_retries", 2),
         retry_delay=provider_cfg.get("retry_delay", 0.5),
@@ -78,7 +84,7 @@ def create_stt_provider(config: dict) -> STTProvider:
 # LLM
 # ---------------------------------------------------------------------------
 
-def create_llm_provider(config: dict) -> LLMProvider:
+def create_llm_provider(config: dict, *, consent_gate: CloudConsentGate | None = None) -> LLMProvider:
     """Create an LLM provider based on configuration.
 
     Args:
@@ -92,7 +98,9 @@ def create_llm_provider(config: dict) -> LLMProvider:
 
     if mode == "remote":
         logger.info("LLM provider: remote (%s)", provider_cfg.get("url"))
-        return RemoteLLMProvider(_remote_config(provider_cfg, cloud_consent=config.get("reasoner", {}).get("cloud", {}).get("consent", False)))
+        return RemoteLLMProvider(_remote_config(
+            provider_cfg, cloud_consent=config.get("reasoner", {}).get("cloud", {}).get("consent", False),
+            consent_gate=consent_gate))
 
     logger.info("LLM provider: local (in-process)")
     from src.llm.reasoner import LLMReasoner
@@ -143,7 +151,7 @@ def create_tts_provider(config: dict) -> TTSProvider:
 # Router
 # ---------------------------------------------------------------------------
 
-def create_router_provider(config: dict) -> RouterProvider:
+def create_router_provider(config: dict, *, consent_gate: CloudConsentGate | None = None) -> RouterProvider:
     """Create a Router provider based on configuration.
 
     Args:
@@ -157,7 +165,9 @@ def create_router_provider(config: dict) -> RouterProvider:
 
     if mode == "remote":
         logger.info("Router provider: remote (%s)", provider_cfg.get("url"))
-        return RemoteRouterProvider(_remote_config(provider_cfg, cloud_consent=config.get("reasoner", {}).get("cloud", {}).get("consent", False)))
+        return RemoteRouterProvider(_remote_config(
+            provider_cfg, cloud_consent=config.get("reasoner", {}).get("cloud", {}).get("consent", False),
+            consent_gate=consent_gate))
 
     logger.info("Router provider: HTTP (kza-llm-fast :8101)")
     from src.llm.reasoner import FastRouter
@@ -169,4 +179,5 @@ def create_router_provider(config: dict) -> RouterProvider:
         cloud_consent=config.get("reasoner", {}).get("cloud", {}).get("consent", False),
         model=router_cfg.get("model", "qwen2.5-7b-instruct"),
         timeout=router_cfg.get("timeout", 30),
+        consent_gate=consent_gate,
     )

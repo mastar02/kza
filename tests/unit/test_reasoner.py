@@ -189,9 +189,11 @@ class TestFastRouterLoRA:
         """
         import logging
 
+        from src.core.egress import CloudConsentGate
         from src.llm.reasoner import HttpReasoner
 
-        reasoner = HttpReasoner(base_url="http://127.0.0.1:8101/v1", cloud_consent=True)
+        reasoner = HttpReasoner(base_url="http://127.0.0.1:8101/v1", cloud_consent=True,
+                                consent_gate=CloudConsentGate())
 
         with caplog.at_level(logging.WARNING, logger="src.llm.reasoner"):
             reasoner.load_lora("/models/nightly/latest")

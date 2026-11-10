@@ -390,9 +390,11 @@ def capability_prompt_detail(spec: CommandSpec) -> tuple[str, str]:
 # ============================================================
 class VLLMClient:
     """Cliente OpenAI contra vLLM compartido :8100 (infra)."""
-    def __init__(self, base_url: str, model: str, timeout: float = 30.0, *, destination: str = "cloud", cloud_consent: bool = False):
-        from src.core.egress import EgressPolicy
-        self.policy = EgressPolicy.for_http(base_url, destination, cloud_consent)
+    def __init__(self, base_url: str, model: str, timeout: float = 30.0, *, destination: str = "cloud",
+                 cloud_consent: bool = False, consent_gate=None):
+        from src.core.egress import EgressPolicy, require_consent_gate
+        self.policy = EgressPolicy.for_http(base_url, destination, cloud_consent, consent_gate=consent_gate)
+        require_consent_gate(self.policy)
         self.policy.require_allowed(base_url)
         self.base_url = base_url
         self.model = model
@@ -623,6 +625,7 @@ def main():
             llm = LocalLLMClient(args.model_path)
         else:
             import yaml
+            from src.core.egress import CloudConsentGate
             from src.core.settings_schema import resolve_env_vars
             with open(args.config) as stream:
                 inference_config = resolve_env_vars(yaml.safe_load(stream))
@@ -633,6 +636,8 @@ def main():
                 base_url, args.vllm_model or router_config.get("model", "local"),
                 destination=router_config.get("destination", "cloud") if matches_profile else "cloud",
                 cloud_consent=inference_config.get("reasoner", {}).get("cloud", {}).get("consent", False) if matches_profile else False,
+                # Operator script, own process (K5): a fresh gate, never withdrawn here.
+                consent_gate=CloudConsentGate(),
             )
 
     # Generar + persistir

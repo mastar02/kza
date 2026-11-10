@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from src.core.egress import EgressPolicy, ProcessingDestination
+from src.core.egress import CloudConsentGate, EgressPolicy, ProcessingDestination, require_consent_gate
 
 from src.llm.http_generation import HTTPGenerationClient
 from src.llm.http_reasoner_lifecycle import HttpReasonerLifecycle, _raise_failures as _http_raise_failures
@@ -461,6 +461,18 @@ class LLMReasoner:
         return RECOMMENDED_MODELS
 
 
+def _sync_request_guard(policy: EgressPolicy):
+    """Per-request httpx hook: every SDK attempt, retries included, re-checks consent."""
+    def guard(request: httpx.Request) -> None:
+        policy.require_allowed()
+    return guard
+
+
+def _sdk_retry_options(policy: EgressPolicy) -> dict:
+    """No automatic SDK retry for cloud processing; local keeps the SDK default."""
+    return {"max_retries": 0} if policy.destination is ProcessingDestination.CLOUD else {}
+
+
 class HttpReasoner:
     """Configured OpenAI-compatible HTTP gateway with explicit egress policy.
 
@@ -479,6 +491,7 @@ class HttpReasoner:
         verify_ssl: bool = True,              # desactivar para proxies locales (tarea B5)
         destination: str = "cloud",
         cloud_consent: bool = False,
+        consent_gate: CloudConsentGate | None = None,
         **_ignored_legacy,
     ):
         # Nota: el fallback simple base_url→fallback_base_url (commit 074160b)
@@ -492,7 +505,9 @@ class HttpReasoner:
         self.api_key_env = api_key_env
         self.api_style = api_style
         self.verify_ssl = verify_ssl
-        self.policy = EgressPolicy.for_http(base_url, destination, cloud_consent)
+        self.policy = EgressPolicy.for_http(base_url, destination, cloud_consent, consent_gate=consent_gate)
+        # A consented CLOUD client without the runtime gate would ignore a withdrawal.
+        require_consent_gate(self.policy)
         self._client = None
         self._resolved_model = None
         self._resolved_base_url = None
@@ -511,9 +526,11 @@ class HttpReasoner:
             failures = []
             try:
                 api_key = _resolve_api_key(base_url, self.api_key_env)
-                bundle.http = httpx.Client(follow_redirects=False, verify=self.verify_ssl)
+                bundle.http = httpx.Client(follow_redirects=False, verify=self.verify_ssl,
+                                           event_hooks={"request": [_sync_request_guard(self.policy)]})
                 bundle.sdk = OpenAI(base_url=base_url, api_key=api_key,
-                                    timeout=self.timeout, http_client=bundle.http)
+                                    timeout=self.timeout, http_client=bundle.http,
+                                    **_sdk_retry_options(self.policy))
                 models = bundle.sdk.models.list()
                 ids = [m.id for m in models.data]
                 if preferred_model and preferred_model in ids:
@@ -612,6 +629,8 @@ class HttpReasoner:
                 self.load()
             start = time.perf_counter()
             resp = self._create_completion(prompt, max_tokens=max_tokens, temperature=temperature, top_p=top_p, stop=stop)
+            # A reply that arrives after a withdrawal is discarded, never returned.
+            self.policy.require_allowed()
             text = self._extract_text(resp)
             elapsed_ms = (time.perf_counter() - start) * 1000
             logger.debug(f'HttpReasoner ({elapsed_ms:.0f}ms) {len(prompt)}chars → {len(text)}chars')
@@ -636,7 +655,7 @@ class HttpReasoner:
     def _new_async_client(self, base_url: str) -> HTTPGenerationClient:
         """Build transport objects off-loop without initializing SDK model types."""
         self.policy.require_allowed(base_url)
-        return HTTPGenerationClient(base_url, api_key=_resolve_api_key(base_url, self.api_key_env), timeout=self.timeout, verify=self.verify_ssl, own_client=self._http_lifecycle.async_client_adopter())
+        return HTTPGenerationClient(base_url, api_key=_resolve_api_key(base_url, self.api_key_env), timeout=self.timeout, verify=self.verify_ssl, own_client=self._http_lifecycle.async_client_adopter(), request_guard=self.policy.require_allowed)
 
     def _prepare_async_generation(self, base_url: str, style: str) -> _AsyncGenerationResources:
         """Prepare owned transport resources outside the capture loop."""
@@ -749,6 +768,8 @@ class HttpReasoner:
                         chunk = await self._http_lifecycle.run_task(lease, anext(stream), consumer=True)
                     except StopAsyncIteration:
                         break
+                    # Cut before the next yield once consent is withdrawn.
+                    self.policy.require_allowed()
                     yield chunk
             except BaseException as error:
                 original = error
@@ -806,6 +827,7 @@ class HttpReasoner:
                         else:
                             record = None
                     if record is not None:
+                        self.policy.require_allowed()
                         yield record
                 with self._http_lifecycle.entered(lease):
                     final = _strip_reasoning(raw)
@@ -814,6 +836,8 @@ class HttpReasoner:
                         record = {"token": final[len(emitted):], "text": final, "token_count": count}
                     else:
                         record = None
+                # The held-back tail is never flushed after a withdrawal.
+                self.policy.require_allowed()
                 if record is not None:
                     yield record
             except BaseException as error:
@@ -868,7 +892,9 @@ class HttpReasoner:
         self._last_metrics = None
         if self.idle_timeout_s:
             async with aclosing(self.astream(prompt, max_tokens, temperature)) as stream:
-                return ''.join([chunk['token'] async for chunk in stream]).strip()
+                text = ''.join([chunk['token'] async for chunk in stream]).strip()
+            self.policy.require_allowed()
+            return text
         async with self._async_generation_session() as (client, model, style):
             if style == 'chat' and self.policy.destination is ProcessingDestination.CLOUD:
                 logger.info('Cloud reasoning: sending ~%d chars to %s (model=%s)', len(prompt), urlparse(self.base_url).hostname, model)
@@ -879,6 +905,8 @@ class HttpReasoner:
                 options['prompt'] = prompt
             t0 = time.perf_counter()
             result = await client.complete(options, style=style, max_chars=65536)
+            # A late non-streaming reply after a withdrawal is discarded.
+            self.policy.require_allowed()
             elapsed_ms = (time.perf_counter() - t0) * 1000
             if result.tokens is not None:
                 self._last_metrics = {'tokens': result.tokens, 'ms': elapsed_ms}
@@ -1010,6 +1038,7 @@ REGLAS:
         api_key_env: str | None = None,  # env var explícito para cloud endpoints
         destination: str = "cloud",
         cloud_consent: bool = False,
+        consent_gate: CloudConsentGate | None = None,
         # Backward-compat: ignorar kwargs de la versión local (device, gpu_*, lora_*).
         **_ignored,
     ):
@@ -1017,7 +1046,8 @@ REGLAS:
         self.model_name = model
         self.timeout = timeout
         self.api_key_env = api_key_env
-        self.policy = EgressPolicy.for_http(base_url, destination, cloud_consent)
+        self.policy = EgressPolicy.for_http(base_url, destination, cloud_consent, consent_gate=consent_gate)
+        require_consent_gate(self.policy)
         self._router_initialize()
         self._client = None
         self._available = False
@@ -1043,10 +1073,13 @@ REGLAS:
                     request_timeout = self.timeout
                     clients, owner = self._router_new_clients()
                     with owner.operation():
-                        clients.http = httpx.Client(follow_redirects=False)
+                        clients.http = httpx.Client(
+                            follow_redirects=False,
+                            event_hooks={"request": [_sync_request_guard(self.policy)]},
+                        )
                         clients.sdk = OpenAI(
                             base_url=endpoint, api_key=api_key, timeout=request_timeout,
-                            http_client=clients.http,
+                            http_client=clients.http, **_sdk_retry_options(self.policy),
                         )
                         self._client = clients.sdk
 
@@ -1109,6 +1142,8 @@ REGLAS:
                 temperature=temperature,
                 **extra,
             )
+            # A late reply after a withdrawal is discarded.
+            self.policy.require_allowed()
             elapsed_ms = (time.perf_counter() - t0) * 1000
             usage = getattr(resp, "usage", None)
             if usage is not None:
@@ -1138,7 +1173,7 @@ REGLAS:
         prompt ("Texto: ...\nCategoría: ..."), lo que ensucia el output. Medido
         +18 puntos accuracy en classify (benchmarks/router/REPORT.md).
         """
-        results = kwargs = prompt = resp = None
+        results = kwargs = prompt = resp = text = None
         with self._adapter_admit():
             try:
                 self.policy.require_allowed(self.base_url)
@@ -1160,15 +1195,19 @@ REGLAS:
                             temperature=temperature,
                             **kwargs,
                         )
-                        results.append(resp.choices[0].text)
+                        text = resp.choices[0].text
                     except Exception:
                         logger.error("Router HTTP request failed")
                         results.append("")
+                        continue
+                    # Outside the per-prompt fallback: a withdrawal is never an empty reply.
+                    self.policy.require_allowed()
+                    results.append(text)
                 elapsed_ms = (time.perf_counter() - start) * 1000
                 logger.debug(f"Router HTTP ({elapsed_ms:.0f}ms, {len(prompts)} prompts)")
                 return results
             finally:
-                self = prompts = extra_body = stop = results = kwargs = prompt = resp = None
+                self = prompts = extra_body = stop = results = kwargs = prompt = resp = text = None
 
     def load_lora(self, lora_path: str):
         """LoRA no soportado vía HTTP en vLLM compartido. Requiere coordinación con infra (R3)."""

@@ -30,6 +30,7 @@ class ErrorKind(Enum):
     FORMAT = "format"              # JSON inválido, schema mismatch
     AUTH = "auth"                  # 401, 403 (no rotamos: requiere acción humana)
     PERMANENT = "permanent"        # cualquier otro error definitivo
+    CONSENT_WITHDRAWN = "consent_withdrawn"  # OQ-8: política, no salud; rota sin cooldown
 
     def is_failover_worthy(self) -> bool:
         """¿Este error justifica rotar al siguiente candidato?"""
@@ -39,6 +40,7 @@ class ErrorKind(Enum):
             ErrorKind.IDLE_TIMEOUT,
             ErrorKind.BILLING,
             ErrorKind.FORMAT,
+            ErrorKind.CONSENT_WITHDRAWN,
         }
 
 

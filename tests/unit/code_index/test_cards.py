@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.core.egress import CloudConsentGate
 from src.code_index.cards import CardGenerator, _strip_think
 
 
@@ -24,7 +25,7 @@ def test_strip_think_noop_without_block():
 
 
 async def test_generate_returns_stripped_card():
-    gen = CardGenerator(base_url="http://fake:8200/v1", model="test-model", cloud_consent=True)
+    gen = CardGenerator(base_url="http://fake:8200/v1", model="test-model", cloud_consent=True, consent_gate=CloudConsentGate())
     fake_client = SimpleNamespace(
         chat=SimpleNamespace(
             completions=SimpleNamespace(
@@ -49,7 +50,7 @@ async def test_generate_returns_stripped_card():
 async def test_generate_truncates_long_source():
     gen = CardGenerator(
         base_url="http://fake:8200/v1", model="m", max_source_chars=10
-    , cloud_consent=True)
+    , cloud_consent=True, consent_gate=CloudConsentGate())
     fake_client = SimpleNamespace(
         chat=SimpleNamespace(
             completions=SimpleNamespace(
@@ -66,7 +67,7 @@ async def test_generate_truncates_long_source():
 
 
 async def test_generate_propagates_gateway_errors():
-    gen = CardGenerator(base_url="http://fake:8200/v1", model="m", cloud_consent=True)
+    gen = CardGenerator(base_url="http://fake:8200/v1", model="m", cloud_consent=True, consent_gate=CloudConsentGate())
     fake_client = SimpleNamespace(
         chat=SimpleNamespace(
             completions=SimpleNamespace(
@@ -98,7 +99,7 @@ def test_get_client_lazy_wiring(monkeypatch):
     gen = CardGenerator(
         base_url="http://gw:8200/v1", model="m",
         api_key_env="MI_KEY_ENV", timeout=45.0,
-        cloud_consent=True,
+        cloud_consent=True, consent_gate=CloudConsentGate(),
     )
     client = gen._get_client()
 
@@ -125,5 +126,5 @@ def test_get_client_dummy_key_when_env_missing(monkeypatch):
     monkeypatch.setitem(sys.modules, "openai", FakeOpenAI())
     monkeypatch.delenv("NO_EXISTE_ENV", raising=False)
 
-    gen = CardGenerator(base_url="http://gw:8200/v1", model="m", api_key_env="NO_EXISTE_ENV", cloud_consent=True)
+    gen = CardGenerator(base_url="http://gw:8200/v1", model="m", api_key_env="NO_EXISTE_ENV", cloud_consent=True, consent_gate=CloudConsentGate())
     assert gen._get_client().kwargs["api_key"] == "dummy"

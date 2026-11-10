@@ -200,12 +200,146 @@ def _configuration_event(event: dict, prior: dict | None, selected: bool, header
     return configuration_event_shape(event, prior, selected, Path(header["state_root"]), header["state_identity"])
 
 
+# ----------------------------------------------------------------------
+# configuration_publisher/2 (OQ-8): the /1 events plus the durable
+# consent-withdrawal marker. Every /1 function above stays byte-identical.
+# ----------------------------------------------------------------------
+
+CONSENT_SCOPE = "reasoner_cloud"
+_CONFIGURATION_PHASES_V2 = {
+    "intent": {None}, "attached": {"intent"}, "withdrawn": {"attached"}, "opening": {"withdrawn"},
+    "drained": {"attached", "withdrawn", "opening"}, "disabled": {None},
+}
+CONFIGURATION_OUTCOMES_V2 = MappingProxyType({
+    "no_pending": frozenset({"attached", "withdrawn"}),
+    "not_attempted_graph_failed": frozenset({"withdrawn"}),
+    "refused_before_temporary": frozenset({"withdrawn", "opening"}),
+    "clean_failed": frozenset({"opening"}),
+    "committed": frozenset({"opening"}),
+})
+UNVERIFIABLE_REASONS = frozenset({"chain_invalid", "epoch_unreadable_with_records", "duplicate_generation",
+                                  "run_unreadable"})
+_MARKER_KEYS = frozenset({"origin", "basis", "scope", "pinned_config_sha256", "source"})
+_SOURCE_KEYS = frozenset({"run_id", "generation", "record_sha256", "reason"})
+
+
+def _run_id(value: object) -> bool:
+    return type(value) is str and re.fullmatch("[0-9a-f]{32}", value) is not None
+
+
+def _generation(value: object) -> bool:
+    return type(value) is int and value > 0
+
+
+def _decision_shape(value: object) -> None:
+    """A boot decision: null, or an inherited actor/unverifiable marker; no identity or time."""
+    if value is None:
+        return
+    base._require(type(value) is dict and set(value) == _MARKER_KEYS and value["origin"] == "inherited"
+        and value["basis"] in {"actor", "unverifiable"} and value["scope"] == CONSENT_SCOPE
+        and (_hex64(value["pinned_config_sha256"]) if value["basis"] == "actor"
+             else value["pinned_config_sha256"] is None or _hex64(value["pinned_config_sha256"]))
+        and type(value["source"]) is dict and set(value["source"]) == _SOURCE_KEYS, "configuration_decision")
+    source = value["source"]
+    decoded = (_run_id(source["run_id"]) and _generation(source["generation"])
+               and _hex64(source["record_sha256"]) and source["reason"] is None)
+    detected = (value["basis"] == "unverifiable" and source["record_sha256"] is None
+                and source["reason"] in UNVERIFIABLE_REASONS
+                and (source["run_id"] is None or _run_id(source["run_id"]))
+                and (source["generation"] is None or _generation(source["generation"])))
+    base._require(decoded or detected, "configuration_decision")
+
+
+def _withdrawal_shape(value: object, plan: dict) -> None:
+    """The actor withdrawal of this run, pinned to the attached file; no actor identity."""
+    base._require(type(value) is dict and set(value) == _MARKER_KEYS and value["origin"] == "actor"
+        and value["basis"] == "actor" and value["scope"] == CONSENT_SCOPE
+        and value["pinned_config_sha256"] == plan["initial_sha256"] and value["source"] is None,
+        "configuration_withdrawal")
+
+
+def actor_withdrawal(plan: dict) -> dict:
+    """The withdrawal object recorded for an authorized actor of this run."""
+    return {"origin": "actor", "basis": "actor", "scope": CONSENT_SCOPE,
+            "pinned_config_sha256": plan["initial_sha256"], "source": None}
+
+
+def _aggregate_shape_v2(aggregate: dict, plan: dict, prior_phase: str) -> None:
+    base._require(type(aggregate) is dict and set(aggregate) == _CONFIGURATION_AGGREGATE_KEYS
+        and aggregate["outcome"] in CONFIGURATION_OUTCOMES_V2
+        and prior_phase in CONFIGURATION_OUTCOMES_V2[aggregate["outcome"]], "configuration_aggregate")
+    committed = aggregate["outcome"] == "committed"
+    attempted = aggregate["outcome"] in {"committed", "clean_failed"}
+    base._require(type(aggregate["attempts"]) is int and aggregate["attempts"] == (1 if attempted else 0)
+        and aggregate["writer_returned"] is True
+        and type(aggregate["open_temp_count"]) is int and aggregate["open_temp_count"] == 0
+        and aggregate["cleanup_uncertain"] is False
+        and (base._identity_shape(aggregate["last_committed_identity"])
+             and aggregate["last_committed_identity"] != plan["initial_identity"]
+             and _hex64(aggregate["last_committed_sha256"])
+             if committed else
+             aggregate["last_committed_identity"] == plan["initial_identity"]
+             and aggregate["last_committed_sha256"] == plan["initial_sha256"]), "configuration_aggregate")
+
+
+def configuration_event_shape_v2(event: dict, prior: dict | None, selected: bool, state: Path,
+                                 state_identity: dict | None = None) -> dict:
+    """Check one /2 configuration event (without chain fields); return its state.
+
+    The decision is required on the first record (intent or disabled) and is
+    repeated unchanged; ``marker_out`` is the run's effective marker and is
+    sticky whatever the drain outcome.
+    """
+    phase = event.get("phase")
+    prior_phase = None if prior is None else prior["phase"]
+    base._require(phase in _CONFIGURATION_PHASES_V2 and prior_phase in _CONFIGURATION_PHASES_V2[phase],
+                  "transition")
+    if phase == "disabled":
+        base._require(selected is False and set(event) == {"kind", "phase", "path", "decision"}
+                      and event["path"] == str(configuration_path(state)), "configuration_event")
+        _decision_shape(event["decision"])
+        return {"phase": "disabled", "plan": None, "producer": "configuration", "path": event["path"],
+                "decision": event["decision"], "withdrawal": None, "marker_out": event["decision"]}
+    fields = {"kind", "phase", "plan", "decision"}
+    if phase in {"withdrawn", "opening", "drained"}:
+        fields |= {"withdrawal"}
+    if phase == "drained":
+        fields |= {"aggregate"}
+    base._require(selected is True and set(event) == fields, "configuration_event")
+    plan = event["plan"]
+    configuration_plan_shape(plan, state, state_identity)
+    base._require(prior is None or prior["plan"] == plan, "plan_changed")
+    _decision_shape(event["decision"])
+    base._require(prior is None or prior["decision"] == event["decision"], "configuration_decision")
+    withdrawal = None
+    if phase == "withdrawn":
+        _withdrawal_shape(event["withdrawal"], plan)
+        withdrawal = event["withdrawal"]
+    elif phase in {"opening", "drained"}:
+        withdrawal = event["withdrawal"]
+        base._require(withdrawal == prior["withdrawal"], "configuration_withdrawal")
+    aggregate = None
+    if phase == "drained":
+        _aggregate_shape_v2(event["aggregate"], plan, prior_phase)
+        aggregate = event["aggregate"]
+    return {"phase": phase, "plan": plan, "producer": "configuration", "aggregate": aggregate,
+            "decision": event["decision"], "withdrawal": withdrawal,
+            "marker_out": withdrawal if withdrawal is not None else event["decision"]}
+
+
+def _configuration_event_v2(event: dict, prior: dict | None, selected: bool, header: dict) -> dict:
+    return configuration_event_shape_v2(event, prior, selected, Path(header["state_root"]),
+                                        header["state_identity"])
+
+
 _GRAMMARS = MappingProxyType({
     "account_publisher/1": _Grammar("account_publisher/1", "accounts", "account_publisher", _account_event),
     "configuration_publisher/1": _Grammar("configuration_publisher/1", "configuration",
                                           "configuration_publisher", _configuration_event),
+    "configuration_publisher/2": _Grammar("configuration_publisher/2", "configuration",
+                                          "configuration_publisher", _configuration_event_v2),
 })
-WRITER_GRAMMARS = MappingProxyType({"accounts": "account_publisher/1", "configuration": "configuration_publisher/1"})
+WRITER_GRAMMARS = MappingProxyType({"accounts": "account_publisher/1", "configuration": "configuration_publisher/2"})
 
 
 def declared_grammars(header: dict) -> dict[str, _Grammar]:
@@ -329,3 +463,85 @@ V4_FORMAT = v2._JournalFormat(
     schema_version=4, namespace_name="v4", known_versions=frozenset({"v1", "v2", "v3", "v4"}),
     selected_producers=v2._SELECTED | set(WRITER_GRAMMARS), decode_chain=chain,
 )
+
+
+# ----------------------------------------------------------------------
+# OQ-8 boot reader: the authoritative consent decision of the history.
+# Pure and read-only; the writer calls it before its own epoch exists.
+# ----------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class PriorConsentDecision:
+    """What the newest authoritative run says; ``decision`` is ready to inherit."""
+
+    basis: str  # "none" | "actor" | "unverifiable"
+    decision: dict | None = None
+
+
+def _unverifiable(reason: str, run_id: str | None, generation: int | None) -> PriorConsentDecision:
+    return PriorConsentDecision("unverifiable", {
+        "origin": "inherited", "basis": "unverifiable", "scope": CONSENT_SCOPE, "pinned_config_sha256": None,
+        "source": {"run_id": run_id, "generation": generation, "record_sha256": None, "reason": reason}})
+
+
+_EMPTY_RUN_NAMES = frozenset({"epoch.json", "HEAD.next"})
+
+
+def prior_consent_decision(runs: Path, exclude_run_id: str) -> PriorConsentDecision:
+    """Return the effective marker of the newest /2 run with configuration state.
+
+    A run holding only ``epoch.json`` and/or ``HEAD.next`` (torn creation) is
+    ignored. An unreadable epoch beside a HEAD or records, two runs with the
+    same generation, or a run whose chain does not decode, are unverifiable
+    (fail closed). Any unexpected per-run error is unverifiable too.
+    """
+    runs = Path(runs)
+    if not runs.exists():
+        return PriorConsentDecision("none")
+    candidates: list[tuple[int, str, Path]] = []
+    try:
+        directories = sorted(runs.iterdir())
+    except OSError:
+        return _unverifiable("run_unreadable", None, None)
+    for directory in directories:
+        if directory.name == exclude_run_id:
+            continue
+        try:
+            names = {path.name for path in directory.iterdir()}
+            if names <= _EMPTY_RUN_NAMES:
+                continue
+            try:
+                header, _ = base._read(directory / "epoch.json")
+                base._require(type(header) is dict, "header")
+            except (OSError, RuntimeError, ValueError):
+                return _unverifiable("epoch_unreadable_with_records", directory.name, None)
+            grammars = header.get("grammars")
+            if type(grammars) is not dict or grammars.get("configuration") != "configuration_publisher/2":
+                continue  # /1 or older runs cannot hold a decision.
+            generation = header.get("generation")
+            if not _generation(generation):
+                return _unverifiable("chain_invalid", directory.name, None)
+            candidates.append((generation, directory.name, directory))
+        except Exception:  # noqa: BLE001 - any per-run defect fails closed
+            return _unverifiable("run_unreadable", directory.name, None)
+    generations = [generation for generation, _, _ in candidates]
+    for generation in generations:
+        if generations.count(generation) > 1:
+            return _unverifiable("duplicate_generation", None, generation)
+    for generation, run_id, directory in sorted(candidates, reverse=True):
+        try:
+            header, _, states, _ = chain(directory)
+        except Exception:  # noqa: BLE001 - torn, malformed or unexpected: fail closed
+            return _unverifiable("chain_invalid", run_id, generation)
+        state = states.get("configuration")
+        if state is None:
+            continue  # Crashed before its first configuration record.
+        marker = state["marker_out"]
+        if marker is None:
+            return PriorConsentDecision("none")
+        return PriorConsentDecision(marker["basis"], {
+            "origin": "inherited", "basis": marker["basis"], "scope": CONSENT_SCOPE,
+            "pinned_config_sha256": marker["pinned_config_sha256"],
+            "source": {"run_id": header["run_id"], "generation": header["generation"],
+                       "record_sha256": state["sha256"], "reason": None}})
+    return PriorConsentDecision("none")

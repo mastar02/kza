@@ -19,13 +19,14 @@ def test_cold_async_paths_do_not_initialize_openai_sdk():
                     raise AssertionError('Async generation imported SDK types: ' + fullname)
 
         sys.meta_path.insert(0, DenySDK())
+        from src.core.egress import CloudConsentGate
         from src.llm.reasoner import HttpReasoner
         from tests.mocks.llm_http import Endpoint, SSEBody, event
 
         async def check():
             endpoint = Endpoint(SSEBody([event('Respuesta completa.'), event(finish='stop')]))
             endpoint.completion_payload = {'choices': [{'message': {'content': 'Respuesta completa.'}, 'finish_reason': 'stop'}]}
-            reasoner = HttpReasoner(model='configured-model', api_style='chat', cloud_consent=True)
+            reasoner = HttpReasoner(model='configured-model', api_style='chat', cloud_consent=True, consent_gate=CloudConsentGate())
             reasoner._new_async_client = endpoint.build
             async with aclosing(reasoner.astream('synthetic')) as stream:
                 assert ''.join([chunk['token'] async for chunk in stream]) == 'Respuesta completa.'

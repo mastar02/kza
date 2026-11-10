@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.core.egress import CloudConsentGate
 from src.llm.reasoner import HttpReasoner
 from tests.mocks.llm_http import event
 from tests.unit.llm.test_http_async_stream import setup
@@ -40,7 +41,7 @@ async def test_complete_uses_chat_when_api_style_chat(monkeypatch):
 
 
 def test_call_chat_style_returns_completions_shaped_dict():
-    r = HttpReasoner(base_url="https://api.minimax.io/v1", api_style="chat", cloud_consent=True)
+    r = HttpReasoner(base_url="https://api.minimax.io/v1", api_style="chat", cloud_consent=True, consent_gate=CloudConsentGate())
     r._client = _make_chat_client("hola")
     r._resolved_model = "MiniMax-M2.7-highspeed"
     result = r("dummy prompt")
@@ -56,7 +57,7 @@ def test_completions_style_unchanged_legacy():
     resp.usage.prompt_tokens = 1
     resp.usage.completion_tokens = 2
     client.completions.create.return_value = resp
-    r = HttpReasoner(base_url="http://127.0.0.1:8200/v1", cloud_consent=True)  # default api_style="completions"
+    r = HttpReasoner(base_url="http://127.0.0.1:8200/v1", cloud_consent=True, consent_gate=CloudConsentGate())  # default api_style="completions"
     r._client = client
     r._resolved_model = "local"
     result = r("hola")

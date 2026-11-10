@@ -181,12 +181,33 @@ class HTTPGenerationStream:
         decoder.finish()
 
 
+def _install_request_guard(client: httpx.AsyncClient, guard: Callable[[], None]) -> None:
+    """Install ``guard`` as an awaited request hook, idempotently per guard."""
+    hooks = client.event_hooks
+    requests = list(hooks.get("request", ()))
+    if any(getattr(hook, "_kza_request_guard", None) == guard for hook in requests):
+        return
+
+    async def _guard(request: httpx.Request) -> None:
+        guard()
+    _guard._kza_request_guard = guard
+    client.event_hooks = {**hooks, "request": [*requests, _guard]}
+
+
 class HTTPGenerationClient:
     """One-request HTTPX client with explicit resource ownership and no retries."""
 
-    def __init__(self, base_url: str, *, api_key: str, timeout: float=120, verify: bool=True, http_client: httpx.AsyncClient | None=None, own_client: Callable[[HTTPGenerationClient], CloseTaskFactory] | None=None) -> None:
+    def __init__(self, base_url: str, *, api_key: str, timeout: float=120, verify: bool=True, http_client: httpx.AsyncClient | None=None, own_client: Callable[[HTTPGenerationClient], CloseTaskFactory] | None=None, request_guard: Callable[[], None] | None=None) -> None:
+        """Bind one endpoint; ``request_guard`` runs before every request is sent.
+
+        An injected ``http_client`` must serve a single egress policy: the
+        guard is appended to its request hooks (once per guard) and denies
+        every later request through that client after a withdrawal.
+        """
         self._close_task_factory: CloseTaskFactory | None = None
         self._client = http_client or httpx.AsyncClient(verify=verify, timeout=timeout, follow_redirects=False)
+        if request_guard is not None:
+            _install_request_guard(self._client, request_guard)
         if own_client is not None:
             self._close_task_factory = own_client(self)
         self.base_url = base_url.rstrip('/') + '/'

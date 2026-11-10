@@ -6,6 +6,7 @@ which checks hasattr(self.llm, 'generate_stream') and falls back to .generate().
 
 from unittest.mock import MagicMock
 
+from src.core.egress import CloudConsentGate
 from src.llm.reasoner import HttpReasoner
 
 
@@ -21,7 +22,7 @@ def _chat_client(text):
 
 
 def test_generate_returns_text():
-    r = HttpReasoner(base_url="https://api.minimax.io/v1", api_style="chat", cloud_consent=True)
+    r = HttpReasoner(base_url="https://api.minimax.io/v1", api_style="chat", cloud_consent=True, consent_gate=CloudConsentGate())
     r._client = _chat_client("hola mundo")
     r._resolved_model = "MiniMax-M2.7-highspeed"
     assert r.generate("hi") == "hola mundo"
@@ -34,7 +35,7 @@ def test_httpreasoner_has_drop_in_interface():
 
 
 def test_generate_stream_yields_token_dicts():
-    r = HttpReasoner(base_url="https://api.minimax.io/v1", api_style="chat", cloud_consent=True)
+    r = HttpReasoner(base_url="https://api.minimax.io/v1", api_style="chat", cloud_consent=True, consent_gate=CloudConsentGate())
     chunks = []
     for piece in ["ho", "la"]:
         ch = MagicMock()

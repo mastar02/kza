@@ -6,7 +6,7 @@ import re
 
 import httpx
 
-from src.core.egress import EgressPolicy
+from src.core.egress import CloudConsentGate, EgressPolicy, require_consent_gate
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,7 @@ class CardGenerator:
         max_source_chars: int = 48_000,
         destination: str = "cloud",
         cloud_consent: bool = False,
+        consent_gate: CloudConsentGate | None = None,
     ):
         """Inicializar el generador de cards.
 
@@ -60,13 +61,19 @@ class CardGenerator:
             api_key_env: Variable de entorno que contiene la API key virtual (default MINIMAX_API_KEY).
             timeout: Timeout en segundos para requests al gateway (default 120.0).
             max_source_chars: Máximo de caracteres del source a enviar al LLM (default 48000).
+            destination: Destino declarado del procesamiento.
+            cloud_consent: Consentimiento literal de settings.yaml.
+            consent_gate: Compuerta de retiro (OQ-8); obligatoria con consentimiento cloud.
+                Este servicio corre en su propio proceso: su compuerta no ve el retiro
+                del asistente (límite conocido K5).
         """
         self.base_url = base_url
         self.model = model
         self.api_key_env = api_key_env
         self.timeout = timeout
         self.max_source_chars = max_source_chars
-        self.policy = EgressPolicy.for_http(base_url, destination, cloud_consent)
+        self.policy = EgressPolicy.for_http(base_url, destination, cloud_consent, consent_gate=consent_gate)
+        require_consent_gate(self.policy)
         self._client = None
 
     def _get_client(self):

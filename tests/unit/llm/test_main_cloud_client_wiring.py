@@ -1,5 +1,6 @@
 """B3: verify HttpReasoner can be constructed with the MiniMax cloud config."""
 
+from src.core.egress import CloudConsentGate
 from src.llm.hermes_reasoner import HermesCliReasoner
 from src.llm.reasoner import HttpReasoner
 
@@ -21,7 +22,7 @@ def test_httpreasoner_cloud_construction_from_config():
         idle_timeout_s=reasoner_cfg["idle_timeout_s"],
         api_style=reasoner_cfg.get("api_style", "completions"),
         api_key_env=reasoner_cfg.get("api_key_env"),
-        cloud_consent=True,
+        cloud_consent=True, consent_gate=CloudConsentGate(),
     )
     assert r.base_url == "https://api.minimax.io/v1"
     assert r.model == "MiniMax-M2.7-highspeed"
@@ -44,7 +45,7 @@ def test_hermes_cli_reasoner_construction_from_config():
         provider=reasoner_cfg.get("hermes_provider", "openai-codex"),
         model=reasoner_cfg.get("hermes_model"),
         timeout_s=reasoner_cfg.get("hermes_timeout_s", 90.0),
-        cloud_consent=True,
+        cloud_consent=True, consent_gate=CloudConsentGate(),
     )
     assert r.binary_path == "/opt/hermes/bin/hermes"
     assert r.provider == "openai-codex"
@@ -59,7 +60,7 @@ def test_hermes_cli_reasoner_construction_uses_defaults_when_keys_missing():
         provider=reasoner_cfg.get("hermes_provider", "openai-codex"),
         model=reasoner_cfg.get("hermes_model"),
         timeout_s=reasoner_cfg.get("hermes_timeout_s", 90.0),
-        cloud_consent=True,
+        cloud_consent=True, consent_gate=CloudConsentGate(),
     )
     assert r.binary_path == "hermes"
     assert r.timeout_s == 90.0
@@ -79,7 +80,7 @@ def test_hermes_cli_compaction_reasoner_construction():
         provider=reasoner_cfg.get("hermes_provider", "openai-codex"),
         model=reasoner_cfg.get("hermes_model"),
         timeout_s=reasoner_cfg.get("hermes_timeout_s", 90.0),
-        cloud_consent=True,
+        cloud_consent=True, consent_gate=CloudConsentGate(),
     )
     assert isinstance(compaction_reasoner, HermesCliReasoner)
     assert compaction_reasoner.provider == "openai-codex"

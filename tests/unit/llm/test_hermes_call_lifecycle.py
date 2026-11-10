@@ -30,6 +30,7 @@ async def _until(predicate):
 
 
 async def _scenario(case):
+    from src.core.egress import CloudConsentGate
     from src.llm.hermes_reasoner import HermesCliReasoner
 
     loop = asyncio.get_running_loop()
@@ -43,7 +44,7 @@ async def _scenario(case):
     context_reads = []
     native_error = OSError("synthetic_native_error")
     reentry = {}
-    model = HermesCliReasoner(provider="synthetic", cloud_consent=True)
+    model = HermesCliReasoner(provider="synthetic", cloud_consent=True, consent_gate=CloudConsentGate())
     original_handler = loop.get_exception_handler()
     unexpected = []
     loop.set_exception_handler(lambda _loop, info: unexpected.append(info))

@@ -9,7 +9,7 @@ from contextlib import aclosing
 import httpx
 import pytest
 
-from src.core.egress import EgressDenied, EgressPolicy
+from src.core.egress import CloudConsentGate, EgressDenied, EgressPolicy
 from src.llm.idle_watchdog import IdleTimeoutError
 from src.llm.reasoner import HttpReasoner
 from tests.mocks.llm_http import Endpoint, SSEBody, event
@@ -22,6 +22,7 @@ def setup(monkeypatch, parts=None, *, style="chat", models=("configured-model",)
           status=200, on_models=None, **kwargs):
     body = SSEBody(parts if parts is not None else [event("Hola"), event(finish="stop")])
     endpoint = Endpoint(body, models=models, status=status, on_models=on_models)
+    kwargs.setdefault("consent_gate", CloudConsentGate())
     reasoner = HttpReasoner(base_url=ENDPOINT, model=model, api_style=style, cloud_consent=True, **kwargs)
     monkeypatch.setattr(reasoner, "_new_async_client", endpoint.build)
     return reasoner, endpoint

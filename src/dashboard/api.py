@@ -202,6 +202,8 @@ class DashboardAPI:
         voice_registry=None,
         ambient_control=None,
         capture_control=None,
+        configuration_changes=None,
+        consent_gate=None,
     ):
         self.scheduler = routine_scheduler
         self.authority = authority
@@ -230,6 +232,9 @@ class DashboardAPI:
         self.voice_registry = voice_registry
         self.ambient_control = ambient_control
         self.capture_control = capture_control
+        # OQ-8: admin-only cloud-consent withdrawal (never voice/persona).
+        self.configuration_changes = configuration_changes
+        self.consent_gate = consent_gate
         self.home_actions = home_actions if home_actions is not None else (
             HomeActionService(ha_client) if ha_client is not None else None
         )
@@ -980,6 +985,8 @@ class DashboardAPI:
             voice_registry=self.voice_registry,
             admin_work=self.admin_work,
             model_lock=self.speaker_model_lock,
+            configuration_changes=self.configuration_changes,
+            consent_gate=self.consent_gate,
         )
         register_memory_routes(self.app, manager=self.memory_manager)
         register_voice_routes(self.app,voices=self.voice_registry)

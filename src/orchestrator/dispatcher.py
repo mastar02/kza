@@ -54,6 +54,7 @@ from src.home_assistant.capability_service import HomeCapabilityService
 from src.home_assistant.ha_client import HAStatesSnapshot, STATE_OBSERVATION_TTL_S
 from src.home_assistant.voice_actions import VoiceActionResult, VoiceHomeActionExecutor
 from src.llm.generation_stream import GenerationStream, GuardedGeneration
+from src.llm.error_classifier import is_consent_withdrawn
 from src.memory.fact_ledger import MemorySource
 from src.memory.producer_scopes import ProducerScopes, current_producer_scope
 from src.orchestrator.cancellation import CancellationReason
@@ -208,6 +209,12 @@ def _strip_accents(text: str) -> str:
 # Nota: el match se hace sobre texto normalizado SIN acentos → entradas sin tilde.
 _LIGHT_NOUNS: tuple[str, ...] = (
     "luz", "luces", "lampara", "foco", "luminaria", "veladora",
+)
+
+# OQ-8: spoken when the slow path fails because cloud consent was withdrawn.
+_CLOUD_CONSENT_WITHDRAWN_RESPONSE = (
+    "El razonamiento en la nube está desactivado porque se retiró el consentimiento. "
+    "Puedo seguir con los comandos de la casa."
 )
 
 # Respuesta inmediata y honesta cuando se rechaza un match de luz por conflicto
@@ -2174,6 +2181,8 @@ class MultiUserOrchestrator:
                     data={"error": str(e)}
                 )
                 failure = str(e)
+                if is_consent_withdrawn(e) and not request.speech_handled:
+                    request.error_response = _CLOUD_CONSENT_WITHDRAWN_RESPONSE
 
             finally:
                 if request.is_cancelled:

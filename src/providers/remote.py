@@ -16,11 +16,11 @@ import asyncio
 import base64
 import io
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
-from src.core.egress import EgressDenied, EgressPolicy
+from src.core.egress import CloudConsentGate, EgressDenied, EgressPolicy, require_consent_gate
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +40,17 @@ class RemoteProviderConfig:
     retry_delay: float = _DEFAULT_RETRY_DELAY_S
     destination: str = "cloud"
     cloud_consent: bool = False
+    consent_gate: CloudConsentGate | None = field(default=None, compare=False)
+
+    def __post_init__(self) -> None:
+        # OQ-8 (N4): a consented CLOUD worker must carry the runtime gate.
+        require_consent_gate(self.egress_policy)
 
     @property
     def egress_policy(self) -> EgressPolicy:
         """Return the processing grant bound to this worker, not its hostname."""
-        return EgressPolicy.for_http(self.url, self.destination, self.cloud_consent)
+        return EgressPolicy.for_http(self.url, self.destination, self.cloud_consent,
+                                     consent_gate=self.consent_gate)
 
 
 # ---------------------------------------------------------------------------

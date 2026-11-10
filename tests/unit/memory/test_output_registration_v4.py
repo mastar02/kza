@@ -27,6 +27,8 @@ from tests.unit.memory.test_output_registration_v3 import _plan as _account_plan
 
 SELECTED = ("privacy_authority", "authority_sessions", "routines", "events", "suggestions")
 GRAMMARS = {"accounts": "account_publisher/1", "configuration": "configuration_publisher/1"}
+# OQ-8: the writer declares the appended consent-marker grammar; /1 runs stay readable.
+WRITER = {"accounts": "account_publisher/1", "configuration": "configuration_publisher/2"}
 BINDING_SHA = "b" * 64  # The synthetic binding's settings.yaml projection.
 
 
@@ -94,12 +96,13 @@ def test_v4_grammar_table_is_closed_and_reuses_the_unchanged_v3_account_function
     table = module._GRAMMARS
     assert {key: (entry.grammar_id, entry.producer, entry.event_kind) for key, entry in table.items()} == {
         "account_publisher/1": ("account_publisher/1", "accounts", "account_publisher"),
-        "configuration_publisher/1": ("configuration_publisher/1", "configuration", "configuration_publisher")}
+        "configuration_publisher/1": ("configuration_publisher/1", "configuration", "configuration_publisher"),
+        "configuration_publisher/2": ("configuration_publisher/2", "configuration", "configuration_publisher")}
     with pytest.raises(TypeError):
         table["future_publisher/1"] = table["account_publisher/1"]
     with pytest.raises(TypeError):
         table["account_publisher/1"].__reduce_ex__(2)
-    assert dict(module.WRITER_GRAMMARS) == GRAMMARS
+    assert dict(module.WRITER_GRAMMARS) == WRITER
     fmt = module.V4_FORMAT
     assert (fmt.schema_version, fmt.namespace_name, fmt.known_versions, fmt.decode_chain) == (
         4, "v4", frozenset({"v1", "v2", "v3", "v4"}), module.chain)
@@ -133,6 +136,21 @@ V4_PINNED = {
                              "e1363a23bc03a78cd6ebd5933af5967367b2062e5128080c108e15a4ebbdb396"),
     "_account_event": ("e02329d8bc35724692cc346d940256daa4285b1ab038fc08fd23f1a253cb368f",
                        "2325ca04a540cba220e3d9797496c8b8f965db936379c9249861a9fa32a6c621"),
+    # OQ-8: configuration_publisher/2 functions (appended; /1 pins above are unchanged).
+    "_decision_shape": ("4c776b4d03bead66c09cfb2be4418bfc94b9cba6d5c82635d89c0656fce88366",
+                        "41715defa0a0cdfc15df5abc32756c6c993b580cf27adb03c5c00e1c47908642"),
+    "_withdrawal_shape": ("1869ec725726a5646b7f558221e5640e1dc519423aedf68087e41181e4dc15f7",
+                          "4a8301ddabd7b8845932b65a598807186dc715395d94d93902056e2bf13c03b9"),
+    "actor_withdrawal": ("c870c2ef3db2d3be6895ffe69ead892036ec5c99e90830199108ea3f3724741b",
+                         "83b16607a2fa19c72f7b82d2965abae1c087b03e994dbb237249203d70130f0c"),
+    "_aggregate_shape_v2": ("cc5e17ab45240d2170c1c5d93ebffbfbd6b830ad789526c9ce2dc1d6ce462c6f",
+                            "b615ee0f19dc2d6d6053e1f3246552a6b8a242c544a7ed63ee4cafbe5c428dee"),
+    "configuration_event_shape_v2": ("437cb286e957b84dac7f73af350ac34cfc84505905075a2f0801edd32caf012d",
+                                     "9e155289554261e22e0cd1c623302f41de360a0344473a93bf048620aed98e1f"),
+    "_configuration_event_v2": ("3d73189c9ab633425b2633f68a8b49f382bd6e3b843ebdec127a544872ca85c1",
+                                "c850266b39e82b3d29e23dc47e5173c39434f8c0e15029225d21c5d68e8ee192"),
+    "prior_consent_decision": ("e388b8db0196c2d8c20fa1ca1620954acd629a56de88b6159fdd1fa0718e0772",
+                               "b79bf62fa9a2c1f212e88b3ee36edb2da57124c7f8ddc26a613a91b0ee060721"),
 }
 
 
@@ -145,7 +163,8 @@ def test_v4_decoders_and_grammar_entries_are_byte_and_ast_pinned():
     entries = {key: (entry.producer, entry.event_kind, entry.decode_event) for key, entry in module._GRAMMARS.items()}
     assert entries == {
         "account_publisher/1": ("accounts", "account_publisher", module._account_event),
-        "configuration_publisher/1": ("configuration", "configuration_publisher", module._configuration_event)}
+        "configuration_publisher/1": ("configuration", "configuration_publisher", module._configuration_event),
+        "configuration_publisher/2": ("configuration", "configuration_publisher", module._configuration_event_v2)}
     assert module.V4_FORMAT.decode_chain is module.chain
     assert dict(module.CONFIGURATION_OUTCOMES) == {
         "no_pending": frozenset({"attached"}), "not_attempted_graph_failed": frozenset({"attached"}),
@@ -228,7 +247,7 @@ async def test_production_writer_begins_a_v4_run_declaring_its_grammars(tmp_path
         assert owner._format is v4().V4_FORMAT
         assert owner._directory.parents[1].name == "v4"
         header, head, states, _ = v4().chain(owner._directory)
-        assert header["schema_version"] == 4 and header["grammars"] == GRAMMARS
+        assert header["schema_version"] == 4 and header["grammars"] == WRITER
         assert set(header["selected"]) == {*SELECTED, "accounts", "configuration"}
         assert header["selected"]["configuration"] is header["selected"]["authority_sessions"] is True
         assert owner._expected["configuration"] == str(Path(header["state_root"]) / "config/settings.yaml")
@@ -428,7 +447,7 @@ def test_reader_joins_v1_to_v4_and_reports_configuration_as_partial(decoder):  #
 
 
 @pytest.mark.parametrize("grammars,selected", [
-    ({"accounts": "account_publisher/1", "configuration": "configuration_publisher/2"}, {}),
+    ({"accounts": "account_publisher/1", "configuration": "configuration_publisher/3"}, {}),
     (dict(GRAMMARS, audio_health="audio_health_publisher/1"), {"audio_health": True}),
 ])
 def test_unknown_grammar_is_its_own_typed_reason_and_never_decoded(decoder, grammars, selected):  # noqa: F811
@@ -471,7 +490,7 @@ async def test_writer_refuses_to_start_over_a_run_with_an_unknown_grammar(tmp_pa
     runs = coordinator._namespace / "v4/runs"
     newer = runs / ("e" * 32)
     newer.mkdir(parents=True)
-    header = {"schema_version": 4, "grammars": dict(GRAMMARS, configuration="configuration_publisher/2")}
+    header = {"schema_version": 4, "grammars": dict(GRAMMARS, configuration="configuration_publisher/3")}
     (newer / "epoch.json").write_bytes(base._encoded(header))
     try:
         with pytest.raises(RuntimeError, match="^output_registration_unsupported_producer_grammar$"):

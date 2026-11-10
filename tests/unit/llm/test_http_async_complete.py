@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from src.core.egress import EgressDenied, EgressPolicy
+from src.core.egress import CloudConsentGate, EgressDenied, EgressPolicy
 from src.llm.idle_watchdog import IdleTimeoutError
 from src.llm.reasoner import HttpReasoner
 from tests.mocks.llm_http import SSEBody, event
@@ -138,6 +138,6 @@ async def test_idle_complete_requires_stop_and_closes_stalled_or_incomplete_stre
 
 
 async def test_unmocked_async_reasoner_transport_is_blocked_by_suite():
-    reasoner = HttpReasoner(cloud_consent=True)
+    reasoner = HttpReasoner(cloud_consent=True, consent_gate=CloudConsentGate())
     with pytest.raises(AssertionError, match='synthetic HTTPX transport'):
         await reasoner.complete('synthetic')

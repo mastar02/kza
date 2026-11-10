@@ -1,10 +1,15 @@
-"""A queued consent withdrawal for the next fully closed Graph generation."""
+"""Cloud-consent withdrawal: runtime gate, durable journal marker, shutdown write.
+
+OQ-8 order: admin authority -> gate close -> durable marker -> queued write of
+``reasoner.cloud.consent: false`` for the next fully closed Graph generation.
+"""
 from __future__ import annotations
 
 import asyncio
 from contextlib import AsyncExitStack
 from contextvars import Context
 from dataclasses import dataclass
+from enum import StrEnum
 import hashlib
 from io import BufferedWriter, FileIO
 import logging
@@ -17,6 +22,7 @@ import threading
 
 import yaml
 
+from src.core.egress import CloudConsentGate, ConsentWithdrawalSource
 from src.core.runtime_admission import RuntimeAdmission
 from src.dashboard.authority import DashboardAuthority, DashboardLease
 from src.memory import output_registration_v2 as output_registration
@@ -43,6 +49,46 @@ class ConsentWithdrawalReceipt:
     next_generation_only: bool = True
 
 
+class MarkerRecordState(StrEnum):
+    """Whether this run's withdrawal marker is recorded."""
+
+    DURABLE = "durable"
+    REGISTRATION_FAILED = "registration_failed"
+    UNMANAGED = "unmanaged"
+    ALREADY_RECORDED = "already_recorded"
+
+
+@dataclass(frozen=True)
+class ConsentWithdrawalOutcome:
+    """Result of one withdrawal request; the gate stays closed whatever follows."""
+
+    gate_closed: bool
+    marker: MarkerRecordState
+    pending: PendingConsentWithdrawal | None
+    failure: str | None = None
+
+
+@dataclass(frozen=True)
+class CloudConsentStatus:
+    """Administrative view of the runtime gate, marker and pending shutdown write."""
+
+    gate_withdrawn: bool
+    gate_source: str | None
+    boot_decision_basis: str
+    marker: str | None
+    pending_write: bool
+    pending_write_cause: str | None
+    registration_failure: str | None
+    last_settled: str | None
+
+
+_QUEUE_CODES = frozenset({
+    "configuration_actor_denied", "configuration_file_changed", "configuration_path_invalid",
+    "configuration_yaml_invalid", "configuration_consent_invalid", "configuration_admission_required",
+    "configuration_owner_not_open", "configuration_marker_required",
+})
+
+
 class ConfigurationChanges:
     """Write only after later owned exits succeeded, while auth remains live.
 
@@ -50,13 +96,20 @@ class ConfigurationChanges:
     not change a live client's construction-time EgressPolicy or grant consent.
     """
 
-    def __init__(self, authority, admission):
+    def __init__(self, authority, admission, consent_gate: CloudConsentGate | None = None):
         if authority is not None and type(authority) is not DashboardAuthority:
             raise TypeError("configuration_authority_required")
         if admission is not None and type(admission) is not RuntimeAdmission:
             raise TypeError("configuration_admission_required")
+        if consent_gate is not None and type(consent_gate) is not CloudConsentGate:
+            raise TypeError("configuration_consent_gate_required")
         self._authority = authority
         self._admission = admission
+        self._consent_gate = consent_gate
+        self._marker: MarkerRecordState | None = None
+        self._withdrawing: asyncio.Task | None = None
+        self._withdrawal_failure: str | None = None
+        self._queue_failure: str | None = None
         self._graph = None
         self._privacy = None
         self._privacy_path = None
@@ -160,11 +213,108 @@ class ConfigurationChanges:
             raise RuntimeError("configuration_file_changed")
         return path, roots, identity, mode, raw, hashlib.sha256(raw).hexdigest()
 
-    def queue_consent_withdrawal(self, actor) -> PendingConsentWithdrawal:
-        """Reserve only false, with the original actor and current head/SHA."""
+    async def withdraw_cloud_consent(self, actor) -> ConsentWithdrawalOutcome:
+        """Withdraw cloud consent for an admin actor: gate, durable marker, queued write.
+
+        The work runs in one retained Task observed through ``_settle``, so a
+        cancelled caller never cancels it; close awaits it before reading
+        ``_pending``. Authorization failure raises PermissionError with no
+        effect. Any later failure keeps the gate closed and either stays
+        durable (marker recorded) or poisons the epoch (no clean receipt).
+
+        Args:
+            actor: The DashboardLease of the requesting administrator.
+
+        Returns:
+            The outcome; ``failure`` names a later step that did not complete.
+        """
+        if not self._installed or self._closed:
+            raise RuntimeError("configuration_owner_not_open")
+        if type(self._consent_gate) is not CloudConsentGate:
+            raise RuntimeError("configuration_consent_gate_required")
+        work = self._withdraw(actor, self._withdrawing)
+        task = asyncio.Task(work, context=Context())
+        self._withdrawing = task
+        actor = None
+        cancelled = await self._settle(task)
+        try:
+            outcome = task.result()
+        except asyncio.CancelledError:
+            outcome = ConsentWithdrawalOutcome(self._consent_gate.withdrawn, MarkerRecordState.REGISTRATION_FAILED,
+                                               None, self._withdrawal_failure)
+        finally:
+            task = None
+            if cancelled:
+                raise asyncio.CancelledError
+        return outcome
+
+    async def _withdraw(self, actor, previous: asyncio.Task | None) -> ConsentWithdrawalOutcome:
+        if previous is not None:
+            await self._settle(previous)  # Serialize: one marker per run.
+        self._require_actor(actor)  # Step 1: no effect on failure.
+        gate = self._consent_gate
+        confirmed = False
+        try:
+            # Step 2: no await between the authority check and the gate.
+            gate.withdraw(ConsentWithdrawalSource.ACTOR)
+            if self._marker is MarkerRecordState.REGISTRATION_FAILED:
+                return ConsentWithdrawalOutcome(True, MarkerRecordState.REGISTRATION_FAILED, None,
+                                                self._withdrawal_failure)
+            if self._marker is None:
+                # Step 3: durable (record and HEAD fsynced) before it returns.
+                recorded = await output_registration.configuration_withdrawn(self)
+                self._marker = MarkerRecordState.DURABLE if recorded else MarkerRecordState.UNMANAGED
+                marker = self._marker
+            else:
+                marker = MarkerRecordState.ALREADY_RECORDED
+            confirmed = True
+        except BaseException as error:
+            if not confirmed and gate.withdrawn:
+                self._withdrawal_unconfirmed(error)
+            if isinstance(error, Exception):
+                return ConsentWithdrawalOutcome(gate.withdrawn, MarkerRecordState.REGISTRATION_FAILED, None,
+                                                self._withdrawal_failure)
+            raise
+        # Step 4: the queued shutdown write; failures here keep the durable marker.
+        try:
+            pending = await asyncio.to_thread(self._queue_pending, actor)
+            self._queue_failure = None
+            return ConsentWithdrawalOutcome(True, marker, pending)
+        except Exception as error:
+            code = "configuration_queue_unconfirmed"
+            if (type(error) in (PermissionError, RuntimeError, ValueError) and len(error.args) == 1
+                    and error.args[0] in _QUEUE_CODES):
+                code = error.args[0]
+            self._queue_failure = code
+            logger.warning("Consent withdrawal recorded; shutdown write not queued (%s)", code)
+            return ConsentWithdrawalOutcome(True, marker, self._pending, code)
+        finally:
+            actor = previous = None
+
+    def _withdrawal_unconfirmed(self, error: BaseException) -> None:
+        """The gate closed but the marker is not confirmed: poison the epoch (fail closed)."""
+        if isinstance(error, asyncio.CancelledError):
+            code = "output_registration_withdrawal_cancelled"
+        elif isinstance(error, RuntimeError) and str(error).startswith("output_registration_"):
+            code = str(error)
+        else:
+            code = "output_registration_unconfirmed"
+        self._marker = MarkerRecordState.REGISTRATION_FAILED
+        self._withdrawal_failure = code
+        try:
+            output_registration.configuration_withdrawal_unconfirmed(self)
+        finally:
+            self._registration_failed(code)
+            logger.error("Consent withdrawal marker not recorded (%s); cloud stays off in this run and "
+                         "no closed admission receipt follows", code)
+
+    def _queue_pending(self, actor) -> PendingConsentWithdrawal:
+        """Reserve only false, with the original actor and current head/SHA (after the marker)."""
         with self._lock:
             if not self._installed or self._closed:
                 raise RuntimeError("configuration_owner_not_open")
+            if self._marker not in (MarkerRecordState.DURABLE, MarkerRecordState.UNMANAGED):
+                raise RuntimeError("configuration_marker_required")
             self._require_actor(actor)
             if self._admission is None:
                 raise RuntimeError("configuration_admission_required")
@@ -182,6 +332,26 @@ class ConfigurationChanges:
             self._actor = actor
             self._pending = PendingConsentWithdrawal(digest, consent, actor.principal.subject)
             return self._pending
+
+    def status(self) -> CloudConsentStatus:
+        """Administrative status; never includes actor identity or file content."""
+        gate = self._consent_gate
+        coordinator = getattr(self, "_output_coordinator", None)
+        decision = None if coordinator is None else coordinator.effective_decision
+        settled = None if coordinator is None else coordinator.settled_decision
+        cause = self._queue_failure
+        if self._pending is not None:
+            actor = self._actor
+            current = actor is not None and actor.current(frozenset({"admin:manage"}))
+            cause = None if current else "actor_lease_expired"
+        return CloudConsentStatus(
+            gate_withdrawn=gate is not None and gate.withdrawn,
+            gate_source=None if gate is None or gate.source is None else gate.source.value,
+            boot_decision_basis="none" if decision is None else decision["basis"],
+            marker=None if self._marker is None else self._marker.value,
+            pending_write=self._pending is not None, pending_write_cause=cause,
+            registration_failure=self._registration_failure,
+            last_settled=None if settled is None else settled["basis"])
 
     def _require_graph_closed(self) -> None:
         if (self._graph is None or self._graph.privacy is not self._privacy
@@ -395,6 +565,13 @@ class ConfigurationChanges:
     async def _after_graph_close(self, exc_type, exc, traceback) -> bool:
         self._closed = True
         errors, cancelled, extent = [], False, None
+        # N1: settle any withdrawal before reading _pending or the marker.
+        if self._withdrawing is not None:
+            cancelled = await self._settle(self._withdrawing)
+        with self._lock:
+            pass  # Barrier: a step-4 worker left behind by cancellation has finished.
+        if self._withdrawal_failure is not None:
+            errors.append(RuntimeError("configuration_withdrawal_unconfirmed"))
         if exc_type is not None or self._pending is None:
             outcome = "no_pending" if self._pending is None else "not_attempted_graph_failed"
             if self._pending is not None:

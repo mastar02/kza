@@ -25,7 +25,8 @@ from scripts import stage_runtime as stage
 from src.application import ApplicationGraph
 from src.core import runtime_admission
 from src.core import state_configuration
-from src.core.state_configuration import ConfigurationChanges
+from src.core.egress import CloudConsentGate
+from src.core.state_configuration import ConfigurationChanges, MarkerRecordState, PendingConsentWithdrawal
 from src.dashboard.api import DashboardAPI
 from src.dashboard.authority import DashboardAuthority, DashboardRole
 from src.memory import output_registration as base
@@ -79,14 +80,14 @@ async def configuration_graph(tmp_path, monkeypatch, *, dashboard=True, attach=T
     owner = await admission.begin_destination_registration(config)
     g = SimpleNamespace(owner=owner, stack=stack, config=config, state=state, data=data, settings=settings,
                         admission=admission, checks=checks, closed=False, error=None, changes=None, observed=[],
-                        authority=None, actor=None, privacy=None, users=None, api=None)
+                        authority=None, actor=None, privacy=None, users=None, api=None, gate=CloudConsentGate())
     try:
         if dashboard:
             g.authority = DashboardAuthority(config["dashboard"]["auth"]["db_path"], expected_token=lambda: TOKEN)
             stack.push_async_callback(g.authority.aclose)
             await registration.attach_output(g.authority, "authority_sessions")
             stack.push_async_exit(g_observer(g))
-            g.changes = ConfigurationChanges(g.authority, admission)
+            g.changes = ConfigurationChanges(g.authority, admission, g.gate)
             g.changes.install_on(stack)
             if poison_before_configuration:
                 # An unrelated producer poisons the epoch after privacy closed,
@@ -203,8 +204,12 @@ def assert_poisoned(g, *, last="opening", closing="output_registration_epoch_inc
     assert "drained" not in phases(g.owner) and phases(g.owner)[-1] == last
 
 
-def queue(g, actor=None):
-    pending = g.changes.queue_consent_withdrawal(actor or g.actor)
+async def queue(g, actor=None):
+    """OQ-8: gate, durable marker, then the queued shutdown write (one call)."""
+    outcome = await g.changes.withdraw_cloud_consent(actor or g.actor)
+    assert outcome.gate_closed is True and g.gate.withdrawn is True and outcome.failure is None
+    assert outcome.marker in (MarkerRecordState.DURABLE, MarkerRecordState.ALREADY_RECORDED)
+    pending = outcome.pending
     assert pending.state == "pending" and g.changes.receipt is None
     return pending
 
@@ -264,7 +269,9 @@ async def test_attach_rejects_wrong_owner_shapes_without_creating_files(tmp_path
         elif shape == "closed_owner":
             changes._closed = True
         elif shape == "pending_owner":
-            queue(g)
+            # OQ-8: the public API can no longer queue without an attached,
+            # durable marker; the attach guard is exercised on the state seam.
+            changes._pending = PendingConsentWithdrawal("0" * 64, True, "synthetic")
         elif shape == "symlinked_settings":
             outside = tmp_path / "outside.yaml"
             outside.write_bytes(RAW)
@@ -317,7 +324,7 @@ async def test_close_without_pending_drains_no_pending(tmp_path, monkeypatch):
 async def test_pending_withdrawal_commits_after_opening_through_real_closed_privacy(tmp_path, monkeypatch):
     async with configuration_graph(tmp_path, monkeypatch) as g:
         graph_ready(g)
-        pending = queue(g)
+        pending = await queue(g)
         assert pending.previous_consent is True
         allocations, original = [], state_configuration.tempfile.mkstemp
 
@@ -329,7 +336,7 @@ async def test_pending_withdrawal_commits_after_opening_through_real_closed_priv
         monkeypatch.setattr(state_configuration.tempfile, "mkstemp", mkstemp)
         assert await shutdown(g) is None
         assert allocations[0] == "opening"
-        assert phases(g.owner) == ["intent", "attached", "opening", "drained"]
+        assert phases(g.owner) == ["intent", "attached", "withdrawn", "opening", "drained"]
         persisted = yaml.safe_load(g.settings.read_text())
         assert persisted["reasoner"]["cloud"]["consent"] is False and persisted["other"] == "untouched"
         aggregate = drained(g.owner)["aggregate"]
@@ -349,7 +356,7 @@ async def test_identical_bytes_commit_is_recorded_as_committed(tmp_path, monkeyp
     async with configuration_graph(tmp_path, monkeypatch, raw=raw) as g:
         graph_ready(g)
         initial = identity(g.settings)
-        assert queue(g).previous_consent is False
+        assert (await queue(g)).previous_consent is False
         assert await shutdown(g) is None
         aggregate = drained(g.owner)["aggregate"]
         assert g.settings.read_bytes() == raw and identity(g.settings) != initial
@@ -364,11 +371,11 @@ async def test_revoked_actor_after_opening_is_refused_before_temporary(tmp_path,
         issued = await g.authority.issue_credential(g.actor, subject="synthetic-configuration-operator",
             role=DashboardRole.OPERATOR, expires_at=g.authority._now() + 600)
         operator = g.authority.resolve(issued.token)
-        queue(g, operator)
+        await queue(g, operator)
         assert await g.authority.revoke_credential(g.actor, issued.identity)
         error = await shutdown(g)
         assert type(error) is PermissionError and str(error) == "configuration_actor_denied"
-        assert phases(g.owner) == ["intent", "attached", "opening", "drained"]
+        assert phases(g.owner) == ["intent", "attached", "withdrawn", "opening", "drained"]
         assert drained(g.owner)["aggregate"]["outcome"] == "refused_before_temporary"
         assert drained(g.owner)["aggregate"]["attempts"] == 0
         assert g.settings.read_bytes() == RAW and temporaries(g) == []
@@ -379,23 +386,23 @@ async def test_settings_changed_after_attach_poisons_at_opening(tmp_path, monkey
     """Fail closed: a change after attach comes from an unregistered writer."""
     async with configuration_graph(tmp_path, monkeypatch) as g:
         graph_ready(g)
-        queue(g)
+        await queue(g)
         changed = RAW.replace(b"untouched", b"external-edit")
         g.settings.write_bytes(changed)
         await shutdown(g)
         assert "output_registration_destination_changed" in messages(config_error(g))
         assert g.changes.registration_failure == "output_registration_destination_changed"
         assert g.settings.read_bytes() == changed and temporaries(g) == [] and g.changes.receipt is None
-        assert_poisoned(g, last="attached")
+        assert_poisoned(g, last="withdrawn")
 
 
 async def test_graph_close_unconfirmed_drains_refused_before_temporary_from_attached(tmp_path, monkeypatch):
     """F2: the owner's own refusal before opening still gets exactly one terminal."""
     async with configuration_graph(tmp_path, monkeypatch) as g:
-        queue(g)  # No ApplicationGraph was attached: close cannot be confirmed.
+        await queue(g)  # No ApplicationGraph was attached: close cannot be confirmed.
         error = await shutdown(g)
         assert type(error) is RuntimeError and str(error) == "configuration_graph_close_unconfirmed"
-        assert phases(g.owner) == ["intent", "attached", "drained"]
+        assert phases(g.owner) == ["intent", "attached", "withdrawn", "drained"]
         assert drained(g.owner)["aggregate"]["outcome"] == "refused_before_temporary"
         assert g.settings.read_bytes() == RAW and g.owner._closing.exception() is None
 
@@ -404,10 +411,10 @@ async def test_failed_graph_with_pending_is_not_attempted(tmp_path, monkeypatch)
     """F2: a pending change abandoned by a failed graph is never reported as no_pending."""
     async with configuration_graph(tmp_path, monkeypatch) as g:
         graph_ready(g)
-        queue(g)
+        await queue(g)
         # The stack observes the failure; the caller still owns re-raising it.
         assert await shutdown(g, RuntimeError("synthetic graph failure")) is None
-        assert phases(g.owner) == ["intent", "attached", "drained"]
+        assert phases(g.owner) == ["intent", "attached", "withdrawn", "drained"]
         assert drained(g.owner)["aggregate"]["outcome"] == "not_attempted_graph_failed"
         assert g.settings.read_bytes() == RAW and g.owner._closing.exception() is None
 
@@ -416,7 +423,7 @@ async def test_failed_graph_with_pending_is_not_attempted(tmp_path, monkeypatch)
 async def test_failure_after_temporary_unlinks_only_own_temp_and_drains_clean_failed(tmp_path, monkeypatch, failure):
     async with configuration_graph(tmp_path, monkeypatch) as g:
         graph_ready(g)
-        queue(g)
+        await queue(g)
         created, raised = [], []
         original_mkstemp, original_replace = state_configuration.tempfile.mkstemp, os.replace
 
@@ -442,7 +449,7 @@ async def test_failure_after_temporary_unlinks_only_own_temp_and_drains_clean_fa
         assert type(error) is RuntimeError and str(error) == "configuration_write_unconfirmed"
         assert len(created) == 1 and not os.path.lexists(created[0]) and temporaries(g) == []
         assert g.settings.read_bytes() == RAW
-        assert phases(g.owner) == ["intent", "attached", "opening", "drained"]
+        assert phases(g.owner) == ["intent", "attached", "withdrawn", "opening", "drained"]
         aggregate = drained(g.owner)["aggregate"]
         assert aggregate["outcome"] == "clean_failed" and aggregate["attempts"] == 1
         assert g.owner._closing.exception() is None and g.changes.receipt is None
@@ -455,7 +462,7 @@ async def test_failure_after_temporary_unlinks_only_own_temp_and_drains_clean_fa
 async def test_substituted_temporary_is_never_replaced_or_deleted(tmp_path, monkeypatch):
     async with configuration_graph(tmp_path, monkeypatch) as g:
         graph_ready(g)
-        queue(g)
+        await queue(g)
         created, original_mkstemp = [], state_configuration.tempfile.mkstemp
 
         def mkstemp(*args, **kwargs):
@@ -479,7 +486,7 @@ async def test_substituted_temporary_is_never_replaced_or_deleted(tmp_path, monk
 async def test_destination_substituted_after_replace_is_uncertain(tmp_path, monkeypatch):
     async with configuration_graph(tmp_path, monkeypatch) as g:
         graph_ready(g)
-        queue(g)
+        await queue(g)
         original = os.replace
 
         def replace(source, destination, *args, **kwargs):
@@ -501,7 +508,7 @@ async def test_directory_fsync_failure_after_replace_is_uncertain(tmp_path, monk
     """F9: a published but undurable replacement is never reported as committed."""
     async with configuration_graph(tmp_path, monkeypatch) as g:
         graph_ready(g)
-        queue(g)
+        await queue(g)
         replaced, original_replace, original_fsync = [], os.replace, os.fsync
 
         def replace(source, destination, *args, **kwargs):
@@ -529,7 +536,7 @@ async def test_directory_fsync_failure_after_replace_is_uncertain(tmp_path, monk
 async def test_extent_is_single_use_and_bound_to_its_owner(tmp_path, monkeypatch, misuse):
     async with configuration_graph(tmp_path, monkeypatch) as g:
         graph_ready(g)
-        queue(g)
+        await queue(g)
         extent = await registration.configuration_opening(g.changes)
         path, roots, current, _mode, _raw, digest = g.changes._read()
         if misuse == "reuse":
@@ -549,11 +556,16 @@ async def test_extent_is_single_use_and_bound_to_its_owner(tmp_path, monkeypatch
 async def test_managed_owner_without_attachment_is_refused_before_temporary(tmp_path, monkeypatch):
     async with configuration_graph(tmp_path, monkeypatch, attach=False) as g:
         graph_ready(g)
-        queue(g)
+        # OQ-8: without an attached publisher the marker cannot be recorded: the
+        # gate stays closed in-run, nothing is queued and the epoch is poisoned.
+        outcome = await g.changes.withdraw_cloud_consent(g.actor)
+        assert outcome.gate_closed is True and g.gate.withdrawn is True
+        assert outcome.marker is MarkerRecordState.REGISTRATION_FAILED and outcome.pending is None
+        assert outcome.failure == "output_registration_required" and g.owner._failed
         calls = []
         monkeypatch.setattr(state_configuration.tempfile, "mkstemp", lambda *a, **k: calls.append(a))
         await shutdown(g)
-        assert "output_registration_required" in messages(config_error(g))
+        assert "configuration_withdrawal_unconfirmed" in messages(config_error(g))
         assert calls == [] and g.settings.read_bytes() == RAW and phases(g.owner) == []
         assert g.changes.registration_failure == "output_registration_required"
 
@@ -561,7 +573,7 @@ async def test_managed_owner_without_attachment_is_refused_before_temporary(tmp_
 async def test_repeated_observer_cancellation_drains_once(tmp_path, monkeypatch):
     async with configuration_graph(tmp_path, monkeypatch) as g:
         graph_ready(g)
-        queue(g)
+        await queue(g)
         entered, release, calls = threading.Event(), threading.Event(), []
         original = state_configuration.tempfile.mkstemp
 
@@ -579,7 +591,7 @@ async def test_repeated_observer_cancellation_drains_once(tmp_path, monkeypatch)
         release.set()
         error = await task
         assert isinstance(error, asyncio.CancelledError)
-        assert calls == [True] and phases(g.owner) == ["intent", "attached", "opening", "drained"]
+        assert calls == [True] and phases(g.owner) == ["intent", "attached", "withdrawn", "opening", "drained"]
         assert drained(g.owner)["aggregate"]["outcome"] == "committed"
         assert yaml.safe_load(g.settings.read_text())["reasoner"]["cloud"]["consent"] is False
         assert g.changes.receipt is not None and g.owner._closing.exception() is None
@@ -594,7 +606,7 @@ async def test_drained_after_replace_and_later_revalidation_succeed(tmp_path, mo
     """
     async with configuration_graph(tmp_path, monkeypatch) as g:
         graph_ready(g)
-        queue(g)
+        await queue(g)
         marks, original = [], os.replace
 
         def replace(source, destination, *args, **kwargs):
@@ -726,7 +738,7 @@ async def test_disabled_pin_requires_no_configuration_owner_on_the_graph(tmp_pat
 async def test_registration_failure_blocks_the_withdrawal_and_is_recorded(tmp_path, monkeypatch, cause):
     async with configuration_graph(tmp_path, monkeypatch, poison_before_configuration=cause) as g:
         graph_ready(g)
-        pending = queue(g)
+        pending = await queue(g)
         calls = []
         monkeypatch.setattr(state_configuration.tempfile, "mkstemp", lambda *a, **k: calls.append(a))
         await shutdown(g)
@@ -735,14 +747,14 @@ async def test_registration_failure_blocks_the_withdrawal_and_is_recorded(tmp_pa
         # The withdrawal is not written and never reported as committed.
         assert calls == [] and g.settings.read_bytes() == RAW and temporaries(g) == []
         assert g.changes.receipt is None and g.changes.pending is pending and pending.state == "pending"
-        assert phases(g.owner) == ["intent", "attached"]
+        assert phases(g.owner) == ["intent", "attached", "withdrawn"]
 
 
 async def test_epoch_poisoned_before_graph_close_also_leaves_the_withdrawal_unwritten(tmp_path, monkeypatch):
     """OQ-8, earlier poisoning: the graph close fails first; nothing is attempted."""
     async with configuration_graph(tmp_path, monkeypatch) as g:
         graph_ready(g)
-        queue(g)
+        await queue(g)
         calls = []
         monkeypatch.setattr(state_configuration.tempfile, "mkstemp", lambda *a, **k: calls.append(a))
         g.owner._failed = True
@@ -750,7 +762,7 @@ async def test_epoch_poisoned_before_graph_close_also_leaves_the_withdrawal_unwr
         # The earlier exit's error passes through our exit unchanged.
         assert error is not None and str(config_error(g)) == "output_registration_registry_unavailable"
         assert calls == [] and g.settings.read_bytes() == RAW and g.changes.receipt is None
-        assert phases(g.owner) == ["intent", "attached"]
+        assert phases(g.owner) == ["intent", "attached", "withdrawn"]
 
 
 async def test_registration_failure_withholds_the_receipt_so_no_next_generation_starts(tmp_path, monkeypatch):
@@ -760,7 +772,7 @@ async def test_registration_failure_withholds_the_receipt_so_no_next_generation_
                         lambda: SimpleNamespace(write_admission_receipt=lambda *a: receipts.append(a)))
     async with configuration_graph(tmp_path, monkeypatch, poison_before_configuration="failed") as g:
         graph_ready(g)
-        queue(g)
+        await queue(g)
         g.admission._graph = object()  # Any receipt attempt past the exc_type check would fail loudly.
         await shutdown(g)
         assert "output_registration_coordinator" in messages(config_error(g)) and receipts == []
@@ -810,12 +822,15 @@ async def test_unmanaged_cleanup_never_deletes_a_substituted_temporary(tmp_path,
     await authority.initialize()
     stack = AsyncExitStack()
     try:
-        owner = ConfigurationChanges(authority, admission)
+        gate = CloudConsentGate()
+        owner = ConfigurationChanges(authority, admission, gate)
         owner.install_on(stack)
         privacy = await build_privacy_services(config, shutdown=stack)
         g = SimpleNamespace(config=config, privacy=privacy, api=None, authority=authority, changes=owner)
         owner.attach_graph(application_graph(g))
-        owner.queue_consent_withdrawal(authority.resolve("Bearer " + TOKEN))
+        outcome = await owner.withdraw_cloud_consent(authority.resolve("Bearer " + TOKEN))
+        assert outcome.marker is MarkerRecordState.UNMANAGED and outcome.pending is not None
+        assert gate.withdrawn is True
         with pytest.raises(RuntimeError, match="^configuration_write_unconfirmed$"):
             await stack.__aexit__(None, None, None)
     finally:
@@ -835,7 +850,7 @@ async def test_unregistered_change_is_caught_by_the_drained_observation(tmp_path
         graph_ready(g)
         foreign = RAW.replace(b"untouched", b"unregistered-edit")
         if change == "after_commit":
-            queue(g)
+            await queue(g)
             state, real_replace, real_fsync = [], os.replace, os.fsync
 
             def replace(source, destination, *args, **kwargs):
@@ -870,7 +885,7 @@ async def test_unproven_cleanup_after_a_failed_replace_poisons(tmp_path, monkeyp
     """R2: a name left at the own temp path is never drained as clean_failed."""
     async with configuration_graph(tmp_path, monkeypatch) as g:
         graph_ready(g)
-        queue(g)
+        await queue(g)
         created, real_mkstemp, real_replace = [], state_configuration.tempfile.mkstemp, os.replace
 
         def mkstemp(*args, **kwargs):
@@ -898,7 +913,7 @@ async def test_destination_swapped_after_the_owner_check_is_never_replaced(tmp_p
     """R3: the extent rechecks the destination after the owner's own pinned read."""
     async with configuration_graph(tmp_path, monkeypatch) as g:
         graph_ready(g)
-        queue(g)
+        await queue(g)
         created, swapped, real_mkstemp, real_read = [], [], state_configuration.tempfile.mkstemp, g.changes._read
 
         def mkstemp(*args, **kwargs):
@@ -929,7 +944,7 @@ async def test_writer_that_cannot_start_or_report_still_drains_once(tmp_path, mo
     """R5: the two rare writer exits still record exactly one terminal."""
     async with configuration_graph(tmp_path, monkeypatch) as g:
         graph_ready(g)
-        queue(g)
+        await queue(g)
         real = asyncio.to_thread
         failure = RuntimeError("synthetic executor unavailable")
 
@@ -949,7 +964,7 @@ async def test_writer_that_cannot_start_or_report_still_drains_once(tmp_path, mo
                             to_thread_sync if exit_ == "task_not_created" else to_thread_async)
         error = await shutdown(g)
         assert error is failure and config_error(g) is failure
-        assert phases(g.owner) == ["intent", "attached", "opening", "drained"]
+        assert phases(g.owner) == ["intent", "attached", "withdrawn", "opening", "drained"]
         assert drained(g.owner)["aggregate"]["outcome"] == "refused_before_temporary"
         assert g.settings.read_bytes() == RAW and temporaries(g) == [] and g.changes.receipt is None
         assert g.owner._closing.exception() is None and g.changes.registration_failure is None
@@ -959,7 +974,7 @@ async def test_cancelled_opening_records_the_dropped_change(tmp_path, monkeypatc
     """R6: a pending change dropped by cancellation during opening is recorded."""
     async with configuration_graph(tmp_path, monkeypatch) as g:
         graph_ready(g)
-        queue(g)
+        await queue(g)
         entered, release = threading.Event(), threading.Event()
         real = registration.OutputRegistrationV2._append_configuration
 

@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 
-from src.core.egress import EgressPolicy
+from src.core.egress import CloudConsentGate, EgressDenied, EgressPolicy, require_consent_gate
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,23 @@ class _HermesProcessOwner:
         self.pgid = proc.pid
         self.stdout = proc.stdout
         self.stderr = proc.stderr
+
+    def kill_group(self) -> bool:
+        """SIGKILL the adopted group while its leader is unreaped (OQ-8 withdrawal).
+
+        Only an unreaped leader pins its PID, hence the PGID, so a reaped
+        leader is never signalled. Residual (stated): a reap racing between
+        this check and killpg, and children that outlive a leader exiting
+        normally, are out of scope; retire() kills an unconfirmed group.
+        """
+        proc = self.proc
+        if proc is None or self.pgid is None or self.wait_confirmed or proc.returncode is not None:
+            return False
+        try:
+            os.killpg(self.pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            return False
+        return True
 
     def _failed(
         self, phase: str, error: BaseException, controls: list[BaseException]
@@ -517,6 +534,7 @@ class HermesCliReasoner(_HermesLifecycle):
         model: str | None = None,
         timeout_s: float = 90.0,
         cloud_consent: bool = False,
+        consent_gate: CloudConsentGate | None = None,
     ):
         """
         Args:
@@ -530,16 +548,35 @@ class HermesCliReasoner(_HermesLifecycle):
             timeout_s: Timeout duro del subproceso. Más alto que el HTTP
                 equivalente (60s en HttpReasoner) porque suma el arranque del
                 proceso `hermes`.
+            cloud_consent: Consentimiento literal de settings.yaml.
+            consent_gate: Compuerta de retiro en ejecución (OQ-8); obligatoria
+                con consentimiento: al retirarse, mata los grupos de proceso.
         """
         self._hermes_initialize()
         self.binary_path = binary_path
         self.provider = provider
         self.model = model
         self.timeout_s = timeout_s
-        self.policy = EgressPolicy(cloud_consent=cloud_consent)
+        self.policy = EgressPolicy(cloud_consent=cloud_consent, consent_gate=consent_gate)
+        require_consent_gate(self.policy)
+        self._consent_gate = consent_gate
         self._last_metrics: dict | None = None
         self._metrics_tracker = None
         self._endpoint_id: str | None = None
+        if consent_gate is not None:
+            consent_gate.subscribe(self._on_consent_withdrawn)
+
+    def _on_consent_withdrawn(self) -> None:
+        """Gate subscriber: kill every adopted, unreaped process group (M2)."""
+        with self._hermes_condition:
+            for owner in tuple(self._hermes_process_owners):
+                if owner.kill_group():
+                    logger.warning("[Hermes] Process group killed: cloud consent withdrawn")
+
+    def _raise_if_withdrawn(self, error: BaseException | None = None) -> None:
+        """F3: a run ended by (or after) a withdrawal is consent-withdrawn, not a CLI failure."""
+        if self._consent_gate is not None and self._consent_gate.withdrawn:
+            raise EgressDenied("cloud_consent_withdrawn") from error
 
     def load(self):
         """Chequeo de boot: falla ruidoso si `hermes` o el auth de Codex no están listos.
@@ -650,23 +687,38 @@ class HermesCliReasoner(_HermesLifecycle):
                 except OSError as e:
                     raise RuntimeError(f"hermes -z could not start: {e}") from e
                 proc = owner.proc
-                owner.adopt(proc)
+                # F2: adopt and check under the subscriber's lock, so either the
+                # subscriber sees this PGID or this launcher sees the withdrawal.
+                # No lock is held across Popen (N3).
+                with self._hermes_condition:
+                    owner.adopt(proc)
+                    if self._consent_gate is not None and self._consent_gate.withdrawn:
+                        owner.kill_group()
                 try:
                     stdout, stderr = proc.communicate(timeout=self.timeout_s)
                 except subprocess.TimeoutExpired as e:
-                    raise RuntimeError(f"hermes -z timed out after {self.timeout_s}s") from e
+                    timeout = RuntimeError(f"hermes -z timed out after {self.timeout_s}s")
+                    timeout.__cause__ = e
+                    self._raise_if_withdrawn(timeout)
+                    raise timeout from e
                 elapsed_ms = (time.perf_counter() - start) * 1000
                 # A successful communicate returns only after its actual wait.
                 owner.wait_confirmed = True
                 if proc.returncode != 0:
-                    raise RuntimeError(
+                    failure = RuntimeError(
                         f"hermes -z failed (exit={proc.returncode}): {stderr.strip()}"
                     )
+                    self._raise_if_withdrawn(failure)
+                    raise failure
                 tokens = self._record_usage(usage_path, elapsed_ms)
                 if not stdout.strip():
-                    raise RuntimeError(
+                    empty = RuntimeError(
                         f"hermes -z returned empty output (exit=0), stderr={stderr.strip()!r}"
                     )
+                    self._raise_if_withdrawn(empty)
+                    raise empty
+                # A reply produced after a withdrawal is discarded.
+                self._raise_if_withdrawn()
                 return stdout.strip(), tokens
             except BaseException as error:
                 primary = error
