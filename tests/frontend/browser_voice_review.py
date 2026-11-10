@@ -24,8 +24,7 @@ from src.memory.erasure_coordinator import ErasureCoordinator
 from src.memory.fact_ledger import MemoryReviewer
 from src.memory.privacy_services import PrivacyServices
 from src.users.voice_registry import build_voice_registry
-from tests.frontend.browser_support import browser_binary as select_browser, browser_profile_root, evidence_directory, install_login_session
-from tests.frontend.browser_typed_controls import Page
+from tests.frontend.browser_support import Page, browser_binary as select_browser, browser_profile_root, evidence_directory, install_login_session
 from tests.mocks.ambient_graph import Clock
 from tests.mocks.memory_sources import memory_source
 from tests.mocks.voice_registry import AUDIO,Encoder

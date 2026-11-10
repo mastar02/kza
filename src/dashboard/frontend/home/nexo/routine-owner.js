@@ -5,7 +5,8 @@
   const isNode = typeof module !== 'undefined' && module.exports;
   const home = isNode ? require('../home.js') : root.HomeUI;
   const { newRequestId } = isNode ? require('../request-id.js') : root.HomeRequestIdentity;
-  // Shared with legacy routines.js so either surface restores and wipes the other's attempts.
+  // The retired legacy page used this prefix without a subject; such records (still possible
+  // in a tab of the installed release) are treated as foreign below, never restored.
   const PREFIX = 'kza:routine-attempt:';
   const WRITE_PREFIX = PREFIX + '~write:';
   // Outside the attempt prefix so a session-end wipe can leave a content-free reminder.

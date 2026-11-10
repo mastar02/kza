@@ -22,8 +22,7 @@ from src.dashboard.live_receipts import LiveReceiptStore
 from src.analytics.event_logger import EventLogger
 from src.memory.fact_ledger import MemoryReviewer
 from src.memory.privacy_services import PrivacyServices
-from tests.frontend.browser_support import browser_binary as select_browser, browser_profile_root, evidence_directory, install_login_session
-from tests.frontend.browser_typed_controls import Page
+from tests.frontend.browser_support import Page, browser_binary as select_browser, browser_profile_root, evidence_directory, install_login_session
 from tests.mocks.memory_sources import memory_source
 
 

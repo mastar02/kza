@@ -75,6 +75,17 @@ y Escritorio; Living y Cocina siguen sin captura útil. HA conserva `auth_error`
   NEXO en `/` y el panel técnico `/obs/` queda sólo por URL directa, sin enlace
   desde NEXO (decisión D1 del usuario, 2026-11-10). La release instalada no
   contiene NEXO y sigue usando `/obs/`.
+- Pendiente de release (no instalado): T040/T041 U4 retira en la rama de
+  desarrollo `/home/legacy.html`, `/home/home.css`, los `routines.js` y
+  `memory.js` heredados y el dashboard raíz `/index.html` (`dashboard.js`,
+  `style.css`); Rutinas y Memoria quedan en NEXO. **La release instalada
+  todavía sirve esos archivos** y los conserva hasta que una release los
+  sustituya. Ojo: la release instalada (slot activo 63ea8d3) no tiene
+  `legacy.html`; allí las vistas heredadas son `/home/` mismo (`home/index.html`
+  con `home.js`, `home.css`, `routines.js`, `memory.js`) y la grilla raíz
+  (`/index.html`, `dashboard.js`, `style.css`). En desarrollo, con
+  `dashboard.home.enabled: false`, `/` responde 404 con una página que explica esa
+  opción, sin enlaces; los archivos estáticos de `/home/` siguen montados.
 - El certificado es local y autofirmado. El login usa el
   `KZA_DASHBOARD_TOKEN` existente de `/home/kza/secrets/.env`; no copiarlo a Git
   ni al chat. El acceso privado sin sesión devuelve 401.

@@ -110,7 +110,8 @@ async def test_voice_proposal_can_only_become_permanent_through_authenticated_re
             assert (await services.manager.long_term.asearch_relevant('cocinar'))[0]['state'] == 'confirmed'
             deleted = await client.delete('/api/memory/facts/'+proposal['id'], headers=dashboard_auth)
             assert deleted.json()['deleted'] and await services.manager.long_term.asearch_relevant('cocinar') == []
-            assert (await client.get('/home/memory.js')).status_code == 200
+            assert (await client.get('/home/memory.js')).status_code == 404  # legacy view retired (T040/T041 U4)
+            assert (await client.get('/home/nexo/memory.js')).status_code == 200
 
 
 async def test_disabled_memory_remains_unavailable_under_authenticated_dashboard(tmp_path, dashboard_auth):

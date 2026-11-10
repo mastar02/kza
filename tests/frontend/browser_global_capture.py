@@ -25,8 +25,7 @@ from websockets.asyncio.client import connect
 from src.dashboard import system_monitor
 from src.main import build_application
 from src.wakeword.detector import WakeWordDetector
-from tests.frontend.browser_support import browser_binary
-from tests.frontend.browser_typed_controls import Page
+from tests.frontend.browser_support import Page, browser_binary
 from tests.integration.test_capability_application import configuration, leaves
 from tests.integration.test_capture_producer_privacy import until
 from tests.integration.test_wake_graph_retirement import configured

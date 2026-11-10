@@ -26,8 +26,7 @@ from websockets.asyncio.client import connect
 from src.dashboard.api import DashboardAPI
 from src.dashboard.authority import DashboardAuthority
 from tests.frontend.browser_nexo_home import screenshot
-from tests.frontend.browser_support import browser_binary, browser_profile_root, evidence_directory
-from tests.frontend.browser_typed_controls import Page
+from tests.frontend.browser_support import Page, browser_binary, browser_profile_root, evidence_directory
 
 EVIDENCE = evidence_directory('KZA_OBS_PANEL_EVIDENCE', 'data/autonomous-roadmap-20261102/t040-t041/obs-browser-runs')
 TOKEN = 'synthetic-obs-panel-root'

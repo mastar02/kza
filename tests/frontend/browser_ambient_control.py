@@ -20,8 +20,7 @@ from src.dashboard.authority import DashboardAuthority
 from src.dashboard import system_monitor
 from src.dashboard.live_erasure import build_live_services
 from src.memory.erasure_coordinator import ErasureCoordinator
-from tests.frontend.browser_support import browser_binary as select_browser, browser_profile_root, evidence_directory, install_login_session
-from tests.frontend.browser_typed_controls import Page
+from tests.frontend.browser_support import Page, browser_binary as select_browser, browser_profile_root, evidence_directory, install_login_session
 from tests.integration.test_capture_producer_privacy import until
 from tests.mocks.ambient_graph import ambient_graph,Clock
 

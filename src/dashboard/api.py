@@ -31,7 +31,8 @@ from src.dashboard.native_work import ensure_admin_work
 from src.memory import output_registration_v2 as output_registration
 from src.reminders.reminder_store import ReminderScope
 from src.dashboard.home_api import (
-    LegacyHomeActionBody, execute_home_action, register_home_frontend, register_home_routes,
+    LegacyHomeActionBody, execute_home_action, register_home_disabled_root, register_home_frontend,
+    register_home_routes,
 )
 from src.dashboard.home_catalog import HomeCatalogService
 from src.dashboard.live_event_bus import LiveEventBus
@@ -1006,8 +1007,11 @@ class DashboardAPI:
 
         if self.home_enabled:
             register_home_frontend(self.app)
+        else:
+            register_home_disabled_root(self.app)
 
-        # Servir frontend si existe (incluye /obs/ con el dashboard wireframe)
+        # Servir frontend si existe: /obs/ (panel técnico por URL directa). El
+        # dashboard heredado de la raíz se retiró en T040/T041 U4.
         frontend_path = os.path.join(os.path.dirname(__file__), "frontend")
         if os.path.exists(frontend_path):
             self.app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")

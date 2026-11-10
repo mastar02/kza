@@ -168,7 +168,7 @@ function retire(message = '', { endSession = true } = {}) {
   actions.clear(); destroyHouse(); catalog = clock = lastError = null; roomId = undefined; activeView = null;
   byId('voice-connection').textContent = ''; byId('evaluation-connection').textContent = '';
   byId('view-transition-status').hidden = true;
-  for (const id of ['room-list', 'room-controls', 'action-list', 'app-nav', 'rail-nav', 'additional-tools']) byId(id).replaceChildren();
+  for (const id of ['room-list', 'room-controls', 'action-list', 'app-nav', 'rail-nav']) byId(id).replaceChildren();
   for (const id of ['lights-total', 'entities-total', 'rooms-total', 'room-count']) byId(id).textContent = '—';
   byId('nexo-workspace').hidden = true; byId('login-panel').hidden = false;
   byId('logout').hidden = true;
@@ -354,8 +354,6 @@ function renderNavigation() {
     }
   }
   railOverflow();
-  const tools = byId('additional-tools'); tools.replaceChildren();
-  if (session.can('diagnostics:read')) { const link = node('a', 'text-button', 'Micrófonos y diagnóstico ↗'); link.href = '/home/legacy.html'; tools.append(link); }
 }
 async function activate(view, push = true, force = false) {
   if (!session.views().includes(view) || !Object.hasOwn(viewIds, view)) return false;

@@ -582,6 +582,22 @@ La referencia de diseño en el Mac está en `/Users/gabriel/Documents/Proyectos/
 
 Siguiente: T040/T041 (retiro de vistas heredadas), luego los productores F1 restantes y el runbook OQ-8 en DEPLOYMENT.md antes de H6.
 
+## T040/T041 — retiro de vistas heredadas (2026-11-10)
+
+Secuencia de `data/autonomous-roadmap-20261102/t040-t041/user-decisions-20261110.json`:
+U1 (`2873fbc`) quitó el enlace a `/obs/` y arregló sus controles; U2 (`cfa985a`) y
+U3 (`5af9b5c`) agregaron Rutinas y Memoria a NEXO. U4 retira en desarrollo
+`/home/legacy.html`, `home.css`, los `routines.js`/`memory.js` heredados, el
+dashboard raíz (`/index.html`, `dashboard.js`, `style.css`), el enlace
+"Micrófonos y diagnóstico" y `#additional-tools`. Con `dashboard.home.enabled`
+falso, `/` responde 404 con una página que nombra esa opción. Evidencia en
+`data/autonomous-roadmap-20261102/t040-t041/u4-evidence.json`. La release
+instalada (slot activo 63ea8d3) no tiene `legacy.html`: sus vistas heredadas son
+`/home/` y la grilla raíz `/index.html`, y las conserva hasta la próxima release.
+Revisión independiente: `u4-independent-review.json` (accept_with_changes). Abierto:
+F3, los controles de una entidad se deshabilitan un instante porque la observación
+vence a los 6 s y el sondeo del catálogo tarda más de eso bajo carga.
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.

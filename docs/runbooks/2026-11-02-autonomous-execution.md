@@ -429,6 +429,10 @@ anteriores están en
 
 Voces todavía abre la vista técnica existente mediante un destino permitido.
 Las herramientas anteriores se conservan en `/home/legacy.html`.
+(Actualización 2026-11-10: T040/T041 U4 retira `/home/legacy.html` en desarrollo,
+después de que NEXO incorporó Rutinas y Memoria. La release instalada nunca tuvo
+`legacy.html`: sus vistas heredadas son `/home/` y la grilla raíz `/index.html`, y las
+conserva hasta la próxima release.)
 Las siguientes unidades adaptarán Voces a NEXO y añadirán el contrato
 manual perfil vocal–persona: metadata administrativa sin crear sesión,
 credencial, consentimiento, roles o acceso personal. T047 sigue en curso.

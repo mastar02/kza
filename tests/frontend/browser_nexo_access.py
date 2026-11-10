@@ -29,8 +29,7 @@ from src.memory.privacy_services import PrivacyServices
 from src.users.user_manager import PermissionLevel
 from src.users.voice_registry import build_voice_registry
 from tests.frontend.browser_nexo_home import login, screenshot
-from tests.frontend.browser_support import audit_view, browser_binary, browser_profile_root, evidence_directory
-from tests.frontend.browser_typed_controls import Page
+from tests.frontend.browser_support import Page, audit_view, browser_binary, browser_profile_root, evidence_directory
 from tests.mocks.ambient_graph import Clock
 from tests.mocks.memory_sources import memory_source
 from tests.mocks.voice_registry import AUDIO, Encoder

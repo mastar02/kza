@@ -22,9 +22,8 @@ from src.dashboard.authority import (
 from src.rooms.room_context import RoomConfig
 from src.users.user_manager import PermissionLevel, UserManager
 from tests.frontend.browser_support import (
-    audit_view, browser_binary, browser_profile_root, evidence_directory, reduced_motion_house,
+    Page, audit_view, browser_binary, browser_profile_root, evidence_directory, reduced_motion_house,
 )
-from tests.frontend.browser_typed_controls import Page
 from tests.integration.test_typed_home_operations import typed_graph
 
 
@@ -64,6 +63,9 @@ HOME_CONTROLS = (
     ('#expand-map', None), ('#layer-tabs [data-layer=lights]', None), ('#room-list [data-room-id=living]', None),
     ('#room-controls input[name=temperature]', None), ('#logout', None),
 )
+# U4: no surface links to the retired legacy views or the technical panel.
+LEGACY_LINKS = ("document.querySelectorAll('a[href*=\"legacy.html\"], a[href^=\"/obs\"], a[href=\"/index.html\"], "
+                "a[href=\"/dashboard.js\"], #technical-link, #additional-tools').length")
 ACTION_CONTROLS = (('#app-nav [data-view=home]', None), ('#action-list button', None), ('#refresh', None), ('#logout', None))
 PEOPLE_CONTROLS = (('#app-nav [data-view=people]', None), ('#add-person', None), ('#refresh-people', None),
                    ('#people-grid [data-person]', None), ('#logout', None))
@@ -244,6 +246,7 @@ async def main() -> None:
 
                     motion = await reduced_motion_house(page, remount_house)
                     audits['hogar'] = await audit_view(page, evidence, 'hogar', HOME_CONTROLS, screenshot)
+                    legacy_links = {'home-1425': await page.evaluate(LEGACY_LINKS)}
                     await page.command("Emulation.setDeviceMetricsOverride", {"width": 390, "height": 844, "deviceScaleFactor": 1, "mobile": True})
                     await asyncio.sleep(0.2)
                     assert await page.evaluate("document.documentElement.scrollWidth<=window.innerWidth")
@@ -280,6 +283,9 @@ async def main() -> None:
                     assert not any(request['path'] == '/api/admin/users' for request in requests)
                     # D1: the technical panel stays reachable only by direct URL, never linked from NEXO.
                     assert await page.evaluate("document.querySelectorAll('a[href^=\"/obs\"], a[href*=\"//\"][href*=\"/obs\"], #technical-link').length===0")
+                    for width in (320, 390, 768, 1024, 1280, 1440):
+                        await page.command('Emulation.setDeviceMetricsOverride', {'width': width, 'height': 900, 'deviceScaleFactor': 1, 'mobile': width < 768})
+                        legacy_links[f'operator-{width}'] = await page.evaluate(LEGACY_LINKS)
                     await page.command('Emulation.setDeviceMetricsOverride', {'width': 1425, 'height': 1180, 'deviceScaleFactor': 1, 'mobile': False})
                     await page.evaluate("document.querySelector('#app-nav [data-view=people]').click()")
                     await page.wait_for("document.querySelectorAll('#people-grid [data-person]').length===3")
@@ -358,6 +364,8 @@ async def main() -> None:
                     await page.wait_for("document.querySelector('#login-error').textContent==='Sesión cerrada.'")
                     await page.command('Emulation.setDeviceMetricsOverride', {'width': 1425, 'height': 1180, 'deviceScaleFactor': 1, 'mobile': False})
                     await login(page, operator.token, 'Administración')
+                    legacy_links['operator-relogin-1425'] = await page.evaluate(LEGACY_LINKS)
+                    assert not any(legacy_links.values()), legacy_links
                     await page.evaluate("window.__qaFailLogout=true;document.querySelector('#logout').click()")
                     await page.wait_for("document.querySelector('#login-error').textContent.includes('No pudimos confirmar')")
                     assert await page.evaluate("document.querySelector('#nexo-workspace').hidden && !document.querySelector('#room-controls').children.length")
@@ -385,7 +393,8 @@ async def main() -> None:
                                               "accessible names from the browser accessibility tree", "Tab reaches every control in document order",
                                               ":focus-visible with a visible indicator, not obscured", "44x44 CSS px touch targets at 320/390",
                                               "html lang es", "prefers-reduced-motion settles the 3D camera at once"],
-                              "a11y_evidence": [f'a11y-{view}.json' for view in audits], "reduced_motion": motion}
+                              "a11y_evidence": [f'a11y-{view}.json' for view in audits], "reduced_motion": motion,
+                              "legacy_links": legacy_links}
                     (evidence / "browser-result.json").write_text(json.dumps(result, indent=2) + '\n')
                     print(json.dumps(result))
         finally:

@@ -25,8 +25,7 @@ from src.rooms.room_context import RoomConfig
 from src.routines.factory import build_routine_scheduler
 from src.routines.models import RunStatus, parse_routine_spec
 from tests.frontend.browser_nexo_home import login, screenshot
-from tests.frontend.browser_support import _press_tab, audit_view, browser_binary, browser_profile_root, evidence_directory, install_login_session, press_enter
-from tests.frontend.browser_typed_controls import Page
+from tests.frontend.browser_support import Page, _press_tab, audit_view, browser_binary, browser_profile_root, evidence_directory, install_login_session, press_enter
 from tests.integration.test_typed_home_operations import typed_graph
 
 
@@ -187,7 +186,7 @@ async def main() -> None:
                     # Operator: navigation, empty state, failed save focus, preview, create.
                     await login(page, operator.token, 'Administración')
                     assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(n=>n.dataset.view).join(',')==='home,voices,people,actions,routines,memory,access'")
-                    assert await page.evaluate("document.querySelectorAll('a[href*=\"legacy.html\"]').length===0 || ![...document.querySelectorAll('a[href*=\"legacy.html\"]')].some(a=>a.textContent.includes('Rutinas'))")
+                    assert await page.evaluate("document.querySelectorAll('a[href*=\"legacy.html\"]').length===0")
                     await click('#app-nav [data-view=routines]')
                     await page.wait_for("location.hash==='#rutinas' && !document.querySelector('#routines-view').hidden && !document.querySelector('.routines-empty').hidden")
                     assert await page.evaluate("document.querySelector('.routines-empty').textContent.includes('Todavía no hay rutinas')")

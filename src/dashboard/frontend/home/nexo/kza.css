@@ -115,8 +115,6 @@ main{padding:34px;max-width:1800px;margin:0 auto;min-width:0}
 .identity-heading p{color:var(--muted);line-height:1.7}
 .empty-panel{padding:22px;font-size:12px;color:var(--muted);line-height:1.8}
 .empty-panel h2{margin-bottom:10px;color:var(--text)}
-.additional-tools{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;padding:0 4px}
-.additional-tools a{color:#a2b6c8}
 .access-panel{max-width:480px;margin:40px auto 70px;padding:34px}
 .access-panel .eyebrow{font-size:9px;letter-spacing:2px;color:var(--mint)}
 .access-panel h2{font-size:29px;letter-spacing:-.8px;font-weight:450;margin:18px 0 12px}

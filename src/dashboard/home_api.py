@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.middleware.base import RequestResponseEndpoint
@@ -76,6 +76,29 @@ def register_home_frontend(app: FastAPI) -> None:
         return FileResponse(home / "index.html")
 
     app.mount("/home", StaticFiles(directory=home, html=True), name="home_assets")
+
+
+HOME_DISABLED_PAGE = """<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KZA — Hogar desactivado</title></head>
+<body><main><h1>La vista de hogar está desactivada</h1>
+<p>La vista de hogar no está habilitada en la raíz porque <code>dashboard.home.enabled</code>
+es falso en <code>config/settings.yaml</code>. El panel heredado se retiró; las API privadas
+siguen requiriendo sesión.</p></main></body></html>
+"""
+
+
+def register_home_disabled_root(app: FastAPI) -> None:
+    """Explain the root when NEXO is disabled instead of a bare static 404.
+
+    The retired legacy grid used to answer ``/`` through the catch-all static
+    mount. With it gone, ``/`` answers 404 (nothing is served there) with a
+    page naming the setting, and no link to any other surface.
+    """
+
+    @app.get("/", include_in_schema=False)
+    async def home_disabled_index() -> HTMLResponse:
+        return HTMLResponse(HOME_DISABLED_PAGE, status_code=404, headers={"Cache-Control": "no-store"})
 
 
 class HomeActionBody(BaseModel):

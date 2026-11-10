@@ -28,8 +28,7 @@ from src.memory.fact_ledger import FactDependency, MemoryReviewer
 from src.memory.services import build_memory_services
 from src.rooms.room_context import RoomConfig
 from tests.frontend.browser_nexo_home import login, screenshot
-from tests.frontend.browser_support import audit_view, browser_binary, browser_profile_root, evidence_directory, install_login_session, press_enter
-from tests.frontend.browser_typed_controls import Page
+from tests.frontend.browser_support import Page, audit_view, browser_binary, browser_profile_root, evidence_directory, install_login_session, press_enter
 from tests.integration.test_typed_home_operations import typed_graph
 from tests.mocks.memory_graph import MemoryClient
 

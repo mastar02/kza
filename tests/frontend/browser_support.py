@@ -24,6 +24,48 @@ ROOT = Path(__file__).resolve().parents[2]
 MAC_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
 
+class Page:
+    """Small sequential CDP client using an existing development dependency.
+
+    Moved here from the retired legacy ``browser_typed_controls`` harness so
+    every browser script shares one implementation.
+    """
+
+    def __init__(self, connection):
+        self.connection = connection
+        self.sequence = 0
+        self.errors = []
+
+    async def command(self, method, params=None):
+        """Send one CDP command and return its result, recording page exceptions."""
+        self.sequence += 1
+        identity = self.sequence
+        await self.connection.send(json.dumps({"id": identity, "method": method, "params": params or {}}))
+        while True:
+            result = json.loads(await asyncio.wait_for(self.connection.recv(), 15))
+            if result.get("method") == "Runtime.exceptionThrown":
+                self.errors.append(result["params"])
+            if result.get("id") == identity:
+                if "error" in result:
+                    raise RuntimeError(result["error"])
+                return result.get("result", {})
+
+    async def evaluate(self, expression):
+        """Evaluate an expression in the page and return its value."""
+        result = await self.command("Runtime.evaluate", {"expression": expression, "awaitPromise": True, "returnByValue": True})
+        if "exceptionDetails" in result:
+            raise RuntimeError(result["exceptionDetails"])
+        return result.get("result", {}).get("value")
+
+    async def wait_for(self, expression):
+        """Poll a page condition until it is truthy or fail after about five seconds."""
+        for _ in range(100):
+            if await self.evaluate(expression):
+                return
+            await asyncio.sleep(0.05)
+        raise AssertionError("Browser condition timed out: " + expression)
+
+
 def browser_binary(override_variable: str = 'KZA_BROWSER_BINARY',
                    missing: str = 'browser_binary_missing') -> str:
     """Select an owned headless browser without changing the Linux default.

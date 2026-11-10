@@ -92,7 +92,7 @@ function owner({ server = fakeServer(), permissions = MANAGER, storage = memoryS
 async function opened(options) { const value = owner(options); await value.instance.open(); await value.instance.refresh(); return value; }
 const executes = server => server.calls.filter(call => call.path.endsWith('/execute'));
 
-test('legacy contract: typed validation and raw brightness serialization (duplicated from the legacy controller)', async () => {
+test('legacy contract: typed validation and raw brightness serialization (carried over from the retired legacy controller)', async () => {
   const draft = { ...spec('test'), actions: [{ entity_id: ac.entity_id, operation: 'set_temperature', temperature: 23.5 }] };
   assert.equal(routines.validateRoutineDraft(draft, { entities: [ac] }).valid, true);
   for (const temperature of [undefined, null, 30, 22.2]) assert.equal(routines.validateRoutineDraft({ ...draft, actions: [{ ...draft.actions[0], temperature }] }, { entities: [ac] }).valid, false);
