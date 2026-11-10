@@ -1557,8 +1557,25 @@
       "optional": false,
       "inclusion": "required",
       "status": "verified_local",
-      "implementation_commits": [],
-      "evidence": [],
+      "implementation_commits": [
+        "2873fbcc2f64e13f53ba7aeb165d8451a9f52e7e",
+        "cfa985a612b5e35d256ede070648565b44217338",
+        "b54979277f825d061cba2f784fcf50ceecf23113",
+        "5af9b5c5a93e8b09354443b6633124d4b2b92515",
+        "3dd3d0890284532918d58319e82cdfdb8d9a8d29",
+        "926fc0a5422e209736f9fe83f03717456b05902e",
+        "a69039a58581c0a532e4bc8b5fab6ab7cc2c808d"
+      ],
+      "evidence": [
+        "data/autonomous-roadmap-20261102/t040-t041/acceptance-proof-20261110.json",
+        "data/autonomous-roadmap-20261102/t040-t041/validation-round-01/README.md",
+        "data/autonomous-roadmap-20261102/t040-t041/validation-round-01/independent-review.json",
+        "data/autonomous-roadmap-20261102/t040-t041/u1-evidence.json",
+        "data/autonomous-roadmap-20261102/t040-t041/u2-evidence.json",
+        "data/autonomous-roadmap-20261102/t040-t041/u3-evidence.json",
+        "data/autonomous-roadmap-20261102/t040-t041/u4-evidence.json",
+        "data/autonomous-roadmap-20261102/t047/staleness-fix/evidence.json"
+      ],
       "next_action": "Aceptada localmente el 2026-11-10 (ronda 01 verde + revisión independiente). Pendiente: WEB-05 en /obs/ (vista en URL, 320/390), ACCESS-01 (T013), paginación de memoria, memoria por persona (U3b), campo P7.",
       "scoped_acceptance": {
         "date": "2026-11-10",
@@ -1582,8 +1599,25 @@
       "optional": false,
       "inclusion": "required",
       "status": "verified_local",
-      "implementation_commits": [],
-      "evidence": [],
+      "implementation_commits": [
+        "2873fbcc2f64e13f53ba7aeb165d8451a9f52e7e",
+        "cfa985a612b5e35d256ede070648565b44217338",
+        "b54979277f825d061cba2f784fcf50ceecf23113",
+        "5af9b5c5a93e8b09354443b6633124d4b2b92515",
+        "3dd3d0890284532918d58319e82cdfdb8d9a8d29",
+        "926fc0a5422e209736f9fe83f03717456b05902e",
+        "a69039a58581c0a532e4bc8b5fab6ab7cc2c808d"
+      ],
+      "evidence": [
+        "data/autonomous-roadmap-20261102/t040-t041/acceptance-proof-20261110.json",
+        "data/autonomous-roadmap-20261102/t040-t041/validation-round-01/README.md",
+        "data/autonomous-roadmap-20261102/t040-t041/validation-round-01/independent-review.json",
+        "data/autonomous-roadmap-20261102/t040-t041/u1-evidence.json",
+        "data/autonomous-roadmap-20261102/t040-t041/u2-evidence.json",
+        "data/autonomous-roadmap-20261102/t040-t041/u3-evidence.json",
+        "data/autonomous-roadmap-20261102/t040-t041/u4-evidence.json",
+        "data/autonomous-roadmap-20261102/t047/staleness-fix/evidence.json"
+      ],
       "next_action": "Aceptada localmente el 2026-11-10 (ronda 01 verde + revisión independiente). Pendiente: WEB-05 en /obs/ (vista en URL, 320/390), ACCESS-01 (T013), paginación de memoria, memoria por persona (U3b), campo P7.",
       "scoped_acceptance": {
         "date": "2026-11-10",
