@@ -493,6 +493,61 @@ Hallazgos no bloqueantes de la revisión:
 
 Siguiente: OQ-8, con el marcador durable en el journal y la compuerta de egress en ejecución, y después la prioridad T047.
 
+## OQ-8 — retiro del consentimiento cloud: marcador durable y compuerta en ejecución, aceptado con salvedades
+
+`0c8f5be` implementa OQ-8 y `0e9cc8a` corrige una migración de test. Decisiones del usuario (2026-11-09 y 2026-11-10):
+- **Alcance:** marcador más compuerta. El marcador vive en el journal, no en un archivo de config.
+- **Endpoint:** se agregó ya, sólo con `admin:manage`, sin acceso por voz ni persona.
+- **Reversión:** se mitiga por runbook.
+- **Journal ilegible al arrancar:** cuenta como retirado.
+- **Pedidos en curso:** se cortan.
+- **Router:** cae al 7B local.
+- **Arranque tras un cierre no limpio:** si el journal se lee y no tiene marcador, manda `settings.yaml`.
+
+Implementación:
+- **Compuerta:** `CloudConsentGate` es compartida y se inyecta por constructor. Se comprueba:
+  - en `EgressPolicy.require_allowed`;
+  - en un hook por pedido HTTP, con `max_retries=0`;
+  - antes de cada fragmento de streaming.
+- **Clientes cloud:** uno con consentimiento no se construye sin compuerta (`consent_gate_required`).
+- **Retiro:** `POST /api/admin/cloud-consent/withdraw` corre como una única tarea retenida, en este orden:
+  1. autoridad;
+  2. cierre de la compuerta;
+  3. marcador durable `configuration_publisher/2`;
+  4. escritura de cierre encolada.
+
+  Cualquier fallo después de cerrar la compuerta envenena la época: no hay recibo limpio. El cierre espera un retiro en curso antes de leer el pendiente (N1).
+- **Arranque:** lee la decisión del run legible más nuevo, que va en `intent`. Un run más nuevo ilegible se registra como `unverifiable` y se arrastra hasta un arranque que encuentre `consent: false`.
+- **Hermes:** se mata el grupo de procesos. Un proceso lanzado durante el retiro también muere (F2/N3).
+- **`/1`:** queda idéntico. Lo verifiqué con las 29 definiciones de primer nivel y con 150 tests propios.
+
+Validación:
+- **Round-05 (`0c8f5be`), fallida:** `test_stage_runtime` construía un reasoner con consentimiento y sin compuerta. Se corrigió en `0e9cc8a`.
+- **Round-06 (`0e9cc8a`), fallida:** la full se colgó unos 24 min en `test_capture_native_clients.py::test_diagnostics_has_its_own_capability_and_three_native_ack_barrier`. La causa sigue desconocida y no se reproduce sola, con su módulo ni con el mismo prefijo. Investigación: `data/.../oq8/round06-hang-investigation.json`.
+- **Round-07 (`0e9cc8a`), verde:**
+  - partición de 9756 IDs (9551 más 205, 0 eliminados);
+  - component con 275 tests previos más los nuevos, 493 en total;
+  - nativas con 1 PASS cada una;
+  - full con 9748 PASS más la xfail conocida, en 863 s de 1500.
+- **Cambios de procedimiento:**
+  - el runner captura stacks (`faulthandler_timeout=120` y `sample` al vencer el plazo);
+  - la compuerta de carga se quitó por decisión del usuario desde native-03;
+  - los límites, aserciones y GC no cambiaron.
+- **Revisión independiente:** `accept_with_caveats`.
+
+**Aceptado dentro de su alcance, con salvedades**: `.../oq8-validation-round-07/acceptance-proof.json`. No acepta F1, T024, H6 ni el runtime, y no implica release.
+
+Salvedades y pendientes:
+- **Defecto abierto:** el cuelgue intermitente de round-06. No se encontró un camino causal desde OQ-8, pero tampoco está probado que sea ajeno. Una sola corrida verde no acota su frecuencia.
+- **K5:** code-index y `sync_ha_to_chroma.py` crean su propia compuerta en otros procesos, así que un retiro no los alcanza.
+- **Cierre a mitad de un retiro:** el marcador queda durable pero `settings.yaml` no se reescribe. La nube sigue apagada hasta que un operador fije `consent: false`.
+- **Reversión:**
+  - `b0866e8` ignora el marcador. Antes de revertir hay que verificarlo y fijar `consent: false`.
+  - `2f5e657` no arranca si existen runs `/2`.
+- **Antes de H6:** falta el texto de runbook en `docs/architecture/DEPLOYMENT.md` (F11/F15/F16 y la precondición de reversión D7).
+
+Siguiente: la prioridad T047.
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.
