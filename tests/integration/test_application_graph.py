@@ -14,7 +14,7 @@ from src.application import ApplicationFactories
 from src.home_assistant.control_policy import ActionOrigin, HomeActor
 from src.home_assistant.home_actions import HomeActionRequest
 from src.main import build_application
-from src.memory.fact_ledger import MemoryAssigner, MemoryReviewer
+from src.memory.fact_ledger import MemoryReviewer
 from src.pipeline.command_event import CommandEvent
 from tests.mocks.application_graph import (
     OfflineEncoder, OfflineSTT, OfflineTTS, OfflineWake, offline_config, offline_home,
@@ -144,6 +144,8 @@ async def test_factory_loads_canonical_accounts_without_constructing_biometric_m
                 assert not users._retirement_proof(targets)
                 root = graph.dashboard_authority.resolve(dashboard_auth['Authorization'].split(' ', 1)[1])
                 # U3b-1b: the production proof also requires no owner row for the account.
+                # Imported here: compiled-slot rehearsals import this module from pre-U3b slots.
+                from src.memory.fact_ledger import MemoryAssigner
                 privacy = graph.voice_registry.privacy
                 fact = await privacy.acall(lambda: privacy.ledger.confirm(privacy.ledger.store(
                     "Synthetic owned fact", "fact", 1.0, (memory_source(),), proposed=True).id,
