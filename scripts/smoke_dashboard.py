@@ -59,11 +59,11 @@ def main():
     r = client.post("/api/llm/endpoints/foo/clear-cooldown")
     print(f"  [{'OK ' if r.status_code == 200 else 'ERR'}] {r.status_code}  → {r.json()}")
 
-    print("\nGET /obs/ (frontend wireframe):")
+    print("\nGET /obs/ (panel técnico, URL directa):")
     r = client.get("/obs/")
     body = r.text
     assert r.status_code == 200, r.status_code
-    assert "KZA — Dashboard wireframes" in body
+    assert "KZA — Panel técnico" in body
     assert "src/app.jsx" in body
     print(f"  [OK ] 200  → {len(body)} bytes, contains shell + jsx imports")
 

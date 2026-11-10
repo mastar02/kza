@@ -278,6 +278,8 @@ async def main() -> None:
                     await page.wait_for("document.querySelector('#app-nav [data-view=voices]') && document.querySelector('#room-list').children.length>0")
                     assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(node=>node.dataset.view).join(',')==='home,voices,people,actions,access'")
                     assert not any(request['path'] == '/api/admin/users' for request in requests)
+                    # D1: the technical panel stays reachable only by direct URL, never linked from NEXO.
+                    assert await page.evaluate("document.querySelectorAll('a[href^=\"/obs\"], a[href*=\"//\"][href*=\"/obs\"], #technical-link').length===0")
                     await page.command('Emulation.setDeviceMetricsOverride', {'width': 1425, 'height': 1180, 'deviceScaleFactor': 1, 'mobile': False})
                     await page.evaluate("document.querySelector('#app-nav [data-view=people]').click()")
                     await page.wait_for("document.querySelectorAll('#people-grid [data-person]').length===3")
@@ -375,7 +377,7 @@ async def main() -> None:
                     result = {"passed": True, "synthetic_fixture": True, "actual_chromium_http_login": True,
                               "roles": ["home", "evaluator", "operator"], "home_effects": len(ha.sends),
                               "webgl_illustration": webgl, "individual_sessions": True,
-                              "checks": ["bootstrap no private prefetch", "hidden bootstrap sends no catalog", "role permissions before requests", "independent light/climate typed effects", "focused drafts preserve current observed labels", "lost POST and in_progress receipt reconcile by poll without repost", "camera visual and ARIA agree", "visible model between renders", "navigation releases renderer/RAF", "320px and 390px no horizontal overflow", "logout clears before pending HTTP and blocks crossed login", "failed logout stays hidden across reload", "session expires before fresh catalog"],
+                              "checks": ["bootstrap no private prefetch", "hidden bootstrap sends no catalog", "role permissions before requests", "independent light/climate typed effects", "focused drafts preserve current observed labels", "lost POST and in_progress receipt reconcile by poll without repost", "camera visual and ARIA agree", "visible model between renders", "navigation releases renderer/RAF", "320px and 390px no horizontal overflow", "operator session has no /obs link", "logout clears before pending HTTP and blocks crossed login", "failed logout stays hidden across reload", "session expires before fresh catalog"],
                               "people_checks": ['real CRUD once per gesture', 'mutation stays pending across leave/reentry without repost', 'crossed GET keeps latest result', 'lost mutation receipt requires GET without repost', 'account level does not select dashboard role', 'cancelled confirmation has no effect', 'deletion retires every personal session', 'last admin conflict', '503 is not empty catalog', 'open dialog reports failed refresh and disables submit while preserving draft', 'names are DOM text', '320/390 reflow', 'logout clears dialog/draft/accounts before late GET under another login'],
                               "screenshots": ["home-desktop.png", "climate-desktop.png", "home-mobile.png", "people-desktop.png", "people-mobile.png"],
                               "reflow_widths": {view: sorted(audit['widths'], key=int) for view, audit in audits.items()},

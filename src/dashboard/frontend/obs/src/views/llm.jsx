@@ -2,120 +2,108 @@
 // LLM Router view
 // =============================================================
 
-const { LLM_ENDPOINTS, COOLDOWN_HISTORY_7D } = window.MOCKS;
-
 function StateBadge({ state }) {
-  if (state === 'healthy') return <Pill kind="ok">● healthy</Pill>;
+  if (state === 'healthy') return <Pill kind="ok">● saludable</Pill>;
   if (state === 'cooldown') return <Pill kind="warn">● cooldown</Pill>;
-  if (state === 'disabled') return <Pill kind="err">● disabled</Pill>;
+  if (state === 'disabled') return <Pill kind="err">● deshabilitado</Pill>;
+  if (state === 'unknown' || !state) return <Pill>sin verificar</Pill>;
   return <Pill>{state}</Pill>;
 }
 
+function Failures({ value, observed }) {
+  if (!observed || !value || typeof value !== 'object' || Object.keys(value).length === 0) {
+    return <span className="mute">no observado</span>;
+  }
+  const total = Object.values(value).reduce((s, n) => s + (Number(n) || 0), 0);
+  if (total === 0) return <span className="mute">0</span>;
+  return (
+    <span className="mono" style={{ fontSize: 10 }}>
+      {value.timeout > 0 && <Pill kind="warn">to:{value.timeout}</Pill>}
+      {value.idle > 0 && <Pill>idle:{value.idle}</Pill>}
+      {value.rate_limit > 0 && <Pill kind="warn">429:{value.rate_limit}</Pill>}
+      {value.billing > 0 && <Pill kind="err">$:{value.billing}</Pill>}
+    </span>
+  );
+}
+
 function LLMView() {
-  const [confirmId, setConfirmId] = React.useState(null);
+  const obs = useObs();
+  const endpoints = obs.get('LLM_ENDPOINTS');
+  const available = obs.available('LLM_ENDPOINTS');
+  const inCooldown = endpoints.filter(e => e.cooldown_ends);
+  const verified = endpoints.filter(e => e.state === 'healthy');
+  const failuresObserved = !obs.unobserved('LLM_ENDPOINTS', 'failures_7d');
   return (
     <div className="view" id="view-llm">
       <PageHead
         title="LLM Router"
-        subtitle="Failover entre endpoints · cooldown exponencial 1m → 5m → 25m → 1h"
-        meta={<>persistido en <span className="mono">data/llm_cooldowns.json</span></>}
-        actions={<button className="btn">force health check</button>}
+        subtitle="Failover entre endpoints · escalones de cooldown por defecto del código: 1m → 5m → 25m → 1h"
+        meta={<>ruta de persistencia por defecto <span className="mono">data/llm_cooldowns.json</span> · <SourceNote k="LLM_ENDPOINTS" /></>}
+        actions={<UnavailableButton id="llm-health-reason" label="Forzar chequeo de salud"
+          reason="Chequeo de salud no disponible: no existe una operación autenticada para forzarlo." />}
       />
 
       <div className="grid grid-3" style={{ marginBottom: 16 }}>
-        <Card title="Endpoint activo" meta="fast path">
-          <div className="mono" style={{ fontSize: 18, color: 'var(--accent)' }}>vllm-7b</div>
-          <div className="mute mono" style={{ fontSize: 11 }}>:8100 · cuda:1 · prio 1</div>
-          <div style={{ display: 'flex', gap: 16, marginTop: 12 }}>
-            <div><div className="mono" style={{ fontSize: 16 }}>82</div><div className="mute mono" style={{ fontSize: 10 }}>tok/s</div></div>
-            <div><div className="mono" style={{ fontSize: 16 }}>142</div><div className="mute mono" style={{ fontSize: 10 }}>ttft ms</div></div>
-          </div>
+        <Card title="Endpoints configurados">
+          <div className="mono" style={{ fontSize: 18 }}>{available ? endpoints.length : '—'}</div>
+          <div className="mute mono" style={{ fontSize: 11 }}>{available ? 'según el estado del router' : 'no disponible'}</div>
         </Card>
-
-        <Card title="Slow path" meta="reasoning">
-          <div className="mono" style={{ fontSize: 18, color: 'var(--warn)' }}>ik-30b-cpu</div>
-          <div className="mute mono" style={{ fontSize: 11 }}>:8200 · CPU · prio 2</div>
-          <div style={{ display: 'flex', gap: 16, marginTop: 12, alignItems: 'center' }}>
-            <Pill kind="warn">cooldown 5m</Pill>
-            <Countdown until="14:35:02" />
-          </div>
+        <Card title="En cooldown">
+          <div className="mono" style={{ fontSize: 18, color: inCooldown.length ? 'var(--warn)' : 'var(--ink)' }}>{available ? inCooldown.length : '—'}</div>
+          <div className="mute mono" style={{ fontSize: 11 }}>{available ? inCooldown.map(e => e.id).join(', ') || 'ninguno' : 'no disponible'}</div>
         </Card>
-
-        <Card title="Cooldowns últimos 7 días" meta={`${COOLDOWN_HISTORY_7D.reduce((s,d)=>s+d.count,0)} eventos`}>
-          <BarChart data={COOLDOWN_HISTORY_7D} height={56} labels />
+        <Card title="Salud verificada">
+          <div className="mono" style={{ fontSize: 18 }}>{available ? verified.length : '—'}</div>
+          <div className="mute mono" style={{ fontSize: 11 }}>
+            {available ? (obs.unobserved('LLM_ENDPOINTS', 'backend_health') ? 'el servidor no observa la salud de los backends' : 'endpoints saludables') : 'no disponible'}
+          </div>
         </Card>
       </div>
 
-      <SectionBar title="Endpoints" meta={`${LLM_ENDPOINTS.length} configurados`} />
+      <SectionBar title="Endpoints" meta={available ? `${endpoints.length} configurados` : null} />
       <Card>
-        <table className="k">
-          <thead>
-            <tr>
-              <th>id</th><th>rol</th><th>url</th><th>prio</th><th>state</th>
-              <th>tok/s</th><th>ttft</th>
-              <th>fallos 7d</th><th>cooldown</th><th>last check</th><th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {LLM_ENDPOINTS.map(e => {
-              const totalFails = Object.values(e.failures_7d).reduce((s,n)=>s+n,0);
-              return (
+        {available && endpoints.length > 0 ? (
+          <table className="k">
+            <thead>
+              <tr>
+                <th>id</th><th>rol</th><th>url</th><th>prio</th><th>estado</th>
+                <th>tok/s</th><th>ttft</th>
+                <th>fallos 7d</th><th>cooldown</th><th>última llamada</th><th>acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              {endpoints.map(e => (
                 <tr key={e.id}>
                   <td className="mono">{e.id}</td>
-                  <td className="mute">{e.role}</td>
-                  <td className="mono" style={{ fontSize: 10 }}>{e.url}</td>
-                  <td className="mono">{e.priority}</td>
+                  <td className="mute">{e.role || '—'}</td>
+                  <td className="mono" style={{ fontSize: 10 }}>{e.url || '—'}</td>
+                  <td className="mono">{e.priority ?? '—'}</td>
                   <td><StateBadge state={e.state} /></td>
-                  <td className="num">{e.tps ?? '—'}</td>
-                  <td className="num">{e.ttft_ms}ms</td>
-                  <td>
-                    <span className="mono" style={{ fontSize: 10 }}>
-                      {totalFails === 0 ? <span className="mute">0</span> : (
-                        <>
-                          {e.failures_7d.timeout    > 0 && <Pill kind="warn">to:{e.failures_7d.timeout}</Pill>}
-                          {e.failures_7d.idle       > 0 && <Pill>idle:{e.failures_7d.idle}</Pill>}
-                          {e.failures_7d.rate_limit > 0 && <Pill kind="warn">429:{e.failures_7d.rate_limit}</Pill>}
-                          {e.failures_7d.billing    > 0 && <Pill kind="err">$:{e.failures_7d.billing}</Pill>}
-                        </>
-                      )}
-                    </span>
-                  </td>
-                  <td>{e.cooldown_ends ? <Countdown until={e.cooldown_ends} /> : <span className="mute">—</span>}</td>
-                  <td className="mono mute" style={{ fontSize: 10 }}>{e.last_check}</td>
+                  <td className="num">{typeof e.tps === 'number' ? e.tps : '—'}</td>
+                  <td className="num">{typeof e.ttft_ms === 'number' ? `${e.ttft_ms}ms` : '—'}</td>
+                  <td><Failures value={e.failures_7d} observed={failuresObserved} /></td>
+                  <td>{e.cooldown_ends || e.cooldown_until ? <Countdown until={e.cooldown_until} fallback={e.cooldown_ends} /> : <span className="mute">—</span>}</td>
+                  <td className="mono mute" style={{ fontSize: 10 }}>{e.last_call_at ? window.KzaObsData.formatInstant(e.last_call_at) : e.last_check || '—'}</td>
                   <td>
                     {e.cooldown_ends ? (
-                      confirmId === e.id ? (
-                        <div style={{ display: 'flex', gap: 4 }}>
-                          <button className="btn danger" onClick={() => setConfirmId(null)}>confirmar</button>
-                          <button className="btn" onClick={() => setConfirmId(null)}>×</button>
-                        </div>
-                      ) : (
-                        <button className="btn" onClick={() => setConfirmId(e.id)}>clear cooldown</button>
-                      )
-                    ) : <button className="btn">probe</button>}
+                      <OperationButton kind="clearCooldown" target={e.id} label="Quitar cooldown" confirmLabel={`Confirmar: quitar cooldown de ${e.id}`} />
+                    ) : (
+                      <UnavailableButton id={`probe-reason-${String(e.id).replace(/[^a-zA-Z0-9_-]/g, '_')}`} label="Probar"
+                        reason="Prueba no disponible: no existe una operación autenticada." />
+                    )}
                   </td>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <Unavailable>{available ? 'No hay endpoints configurados.' : 'Endpoints no disponibles: no se pudo leer el estado del router.'}</Unavailable>
+        )}
       </Card>
 
-      <SectionBar title="Decisión del router · últimas 30 requests" />
+      <SectionBar title="Historial de cooldowns y decisiones del router" />
       <Card>
-        <div style={{ display: 'flex', gap: 2, height: 44, alignItems: 'flex-end' }}>
-          {Array.from({ length: 30 }, (_, i) => {
-            const v = (i % 7 === 6) ? 'slow' : (i % 5 === 4 ? 'music' : 'fast');
-            const c = v === 'fast' ? 'var(--ok)' : v === 'slow' ? 'var(--info)' : 'var(--accent)';
-            const h = v === 'fast' ? 16 : v === 'music' ? 26 : 40;
-            return <div key={i} style={{ flex: 1, height: h, background: c, opacity: 0.75, borderRadius: 2 }} title={v} />;
-          })}
-        </div>
-        <div style={{ display: 'flex', gap: 16, marginTop: 8, fontFamily: 'var(--mono)', fontSize: 10 }}>
-          <span><span style={{ display: 'inline-block', width: 8, height: 8, background: 'var(--ok)', borderRadius: 2, marginRight: 4 }} />fast</span>
-          <span><span style={{ display: 'inline-block', width: 8, height: 8, background: 'var(--accent)', borderRadius: 2, marginRight: 4 }} />music</span>
-          <span><span style={{ display: 'inline-block', width: 8, height: 8, background: 'var(--info)', borderRadius: 2, marginRight: 4 }} />slow</span>
-        </div>
+        <Unavailable>No disponible: el servidor no publica historial de cooldowns ni de decisiones del router.</Unavailable>
       </Card>
     </div>
   );

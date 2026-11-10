@@ -69,11 +69,13 @@ def _llm_endpoints_adapter(llm_router, metrics_tracker=None, *, before_read=None
     for ep in endpoints:
         ep_id = getattr(ep, "id", "?")
         in_cd = (cd is not None) and (not cd.is_available(ep_id, before_read=before_read))
-        cooldown_ends = None
+        cooldown_ends = cooldown_until = None
         if in_cd and cd is not None:
             try:
                 eta = cd.next_attempt_at(ep_id, before_read=before_read)
                 cooldown_ends = datetime.fromtimestamp(eta).strftime("%H:%M:%S")
+                # Zone-independent instant for clients; cooldown_ends stays server-local.
+                cooldown_until = datetime.fromtimestamp(eta, tz=UTC).isoformat()
             except NativeAuthorityRetired:
                 raise
             except Exception:
@@ -102,6 +104,7 @@ def _llm_endpoints_adapter(llm_router, metrics_tracker=None, *, before_read=None
             "last_call_at": datetime.fromtimestamp(last_check_ts, tz=UTC).isoformat() if type(last_check_ts) in (int, float) else None,
             "failures_7d": {},
             "cooldown_ends": cooldown_ends,
+            "cooldown_until": cooldown_until,
         })
     if before_read is not None:
         before_read()
@@ -125,6 +128,13 @@ def _users_adapter(user_manager, *, before_read=None) -> list[dict]:
         users = None
 
 
+def _alert_instant(value) -> str | None:
+    """ISO-8601 with offset; AlertManager stores naive timestamps in UTC (utcnow)."""
+    if not isinstance(value, datetime):
+        return None
+    return (value if value.tzinfo is not None else value.replace(tzinfo=UTC)).isoformat()
+
+
 def _alerts_adapter(alert_manager, status: str | None) -> list[dict]:
     history = alert_manager.get_history(limit=100)
     out = []
@@ -139,6 +149,7 @@ def _alerts_adapter(alert_manager, status: str | None) -> list[dict]:
         out.append({
             "id": a.alert_id,
             "ts": a.timestamp.strftime("%H:%M:%S") if hasattr(a.timestamp, "strftime") else str(a.timestamp),
+            "at": _alert_instant(a.timestamp),
             "priority": prio_map.get(prio_name, prio_name),
             "type": a.alert_type.value if hasattr(a.alert_type, "value") else str(a.alert_type),
             "zone": a.details.get("zone", "—"),
@@ -165,6 +176,7 @@ def _ha_actions_adapter(event_logger, *, limit: int = 50) -> list[dict] | None:
         out.append({
             "id": f"act_{int(ev.timestamp * 1000)}",
             "ts": ev.datetime.strftime("%H:%M:%S"),
+            "at": datetime.fromtimestamp(ev.timestamp, tz=UTC).isoformat(),
             "idem": ctx.get("idem", "—"),
             "user": ev.user_name or ev.user_id or "—",
             "service": f"{domain}.{ev.action}",

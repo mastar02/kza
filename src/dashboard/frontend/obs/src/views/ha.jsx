@@ -2,9 +2,8 @@
 // Home Assistant view
 // =============================================================
 
-const { HA_ENTITIES, HA_ACTIONS } = window.MOCKS;
-
 function ScoreBar({ score }) {
+  if (typeof score !== 'number') return <span className="mono mute" style={{ fontSize: 10 }}>no observado</span>;
   const pct = score * 100;
   const color = score > 0.9 ? 'var(--ok)' : score > 0.8 ? 'var(--warn)' : 'var(--ink-mute)';
   return (
@@ -25,80 +24,99 @@ function StatePill({ entity }) {
   return <Pill kind="info">{s}</Pill>;
 }
 
+function ActionResult({ a }) {
+  if (a.ok === true) return <Pill kind="ok">✓ ok</Pill>;
+  if (a.ok === false) {
+    return (
+      <div>
+        <Pill kind="err">✗ falló</Pill>
+        {a.err && <div className="mono" style={{ fontSize: 9, color: 'var(--err)', marginTop: 2 }}>{a.err}</div>}
+      </div>
+    );
+  }
+  return <Pill>sin confirmar</Pill>;
+}
+
 function HAView() {
+  const obs = useObs();
+  const entities = obs.get('HA_ENTITIES');
+  const actions = obs.get('HA_ACTIONS');
   const [domainFilter, setDomainFilter] = React.useState('all');
-  const domains = ['all', ...Array.from(new Set(HA_ENTITIES.map(e => e.domain)))];
-  const filtered = domainFilter === 'all' ? HA_ENTITIES : HA_ENTITIES.filter(e => e.domain === domainFilter);
+  const domains = ['all', ...Array.from(new Set(entities.map(e => e.domain)))];
+  const filtered = domainFilter === 'all' ? entities : entities.filter(e => e.domain === domainFilter);
   return (
     <div className="view" id="view-ha">
       <PageHead
         title="Home Assistant"
-        subtitle="Entidades indexadas en ChromaDB · log de acciones con idempotency keys"
-        meta={<><span>{HA_ENTITIES.length} entidades</span> · <span>BGE-M3 embeddings</span></>}
+        subtitle="Estados leídos de Home Assistant · registro de acciones"
+        meta={obs.available('HA_ENTITIES') ? <span>{entities.length} entidades</span> : null}
       />
 
-      <SectionBar title="Entidades indexadas" meta={`${filtered.length} de ${HA_ENTITIES.length}`} />
+      <SectionBar title="Entidades" meta={<SourceNote k="HA_ENTITIES" />} />
       <Card>
-        <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
-          {domains.map(d => (
-            <button key={d} className={`btn ${domainFilter === d ? 'primary' : ''}`} onClick={() => setDomainFilter(d)}>
-              {d}
-            </button>
-          ))}
-        </div>
-        <table className="k">
-          <thead>
-            <tr>
-              <th>entity_id</th><th>domain</th><th>nombre</th><th>state</th>
-              <th>similarity</th><th>last seen</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map(e => (
-              <tr key={e.id}>
-                <td className="mono" style={{ fontSize: 11 }}>{e.id}</td>
-                <td><span className="mono mute">{e.domain}</span></td>
-                <td>{e.name}</td>
-                <td><StatePill entity={e} /></td>
-                <td><ScoreBar score={e.score} /></td>
-                <td className="mono mute" style={{ fontSize: 10 }}>{e.lastSeen}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        {obs.available('HA_ENTITIES') && entities.length > 0 ? (
+          <>
+            <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+              {domains.map(d => (
+                <button type="button" key={d} className={`btn ${domainFilter === d ? 'primary' : ''}`} aria-pressed={domainFilter === d} onClick={() => setDomainFilter(d)}>
+                  {d}
+                </button>
+              ))}
+            </div>
+            <table className="k">
+              <thead>
+                <tr>
+                  <th>entity_id</th><th>dominio</th><th>nombre</th><th>estado</th>
+                  <th>similitud</th><th>último cambio</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(e => (
+                  <tr key={e.id}>
+                    <td className="mono" style={{ fontSize: 11 }}>{e.id}</td>
+                    <td><span className="mono mute">{e.domain}</span></td>
+                    <td>{e.name}</td>
+                    <td><StatePill entity={e} /></td>
+                    <td><ScoreBar score={e.score} /></td>
+                    <td className="mono mute" style={{ fontSize: 10 }}>{e.state_changed_at ? window.KzaObsData.formatInstant(e.state_changed_at) : 'no observado'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        ) : (
+          <Unavailable>{obs.available('HA_ENTITIES') ? 'Home Assistant no informó entidades.' : 'Entidades no disponibles: no se pudo leer Home Assistant.'}</Unavailable>
+        )}
       </Card>
 
-      <SectionBar title="Acciones disparadas" meta="con idempotency key" action={<button className="btn">tail en vivo</button>} />
+      <SectionBar title="Acciones disparadas" meta={<SourceNote k="HA_ACTIONS" />} />
       <Card>
-        <table className="k">
-          <thead>
-            <tr>
-              <th>ts</th><th>idempotency</th><th>user</th><th>service</th>
-              <th>target</th><th>args</th><th>resultado</th><th style={{ textAlign:'right' }}>lat</th>
-            </tr>
-          </thead>
-          <tbody>
-            {HA_ACTIONS.map(a => (
-              <tr key={a.id}>
-                <td className="mono">{a.ts}</td>
-                <td className="mono" style={{ fontSize: 10, color: 'var(--accent)' }}>{a.idem}</td>
-                <td>{a.user}</td>
-                <td className="mono" style={{ fontSize: 11 }}>{a.service}</td>
-                <td className="mono mute" style={{ fontSize: 10 }}>{a.target}</td>
-                <td className="mono mute" style={{ fontSize: 10 }}>{a.args}</td>
-                <td>
-                  {a.ok ? <Pill kind="ok">✓ ok</Pill> : (
-                    <div>
-                      <Pill kind="err">✗ fail</Pill>
-                      <div className="mono" style={{ fontSize: 9, color: 'var(--err)', marginTop: 2 }}>{a.err}</div>
-                    </div>
-                  )}
-                </td>
-                <td className="num">{a.lat_ms}ms</td>
+        {obs.available('HA_ACTIONS') && actions.length > 0 ? (
+          <table className="k">
+            <thead>
+              <tr>
+                <th>ts</th><th>idempotency</th><th>usuario</th><th>servicio</th>
+                <th>destino</th><th>args</th><th>resultado</th><th style={{ textAlign:'right' }}>lat</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {actions.map(a => (
+                <tr key={a.id}>
+                  <td><EventTime at={a.at} ts={a.ts} /></td>
+                  <td className="mono" style={{ fontSize: 10, color: 'var(--accent)' }}>{a.idem || '—'}</td>
+                  <td>{a.user || '—'}</td>
+                  <td className="mono" style={{ fontSize: 11 }}>{a.service}</td>
+                  <td className="mono mute" style={{ fontSize: 10 }}>{a.target}</td>
+                  <td className="mono mute" style={{ fontSize: 10 }}>{a.args ?? '—'}</td>
+                  <td><ActionResult a={a} /></td>
+                  <td className="num">{typeof a.lat_ms === 'number' ? `${a.lat_ms}ms` : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <Unavailable>{obs.available('HA_ACTIONS') ? 'Sin acciones registradas.' : 'Acciones no disponibles: no se pudo leer el registro.'}</Unavailable>
+        )}
       </Card>
     </div>
   );

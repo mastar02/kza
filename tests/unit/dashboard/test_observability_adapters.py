@@ -171,3 +171,41 @@ def test_warn_logged_when_use_mocks_with_real_services_injected(caplog, dashboar
     with caplog.at_level("WARNING"):
         register_observability_routes(app, use_mocks=True, zone_manager=_M())
     assert any("use_mocks=True con servicios reales" in m for m in caplog.messages)
+
+
+def test_alert_instant_is_explicit_utc_for_naive_alert_manager_timestamps():
+    """AlertManager stores naive UTC; clients receive an offset-bearing instant."""
+    from datetime import datetime
+    from src.dashboard.observability import _alerts_adapter
+    alert = Alert(alert_id="al_z", alert_type=AlertType.SECURITY, priority=AlertPriority.LOW,
+                  message="m", details={}, timestamp=datetime(2026, 11, 10, 13, 39, 43))
+    manager = MagicMock()
+    manager.get_history.return_value = [alert]
+    [row] = _alerts_adapter(manager, None)
+    assert row["at"] == "2026-11-10T13:39:43+00:00"
+    assert row["ts"] == "13:39:43"
+
+
+def test_llm_cooldown_until_is_zone_explicit_and_legacy_field_kept(fake_llm_router):
+    from datetime import UTC, datetime
+    from src.dashboard.observability import _llm_endpoints_adapter
+    eta = datetime(2026, 11, 10, 14, 0, 5, tzinfo=UTC).timestamp()
+    fake_llm_router._cd.is_available.return_value = False
+    fake_llm_router._cd.next_attempt_at.return_value = eta
+    [row] = _llm_endpoints_adapter(fake_llm_router)
+    assert row["state"] == "cooldown"
+    assert row["cooldown_until"] == "2026-11-10T14:00:05+00:00"
+    assert row["cooldown_ends"] == datetime.fromtimestamp(eta).strftime("%H:%M:%S")
+
+
+def test_ha_action_instant_is_zone_explicit():
+    from datetime import UTC, datetime
+    from src.dashboard.observability import _ha_actions_adapter
+    ts = datetime(2026, 11, 10, 9, 15, 0, tzinfo=UTC).timestamp()
+    event = SimpleNamespace(entity_id="light.sala", context={}, timestamp=ts, user_name=None,
+                            user_id="u_test", action="turn_on",
+                            datetime=datetime.fromtimestamp(ts))
+    logger_ = MagicMock()
+    logger_.get_events.return_value = [event]
+    rows = _ha_actions_adapter(logger_)
+    assert rows and rows[0]["at"] == "2026-11-10T09:15:00+00:00"

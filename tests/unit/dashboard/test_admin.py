@@ -309,6 +309,21 @@ def test_restart_service_calls_systemctl(monkeypatch, _client):
     assert r.json()["service"] == "kza-voice"
 
 
+def test_restart_service_refused_in_observability_demo_without_systemctl(monkeypatch, _client):
+    import shutil
+    import subprocess
+    calls = []
+    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/systemctl")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: calls.append(a))
+
+    c = _client(observability_demo=True)
+    assert c.post("/api/admin/services/kza-voice/restart").status_code == 401
+    r = c.post("/api/admin/services/kza-voice/restart", headers=_bearer())
+    assert r.status_code == 409
+    assert r.json() == {"detail": "observability_demo_mode"}
+    assert calls == []
+
+
 def test_restart_service_systemctl_failure_returns_500(monkeypatch, _client):
     import shutil
     import subprocess

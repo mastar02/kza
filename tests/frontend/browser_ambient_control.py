@@ -16,20 +16,26 @@ from websockets.asyncio.client import connect
 
 from src.ambient.control import build_ambient_control
 from src.dashboard.api import DashboardAPI
+from src.dashboard.authority import DashboardAuthority
 from src.dashboard import system_monitor
 from src.dashboard.live_erasure import build_live_services
 from src.memory.erasure_coordinator import ErasureCoordinator
+from tests.frontend.browser_support import browser_binary as select_browser, browser_profile_root, evidence_directory, install_login_session
 from tests.frontend.browser_typed_controls import Page
 from tests.integration.test_capture_producer_privacy import until
 from tests.mocks.ambient_graph import ambient_graph,Clock
+
+
+EVIDENCE=evidence_directory('KZA_AMBIENT_CONTROL_EVIDENCE','data/browser-runs/ambient-control')
 
 
 async def main():
     """Exercise the real page with synthetic audio and an actually held native ASR."""
     token='synthetic-ambient-control-browser'
     os.environ['KZA_DASHBOARD_TOKEN']=token
-    browser_data=Path.home()/'snap/chromium/common'
-    browser_data.mkdir(parents=True,exist_ok=True)
+    EVIDENCE.mkdir(mode=0o700,parents=True,exist_ok=True)
+    binary=select_browser()
+    browser_data=browser_profile_root()
     with tempfile.TemporaryDirectory(prefix='kza-ambient-browser-',dir=browser_data) as directory:
         work=Path(directory)
         async with ambient_graph(work,stage='stt',clock=Clock(time.time())) as g,AsyncExitStack() as stack:
@@ -39,7 +45,10 @@ async def main():
             owner=ErasureCoordinator(g.privacy)
             stack.push_async_callback(owner.aclose)
             bus=await build_live_services({},privacy=g.privacy,owner=owner,shutdown=stack)
-            dashboard=DashboardAPI(ambient_control=control,event_bus=bus,observability_use_mocks=False)
+            authority=DashboardAuthority(work/'auth.db',session_ttl_s=600)
+            stack.push_async_callback(authority.aclose)
+            await authority.initialize()
+            dashboard=DashboardAPI(authority=authority,ambient_control=control,event_bus=bus,observability_use_mocks=False)
             gpu,services=system_monitor.gpu_snapshot,system_monitor.services_snapshot
             system_monitor.gpu_snapshot,system_monitor.services_snapshot=lambda:None,lambda:None
             listener=socket.socket();listener.bind(('127.0.0.1',0));port=listener.getsockname()[1]
@@ -49,13 +58,13 @@ async def main():
             try:
                 await until(lambda:server.started)
                 profile=work/'chromium'
-                with (work/'chromium.log').open('w') as log:
-                    browser=subprocess.Popen(['chromium','--headless','--disable-gpu','--no-first-run',
+                with (EVIDENCE/'chromium.log').open('w') as log:
+                    browser=subprocess.Popen([binary,'--headless','--disable-gpu','--no-first-run',
                         '--remote-debugging-port=0',f'--user-data-dir={profile}'],stdout=log,stderr=log)
                     async with asyncio.timeout(15):
                         while not (profile/'DevToolsActivePort').exists():
                             if browser.poll() is not None:
-                                raise RuntimeError((work/'chromium.log').read_text()[:2000])
+                                raise RuntimeError((EVIDENCE/'chromium.log').read_text()[:2000])
                             await asyncio.sleep(.05)
                     debug=int((profile/'DevToolsActivePort').read_text().splitlines()[0])
                     async with aiohttp.ClientSession() as client:
@@ -65,8 +74,7 @@ async def main():
                         page=Page(ws)
                         await page.command('Runtime.enable')
                         await page.command('Network.enable')
-                        await page.command('Network.setCookie',{'name':'kza_dashboard_token','value':token,
-                            'url':f'http://127.0.0.1:{port}/','httpOnly':True,'sameSite':'Strict'})
+                        await install_login_session(page,f'http://127.0.0.1:{port}',token)
                         await page.command('Network.setBlockedURLs',{'urls':['https://unpkg.com/*','https://fonts.googleapis.com/*','https://fonts.gstatic.com/*']})
                         await page.command('Page.navigate',{'url':f'http://127.0.0.1:{port}/obs/'})
                         await page.wait_for("document.querySelector('#view-live') && window.__kzaLiveWs?.readyState===1")
@@ -113,3 +121,4 @@ async def main():
 
 if __name__=='__main__':
     asyncio.run(main())
+    (EVIDENCE/'browser-result.json').write_text(json.dumps({'passed':True,'synthetic_fixture':True})+'\n')

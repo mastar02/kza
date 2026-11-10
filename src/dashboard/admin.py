@@ -161,8 +161,13 @@ def register_admin_routes(
     model_lock=None,
     configuration_changes=None,
     consent_gate: CloudConsentGate | None = None,
+    observability_demo: bool = False,
 ) -> None:
     """Registrar /api/admin/*. Llamar antes del mount de StaticFiles.
+
+    ``observability_demo`` mirrors ``dashboard.observability_use_mocks``: the
+    panel then shows example rows, so service restarts are refused (409) and
+    never reach systemctl. The admin:manage requirement is unchanged.
 
     ``configuration_changes`` (ConfigurationChanges) and ``consent_gate``
     enable the OQ-8 cloud-consent routes; they are reachable only through an
@@ -367,6 +372,8 @@ def register_admin_routes(
 
     @router.post("/services/{name}/restart", dependencies=[Depends(require_admin)])
     async def restart_service(name: str, request: Request):
+        if observability_demo:
+            raise HTTPException(409, "observability_demo_mode")
         if name not in RESTARTABLE_SERVICES:
             raise HTTPException(403, f"servicio '{name}' no está en allowlist")
         if not shutil.which("systemctl"):

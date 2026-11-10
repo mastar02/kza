@@ -146,7 +146,7 @@ function retire(message = '') {
   for (const id of ['room-list', 'room-controls', 'action-list', 'app-nav', 'rail-nav', 'additional-tools']) byId(id).replaceChildren();
   for (const id of ['lights-total', 'entities-total', 'rooms-total', 'room-count']) byId(id).textContent = '—';
   byId('nexo-workspace').hidden = true; byId('login-panel').hidden = false;
-  byId('logout').hidden = true; byId('technical-link').hidden = true;
+  byId('logout').hidden = true;
   byId('demo-banner').hidden = true; byId('token').value = '';
   byId('session-label').textContent = 'Acceso local'; byId('login-error').textContent = message;
 }
@@ -326,7 +326,6 @@ function renderNavigation() {
       control.append(node('span', target === 'rail-nav' ? 'rail-tooltip' : '', view.label)); container.append(control);
     }
   }
-  byId('technical-link').hidden = !session.can('diagnostics:read');
   const tools = byId('additional-tools'); tools.replaceChildren();
   if (session.can('routines:execute')) { const link = node('a', 'text-button', 'Rutinas del hogar ↗'); link.href = '/home/legacy.html'; tools.append(link); }
   if (session.can('diagnostics:read')) { const link = node('a', 'text-button', 'Micrófonos y diagnóstico ↗'); link.href = '/home/legacy.html'; tools.append(link); }

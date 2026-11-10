@@ -78,6 +78,32 @@ def evidence_directory(variable: str, default_parent: str) -> Path:
     return ROOT / default_parent / f'run-{time.time_ns()}'
 
 
+async def install_login_session(page, base_url: str, token: str) -> None:
+    """Sign in through the real login route and hand its opaque session to the browser.
+
+    The dashboard must run with a ``DashboardAuthority``. The server issues the
+    session cookie; the raw administrative token is never stored in the browser.
+
+    Args:
+        page: CDP page client with a ``command`` coroutine.
+        base_url: Origin of the dashboard under test, without a trailing slash.
+        token: Synthetic administrative token configured for the fixture.
+    """
+    import aiohttp
+    from src.dashboard.auth import COOKIE_NAME
+
+    async with aiohttp.ClientSession() as client:
+        async with client.post(f'{base_url}/api/admin/auth/login', json={'token': token}) as response:
+            if response.status != 200:
+                raise RuntimeError(f'login_failed:{response.status}')
+            morsel = response.cookies.get(COOKIE_NAME)
+    if morsel is None or not morsel.value or morsel.value == token:
+        raise RuntimeError('login_session_cookie_missing')
+    await page.command('Network.enable')
+    await page.command('Network.setCookie', {'name': COOKIE_NAME, 'value': morsel.value, 'url': base_url + '/',
+                                             'httpOnly': True, 'sameSite': 'Strict'})
+
+
 # C08 reflow widths plus the historical 1425 px desktop width kept by the harnesses.
 C08_WIDTHS = (320, 390, 768, 1280, 1425, 1440)
 TOUCH_TARGET_WIDTHS = frozenset({320, 390})

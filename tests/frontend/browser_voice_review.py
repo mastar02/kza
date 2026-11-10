@@ -17,24 +17,30 @@ import uvicorn
 from websockets.asyncio.client import connect
 
 from src.dashboard.api import DashboardAPI
+from src.dashboard.authority import DashboardAuthority
 from src.dashboard import system_monitor
 from src.dashboard.live_erasure import build_live_services
 from src.memory.erasure_coordinator import ErasureCoordinator
 from src.memory.fact_ledger import MemoryReviewer
 from src.memory.privacy_services import PrivacyServices
 from src.users.voice_registry import build_voice_registry
+from tests.frontend.browser_support import browser_binary as select_browser, browser_profile_root, evidence_directory, install_login_session
 from tests.frontend.browser_typed_controls import Page
 from tests.mocks.ambient_graph import Clock
 from tests.mocks.memory_sources import memory_source
 from tests.mocks.voice_registry import AUDIO,Encoder
 
 
-async def main(*,browser_binary='chromium'):
+EVIDENCE = evidence_directory('KZA_VOICE_REVIEW_EVIDENCE','data/browser-runs/voice-review')
+
+
+async def main(*,browser_binary=None):
     """Exercise actual UI events, HTTP/v3 WebSocket and native HTML media teardown."""
     token = 'synthetic-voice-review-browser'
     os.environ['KZA_DASHBOARD_TOKEN'] = token
-    browser_data = Path.home()/'snap/chromium/common'
-    browser_data.mkdir(parents=True,exist_ok=True)
+    EVIDENCE.mkdir(mode=0o700,parents=True,exist_ok=True)
+    browser_binary = browser_binary or select_browser()
+    browser_data = browser_profile_root()
     with tempfile.TemporaryDirectory(prefix='kza-voice-browser-',dir=browser_data) as work:
         directory = Path(work)
         async with AsyncExitStack() as stack:
@@ -62,7 +68,10 @@ async def main(*,browser_binary='chromium'):
                 return source,identity
             samples = [await sample('Synthetic reviewed phrase '+str(index)) for index in range(3)]
             extra,extra_id = await sample('Synthetic audio retirement phrase')
-            dashboard = DashboardAPI(event_bus=bus,voice_registry=voices,observability_use_mocks=False)
+            authority = DashboardAuthority(directory/'auth.db',session_ttl_s=600)
+            stack.push_async_callback(authority.aclose)
+            await authority.initialize()
+            dashboard = DashboardAPI(authority=authority,event_bus=bus,voice_registry=voices,observability_use_mocks=False)
             original_gpu,original_services = system_monitor.gpu_snapshot,system_monitor.services_snapshot
             requests = []
             system_monitor.gpu_snapshot,system_monitor.services_snapshot = lambda:None,lambda:None
@@ -72,8 +81,6 @@ async def main(*,browser_binary='chromium'):
                     await asyncio.sleep(.25)  # Expose loading feedback before the real response.
                 response = await call_next(request)
                 requests.append({'method':request.method,'path':request.url.path,'status':response.status_code})
-                if request.url.path=='/':
-                    response.set_cookie('kza_dashboard_token',token,httponly=True,samesite='strict')
                 return response
             listener = socket.socket()
             listener.bind(('127.0.0.1',0))
@@ -86,13 +93,13 @@ async def main(*,browser_binary='chromium'):
                     while not server.started:
                         await asyncio.sleep(.02)
                 profile = directory/'chromium'
-                with (directory/'chromium.log').open('w') as log:
+                with (EVIDENCE/'chromium.log').open('w') as log:
                     browser = subprocess.Popen([browser_binary,'--headless','--disable-gpu','--no-first-run',
                         '--remote-debugging-port=0',f'--user-data-dir={profile}',f'http://127.0.0.1:{port}/'],stdout=log,stderr=log)
                     async with asyncio.timeout(15):
                         while not (profile/'DevToolsActivePort').exists():
                             if browser.poll() is not None:
-                                raise RuntimeError((directory/'chromium.log').read_text()[:2000])
+                                raise RuntimeError((EVIDENCE/'chromium.log').read_text()[:2000])
                             await asyncio.sleep(.05)
                     debugging = int((profile/'DevToolsActivePort').read_text().splitlines()[0])
                     async with aiohttp.ClientSession() as session:
@@ -102,8 +109,7 @@ async def main(*,browser_binary='chromium'):
                         page = Page(connection)
                         await page.command('Runtime.enable')
                         await page.command('Network.enable')
-                        await page.command('Network.setCookie',{'name':'kza_dashboard_token','value':token,
-                            'url':f'http://127.0.0.1:{port}/','httpOnly':True,'sameSite':'Strict'})
+                        await install_login_session(page,f'http://127.0.0.1:{port}',token)
                         await page.command('Network.setBlockedURLs',{'urls':['https://unpkg.com/*','https://fonts.googleapis.com/*','https://fonts.gstatic.com/*']})
                         await page.command('Page.navigate',{'url':f'http://127.0.0.1:{port}/obs/'})
                         try:
@@ -280,5 +286,6 @@ async def main(*,browser_binary='chromium'):
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--browser-binary',default='chromium')
+    parser.add_argument('--browser-binary',default=None)
     asyncio.run(main(browser_binary=parser.parse_args().browser_binary))
+    (EVIDENCE/'browser-result.json').write_text(json.dumps({'passed':True,'synthetic_fixture':True})+'\n')

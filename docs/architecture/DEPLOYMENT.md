@@ -71,6 +71,10 @@ y Escritorio; Living y Cocina siguen sin captura útil. HA conserva `auth_error`
 - Dashboard: **https://192.168.1.2:9540/obs/**. NGINX del proyecto, bajo
   `kza-dashboard-proxy.service`, termina TLS y reenvía a `127.0.0.1:9500`.
   Conserva Host, esquema y WebSocket. No modifica el NGINX compartido.
+- Pendiente de release (no instalado): en la rama de desarrollo el dashboard es
+  NEXO en `/` y el panel técnico `/obs/` queda sólo por URL directa, sin enlace
+  desde NEXO (decisión D1 del usuario, 2026-11-10). La release instalada no
+  contiene NEXO y sigue usando `/obs/`.
 - El certificado es local y autofirmado. El login usa el
   `KZA_DASHBOARD_TOKEN` existente de `/home/kza/secrets/.env`; no copiarlo a Git
   ni al chat. El acceso privado sin sesión devuelve 401.

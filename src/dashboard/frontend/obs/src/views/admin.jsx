@@ -6,7 +6,6 @@
 // =============================================================
 
 const PERMISSION_LEVELS = ["guest", "child", "teen", "adult", "admin"];
-const RESTARTABLE = ["kza-voice", "kza-llm-ik"];
 const ENROLL_SAMPLES = 3;
 const ENROLL_PHRASES = [
   "Hola, soy yo grabando una muestra para KZA",
@@ -116,7 +115,7 @@ function encodeWav(int16Samples, sampleRate) {
 
 // ---------------- Users panel ----------------
 
-function UsersPanel({ users, onChanged }) {
+function UsersPanel({ users, loadError, onChanged }) {
   const [name, setName] = React.useState("");
   const [level, setLevel] = React.useState("adult");
   const [err, setErr] = React.useState(null);
@@ -135,14 +134,21 @@ function UsersPanel({ users, onChanged }) {
   };
   const del = async (uid) => {
     if (!confirm(`¿Eliminar ${uid}?`)) return;
-    await authedFetch(`/api/admin/users/${uid}`, { method: "DELETE" });
+    setErr(null);
+    try {
+      const r = await authedFetch(`/api/admin/users/${encodeURIComponent(uid)}`, { method: "DELETE" });
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        setErr(typeof body.detail === "string" ? body.detail : `No se pudo eliminar (HTTP ${r.status}).`);
+      }
+    } catch (e) { setErr(String(e)); }
     onChanged();
   };
 
   return (
     <div className="card">
       <div className="card-h"><h3>Usuarios</h3>
-        <span className="h-meta"><span>{users.length} enrolled</span></span>
+        <span className="h-meta"><span>{loadError ? "no disponible" : `${users.length} usuarios`}</span></span>
       </div>
       <div className="card-b">
         <form onSubmit={create} style={{ display: "flex", gap: 8, marginBottom: 16 }}>
@@ -167,8 +173,8 @@ function UsersPanel({ users, onChanged }) {
               <tr key={u.id}>
                 <td className="mono">{u.id}</td>
                 <td>{u.name}</td>
-                <td>{u.permissions ? Object.entries(u.permissions).filter(([,v]) => v).map(([k]) => k).join(", ") : "—"}</td>
-                <td>{u.samples > 0 ? <Pill kind="ok">enrolado</Pill> : <Pill>sin voz</Pill>}</td>
+                <td>{u.permissions && Object.values(u.permissions).some(Boolean) ? Object.entries(u.permissions).filter(([,v]) => v).map(([k]) => k).join(", ") : <span className="mute">no observado</span>}</td>
+                <td>{typeof u.samples !== "number" ? <span className="mute">no observado</span> : u.samples > 0 ? <Pill kind="ok">enrolado</Pill> : <Pill>sin voz</Pill>}</td>
                 <td style={{ display: "flex", gap: 6 }}>
                   <EnrollButton userId={u.id} onDone={onChanged} />
                   <button className="btn danger" onClick={() => del(u.id)}>×</button>
@@ -177,7 +183,7 @@ function UsersPanel({ users, onChanged }) {
             ))}
             {users.length === 0 && (
               <tr><td colSpan={5} className="mute" style={{ textAlign: "center", padding: 24 }}>
-                Sin usuarios — creá uno arriba
+                {loadError ? `Usuarios no disponibles: ${loadError}` : "Sin usuarios — creá uno arriba"}
               </td></tr>
             )}
           </tbody>
@@ -314,32 +320,16 @@ function EnrollButton({ userId, onDone }) {
 // ---------------- Services panel ----------------
 
 function ServicesPanel() {
-  const [busy, setBusy] = React.useState(null);
-  const [msg, setMsg] = React.useState(null);
-  const restart = async (name) => {
-    if (!confirm(`Reiniciar ${name}?`)) return;
-    setBusy(name); setMsg(null);
-    try {
-      const r = await authedFetch(`/api/admin/services/${name}/restart`, { method: "POST" });
-      const j = await r.json();
-      setMsg(r.ok ? { kind: "ok", text: `${name} reiniciado` }
-                  : { kind: "err", text: j.detail || `HTTP ${r.status}` });
-    } catch (e) { setMsg({ kind: "err", text: String(e) }); }
-    finally { setBusy(null); }
-  };
   return (
     <div className="card">
       <div className="card-h"><h3>Acciones de servicio</h3></div>
       <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {RESTARTABLE.map(svc => (
-          <div key={svc} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        {window.KzaObsData.RESTARTABLE_SERVICES.map(svc => (
+          <div key={svc} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
             <span className="mono">{svc}</span>
-            <button className="btn" disabled={busy === svc} onClick={() => restart(svc)}>
-              {busy === svc ? "reiniciando…" : "↻ restart"}
-            </button>
+            <OperationButton kind="restartService" target={svc} label="↻ Reiniciar" confirmLabel={`Confirmar reinicio de ${svc}`} />
           </div>
         ))}
-        {msg && <div className={`pill ${msg.kind}`}>{msg.text}</div>}
       </div>
     </div>
   );
@@ -350,11 +340,16 @@ function ServicesPanel() {
 function AdminView() {
   const { authed, refresh } = useAuth();
   const [users, setUsers] = React.useState([]);
+  const [loadError, setLoadError] = React.useState(null);
   const loadUsers = React.useCallback(async () => {
     try {
-      const r = await fetch("/api/users");
-      if (r.ok) setUsers(await r.json());
-    } catch {}
+      const r = await fetch("/api/users", { credentials: "same-origin", cache: "no-store" });
+      const source = (r.headers.get("x-kza-source") || "").toLowerCase();
+      if (r.ok && (source === "real" || source === "mock")) { setUsers(await r.json()); setLoadError(null); }
+      else { setUsers([]); setLoadError(r.ok ? "la fuente no está disponible" : `HTTP ${r.status}`); }
+    } catch {
+      setUsers([]); setLoadError("sin respuesta del servidor");
+    }
   }, []);
   React.useEffect(() => { if (authed) loadUsers(); }, [authed, loadUsers]);
 
@@ -375,7 +370,7 @@ function AdminView() {
         }}>cerrar sesión</button>
       </div>
       <div className="grid grid-2">
-        <UsersPanel users={users} onChanged={loadUsers} />
+        <UsersPanel users={users} loadError={loadError} onChanged={loadUsers} />
         <ServicesPanel />
       </div>
     </div>

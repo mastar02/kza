@@ -1,7 +1,7 @@
 """
 Mock data para el dashboard de observability.
 
-Mismas shapes que `frontend/obs/src/mocks.jsx`. Sólo se sirven con demo
+Mismas shapes que las respuestas reales de observability. Sólo se sirven con demo
 explícita (`use_mocks=True`); un fallo operativo nunca activa estos ejemplos.
 """
 

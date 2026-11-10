@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>KZA — Dashboard wireframes</title>
+<title>KZA — Panel técnico</title>
 <style>
   :root {
     --bg: #0b0b0d;
@@ -23,22 +23,14 @@
     --info: #38bdf8;
     --sans: 'Inter', system-ui, sans-serif;
     --mono: 'JetBrains Mono', ui-monospace, monospace;
-    --hand: 'Caveat', cursive;
     --pad: 16px;
     --radius: 6px;
   }
-  [data-density="cozy"]    { --pad: 20px; }
-  [data-density="balanced"]{ --pad: 16px; }
-  [data-density="dense"]   { --pad: 12px; }
 
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
   a { color: inherit; text-decoration: none; }
   button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
-
-  /* Wireframe sketchy treatment — subtle hand-drawn feel without losing legibility */
-  .sketch-stroke { border: 1px dashed var(--line); }
-  .hand { font-family: var(--hand); color: var(--ink-dim); }
 
   /* Layout shell */
   .app { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
@@ -70,6 +62,7 @@
     border: 1px solid transparent;
     user-select: none;
   }
+  button.nav-item { width: 100%; text-align: left; }
   .nav-item:hover { background: var(--bg-elev-2); color: var(--ink); }
   .nav-item.active { background: var(--accent-soft); color: var(--ink); border-color: var(--accent-line); }
   .nav-item .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-mute); }
@@ -90,6 +83,9 @@
     padding: 0 20px;
     position: sticky; top: 0; z-index: 30;
   }
+  .source-banner { margin: 16px 24px 0; padding: 12px 16px; border-radius: 6px; font-size: 12px; }
+  .source-banner.warn { border: 1px solid #806020; background: #302615; color: #f6d28b; }
+  .btn:disabled { opacity: 0.55; cursor: not-allowed; }
   .crumbs { font-family: var(--mono); font-size: 11px; color: var(--ink-mute); }
   .crumbs b { color: var(--ink); font-weight: 500; }
   .topbar-spacer { flex: 1; }
@@ -108,8 +104,6 @@
   .topbar input[type="search"]::placeholder { color: var(--ink-mute); }
 
   .content { padding: 24px 28px 80px; max-width: 1500px; width: 100%; }
-  [data-density="dense"] .content { padding: 16px 20px 60px; }
-  [data-density="cozy"]  .content { padding: 32px 36px 100px; }
 
   .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 18px; }
   .page-head h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
@@ -156,8 +150,6 @@
   table.k tr:hover td { background: rgba(255,255,255,0.02); }
   table.k tr:last-child td { border-bottom: 0; }
 
-  /* Sparkline */
-  .spark { width: 100%; height: 28px; display: block; }
 
   /* Buttons */
   .btn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 5px; font-family: var(--mono); font-size: 11px; color: var(--ink-dim); background: var(--bg-elev-2); }
@@ -171,14 +163,6 @@
   .wire-fill { background:
     repeating-linear-gradient(135deg, transparent 0 6px, rgba(255,255,255,0.025) 6px 7px);
   }
-
-  /* Hand-drawn annotation */
-  .annot { position: relative; }
-  .annot .note {
-    font-family: var(--hand); font-size: 16px; color: var(--accent);
-    position: absolute; pointer-events: none;
-  }
-  .annot .arrow { position: absolute; pointer-events: none; color: var(--accent); }
 
   /* App.jsx mounts one view at a time; no need to hide by default */
   .view { display: block; }
@@ -198,66 +182,12 @@
     50%     { transform: scaleY(1); }
   }
 
-  /* Pipeline stage */
-  .pipe { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; align-items: stretch; }
-  .pipe .stage {
-    border: 1px dashed var(--line);
-    border-radius: 6px;
-    padding: 10px;
-    background: var(--bg-elev-2);
-    position: relative;
-  }
-  .pipe .stage.active {
-    border-color: var(--accent);
-    background: var(--accent-soft);
-  }
-  .pipe .stage h5 { margin: 0 0 4px; font-size: 11px; font-weight: 600; }
-  .pipe .stage .mono { font-size: 10px; color: var(--ink-dim); }
-  .pipe .arrow {
-    position: absolute; right: -10px; top: 50%; transform: translateY(-50%);
-    color: var(--ink-mute); font-family: var(--mono); font-size: 12px;
-  }
-  .pipe .stage:last-child .arrow { display: none; }
-
-  /* Density tweaks */
-  [data-density="dense"] .card-b { padding: 12px; }
-  [data-density="dense"] .grid { gap: 10px; }
-  [data-density="dense"] table.k th, [data-density="dense"] table.k td { padding: 6px 10px; }
-
-  /* Annotation flag (wireframe vibe) */
-  .stamp {
-    display: inline-block;
-    border: 1px dashed var(--accent-line);
-    color: var(--accent);
-    font-family: var(--hand);
-    font-size: 14px;
-    padding: 1px 8px;
-    border-radius: 999px;
-    transform: rotate(-2deg);
-    background: var(--accent-soft);
-  }
-
-  /* PCA scatter */
-  .scatter { width: 100%; height: 220px; display: block; }
-
   /* GPU meter */
   .meter { display: grid; grid-template-columns: 80px 1fr 60px; gap: 10px; align-items: center; padding: 6px 0; }
   .meter .label { font-family: var(--mono); font-size: 11px; color: var(--ink-dim); }
   .meter .bar { height: 8px; background: var(--bg-elev-2); border: 1px solid var(--line-soft); border-radius: 999px; overflow: hidden; }
   .meter .bar > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
   .meter .val { font-family: var(--mono); font-size: 11px; text-align: right; color: var(--ink); }
-
-  /* Logs */
-  .logs { font-family: var(--mono); font-size: 11px; line-height: 1.55; max-height: 380px; overflow: auto; padding: 12px; background: #0a0a0c; border: 1px solid var(--line); border-radius: 6px; }
-  .logs .ll { display: grid; grid-template-columns: 78px 60px 90px 1fr; gap: 10px; }
-  .logs .ll .ts { color: var(--ink-mute); }
-  .logs .ll .lvl { font-weight: 600; }
-  .logs .ll .lvl.INFO { color: var(--info); }
-  .logs .ll .lvl.WARN { color: var(--warn); }
-  .logs .ll .lvl.ERR  { color: var(--err); }
-  .logs .ll .lvl.OK   { color: var(--ok); }
-  .logs .ll .svc { color: var(--accent); }
-  .logs .ll .msg { color: var(--ink-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   /* Section divider */
   .h-bar { display: flex; align-items: center; gap: 12px; margin: 24px 0 12px; }
@@ -270,21 +200,11 @@
 
 <div id="root"></div>
 
-<script type="application/json" id="initial-tweaks">
-/*EDITMODE-BEGIN*/{
-  "accent": "violet",
-  "density": "balanced",
-  "homeLayout": "zones-grid",
-  "showAnnotations": true
-}/*EDITMODE-END*/
-</script>
-
 <script src="vendor/react-18.3.1.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
 <script src="vendor/react-dom-18.3.1.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
 <script src="vendor/babel-standalone-7.29.0.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
 
-<script type="text/babel" src="tweaks-panel.jsx"></script>
-<script type="text/babel" src="src/mocks.jsx"></script>
+<script src="src/obs-data.js"></script>
 <script type="text/babel" src="src/primitives.jsx"></script>
 <script type="text/babel" src="src/views/live.jsx"></script>
 <script type="text/babel" src="src/views/conversations.jsx"></script>

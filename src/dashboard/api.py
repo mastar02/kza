@@ -987,6 +987,7 @@ class DashboardAPI:
             model_lock=self.speaker_model_lock,
             configuration_changes=self.configuration_changes,
             consent_gate=self.consent_gate,
+            observability_demo=self.observability_use_mocks,
         )
         register_memory_routes(self.app, manager=self.memory_manager)
         register_voice_routes(self.app,voices=self.voice_registry)

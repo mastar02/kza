@@ -1,79 +1,108 @@
 // =============================================================
-// App shell — KZA dashboard
+// App shell — KZA technical panel (direct URL /obs/)
 // =============================================================
 
 const { useState, useEffect } = React;
 
 const NAV = [
-  { id: 'live',          label: 'Live',           group: 'Operación', icon: '◉', view: 'LiveView',          badge: 'WS' },
-  { id: 'conversations', label: 'Conversaciones', group: 'Operación', icon: '◰', view: 'ConversationsView' },
-  { id: 'privacy',       label: 'Privacidad',     group: 'Operación', icon: '◌', view: 'PrivacyView' },
-  { id: 'alerts',        label: 'Alertas',        group: 'Operación', icon: '◬', view: 'AlertsView',        badge: '3' },
-  { id: 'ha',            label: 'Home Assistant', group: 'Plataforma', icon: '◧', view: 'HAView' },
-  { id: 'llm',           label: 'LLM Router',     group: 'Plataforma', icon: '◆', view: 'LLMView',           badge: '!' },
-  { id: 'users',         label: 'Voces',          group: 'Plataforma', icon: '◐', view: 'UsersView' },
-  { id: 'system',        label: 'Sistema',        group: 'Infraestructura', icon: '▦', view: 'SystemView' },
-  { id: 'admin',         label: 'Admin',          group: 'Infraestructura', icon: '⚙', view: 'AdminView' },
+  { id: 'live',          label: 'Live',           group: 'Operación' },
+  { id: 'conversations', label: 'Conversaciones', group: 'Operación' },
+  { id: 'privacy',       label: 'Privacidad',     group: 'Operación' },
+  { id: 'alerts',        label: 'Alertas',        group: 'Operación' },
+  { id: 'ha',            label: 'Home Assistant', group: 'Plataforma' },
+  { id: 'llm',           label: 'LLM Router',     group: 'Plataforma' },
+  { id: 'users',         label: 'Voces',          group: 'Plataforma' },
+  { id: 'system',        label: 'Sistema',        group: 'Infraestructura' },
+  { id: 'admin',         label: 'Admin',          group: 'Infraestructura' },
 ];
 
-const ACCENTS = {
-  violet: { color: '#7c3aed', soft: 'rgba(124,58,237,0.16)', line: 'rgba(124,58,237,0.4)' },
-  cyan:   { color: '#06b6d4', soft: 'rgba(6,182,212,0.16)',  line: 'rgba(6,182,212,0.4)' },
-  lime:   { color: '#84cc16', soft: 'rgba(132,204,22,0.16)', line: 'rgba(132,204,22,0.4)' },
-  orange: { color: '#f97316', soft: 'rgba(249,115,22,0.16)', line: 'rgba(249,115,22,0.4)' },
-};
+function navBadge(obs, id) {
+  if (id !== 'alerts' || !obs.available('ALERTS')) return null;
+  const active = obs.get('ALERTS').filter(alert => !alert.acked).length;
+  return active ? String(active) : null;
+}
 
 function Sidebar({ active, onNav }) {
+  const obs = useObs();
   const groups = [...new Set(NAV.map(n => n.group))];
   return (
     <aside className="sidebar">
       <div className="brand">
-        <div className="brand-mark">K</div>
+        <div className="brand-mark" aria-hidden="true">K</div>
         <div>
           <div className="brand-name">KZA</div>
-          <div className="brand-sub">v0.4 · on-prem</div>
+          <div className="brand-sub">panel técnico</div>
         </div>
       </div>
-      <nav className="nav">
+      <nav className="nav" aria-label="Secciones del panel técnico">
         {groups.map(g => (
           <React.Fragment key={g}>
             <div className="nav-section">{g}</div>
-            {NAV.filter(n => n.group === g).map(n => (
-              <div key={n.id}
-                   className={`nav-item ${active === n.id ? 'active' : ''}`}
-                   onClick={() => onNav(n.id)}>
-                <span className="dot" />
-                <span>{n.label}</span>
-                {n.badge && <span className="badge">{n.badge}</span>}
-              </div>
-            ))}
+            {NAV.filter(n => n.group === g).map(n => {
+              const badge = navBadge(obs, n.id);
+              return (
+                <button type="button" key={n.id}
+                     className={`nav-item ${active === n.id ? 'active' : ''}`}
+                     aria-current={active === n.id ? 'page' : undefined}
+                     onClick={() => onNav(n.id)}>
+                  <span className="dot" />
+                  <span>{n.label}</span>
+                  {badge && <span className="badge" aria-label={`${badge} activas`}>{badge}</span>}
+                </button>
+              );
+            })}
           </React.Fragment>
         ))}
       </nav>
       <div className="sidebar-foot">
-        <div className="row"><span>host</span><b style={{ color: 'var(--ink)' }}>192.168.1.2</b></div>
-        <div className="row"><span>uptime</span><b style={{ color: 'var(--ink)' }}>21d 08h</b></div>
-        <div className="row"><span>build</span><b style={{ color: 'var(--ink)' }}>kza@a3f9c2e</b></div>
+        <div className="row"><span>host</span><b style={{ color: 'var(--ink)' }}>{window.location.host}</b></div>
+        <div className="row"><span>uptime</span><b className="mute">no disponible</b></div>
+        <div className="row"><span>build</span><b className="mute">no disponible</b></div>
       </div>
     </aside>
   );
 }
 
-function Topbar({ activeNav }) {
+function Topbar({ activeNav, onRefresh, refreshing }) {
+  const obs = useObs();
   const item = NAV.find(n => n.id === activeNav);
+  const summary = obs.summary();
+  const healthy = summary.degraded.length === 0 && summary.pending.length === 0;
+  const ws = obs.channel('ws');
   return (
     <header className="topbar">
       <div className="crumbs">kza · <b>{item.label}</b></div>
       <div className="topbar-spacer" />
-      <input type="search" placeholder="buscar entidades, turns, users… (⌘K)" />
       <div className="pulse-group">
-        <div className="pulse warn"><i className="led" /> sistema · ejemplo</div>
-        <div className="pulse warn"><i className="led" /> cooldown · ejemplo</div>
-        <div className="pulse warn"><i className="led" /> WS · sin validar</div>
+        <div className={`pulse ${healthy ? '' : 'warn'}`}><i className="led" /> datos · {summary.real.length}/{summary.total} reales</div>
+        <div className={`pulse ${ws === 'conectado' ? '' : 'warn'}`}><i className="led" /> WS · {ws}</div>
       </div>
-      <span className="kbd">⌘K</span>
+      <button type="button" className="btn" disabled={refreshing} onClick={onRefresh}>{refreshing ? 'Actualizando…' : 'Actualizar datos'}</button>
     </header>
   );
+}
+
+function SourceBanner() {
+  const obs = useObs();
+  const summary = obs.summary();
+  const label = key => window.KzaObsData.COLLECTIONS.find(([name]) => name === key)?.[2] || key;
+  if (summary.demo.length) {
+    return (
+      <section role="status" className="source-banner warn">
+        <strong>Modo demostración</strong>
+        <div>El servidor está configurado con datos de ejemplo (dashboard.observability_use_mocks). No describen el sistema real: {summary.demo.map(label).join(', ')}.</div>
+      </section>
+    );
+  }
+  if (summary.degraded.length) {
+    return (
+      <section role="status" className="source-banner warn">
+        <strong>Fuentes no disponibles</strong>
+        <div>No se pudieron leer: {summary.degraded.map(label).join(', ')}. Esas secciones se muestran como no disponibles, sin datos de reemplazo.</div>
+      </section>
+    );
+  }
+  return null;
 }
 
 function App() {
@@ -81,23 +110,17 @@ function App() {
     const requested = window.location.hash.slice(1);
     return NAV.some(item => item.id === requested) ? requested : 'live';
   });
-  const tweaks = window.useTweaks ? window.useTweaks({
-    accent: 'violet',
-    density: 'balanced',
-    homeLayout: 'zones-grid',
-    showAnnotations: true,
-  }) : { tweaks: { accent: 'violet', density: 'balanced', homeLayout: 'zones-grid', showAnnotations: true }, setTweak: () => {} };
-  const t = tweaks.tweaks || tweaks;
-
-  // Apply density + accent
-  useEffect(() => {
-    document.documentElement.setAttribute('data-density', t.density);
-    const a = ACCENTS[t.accent] || ACCENTS.violet;
-    document.documentElement.style.setProperty('--accent', a.color);
-    document.documentElement.style.setProperty('--accent-soft', a.soft);
-    document.documentElement.style.setProperty('--accent-line', a.line);
-    window.__showAnnotations = t.showAnnotations;
-  }, [t.density, t.accent, t.showAnnotations]);
+  const [refreshing, setRefreshing] = useState(false);
+  async function refresh() {
+    setRefreshing(true);
+    try {
+      await window.KzaObsData.hydrate({ fetch: window.fetch.bind(window), store: window.__kzaObs });
+    } catch (error) {
+      if (error instanceof window.KzaObsData.AuthRequired) window.dispatchEvent(new CustomEvent('kza:auth-required'));
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   const Views = {
     live:          window.LiveView,
@@ -114,128 +137,43 @@ function App() {
 
   return (
     <div className="app" data-screen-label={`${NAV.findIndex(n=>n.id===active)+1} ${NAV.find(n=>n.id===active).label}`}>
-      <Sidebar active={active} onNav={setActive} />
+      <Sidebar active={active} onNav={id => { window.__kzaObs.setNotice(null); setActive(id); }} />
       <main className="main">
-        <Topbar activeNav={active} />
-        <section role="status" style={{ margin: '16px 24px 0', padding: '12px 16px', border: '1px solid #806020', borderRadius: 6, background: '#302615', color: '#f6d28b', fontSize: 12 }}>
-          <strong>Panel técnico · incluye datos de ejemplo</strong>
-          <div>Esta pantalla puede mezclar observaciones de API con datos sintéticos del wireframe. Los indicadores, host, uptime y build de ejemplo no verifican el sistema real.</div>
-          <div>Fuentes en modo mock, degradadas o sin verificar: {Object.entries(window.__kzaSources || {}).filter(([, source]) => source !== 'real').map(([key, source]) => `${key} (${source})`).join(', ') || 'ninguna API marcada; los elementos de ejemplo siguen presentes'}.</div>
-        </section>
+        <Topbar activeNav={active} onRefresh={refresh} refreshing={refreshing} />
+        <SourceBanner />
+        <OperationNotice />
         <div className="content">
-          {ViewComp && <ViewComp homeLayout={t.homeLayout} />}
+          {ViewComp && <ViewComp />}
         </div>
       </main>
-
-      {window.TweaksPanel && (
-        <window.TweaksPanel title="Tweaks">
-          <window.TweakSection title="Apariencia">
-            <window.TweakRadio
-              label="Acento"
-              value={t.accent}
-              onChange={v => tweaks.setTweak('accent', v)}
-              options={[
-                { value: 'violet', label: 'Violeta' },
-                { value: 'cyan',   label: 'Cyan' },
-                { value: 'lime',   label: 'Lime' },
-                { value: 'orange', label: 'Naranja' },
-              ]}
-            />
-            <window.TweakRadio
-              label="Densidad"
-              value={t.density}
-              onChange={v => tweaks.setTweak('density', v)}
-              options={[
-                { value: 'cozy',     label: 'Cozy' },
-                { value: 'balanced', label: 'Balanced' },
-                { value: 'dense',    label: 'Dense' },
-              ]}
-            />
-          </window.TweakSection>
-          <window.TweakSection title="Wireframe">
-            <window.TweakToggle
-              label="Anotaciones a mano"
-              value={t.showAnnotations}
-              onChange={v => tweaks.setTweak('showAnnotations', v)}
-            />
-          </window.TweakSection>
-        </window.TweaksPanel>
-      )}
     </div>
   );
 }
 
 // =============================================================
-// Bootstrap: fetch real data desde /api/* antes de montar React.
-// Si un endpoint falla, se conserva el mock literal de mocks.jsx (fallback).
+// Bootstrap: read /api/* before mounting React. A failed read leaves the
+// collection empty and marked unavailable; there are no local examples.
 // =============================================================
 
-const API_BASE = window.location.origin;
-
-const ENDPOINT_MAP = [
-  ['ZONES',         '/api/zones'],
-  ['LLM_ENDPOINTS', '/api/llm/endpoints'],
-  ['HA_ENTITIES',   '/api/ha/entities'],
-  ['HA_ACTIONS',    '/api/ha/actions'],
-  ['ALERTS',        '/api/alerts'],
-  ['GPUS',          '/api/system/gpus'],
-  ['SERVICES',      '/api/system/services'],
-];
-window.__kzaSources = Object.fromEntries(ENDPOINT_MAP.map(([key]) => [key, 'mock/sin verificar']));
-
-const initialMocks = JSON.parse(JSON.stringify(window.MOCKS));
+window.__kzaObs = window.KzaObsData.createObservationStore();
+window.__kzaSources = window.__kzaObs.sources;
 window.__kzaConversationState = window.KzaConversationPrivacy.createConversationState();
 window.__kzaVoiceState = window.KzaVoicePrivacy.createVoiceState();
-
-function replaceData(key, data) {
-  const target = window.MOCKS[key];
-  if (Array.isArray(target) && Array.isArray(data)) target.splice(0, target.length, ...data);
-  else if (target && typeof target === 'object' && !Array.isArray(data)) {
-    for (const name of Object.keys(target)) delete target[name];
-    Object.assign(target, data);
-  } else window.MOCKS[key] = data;
-}
 
 function clearPrivateData() {
   window.__kzaLiveState?.clear();
   window.__kzaConversationState.clear();
   window.__kzaVoiceState.clear();
-  for (const [key, data] of Object.entries(initialMocks)) replaceData(key, JSON.parse(JSON.stringify(data)));
-  window.__kzaSources = Object.fromEntries(ENDPOINT_MAP.map(([key]) => [key, 'mock/sin verificar']));
+  window.__kzaObs.clear();
 }
 
-async function hydrateMocks({ signal }) {
-  await Promise.all(ENDPOINT_MAP.map(async ([key, path]) => {
-    try {
-      const r = await fetch(API_BASE + path, { credentials: 'same-origin', signal });
-      if (!r.ok) {
-        const body = await r.json().catch(() => ({}));
-        if (signal.aborted) return;
-        if (r.status === 401 || r.status === 403 || body.detail === 'dashboard_auth_not_configured') {
-          throw new window.KzaDashboardSession.SessionRequired();
-        }
-        window.__kzaSources[key] = 'degradada'; return;
-      }
-      const data = await r.json();
-      if (signal.aborted) return;
-      // El header X-KZA-Source nos dice si el server tiene datos reales.
-      // - "real": usar data tal cual (incluso lista vacía → "0 usuarios").
-      // - "mock"/"degraded": el server ya cayó al mock; mantenemos el literal
-      //   de mocks.jsx que es idéntico, sin sobrescribir.
-      const source = (r.headers.get('x-kza-source') || '').toLowerCase();
-      window.__kzaSources[key] = data === null || data === undefined ? 'degradada' : source === 'real' ? 'real' : source === 'degraded' ? 'degradada' : 'mock/sin verificar';
-      if (source !== 'real' || data === null || data === undefined) return;
-      // Mutar in-place: las views hacen `const { X } = window.MOCKS;` al cargar
-      // el script, capturando la referencia. Reasignar `window.MOCKS[key] = data`
-      // dejaría la referencia vieja apuntando al mock. Mutamos el array/objeto
-      // existente para que la referencia capturada vea los datos nuevos.
-      replaceData(key, data);
-    } catch (e) {
-      if (signal.aborted || e instanceof window.KzaDashboardSession.SessionRequired) throw e;
-      window.__kzaSources[key] = 'degradada';
-      console.warn('[bootstrap] endpoint failed, keeping mock:', path, e);
-    }
-  }));
+async function hydrateObservations({ signal }) {
+  try {
+    await window.KzaObsData.hydrate({ fetch: window.fetch.bind(window), store: window.__kzaObs, signal });
+  } catch (error) {
+    if (error instanceof window.KzaObsData.AuthRequired) throw new window.KzaDashboardSession.SessionRequired();
+    throw error;
+  }
 }
 
 function mountWsLiveBridge() {
@@ -248,13 +186,13 @@ function mountWsLiveBridge() {
     store:window.__kzaConversationState, fetch:window.fetch.bind(window), emitAck,
     hasView:() => !!document.querySelector('#view-conversations'),
     onUnauthorized:() => window.dispatchEvent(new CustomEvent('kza:auth-required')),
-    onState:state => { window.__kzaSources.CONVERSATIONS = state === 'real' ? 'real' :
-      ({ waiting:'sin confirmar', loading:'consultando', unavailable:'degradada', closed:'sin sesión' })[state]; },
+    onState:state => { window.__kzaObs.setSource('CONVERSATIONS', state === 'real' ? 'real' :
+      ({ waiting:'sin confirmar', loading:'consultando', unavailable:'degradada', closed:'sin sesión' })[state]); },
   });
   const voices = window.KzaVoiceChannel.createVoiceController({ state:window.__kzaVoiceState,
     fetch:window.fetch.bind(window), emitAck, hasView:() => !!document.querySelector('#view-users'),
     onUnauthorized:() => window.dispatchEvent(new CustomEvent('kza:auth-required')),
-    onStatus:status => { window.__kzaSources.VOICES = status; },
+    onStatus:status => { window.__kzaObs.setSource('VOICES', status); },
   });
   window.__kzaVoiceController = voices;
   const live = window.KzaLivePrivacy.createLiveState({
@@ -274,7 +212,9 @@ function mountWsLiveBridge() {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${proto}//${window.location.host}/ws/live`);
     socket = ws;
+    window.__kzaObs.setChannel('ws', 'conectando');
     ws.onopen = () => {
+      if (!retired && socket === ws) window.__kzaObs.setChannel('ws', 'conectado');
       if (!retired && socket === ws) ws.send(JSON.stringify({ type:'live_hello', version:3, client_id:window.KzaLivePrivacy.pageId() }));
     };
     ws.onmessage = (ev) => {
@@ -296,6 +236,7 @@ function mountWsLiveBridge() {
     };
     ws.onclose = async (event) => {
       if (socket !== ws) return;
+      window.__kzaObs.setChannel('ws', retired ? 'cerrado' : 'desconectado');
       live.clear();
       conversations.reset();
       voices.reset();
@@ -330,7 +271,7 @@ function mountWsLiveBridge() {
 
 const appRoot = ReactDOM.createRoot(document.getElementById('root'));
 const session = window.KzaDashboardSession.createSession({
-  fetch: window.fetch.bind(window), hydrate: hydrateMocks,
+  fetch: window.fetch.bind(window), hydrate: hydrateObservations,
   connect: mountWsLiveBridge, clear: clearPrivateData,
   onState(state) {
     if (state === 'ready') appRoot.render(<App />);

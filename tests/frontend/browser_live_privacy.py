@@ -15,21 +15,27 @@ import uvicorn
 from websockets.asyncio.client import connect
 
 from src.dashboard.api import DashboardAPI
+from src.dashboard.authority import DashboardAuthority
 from src.dashboard import system_monitor
 from src.dashboard.live_event_bus import LiveEvent, LiveEventBus, LiveEventType
 from src.dashboard.live_receipts import LiveReceiptStore
 from src.analytics.event_logger import EventLogger
 from src.memory.fact_ledger import MemoryReviewer
 from src.memory.privacy_services import PrivacyServices
+from tests.frontend.browser_support import browser_binary as select_browser, browser_profile_root, evidence_directory, install_login_session
 from tests.frontend.browser_typed_controls import Page
 from tests.mocks.memory_sources import memory_source
+
+
+EVIDENCE = evidence_directory('KZA_LIVE_PRIVACY_EVIDENCE', 'data/browser-runs/live-privacy')
 
 
 async def main(*, offline_assets=False):
     """Verify rendered retirement, idle expiry, disconnect and session cleanup."""
     os.environ['KZA_DASHBOARD_TOKEN'] = 'synthetic-live-browser'
-    browser_data = Path.home()/'snap/chromium/common'
-    browser_data.mkdir(parents=True, exist_ok=True)
+    EVIDENCE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    binary = select_browser()
+    browser_data = browser_profile_root()
     with tempfile.TemporaryDirectory(prefix='kza-live-browser-', dir=browser_data) as work:
         directory = Path(work)
         privacy = PrivacyServices(str(directory/'privacy.db'))
@@ -40,16 +46,12 @@ async def main(*, offline_assets=False):
         bus.start()
         events = EventLogger(str(directory/'events.db'), source_policy=privacy.ledger)
         await events.acall(events.initialize)
-        dashboard = DashboardAPI(event_bus=bus, event_logger=events, observability_use_mocks=False)
+        authority = DashboardAuthority(directory/'auth.db', session_ttl_s=600)
+        await authority.initialize()
+        dashboard = DashboardAPI(authority=authority, event_bus=bus, event_logger=events, observability_use_mocks=False)
         # Keep mocked UI service adapters independent of host hardware probing.
         original_gpu, original_services = system_monitor.gpu_snapshot, system_monitor.services_snapshot
         system_monitor.gpu_snapshot, system_monitor.services_snapshot = lambda:None, lambda:None
-        @dashboard.app.middleware('http')
-        async def fixture_cookie(request, call_next):
-            response = await call_next(request)
-            if request.url.path == '/':
-                response.set_cookie('kza_dashboard_token','synthetic-live-browser',httponly=True,samesite='strict')
-            return response
         listener = socket.socket()
         listener.bind(('127.0.0.1',0))
         port = listener.getsockname()[1]
@@ -61,13 +63,13 @@ async def main(*, offline_assets=False):
                 while not server.started:
                     await asyncio.sleep(.02)
             profile = directory/'chromium'
-            with (directory/'chromium.log').open('w') as log:
-                browser = subprocess.Popen(['chromium','--headless','--disable-gpu','--no-first-run',
+            with (EVIDENCE/'chromium.log').open('w') as log:
+                browser = subprocess.Popen([binary,'--headless','--disable-gpu','--no-first-run',
                     '--remote-debugging-port=0',f'--user-data-dir={profile}',f'http://127.0.0.1:{port}/'],stdout=log,stderr=log)
                 async with asyncio.timeout(15):
                     while not (profile/'DevToolsActivePort').exists():
                         if browser.poll() is not None:
-                            raise RuntimeError((directory/'chromium.log').read_text()[:2000])
+                            raise RuntimeError((EVIDENCE/'chromium.log').read_text()[:2000])
                         await asyncio.sleep(.05)
                 debugging = int((profile/'DevToolsActivePort').read_text().splitlines()[0])
                 async with aiohttp.ClientSession() as session:
@@ -80,6 +82,7 @@ async def main(*, offline_assets=False):
                         await page.command('Network.enable')
                         await page.command('Network.setBlockedURLs',{'urls':[
                             'https://unpkg.com/*','https://fonts.googleapis.com/*','https://fonts.gstatic.com/*']})
+                    await install_login_session(page, f'http://127.0.0.1:{port}', 'synthetic-live-browser')
                     await page.command('Page.navigate',{'url':f'http://127.0.0.1:{port}/obs/'})
                     await page.wait_for("document.querySelector('#view-live') && window.__kzaLiveWs?.readyState === 1")
                     async def show(text, ttl=48*3600):
@@ -123,7 +126,7 @@ async def main(*, offline_assets=False):
                         user_name='Synthetic REST voice', sources=(rest_source,))
                     await page.command('Page.navigate',{'url':f'http://127.0.0.1:{port}/obs/'})
                     await page.wait_for("document.querySelector('#view-live') && window.__kzaLiveWs?.readyState === 1")
-                    assert await page.evaluate('!JSON.stringify(window.MOCKS.CONVERSATIONS).includes('+json.dumps(rest_text)+')')
+                    assert await page.evaluate("typeof window.MOCKS === 'undefined' && !JSON.stringify(window.KzaObsData.COLLECTIONS.map(([key]) => window.__kzaObs.get(key))).includes("+json.dumps(rest_text)+")")
                     await page.evaluate("[...document.querySelectorAll('.nav-item')].find(node => node.textContent.includes('Conversaciones')).click()")
                     await page.wait_for('document.body.textContent.includes('+json.dumps(rest_text)+')')
                     await page.evaluate("const filter = document.querySelector('[aria-label=\"Todas las voces\"]'); filter.value = 'Synthetic REST voice'; filter.dispatchEvent(new Event('change'))")
@@ -183,6 +186,7 @@ async def main(*, offline_assets=False):
             await bus.aclose()
             await events.aclose()
             await privacy.aclose()
+            await authority.aclose()
             system_monitor.gpu_snapshot, system_monitor.services_snapshot = original_gpu, original_services
 
 
@@ -190,3 +194,4 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--offline-assets',action='store_true')
     asyncio.run(main(offline_assets=parser.parse_args().offline_assets))
+    (EVIDENCE/'browser-result.json').write_text(json.dumps({'passed': True, 'synthetic_fixture': True}) + '\n')
