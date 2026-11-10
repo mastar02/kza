@@ -25,6 +25,7 @@ from websockets.asyncio.client import connect
 from src.dashboard import system_monitor
 from src.main import build_application
 from src.wakeword.detector import WakeWordDetector
+from tests.frontend.browser_support import browser_binary
 from tests.frontend.browser_typed_controls import Page
 from tests.integration.test_capability_application import configuration, leaves
 from tests.integration.test_capture_producer_privacy import until
@@ -115,19 +116,7 @@ async def open_page(client, debug: int, target_id: str) -> tuple:
 
 def _browser_binary() -> str:
     """Select an owned headless browser without changing the Linux default."""
-    override = os.environ.get('KZA_CAPTURE_BROWSER_BINARY')
-    try:
-        if override is None and sys.platform != 'darwin':
-            if shutil.which('chromium') is not None:
-                return 'chromium'
-        else:
-            selected = Path(override if override is not None else
-                            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
-            if selected.is_absolute() and selected.is_file() and os.access(selected, os.X_OK):
-                return str(selected)
-    except (OSError, ValueError):
-        pass
-    raise RuntimeError('capture_browser_binary_missing')
+    return browser_binary('KZA_CAPTURE_BROWSER_BINARY', 'capture_browser_binary_missing')
 
 
 async def exercise(receipt: dict) -> None:

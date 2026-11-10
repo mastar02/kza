@@ -27,6 +27,7 @@ from src.users.user_manager import PermissionLevel
 from src.users.voice_ledger import VoiceReviewer
 from src.users.voice_registry import build_voice_registry
 from tests.frontend.browser_nexo_home import login, screenshot
+from tests.frontend.browser_support import browser_binary, browser_profile_root, evidence_directory
 from tests.frontend.browser_typed_controls import Page
 from tests.mocks.ambient_graph import Clock
 from tests.mocks.voice_registry import AUDIO, Encoder
@@ -85,7 +86,7 @@ async def refresh_voices(page):
 
 async def main() -> None:
     os.environ['KZA_DASHBOARD_TOKEN'] = 'synthetic-nexo-voice-root'
-    evidence = Path('data/autonomous-roadmap-20261102/t047/voices-browser')
+    evidence = evidence_directory('KZA_NEXO_VOICES_EVIDENCE', 'data/autonomous-roadmap-20261102/t047/voices-browser-runs')
     evidence.mkdir(mode=0o700, parents=True, exist_ok=True)
     class DiagnosticPage(Page):
         async def wait_for(self, expression):
@@ -96,8 +97,8 @@ async def main() -> None:
                 (evidence/'failure.json').write_text(json.dumps({'condition':expression, 'document':diagnostic, 'errors':self.errors, 'requests':requests}, indent=2)+'\n')
                 await screenshot(self, evidence/'failure.png')
                 raise
-    browser_data = Path.home() / 'snap/chromium/common'
-    browser_data.mkdir(parents=True, exist_ok=True)
+    binary = browser_binary()
+    browser_data = browser_profile_root()
     with tempfile.TemporaryDirectory(prefix='kza-nexo-voices-', dir=browser_data) as temporary:
         directory = Path(temporary)
         async with AsyncExitStack() as stack:
@@ -151,7 +152,7 @@ async def main() -> None:
                         await asyncio.sleep(.02)
                 profile = directory / 'chromium'
                 with (evidence/'chromium.log').open('w') as output:
-                    browser = subprocess.Popen(['chromium', '--headless', '--disable-gpu', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--no-first-run', '--disable-background-networking', '--autoplay-policy=no-user-gesture-required', '--remote-debugging-port=0', f'--user-data-dir={profile}', 'about:blank'], stdout=output, stderr=output)
+                    browser = subprocess.Popen([binary, '--headless', '--disable-gpu', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--no-first-run', '--disable-background-networking', '--autoplay-policy=no-user-gesture-required', '--remote-debugging-port=0', f'--user-data-dir={profile}', 'about:blank'], stdout=output, stderr=output)
                     async with asyncio.timeout(15):
                         while not (profile/'DevToolsActivePort').exists():
                             assert browser.poll() is None

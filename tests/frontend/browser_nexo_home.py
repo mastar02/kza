@@ -21,6 +21,7 @@ from src.dashboard.authority import (
 )
 from src.rooms.room_context import RoomConfig
 from src.users.user_manager import PermissionLevel, UserManager
+from tests.frontend.browser_support import browser_binary, browser_profile_root, evidence_directory
 from tests.frontend.browser_typed_controls import Page
 from tests.integration.test_typed_home_operations import typed_graph
 
@@ -68,7 +69,7 @@ async def screenshot(page: Page, path: Path, *, full: bool = True, scroll_top: b
 
 async def main() -> None:
     os.environ["KZA_DASHBOARD_TOKEN"] = "synthetic-nexo-bootstrap"
-    evidence = Path("data/autonomous-roadmap-20261102/t047/people-browser")
+    evidence = evidence_directory("KZA_NEXO_HOME_EVIDENCE", "data/autonomous-roadmap-20261102/t047/people-browser-runs")
     evidence.mkdir(mode=0o700, parents=True, exist_ok=True)
 
     class DiagnosticPage(Page):
@@ -84,8 +85,8 @@ async def main() -> None:
                 (evidence / 'browser-failure.json').write_text(json.dumps({'condition': expression, 'document': diagnostic, 'errors': self.errors, 'requests': requests}, indent=2) + '\n')
                 await screenshot(self, evidence / 'browser-failure.png')
                 raise
-    browser_data = Path.home() / "snap/chromium/common"
-    browser_data.mkdir(mode=0o700, parents=True, exist_ok=True)
+    binary = browser_binary()
+    browser_data = browser_profile_root(mode=0o700)
     ha, actions = typed_graph.__wrapped__()
     for entity, name in [("light.test_lamp", "Luz principal"), ("climate.test_ac", "Aire acondicionado"), ("cover.test_blind", "Persiana")]:
         ha.states[entity]["attributes"]["friendly_name"] = name
@@ -141,7 +142,7 @@ async def main() -> None:
             profile = directory / "chromium"
             with (evidence / "chromium-first.log").open("w") as output:
                 browser = await asyncio.to_thread(subprocess.Popen, [
-                    "chromium", "--headless", "--disable-gpu", "--use-angle=swiftshader", "--enable-unsafe-swiftshader",
+                    binary, "--headless", "--disable-gpu", "--use-angle=swiftshader", "--enable-unsafe-swiftshader",
                     "--no-first-run", "--no-default-browser-check", "--disable-background-networking", "--disable-component-update",
                     "--disable-sync", "--remote-debugging-port=0", f"--user-data-dir={profile}", "about:blank",
                 ], stdout=output, stderr=output)

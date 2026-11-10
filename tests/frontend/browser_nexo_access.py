@@ -29,13 +29,14 @@ from src.memory.privacy_services import PrivacyServices
 from src.users.user_manager import PermissionLevel
 from src.users.voice_registry import build_voice_registry
 from tests.frontend.browser_nexo_home import login, screenshot
+from tests.frontend.browser_support import browser_binary, browser_profile_root, evidence_directory
 from tests.frontend.browser_typed_controls import Page
 from tests.mocks.ambient_graph import Clock
 from tests.mocks.memory_sources import memory_source
 from tests.mocks.voice_registry import AUDIO, Encoder
 
 
-EVIDENCE = Path(os.environ.get('KZA_NEXO_ACCESS_EVIDENCE', 'data/autonomous-roadmap-20261102/t013/nexo-access-browser'))
+EVIDENCE = evidence_directory('KZA_NEXO_ACCESS_EVIDENCE', 'data/autonomous-roadmap-20261102/t013/nexo-access-browser-runs')
 INSTRUMENT = r"""(() => {
   window.__emptyCallbacks=[];window.__holdEmpty=false;window.__urls=new Set();
   window.__credentialPosts=[];window.__loseIssueReceipt=false;window.__copyRequests=0;window.__copiedShape=false;
@@ -104,8 +105,8 @@ async def main():
                 await screenshot(self, EVIDENCE/'failure.png')
                 raise AssertionError('Browser condition failed in phase: '+phase) from None
 
-    browser_data = Path.home()/'snap/chromium/common'
-    browser_data.mkdir(parents=True, exist_ok=True)
+    binary = browser_binary()
+    browser_data = browser_profile_root()
     with tempfile.TemporaryDirectory(prefix='kza-nexo-access-', dir=browser_data) as temporary:
         directory = Path(temporary)
         async with AsyncExitStack() as stack:
@@ -158,7 +159,7 @@ async def main():
                         await asyncio.sleep(.02)
                 profile = directory/'chromium'
                 with (EVIDENCE/'chromium.log').open('w') as output:
-                    browser = subprocess.Popen(['chromium', '--headless', '--disable-gpu', '--use-angle=swiftshader',
+                    browser = subprocess.Popen([binary, '--headless', '--disable-gpu', '--use-angle=swiftshader',
                         '--enable-unsafe-swiftshader', '--no-first-run', '--disable-background-networking',
                         '--autoplay-policy=no-user-gesture-required', '--remote-debugging-port=0',
                         f'--user-data-dir={profile}', 'about:blank'], stdout=output, stderr=output)
