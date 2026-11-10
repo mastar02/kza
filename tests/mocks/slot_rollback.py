@@ -17,13 +17,49 @@ from tests.mocks import compiled_restore as compiled
 
 
 CHILD = "tests/mocks/slot_rollback_child.py"
-REVISION = "9b3170294eb69a53dd27b63949c09a63a2efed54"
+# U3b-0a: a managed activation refuses a slot whose artifact lacks the admission
+# companion pair, so the copied-slot rehearsals run the earliest managed-capable
+# ancestor of HEAD (derived with git, never pinned). The former unmanaged pin
+# 9b3170294eb69a53dd27b63949c09a63a2efed54 is covered by an explicit refusal test.
+MANAGED_COMPANIONS = ("scripts/stage_runtime.py", "src/core/runtime_admission.py")
 EVIDENCE_ENV = "KZA_SLOT_ROLLBACK_EVIDENCE_ROOT"
+REVISION_ENV = "KZA_SLOT_ROLLBACK_REVISION"
 PARENT_SECONDS, PHASE_SECONDS, CLEANUP_SECONDS = 240, 65, 20
 
 
 def _sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def is_managed_capable(repo: Path, revision: str) -> bool:
+    """True when the revision's tree carries both admission companion sources."""
+    listed = subprocess.check_output(["git", "ls-tree", "-r", "--name-only", revision, "--",
+        *MANAGED_COMPANIONS], cwd=repo, text=True).split()
+    return set(listed) == set(MANAGED_COMPANIONS)
+
+
+def managed_revision(repo: Path) -> str:
+    """Earliest ancestor of HEAD (topological order) whose tree carries both companions."""
+    candidates = subprocess.check_output(["git", "rev-list", "--reverse", "--topo-order", "HEAD",
+        "--", MANAGED_COMPANIONS[1]], cwd=repo, text=True).split()
+    for revision in candidates:
+        if is_managed_capable(repo, revision):
+            return revision
+    raise ValueError("slot_managed_revision_unavailable")
+
+
+def selected_revision(repo: Path) -> str:
+    """The rehearsal revision: KZA_SLOT_ROLLBACK_REVISION if set, else managed_revision()."""
+    requested = os.environ.get(REVISION_ENV)
+    if requested is None:
+        return managed_revision(repo)
+    if re.fullmatch("[0-9a-f]{40}", requested) is None:
+        raise ValueError("slot_revision_must_be_exact_commit")
+    revision = subprocess.check_output(["git", "rev-parse", "--verify", requested + "^{commit}"],
+        cwd=repo, text=True).strip()
+    if not is_managed_capable(repo, revision):
+        raise ValueError("slot_revision_not_managed_capable")
+    return revision
 
 
 def _typed(value):
@@ -439,11 +475,7 @@ def exercise_slot_rollback(tmp_path: Path) -> dict:
     if task.is_relative_to(repo) or repo.is_relative_to(task):
         raise ValueError("slot_task_must_be_outside_checkout")
     task.mkdir(mode=0o700, parents=True, exist_ok=True)
-    requested = os.environ.get("KZA_SLOT_ROLLBACK_REVISION", REVISION)
-    if re.fullmatch("[0-9a-f]{40}", requested) is None:
-        raise ValueError("slot_revision_must_be_exact_commit")
-    revision = subprocess.check_output(["git", "rev-parse", "--verify", requested + "^{commit}"],
-        cwd=repo, text=True).strip()
+    revision = selected_revision(repo)
     selected = os.environ.get(EVIDENCE_ENV)
     evidence = task / "evidence" if selected is None else Path(selected).absolute() / ("attempt-" + uuid4().hex)
     evidence.mkdir(mode=0o700, parents=True)

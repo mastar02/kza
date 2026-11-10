@@ -90,9 +90,11 @@ def prepare_case(task, evidence, repo, new_revision, *, copy_cleanup_seed=False,
         raise ValueError("reconciliation_binary_lineage_seed_flag")
     if re.fullmatch("[0-9a-f]{40}", new_revision) is None:
         raise ValueError("reconciliation_exact_new_commit_required")
-    # The older application stays genuine OLD code. Its security bridge uses
-    # the exact current production closure observer, with independent provenance.
-    prepared = original._prepare(task, evidence, repo, original.REVISION,
+    # The older application stays genuine OLD code, now the earliest managed-capable
+    # ancestor (U3b-0a refuses unmanaged slots). Its security bridge uses the exact
+    # current production closure observer, with independent provenance.
+    old_revision = original.managed_revision(repo)
+    prepared = original._prepare(task, evidence, repo, old_revision,
         bridge_revision=new_revision)
     settings = prepared["runtimes"]["old"].parent / "state/config/settings.yaml"
     value = yaml.safe_load(settings.read_text())
@@ -103,15 +105,15 @@ def prepare_case(task, evidence, repo, new_revision, *, copy_cleanup_seed=False,
     manifest = build_runtime(repo, archive, revision=new_revision)
     required = {"src/memory/state_snapshot.pyc", "src/memory/payload_derivation.pyc",
         "src/memory/state_journal_derivation.pyc", "src/core/state_configuration.pyc"}
-    if not required <= manifest["files"].keys() or new_revision == original.REVISION:
+    if not required <= manifest["files"].keys() or new_revision == old_revision:
         raise ValueError("reconciliation_new_artifact_missing_production_derivation")
     entry = "tests/mocks/slot_reconciliation_child.py"
     target = prepared["island"] / entry
     target.write_bytes((repo / entry).read_bytes())
     prepared["island_files"][entry] = original._sha(target)
-    specs = {"O": ("old", prepared["archive"], original.REVISION, prepared["manifest"]),
+    specs = {"O": ("old", prepared["archive"], old_revision, prepared["manifest"]),
         "N": ("candidate", archive, new_revision, manifest),
-        "R": ("rollback", prepared["archive"], original.REVISION, prepared["manifest"]),
+        "R": ("rollback", prepared["archive"], old_revision, prepared["manifest"]),
         "F": ("forward", archive, new_revision, manifest)}
     controls, runtimes, roots, manifests = {}, {}, {}, {}
     plan = {"schema_version": 1, "unit": "T024-F1/material-code-data-reconciliation",

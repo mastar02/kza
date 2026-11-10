@@ -37,6 +37,44 @@ _TICKET_KEYS = {"schema_version", "admission_root", "binding_id", "generation", 
                 "lease_fd", "lease_identity", "controller_pid"}
 _MARKER = ".kza-state-binding.json"
 _CLOSED_RESOURCES = {"graph_closed", "privacy_closed", "sdk_closed", "native_closed"}
+# A managed candidate must carry the companion pair a managed child admits with
+# (src/core/runtime_admission loads scripts/stage_runtime by path).
+_PROBE_COMPANIONS = ("scripts/stage_runtime.pyc", "src/core/runtime_admission.pyc")
+_PROBE_TIMEOUT_SECONDS = 60.0
+_PROBE_TIMEOUT_BOUNDS = (1.0, 3600.0)
+# The probe gets an allow-list, never the controller environment (secrets such
+# as HOME_ASSISTANT_TOKEN must not reach candidate code that may be refused).
+# _binding_snapshot reads no environment variable itself; these keep only what
+# can change how it observes the same files: LANG/LC_ALL/LC_CTYPE fix the locale
+# the controller decodes state file names with, and TMPDIR/SQLITE_TMPDIR keep any
+# SQLite spill files of the in-memory backups where the controller would put them.
+# PATH and HOME are not needed (no subprocess, no user files); -I already drops
+# PYTHON* variables and the user site.
+_PROBE_ENVIRONMENT = ("LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SQLITE_TMPDIR")
+_PROBE_UNMANAGED_EXIT = 3
+_PROBE_REJECTED_EXIT = 2
+# Runs in a fresh "-I -B" interpreter: loads the candidate's own companion by
+# path and prints the binding its code computes for the same root and slot.
+_PROBE_SOURCE = "\n".join([
+    "import importlib.util, json, sys",
+    "from pathlib import Path",
+    "module_path, root, slot = sys.argv[1:4]",
+    "spec = importlib.util.spec_from_file_location('_kza_candidate_stage_runtime', module_path)",
+    "module = importlib.util.module_from_spec(spec)",
+    "sys.modules[spec.name] = module",
+    "spec.loader.exec_module(module)",
+    "snapshot = getattr(module, '_binding_snapshot', None)",
+    "if snapshot is None:",
+    "    sys.stdout.write(json.dumps({'probe': 'unmanaged'}))",
+    "    raise SystemExit(" + str(_PROBE_UNMANAGED_EXIT) + ")",
+    "try:",
+    "    binding = snapshot(Path(root), slot)",
+    "except ValueError as error:",
+    "    sys.stdout.write(json.dumps({'probe': 'error', 'code': str(error)}))",
+    "    raise SystemExit(" + str(_PROBE_REJECTED_EXIT) + ")",
+    "sys.stdout.write(json.dumps({'probe': 'binding', 'binding': binding},",
+    "                            sort_keys=True, separators=(',', ':'), allow_nan=False))",
+])
 _manual_components_module = None
 _PROTECTED_TABLES = frozenset({
     "conversation_tombstones", "conversation_erasures", "voice_profiles", "voice_profile_sources",
@@ -1680,12 +1718,23 @@ def _seal_local_targets(root: Path, binding: dict) -> None:
     _atomic_record(path, policy)
 
 
+def _inherited_targets(source: dict) -> list[str]:
+    """Delegated target ids recorded in a verified source state's ownership policy."""
+    if source["ownership_sha256"] is None:
+        return []
+    return _read_json(Path(source["state_root"]) / ".kza-target-ownership.json")["delegated_targets"]
+
+
 def _authorize_target_delegation(root: Path, destination_state: Path, source_binding: str,
                                  target_ids: list[str]) -> str:
     head = read_admission_head(root)
     if head is None or head["status"] != "closed" or head["binding_id"] != source_binding:
         raise ValueError("runtime_admission_delegation_source_not_current")
     source = verify_closed_binding(root, source_binding)
+    if _inherited_targets(source):
+        # One hop only: a source that itself holds delegated targets would chain
+        # access to another owner's state (multi-hop delegation is U3b-0b).
+        raise ValueError("runtime_admission_delegation_one_hop_only")
     source_manual = _verify_manual_head(root, head, source)
     proof = _closure_proof(root, source_binding)
     state = _safe_directory(Path(destination_state).resolve(strict=True))
@@ -2183,6 +2232,69 @@ def write_admission_receipt(ticket: dict | str, resources: dict) -> Path:
     return path
 
 
+def _probe_timeout(value: object) -> float:
+    """Return a probe timeout in [1, 3600] seconds or refuse with a coded error."""
+    low, high = _PROBE_TIMEOUT_BOUNDS
+    if type(value) not in {int, float} or not math.isfinite(value) or not low <= value <= high:
+        raise ValueError("runtime_admission_probe_timeout")
+    return float(value)
+
+
+def _probe_timeout_argument(text: str) -> float:
+    try:
+        return _probe_timeout(float(text))
+    except ValueError:
+        raise argparse.ArgumentTypeError("runtime_admission_probe_timeout: expected 1-3600 seconds") from None
+
+
+def _probe_candidate(root: Path, name: str, binding: dict, *, timeout: float) -> None:
+    """Have the candidate's own companion recompute its binding before any write.
+
+    A managed child re-validates with its own code (validate_admission_ticket:
+    full binding equality). Selecting a slot whose code disagrees would move the
+    head and then wedge it at child start, so disagreement refuses here first.
+    The probe is read-only by construction of the companion's code, not by an
+    OS sandbox: database images open '?mode=ro' and writer checks take only
+    transient non-blocking flocks on state *.lock/*.lease files. It runs with
+    this interpreter (same site-packages, hence same sdk_versions), without the
+    lease descriptor or an admission ticket, and with only _PROBE_ENVIRONMENT.
+    """
+    runtime = Path(binding["runtime_root"])
+    release = (runtime / "release.json").read_bytes()
+    if hashlib.sha256(release).hexdigest() != binding["release_sha256"]:
+        raise ValueError("runtime_admission_release_changed")
+    files = json.loads(release)["files"]
+    module = runtime / "scripts" / "stage_runtime.pyc"
+    if (any(companion not in files for companion in _PROBE_COMPANIONS)
+            or module.is_symlink() or not module.is_file()):
+        raise ValueError("runtime_admission_candidate_unmanaged")
+    environment = {key: os.environ[key] for key in _PROBE_ENVIRONMENT if key in os.environ}
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-I", "-B", "-c", _PROBE_SOURCE, str(module), str(root), name],
+            cwd=runtime, env=environment, stdin=subprocess.DEVNULL, capture_output=True,
+            timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        raise ValueError("runtime_admission_candidate_rejected: probe_timeout") from None
+    try:
+        result = json.loads(completed.stdout)
+    except (UnicodeDecodeError, ValueError):
+        result = None
+    if type(result) is not dict:
+        raise ValueError("runtime_admission_candidate_rejected: probe_output exit="
+                         + str(completed.returncode))
+    if completed.returncode == _PROBE_UNMANAGED_EXIT and result == {"probe": "unmanaged"}:
+        raise ValueError("runtime_admission_candidate_unmanaged")
+    if (completed.returncode == _PROBE_REJECTED_EXIT and set(result) == {"probe", "code"}
+            and result["probe"] == "error" and type(result["code"]) is str):
+        raise ValueError("runtime_admission_candidate_rejected: " + result["code"][:200])
+    if completed.returncode != 0 or set(result) != {"probe", "binding"} or result["probe"] != "binding":
+        raise ValueError("runtime_admission_candidate_rejected: probe_output exit="
+                         + str(completed.returncode))
+    if _canonical_json(result["binding"]) != _canonical_json(binding):
+        raise ValueError("runtime_admission_candidate_rejected: binding_mismatch")
+
+
 class AdmissionController:
     """Own one admission root until each managed child is actually reaped.
 
@@ -2190,8 +2302,9 @@ class AdmissionController:
     changes cannot be adopted as a new authority merely by selecting that slot.
     """
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, probe_timeout: float = _PROBE_TIMEOUT_SECONDS):
         self.root = Path(root).resolve()
+        self.probe_timeout = _probe_timeout(probe_timeout)
         self._descriptor = None
 
     def __enter__(self):
@@ -2241,6 +2354,40 @@ class AdmissionController:
         self._require_lease()
         with _locked_root(self.root):
             return _authorize_target_delegation(self.root, destination_state, source_binding, target_ids)
+
+    def delegate(self, name: str) -> dict:
+        """Delegate the closed head's local path targets to one copied slot.
+
+        Target ids follow the proven rehearsal derivation: registered targets
+        whose descriptor carries absolute paths, all inside the source state.
+        Path-less targets stay owned. A source whose ownership policy lists any
+        delegated target (path-bearing or not) is refused as one hop only;
+        _authorize_target_delegation enforces the same rule for every caller,
+        and multi-hop delegation is U3b-0b.
+        """
+        self._require_lease()
+        name = _slot_name(name)
+        with _locked_root(self.root):
+            head = read_admission_head(self.root)
+            if head is None or head["status"] != "closed":
+                raise ValueError("runtime_admission_delegation_source_not_current")
+            source = verify_closed_binding(self.root, head["binding_id"])
+            state = Path(source["state_root"])
+            inherited = _inherited_targets(source)
+            if inherited:
+                raise ValueError("runtime_admission_delegation_one_hop_only: this state already holds "
+                                 + str(len(inherited)) + " delegated target(s); multi-hop is U3b-0b")
+            target_ids = []
+            for identity, target in sorted(_target_inventory(state).items()):
+                paths = [Path(value) for value in _descriptor_paths(target["descriptor"])]
+                if not paths:
+                    continue
+                if any(not path.is_relative_to(state) or path.resolve() != path for path in paths):
+                    raise ValueError("runtime_admission_delegation_foreign_source")
+                target_ids.append(identity)
+            capability = _authorize_target_delegation(
+                self.root, self.root / "slots" / name / "state", head["binding_id"], target_ids)
+        return {"capability": capability, "source_binding": head["binding_id"], "targets": target_ids}
 
     def authorize_derived_state(self, name: str, latest_binding_id: str, *,
                                 target_relocations: dict[str, str]) -> str:
@@ -2299,6 +2446,8 @@ class AdmissionController:
                 if latest["authority"]["digest"] != binding["authority"]["digest"]:
                     if head is None or not _validate_derived_capability(self.root, head, latest, binding):
                         raise ValueError("privacy_authority_stale")
+                # Before any admission record, marker, head CAS or selection.
+                _probe_candidate(self.root, name, binding, timeout=self.probe_timeout)
                 identity = _store_binding(self.root, binding)
                 if head is None and _has_authority(latest):
                     raise ValueError("runtime_admission_manual_legacy_unsealed")
@@ -2410,9 +2559,15 @@ def authorize_target_delegation(root: Path, destination_state: Path, source_bind
         return controller.authorize_target_delegation(destination_state, source_binding, target_ids)
 
 
-def activate_slot(root: Path, name: str) -> str | None:
-    """Atomically select an integrity-checked slot with non-regressing authority."""
+def delegate_slot(root: Path, name: str) -> dict:
+    """Delegate the current closed head's local targets to one copied slot (one hop)."""
     with AdmissionController(root) as controller:
+        return controller.delegate(name)
+
+
+def activate_slot(root: Path, name: str, *, probe_timeout: float = _PROBE_TIMEOUT_SECONDS) -> str | None:
+    """Atomically select an integrity-checked slot with non-regressing authority."""
+    with AdmissionController(root, probe_timeout=probe_timeout) as controller:
         return controller.activate(name)
 
 
@@ -2436,12 +2591,20 @@ def main() -> None:
     prepare.add_argument("--state-source", type=Path, required=True)
     activate = commands.add_parser("activate")
     activate.add_argument("name")
+    activate.add_argument("--probe-timeout", type=_probe_timeout_argument, default=_PROBE_TIMEOUT_SECONDS,
+                          help="Seconds (1-3600) allowed for the candidate's own read-only validation")
+    delegate = commands.add_parser(
+        "delegate", help="Delegate the closed head's local erasure targets to a copied slot (one hop only)")
+    delegate.add_argument("name")
     args = parser.parse_args()
     if args.command == "prepare":
         manifest = prepare_slot(args.archive, args.root, args.name, args.state_source)
         print(json.dumps({"slot": args.name, "commit": manifest["git_commit"]}))
+    elif args.command == "delegate":
+        result = delegate_slot(args.root, args.name)
+        print(json.dumps({"slot": args.name, **result}))
     else:
-        previous = activate_slot(args.root, args.name)
+        previous = activate_slot(args.root, args.name, probe_timeout=args.probe_timeout)
         print(json.dumps({"slot": args.name, "previous": previous}))
 
 

@@ -173,6 +173,38 @@ integridad del artefacto y el emparejamiento de rutas no prueban un rollback
 seguro de datos y permisos. La regresión nueva sigue fallando, sin corrección de
 producto; ver [evidencia y continuación](../research/2026-11-06-copied-slot-authority-baseline.json).
 
+En desarrollo, sin release (U3b-0a): una activación gestionada valida antes de
+mover el head el slot candidato con su propio `scripts/stage_runtime`, en un
+proceso de sólo lectura. Un artefacto sin el par `scripts/stage_runtime.pyc` +
+`src/core/runtime_admission.pyc` (por ejemplo 9b31702, 63ea8d3 o b0866e8) se
+rechaza como `runtime_admission_candidate_unmanaged` sin cambiar nada. Por eso
+los ensayos compilados de slots copiados ya no fijan 9b31702: usan el ancestro
+más antiguo de HEAD con ambos compañeros, derivado con git
+(`tests/mocks/slot_rollback.managed_revision`; hoy 80b47f5).
+`KZA_SLOT_ROLLBACK_REVISION` sólo acepta revisiones con ese par.
+
+Consecuencia operativa: en cuanto exista un head gestionado, volver al slot de
+producción actual b0866e8 (o a 63ea8d3) queda rechazado; sólo una activación no
+gestionada, sin head ni autoridad, los acepta todavía. El rollback posterior
+debe apuntar a una release que incluya el par.
+
+La sonda corre con el intérprete del controlador, `-I -B`, sin el lease, sin
+ticket y con un entorno mínimo (`LANG`, `LC_ALL`, `LC_CTYPE`, `TMPDIR`,
+`SQLITE_TMPDIR`). Que sea de sólo lectura es una convención del código del
+candidato, no un sandbox. Su límite es `activate --probe-timeout` (por defecto
+60 s; sólo 1–3600 s, otro valor se rechaza como
+`runtime_admission_probe_timeout`). Cada activación gestionada y cada `run()`
+pagan un segundo snapshot completo. En un Mac M-series midió 2,6 s con 0,49 GB
+de bases sintéticas y 10,4 s con 1,95 GB, unos 5,3 s/GB. Antes de la release hay
+que medirlo con una copia de tamaño real bajo `yo` en el servidor
+(`tests/mocks/probe_cost_harness.py`).
+
+`stage_runtime --root R --offline delegate <slot>` expone la delegación de un
+solo salto. `authorize_target_delegation` rechaza el segundo salto también para
+cualquier otro llamador (`runtime_admission_delegation_one_hop_only`); el
+multi-salto es U3b-0b. Ver la [evidencia](../../data/autonomous-roadmap-20261102/t040-t041/u3b-0a-evidence.json),
+local y fuera de Git.
+
 Es bytecode para CPython 3.13, no un ejecutable nativo ni una barrera contra
 descompilación. Requiere el intérprete y las dependencias del entorno de
 ejecución. Ver [py_compile](https://docs.python.org/3.13/library/py_compile.html)
