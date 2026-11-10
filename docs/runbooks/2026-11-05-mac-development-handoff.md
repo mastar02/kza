@@ -486,7 +486,8 @@ Validación fresca round-04 en `2f5e657`, con los mismos límites y una compuert
 Hallazgos no bloqueantes de la revisión:
 - los scripts de `root-procedure/` sólo se pueden rastrear hasta una copia en `/private/tmp`; hay que fijarlos antes de la próxima ronda;
 - el pico de carga de 242 después de native-01 no tiene evidencia de procesos guardada;
-- las colecciones no figuran en `load-observations.jsonl`.
+- las colecciones no figuran en `load-observations.jsonl`;
+- la carga sólo se registró al inicio (3,22) y al final (4,99) de la full, sin registro intermedio, así que sus 801 s pueden estar afectados por carga externa.
 
 **Unidad aceptada dentro de su alcance**: `.../configuration-v4-validation-round-04/acceptance-proof.json`. No acepta F1, T024, H6 ni el runtime, y no implica release.
 
