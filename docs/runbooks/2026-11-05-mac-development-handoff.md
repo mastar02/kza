@@ -598,6 +598,56 @@ Revisión independiente: `u4-independent-review.json` (accept_with_changes). Abi
 F3, los controles de una entidad se deshabilitan un instante porque la observación
 vence a los 6 s y el sondeo del catálogo tarda más de eso bajo carga.
 
+## T040/T041 — aceptadas localmente con salvedades (2026-11-10)
+
+Unidades:
+- **U1** (`2873fbc`): `/obs/` queda accesible solo por URL directa, con controles reales o deshabilitados honestamente.
+- **U2** (`cfa985a`): Rutinas en NEXO.
+- **U3** (`5af9b5c`): Memoria en NEXO, solo administración.
+- **U4** (`926fc0a`): retiro de las vistas heredadas.
+- **Arreglo de frescura** (`a69039a`): el catálogo se consulta contra el vencimiento de las observaciones.
+- **U3b-0a** (`69a79e6`): `activate` sondea el slot candidato con su propio controlador y agrega el comando `delegate` de un salto.
+
+Ronda 01 sobre `69a79e6` (`data/.../t040-t041/validation-round-01/`):
+
+| Prueba | Resultado |
+|---|---|
+| node | 275/275 |
+| Navegador | 10/10, 0 hallazgos de accesibilidad |
+| Dirigido | 1240 |
+| Full | 9822 + xfail conocida, 0 fallos, 886 s |
+
+Es la segunda full verde tras el arreglo del cuelgue de captura (`7b24460`). Revisión independiente: `accept_scoped_with_caveats`. Prueba: `data/.../t040-t041/acceptance-proof-20261110.json`. El estado sigue en `verified_local`; no acepta C04/C06/C07/C08 ni P4.
+
+Estado de los hallazgos:
+
+| Hallazgo | Estado |
+|---|---|
+| WEB-01 | Cerrado localmente con salvedades |
+| WEB-02 | Cerrado localmente con salvedades |
+| WEB-05 | Parcial: la vista de `/obs/` no queda en la URL y `/obs/` a 320/390 px no se auditó |
+| ACCESS-01 | Abierto (T013); el login de `/obs/` menciona el token |
+
+Otros pendientes:
+- Memoria: paginación (límite de 100) y mapeo 404/409 posterior al commit (F3).
+- Alcance del borrado C04.
+- Q19, a cargo de T033.
+- Permiso `routines:execute` de hogar, que no habilita nada.
+- Falla de `smoke_dashboard` en `/ws/live`.
+- Visto bueno visual del usuario.
+- Campo P7.
+
+Memoria por persona (U3b): las decisiones del usuario están en `user-decisions-20261110.json` (`u3b_*`):
+- asignación por administración más voz reconocida con alta propia;
+- administración ve todo;
+- asignar confirma el recuerdo;
+- no volver a `b0866e8` después de U3b;
+- «No es mío» lo devuelve a una cola de administración;
+- la voz se compara contra todos los perfiles solo para descartar;
+- el esquema sale en una release anterior a la función.
+
+Diseño v5 más enmiendas de 0a en `data/.../t040-t041/`. Siguiente: U3b-1a (núcleo del ledger), aplicando los cambios que la revisión del v5 exige para 1a.
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.

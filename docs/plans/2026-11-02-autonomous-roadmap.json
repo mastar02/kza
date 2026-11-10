@@ -1556,10 +1556,16 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
+      "status": "verified_local",
       "implementation_commits": [],
       "evidence": [],
-      "next_action": null
+      "next_action": "Aceptada localmente el 2026-11-10 (ronda 01 verde + revisión independiente). Pendiente: WEB-05 en /obs/ (vista en URL, 320/390), ACCESS-01 (T013), paginación de memoria, memoria por persona (U3b), campo P7.",
+      "scoped_acceptance": {
+        "date": "2026-11-10",
+        "head": "69a79e6",
+        "proof": "data/autonomous-roadmap-20261102/t040-t041/acceptance-proof-20261110.json",
+        "verdict": "aceptada localmente con salvedades dentro de D1/D3/D4; status sigue verified_local; no acepta C04/C06/C07/C08 ni P4"
+      }
     },
     {
       "id": "T041",
@@ -1575,10 +1581,16 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
+      "status": "verified_local",
       "implementation_commits": [],
       "evidence": [],
-      "next_action": null
+      "next_action": "Aceptada localmente el 2026-11-10 (ronda 01 verde + revisión independiente). Pendiente: WEB-05 en /obs/ (vista en URL, 320/390), ACCESS-01 (T013), paginación de memoria, memoria por persona (U3b), campo P7.",
+      "scoped_acceptance": {
+        "date": "2026-11-10",
+        "head": "69a79e6",
+        "proof": "data/autonomous-roadmap-20261102/t040-t041/acceptance-proof-20261110.json",
+        "verdict": "aceptada localmente con salvedades dentro de D1/D3/D4; status sigue verified_local; no acepta C04/C06/C07/C08 ni P4"
+      }
     },
     {
       "id": "T042",
