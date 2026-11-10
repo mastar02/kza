@@ -1733,9 +1733,10 @@
         "data/autonomous-roadmap-20261102/t047/person-ui-evidence.json",
         "data/autonomous-roadmap-20261102/t047/person-filter-evidence.json",
         "data/autonomous-roadmap-20261102/t047/person-inverse-evidence.json",
-        "data/autonomous-roadmap-20261102/t013/nexo-ui-evidence.json"
+        "data/autonomous-roadmap-20261102/t013/nexo-ui-evidence.json",
+        "data/autonomous-roadmap-20261102/t047/acceptance-proof-20261110.json"
       ],
-      "next_action": "Conservar las regresiones NEXO verificadas durante T014 y tareas posteriores. T013 quedó verified_local con orientación de acceso, roles y límites comprobados; no se acepta ningún criterio ni la fase P4.",
+      "next_action": "T047 aceptada localmente dentro de su alcance el 2026-11-10 (ronda 02 verde + revisión independiente). Siguiente: T040/T041 retiran /home/legacy.html y el enlace al panel técnico; los criterios C quedan para P7.",
       "design_reference": {
         "path": "/home/yo/projects/kza-design-reference/nexo-2026-11-02-d686fcd",
         "source_commit": "d686fcde52a34c3b786decf167eebdb91dceb6d6",
@@ -1746,7 +1747,9 @@
         "code": "site/",
         "previews": "previews/",
         "approved_on": "2026-11-02",
-        "illustrative_data_only": true
+        "illustrative_data_only": true,
+        "path_mac": "/Users/gabriel/Documents/Proyectos/kza-design-reference/nexo-2026-11-02-d686fcd",
+        "path_note": "path es la copia del checkout Linux; path_mac es la copia verificada (MANIFEST 22/22) del equipo Mac."
       },
       "integration_contract": [
         "Conservar estética oscura, cian/violeta, tipografía, casa 3D y navegación Hogar/Voces/Personas/Acciones; adaptación responsiva y accesible.",
@@ -1769,6 +1772,25 @@
           "T046"
         ],
         "phase_acceptance_dependencies_unchanged": true
+      },
+      "scoped_acceptance": {
+        "date": "2026-11-10",
+        "head": "7b24460",
+        "proof": "data/autonomous-roadmap-20261102/t047/acceptance-proof-20261110.json",
+        "verdict": "aceptada localmente con salvedades dentro de su alcance; status sigue verified_local; no acepta C02/C04/C06/C07/C08/C18 ni P4",
+        "remains_pending": [
+          "C02, C04, C06, C07, C08, C18 hasta P7",
+          "P4 no aceptada",
+          "WEB-01, WEB-02, WEB-05, ACCESS-01 y retiro de /home/legacy.html y del enlace al panel técnico (T040/T041, decisión del usuario 2026-11-10)",
+          "iPhone físico, Chrome de escritorio en Terra, usabilidad 3 personas x 10 tareas y revisión con lector de pantalla",
+          "Voces reales (C18/H3), privacidad en campo (C04), matriz negativa de 200 entradas (C02)",
+          "Reconciliación con el catálogo real de Home Assistant y efectos observados en luces y clima",
+          "Accesibilidad de diálogos (botones de 40 px en el diálogo de revisión de voces en teléfono), auditoría WCAG estándar (T042) y matriz de estados de error C06 (T045)",
+          "Comparación de fidelidad visual contra las previews aprobadas y visto bueno del usuario",
+          "Suites compiladas, slot compilado y release de producción (H6)",
+          "Separación voz/persona respecto de permisos observada en ejecución con cuentas reales",
+          "Confirmación del arreglo del cuelgue de captura (7b24460) en más corridas completas"
+        ]
       }
     },
     {

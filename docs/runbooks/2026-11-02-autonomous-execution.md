@@ -390,7 +390,8 @@ frontend con backend real y mantener separado el vínculo vocal de la autoridad.
 
 T047 forma parte del goal activo por instrucción del usuario del 2026-11-02.
 La referencia aprobada está en
-`/home/yo/projects/kza-design-reference/nexo-2026-11-02-d686fcd`.
+`/home/yo/projects/kza-design-reference/nexo-2026-11-02-d686fcd` en Linux y en
+`/Users/gabriel/Documents/Proyectos/kza-design-reference/nexo-2026-11-02-d686fcd` en el Mac.
 Se leyeron `LEEME.txt`, `HANDOFF.json` y las capturas y se verificó
 `MANIFEST.sha256`. Los estilos, la geometría amueblada, Three.js e Inter
 proceden de ese paquete; los recursos y sus licencias se sirven localmente.

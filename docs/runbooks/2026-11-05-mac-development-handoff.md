@@ -548,6 +548,40 @@ Salvedades y pendientes:
 
 Siguiente: la prioridad T047.
 
+**Actualización 2026-11-10 — el cuelgue de captura quedó resuelto** (`7b24460`). `CaptureRecorders.drain` y `aclose` repetían `while self._operations: await gather(...)`. Pero `gather` sobre tareas ya terminadas resuelve sin ceder el event loop, y el callback que las saca del conjunto queda encolado con `call_soon`. Si una operación terminaba justo antes de `drain`, el bucle giraba sin fin. El stack de faulthandler de la ronda 01 de T047 lo ubicó en `capture_recorders.py:291`. El arreglo espera una foto del conjunto y descarta esas tareas.
+- **Pruebas:** una prueba determinista roja→verde (`tests/unit/memory/test_capture_recorders_drain.py`) y el módulo nativo 20 de 20 seguidas.
+- **Revisión independiente:** `accept`. Evidencia en `data/autonomous-roadmap-20261102/t024/capture-drain-hang/`.
+- **Pendiente:** hubo una sola full verde desde el arreglo; conviene confirmarlo en más corridas.
+
+## T047 — NEXO en el frontend real, aceptado localmente dentro de su alcance, con salvedades
+
+Decisiones del usuario (2026-11-10, `data/.../t047/user-decisions-20261110.json`):
+- **Aceptación:** acotada a su alcance.
+- **Vistas heredadas:** se retiran `/home/legacy.html` y el enlace al panel técnico, en T040/T041.
+- **Casa 3D:** la casa 3D ilustrativa alcanza.
+
+Ronda 02 sobre `7b24460` (`data/.../t047/validation-round-02/`), sin reintentos:
+- node 178/178;
+- navegador NEXO (home, voces, accesos) con 0 hallazgos de accesibilidad en 320–1440 px;
+- pytest dirigido: 850 passed;
+- full: 9750 passed más la xfail conocida, 0 fallos, en 941 s de 1500;
+- referencia de diseño: 22/22.
+
+Revisión independiente: `accept_scoped_with_caveats`. Prueba en `data/.../t047/acceptance-proof-20261110.json`. El estado de la tarea en el roadmap sigue `verified_local` y tiene un nuevo campo `scoped_acceptance`. **No acepta** C02/C04/C06/C07/C08/C18 ni P4.
+
+Pendiente explícito:
+- **T040/T041:** WEB-01/02/05 y ACCESS-01; retirar las vistas heredadas y el enlace técnico.
+- **Campo:** iPhone físico; Chrome en Terra; usabilidad 3×10; lector de pantalla; voces reales; privacidad en campo; matriz negativa C02; catálogo real de Home Assistant y efectos observados.
+- **Accesibilidad de diálogos:** botones de 40 px en teléfono en el diálogo de revisión de voces. La auditoría no abre diálogos.
+- **Otras auditorías:** WCAG estándar (T042) y matriz de errores C06 (T045).
+- **Fidelidad visual:** comparación contra las previews y visto bueno del usuario.
+- **Suites compiladas y release (H6).**
+- **Separación voz/persona respecto de permisos:** observarla en ejecución con cuentas reales. Hoy está verificada por traza de código y pruebas sintéticas.
+
+La referencia de diseño en el Mac está en `/Users/gabriel/Documents/Proyectos/kza-design-reference/nexo-2026-11-02-d686fcd`.
+
+Siguiente: T040/T041 (retiro de vistas heredadas), luego los productores F1 restantes y el runbook OQ-8 en DEPLOYMENT.md antes de H6.
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.
