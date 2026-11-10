@@ -188,7 +188,9 @@ AUDIT_SCRIPT = r"""(() => {
         if (getComputedStyle(el).position !== 'fixed') {
           // Content inside a clipping or scrolling container that itself fits does not reflow the page.
           let clipped = false;
+          // An inline <svg> is overflow:hidden by default but is not a container: look past it.
           for (let node = el.parentElement; node && node !== document.body; node = node.parentElement) {
+            if (node instanceof SVGElement) continue;
             const style = getComputedStyle(node);
             if (style.overflowX !== 'visible') { const box = node.getBoundingClientRect(); clipped = box.right <= width + 1 && box.left >= -1; break; }
           }

@@ -13,6 +13,8 @@ import './access-owner.js';
 import './access.js';
 import './evaluation-owner.js';
 import './evaluation.js';
+import './routine-owner.js';
+import './routines.js';
 import { createHouse } from './house.js';
 
 const core = window.HomeUI, state = window.NexoState;
@@ -22,9 +24,9 @@ const roleLabels = { operator: 'Administración', home: 'Acceso de hogar', evalu
 let epoch = 0, poller, sessionTimer, ticker, catalog = null, clock = null, lastError = null;
 let roomId, layer = 'lights', house, logoutPending = false, authBusy = false, activeView = null;
 let navigationVersion = 0, desiredView = null, accessView = null, viewsReady = true, viewDrain = Promise.resolve(true), privateSuspended = false;
-const viewIds = { home: 'home-view', actions: 'actions-view', people: 'people-view', voices: 'voices-view', access: 'access-view', evaluation: 'evaluation-view' };
-const viewHashes = { home: '#hogar', actions: '#acciones', people: '#personas', voices: '#voces', access: '#accesos', evaluation: '#evaluacion' };
-const auxiliaryView = view => ['people', 'voices', 'access', 'evaluation'].includes(view);
+const viewIds = { home: 'home-view', actions: 'actions-view', routines: 'routines-view', people: 'people-view', voices: 'voices-view', access: 'access-view', evaluation: 'evaluation-view' };
+const viewHashes = { home: '#hogar', actions: '#acciones', routines: '#rutinas', people: '#personas', voices: '#voces', access: '#accesos', evaluation: '#evaluacion' };
+const auxiliaryView = view => ['people', 'voices', 'access', 'evaluation', 'routines'].includes(view);
 try { logoutPending = sessionStorage.getItem('kza.logoutPending') === 'true'; } catch (_) { /* Storage is optional. */ }
 
 function node(tag, className, text) {
@@ -95,6 +97,16 @@ const evaluator = window.NexoEvaluationOwner.createEvaluationOwner({ session,
   onStatus: message => { byId('evaluation-connection').textContent = message; },
   verifyIdentity: options => verifyIdentity(['evaluation:read'], 'evaluator', options),
   onUnauthorized: () => retire('Tu acceso de evaluación dejó de estar vigente.') });
+// One owner per page: it survives navigation so writes are never cut, and is cleared only at session boundaries.
+// Another tab switched the shared cookie to another account: end this tab's cached session and
+// read the current one again; nothing pending of the previous account is kept.
+const routines = window.NexoRoutineOwner.createRoutineOwner({ api, session,
+  onAccountChanged: () => { setTimeout(() => { retire('La cuenta cambió en otra pestaña.'); void bootstrap(); }, 0); } });
+let routinesView = null;
+function closeRoutines() {
+  const dispose = routinesView; routinesView = null; dispose?.();
+  return routines.leave();
+}
 function closeAccess() {
   const dispose = accessView; accessView = null; dispose?.();
   return access.leave();
@@ -117,7 +129,7 @@ function trackViewDrain(promises) {
 }
 function drainViews() {
   people.leave();
-  return trackViewDrain([voices.leave(), evaluator.leave(), closeAccess()]);
+  return trackViewDrain([voices.leave(), evaluator.leave(), closeAccess(), closeRoutines()]);
 }
 
 function pendingLogout(value) {
@@ -135,11 +147,13 @@ function destroyHouse() {
   document.body.classList.remove('map-expanded');
   byId('expand-map').setAttribute('aria-expanded', 'false');
 }
-function retire(message = '') {
+// endSession=false only when the page is hidden or the server could not be asked: pending
+// routine identities then survive in this tab's sessionStorage until the owning session ends.
+function retire(message = '', { endSession = true } = {}) {
   epoch++; navigationVersion++; desiredView = null; privateSuspended = false; session.clear(); transport.invalidateSession();
   clearTimeout(sessionTimer); poller?.stop(); poller = null; ticker?.stop(); ticker = null;
-  people.clear(); const accessClosing = closeAccess();
-  trackViewDrain([voices.clear(), evaluator.clear(), access.clear(), accessClosing]);
+  people.clear(); const accessClosing = closeAccess(), routinesClosing = closeRoutines();
+  trackViewDrain([voices.clear(), evaluator.clear(), access.clear(), accessClosing, routinesClosing, routines.clear({ wipe: endSession })]);
   actions.clear(); destroyHouse(); catalog = clock = lastError = null; roomId = undefined; activeView = null;
   byId('voice-connection').textContent = ''; byId('evaluation-connection').textContent = '';
   byId('view-transition-status').hidden = true;
@@ -314,6 +328,7 @@ function renderNavigation() {
     { id: 'voices', label: 'Voces', icon: 'mic' },
     { id: 'people', label: 'Personas', icon: 'user' },
     { id: 'actions', label: 'Acciones', icon: 'list' },
+    { id: 'routines', label: 'Rutinas', icon: 'clock' },
     { id: 'access', label: 'Accesos', icon: 'shield' },
     { id: 'evaluation', label: 'Evaluación', icon: 'mic' }
   ].filter(view => session.views().includes(view.id));
@@ -326,8 +341,8 @@ function renderNavigation() {
       control.append(node('span', target === 'rail-nav' ? 'rail-tooltip' : '', view.label)); container.append(control);
     }
   }
+  railOverflow();
   const tools = byId('additional-tools'); tools.replaceChildren();
-  if (session.can('routines:execute')) { const link = node('a', 'text-button', 'Rutinas del hogar ↗'); link.href = '/home/legacy.html'; tools.append(link); }
   if (session.can('diagnostics:read')) { const link = node('a', 'text-button', 'Micrófonos y diagnóstico ↗'); link.href = '/home/legacy.html'; tools.append(link); }
 }
 async function activate(view, push = true, force = false) {
@@ -364,6 +379,11 @@ async function activate(view, push = true, force = false) {
       opened = await access.open();
     }
     if (view === 'evaluation') opened = await evaluator.open();
+    if (view === 'routines') {
+      routinesView = window.NexoRoutines.mountRoutines({ container: byId('routines-view'), dialog: byId('routine-dialog'),
+        confirmDialog: byId('routine-confirm-dialog'), owner: routines, icon });
+      opened = await routines.open();
+    }
     if (!stillCurrent()) return false;
     if (!opened) throw Error('No pudimos abrir esta vista. Podés reintentar la consulta.');
     privateSuspended = false;
@@ -373,6 +393,7 @@ async function activate(view, push = true, force = false) {
       const selected = control.dataset.view === view; control.classList.toggle('active', selected);
       if (selected) control.setAttribute('aria-current', 'page'); else control.removeAttribute('aria-current');
     }
+    revealActiveRail();
     if (view === 'home' && !house) {
       byId('map-loading').hidden = false;
       house = createHouse({ container: byId('house-canvas'), onReady(ready) {
@@ -428,7 +449,7 @@ async function bootstrap() {
     ticker = core.createFreshnessTicker({ read: () => freshness(), onTick: updateTemporal });
     poller.setHidden(document.hidden || auxiliaryView(activeView)); if (!document.hidden && !auxiliaryView(activeView)) ticker.start(); poller.start();
   } catch (error) {
-    if (started === epoch) retire(error.status === 401 ? 'Ingresá para consultar tu hogar.' : error.message);
+    if (started === epoch) retire(error.status === 401 ? 'Ingresá para consultar tu hogar.' : error.message, { endSession: error.status === 401 });
   }
 }
 
@@ -465,6 +486,27 @@ for (const [id, callback] of [
   ['zoom-in', () => house?.zoom(.12)], ['zoom-out', () => house?.zoom(-.12)], ['reset-view', () => { house?.reset(); cameraView('3d', false); }]
 ]) byId(id).addEventListener('click', callback);
 byId('expand-map').addEventListener('click', () => { const expanded = document.body.classList.toggle('map-expanded'); byId('expand-map').setAttribute('aria-expanded', String(expanded)); });
+// On phones the view group scrolls inside the bottom rail: edge fades show there is more, the
+// focused or active item is kept fully visible, and every target stays 44 px.
+const RAIL_ITEM = 44, RAIL_PEEK = 22;
+function railOverflow() {
+  const rail = byId('rail-nav'), items = rail.querySelectorAll('[data-view]').length;
+  // When the views do not fit, space them so the item at the edge is cut in half: the fade then lies over
+  // a visibly partial item instead of a whole one.
+  const width = rail.clientWidth - parseFloat(getComputedStyle(rail).paddingLeft) - parseFloat(getComputedStyle(rail).paddingRight);
+  const whole = Math.floor((width - RAIL_PEEK) / (RAIL_ITEM + 4));
+  const gap = window.matchMedia('(max-width:620px)').matches && items * RAIL_ITEM > width && whole > 0 ? (width - RAIL_PEEK) / whole - RAIL_ITEM : 0;
+  const value = gap.toFixed(2) + 'px';
+  if (rail.style.getPropertyValue('--rail-gap') !== value) rail.style.setProperty('--rail-gap', value);
+  const max = rail.scrollWidth - rail.clientWidth;
+  rail.classList.toggle('more-start', max > 1 && rail.scrollLeft > 1);
+  rail.classList.toggle('more-end', max > 1 && rail.scrollLeft < max - 1);
+}
+function revealActiveRail() { railOverflow(); byId('rail-nav').querySelector('.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); railOverflow(); }
+byId('rail-nav').addEventListener('focusin', event => event.target.closest?.('[data-view]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
+byId('rail-nav').addEventListener('scroll', railOverflow, { passive: true });
+// A layout change (rotation, phone width) keeps the active view inside the rail.
+window.addEventListener('resize', revealActiveRail);
 byId('help-button').addEventListener('click', () => byId('info-dialog').showModal());
 for (const id of ['dialog-close', 'dialog-done']) byId(id).addEventListener('click', () => byId('info-dialog').close());
 document.addEventListener('keydown', event => { if (event.key === 'Escape') { document.body.classList.remove('map-expanded'); byId('expand-map').setAttribute('aria-expanded', 'false'); } });
@@ -481,6 +523,6 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 window.addEventListener('popstate', () => activate(requestedView(), false));
-window.addEventListener('pagehide', () => retire());
+window.addEventListener('pagehide', () => retire('', { endSession: false }));
 window.addEventListener('pageshow', event => { if (event.persisted) bootstrap(); });
 bootstrap();

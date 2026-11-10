@@ -198,3 +198,70 @@ dialog>p{font-size:13px;color:#abbccd;line-height:1.9;margin:12px 0}
 .person-voice-details .person-linked-profiles{max-height:360px;overflow:auto}
 /* C07 product target on phones: 44 px touch controls. The bottom rail fits seven 44 px buttons at 320 px and never hides keyboard focus. */
 @media(max-width:620px){html{scroll-padding-bottom:88px}.rail{padding:7px 4px}.rail-group,.rail-bottom{gap:0}.rail-button{width:44px;height:44px;flex-shrink:0}.wordmark{display:flex;flex-direction:column;justify-content:center;min-height:44px}.text-button,.view-switch button,.control-tabs button,.apply-button,.operation-button,.advanced-control summary,.control-field input[type=range]{min-height:44px}.view-switch button{min-width:44px}.map-tools button{width:44px;height:44px}#nexo-workspace .identity-primary,#nexo-workspace .identity-secondary,#nexo-workspace .identity-danger{min-height:44px}}
+/* Rutinas: Escenas look with readable text, wrapping lines and 44 px controls at every width. */
+#routines-view .routines-heading{align-items:flex-start;flex-wrap:wrap}
+#routines-view .routines-heading p:not(.eyebrow){font-size:13px;line-height:1.7;max-width:560px}
+#routines-view .routines-heading-side{flex-direction:row;align-items:center;flex-wrap:wrap;gap:10px}
+#routines-view .identity-primary,#routines-view .identity-secondary,#routines-view .identity-danger{min-height:44px;min-width:44px;font-size:12px}
+#routines-view .routines-permission,#routines-view .routines-freshness,#routines-view .routine-notice{font-size:13px;line-height:1.7;color:var(--muted);margin:0 0 14px;overflow-wrap:anywhere}
+#routines-view .routines-freshness.is-error{color:#f2a7b6}
+#routines-view .routine-notice:empty{display:none}
+.routines-live{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+#routines-view .routine-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;align-items:start}
+#routines-view .routine-card{padding:20px;min-width:0;display:flex;flex-direction:column;gap:8px;transform:none}
+#routines-view .routine-card-top{display:flex;align-items:flex-start;gap:12px;min-width:0}
+#routines-view .routine-card .scene-icon{flex-shrink:0;display:grid;place-items:center;width:40px;height:40px;border-radius:10px;background:#ffffff08}
+#routines-view .routine-card .scene-icon svg{width:20px;height:20px}
+#routines-view .routine-card .scene-icon.mint{color:var(--mint)}#routines-view .routine-card .scene-icon.lavender{color:var(--purple)}
+#routines-view .routine-card-name{display:flex;flex-direction:column;align-items:flex-start;gap:6px;min-width:0}
+#routines-view .routine-card h3{font-size:17px;line-height:1.4;font-weight:500;overflow-wrap:anywhere;white-space:normal}
+#routines-view .identity-badge{font-size:11px;line-height:1.5}
+#routines-view .routine-detail,#routines-view .routine-run-actions li,#routines-view .routine-run-status,#routines-view .routine-state{font-size:13px;line-height:1.6;overflow-wrap:anywhere;white-space:normal;color:#b0bfd4}
+#routines-view .routine-state{color:#f3d48b}
+#routines-view .routine-run{border-top:1px solid #ffffff10;padding-top:8px;min-width:0}
+#routines-view .routine-run-caption{font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--muted)}
+#routines-view .routine-run-status{color:var(--text)}
+#routines-view .routine-run-actions{margin:4px 0 0;padding-left:20px}
+#routines-view .routine-footnote{font-size:12px;line-height:1.6;color:var(--muted);overflow-wrap:anywhere}
+#routines-view .routine-controls{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+#routines-view .routines-empty{font-size:13px}
+#routine-dialog,#routine-confirm-dialog{width:720px;max-width:calc(100% - 24px);max-height:calc(100dvh - 24px);overflow:auto;padding:24px}
+#routine-confirm-dialog{width:520px}
+#routine-dialog h2,#routine-confirm-dialog h2{overflow-wrap:anywhere}
+#routine-dialog .eyebrow{font-size:11px}
+#routine-dialog .routine-fieldset{border:1px solid #ffffff12;border-radius:10px;padding:14px;margin:0 0 14px;min-width:0;display:flex;flex-direction:column;gap:10px}
+#routine-dialog .routine-section{font-size:13px;font-weight:600;color:var(--text);padding:0 6px}
+#routine-dialog .routine-field{display:flex;flex-direction:column;gap:6px;font-size:13px;min-width:0}
+#routine-dialog .routine-field-label{font-size:13px;color:#b0bfd4;overflow-wrap:anywhere}
+#routine-dialog input:not([type=checkbox]),#routine-dialog select{box-sizing:border-box;width:100%;max-width:100%;min-width:0;min-height:44px;font-size:14px}
+#routine-dialog .routine-check{flex-direction:row;align-items:center;gap:10px;min-height:44px}
+#routine-dialog .routine-check input{width:22px;height:22px;margin:0}
+#routine-dialog .routine-days{display:flex;flex-wrap:wrap;gap:6px}
+#routine-dialog .routine-day{min-width:44px;min-height:44px;border-radius:8px;border:1px solid #ffffff20;background:#ffffff05;color:#b0bfd4;font-size:13px}
+#routine-dialog .routine-day[aria-pressed=true]{background:var(--mint);color:#103d34;border-color:var(--mint);font-weight:600}
+#routine-dialog .routine-row{border-top:1px solid #ffffff10;padding-top:10px;display:flex;flex-direction:column;gap:8px;min-width:0}
+#routine-dialog .routine-row-controls,#routine-dialog .routine-editor-actions,#routine-confirm-dialog .routine-confirm-actions{display:flex;flex-wrap:wrap;gap:8px}
+#routine-dialog .identity-primary,#routine-dialog .identity-secondary,#routine-dialog .identity-danger,#routine-confirm-dialog .identity-primary,#routine-confirm-dialog .identity-secondary,#routine-confirm-dialog .identity-danger{min-height:44px;min-width:44px;font-size:12px}
+#routine-dialog .routine-errors{font-size:13px;line-height:1.6;color:#f2a7b6}
+#routine-dialog .routine-errors:empty{display:none}
+#routine-dialog .routine-errors ul{margin:0 0 10px;padding-left:20px}
+#routine-dialog .routine-warning,#routine-dialog .routine-state{font-size:13px;line-height:1.6;color:#f3d48b;margin:0 0 12px}
+#routine-dialog .routine-preview{border:1px solid #62e8cd40;border-radius:10px;padding:12px;margin:0 0 12px}
+#routine-dialog .routine-preview .identity-badge{font-size:11px}
+#routine-dialog .routine-detail,#routine-dialog .routine-run-actions li,#routine-dialog .routine-footnote{font-size:13px;line-height:1.6;overflow-wrap:anywhere}
+#routine-confirm-dialog .modal-description,#routine-confirm-dialog li{font-size:13px;line-height:1.7;overflow-wrap:anywhere}
+#routine-confirm-dialog .routine-confirm-items{margin:0 0 12px;padding-left:20px}
+@media(max-width:1279px){#routines-view .routine-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:620px){#routines-view .routine-grid{grid-template-columns:minmax(0,1fr)}#routine-dialog,#routine-confirm-dialog{width:100%;max-width:100%;max-height:100dvh;height:100dvh;margin:0;border-radius:0;padding:18px}#routine-dialog .routine-editor-actions>*,#routine-confirm-dialog .routine-confirm-actions>*{flex:1 1 100%}}
+/* With Rutinas an operator rail holds eight 44 px items; on phones the view group scrolls inside the rail
+   instead of shrinking targets or widening the page. Auto margins keep short groups centred without clipping. */
+@media(max-width:620px){.rail-group{min-width:0;padding:2px 3px;overflow-x:auto;overscroll-behavior-x:contain;justify-content:flex-start;scrollbar-width:none}.rail-group::-webkit-scrollbar{display:none}.rail-group>:first-child{margin-left:auto}.rail-group>:last-child{margin-right:auto}.rail-bottom{flex-shrink:0}}
+#routine-dialog .routine-time{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+#routines-view .identity-heading .eyebrow{font-size:11px;letter-spacing:1.5px}
+#routines-view .routine-recovery{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 14px}
+#routines-view .routine-recovery .routine-notice{flex:1 1 100%;margin:0}
+#routines-view .routine-session-notice{color:#f3d48b}
+/* Rail cue: app.js sizes --rail-gap so the item at the overflow edge is cut in half, and the 22 px fade lies
+   over that partial item, not over a fully visible one. The focus ring is drawn inside the button so the scroller and
+   the fade never clip it; scroll padding keeps a focused item clear of the fade. */
+@media(max-width:620px){.rail-group{gap:var(--rail-gap,0px);padding:3px 4px;scroll-padding-inline:30px}.rail-group .rail-button:focus-visible{outline-offset:-3px}.rail-group.more-end{-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 22px),#0000);mask-image:linear-gradient(to right,#000 calc(100% - 22px),#0000)}.rail-group.more-start{-webkit-mask-image:linear-gradient(to right,#0000,#000 22px);mask-image:linear-gradient(to right,#0000,#000 22px)}.rail-group.more-start.more-end{-webkit-mask-image:linear-gradient(to right,#0000,#000 22px,#000 calc(100% - 22px),#0000);mask-image:linear-gradient(to right,#0000,#000 22px,#000 calc(100% - 22px),#0000)}}

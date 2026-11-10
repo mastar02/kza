@@ -190,7 +190,7 @@ async def main() -> None:
                     await page.evaluate("delete document.hidden;document.dispatchEvent(new Event('visibilitychange'))")
                     await page.wait_for("document.querySelector('#room-list [data-room-id=living]') && document.querySelector('#room-controls [data-operation=turn_on]')")
                     await page.wait_for("document.querySelector('#map-loading').hidden")
-                    assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(node=>node.dataset.view).join(',')==='home,actions'")
+                    assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(node=>node.dataset.view).join(',')==='home,actions,routines'")
                     assert not any(request["path"] in {"/api/users", "/api/voices", "/api/home/microphones", "/api/conversations"} for request in requests[marker:])
                     await screenshot(page, evidence / "home-desktop.png")
                     webgl = await page.evaluate("!!document.querySelector('#house-canvas canvas')")
@@ -276,7 +276,7 @@ async def main() -> None:
                     await page.evaluate("delete document.hidden")
                     await login(page, operator.token, "Administración")
                     await page.wait_for("document.querySelector('#app-nav [data-view=voices]') && document.querySelector('#room-list').children.length>0")
-                    assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(node=>node.dataset.view).join(',')==='home,voices,people,actions,access'")
+                    assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(node=>node.dataset.view).join(',')==='home,voices,people,actions,routines,access'")
                     assert not any(request['path'] == '/api/admin/users' for request in requests)
                     # D1: the technical panel stays reachable only by direct URL, never linked from NEXO.
                     assert await page.evaluate("document.querySelectorAll('a[href^=\"/obs\"], a[href*=\"//\"][href*=\"/obs\"], #technical-link').length===0")

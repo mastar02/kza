@@ -31,7 +31,8 @@ test('pending bootstrap and HOME cannot query private or diagnostic sources', as
     await assert.rejects(api(path), error => error.status === 403 && error.sent === false);
   }
   assert.deepEqual(requests, ['/api/admin/auth/whoami', '/api/home/catalog']);
-  assert.deepEqual(session.views(), ['home', 'actions']);
+  // Rutinas is readable with home:read; writes stay gated by their own permissions.
+  assert.deepEqual(session.views(), ['home', 'actions', 'routines']);
 });
 
 test('EVALUATOR and a read-only identity cannot submit household effects', async () => {
@@ -158,4 +159,54 @@ test('account metadata is closed and account role or voice material cannot selec
   assert.match(people.mutationError({ detail: { credentials_retired: true } }), /Se confirmó el retiro/);
   assert.match(people.mutationError({ detail: { credentials_retired: null } }), /No se pudo confirmar/);
   assert.match(people.mutationError(new Error('private raw detail')), /Puede haberse aplicado/);
+});
+
+test('routine routes mirror the effective server requirement and refuse unmapped paths locally', async () => {
+  const session = nexo.createSession({ wall: () => 0, monotonic: () => 0 });
+  const sent = [];
+  const api = nexo.createScopedApi({ session, transport: async (path, options = {}) => { sent.push(`${options.method || 'GET'} ${path}`); return {}; } });
+  const routes = [
+    ['GET', '/api/routines'], ['GET', '/api/routines/r1'], ['POST', '/api/routines'], ['POST', '/api/routines/preview'],
+    ['PUT', '/api/routines/r1'], ['DELETE', '/api/routines/r1?expected_revision=1'], ['POST', '/api/routines/r1/enable'],
+    ['POST', '/api/routines/r1/disable'], ['POST', '/api/routines/r1/execute'], ['GET', '/api/routines/r1/runs/run1'],
+    ['GET', '/api/routines/r1/attempts?request_id=x'],
+  ];
+  const attempt = async () => { const allowed = []; for (const [method, path] of routes) { try { await api(path, { method }); allowed.push(`${method} ${path}`); } catch (error) { assert.equal(error.sent, false); } } return allowed; };
+  session.accept(identity(['home:read', 'home:control', 'routines:execute'], 'home'));
+  assert.deepEqual(await attempt(), ['GET /api/routines', 'GET /api/routines/r1']);
+  // A role label never substitutes a permission: an 'operator' without routines:manage gets the same refusals.
+  session.accept(identity(['home:read', 'home:control'], 'operator'));
+  assert.deepEqual(await attempt(), ['GET /api/routines', 'GET /api/routines/r1']);
+  session.accept(identity(['home:read', 'routines:manage'], 'operator'));
+  assert.ok(!(await attempt()).includes('POST /api/routines/r1/execute'), 'execute also needs home:control');
+  session.accept(identity(['home:read', 'routines:manage', 'home:control'], 'operator'));
+  assert.equal((await attempt()).length, routes.length);
+  sent.length = 0;
+  for (const [method, path] of [['GET', '/api/routines/preview/x'], ['PATCH', '/api/routines/r1'], ['POST', '/api/routines/r1/unknown'], ['GET', '/api/routines/r1/runs']]) {
+    await assert.rejects(api(path, { method }), error => error.sent === false);
+  }
+  assert.deepEqual(sent, []);
+  session.accept(identity(['evaluation:read'], 'evaluator'));
+  assert.ok(!session.views().includes('routines'));
+});
+
+test('extra identity fields such as voice or person links never change permissions or views', () => {
+  const plain = nexo.createSession({ wall: () => 0, monotonic: () => 0 }), linked = nexo.createSession({ wall: () => 0, monotonic: () => 0 });
+  plain.accept(identity(['home:read', 'home:control', 'routines:execute']));
+  linked.accept({ ...identity(['home:read', 'home:control', 'routines:execute']), user_id: 'person-1', person_link: { user_id: 'person-1', role: 'admin' },
+    voice_profile: 'vp_admin', speaker_label: 'Administración', permissions_hint: ['routines:manage'] });
+  for (const permission of ['routines:manage', 'routines:execute', 'home:control', 'admin:manage']) assert.equal(linked.can(permission), plain.can(permission));
+  assert.deepEqual(linked.views(), plain.views());
+});
+
+test('a response discarded after the server answered is marked as answered, not as a local refusal', async () => {
+  const session = nexo.createSession({ wall: () => 0, monotonic: () => 0 });
+  session.accept(identity(['home:read', 'routines:manage', 'home:control'], 'operator'));
+  const pending = deferred(); let retired = 0;
+  const api = nexo.createScopedApi({ session, transport: () => pending.promise, onRetired: () => retired++ });
+  const result = api('/api/routines/r1/execute', { method: 'POST', body: { request_id: 'x' } });
+  session.clear(); session.accept(identity(['home:read', 'routines:manage', 'home:control'], 'operator'));
+  pending.resolve({ run_id: 'run1' });
+  await assert.rejects(result, error => error.status === 403 && error.detail === 'dashboard_session_retired' && error.sent === true && error.answered === true);
+  assert.equal(retired, 0);
 });

@@ -1,7 +1,7 @@
 /* Session and catalog presentation; voice labels never select authority. */
 (function (root) {
   'use strict';
-  const VIEWS = { home: ['home:read'], actions: ['home:read'], voices: ['voices:read', 'voices:review'], people: ['admin:manage'], access: ['auth:manage'], evaluation: ['evaluation:read'] };
+  const VIEWS = { home: ['home:read'], actions: ['home:read'], routines: ['home:read'], voices: ['voices:read', 'voices:review'], people: ['admin:manage'], access: ['auth:manage'], evaluation: ['evaluation:read'] };
   function createSession({ wall = Date.now, monotonic = () => root.performance.now() } = {}) {
     let identity = null, deadline = 0, generation = 0;
     function clear() { identity = null; deadline = 0; generation++; }
@@ -11,7 +11,8 @@
       if (value?.ok !== true || !['operator', 'home', 'evaluator'].includes(value.role)
           || !Array.isArray(value.permissions) || value.permissions.some(permission => typeof permission !== 'string')
           || !Number.isFinite(expires) || expires <= wall()) return false;
-      identity = { role: value.role, permissions: new Set(value.permissions), expires };
+      // The subject only scopes this tab's pending routine identities; it never grants anything.
+      identity = { role: value.role, permissions: new Set(value.permissions), expires, subject: typeof value.subject === 'string' && value.subject ? value.subject : null };
       deadline = monotonic() + Math.max(0, expires - wall());
       return true;
     }
@@ -20,6 +21,7 @@
     function can(permission) { return active() && identity.permissions.has(permission); }
     return { accept, clear, active, can, remaining, generation: () => generation,
       role: () => active() ? identity.role : null,
+      subject: () => active() ? identity.subject : null,
       views: () => Object.keys(VIEWS).filter(view => VIEWS[view].every(can)
         && (view !== 'evaluation' || identity?.role === 'evaluator') && (view !== 'access' || identity?.role === 'operator')) };
   }
@@ -27,6 +29,19 @@
     const code = typeof error?.detail === 'string' ? error.detail : error?.detail?.code;
     return error?.status === 401 || error?.status === 403 &&
       ['dashboard_session_retired', 'dashboard_authority_retired'].includes(code);
+  }
+  // Mirrors the effective server requirement: auth.py route permission plus the handler's own set.
+  function routinePermission(pathname, method) {
+    const item = /^\/api\/routines\/([^/]+)(?:\/(.+))?$/.exec(pathname);
+    if (pathname === '/api/routines') return method === 'GET' ? 'home:read' : method === 'POST' ? 'routines:manage' : null;
+    if (!item) return null;
+    const [, id, rest] = item;
+    if (id === 'preview') return rest === undefined && method === 'POST' ? 'routines:manage' : null;
+    if (rest === undefined) return method === 'GET' ? 'home:read' : ['PUT', 'DELETE'].includes(method) ? 'routines:manage' : null;
+    if (['enable', 'disable'].includes(rest) && method === 'POST') return 'routines:manage';
+    if (rest === 'execute' && method === 'POST') return ['routines:manage', 'home:control'];
+    if ((rest === 'attempts' || /^runs\/[^/]+$/.test(rest)) && method === 'GET') return 'routines:manage';
+    return null;
   }
   function createScopedApi({ session, transport, onRetired = () => {} }) {
     return async function api(path, options = {}) {
@@ -40,7 +55,8 @@
         pathname === '/api/home/microphones' && method === 'GET' ? 'diagnostics:read' :
         pathname === '/api/admin/users' && ['GET', 'POST'].includes(method) ? 'admin:manage' :
         /^\/api\/admin\/users\/[^/]+\/permissions$/.test(pathname) && method === 'PUT' ? 'admin:manage' :
-        /^\/api\/admin\/users\/[^/]+$/.test(pathname) && method === 'DELETE' ? ['admin:manage', 'auth:manage'] : null;
+        /^\/api\/admin\/users\/[^/]+$/.test(pathname) && method === 'DELETE' ? ['admin:manage', 'auth:manage'] :
+        routinePermission(pathname, method);
       const permitted = () => Boolean(permission) && (Array.isArray(permission) ? permission : [permission]).every(session.can);
       if (!publicAuth && !permitted()) {
         throw Object.assign(new Error('Este acceso no permite la operación.'), { status: 403, sent: false });
@@ -49,7 +65,8 @@
       try {
         const result = await transport(path, options);
         if (generation !== session.generation() || !publicAuth && !permitted()) {
-          throw Object.assign(new Error('La sesión dejó de estar vigente.'), { status: 403, detail: 'dashboard_session_retired' });
+          // The server already answered: callers that track side effects must not read this as a denial.
+          throw Object.assign(new Error('La sesión dejó de estar vigente.'), { status: 403, detail: 'dashboard_session_retired', sent: true, answered: true });
         }
         return result;
       } catch (error) {
