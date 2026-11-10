@@ -29,7 +29,7 @@ from src.memory.privacy_services import PrivacyServices
 from src.users.user_manager import PermissionLevel
 from src.users.voice_registry import build_voice_registry
 from tests.frontend.browser_nexo_home import login, screenshot
-from tests.frontend.browser_support import browser_binary, browser_profile_root, evidence_directory
+from tests.frontend.browser_support import audit_view, browser_binary, browser_profile_root, evidence_directory
 from tests.frontend.browser_typed_controls import Page
 from tests.mocks.ambient_graph import Clock
 from tests.mocks.memory_sources import memory_source
@@ -197,6 +197,10 @@ async def main():
                         assert home['user_id'] == person_b.user_id and home['role'] == 'home'
                         checks.append('home grant uses selected canonical homonym; explicit masked secret copy and Escape retirement')
                         await screenshot(page, EVIDENCE/'access-desktop.png')
+                        phase = 'access reflow and accessibility audit'
+                        audits = {'accesos': await audit_view(page, EVIDENCE, 'accesos', (
+                            ('#app-nav [data-view=access]', None), ('#add-access', None),
+                            ('[data-credential-id] button', 'Modificar'), ('#logout', None)), screenshot)}
                         for width in (390, 320):
                             await page.command('Emulation.setDeviceMetricsOverride', {'width': width, 'height': 900, 'deviceScaleFactor': 1, 'mobile': True})
                             assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')
@@ -288,6 +292,10 @@ async def main():
                         assert await page.evaluate("!document.querySelector('[data-evaluation-sample] audio') && window.__urls.size===0")
                         checks.append('audio-only payload; modality change drains native audio before separate transcript query')
                         await screenshot(page, EVIDENCE/'evaluation-desktop.png')
+                        phase = 'evaluation reflow and accessibility audit'
+                        audits['evaluacion'] = await audit_view(page, EVIDENCE, 'evaluacion', (
+                            ('#evaluation-fingerprint', None), ('#evaluation-modality', None),
+                            ('#evaluation-content button[type=submit]', None), ('#logout', None)), screenshot)
                         phase = 'mobile evaluator layout'
                         for width in (390, 320):
                             await page.command('Emulation.setDeviceMetricsOverride', {'width': width, 'height': 900, 'deviceScaleFactor': 1, 'mobile': True})
@@ -328,7 +336,9 @@ async def main():
                         result = {'passed': True, 'checks': checks, 'request_count': len(requests),
                             'credential_posts': await page.evaluate('window.__credentialPosts.length'),
                             'runtime_error_count': len(page.errors),
-                            'screenshots': ['access-secret-masked.png', 'evaluation-390.png', 'evaluation-320.png']}
+                            'screenshots': ['access-secret-masked.png', 'evaluation-390.png', 'evaluation-320.png'],
+                            'reflow_widths': {view: sorted(audit['widths'], key=int) for view, audit in audits.items()},
+                            'a11y_evidence': [f'a11y-{view}.json' for view in audits]}
                         (EVIDENCE/'result.json').write_text(json.dumps(result, indent=2)+'\n')
                         print(json.dumps(result))
             finally:

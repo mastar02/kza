@@ -21,7 +21,9 @@ from src.dashboard.authority import (
 )
 from src.rooms.room_context import RoomConfig
 from src.users.user_manager import PermissionLevel, UserManager
-from tests.frontend.browser_support import browser_binary, browser_profile_root, evidence_directory
+from tests.frontend.browser_support import (
+    audit_view, browser_binary, browser_profile_root, evidence_directory, reduced_motion_house,
+)
 from tests.frontend.browser_typed_controls import Page
 from tests.integration.test_typed_home_operations import typed_graph
 
@@ -54,6 +56,17 @@ async def login(page: Page, token: str, label: str) -> None:
     await page.evaluate("document.querySelector('#token').value=" + json.dumps(token) + ";document.querySelector('#login-form').requestSubmit()")
     await page.wait_for("document.querySelector('#session-label').textContent===" + json.dumps(label))
     assert await page.evaluate("document.querySelector('#token').value==='' && document.cookie===''")
+
+
+HOME_CONTROLS = (
+    ('#app-nav [data-view=home]', None), ('#app-nav [data-view=actions]', None), ('#refresh', None),
+    ('#view-3d', None), ('#view-top', None), ('#zoom-in', None), ('#zoom-out', None), ('#reset-view', None),
+    ('#expand-map', None), ('#layer-tabs [data-layer=lights]', None), ('#room-list [data-room-id=living]', None),
+    ('#room-controls input[name=temperature]', None), ('#logout', None),
+)
+ACTION_CONTROLS = (('#app-nav [data-view=home]', None), ('#action-list button', None), ('#refresh', None), ('#logout', None))
+PEOPLE_CONTROLS = (('#app-nav [data-view=people]', None), ('#add-person', None), ('#refresh-people', None),
+                   ('#people-grid [data-person]', None), ('#logout', None))
 
 
 async def screenshot(page: Page, path: Path, *, full: bool = True, scroll_top: bool = True) -> None:
@@ -219,8 +232,18 @@ async def main() -> None:
                     await page.evaluate("document.querySelector('#app-nav [data-view=actions]').click()")
                     await page.wait_for("!document.querySelector('#actions-view').hidden")
                     assert await page.evaluate("!document.querySelector('#house-canvas canvas') && window.__qaFrames.size===0")
+                    audits = {'acciones': await audit_view(page, evidence, 'acciones', ACTION_CONTROLS, screenshot)}
                     await page.evaluate("history.back()")
                     await page.wait_for("!document.querySelector('#home-view').hidden && document.querySelector('#map-loading').hidden")
+
+                    async def remount_house():
+                        await page.evaluate("document.querySelector('#app-nav [data-view=actions]').click()")
+                        await page.wait_for("!document.querySelector('#actions-view').hidden && !document.querySelector('#house-canvas canvas')")
+                        await page.evaluate("document.querySelector('#app-nav [data-view=home]').click()")
+                        await page.wait_for("!document.querySelector('#home-view').hidden && document.querySelector('#map-loading').hidden && !!document.querySelector('#house-canvas canvas') && !document.querySelector('#view-top').disabled")
+
+                    motion = await reduced_motion_house(page, remount_house)
+                    audits['hogar'] = await audit_view(page, evidence, 'hogar', HOME_CONTROLS, screenshot)
                     await page.command("Emulation.setDeviceMetricsOverride", {"width": 390, "height": 844, "deviceScaleFactor": 1, "mobile": True})
                     await asyncio.sleep(0.2)
                     assert await page.evaluate("document.documentElement.scrollWidth<=window.innerWidth")
@@ -305,6 +328,7 @@ async def main() -> None:
                     assert users.get_user(admin.user_id) is not None
                     await page.evaluate("document.querySelector('#refresh-people').click()")
                     await page.wait_for("document.querySelectorAll('#people-grid [data-person]').length===3")
+                    audits['personas'] = await audit_view(page, evidence, 'personas', PEOPLE_CONTROLS, screenshot)
                     await screenshot(page, evidence / 'people-desktop.png')
                     await page.command('Emulation.setDeviceMetricsOverride', {'width': 390, 'height': 1000, 'deviceScaleFactor': 1, 'mobile': False})
                     assert await page.evaluate('document.documentElement.scrollWidth<=window.innerWidth')
@@ -337,7 +361,7 @@ async def main() -> None:
                     assert await page.evaluate("document.querySelector('#nexo-workspace').hidden && !document.querySelector('#room-controls').children.length")
                     marker = len(requests)
                     await page.command("Page.reload")
-                    await page.wait_for("document.querySelector('#login-error').textContent.includes('cierre anterior')")
+                    await page.wait_for("document.querySelector('#login-error')?.textContent.includes('cierre anterior')")
                     assert len(requests) == marker
                     await page.evaluate("document.querySelector('#retry-logout').click()")
                     await page.wait_for("document.querySelector('#login-error').textContent==='Sesión cerrada.'")
@@ -353,7 +377,13 @@ async def main() -> None:
                               "webgl_illustration": webgl, "individual_sessions": True,
                               "checks": ["bootstrap no private prefetch", "hidden bootstrap sends no catalog", "role permissions before requests", "independent light/climate typed effects", "focused drafts preserve current observed labels", "lost POST and in_progress receipt reconcile by poll without repost", "camera visual and ARIA agree", "visible model between renders", "navigation releases renderer/RAF", "320px and 390px no horizontal overflow", "logout clears before pending HTTP and blocks crossed login", "failed logout stays hidden across reload", "session expires before fresh catalog"],
                               "people_checks": ['real CRUD once per gesture', 'mutation stays pending across leave/reentry without repost', 'crossed GET keeps latest result', 'lost mutation receipt requires GET without repost', 'account level does not select dashboard role', 'cancelled confirmation has no effect', 'deletion retires every personal session', 'last admin conflict', '503 is not empty catalog', 'open dialog reports failed refresh and disables submit while preserving draft', 'names are DOM text', '320/390 reflow', 'logout clears dialog/draft/accounts before late GET under another login'],
-                              "screenshots": ["home-desktop.png", "climate-desktop.png", "home-mobile.png", "people-desktop.png", "people-mobile.png"]}
+                              "screenshots": ["home-desktop.png", "climate-desktop.png", "home-mobile.png", "people-desktop.png", "people-mobile.png"],
+                              "reflow_widths": {view: sorted(audit['widths'], key=int) for view, audit in audits.items()},
+                              "a11y_checks": ["no horizontal overflow per C08 width", "key controls visible, enabled and hit-testable",
+                                              "accessible names from the browser accessibility tree", "Tab reaches every control in document order",
+                                              ":focus-visible with a visible indicator, not obscured", "44x44 CSS px touch targets at 320/390",
+                                              "html lang es", "prefers-reduced-motion settles the 3D camera at once"],
+                              "a11y_evidence": [f'a11y-{view}.json' for view in audits], "reduced_motion": motion}
                     (evidence / "browser-result.json").write_text(json.dumps(result, indent=2) + '\n')
                     print(json.dumps(result))
         finally:

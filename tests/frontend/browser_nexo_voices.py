@@ -27,7 +27,7 @@ from src.users.user_manager import PermissionLevel
 from src.users.voice_ledger import VoiceReviewer
 from src.users.voice_registry import build_voice_registry
 from tests.frontend.browser_nexo_home import login, screenshot
-from tests.frontend.browser_support import browser_binary, browser_profile_root, evidence_directory
+from tests.frontend.browser_support import audit_view, browser_binary, browser_profile_root, evidence_directory
 from tests.frontend.browser_typed_controls import Page
 from tests.mocks.ambient_graph import Clock
 from tests.mocks.voice_registry import AUDIO, Encoder
@@ -272,6 +272,9 @@ async def main() -> None:
                         corrected = (await voices.acall(voices.ledger.snapshot))['fingerprints']
                         assert sum(row['group_reason']=='manual_unknown' for row in corrected) == 1
                         await page.evaluate("document.querySelector('#voice-dialog>button').click()")
+                        audits = {'voces': await audit_view(page, evidence, 'voces', (
+                            ('#app-nav [data-view=voices]', None), ('#voices-content button', 'Revisar muestras'),
+                            ('#voices-content button', 'Borrar perfil'), ('#voices-content button', 'Actualizar'), ('#logout', None)), screenshot)}
                         for width in [390, 320]:
                             await page.command('Emulation.setDeviceMetricsOverride', {'width':width, 'height':844, 'deviceScaleFactor':1, 'mobile':True})
                             assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')
@@ -320,6 +323,9 @@ async def main() -> None:
                         filtered_reads=[row for row in requests[inverse_marker:] if row['path']=='/api/voices/profiles']
                         assert filtered_reads and all('person_id=' in row['query'] and 'include_person=true' in row['query'] for row in filtered_reads)
                         await screenshot(page,evidence/'person-voices-desktop.png')
+                        audits['personas-voces'] = await audit_view(page, evidence, 'personas-voces', (
+                            ('#app-nav [data-view=people]', None), ('#people-grid [data-person]', None),
+                            ('#person-detail [data-voice-refresh]', None), ('#logout', None)), screenshot)
                         for width in [390,320]:
                             await page.command('Emulation.setDeviceMetricsOverride', {'width':width,'height':844,'deviceScaleFactor':1,'mobile':True})
                             assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')
@@ -374,7 +380,8 @@ async def main() -> None:
                         assert not any(row['path'].startswith('/api/voices') for row in requests[marker:])
                         assert await page.evaluate("!document.querySelector('#voice-link-dialog').children.length && !document.querySelector('#voices-content').children.length")
                         assert not page.errors, page.errors
-                        result = {'passed':True, 'individual_http_login':True, 'synthetic_pcm_only':True, 'native_media_drain':True, 'voice_control_only':True, 'lost_receipt_single_profile':True, 'explicit_recreation_after_delete':True, 'manual_person_link':True, 'homonyms_by_canonical_id':True, 'independent_acoustic_revision':True, 'conflict_unavailable_no_retry':True, 'old_catalogue_new_token_rejected':True, 'account_delete_unlinks':True, 'people_decoder_across_logout':True, 'inverse_person_profiles':True, 'inverse_scope_drain':True, 'inverse_no_audio_or_mutations':True, 'inverse_native_pagination_51':True, 'account_level_preserves_voice_link':True, 'inverse_empty_unavailable_distinct':True, 'requests':requests, 'screenshots':['voices-desktop.png','voices-profile.png','voices-person-linked.png','voices-person-dialog.png','voices-review.png','voices-390.png','voices-320.png','person-voices-desktop.png','person-voices-390.png','person-voices-320.png']}
+                        result = {'passed':True, 'individual_http_login':True, 'synthetic_pcm_only':True, 'native_media_drain':True, 'voice_control_only':True, 'lost_receipt_single_profile':True, 'explicit_recreation_after_delete':True, 'manual_person_link':True, 'homonyms_by_canonical_id':True, 'independent_acoustic_revision':True, 'conflict_unavailable_no_retry':True, 'old_catalogue_new_token_rejected':True, 'account_delete_unlinks':True, 'people_decoder_across_logout':True, 'inverse_person_profiles':True, 'inverse_scope_drain':True, 'inverse_no_audio_or_mutations':True, 'inverse_native_pagination_51':True, 'account_level_preserves_voice_link':True, 'inverse_empty_unavailable_distinct':True, 'requests':requests, 'screenshots':['voices-desktop.png','voices-profile.png','voices-person-linked.png','voices-person-dialog.png','voices-review.png','voices-390.png','voices-320.png','person-voices-desktop.png','person-voices-390.png','person-voices-320.png'],
+                                  'reflow_widths':{view:sorted(audit['widths'],key=int) for view,audit in audits.items()}, 'a11y_evidence':[f'a11y-{view}.json' for view in audits]}
                         (evidence/'result.json').write_text(json.dumps(result, indent=2)+'\n')
                         print(json.dumps(result))
             finally:

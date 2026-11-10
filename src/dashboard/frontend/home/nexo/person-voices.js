@@ -10,6 +10,8 @@
     function button(text,callback) { const element=node('button',text,'identity-secondary');element.type='button';element.addEventListener('click',callback);return element; }
     const heading=node('div','','person-linked-header'), count=node('span','—'), list=node('div','','person-linked-profiles');
     heading.append(node('h4','Perfiles vocales'),count);
+    // The bounded list scrolls; keyboard users reach it as a named region.
+    list.tabIndex=0;list.setAttribute('role','region');list.setAttribute('aria-label','Perfiles vocales vinculados');
     const connection=node('p','Preparando consulta privada…','person-voice-status'); connection.dataset.voiceConnection='';
     const status=node('p','','person-voice-status'), controls=node('div','','person-voice-controls');status.setAttribute('role','status');
     const refresh=button('Actualizar perfiles',()=>request(false)), next=button('Más perfiles',()=>request(true));
