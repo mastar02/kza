@@ -276,7 +276,7 @@ class TestLongTermMemory:
             "documents": [["untrusted index content", "also untrusted"]],
             "metadatas": [[{"state": "confirmed"}, {}]],
         }
-        results = ltm.search_relevant("¿Dónde vive Juan?")
+        results = ltm.search_relevant("¿Dónde vive Juan?", scope='all')
         assert [row["content"] for row in results] == ["Fact 1", "Fact 2"]
         assert results[0]["state"] == "automatic" and results[0]["confirmed_by"] is None
 
@@ -285,7 +285,7 @@ class TestLongTermMemory:
         ltm = LongTermMemory(client)
         ltm.store_fact("Personal fact 1", "personal", sources=(_source(),))
         ltm.store_fact("Personal fact 2", "personal", sources=(_source(),))
-        facts = ltm.get_by_category("personal")
+        facts = ltm.get_by_category("personal", scope='all')
         assert {f["content"] for f in facts} == {"Personal fact 1", "Personal fact 2"}
 
     def test_delete_fact(self):
@@ -293,7 +293,7 @@ class TestLongTermMemory:
         fact_id = ltm.store_fact("Temporary fact", "fact", sources=(_source(),))
         assert ltm.delete_fact(fact_id, MemoryReviewer("test-admin"))
         assert ltm.ledger.get(fact_id) is None
-        assert ltm.get_by_category("fact") == []
+        assert ltm.get_by_category("fact", scope='all') == []
 
     def test_get_stats(self):
         """Test getting memory statistics"""

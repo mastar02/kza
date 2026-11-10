@@ -537,11 +537,35 @@ def _select_database(old, new, policy):
     return selected
 
 
+_OWNER_TABLES = ("fact_owners", "fact_owner_revisions")
+
+
+def _owned_fact_ids(tables):
+    """Fact ids in fact_owners ∪ fact_owner_revisions of the latest image.
+
+    A pre-U3b image has neither table (empty set); one without the other is
+    an invalid image. Present tables are validated like any other table.
+    """
+    present = [name for name in _OWNER_TABLES if name in tables]
+    if not present:
+        return set()
+    _require(len(present) == len(_OWNER_TABLES), "payload_table_schema_invalid")
+    owned = set()
+    for name in _OWNER_TABLES:
+        table, keyed = _table({"tables": tables}, name)
+        _require(list(table["primary_key"]) == ["fact_id"], "payload_table_schema_invalid")
+        owned |= {key[0] for key in keyed}
+    return owned
+
+
 def _select_facts(old, new, selected, policy, related):
     if "facts" not in new:
         return
     protected = {row["id"] for row in new["facts"]["rows"]
         if row["state"] in {"confirmed", "deleted", "quarantined"}}
+    # U3b W1: a fact with an owner row or any ownership history is never cut,
+    # or the latest owner rows (not payload; cloned from latest) would dangle.
+    protected |= _owned_fact_ids(new)
     dependencies = new["fact_dependencies"]["rows"]
     while True:
         closure = protected | {row["source_fact_id"] for row in dependencies if row["fact_id"] in protected}
@@ -1007,19 +1031,39 @@ def _validate_evidence(cuts, targets, snapshots, layout):
                     == dependency, "payload_event_revision_or_lineage_changed")
 
 
-def _privacy_lookup_index_added(ordinary: list[dict], latest: list[dict]) -> bool:
-    """Recognize only the additive lookup index introduced for target snapshots.
+_LOOKUP_INDEX = {"type": "index", "name": "idx_erasure_target_participant_id", "tbl_name": "erasure_targets",
+    "sql": "CREATE INDEX idx_erasure_target_participant_id ON erasure_targets(participant, id)"}
 
-    Each source schema is already authenticated by _database_contract. This
-    compatibility rule does not normalize those schemas or change the latest
-    schema that materialization must clone exactly.
+
+def _privacy_schema_additions() -> tuple[tuple[dict, ...], ...]:
+    """Each known additive privacy-schema change, as its exact sqlite_master rows.
+
+    The erasure lookup index (014b422) and the U3b owner schema (all seven rows
+    of FACT_OWNER_SCHEMA together). A group is either wholly absent from an
+    older image or wholly present in both.
     """
-    index = {"type": "index", "name": "idx_erasure_target_participant_id",
-        "tbl_name": "erasure_targets",
-        "sql": "CREATE INDEX idx_erasure_target_participant_id ON erasure_targets(participant, id)"}
-    return (not any(row["name"] == index["name"] for row in ordinary)
-        and latest.count(index) == 1
-        and [row for row in latest if row != index] == ordinary)
+    from src.memory.fact_ledger import fact_owner_schema_objects
+    return ((_LOOKUP_INDEX,), tuple(fact_owner_schema_objects()))
+
+
+def _privacy_schema_added(ordinary: list[dict], latest: list[dict]) -> bool:
+    """Recognize latest == ordinary + any non-empty subset of the known additive groups.
+
+    Each source schema is already authenticated by _database_contract. An
+    added group must appear exactly once per row in the latest image and not
+    at all in the ordinary image; every other row must match in order. This
+    rule neither normalizes the schemas nor changes the latest schema that
+    materialization clones exactly. Owner rows are not payload; they are
+    cloned from the latest image (U3b W9).
+    """
+    names = {row["name"] for row in ordinary}
+    added = []
+    for group in _privacy_schema_additions():
+        if any(row["name"] in names for row in group):
+            continue  # Already in the older image: it must then match like any other row.
+        if all(latest.count(row) == 1 for row in group):
+            added.extend(group)
+    return bool(added) and [row for row in latest if row not in added] == ordinary
 
 
 def plan_payload_cut(ordinary: ClosedStateSnapshot, latest: ClosedStateSnapshot, *, now: float,
@@ -1063,7 +1107,7 @@ def plan_payload_cut(ordinary: ClosedStateSnapshot, latest: ClosedStateSnapshot,
                             read_blob(snapshot, value)
         compatible_schema = (old["schema"] == new["schema"] or
             mapping.destination_relative == layout.privacy_relative
-            and _privacy_lookup_index_added(old["schema"], new["schema"]))
+            and _privacy_schema_added(old["schema"], new["schema"]))
         _require(compatible_schema and old["application_id"] == new["application_id"]
             and old["user_version"] == new["user_version"], "payload_database_schema_changed")
         for name in ("pending_audio_deletions", "audio_write_intents", "quarantines", "staged"):

@@ -51,13 +51,13 @@ async def test_factory_distiller_keeps_actual_sources_and_tombstones_inflight_de
         await services.manager.long_term.acall(services.manager.long_term.delete_conversation, utterance.conversation_id, MemoryReviewer('test-admin'))
         release.set()
         assert await task == 0
-        assert await services.manager.long_term.asearch_relevant('dato') == []
+        assert await services.manager.long_term.asearch_relevant('dato', scope='all') == []
         # A different capture/recording scope can still produce usable memory.
         fresh = AmbientUtterance('another_room', clock.now, clock.now+1, text='Otro dato.', vad_prob=.9)
         await store.add(fresh)
         await store.mark_distilled([1])
         assert await distiller.distill_once() == 1
-        fact = (await services.manager.long_term.asearch_relevant('dato'))[0]
+        fact = (await services.manager.long_term.asearch_relevant('dato', scope='all'))[0]
         assert fact['sources'][0]['capture_id'] == fresh.capture_id
         assert fact['sources'][0]['conversation_id'] == fresh.conversation_id
         assert fact['state'] == 'automatic' and fact['expires_at'] == clock.now+30*86400
@@ -89,7 +89,7 @@ async def test_voice_proposal_can_only_become_permanent_through_authenticated_re
         assert result['outcome']['persistence'] == 'committed'
         proposal = result['memory_proposal']
         assert proposal['sources'][0]['capture_id'] == event.capture_id
-        assert await services.manager.long_term.asearch_relevant('cocinar') == []
+        assert await services.manager.long_term.asearch_relevant('cocinar', scope='all') == []
         app = DashboardAPI(memory_manager=services.manager).app
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver') as client:
             denied = await client.post('/api/memory/proposals/'+proposal['id']+'/confirm')
@@ -98,7 +98,7 @@ async def test_voice_proposal_can_only_become_permanent_through_authenticated_re
             cross_origin = await client.post('/api/memory/proposals/'+proposal['id']+'/confirm',
                 headers=dashboard_auth | {'Origin': 'https://foreign.invalid'})
             assert cross_origin.status_code == 403
-            assert await services.manager.long_term.asearch_relevant('cocinar') == []
+            assert await services.manager.long_term.asearch_relevant('cocinar', scope='all') == []
             confirmed = await client.post('/api/memory/proposals/'+proposal['id']+'/confirm', headers=dashboard_auth)
             assert confirmed.status_code == 200 and confirmed.json()['fact']['confirmed_by'] == 'dashboard-admin'
             stale_reject = await client.post('/api/memory/proposals/'+proposal['id']+'/reject', headers=dashboard_auth)
@@ -107,9 +107,9 @@ async def test_voice_proposal_can_only_become_permanent_through_authenticated_re
             assert snapshot.json()['proposals'] == [] and snapshot.json()['facts'][0]['state'] == 'confirmed'
             assert snapshot.headers['cache-control'] == 'no-store'
             clock.now += 40*86400
-            assert (await services.manager.long_term.asearch_relevant('cocinar'))[0]['state'] == 'confirmed'
+            assert (await services.manager.long_term.asearch_relevant('cocinar', scope='all'))[0]['state'] == 'confirmed'
             deleted = await client.delete('/api/memory/facts/'+proposal['id'], headers=dashboard_auth)
-            assert deleted.json()['deleted'] and await services.manager.long_term.asearch_relevant('cocinar') == []
+            assert deleted.json()['deleted'] and await services.manager.long_term.asearch_relevant('cocinar', scope='all') == []
             assert (await client.get('/home/memory.js')).status_code == 404  # legacy view retired (T040/T041 U4)
             assert (await client.get('/home/nexo/memory.js')).status_code == 200
 

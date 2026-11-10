@@ -196,6 +196,7 @@ def projection_state(tmp_path):
     with sqlite3.connect(state / "data" / "authority.db") as db:
         for filename, assignment in (
             ("src/memory/fact_ledger.py", "_SCHEMA"),
+            ("src/memory/fact_ledger.py", "FACT_OWNER_SCHEMA"),  # includes marker row 1
             ("src/memory/voice_schema.py", "VOICE_SCHEMA"),
             ("src/wakeword/clip_store.py", "_SCHEMA"),
             ("src/ambient/store.py", "_SCHEMA"),
@@ -222,6 +223,14 @@ def projection_state(tmp_path):
         db.execute("INSERT INTO capture_browser_recorders VALUES('token','active','browser')")
         db.execute("INSERT INTO facts VALUES('f','ordinary','general',0.8,'automatic',100,200,1,NULL,NULL)")
         db.execute("INSERT INTO fact_sources VALUES('f','capture','U',100,200,'voice','[]')")
+        db.execute("INSERT INTO facts VALUES('g','returned','general',1,'confirmed',100,NULL,2,150,'admin')")
+        # An owned AUTOMATIC fact: impossible through the 1a API (assignment confirms); the voice
+        # stage will own proposals. Admission pins it in any state, like the payload cut (R4).
+        db.execute("INSERT INTO facts VALUES('h','owned','general',0.8,'automatic',100,200,1,NULL,NULL)")
+        db.execute("INSERT INTO fact_sources VALUES('h','capture-h','U',100,200,'voice','[]')")
+        db.execute("INSERT INTO fact_owners VALUES('h','user_a','voice_proposal',1,150,'admin','{}')")
+        db.execute("INSERT INTO fact_owner_revisions VALUES('h',1,'voice_proposed',0,150)")
+        db.execute("INSERT INTO fact_owner_revisions VALUES('g',2,'owner_returned',1,160)")
         db.execute("INSERT INTO wake_clips_v1 VALUES(1,'clip','target','bucket','room',0.5,?,100,200,1)", (sources,))
         db.execute("INSERT INTO stt_corrections_v1 VALUES('clip','original','corrected','u',16000,0)")
         db.execute("INSERT INTO conversation_turns_v1 VALUES('clip','group',?,'unmarked','digest')", (sources,))
@@ -268,6 +277,12 @@ def projection_state(tmp_path):
     "UPDATE list_items SET completed=1",
     "INSERT INTO audio_write_intents VALUES('pending.flac',1,'U',200)",
     "INSERT INTO pending_audio_deletions VALUES('pending.flac',100,0,NULL,'U')",
+    "UPDATE fact_owners SET person_id='user_b'",
+    "DELETE FROM fact_owner_revisions",
+    "INSERT INTO fact_owners VALUES('g','user_b','operator_assignment',2,170,'admin','{}')",
+    "UPDATE fact_owner_revisions SET last_change='operator_unassigned' WHERE fact_id='g'",
+    "UPDATE facts SET content='different owned text' WHERE id='h'",
+    "UPDATE fact_sources SET expires_at=150 WHERE fact_id='h'",
 ])
 def test_protected_family_mutations_change_authority(projection_state, statement):
     before = stage.capture_state_authority(projection_state)
@@ -277,7 +292,7 @@ def test_protected_family_mutations_change_authority(projection_state, statement
 
 
 @pytest.mark.parametrize("statement", [
-    "UPDATE facts SET content='different ordinary text'",
+    "UPDATE facts SET content='different ordinary text' WHERE id='f'",  # 'g' confirmed, 'h' owned: protected
     "UPDATE wake_clips_v1 SET score=0.9",
     "UPDATE stt_corrections_v1 SET original_text='different raw transcript'",
     "UPDATE conversation_turns_v1 SET digest='different unmarked payload'",
@@ -317,6 +332,10 @@ def test_environment_is_opaque_protected_configuration(projection_state):
     "ALTER TABLE capture_runtime_control ADD COLUMN unclassified TEXT",
     "CREATE TABLE unknown_authority (permission TEXT)",
     "PRAGMA user_version=99",
+    "ALTER TABLE fact_owners ADD COLUMN unclassified TEXT",
+    "UPDATE fact_owner_schema SET version=2",
+    "INSERT INTO fact_owner_schema VALUES(2)",
+    "DELETE FROM fact_owner_schema",
 ])
 def test_unknown_schema_is_rejected(projection_state, statement):
     with sqlite3.connect(projection_state / "data" / "authority.db") as db:

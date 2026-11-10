@@ -87,7 +87,12 @@ _PROTECTED_TABLES = frozenset({
     "lists", "list_items", "quarantines", "staged",
     "legacy_quarantine_batches_v1", "legacy_quarantine_records_v1",
     "pending_audio_deletions", "audio_write_intents",
+    "fact_owners", "fact_owner_revisions",
 })
+
+# Single-row version markers; each must hold exactly [(1,)].
+_SCHEMA_MARKERS = frozenset({"voice_group_schema", "voice_person_schema", "voice_capture_review_schema",
+                             "fact_owner_schema"})
 
 # Source-owned v1 column contracts. Unknown additions need an explicit decision
 # about authority versus payload before a managed generation may serve them.
@@ -127,6 +132,9 @@ _TABLE_COLUMNS = {
     "voice_group_request_lineage": "actor:TEXT request_id:TEXT source_digest:TEXT",
     "voice_group_schema": "version:INTEGER", "voice_person_schema": "version:INTEGER",
     "voice_capture_review_schema": "version:INTEGER",
+    "fact_owners": "fact_id:TEXT person_id:TEXT method:TEXT revision:INTEGER assigned_at:REAL assigned_by:TEXT evidence:TEXT",
+    "fact_owner_revisions": "fact_id:TEXT revision:INTEGER last_change:TEXT confirmed_by_assignment:INTEGER changed_at:REAL",
+    "fact_owner_schema": "version:INTEGER",
     "auth_meta": "key:TEXT value:TEXT",
     "credentials": "id:TEXT digest:TEXT subject:TEXT role:TEXT user_id:TEXT issued_at:REAL expires_at:REAL revision:INTEGER samples:TEXT",
     "sessions": "digest:TEXT credential:TEXT legacy_digest:TEXT issued_at:REAL expires_at:REAL revision:INTEGER",
@@ -556,7 +564,7 @@ def _schema_contract(db: sqlite3.Connection, names: set[str]) -> dict | None:
         if actual != dict(item.split(":") for item in _TABLE_COLUMNS[name].split()):
             raise ValueError("runtime_admission_unknown_schema")
         columns[name] = actual
-        if name in {"voice_group_schema", "voice_person_schema", "voice_capture_review_schema"}:
+        if name in _SCHEMA_MARKERS:
             if [tuple(row) for row in db.execute("SELECT version FROM " + _quote(name))] != [(1,)]:
                 raise ValueError("runtime_admission_unknown_schema")
     application = db.execute("PRAGMA application_id").fetchone()[0]
@@ -671,6 +679,11 @@ def capture_state_authority(state_root: Path) -> dict:
                 selected["schema_contract_v1"] = contract
                 if "facts" in names:
                     condition = " WHERE state IN ('confirmed','deleted','quarantined')"
+                    if {"fact_owners", "fact_owner_revisions"} <= names:
+                        # U3b R4: every owned or ever-assigned fact is pinned in any
+                        # state, matching payload_derivation's never-cut set.
+                        condition += (" OR id IN (SELECT fact_id FROM fact_owners"
+                                      " UNION SELECT fact_id FROM fact_owner_revisions)")
                     selected["facts"] = _row_projection(db, "facts", condition)
                     for table in ("fact_sources", "fact_dependencies"):
                         if table in names:

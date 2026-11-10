@@ -45,7 +45,7 @@ async def test_copy_preserves_selected_documents_metadata_and_vectors_without_in
     ledger = FactLedger(str(source.output/'candidate.sqlite3'))
     ledger.initialize()
     try:
-        assert ledger.eligible_ids()==ledger.list()==ledger.jobs()==[]
+        assert ledger.eligible_ids(scope='all')==ledger.list()==ledger.jobs()==[]
         assert ledger.snapshot()['facts']==ledger.snapshot()['proposals']==[]
         assert ledger.status()['states']=={}
         for identifier in source.selected:
@@ -239,7 +239,7 @@ async def test_quarantined_copy_is_ineligible_in_real_runtime_even_with_a_contam
         services=await build_memory_services({'memory':{'long_term_collection':'legacy_memories',
             'privacy_db_path':str(source.output/'candidate.sqlite3'),
             'preferences_path':str(source.output/'preferences.json')}},shutdown=stack,privacy=privacy,chroma_client=client)
-        assert await services.manager.long_term.asearch_relevant('private legacy marker')==[]
+        assert await services.manager.long_term.asearch_relevant('private legacy marker', scope='all')==[]
         assert privacy.ledger.snapshot()['facts']==[] and privacy.ledger.snapshot()['proposals']==[]
         assert len(rows(source.output))==2
 

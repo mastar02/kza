@@ -281,3 +281,49 @@ def test_cut_preparation_rejects_unbound_or_protected_evidence(journal, tmp_path
         proof["cleanup_complete"] = True
     with pytest.raises(ValueError):
         derivation._payload_cut_proof(stage, proof, sources, state)
+
+
+def test_owner_and_revision_rows_survive_journal_replacement_byte_identical(journal, tmp_path):
+    """U3b W8: owner tables are covered by _replace_current's immutable projection."""
+    from src.memory.fact_ledger import MemoryAssigner, MemoryOwnerActor
+    ledger = journal.ledger
+    operator = MemoryAssigner("synthetic-operator")
+    allow = {"retired": lambda ids: False, "active": lambda person: True}
+    owned = ledger.store("Synthetic fact to own", "fact", .9, (memory_source(),))
+    returned = ledger.store("Synthetic fact to return", "fact", .9, (memory_source(),))
+    ledger.assign_owner(journal.confirmed.id, "user_one", journal.confirmed.revision, 0, operator, **allow)
+    ledger.assign_owner(owned.id, "user_two", owned.revision, 0, operator, **allow)
+    ledger.assign_owner(returned.id, "user_two", returned.revision, 0, operator, **allow)
+    assert ledger.return_owned(returned.id, "user_two", MemoryOwnerActor("synthetic-home", "user_two"))
+
+    def rows():  # Values and their SQLite storage types, row by row.
+        return {table: [(tuple(row), tuple(type(value).__name__ for value in row))
+                        for row in ledger._db.execute("SELECT * FROM " + table + " ORDER BY 1")]
+                for table in ("fact_owners", "fact_owner_revisions", "fact_owner_schema")}
+
+    before = rows()
+    assert len(before["fact_owners"]) == 2 and len(before["fact_owner_revisions"]) == 3
+    _, mapping, records = _local(journal, tmp_path)
+    derivation._replace_current(ledger, records, mapping)
+    assert rows() == before
+    assert not ledger._db.execute("PRAGMA foreign_key_check").fetchall()
+
+
+def test_journal_replacement_refuses_an_owner_row_change(journal, tmp_path, monkeypatch):
+    """The immutable projection includes the owner tables: a change inside the transaction aborts it."""
+    ledger = journal.ledger
+    ledger._db.execute("INSERT INTO fact_owner_revisions VALUES (?,1,'operator_unassigned',0,1)",
+                       (journal.confirmed.id,))
+    before = derivation._projection(ledger._db)
+    original = ledger._queue
+
+    def tamper(db, *args):
+        db.execute("UPDATE fact_owner_revisions SET last_change='owner_returned'")
+        return original(db, *args)
+
+    monkeypatch.setattr(ledger, "_queue", tamper)
+    _, mapping, records = _local(journal, tmp_path)
+    with pytest.raises(ValueError, match="protected_records_changed"):
+        derivation._replace_current(ledger, records, mapping)
+    monkeypatch.undo()
+    assert derivation._projection(ledger._db) == before

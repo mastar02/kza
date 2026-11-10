@@ -192,7 +192,7 @@ def test_compiled_main_and_frontend_outside_checkout(archive, state, tmp_path):
             "            memory = services.manager.long_term",
             "            source = services.manager.source_for_capture(str(uuid4()), clock[0], 'offline')",
             "            proposal = await memory.acall(memory.propose, 'synthetic memory', (source,))",
-            "            assert await memory.asearch_relevant('synthetic') == []",
+            "            assert await memory.asearch_relevant('synthetic', scope='all') == []",
             "            confirmed = await memory.acall(memory.confirm, proposal['id'], MemoryReviewer('offline-admin'))",
             "            assert confirmed['state'] == 'confirmed' and confirmed['expires_at'] is None",
             "            from src.memory.fact_ledger import FactDependency",

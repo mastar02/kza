@@ -39,6 +39,39 @@ class FactState(StrEnum):
     QUARANTINED = "quarantined"
 
 
+class FactOwnerMethod(StrEnum):
+    """Closed provenance of an owner row, including the voice stage (U3b W12)."""
+
+    OPERATOR_ASSIGNMENT = "operator_assignment"
+    PERSON_SESSION = "person_session"
+    VOICE_PROPOSAL = "voice_proposal"
+
+
+class FactOwnerChange(StrEnum):
+    """Closed last-change values of fact_owner_revisions, including the voice stage."""
+
+    ASSIGNED = "assigned"
+    REASSIGNED = "reassigned"
+    OWNER_RETURNED = "owner_returned"
+    OPERATOR_UNASSIGNED = "operator_unassigned"
+    VOICE_PROPOSED = "voice_proposed"
+    OWNER_CONFIRMED = "owner_confirmed"
+    OPERATOR_CONFIRMED = "operator_confirmed"
+
+
+class MemoryScope(StrEnum):
+    """Which facts a reader sees (U3b W5).
+
+    HOUSEHOLD: never assigned (no fact_owner_revisions row). PERSON: currently
+    owned by one person. ALL: every eligible fact; returned and unassigned
+    facts are visible only here.
+    """
+
+    HOUSEHOLD = "household"
+    PERSON = "person"
+    ALL = "all"
+
+
 class MemoryOrigin(StrEnum):
     AMBIENT = "ambient"
     VOICE = "voice"
@@ -154,6 +187,192 @@ class MemoryReviewer:
 
 
 @dataclass(frozen=True)
+class MemoryAssigner:
+    """Server-minted capability to assign or unassign fact owners.
+
+    Requires the permission string ``memory:assign``. No DashboardPermission
+    member grants it until U3b-2, so production cannot mint one in U3b-1a.
+    """
+
+    subject: str
+    _current: Callable[[], bool] | None = field(default=None, repr=False, compare=False)
+
+    @classmethod
+    def from_dashboard(cls, principal: object, current: Callable[[], bool] | None = None) -> "MemoryAssigner":
+        """Mint assignment authority from the dashboard's actual session DTO."""
+        from src.dashboard.auth import DashboardPrincipal
+        if not isinstance(principal, DashboardPrincipal) or "memory:assign" not in principal.permissions:
+            raise PermissionError("memory_assign_denied")
+        return cls(principal.subject, current)
+
+    def require_current(self) -> None:
+        """A queued assignment cannot outlive its original session."""
+        if self._current is not None:
+            try:
+                allowed = self._current()
+            except Exception:
+                raise PermissionError("memory_assign_denied") from None
+            if allowed is not True:
+                raise PermissionError("memory_assign_denied")
+
+
+@dataclass(frozen=True)
+class MemoryOwnerActor:
+    """Server-minted capability of one person acting on facts they own.
+
+    Requires ``memory:own:write`` and a principal bound to a user id. In U3b-1a
+    it only authorizes ``return_owned``; U3b-2 adds the permission and routes.
+    """
+
+    subject: str
+    person_id: str
+    _current: Callable[[], bool] | None = field(default=None, repr=False, compare=False)
+
+    @classmethod
+    def from_dashboard(cls, principal: object, current: Callable[[], bool] | None = None) -> "MemoryOwnerActor":
+        """Mint owner authority from a person-bound dashboard session."""
+        from src.dashboard.auth import DashboardPrincipal
+        if (not isinstance(principal, DashboardPrincipal) or "memory:own:write" not in principal.permissions
+                or not _valid_person(principal.user_id)):
+            raise PermissionError("memory_owner_actor_denied")
+        return cls(principal.subject, principal.user_id, current)
+
+    def require_current(self) -> None:
+        """A queued owner action cannot outlive its original session."""
+        if self._current is not None:
+            try:
+                allowed = self._current()
+            except Exception:
+                raise PermissionError("memory_owner_actor_denied") from None
+            if allowed is not True:
+                raise PermissionError("memory_owner_actor_denied")
+
+
+class MemoryOwnerDependents(ValueError):
+    """An AUTOMATIC target has dependents and the caller did not opt to delete them."""
+
+    code = "memory_owner_has_dependents"
+
+    def __init__(self, dependents: list[tuple[str, str]]):
+        super().__init__(self.code)
+        self.dependents = dependents
+
+
+@dataclass(frozen=True)
+class AssignmentReceipt:
+    """Revisions after an owner change; content-free."""
+
+    fact_revision: int
+    owner_revision: int
+    deleted_dependents: int = 0
+
+
+@dataclass(frozen=True)
+class OwnedCounts:
+    """Owner counts over non-deleted facts (U3b V5); also a future purge's scope."""
+
+    currently_owned: int
+    returned: int
+    ever_assigned_live: int
+    owned_proposals: int
+
+    def to_dict(self) -> dict:
+        """Serialize counts only."""
+        return {"currently_owned": self.currently_owned, "returned": self.returned,
+                "ever_assigned_live": self.ever_assigned_live, "owned_proposals": self.owned_proposals}
+
+
+@dataclass(frozen=True)
+class FactOwner:
+    """A validated fact_owners row."""
+
+    fact_id: str
+    person_id: str
+    method: FactOwnerMethod
+    revision: int
+    assigned_at: float
+    assigned_by: str
+    evidence: str
+
+
+@dataclass(frozen=True)
+class FactOwnerRevision:
+    """A validated fact_owner_revisions row (the single owner CAS source)."""
+
+    fact_id: str
+    revision: int
+    last_change: FactOwnerChange
+    confirmed_by_assignment: int
+    changed_at: float
+
+
+def _valid_person(value: object) -> bool:
+    return (type(value) is str and 1 <= len(value) <= 128
+            and not any(ord(char) < 32 or ord(char) == 127 for char in value))
+
+
+def _finite(value: object) -> bool:
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def _owner_from_row(row) -> FactOwner:
+    fact_id, person_id, method, revision, assigned_at, assigned_by, evidence = tuple(row)
+    try:
+        if not (type(fact_id) is str and fact_id and _valid_person(person_id) and type(method) is str
+                and type(revision) is int and revision >= 1 and _finite(assigned_at)
+                and type(assigned_by) is str and assigned_by and type(evidence) is str
+                and type(json.loads(evidence)) is dict):
+            raise ValueError("invalid")
+        return FactOwner(fact_id, person_id, FactOwnerMethod(method), revision, assigned_at, assigned_by, evidence)
+    except ValueError:
+        raise RuntimeError("fact_owner_value_unknown") from None
+
+
+def _revision_from_row(row) -> FactOwnerRevision:
+    fact_id, revision, last_change, confirmed, changed_at = tuple(row)
+    try:
+        if not (type(fact_id) is str and fact_id and type(revision) is int and revision >= 1
+                and type(last_change) is str and type(confirmed) is int and confirmed in (0, 1)
+                and _finite(changed_at)):
+            raise ValueError("invalid")
+        return FactOwnerRevision(fact_id, revision, FactOwnerChange(last_change), confirmed, changed_at)
+    except ValueError:
+        raise RuntimeError("fact_owner_value_unknown") from None
+
+
+_OWNER_SELECT = ("SELECT fact_id,person_id,method,revision,assigned_at,assigned_by,evidence "
+                 "FROM fact_owners")
+_REVISION_SELECT = ("SELECT fact_id,revision,last_change,confirmed_by_assignment,changed_at "
+                    "FROM fact_owner_revisions")
+
+
+def _scan_fact_owner_rows(db: sqlite3.Connection) -> None:
+    """Validate every owner and revision row; unknown values fail closed (1a-F4)."""
+    owners = [_owner_from_row(row) for row in db.execute(_OWNER_SELECT)]
+    revisions = {record.fact_id: record for record in map(_revision_from_row, db.execute(_REVISION_SELECT))}
+    for owner in owners:
+        record = revisions.get(owner.fact_id)
+        if record is None or record.revision != owner.revision:
+            raise RuntimeError("fact_owner_revision_mismatch")
+
+
+def _scope_filter(scope: object, person_id: object) -> tuple[str, tuple]:
+    """Translate a required reader scope into a SQL predicate over facts.id."""
+    if not isinstance(scope, str) or scope not in {item.value for item in MemoryScope}:
+        raise ValueError("invalid_memory_scope")
+    scope = MemoryScope(scope)
+    if scope is MemoryScope.PERSON:
+        if not _valid_person(person_id):
+            raise ValueError("invalid_memory_scope")
+        return " AND id IN (SELECT fact_id FROM fact_owners WHERE person_id=?)", (person_id,)
+    if person_id is not None:
+        raise ValueError("invalid_memory_scope")
+    if scope is MemoryScope.HOUSEHOLD:
+        return " AND id NOT IN (SELECT fact_id FROM fact_owner_revisions)", ()
+    return "", ()
+
+
+@dataclass(frozen=True)
 class StoredFact:
     """A ledger receipt, independent of vector-index availability."""
 
@@ -210,6 +429,117 @@ CREATE TABLE IF NOT EXISTS index_jobs (
   last_error TEXT
 );
 """
+
+# U3b owner schema: the single DDL source for fresh and migrated ledgers, the
+# admission fixture and every rehearsal. method/last_change/confirmed_by_assignment
+# carry no CHECK; the ledger validates them against the closed enums (W12).
+FACT_OWNER_SCHEMA = """
+CREATE TABLE fact_owners (fact_id TEXT NOT NULL PRIMARY KEY REFERENCES facts(id), person_id TEXT NOT NULL, method TEXT NOT NULL, revision INTEGER NOT NULL, assigned_at REAL NOT NULL, assigned_by TEXT NOT NULL, evidence TEXT NOT NULL DEFAULT '{}');
+CREATE INDEX fact_owners_person ON fact_owners(person_id);
+CREATE TABLE fact_owner_revisions (fact_id TEXT NOT NULL PRIMARY KEY REFERENCES facts(id), revision INTEGER NOT NULL, last_change TEXT NOT NULL, confirmed_by_assignment INTEGER NOT NULL, changed_at REAL NOT NULL);
+CREATE INDEX fact_owner_revisions_change ON fact_owner_revisions(last_change, changed_at);
+CREATE TABLE fact_owner_schema (version INTEGER PRIMARY KEY);
+INSERT INTO fact_owner_schema VALUES (1);
+"""
+_FACT_OWNER_TABLES = ("fact_owners", "fact_owner_revisions", "fact_owner_schema")
+# PRAGMA table_info as (name, type, notnull, dflt_value, pk).
+_FACT_OWNER_COLUMNS = {
+    "fact_owners": [
+        ("fact_id", "TEXT", 1, None, 1), ("person_id", "TEXT", 1, None, 0), ("method", "TEXT", 1, None, 0),
+        ("revision", "INTEGER", 1, None, 0), ("assigned_at", "REAL", 1, None, 0),
+        ("assigned_by", "TEXT", 1, None, 0), ("evidence", "TEXT", 1, "'{}'", 0)],
+    "fact_owner_revisions": [
+        ("fact_id", "TEXT", 1, None, 1), ("revision", "INTEGER", 1, None, 0), ("last_change", "TEXT", 1, None, 0),
+        ("confirmed_by_assignment", "INTEGER", 1, None, 0), ("changed_at", "REAL", 1, None, 0)],
+    "fact_owner_schema": [("version", "INTEGER", 0, None, 1)],
+}
+# PRAGMA index_list as (name, unique, origin, partial) plus the indexed columns.
+_FACT_OWNER_INDEXES = {
+    "fact_owners": {("fact_owners_person", 0, "c", 0, ("person_id",)),
+                    ("sqlite_autoindex_fact_owners_1", 1, "pk", 0, ("fact_id",))},
+    "fact_owner_revisions": {("fact_owner_revisions_change", 0, "c", 0, ("last_change", "changed_at")),
+                             ("sqlite_autoindex_fact_owner_revisions_1", 1, "pk", 0, ("fact_id",))},
+    "fact_owner_schema": set(),
+}
+_FACT_OWNER_FOREIGN_KEYS = {
+    "fact_owners": [(0, 0, "facts", "fact_id", "id", "NO ACTION", "NO ACTION", "NONE")],
+    "fact_owner_revisions": [(0, 0, "facts", "fact_id", "id", "NO ACTION", "NO ACTION", "NONE")],
+    "fact_owner_schema": [],
+}
+
+
+def fact_owner_schema_objects() -> list[dict]:
+    """The sqlite_master rows (type, name, tbl_name, sql) that FACT_OWNER_SCHEMA creates.
+
+    SQLite stores each CREATE statement's text verbatim, so these rows are the
+    byte-exact owner DDL. The ledger initializer and the payload mixed-cut rule
+    both compare against them; CHECK, COLLATE, STRICT, generated columns or any
+    other text drift that PRAGMA introspection cannot see is refused.
+    """
+    rows = []
+    for statement in (part.strip() for part in FACT_OWNER_SCHEMA.split(";")):
+        words = statement.split()
+        if words[:2] == ["CREATE", "TABLE"]:
+            rows.append({"type": "table", "name": words[2], "tbl_name": words[2], "sql": statement})
+            if words[2] != "fact_owner_schema":  # INTEGER PRIMARY KEY aliases the rowid: no autoindex.
+                rows.append({"type": "index", "name": "sqlite_autoindex_" + words[2] + "_1",
+                             "tbl_name": words[2], "sql": None})
+        elif words[:2] == ["CREATE", "INDEX"]:
+            rows.append({"type": "index", "name": words[2], "tbl_name": words[4].split("(")[0], "sql": statement})
+    return rows
+
+
+def _fact_owner_shape_valid(db: sqlite3.Connection) -> bool:
+    objects = sorted((row[0], row[1], row[2], row[3]) for row in db.execute(
+        "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE tbl_name IN (?,?,?) OR name IN (?,?,?)",
+        _FACT_OWNER_TABLES * 2))
+    expected = sorted((row["type"], row["name"], row["tbl_name"], row["sql"]) for row in fact_owner_schema_objects())
+    if objects != expected:
+        return False
+    for table in _FACT_OWNER_TABLES:
+        columns = [(row[1], row[2], row[3], row[4], row[5])
+                   for row in db.execute("PRAGMA table_info(" + table + ")")]
+        indexes = {(row[1], row[2], row[3], row[4],
+                    tuple(info[2] for info in db.execute("PRAGMA index_info(" + row[1] + ")")))
+                   for row in db.execute("PRAGMA index_list(" + table + ")")}
+        foreign_keys = [tuple(row) for row in db.execute("PRAGMA foreign_key_list(" + table + ")")]
+        if (columns != _FACT_OWNER_COLUMNS[table] or indexes != _FACT_OWNER_INDEXES[table]
+                or foreign_keys != _FACT_OWNER_FOREIGN_KEYS[table]):
+            return False
+    versions = [tuple(row) for row in db.execute("SELECT version FROM fact_owner_schema LIMIT 2")]
+    return len(versions) == 1 and type(versions[0][0]) is int and versions[0][0] == 1
+
+
+def initialize_fact_owner_schema(db: sqlite3.Connection) -> int:
+    """Create or verify the owner tables atomically; prune rows of deleted facts.
+
+    A ledger without any owner object gets the exact FACT_OWNER_SCHEMA. Any
+    partial or foreign shape (table, index or marker missing, extra or
+    different) raises ``fact_owner_schema_unavailable`` with nothing written.
+    Every owner and revision row is then validated (unknown enum value, bad
+    type or revision mismatch fails closed) before rows whose fact is
+    DELETED are removed. Returns the number of pruned rows.
+    """
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        present = db.execute("SELECT 1 FROM sqlite_master WHERE tbl_name IN (?,?,?) OR name IN (?,?,?) LIMIT 1",
+                             _FACT_OWNER_TABLES * 2).fetchone()
+        if present is None:
+            for statement in FACT_OWNER_SCHEMA.split(";"):
+                if statement.strip():
+                    db.execute(statement.strip())
+        if not _fact_owner_shape_valid(db):
+            raise RuntimeError("fact_owner_schema_unavailable")
+        _scan_fact_owner_rows(db)
+        pruned = 0
+        for table in ("fact_owners", "fact_owner_revisions"):
+            pruned += db.execute("DELETE FROM " + table + " WHERE fact_id IN (SELECT id FROM facts WHERE state=?)",
+                                 (FactState.DELETED.value,)).rowcount
+        db.commit()
+        return pruned
+    except BaseException:
+        db.rollback()
+        raise
 
 
 class FactLedger:
@@ -298,6 +628,7 @@ class FactLedger:
                     except BaseException:
                         db.rollback()
                         raise
+                initialize_fact_owner_schema(db)
                 receipts = self._read_fact_receipts(db)
                 deleted_times = dict(db.execute("SELECT conversation_id, deleted_at FROM conversation_tombstones"))
                 self._fact_receipts = receipts
@@ -590,17 +921,26 @@ class FactLedger:
             fact = self._fact(db, fact_id)
             return fact if self._eligible(db, fact, review=review) else None
 
-    def list(self, *, category: str | None = None, proposals: bool = False, limit: int = 100) -> list[StoredFact]:
-        """Read live facts without refreshing their retention clock."""
+    def list(self, *, scope: str = MemoryScope.ALL, person_id: str | None = None, category: str | None = None,
+             proposals: bool = False, limit: int = 100) -> list[StoredFact]:
+        """Read live facts in one owner scope without refreshing their retention clock.
+
+        ``scope`` defaults to 'all' only for the operator review route
+        (src/dashboard/memory_api.py), which U3b-1a must not edit; every
+        caller in src/memory passes it explicitly (pinned by a test).
+        """
         if type(limit) is not int or not 0 < limit <= 1000:
             raise ValueError("invalid_memory_limit")
+        predicate, parameters = _scope_filter(scope, person_id)
         with self._transaction() as db:
+            if predicate:
+                _scan_fact_owner_rows(db)
             rows = db.execute(
                 "SELECT id FROM facts WHERE state IN (?,?) AND (expires_at IS NULL OR expires_at>?) "
-                "AND (? IS NULL OR category=?) ORDER BY extracted_at DESC, id",
+                "AND (? IS NULL OR category=?)" + predicate + " ORDER BY extracted_at DESC, id",
                 ((FactState.PROPOSED if proposals else FactState.AUTOMATIC).value,
                  (FactState.PROPOSED if proposals else FactState.CONFIRMED).value,
-                 self.clock(), category, category),
+                 self.clock(), category, category, *parameters),
             )
             result = []
             for row in rows:
@@ -644,6 +984,9 @@ class FactLedger:
             db.execute("UPDATE facts SET content=NULL, state=?, expires_at=NULL, confirmed_at=NULL, confirmed_by=NULL, revision=? WHERE id=?",
                        (FactState.DELETED.value, revision, row["id"]))
             db.execute("DELETE FROM fact_sources WHERE fact_id=?", (row["id"],))
+            # A deleted fact keeps no owner or ownership history (U3b pruning).
+            db.execute("DELETE FROM fact_owners WHERE fact_id=?", (row["id"],))
+            db.execute("DELETE FROM fact_owner_revisions WHERE fact_id=?", (row["id"],))
             self._queue(db, row["id"], revision, "delete")
         if rows:
             self._authority_version += 1
@@ -665,6 +1008,188 @@ class FactLedger:
             if fact.state is not FactState.PROPOSED:
                 raise ValueError("memory_proposal_state_changed")
             return bool(self._delete(db, fact_id))
+
+    # --- U3b-1a: per-person ownership. No production caller until U3b-1b/U3b-2. ---
+
+    def _assigner(self, actor: MemoryAssigner) -> None:
+        if type(actor) is not MemoryAssigner or type(actor.subject) is not str or not actor.subject:
+            raise PermissionError("memory_assign_denied")
+        actor.require_current()
+
+    def _owner_state(self, db, fact_id: str) -> tuple[FactOwner | None, FactOwnerRevision | None]:
+        """Load and validate one fact's owner rows; fact_owners mirrors the revision row."""
+        row = db.execute(_OWNER_SELECT + " WHERE fact_id=?", (fact_id,)).fetchone()
+        owner = None if row is None else _owner_from_row(row)
+        row = db.execute(_REVISION_SELECT + " WHERE fact_id=?", (fact_id,)).fetchone()
+        record = None if row is None else _revision_from_row(row)
+        if owner is not None and (record is None or record.revision != owner.revision):
+            raise RuntimeError("fact_owner_revision_mismatch")
+        return owner, record
+
+    def _write_owner(self, db, fact_id: str, record: FactOwnerRevision | None, change: FactOwnerChange, *,
+                     person_id: str | None = None, method: FactOwnerMethod | None = None,
+                     assigned_by: str | None = None, confirmed: bool = False) -> int:
+        """Apply one owner change: upsert or remove the owner row, then bump the revision row."""
+        if type(change) is not FactOwnerChange or (person_id is not None and type(method) is not FactOwnerMethod):
+            raise RuntimeError("fact_owner_value_unknown")
+        revision = (0 if record is None else record.revision) + 1
+        sticky = 1 if confirmed or (record is not None and record.confirmed_by_assignment == 1) else 0
+        now = self.clock()
+        if person_id is None:
+            db.execute("DELETE FROM fact_owners WHERE fact_id=?", (fact_id,))
+        else:
+            db.execute(
+                "INSERT INTO fact_owners(fact_id,person_id,method,revision,assigned_at,assigned_by,evidence) "
+                "VALUES (?,?,?,?,?,?,'{}') ON CONFLICT(fact_id) DO UPDATE SET person_id=excluded.person_id, "
+                "method=excluded.method, revision=excluded.revision, assigned_at=excluded.assigned_at, "
+                "assigned_by=excluded.assigned_by, evidence=excluded.evidence",
+                (fact_id, person_id, method.value, revision, now, assigned_by))
+        db.execute(
+            "INSERT INTO fact_owner_revisions(fact_id,revision,last_change,confirmed_by_assignment,changed_at) "
+            "VALUES (?,?,?,?,?) ON CONFLICT(fact_id) DO UPDATE SET revision=excluded.revision, "
+            "last_change=excluded.last_change, confirmed_by_assignment=excluded.confirmed_by_assignment, "
+            "changed_at=excluded.changed_at",
+            (fact_id, revision, change.value, sticky, now))
+        self._authority_version += 1
+        return revision
+
+    def _dependents(self, db, fact_id: str) -> list[tuple[str, str]]:
+        """Every live fact derived (transitively) from fact_id, with its state."""
+        return [(row[0], row[1]) for row in db.execute("""WITH RECURSIVE affected(id) AS (
+            SELECT ? UNION SELECT d.fact_id FROM fact_dependencies d JOIN affected a ON d.source_fact_id=a.id
+            ) SELECT f.id, f.state FROM facts f JOIN affected a ON f.id=a.id WHERE f.state!=? AND f.id!=?
+            ORDER BY f.id""", (fact_id, FactState.DELETED.value, fact_id))]
+
+    def assign_owner(self, fact_id: str, person_id: str, expected_fact_revision: int, expected_owner_revision: int,
+                     actor: MemoryAssigner, *, retired: Callable[[frozenset[str]], bool],
+                     active: Callable[[str], bool], delete_dependents: bool = False) -> AssignmentReceipt:
+        """Assign an owner; assigning confirms the fact and stops its expiry (U3b P3).
+
+        ``retired(frozenset({person_id}))`` must return exactly False and
+        ``active(person_id)`` exactly True, before BEGIN, after the body and
+        before commit; anything else (including an exception) refuses. The
+        dependents rule applies only to the AUTOMATIC -> CONFIRMED transition.
+        """
+        self._assigner(actor)
+        if not callable(retired) or not callable(active):
+            raise PermissionError("memory_owner_authority_missing")
+        if not _valid_person(person_id):
+            raise ValueError("memory_owner_invalid_person")
+        if type(delete_dependents) is not bool:
+            raise ValueError("memory_owner_dependents_not_applicable")
+        if (type(expected_fact_revision) is not int or expected_fact_revision < 1
+                or type(expected_owner_revision) is not int or expected_owner_revision < 0):
+            raise ValueError("memory_owner_conflict")
+        targets = frozenset({person_id})
+
+        def guard() -> None:
+            actor.require_current()
+            try:
+                is_retired = retired(targets)
+                is_active = active(person_id)
+            except Exception:
+                raise PermissionError("memory_owner_authority_unavailable") from None
+            if is_retired is True:
+                raise PermissionError("memory_owner_retired")
+            if is_retired is not False:
+                raise PermissionError("memory_owner_authority_unavailable")
+            if is_active is False:
+                raise PermissionError("memory_owner_inactive")
+            if is_active is not True:
+                raise PermissionError("memory_owner_authority_unavailable")
+
+        with self._transaction(guard) as db:
+            fact = self._fact(db, fact_id) if type(fact_id) is str else None
+            if not self._eligible(db, fact, review=True):
+                raise LookupError("memory_fact_unavailable")
+            owner, record = self._owner_state(db, fact_id)
+            if fact.revision != expected_fact_revision or (
+                    0 if record is None else record.revision) != expected_owner_revision:
+                raise ValueError("memory_owner_conflict")
+            if any(source.fact_dependencies for source in fact.sources) or db.execute(
+                    "SELECT 1 FROM fact_dependencies WHERE fact_id=? LIMIT 1", (fact_id,)).fetchone():
+                raise ValueError("memory_owner_derived_fact")
+            if delete_dependents and fact.state is not FactState.AUTOMATIC:
+                raise ValueError("memory_owner_dependents_not_applicable")
+            if owner is not None and owner.person_id == person_id:
+                return AssignmentReceipt(fact.revision, record.revision)
+            deleted = 0
+            confirming = fact.state in (FactState.AUTOMATIC, FactState.PROPOSED)
+            if fact.state is FactState.AUTOMATIC:
+                dependents = self._dependents(db, fact_id)
+                if dependents and not delete_dependents:
+                    raise MemoryOwnerDependents(dependents)
+                deleted = sum(self._delete(db, identity) for identity, _state in dependents)
+            fact_revision = fact.revision
+            if confirming:
+                fact_revision += 1
+                db.execute("UPDATE facts SET state=?, expires_at=NULL, confirmed_at=?, confirmed_by=?, revision=? "
+                           "WHERE id=?", (FactState.CONFIRMED.value, self.clock(), actor.subject, fact_revision,
+                                          fact_id))
+                self._queue(db, fact_id, fact_revision, "upsert")
+            change = FactOwnerChange.REASSIGNED if owner is not None else FactOwnerChange.ASSIGNED
+            owner_revision = self._write_owner(db, fact_id, record, change, person_id=person_id,
+                                               method=FactOwnerMethod.OPERATOR_ASSIGNMENT,
+                                               assigned_by=actor.subject, confirmed=confirming)
+            return AssignmentReceipt(fact_revision, owner_revision, deleted)
+
+    def unassign_owner(self, fact_id: str, expected_owner_revision: int, actor: MemoryAssigner) -> AssignmentReceipt:
+        """Remove the owner as operator; the fact stays CONFIRMED and is not 'Devueltos'."""
+        self._assigner(actor)
+        if type(expected_owner_revision) is not int or expected_owner_revision < 0:
+            raise ValueError("memory_owner_conflict")
+        with self._transaction(actor.require_current) as db:
+            fact = self._fact(db, fact_id) if type(fact_id) is str else None
+            if not self._eligible(db, fact, review=True):
+                raise LookupError("memory_fact_unavailable")
+            owner, record = self._owner_state(db, fact_id)
+            current = 0 if record is None else record.revision
+            if current != expected_owner_revision:
+                raise ValueError("memory_owner_conflict")
+            if owner is None:
+                return AssignmentReceipt(fact.revision, current)
+            return AssignmentReceipt(fact.revision, self._write_owner(
+                db, fact_id, record, FactOwnerChange.OPERATOR_UNASSIGNED))
+
+    def return_owned(self, fact_id: str, person_id: str, actor: MemoryOwnerActor) -> bool:
+        """'No es mío': the owner hands the fact back to the operator's 'Devueltos' queue.
+
+        The fact stays as it is (CONFIRMED, no expiry) and ownerless. A fact the
+        actor's person does not own returns False, like a missing one.
+        """
+        if (type(actor) is not MemoryOwnerActor or type(actor.subject) is not str or not actor.subject
+                or not _valid_person(actor.person_id) or person_id != actor.person_id):
+            raise PermissionError("memory_owner_actor_denied")
+        actor.require_current()
+        with self._transaction(actor.require_current) as db:
+            fact = self._fact(db, fact_id) if type(fact_id) is str else None
+            if not self._eligible(db, fact, review=True):
+                return False
+            owner, record = self._owner_state(db, fact_id)
+            if owner is None or owner.person_id != person_id:
+                return False
+            self._write_owner(db, fact_id, record, FactOwnerChange.OWNER_RETURNED)
+            return True
+
+    def owned_counts(self, actor: MemoryAssigner) -> OwnedCounts:
+        """Count owner state over non-deleted facts; every owner row is validated first."""
+        self._assigner(actor)
+        with self._transaction(actor.require_current) as db:
+            _scan_fact_owner_rows(db)
+
+            def count(sql: str) -> int:
+                return db.execute(sql, (FactState.DELETED.value,)).fetchone()[0]
+
+            return OwnedCounts(
+                currently_owned=count("SELECT COUNT(*) FROM fact_owners o JOIN facts f ON f.id=o.fact_id "
+                                      "WHERE f.state!=?"),
+                returned=count("SELECT COUNT(*) FROM fact_owner_revisions r JOIN facts f ON f.id=r.fact_id "
+                               "WHERE f.state!=? AND r.last_change='owner_returned' "
+                               "AND NOT EXISTS (SELECT 1 FROM fact_owners o WHERE o.fact_id=r.fact_id)"),
+                ever_assigned_live=count("SELECT COUNT(*) FROM fact_owner_revisions r JOIN facts f "
+                                         "ON f.id=r.fact_id WHERE f.state!=?"),
+                owned_proposals=db.execute("SELECT COUNT(*) FROM fact_owners o JOIN facts f ON f.id=o.fact_id "
+                                           "WHERE f.state=?", (FactState.PROPOSED.value,)).fetchone()[0])
 
     def snapshot(self) -> dict:
         """Read one coherent review snapshot with a server expiry clock."""
@@ -709,13 +1234,18 @@ class FactLedger:
         with self._transaction() as db:
             return [dict(r) for r in db.execute("SELECT * FROM index_jobs ORDER BY attempts, queued_at, fact_id LIMIT ?", (limit,))]
 
-    def eligible_ids(self, min_confidence: float = 0, *, category: str | None = None) -> list[str]:
-        """Pre-filter vector candidates so stale entries cannot crowd out live facts."""
+    def eligible_ids(self, min_confidence: float = 0, *, scope: str, person_id: str | None = None,
+                     category: str | None = None) -> list[str]:
+        """Pre-filter vector candidates in one owner scope (required, U3b W5)."""
+        predicate, parameters = _scope_filter(scope, person_id)
         with self._transaction() as db:
+            if predicate:
+                _scan_fact_owner_rows(db)
             return [r[0] for r in db.execute(
                 "SELECT id FROM facts WHERE state IN (?,?) AND confidence>=? AND (expires_at IS NULL OR expires_at>?) "
-                "AND (? IS NULL OR category=?)",
-                (FactState.AUTOMATIC.value, FactState.CONFIRMED.value, min_confidence, self.clock(), category, category))]
+                "AND (? IS NULL OR category=?)" + predicate,
+                (FactState.AUTOMATIC.value, FactState.CONFIRMED.value, min_confidence, self.clock(), category, category,
+                 *parameters))]
 
     def sources_admitted(self, sources: tuple[MemorySource, ...]) -> bool:
         """Check a producer's sources again before retaining a raw interaction."""

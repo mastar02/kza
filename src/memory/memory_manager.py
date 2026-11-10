@@ -379,7 +379,8 @@ class MemoryManager:
         relevant_facts = self.long_term.search_relevant(
             query=current_query,
             n_results=5,
-            min_confidence=0.6
+            min_confidence=0.6,
+            scope='all',
         )
 
         # A legacy JSON "explicit" flag is not authenticated confirmation.
@@ -387,7 +388,7 @@ class MemoryManager:
         # enter this context channel. Automatic preference facts use search.
         preferences = {}
         preference_facts = {}
-        for fact in self.long_term.get_by_category("preference", limit=100):
+        for fact in self.long_term.get_by_category("preference", limit=100, scope='all'):
             if fact["state"] == "confirmed":
                 key, separator, value = fact["content"].partition(": ")
                 preferences[key if separator else fact["id"]] = value if separator else key
@@ -440,6 +441,6 @@ class MemoryManager:
         return {
             "short_term_turns": len(self.short_term),
             "long_term": self.long_term.get_stats(),
-            "preferences_count": len(self.long_term.ledger.eligible_ids(category="preference")),
+            "preferences_count": len(self.long_term.ledger.eligible_ids(category="preference", scope='all')),
             "legacy_preferences_policy": "quarantined",
         }

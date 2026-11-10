@@ -212,8 +212,9 @@ class LongTermMemory:
         finally:
             self._index_lock.release()
 
-    def search_relevant(self, query: str, n_results: int = 5, min_confidence: float = .5) -> list[dict]:
-        """Resolve index candidates against live authoritative facts, not documents."""
+    def search_relevant(self, query: str, n_results: int = 5, min_confidence: float = .5, *,
+                        scope: str, person_id: str | None = None) -> list[dict]:
+        """Resolve index candidates against live authoritative facts in one owner scope."""
         if type(n_results) is not int or not 0 < n_results <= 100:
             raise ValueError("invalid_memory_query_limit")
         self.initialize()
@@ -221,7 +222,7 @@ class LongTermMemory:
             raise RuntimeError("memory_search_busy")
         try:
             count = self._collection.count()
-            eligible = self.ledger.eligible_ids(min_confidence)
+            eligible = self.ledger.eligible_ids(min_confidence, scope=scope, person_id=person_id)
             if not count or not eligible:
                 return []
             results = self._collection.query(query_texts=[query], n_results=min(count, n_results),
@@ -241,20 +242,22 @@ class LongTermMemory:
         finally:
             self._query_lock.release()
 
-    def get_by_category(self, category: str, limit: int = 10) -> list[dict]:
-        """List live catalog facts without reading unverified index metadata."""
+    def get_by_category(self, category: str, limit: int = 10, *, scope: str,
+                        person_id: str | None = None) -> list[dict]:
+        """List live catalog facts in one owner scope, without unverified index metadata."""
         self.initialize()
-        return [fact.to_dict() for fact in self.ledger.list(category=category, limit=limit)]
+        return [fact.to_dict() for fact in self.ledger.list(category=category, limit=limit, scope=scope,
+                                                            person_id=person_id)]
 
     def proposals(self, limit: int = 100) -> list[dict]:
         """List only live pending proposals for authenticated review adapters."""
         self.initialize()
-        return [fact.to_dict() for fact in self.ledger.list(proposals=True, limit=limit)]
+        return [fact.to_dict() for fact in self.ledger.list(proposals=True, limit=limit, scope='all')]
 
     def get_stats(self) -> dict:
         """Expose lifecycle/cleanup counts, with legacy quarantine explicit."""
         self.initialize()
-        return {"total_facts": len(self.ledger.eligible_ids()), "collection": self.index_collection_name,
+        return {"total_facts": len(self.ledger.eligible_ids(scope='all')), "collection": self.index_collection_name,
                 "legacy_collection": self._collection_name, "legacy_policy": "quarantined",
                 **self.ledger.status()}
 

@@ -41,14 +41,14 @@ async def test_automatic_facts_expire_at_30_days_without_access_renewal_or_resta
     fact_id = await memory.astore_fact('Le gusta cocinar.', 'preference', sources=(origin,))
     before = memory.ledger.get(fact_id)
     clock.now += 29*86400
-    assert (await memory.asearch_relevant('cocinar'))[0]['id'] == fact_id
+    assert (await memory.asearch_relevant('cocinar', scope='all'))[0]['id'] == fact_id
     assert memory.ledger.get(fact_id).expires_at == before.expires_at
     await memory.aclose()
     clock.now += 86400
     reopened = LongTermMemory(client, ledger_path=str(tmp_path / 'privacy.db'), clock=clock)
     try:
-        assert await reopened.asearch_relevant('cocinar') == []
-        assert await reopened.acall(reopened.get_by_category, 'preference') == []
+        assert await reopened.asearch_relevant('cocinar', scope='all') == []
+        assert await reopened.acall(reopened.get_by_category, 'preference', scope='all') == []
         await reopened.areconcile()
         assert reopened._collection.count() == 0
         assert reopened.ledger.status()['states'] == {'deleted': 1}
@@ -61,7 +61,7 @@ async def test_legacy_collection_remains_unchanged_and_is_not_queried_for_contex
     legacy = client.get_or_create_collection('user_memories')
     legacy.upsert(ids=['legacy'], documents=['Un registro sin fuentes.'], metadatas=[{'origin': 'ambient'}])
     try:
-        assert await memory.asearch_relevant('registro') == []
+        assert await memory.asearch_relevant('registro', scope='all') == []
         assert legacy.count() == 1
         assert legacy.get(ids=['legacy'])['documents'] == ['Un registro sin fuentes.']
         assert (await memory.acall(memory.get_stats))['legacy_policy'] == 'quarantined'
@@ -75,18 +75,18 @@ async def test_proposal_is_excluded_until_manual_review_and_confirmation_does_no
     origin = source(clock)
     try:
         proposal = await memory.acall(memory.propose, 'Recordar este dato.', (origin,))
-        assert await memory.asearch_relevant('dato') == []
+        assert await memory.asearch_relevant('dato', scope='all') == []
         with pytest.raises(PermissionError):
             await memory.acall(memory.confirm, proposal['id'], None)
         confirmed = await memory.acall(memory.confirm, proposal['id'], reviewer())
         assert confirmed['confirmed_by'] == 'test-admin' and confirmed['expires_at'] is None
         original_confirmation = confirmed['confirmed_at']
         clock.now += 90*86400
-        assert (await memory.asearch_relevant('dato'))[0]['state'] == 'confirmed'
+        assert (await memory.asearch_relevant('dato', scope='all'))[0]['state'] == 'confirmed'
         again = await memory.acall(memory.confirm, proposal['id'], reviewer())
         assert again['confirmed_at'] == original_confirmation
         assert await memory.acall(memory.delete_fact, proposal['id'], reviewer())
-        assert await memory.asearch_relevant('dato') == []
+        assert await memory.asearch_relevant('dato', scope='all') == []
     finally:
         await memory.aclose()
 
@@ -116,7 +116,7 @@ async def test_deleted_conversation_blocks_pending_and_replayed_derivation_after
     try:
         with pytest.raises(PermissionError):
             await reopened.astore_fact('Un hecho tardío.', 'fact', sources=(origin,))
-        assert await reopened.asearch_relevant('hecho') == []
+        assert await reopened.asearch_relevant('hecho', scope='all') == []
     finally:
         await reopened.aclose()
 
@@ -129,7 +129,7 @@ async def test_expiry_scrubs_catalog_and_keeps_failed_vector_cleanup_durable(tmp
     status = await memory.areconcile()
     assert status['pending_index'] == 1 and memory.ledger.get(fact_id) is None
     assert memory._collection.count() == 1
-    assert await memory.asearch_relevant('temporal') == []
+    assert await memory.asearch_relevant('temporal', scope='all') == []
     await memory.aclose()
     memory, _, _ = graph(tmp_path, clock=clock)
     try:
@@ -154,11 +154,11 @@ async def test_slow_old_upsert_cannot_acknowledge_newer_conversation_deletion(tm
     try:
         await until(entered.is_set)
         assert await memory.acall(memory.delete_conversation, origin.conversation_id, reviewer()) == 1
-        assert await memory.asearch_relevant('tardío') == []
+        assert await memory.asearch_relevant('tardío', scope='all') == []
         release.set()
         await saving
         assert memory.ledger.status()['pending_index'] == 1
-        assert await memory.asearch_relevant('tardío') == []
+        assert await memory.asearch_relevant('tardío', scope='all') == []
         await memory.areconcile()
         assert memory._collection.count() == 0 and memory.ledger.status()['pending_index'] == 0
     finally:

@@ -14,7 +14,7 @@ import pytest
 
 from src.memory import payload_derivation as payload
 from src.memory import state_snapshot as snapshots
-from src.memory.fact_ledger import FactDependency, FactLedger, MemoryReviewer
+from src.memory.fact_ledger import FactDependency, FactLedger, MemoryAssigner, MemoryOwnerActor, MemoryReviewer
 from tests.mocks.memory_sources import memory_source
 
 
@@ -56,7 +56,7 @@ CREATE TABLE live_delivery_lineage(id TEXT PRIMARY KEY);
 """
 
 
-def _image(tmp_path, name, *, statements=(), seed=None, diagnostic_seed=None):
+def _image(tmp_path, name, *, statements=(), seed=None, diagnostic_seed=None, indexed=True):
     source = tmp_path / (name + "-source")
     (source / "data/graph").mkdir(parents=True)
     ledger = FactLedger(str(source / PRIVACY), clock=lambda: NOW)
@@ -77,11 +77,15 @@ def _image(tmp_path, name, *, statements=(), seed=None, diagnostic_seed=None):
             "partition INTEGER,bytes INTEGER);CREATE TABLE lineage(record_id TEXT,conversation_id TEXT,"
             "PRIMARY KEY(record_id,conversation_id));CREATE TABLE state(key TEXT PRIMARY KEY,value INTEGER);")
             .replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS "))
-    return _snapshot_codec(source, tmp_path / (name + "-image"), (PRIVACY, DIAGNOSTICS))
+    return _snapshot_codec(source, tmp_path / (name + "-image"), (PRIVACY, DIAGNOSTICS), indexed=indexed)
 
 
 def _snapshot_codec(source, root, database_paths, *, indexed=True):
-    """Pin real table bytes for codec tests, without an admission capability."""
+    """Pin real table bytes for codec tests, without an admission capability.
+
+    indexed="live" exports one exact index record per live automatic/confirmed
+    fact (the reconciled state), for plans that keep such facts.
+    """
     databases, files, schemas, contracts = {}, {}, {}, {}
     for relative in database_paths:
         copied = root / "state" / relative
@@ -102,11 +106,18 @@ def _snapshot_codec(source, root, database_paths, *, indexed=True):
     identity = payload._digest(binding)
     manifest = {"schema_version": 1, "source_binding_id": identity, "source_binding": binding,
         "files": files, "databases": databases, "index_exports": [{"source_path": str(source / "data/graph/chroma"),
-            "relative_path": "data/graph/chroma", "collection": "unit_policy_v1", "present": False,
+            "relative_path": "data/graph/chroma", "collection": "unit_policy_v1", "present": indexed == "live",
             "metadata": None, "sdk_version": None, "fields": ["ids", "documents", "metadatas", "embeddings"],
-            "records": []}] if indexed else []}
+            "records": _live_index_records(source) if indexed == "live" else []}] if indexed else []}
     (root / "manifest.json").write_bytes(snapshots._json(manifest) + b"\n")
     return snapshots.ClosedStateSnapshot(root, identity, binding, manifest)
+
+
+def _live_index_records(source):
+    with closing(sqlite3.connect(source / PRIVACY)) as db:
+        return [{"id": identity, "document": content, "metadata": {"fact_policy": 1, "revision": revision},
+                 "embedding": [1.0, 0.0]} for identity, content, revision in db.execute(
+                     "SELECT id,content,revision FROM facts WHERE state IN ('automatic','confirmed') ORDER BY id")]
 
 
 def _layout(destination):
@@ -1051,3 +1062,130 @@ def test_catalog_prepared_rejection_keeps_real_ownership_blocked(tmp_path):
     binding = {"state_root": str(destination), "ownership_sha256": hashlib.sha256(blocked).hexdigest()}
     with pytest.raises(ValueError, match="runtime_admission_active_inventory_mismatch"):
         validate_target_ownership(tmp_path, binding)
+
+
+# --- U3b-1a: owner tables are not payload; their facts are never cut (W1, W9) ---------
+
+_DROP_OWNER_TABLES = (("DROP TABLE fact_owners", ()), ("DROP TABLE fact_owner_revisions", ()),
+                      ("DROP TABLE fact_owner_schema", ()))
+_NO_JOURNAL = SimpleNamespace(target_id_map={}, event_dependency_target_map={})
+
+
+def _materialize_tables(tmp_path, ordinary, latest):
+    """Clone latest and apply the planned table cut: the SQL half of materialization."""
+    destination = tmp_path / "R"
+    plan = payload.plan_payload_cut(ordinary, latest, now=NOW, layout=_layout(destination))
+    payload._clone_latest(plan, destination)
+    payload._apply_tables(plan, destination, _NO_JOURNAL)
+    connection = sqlite3.connect(destination / PRIVACY)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def _two_proposals(ledger, sources):
+    return [ledger.store(content, "fact", 1.0, (source,), proposed=True).id
+            for content, source in zip(("Owned synthetic proposal", "Unowned synthetic proposal"), sources)]
+
+
+def test_w1_fact_with_only_an_ownership_history_row_is_never_cut(tmp_path):
+    """No 1a API produces this row (voice stage does); it is inserted by SQL.
+
+    Reverting the W1 protection in payload_derivation._select_facts makes this fail.
+    """
+    sources = (memory_source(now=NOW - 1, ttl=10), memory_source(now=NOW - 1, ttl=10))
+    ids = []
+    expire = ("UPDATE facts SET expires_at=? WHERE state='proposed'", (NOW - .5,))
+    history = ("INSERT INTO fact_owner_revisions SELECT id,1,'voice_proposed',0,? FROM facts "
+               "WHERE content='Owned synthetic proposal'", (NOW,))
+    ordinary = _image(tmp_path, "O", statements=(expire,), seed=lambda ledger: ids.extend(_two_proposals(ledger, sources)))
+    latest = _image(tmp_path, "N", statements=(history,), seed=lambda ledger: _two_proposals(ledger, sources))
+    owned, unowned = ids
+    selected, _ = _select(ordinary, latest)
+    assert selected["facts"][(owned,)].source == "latest"
+    assert (unowned,) not in selected["facts"]  # The ordinary cut really removes an expired proposal.
+    with closing(_materialize_tables(tmp_path, ordinary, latest)) as db:
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert [row["id"] for row in db.execute("SELECT id FROM facts WHERE state='proposed'")] == [owned]
+        assert [tuple(row) for row in db.execute("SELECT fact_id,last_change FROM fact_owner_revisions")] == [
+            (owned, "voice_proposed")]
+
+
+_DROP_LOOKUP_INDEX = (("DROP INDEX idx_erasure_target_participant_id", ()),)
+
+
+@pytest.mark.parametrize("missing", ["owner_schema", "lookup_index", "both"])
+def test_mixed_cut_restores_owner_rows_only_from_the_latest_image(tmp_path, missing):
+    """W9 + R1: the ordinary snapshot predates U3b, the 014b422 lookup index, or both.
+
+    'both' is a b0866e8-era ordinary image (014b422 is not an ancestor of b0866e8);
+    the former one-rule-at-a-time compatibility check refused it.
+    """
+    source, kept = memory_source(now=NOW - 1), memory_source(now=NOW - 1)
+    operator = MemoryAssigner("synthetic-operator")
+    allow = {"retired": lambda ids: False, "active": lambda person: True}
+
+    def seed(ledger, *, assign):
+        confirmed = ledger.confirm(ledger.store("Owned confirmed", "fact", 1.0, (source,), proposed=True).id,
+                                   MemoryReviewer("synthetic-reviewer"))
+        automatic = ledger.store("Automatic to assign", "fact", .9, (kept,))
+        if assign:
+            ledger.assign_owner(confirmed.id, "user_one", confirmed.revision, 0, operator, **allow)
+            ledger.assign_owner(automatic.id, "user_two", automatic.revision, 0, operator, **allow)
+            ledger.return_owned(automatic.id, "user_two", MemoryOwnerActor("synthetic-home", "user_two"))
+
+    drops = {"owner_schema": _DROP_OWNER_TABLES, "lookup_index": _DROP_LOOKUP_INDEX,
+             "both": _DROP_OWNER_TABLES + _DROP_LOOKUP_INDEX}[missing]
+    ordinary = _image(tmp_path, "O", statements=drops, seed=lambda ledger: seed(ledger, assign=False),
+                      indexed="live")
+    latest = _image(tmp_path, "N", seed=lambda ledger: seed(ledger, assign=True), indexed="live")
+    names = {row["name"] for row in ordinary.manifest["databases"][PRIVACY]["schema"]}
+    assert ("fact_owners" in names) is (missing == "lookup_index")
+    assert ("idx_erasure_target_participant_id" in names) is (missing == "owner_schema")
+    with closing(sqlite3.connect(tmp_path / "N-source" / PRIVACY)) as db:
+        expected = {table: sorted(db.execute("SELECT * FROM " + table))
+                    for table in ("fact_owners", "fact_owner_revisions", "fact_owner_schema")}
+    assert len(expected["fact_owners"]) == 1 and len(expected["fact_owner_revisions"]) == 2
+    with closing(_materialize_tables(tmp_path, ordinary, latest)) as db:
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert {table: sorted(map(tuple, db.execute("SELECT * FROM " + table))) for table in expected} == expected
+
+
+def test_pre_u3b_latest_image_has_no_owned_facts_and_plans_normally(tmp_path):
+    ordinary = _image(tmp_path, "O", statements=_DROP_OWNER_TABLES)
+    latest = _image(tmp_path, "N", statements=_DROP_OWNER_TABLES)
+    assert payload._owned_fact_ids(latest.manifest["databases"][PRIVACY]["tables"]) == set()
+    plan = payload.plan_payload_cut(ordinary, latest, now=NOW, layout=_layout(tmp_path / "R"))
+    assert plan.coverage == tuple(sorted(payload.FAMILIES))
+
+
+@pytest.mark.parametrize("dropped", ["fact_owners", "fact_owner_revisions"])
+def test_latest_image_with_only_one_owner_table_is_invalid(tmp_path, dropped):
+    ordinary = _image(tmp_path, "O")
+    latest = _image(tmp_path, "N", statements=(("DROP TABLE " + dropped, ()),))
+    with pytest.raises(payload.PayloadDerivationError, match="payload_table_schema_invalid"):
+        _select(ordinary, latest)
+
+
+def test_only_exact_additive_schema_groups_are_a_compatible_mixed_cut(tmp_path):
+    post = _image(tmp_path, "N").manifest["databases"][PRIVACY]["schema"]
+    index, owner = payload._privacy_schema_additions()
+    assert len(index) == 1 and len(owner) == 7 and all(row in post for row in index + owner)
+
+    def without(*groups):
+        return [row for row in post if not any(row in group for group in groups)]
+
+    for older in (without(index), without(owner), without(index, owner)):
+        assert payload._privacy_schema_added(older, post)
+        assert not payload._privacy_schema_added(post, older)  # Never towards an older latest image.
+    assert not payload._privacy_schema_added(post, post)  # Equality is handled by the caller.
+    pre = without(index, owner)
+    assert not payload._privacy_schema_added(pre, [row for row in post if row["name"] != "fact_owners_person"])
+    assert not payload._privacy_schema_added(without(owner), without(owner) + [owner[0]])  # Partial group.
+    extra = {"type": "table", "name": "unrelated", "tbl_name": "unrelated", "sql": "CREATE TABLE unrelated (x)"}
+    assert not payload._privacy_schema_added(pre, post + [extra])
+    changed = [dict(row, sql=row["sql"].replace("NOT NULL PRIMARY KEY", "PRIMARY KEY"))
+               if row["name"] == "fact_owners" else row for row in post]
+    assert not payload._privacy_schema_added(pre, changed)
+    retyped = [dict(row, sql=row["sql"] + " ") if row["name"] == "idx_erasure_target_participant_id" else row
+               for row in post]
+    assert not payload._privacy_schema_added(without(index), retyped)
