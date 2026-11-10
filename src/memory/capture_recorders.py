@@ -284,11 +284,25 @@ class CaptureRecorders:
             self._fault = True
             raise
 
+    async def _drain_operations(self) -> list[object]:
+        """Wait for every admitted operation, including ones admitted meanwhile.
+
+        A finished task leaves ``_operations`` only through its queued
+        done-callback, and ``gather`` over finished tasks completes without
+        yielding. Discarding each awaited snapshot here keeps the loop from
+        spinning on a done member whose callback the loop never gets to run.
+        """
+        results: list[object] = []
+        while self._operations:
+            observed = tuple(self._operations)
+            results.extend(await asyncio.shield(asyncio.gather(*observed, return_exceptions=True)))
+            self._operations.difference_update(observed)
+        return results
+
     async def drain(self) -> None:
         """Wait for issued owners' explicit ACKs; reserve-only owners may retire."""
         self.seal()
-        while self._operations:
-            await asyncio.shield(asyncio.gather(*tuple(self._operations), return_exceptions=True))
+        await self._drain_operations()
         await self._work.drain_admitted()
         if self._fault:
             raise RuntimeError("capture_recorder_state_unconfirmed")
@@ -305,8 +319,7 @@ class CaptureRecorders:
         failures = []
         if self._initializing is not None:
             failures.extend(await asyncio.gather(asyncio.shield(self._initializing), return_exceptions=True))
-        while self._operations:
-            failures.extend(await asyncio.shield(asyncio.gather(*tuple(self._operations), return_exceptions=True)))
+        failures.extend(await self._drain_operations())
         await asyncio.shield(self._work.begin_close())
         if self._fault or any(isinstance(result, BaseException) for result in failures):
             raise RuntimeError("capture_recorder_state_unconfirmed")
