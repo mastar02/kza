@@ -56,6 +56,7 @@ class DashboardPermission(StrEnum):
     MEMORY_ASSIGN = "memory:assign"
     MEMORY_OWN_READ = "memory:own:read"
     MEMORY_OWN_WRITE = "memory:own:write"
+    MEMORY_OWN_VOICE = "memory:own:voice"
     VOICES_READ = "voices:read"
     VOICES_REVIEW = "voices:review"
     EVALUATION_READ = "evaluation:read"
@@ -78,8 +79,9 @@ _HOME_PERMISSIONS = frozenset({
 })
 # 'Mis recuerdos' (U3b-2): only a household credential bound to a person holds
 # these. Operator credentials can never carry a user_id, so they do not get them.
+# U3b-4a-2: memory:own:voice is the separate biometric opt-in grant, same rule.
 _PERSON_MEMORY_PERMISSIONS = frozenset({
-    DashboardPermission.MEMORY_OWN_READ, DashboardPermission.MEMORY_OWN_WRITE,
+    DashboardPermission.MEMORY_OWN_READ, DashboardPermission.MEMORY_OWN_WRITE, DashboardPermission.MEMORY_OWN_VOICE,
 })
 MAX_CREDENTIAL_TTL_S = 30 * 86400
 DEFAULT_SESSION_TTL_S = 30 * 86400

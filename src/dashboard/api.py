@@ -37,6 +37,7 @@ from src.dashboard.home_api import (
 from src.dashboard.home_catalog import HomeCatalogService
 from src.dashboard.live_event_bus import LiveEventBus
 from src.dashboard.memory_api import register_memory_routes
+from src.dashboard.memory_voice_api import register_memory_voice_routes
 from src.dashboard.rest_delivery import DashboardApplication
 from src.dashboard.voice_api import register_voice_routes
 from src.dashboard.evaluation_api import register_evaluation_routes
@@ -991,6 +992,7 @@ class DashboardAPI:
             observability_demo=self.observability_use_mocks,
         )
         register_memory_routes(self.app, manager=self.memory_manager)
+        register_memory_voice_routes(self.app, manager=self.memory_manager, room_available=lambda room_id: self._voice_room_available(room_id))
         register_voice_routes(self.app,voices=self.voice_registry)
         register_evaluation_routes(self.app,voices=self.voice_registry)
         register_credential_routes(self.app,work=self.admin_work,voices=self.voice_registry)
@@ -1015,6 +1017,24 @@ class DashboardAPI:
         frontend_path = os.path.join(os.path.dirname(__file__), "frontend")
         if os.path.exists(frontend_path):
             self.app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
+
+    def _voice_room_available(self, room_id: str) -> bool:
+        """U3b-4a-2: a verification window needs a multi-room microphone that is capturing now.
+
+        The room must be bound to a fresh microphone snapshot whose capture is
+        waiting or receiving, and capture must not be paused. Anything unknown
+        is unavailable.
+        """
+        from src.audio.microphone_status import CaptureState
+
+        provider = self.microphone_snapshot_provider
+        snapshot = provider() if provider is not None else None
+        if snapshot is None or snapshot.stale:
+            return False
+        if self.capture_control is not None and self.capture_control.capture_allowed is not True:
+            return False
+        return any(mic.room_id == room_id and mic.capture.state in (CaptureState.WAITING, CaptureState.RECEIVING)
+                   for mic in snapshot.microphones)
 
     def _register_routine_exception_handlers(self) -> None:
         """Translate domain and unavailable-storage failures without private details."""

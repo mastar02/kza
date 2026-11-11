@@ -832,6 +832,8 @@ _ASSIGNMENT_REFERENCES = {
                                     "import MemoryOwnerActor", "assign_owner", "unassign_owner", "return_owned",
                                     "'memory:assign'", "'memory:own:write'"},
     "src/memory/long_term.py": {"import MemoryOwnerActor", "MemoryOwnerActor"},
+    # U3b-4a-2: operator voice routes (consent reopen, resume) mint MemoryAssigner from the session.
+    "src/dashboard/memory_voice_api.py": {"MemoryAssigner", "import MemoryAssigner", "'memory:assign'"},
 }
 
 

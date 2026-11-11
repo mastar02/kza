@@ -408,7 +408,9 @@ def test_person_binding_comes_only_from_the_credential_account():
     api = ast.parse((ROOT / "src/dashboard/memory_api.py").read_text(encoding="utf-8"))
     names = {n.id for n in ast.walk(api) if isinstance(n, ast.Name)} | \
         {n.attr for n in ast.walk(api) if isinstance(n, ast.Attribute)}
-    assert not {name for name in names if "voice" in name.lower() or "speaker" in name.lower()}
+    # U3b-4a-2 (N5): the return route only chooses its notice from the ledger receipt; no voice name binds a person.
+    assert {name for name in names if "voice" in name.lower() or "speaker" in name.lower()} == {
+        "VOICE_RETURN_NOTICE", "voice_proposal"}
     # The person is read from the minted actor only, never from the request.
     person_reads = [ast.unparse(n) for n in ast.walk(api) if isinstance(n, ast.Attribute) and n.attr == "person_id"]
     assert person_reads == ["actor.person_id"]

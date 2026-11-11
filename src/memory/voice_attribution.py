@@ -7,6 +7,7 @@ rebuild is ever needed for them.
 """
 
 import math
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -245,3 +246,64 @@ class VoiceAttributionCapability:
     """
 
     issuer: str
+
+
+# --- U3b-4a-2: in-memory verification windows ---------------------------------------------------
+
+
+@dataclass(frozen=True)
+class VerificationWindow:
+    """One open window: what it is bound to, the room, and its deadline.
+
+    The phrase is drawn by the U3b-4b router (fixed word list); until then it
+    is None and no utterance can match a window.
+    """
+
+    binding: object
+    room_id: str
+    expires_at: float
+    phrase: str | None = None
+
+
+class VoiceVerificationWindows:
+    """Single-use windows kept only in memory: a restart closes them; at most one per person."""
+
+    WINDOW_S = 60.0
+
+    def __init__(self, clock: Callable[[], float]):
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._windows: dict[str, VerificationWindow] = {}
+
+    def open(self, binding: object, room_id: str) -> VerificationWindow:
+        """Replace the person's window with a fresh one bound to ``binding``."""
+        window = VerificationWindow(binding, room_id, self._clock() + self.WINDOW_S)
+        with self._lock:
+            self._windows[binding.person_id] = window
+        return window
+
+    def current(self, person_id: str) -> VerificationWindow | None:
+        """The person's live window; an expired one is dropped."""
+        with self._lock:
+            window = self._windows.get(person_id)
+            if window is not None and window.expires_at <= self._clock():
+                del self._windows[person_id]
+                window = None
+            return window
+
+    def close(self, person_id: str) -> None:
+        """Close the person's window (revocation, invalidation, retirement)."""
+        with self._lock:
+            self._windows.pop(person_id, None)
+
+    def close_profile(self, profile_id: str) -> None:
+        """Close every window bound to ``profile_id`` (its link, revision or review changed)."""
+        with self._lock:
+            for person in [person for person, window in self._windows.items()
+                           if getattr(window.binding, "profile_id", None) == profile_id]:
+                del self._windows[person]
+
+    def clear(self) -> None:
+        """Close every window (the voice switch was turned off)."""
+        with self._lock:
+            self._windows.clear()

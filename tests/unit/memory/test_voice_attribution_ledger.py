@@ -911,12 +911,17 @@ def test_flag_off_with_seeded_voice_rows_keeps_every_exposure_closed(tmp_path, c
 _DARK = {"attribute_voice_proposal", "verify_voice_consent", "open_voice_verification", "request_voice_consent",
          "revoke_voice_consent", "reopen_voice_consent", "set_voice_switch", "resume_voice_attribution",
          "voice_consent", "voice_switch", "voice_suspension", "VoiceAttributionCapability",
-         "MemoryVoiceConsentActor", "VoiceSwitchActor", "memory:own:voice"}
+         "MemoryVoiceConsentActor", "VoiceSwitchActor", "memory:own:voice", "open_voice_window"}
 _ALLOWED = {"src/memory/fact_ledger.py", "src/memory/voice_attribution.py"}
 
 
-def test_the_voice_stage_has_no_production_caller_in_4a_1():
-    """Dark: no route, attributor, verifier or capability construction until 4a-2/4b."""
+def test_the_voice_stage_has_exactly_the_4a_2_production_callers():
+    """4a-2 wires routes only: no attributor, verifier or capability construction until 4b.
+
+    Pinned per name as a count of referencing lines (4a-2 review P), so a second call site of an
+    already-listed writer fails too.
+    """
+    from collections import Counter
     from tests.unit.memory.test_fact_owners import _references
     found = {}
     for path in sorted((ROOT / "src").rglob("*.py")):
@@ -925,8 +930,15 @@ def test_the_voice_stage_has_no_production_caller_in_4a_1():
             continue
         uses = _references(path.read_text(encoding="utf-8"), _DARK)
         if uses:
-            found[relative] = uses
-    assert found == {}
+            found[relative] = dict(Counter(use.split(":", 1)[1] for use in uses))
+    assert found == {
+        "src/dashboard/authority.py": {"'memory:own:voice'": 1},
+        "src/dashboard/memory_voice_api.py": {
+            "'memory:own:voice'": 1, "MemoryVoiceConsentActor": 6, "VoiceSwitchActor": 1,
+            "import MemoryVoiceConsentActor": 1, "import VoiceSwitchActor": 1, "open_voice_window": 1,
+            "reopen_voice_consent": 1, "request_voice_consent": 1, "resume_voice_attribution": 1,
+            "revoke_voice_consent": 1, "set_voice_switch": 1, "voice_switch": 1},
+    }
 
 
 def test_the_hooks_and_the_prune_have_exactly_the_wired_callers():

@@ -159,14 +159,26 @@ def _route_permissions(request: HTTPConnection) -> frozenset[str]:
             or path.startswith("/api/evaluation/samples/") and path.count("/") == 4)):
         return frozenset({DashboardPermission.EVALUATION_READ})
     if path == "/api/voices" or path.startswith("/api/voices/"):
+        # U3b-4a-2: resuming a suspended profile is a review plus administration act.
+        if (not read and path.startswith("/api/voices/profiles/") and path.endswith("/attribution/resume")
+                and path.count("/") == 6):
+            return frozenset({DashboardPermission.VOICES_REVIEW, DashboardPermission.ADMIN_MANAGE,
+                              DashboardPermission.MEMORY_ASSIGN})
         if voice_person_scope_requested(request):
             return frozenset({DashboardPermission.VOICES_REVIEW,DashboardPermission.ADMIN_MANAGE,
                               *({DashboardPermission.VOICES_READ} if read else set())})
         return frozenset({DashboardPermission.VOICES_READ if read else DashboardPermission.VOICES_REVIEW})
+    # U3b-4a-2: the person's voice opt-in is its own grant, matched before 'Mis recuerdos'.
+    if path == "/api/memory/mine/voice" or path.startswith("/api/memory/mine/voice/"):
+        return frozenset({DashboardPermission.MEMORY_OWN_VOICE})
     # 'Mis recuerdos' (U3b-2) must be matched before the generic memory branch:
     # every /api/memory/mine path, known or not, stays in the person's branch.
     if path == "/api/memory/mine" or path.startswith("/api/memory/mine/"):
         return frozenset({DashboardPermission.MEMORY_OWN_READ if read else DashboardPermission.MEMORY_OWN_WRITE})
+    if path == "/api/memory/voice/switch" and not read:  # G1: operators with administration only
+        return frozenset({DashboardPermission.MEMORY_ASSIGN, DashboardPermission.ADMIN_MANAGE})
+    if path == "/api/memory/voice" or path.startswith("/api/memory/voice/"):
+        return frozenset({DashboardPermission.MEMORY_ASSIGN, *({DashboardPermission.MEMORY_READ} if read else ())})
     if path in {"/api/memory/returned", "/api/memory/owners/counts"} or (
             path.startswith("/api/memory/facts/") and path.endswith("/owner") and path.count("/") == 5):
         return frozenset({DashboardPermission.MEMORY_ASSIGN, *({DashboardPermission.MEMORY_READ} if read else ())})

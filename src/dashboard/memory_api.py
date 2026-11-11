@@ -41,6 +41,9 @@ DEPENDENTS_NOTICE = ("Este recuerdo automático tiene recuerdos derivados. Para 
 RETURN_NOTICE = ("Lo devolviste a la administración. No se borró: sigue guardado hasta que la administración "
                  "lo reasigne o lo elimine. Si querés que se borre, usá Eliminar antes de devolverlo.")
 
+VOICE_RETURN_NOTICE = ("La devolviste a la administración. Es una propuesta: si nadie la confirma ni la reasigna, "
+                       "vence sola en menos de 48 horas.")
+
 # contracts_1a.exceptions -> HTTP (design v5), plus memory_owner_actor_denied (A10).
 _OWNER_ERRORS = {
     "memory_owner_conflict": 409,
@@ -310,6 +313,9 @@ def register_memory_routes(app, *, manager=None) -> None:
             returned = await run(service.ledger.return_owned, fact_id, actor.person_id, actor)
         except PermissionError as error:
             raise HTTPException(403, detail="memory_owner_actor_denied") from error
-        return {"returned": True, "notice": RETURN_NOTICE} if returned else {"returned": False}
+        if not returned:
+            return {"returned": False}
+        # N5 (U3b-4a-2): an unconfirmed voice proposal keeps its deadline; say so.
+        return {"returned": True, "notice": VOICE_RETURN_NOTICE if returned.voice_proposal else RETURN_NOTICE}
 
     app.include_router(router)

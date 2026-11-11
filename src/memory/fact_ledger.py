@@ -32,6 +32,7 @@ from src.memory.index_deletions import INDEX_DELETION_SCHEMA, IndexDeletionQueue
 from src.memory.voice_attribution import (
     AttributionReason, GateDecision, ScoringSnapshot, VoiceAttributionCapability, VoiceAttributionEventKind,
     VoiceConsentState, VoiceProposalSettings, VoiceSuspensionReason, VoiceVerificationOutcome,
+    VoiceVerificationWindows,
     evaluate_gate, verification_outcome,
 )
 from src.memory.voice_schema import (
@@ -359,6 +360,7 @@ def _person_principal(principal: object, permission: str) -> bool:
 
 
 MEMORY_PAGE_LIMIT = 100
+VOICE_CONSENT_LISTING_MAX = 256  # U3b-4a-2: bounded operator consent listing
 
 
 @dataclass(frozen=True)
@@ -834,6 +836,8 @@ class FactLedger:
             raise ValueError("voice_proposals_config_invalid")
         # G2: absent settings mean the voice stage is off; the switch row alone never enables it.
         self.voice_settings = VoiceProposalSettings() if voice_settings is None else voice_settings
+        # U3b-4a-2: open verification windows live only in memory (a restart closes them).
+        self.voice_windows = VoiceVerificationWindows(self.clock)
         self._lock = threading.RLock()
         self._db: sqlite3.Connection | None = None
         self._authority_available = False
@@ -1698,7 +1702,10 @@ class FactLedger:
                            "enabled=excluded.enabled, revision=excluded.revision, changed_at=excluded.changed_at, "
                            "changed_by=excluded.changed_by",
                            (int(enabled), revision, self.clock(), _subject(actor.subject)))
-            return VoiceSwitchState(self.voice_settings.enabled is True, enabled, revision)
+            state = VoiceSwitchState(self.voice_settings.enabled is True, enabled, revision)
+        if not enabled:
+            self.voice_windows.clear()  # 4a-2 review W: no window outlives the switch
+        return state
 
     def _consent_row(self, db, person_id: str) -> tuple | None:
         row = db.execute("SELECT state, revision, verified_profile_id, verified_profile_revision, "
@@ -1802,6 +1809,60 @@ class FactLedger:
             scan_voice_attribution_rows(db)
             return self._consent(db, actor.person_id)
 
+    def voice_status(self, actor: MemoryVoiceConsentActor) -> dict:
+        """The caller's own status (U3b-4a-2): state, revision, effective switch, failures left, window.
+
+        The window is returned only while its binding still holds (switch on,
+        same pending consent revision, same single linked profile and link,
+        not suspended); a stale one is closed. Nothing about other people,
+        their windows, rooms or profiles.
+        """
+        self._consent_actor(actor)
+        with self._transaction(actor.require_current) as db:
+            scan_voice_attribution_rows(db)
+            consent = self._consent(db, actor.person_id)
+            failures = self._attempts_since(db, actor.person_id, VoiceVerificationOutcome.FAILED,
+                                            self.voice_settings.verification_lock_window_s)
+            pending = consent.state is VoiceConsentState.PENDING_VERIFICATION
+            window = self.voice_windows.current(actor.person_id)
+            if window is not None and not self._binding_current(db, window.binding):
+                self.voice_windows.close(actor.person_id)  # 4a-2 review W: a stale window is never shown
+                window = None
+            return {"state": None if consent.state is None else consent.state.value, "revision": consent.revision,
+                    "effective": self._voice_effective(db),
+                    "failures_left": max(0, self.voice_settings.verification_max_failures - failures)
+                    if pending else None,
+                    "window": window}
+
+    def voice_consents(self, actor: MemoryAssigner) -> dict:
+        """Operator view: consents with their verified profile, suspensions and multi-profile people.
+
+        No scores and no attempt details (R3). One row per account, at most
+        VOICE_CONSENT_LISTING_MAX rows by person id; ``truncated`` says more exist.
+        """
+        self._assigner(actor)
+        with self._transaction(actor.require_current) as db:
+            scan_voice_attribution_rows(db)
+            live = self._live_voice_profiles(db)
+            names = dict(db.execute("SELECT id, name FROM voice_profiles WHERE deleted_at IS NULL"))
+            linked: dict[str, int] = {}
+            for profile, (person, _revision) in self._profile_links(db).items():
+                if profile in live:
+                    linked[person] = linked.get(person, 0) + 1
+            rows = db.execute("SELECT person_id, state, revision, verified_profile_id, changed_at "
+                              "FROM voice_attribution_consents ORDER BY person_id LIMIT ?",
+                              (VOICE_CONSENT_LISTING_MAX + 1,)).fetchall()
+            consents = [{"person_id": person, "state": state, "revision": revision, "changed_at": changed_at,
+                         "verified_profile": None if profile is None else {"id": profile, "name": names.get(profile)},
+                         "linked_live_profiles": linked.get(person, 0)}
+                        for person, state, revision, profile, changed_at in rows[:VOICE_CONSENT_LISTING_MAX]]
+            return {"consents": consents, "truncated": len(rows) > VOICE_CONSENT_LISTING_MAX,
+                    "suspended_profiles": [{"profile_id": profile, "revision": revision} for profile, revision in
+                                           db.execute("SELECT profile_id, revision FROM voice_attribution_suspensions "
+                                                      "ORDER BY profile_id")],
+                    "multiple_profiles": [{"person_id": person, "linked_live_profiles": count}
+                                          for person, count in sorted(linked.items()) if count > 1]}
+
     def request_voice_consent(self, actor: MemoryVoiceConsentActor, expected_revision: int) -> VoiceConsent:
         """none | revoked | invalidated -> pending_verification; it grants nothing yet.
 
@@ -1850,7 +1911,9 @@ class FactLedger:
                 raise ValueError("memory_voice_consent_state")
             state = (VoiceConsentState.VERIFICATION_LOCKED if consent.state is VoiceConsentState.VERIFICATION_LOCKED
                      else VoiceConsentState.REVOKED)
-            return self._write_consent(db, actor.person_id, state, consent.revision + 1, actor.subject)
+            written = self._write_consent(db, actor.person_id, state, consent.revision + 1, actor.subject)
+        self.voice_windows.close(actor.person_id)
+        return written
 
     def reopen_voice_consent(self, person_id: str, expected_revision: int, actor: MemoryAssigner) -> VoiceConsent:
         """Operator: verification_locked -> pending_verification; any other state or no row is the same refusal.
@@ -1884,39 +1947,75 @@ class FactLedger:
         is not suspended and a scoring set of at least min_scoring_profiles
         (Q4). More than verification_windows_per_day openings in 24 h, counted
         from the durable table, are refused (rate limit survives a restart).
-        The in-memory window itself (room, phrase) belongs to U3b-4b.
+        The in-memory window itself (room, phrase) is opened by open_voice_window.
+        """
+        self._consent_actor(actor)
+        expected = self._expected(expected_revision)
+        with self._owner_transaction(actor.require_current) as db:
+            return self._open_binding(db, actor.person_id, expected)
+
+    def open_voice_window(self, actor: MemoryVoiceConsentActor, expected_revision: int, room_id: str,
+                          room_available: Callable[[str], bool] | None):
+        """Open the person's verification window in ``room_id`` (U3b-4a-2 review R, W).
+
+        Every consent, profile and rate-limit check runs first, so only a person
+        who could open a window ever learns a room's state, and that answer
+        consumes one of the day's window openings (the attempt row is written
+        before the room is read). The window is registered inside the same
+        ledger transaction, so a revocation or invalidation can never land
+        between the binding and its registration. Returns None when the room
+        is not capturing (only an exact True from ``room_available`` counts).
         """
         self._consent_actor(actor)
         expected = self._expected(expected_revision)
         person = actor.person_id
-        with self._owner_transaction(actor.require_current) as db:
-            scan_voice_attribution_rows(db)
-            if not self._voice_effective(db):
-                raise ValueError("memory_voice_disabled")
-            consent = self._consent(db, person)
-            if consent.revision != expected:
-                raise ValueError("memory_voice_consent_conflict")
-            if consent.state is not VoiceConsentState.PENDING_VERIFICATION:
-                raise ValueError("memory_voice_consent_state")
-            live = self._live_voice_profiles(db)
-            linked = self._linked_profiles(db, person, live)
-            if not linked:
-                raise ValueError("memory_voice_no_profile")
-            if len(linked) > 1:
-                raise ValueError("memory_voice_profile_ambiguous")
-            (profile, (profile_revision, link_revision)), = linked.items()
-            if self._suspended(db, profile):
-                raise ValueError("memory_voice_profile_suspended")
-            if len(live) < self.voice_settings.min_scoring_profiles:
-                raise ValueError("memory_voice_insufficient_profiles")
-            if not self._scorable(db, live):
-                raise ValueError("memory_voice_scoring_incomplete")
-            if self._attempts_since(db, person, VoiceVerificationOutcome.WINDOW_OPENED,
-                                    86400.0) >= self.voice_settings.verification_windows_per_day:
-                raise PermissionError("memory_voice_rate_limited")
-            opened_at = self._attempt(db, person, VoiceVerificationOutcome.WINDOW_OPENED)
-            return VoiceVerificationBinding(person, consent.revision, profile, profile_revision, link_revision,
-                                            opened_at)
+        registered = False
+        try:
+            with self._owner_transaction(actor.require_current) as db:
+                binding = self._open_binding(db, person, expected)
+                try:
+                    available = callable(room_available) and room_available(room_id) is True
+                except Exception as error:
+                    logger.warning("[FactLedger] room availability failed: %s", type(error).__name__)
+                    available = False
+                if not available:
+                    return None
+                registered = True  # before the call: a failure inside the registry still closes it
+                return self.voice_windows.open(binding, room_id)
+        except BaseException:
+            if registered:
+                self.voice_windows.close(person)
+            raise
+
+    def _open_binding(self, db, person: str, expected: int) -> VoiceVerificationBinding:
+        """Inside the caller's transaction: every opening check, then the counted 'window_opened' row."""
+        scan_voice_attribution_rows(db)
+        if not self._voice_effective(db):
+            raise ValueError("memory_voice_disabled")
+        consent = self._consent(db, person)
+        if consent.revision != expected:
+            raise ValueError("memory_voice_consent_conflict")
+        if consent.state is not VoiceConsentState.PENDING_VERIFICATION:
+            raise ValueError("memory_voice_consent_state")
+        live = self._live_voice_profiles(db)
+        linked = self._linked_profiles(db, person, live)
+        if not linked:
+            raise ValueError("memory_voice_no_profile")
+        if len(linked) > 1:
+            raise ValueError("memory_voice_profile_ambiguous")
+        (profile, (profile_revision, link_revision)), = linked.items()
+        if self._suspended(db, profile):
+            raise ValueError("memory_voice_profile_suspended")
+        if len(live) < self.voice_settings.min_scoring_profiles:
+            raise ValueError("memory_voice_insufficient_profiles")
+        if not self._scorable(db, live):
+            raise ValueError("memory_voice_scoring_incomplete")
+        if self._attempts_since(db, person, VoiceVerificationOutcome.WINDOW_OPENED,
+                                86400.0) >= self.voice_settings.verification_windows_per_day:
+            raise PermissionError("memory_voice_rate_limited")
+        opened_at = self._attempt(db, person, VoiceVerificationOutcome.WINDOW_OPENED)
+        return VoiceVerificationBinding(person, consent.revision, profile, profile_revision, link_revision,
+                                        opened_at)
 
     @staticmethod
     def _person_available(retired: object, active: object, person_id: str) -> bool:
@@ -1936,6 +2035,18 @@ class FactLedger:
             logger.warning("[FactLedger] voice scorer failed: %s", type(error).__name__)
             return None
         return snapshot if type(snapshot) is ScoringSnapshot and snapshot.valid() else None
+
+    def _binding_current(self, db, binding: object) -> bool:
+        """The window's binding still holds: switch on, same pending consent, same link, not suspended."""
+        if type(binding) is not VoiceVerificationBinding or not self._voice_effective(db):
+            return False
+        consent = self._consent_row(db, binding.person_id)
+        if (consent is None or consent[0] is not VoiceConsentState.PENDING_VERIFICATION
+                or consent[1] != binding.consent_revision):
+            return False
+        return (self._linked_profiles(db, binding.person_id) == {
+            binding.profile_id: (binding.profile_revision, binding.link_revision)}
+            and not self._suspended(db, binding.profile_id))
 
     def _verification_reason(self, db, binding: VoiceVerificationBinding, scorer: Callable,
                              retired: object, active: object) -> AttributionReason:
@@ -2176,9 +2287,11 @@ class FactLedger:
         """Hook inside the caller's transaction: a verified profile changed, was unlinked or deleted.
 
         Active consents verified on it -> invalidated (revision+1), and that
-        person's unconfirmed voice proposals are unassigned. Never creates or
+        person's unconfirmed voice proposals are unassigned. Verification
+        windows bound to it are closed. Never creates or
         activates anything. Returns the number of consents invalidated.
         """
+        self.voice_windows.close_profile(profile_id)  # 4a-2 review W: pending windows bound to it
         rows = db.execute("SELECT person_id, revision FROM voice_attribution_consents "
                           "WHERE verified_profile_id=? AND state=?",
                           (profile_id, VoiceConsentState.ACTIVE.value)).fetchall()
@@ -2191,6 +2304,7 @@ class FactLedger:
         """Defensive retirement hook (clear_user_links): with the N3 order clear_user_facts already did this."""
         removed = 0
         for person in sorted(identities):
+            self.voice_windows.close(person)
             removed += self._release_voice_proposals(db, person, retiring=True)
             removed += db.execute("DELETE FROM voice_attribution_consents WHERE person_id=?", (person,)).rowcount
             removed += db.execute("DELETE FROM voice_verification_attempts WHERE person_id=?", (person,)).rowcount
