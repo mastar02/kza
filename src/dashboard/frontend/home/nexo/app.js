@@ -19,6 +19,10 @@ import './memory-owner.js';
 import './memory.js';
 import './my-memory-owner.js';
 import './my-memory.js';
+import './my-voice-owner.js';
+import './my-voice.js';
+import './voice-consents-owner.js';
+import './voice-consents.js';
 import { createHouse } from './house.js';
 
 const core = window.HomeUI, state = window.NexoState;
@@ -74,7 +78,9 @@ const voices = window.NexoVoiceOwner.createVoiceOwner({ session,
   fetch: window.fetch.bind(window), connect: url => new WebSocket(url),
   socketUrl: () => `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/voices`,
   mount: controller => window.NexoVoices.mountVoices({ container: byId('voices-content'), dialog: byId('voice-dialog'), linkDialog: byId('voice-link-dialog'), controller, icon,
-    onEvaluate: session.role() === 'operator' && session.can('auth:manage') ? prepareEvaluation : undefined }),
+    onEvaluate: session.role() === 'operator' && session.can('auth:manage') ? prepareEvaluation : undefined,
+    // U3b-4a-3: 'Verificada por …' and the pause next to each profile, from the voice administration owner.
+    profileNote: id => voiceAdmin.profileNote(id), onProfileNotes: listener => voiceAdmin.subscribe(listener) }),
   onStatus: message => { byId('voice-connection').textContent = message; },
   verifyIdentity: async () => { const identity = await api('/api/admin/auth/whoami'); return identity?.ok === true && ['voices:read', 'voices:review'].every(permission => identity.permissions?.includes(permission)); },
   onUnauthorized: () => retire('Tu acceso a Voces dejó de estar vigente. Iniciá sesión nuevamente.')
@@ -124,9 +130,21 @@ function closeMemory() {
 const myMemory = window.NexoMyMemoryOwner.createMyMemoryOwner({ api, session,
   onAccountChanged: () => { setTimeout(() => { retire('La cuenta cambió en otra pestaña.'); void bootstrap(); }, 0); } });
 let myMemoryView = null;
+// U3b-4a-3: the person's voice opt-in lives inside 'Mis recuerdos' with its own owner and the same session rules.
+const myVoice = window.NexoMyVoiceOwner.createMyVoiceOwner({ api, session,
+  onAccountChanged: () => { setTimeout(() => { retire('La cuenta cambió en otra pestaña.'); void bootstrap(); }, 0); } });
+let myVoiceView = null;
 function closeMyMemory() {
-  const dispose = myMemoryView; myMemoryView = null; dispose?.();
-  return myMemory.leave();
+  const dispose = myMemoryView, disposeVoice = myVoiceView; myMemoryView = myVoiceView = null; dispose?.(); disposeVoice?.();
+  return Promise.all([myMemory.leave(), myVoice.leave()]).then(values => values.every(Boolean));
+}
+// U3b-4a-3: the voice stage administration (switch, consents, resume) is a panel inside Voces.
+const voiceAdmin = window.NexoVoiceConsentsOwner.createVoiceConsentsOwner({ api, session,
+  onAccountChanged: () => { setTimeout(() => { retire('La cuenta cambió en otra pestaña.'); void bootstrap(); }, 0); } });
+let voiceAdminView = null;
+function closeVoiceAdmin() {
+  const dispose = voiceAdminView; voiceAdminView = null; dispose?.();
+  return voiceAdmin.leave();
 }
 function closeAccess() {
   const dispose = accessView; accessView = null; dispose?.();
@@ -150,7 +168,7 @@ function trackViewDrain(promises) {
 }
 function drainViews() {
   people.leave();
-  return trackViewDrain([voices.leave(), evaluator.leave(), closeAccess(), closeRoutines(), closeMemory(), closeMyMemory()]);
+  return trackViewDrain([voices.leave(), evaluator.leave(), closeAccess(), closeRoutines(), closeMemory(), closeMyMemory(), closeVoiceAdmin()]);
 }
 
 function pendingLogout(value) {
@@ -173,9 +191,9 @@ function destroyHouse() {
 function retire(message = '', { endSession = true } = {}) {
   epoch++; navigationVersion++; desiredView = null; privateSuspended = false; session.clear(); transport.invalidateSession();
   clearTimeout(sessionTimer); poller?.stop(); poller = null; ticker?.stop(); ticker = null;
-  people.clear(); const accessClosing = closeAccess(), routinesClosing = closeRoutines(), memoryClosing = closeMemory(), myMemoryClosing = closeMyMemory();
+  people.clear(); const accessClosing = closeAccess(), routinesClosing = closeRoutines(), memoryClosing = closeMemory(), myMemoryClosing = closeMyMemory(), voiceAdminClosing = closeVoiceAdmin();
   trackViewDrain([voices.clear(), evaluator.clear(), access.clear(), accessClosing, routinesClosing, routines.clear({ wipe: endSession }),
-    memoryClosing, memory.clear({ wipe: endSession }), myMemoryClosing, myMemory.clear({ wipe: endSession })]);
+    memoryClosing, memory.clear({ wipe: endSession }), myMemoryClosing, myMemory.clear({ wipe: endSession }), myVoice.clear({ wipe: endSession }), voiceAdminClosing, voiceAdmin.clear({ wipe: endSession })]);
   actions.clear(); destroyHouse(); catalog = clock = lastError = staleFocus = null; roomId = undefined; activeView = null;
   byId('voice-connection').textContent = ''; byId('evaluation-connection').textContent = '';
   byId('view-transition-status').hidden = true;
@@ -412,7 +430,11 @@ async function activate(view, push = true, force = false) {
     }
     let opened = true;
     if (view === 'people') people.open();
-    if (view === 'voices') opened = await voices.open();
+    if (view === 'voices') {
+      voiceAdminView = window.NexoVoiceConsents.mountVoiceConsents({ container: byId('voice-attribution'), confirmDialog: byId('voice-attribution-confirm-dialog'), owner: voiceAdmin, icon });
+      opened = await voices.open();
+      void voiceAdmin.open();
+    }
     if (view === 'access') {
       accessView = window.NexoAccess.mountAccess({ container: byId('access-view'), dialog: byId('access-dialog'),
         secretDialog: byId('access-secret-dialog'), controller: access, icon });
@@ -429,9 +451,13 @@ async function activate(view, push = true, force = false) {
       opened = await memory.open();
     }
     if (view === 'mymemory') {
+      const voiceSlot = node('div', 'memory-voice-slot');
+      myVoiceView = window.NexoMyVoice.mountMyVoice({ container: voiceSlot, confirmDialog: byId('my-voice-confirm-dialog'), owner: myVoice, icon });
       myMemoryView = window.NexoMyMemory.mountMyMemory({ container: byId('my-memory-view'), confirmDialog: byId('my-memory-confirm-dialog'), owner: myMemory, icon,
-        returnNotice: window.NexoMyMemoryOwner.RETURN_NOTICE });
+        returnNotice: window.NexoMyMemoryOwner.RETURN_NOTICE, voiceReturnNotice: window.NexoMyMemoryOwner.VOICE_RETURN_NOTICE, voiceSlot,
+        voiceEnabled: () => myVoice.getState().status?.enabled === true, onVoiceChange: listener => myVoice.subscribe(listener) });
       opened = await myMemory.open();
+      void myVoice.open();
     }
     if (!stillCurrent()) return false;
     if (!opened) throw Error('No pudimos abrir esta vista. Podés reintentar la consulta.');

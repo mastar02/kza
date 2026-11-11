@@ -20,6 +20,11 @@
   const NOT_APPLIED_503 = ['memory_unavailable', 'dashboard_authority_unavailable', 'dashboard_auth_not_configured'];
   // memory_api.RETURN_NOTICE, shown before and after 'No es mío' (v4 return_semantics.person_notice).
   const RETURN_NOTICE = 'Lo devolviste a la administración. No se borró: sigue guardado hasta que la administración lo reasigne o lo elimine. Si querés que se borre, usá Eliminar antes de devolverlo.';
+  // memory_api.VOICE_RETURN_NOTICE (N5): 'No es mío' on an unconfirmed voice proposal.
+  const VOICE_RETURN_NOTICE = 'La devolviste a la administración. Es una propuesta: si nadie la confirma ni la reasigna, vence sola en menos de 48 horas.';
+  // Q5/N7: an unconfirmed voice proposal is projected without content, with times rounded down to the hour.
+  const PENDING_KEYS = 'created_at,expires_at,id,kind';
+  const HOUR = 3600;
   const string = value => typeof value === 'string';
   const finite = value => typeof value === 'number' && Number.isFinite(value);
 
@@ -27,14 +32,21 @@
     const detail = error?.detail;
     return string(detail) ? detail : string(detail?.code) ? detail.code : null;
   }
+  function parsePending(value) {
+    if (value.kind !== 'voice_proposal_pending' || !string(value.id) || !FACT_ID.test(value.id) || !finite(value.created_at) || !finite(value.expires_at)
+        || value.created_at % HOUR !== 0 || value.expires_at % HOUR !== 0 || value.expires_at < value.created_at) throw Error('invalid_my_memory');
+    return { id: value.id, pending: true, content: null, category: null, state: 'proposed', created_at: value.created_at, expires_at: value.expires_at,
+      method: 'voice_proposal', assigned_at: null, owned_dependents: [], hidden_dependents: false };
+  }
   function parseItem(value) {
+    if (value && typeof value === 'object' && Object.keys(value).sort().join(',') === PENDING_KEYS) return parsePending(value);
     if (!value || typeof value !== 'object' || Object.keys(value).sort().join(',') !== ITEM_KEYS.join(',')
         || !string(value.id) || !FACT_ID.test(value.id) || !string(value.content) || !string(value.category) || !STATES.includes(value.state)
         || !finite(value.created_at) || !(value.expires_at === null || finite(value.expires_at)) || (value.state === 'confirmed') !== (value.expires_at === null)
         || !METHODS.includes(value.owner_method) || !finite(value.owner_assigned_at) || typeof value.has_hidden_dependents !== 'boolean'
         || !Array.isArray(value.owned_dependents) || value.owned_dependents.some(id => !string(id) || !FACT_ID.test(id) || id === value.id)
         || new Set(value.owned_dependents).size !== value.owned_dependents.length) throw Error('invalid_my_memory');
-    return { id: value.id, content: value.content, category: value.category, state: value.state, created_at: value.created_at,
+    return { id: value.id, pending: false, content: value.content, category: value.category, state: value.state, created_at: value.created_at,
       expires_at: value.expires_at, method: value.owner_method, assigned_at: value.owner_assigned_at,
       owned_dependents: [...value.owned_dependents], hidden_dependents: value.has_hidden_dependents };
   }
@@ -130,17 +142,19 @@
       const controller = new AbortController(); reads.add(controller);
       try { return await api(path, { signal: controller.signal }); } finally { reads.delete(controller); }
     }
-    // The person projection has no server clock: expiry is judged against the local wall clock.
+    // The person projection has no server clock: expiry is judged against the local wall clock. A pending
+    // voice proposal's expiry is rounded down to the hour: it stays listed until the latest possible real expiry.
+    const deadline = item => item.expires_at === null ? null : item.pending ? item.expires_at + HOUR : item.expires_at;
     function visibleList() {
       if (!state.list) return [];
       const now = wall() / 1000;
-      return state.list.filter(item => state.markers[item.id] || item.expires_at === null || item.expires_at > now);
+      return state.list.filter(item => state.markers[item.id] || deadline(item) === null || deadline(item) > now);
     }
     function plan() {
       stopTimer();
       if (!opened || !state.list) return;
       const now = wall() / 1000;
-      const deadlines = state.list.map(item => item.expires_at).filter(value => value !== null && value > now);
+      const deadlines = state.list.map(deadline).filter(value => value !== null && value > now);
       if (!deadlines.length) return;
       const ticket = epoch;
       timer = schedule(() => { timer = undefined; if (ticket === epoch && opened) { emit(); plan(); } }, Math.max(50, Math.min(60000, (Math.min(...deadlines) - now) * 1000 + 50)));
@@ -284,13 +298,14 @@
       return Boolean(state.markers[id]) || Boolean(item && item.owned_dependents.some(other => state.markers[other]));
     }
     async function send(id, marker, first) {
-      const ticket = epoch;
+      const ticket = epoch, wasPending = find(id)?.pending === true;
       const path = '/api/memory/mine/facts/' + id + (marker.op === 'return' ? '/return' : '');
       let outcome;
       // Never aborted: leaving the view must not cut a write the server may commit.
       try { outcome = { value: await api(path, { method: marker.op === 'delete' ? 'DELETE' : 'POST' }) }; } catch (error) { outcome = { error }; }
       if (ticket !== epoch || state.markers[id] !== marker) return { stale: true };
       const verdict = classifyWrite(marker.op, outcome);
+      if (verdict.kind === 'applied' && wasPending && marker.op === 'delete' && verdict.done) verdict.text = 'Propuesta descartada.';
       if (verdict.kind === 'applied') {
         dropMarker(id); readFloor = readSeq; again = again || Boolean(refreshing);
         if (state.list && opened) {
@@ -384,7 +399,7 @@
       remove: (id, options) => act('delete', id, options), giveBack: (id, options) => act('return', id, options), retry, isOpen: () => opened };
   }
 
-  const exported = { createMyMemoryOwner, parsePage, parseItem, classifyWrite, writeDisposition, resolveMarker, describeReadError, PREFIX, ENDED_KEY, RETURN_NOTICE, MAX_PAGES, RESTORED_ABSENT, RESTORED_STILL };
+  const exported = { createMyMemoryOwner, parsePage, parseItem, classifyWrite, writeDisposition, resolveMarker, describeReadError, PREFIX, ENDED_KEY, RETURN_NOTICE, VOICE_RETURN_NOTICE, MAX_PAGES, RESTORED_ABSENT, RESTORED_STILL };
   root.NexoMyMemoryOwner = exported;
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;
 })(typeof window !== 'undefined' ? window : globalThis);

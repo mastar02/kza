@@ -312,3 +312,36 @@ dialog>p{font-size:13px;color:#abbccd;line-height:1.9;margin:12px 0}
 #memory-confirm-dialog .memory-assign-notice{color:#f3d48b}
 :is(#memory-confirm-dialog,#my-memory-confirm-dialog) .identity-primary{min-height:44px;min-width:44px;font-size:12px}
 :is(#memory-confirm-dialog,#my-memory-confirm-dialog) .memory-confirm-actions>button{white-space:normal;max-width:100%}
+/* U3b-4a-3: voice opt-in (Mis recuerdos) and voice stage administration (Voces). */
+:is(#my-voice-confirm-dialog,#voice-attribution-confirm-dialog){width:560px;max-width:calc(100% - 24px);max-height:calc(100dvh - 24px);overflow:auto;padding:24px}
+:is(#my-voice-confirm-dialog,#voice-attribution-confirm-dialog) h2{overflow-wrap:anywhere}
+:is(#my-voice-confirm-dialog,#voice-attribution-confirm-dialog) .modal-description{font-size:13px;line-height:1.7;overflow-wrap:anywhere}
+:is(#my-voice-confirm-dialog,#voice-attribution-confirm-dialog) .memory-confirm-actions{display:flex;flex-wrap:wrap;gap:8px}
+:is(#my-voice-confirm-dialog,#voice-attribution-confirm-dialog) :is(.identity-primary,.identity-secondary,.identity-danger){min-height:44px;min-width:44px;font-size:12px;white-space:normal;max-width:100%}
+#my-memory-view .memory-voice{padding:20px;margin:0 0 18px;display:flex;flex-direction:column;gap:8px;min-width:0}
+#my-memory-view .memory-voice .memory-card-top{display:flex;align-items:center;gap:12px;min-width:0}
+#my-memory-view .memory-voice .scene-icon{flex-shrink:0;display:grid;place-items:center;width:40px;height:40px;border-radius:10px;background:#ffffff08;color:var(--purple)}
+#my-memory-view .memory-voice .scene-icon svg{width:20px;height:20px}
+#my-memory-view .memory-voice .memory-section-title{margin:0}
+#my-memory-view .memory-voice-phrase{font-size:18px;line-height:1.5;color:var(--text);overflow-wrap:anywhere;unicode-bidi:isolate;margin:0}
+#my-memory-view .memory-voice-verify{display:flex;flex-direction:column;gap:10px;min-width:0}
+#my-memory-view .memory-voice-room{display:flex;flex-direction:column;gap:6px;font-size:13px;color:#b0bfd4;min-width:0}
+#my-memory-view .memory-voice-room select{box-sizing:border-box;width:100%;max-width:100%;min-width:0;min-height:44px;font-size:14px;background:#0b1421;color:#d8e7f8;border:1px solid #ffffff17;border-radius:7px;padding:8px 10px}
+#my-memory-view .memory-voice-verify>button{align-self:flex-start;white-space:normal;max-width:100%}
+#my-memory-view .memory-pending-title{font-size:15px;line-height:1.5;color:var(--text);overflow-wrap:anywhere;margin:0}
+#my-memory-view .memory-pending{border-color:#b29af433}
+#my-memory-view .memory-controls>button{white-space:normal;max-width:100%}
+#voices-view .voice-attribution{padding:20px;margin-top:24px;display:flex;flex-direction:column;gap:12px;min-width:0}
+#voices-view .voice-attribution-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px}
+#voices-view .voice-attribution-head h3{font-size:15px;margin:0}
+#voices-view .voice-attribution h4{font-size:13px;font-weight:600;margin:6px 0;color:var(--text)}
+#voices-view .voice-attribution-note,#voices-view .voice-attribution-state{font-size:13px;line-height:1.7;color:var(--muted);margin:0;overflow-wrap:anywhere}
+#voices-view .voice-attribution-note:empty{display:none}
+#voices-view .voice-attribution-warning{font-size:13px;line-height:1.6;color:#f3d48b;overflow-wrap:anywhere}
+#voices-view .voice-attribution-block{display:flex;flex-direction:column;gap:8px;min-width:0}
+#voices-view .voice-attribution-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+#voices-view .voice-attribution-row{display:flex;flex-direction:column;gap:6px;padding:12px;border:1px solid #ffffff14;border-radius:10px;min-width:0;font-size:13px;color:#b0bfd4;overflow-wrap:anywhere}
+#voices-view .voice-attribution-row>strong{font-size:14px;color:var(--text);unicode-bidi:isolate}
+#voices-view .voice-attribution :is(.identity-primary,.identity-secondary,.identity-danger){min-height:44px;min-width:44px;font-size:12px;align-self:flex-start;white-space:normal;max-width:100%}
+#voices-view .voice-attribution [aria-disabled=true]{opacity:.6;cursor:progress}
+@media(max-width:620px){:is(#my-voice-confirm-dialog,#voice-attribution-confirm-dialog){width:100%;max-width:100%;max-height:100dvh;height:100dvh;margin:0;border-radius:0;padding:18px}:is(#my-voice-confirm-dialog,#voice-attribution-confirm-dialog) .memory-confirm-actions>*{flex:1 1 100%}#voices-view .voice-attribution{padding:14px}#my-memory-view .memory-voice{padding:14px}}

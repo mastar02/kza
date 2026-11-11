@@ -269,7 +269,8 @@ async def main() -> None:
                         await click('#app-nav [data-view=mymemory]')
                         await page.wait_for(f"location.hash==='#mis-recuerdos' && !document.querySelector('#my-memory-view').hidden && document.querySelector({card(a_return)})")
                         opened = [item['path'] for item in requests[marker:] if item['path'] in ('/api/admin/auth/whoami', '/api/memory/mine')]
-                        assert opened[:2] == ['/api/admin/auth/whoami', '/api/memory/mine'], opened
+                        # U3b-4a-3: the voice section confirms the account on its own, so a second whoami may precede the list.
+                        assert opened[0] == '/api/admin/auth/whoami' and '/api/memory/mine' in opened, opened
                         assert not any(item['path'] == '/api/memory' or item['path'].startswith('/api/memory/') and not item['path'].startswith('/api/memory/mine')
                                        for item in requests[marker:]), requests[marker:]
                         text = await page.evaluate("document.querySelector('#my-memory-view').innerText")

@@ -60,6 +60,20 @@
     if (pathname === '/api/memory/mine') return method === 'GET' ? 'memory:own:read' : null;
     if (method === 'DELETE' && new RegExp(`^/api/memory/mine/facts/${FACT}$`).test(pathname)) return 'memory:own:write';
     if (method === 'POST' && new RegExp(`^/api/memory/mine/facts/${FACT}/return$`).test(pathname)) return 'memory:own:write';
+    return voicePermission(pathname, method);
+  }
+  // U3b-4a-3: the voice opt-in routes (memory_voice_api.py), each with auth.py's route permission
+  // plus the handler's own guard. Unknown /mine/voice subpaths stay unmapped (refused locally).
+  const PERSON_ID = '[A-Za-z0-9_.:@-]{1,128}';
+  const PROFILE_ID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+  function voicePermission(pathname, method) {
+    if (pathname === '/api/memory/mine/voice') return method === 'GET' ? 'memory:own:voice' : null;
+    if (pathname === '/api/memory/mine/voice/consent') return ['POST', 'DELETE'].includes(method) ? 'memory:own:voice' : null;
+    if (pathname === '/api/memory/mine/voice/verification') return method === 'POST' ? 'memory:own:voice' : null;
+    if (pathname === '/api/memory/voice/consents') return method === 'GET' ? ['memory:assign', 'memory:read'] : null;
+    if (method === 'POST' && new RegExp(`^/api/memory/voice/consents/${PERSON_ID}/reopen$`).test(pathname)) return 'memory:assign';
+    if (pathname === '/api/memory/voice/switch') return method === 'GET' ? ['memory:assign', 'memory:read'] : method === 'POST' ? ['admin:manage', 'memory:assign'] : null;
+    if (method === 'POST' && new RegExp(`^/api/voices/profiles/${PROFILE_ID}/attribution/resume$`).test(pathname)) return ['admin:manage', 'memory:assign', 'voices:review'];
     return null;
   }
   function createScopedApi({ session, transport, onRetired = () => {} }) {
@@ -106,7 +120,7 @@
     if (entity.domain === 'climate') return `Modo ${MODE_LABELS[entity.state] || entity.state}`;
     return ({ on: 'Encendido', off: 'Apagado', open: 'Abierto', closed: 'Cerrado', opening: 'Abriendo', closing: 'Cerrando' })[entity.state] || entity.state || 'Estado desconocido';
   }
-  const exported = { createSession, createScopedApi, sessionRetired, memoryPermission, roomEntities, entityState };
+  const exported = { createSession, createScopedApi, sessionRetired, memoryPermission, voicePermission, roomEntities, entityState };
   root.NexoState = exported;
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;
 })(typeof window !== 'undefined' ? window : globalThis);

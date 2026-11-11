@@ -19,9 +19,16 @@
     hidden: 'También se eliminan datos derivados de este recuerdo que no se muestran acá.',
     // Always shown: the deletion removes what depends on it when the server applies it, and no count comes back (R6).
     cascade: 'Se elimina además todo lo que dependa de este recuerdo al momento de borrarlo, aunque haya aparecido después de abrir este aviso. No se informa cuántos datos derivados se eliminaron.',
+    // With the voice stage on, the empty text names voice proposals (design v4 stage1_empty).
+    emptyVoice: 'Todavía no tenés recuerdos. Si te inscribís en la memoria por voz, lo que pidas recordar con tu voz aparece acá primero como propuesta pendiente.',
+    // Q5/Q6 and design v4 disclosure_copy.pending_entry: no content until administration confirms.
+    pendingTitle: 'Propuesta de voz pendiente de revisión',
+    pendingWhat: 'Todavía no se muestra el texto: lo vas a ver cuando la administración la confirme.',
+    discardConfirm: 'Se va a borrar esta propuesta. La administración no la va a ver.',
+    notMineConfirm: 'Si no fuiste vos, la devolvemos a la administración para que la revise. Vence sola en menos de 48 horas.',
   };
 
-  function mountMyMemory({ container, confirmDialog, owner, icon, returnNotice }) {
+  function mountMyMemory({ container, confirmDialog, owner, icon, returnNotice, voiceReturnNotice = '', voiceSlot = null, voiceEnabled = () => false, onVoiceChange = null }) {
     const doc = container.ownerDocument;
     const cards = new Map(), expanded = new Set();
     let active = true, lastAnnouncement = 0, confirmResolve = null, shown = SHOW_STEP, moreFocus = null;
@@ -38,6 +45,10 @@
     }
     function date(seconds) {
       return new Date(seconds * 1000).toLocaleString('es-UY', { timeZone: 'America/Montevideo', dateStyle: 'medium', timeStyle: 'short' });
+    }
+    // N7: the pending entry only knows whole hours; the copy never claims more precision.
+    function pendingTimes(item) {
+      return 'Recibida: ' + date(item.created_at) + ' (hora aproximada) · Vence antes de: ' + date(item.expires_at + 3600);
     }
     function content(item, clamp = true) {
       const long = item.content.length > CLAMP, open = !clamp || expanded.has(item.id);
@@ -80,10 +91,37 @@
     const empty = node('p', 'memory-note memory-empty', COPY.empty); empty.id = 'my-memory-empty';
     const sections = node('div', 'memory-sections');
     sections.append(pendingTitle, pendingList, listTitle, incomplete, grid, more, empty);
-    container.replaceChildren(heading, permission, sessionNotice, freshness, returned, live, sections);
+    container.replaceChildren(heading, permission, sessionNotice, freshness, returned, live, ...(voiceSlot ? [voiceSlot] : []), sections);
 
     function markerText(marker) { return marker.state === 'sending' ? 'Enviando…' : 'Sin confirmar: ' + OP_LABEL[marker.op]; }
+    function pendingAction(text, key, callback, label, blocked) {
+      const control = button(text, key, () => { if (control.getAttribute('aria-disabled') !== 'true') callback(); });
+      control.setAttribute('aria-disabled', String(blocked)); control.setAttribute('aria-label', label);
+      return control;
+    }
+    function buildPending(state, item, card) {
+      const marker = state.markers[item.id], caps = state.capabilities;
+      const top = node('div', 'memory-card-top');
+      const badge = node('span', 'scene-icon lavender'); badge.append(icon('mic'));
+      const title = node('h4', 'memory-pending-title', COPY.pendingTitle);
+      top.append(badge, title); card.append(top);
+      card.append(node('p', 'memory-detail', COPY.pendingWhat), node('p', 'memory-meta', pendingTimes(item)));
+      if (marker) { const line = node('p', 'memory-state', markerText(marker)); line.dataset.memoryMarker = marker.state; card.append(line); }
+      const message = node('p', 'memory-notice', state.notices[item.id] || ''); message.dataset.memoryNotice = item.id; card.append(message);
+      if (!caps.write) return;
+      const controls = node('div', 'memory-controls');
+      if (marker) {
+        if (!marker.restored) controls.append(pendingAction('Reintentar ' + OP_LABEL[marker.op], item.id + ':retry', () => owner.retry(item.id), 'Reintentar ' + OP_LABEL[marker.op], marker.state === 'sending'));
+      } else {
+        const blocked = owner.blocked(item.id);
+        // Exactly these two actions (Q6): «Eliminar» exists only after confirmation.
+        controls.append(pendingAction('Descartar', item.id + ':discard', () => confirmDiscard(item.id), 'Descartar esta propuesta de voz', blocked),
+          pendingAction('No es mío', item.id + ':return', () => confirmReturn(item.id), 'No es mío: devolver esta propuesta a la administración', blocked));
+      }
+      if (controls.childElementCount) card.append(controls);
+    }
     function buildCard(state, item, card) {
+      if (item.pending) { buildPending(state, item, card); return; }
       const marker = state.markers[item.id], caps = state.capabilities;
       const top = node('div', 'memory-card-top');
       const badge = node('span', 'scene-icon mint'); badge.append(icon('layers'));
@@ -122,7 +160,8 @@
         const signature = JSON.stringify([item, state.markers[item.id] || null, state.notices[item.id] || null, state.capabilities, expanded.has(item.id), owner.blocked(item.id)]);
         if (entry.signature !== signature) {
           const hadFocus = entry.card.contains(doc.activeElement);
-          entry.card.replaceChildren(); entry.card.setAttribute('aria-label', 'Recuerdo ' + (CATEGORY[item.category] || ''));
+          entry.card.replaceChildren(); entry.card.setAttribute('aria-label', item.pending ? COPY.pendingTitle : 'Recuerdo ' + (CATEGORY[item.category] || ''));
+          entry.card.classList.toggle('memory-pending', item.pending === true);
           buildCard(state, item, entry.card); entry.signature = signature;
           if (hadFocus && !focusByKey(key)) (entry.card.querySelector('button:not([disabled])') || entry.card).focus({ preventScroll: true });
         }
@@ -165,7 +204,8 @@
     }
     function target(item) {
       const box = node('div', 'memory-confirm-target');
-      box.append(content(item, false).text, node('p', 'memory-detail', stateLine(item)));
+      if (item.pending) box.append(node('p', 'memory-pending-title', COPY.pendingTitle), node('p', 'memory-detail', pendingTimes(item)));
+      else box.append(content(item, false).text, node('p', 'memory-detail', stateLine(item)));
       return box;
     }
     function actions(acceptText, acceptClass) {
@@ -214,9 +254,28 @@
       }
       await owner.remove(id, { confirmed: true });
     }
+    async function confirmDiscard(id) {
+      const item = owner.getState().facts.find(entry => entry.id === id);
+      if (!item || !item.pending) return;
+      const heading = node('h2', '', 'Descartar esta propuesta'); heading.id = 'my-memory-confirm-title';
+      const { row, cancelButton, accept } = actions('Descartar', 'identity-danger');
+      const accepted = await dialog([heading, target(item), node('p', 'modal-description', COPY.discardConfirm), row], cancelButton, id + ':discard',
+        finish => { cancelButton.onclick = () => finish(false); accept.onclick = () => finish(true); });
+      if (accepted && active) await owner.remove(id, { confirmed: true });
+    }
     async function confirmReturn(id) {
       const item = owner.getState().facts.find(entry => entry.id === id);
       if (!item) return;
+      if (item.pending) {
+        const heading = node('h2', '', 'No es mío'); heading.id = 'my-memory-confirm-title';
+        const { row, cancelButton, accept } = actions('No es mío', 'identity-primary');
+        // The same N5 sentence before acting as the server returns after.
+        const accepted = await dialog([heading, target(item), node('p', 'modal-description', COPY.notMineConfirm),
+          node('p', 'modal-description memory-return-before', voiceReturnNotice), row], cancelButton, id + ':return',
+          finish => { cancelButton.onclick = () => finish(false); accept.onclick = () => finish(true); });
+        if (accepted && active) await owner.giveBack(id, { confirmed: true });
+        return;
+      }
       const heading = node('h2', '', 'No es mío'); heading.id = 'my-memory-confirm-title';
       // The same sentence before acting as after (v4 person_notice).
       const { row, cancelButton, accept } = actions('Devolver a la administración', 'identity-primary');
@@ -270,14 +329,16 @@
         }
       } else if (existing) more.replaceChildren();
       if (moreFocus !== null) { const card = grid.children[moreFocus]; if (card) (card.querySelector('button:not([disabled])') || card).focus({ preventScroll: true }); moreFocus = null; }
+      empty.textContent = voiceEnabled() ? COPY.emptyVoice : COPY.empty;
       empty.hidden = !show || state.facts.length > 0;
       if (state.announcement && state.announcement.serial !== lastAnnouncement) { lastAnnouncement = state.announcement.serial; live.textContent = state.announcement.text; }
     }
     const stop = owner.subscribe(render);
+    const stopVoice = typeof onVoiceChange === 'function' ? onVoiceChange(render) : () => {};
     if (owner.getState().announcement) lastAnnouncement = owner.getState().announcement.serial;
     render();
     return () => {
-      active = false; stop();
+      active = false; stop(); stopVoice();
       if (confirmResolve) confirmResolve(false);
       if (confirmDialog.open) confirmDialog.close();
       confirmDialog.replaceChildren(); container.replaceChildren(); cards.clear(); expanded.clear();

@@ -1,7 +1,7 @@
 /* NEXO presentation over the existing, expiring voice stores. */
 (function (root) {
   'use strict';
-  function mountVoices({ container, dialog, linkDialog, controller, icon, onEvaluate }) {
+  function mountVoices({ container, dialog, linkDialog, controller, icon, onEvaluate, profileNote = () => null, onProfileNotes = null }) {
     const doc = container.ownerDocument, state = controller.state, selected = new Set();
     let active = true, profileId = null, renderedAudio = null, busy = false, needsRefresh = false;
     let linkToken = null, catalogue = null, catalogueStatus = 'waiting', linkDraft = null;
@@ -163,7 +163,7 @@
       const rows = state.profiles.snapshot(); counts[0].textContent = state.profiles.status() === 'real' ? String(rows.length) : '—';
       if (!rows.some(row => row.id === profileId)) profileId = rows[0]?.id ?? null; list.replaceChildren(); profilePage.replaceChildren();
       if (!rows.length) list.append(node('p', message(state.profiles, 'Aún no hay perfiles confirmados.'), 'identity-empty'));
-      for (const row of rows) { const item = button('', () => { closeLink(); profileId = row.id; drawProfiles(); }, 'voice-profile-row'), copy = node('span', '', 'voice-profile-info'); item.dataset.voiceProfile = row.id; item.classList.toggle('selected', profileId === row.id); item.setAttribute('aria-pressed', String(profileId === row.id)); copy.append(node('strong', row.name), node('span', 'Perfil confirmado')); item.append(icon('mic'), copy); list.append(item); }
+      for (const row of rows) { const item = button('', () => { closeLink(); profileId = row.id; drawProfiles(); }, 'voice-profile-row'), copy = node('span', '', 'voice-profile-info'); item.dataset.voiceProfile = row.id; item.classList.toggle('selected', profileId === row.id); item.setAttribute('aria-pressed', String(profileId === row.id)); const note = profileNote(row.id); copy.append(node('strong', row.name), node('span', typeof note === 'string' && note ? 'Perfil confirmado · ' + note : 'Perfil confirmado')); item.append(icon('mic'), copy); list.append(item); }
       if (controller.hasNext('profiles')) profilePage.append(button('Más perfiles', () => controller.next('profiles')));
       const row = rows.find(profile => profile.id === profileId); detail.replaceChildren();
       if (!row) detail.append(node('p', 'Elegí un perfil confirmado para revisarlo.', 'identity-empty'));
@@ -219,7 +219,7 @@
       }
       state.review.committed(state.review.deliveryToken());
     }
-    const stops = [state.profiles.subscribe(drawProfiles), state.captures.subscribe(drawCaptures), state.review.subscribe(drawReview)], check = () => { for (const key of ['profiles', 'captures', 'review']) state[key].check(); };
+    const stops = [state.profiles.subscribe(drawProfiles), state.captures.subscribe(drawCaptures), state.review.subscribe(drawReview), ...(typeof onProfileNotes === 'function' ? [onProfileNotes(() => { if (active) drawProfiles(); })] : [])], check = () => { for (const key of ['profiles', 'captures', 'review']) state[key].check(); };
     const cancelDialog = event => { event.preventDefault(); closeDialog(); }, cancelLink = event => { event.preventDefault(); closeLink(); }; dialog.addEventListener('cancel', cancelDialog); linkDialog?.addEventListener('cancel',cancelLink); doc.addEventListener('visibilitychange', check); root.addEventListener('focus', check);
     drawProfiles(); drawCaptures(); drawReview();
     return () => { active = false; clearPeople(); linkToken = null; linkDialog?.removeEventListener('cancel',cancelLink); for (const stop of stops) stop(); dialog.removeEventListener('cancel', cancelDialog); doc.removeEventListener('visibilitychange', check); root.removeEventListener('focus', check); closeDialog(); selected.clear(); name.value = ''; container.replaceChildren(); dialog.replaceChildren(); profileId = renderedAudio = null; controller.leave(); for (const key of ['profiles', 'captures', 'review']) state[key].committed(null); };

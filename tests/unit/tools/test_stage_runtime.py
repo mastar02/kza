@@ -588,7 +588,7 @@ def test_compiled_main_and_frontend_outside_checkout(archive, state, tmp_path):
             "spec = {'name': 'compiled', 'description': '', 'enabled': True, 'timezone': 'America/Montevideo', 'schedule': None, 'conditions': [], 'actions': [{'entity_id': 'climate.test_ac', 'operation': 'set_temperature', 'temperature': 23.5}]}",
             "assert spec_to_dict(parse_routine_spec(spec)) == spec",
             "client = TestClient(DashboardAPI(home_enabled=True).app)",
-            "for path in ('/', '/home/home.js', '/home/request-id.js', '/home/nexo/routine-owner.js', '/home/nexo/routines.js', '/home/nexo/memory-owner.js', '/home/nexo/memory.js', '/home/nexo/my-memory-owner.js', '/home/nexo/my-memory.js', '/obs/src/session.js'):",
+            "for path in ('/', '/home/home.js', '/home/request-id.js', '/home/nexo/routine-owner.js', '/home/nexo/routines.js', '/home/nexo/memory-owner.js', '/home/nexo/memory.js', '/home/nexo/my-memory-owner.js', '/home/nexo/my-memory.js', '/home/nexo/my-voice-owner.js', '/home/nexo/my-voice.js', '/home/nexo/voice-consents-owner.js', '/home/nexo/voice-consents.js', '/obs/src/session.js'):",
             "    assert client.get(path).status_code == 200, path",
             "for path in ('/home/legacy.html', '/home/home.css', '/home/routines.js', '/home/memory.js', '/index.html', '/dashboard.js', '/style.css'):",
             "    assert client.get(path).status_code == 404, path",

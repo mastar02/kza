@@ -43,7 +43,7 @@
 <section id="memory-view" hidden aria-labelledby="memory-title"></section>
 <section id="my-memory-view" hidden aria-labelledby="my-memory-title"></section>
 <section id="people-view" hidden aria-labelledby="people-title"></section>
-<section id="voices-view" hidden aria-label="Voces"><p id="voice-connection" role="status"></p><div id="voices-content"></div></section>
+<section id="voices-view" hidden aria-label="Voces"><p id="voice-connection" role="status"></p><div id="voices-content"></div><div id="voice-attribution"></div></section>
 <section id="access-view" hidden aria-label="Accesos"></section>
 <section id="evaluation-view" hidden aria-label="Evaluación"><p id="evaluation-connection" role="status"></p><div id="evaluation-content"></div></section>
 <section id="restricted-view" class="panel empty-panel" hidden><h2>Este acceso no incluye el control del hogar.</h2><p>Las vistas disponibles dependen de los permisos de tu sesión.</p></section>
@@ -58,6 +58,8 @@
 <dialog id="routine-confirm-dialog" class="identity-dialog routine-confirm-dialog" tabindex="-1"></dialog>
 <dialog id="memory-confirm-dialog" class="identity-dialog memory-confirm-dialog" tabindex="-1"></dialog>
 <dialog id="my-memory-confirm-dialog" class="identity-dialog memory-confirm-dialog" tabindex="-1"></dialog>
+<dialog id="my-voice-confirm-dialog" class="identity-dialog memory-confirm-dialog" tabindex="-1"></dialog>
+<dialog id="voice-attribution-confirm-dialog" class="identity-dialog memory-confirm-dialog" tabindex="-1"></dialog>
 <dialog id="voice-dialog" class="identity-dialog nexo-voice-dialog" aria-label="Revisar muestras de voz"></dialog>
 <dialog id="info-dialog"><div class="dialog-top"><p class="eyebrow">KZA / HOME OS</p><button id="dialog-close" class="icon-button" aria-label="Cerrar ayuda">×</button></div><h2>Tu hogar, a tu manera.</h2><p>Los controles usan los dispositivos y permisos de tu sesión. Cada operación muestra si Home Assistant confirmó el resultado.</p><p>La casa 3D es una ilustración: sus ambientes no están asociados a tus dispositivos. Los controles del catálogo funcionan de forma independiente.</p><button id="dialog-done" class="dialog-done">Entendido →</button></dialog>
 </body></html>

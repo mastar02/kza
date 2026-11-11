@@ -50,8 +50,9 @@ STATE_MESSAGES = {
     "verification_locked": "Hubo varios intentos sin éxito (también cuenta si otra persona dijo tu frase). "
                            "Pedile a la administración que habilite uno nuevo.",
 }
-INSUFFICIENT_PROFILES_MESSAGE = ("Todavía no se puede verificar tu voz en este hogar. La administración te va a "
-                                 "avisar cuando sea posible.")
+# K (4a-3 review): no notification exists, so the copy promises none.
+INSUFFICIENT_PROFILES_MESSAGE = ("Todavía no se puede verificar tu voz en este hogar. Podés volver a intentarlo "
+                                 "más adelante.")
 
 _INVALID = "memory_voice_invalid_request"
 _ROOM = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
