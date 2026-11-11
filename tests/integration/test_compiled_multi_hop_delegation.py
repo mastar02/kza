@@ -1,8 +1,8 @@
 """U3b-0b compiled rehearsal: release, rollback and roll-forward across real artifacts.
 
-X is the committed HEAD (pre-0b controller code inside the slot); Y is a commit
-made only in a temporary shared clone that carries this working tree's
-scripts/ and src/ changes (0b code inside the slot). Slots A(X) -> B(Y) ->
+X is the last commit before U3b-0b (pre-0b controller code inside the slot);
+Y is HEAD plus, when present, this working tree's uncommitted scripts/ and src/
+changes, committed only in a temporary shared clone (0b code inside the slot). Slots A(X) -> B(Y) ->
 C(X, rollback) -> D(Y, roll-forward) each run a real admitted child that
 validates its ownership with its own compiled code, after the candidate's own
 compiled probe. Delegation uses Y's compiled stage_runtime CLI.
@@ -26,6 +26,8 @@ from tests.unit.tools.test_stage_runtime_admission import (
 )
 
 _INSERT = "INSERT INTO erasure_targets VALUES(?,?,?,?)"
+# Last commit whose controller predates multi-hop delegation (U3b-3, pushed).
+_PRE_0B = "238b463"
 
 
 def _git(clone, *arguments, **kwargs):
@@ -36,7 +38,8 @@ def _git(clone, *arguments, **kwargs):
 def _working_tree_commit(repo: Path, clone: Path) -> str:
     """Commit, in the clone only, every modified runtime source of the working tree."""
     changed = _git(repo, "diff", "--name-only", "HEAD", "--", "scripts", "src").split()
-    assert "scripts/stage_runtime.py" in changed
+    if not changed:
+        return _git(clone, "rev-parse", "HEAD")
     _git(clone, "read-tree", "HEAD")
     for relative in changed:
         blob = _git(clone, "hash-object", "-w", "--path", relative, str(repo / relative))
@@ -76,8 +79,9 @@ def test_release_rollback_and_roll_forward_across_compiled_artifacts(tmp_path):
     clone = tmp_path / "clone"
     subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(repo), str(clone)],
                    check=True, timeout=120)
-    x = _git(clone, "rev-parse", "HEAD")
+    x = _git(clone, "rev-parse", _PRE_0B + "^{commit}")
     y = _working_tree_commit(repo, clone)
+    assert _git(clone, "diff", "--name-only", x, y, "--", "scripts/stage_runtime.py") == "scripts/stage_runtime.py"
     archives = {"X": tmp_path / "x.tar.gz", "Y": tmp_path / "y.tar.gz"}
     assert build_runtime(clone, archives["X"], revision=x)["git_commit"] == x
     assert build_runtime(clone, archives["Y"], revision=y)["git_commit"] == y
