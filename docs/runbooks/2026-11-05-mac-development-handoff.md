@@ -671,9 +671,15 @@ Validación: `data/.../u3b/validation-round-01/`, verde sobre `da60173`.
 
 Es la tercera full verde tras el arreglo del cuelgue de captura.
 
-Siguiente:
-- U3b-3: pantallas NEXO.
-- U3b-0b: delegación de varios saltos. Antes de la release de U3b-3.
+U3b-3 (`238b463`): pantallas NEXO (Mis recuerdos, asignación, Devueltos), smoke compilado 13/13.
+
+U3b-0b: delegación de varios saltos en `scripts/stage_runtime.py` (cadenas en `admission/delegation-chains/`, tope 8 dueños: el 9.º se rechaza). Revisión independiente `accept_with_changes`; F1–F7 corregidos. Abierto:
+- F8: un borrado de una fila protegida en un estado dueño deja el head `unknown`. Ya existía con un salto; queda como xfail estricto. Requiere diseño de re-vinculación.
+- Binding de más de 16 MB (unas 250k filas protegidas) rechazado como `unsafe_record`. Viene de 0a.
+- Tope de dueños: el usuario eligió **compactar** (2026-11-11). Unidad nueva antes de la primera release gestionada en producción.
+- Falta medir con un estado del tamaño de producción.
+
+Siguiente: U3b-4a/4b (etapa de voz sintética y local), huecos de backend (ids en el recibo, persona en whoami) y una ronda full nueva.
 
 Decisiones del usuario en `t040-t041/user-decisions-20261110.json` (`u3b_*`).
 

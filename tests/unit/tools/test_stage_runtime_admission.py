@@ -579,7 +579,7 @@ def test_same_version_candidate_activates_after_one_probe(admission_archive, tmp
     assert marker["binding_id"] == closed["binding_id"]
 
 
-# --- U3b-0a: one-hop 'delegate' CLI ------------------------------------------------
+# --- U3b-0a/0b: 'delegate' CLI ------------------------------------------------------
 
 def _delegate_cli(root, name):
     repo = Path(__file__).resolve().parents[3]
@@ -627,8 +627,12 @@ def test_delegate_cli_grants_only_local_path_targets_then_activate(delegated_pai
     output = json.loads(result.stdout)
     assert output["slot"] == "candidate" and output["source_binding"] == head["binding_id"]
     assert output["targets"] == [delegated_pair["local"]]  # Path-less targets stay owned.
-    record = root / "admission" / "delegations" / (output["capability"] + ".json")
+    [capability] = output["capabilities"]
+    record = root / "admission" / "delegations" / (capability + ".json")
     assert set(json.loads(record.read_text())["targets"]) == {delegated_pair["local"]}
+    # U3b-0b: one hop is the chain [grantor] and the grantor is the owner.
+    chain = json.loads((root / "admission" / "delegation-chains" / (capability + ".json")).read_text())
+    assert [hop["binding_id"] for hop in chain["chains"][delegated_pair["local"]]] == [head["binding_id"]]
     policy = json.loads((candidate / ".kza-target-ownership.json").read_text())
     assert policy["delegated_targets"] == [delegated_pair["local"]]
     assert policy["owned_targets"] == [delegated_pair["pathless"]]
@@ -636,17 +640,17 @@ def test_delegate_cli_grants_only_local_path_targets_then_activate(delegated_pai
     assert os.readlink(root / "current") == "slots/candidate/runtime"
 
 
-def test_delegate_cli_refuses_a_second_hop(delegated_pair, admission_archive):
+def test_delegate_cli_grants_a_second_hop(delegated_pair, admission_archive):
+    """U3b-0b inverts the 0a one-hop refusal: the CLI re-delegates what the head holds."""
     root, candidate = delegated_pair["root"], delegated_pair["candidate"]
     assert _delegate_cli(root, "candidate").returncode == 0
     stage.run_slot(root, "candidate", _command(_CLOSING_CHILD, "[]"), timeout=30)
     assert stage.read_admission_head(root)["status"] == "closed"
-    third = _copy_candidate(admission_archive, root, candidate, "third")
-    before = _witness(root, delegated_pair["state"], candidate, third)
+    _copy_candidate(admission_archive, root, candidate, "third")
     result = _delegate_cli(root, "third")
-    assert result.returncode != 0
-    assert "runtime_admission_delegation_one_hop_only" in result.stderr and "U3b-0b" in result.stderr
-    assert _witness(root, delegated_pair["state"], candidate, third) == before
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["targets"] == [delegated_pair["local"]]
+    assert stage.activate_slot(root, "third") == "slots/candidate/runtime"
 
 
 def test_delegate_never_grants_a_target_recorded_outside_the_source(delegated_pair, tmp_path):
@@ -717,8 +721,8 @@ def test_cli_probe_timeout_outside_bounds_is_refused(tmp_path, text):
     assert not (tmp_path / "root").exists()
 
 
-def test_delegation_api_refuses_a_second_hop_even_for_pathless_targets(delegated_pair, admission_archive):
-    """R5: one hop is enforced by authorize_target_delegation itself, not only by the CLI."""
+def test_delegation_api_refuses_a_grant_that_drops_a_held_pathless_target(delegated_pair, admission_archive):
+    """U3b-0b D3: the API, like the CLI, never turns a held delegation into ownership."""
     root, candidate = delegated_pair["root"], delegated_pair["candidate"]
     head = stage.read_admission_head(root)
     with stage.AdmissionController(root) as controller:
@@ -734,4 +738,11 @@ def test_delegation_api_refuses_a_second_hop_even_for_pathless_targets(delegated
         _refused(root, (delegated_pair["state"], candidate, third),
                  lambda: controller.authorize_target_delegation(third, closed["binding_id"],
                                                                 [delegated_pair["pathless"]]),
-                 "^runtime_admission_delegation_one_hop_only$")
+                 "^runtime_admission_delegation_incomplete$")
+        granted = controller.authorize_target_delegation(
+            third, closed["binding_id"], [delegated_pair["local"], delegated_pair["pathless"]])
+        assert controller.activate("third") == "slots/candidate/runtime"
+    [capability] = granted  # Both held targets share the owner, so one record.
+    chain = json.loads((root / "admission" / "delegation-chains" / (capability + ".json")).read_text())
+    for identity in (delegated_pair["local"], delegated_pair["pathless"]):
+        assert [hop["binding_id"] for hop in chain["chains"][identity]] == [head["binding_id"], closed["binding_id"]]

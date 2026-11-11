@@ -62,7 +62,11 @@ def artifact_admission(admission_root, admission_archive, monkeypatch, request):
         _write(root / "admission/bindings" / (source_id + ".json"), source)
         _write(source_state / stage._MARKER, {"schema_version": 1, "admission_root": str(root),
                "binding_id": source_id, "state_root": str(source_state)})
-        proof = {"unit_close_observation": "not a controller receipt"}
+        # Not a controller receipt; its running head names the source's own binding so the
+        # U3b-0b owner check (the closure belongs to a run of the owner's slot) applies.
+        proof = {"unit_close_observation": "not a controller receipt",
+                 "running_head": {"schema_version": 1, "generation": 1, "binding_id": source_id,
+                                  "status": "running", "run_id": "c" * 32}}
 
         def closure(actual_root, identity):
             assert actual_root == root and identity == source_id
@@ -73,6 +77,14 @@ def artifact_admission(admission_root, admission_archive, monkeypatch, request):
                   "destination_identity": stage._identity(state), "source_binding": source_id,
                   "source_close_sha256": stage._digest(proof), "targets": {target["id"]: target}}
         _write(root / "admission/delegations" / (stage._digest(record) + ".json"), record)
+        # U3b-0b: every honored record carries its provenance; a one-hop chain is [owner].
+        hop = {"binding_id": source_id, "close_sha256": stage._digest(proof), "closure": proof,
+               "state_root": str(source_state), "state_identity": stage._identity(source_state), "via": None}
+        _write(stage._chain_path(root, stage._digest(record)), {
+            "schema_version": 1, "record_sha256": stage._digest(record), "destination_state": str(state),
+            "destination_identity": stage._identity(state),
+            "grantor": {"binding_id": source_id, "close_sha256": stage._digest(proof)},
+            "chains": {target["id"]: [hop]}})
         _registry(state, target)
         _write(state / ".kza-target-ownership.json", {"schema_version": 1,
                "source_bindings": [source_id], "owned_targets": [],

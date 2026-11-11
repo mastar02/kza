@@ -146,6 +146,14 @@ def delegated_metadata(tmp_path, monkeypatch):
               "source_close_sha256": stage._digest(proof), "targets": {target["id"]: target}}
     record_path = root / "admission/delegations" / (stage._digest(record) + ".json")
     _write(record_path, record)
+    # U3b-0b: every honored record carries its provenance; a one-hop chain is [owner].
+    hop = {"binding_id": source_id, "close_sha256": stage._digest(proof), "closure": proof,
+           "state_root": str(source_state), "state_identity": stage._identity(source_state), "via": None}
+    chain = {"schema_version": 1, "record_sha256": stage._digest(record), "destination_state": str(state),
+             "destination_identity": stage._identity(state),
+             "grantor": {"binding_id": source_id, "close_sha256": stage._digest(proof)},
+             "chains": {target["id"]: [hop]}}
+    _write(stage._chain_path(root, stage._digest(record)), chain)
     archive = {"schema_version": 1, "source_binding": source_id, "targets": [target]}
     raw_archive = stage._canonical_json(archive) + b"\n"
     archive_sha = hashlib.sha256(raw_archive).hexdigest()
@@ -157,7 +165,8 @@ def delegated_metadata(tmp_path, monkeypatch):
     policy_path = state / ".kza-target-ownership.json"
     binding = {"state_root": str(state), "ownership_sha256": _write(policy_path, policy)}
     ticket = _ticket(root)
-    selected = {"record": record, "source": source, "marker": marker, "proof": proof}
+    selected = {"record": record, "source": source, "marker": marker, "proof": proof,
+                "capability": stage._digest(record), "chain": chain, "vias": {}}
     ownership = {"targets": {target["id"]: target}, "policy": policy,
                  "delegations": {target["id"]: selected}, "delegation_records": [record]}
     scan_calls = []
@@ -202,7 +211,8 @@ def delegated_metadata(tmp_path, monkeypatch):
     assert scan_calls == ["synthetic full-validation observation"]
     return {"root": root, "state": state, "source_state": source_state, "runtime": runtime,
             "ticket": ticket, "snapshot": snapshot, "policy_path": policy_path,
-            "record_path": record_path, "archive_path": archive_path, "proof": proof}
+            "record_path": record_path, "archive_path": archive_path, "proof": proof,
+            "chain_path": stage._chain_path(root, stage._digest(record))}
 
 
 @pytest.mark.parametrize("mutation,error", [
@@ -214,6 +224,8 @@ def delegated_metadata(tmp_path, monkeypatch):
     ("source_policy", "runtime_admission_ownership_changed"),
     ("closure", "runtime_admission_source_close_proof"),
     ("history", "runtime_admission_history_mismatch"),
+    ("chain", "runtime_admission_delegation_changed"),
+    ("chain_removed", "runtime_admission_delegation_chain_missing"),
 ])
 def test_live_metadata_rejects_changed_pinned_observation(delegated_metadata, monkeypatch, mutation, error):
     value = delegated_metadata
@@ -247,6 +259,13 @@ def test_live_metadata_rejects_changed_pinned_observation(delegated_metadata, mo
         _write(value["source_state"] / ".kza-target-ownership.json", {"unexpected": True})
     elif mutation == "closure":
         value["proof"]["unit_metadata_observation"] = "changed"
+    elif mutation == "chain":  # U3b-0b: provenance pinned by the full validation.
+        path = value["chain_path"]
+        chain = json.loads(path.read_bytes())
+        chain["chains"]["events:unit"][0]["state_root"] += "-moved"
+        _write(path, chain)
+    elif mutation == "chain_removed":
+        value["chain_path"].unlink()
     elif mutation == "history":
         path = value["archive_path"]
         archive = json.loads(path.read_bytes())

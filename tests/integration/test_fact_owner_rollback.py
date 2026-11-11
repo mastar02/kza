@@ -5,15 +5,15 @@ X = the working tree committed in the clone (carries the owner schema), Y = an
 empty descendant of X (different code commit, same schema), P = the pre-U3b
 parent located with git (the parent of the first commit that registers
 fact_owner_schema, through ``git merge-base``). The controller is this
-checkout's stage_runtime (U3b-0a probe and one-hop delegate).
+checkout's stage_runtime (U3b-0a probe and the U3b-0b multi-hop delegate).
 
 (1) code rollback: A (X) runs admitted and writes owner rows inside the run;
     B (Y) is prepared from A's closed state, delegated, activated and sees
     the same owner rows.
 (2) rejection point: the pre-U3b candidate, prepared from A's closed state and
     delegated, is refused by the probe with nothing changed.
-(3) one hop only: after B closes, delegating a copy of B's state is refused
-    until U3b-0b.
+(3) second hop (U3b-0b): after B closes, a rollback slot C (X) prepared from
+    B's state is delegated, activated and run, and keeps the same owner rows.
 """
 
 from contextlib import closing
@@ -271,8 +271,8 @@ def test_pre_u3b_candidate_is_refused_at_activation_with_nothing_changed(artifac
     assert _owner_rows(state_a) == _owner_rows(state_pre) == rows
 
 
-def test_second_hop_is_refused_until_u3b_0b(artifacts, tmp_path):
-    """Rehearsal (3): one hop only. A -> B works; B's state cannot be delegated again."""
+def test_second_hop_rollback_keeps_owner_rows(artifacts, tmp_path):
+    """Rehearsal (3), inverted by U3b-0b: A(X) -> B(Y) -> C(X) is a second hop and works."""
     root, state_a, _ = _closed_a(artifacts, tmp_path)
     stage.prepare_slot(artifacts["archives"]["y"], root, "b", state_a)
     stage.delegate_slot(root, "b")
@@ -282,8 +282,10 @@ def test_second_hop_is_refused_until_u3b_0b(artifacts, tmp_path):
     state_b = root / "slots" / "b" / "state"
     stage.prepare_slot(artifacts["archives"]["x"], root, "c", state_b)
     state_c = root / "slots" / "c" / "state"
-    before = _witness(root, state_a, state_b, state_c)
-    with pytest.raises(ValueError, match="runtime_admission_delegation_one_hop_only.*U3b-0b"):
-        stage.delegate_slot(root, "c")
-    assert _witness(root, state_a, state_b, state_c) == before
-    assert os.readlink(root / "current") == "slots/b/runtime"
+    granted = stage.delegate_slot(root, "c")
+    assert granted["targets"] and len(granted["capabilities"]) >= 1
+    assert stage.activate_slot(root, "c") == "slots/b/runtime"
+    _run(root, "c", _child(_CLOSING))
+    assert stage.read_admission_head(root)["status"] == "closed"
+    assert _owner_rows(state_c) == _owner_rows(state_b) == _owner_rows(state_a)
+    assert os.readlink(root / "current") == "slots/c/runtime"

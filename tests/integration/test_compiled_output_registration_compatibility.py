@@ -259,7 +259,8 @@ def _exercise(task: Path, evidence: Path, repo: Path, revision: str) -> dict:
             delegated = [target["id"] for target in targets if target["absolute_paths"]]
             assert delegated and len(delegated) == len(set(delegated))
             compiled.write_json(evidence / "copied-targets-before-current-graph.json", targets)
-            delegation = controller.authorize_target_delegation(new_state, source_binding, delegated)
+            # U3b-0b returns one capability per owner; this one-hop grant has one owner.
+            [delegation] = controller.authorize_target_delegation(new_state, source_binding, delegated)
             proof["delegation"] = {"id": delegation, "source_closed_binding": source_binding,
                                    "destination_state": str(new_state), "target_ids": delegated}
             current_control = _control(prepared, "candidate", prepared["bridge_manifest"], evidence)

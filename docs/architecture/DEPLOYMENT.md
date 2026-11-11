@@ -199,11 +199,111 @@ de bases sintéticas y 10,4 s con 1,95 GB, unos 5,3 s/GB. Antes de la release ha
 que medirlo con una copia de tamaño real bajo `yo` en el servidor
 (`tests/mocks/probe_cost_harness.py`).
 
-`stage_runtime --root R --offline delegate <slot>` expone la delegación de un
-solo salto. `authorize_target_delegation` rechaza el segundo salto también para
-cualquier otro llamador (`runtime_admission_delegation_one_hop_only`); el
-multi-salto es U3b-0b. Ver la [evidencia](../../data/autonomous-roadmap-20261102/t040-t041/u3b-0a-evidence.json),
-local y fuera de Git.
+`stage_runtime --root R --offline delegate <slot>` delega al slot copiado todo
+lo que el head cerrado tiene. Incluye sus destinos de borrado propios con rutas
+y los que heredó, aunque no tengan rutas. Desde U3b-0b (en desarrollo, sin
+release) admite varios saltos. Así funcionan la segunda release gestionada, un
+rollback y el roll-forward posterior.
+
+Cada registro de `admission/delegations/` conserva el esquema v1 y nombra al
+dueño físico de las rutas. El código 0a de slots anteriores los acepta. Al lado,
+`admission/delegation-chains/<capability>.json` guarda la cadena: dueño primero,
+emisor al final. Cada salto incluye su binding, la prueba de cierre embebida y
+el registro que le dio el destino. El controlador sólo honra registros con esa
+cadena y deriva cada cadena del head verificado, nunca del llamador.
+
+Antes de escribir nada, rechaza estos casos:
+
+- volver a un estado que ya fue dueño o salto: `runtime_admission_delegation_cycle`;
+- cadenas faltantes, alteradas o truncadas: `runtime_admission_delegation_chain`
+  o `runtime_admission_delegation_chain_missing`;
+- una concesión que omite un destino heredado: `runtime_admission_delegation_incomplete`;
+- una colisión con otra cadena: `runtime_admission_delegation_conflict`;
+- más de 8 estados dueños distintos (con 8 todavía se concede): `runtime_admission_delegation_owner_limit`.
+
+La API devuelve una capability por dueño. La sonda de `activate` ahora también
+corre el `validate_target_ownership` del candidato, así que un candidato que
+recalcularía distinto a un dueño se rechaza antes de mover el head.
+
+Límites:
+
+- Todo estado dueño debe quedar intacto mientras un descendiente lo use. Si
+  cambia su marker o su cierre, si se altera o retira su slot, si se actualiza
+  un SDK o cambia el formato del binding, se pierden sus destinos en todos los
+  descendientes.
+- Costo: cada pasada de validación toma una instantánea completa por dueño
+  distinto, no por destino. Un candidato 0b hace lo mismo en su sonda. Un
+  candidato anterior a 0b (por ejemplo, una release de rollback sin 0b) toma
+  una por destino delegado, en la sonda y en su hijo. Medido en un Mac
+  M-series con estados sintéticos de 0,49 GB, un destino con 5 destinos
+  heredados de 2 dueños da:
+  - sonda 0b: 3,5 s;
+  - sonda anterior a 0b: 6,8 s;
+  - pasada del controlador: 2,4 s;
+  - `activate` completo: 17,5 s.
+
+  El límite de la sonda (60 s por defecto) no cambia. Con 8 dueños de ese
+  tamaño, la sonda 0b ronda 10 s. Con estados de unos 2 GB, una sonda 0b con 8
+  dueños ronda 40 s. Una anterior a 0b, con varios destinos por dueño, pasa
+  de 60 s: hay que medir con una copia real
+  (`tests/mocks/probe_cost_harness.py --multi-hop`) antes de la release y
+  ajustar `--probe-timeout` sólo con esa medición.
+- No hay compactación. Una cadena admite hasta 8 dueños distintos. Cada
+  transición gestionada (release, rollback o roll-forward) suma el dueño
+  anterior, así que el estado número 10 de una cadena, que necesitaría 9
+  dueños, se rechaza con `runtime_admission_delegation_owner_limit`. Eso pasa
+  en la novena transición desde el primer estado gestionado. Decidir antes
+  qué hacer es del usuario.
+- Volver a ejecutar un salto intermedio no revoca nada. Su prueba de cierre
+  embebida debe venir de una ejecución de su propio slot y estado, y se
+  comprueba contra el recibo inmutable.
+- Borrar en un dueño puede dejar el head en UNKNOWN (hallazgo F8, heredado de
+  0a y sin corrección local). Si el hijo del head borra, mediante un destino
+  heredado, una fila que forma parte de la proyección protegida del dueño, el
+  dueño deja de coincidir con su binding. Un ejemplo es un evento con su plazo
+  de texto acortado. El cierre del hijo falla con
+  `runtime_admission_delegation_missing` y el head queda UNKNOWN. Borrar
+  contenido ordinario no tiene ese efecto. Corregirlo requiere volver a
+  vincular el dueño bajo la autoridad del head, un diseño pendiente.
+- Sin secreto, quien escribe `admission/` con el mismo uid queda fuera del
+  modelo.
+- Dentro de un slot 0a, el hijo sólo comprueba el registro del dueño, no la
+  cadena.
+- Los archivos de historial guardan los registros, no las cadenas.
+
+Versiones del controlador: en cuanto exista un registro escrito por 0b,
+`delegate`, `activate` y `run` deben ejecutarse con un `stage_runtime` 0b o
+posterior. Tras un rollback, no uses como controlador el `stage_runtime` del
+slot restaurado si es anterior. Un controlador anterior a 0b rechaza el
+multi-salto con `runtime_admission_delegation_one_hop_only`. Si concede un
+primer salto, escribe un registro sin cadena. Un controlador 0b lo rechaza
+(`runtime_admission_delegation_chain_missing`), y ese head ya no se puede
+delegar hacia adelante.
+
+Fallos a mitad de una concesión (orden de escritura: cadenas, registros,
+política, manual head, CAS del head):
+
+- Falla al escribir cadenas o registros: quedan archivos inmutables inertes que
+  ninguna política lista. La política, el marker y el head no cambian. Para
+  recuperar, repetí `delegate <slot>`: reescribe archivos idénticos y termina.
+- Falla después de escribir la política (por ejemplo, en el manual head): la
+  concesión ya vale y `activate` la acepta, pero faltan el registro de manual
+  head y el aumento de generación del head. Para recuperar, repetí
+  `delegate <slot>`: valida, reescribe lo idéntico y completa el CAS.
+- Quedaron restos y después el emisor volvió a ejecutarse (su prueba de cierre
+  cambió): ese destino queda en conflicto permanente
+  (`runtime_admission_delegation_conflict`). Para recuperar, prepará un slot
+  nuevo desde el estado del head y delegá a ése.
+
+Hallazgo aparte, de 0a: un estado con unas 250 000 filas protegidas o más
+produce un binding de más de 16 MB, y el controlador no puede leerlo
+(`runtime_admission_unsafe_record`). Lo produjeron los 500 000 eventos con plazo
+acortado del arnés de costo, al cerrar. Hay que revisarlo antes de una release
+con datos reales.
+
+Ver la evidencia [0a](../../data/autonomous-roadmap-20261102/t040-t041/u3b-0a-evidence.json)
+y [0b](../../data/autonomous-roadmap-20261102/t040-t041/u3b-0b-evidence.json),
+locales y fuera de Git.
 
 Es bytecode para CPython 3.13, no un ejecutable nativo ni una barrera contra
 descompilación. Requiere el intérprete y las dependencias del entorno de

@@ -54,7 +54,9 @@ _PROBE_ENVIRONMENT = ("LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SQLITE_TMPDIR")
 _PROBE_UNMANAGED_EXIT = 3
 _PROBE_REJECTED_EXIT = 2
 # Runs in a fresh "-I -B" interpreter: loads the candidate's own companion by
-# path and prints the binding its code computes for the same root and slot.
+# path and prints the binding its code computes for the same root and slot,
+# after its own validate_target_ownership accepted that binding (U3b-0b D2: the
+# child re-snapshots every delegation owner with candidate code at start).
 _PROBE_SOURCE = "\n".join([
     "import importlib.util, json, sys",
     "from pathlib import Path",
@@ -64,11 +66,13 @@ _PROBE_SOURCE = "\n".join([
     "sys.modules[spec.name] = module",
     "spec.loader.exec_module(module)",
     "snapshot = getattr(module, '_binding_snapshot', None)",
-    "if snapshot is None:",
+    "validate = getattr(module, 'validate_target_ownership', None)",
+    "if snapshot is None or validate is None:",
     "    sys.stdout.write(json.dumps({'probe': 'unmanaged'}))",
     "    raise SystemExit(" + str(_PROBE_UNMANAGED_EXIT) + ")",
     "try:",
     "    binding = snapshot(Path(root), slot)",
+    "    validate(Path(root), binding)",
     "except ValueError as error:",
     "    sys.stdout.write(json.dumps({'probe': 'error', 'code': str(error)}))",
     "    raise SystemExit(" + str(_PROBE_REJECTED_EXIT) + ")",
@@ -1235,6 +1239,218 @@ def _closure_proof(root: Path, binding_id: str) -> dict:
     return proof
 
 
+_RECORD_KEYS = frozenset({"schema_version", "destination_state", "destination_identity",
+                          "source_binding", "source_close_sha256", "targets"})
+# U3b-0b provenance sidecar, admission/delegation-chains/<record capability>.json.
+# Records stay v1 and name the physical owner (flattened); the sidecar proves
+# how the grantor came to hold each target: owner first, grantor last.
+_CHAIN_KEYS = frozenset({"schema_version", "record_sha256", "destination_state", "destination_identity",
+                         "grantor", "chains"})
+_HOP_KEYS = frozenset({"binding_id", "close_sha256", "closure", "state_root", "state_identity", "via"})
+# Every distinct owner state is re-snapshotted in full by every validation; past
+# this many owners a grant is refused until compaction is decided (U3b-0b D1).
+_DELEGATION_OWNER_LIMIT = 8
+
+
+def _hex64(value: object) -> bool:
+    return type(value) is str and re.fullmatch("[0-9a-f]{64}", value) is not None
+
+
+def _chain_path(root: Path, capability: str) -> Path:
+    return root / "admission" / "delegation-chains" / (capability + ".json")
+
+
+def _read_delegation_record(root: Path, capability: str) -> dict:
+    """Read one content-addressed v1 delegation record named by a chain hop."""
+    if not _hex64(capability):
+        raise ValueError("runtime_admission_delegation_chain")
+    path = root / "admission" / "delegations" / (capability + ".json")
+    _safe_directory(path.parent)
+    try:
+        record = _read_json(path)
+    except FileNotFoundError:
+        raise ValueError("runtime_admission_delegation_chain") from None
+    if (_digest(record) != capability or set(record) != _RECORD_KEYS or record["schema_version"] != 1
+            or type(record["targets"]) is not dict):
+        raise ValueError("runtime_admission_delegation_chain")
+    return record
+
+
+def _chain_shape(record: dict, chain: dict, hops: object) -> None:
+    """Owner first, grantor last; hops pairwise distinct and none the destination."""
+    if type(hops) is not list or not hops:
+        raise ValueError("runtime_admission_delegation_chain")
+    for index, hop in enumerate(hops):
+        if (type(hop) is not dict or set(hop) != _HOP_KEYS or not _hex64(hop["binding_id"])
+                or not _hex64(hop["close_sha256"]) or type(hop["closure"]) is not dict
+                or type(hop["state_root"]) is not str or type(hop["state_identity"]) is not dict
+                or set(hop["state_identity"]) != {"device", "inode"}
+                or any(type(item) is not int for item in hop["state_identity"].values())
+                or (hop["via"] is not None if index == 0 else not _hex64(hop["via"]))):
+            raise ValueError("runtime_admission_delegation_chain")
+    owner, grantor = hops[0], hops[-1]
+    if (owner["binding_id"] != record["source_binding"]
+            or owner["close_sha256"] != record["source_close_sha256"]
+            or grantor["binding_id"] != chain["grantor"]["binding_id"]
+            or grantor["close_sha256"] != chain["grantor"]["close_sha256"]):
+        raise ValueError("runtime_admission_delegation_chain")
+    states = [hop["state_root"] for hop in hops]
+    identities = [_canonical_json(hop["state_identity"]) for hop in hops]
+    if (len({hop["binding_id"] for hop in hops}) != len(hops) or len(set(states)) != len(hops)
+            or len(set(identities)) != len(hops) or record["destination_state"] in states
+            or _canonical_json(record["destination_identity"]) in identities):
+        raise ValueError("runtime_admission_delegation_cycle")
+
+
+def _read_chain(root: Path, record: dict) -> dict:
+    """Read and shape-check the provenance sidecar of one delegation record."""
+    capability = _digest(record)
+    path = _chain_path(root, capability)
+    if not (path.exists() or path.is_symlink()):
+        raise ValueError("runtime_admission_delegation_chain_missing")
+    _safe_directory(path.parent)
+    chain = _read_json(path)
+    if (set(chain) != _CHAIN_KEYS or chain["schema_version"] != 1 or chain["record_sha256"] != capability
+            or chain["destination_state"] != record["destination_state"]
+            or chain["destination_identity"] != record["destination_identity"]
+            or type(chain["grantor"]) is not dict or set(chain["grantor"]) != {"binding_id", "close_sha256"}
+            or type(chain["chains"]) is not dict or set(chain["chains"]) != set(record["targets"])):
+        raise ValueError("runtime_admission_delegation_chain")
+    for hops in chain["chains"].values():
+        _chain_shape(record, chain, hops)
+    return chain
+
+
+def _verify_chain_hops(root: Path, target: dict, hops: list) -> dict:
+    """Anchor every hop on immutable evidence and prove each later hop by its own grant.
+
+    Intermediate hops are checked against their embedded closure proof and the
+    immutable per-run receipt it names, never the mutable closures/<binding>
+    file, so rerunning an intermediate does not revoke. Each later hop must be
+    the destination of the record named by 'via', whose own sidecar carries
+    exactly the preceding prefix. Returns the via records and sidecars.
+    """
+    vias = {}
+    for index, hop in enumerate(hops):
+        binding = read_binding(root, hop["binding_id"])
+        if (binding["state_root"] != hop["state_root"] or binding["state_identity"] != hop["state_identity"]
+                or _digest(hop["closure"]) != hop["close_sha256"]):
+            raise ValueError("runtime_admission_delegation_chain")
+        if index == 0:
+            # The owner's closure is its live closures/<owner> proof, checked by the
+            # caller against record.source_close_sha256 (0a semantics).
+            continue
+        running = _validate_closure_header(hop["binding_id"], hop["closure"])
+        if type(running["run_id"]) is not str or re.fullmatch("[0-9a-f]{32}", running["run_id"]) is None:
+            raise ValueError("runtime_admission_delegation_chain")
+        run = read_binding(root, running["binding_id"])
+        if (run["slot"] != binding["slot"] or run["state_root"] != hop["state_root"]
+                or run["state_identity"] != hop["state_identity"]):
+            # F1: the embedded closure must come from a run of this hop's own slot and
+            # state, not another run's real closure relabelled with this binding id.
+            raise ValueError("runtime_admission_delegation_chain")
+        receipt_path = root / "admission" / "receipts" / (running["run_id"] + ".json")
+        _validate_closure_receipt(hop["closure"], _read_json(receipt_path))
+        _validate_closure_digest(hop["closure"], hashlib.sha256(receipt_path.read_bytes()).hexdigest())
+        via = _read_delegation_record(root, hop["via"])
+        if (via["destination_state"] != hop["state_root"]
+                or via["destination_identity"] != hop["state_identity"]
+                or via["source_binding"] != hops[0]["binding_id"]
+                or via["source_close_sha256"] != hops[0]["close_sha256"]
+                or via["targets"].get(target["id"]) != target):
+            raise ValueError("runtime_admission_delegation_chain")
+        via_chain = _read_chain(root, via)
+        if via_chain["chains"].get(target["id"]) != hops[:index]:
+            raise ValueError("runtime_admission_delegation_chain")
+        vias[hop["via"]] = {"record": via, "chain": via_chain}
+    return vias
+
+
+def _owner_observation(root: Path, owner_id: str, *, artifacts: dict | None = None,
+                       cache: dict | None = None) -> dict:
+    """Observe one owner state once per validation pass (U3b-0b F2).
+
+    The full owner snapshot and inventory are the expensive part of every
+    delegated-target check; a pass validating several targets of the same owner
+    reuses one observation instead of re-snapshotting per target.
+    """
+    if cache is not None and owner_id in cache:
+        return cache[owner_id]
+    source = read_binding(root, owner_id)
+    source_state = Path(source["state_root"])
+    value = {"source": source, "marker": _read_json(source_state / _MARKER), "live": False}
+    if value["marker"].get("binding_id") == owner_id:
+        observed = (_binding_snapshot(root, source["slot"]) if artifacts is None
+                    else _binding_snapshot(root, source["slot"], artifacts=artifacts))
+        if observed == source:
+            proof = _closure_proof(root, owner_id)
+            running = proof.get("running_head")
+            if type(running) is not dict:
+                raise ValueError("runtime_admission_delegation_chain")
+            run = read_binding(root, running.get("binding_id"))
+            if run["slot"] != source["slot"] or run["state_root"] != source["state_root"]:
+                # F1: the owner's closure must belong to a run of the owner's own slot.
+                raise ValueError("runtime_admission_delegation_chain")
+            policy = None
+            if source["ownership_sha256"] is not None:
+                policy_path = source_state / ".kza-target-ownership.json"
+                policy = _read_json(policy_path)
+                if (hashlib.sha256(policy_path.read_bytes()).hexdigest() != source["ownership_sha256"]
+                        or type(policy.get("delegated_targets")) is not list):
+                    raise ValueError("runtime_admission_delegation_chain")
+            value.update(live=True, proof=proof, inventory=_target_inventory(source_state), policy=policy)
+    if cache is not None:
+        cache[owner_id] = value
+    return value
+
+
+def _delegation_candidate(root: Path, record: dict, chain: dict, target: dict, sources: list,
+                          *, artifacts: dict | None = None, cache: dict | None = None) -> dict | None:
+    """Validate one record and its chain for one target; None when its owner is stale."""
+    hops = chain["chains"][target["id"]]
+    if any(hop["binding_id"] not in sources for hop in hops):
+        raise ValueError("runtime_admission_delegation_chain")
+    vias = _verify_chain_hops(root, target, hops)
+    owner = _owner_observation(root, record["source_binding"], artifacts=artifacts, cache=cache)
+    source, marker = owner["source"], owner["marker"]
+    if not owner["live"] or _digest(owner["proof"]) != record["source_close_sha256"]:
+        return None
+    source_state = Path(source["state_root"])
+    if owner["inventory"].get(target["id"]) != target:
+        raise ValueError("runtime_admission_delegation_source_target_changed")
+    for value in _descriptor_paths(target["descriptor"]):
+        path = Path(value)
+        if not path.is_relative_to(source_state) or path.resolve() != path:
+            raise ValueError("runtime_admission_delegation_foreign_source")
+    if owner["policy"] is not None and target["id"] in owner["policy"]["delegated_targets"]:
+        # The owner must own the target, never merely hold it delegated.
+        raise ValueError("runtime_admission_delegation_chain")
+    return {"record": record, "source": source, "marker": marker, "proof": owner["proof"],
+            "capability": _digest(record), "chain": chain, "vias": vias}
+
+
+def _delegation_states(root: Path) -> tuple[set, set]:
+    """State paths and identities that already served as a delegation owner or hop."""
+    paths, identities = set(), set()
+    directory = root / "admission" / "delegations"
+    if not directory.exists():
+        return paths, identities
+    _safe_directory(directory)
+    for path in sorted(directory.glob("*.json")):
+        record = _read_json(path)
+        if path.stem != _digest(record) or set(record) != _RECORD_KEYS:
+            raise ValueError("runtime_admission_delegation_changed")
+        owner = read_binding(root, record["source_binding"])
+        paths.add(owner["state_root"])
+        identities.add(_canonical_json(owner["state_identity"]))
+        sidecar = _chain_path(root, path.stem)
+        if sidecar.exists() or sidecar.is_symlink():
+            for hops in _read_chain(root, record)["chains"].values():
+                paths.update(hop["state_root"] for hop in hops)
+                identities.update(_canonical_json(hop["state_identity"]) for hop in hops)
+    return paths, identities
+
+
 def _delegation_records(root: Path, state: Path):
     directory = root / "admission" / "delegations"
     if not directory.exists():
@@ -1249,11 +1465,15 @@ def _delegation_records(root: Path, state: Path):
 
 
 def _validate_delegated_target(root: Path, state: Path, target: dict, sources: list,
-                               *, artifacts: dict | None = None) -> dict:
+                               *, artifacts: dict | None = None, cache: dict | None = None) -> dict:
+    """Select the record that grants one delegated target, with its proven provenance.
+
+    Every honored record must carry a chain sidecar (U3b-0b). A record whose
+    owner state is stale is skipped (0a live semantics); a structural defect in
+    the record, its sidecar or any hop raises.
+    """
     for record in _delegation_records(root, state):
-        if (set(record) != {"schema_version", "destination_state", "destination_identity",
-                           "source_binding", "source_close_sha256", "targets"}
-                or record["schema_version"] != 1 or type(record["targets"]) is not dict):
+        if (set(record) != _RECORD_KEYS or record["schema_version"] != 1 or type(record["targets"]) is not dict):
             raise ValueError("runtime_admission_delegation_schema")
         if record["destination_identity"] != _identity(state) or record["source_binding"] not in sources:
             continue
@@ -1261,25 +1481,10 @@ def _validate_delegated_target(root: Path, state: Path, target: dict, sources: l
             continue
         if record["targets"][target["id"]] != target:
             raise ValueError("runtime_admission_delegation_target_changed")
-        source = read_binding(root, record["source_binding"])
-        marker = _read_json(Path(source["state_root"]) / _MARKER)
-        if marker.get("binding_id") != record["source_binding"]:
-            continue
-        observed = (_binding_snapshot(root, source["slot"]) if artifacts is None
-                    else _binding_snapshot(root, source["slot"], artifacts=artifacts))
-        if observed != source:
-            continue
-        proof = _closure_proof(root, record["source_binding"])
-        if _digest(proof) != record["source_close_sha256"]:
-            continue
-        source_targets = _target_inventory(Path(source["state_root"]))
-        if source_targets.get(target["id"]) != target:
-            raise ValueError("runtime_admission_delegation_source_target_changed")
-        for value in _descriptor_paths(target["descriptor"]):
-            path = Path(value)
-            if not path.is_relative_to(Path(source["state_root"])) or path.resolve() != path:
-                raise ValueError("runtime_admission_delegation_foreign_source")
-        return {"record": record, "source": source, "marker": marker, "proof": proof}
+        selected = _delegation_candidate(root, record, _read_chain(root, record), target, sources,
+                                         artifacts=artifacts, cache=cache)
+        if selected is not None:
+            return selected
     raise ValueError("runtime_admission_delegation_missing")
 
 
@@ -1352,10 +1557,12 @@ def _target_ownership_validation(
         if extras and not allow_new_local:
             raise ValueError("runtime_admission_active_inventory_mismatch")
         owned |= extras
+        owners = {}  # One observation per owner for this whole pass (U3b-0b F2).
         for identity in delegated:
-            delegations[identity] = (_validate_delegated_target(root, state, targets[identity], sources)
+            delegations[identity] = (_validate_delegated_target(root, state, targets[identity], sources,
+                                                                cache=owners)
                 if artifacts is None else _validate_delegated_target(
-                    root, state, targets[identity], sources, artifacts=artifacts))
+                    root, state, targets[identity], sources, artifacts=artifacts, cache=owners))
         _validate_ownership_history(root, policy)
     for identity in owned:
         for value in _descriptor_paths(targets[identity]["descriptor"]):
@@ -1396,7 +1603,7 @@ def _manual_module():
     return _manual_components_module
 
 
-def _manual_owner(root: Path, binding: dict, target: dict):
+def _manual_owner(root: Path, binding: dict, target: dict, cache: dict | None = None):
     module = _manual_module()
     state = Path(binding["state_root"])
     descriptor = target["descriptor"]
@@ -1406,22 +1613,20 @@ def _manual_owner(root: Path, binding: dict, target: dict):
         policy = _read_json(state / ".kza-target-ownership.json")
         if target["id"] not in policy["delegated_targets"]:
             raise ValueError("privacy_authority_stale")
-        _validate_delegated_target(root, state, target, policy["source_bindings"])
+        _validate_delegated_target(root, state, target, policy["source_bindings"], cache=cache)
         candidates = {}
         for record in _delegation_records(root, state):
             if (record["source_binding"] not in policy["source_bindings"]
                     or record["destination_identity"] != _identity(state)
                     or record["targets"].get(target["id"]) != target):
                 continue
-            source = read_binding(root, record["source_binding"])
-            source_state = Path(source["state_root"])
-            if (not directory.is_relative_to(source_state)
-                    or _binding_snapshot(root, source["slot"]) != source
-                    or _digest(_closure_proof(root, record["source_binding"])) != record["source_close_sha256"]
-                    or _target_inventory(source_state).get(target["id"]) != target):
+            observed = _owner_observation(root, record["source_binding"], cache=cache)
+            source = observed["source"]
+            if (not directory.is_relative_to(Path(source["state_root"])) or not observed["live"]
+                    or _digest(observed["proof"]) != record["source_close_sha256"]
+                    or observed["inventory"].get(target["id"]) != target):
                 continue
-            if _read_json(source_state / _MARKER).get("binding_id") == record["source_binding"]:
-                candidates[record["source_binding"]] = source
+            candidates[record["source_binding"]] = source
         if len(candidates) != 1:
             raise ValueError("runtime_admission_manual_owner_ambiguous")
         owner = next(iter(candidates.values()))
@@ -1447,6 +1652,7 @@ def _manual_capture(root: Path, binding: dict) -> dict:
             stores[relative] = {name: [dict(row) for row in db.execute("SELECT * FROM " + _quote(name))]
                                 for name in tables}
     inventory = _target_inventory(state)
+    cache = {}  # One owner observation per capture (U3b-0b F2).
     used = set()
     for store in stores.values():
         protected = module.protected_collector_records(store)
@@ -1459,7 +1665,7 @@ def _manual_capture(root: Path, binding: dict) -> dict:
                 or target["descriptor"]["kind"] not in {
                     "wake_clips", "stt_corrections", "conversations", "conversation_exports"}):
             raise ValueError("runtime_admission_manual_owner_missing")
-        owners[identity] = _manual_owner(root, binding, target)
+        owners[identity] = _manual_owner(root, binding, target, cache)
     return module.capture_manual_components(state, stores, owners)
 
 
@@ -1731,25 +1937,23 @@ def _seal_local_targets(root: Path, binding: dict) -> None:
     _atomic_record(path, policy)
 
 
-def _inherited_targets(source: dict) -> list[str]:
-    """Delegated target ids recorded in a verified source state's ownership policy."""
-    if source["ownership_sha256"] is None:
-        return []
-    return _read_json(Path(source["state_root"]) / ".kza-target-ownership.json")["delegated_targets"]
-
-
 def _authorize_target_delegation(root: Path, destination_state: Path, source_binding: str,
-                                 target_ids: list[str]) -> str:
+                                 target_ids: list[str]) -> list[str]:
+    """Grant exact held targets to one copied state, owner-flattened with provenance.
+
+    Every check (source, destination, targets, cycles, owner limit, collisions
+    and the full chain validation of the computed records) runs before the
+    first write. Returns the sorted capabilities, one record per owner.
+    """
     head = read_admission_head(root)
     if head is None or head["status"] != "closed" or head["binding_id"] != source_binding:
         raise ValueError("runtime_admission_delegation_source_not_current")
     source = verify_closed_binding(root, source_binding)
-    if _inherited_targets(source):
-        # One hop only: a source that itself holds delegated targets would chain
-        # access to another owner's state (multi-hop delegation is U3b-0b).
-        raise ValueError("runtime_admission_delegation_one_hop_only")
+    # Inherited chains come only from the verified source's own selection.
+    held = _target_ownership_validation(root, source)["delegations"]
     source_manual = _verify_manual_head(root, head, source)
     proof = _closure_proof(root, source_binding)
+    source_state = Path(source["state_root"])
     state = _safe_directory(Path(destination_state).resolve(strict=True))
     if state.parent.parent != root / "slots" or state.name != "state" or str(state) == source["state_root"]:
         raise ValueError("runtime_admission_delegation_destination")
@@ -1761,18 +1965,36 @@ def _authorize_target_delegation(root: Path, destination_state: Path, source_bin
             or any(type(item) is not str for item in target_ids)
             or len(set(target_ids)) != len(target_ids)):
         raise ValueError("runtime_admission_delegation_targets")
-    source_targets = _target_inventory(Path(source["state_root"]))
+    if set(held) - set(target_ids):
+        # A held delegation is never silently converted into destination ownership.
+        raise ValueError("runtime_admission_delegation_incomplete")
+    source_targets = _target_inventory(source_state)
     destination_targets = _target_inventory(state)
-    targets = {}
+    grantor = {"binding_id": source_binding, "close_sha256": _digest(proof), "closure": proof,
+               "state_root": source["state_root"], "state_identity": source["state_identity"]}
+    grants = {}
     for identity in target_ids:
         target = source_targets.get(identity)
         if target is None or destination_targets.get(identity) != target:
             raise ValueError("runtime_admission_delegation_target_mismatch")
-        for value in _descriptor_paths(target["descriptor"]):
-            path = Path(value)
-            if not path.is_relative_to(Path(source["state_root"])) or path.resolve() != path:
-                raise ValueError("runtime_admission_delegation_foreign_source")
-        targets[identity] = target
+        if identity in held:
+            selected = held[identity]
+            hops = [*selected["chain"]["chains"][identity], dict(grantor, via=selected["capability"])]
+        else:
+            for value in _descriptor_paths(target["descriptor"]):
+                path = Path(value)
+                if not path.is_relative_to(source_state) or path.resolve() != path:
+                    raise ValueError("runtime_admission_delegation_foreign_source")
+            hops = [dict(grantor, via=None)]
+        grants.setdefault((hops[0]["binding_id"], hops[0]["close_sha256"]), {})[identity] = (target, hops)
+    destination_identity = _identity(state)
+    used_paths, used_identities = _delegation_states(root)
+    for items in grants.values():
+        for _, hops in items.values():
+            used_paths.update(hop["state_root"] for hop in hops)
+            used_identities.update(_canonical_json(hop["state_identity"]) for hop in hops)
+    if str(state) in used_paths or _canonical_json(destination_identity) in used_identities:
+        raise ValueError("runtime_admission_delegation_cycle")
     policy_path = state / ".kza-target-ownership.json"
     if policy_path.exists() or policy_path.is_symlink():
         policy = _read_json(policy_path)
@@ -1784,19 +2006,59 @@ def _authorize_target_delegation(root: Path, destination_state: Path, source_bin
     else:
         policy = {"schema_version": 1, "source_bindings": [], "owned_targets": [],
                   "delegated_targets": [], "historical_targets": []}
-    delegated = set(policy["delegated_targets"]) | set(targets)
+    existing = [record for record in _delegation_records(root, state)
+                if record.get("destination_identity") == destination_identity]
+    for identity in set(policy["delegated_targets"]) - set(target_ids):
+        if not any(type(record.get("targets")) is dict and identity in record["targets"] for record in existing):
+            raise ValueError("runtime_admission_delegation_incomplete")
+    if len({owner for owner, _ in grants} | {record.get("source_binding") for record in existing}) \
+            > _DELEGATION_OWNER_LIMIT:
+        raise ValueError("runtime_admission_delegation_owner_limit")
+    delegated = set(policy["delegated_targets"]) | set(target_ids)
     owned = set(destination_targets) - delegated
     for identity in owned:
         for value in _descriptor_paths(destination_targets[identity]["descriptor"]):
             path = Path(value)
             if not path.is_relative_to(state) or path.resolve() != path:
                 raise ValueError("runtime_admission_foreign_target")
-    record = {"schema_version": 1, "destination_state": str(state),
-              "destination_identity": _identity(state), "source_binding": source_binding,
-              "source_close_sha256": _digest(proof), "targets": targets}
-    capability = _digest(record)
-    _atomic_record(root / "admission" / "delegations" / (capability + ".json"), record, immutable=True)
-    policy["source_bindings"] = sorted(set(policy["source_bindings"]) | {source_binding})
+    sources = sorted(set(policy["source_bindings"])
+                     | {hop["binding_id"] for items in grants.values() for _, hops in items.values()
+                        for hop in hops})
+    planned = []
+    for (owner, close), items in sorted(grants.items()):
+        record = {"schema_version": 1, "destination_state": str(state),
+                  "destination_identity": destination_identity, "source_binding": owner,
+                  "source_close_sha256": close,
+                  "targets": {identity: target for identity, (target, _) in sorted(items.items())}}
+        capability = _digest(record)
+        chain = {"schema_version": 1, "record_sha256": capability, "destination_state": str(state),
+                 "destination_identity": destination_identity,
+                 "grantor": {"binding_id": source_binding, "close_sha256": grantor["close_sha256"]},
+                 "chains": {identity: hops for identity, (_, hops) in sorted(items.items())}}
+        for hops in chain["chains"].values():
+            _chain_shape(record, chain, hops)
+        for path, value in ((root / "admission" / "delegations" / (capability + ".json"), record),
+                            (_chain_path(root, capability), chain)):
+            if (path.exists() or path.is_symlink()) and _read_json(path) != value:
+                raise ValueError("runtime_admission_delegation_conflict")
+        planned.append((capability, record, chain))
+    owners = {}
+    for _, record, chain in planned:
+        # The same validator later runs on the written files; nothing is written yet.
+        for target in record["targets"].values():
+            if _delegation_candidate(root, record, chain, target, sources, cache=owners) is None:
+                raise ValueError("runtime_admission_delegation_source_stale")
+    for identity in sorted(set(policy["delegated_targets"]) - set(target_ids)):
+        # F6: entries carried over from an earlier grant into this destination are
+        # validated before writing too, not only by the post-write self-check.
+        if identity not in destination_targets:
+            raise ValueError("runtime_admission_active_inventory_mismatch")
+        _validate_delegated_target(root, state, destination_targets[identity], sources, cache=owners)
+    for capability, _, chain in planned:
+        _atomic_record(_chain_path(root, capability), chain, immutable=True)
+    for capability, record, _ in planned:
+        _atomic_record(root / "admission" / "delegations" / (capability + ".json"), record, immutable=True)
+    policy["source_bindings"] = sources
     policy["owned_targets"] = sorted(owned)
     policy["delegated_targets"] = sorted(delegated)
     _atomic_record(policy_path, policy)
@@ -1804,7 +2066,7 @@ def _authorize_target_delegation(root: Path, destination_state: Path, source_bin
     validate_target_ownership(root, destination)
     _prepare_manual_head(root, head, source, previous=source_manual)
     _cas_head(root, head, source_binding, "closed")
-    return capability
+    return sorted(capability for capability, _, _ in planned)
 
 
 def _current_slot(root: Path) -> str | None:
@@ -2178,6 +2440,12 @@ def _validate_ownership_metadata(root: Path, binding: dict, ownership: dict, art
             source = read_binding(root, source_id)
             if source != selected["source"]:
                 raise ValueError("runtime_admission_delegation_changed")
+            # U3b-0b: the provenance read by the full validation must be unchanged.
+            if (selected["capability"] != _digest(record) or _read_chain(root, record) != selected["chain"]
+                    or any(_read_delegation_record(root, capability) != via["record"]
+                           or _read_chain(root, via["record"]) != via["chain"]
+                           for capability, via in selected["vias"].items())):
+                raise ValueError("runtime_admission_delegation_changed")
             if source_id not in checked_sources:
                 marker = _read_json(Path(source["state_root"]) / _MARKER)
                 if marker != selected["marker"] or marker.get("binding_id") != source_id:
@@ -2394,21 +2662,21 @@ class AdmissionController:
             return {"binding_id": _store_binding(self.root, binding), "binding": binding}
 
     def authorize_target_delegation(self, destination_state: Path, source_binding: str,
-                                    target_ids: list[str]) -> str:
-        """Grant exact historical targets to one physical copied state."""
+                                    target_ids: list[str]) -> list[str]:
+        """Grant exact held targets to one physical copied state; one capability per owner."""
         self._require_lease()
         with _locked_root(self.root):
             return _authorize_target_delegation(self.root, destination_state, source_binding, target_ids)
 
     def delegate(self, name: str) -> dict:
-        """Delegate the closed head's local path targets to one copied slot.
+        """Delegate what the closed head holds to one copied slot (any hop).
 
-        Target ids follow the proven rehearsal derivation: registered targets
-        whose descriptor carries absolute paths, all inside the source state.
-        Path-less targets stay owned. A source whose ownership policy lists any
-        delegated target (path-bearing or not) is refused as one hop only;
-        _authorize_target_delegation enforces the same rule for every caller,
-        and multi-hop delegation is U3b-0b.
+        Target ids: every target the head holds as delegated (path-less ones
+        included, so a chain is never converted into ownership) plus every
+        owned target whose descriptor carries absolute paths, all inside the
+        head's state. Owned path-less targets stay owned by the destination.
+        _authorize_target_delegation re-derives inherited chains from the
+        verified head and records one owner-flattened record per owner.
         """
         self._require_lease()
         name = _slot_name(name)
@@ -2418,21 +2686,21 @@ class AdmissionController:
                 raise ValueError("runtime_admission_delegation_source_not_current")
             source = verify_closed_binding(self.root, head["binding_id"])
             state = Path(source["state_root"])
-            inherited = _inherited_targets(source)
-            if inherited:
-                raise ValueError("runtime_admission_delegation_one_hop_only: this state already holds "
-                                 + str(len(inherited)) + " delegated target(s); multi-hop is U3b-0b")
+            held = _target_ownership_validation(self.root, source)["delegations"]
             target_ids = []
             for identity, target in sorted(_target_inventory(state).items()):
+                if identity in held:
+                    target_ids.append(identity)
+                    continue
                 paths = [Path(value) for value in _descriptor_paths(target["descriptor"])]
                 if not paths:
                     continue
                 if any(not path.is_relative_to(state) or path.resolve() != path for path in paths):
                     raise ValueError("runtime_admission_delegation_foreign_source")
                 target_ids.append(identity)
-            capability = _authorize_target_delegation(
+            capabilities = _authorize_target_delegation(
                 self.root, self.root / "slots" / name / "state", head["binding_id"], target_ids)
-        return {"capability": capability, "source_binding": head["binding_id"], "targets": target_ids}
+        return {"capabilities": capabilities, "source_binding": head["binding_id"], "targets": target_ids}
 
     def authorize_derived_state(self, name: str, latest_binding_id: str, *,
                                 target_relocations: dict[str, str]) -> str:
@@ -2598,14 +2866,14 @@ def prepare_binding(root: Path, name: str, *, expected_head: dict | None = None)
 
 
 def authorize_target_delegation(root: Path, destination_state: Path, source_binding: str,
-                                 target_ids: list[str]) -> str:
+                                 target_ids: list[str]) -> list[str]:
     """Issue an exact delegation while exclusively owning the current closed head."""
     with AdmissionController(root) as controller:
         return controller.authorize_target_delegation(destination_state, source_binding, target_ids)
 
 
 def delegate_slot(root: Path, name: str) -> dict:
-    """Delegate the current closed head's local targets to one copied slot (one hop)."""
+    """Delegate what the current closed head holds to one copied slot (multi-hop, U3b-0b)."""
     with AdmissionController(root) as controller:
         return controller.delegate(name)
 
@@ -2639,7 +2907,8 @@ def main() -> None:
     activate.add_argument("--probe-timeout", type=_probe_timeout_argument, default=_PROBE_TIMEOUT_SECONDS,
                           help="Seconds (1-3600) allowed for the candidate's own read-only validation")
     delegate = commands.add_parser(
-        "delegate", help="Delegate the closed head's local erasure targets to a copied slot (one hop only)")
+        "delegate", help="Delegate the erasure targets the closed head holds (local and inherited) "
+                         "to a copied slot")
     delegate.add_argument("name")
     args = parser.parse_args()
     if args.command == "prepare":
