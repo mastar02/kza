@@ -711,8 +711,19 @@ U3b-4a-3: pantallas NEXO de voz.
 - R2 queda con aviso: el cliente no puede saber qué habitaciones tienen micrófono sin un campo nuevo del servidor.
 - Pendiente con el usuario: el visto bueno visual y dos textos que difieren del diseño v4 («Todavía no se puede verificar tu voz en este hogar…» y la línea con la voz apagada). Capturas en `t040-t041/u3b-4a-3-dev/browser-runs/`.
 
+`cd8bc47` (U3b-4b): puntaje sobre embeddings guardados, atribución tras la respuesta fija y frases de verificación.
+- Las frases se filtran contra confusiones de ASR y contra los nombres de Home Assistant.
+- Los casi-aciertos se absorben mientras haya una ventana abierta.
+- La activación textual ya no loguea texto.
+- La revisión fue `accept_with_changes` (L1, L2, W, E, T); todo quedó corregido.
+- 4b-3 se saltó porque requeriría speechbrain y descargas.
+
+Antes de prender la voz (4c):
+- calibrar los umbrales con voces reales después de P7, contra la meta de falsos aciertos acordada con el usuario;
+- verificar el codificador real en el servidor;
+- contar con el procedimiento de cambio de configuración, porque P0 mostró que editar `settings.yaml` se rechaza.
+
 Siguiente:
-- 4b: atribución.
 - Huecos de backend: ids en el recibo, persona en whoami.
 - Una ronda full nueva.
 
