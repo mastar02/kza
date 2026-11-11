@@ -688,8 +688,19 @@ U3b-4 (voz, sintético y local): diseño v4 en `t040-t041/u3b-4-design-v4.json`,
 
 P0 confirmó que editar `settings.yaml` del estado se rechaza con `privacy_authority_stale`. Prender la voz requiere un procedimiento nuevo de cambio de configuración; apagarla usa G1.
 
+`293169d`: la búsqueda en memoria filtra solo por los IDs que el índice tiene. Arregla el fallo intermitente `memory_prompt_unavailable` (índice atrasado respecto del registro). La espera es acotada a 5 s y después da `memory_search_busy`.
+
+`d513dc2` (U3b-4a-1): consentimientos de voz.
+- La solicitud exige exactamente un perfil vinculado.
+- El bloqueo sobrevive a la revocación y solo lo reabre un operador.
+- La verificación tiene un límite por día contado sobre filas guardadas.
+- La comparación solo rechaza.
+- La atribución tiene dos pasos y relee todas las revisiones.
+- Las propuestas pendientes no muestran texto; incluyen «Descartar» y «No es mío».
+- Por ahora los puntajes son inyectados; el puntaje real llega en 4b.
+- Revisión `accept_with_changes`; A–I corregidos y 66/66 mutantes detectados.
+
 Siguiente:
-- U3b-4a-1: consentimientos y verificación. Antes, sembrar filas relativas al reloj real (F2) y correr los tests G2 (a)–(c).
 - 4a-2: API.
 - 4a-3: NEXO.
 - 4b: atribución.
