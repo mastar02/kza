@@ -704,8 +704,14 @@ U3b-4a-2: permiso `memory:own:voice`, rutas de la persona y de administración, 
 
 La suite completa ya no entra en una corrida de 1500 s, así que se corre en dos tandas con el mismo límite (ver `u3b/full-4a1-r3/RESULT.md`).
 
+U3b-4a-3: pantallas NEXO de voz.
+- En «Mis recuerdos»: inscripción, verificación y una tarjeta sin contenido con «Descartar» / «No es mío».
+- En Voces: interruptor, consentimientos, reabrir y reanudar.
+- La revisión fue `accept_with_changes`; S (marcas borradas en pagehide), T, K y Z ya están corregidos.
+- R2 queda con aviso: el cliente no puede saber qué habitaciones tienen micrófono sin un campo nuevo del servidor.
+- Pendiente con el usuario: el visto bueno visual y dos textos que difieren del diseño v4 («Todavía no se puede verificar tu voz en este hogar…» y la línea con la voz apagada). Capturas en `t040-t041/u3b-4a-3-dev/browser-runs/`.
+
 Siguiente:
-- 4a-3: NEXO.
 - 4b: atribución.
 - Huecos de backend: ids en el recibo, persona en whoami.
 - Una ronda full nueva.
