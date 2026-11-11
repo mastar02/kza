@@ -142,3 +142,38 @@ def test_initialisation_adds_only_two_empty_projections_and_three_contract_entri
     with reference_controller(monkeypatch):
         with pytest.raises(ValueError, match="runtime_admission_unknown_schema"):
             stage.capture_state_authority(state)
+
+
+def test_derived_expectation_admits_only_the_empty_owner_schema_migrated_by_derivation(tmp_path):
+    """A derivation from a pre-U3b image opens the destination ledger, which migrates in the owner schema.
+
+    authorize_derived_state expects exactly that empty addition and nothing else: an owner row in the
+    derived image, or an owner schema already present in the source, still mismatches.
+    """
+    state = _state(tmp_path, pre_u3b=True)
+    source = stage.capture_state_authority(state)["projection"]
+    ledger = FactLedger(str(state / PRIVACY), clock=lambda: NOW)
+    ledger.initialize()
+    ledger.close()
+    derived = stage.capture_state_authority(state)["projection"]
+    assert source != derived
+    expected = copy.deepcopy(source)
+    stage._expect_empty_owner_schema(expected, derived)
+    assert expected == derived
+
+    ledger = FactLedger(str(state / PRIVACY), clock=lambda: NOW)
+    ledger.initialize()
+    try:
+        fact = ledger.list(scope="all")[0]
+        ledger.assign_owner(fact.id, "user_synthetic", fact.revision, 0, MemoryAssigner("synthetic-operator"),
+                            retired=lambda ids: False, active=lambda person: True)
+    finally:
+        ledger.close()
+    owned = stage.capture_state_authority(state)["projection"]
+    expected = copy.deepcopy(source)
+    stage._expect_empty_owner_schema(expected, owned)
+    assert expected != owned
+
+    unchanged = copy.deepcopy(derived)
+    stage._expect_empty_owner_schema(unchanged, owned)
+    assert unchanged == derived

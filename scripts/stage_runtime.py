@@ -1964,6 +1964,37 @@ def _event_relocation_data(root: Path, source: dict, candidate: dict, target_rel
     return evidence_targets, source_events, candidate_events
 
 
+# U3b-1a: the owner schema FactLedger.initialize migrates into a pre-owner ledger.
+_FACT_OWNER_ADDITION = ("fact_owners", "fact_owner_revisions", "fact_owner_schema")
+
+
+def _expect_empty_owner_schema(expected: dict, derived: dict) -> None:
+    """Admit only the empty owner schema a derivation migrates into a pre-U3b ledger.
+
+    Materialization opens the destination ledger with current code, and
+    FactLedger.initialize creates fact_owners, fact_owner_revisions and
+    fact_owner_schema when the source image predates them. Per database, that
+    addition is expected only when the source contract has none of the three
+    tables and the derived contract has all three; the expected projection then
+    carries their exact _TABLE_COLUMNS contract and no owner rows. Any owner row
+    or partial owner schema still mismatches, and an empty owner set pins no
+    further fact, so every other projection must still match exactly.
+    """
+    for relative, tables in expected["tables"].items():
+        contract = tables.get("schema_contract_v1")
+        target = derived["tables"].get(relative)
+        if contract is None or type(target) is not dict or "schema_contract_v1" not in target:
+            continue
+        if (any(name in contract["columns"] for name in _FACT_OWNER_ADDITION)
+                or not all(name in target["schema_contract_v1"]["columns"] for name in _FACT_OWNER_ADDITION)):
+            continue
+        for name in _FACT_OWNER_ADDITION:
+            contract["columns"][name] = dict(item.split(":") for item in _TABLE_COLUMNS[name].split())
+        for name in ("fact_owners", "fact_owner_revisions"):
+            tables[name] = {"columns": [item.split(":")[0] for item in _TABLE_COLUMNS[name].split()],
+                            "row_hashes": []}
+
+
 def _derived_authority_equivalent(root: Path, source: dict, candidate: dict, target_relocations: dict) -> bool:
     mapping, before_events, after_events = _event_relocation_data(root, source, candidate, target_relocations)
     before, after = _protected_suggestions(source), _protected_suggestions(candidate)
@@ -1975,6 +2006,7 @@ def _derived_authority_equivalent(root: Path, source: dict, candidate: dict, tar
         projection = _remapped_suggestion_projection(columns, rows, target_columns, target_rows,
                                                      mapping, before_events, after_events)
         expected["tables"][relative]["suggestions_policy_v1"] = projection
+    _expect_empty_owner_schema(expected, candidate["authority"]["projection"])
     return candidate["authority"] == {"schema_version": 1, "digest": _digest(expected), "projection": expected}
 
 

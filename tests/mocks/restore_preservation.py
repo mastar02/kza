@@ -5,11 +5,11 @@ backups with the real constraints enabled; the caller owns the eventual replay.
 """
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 from copy import deepcopy
 from contextlib import closing
 from dataclasses import dataclass, field
+from functools import partial
 import hashlib
 from importlib.metadata import version as installed_version
 import json
@@ -133,11 +133,19 @@ async def seed_manual_sentinels(g, *, sources, voice_ids, suggestion_ids,
     profile = await voices.acall(voices.ledger.confirm, tuple(voice_ids[:3]),
         "Synthetic current reviewed voice", str(uuid4()), actor)
     users = graph.pipeline.request_router.user_manager
+    # The dashboard's own account path (POST /users): the original admin_work owner,
+    # the boolean lease and a require_current guard. A managed graph with the account
+    # publisher (922b80c+) admits only this native invocation; older graphs run the
+    # same adapter without observation.
+    from src.dashboard.native_work import NativeAuthorityRetired, require_current, run_admin_work
     def current():
-        if not root_lease.current(frozenset({"admin:manage"})):
-            raise PermissionError("manual_sentinel_account_denied")
-    user, _ = await asyncio.to_thread(users.add_user, "Synthetic restore person " + uuid4().hex,
-                                    PermissionLevel.ADULT, before_save=current)
+        return root_lease.current(frozenset({"admin:manage"}))
+    try:
+        user, _ = await run_admin_work(graph.dashboard.admin_work, current, users.add_user,
+            name="Synthetic restore person " + uuid4().hex, permission_level=PermissionLevel.ADULT,
+            before_save=partial(require_current, current))
+    except NativeAuthorityRetired as error:
+        raise PermissionError("manual_sentinel_account_denied") from error
     if user is None:
         raise AssertionError("manual account was not committed")
     links = voices.ledger.people

@@ -488,7 +488,10 @@ with stage.AdmissionController(admission) as controller:
     manifest = json.loads((runtime / 'release.json').read_text())
     assert hashlib.sha256((runtime / 'release.json').read_bytes()).hexdigest() == current['release_sha256']
     expected, modes = {}, {}
-    for mode in ('advance-N', 'forward-F'):
+    # The schema-compatible old side (O/R) already registers outputs, so all four
+    # admitted runs journal; a pre-registration old side is covered by
+    # test_pre_u3b_owner_derivation.
+    for mode in ('seed-O', 'advance-N', 'rollback-R', 'forward-F'):
         parent = json.loads((evidence / (mode + '-parent-receipt.json')).read_text())
         closure_path = admission / 'admission/closures' / (parent['closed_binding_id'] + '.json')
         assert hashlib.sha256(closure_path.read_bytes()).hexdigest() == parent['closure_sha256']
@@ -497,9 +500,9 @@ with stage.AdmissionController(admission) as controller:
         modes[running['run_id']] = mode
     records = output_registration.read_output_inventory(controller)
     assert {r['run_id']: (r['header']['binding_id'], r['header']['generation']) for r in records} == expected
-    assert len(records) == 2, records
+    assert len(records) == 4, records
     assert all(r['phase'] == 'observed' for r in records)
-    # Runs written by the compiled current HEAD use the extensible V4 grammar.
+    # Every run, old side included, writes the extensible V4 grammar.
     assert all(r['version'] == 'v4' and r['header']['schema_version'] == 4 for r in records)
     assert all(r['journal']['revision'] > 10 for r in records)
     expected_owners = {'lists', 'reminders', 'privacy_authority', 'authority_sessions', 'routines',
@@ -563,7 +566,7 @@ with stage.AdmissionController(admission) as controller:
             module_hashes[name] = digest
 print(json.dumps({'pid': os.getpid(), 'module': output_registration.__file__,
     'stage_module': stage.__file__, 'module_hashes': module_hashes, 'unchanged_head_state': True, 'run_ids': sorted(r['run_id'] for r in records),
-    'stores_closed': 22, 'account_publishers_drained': 2, 'configuration_publishers_drained': 2,
+    'stores_closed': 44, 'account_publishers_drained': 4, 'configuration_publishers_drained': 4,
     'configuration_outcomes': sorted(outcome['outcome'] for outcome in outcomes.values()),
     'instrumented_per_run': 9, 'required_producers': 32, 'uncovered_per_run': 30,
     'completed_run_metadata_rejected_before_connect': True,
@@ -593,7 +596,10 @@ def test_compiled_material_rollback_and_forward_preserve_latest_authority(tmp_pa
         "sql": "CREATE INDEX idx_erasure_target_participant_id ON erasure_targets(participant, id)"}
     images = {branch: json.loads((tmp_path / "closed-snapshots" / branch / "manifest.json").read_text())
         for branch in ("O", "N", "R")}
-    assert not any(row["name"] == index["name"] for row in images["O"]["databases"][privacy]["schema"])
+    # The old side is schema-compatible with N (U3b), so it already carries the
+    # lookup index; its addition is covered by test_pre_u3b_owner_derivation.
+    assert [row for row in images["O"]["databases"][privacy]["schema"]
+        if row["name"] == index["name"]] == [index]
     for branch in ("N", "R"):
         assert [row for row in images[branch]["databases"][privacy]["schema"]
             if row["name"] == index["name"]] == [index]

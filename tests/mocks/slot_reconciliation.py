@@ -1,9 +1,45 @@
 """Compiled O/N/R/F orchestration; production modules own all state derivation."""
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 import re
+import subprocess
+
+
+def _table_columns(repo: Path, revision: str) -> dict:
+    """The admission schema registry (_TABLE_COLUMNS) as committed at revision."""
+    source = subprocess.check_output(["git", "show", revision + ":scripts/stage_runtime.py"],
+        cwd=repo, text=True)
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and any(getattr(target, "id", None) == "_TABLE_COLUMNS"
+                                                 for target in node.targets):
+            return ast.literal_eval(node.value)
+    raise ValueError("reconciliation_schema_registry_unavailable")
+
+
+def schema_compatible_revision(repo: Path, new_revision: str) -> str:
+    """Earliest managed-capable ancestor of new_revision with its exact schema registry.
+
+    R runs the old code over state derived from N's closed state. Once N
+    registers a table (U3b-1a: fact_owners, fact_owner_revisions,
+    fact_owner_schema), N's runtime and the current derivation write it into
+    every later state, and an older candidate's own probe refuses that state as
+    runtime_admission_unknown_schema by design (test_fact_owner_rollback). So
+    the old side is the earliest managed-capable ancestor whose _TABLE_COLUMNS
+    equals N's: still derived with git, never pinned, and equal to
+    slot_rollback.managed_revision while the registry is unchanged.
+    """
+    from tests.mocks import slot_rollback as original
+
+    wanted = _table_columns(repo, new_revision)
+    candidates = subprocess.check_output(["git", "rev-list", "--reverse", "--topo-order", new_revision,
+        "--", *original.MANAGED_COMPANIONS], cwd=repo, text=True).split()
+    for revision in candidates:
+        if original.is_managed_capable(repo, revision) and _table_columns(repo, revision) == wanted:
+            return revision
+    raise ValueError("reconciliation_schema_compatible_revision_unavailable")
 
 
 def fixture_layout(ordinary, latest, destination):
@@ -76,8 +112,12 @@ def derive_branch(controller, ordinary, latest, slot, *, now):
 
 
 def prepare_case(task, evidence, repo, new_revision, *, copy_cleanup_seed=False,
-                 binary_lineage_seed=False):
-    """Build exact old/new artifacts and declare four independent physical roots."""
+                 binary_lineage_seed=False, old_revision=None):
+    """Build exact old/new artifacts and declare four independent physical roots.
+
+    old_revision defaults to schema_compatible_revision; an explicit one must be
+    an exact managed-capable commit (exercise_pre_u3b_derivation).
+    """
     from scripts.build_runtime import build_runtime
     from scripts.stage_runtime import prepare_slot
     from tests.mocks import compiled_restore as compiled
@@ -90,10 +130,15 @@ def prepare_case(task, evidence, repo, new_revision, *, copy_cleanup_seed=False,
         raise ValueError("reconciliation_binary_lineage_seed_flag")
     if re.fullmatch("[0-9a-f]{40}", new_revision) is None:
         raise ValueError("reconciliation_exact_new_commit_required")
-    # The older application stays genuine OLD code, now the earliest managed-capable
-    # ancestor (U3b-0a refuses unmanaged slots). Its security bridge uses the exact
-    # current production closure observer, with independent provenance.
-    old_revision = original.managed_revision(repo)
+    # The older application stays genuine OLD code: the earliest managed-capable
+    # ancestor (U3b-0a refuses unmanaged slots) that can still serve N's schema
+    # (U3b-1a refuses pre-owner code over owner tables). Its security bridge uses
+    # the exact current production closure observer, with independent provenance.
+    if old_revision is None:
+        old_revision = schema_compatible_revision(repo, new_revision)
+    elif (type(old_revision) is not str or re.fullmatch("[0-9a-f]{40}", old_revision) is None
+            or not original.is_managed_capable(repo, old_revision)):
+        raise ValueError("reconciliation_exact_managed_old_commit_required")
     prepared = original._prepare(task, evidence, repo, old_revision,
         bridge_revision=new_revision)
     settings = prepared["runtimes"]["old"].parent / "state/config/settings.yaml"
@@ -357,3 +402,88 @@ def exercise_material_reconciliation(task, evidence, repo, *, new_revision,
     finally:
         proof["elapsed_s"] = time.monotonic() - started
         compiled.write_json(evidence / "material-parent-proof.json", proof)
+
+
+def privacy_schema_rows(state_root, name):
+    """The sqlite_master rows named name in a state's privacy ledger, read-only."""
+    import sqlite3
+    from contextlib import closing
+
+    path = Path(state_root) / "data/graph/privacy.db"
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+        return [{"type": kind, "name": item, "tbl_name": table, "sql": sql} for kind, item, table, sql
+            in db.execute("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name=?", (name,))]
+
+
+def exercise_pre_u3b_derivation(task, evidence, repo, *, new_revision):
+    """O on the earliest managed revision, N derived from it by new code and run, then
+    an O->N cut derived and authorized for R's slot but never activated; no R/F run.
+
+    The old side is slot_rollback.managed_revision (git-derived), which predates
+    both the erasure lookup index and the U3b owner schema. R cannot run here:
+    N's derived and closed states carry the owner schema, and the U3b rule is that
+    pre-owner code refuses it (runtime_admission_unknown_schema, see
+    test_fact_owner_rollback). The O/N/R/F rehearsal runs on a schema-compatible
+    old side instead.
+    """
+    import time
+    from scripts.stage_runtime import AdmissionController, read_binding
+    from src.memory.state_snapshot import snapshot_closed_state
+    from tests.mocks import compiled_restore as compiled
+    from tests.mocks import slot_rollback as original
+    from tests.mocks.compiled_restore_child import DataCodec
+    from tests.mocks.slot_reconciliation_child import read_phase_bag
+
+    started = time.monotonic()
+    deadline = started + 240
+    task, evidence, repo = Path(task).resolve(), Path(evidence).resolve(), Path(repo).resolve()
+    assert not task.is_relative_to(repo) and not repo.is_relative_to(task)
+    snapshots = task / "closed-snapshots"
+    snapshots.mkdir(mode=0o700)
+    old_revision = original.managed_revision(repo)
+    prepared = prepare_case(task, evidence, repo, new_revision, old_revision=old_revision)
+    settings = (prepared["full_roots"]["O"].parents[1] / "config/settings.yaml").read_bytes()
+    proof = {"schema_version": 1, "unit": "U3b/pre-owner-derivation", "complete": False,
+        "code_pair": {branch: prepared["full_controls"][branch][0]["source_commit"] for branch in ("O", "N")},
+        "phases": {}}
+
+    def phase(controller, branch, mode):
+        budget = min(55, deadline - time.monotonic() - 20)
+        if budget <= 0:
+            raise TimeoutError("reconciliation_parent_deadline")
+        result = run_phase(controller, prepared, evidence, branch, mode, timeout=budget)
+        proof["phases"][branch] = result
+        return result
+
+    try:
+        with AdmissionController(prepared["staging"]) as controller:
+            receipt_O = phase(controller, "O", "seed-O")
+            seed = read_phase_bag(__import__(DataCodec.__module__, fromlist=["DataCodec"]),
+                prepared["phase_inputs"]["outputs"]["O"], prepared["full_controls"]["O"][0], "seed-O")[0]
+            image_O = snapshot_closed_state(controller, receipt_O["closed_binding_id"], snapshots / "O")
+            state_N = prepared["full_roots"]["N"].parents[1]
+            clear_fresh_placeholder(state_N, settings)
+            derived_N, identity = derive_branch(controller, image_O, image_O, "candidate",
+                now=seed["clock_now"])
+            derived_binding = read_binding(controller.root, identity)
+            proof["derived"] = {"binding_id": identity, "state_root": derived_binding["state_root"],
+                "authority_tables": sorted(derived_binding["authority"]["projection"]["tables"]
+                    ["data/graph/privacy.db"])}
+            receipt_N = phase(controller, "N", "advance-N")
+            latest = read_phase_bag(__import__(DataCodec.__module__, fromlist=["DataCodec"]),
+                prepared["phase_inputs"]["outputs"]["N"], prepared["full_controls"]["N"][0], "advance-N")[0]
+            image_N = snapshot_closed_state(controller, receipt_N["closed_binding_id"], snapshots / "N")
+            # The O -> N cut: ordinary O lacks what latest N added (lookup index and
+            # owner schema), so only the known additive-schema rule admits it. The
+            # result is authorized but never activated (see the docstring).
+            state_R = prepared["full_roots"]["R"].parents[1]
+            clear_fresh_placeholder(state_R, settings)
+            derived_R, identity_R = derive_branch(controller, image_O, image_N, "rollback",
+                now=latest["clock_now"])
+            proof["derived_cut"] = {"binding_id": identity_R,
+                "state_root": read_binding(controller.root, identity_R)["state_root"]}
+            proof["complete"] = True
+        return proof
+    finally:
+        proof["elapsed_s"] = time.monotonic() - started
+        compiled.write_json(evidence / "pre-u3b-parent-proof.json", proof)
