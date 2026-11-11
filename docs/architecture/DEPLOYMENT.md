@@ -271,6 +271,25 @@ Límites:
   cadena.
 - Los archivos de historial guardan los registros, no las cadenas.
 
+### Hueco de privacidad conocido: copias que el borrado no alcanza
+
+Estado actual (confirmado por revisión de código, 2026-11-11). Cuando el head gestionado borra una conversación, un recuerdo o un perfil de voz, el borrado actúa sobre:
+
+- su propia base de privacidad (`privacy.db`);
+- los destinos con ruta que tiene delegados: eventos, sugerencias, contextos, capturas, diagnósticos, colectores e índices semánticos de los estados dueños anteriores.
+
+La base de privacidad no es un destino de borrado. Ningún participante la nombra (`scripts/stage_runtime.py:1116-1167`). Por eso, en estas copias, las filas de `facts`, `fact_sources`, `fact_dependencies`, `voice_profiles` (huellas biométricas), `voice_fingerprints` y las tablas `voice_attribution_*` **nunca se borran**:
+
+- la `privacy.db` de cada slot gestionado anterior, sea dueño o no;
+- los snapshots y estados derivados que registra el catálogo de copias (`admission/copies`, con `acknowledges_retained_copy_cleanup = false`);
+- fuera de la raíz de admisión: el estado de producción de b0866e8 (`/home/kza/kza`), los respaldos de `/home/kza/releases/backups/` y cualquier snapshot del disco.
+
+Los embeddings de esos recuerdos en los índices semánticos de los estados dueños sí se borran, porque esos índices son destinos con ruta.
+
+Consecuencia: si una persona pide «olvidá mi voz» u «olvidá esto», su perfil de voz o su recuerdo desaparece del estado activo, pero sigue en cada slot anterior y en cada copia hasta que esa copia se destruya. Con la compactación (U3b-0c, en diseño; requiere antes la unidad del lanzador gestionado), esas copias se destruyen al compactar. Mientras tanto pueden ser hasta 5 slots anteriores si se compacta al llegar a 6 dueños. El borrado de la compactación es sólo unlink: no sobrescribe. Las copias fuera de la raíz no las alcanza ningún mecanismo actual.
+
+Hasta que exista una herramienta, retirar a mano una copia vieja requiere una decisión explícita del usuario. Nunca borres el estado del slot activo ni el de un dueño que el head todavía necesita (ver «Todo estado dueño debe quedar intacto»).
+
 Versiones del controlador: en cuanto exista un registro escrito por 0b,
 `delegate`, `activate` y `run` deben ejecutarse con un `stage_runtime` 0b o
 posterior. Tras un rollback, no uses como controlador el `stage_runtime` del
