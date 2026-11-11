@@ -264,39 +264,51 @@ dialog>p{font-size:13px;color:#abbccd;line-height:1.9;margin:12px 0}
    the fade never clip it; scroll padding keeps a focused item clear of the fade. */
 @media(max-width:620px){.rail-group{gap:var(--rail-gap,0px);padding:3px 4px;scroll-padding-inline:30px}.rail-group .rail-button:focus-visible{outline-offset:-3px}.rail-group.more-end{-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 22px),#0000);mask-image:linear-gradient(to right,#000 calc(100% - 22px),#0000)}.rail-group.more-start{-webkit-mask-image:linear-gradient(to right,#0000,#000 22px);mask-image:linear-gradient(to right,#0000,#000 22px)}.rail-group.more-start.more-end{-webkit-mask-image:linear-gradient(to right,#0000,#000 22px,#000 calc(100% - 22px),#0000);mask-image:linear-gradient(to right,#0000,#000 22px,#000 calc(100% - 22px),#0000)}}
 /* Memoria (U3): scoped to the view and its delete dialog. */
-#memory-view .memory-heading{align-items:flex-start;flex-wrap:wrap}
-#memory-view .memory-heading p:not(.eyebrow){font-size:13px;line-height:1.7;max-width:640px}
-#memory-view .identity-heading .eyebrow{font-size:11px;letter-spacing:1.5px}
-#memory-view .memory-heading-side{flex-direction:row;align-items:center;flex-wrap:wrap;gap:10px}
-#memory-view .identity-primary,#memory-view .identity-secondary,#memory-view .identity-danger{min-height:44px;min-width:44px;font-size:12px}
-#memory-view .memory-note,#memory-view .memory-notice{font-size:13px;line-height:1.7;color:var(--muted);margin:0 0 14px;overflow-wrap:anywhere}
-#memory-view .memory-note:empty,#memory-view .memory-notice:empty{display:none}
-#memory-view .memory-freshness.is-error{color:#f2a7b6}
-#memory-view .memory-session-notice,#memory-view .memory-cleanup,#memory-view .memory-cap{color:#f3d48b}
-#memory-view .memory-section-title{font-size:15px;font-weight:600;margin:18px 0 10px;color:var(--text)}
-#memory-view .memory-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;align-items:start;margin-bottom:8px}
-#memory-view .memory-card{padding:20px;min-width:0;display:flex;flex-direction:column;gap:8px;transform:none}
-#memory-view .memory-card:focus{outline:2px solid var(--mint);outline-offset:2px}
-#memory-view .memory-card-top{display:flex;align-items:flex-start;gap:12px;min-width:0}
-#memory-view .memory-card .scene-icon{flex-shrink:0;display:grid;place-items:center;width:40px;height:40px;border-radius:10px;background:#ffffff08}
-#memory-view .memory-card .scene-icon svg{width:20px;height:20px}
-#memory-view .memory-card .scene-icon.mint{color:var(--mint)}#memory-view .memory-card .scene-icon.lavender{color:var(--purple)}
-#memory-view .memory-meta{font-size:12px;line-height:1.6;color:var(--muted);overflow-wrap:anywhere;min-width:0}
+:is(#memory-view,#my-memory-view) .memory-heading{align-items:flex-start;flex-wrap:wrap}
+:is(#memory-view,#my-memory-view) .memory-heading p:not(.eyebrow){font-size:13px;line-height:1.7;max-width:640px}
+:is(#memory-view,#my-memory-view) .identity-heading .eyebrow{font-size:11px;letter-spacing:1.5px}
+:is(#memory-view,#my-memory-view) .memory-heading-side{flex-direction:row;align-items:center;flex-wrap:wrap;gap:10px}
+:is(#memory-view,#my-memory-view) .identity-primary,:is(#memory-view,#my-memory-view) .identity-secondary,:is(#memory-view,#my-memory-view) .identity-danger{min-height:44px;min-width:44px;font-size:12px}
+:is(#memory-view,#my-memory-view) .memory-note,:is(#memory-view,#my-memory-view) .memory-notice{font-size:13px;line-height:1.7;color:var(--muted);margin:0 0 14px;overflow-wrap:anywhere}
+:is(#memory-view,#my-memory-view) .memory-note:empty,:is(#memory-view,#my-memory-view) .memory-notice:empty{display:none}
+:is(#memory-view,#my-memory-view) .memory-freshness.is-error{color:#f2a7b6}
+:is(#memory-view,#my-memory-view) .memory-session-notice,:is(#memory-view,#my-memory-view) .memory-cleanup,:is(#memory-view,#my-memory-view) .memory-cap{color:#f3d48b}
+:is(#memory-view,#my-memory-view) .memory-section-title{font-size:15px;font-weight:600;margin:18px 0 10px;color:var(--text)}
+:is(#memory-view,#my-memory-view) .memory-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;align-items:start;margin-bottom:8px}
+:is(#memory-view,#my-memory-view) .memory-card{padding:20px;min-width:0;display:flex;flex-direction:column;gap:8px;transform:none}
+:is(#memory-view,#my-memory-view) .memory-card:focus{outline:2px solid var(--mint);outline-offset:2px}
+:is(#memory-view,#my-memory-view) .memory-card-top{display:flex;align-items:flex-start;gap:12px;min-width:0}
+:is(#memory-view,#my-memory-view) .memory-card .scene-icon{flex-shrink:0;display:grid;place-items:center;width:40px;height:40px;border-radius:10px;background:#ffffff08}
+:is(#memory-view,#my-memory-view) .memory-card .scene-icon svg{width:20px;height:20px}
+:is(#memory-view,#my-memory-view) .memory-card .scene-icon.mint{color:var(--mint)}:is(#memory-view,#my-memory-view) .memory-card .scene-icon.lavender{color:var(--purple)}
+:is(#memory-view,#my-memory-view) .memory-meta{font-size:12px;line-height:1.6;color:var(--muted);overflow-wrap:anywhere;min-width:0}
 .memory-content{font-size:15px;line-height:1.6;color:var(--text);overflow-wrap:anywhere;white-space:pre-wrap;unicode-bidi:isolate;margin:0}
-#memory-view .memory-detail,#memory-view .memory-state{font-size:13px;line-height:1.6;overflow-wrap:anywhere;color:#b0bfd4;margin:0}
-#memory-view .memory-state{color:#f3d48b}
-#memory-view .memory-notice{margin:0}
-#memory-view .memory-sources summary{min-height:44px;display:flex;align-items:center;font-size:13px;cursor:pointer;color:#b0bfd4}
-#memory-view .memory-controls{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
-#memory-confirm-dialog{width:560px;max-width:calc(100% - 24px);max-height:calc(100dvh - 24px);overflow:auto;padding:24px}
-#memory-confirm-dialog h2{overflow-wrap:anywhere}
-#memory-confirm-dialog .memory-confirm-target{border:1px solid #ffffff14;border-radius:10px;padding:12px;margin:0 0 12px;display:flex;flex-direction:column;gap:6px}
-#memory-confirm-dialog .modal-description,#memory-confirm-dialog li,#memory-confirm-dialog .memory-detail{font-size:13px;line-height:1.7;overflow-wrap:anywhere;margin:0 0 10px}
-#memory-confirm-dialog .memory-confirm-items{margin:0 0 12px;padding-left:20px}
-#memory-confirm-dialog .memory-confirm-items .memory-content{font-size:13px;display:inline}
-#memory-confirm-dialog .memory-confirm-actions{display:flex;flex-wrap:wrap;gap:8px}
-#memory-confirm-dialog .identity-secondary,#memory-confirm-dialog .identity-danger{min-height:44px;min-width:44px;font-size:12px}
-@media(max-width:1279px){#memory-view .memory-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:620px){#memory-view .memory-grid{grid-template-columns:minmax(0,1fr)}#memory-confirm-dialog{width:100%;max-width:100%;max-height:100dvh;height:100dvh;margin:0;border-radius:0;padding:18px}#memory-confirm-dialog .memory-confirm-actions>*{flex:1 1 100%}}
-#routines-view [aria-disabled=true],#memory-view [aria-disabled=true]{opacity:.6;cursor:progress}
-#memory-confirm-dialog .memory-changed{color:#f3d48b}
+:is(#memory-view,#my-memory-view) .memory-detail,:is(#memory-view,#my-memory-view) .memory-state{font-size:13px;line-height:1.6;overflow-wrap:anywhere;color:#b0bfd4;margin:0}
+:is(#memory-view,#my-memory-view) .memory-state{color:#f3d48b}
+:is(#memory-view,#my-memory-view) .memory-notice{margin:0}
+:is(#memory-view,#my-memory-view) .memory-sources summary{min-height:44px;display:flex;align-items:center;font-size:13px;cursor:pointer;color:#b0bfd4}
+:is(#memory-view,#my-memory-view) .memory-controls{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+:is(#memory-confirm-dialog,#my-memory-confirm-dialog){width:560px;max-width:calc(100% - 24px);max-height:calc(100dvh - 24px);overflow:auto;padding:24px}
+:is(#memory-confirm-dialog,#my-memory-confirm-dialog) h2{overflow-wrap:anywhere}
+:is(#memory-confirm-dialog,#my-memory-confirm-dialog) .memory-confirm-target{border:1px solid #ffffff14;border-radius:10px;padding:12px;margin:0 0 12px;display:flex;flex-direction:column;gap:6px}
+:is(#memory-confirm-dialog,#my-memory-confirm-dialog) .modal-description,:is(#memory-confirm-dialog,#my-memory-confirm-dialog) li,:is(#memory-confirm-dialog,#my-memory-confirm-dialog) .memory-detail{font-size:13px;line-height:1.7;overflow-wrap:anywhere;margin:0 0 10px}
+:is(#memory-confirm-dialog,#my-memory-confirm-dialog) .memory-confirm-items{margin:0 0 12px;padding-left:20px}
+:is(#memory-confirm-dialog,#my-memory-confirm-dialog) .memory-confirm-items .memory-content{font-size:13px;display:inline}
+:is(#memory-confirm-dialog,#my-memory-confirm-dialog) .memory-confirm-actions{display:flex;flex-wrap:wrap;gap:8px}
+:is(#memory-confirm-dialog,#my-memory-confirm-dialog) .identity-secondary,:is(#memory-confirm-dialog,#my-memory-confirm-dialog) .identity-danger{min-height:44px;min-width:44px;font-size:12px}
+@media(max-width:1279px){:is(#memory-view,#my-memory-view) .memory-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:620px){:is(#memory-view,#my-memory-view) .memory-grid{grid-template-columns:minmax(0,1fr)}:is(#memory-confirm-dialog,#my-memory-confirm-dialog){width:100%;max-width:100%;max-height:100dvh;height:100dvh;margin:0;border-radius:0;padding:18px}:is(#memory-confirm-dialog,#my-memory-confirm-dialog) .memory-confirm-actions>*{flex:1 1 100%}}
+#routines-view [aria-disabled=true],:is(#memory-view,#my-memory-view) [aria-disabled=true]{opacity:.6;cursor:progress}
+:is(#memory-confirm-dialog,#my-memory-confirm-dialog) .memory-changed{color:#f3d48b}
+:is(#memory-view,#my-memory-view) .memory-prune,:is(#memory-view,#my-memory-view) .memory-people{color:#f3d48b}
+#my-memory-view .memory-return-notice{color:var(--text);border-left:3px solid var(--mint);padding-left:10px}
+:is(#memory-view,#my-memory-view) .memory-more{margin:0 0 16px}
+:is(#memory-view,#my-memory-view) .memory-more:empty{display:none}
+:is(#memory-view,#my-memory-view) .memory-more .identity-secondary{min-height:44px;min-width:44px;font-size:12px}
+:is(#memory-view,#my-memory-view) .memory-controls>button{max-width:100%;white-space:normal}
+#memory-confirm-dialog .memory-person-field{display:block;font-size:13px;margin:0 0 6px;color:var(--text)}
+#memory-confirm-dialog select{width:100%;min-height:44px;margin:0 0 12px;font-size:14px;max-width:100%}
+#memory-confirm-dialog .memory-id{font-size:11px;overflow-wrap:anywhere;word-break:break-all;color:#b0bfd4}
+#memory-confirm-dialog .memory-assign-notice{color:#f3d48b}
+:is(#memory-confirm-dialog,#my-memory-confirm-dialog) .identity-primary{min-height:44px;min-width:44px;font-size:12px}
+:is(#memory-confirm-dialog,#my-memory-confirm-dialog) .memory-confirm-actions>button{white-space:normal;max-width:100%}

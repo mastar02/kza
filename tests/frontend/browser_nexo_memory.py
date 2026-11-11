@@ -1,5 +1,9 @@
 """Real Chromium, real logins and real memory services for the NEXO Memoria view.
 
+U3b-3 adds the operator owner side: walked pagination, owner labels and counts,
+the assign dialog (permanence, D5, A16 notice, 409 dependents), reassign,
+unassign, 'Devueltos', the prune flag and the account-removal disclosure.
+
 Synthetic credentials stay in process memory. Evidence never serializes a
 credential, a cookie, a request body or fact text; only methods, paths,
 statuses and counts.
@@ -22,15 +26,21 @@ import uvicorn
 from starlette.routing import WebSocketRoute
 from websockets.asyncio.client import connect
 
+from src.dashboard import memory_api
 from src.dashboard.api import DashboardAPI
 from src.dashboard.authority import DashboardAuthority, DashboardRole, EvaluationModality, EvaluationSample
-from src.memory.fact_ledger import FactDependency, MemoryReviewer
+from src.memory.fact_ledger import FactDependency, MemoryAssigner, MemoryReviewer
 from src.memory.services import build_memory_services
 from src.rooms.room_context import RoomConfig
+from src.users.user_manager import PermissionLevel, UserManager
 from tests.frontend.browser_nexo_home import login, screenshot
 from tests.frontend.browser_support import Page, audit_view, browser_binary, browser_profile_root, evidence_directory, install_login_session, press_enter
 from tests.integration.test_typed_home_operations import typed_graph
 from tests.mocks.memory_graph import MemoryClient
+
+# Copy shipped by memory.js (R1).
+DEPENDENTS_SCOPE = ('Se eliminan los recuerdos derivados que existan al momento de asignar, que pueden no ser exactamente los de esta '
+                    'lista si cambian mientras decidís. El servidor informa solo cuántos se eliminaron, no cuáles.')
 
 
 EVIDENCE = evidence_directory('KZA_NEXO_MEMORY_EVIDENCE', 'data/autonomous-roadmap-20261102/t040-t041/u3-memory-browser-runs')
@@ -122,7 +132,12 @@ async def main() -> None:
                                                     'preferences_path': str(directory / 'preferences.json')}},
                                                    shutdown=stack, chroma_client=client)
             manager, memory = services.manager, services.manager.long_term
-            authority = DashboardAuthority(directory / 'auth.db', session_ttl_s=900)
+            # Real account catalog: assignment checks the person is an active, non-retired account.
+            users = UserManager(str(directory / 'users.json'), retirement_proof=lambda identities: authority.users_retired(identities))
+            person_a, _ = users.add_user('Persona sintética A', PermissionLevel.ADULT)
+            person_b, _ = users.add_user('Persona sintética B', PermissionLevel.ADULT)
+            assert person_a is not None and person_b is not None
+            authority = DashboardAuthority(directory / 'auth.db', session_ttl_s=900, account_provider=users.active_accounts)
             await authority.initialize()
             stack.push_async_callback(authority.aclose)
             root = authority.resolve('Bearer synthetic-memory-bootstrap')
@@ -131,10 +146,11 @@ async def main() -> None:
             operator = await authority.issue_credential(root, subject='synthetic-operator', role=DashboardRole.OPERATOR, expires_at=expires)
             operator_b = await authority.issue_credential(root, subject='synthetic-operator-b', role=DashboardRole.OPERATOR, expires_at=expires)
             household = await authority.issue_credential(root, subject='synthetic-home', role=DashboardRole.HOME, expires_at=expires)
+            home_a = await authority.issue_credential(root, subject='synthetic-home-a', role=DashboardRole.HOME, expires_at=expires, user_id=person_a.user_id)
             selection = EvaluationSample('vf_' + 'a' * 64, frozenset({'b' * 64}), frozenset({EvaluationModality.AUDIO_PREVIEW}), expires)
             evaluator = await authority.issue_credential(root, subject='synthetic-evaluator', role=DashboardRole.EVALUATOR, expires_at=expires, samples=(selection,))
             rooms = {'living': RoomConfig('living', 'Sala de estar', 'la sala', default_light='light.test_lamp')}
-            dashboard = DashboardAPI(authority=authority, ha_client=ha, home_actions=actions, home_rooms=rooms, memory_manager=manager)
+            dashboard = DashboardAPI(authority=authority, ha_client=ha, home_actions=actions, home_rooms=rooms, memory_manager=manager, user_manager=users)
 
             def source(*parents):
                 value = manager.source_for_capture(str(uuid4()), time.time(), 'synthetic-room')
@@ -149,6 +165,18 @@ async def main() -> None:
             async def get(identity, review=True):
                 return await memory.acall(memory.ledger.get, identity, review=review)
 
+            def owner_row(identity):
+                row = memory.ledger._db.execute('SELECT person_id FROM fact_owners WHERE fact_id=?', (identity,)).fetchone()
+                return None if row is None else row[0]
+
+            async def owner_of(identity):
+                return await memory.acall(owner_row, identity)
+
+            async def seed_assign(identity, person):
+                fact = await get(identity)
+                return await memory.acall(memory.ledger.assign_owner, identity, person, fact.revision, 0, MemoryAssigner('synthetic-seed-operator'),
+                                          retired=authority.memory_owner_retired, active=authority.memory_owner_active)
+
             async def unavailable_live_channel(websocket):
                 await websocket.close(code=1013)
 
@@ -162,7 +190,9 @@ async def main() -> None:
                     await gate.wait()
                 response = await call_next(request)
                 if request.url.path.startswith('/api/'):
-                    requests.append({'method': request.method, 'path': request.url.path, 'status': response.status_code})
+                    # Query parameter names only (never cursor values).
+                    requests.append({'method': request.method, 'path': request.url.path, 'status': response.status_code,
+                                     'query': sorted(request.query_params.keys())})
                 return response
 
             # Synthetic household memory.
@@ -182,6 +212,15 @@ async def main() -> None:
             long_id = await automatic(long_text)
             n5_proposal_id = await propose('Escucho radio por la mañana. Propuesta sintética para descartar.')
             n5_parent_id = await automatic('Tengo un perro llamado Sol. Dato sintético raíz para N5.')
+            # U3b-3 owner flows.
+            plain_id = await automatic('Me gusta el té de menta. Dato sintético para asignar.')
+            owner_parent_id = await automatic('Practico guitarra los lunes. Dato sintético raíz con derivado.')
+            owner_child_id = await automatic('Los lunes no cocino. Derivado sintético del dato asignado.', await get(owner_parent_id, review=False))
+            lost_assign_id = await automatic('Camino por la rambla los sábados. Dato sintético para la asignación perdida.')
+            returned_keep_id = await automatic('Tomo mate amargo. Dato sintético que la persona devuelve y se reasigna.')
+            returned_drop_id = await automatic('Colecciono estampillas. Dato sintético que la persona devuelve y se elimina.')
+            for identity in (returned_keep_id, returned_drop_id):
+                await seed_assign(identity, person_a.user_id)
 
             listener = socket.socket()
             listener.bind(('127.0.0.1', 0))
@@ -398,13 +437,13 @@ async def main() -> None:
                         # Accessibility and reflow of the list, plus a 200% text pass.
                         audits['memoria'] = await audit_view(page, evidence, 'memoria', (
                             ('#app-nav [data-view=memory]', None), ('#rail-nav [data-view=access]', None), ('#memory-refresh', None),
-                            (key(hidden_id + ':delete'), None), (key(confirm_id + ':sources'), None)), screenshot, widths=WIDTHS)
+                            (key(hidden_id + ':delete'), None), (key(hidden_id + ':assign'), None), (key(confirm_id + ':sources'), None)), screenshot, widths=WIDTHS)
                         zoom = {}
                         for width in ZOOM_WIDTHS:
                             await page.command('Emulation.setDeviceMetricsOverride', {'width': width, 'height': 844, 'deviceScaleFactor': 1, 'mobile': True})
                             await page.evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
                             enlarged = await page.evaluate(TEXT_ZOOM + "(['#memory-view','#rail-nav'])")
-                            measured = await page.evaluate(TEXT_ZOOM_CHECK + "(['#memory-view'], " + json.dumps(['#memory-refresh', key(hidden_id + ':delete'), key(confirm_id + ':sources')]) + ')')
+                            measured = await page.evaluate(TEXT_ZOOM_CHECK + "(['#memory-view'], " + json.dumps(['#memory-refresh', key(hidden_id + ':delete'), key(hidden_id + ':assign'), key(confirm_id + ':sources')]) + ')')
                             await screenshot(page, evidence / f'memoria-text200-{width}.png')
                             problems = ([f'document scrolls horizontally {measured["scrollWidth"]}>{measured["innerWidth"]}'] if measured['scrollWidth'] > measured['innerWidth'] else []) \
                                 + [f'overflows: {item}' for item in measured['offenders']] + [f'clipped: {item}' for item in measured['clipped']] + measured['blocked']
@@ -466,13 +505,161 @@ async def main() -> None:
                         assert count('DELETE', f'/api/memory/facts/{hidden_id}') == 1, 'never resent under the other account'
                         checks.append("F5/F11: B's unresolved delete is never resent or resolved under A; the key is wiped and the session-end reminder is shown")
 
-                        # Cap: 100 newer automatic facts hide older ones; the copy says so honestly.
+                        # U3b-3: owner labels and counts; the assign dialog states permanence, D5 and the server's A16 notice.
+                        await click('#memory-refresh')
+                        await page.wait_for(f"document.querySelector({card(plain_id)}) && (document.querySelector('#memory-owner-counts')?.textContent||'').includes('Asignados a personas: 2 · Devueltos: 0')")
+                        assert await page.evaluate(f"document.querySelector({card(plain_id, '.memory-owner')}).textContent") == 'Sin asignar'
+                        assert await page.evaluate(f"document.querySelector({card(returned_keep_id, '.memory-owner')}).textContent.startsWith('Asignado a Persona sintética A')")
+                        await page.evaluate(f"document.querySelector('{key(plain_id + ':assign')}').focus()")
+                        await press(key(plain_id + ':assign'))
+                        await page.wait_for("document.querySelector('#memory-confirm-dialog').open && document.activeElement?.id==='memory-assign-person'")
+                        dialog = await page.evaluate("document.querySelector('#memory-confirm-dialog').innerText")
+                        assert 'queda confirmado y no vence' in dialog and 'La persona va a poder verlo, eliminarlo o devolverlo' in dialog, dialog
+                        assert 'Si el recuerdo habla de otra persona, asignarlo se lo muestra a quien elijas.' in dialog, dialog
+                        assert memory_api.ASSIGN_NOTICE in dialog, 'the A16 notice from GET /api/memory is shown before acting'
+                        options = await page.evaluate("[...document.querySelectorAll('#memory-assign-person option')].map(o=>[o.value,o.textContent])")
+                        assert options == [[person_a.user_id, 'Persona sintética A'], [person_b.user_id, 'Persona sintética B']], options
+                        audits['memoria-asignar'] = await audit_view(page, evidence, 'memoria-asignar', (
+                            ('#memory-assign-person', None), ('#memory-confirm-dialog [data-key=confirm-cancel]', None), ('#memory-confirm-dialog [data-key=confirm-accept]', None)),
+                            screenshot, widths=WIDTHS)
+                        await click('#memory-confirm-dialog [data-key="confirm-cancel"]')
+                        await page.wait_for(f"!document.querySelector('#memory-confirm-dialog').open && document.activeElement?.dataset.key==='{plain_id}:assign'")
+                        assert count('POST', f'/api/memory/facts/{plain_id}/owner') == 0 and await owner_of(plain_id) is None
+                        await press(key(plain_id + ':assign'))
+                        await page.wait_for("document.querySelector('#memory-confirm-dialog').open")
+                        await page.evaluate(f"document.querySelector('#memory-assign-person').value={json.dumps(person_a.user_id)}")
+                        await click('#memory-confirm-dialog [data-key="confirm-accept"]')
+                        await page.wait_for(f"(document.querySelector({card(plain_id, '.memory-owner')})?.textContent||'').startsWith('Asignado a Persona sintética A') && document.querySelector('#memory-live').textContent.startsWith('Recuerdo asignado.')")
+                        stored = await get(plain_id)
+                        assert await owner_of(plain_id) == person_a.user_id and stored.state.value == 'confirmed' and stored.expires_at is None
+                        assert memory_api.ASSIGN_NOTICE in await page.evaluate("document.querySelector('#memory-live').textContent"), 'the receipt notice is announced'
+                        assert count('POST', f'/api/memory/facts/{plain_id}/owner') == 1
+                        assert await page.evaluate("!Object.keys(sessionStorage).some(k=>k.startsWith('kza:memory-op:'))")
+                        checks.append('U3b-3 assign: owner label and counts; dialog states permanence, the D5 sentence and the server A16 notice before acting; cancel sends nothing and returns focus; accept assigns, confirms without expiry and announces the receipt notice')
+
+                        # 409 has_dependents: the dialog lists ids and states; cancel deletes nothing; accept deletes them and assigns.
+                        await press(key(owner_parent_id + ':assign'))
+                        await page.wait_for("document.querySelector('#memory-confirm-dialog').open")
+                        await page.evaluate(f"document.querySelector('#memory-assign-person').value={json.dumps(person_b.user_id)}")
+                        await click('#memory-confirm-dialog [data-key="confirm-accept"]')
+                        await page.wait_for(f"document.querySelector('#memory-assign-dependents [data-dependent-id=\"{owner_child_id}\"]')")
+                        dialog = await page.evaluate("document.querySelector('#memory-confirm-dialog').innerText")
+                        assert memory_api.DEPENDENTS_NOTICE in dialog and owner_child_id in dialog and 'automático' in dialog and 'Los lunes no cocino' in dialog, dialog
+                        # R1: before confirming, the dialog says the server decides the set at apply time and reports only a count.
+                        assert DEPENDENTS_SCOPE in dialog and await page.evaluate("Boolean(document.querySelector('#memory-assign-dependents-scope'))"), dialog
+                        assert await owner_of(owner_parent_id) is None and await get(owner_child_id) is not None
+                        audits['memoria-derivados'] = await audit_view(page, evidence, 'memoria-derivados', (
+                            ('#memory-confirm-dialog [data-key=confirm-cancel]', None), ('#memory-confirm-dialog [data-key=confirm-accept]', None)), screenshot, widths=WIDTHS)
+                        await click('#memory-confirm-dialog [data-key="confirm-cancel"]')
+                        await page.wait_for("!document.querySelector('#memory-confirm-dialog').open")
+                        assert await get(owner_child_id) is not None and await owner_of(owner_parent_id) is None
+                        assert count('POST', f'/api/memory/facts/{owner_parent_id}/owner') == 1
+                        await press(key(owner_parent_id + ':assign'))
+                        await page.wait_for("document.querySelector('#memory-confirm-dialog').open")
+                        await page.evaluate(f"document.querySelector('#memory-assign-person').value={json.dumps(person_b.user_id)}")
+                        await click('#memory-confirm-dialog [data-key="confirm-accept"]')
+                        await page.wait_for("document.querySelector('#memory-assign-dependents')")
+                        await click('#memory-confirm-dialog [data-key="confirm-accept"]')
+                        await page.wait_for(f"!document.querySelector({card(owner_child_id)}) && (document.querySelector({card(owner_parent_id, '.memory-owner')})?.textContent||'').startsWith('Asignado a Persona sintética B')")
+                        assert await get(owner_child_id) is None and await owner_of(owner_parent_id) == person_b.user_id
+                        assert count('POST', f'/api/memory/facts/{owner_parent_id}/owner') == 3
+                        checks.append('U3b-3 409 has_dependents: ids and states listed with the server notice; cancel deletes nothing; the confirmed resend deletes the dependents and assigns')
+
+                        # Reassign and unassign.
+                        await press(key(plain_id + ':assign'))
+                        await page.wait_for("document.querySelector('#memory-confirm-dialog').open")
+                        assert await page.evaluate("[...document.querySelectorAll('#memory-assign-person option')].map(o=>o.value)") == [person_b.user_id], 'the current owner is not offered'
+                        assert 'deja de verlo en Mis recuerdos' in await page.evaluate("document.querySelector('#memory-confirm-dialog').innerText")
+                        await click('#memory-confirm-dialog [data-key="confirm-accept"]')
+                        await page.wait_for(f"(document.querySelector({card(plain_id, '.memory-owner')})?.textContent||'').startsWith('Asignado a Persona sintética B')")
+                        assert await owner_of(plain_id) == person_b.user_id
+                        await press(key(plain_id + ':unassign'))
+                        await page.wait_for("document.querySelector('#memory-confirm-dialog').open")
+                        assert 'Persona sintética B deja de verlo en Mis recuerdos' in await page.evaluate("document.querySelector('#memory-confirm-dialog').innerText")
+                        await click('#memory-confirm-dialog [data-key="confirm-accept"]')
+                        await page.wait_for(f"document.querySelector({card(plain_id, '.memory-owner')})?.textContent==='Sin asignar · la administración quitó la asignación'")
+                        assert await owner_of(plain_id) is None and (await get(plain_id)).state.value == 'confirmed'
+                        checks.append('U3b-3 reassign offers only other active people and says the current owner loses it; unassign keeps the memory confirmed and labels it')
+
+                        # Lost assignment response after the commit: resolved by a later read.
+                        await rule('POST', f'/api/memory/facts/{lost_assign_id}/owner', 'drop')
+                        await press(key(lost_assign_id + ':assign'))
+                        await page.wait_for("document.querySelector('#memory-confirm-dialog').open")
+                        await click('#memory-confirm-dialog [data-key="confirm-accept"]')
+                        await page.wait_for("document.querySelector('#memory-live').textContent==='Comprobado: el recuerdo quedó asignado y confirmado.'")
+                        assert await owner_of(lost_assign_id) == person_a.user_id and count('POST', f'/api/memory/facts/{lost_assign_id}/owner') == 1
+                        checks.append('U3b-3 lost assignment response: unresolved, then settled by a read that started after the loss; one POST')
+
+                        # 'Devueltos': person A says 'No es mío' through the real route; the operator reassigns one and deletes the other.
+                        async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as person_http:
+                            async with person_http.post(base + '/api/admin/auth/login', json={'token': home_a.token}) as response:
+                                assert response.status == 200
+                            for identity in (returned_keep_id, returned_drop_id):
+                                async with person_http.post(base + f'/api/memory/mine/facts/{identity}/return') as response:
+                                    assert response.status == 200 and (await response.json())['returned'] is True
+                        await click('#memory-refresh')
+                        await page.wait_for(f"document.querySelector('#memory-returned {key(returned_keep_id + ':assign')}') && document.querySelector('#memory-returned {key(returned_drop_id + ':delete')}') && (document.querySelector('#memory-owner-counts')?.textContent||'').includes('Devueltos: 2')")
+                        assert await page.evaluate(f"document.querySelectorAll('[data-memory-id=\"{returned_keep_id}\"]').length") == 1, 'each memory is shown once'
+                        assert 'Una persona marcó estos recuerdos como «No es mío»' in await page.evaluate("document.querySelector('#memory-view').innerText")
+                        assert await page.evaluate(f"document.querySelector({card(returned_keep_id, '.memory-owner')}).textContent") == 'Devuelto por la persona («No es mío») · sin asignar'
+                        assert any(item['path'] == '/api/memory/returned' and item['status'] == 200 for item in requests)
+                        audits['memoria-devueltos'] = await audit_view(page, evidence, 'memoria-devueltos', (
+                            (key(returned_keep_id + ':assign'), None), (key(returned_drop_id + ':delete'), None)), screenshot, widths=WIDTHS)
+                        await press(key(returned_keep_id + ':assign'))
+                        await page.wait_for("document.querySelector('#memory-confirm-dialog').open")
+                        await page.evaluate(f"document.querySelector('#memory-assign-person').value={json.dumps(person_b.user_id)}")
+                        await click('#memory-confirm-dialog [data-key="confirm-accept"]')
+                        await page.wait_for(f"document.querySelector('#memory-facts [data-memory-id=\"{returned_keep_id}\"]') && !document.querySelector('#memory-returned [data-memory-id=\"{returned_keep_id}\"]')")
+                        assert await owner_of(returned_keep_id) == person_b.user_id
+                        await press(key(returned_drop_id + ':delete'))
+                        await page.wait_for("document.querySelector('#memory-confirm-dialog').open")
+                        await click('#memory-confirm-dialog [data-key="confirm-accept"]')
+                        await page.wait_for(f"!document.querySelector({card(returned_drop_id)}) && (document.querySelector('#memory-owner-counts')?.textContent||'').includes('Devueltos: 0')")
+                        assert await get(returned_drop_id) is None
+                        checks.append("U3b-3 Devueltos: 'No es mío' through the real person route lands in the paginated queue with its count; reassign moves it out; delete removes it")
+
+                        # retired_owner_prune_pending (synthetic flag on the real ledger attribute) is shown and clears.
+                        memory.ledger.retired_owner_prune_pending = True
+                        await click('#memory-refresh')
+                        await page.wait_for("!document.querySelector('#memory-prune-pending').hidden && document.querySelector('#memory-prune-pending').textContent.includes('cuentas ya retiradas')")
+                        memory.ledger.retired_owner_prune_pending = False
+                        await click('#memory-refresh')
+                        await page.wait_for("document.querySelector('#memory-prune-pending').hidden")
+                        checks.append('U3b-3 retired_owner_prune_pending from GET /api/memory/owners/counts is shown as a status and cleared on the next read')
+
+                        # Pagination (release requirement): 100 newer facts push old ones past the first page; the view walks the cursors.
                         for index in range(100):
                             await automatic(f'Dato sintético de relleno número {index}.')
+                        marker = len(requests)
                         await click('#memory-refresh')
-                        await page.wait_for("document.querySelectorAll('#memory-facts .memory-card').length===100 && document.querySelector('#memory-view').innerText.includes('Se muestran los 100 más recientes. Los anteriores, incluidos recuerdos confirmados que no vencen, no se pueden revisar ni eliminar desde acá.')")
-                        assert not await page.evaluate(f"document.querySelector({card(confirm_id)})"), 'the old confirmed memory is out of view'
-                        checks.append('F1: at the 100 cap the view states that older memories, including confirmed ones, cannot be reviewed or deleted here')
+                        await page.wait_for("document.querySelectorAll('#memory-facts .memory-card').length===100 && (document.querySelector('#memory-facts + .memory-more button')?.textContent||'').startsWith('Mostrar más recuerdos')")
+                        walked = [item for item in requests[marker:] if item['path'] == '/api/memory']
+                        assert any(item['query'] == ['facts_after'] for item in walked), walked
+                        text = await page.evaluate("document.querySelector('#memory-view').innerText")
+                        assert 'Se muestran los 100 más recientes' not in text and 'no se pueden revisar ni eliminar desde acá' not in text
+                        assert not await page.evaluate(f"document.querySelector({card(confirm_id)})")
+                        await page.evaluate("document.querySelector('#memory-facts + .memory-more button').focus()")
+                        await press('#memory-facts + .memory-more button')
+                        await page.wait_for(f"document.querySelector({card(confirm_id)}) && document.querySelector('#memory-facts').contains(document.activeElement)")
+                        assert await page.evaluate(f"!!document.querySelector('{key(confirm_id + ':delete')}')"), 'the old confirmed memory can be reviewed again'
+                        checks.append('U3b-3 pagination: the read walks facts_after cursors; older confirmed memories are reachable through Mostrar más (focus moves to the first new card); the 100-cap copy is gone')
+
+                        # Account removal discloses the deletion of assigned memories; cancel removes nothing.
+                        await click('#app-nav [data-view=people]')
+                        await page.wait_for("document.querySelectorAll('#people-grid [data-person]').length===2")
+                        await page.evaluate(f"document.querySelector('#people-grid [data-person=\"{person_b.user_id}\"]').click()")
+                        await page.wait_for("document.querySelector('#person-detail .identity-danger')")
+                        await click('#person-detail .identity-danger')
+                        await page.wait_for("document.querySelector('#person-dialog').open")
+                        removal = await page.evaluate("document.querySelector('#person-dialog').innerText")
+                        assert 'También se eliminan, sin posibilidad de recuperarlos, los recuerdos asignados a esta persona en Memoria' in removal, removal
+                        await click('#person-dialog .modal-actions .identity-secondary')
+                        await page.wait_for("!document.querySelector('#person-dialog').open")
+                        assert not any(item['method'] == 'DELETE' and item['path'].startswith('/api/admin/users/') for item in requests)
+                        assert await owner_of(plain_id) is None and await owner_of(owner_parent_id) == person_b.user_id
+                        checks.append('U3b-3 account removal dialog discloses that the person\'s assigned memories are deleted irreversibly; cancel sends nothing')
+                        await click('#app-nav [data-view=memory]')
+                        await page.wait_for("document.querySelectorAll('#memory-facts .memory-card').length===100")
 
                         # Logout wipes markers; HOME and evaluator never reach memory.
                         await click('#logout')
@@ -492,6 +679,24 @@ async def main() -> None:
                         checks.append('F10 household: no Memoria entry; #memoria falls back to Hogar with no memory request; server 403')
                         await click('#logout')
                         await page.wait_for("document.querySelector('#login-error').textContent==='Sesión cerrada.'")
+                        await login(page, home_a.token, 'Acceso de hogar')
+                        assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(n=>n.dataset.view).join(',')==='home,actions,routines,mymemory'")
+                        marker = len(requests)
+                        await page.evaluate("location.hash='#memoria'")
+                        await page.command('Page.reload')
+                        await page.wait_for("document.querySelector('#session-label').textContent==='Acceso de hogar' && !document.querySelector('#home-view').hidden")
+                        await asyncio.sleep(0.3)
+                        assert not any(item['path'] == '/api/memory' or item['path'].startswith('/api/memory/') and not item['path'].startswith('/api/memory/mine') for item in requests[marker:]), requests[marker:]
+                        assert await page.evaluate("document.querySelector('#memory-view').hidden && !document.querySelector('#memory-view').children.length")
+                        for path in ('/api/memory', '/api/memory/returned', '/api/memory/owners/counts'):
+                            assert await page.evaluate(f"fetch({json.dumps(path)}).then(r=>r.status)") == 403, path
+                        status = await page.evaluate(f"fetch('/api/memory/facts/{plain_id}/owner',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{person_id:{json.dumps(person_a.user_id)},expected_fact_revision:1,expected_owner_revision:0}})}}).then(r=>r.status)")
+                        assert status == 403 and await owner_of(plain_id) is None
+                        body = await page.evaluate('document.body.innerText')
+                        assert 'Practico guitarra' not in body and 'Persona sintética B' not in body
+                        checks.append('U3b-3 household bound to a person: Mis recuerdos only, no Memoria entry or operator DOM; operator memory routes and assignment answer 403 and change nothing')
+                        await click('#logout')
+                        await page.wait_for("document.querySelector('#login-error').textContent==='Sesión cerrada.'")
                         await login(page, evaluator.token, 'Evaluación temporal')
                         await page.wait_for("!document.querySelector('#evaluation-view').hidden")
                         assert await page.evaluate("!document.querySelector('[data-view=memory]')")
@@ -502,7 +707,7 @@ async def main() -> None:
                         assert page.errors == [], page.errors
 
                         result = {'passed': True, 'synthetic_fixture': True, 'actual_chromium_http_login': True, 'real_memory_services': True,
-                                  'roles': ['operator', 'operator-b', 'home', 'evaluator'], 'widths': list(WIDTHS), 'text_zoom_widths': list(ZOOM_WIDTHS),
+                                  'roles': ['operator', 'operator-b', 'home', 'home-person-a', 'evaluator'], 'widths': list(WIDTHS), 'text_zoom_widths': list(ZOOM_WIDTHS),
                                   'checks': checks, 'a11y_evidence': [f'a11y-{view}.json' for view in audits] + ['text-zoom-memoria.json'],
                                   'a11y_findings': {view: len(audit['findings']) for view, audit in audits.items()},
                                   'text_zoom_findings': len(zoom_findings), 'requests': len(requests), 'javascript_exceptions': len(page.errors)}

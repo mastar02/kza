@@ -17,6 +17,8 @@ import './routine-owner.js';
 import './routines.js';
 import './memory-owner.js';
 import './memory.js';
+import './my-memory-owner.js';
+import './my-memory.js';
 import { createHouse } from './house.js';
 
 const core = window.HomeUI, state = window.NexoState;
@@ -27,9 +29,9 @@ let epoch = 0, poller, sessionTimer, ticker, catalog = null, clock = null, lastE
 let roomId, layer = 'lights', house, logoutPending = false, authBusy = false, activeView = null;
 let staleFocus = null;
 let navigationVersion = 0, desiredView = null, accessView = null, viewsReady = true, viewDrain = Promise.resolve(true), privateSuspended = false;
-const viewIds = { home: 'home-view', actions: 'actions-view', routines: 'routines-view', memory: 'memory-view', people: 'people-view', voices: 'voices-view', access: 'access-view', evaluation: 'evaluation-view' };
-const viewHashes = { home: '#hogar', actions: '#acciones', routines: '#rutinas', memory: '#memoria', people: '#personas', voices: '#voces', access: '#accesos', evaluation: '#evaluacion' };
-const auxiliaryView = view => ['people', 'voices', 'access', 'evaluation', 'routines', 'memory'].includes(view);
+const viewIds = { home: 'home-view', actions: 'actions-view', routines: 'routines-view', memory: 'memory-view', mymemory: 'my-memory-view', people: 'people-view', voices: 'voices-view', access: 'access-view', evaluation: 'evaluation-view' };
+const viewHashes = { home: '#hogar', actions: '#acciones', routines: '#rutinas', memory: '#memoria', mymemory: '#mis-recuerdos', people: '#personas', voices: '#voces', access: '#accesos', evaluation: '#evaluacion' };
+const auxiliaryView = view => ['people', 'voices', 'access', 'evaluation', 'routines', 'memory', 'mymemory'].includes(view);
 try { logoutPending = sessionStorage.getItem('kza.logoutPending') === 'true'; } catch (_) { /* Storage is optional. */ }
 
 function node(tag, className, text) {
@@ -118,6 +120,14 @@ function closeMemory() {
   const dispose = memoryView; memoryView = null; dispose?.();
   return memory.leave();
 }
+// 'Mis recuerdos' has its own owner (no shared state with Memoria); the same session rules apply.
+const myMemory = window.NexoMyMemoryOwner.createMyMemoryOwner({ api, session,
+  onAccountChanged: () => { setTimeout(() => { retire('La cuenta cambió en otra pestaña.'); void bootstrap(); }, 0); } });
+let myMemoryView = null;
+function closeMyMemory() {
+  const dispose = myMemoryView; myMemoryView = null; dispose?.();
+  return myMemory.leave();
+}
 function closeAccess() {
   const dispose = accessView; accessView = null; dispose?.();
   return access.leave();
@@ -140,7 +150,7 @@ function trackViewDrain(promises) {
 }
 function drainViews() {
   people.leave();
-  return trackViewDrain([voices.leave(), evaluator.leave(), closeAccess(), closeRoutines(), closeMemory()]);
+  return trackViewDrain([voices.leave(), evaluator.leave(), closeAccess(), closeRoutines(), closeMemory(), closeMyMemory()]);
 }
 
 function pendingLogout(value) {
@@ -163,9 +173,9 @@ function destroyHouse() {
 function retire(message = '', { endSession = true } = {}) {
   epoch++; navigationVersion++; desiredView = null; privateSuspended = false; session.clear(); transport.invalidateSession();
   clearTimeout(sessionTimer); poller?.stop(); poller = null; ticker?.stop(); ticker = null;
-  people.clear(); const accessClosing = closeAccess(), routinesClosing = closeRoutines(), memoryClosing = closeMemory();
+  people.clear(); const accessClosing = closeAccess(), routinesClosing = closeRoutines(), memoryClosing = closeMemory(), myMemoryClosing = closeMyMemory();
   trackViewDrain([voices.clear(), evaluator.clear(), access.clear(), accessClosing, routinesClosing, routines.clear({ wipe: endSession }),
-    memoryClosing, memory.clear({ wipe: endSession })]);
+    memoryClosing, memory.clear({ wipe: endSession }), myMemoryClosing, myMemory.clear({ wipe: endSession })]);
   actions.clear(); destroyHouse(); catalog = clock = lastError = staleFocus = null; roomId = undefined; activeView = null;
   byId('voice-connection').textContent = ''; byId('evaluation-connection').textContent = '';
   byId('view-transition-status').hidden = true;
@@ -360,6 +370,7 @@ function renderNavigation() {
     { id: 'actions', label: 'Acciones', icon: 'list' },
     { id: 'routines', label: 'Rutinas', icon: 'clock' },
     { id: 'memory', label: 'Memoria', icon: 'layers' },
+    { id: 'mymemory', label: 'Mis recuerdos', icon: 'user' },
     { id: 'access', label: 'Accesos', icon: 'shield' },
     { id: 'evaluation', label: 'Evaluación', icon: 'mic' }
   ].filter(view => session.views().includes(view.id));
@@ -416,6 +427,11 @@ async function activate(view, push = true, force = false) {
     if (view === 'memory') {
       memoryView = window.NexoMemory.mountMemory({ container: byId('memory-view'), confirmDialog: byId('memory-confirm-dialog'), owner: memory, icon });
       opened = await memory.open();
+    }
+    if (view === 'mymemory') {
+      myMemoryView = window.NexoMyMemory.mountMyMemory({ container: byId('my-memory-view'), confirmDialog: byId('my-memory-confirm-dialog'), owner: myMemory, icon,
+        returnNotice: window.NexoMyMemoryOwner.RETURN_NOTICE });
+      opened = await myMemory.open();
     }
     if (!stillCurrent()) return false;
     if (!opened) throw Error('No pudimos abrir esta vista. Podés reintentar la consulta.');

@@ -133,7 +133,8 @@ function UsersPanel({ users, loadError, onChanged }) {
     } catch (e) { setErr(String(e)); }
   };
   const del = async (uid) => {
-    if (!confirm(`¿Eliminar ${uid}?`)) return;
+    // U3b-1b/D7: the removal also deletes the memories assigned to that person.
+    if (!confirm(`¿Eliminar ${uid}? También se eliminan, sin posibilidad de recuperarlos, los recuerdos asignados a esta persona en Memoria, junto con los recuerdos que dependen de ellos.`)) return;
     setErr(null);
     try {
       const r = await authedFetch(`/api/admin/users/${encodeURIComponent(uid)}`, { method: "DELETE" });

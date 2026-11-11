@@ -241,3 +241,42 @@ test('Memoria is visible only with memory:read and maps only the routes the view
   session.accept({ ...identity(['memory:read'], 'operator'), voice_profile: 'vp_admin', permissions_hint: ['memory:review'] });
   assert.equal(session.can('memory:review'), false);
 });
+
+test('U3b-3: Mis recuerdos is visible only to a household account bound to a person; owner routes map exactly', async () => {
+  const session = nexo.createSession({ wall: () => 0, monotonic: () => 0 });
+  const sends = [];
+  const api = nexo.createScopedApi({ session, transport: async (path, options = {}) => { sends.push((options.method || 'GET') + ' ' + path); return {}; } });
+  const id = 'fact_' + 'a'.repeat(64);
+  const person = [['GET', '/api/memory/mine'], ['GET', '/api/memory/mine?after=k1.0000000000000000.' + id], ['DELETE', `/api/memory/mine/facts/${id}`], ['POST', `/api/memory/mine/facts/${id}/return`]];
+  const operator = [['POST', `/api/memory/facts/${id}/owner`], ['GET', '/api/memory/returned'], ['GET', '/api/memory/owners/counts']];
+  async function attempt(list) {
+    const before = sends.length;
+    for (const [method, path] of list) { try { await api(path, { method }); } catch (error) { assert.equal(error.sent, false, method + ' ' + path); } }
+    return sends.slice(before);
+  }
+  // HOME without a person, evaluator: no view, nothing sent.
+  for (const [role, permissions] of [['home', ['home:read', 'home:control', 'routines:execute', 'tasks:personal']], ['evaluator', ['evaluation:read']]]) {
+    session.accept(identity(permissions, role));
+    assert.ok(!session.views().includes('mymemory') && !session.views().includes('memory'));
+    assert.deepEqual(await attempt([...person, ...operator]), []);
+  }
+  // HOME bound to a person: the view and its own routes, never the operator routes.
+  session.accept(identity(['home:read', 'home:control', 'tasks:personal', 'memory:own:read', 'memory:own:write']));
+  assert.deepEqual(session.views(), ['home', 'actions', 'routines', 'mymemory']);
+  assert.deepEqual(await attempt(person), person.map(([method, path]) => method + ' ' + path));
+  assert.deepEqual(await attempt([...operator, ['GET', '/api/memory']]), []);
+  // Read-only person: reads only.
+  session.accept(identity(['home:read', 'memory:own:read']));
+  assert.deepEqual(await attempt(person), ['GET /api/memory/mine', 'GET /api/memory/mine?after=k1.0000000000000000.' + id]);
+  // An operator never gets the household view, even with the permission named on the identity.
+  session.accept(identity(['memory:read', 'memory:review', 'memory:assign', 'memory:own:read', 'memory:own:write'], 'operator'));
+  assert.ok(!session.views().includes('mymemory') && session.views().includes('memory'));
+  assert.deepEqual(await attempt(operator), operator.map(([method, path]) => method + ' ' + path));
+  // memory:assign without memory:read cannot read the owner lists (route requires both).
+  session.accept(identity(['memory:assign'], 'operator'));
+  assert.deepEqual(await attempt(operator), ['POST /api/memory/facts/' + id + '/owner']);
+  // Voice or person links on the identity grant nothing.
+  session.accept({ ...identity(['home:read']), user_id: 'user_' + 'a'.repeat(32), person_link: { user_id: 'user_' + 'a'.repeat(32) }, voice_profile: 'vp_a', permissions_hint: ['memory:own:read'] });
+  assert.ok(!session.views().includes('mymemory'));
+  assert.deepEqual(await attempt(person), []);
+});

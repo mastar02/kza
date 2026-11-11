@@ -1,7 +1,7 @@
 /* Session and catalog presentation; voice labels never select authority. */
 (function (root) {
   'use strict';
-  const VIEWS = { home: ['home:read'], actions: ['home:read'], routines: ['home:read'], memory: ['memory:read'], voices: ['voices:read', 'voices:review'], people: ['admin:manage'], access: ['auth:manage'], evaluation: ['evaluation:read'] };
+  const VIEWS = { home: ['home:read'], actions: ['home:read'], routines: ['home:read'], memory: ['memory:read'], mymemory: ['memory:own:read'], voices: ['voices:read', 'voices:review'], people: ['admin:manage'], access: ['auth:manage'], evaluation: ['evaluation:read'] };
   function createSession({ wall = Date.now, monotonic = () => root.performance.now() } = {}) {
     let identity = null, deadline = 0, generation = 0;
     function clear() { identity = null; deadline = 0; generation++; }
@@ -23,7 +23,9 @@
       role: () => active() ? identity.role : null,
       subject: () => active() ? identity.subject : null,
       views: () => Object.keys(VIEWS).filter(view => VIEWS[view].every(can)
-        && (view !== 'evaluation' || identity?.role === 'evaluator') && (view !== 'access' || identity?.role === 'operator')) };
+        && (view !== 'evaluation' || identity?.role === 'evaluator') && (view !== 'access' || identity?.role === 'operator')
+        // 'Mis recuerdos' is a person's own view: only household credentials bound to a person carry memory:own:read.
+        && (view !== 'mymemory' || identity?.role === 'home')) };
   }
   function sessionRetired(error) {
     const code = typeof error?.detail === 'string' ? error.detail : error?.detail?.code;
@@ -43,11 +45,21 @@
     if ((rest === 'attempts' || /^runs\/[^/]+$/.test(rest)) && method === 'GET') return 'routines:manage';
     return null;
   }
-  // Only the routes the Memoria view uses: the read-only /facts and /proposals lists stay unmapped.
+  // Only the routes the Memoria and Mis recuerdos views use, each with the effective server requirement:
+  // auth.py _route_permissions plus the handler's own permission (memory_api.py). The read-only
+  // /facts and /proposals lists and unknown /mine subpaths stay unmapped (refused locally).
+  const FACT = 'fact_[0-9a-f]{64}';
   function memoryPermission(pathname, method) {
     if (pathname === '/api/memory') return method === 'GET' ? 'memory:read' : null;
-    if (method === 'POST' && /^\/api\/memory\/proposals\/fact_[0-9a-f]{64}\/(?:confirm|reject)$/.test(pathname)) return 'memory:review';
-    if (method === 'DELETE' && /^\/api\/memory\/facts\/fact_[0-9a-f]{64}$/.test(pathname)) return 'memory:review';
+    if (method === 'POST' && new RegExp(`^/api/memory/proposals/${FACT}/(?:confirm|reject)$`).test(pathname)) return 'memory:review';
+    if (method === 'DELETE' && new RegExp(`^/api/memory/facts/${FACT}$`).test(pathname)) return 'memory:review';
+    // Operator owner routes: route memory:assign (+ memory:read for reads), handler memory:assign.
+    if (method === 'POST' && new RegExp(`^/api/memory/facts/${FACT}/owner$`).test(pathname)) return 'memory:assign';
+    if (method === 'GET' && ['/api/memory/returned', '/api/memory/owners/counts'].includes(pathname)) return ['memory:assign', 'memory:read'];
+    // The person's own memories: memory:own:read for reads, memory:own:write otherwise.
+    if (pathname === '/api/memory/mine') return method === 'GET' ? 'memory:own:read' : null;
+    if (method === 'DELETE' && new RegExp(`^/api/memory/mine/facts/${FACT}$`).test(pathname)) return 'memory:own:write';
+    if (method === 'POST' && new RegExp(`^/api/memory/mine/facts/${FACT}/return$`).test(pathname)) return 'memory:own:write';
     return null;
   }
   function createScopedApi({ session, transport, onRetired = () => {} }) {

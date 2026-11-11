@@ -17,10 +17,11 @@ function fact(id, overrides = {}) {
   const state = overrides.state || 'automatic';
   return { id, content: 'Dato sintético ' + id.slice(5, 9), category: 'fact', confidence: 1, state, created_at: 90, extracted_at: 90,
     expires_at: state === 'confirmed' ? null : 500, revision: 1, confirmed_at: state === 'confirmed' ? 95 : null,
-    confirmed_by: state === 'confirmed' ? 'synthetic-a' : null, sources: [source()], ...overrides };
+    confirmed_by: state === 'confirmed' ? 'synthetic-a' : null, sources: [source()], owner: null, owner_revision: 0, owner_change: null, ...overrides };
 }
 const proposal = (id, overrides = {}) => fact(id, { state: 'proposed', ...overrides });
-const snap = (facts = [], proposals = [], extra = {}) => ({ observed_at: 100, facts, proposals, legacy_policy: 'quarantined', pending_index: 0, pending_index_cleanup: 0, ...extra });
+const snap = (facts = [], proposals = [], extra = {}) => ({ observed_at: 100, facts, proposals, legacy_policy: 'quarantined', pending_index: 0, pending_index_cleanup: 0,
+  facts_next: null, proposals_next: null, limit: 100, assign_notice: 'Aviso sintético de asignación.', ...extra });
 const filler = (count, offset = 0) => Array.from({ length: count }, (_, index) => fact(hex(offset + index + 1)));
 
 function storageMock(fail = false) {
@@ -37,7 +38,7 @@ function sessionMock(subject = 'synthetic-a', permissions = ['memory:read', 'mem
 const whoami = (subject = 'synthetic-a', role = 'operator', permissions = ['memory:read', 'memory:review']) => ({ ok: true, subject, role, permissions });
 
 /** A scripted server: each handler gets (path, options) and returns or throws. */
-function fixture({ storage = storageMock(), session = sessionMock(), identity = () => whoami(), onAccountChanged = () => {} } = {}) {
+function fixture({ storage = storageMock(), session = sessionMock(), identity = () => whoami(), onAccountChanged = () => {}, maxPages, extra = {} } = {}) {
   const calls = [];
   let reads = [], writes = [];
   let time = 0;
@@ -45,7 +46,12 @@ function fixture({ storage = storageMock(), session = sessionMock(), identity = 
     const method = options.method || 'GET';
     calls.push(method + ' ' + path);
     if (path === '/api/admin/auth/whoami') return Promise.resolve().then(identity);
-    if (path === '/api/memory') {
+    if (method === 'GET') {
+      for (const [prefix, handler] of Object.entries(extra)) {
+        if (path === prefix || path.startsWith(prefix + '?')) return Promise.resolve().then(() => handler(path));
+      }
+    }
+    if (path === '/api/memory' || path.startsWith('/api/memory?')) {
       const handler = reads.shift();
       if (!handler) return Promise.reject(Object.assign(Error('no read scripted'), { status: 599 }));
       const result = typeof handler === 'function' ? handler(options) : handler;
@@ -62,7 +68,7 @@ function fixture({ storage = storageMock(), session = sessionMock(), identity = 
     if (!handler) return Promise.reject(Object.assign(Error('no write scripted'), { status: 599 }));
     return Promise.resolve().then(() => typeof handler === 'function' ? handler(path, options) : handler);
   };
-  const owner = createMemoryOwner({ api, session, storage, schedule: () => 0, cancel: () => {}, monotonic: () => time, wall: () => time, onAccountChanged });
+  const owner = createMemoryOwner({ api, session, storage, schedule: () => 0, cancel: () => {}, monotonic: () => time, wall: () => time, onAccountChanged, ...(maxPages ? { maxPages } : {}) });
   return { owner, calls, storage, read: (...handlers) => reads.push(...handlers), write: (...handlers) => writes.push(...handlers),
     advance(ms) { time += ms; }, writes: () => calls.filter(call => !call.startsWith('GET')) };
 }
@@ -241,34 +247,38 @@ test('F3: a 404 on confirm is provisional and a read showing the fact confirmed 
   assert.deepEqual(g.owner.getState().markers, {});
 });
 
-test('F1: at the cap absence is inconclusive for confirm, reject and delete; resend settles it', async () => {
+// U3b-3: a read walks every page; absence is inconclusive only when the walk stopped before the end.
+const CUR = n => 'k1.' + n.toString(16).padStart(16, '0') + '.' + hex(n);
+const INCOMPLETE_TEXT = 'No pudimos comprobarlo: la lista de recuerdos no se pudo recorrer completa.';
+
+test('F1: an incomplete walk makes absence inconclusive for confirm, reject and delete; resend settles it', async () => {
   const full = filler(CAP);
   for (const [op, start, after] of [
-    ['confirm', snap(filler(CAP), [proposal(ID('b'))]), snap(full, [])],
-    ['reject', snap(filler(CAP), [proposal(ID('b'))]), snap(full, [])],
-    ['delete', snap([fact(ID('b')), ...filler(CAP - 1)]), snap(full, [])],
+    ['confirm', snap(filler(CAP), [proposal(ID('b'))], { facts_next: CUR(1) }), snap(full, [], { facts_next: CUR(1) })],
+    ['reject', snap(filler(CAP), [proposal(ID('b'))], { facts_next: CUR(1) }), snap(full, [], { facts_next: CUR(1) })],
+    ['delete', snap([fact(ID('b')), ...filler(CAP - 1)], [], { facts_next: CUR(1) }), snap(full, [], { facts_next: CUR(1) })],
   ]) {
-    const f = fixture();
+    const f = fixture({ maxPages: 1 });
     f.read(start, after);
     await f.owner.open(); await settle();
     f.write(network);
     await (op === 'delete' ? f.owner.remove(ID('b'), { confirmed: true }) : f.owner[op](ID('b'))); await settle();
     let state = f.owner.getState();
     assert.equal(state.markers[ID('b')]?.state, 'unresolved', op);
-    assert.equal(state.notices[ID('b')], 'No pudimos comprobarlo: no aparece entre los 100 más recientes.');
-    assert.equal(state.factsFull, true);
+    assert.equal(state.notices[ID('b')], INCOMPLETE_TEXT);
+    assert.equal(state.factsFull, true); assert.equal(state.factsComplete, false);
     // Reintentar: idempotent resend after the account check; its answer is final.
     f.write(op === 'confirm' ? { fact: fact(ID('b'), { state: 'confirmed' }) } : { deleted: false });
-    f.read(snap(full, []));
+    f.read(snap(full, [], { facts_next: CUR(1) }));
     await f.owner.retry(ID('b')); await settle();
     state = f.owner.getState();
     assert.deepEqual(state.markers, {}, op);
   }
 });
 
-test('F1: a proposal confirmed elsewhere that sank below the cap is never reported as rejected', async () => {
-  const f = fixture();
-  f.read(snap(filler(CAP - 1), [proposal(ID('b'))]), snap(filler(CAP), []));
+test('F1: a proposal confirmed elsewhere that sank beyond the walked part is never reported as rejected', async () => {
+  const f = fixture({ maxPages: 1 });
+  f.read(snap(filler(CAP - 1), [proposal(ID('b'))]), snap(filler(CAP), [], { facts_next: CUR(1) }));
   await f.owner.open(); await settle();
   f.write(network);
   await f.owner.reject(ID('b')); await settle();
@@ -277,10 +287,10 @@ test('F1: a proposal confirmed elsewhere that sank below the cap is never report
   assert.ok(!/descartada|Comprobado/.test(state.notices[ID('b')]));
 });
 
-test('F1: a confirmed card stays visible when the full facts list omits it, and goes once the list is below the cap', async () => {
-  const f = fixture();
+test('F1: a confirmed card stays visible while an incomplete walk omits it, and goes once the walk is complete', async () => {
+  const f = fixture({ maxPages: 1 });
   const confirmed = fact(ID('b'), { state: 'confirmed' });
-  f.read(snap(filler(CAP), [proposal(ID('b'))]), snap(filler(CAP), []), snap(filler(CAP - 1), []));
+  f.read(snap(filler(CAP), [proposal(ID('b'))], { facts_next: CUR(1) }), snap(filler(CAP), [], { facts_next: CUR(1) }), snap(filler(CAP - 1), []));
   await f.owner.open(); await settle();
   f.write({ fact: confirmed });
   await f.owner.confirm(ID('b')); await settle();
@@ -290,6 +300,53 @@ test('F1: a confirmed card stays visible when the full facts list omits it, and 
   await f.owner.refresh(); await settle();
   state = f.owner.getState();
   assert.deepEqual(state.kept, []);
+});
+
+test('the walk follows every cursor: proposals first, then facts from the last proposals page; a moved proposal is listed once', async () => {
+  const f = fixture();
+  const moved = ID('f');
+  const page1 = snap(filler(CAP, 0), [proposal(moved), ...filler(CAP - 1, 500).map(item => ({ ...item, state: 'proposed' }))], { facts_next: CUR(1), proposals_next: CUR(2) });
+  // The proposals page 2 call also returns a fresh facts page 1, where the moved proposal is now confirmed.
+  const page2 = snap([fact(moved, { state: 'confirmed', revision: 2 }), ...filler(CAP - 1, 0)], filler(3, 900).map(item => ({ ...item, state: 'proposed' })), { facts_next: CUR(3) });
+  const page3 = snap(filler(40, 200), [], { facts_next: null });
+  f.read(page1, page2, page3);
+  await f.owner.open(); await settle();
+  assert.equal(f.owner.getState().read.error, null);
+  assert.deepEqual(f.calls, ['GET /api/admin/auth/whoami', 'GET /api/memory', 'GET /api/memory?proposals_after=' + CUR(2), 'GET /api/memory?facts_after=' + CUR(3)]);
+  const state = f.owner.getState();
+  assert.equal(state.facts.length, CAP + 40); assert.equal(state.proposals.length, CAP - 1 + 3);
+  assert.ok(state.facts.some(item => item.id === moved && item.state === 'confirmed') && !state.proposals.some(item => item.id === moved));
+  assert.equal(state.factsComplete, true); assert.equal(state.proposalsComplete, true); assert.equal(state.factsFull, false);
+});
+
+test('absence after a complete multi-page walk resolves a lost delete; a fact beyond page one is still found', async () => {
+  const f = fixture();
+  const deep = ID('d');
+  f.read(snap(filler(CAP), [], { facts_next: CUR(1) }), snap([fact(deep)], []));
+  await f.owner.open(); await settle();
+  assert.ok(f.owner.getState().facts.some(item => item.id === deep));
+  f.write(network);
+  f.read(snap(filler(CAP), [], { facts_next: CUR(1) }), snap([fact(ID('e'))], []));
+  await f.owner.remove(deep, { confirmed: true }); await settle();
+  const state = f.owner.getState();
+  assert.deepEqual(state.markers, {});
+  assert.equal(state.notices[deep], 'Comprobado: ya no está guardado.');
+});
+
+test('a repeated cursor, a duplicate id across pages or an oversized page fails the read closed', async () => {
+  for (const pages of [
+    [snap(filler(2), [], { facts_next: CUR(1) }), snap(filler(2, 10), [], { facts_next: CUR(1) })],
+    [snap(filler(2), [], { facts_next: CUR(1) }), snap(filler(2), [])],
+    [snap(filler(CAP + 1))],
+    [snap(filler(2), [], { facts_next: 'k1.zz' })],
+  ]) {
+    const f = fixture();
+    f.read(...pages);
+    await f.owner.open(); await settle();
+    const state = f.owner.getState();
+    assert.equal(state.loaded, false);
+    assert.equal(state.read.error, 'El servidor devolvió la memoria con un formato desconocido.');
+  }
 });
 
 test('401/403 on the first send and on a retry are uncertain; answered:true is uncertain', async () => {
@@ -626,12 +683,13 @@ const OBSERVATIONS = {
   present_other: () => snap([fact(target, { state: 'confirmed' })]),
   present_automatic: () => snap([fact(target)]),
   absent_below: () => snap(filler(3), filler(2, 50).map(item => ({ ...item, state: 'proposed' }))),
-  absent_facts_cap: () => snap(filler(CAP)),
-  absent_proposals_cap: () => snap([], filler(CAP).map(item => ({ ...item, state: 'proposed' }))),
+  // An incomplete walk (page bound reached) on either list.
+  absent_facts_incomplete: () => ({ ...parseSnapshot(snap(filler(CAP), [], { facts_next: CUR(1) })), factsComplete: false }),
+  absent_proposals_incomplete: () => ({ ...parseSnapshot(snap([], filler(CAP).map(item => ({ ...item, state: 'proposed' })), { proposals_next: CUR(1) })), proposalsComplete: false }),
 };
 const STILL_P = 'Todavía figura como propuesta; puede que el cambio no se haya aplicado.';
 const STILL_F = 'Todavía figura guardado; puede que el cambio no se haya aplicado.';
-const NOPE = 'No pudimos comprobarlo: no aparece entre los 100 más recientes.';
+const NOPE = INCOMPLETE_TEXT;
 const NOT_PROPOSAL_C = 'Este recuerdo no es una propuesta; no se conservó.';
 const NOT_PROPOSAL_R = 'Este recuerdo no es una propuesta; no se descartó.';
 const CONFIRMED_ELSEWHERE = 'Otra sesión ya la confirmó; no se descartó.';
@@ -645,24 +703,24 @@ const EXPECTED = {
     present_other: { unresolved: ['applied', 'Comprobado: el recuerdo quedó conservado sin vencimiento.'], provisional: ['applied', 'Comprobado: el recuerdo quedó conservado sin vencimiento.'] },
     present_automatic: { unresolved: ['final', NOT_PROPOSAL_C], provisional: ['final', 'REASON'] },
     absent_below: { unresolved: ['final', GONE], provisional: ['final', GONE] },
-    absent_facts_cap: { unresolved: ['inconclusive', NOPE], provisional: ['inconclusive', NOPE] },
-    absent_proposals_cap: { unresolved: ['inconclusive', NOPE], provisional: ['final', 'REASON'] },
+    absent_facts_incomplete: { unresolved: ['inconclusive', NOPE], provisional: ['inconclusive', NOPE] },
+    absent_proposals_incomplete: { unresolved: ['inconclusive', NOPE], provisional: ['final', 'REASON'] },
   },
   reject: {
     present_unchanged: { unresolved: ['pending', STILL_P], provisional: ['final', 'REASON'] },
     present_other: { unresolved: ['final', CONFIRMED_ELSEWHERE], provisional: ['final', CONFIRMED_ELSEWHERE] },
     present_automatic: { unresolved: ['final', NOT_PROPOSAL_R], provisional: ['final', NOT_PROPOSAL_R] },
     absent_below: { unresolved: ['applied', 'Comprobado: la propuesta ya no está guardada.'], provisional: ['applied', 'Comprobado: la propuesta ya no está guardada.'] },
-    absent_facts_cap: { unresolved: ['inconclusive', NOPE], provisional: ['inconclusive', NOPE] },
-    absent_proposals_cap: { unresolved: ['inconclusive', NOPE], provisional: ['inconclusive', NOPE] },
+    absent_facts_incomplete: { unresolved: ['inconclusive', NOPE], provisional: ['inconclusive', NOPE] },
+    absent_proposals_incomplete: { unresolved: ['inconclusive', NOPE], provisional: ['inconclusive', NOPE] },
   },
   delete: {
     present_unchanged: { unresolved: ['pending', STILL_F], provisional: ['final', 'REASON'] },
     present_other: { unresolved: ['pending', STILL_F], provisional: ['final', 'REASON'] },
     present_automatic: { unresolved: ['pending', STILL_F], provisional: ['final', 'REASON'] },
     absent_below: { unresolved: ['applied', 'Comprobado: ya no está guardado.'], provisional: ['applied', 'Comprobado: ya no está guardado.'] },
-    absent_facts_cap: { unresolved: ['inconclusive', NOPE], provisional: ['inconclusive', NOPE] },
-    absent_proposals_cap: { unresolved: ['inconclusive', NOPE], provisional: ['inconclusive', NOPE] },
+    absent_facts_incomplete: { unresolved: ['inconclusive', NOPE], provisional: ['inconclusive', NOPE] },
+    absent_proposals_incomplete: { unresolved: ['inconclusive', NOPE], provisional: ['inconclusive', NOPE] },
   },
 };
 // Marker disposition per class and send: written out, not derived.
@@ -690,7 +748,8 @@ test('C02 failure matrix: classification, first/retry disposition and post-answe
         if (disposition === 'drop' || disposition === 'final') continue;
         const provisional = disposition === 'provisional';
         for (const [observation, build] of Object.entries(OBSERVATIONS)) {
-          const resolved = resolveMarker(op, observe(parseSnapshot(build(op)), target), provisional, provisional ? verdict.text : '');
+          const built = build(op);
+          const resolved = resolveMarker(op, observe('factsComplete' in built || 'proposalsComplete' in built ? built : parseSnapshot(built), target), provisional, provisional ? verdict.text : '');
           const [result, text] = EXPECTED[op][observation][disposition];
           assert.equal(resolved.result, result, `${op} / ${name} / ${send} / ${observation}`);
           assert.equal(resolved.text, text === 'REASON' ? verdict.text : text, `${op} / ${name} / ${send} / ${observation} copy`);
@@ -719,4 +778,431 @@ test('Memoria copy: no use-in-answers claim, no never-leaves-the-house claim, re
     'En esta versión KZA no usa estos recuerdos para responder', 'La memoria es compartida por todo el hogar', 'las cuentas de administración ven y revisan los recuerdos de todos']) {
     assert.ok(view.includes(phrase), phrase);
   }
+});
+
+// ---------------------------------------------------------------------------
+// U3b-3: owner assignment, 'Devueltos', counts and people (operator with memory:assign).
+const OPERATOR = ['memory:read', 'memory:review', 'memory:assign', 'admin:manage'];
+const A = 'user_' + 'a'.repeat(32), B = 'user_' + 'b'.repeat(32), RETIRED = 'user_' + 'c'.repeat(32);
+const PEOPLE = [{ id: A, name: 'Persona A', permission_level: 'adult', is_active: true }, { id: B, name: 'Persona B', permission_level: 'adult', is_active: true },
+  { id: RETIRED, name: 'Persona inactiva', permission_level: 'adult', is_active: false }];
+const COUNTS = { currently_owned: 1, returned: 1, ever_assigned_live: 2, owned_proposals: 0, retired_owner_prune_pending: false };
+const owned = (id, person, revision = 1, overrides = {}) => fact(id, { state: 'confirmed', revision: 2, owner: { person_id: person, method: 'operator_assignment', revision, assigned_at: 99 },
+  owner_revision: revision, owner_change: revision === 1 ? 'assigned' : 'reassigned', ...overrides });
+const returnedItem = id => fact(id, { state: 'confirmed', revision: 2, owner: null, owner_revision: 2, owner_change: 'owner_returned' });
+function operatorFixture({ returned = () => ({ facts: [], next: null, limit: 100 }), counts = () => COUNTS, people = () => PEOPLE, ...options } = {}) {
+  return fixture({ session: sessionMock('synthetic-a', OPERATOR), identity: () => whoami('synthetic-a', 'operator', OPERATOR),
+    extra: { '/api/memory/returned': returned, '/api/memory/owners/counts': counts, '/api/admin/users': people }, ...options });
+}
+const ASSIGN_KEYS = ['delete_dependents', 'expected_fact_revision', 'expected_owner_revision', 'op', 'person_id', 'sent_at', 'state', 'subject'];
+
+test('U3b-3: extras are read only with memory:assign (people only with admin:manage) and each fails on its own', async () => {
+  const f = operatorFixture();
+  f.read(snap([fact(ID('a'))]));
+  await f.owner.open(); await settle();
+  assert.deepEqual(f.calls, ['GET /api/admin/auth/whoami', 'GET /api/memory', 'GET /api/memory/returned', 'GET /api/memory/owners/counts', 'GET /api/admin/users']);
+  let state = f.owner.getState();
+  assert.deepEqual(state.counts, { currently_owned: 1, returned: 1, ever_assigned_live: 2, owned_proposals: 0, prune_pending: false });
+  assert.deepEqual(state.people.map(item => [item.id, item.active]), [[A, true], [B, true], [RETIRED, false]]);
+  assert.ok(!('permission_level' in state.people[0]), 'only id, name and activity are kept');
+  // Read-only operator (memory:read): no owner routes at all.
+  const g = fixture();
+  g.read(snap([fact(ID('a'))]));
+  await g.owner.open(); await settle();
+  assert.deepEqual(g.calls, ['GET /api/admin/auth/whoami', 'GET /api/memory']);
+  // memory:assign without admin:manage: no people catalog, so nothing is assignable.
+  const permissions = ['memory:read', 'memory:review', 'memory:assign'];
+  const h = fixture({ session: sessionMock('synthetic-a', permissions), identity: () => whoami('synthetic-a', 'operator', permissions),
+    extra: { '/api/memory/returned': () => ({ facts: [], next: null, limit: 100 }), '/api/memory/owners/counts': () => COUNTS } });
+  h.read(snap([fact(ID('a'))]));
+  await h.owner.open(); await settle();
+  assert.ok(!h.calls.includes('GET /api/admin/users'));
+  assert.equal(h.owner.assignable(ID('a')), false);
+  assert.deepEqual(await h.owner.assign(ID('a'), A, { confirmed: true }), { sent: false });
+  // A failing 'Devueltos' read or counts read keeps the main list and says so.
+  const k = operatorFixture({ returned: fail(503, 'memory_unavailable'), counts: () => ({ ...COUNTS, returned: -1 }) });
+  k.read(snap([fact(ID('a'))]));
+  await k.owner.open(); await settle();
+  state = k.owner.getState();
+  assert.equal(state.loaded, true); assert.equal(state.facts.length, 1);
+  assert.equal(state.returnedError, 'No pudimos consultar los recuerdos devueltos.');
+  assert.equal(state.countsError, 'No pudimos consultar los totales de asignación.');
+  // The prune flag is carried through.
+  const m = operatorFixture({ counts: () => ({ ...COUNTS, retired_owner_prune_pending: true }) });
+  m.read(snap([]));
+  await m.owner.open(); await settle();
+  assert.equal(m.owner.getState().counts.prune_pending, true);
+});
+
+test('U3b-3: Devueltos walks every page through ?after= and is listed separately from the owner rows', async () => {
+  const pages = [{ facts: [returnedItem(ID('a'))], next: CUR(7), limit: 1 }, { facts: [returnedItem(ID('b'))], next: null, limit: 1 }];
+  const f = operatorFixture({ returned: () => pages.shift() });
+  f.read(snap([returnedItem(ID('a')), returnedItem(ID('b')), owned(ID('c'), A)]));
+  await f.owner.open(); await settle();
+  assert.ok(f.calls.includes('GET /api/memory/returned?after=' + CUR(7)));
+  const state = f.owner.getState();
+  assert.deepEqual(state.returned.map(item => item.id), [ID('a'), ID('b')]);
+  assert.equal(state.returnedComplete, true);
+  // A returned row that still has an owner is malformed: the queue fails closed, the list stays.
+  const g = operatorFixture({ returned: () => ({ facts: [owned(ID('c'), A)], next: null, limit: 100 }) });
+  g.read(snap([owned(ID('c'), A)]));
+  await g.owner.open(); await settle();
+  assert.equal(g.owner.getState().returnedError, 'No pudimos consultar los recuerdos devueltos.');
+  assert.equal(g.owner.getState().facts.length, 1);
+});
+
+test('U3b-3: assign sends the expected revisions after a whoami, stores no content and applies the receipt', async () => {
+  const f = operatorFixture();
+  f.read(snap([fact(ID('a'), { revision: 3 })]), snap([owned(ID('a'), A)]));
+  await f.owner.open(); await settle();
+  assert.equal(f.owner.assignable(ID('a')), true);
+  // Without the dialog's confirmation, to an inactive or unknown person: nothing is sent.
+  for (const [person, options] of [[A, {}], [RETIRED, { confirmed: true }], ['user_' + 'd'.repeat(32), { confirmed: true }]]) {
+    assert.deepEqual(await f.owner.assign(ID('a'), person, options), { sent: false });
+  }
+  assert.deepEqual(f.writes(), []);
+  let body = null;
+  f.write((path, options) => { body = options.body; assert.equal(path, '/api/memory/facts/' + ID('a') + '/owner'); assert.equal(options.method, 'POST');
+    const stored = JSON.parse(f.storage.getItem(PREFIX + ID('a')));
+    assert.deepEqual(Object.keys(stored).sort(), ASSIGN_KEYS);
+    assert.ok(!JSON.stringify(stored).includes('Dato sintético'));
+    return { fact_revision: 4, owner_revision: 1, deleted_dependents: 0, confirmed_now: true, derived_records_retired: true, notice: 'Aviso A16 sintético.' }; });
+  const before = f.calls.length;
+  const result = await f.owner.assign(ID('a'), A, { confirmed: true }); await settle();
+  assert.deepEqual(f.calls.slice(before, before + 2), ['GET /api/admin/auth/whoami', 'POST /api/memory/facts/' + ID('a') + '/owner']);
+  assert.deepEqual(body, { person_id: A, expected_fact_revision: 3, expected_owner_revision: 0 });
+  assert.equal(result.applied, true);
+  const state = f.owner.getState();
+  assert.equal(state.notices[ID('a')], 'Recuerdo asignado. Quedó confirmado y no vence. Aviso A16 sintético.');
+  assert.equal(state.facts[0].owner.person_id, A); assert.equal(state.facts[0].state, 'confirmed');
+  assert.equal(f.storage.getItem(PREFIX + ID('a')), null);
+});
+
+test('U3b-3: a derived memory, a missing assign notice or a missing people catalog is never assignable', async () => {
+  for (const [name, start, options] of [
+    ['derived', snap([fact(ID('a')), fact(ID('b'), { sources: [source([ID('a')])] })]), {}],
+    ['no notice', snap([fact(ID('b'))], [], { assign_notice: undefined }), {}],
+    ['no people', snap([fact(ID('b'))]), { people: fail(503, 'user_catalog_unavailable') }],
+  ]) {
+    const f = operatorFixture(options);
+    f.read(start);
+    await f.owner.open(); await settle();
+    assert.equal(f.owner.assignable(ID('b')), false, name);
+    assert.deepEqual(await f.owner.assign(ID('b'), A, { confirmed: true }), { sent: false }, name);
+    assert.deepEqual(f.writes(), [], name);
+  }
+});
+
+test('U3b-3: 409 has_dependents returns ids and states, drops the marker, and the confirmed resend deletes them with the same revisions', async () => {
+  const f = operatorFixture();
+  f.read(snap([fact(ID('a'), { revision: 2 }), fact(ID('b'), { sources: [source([ID('a')])] })]), snap([owned(ID('a'), A)]));
+  await f.owner.open(); await settle();
+  const bodies = [];
+  f.write((path, options) => { bodies.push(options.body); throw Object.assign(Error('http'), { status: 409, detail: { code: 'memory_owner_has_dependents', notice: 'Tiene derivados (sintético).', dependents: [{ id: ID('b'), state: 'automatic' }, { id: ID('c'), state: 'confirmed' }] } }); },
+    (path, options) => { bodies.push(options.body); return { fact_revision: 3, owner_revision: 1, deleted_dependents: 2, confirmed_now: true, derived_records_retired: true, notice: null }; });
+  const first = await f.owner.assign(ID('a'), A, { confirmed: true }); await settle();
+  assert.deepEqual(first.dependents, [{ id: ID('b'), state: 'automatic' }, { id: ID('c'), state: 'confirmed' }]);
+  assert.equal(first.notice, 'Tiene derivados (sintético).');
+  assert.deepEqual(f.owner.getState().markers, {}); assert.equal(f.storage.getItem(PREFIX + ID('a')), null);
+  const second = await f.owner.assign(ID('a'), A, { confirmed: true, deleteDependents: true, expected: first.expected }); await settle();
+  assert.equal(second.applied, true); assert.equal(second.receipt.deleted_dependents, 2);
+  assert.deepEqual(bodies, [{ person_id: A, expected_fact_revision: 2, expected_owner_revision: 0 },
+    { person_id: A, expected_fact_revision: 2, expected_owner_revision: 0, delete_dependents: true }]);
+  assert.match(f.owner.getState().notices[ID('a')], /Se eliminaron 2 recuerdos derivados/);
+  // A malformed dependents body is not trusted as a list: provisional, a read decides.
+  const g = operatorFixture();
+  g.read(snap([fact(ID('a'))]), snap([fact(ID('a'))]));
+  await g.owner.open(); await settle();
+  g.write(fail(409, { code: 'memory_owner_has_dependents', dependents: [{ id: 'nope', state: 'x' }] }));
+  await g.owner.assign(ID('a'), A, { confirmed: true }); await settle();
+  assert.equal(g.owner.getState().notices[ID('a')], 'El servidor informó recuerdos derivados con un formato desconocido.');
+});
+
+test('U3b-3: a lost assign is judged only by a later read: owner reached, CAS moved elsewhere, or still pending', async () => {
+  // Applied: the read shows the chosen person.
+  let f = operatorFixture();
+  f.read(snap([fact(ID('a'))]), snap([owned(ID('a'), A)]));
+  await f.owner.open(); await settle();
+  f.write(network);
+  await f.owner.assign(ID('a'), A, { confirmed: true }); await settle();
+  assert.deepEqual(f.owner.getState().markers, {});
+  assert.equal(f.owner.getState().notices[ID('a')], 'Comprobado: el recuerdo quedó asignado y confirmado.');
+  // Another session assigned it to B meanwhile: the CAS can never match again; the copy claims nothing about ours.
+  f = operatorFixture();
+  f.read(snap([fact(ID('a'))]), snap([owned(ID('a'), B)]));
+  await f.owner.open(); await settle();
+  f.write(network);
+  await f.owner.assign(ID('a'), A, { confirmed: true }); await settle();
+  assert.deepEqual(f.owner.getState().markers, {});
+  assert.equal(f.owner.getState().notices[ID('a')], 'La asignación de este recuerdo cambió desde otra sesión. Revisá a quién quedó asignado.');
+  assert.ok(!/no se asignó/.test(f.owner.getState().notices[ID('a')]));
+  // Unchanged: still pending, never "not applied"; the marker survives a reload without content.
+  f = operatorFixture();
+  f.read(snap([fact(ID('a'))]), snap([fact(ID('a'))]));
+  await f.owner.open(); await settle();
+  f.write(network);
+  await f.owner.assign(ID('a'), A, { confirmed: true }); await settle();
+  assert.equal(f.owner.getState().markers[ID('a')].state, 'unresolved');
+  assert.equal(f.owner.getState().notices[ID('a')], 'Todavía figura sin esa asignación; puede que el cambio no se haya aplicado.');
+  const stored = JSON.parse(f.storage.getItem(PREFIX + ID('a')));
+  assert.deepEqual(Object.keys(stored).sort(), ASSIGN_KEYS); assert.equal(stored.person_id, A);
+  // Retry resends the identical body; a 409 conflict is provisional and the read settles it as applied.
+  let body = null;
+  f.write((path, options) => { body = options.body; throw Object.assign(Error('http'), { status: 409, detail: 'memory_owner_conflict' }); });
+  f.read(snap([owned(ID('a'), A)]));
+  await f.owner.retry(ID('a')); await settle();
+  assert.deepEqual(body, { person_id: A, expected_fact_revision: 1, expected_owner_revision: 0 });
+  assert.deepEqual(f.owner.getState().markers, {});
+  assert.equal(f.owner.getState().notices[ID('a')], 'Comprobado: el recuerdo quedó asignado y confirmado.');
+});
+
+test('U3b-3: unassign sends person_id null with the owner revision; a lost unassign resolves from the read', async () => {
+  const f = operatorFixture();
+  f.read(snap([owned(ID('a'), A, 2)]), snap([fact(ID('a'), { state: 'confirmed', revision: 2, owner: null, owner_revision: 3, owner_change: 'operator_unassigned' })]));
+  await f.owner.open(); await settle();
+  assert.deepEqual(await f.owner.unassign(ID('a'), {}), { sent: false }, 'needs the dialog');
+  let body = null;
+  f.write((path, options) => { body = options.body; throw new TypeError('Failed to fetch'); });
+  await f.owner.unassign(ID('a'), { confirmed: true }); await settle();
+  assert.deepEqual(body, { person_id: null, expected_owner_revision: 2 });
+  assert.deepEqual(f.owner.getState().markers, {});
+  assert.equal(f.owner.getState().notices[ID('a')], 'Comprobado: el recuerdo quedó sin asignar.');
+  // An unowned memory has nothing to unassign.
+  const g = operatorFixture();
+  g.read(snap([fact(ID('a'))]));
+  await g.owner.open(); await settle();
+  assert.deepEqual(await g.owner.unassign(ID('a'), { confirmed: true }), { sent: false });
+  assert.deepEqual(g.writes(), []);
+});
+
+test('U3b-3: an owner marker of another account is never resent; an account switch before assign sends nothing', async () => {
+  const storage = storageMock();
+  storage.setItem(PREFIX + ID('a'), JSON.stringify({ op: 'assign', subject: 'synthetic-b', sent_at: 1, state: 'unresolved', person_id: A, expected_fact_revision: 1, expected_owner_revision: 0, delete_dependents: false }));
+  const f = operatorFixture({ storage });
+  f.read(snap([fact(ID('a'))]));
+  await f.owner.open(); await settle();
+  assert.equal(storage.getItem(PREFIX + ID('a')), null);
+  assert.deepEqual(f.owner.getState().markers, {});
+  assert.match(f.owner.getState().notices.session, /otra cuenta/);
+  assert.deepEqual(f.writes(), []);
+  let changed = 0, first = true;
+  const g = operatorFixture({ identity: () => { if (first) { first = false; return whoami('synthetic-a', 'operator', OPERATOR); } return whoami('synthetic-b', 'operator', OPERATOR); }, onAccountChanged: () => changed++ });
+  g.read(snap([fact(ID('a'))]));
+  await g.owner.open(); await settle();
+  assert.deepEqual(await g.owner.assign(ID('a'), A, { confirmed: true }), { sent: false, accountChanged: true });
+  assert.equal(changed, 1); assert.deepEqual(g.writes(), []);
+  // A malformed stored owner marker is dropped, not restored.
+  const broken = storageMock();
+  broken.setItem(PREFIX + ID('a'), JSON.stringify({ op: 'assign', subject: 'synthetic-a', sent_at: 1, state: 'unresolved', person_id: '', expected_fact_revision: 0 }));
+  const h = operatorFixture({ storage: broken });
+  h.read(snap([fact(ID('a'))]));
+  await h.owner.open(); await settle();
+  assert.equal(broken.getItem(PREFIX + ID('a')), null); assert.deepEqual(h.owner.getState().markers, {});
+});
+
+// Owner failure matrix: op x answer x send, and every non-final disposition against post-answer reads.
+// Expected classes and copy are written out here, not derived from the implementation.
+const OWNER_OPS = ['assign', 'unassign'];
+const OWNER_RESPONSES = [
+  ['200 valid', op => ({ value: op === 'assign' ? { fact_revision: 2, owner_revision: 1, deleted_dependents: 0, confirmed_now: true, derived_records_retired: true, notice: 'n' } : { fact_revision: 2, owner_revision: 2 } }), { assign: 'applied', unassign: 'applied' }],
+  ['200 malformed', () => ({ value: { fact_revision: 'x' } }), { assign: 'uncertain', unassign: 'uncertain' }],
+  ['200 null', () => ({ value: null }), { assign: 'uncertain', unassign: 'uncertain' }],
+  ['network', () => ({ error: new TypeError('Failed to fetch') }), { assign: 'uncertain', unassign: 'uncertain' }],
+  ['timeout', () => ({ error: Object.assign(Error('aborted'), { name: 'AbortError' }) }), { assign: 'uncertain', unassign: 'uncertain' }],
+  ['401', () => ({ error: { status: 401 } }), { assign: 'uncertain', unassign: 'uncertain' }],
+  ['403 assign denied', () => ({ error: { status: 403, detail: 'memory_assign_denied' } }), { assign: 'uncertain', unassign: 'uncertain' }],
+  ['403 retired', () => ({ error: { status: 403, detail: 'dashboard_session_retired' } }), { assign: 'uncertain', unassign: 'uncertain' }],
+  ['404 unavailable', () => ({ error: { status: 404, detail: 'memory_fact_unavailable' } }), { assign: 'provisional', unassign: 'provisional' }],
+  ['404 other', () => ({ error: { status: 404, detail: 'Not Found' } }), { assign: 'uncertain', unassign: 'uncertain' }],
+  ['409 conflict', () => ({ error: { status: 409, detail: 'memory_owner_conflict' } }), { assign: 'provisional', unassign: 'provisional' }],
+  ['409 derived', () => ({ error: { status: 409, detail: 'memory_owner_derived_fact' } }), { assign: 'provisional', unassign: 'provisional' }],
+  ['409 dependents', () => ({ error: { status: 409, detail: { code: 'memory_owner_has_dependents', notice: 'Tiene derivados (sintético).', dependents: [{ id: ID('f'), state: 'automatic' }] } } }), { assign: 'dependents', unassign: 'uncertain' }],
+  ['409 unknown', () => ({ error: { status: 409, detail: 'memory_proposal_required' } }), { assign: 'uncertain', unassign: 'uncertain' }],
+  ['422 not applicable', () => ({ error: { status: 422, detail: 'memory_owner_dependents_not_applicable' } }), { assign: 'provisional', unassign: 'provisional' }],
+  ['422 retired', () => ({ error: { status: 422, detail: 'memory_owner_retired' } }), { assign: 'provisional', unassign: 'provisional' }],
+  ['422 inactive', () => ({ error: { status: 422, detail: 'memory_owner_inactive' } }), { assign: 'provisional', unassign: 'provisional' }],
+  ['422 invalid person', () => ({ error: { status: 422, detail: 'memory_owner_invalid_person' } }), { assign: 'provisional', unassign: 'provisional' }],
+  ['422 invalid request', () => ({ error: { status: 422, detail: 'memory_owner_invalid_request' } }), { assign: 'provisional', unassign: 'provisional' }],
+  ['422 pydantic list', () => ({ error: { status: 422, detail: [{ loc: ['body'] }] } }), { assign: 'uncertain', unassign: 'uncertain' }],
+  ['500', () => ({ error: { status: 500 } }), { assign: 'uncertain', unassign: 'uncertain' }],
+  ['503 memory unavailable', () => ({ error: { status: 503, detail: 'memory_unavailable' } }), { assign: 'provisional', unassign: 'provisional' }],
+  ['503 authority missing', () => ({ error: { status: 503, detail: 'memory_owner_authority_missing' } }), { assign: 'provisional', unassign: 'provisional' }],
+  ['503 authority unavailable', () => ({ error: { status: 503, detail: 'memory_owner_authority_unavailable' } }), { assign: 'provisional', unassign: 'provisional' }],
+  ['503 unknown', () => ({ error: { status: 503, detail: 'upstream' } }), { assign: 'uncertain', unassign: 'uncertain' }],
+  ['answered', () => ({ error: { status: 403, detail: 'dashboard_session_retired', sent: true, answered: true } }), { assign: 'uncertain', unassign: 'uncertain' }],
+  ['local refusal', () => ({ error: { status: 403, sent: false } }), { assign: 'not_applied', unassign: 'not_applied' }],
+];
+const OWNER_DISPOSITION = { ...DISPOSITION, dependents: { first: 'final', retry: 'final' } };
+// Sent: assign to A with fact revision 1 / owner revision 0; unassign from A with owner revision 1.
+const EXPECTED_OWNER = { assign: { person_id: A, expected_fact_revision: 1, expected_owner_revision: 0 }, unassign: { expected_owner_revision: 1 } };
+const OWNER_OBSERVATIONS = {
+  reached: op => snap([op === 'assign' ? owned(target, A) : fact(target, { state: 'confirmed', revision: 2, owner_revision: 2, owner_change: 'operator_unassigned' })]),
+  unchanged: op => snap([op === 'assign' ? fact(target) : owned(target, A)]),
+  moved_elsewhere: op => snap([op === 'assign' ? owned(target, B) : owned(target, B, 2)]),
+  absent_complete: () => snap(filler(3)),
+  absent_incomplete: () => ({ ...parseSnapshot(snap(filler(CAP), [], { facts_next: CUR(1) })), factsComplete: false }),
+};
+const MOVED = 'La asignación de este recuerdo cambió desde otra sesión. Revisá a quién quedó asignado.';
+const OWNER_GONE = 'Ya no está guardado: venció o se eliminó.';
+const EXPECTED_OWNER_RESULT = {
+  assign: { reached: ['applied', 'Comprobado: el recuerdo quedó asignado y confirmado.'], unchanged: { unresolved: ['pending', 'Todavía figura sin esa asignación; puede que el cambio no se haya aplicado.'], provisional: ['final', 'REASON'] },
+    moved_elsewhere: ['final', MOVED], absent_complete: ['final', OWNER_GONE], absent_incomplete: ['inconclusive', NOPE] },
+  unassign: { reached: ['applied', 'Comprobado: el recuerdo quedó sin asignar.'], unchanged: { unresolved: ['pending', 'Todavía figura asignado; puede que el cambio no se haya aplicado.'], provisional: ['final', 'REASON'] },
+    moved_elsewhere: ['final', MOVED], absent_complete: ['final', OWNER_GONE], absent_incomplete: ['inconclusive', NOPE] },
+};
+const OWNER_IMPOSSIBLE = new Set([MOVED, OWNER_GONE]);
+
+test('U3b-3 owner failure matrix: classification, first/retry disposition and post-answer resolution for assign and unassign', () => {
+  const rows = [], distinct = new Set();
+  for (const op of OWNER_OPS) {
+    for (const [name, make, expected] of OWNER_RESPONSES) {
+      const verdict = classifyWrite(op, target, make(op));
+      assert.equal(verdict.kind, expected[op], `${op} / ${name}`);
+      assert.ok(typeof verdict.text === 'string' && verdict.text.length > 8, `${op} / ${name} has copy`);
+      assert.ok(!/no se asignó|borrado total/.test(verdict.text));
+      for (const send of ['first', 'retry']) {
+        const disposition = writeDisposition(verdict.kind, send === 'first');
+        assert.equal(disposition, OWNER_DISPOSITION[verdict.kind][send], `${op} / ${name} / ${send}`);
+        rows.push({ op, response: name, send, class: verdict.kind, disposition });
+        if (disposition === 'drop' || disposition === 'final') continue;
+        const provisional = disposition === 'provisional';
+        for (const [observation, build] of Object.entries(OWNER_OBSERVATIONS)) {
+          const built = build(op);
+          const snapshot = 'factsComplete' in built ? built : parseSnapshot(built);
+          const resolved = resolveMarker(op, observe(snapshot, target), provisional, provisional ? verdict.text : '', EXPECTED_OWNER[op]);
+          const spec = EXPECTED_OWNER_RESULT[op][observation];
+          const [result, text] = Array.isArray(spec) ? spec : spec[disposition];
+          assert.equal(resolved.result, result, `${op} / ${name} / ${send} / ${observation}`);
+          assert.equal(resolved.text, text === 'REASON' ? verdict.text : text, `${op} / ${name} / ${send} / ${observation} copy`);
+          // F2: an unresolved owner write ends on a read only when it became impossible (never "not applied").
+          if (!provisional && resolved.result === 'final') assert.ok(OWNER_IMPOSSIBLE.has(resolved.text), resolved.text);
+          rows.push({ op, response: name, send, observation, class: verdict.kind, disposition, result });
+          distinct.add([op, disposition, observation, result].join('|'));
+        }
+      }
+    }
+  }
+  assert.ok(rows.length >= 200, 'owner matrix rows: ' + rows.length);
+  if (process.env.KZA_MEMORY_OWNER_MATRIX_OUT) require('node:fs').writeFileSync(process.env.KZA_MEMORY_OWNER_MATRIX_OUT, JSON.stringify({ rows: rows.length, distinct_cases: distinct.size, entries: rows }, null, 1) + '\n');
+});
+
+test('U3b-3 parse: owner fields, cursors, returned pages, counts and people fail closed', () => {
+  const { parseReturnedPage, parseCounts, parsePeople } = memory;
+  const good = snap([owned(ID('a'), A)]);
+  assert.doesNotThrow(() => parseSnapshot(good));
+  const ownerMutations = [
+    i => ({ ...i, owner: { ...i.owner, person_id: '' } }), i => ({ ...i, owner: { ...i.owner, person_id: 'x\u0007' } }), i => ({ ...i, owner: { ...i.owner, method: 'voice' } }),
+    i => ({ ...i, owner: { ...i.owner, revision: 0 } }), i => ({ ...i, owner: { ...i.owner, assigned_at: 'now' } }), i => ({ ...i, owner: 'A' }),
+    i => ({ ...i, owner_revision: -1 }), i => ({ ...i, owner_revision: 1.5 }), i => ({ ...i, owner_change: 'stolen' }), i => ({ ...i, owner_revision: 0 }),
+    i => { const { owner_revision, ...rest } = i; return rest; }, i => ({ ...i, owner_change: null }),
+  ];
+  for (const mutate of ownerMutations) assert.throws(() => parseSnapshot({ ...good, facts: [mutate(good.facts[0])] }));
+  for (const next of ['', 'k1.', CUR(1) + 'x', 'K1' + CUR(1).slice(2), 7]) assert.throws(() => parseSnapshot({ ...good, facts_next: next }));
+  assert.equal(parseSnapshot({ ...good, assign_notice: 3 }).assign_notice, null);
+  assert.doesNotThrow(() => parseReturnedPage({ facts: [returnedItem(ID('b'))], next: null, limit: 100 }));
+  for (const value of [null, { facts: null, next: null }, { facts: [returnedItem(ID('b')), returnedItem(ID('b'))], next: null }, { facts: [owned(ID('b'), A)], next: null },
+    { facts: filler(CAP + 1).map(item => ({ ...item, owner_change: 'owner_returned', owner_revision: 1 })), next: null }, { facts: [], next: 'x' }]) assert.throws(() => parseReturnedPage(value));
+  assert.throws(() => parseCounts({ ...COUNTS, retired_owner_prune_pending: 'no' }));
+  assert.throws(() => parseCounts({ ...COUNTS, currently_owned: undefined }));
+  for (const value of [{}, [{ id: A, name: 'x' }], [{ id: A, name: 'x', is_active: true }, { id: A, name: 'y', is_active: true }], [{ id: '', name: 'x', is_active: true }]]) assert.throws(() => parsePeople(value));
+});
+
+// --- U3b-3 review fixes (R1, R2, R5, R7, R8) ---------------------------------------------------
+
+test('R2: a proposal confirmed mid-walk may end both lists with the same cursor; each list keeps its own cursor set', async () => {
+  // Reproduces probe_cursor_collision.cjs: confirm keeps extracted_at, so the keyset cursor is identical.
+  const P = 1000, cursor = CUR(P);
+  const proposals = filler(99, 0).map(item => ({ ...item, state: 'proposed' })).concat([proposal(hex(P))]);
+  const facts = filler(99, 2000).concat([fact(hex(P), { state: 'confirmed', expires_at: null, confirmed_at: 95, confirmed_by: 'synthetic-a' })]);
+  const f = fixture();
+  f.read(snap([], proposals, { proposals_next: cursor }), snap(facts, [], { facts_next: cursor }), snap([fact(hex(3000))]));
+  await f.owner.open(); await settle();
+  assert.deepEqual(f.calls.slice(1), ['GET /api/memory', 'GET /api/memory?proposals_after=' + encodeURIComponent(cursor), 'GET /api/memory?facts_after=' + encodeURIComponent(cursor)]);
+  const state = f.owner.getState();
+  assert.equal(state.read.error, null); assert.equal(state.loaded, true);
+  assert.deepEqual([state.facts.length, state.proposals.length], [101, 99]);
+  // A cursor repeated within one list is still a cycle.
+  const g = fixture();
+  g.read(snap([], [], { facts_next: CUR(1) }), snap([], [], { facts_next: CUR(2) }), snap([], [], { facts_next: CUR(1) }));
+  await g.owner.open(); await settle();
+  assert.equal(g.owner.getState().loaded, false); assert.ok(g.owner.getState().read.error);
+});
+
+test('R7/m18: Devueltos fails closed on a repeated cursor and on a longer cursor cycle', async () => {
+  for (const [name, cycle] of [['one step', [CUR(1), CUR(1)]], ['two steps', [CUR(1), CUR(2), CUR(1)]], ['three steps', [CUR(1), CUR(2), CUR(3), CUR(2)]]]) {
+    let index = 0;
+    const f = operatorFixture({ returned: () => ({ facts: [returnedItem(hex(500 + index))], next: cycle[index++] ?? null, limit: 1 }) });
+    f.read(snap([fact(ID('a'))]));
+    await f.owner.open(); await settle();
+    const state = f.owner.getState();
+    assert.equal(state.returnedError, 'No pudimos consultar los recuerdos devueltos.', name);
+    assert.equal(state.returnedLoaded, false, name);
+    assert.equal(index, cycle.length, name + ': stops at the first repeated cursor');
+    assert.equal(state.facts.length, 1, name + ': the main list stays');
+  }
+});
+
+test('R8/m15: the dependents resend uses the revisions the 409 refused on, even after a read changed the card', async () => {
+  const f = operatorFixture();
+  f.read(snap([fact(ID('a'), { revision: 2 }), fact(ID('b'), { sources: [source([ID('a')])] })]),
+    snap([fact(ID('a'), { revision: 5 }), fact(ID('b'), { sources: [source([ID('a')])] })]), snap([owned(ID('a'), A)]));
+  await f.owner.open(); await settle();
+  const bodies = [];
+  f.write((path, options) => { bodies.push(options.body); throw Object.assign(Error('http'), { status: 409, detail: { code: 'memory_owner_has_dependents', notice: 'Tiene derivados (sintético).', dependents: [{ id: ID('b'), state: 'automatic' }] } }); },
+    (path, options) => { bodies.push(options.body); return { fact_revision: 3, owner_revision: 1, deleted_dependents: 1, confirmed_now: true, derived_records_retired: true, notice: null }; });
+  const first = await f.owner.assign(ID('a'), A, { confirmed: true }); await settle();
+  // A refresh between the 409 and the dialog's answer moves the card to revision 5.
+  await f.owner.refresh(); await settle();
+  assert.equal(f.owner.getState().facts.find(item => item.id === ID('a')).revision, 5);
+  await f.owner.assign(ID('a'), A, { confirmed: true, deleteDependents: true, expected: first.expected, expectedDependents: 1 }); await settle();
+  assert.deepEqual(bodies[1], { person_id: A, expected_fact_revision: 2, expected_owner_revision: 0, delete_dependents: true });
+});
+
+test('R1: the confirmed dependents count travels with the marker and a different receipt count is said on the card', async () => {
+  for (const [deleted, mismatch] of [[2, false], [3, true], [0, true]]) {
+    const f = operatorFixture();
+    f.read(snap([fact(ID('a'), { revision: 2 }), fact(ID('b'), { sources: [source([ID('a')])] })]), snap([owned(ID('a'), A)]));
+    await f.owner.open(); await settle();
+    let stored = null;
+    f.write(fail(409, { code: 'memory_owner_has_dependents', notice: 'Tiene derivados (sintético).', dependents: [{ id: ID('b'), state: 'automatic' }, { id: ID('c'), state: 'confirmed' }] }),
+      () => { stored = JSON.parse(f.storage.getItem(PREFIX + ID('a'))); return { fact_revision: 3, owner_revision: 1, deleted_dependents: deleted, confirmed_now: true, derived_records_retired: true, notice: null }; });
+    const first = await f.owner.assign(ID('a'), A, { confirmed: true }); await settle();
+    await f.owner.assign(ID('a'), A, { confirmed: true, deleteDependents: true, expected: first.expected, expectedDependents: first.dependents.length }); await settle();
+    assert.equal(stored.expected_dependents, 2, 'a count, never ids or content');
+    assert.deepEqual(Object.keys(stored).sort(), [...ASSIGN_KEYS, 'expected_dependents'].sort());
+    const text = f.owner.getState().notices[ID('a')];
+    if (mismatch) {
+      assert.ok(text.includes(`Confirmaste 2 recuerdos derivados y se eliminaron ${deleted}: la lista cambió mientras decidías.`), text);
+      assert.ok(text.includes('El servidor no informa cuáles se eliminaron.'), text);
+    } else assert.ok(!text.includes('Confirmaste'), text);
+  }
+  // The pre-confirm dialog copy says the deleted set is decided by the server at apply time.
+  const view = require('../../src/dashboard/frontend/home/nexo/memory.js');
+  assert.match(view.DEPENDENTS_SCOPE, /que existan al momento de asignar/);
+  assert.match(view.DEPENDENTS_SCOPE, /solo cuántos se eliminaron, no cuáles/);
+});
+
+test('R5: a retried assign refused for dependents says on the card that nothing was assigned and how to review them', async () => {
+  const f = operatorFixture();
+  f.read(snap([fact(ID('a'), { revision: 2 })]), snap([fact(ID('a'), { revision: 2 })]));
+  await f.owner.open(); await settle();
+  f.write(network, fail(409, { code: 'memory_owner_has_dependents', notice: 'Tiene derivados (sintético).', dependents: [{ id: ID('b'), state: 'automatic' }] }));
+  await f.owner.assign(ID('a'), A, { confirmed: true }); await settle();
+  assert.equal(f.owner.getState().markers[ID('a')].state, 'unresolved');
+  const result = await f.owner.retry(ID('a')); await settle();
+  assert.deepEqual(result.dependents, [{ id: ID('b'), state: 'automatic' }]);
+  const state = f.owner.getState();
+  assert.equal(state.notices[ID('a')], 'Tiene derivados (sintético). ' + memory.RETRY_DEPENDENTS);
+  assert.deepEqual(state.markers, {});
+  assert.match(memory.RETRY_DEPENDENTS, /^No se asignó\./);
+});
+
+test('R8: the /obs account removal confirmation states that assigned memories are deleted irreversibly', () => {
+  const fs = require('node:fs'), path = require('node:path');
+  const admin = fs.readFileSync(path.join(__dirname, '../../src/dashboard/frontend/obs/src/views/admin.jsx'), 'utf8');
+  const people = require('../../src/dashboard/frontend/home/nexo/people.js');
+  assert.ok(people.MEMORY_REMOVAL.includes('sin posibilidad de recuperarlos'));
+  const at = admin.indexOf('confirm(`¿Eliminar ${uid}?'), confirmCall = admin.slice(at, admin.indexOf(')) return;', at));
+  assert.ok(at >= 0, 'the removal asks for confirmation');
+  assert.ok(confirmCall.includes(people.MEMORY_REMOVAL), 'the /obs confirm carries the same sentence as NEXO');
 });

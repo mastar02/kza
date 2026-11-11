@@ -1,6 +1,7 @@
 /* Canonical account metadata. Voices and dashboard grants have separate owners. */
 (function (root) {
   'use strict';
+  const MEMORY_REMOVAL = 'También se eliminan, sin posibilidad de recuperarlos, los recuerdos asignados a esta persona en Memoria, junto con los recuerdos que dependen de ellos.';
   const LEVELS = { guest: 'Invitado', child: 'Niño/a', teen: 'Adolescente', adult: 'Adulto/a', admin: 'Administrador/a' };
   function parseAccounts(value) {
     const ids = new Set();
@@ -209,7 +210,8 @@
     }
     function openRemoval(person) {
       if (!current() || busy || !known || !visible || !session.can('auth:manage')) return;
-      modal(`Retirar a ${person.name}`, 'Se retirarán sus credenciales y vínculos vocales antes de borrar la cuenta. Los perfiles de voz se conservan sin persona asignada.');
+      // U3b-1b/D7: retiring an account deletes the memories assigned to that person (u3b-1b follow-up).
+      modal(`Retirar a ${person.name}`, `Se retirarán sus credenciales y vínculos vocales antes de borrar la cuenta. Los perfiles de voz se conservan sin persona asignada. ${MEMORY_REMOVAL}`);
       const actions = node('div', 'modal-actions');
       actions.append(control('Conservar persona', closeDialog), control('Retirar persona', () => {
         void mutate(`/api/admin/users/${encodeURIComponent(person.id)}`, 'DELETE', undefined, 'Persona retirada.');
@@ -233,7 +235,7 @@
     }
     return { open, leave, clear, refresh: () => load() };
   }
-  const api = { createPeople, parseAccounts, mutationError };
+  const api = { createPeople, parseAccounts, mutationError, MEMORY_REMOVAL };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.NexoPeople = api;
 })(typeof window !== 'undefined' ? window : globalThis);
