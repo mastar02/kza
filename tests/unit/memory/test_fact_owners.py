@@ -459,7 +459,8 @@ def test_automatic_target_with_dependents_lists_each_state_and_deletes_only_with
     assert raised.value.code == "memory_owner_has_dependents" and raised.value.dependents == expected
     assert _bytes(ledger) == before
     receipt = _assign(ledger, parent, delete_dependents=True)
-    assert receipt == AssignmentReceipt(parent.revision + 1, 1, 3)
+    assert receipt == AssignmentReceipt(parent.revision + 1, 1, 3, tuple(identity for identity, _ in expected))
+    assert len(receipt.deleted_dependent_ids) == receipt.deleted_dependents
     assert {_row(ledger, "facts", identity)["state"] for identity, _ in expected} == {"deleted"}
     assert _row(ledger, "facts", parent.id)["state"] == "confirmed"
 

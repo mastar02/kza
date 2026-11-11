@@ -212,7 +212,10 @@ def register_admin_routes(
             "auth_configured": auth_configured(dashboard_authority(request)),
             "subject": principal.subject, "role": principal.role.value,
             "permissions": sorted(principal.permissions), "expires_at": principal.expires_at,
-            "personal_scope": principal.user_id is not None},
+            "personal_scope": principal.user_id is not None,
+            # Opaque per-grant tag (home + person only) that lets a tab tell another credential or
+            # person behind the same subject apart. Never the person id or the credential id.
+            "account_binding": principal.account_binding},
             headers={"Cache-Control": "no-store"})
 
     # ---------------- Users ----------------

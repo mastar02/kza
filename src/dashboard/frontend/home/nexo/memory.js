@@ -12,8 +12,11 @@
   // v3 assignment_confirms.retention_disclosure and the D5 sentence (u3b design v2/v3).
   const ASSIGN_PERMANENCE = 'Al asignarlo, el recuerdo queda confirmado y no vence: se guarda hasta que la persona o la administración lo eliminen. La persona va a poder verlo, eliminarlo o devolverlo con «No es mío».';
   const ASSIGN_OTHERS = 'Si el recuerdo habla de otra persona, asignarlo se lo muestra a quien elijas.';
-  // The server deletes the derived memories that exist when it applies the assignment and reports only how many.
-  const DEPENDENTS_SCOPE = 'Se eliminan los recuerdos derivados que existan al momento de asignar, que pueden no ser exactamente los de esta lista si cambian mientras decidís. El servidor informa solo cuántos se eliminaron, no cuáles.';
+  // The server deletes the derived memories that exist when it applies the assignment and names their ids;
+  // the card names them by the label shown here, and only counts the ones this view never showed.
+  const DEPENDENTS_SCOPE = 'Se eliminan los recuerdos derivados que existan al momento de asignar, que pueden no ser exactamente los de esta lista si cambian mientras decidís. Si la lista cambió, el aviso final dice cuáles difieren, con el texto que ves acá; los que no figuran en esta vista solo se cuentan.';
+  /** A dependent's label in the dialog (and on the card afterwards): its content, clamped to 120 characters. */
+  const dependentLabel = content => content.length > 120 ? content.slice(0, 120).trimEnd() + '…' : content;
 
   function mountMemory({ container, confirmDialog, owner, icon }) {
     const doc = container.ownerDocument;
@@ -348,8 +351,8 @@
       if (result?.dependents && active) {
         const accepted = await askDependents(id, result, chosen);
         if (!accepted || !active) return;
-        // The owner compares the receipt's count with this list and says so on the card (R1).
-        await owner.assign(id, chosen, { confirmed: true, deleteDependents: true, expected: result.expected, expectedDependents: accepted.count });
+        // The owner compares the receipt's ids with this list and says so on the card (R1).
+        await owner.assign(id, chosen, { confirmed: true, deleteDependents: true, expected: result.expected, expectedDependents: accepted.count, expectedDependentIds: accepted.ids, expectedDependentLabels: accepted.labels });
       }
     }
     function askDependents(id, result, personId) {
@@ -359,10 +362,11 @@
       const titleNode = node('h2', '', 'Este recuerdo tiene recuerdos derivados'); titleNode.id = 'memory-confirm-title';
       const nodes = [titleNode, target(item), node('p', 'modal-description', result.notice)];
       const list = node('ul', 'memory-confirm-items memory-dependents'); list.id = 'memory-assign-dependents';
+      const labels = {};
       for (const dependent of result.dependents) {
         const line = node('li'); line.dataset.dependentId = dependent.id;
         const known = itemFor(dependent.id);
-        if (known) { const text = node('span', 'memory-content', known.content.length > 120 ? known.content.slice(0, 120).trimEnd() + '…' : known.content); text.dir = 'auto'; line.append(text, node('span', 'memory-detail', ' · ')); }
+        if (known) { const text = node('span', 'memory-content', dependentLabel(known.content)); labels[dependent.id] = dependentLabel(known.content); text.dir = 'auto'; line.append(text, node('span', 'memory-detail', ' · ')); }
         else line.append(node('span', 'memory-detail', 'Recuerdo que no figura en esta vista · '));
         line.append(node('span', 'memory-detail', STATE_LABEL[dependent.state] + ' · '), node('code', 'memory-id', dependent.id));
         list.append(line);
@@ -373,7 +377,7 @@
       const name = personName(state, personId);
       const { row, cancelButton, accept } = actions('Cancelar', 'Eliminar derivados y asignar' + (name ? ' a ' + name : ''), 'identity-danger');
       nodes.push(row);
-      return dialog({ nodes, bind(finish) { cancelButton.onclick = () => finish(false); accept.onclick = () => finish({ count: result.dependents.length }); },
+      return dialog({ nodes, bind(finish) { cancelButton.onclick = () => finish(false); accept.onclick = () => finish({ count: result.dependents.length, ids: result.dependents.map(dependent => dependent.id), labels }); },
         focus: () => cancelButton.focus() }, id + ':assign', 'memory-confirm-title');
     }
     async function openUnassign(id) {
@@ -487,7 +491,7 @@
       confirmDialog.replaceChildren(); container.replaceChildren(); cards.clear(); expanded.clear();
     };
   }
-  const exported = { mountMemory, ASSIGN_PERMANENCE, ASSIGN_OTHERS, DEPENDENTS_SCOPE };
+  const exported = { mountMemory, ASSIGN_PERMANENCE, ASSIGN_OTHERS, DEPENDENTS_SCOPE, dependentLabel };
   root.NexoMemory = exported;
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;
 })(typeof window !== 'undefined' ? window : globalThis);

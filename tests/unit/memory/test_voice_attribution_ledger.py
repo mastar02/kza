@@ -602,6 +602,7 @@ def test_operator_confirms_the_same_person_and_clears_the_evidence(ledger, clock
     clock.value += 60
     receipt = ledger.assign_owner(fact.id, PERSON, 1, 1, OPERATOR, **ALLOW)
     assert (receipt.fact_revision, receipt.owner_revision) == (2, 2)
+    assert (receipt.deleted_dependents, receipt.deleted_dependent_ids) == (0, ())  # confirm-on-assign deletes nothing
     stored = ledger.get(fact.id)
     assert (stored.state, stored.expires_at, stored.confirmed_by) == (FactState.CONFIRMED, None, "synthetic-operator")
     assert rows(ledger, "fact_owners") == [(fact.id, PERSON, "voice_proposal", 2, NOW + 60, "synthetic-operator", "{}")]

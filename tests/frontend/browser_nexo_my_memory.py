@@ -12,6 +12,7 @@ import asyncio
 from contextlib import AsyncExitStack
 from dataclasses import replace
 import json
+import re
 import socket
 import subprocess
 import tempfile
@@ -352,7 +353,10 @@ async def main() -> None:
                         await click('#my-memory-confirm-dialog [data-key="confirm-accept"]')
                         await page.wait_for(f"{notice(a_held)}==='Todavía figura entre tus recuerdos; puede que el cambio no se haya aplicado.'")
                         stored = await page.evaluate(f"JSON.parse(sessionStorage.getItem('kza:my-memory-op:{a_held}'))")
-                        assert stored['subject'] == 'synthetic-home-a' and stored['op'] == 'delete' and set(stored) <= {'op', 'subject', 'sent_at', 'state', 'reason'}
+                        assert stored['subject'] == 'synthetic-home-a' and stored['op'] == 'delete' and set(stored) <= {'op', 'subject', 'binding', 'sent_at', 'state', 'reason'}
+                        # R3 binding: the marker carries whoami's opaque tag, never the person id.
+                        named = await page.evaluate("fetch('/api/admin/auth/whoami',{credentials:'same-origin'}).then(r=>r.json()).then(b=>b.account_binding)")
+                        assert re.fullmatch(r'[0-9a-f]{32}', stored['binding']) and stored['binding'] == named and person_a.user_id not in json.dumps(stored)
                         assert not any('sintético' in value for value in await page.evaluate('Object.values(sessionStorage)'))
                         assert 'no se eliminó' not in await page.evaluate("document.querySelector('#my-memory-view').innerText")
                         gate.set()
@@ -393,8 +397,8 @@ async def main() -> None:
                         assert count('DELETE', f'/api/memory/mine/facts/{a_hidden}') == 0 and await get(a_hidden) is not None
                         checks.append('F8: a hidden tab closes and empties the dialog; no memory text left in the DOM; nothing sent')
 
-                        # R3: a marker left by an earlier page (maybe another login of the same subject) is never
-                        # 'Comprobado' and never resent with one click; the person may act again through the dialog.
+                        # R3: a marker left by an earlier page without an account_binding (maybe another login of the same
+                        # subject) is never 'Comprobado' and never resent with one click; the person may act again through the dialog.
                         await page.evaluate(f"sessionStorage.setItem('kza:my-memory-op:{a_hidden}', JSON.stringify({{op:'delete',subject:'synthetic-home-a',sent_at:1,state:'unresolved'}}))")
                         await page.command('Page.reload')
                         await page.wait_for(f"{notice(a_hidden)}==={json.dumps(RESTORED_STILL)}")

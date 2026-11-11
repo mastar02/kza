@@ -40,7 +40,8 @@ from tests.mocks.memory_graph import MemoryClient
 
 # Copy shipped by memory.js (R1).
 DEPENDENTS_SCOPE = ('Se eliminan los recuerdos derivados que existan al momento de asignar, que pueden no ser exactamente los de esta '
-                    'lista si cambian mientras decidís. El servidor informa solo cuántos se eliminaron, no cuáles.')
+                    'lista si cambian mientras decidís. Si la lista cambió, el aviso final dice cuáles difieren, con el texto que ves acá; '
+                    'los que no figuran en esta vista solo se cuentan.')
 
 
 EVIDENCE = evidence_directory('KZA_NEXO_MEMORY_EVIDENCE', 'data/autonomous-roadmap-20261102/t040-t041/u3-memory-browser-runs')

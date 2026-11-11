@@ -381,6 +381,101 @@ test('Mis recuerdos copy: what is visible, administration sees everything, not u
   assert.ok(api.includes(RETURN_NOTICE), 'RETURN_NOTICE matches memory_api.RETURN_NOTICE');
 });
 
+const BIND_A = 'a'.repeat(32), BIND_B = 'b'.repeat(32);
+const bound = (binding, subject = 'synthetic-home-a') => () => ({ ...whoami(subject), account_binding: binding });
+
+test('R3 binding: a restored marker with the same account_binding resolves like this page\'s own (Comprobado, retry)', async () => {
+  for (const op of ['delete', 'return']) {
+    const storage = storageMock();
+    storage.setItem(PREFIX + ID('a'), JSON.stringify({ op, subject: 'synthetic-home-a', binding: BIND_A, sent_at: 1, state: 'unresolved' }));
+    const f = fixture({ storage, identity: bound(BIND_A) });
+    f.read(page([item(ID('b'))]));
+    await f.owner.open(); await settle();
+    const state = f.owner.getState();
+    assert.equal(state.notices[ID('a')], 'Comprobado: ya no figura entre tus recuerdos.', op);
+    assert.deepEqual(state.markers, {}); assert.equal(storage.getItem(PREFIX + ID('a')), null);
+    assert.deepEqual(f.writes(), []);
+  }
+  // Present after the adopt: a one-click retry is offered and resends (same grant, same person).
+  const storage = storageMock();
+  storage.setItem(PREFIX + ID('a'), JSON.stringify({ op: 'delete', subject: 'synthetic-home-a', binding: BIND_A, sent_at: 1, state: 'unresolved' }));
+  const g = fixture({ storage, identity: bound(BIND_A) });
+  g.read(page([item(ID('a'))]), page([]));
+  await g.owner.open(); await settle();
+  assert.equal(g.owner.getState().markers[ID('a')].restored, false);
+  g.write({ deleted: true });
+  const result = await g.owner.retry(ID('a')); await settle();
+  assert.equal(result.applied, true); assert.deepEqual(g.writes(), ['DELETE /api/memory/mine/facts/' + ID('a')]);
+});
+
+test('R3 binding: a restored marker of another grant or person is dropped unsent; one without a binding stays restored', async () => {
+  const storage = storageMock();
+  storage.setItem(PREFIX + ID('a'), JSON.stringify({ op: 'delete', subject: 'synthetic-home-a', binding: BIND_B, sent_at: 1, state: 'unresolved' }));
+  storage.setItem(PREFIX + ID('c'), JSON.stringify({ op: 'return', subject: 'synthetic-home-a', sent_at: 1, state: 'unresolved' }));
+  const f = fixture({ storage, identity: bound(BIND_A) });
+  f.read(page([item(ID('b'))]));
+  await f.owner.open();
+  await settle();
+  const state = f.owner.getState();
+  assert.equal(state.notices.session, 'Una operación de otra cuenta quedó sin confirmar; no se reintentó. Revisá tu lista.');
+  assert.equal(state.notices[ID('a')], undefined, 'never said to be Comprobado or still listed');
+  assert.equal(storage.getItem(PREFIX + ID('a')), null);
+  assert.equal(state.notices[ID('c')], mine.RESTORED_ABSENT, 'no binding stored: the pre-binding R3 rule');
+  assert.deepEqual(f.writes(), []);
+  // A server that names no binding never upgrades a stored one.
+  const other = storageMock();
+  other.setItem(PREFIX + ID('a'), JSON.stringify({ op: 'delete', subject: 'synthetic-home-a', binding: BIND_A, sent_at: 1, state: 'unresolved' }));
+  const g = fixture({ storage: other });
+  g.read(page([item(ID('b'))]));
+  await g.owner.open(); await settle();
+  assert.equal(g.owner.getState().notices[ID('a')], mine.RESTORED_ABSENT);
+  // A malformed stored binding is ignored (the marker stays restored), never matched.
+  const third = storageMock();
+  third.setItem(PREFIX + ID('a'), JSON.stringify({ op: 'delete', subject: 'synthetic-home-a', binding: 'A'.repeat(32), sent_at: 1, state: 'unresolved' }));
+  const h = fixture({ storage: third, identity: bound('A'.repeat(32).toLowerCase()) });
+  h.read(page([item(ID('b'))]));
+  await h.owner.open(); await settle();
+  assert.equal(h.owner.getState().notices[ID('a')], mine.RESTORED_ABSENT);
+});
+
+test('R3 binding: the stored marker carries the binding (never a person id); a later whoami with another or a malformed binding is a change', async () => {
+  for (const [name, later] of [['another grant', BIND_B], ['none', null], ['malformed', 'x'.repeat(32)], ['not a string', 7]]) {
+    let calls = 0, changed = 0;
+    const f = fixture({ identity: () => (++calls === 1 ? bound(BIND_A)() : { ...whoami(), account_binding: later }), onAccountChanged: () => changed++ });
+    f.read(page([item(ID('a'))]));
+    await f.owner.open(); await settle();
+    assert.equal(changed, 0, name);
+    assert.deepEqual(await f.owner.remove(ID('a'), { confirmed: true }), { sent: false, accountChanged: true }, name);
+    assert.equal(changed, 1, name); assert.deepEqual(f.writes(), [], name);
+  }
+  // The same binding: sent, and the stored marker has exactly the binding added.
+  const g = fixture({ identity: bound(BIND_A) });
+  g.read(page([item(ID('a'))]), page([]));
+  await g.owner.open(); await settle();
+  let stored = null;
+  g.write(() => { stored = JSON.parse(g.storage.getItem(PREFIX + ID('a'))); return { deleted: true }; });
+  assert.equal((await g.owner.remove(ID('a'), { confirmed: true })).applied, true);
+  assert.deepEqual(Object.keys(stored).sort(), ['binding', 'op', 'sent_at', 'state', 'subject']);
+  assert.equal(stored.binding, BIND_A);
+  // A first whoami with a malformed binding is a change before anything is read.
+  let changed = 0;
+  const h = fixture({ identity: bound('Z'.repeat(32)), onAccountChanged: () => changed++ });
+  await h.owner.open(); await settle();
+  assert.equal(changed, 1); assert.deepEqual(h.calls, ['GET /api/admin/auth/whoami']);
+});
+
+test('R3 binding: the end of a session forgets the binding, so the next login of the same subject starts fresh', async () => {
+  let current = BIND_A, changed = 0;
+  const f = fixture({ identity: () => bound(current)(), onAccountChanged: () => changed++ });
+  f.read(page([item(ID('a'))]), page([item(ID('a'))]), page([]));
+  await f.owner.open(); await settle();
+  await f.owner.clear(); current = BIND_B;
+  await f.owner.open(); await settle();
+  assert.equal(changed, 0, 'a new session is not a change of the previous one');
+  f.write({ deleted: true });
+  assert.equal((await f.owner.remove(ID('a'), { confirmed: true })).applied, true);
+});
+
 test('R3: a marker restored from an earlier page is never Comprobado and never resent with one click', async () => {
   // whoami names only a subject: the same subject may be another login or another bound person.
   for (const [name, list, complete, expected] of [

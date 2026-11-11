@@ -8,6 +8,7 @@ import ast
 import asyncio
 import json
 from pathlib import Path
+import re
 import sqlite3
 from types import SimpleNamespace
 
@@ -126,6 +127,9 @@ async def test_assigning_an_automatic_memory_confirms_it_and_discloses_retired_r
         response = await client.post(f"/api/memory/facts/{graph.facts['auto']}/owner", json=body)
         assert response.status_code == 200, response.text
         receipt = response.json()
+        assert set(receipt) == {"fact_revision", "owner_revision", "deleted_dependents", "deleted_dependent_ids",
+                                "confirmed_now", "derived_records_retired", "notice"}
+        assert receipt["deleted_dependents"] == 0 and receipt["deleted_dependent_ids"] == []
         assert receipt["fact_revision"] == body["expected_fact_revision"] + 1 and receipt["owner_revision"] == 1
         assert receipt["confirmed_now"] is receipt["derived_records_retired"] is True
         assert "dejan de estar disponibles" in receipt["notice"]
@@ -166,6 +170,8 @@ async def test_dependents_are_listed_with_states_and_deleted_only_with_the_flag(
         accepted = await client.post(f"/api/memory/facts/{graph.facts['parent']}/owner",
                                      json={**body, "delete_dependents": True})
         assert accepted.status_code == 200 and accepted.json()["deleted_dependents"] == 2
+        # The receipt names the same ids the 409 listed to this assigner, nothing else (gap R1).
+        assert accepted.json()["deleted_dependent_ids"] == [entry["id"] for entry in detail["dependents"]]
     for name in ("auto_child", "confirmed_child"):
         assert await graph.call(graph.memory.ledger.get, graph.facts[name], review=True) is None
 
@@ -358,6 +364,86 @@ async def test_pre_upgrade_home_session_is_reminted_not_denied(graph):
     with sqlite3.connect(graph.authority.path) as db:
         assert "memory:own" not in json.dumps(db.execute("SELECT * FROM sessions").fetchall())
         assert "memory:own" not in json.dumps(db.execute("SELECT * FROM credentials").fetchall())
+
+
+BINDING = re.compile(r"[0-9a-f]{32}")
+
+
+async def test_whoami_binding_tells_grants_and_persons_apart_without_naming_either(graph):
+    """Gap R3: an opaque per-grant tag, only for personal sessions; never the person or credential id."""
+    shared = "synthetic-home-shared"
+    first, other_person, same_person = (await graph.credential(DashboardRole.HOME, shared, PERSON_A),
+                                        await graph.credential(DashboardRole.HOME, shared, PERSON_B),
+                                        await graph.credential(DashboardRole.HOME, shared, PERSON_A))
+    seen = {}
+    for name, grant in (("first", first), ("again", first), ("other_person", other_person), ("same_person", same_person)):
+        async with graph.client(grant=grant) as client:
+            response = await client.get("/api/admin/auth/whoami")
+            body = response.json()
+            assert body["subject"] == shared and body["personal_scope"] is True
+            assert BINDING.fullmatch(body["account_binding"]), body
+            # Neither the person nor the credential is named, in the value or anywhere in the answer.
+            for secret in (PERSON_A, PERSON_B, first.identity, other_person.identity, same_person.identity,
+                           first.token, other_person.token, same_person.token):
+                assert secret not in response.text
+            seen[name] = body["account_binding"]
+    assert seen["first"] == seen["again"]  # stable across logins of the same grant
+    assert len({seen["first"], seen["other_person"], seen["same_person"]}) == 3
+    # Rebinding the same credential to another person changes the tag.
+    revised = await graph.authority.revise_credential(graph.root, first.identity, role=DashboardRole.HOME,
+                                                      expires_at=graph.clock.now + 7200, user_id=PERSON_B)
+    assert revised is True
+    async with graph.client(grant=first) as client:
+        rebound = (await client.get("/api/admin/auth/whoami")).json()["account_binding"]
+    assert BINDING.fullmatch(rebound) and rebound not in seen.values()
+    # No person, no tag: operators and household logins without a person.
+    for role, person in ((DashboardRole.OPERATOR, None), (DashboardRole.HOME, None)):
+        async with graph.client(role, shared) as client:
+            body = (await client.get("/api/admin/auth/whoami")).json()
+            assert body["account_binding"] is None and body["personal_scope"] is False
+
+
+def _binding_uses(path: Path) -> list[tuple[str, str]]:
+    """Every mention of account_binding in a module, as (kind, enclosing class.function)."""
+    uses = []
+
+    def visit(node, scope):
+        for child in ast.iter_child_nodes(node):
+            inner = scope
+            if isinstance(child, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                inner = scope + (child.name,)
+                if child.name == "account_binding":
+                    uses.append(("def", ".".join(scope) or "<module>"))
+            if isinstance(child, ast.Name) and child.id == "account_binding":
+                uses.append(("name", ".".join(scope)))
+            elif isinstance(child, ast.Attribute) and child.attr == "account_binding":
+                uses.append(("attribute", ".".join(scope)))
+            elif isinstance(child, ast.keyword) and child.arg == "account_binding":
+                uses.append(("keyword", ".".join(scope)))
+            elif isinstance(child, ast.Constant) and child.value == "account_binding":
+                uses.append(("string", ".".join(scope)))
+            visit(child, inner)
+
+    visit(ast.parse(path.read_text(encoding="utf-8")), ())
+    return sorted(uses)
+
+
+def test_account_binding_is_metadata_only():
+    """Review P: nothing compares, stores or authorizes on the tag; every use is allow-listed by AST.
+
+    authority.py may only define it (the helper and the DashboardPrincipal field) and compute it once
+    in resolve(); admin.py may only project principal.account_binding in whoami. Nothing else reads it.
+    """
+    users = sorted(str(path.relative_to(ROOT)) for path in (ROOT / "src").rglob("*.py")
+                   if "account_binding" in path.read_text(encoding="utf-8"))
+    assert users == ["src/dashboard/admin.py", "src/dashboard/authority.py"]
+    assert _binding_uses(ROOT / "src/dashboard/authority.py") == [
+        ("def", "<module>"),                              # def account_binding(...)
+        ("name", "DashboardAuthority.resolve"),           # the one call that sets it
+        ("name", "DashboardPrincipal"),                   # the dataclass field
+    ]
+    assert _binding_uses(ROOT / "src/dashboard/admin.py") == [
+        ("attribute", "register_admin_routes.whoami"), ("string", "register_admin_routes.whoami")]
 
 
 async def test_operator_who_is_also_household_has_two_independent_sessions(graph):

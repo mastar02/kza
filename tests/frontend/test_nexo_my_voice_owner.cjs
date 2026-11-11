@@ -293,6 +293,83 @@ test('a marker of another account is wiped without resending; a restored marker 
   assert.deepEqual(g.writes(), []);
 });
 
+const BIND_A = 'a'.repeat(32), BIND_B = 'b'.repeat(32);
+const bound = binding => () => ({ ...whoami(), account_binding: binding });
+const storedConsent = extra => { const storage = storageMock();
+  storage.setItem(PREFIX + 'consent', JSON.stringify({ op: 'request', subject: 'synthetic-home-a', sent_at: 1, expected_revision: 0, ...extra })); return storage; };
+
+test('R3 binding: a restored consent marker with the same account_binding resolves like this page\'s own (Comprobado)', async () => {
+  const storage = storedConsent({ binding: BIND_A });
+  const f = fixture({ storage, identity: bound(BIND_A) });
+  f.read(on('pending_verification', 1));
+  await f.owner.open(); await settle();
+  assert.equal(f.owner.getState().notice, 'Comprobado: tu inscripción quedó pedida.');
+  assert.equal(f.owner.getState().marker, null); assert.equal(storage.getItem(PREFIX + 'consent'), null);
+  assert.deepEqual(f.writes(), []);
+  // Verify: the same binding lets an open window count as Comprobado.
+  const g = fixture({ storage: storedConsent({ op: 'verify', expected_revision: 1, binding: BIND_A }), identity: bound(BIND_A) });
+  g.read(on('pending_verification', 1, { window: WINDOW }));
+  await g.owner.open(); await settle();
+  assert.equal(g.owner.getState().notice, 'Comprobado: tenés una ventana de verificación abierta.');
+});
+
+test('R3 binding: another grant\'s restored marker is dropped unsent; no binding (stored or named) keeps the old rule', async () => {
+  const f = fixture({ storage: storedConsent({ binding: BIND_B }), identity: bound(BIND_A) });
+  f.read(on('pending_verification', 1));
+  await f.owner.open(); await settle();
+  assert.equal(f.owner.getState().notice, 'Una operación de otra cuenta quedó sin confirmar; no se reintentó.');
+  assert.equal(f.owner.getState().marker, null); assert.equal(f.storage.getItem(PREFIX + 'consent'), null);
+  assert.deepEqual(f.writes(), []);
+  for (const [name, storage, identity] of [
+    ['no stored binding', storedConsent({}), bound(BIND_A)],
+    ['server names none', storedConsent({ binding: BIND_A }), () => whoami()],
+    ['malformed stored binding', storedConsent({ binding: 'A'.repeat(32) }), bound('a'.repeat(32))],
+  ]) {
+    const g = fixture({ storage, identity });
+    g.read(on('pending_verification', 1));
+    await g.owner.open(); await settle();
+    assert.match(g.owner.getState().notice, /no podemos confirmar/, name);
+    assert.ok(!/Comprobado/.test(g.owner.getState().notice), name);
+    assert.deepEqual(g.writes(), [], name);
+  }
+});
+
+test('R3 binding: the stored marker carries the binding (no room, phrase or person); a later different or malformed binding is a change', async () => {
+  for (const [name, later] of [['another grant', BIND_B], ['none', null], ['malformed', 'x'.repeat(32)], ['not a string', 7]]) {
+    let calls = 0, changed = 0;
+    const f = fixture({ identity: () => (++calls === 1 ? bound(BIND_A)() : { ...whoami(), account_binding: later }), onAccountChanged: () => changed++ });
+    f.read(on(null, 0));
+    await f.owner.open(); await settle();
+    assert.equal(changed, 0, name);
+    assert.deepEqual(await f.owner.requestConsent({ confirmed: true }), { sent: false, accountChanged: true }, name);
+    assert.equal(changed, 1, name); assert.deepEqual(f.writes(), [], name);
+  }
+  const g = fixture({ identity: bound(BIND_A) });
+  g.read(on(null, 0), on(null, 0));
+  await g.owner.open(); await settle();
+  let stored = null;
+  g.write(() => { stored = JSON.parse(g.storage.getItem(PREFIX + 'consent')); return { state: 'pending_verification', revision: 1 }; });
+  assert.equal((await g.owner.requestConsent({ confirmed: true })).applied, true);
+  assert.deepEqual(Object.keys(stored).sort(), ['binding', 'expected_revision', 'op', 'sent_at', 'subject']);
+  assert.equal(stored.binding, BIND_A);
+  let changed = 0;
+  const h = fixture({ identity: bound('Z'.repeat(32)), onAccountChanged: () => changed++ });
+  await h.owner.open(); await settle();
+  assert.equal(changed, 1); assert.deepEqual(h.calls, ['GET /api/admin/auth/whoami']);
+});
+
+test('R3 binding: the end of a session forgets the binding, so the next login of the same subject starts fresh', async () => {
+  let current = BIND_A, changed = 0;
+  const f = fixture({ identity: () => bound(current)(), onAccountChanged: () => changed++ });
+  f.read(on(null, 0), on(null, 0));
+  await f.owner.open(); await settle();
+  await f.owner.clear(); current = BIND_B;
+  await f.owner.open(); await settle();
+  assert.equal(changed, 0, 'a new session is not a change of the previous one');
+  f.write({ state: 'pending_verification', revision: 1 });
+  assert.equal((await f.owner.requestConsent({ confirmed: true })).applied, true);
+});
+
 test('a write during an in-flight write, without confirmation or with a stale revision is not sent', async () => {
   const f = fixture();
   const hold = deferred();

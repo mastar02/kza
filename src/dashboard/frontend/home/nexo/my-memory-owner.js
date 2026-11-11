@@ -12,6 +12,8 @@
   const MAX_PAGES = 100;
   const OPS = ['delete', 'return'];
   const FACT_ID = /^fact_[0-9a-f]{64}$/;
+  // whoami's opaque per-grant tag (home + person only): it tells grants apart and authorizes nothing.
+  const BINDING = /^[0-9a-f]{32}$/;
   const CURSOR = /^k1\.[0-9a-f]{16}\.fact_[0-9a-f]{64}$/;
   const STATES = ['automatic', 'confirmed', 'proposed'];
   const METHODS = ['operator_assignment', 'person_session', 'voice_proposal'];
@@ -100,8 +102,8 @@
    * memory is no longer yours (deleted, returned or reassigned): the copy never claims which.
    */
   function resolveMarker(op, observation, provisional = false, reason = '', restored = false) {
-    // whoami names only a subject: it cannot prove that the login (or the person bound to it) is the
-    // one that sent an operation stored by an earlier page. Such a marker is never 'Comprobado' (R3).
+    // A marker stored by an earlier page stays 'restored' unless whoami's account_binding equals the
+    // one stored with it (same credential, same person): only then may it be 'Comprobado' (R3).
     if (restored) {
       if (!observation.complete && !observation.present) return { result: 'inconclusive', text: INCONCLUSIVE };
       return { result: 'final', text: observation.present ? RESTORED_STILL : RESTORED_ABSENT };
@@ -126,6 +128,8 @@
   function createMyMemoryOwner({ api, session, storage = root.sessionStorage, schedule = setTimeout, cancel = clearTimeout,
     monotonic = () => root.performance.now(), wall = Date.now, onAccountChanged = () => {}, maxPages = MAX_PAGES }) {
     let epoch = 0, visit = 0, opened = false, timer, readSeq = 0, readFloor = 0, refreshing = null, again = false, serial = 0;
+    // The account_binding the first whoami of this epoch named; null when the server names none.
+    let binding = null;
     const reads = new Set(), listeners = new Set();
     let state = initial();
     function initial() {
@@ -170,7 +174,8 @@
     function persist(id, marker) {
       if (!storage) throw Error('storage_unavailable');
       if (!marker.subject) throw Error('subject_unavailable');
-      storage.setItem(PREFIX + id, JSON.stringify({ op: marker.op, subject: marker.subject, sent_at: marker.sent_at, state: marker.state, ...(marker.reason ? { reason: marker.reason } : {}) }));
+      storage.setItem(PREFIX + id, JSON.stringify({ op: marker.op, subject: marker.subject, sent_at: marker.sent_at, state: marker.state,
+        ...(marker.binding ? { binding: marker.binding } : {}), ...(marker.reason ? { reason: marker.reason } : {}) }));
     }
     function setMarker(id, marker) { state.markers[id] = marker; try { persist(id, marker); } catch (_) { /* Stored before sending. */ } }
     function dropMarker(id) { delete state.markers[id]; remove(PREFIX + id); }
@@ -187,7 +192,8 @@
           if (!current || value.subject !== current) { foreign = true; throw Error('foreign'); }
           if (state.markers[id]) continue;
           state.markers[id] = { op: value.op, subject: value.subject, sent_at: finite(value.sent_at) ? value.sent_at : null,
-            state: value.state === 'provisional' ? 'provisional' : 'unresolved', reason: string(value.reason) ? value.reason : '', after: -1, restored: true };
+            state: value.state === 'provisional' ? 'provisional' : 'unresolved', reason: string(value.reason) ? value.reason : '', after: -1, restored: true,
+            binding: string(value.binding) && BINDING.test(value.binding) ? value.binding : null };
           notice(id, 'No sabemos si se aplicó la última operación. Consultando…');
         } catch (_) { remove(key); }
       }
@@ -195,12 +201,18 @@
     }
     /** 'same' needs the cached subject, the home role and memory:own:read in the server's answer (F5). */
     async function confirmAccount() {
-      const expected = subject(), seen = visit, wasOpen = opened;
+      const expected = subject(), seen = visit, wasOpen = opened, ticket = epoch;
       if (!expected) return 'changed';
       try {
         const identity = await read('/api/admin/auth/whoami');
-        return identity?.ok === true && identity.subject === expected && identity.role === 'home' && session.role() === 'home'
-          && Array.isArray(identity.permissions) && identity.permissions.includes('memory:own:read') ? 'same' : 'changed';
+        if (!(identity?.ok === true && identity.subject === expected && identity.role === 'home' && session.role() === 'home'
+          && Array.isArray(identity.permissions) && identity.permissions.includes('memory:own:read'))) return 'changed';
+        // Another credential or person behind the same subject is a change too (R3).
+        const named = identity.account_binding ?? null;
+        if (named !== null && !(string(named) && BINDING.test(named))) return 'changed';
+        if (binding !== null && named !== binding) return 'changed';
+        if (ticket === epoch) binding = named;
+        return 'same';
       } catch (error) {
         if (aborted(error) && (wasOpen && (!opened || seen !== visit))) return 'aborted';
         return [401, 403].includes(error?.status) ? 'changed' : 'unknown';
@@ -334,7 +346,7 @@
       if (account === 'changed') { accountChanged(); return { sent: false, accountChanged: true }; }
       if (account !== 'same') { notice(id, ACCOUNT_UNKNOWN); announce(ACCOUNT_UNKNOWN); emit(); return { sent: false }; }
       if (blocked(id) || !find(id)) return { sent: false };
-      const marker = { op, subject: subject(), sent_at: wall(), state: 'sending', reason: '', after: Infinity };
+      const marker = { op, subject: subject(), binding, sent_at: wall(), state: 'sending', reason: '', after: Infinity };
       try { persist(id, marker); } catch (error) {
         const text = error?.message === 'subject_unavailable' ? 'No se pudo identificar la cuenta de esta sesión; no se envió.' : 'El navegador no permite guardar el estado de la operación; no se envió.';
         notice(id, text); announce(text); emit(); return { sent: false };
@@ -357,6 +369,21 @@
       marker.after = Infinity; setMarker(id, marker); notice(id, null); emit();
       return send(id, marker, false);
     }
+    /**
+     * After whoami confirmed the account: a restored marker that carries this binding was sent by
+     * this same grant and person, so it resolves like this page's own; one with another binding
+     * belongs to another account and is dropped unsent. Markers without a binding stay restored.
+     */
+    function adoptRestored() {
+      if (binding === null) return;
+      let foreign = false;
+      for (const [id, marker] of Object.entries(state.markers)) {
+        if (!marker.restored || marker.binding === null || marker.binding === undefined) continue;
+        if (marker.binding === binding) { marker.restored = false; continue; }
+        foreign = true; dropMarker(id); notice(id, null);
+      }
+      if (foreign) notice('session', 'Una operación de otra cuenta quedó sin confirmar; no se reintentó. Revisá tu lista.');
+    }
     async function open() {
       opened = true; visit++; restore();
       try { if (storage?.getItem(ENDED_KEY)) { remove(ENDED_KEY); notice('session', 'Una operación sobre tus recuerdos quedó sin confirmar al terminar la sesión anterior. Revisá la lista antes de repetirla.'); } }
@@ -366,6 +393,7 @@
       if (ticket !== epoch || !opened || seen !== visit || account === 'aborted') return true;
       if (account === 'changed') { accountChanged(); return true; }
       if (account === 'unknown') { state.read.error = ACCOUNT_UNKNOWN; emit(); return true; }
+      adoptRestored(); emit();
       void refresh();
       return true;
     }
@@ -379,7 +407,7 @@
     }
     function clear({ wipe = true } = {}) {
       const pending = Object.keys(state.markers).length > 0;
-      epoch++; leave(); state = initial(); readFloor = readSeq;
+      epoch++; binding = null; leave(); state = initial(); readFloor = readSeq;
       if (wipe) {
         let keys = [];
         try { keys = storageKeys(); } catch (_) { /* Nothing to wipe. */ }

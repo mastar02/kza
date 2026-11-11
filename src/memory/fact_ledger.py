@@ -417,11 +417,17 @@ class MemoryOwnerDependents(ValueError):
 
 @dataclass(frozen=True)
 class AssignmentReceipt:
-    """Revisions after an owner change; content-free."""
+    """Revisions after an owner change; content-free.
+
+    ``deleted_dependent_ids`` names the derived facts deleted in the same
+    transaction (sorted). Only an assigner (memory:assign) receives a receipt,
+    and an assigner already sees every fact and every dependent (P2, C8).
+    """
 
     fact_revision: int
     owner_revision: int
     deleted_dependents: int = 0
+    deleted_dependent_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1443,13 +1449,15 @@ class FactLedger:
                                                    person_id=person_id, method=owner.method,
                                                    assigned_by=actor.subject, confirmed=True)
                 return AssignmentReceipt(fact_revision, owner_revision)
-            deleted = 0
+            deleted, deleted_ids = 0, ()
             confirming = fact.state in (FactState.AUTOMATIC, FactState.PROPOSED)
             if fact.state is FactState.AUTOMATIC:
                 dependents = self._dependents(db, fact_id)
                 if dependents and not delete_dependents:
                     raise MemoryOwnerDependents(dependents)
                 deleted = sum(self._delete(db, identity) for identity, _state in dependents)
+                # _dependents is the transitive closure, so every listed id is now deleted.
+                deleted_ids = tuple(identity for identity, _state in dependents)
             fact_revision = fact.revision
             if confirming:
                 fact_revision += 1
@@ -1461,7 +1469,7 @@ class FactLedger:
             owner_revision = self._write_owner(db, fact_id, record, change, person_id=person_id,
                                                method=FactOwnerMethod.OPERATOR_ASSIGNMENT,
                                                assigned_by=actor.subject, confirmed=confirming)
-            return AssignmentReceipt(fact_revision, owner_revision, deleted)
+            return AssignmentReceipt(fact_revision, owner_revision, deleted, deleted_ids)
 
     def unassign_owner(self, fact_id: str, expected_owner_revision: int, actor: MemoryAssigner) -> AssignmentReceipt:
         """Remove the owner as operator; the fact stays CONFIRMED and is not 'Devueltos'."""

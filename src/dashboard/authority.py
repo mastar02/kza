@@ -155,6 +155,22 @@ class DashboardPrincipal:
     expires_at: float | None = None
     revision: int = 0
     samples: tuple[EvaluationSample, ...] = field(default=(), repr=False)
+    # Opaque tag of the grant and its person binding, only for personal (home + user_id)
+    # credentials. Metadata for whoami: no route accepts it and it authorizes nothing.
+    account_binding: str | None = field(default=None, repr=False, compare=False)
+
+
+def account_binding(identity: str, role: DashboardRole, user_id: str | None) -> str | None:
+    """Tag one personal grant without exposing its credential id or person id.
+
+    The digest covers the random credential id, the role and the person, so it
+    changes when another credential or person is behind the same subject and
+    stays the same across logins of that grant. ``None`` without a person.
+    """
+    if user_id is None:
+        return None
+    material = "\x00".join(("kza-dashboard-account-binding-v1", identity, role.value, user_id))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
 
 
 @dataclass(frozen=True)
@@ -428,7 +444,8 @@ class DashboardAuthority:
             elif credential is not None:
                 expiry = min(credential.expires_at, session.expires_at) if session else credential.expires_at
                 principal = DashboardPrincipal(credential.subject, _permissions(credential.role, credential.user_id),
-                                               credential.role, credential.user_id, expiry, credential.revision, credential.samples)
+                                               credential.role, credential.user_id, expiry, credential.revision, credential.samples,
+                                               account_binding(credential.identity, credential.role, credential.user_id))
             else:
                 return None
         lease = DashboardLease(principal, ("session:" if session else "credential:") + digest, session is not None,

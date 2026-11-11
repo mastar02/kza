@@ -9,6 +9,8 @@
   const OPS = ['request', 'revoke', 'verify'];
   const STATES = ['pending_verification', 'active', 'verification_locked', 'revoked', 'invalidated'];
   const ROOM = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+  // whoami's opaque per-grant tag (home + person only): it tells grants apart and authorizes nothing.
+  const BINDING = /^[0-9a-f]{32}$/;
   const OFF_KEYS = 'enabled,revision,state,window';
   const ON_KEYS = 'disclosure,enabled,failures_left,message,revision,state,window';
   // memory_voice_api.py copy (design v4 disclosure_copy); the parity test pins each string.
@@ -112,7 +114,10 @@
   }
   const STILL = 'Tu estado todavía no cambió; puede que el pedido no se haya aplicado. Podés volver a intentarlo.';
   const CHANGED = 'Tu estado cambió, pero no podemos confirmar que haya sido por este pedido. Revisalo.';
-  /** Judge a lost write from a status read that started after the loss; restored markers are never 'Comprobado'. */
+  /**
+   * Judge a lost write from a status read that started after the loss. A marker stored by an earlier page
+   * is never 'Comprobado' unless whoami's account_binding equals the one stored with it (R3).
+   */
   function resolveMarker(marker, status) {
     if (marker.op === 'verify') {
       if (status.window && !marker.restored) return { result: 'applied', text: 'Comprobado: tenés una ventana de verificación abierta.' };
@@ -147,6 +152,8 @@
   function createMyVoiceOwner({ api, session, storage = root.sessionStorage, schedule = setTimeout, cancel = clearTimeout,
     wall = Date.now, onAccountChanged = () => {} }) {
     let epoch = 0, visit = 0, opened = false, timer, readSeq = 0, refreshing = null, again = false, serial = 0;
+    // The account_binding the first whoami of this epoch named; null when the server names none.
+    let binding = null;
     const reads = new Set(), listeners = new Set();
     let state = initial();
     function initial() {
@@ -173,8 +180,9 @@
     function persist(marker) {
       if (!storage) throw Error('storage_unavailable');
       if (!marker.subject) throw Error('subject_unavailable');
-      // Only the operation, the account, the time and the revision: never the room or the phrase.
-      storage.setItem(PREFIX + 'consent', JSON.stringify({ op: marker.op, subject: marker.subject, sent_at: marker.sent_at, expected_revision: marker.expected_revision }));
+      // Only the operation, the account (subject and opaque binding), the time and the revision: never the room or the phrase.
+      storage.setItem(PREFIX + 'consent', JSON.stringify({ op: marker.op, subject: marker.subject, ...(marker.binding ? { binding: marker.binding } : {}),
+        sent_at: marker.sent_at, expected_revision: marker.expected_revision }));
     }
     function dropMarker() { state.marker = null; remove(); }
     function restore() {
@@ -186,19 +194,26 @@
         if (!value || !OPS.includes(value.op) || !string(value.subject) || !revision(value.expected_revision)) throw Error('invalid');
         if (!current || value.subject !== current) { state.notice = 'Una operación de otra cuenta quedó sin confirmar; no se reintentó.'; throw Error('foreign'); }
         if (!state.marker) {
-          state.marker = { op: value.op, subject: value.subject, sent_at: finite(value.sent_at) ? value.sent_at : null, expected_revision: value.expected_revision, state: 'unresolved', after: -1, restored: true };
+          state.marker = { op: value.op, subject: value.subject, sent_at: finite(value.sent_at) ? value.sent_at : null, expected_revision: value.expected_revision, state: 'unresolved', after: -1, restored: true,
+            binding: string(value.binding) && BINDING.test(value.binding) ? value.binding : null };
           state.notice = 'No sabemos si se aplicó la última operación. Consultando…';
         }
       } catch (_) { remove(); }
     }
     /** 'same' needs the cached subject, the home role and memory:own:voice in the server's answer. */
     async function confirmAccount() {
-      const expected = subject(), seen = visit, wasOpen = opened;
+      const expected = subject(), seen = visit, wasOpen = opened, ticket = epoch;
       if (!expected) return 'changed';
       try {
         const identity = await read('/api/admin/auth/whoami');
-        return identity?.ok === true && identity.subject === expected && identity.role === 'home' && session.role() === 'home'
-          && Array.isArray(identity.permissions) && identity.permissions.includes('memory:own:voice') ? 'same' : 'changed';
+        if (!(identity?.ok === true && identity.subject === expected && identity.role === 'home' && session.role() === 'home'
+          && Array.isArray(identity.permissions) && identity.permissions.includes('memory:own:voice'))) return 'changed';
+        // Another credential or person behind the same subject is a change too (R3).
+        const named = identity.account_binding ?? null;
+        if (named !== null && !(string(named) && BINDING.test(named))) return 'changed';
+        if (binding !== null && named !== binding) return 'changed';
+        if (ticket === epoch) binding = named;
+        return 'same';
       } catch (error) {
         if (aborted(error) && (wasOpen && (!opened || seen !== visit))) return 'aborted';
         return [401, 403].includes(error?.status) ? 'changed' : 'unknown';
@@ -290,13 +305,24 @@
       if (state.status?.revision !== expected || !allowed(state.status)[op]) {
         state.notice = REFUSALS.memory_voice_conflict; announce(state.notice); emit(); return { sent: false };
       }
-      const marker = { op, subject: subject(), sent_at: wall(), expected_revision: expected, state: 'sending', after: Infinity, room_id: roomId };
+      const marker = { op, subject: subject(), binding, sent_at: wall(), expected_revision: expected, state: 'sending', after: Infinity, room_id: roomId };
       try { persist(marker); } catch (error) {
         const text = error?.message === 'subject_unavailable' ? 'No se pudo identificar la cuenta de esta sesión; no se envió.' : 'El navegador no permite guardar el estado de la operación; no se envió.';
         state.notice = text; announce(text); emit(); return { sent: false };
       }
       state.marker = marker; state.notice = null; emit();
       return send(marker);
+    }
+    /**
+     * After whoami confirmed the account: a restored marker with this binding was sent by this same
+     * grant and person and resolves like this page's own; one with another binding belongs to another
+     * account and is dropped unsent. A marker without a binding stays restored.
+     */
+    function adoptRestored() {
+      const marker = state.marker;
+      if (binding === null || !marker?.restored || marker.binding === null || marker.binding === undefined) return;
+      if (marker.binding === binding) { marker.restored = false; return; }
+      dropMarker(); state.notice = 'Una operación de otra cuenta quedó sin confirmar; no se reintentó.';
     }
     async function open() {
       if (!capabilities().voice) return true;
@@ -308,6 +334,7 @@
       if (ticket !== epoch || !opened || seen !== visit || account === 'aborted') return true;
       if (account === 'changed') { accountChanged(); return true; }
       if (account === 'unknown') { state.read.error = ACCOUNT_UNKNOWN; emit(); return true; }
+      adoptRestored(); emit();
       void refresh();
       return true;
     }
@@ -327,7 +354,7 @@
       const pending = Boolean(state.marker);
       let stored = false;
       try { stored = Boolean(storage?.getItem(PREFIX + 'consent')); } catch (_) { /* Nothing to wipe. */ }
-      epoch++; leave(); state = initial();
+      epoch++; binding = null; leave(); state = initial();
       if (wipe) {
         remove();
         if (pending || stored) { try { storage?.setItem(ENDED_KEY, '1'); } catch (_) { /* Best effort. */ } }

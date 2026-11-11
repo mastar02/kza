@@ -244,8 +244,11 @@ def register_memory_routes(app, *, manager=None) -> None:
                 await service.acall(service.owner_index_changed)
             except Exception as error:  # The assignment is durable; maintenance retries indexing.
                 logger.warning("[MemoryAPI] index update deferred after assignment: %s", type(error).__name__)
+        # The ids are the same ones the 409 dependents answer already named to this assigner (C8);
+        # memory:assign sees every fact, so they disclose nothing new.
         return {"fact_revision": receipt.fact_revision, "owner_revision": receipt.owner_revision,
-                "deleted_dependents": receipt.deleted_dependents, "confirmed_now": confirmed,
+                "deleted_dependents": receipt.deleted_dependents,
+                "deleted_dependent_ids": list(receipt.deleted_dependent_ids), "confirmed_now": confirmed,
                 "derived_records_retired": confirmed, "notice": ASSIGN_NOTICE if confirmed else None}
 
     @router.post("/proposals/{fact_id}/confirm")

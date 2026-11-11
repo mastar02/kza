@@ -379,7 +379,7 @@ async def main() -> None:
 
                         # Person B, S: the request commits but its answer is lost and the status read fails, so the
                         # marker stays unresolved; a reload (pagehide, wipe false) restores it and the read settles it
-                        # without «Comprobado» and without resending.
+                        # without resending. The marker carries this grant's account_binding, so the step is «Comprobado» (R3).
                         await login(page, homes['b'].token, 'Acceso de hogar')
                         await open_my_memory()
                         faults.update({('POST', '/api/memory/mine/voice/consent'): 'lose', ('GET', '/api/memory/mine/voice'): 'down'})
@@ -387,17 +387,32 @@ async def main() -> None:
                         await accept('#my-voice-confirm-dialog', 'voice-confirm-accept')
                         await page.wait_for(text_of('#my-voice-notice') + ".startsWith('Sin confirmar.')")
                         stored = await page.evaluate("sessionStorage.getItem('kza:my-voice-op:consent')")
-                        assert stored and sorted(json.loads(stored)) == ['expected_revision', 'op', 'sent_at', 'subject'], 'a content-free marker'
+                        assert stored and sorted(json.loads(stored)) == ['binding', 'expected_revision', 'op', 'sent_at', 'subject'], 'a content-free marker'
+                        assert len(json.loads(stored)['binding']) == 32 and people['b'] not in stored, 'an opaque tag, never the person id'
                         faults.clear()
                         posts = count('POST', '/api/memory/mine/voice/consent')
                         await page.command('Page.reload')
-                        await page.wait_for(text_of('#my-voice-notice') + '===' + json.dumps('Tu estado cambió, pero no podemos confirmar que haya sido por este pedido. Revisalo.'))
-                        assert 'Comprobado' not in await page.evaluate("document.querySelector('#my-memory-view').innerText")
+                        # R3 binding: the restored marker carries this grant's tag, so the observed step is Comprobado.
+                        await page.wait_for(text_of('#my-voice-notice') + '===' + json.dumps('Comprobado: tu inscripción quedó pedida.'))
                         assert await page.evaluate("sessionStorage.getItem('kza:my-voice-op:consent')===null and sessionStorage.getItem('kza:my-voice-op-ended')===null".replace(' and ', '&&'))
                         assert count('POST', '/api/memory/mine/voice/consent') == posts, 'never resent'
                         assert await rows('SELECT state FROM voice_attribution_consents WHERE person_id=?', people['b']) == [('pending_verification',)]
                         await page.wait_for("document.querySelector('#my-voice-room')")
-                        checks.append('S (person): a request whose answer was lost and whose status read failed leaves a content-free marker; after a reload the restored marker is settled by the read without «Comprobado», never resent, then dropped')
+                        checks.append('S (person): a request whose answer was lost and whose status read failed leaves a content-free marker; after a reload the restored marker with this grant\'s account_binding is settled by the read as «Comprobado», never resent, then dropped')
+                        # R3 negatives (review T): a restored marker of another grant (foreign binding) is dropped
+                        # unsent; one without a binding keeps the old rule. Neither is ever «Comprobado».
+                        for case, extra, expected_notice in (
+                                ('foreign binding', ",binding:'" + 'f' * 32 + "'", 'Una operación de otra cuenta quedó sin confirmar; no se reintentó.'),
+                                ('no binding', '', 'Tu estado cambió, pero no podemos confirmar que haya sido por este pedido. Revisalo.')):
+                            await page.evaluate("sessionStorage.setItem('kza:my-voice-op:consent', JSON.stringify({op:'request',subject:'synthetic-home-b'"
+                                                + extra + ",sent_at:1,expected_revision:0}))")
+                            await page.command('Page.reload')
+                            await page.wait_for(text_of('#my-voice-notice') + '===' + json.dumps(expected_notice))
+                            assert 'Comprobado' not in await page.evaluate("document.querySelector('#my-memory-view').innerText"), case
+                            assert await page.evaluate("sessionStorage.getItem('kza:my-voice-op:consent')===null"), case
+                            assert count('POST', '/api/memory/mine/voice/consent') == posts, case + ': never resent'
+                        await page.wait_for("document.querySelector('#my-voice-room')")
+                        checks.append('R3 (person, browser): a restored voice marker with a foreign account_binding is dropped unsent with the other-account notice, and one without a binding is settled by the old rule; neither shows «Comprobado» and nothing is resent')
                         # Person B: three failures (injected) lock the verification.
                         actor_b = MemoryVoiceConsentActor('synthetic-home-b', people['b'])
                         for _ in range(3):

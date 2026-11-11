@@ -131,6 +131,15 @@
    * dependents: assignment refused because derived memories exist (nothing changed);
    * uncertain: anything else, including every 401/403 (a 403 can follow a commit).
    */
+  /** The receipt's deleted ids: distinct fact ids, never the target, exactly as many as the count. */
+  /** The dependents dialog's label for a memory: its content, clamped to 120 characters. */
+  function dependentLabel(content) { return content.length > 120 ? content.slice(0, 120).trimEnd() + '…' : content; }
+  function parseDeletedIds(value, id) {
+    const list = value?.deleted_dependent_ids;
+    if (!Array.isArray(list) || list.length !== value.deleted_dependents || new Set(list).size !== list.length
+        || list.some(other => !string(other) || !FACT_ID.test(other) || other === id)) return null;
+    return [...list];
+  }
   function classifyWrite(op, id, outcome) {
     if (!OPS.includes(op)) throw Error('invalid_memory_operation');
     if (outcome && 'value' in outcome) {
@@ -142,11 +151,13 @@
           : { kind: 'uncertain', text: UNCONFIRMED_RECEIPT };
       }
       if (op === 'assign') {
-        if (!value || !revision(value.fact_revision, 1) || !revision(value.owner_revision, 1) || !revision(value.deleted_dependents, 0)
+        const deletedIds = value && revision(value.deleted_dependents, 0) ? parseDeletedIds(value, id) : null;
+        if (!value || !revision(value.fact_revision, 1) || !revision(value.owner_revision, 1) || !deletedIds
             || typeof value.confirmed_now !== 'boolean' || !(value.notice === null || string(value.notice))) return { kind: 'uncertain', text: UNCONFIRMED_RECEIPT };
         const removed = value.deleted_dependents > 0 ? ` Se eliminaron ${value.deleted_dependents} ${value.deleted_dependents === 1 ? 'recuerdo derivado' : 'recuerdos derivados'}.` : '';
         return { kind: 'applied', text: APPLIED_TEXT.assign + removed + (value.notice ? ' ' + value.notice : ''),
-          receipt: { fact_revision: value.fact_revision, owner_revision: value.owner_revision, deleted_dependents: value.deleted_dependents, confirmed_now: value.confirmed_now } };
+          receipt: { fact_revision: value.fact_revision, owner_revision: value.owner_revision, deleted_dependents: value.deleted_dependents,
+            deleted_dependent_ids: deletedIds, confirmed_now: value.confirmed_now } };
       }
       if (op === 'unassign') {
         if (!value || !revision(value.fact_revision, 1) || !revision(value.owner_revision, 0)) return { kind: 'uncertain', text: UNCONFIRMED_RECEIPT };
@@ -610,20 +621,51 @@
           owner: { person_id: marker.person_id, method: 'operator_assignment', revision: verdict.receipt.owner_revision, assigned_at: wall() / 1000 },
           owner_revision: verdict.receipt.owner_revision, owner_change: item.owner ? 'reassigned' : 'assigned' };
       };
+      // The receipt names the derived memories deleted with the assignment: they leave the view now (R1).
+      const gone = new Set(marker.op === 'assign' ? verdict.receipt.deleted_dependent_ids : []);
+      for (const other of gone) delete state.kept[other];
       const moved = snapshot.proposals.find(item => item.id === id);
-      let facts = snapshot.facts.map(change), proposals = snapshot.proposals.filter(item => item.id !== id || marker.op === 'unassign').map(change);
+      let facts = snapshot.facts.filter(item => !gone.has(item.id)).map(change);
+      let proposals = snapshot.proposals.filter(item => !gone.has(item.id) && (item.id !== id || marker.op === 'unassign')).map(change);
       if (moved && marker.op === 'assign') { facts = [change(moved), ...facts]; state.kept[id] = facts[0]; }
       state.snapshot = { ...snapshot, facts, proposals };
-      if (state.extras.returned && marker.op === 'assign') state.extras.returned = { ...state.extras.returned, items: state.extras.returned.items.filter(item => item.id !== id) };
+      if (state.extras.returned && marker.op === 'assign') state.extras.returned = { ...state.extras.returned, items: state.extras.returned.items.filter(item => item.id !== id && !gone.has(item.id)) };
     }
     /**
-     * The receipt reports how many derived memories were deleted, not which ones. Compare the count
-     * with the list the operator confirmed and say so on the card when they differ (R1).
+     * How the card names a dependent: the label the 409 dialog showed for it, else the same clamped
+     * text if this page still holds the memory, else null (it is only counted). Never a raw id.
+     */
+    function heldLabel(other, labels) {
+      if (labels && string(labels[other]) && labels[other]) return labels[other];
+      const snapshot = state.snapshot;
+      const item = [...(snapshot?.facts || []), ...(snapshot?.proposals || []), ...Object.values(state.kept), ...(state.extras.returned?.items || [])]
+        .find(entry => entry.id === other);
+      return item && string(item.content) && item.content ? dependentLabel(item.content) : null;
+    }
+    function nameDependents(ids, labels) {
+      const named = ids.map(other => heldLabel(other, labels)).filter(Boolean).map(label => '«' + label + '»');
+      const unknown = ids.length - named.length;
+      const counted = unknown ? `${unknown} ${unknown === 1 ? 'que no figuraba' : 'que no figuraban'} en esta vista` : '';
+      return named.join(', ') + (named.length && counted ? ' y ' : '') + counted;
+    }
+    /**
+     * The receipt names the derived memories it deleted. Compare them with the list the operator
+     * confirmed (ids while this page holds them; only the stored count after a reload) and say on
+     * the card which ones differ, by the labels the operator saw (R1, review U).
      */
     function dependentsMismatch(marker, receipt) {
       if (marker.op !== 'assign' || !marker.delete_dependents || !Number.isInteger(marker.expected_dependents) || !receipt) return '';
-      if (receipt.deleted_dependents === marker.expected_dependents) return '';
-      return ` Confirmaste ${marker.expected_dependents} ${marker.expected_dependents === 1 ? 'recuerdo derivado' : 'recuerdos derivados'} y se eliminaron ${receipt.deleted_dependents}: la lista cambió mientras decidías. El servidor no informa cuáles se eliminaron.`;
+      const deleted = receipt.deleted_dependent_ids, accepted = Array.isArray(marker.expected_dependent_ids) ? marker.expected_dependent_ids : null;
+      const labels = marker.expected_dependent_labels || null;
+      const extra = accepted ? deleted.filter(other => !accepted.includes(other)) : [];
+      const kept = accepted ? accepted.filter(other => !deleted.includes(other)) : [];
+      if (receipt.deleted_dependents === marker.expected_dependents && !extra.length && !kept.length) return '';
+      const plural = n => n === 1 ? 'recuerdo derivado' : 'recuerdos derivados';
+      let text = ` Confirmaste ${marker.expected_dependents} ${plural(marker.expected_dependents)} y se eliminaron ${receipt.deleted_dependents}: la lista cambió mientras decidías.`;
+      if (extra.length) text += ` También se eliminaron: ${nameDependents(extra, labels)}.`;
+      if (kept.length) text += ` Ya no estaban: ${nameDependents(kept, labels)}.`;
+      if (!accepted && deleted.length) text += ` Se eliminaron: ${nameDependents(deleted, labels)}.`;
+      return text;
     }
     async function send(id, marker, first) {
       const ticket = epoch;
@@ -634,10 +676,11 @@
       if (ticket !== epoch || state.markers[id] !== marker) return { stale: true };
       const verdict = classifyWrite(marker.op, id, outcome);
       if (verdict.kind === 'applied') {
+        // Named before the view drops the deleted memories, while their labels are still held.
+        const text = verdict.text + dependentsMismatch(marker, verdict.receipt);
         dropMarker(id); readFloor = readSeq; again = again || Boolean(refreshing);
         patchApplied(id, marker, verdict);
         if (marker.op !== 'confirm' && marker.op !== 'assign') delete state.kept[id];
-        const text = verdict.text + dependentsMismatch(marker, verdict.receipt);
         notice(id, text); announce(text); emit();
         void refresh();
         return { applied: true, receipt: verdict.receipt };
@@ -661,7 +704,7 @@
       void refresh();
       return { uncertain: true };
     }
-    async function act(op, id, { confirmed = false, personId = null, deleteDependents = false, expected = null, expectedDependents = null } = {}) {
+    async function act(op, id, { confirmed = false, personId = null, deleteDependents = false, expected = null, expectedDependents = null, expectedDependentIds = null, expectedDependentLabels = null } = {}) {
       const caps = capabilities();
       if (!opened || !OPS.includes(op) || state.markers[id]) return { sent: false };
       if (['confirm', 'reject', 'delete'].includes(op) ? !caps.review : !caps.assign) return { sent: false };
@@ -676,7 +719,20 @@
         const revisions = expected && expected.person_id === personId ? expected : { expected_fact_revision: item.revision, expected_owner_revision: item.owner_revision };
         Object.assign(extra, { person_id: personId, expected_fact_revision: revisions.expected_fact_revision,
           expected_owner_revision: revisions.expected_owner_revision, delete_dependents: deleteDependents === true });
-        if (extra.delete_dependents && Number.isInteger(expectedDependents) && expectedDependents >= 0) extra.expected_dependents = expectedDependents;
+        if (extra.delete_dependents && Number.isInteger(expectedDependents) && expectedDependents >= 0) {
+          extra.expected_dependents = expectedDependents;
+          // The confirmed ids stay in this page's marker only; the stored marker keeps the count (R1).
+          if (Array.isArray(expectedDependentIds) && expectedDependentIds.length === expectedDependents
+              && expectedDependentIds.every(other => string(other) && FACT_ID.test(other))) {
+            extra.expected_dependent_ids = [...expectedDependentIds];
+            // The labels the dialog showed (content the operator already saw), in this page only, never stored.
+            if (expectedDependentLabels && typeof expectedDependentLabels === 'object') {
+              extra.expected_dependent_labels = Object.fromEntries(expectedDependentIds
+                .filter(other => string(expectedDependentLabels[other]) && expectedDependentLabels[other])
+                .map(other => [other, expectedDependentLabels[other]]));
+            }
+          }
+        }
       }
       if (op === 'unassign') {
         if (!confirmed || !item.owner) return { sent: false };
@@ -777,7 +833,7 @@
   }
 
   const exported = { createMemoryOwner, parsePage, parseSnapshot: parsePage, parseReturnedPage, parseCounts, parsePeople, classifyWrite, writeDisposition,
-    resolveMarker, observe, dependents, describeReadError, PREFIX, ENDED_KEY, CAP, MAX_PAGES, RETRY_DEPENDENTS };
+    resolveMarker, observe, dependents, dependentLabel, describeReadError, PREFIX, ENDED_KEY, CAP, MAX_PAGES, RETRY_DEPENDENTS };
   root.NexoMemoryOwner = exported;
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;
 })(typeof window !== 'undefined' ? window : globalThis);

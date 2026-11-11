@@ -866,7 +866,7 @@ test('U3b-3: assign sends the expected revisions after a whoami, stores no conte
     const stored = JSON.parse(f.storage.getItem(PREFIX + ID('a')));
     assert.deepEqual(Object.keys(stored).sort(), ASSIGN_KEYS);
     assert.ok(!JSON.stringify(stored).includes('Dato sintético'));
-    return { fact_revision: 4, owner_revision: 1, deleted_dependents: 0, confirmed_now: true, derived_records_retired: true, notice: 'Aviso A16 sintético.' }; });
+    return { fact_revision: 4, owner_revision: 1, deleted_dependents: 0, deleted_dependent_ids: [], confirmed_now: true, derived_records_retired: true, notice: 'Aviso A16 sintético.' }; });
   const before = f.calls.length;
   const result = await f.owner.assign(ID('a'), A, { confirmed: true }); await settle();
   assert.deepEqual(f.calls.slice(before, before + 2), ['GET /api/admin/auth/whoami', 'POST /api/memory/facts/' + ID('a') + '/owner']);
@@ -899,7 +899,7 @@ test('U3b-3: 409 has_dependents returns ids and states, drops the marker, and th
   await f.owner.open(); await settle();
   const bodies = [];
   f.write((path, options) => { bodies.push(options.body); throw Object.assign(Error('http'), { status: 409, detail: { code: 'memory_owner_has_dependents', notice: 'Tiene derivados (sintético).', dependents: [{ id: ID('b'), state: 'automatic' }, { id: ID('c'), state: 'confirmed' }] } }); },
-    (path, options) => { bodies.push(options.body); return { fact_revision: 3, owner_revision: 1, deleted_dependents: 2, confirmed_now: true, derived_records_retired: true, notice: null }; });
+    (path, options) => { bodies.push(options.body); return { fact_revision: 3, owner_revision: 1, deleted_dependents: 2, deleted_dependent_ids: [ID('b'), ID('c')], confirmed_now: true, derived_records_retired: true, notice: null }; });
   const first = await f.owner.assign(ID('a'), A, { confirmed: true }); await settle();
   assert.deepEqual(first.dependents, [{ id: ID('b'), state: 'automatic' }, { id: ID('c'), state: 'confirmed' }]);
   assert.equal(first.notice, 'Tiene derivados (sintético).');
@@ -1004,7 +1004,7 @@ test('U3b-3: an owner marker of another account is never resent; an account swit
 // Expected classes and copy are written out here, not derived from the implementation.
 const OWNER_OPS = ['assign', 'unassign'];
 const OWNER_RESPONSES = [
-  ['200 valid', op => ({ value: op === 'assign' ? { fact_revision: 2, owner_revision: 1, deleted_dependents: 0, confirmed_now: true, derived_records_retired: true, notice: 'n' } : { fact_revision: 2, owner_revision: 2 } }), { assign: 'applied', unassign: 'applied' }],
+  ['200 valid', op => ({ value: op === 'assign' ? { fact_revision: 2, owner_revision: 1, deleted_dependents: 0, deleted_dependent_ids: [], confirmed_now: true, derived_records_retired: true, notice: 'n' } : { fact_revision: 2, owner_revision: 2 } }), { assign: 'applied', unassign: 'applied' }],
   ['200 malformed', () => ({ value: { fact_revision: 'x' } }), { assign: 'uncertain', unassign: 'uncertain' }],
   ['200 null', () => ({ value: null }), { assign: 'uncertain', unassign: 'uncertain' }],
   ['network', () => ({ error: new TypeError('Failed to fetch') }), { assign: 'uncertain', unassign: 'uncertain' }],
@@ -1149,7 +1149,7 @@ test('R8/m15: the dependents resend uses the revisions the 409 refused on, even 
   await f.owner.open(); await settle();
   const bodies = [];
   f.write((path, options) => { bodies.push(options.body); throw Object.assign(Error('http'), { status: 409, detail: { code: 'memory_owner_has_dependents', notice: 'Tiene derivados (sintético).', dependents: [{ id: ID('b'), state: 'automatic' }] } }); },
-    (path, options) => { bodies.push(options.body); return { fact_revision: 3, owner_revision: 1, deleted_dependents: 1, confirmed_now: true, derived_records_retired: true, notice: null }; });
+    (path, options) => { bodies.push(options.body); return { fact_revision: 3, owner_revision: 1, deleted_dependents: 1, deleted_dependent_ids: [ID('b')], confirmed_now: true, derived_records_retired: true, notice: null }; });
   const first = await f.owner.assign(ID('a'), A, { confirmed: true }); await settle();
   // A refresh between the 409 and the dialog's answer moves the card to revision 5.
   await f.owner.refresh(); await settle();
@@ -1158,28 +1158,111 @@ test('R8/m15: the dependents resend uses the revisions the 409 refused on, even 
   assert.deepEqual(bodies[1], { person_id: A, expected_fact_revision: 2, expected_owner_revision: 0, delete_dependents: true });
 });
 
-test('R1: the confirmed dependents count travels with the marker and a different receipt count is said on the card', async () => {
-  for (const [deleted, mismatch] of [[2, false], [3, true], [0, true]]) {
+test('R1/U: the card names the differing dependents by the dialog\'s labels (never raw ids); unseen ones are only counted', async () => {
+  const accepted = [ID('b'), ID('c')];
+  // The dialog showed b's text; c was 'Recuerdo que no figura en esta vista', so it has no label.
+  const labels = { [ID('b')]: 'Dato sintético bbbb' };
+  for (const [deleted, expectText] of [
+    [[ID('b'), ID('c')], null],
+    [[ID('b'), ID('c'), ID('d')], 'Confirmaste 2 recuerdos derivados y se eliminaron 3: la lista cambió mientras decidías. También se eliminaron: «Dato sintético dddd».'],
+    [[], 'Confirmaste 2 recuerdos derivados y se eliminaron 0: la lista cambió mientras decidías. Ya no estaban: «Dato sintético bbbb» y 1 que no figuraba en esta vista.'],
+    // Same count, different ids: still said (a count comparison alone would hide it).
+    [[ID('b'), ID('d')], 'Confirmaste 2 recuerdos derivados y se eliminaron 2: la lista cambió mientras decidías. También se eliminaron: «Dato sintético dddd». Ya no estaban: 1 que no figuraba en esta vista.'],
+    // Two the page never showed: counted, never named by id.
+    [[ID('e'), ID('f')], 'Confirmaste 2 recuerdos derivados y se eliminaron 2: la lista cambió mientras decidías. También se eliminaron: 2 que no figuraban en esta vista. Ya no estaban: «Dato sintético bbbb» y 1 que no figuraba en esta vista.'],
+  ]) {
     const f = operatorFixture();
-    f.read(snap([fact(ID('a'), { revision: 2 }), fact(ID('b'), { sources: [source([ID('a')])] })]), snap([owned(ID('a'), A)]));
+    // The read after the receipt never answers: what the view shows comes from the receipt alone.
+    f.read(snap([fact(ID('a'), { revision: 2 }), fact(ID('b'), { sources: [source([ID('a')])] }), fact(ID('d'))]), () => new Promise(() => {}));
     await f.owner.open(); await settle();
     let stored = null;
     f.write(fail(409, { code: 'memory_owner_has_dependents', notice: 'Tiene derivados (sintético).', dependents: [{ id: ID('b'), state: 'automatic' }, { id: ID('c'), state: 'confirmed' }] }),
-      () => { stored = JSON.parse(f.storage.getItem(PREFIX + ID('a'))); return { fact_revision: 3, owner_revision: 1, deleted_dependents: deleted, confirmed_now: true, derived_records_retired: true, notice: null }; });
+      () => { stored = JSON.parse(f.storage.getItem(PREFIX + ID('a'))); return { fact_revision: 3, owner_revision: 1, deleted_dependents: deleted.length, deleted_dependent_ids: deleted, confirmed_now: true, derived_records_retired: true, notice: null }; });
     const first = await f.owner.assign(ID('a'), A, { confirmed: true }); await settle();
-    await f.owner.assign(ID('a'), A, { confirmed: true, deleteDependents: true, expected: first.expected, expectedDependents: first.dependents.length }); await settle();
-    assert.equal(stored.expected_dependents, 2, 'a count, never ids or content');
+    await f.owner.assign(ID('a'), A, { confirmed: true, deleteDependents: true, expected: first.expected, expectedDependents: accepted.length, expectedDependentIds: accepted, expectedDependentLabels: labels }); await settle();
+    assert.equal(stored.expected_dependents, 2, 'a count, never ids, labels or content');
     assert.deepEqual(Object.keys(stored).sort(), [...ASSIGN_KEYS, 'expected_dependents'].sort());
+    assert.ok(!JSON.stringify([...f.storage.data.values()]).includes('Dato sintético'));
     const text = f.owner.getState().notices[ID('a')];
-    if (mismatch) {
-      assert.ok(text.includes(`Confirmaste 2 recuerdos derivados y se eliminaron ${deleted}: la lista cambió mientras decidías.`), text);
-      assert.ok(text.includes('El servidor no informa cuáles se eliminaron.'), text);
-    } else assert.ok(!text.includes('Confirmaste'), text);
+    if (expectText) assert.ok(text.endsWith(expectText), text); else assert.ok(!text.includes('Confirmaste'), text);
+    assert.ok(!/fact_/.test(text), 'never a raw id: ' + text);
+    const listed = f.owner.getState().facts.map(item => item.id);
+    for (const other of deleted) assert.ok(!listed.includes(other), other);
+    assert.ok(listed.includes(ID('a')));
+    if (!deleted.includes(ID('d'))) assert.ok(listed.includes(ID('d')), 'an id the receipt does not name stays');
   }
-  // The pre-confirm dialog copy says the deleted set is decided by the server at apply time.
+  // After a reload only the count is known and the page holds neither: counted, not named.
+  const g = operatorFixture();
+  g.read(snap([fact(ID('a'), { revision: 2 })]), snap([owned(ID('a'), A)]));
+  await g.owner.open(); await settle();
+  g.write(fail(409, { code: 'memory_owner_has_dependents', notice: 'n', dependents: [{ id: ID('b'), state: 'automatic' }] }),
+    () => ({ fact_revision: 3, owner_revision: 1, deleted_dependents: 2, deleted_dependent_ids: [ID('b'), ID('c')], confirmed_now: true, derived_records_retired: true, notice: null }));
+  const first = await g.owner.assign(ID('a'), A, { confirmed: true }); await settle();
+  await g.owner.assign(ID('a'), A, { confirmed: true, deleteDependents: true, expected: first.expected, expectedDependents: 1 }); await settle();
+  assert.ok(g.owner.getState().notices[ID('a')].endsWith('se eliminaron 2: la lista cambió mientras decidías. Se eliminaron: 2 que no figuraban en esta vista.'));
+  // The dialog copy promises only that, and the dialog and the card use the same label rule.
   const view = require('../../src/dashboard/frontend/home/nexo/memory.js');
   assert.match(view.DEPENDENTS_SCOPE, /que existan al momento de asignar/);
-  assert.match(view.DEPENDENTS_SCOPE, /solo cuántos se eliminaron, no cuáles/);
+  assert.match(view.DEPENDENTS_SCOPE, /dice cuáles difieren, con el texto que ves acá; los que no figuran en esta vista solo se cuentan\.$/);
+  for (const content of ['corto', 'x'.repeat(120), 'x'.repeat(121), 'q'.repeat(200), 'y'.repeat(119) + ' z' + 'w'.repeat(30)]) assert.equal(view.dependentLabel(content), memory.dependentLabel(content));
+  assert.equal(memory.dependentLabel('a'.repeat(121)), 'a'.repeat(120) + '…');
+});
+
+test('U: a dependent the page no longer holds is still named by the label the dialog showed', async () => {
+  const f = operatorFixture();
+  // A read between the 409 and the operator's answer drops b from the page.
+  f.read(snap([fact(ID('a'), { revision: 2 }), fact(ID('b'), { sources: [source([ID('a')])] })]), snap([fact(ID('a'), { revision: 2 })]), () => new Promise(() => {}));
+  await f.owner.open(); await settle();
+  f.write(fail(409, { code: 'memory_owner_has_dependents', notice: 'n', dependents: [{ id: ID('b'), state: 'automatic' }] }),
+    { fact_revision: 3, owner_revision: 1, deleted_dependents: 0, deleted_dependent_ids: [], confirmed_now: true, derived_records_retired: true, notice: null });
+  const first = await f.owner.assign(ID('a'), A, { confirmed: true }); await settle();
+  await f.owner.refresh(); await settle();
+  assert.ok(!f.owner.getState().facts.some(item => item.id === ID('b')), 'the page no longer holds b');
+  await f.owner.assign(ID('a'), A, { confirmed: true, deleteDependents: true, expected: first.expected, expectedDependents: 1,
+    expectedDependentIds: [ID('b')], expectedDependentLabels: { [ID('b')]: 'Dato sintético bbbb' } }); await settle();
+  assert.ok(f.owner.getState().notices[ID('a')].endsWith('se eliminaron 0: la lista cambió mientras decidías. Ya no estaban: «Dato sintético bbbb».'));
+});
+
+test('T: dependents named by the receipt leave the held list (kept) and «Devueltos» at once, before any read', async () => {
+  const returnedPages = [{ facts: [returnedItem(ID('e'))], next: null, limit: 100 }];
+  const f = operatorFixture({ returned: () => returnedPages.length ? returnedPages.shift() : new Promise(() => {}) });
+  const p = proposal(ID('b'), { sources: [source([ID('a')])] }), confirmed = fact(ID('b'), { state: 'confirmed', revision: 2, sources: [source([ID('a')])] });
+  // Reads after the open never answer: the confirm holds b (state.kept) and lists it among the facts.
+  f.read(snap([fact(ID('a'), { revision: 2 })], [p]), () => new Promise(() => {}));
+  await f.owner.open(); await settle();
+  f.write({ fact: confirmed, status: {} });
+  await f.owner.confirm(ID('b')); await settle();
+  let state = f.owner.getState();
+  assert.ok(state.facts.some(item => item.id === ID('b')), 'b is listed after the confirm');
+  assert.deepEqual(state.kept.map(item => item.id), [], 'held but listed: not shown twice');
+  assert.deepEqual(state.returned.map(item => item.id), [ID('e')]);
+  f.write(fail(409, { code: 'memory_owner_has_dependents', notice: 'n', dependents: [{ id: ID('b'), state: 'confirmed' }, { id: ID('e'), state: 'confirmed' }] }),
+    { fact_revision: 3, owner_revision: 1, deleted_dependents: 2, deleted_dependent_ids: [ID('b'), ID('e')], confirmed_now: true, derived_records_retired: true, notice: null });
+  const first = await f.owner.assign(ID('a'), A, { confirmed: true }); await settle();
+  const second = await f.owner.assign(ID('a'), A, { confirmed: true, deleteDependents: true, expected: first.expected, expectedDependents: 2, expectedDependentIds: [ID('b'), ID('e')] }); await settle();
+  assert.equal(second.applied, true);
+  state = f.owner.getState();
+  assert.deepEqual(state.kept.map(item => item.id), [], 'a deleted dependent is no longer held');
+  assert.deepEqual(state.returned.map(item => item.id), [], 'a deleted dependent leaves «Devueltos»');
+  assert.ok(!state.facts.some(item => [ID('b'), ID('e')].includes(item.id)));
+});
+
+test('R1: an assign receipt without valid deleted ids is not trusted (uncertain)', () => {
+  const base = { fact_revision: 3, owner_revision: 1, deleted_dependents: 1, deleted_dependent_ids: [ID('b')], confirmed_now: true, derived_records_retired: true, notice: null };
+  assert.equal(classifyWrite('assign', ID('a'), { value: base }).kind, 'applied');
+  assert.deepEqual(classifyWrite('assign', ID('a'), { value: base }).receipt.deleted_dependent_ids, [ID('b')]);
+  for (const [name, change] of [
+    ['missing', { deleted_dependent_ids: undefined }],
+    ['not a list', { deleted_dependent_ids: ID('b') }],
+    ['count mismatch', { deleted_dependents: 2 }],
+    ['fewer than count', { deleted_dependent_ids: [] }],
+    ['duplicate', { deleted_dependents: 2, deleted_dependent_ids: [ID('b'), ID('b')] }],
+    ['malformed id', { deleted_dependent_ids: ['fact_xyz'] }],
+    ['non-string', { deleted_dependent_ids: [7] }],
+    ['the target itself', { deleted_dependent_ids: [ID('a')] }],
+  ]) {
+    assert.equal(classifyWrite('assign', ID('a'), { value: { ...base, ...change } }).kind, 'uncertain', name);
+  }
 });
 
 test('R5: a retried assign refused for dependents says on the card that nothing was assigned and how to review them', async () => {
