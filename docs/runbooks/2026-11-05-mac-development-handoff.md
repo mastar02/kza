@@ -648,6 +648,35 @@ Memoria por persona (U3b): las decisiones del usuario están en `user-decisions-
 
 Diseño v5 más enmiendas de 0a en `data/.../t040-t041/`. Siguiente: U3b-1a (núcleo del ledger), aplicando los cambios que la revisión del v5 exige para 1a.
 
+## U3b — memoria por persona: núcleo, baja y API (2026-11-10)
+
+Commits:
+
+| Commit | Contenido |
+|---|---|
+| `69a79e6` (U3b-0a) | `activate` sondea el slot candidato. |
+| `58d7b5c` (U3b-1a) | Tablas de dueño. Asignar confirma; regla de derivados; Devueltos; ámbitos; protección en restauraciones; registro en admisión. |
+| `8f81711` (U3b-1b) | Dar de baja una cuenta borra sus recuerdos asignados; purga al arrancar. |
+| `5f287eb` y `4074a3e` | La derivación desde un estado pre-U3b acepta el esquema de dueño vacío. Los ensayos de slots parten de una versión con el mismo registro de esquema. Hay un ensayo dedicado para la cobertura pre-014b422/pre-ef8bc6d. |
+| `da60173` (U3b-2) | Permisos `memory:own:*` y `memory:assign`, rutas `/api/memory/mine`, asignación y Devueltos, paginación keyset, matriz de 312 denegaciones, purga con autoridad desconocida = pendiente. |
+
+Validación: `data/.../u3b/validation-round-01/`, verde sobre `da60173`.
+
+| Prueba | Resultado |
+|---|---|
+| node | 275 |
+| navegador | 10/10 |
+| dirigido | 2241 |
+| full | 10210 + xfail |
+
+Es la tercera full verde tras el arreglo del cuelgue de captura.
+
+Siguiente:
+- U3b-3: pantallas NEXO.
+- U3b-0b: delegación de varios saltos. Antes de la release de U3b-3.
+
+Decisiones del usuario en `t040-t041/user-decisions-20261110.json` (`u3b_*`).
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.
