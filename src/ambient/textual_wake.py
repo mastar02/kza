@@ -339,7 +339,7 @@ class TextualWakeDetector:
             decision = "source_tv" if source == "tv" else "source_self"
             logger.info(
                 f"[TextualWake] skip room={room_id} source={source} "
-                f"speaker={speaker} decision={decision} text={text!r}"
+                f"speaker={speaker} decision={decision} chars={len(text)}"
             )
             return False
 
@@ -360,7 +360,7 @@ class TextualWakeDetector:
         ):
             logger.info(
                 f"[TextualWake] skip room={room_id} source={source} "
-                f"speaker={speaker} decision=dedup_acoustic text={text!r}"
+                f"speaker={speaker} decision=dedup_acoustic chars={len(text)}"
             )
             return False
 
@@ -368,7 +368,7 @@ class TextualWakeDetector:
         if last_self > 0.0 and (now - last_self) < self._dedup_window_s:
             logger.info(
                 f"[TextualWake] skip room={room_id} source={source} "
-                f"speaker={speaker} decision=dedup_self text={text!r}"
+                f"speaker={speaker} decision=dedup_self chars={len(text)}"
             )
             return False
 
@@ -376,7 +376,7 @@ class TextualWakeDetector:
             logger.info(
                 f"[TextualWake] skip room={room_id} source={source} "
                 f"speaker={speaker} decision=low_vad vad={vad_prob:.2f} "
-                f"min_vad={self._min_vad:.2f} text={text!r}"
+                f"min_vad={self._min_vad:.2f} chars={len(text)}"
             )
             return False
 
@@ -407,12 +407,12 @@ class TextualWakeDetector:
             await self._dispatch_fn(event)
         except Exception as e:
             logger.error(
-                f"[TextualWake] dispatch error room={room_id} text={text!r}: {e}"
+                f"[TextualWake] dispatch error room={room_id} chars={len(text)}: {type(e).__name__}"
             )
             return False
 
         logger.info(
-            f"[TextualWake] DISPARO room={room_id} text={text!r} "
+            f"[TextualWake] DISPARO room={room_id} chars={len(text)} "
             f"source={source} speaker={speaker}"
         )
         self._last_dispatch_ts[room_id] = now

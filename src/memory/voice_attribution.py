@@ -6,11 +6,16 @@ including those used only by later units, are enumerated now so that no table
 rebuild is ever needed for them.
 """
 
+import logging
 import math
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+
+from src.memory.voice_phrase import draw_phrase, normalize_utterance, word_near
+
+logger = logging.getLogger(__name__)
 
 
 class VoiceConsentState(StrEnum):
@@ -104,11 +109,13 @@ class VoiceProposalSettings:
     """
 
     enabled: bool = False
-    min_score: float = 0.80
-    min_margin: float = 0.10
-    min_speech_s: float = 1.5
-    embedding_wait_s: float = 2.0
-    min_scoring_profiles: int = 2
+    # PLACEHOLDERS, not calibrated: U3b-4c sets them from the P7 field evidence
+    # (real XVF3800 captures, the production encoder). Do not tune them locally.
+    min_score: float = 0.80  # placeholder
+    min_margin: float = 0.10  # placeholder
+    min_speech_s: float = 1.5  # placeholder
+    embedding_wait_s: float = 2.0  # placeholder
+    min_scoring_profiles: int = 2  # placeholder (Q4 A)
     verification_max_failures: int = 3
     verification_lock_window_s: float = 86400.0
     verification_windows_per_day: int = 6
@@ -253,10 +260,10 @@ class VoiceAttributionCapability:
 
 @dataclass(frozen=True)
 class VerificationWindow:
-    """One open window: what it is bound to, the room, and its deadline.
+    """One open window: what it is bound to, the room, the phrase and its deadline.
 
-    The phrase is drawn by the U3b-4b router (fixed word list); until then it
-    is None and no utterance can match a window.
+    The phrase is four words from the fixed list (src/memory/voice_phrase.py,
+    U3b-4b-2), single use: a match consumes the window.
     """
 
     binding: object
@@ -270,17 +277,87 @@ class VoiceVerificationWindows:
 
     WINDOW_S = 60.0
 
-    def __init__(self, clock: Callable[[], float]):
+    def __init__(self, clock: Callable[[], float], *, draw: Callable[[], str] = draw_phrase):
         self._clock = clock
+        self._draw = draw
+        self._reserved: Callable[[], Iterable[str]] | None = None
         self._lock = threading.Lock()
         self._windows: dict[str, VerificationWindow] = {}
 
+    def set_reserved(self, names: Callable[[], Iterable[str]] | None) -> None:
+        """Install the source of this home's device and area names (U3b-4b review W).
+
+        ``open`` redraws a phrase while any of its words is the same as, one
+        edit from or sounds like a word of those names, so a phrase never reads
+        as one of this home's devices or rooms.
+        """
+        self._reserved = names
+
+    def _reserved_words(self) -> frozenset[str]:
+        if self._reserved is None:
+            return frozenset()
+        try:
+            return frozenset(word for name in self._reserved()
+                             for word in normalize_utterance(name, ("",)).split() if word)
+        except Exception as e:  # noqa: BLE001 - the static exclusion still holds
+            logger.warning(f"[VoiceWindows] reserved names unavailable ({type(e).__name__})")
+            return frozenset()
+
     def open(self, binding: object, room_id: str) -> VerificationWindow:
-        """Replace the person's window with a fresh one bound to ``binding``."""
-        window = VerificationWindow(binding, room_id, self._clock() + self.WINDOW_S)
+        """Replace the person's window with a fresh one bound to ``binding`` and a new phrase.
+
+        The phrase is redrawn while it equals another live window's phrase in
+        the same room, so a match always names exactly one window, and while a
+        word of it sits near a home device or area name.
+        """
+        reserved = self._reserved_words()
         with self._lock:
+            self._windows.pop(binding.person_id, None)
+            now = self._clock()
+            taken = {window.phrase for window in self._windows.values()
+                     if window.room_id == room_id and window.expires_at > now}
+            collisions = 0
+            for _ in range(8):
+                phrase = self._draw()
+                if any(word_near(word, name) for word in phrase.split() for name in reserved):
+                    collisions += 1
+                    continue
+                if phrase not in taken:
+                    break
+            else:
+                raise RuntimeError("memory_voice_phrase_unavailable")
+            window = VerificationWindow(binding, room_id, now + self.WINDOW_S, phrase)
             self._windows[binding.person_id] = window
+        if collisions:
+            logger.info(f"[VoiceWindows] phrase redrawn: home-name collisions={collisions}")
         return window
+
+    def match(self, room_id: str, phrase: str) -> VerificationWindow | None:
+        """Consume the live window of ``room_id`` whose phrase equals ``phrase`` (single use).
+
+        ``phrase`` is the normalised transcript. A window of another room, an
+        expired window or a different phrase never matches; a consumed window
+        cannot match again.
+        """
+        if type(room_id) is not str or not room_id or type(phrase) is not str or not phrase:
+            return None
+        with self._lock:
+            now = self._clock()
+            for person, window in list(self._windows.items()):
+                if window.expires_at <= now:
+                    del self._windows[person]
+                elif window.room_id == room_id and window.phrase == phrase:
+                    del self._windows[person]
+                    return window
+        return None
+
+    def live_phrases(self) -> tuple[str, ...]:
+        """The phrases of every live window in any room, without consuming one; empty when none is open."""
+        with self._lock:
+            if not self._windows:
+                return ()
+            now = self._clock()
+            return tuple(window.phrase for window in self._windows.values() if window.expires_at > now)
 
     def current(self, person_id: str) -> VerificationWindow | None:
         """The person's live window; an expired one is dropped."""

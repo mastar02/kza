@@ -911,12 +911,13 @@ def test_flag_off_with_seeded_voice_rows_keeps_every_exposure_closed(tmp_path, c
 _DARK = {"attribute_voice_proposal", "verify_voice_consent", "open_voice_verification", "request_voice_consent",
          "revoke_voice_consent", "reopen_voice_consent", "set_voice_switch", "resume_voice_attribution",
          "voice_consent", "voice_switch", "voice_suspension", "VoiceAttributionCapability",
-         "MemoryVoiceConsentActor", "VoiceSwitchActor", "memory:own:voice", "open_voice_window"}
+         "MemoryVoiceConsentActor", "VoiceSwitchActor", "memory:own:voice", "open_voice_window",
+         "discard_voice_review", "build_voice_attribution", "voice_attributor"}
 _ALLOWED = {"src/memory/fact_ledger.py", "src/memory/voice_attribution.py"}
 
 
-def test_the_voice_stage_has_exactly_the_4a_2_production_callers():
-    """4a-2 wires routes only: no attributor, verifier or capability construction until 4b.
+def test_the_voice_stage_has_exactly_the_4b_production_callers():
+    """4a-2 wires the routes; 4b-2 adds one attributor/verifier module, its DI call and the router hook.
 
     Pinned per name as a count of referencing lines (4a-2 review P), so a second call site of an
     already-listed writer fails too.
@@ -938,7 +939,33 @@ def test_the_voice_stage_has_exactly_the_4a_2_production_callers():
             "import MemoryVoiceConsentActor": 1, "import VoiceSwitchActor": 1, "open_voice_window": 1,
             "reopen_voice_consent": 1, "request_voice_consent": 1, "resume_voice_attribution": 1,
             "revoke_voice_consent": 1, "set_voice_switch": 1, "voice_switch": 1},
+        "src/main.py": {"build_voice_attribution": 1, "import build_voice_attribution": 1, "voice_attributor": 2},
+        "src/pipeline/request_router.py": {"voice_attributor": 1},
+        "src/users/voice_attributor.py": {
+            "VoiceAttributionCapability": 3, "attribute_voice_proposal": 1,
+            "discard_voice_review": 1, "import VoiceAttributionCapability": 1, "verify_voice_consent": 1},
     }
+
+
+def test_the_capability_is_constructed_at_exactly_one_production_site():
+    """4b-2: VoiceAttributionCapability(...) is called once in src/, in build_voice_attribution."""
+    sites = []
+    for path in sorted((ROOT / "src").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for function in [node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+            for node in ast.walk(function):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                        and node.func.id == "VoiceAttributionCapability"):
+                    sites.append((str(path.relative_to(ROOT)), function.name))
+        module_level = [node for node in tree.body if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+        for statement in module_level:
+            for node in ast.walk(statement):
+                if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "VoiceAttributionCapability":
+                    sites.append((str(path.relative_to(ROOT)), "<module>"))
+    calls = [node for path in (ROOT / "src").rglob("*.py") for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+             if isinstance(node, ast.Call) and "VoiceAttributionCapability" in ast.unparse(node.func)]
+    assert sites == [("src/users/voice_attributor.py", "build_voice_attribution")]
+    assert len(calls) == 1
 
 
 def test_the_hooks_and_the_prune_have_exactly_the_wired_callers():
@@ -956,6 +983,7 @@ def test_the_hooks_and_the_prune_have_exactly_the_wired_callers():
     assert found == {
         "src/memory/privacy_services.py": ["VoiceProposalSettings", "import VoiceProposalSettings",
                                            "prune_voice_attribution"],
+        "src/users/voice_attributor.py": ["VoiceProposalSettings", "import VoiceProposalSettings"],
         "src/users/voice_ledger.py": ["republish_owner_proof"],
         "src/users/voice_people.py": ["_invalidate_voice_consents", "_retire_voice_people", "republish_owner_proof"],
     }

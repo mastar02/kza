@@ -985,3 +985,46 @@ class TestDetectorMatcherWiring:
 
         assert result is False
         dispatch.assert_not_awaited()
+
+
+# ==================== U3b-4b review L1: no transcript in any log ====================
+
+class TestNoTranscriptInLogs:
+    """Every decision path logs lengths only: a spoken verification phrase never reaches a log record."""
+
+    PHRASE = "Nexa, mosaico ajedrez trineo vitral"
+
+    async def _run(self, caplog, *, source="live", acoustic=0.0, vad=0.9, dispatch=None, twice=False):
+        clock = FakeClock(t=1000.0)
+        detector = TextualWakeDetector(
+            dispatch_fn=dispatch or AsyncMock(return_value={}),
+            last_acoustic_command_ts_fn=lambda room_id: acoustic,
+            now_fn=clock,
+        )
+        with caplog.at_level(logging.DEBUG):
+            for _ in range(2 if twice else 1):
+                await detector.maybe_dispatch(room_id="living", text=self.PHRASE, source=source, speaker=None,
+                                              audio=make_audio(), vad_prob=vad)
+        messages = "\n".join(record.getMessage() for record in caplog.records).casefold()
+        assert "[textualwake]" in messages, "the path did log"
+        for word in ("mosaico", "ajedrez", "trineo", "vitral"):
+            assert word not in messages, word
+        assert f"chars={len(self.PHRASE)}" in messages
+
+    async def test_source_skip(self, caplog):
+        await self._run(caplog, source="tv")
+
+    async def test_dedup_acoustic(self, caplog):
+        await self._run(caplog, acoustic=999.0)
+
+    async def test_dedup_self(self, caplog):
+        await self._run(caplog, twice=True)
+
+    async def test_low_vad(self, caplog):
+        await self._run(caplog, vad=0.1)
+
+    async def test_dispatched(self, caplog):
+        await self._run(caplog)
+
+    async def test_dispatch_error(self, caplog):
+        await self._run(caplog, dispatch=AsyncMock(side_effect=RuntimeError("Nexa, mosaico ajedrez trineo vitral")))

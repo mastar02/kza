@@ -316,14 +316,17 @@ async def main() -> None:
                         assert len(await rows('SELECT 1 FROM voice_verification_attempts WHERE person_id=?', people['a'])) == 1, 'the room refusal counts'
                         await page.evaluate("(s=>{s.value='living';s.dispatchEvent(new Event('change'))})(document.querySelector('#my-voice-room'))")
                         await press('#my-memory-view [data-key=voice-window]')
-                        await page.wait_for(text_of('#my-voice-window') + ".includes('Ventana abierta en Sala de estar') && " + text_of('#my-voice-window') + '.includes(' + json.dumps(NO_PHRASE) + ')')
+                        await page.wait_for(text_of('#my-voice-window') + ".includes('Ventana abierta en Sala de estar')")
+                        phrase = ledger.voice_windows.current(people['a']).phrase  # U3b-4b-2: four words from the fixed list
+                        await page.wait_for(text_of('#my-voice-window') + ".includes('Ventana abierta en Sala de estar') && " + text_of('#my-voice-window') + '.includes(' + json.dumps('«' + phrase + '»') + ')')
+                        assert NO_PHRASE not in await page.evaluate(text_of('#my-voice-window'))
                         stored = json.dumps(await page.evaluate('Object.fromEntries(Object.entries(sessionStorage))'))
-                        assert 'living' not in stored and 'Sala' not in stored, 'no room or phrase in sessionStorage'
+                        assert 'living' not in stored and 'Sala' not in stored and phrase.split()[0] not in stored, 'no room or phrase in sessionStorage'
                         assert (await verify(people['a'], profiles['a'])).outcome.value == 'passed'
                         await reopen_my_memory()
                         await page.wait_for(text_of('#my-voice-status') + "==='Inscripción activa.' && " + text_of('#my-voice-message') + '.startsWith(' + json.dumps(memory_voice_api.STATE_MESSAGES['active']) + ')')
                         assert await page.evaluate(text_of('#my-voice-notice') + "===''"), 'no stale window notice once the window is gone'
-                        checks.append('person A: whoami before the status; the opt-in dialog carries the full disclosure (48 h ambient transcript, evaluators, no permissions); request, a refused room counted against the daily limit, a window without a phrase (R1), no room or phrase in sessionStorage; an injected pass shows the active message')
+                        checks.append('person A: whoami before the status; the opt-in dialog carries the full disclosure (48 h ambient transcript, evaluators, no permissions); request, a refused room counted against the daily limit, a window showing its four-word phrase (U3b-4b-2), no room or phrase in sessionStorage; an injected pass shows the active message')
 
                         # Pending voice proposals: content-free entries with exactly «Descartar» and «No es mío».
                         discard = await proposal('Recuerdo de voz sintético para descartar', profiles['a'])

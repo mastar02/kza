@@ -580,7 +580,7 @@ def test_only_household_accounts_with_a_person_hold_the_voice_grant():
 
 
 def test_no_route_creates_or_activates_a_consent_outside_its_own_writer():
-    """D30: exact call-site counts; verify_voice_consent and attribute_voice_proposal have no caller in src."""
+    """D30: exact call-site counts; verify_voice_consent and attribute_voice_proposal are called only by the 4b-2 attributor."""
     from collections import Counter
     names = {"request_voice_consent", "verify_voice_consent", "attribute_voice_proposal", "reopen_voice_consent",
              "set_voice_switch", "resume_voice_attribution", "open_voice_window", "open_voice_verification",
@@ -595,7 +595,8 @@ def test_no_route_creates_or_activates_a_consent_outside_its_own_writer():
             calls[str(path.relative_to(ROOT))] = dict(found)
     assert calls == {"src/dashboard/memory_voice_api.py": {
         "request_voice_consent": 1, "revoke_voice_consent": 1, "open_voice_window": 1, "reopen_voice_consent": 1,
-        "set_voice_switch": 1, "resume_voice_attribution": 1}}
+        "set_voice_switch": 1, "resume_voice_attribution": 1},
+        "src/users/voice_attributor.py": {"attribute_voice_proposal": 1, "verify_voice_consent": 1}}
 
 
 def test_visible_texts_are_spanish():

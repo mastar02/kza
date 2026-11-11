@@ -82,6 +82,16 @@ def vector_bytes(vector: np.ndarray) -> tuple[bytes,int]:
     return (vector/norm).astype('<f4').tobytes(),int(vector.size)
 
 
+def canonical_sources(sources: tuple[MemorySource,...]) -> str:
+    """The one serialisation of a capture's sources that a fingerprint id is derived from."""
+    return json.dumps([source.to_dict() for source in sorted(sources,key=lambda source:source.capture_id)],sort_keys=True,separators=(',',':'))
+
+
+def fingerprint_identity(model_key: str, sources: tuple[MemorySource,...]) -> str:
+    """Deterministic fingerprint id from the encoder key and the canonical sources (one per actual source set)."""
+    return 'vf_'+hashlib.sha256((model_key+canonical_sources(sources)).encode()).hexdigest()
+
+
 class VoiceLedger:
     """Use the leased authority transaction for every read, review and mutation."""
 
@@ -150,8 +160,8 @@ class VoiceLedger:
                 or sum(len(source.fact_dependencies) for source in sources)>256):
             raise ValueError('invalid_voice_capture')
         audio_metadata = transcript_metadata = None
-        encoded = json.dumps([source.to_dict() for source in sorted(sources,key=lambda source:source.capture_id)],sort_keys=True,separators=(',',':'))
-        identity = 'vf_'+hashlib.sha256((model_key+encoded).encode()).hexdigest()
+        encoded = canonical_sources(sources)
+        identity = fingerprint_identity(model_key,sources)
         raw,dimensions = vector_bytes(embedding)
         try:
             if review is not None:

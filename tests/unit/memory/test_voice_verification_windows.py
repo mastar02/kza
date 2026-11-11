@@ -55,7 +55,8 @@ def test_window_lasts_exactly_sixty_seconds(clock):
     windows = VoiceVerificationWindows(clock)
     assert VoiceVerificationWindows.WINDOW_S == 60.0
     window = windows.open(binding(), "living")
-    assert window == VerificationWindow(window.binding, "living", clock.value + 60.0, None)
+    assert window == VerificationWindow(window.binding, "living", clock.value + 60.0, window.phrase)
+    assert len(window.phrase.split()) == 4  # U3b-4b-2: drawn on open
     clock.value += 59.999
     assert windows.current(PERSON) is window
     clock.value += 0.001

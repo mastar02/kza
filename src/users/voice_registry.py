@@ -1,7 +1,7 @@
 """Bounded background voice observations under the leased privacy authority."""
 
 import asyncio
-from collections import deque
+from collections import OrderedDict,deque
 from contextvars import Context
 from dataclasses import dataclass,field
 from enum import StrEnum
@@ -45,6 +45,31 @@ class VoiceObservation:
     transcript_provenance: CaptureProvenance | None = None
     transcript_span: FrameInterval | None = None
     transcript_truncated: bool | None = None
+    completion: asyncio.Future | None = field(default=None,repr=False)
+
+
+COMPLETION_CAPACITY = 6
+REDACTED_CAPACITY = 64
+
+
+def encoder_model_key(identifier) -> str:
+    """The stored model key of one registered encoder (fingerprints and profiles compare only within it)."""
+    descriptor = [identifier.model_name,getattr(identifier,'_model_type','unknown'),identifier.sample_rate]
+    return 'enc_'+hashlib.sha256(json.dumps(descriptor).encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class FingerprintWait:
+    """The join result (U3b-4b-2): the stored fingerprint id, or why there is none.
+
+    ``reason`` is None with an id, else 'no_fingerprint' (never observed,
+    dropped or failed) or 'late_embedding' (not done within the wait; then
+    ``completion`` still resolves later, for clip cleanup).
+    """
+
+    fingerprint_id: str | None
+    reason: str | None
+    completion: asyncio.Future | None = None
 
 
 class VoiceRegistry:
@@ -67,6 +92,64 @@ class VoiceRegistry:
         self._suspension_reasons: dict[MemoryOrigin, set[object | None]] = {}
         self._suspended_origins = frozenset()
         self._dropped = self._failed = 0
+        self._loop_thread = threading.get_ident()
+        # U3b-4b-2: capture_id -> completion, only while the voice stage is on.
+        self._completions: OrderedDict[str,asyncio.Future] | None = None
+        # Review W20: captures that spoke a verification phrase keep no review clip.
+        self._redacted: OrderedDict[str,None] = OrderedDict()
+
+    def enable_completions(self) -> None:
+        """Turn on the capture join (the voice stage is configured on); off by default."""
+        if self._completions is None:
+            self._completions = OrderedDict()
+
+    def _completion(self, job) -> None:
+        """Create the capture's completion on the loop, bounded; a full map evicts the oldest resolved entry."""
+        if self._completions is None or job.completion is not None or len(job.sources)!=1:
+            return
+        capture = job.sources[0].capture_id
+        if capture in self._completions:
+            return
+        while len(self._completions)>=COMPLETION_CAPACITY:
+            done = next((key for key,future in self._completions.items() if future.done()),None)
+            if done is None:
+                return
+            del self._completions[done]
+        job.completion = self._loop.create_future()
+        self._completions[capture] = job.completion
+
+    def redact_capture(self, capture_id: str) -> None:
+        """Mark a capture that spoke a verification phrase: its fingerprint, if any, is kept without a review clip.
+
+        Called on the loop; read by the worker before the clip is built, so an
+        embedding that lands late (even after shutdown) never stores the phrase.
+        """
+        if type(capture_id) is not str or not capture_id:
+            return
+        self._redacted[capture_id] = None
+        self._redacted.move_to_end(capture_id)
+        while len(self._redacted)>REDACTED_CAPACITY:
+            self._redacted.popitem(last=False)
+
+    def _review_allowed(self, sources: tuple) -> bool:
+        return not any(source.capture_id in self._redacted for source in sources)
+
+    async def await_fingerprint(self, capture_id: str, timeout: float) -> FingerprintWait:
+        """Take the capture's completion (single consumer) and wait at most ``timeout`` seconds.
+
+        No entry answers at once. Never raises for the capture's own failure.
+        """
+        completion = None if self._completions is None else self._completions.pop(capture_id,None)
+        if completion is None:
+            return FingerprintWait(None,'no_fingerprint')
+        if not completion.done():
+            try:
+                async with asyncio.timeout(max(0.0,timeout)):
+                    await asyncio.shield(completion)
+            except TimeoutError:
+                return FingerprintWait(None,'late_embedding',completion)
+        identity = completion.result() if not completion.cancelled() else None
+        return FingerprintWait(identity,None,completion) if type(identity) is str else FingerprintWait(None,'no_fingerprint')
 
     def register_encoder(self, identifier) -> threading.Lock:
         """Share the actual inference lock with existing command/ambient owners."""
@@ -125,6 +208,8 @@ class VoiceRegistry:
                 audio_provenance=owned_audio,transcript_provenance=owned_text,
                 transcript_span=owned_span,transcript_truncated=owned_truncated)
             self._jobs[slot] = job
+            if threading.get_ident()==self._loop_thread:
+                self._completion(job)
             self._loop.call_soon_threadsafe(self._start,slot,job,context=Context())
         except Exception:
             self._jobs.pop(slot,None)
@@ -176,14 +261,19 @@ class VoiceRegistry:
         self._suspended_origins = suspended
 
     def _start(self, slot, job):
+        self._completion(job)
+        completion = job.completion
         task = asyncio.create_task(self._work.run(self._observe_native,job),context=Context())
         self._tasks.add(task)
         def finished(done):
             self._tasks.discard(done)
             self._jobs.pop(slot,None)
             self._free.append(slot)
-            if done.cancelled() or done.exception() is not None or done.result() is VoiceFailure.FAILED:
+            failed = done.cancelled() or done.exception() is not None or done.result() is VoiceFailure.FAILED
+            if failed:
                 self._failed+=1
+            if completion is not None and not completion.done():
+                completion.set_result(None if failed or type(done.result()) is not str else done.result())
         task.add_done_callback(finished,context=Context())
 
     def _observe_native(self, job):
@@ -195,11 +285,11 @@ class VoiceRegistry:
             with model_admission(job.lock,require_live):
                 vector = job.identifier.get_embedding(job.audio)
                 require_live()
-                descriptor = [job.identifier.model_name,getattr(job.identifier,'_model_type','unknown'),job.identifier.sample_rate]
-                model_key = 'enc_'+hashlib.sha256(json.dumps(descriptor).encode()).hexdigest()
-                review = build_review_capture(job.audio,job.transcript,job.room_id,
+                model_key = encoder_model_key(job.identifier)
+                review = (build_review_capture(job.audio,job.transcript,job.room_id,
                     audio_provenance=job.audio_provenance,transcript_provenance=job.transcript_provenance,
                     transcript_span=job.transcript_span,transcript_truncated=job.transcript_truncated)
+                    if self._review_allowed(job.sources) else None)
                 require_live()
                 return self.ledger.put(model_key,vector,job.audio.size/job.identifier.sample_rate,job.sources,review)
         except (Exception,asyncio.CancelledError):

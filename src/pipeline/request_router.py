@@ -30,6 +30,7 @@ from src.orchestrator import PathType
 from src.pipeline.earcon_gate import should_play_earcon
 from src.analytics.asr_quality import alog_asr_outcome
 from src.memory.transient import TransientCache
+from src.memory.voice_phrase import VERIFICATION_REPLY
 from src.memory.prompt_context import SourcesInvalidated, run_private
 from src.llm.generation_stream import GuardedGeneration
 from src.core.owned_work import OwnedBlockingWork
@@ -219,6 +220,7 @@ class RequestRouter:
         before_handler_warn_ms: float = 5.0,
         unavailable_precheck_enabled: bool = True,
         privacy=None,
+        voice_attributor=None,
     ):
         """
         Initialize RequestRouter with injected dependencies.
@@ -328,6 +330,10 @@ class RequestRouter:
         # Earcon "te oí, no te entendí" (2026-06-15)
         self._earcon_cfg = earcon_cfg or {"enabled": False}
         self._asr_event_logger = asr_event_logger
+        # U3b-4b-2: present only when memory.voice_proposals.enabled is true
+        # (src/users/voice_attributor.py build_voice_attribution); None keeps
+        # every path, reply and timing exactly as without the voice stage.
+        self._voice_attributor = voice_attributor
 
         # Plan #3 OpenClaw — plugin hooks registry (or None)
         self._hooks = hooks
@@ -453,6 +459,36 @@ class RequestRouter:
                                                        effect=EffectState.UNCERTAIN))
         delivered = await self._speak_response(result["response"])
         result["voice_delivery"] = delivered.delivery.value
+        if self._voice_attributor is not None and result.get("success") is True and source is not None:
+            # U3b-4b-2: after the reply, whose text and timing never depend on it.
+            self._voice_attributor.schedule(result["memory_proposal"]["id"], source)
+        return True
+
+    async def _try_voice_verification(self, text: str, result: dict, *, room_id, textual_wake) -> bool:
+        """Route a verification phrase, or a near miss of one, before the command gate and the ASR log (U3b-4b-2).
+
+        Nothing changes while no window is open. Only a multi-room
+        room-microphone capture can match, and only the open window of its own
+        room whose phrase equals the normalised transcript; the window is
+        consumed. An utterance close to any open phrase (review L2) takes the
+        same turn without an evaluation. The transcript is redacted from the
+        result (the turn event), nothing is recorded or logged, the fixed reply
+        is spoken for every outcome, and the evaluation runs after it.
+        """
+        attributor = self._voice_attributor
+        if attributor is None:
+            return False
+        screened = attributor.screen(text, room_id, textual_wake, self._active_sources(), self._wake_words)
+        if screened is None:
+            return False
+        window, source = screened
+        result.update(text="", intent="voice_verification", success=True, response=VERIFICATION_REPLY,
+                      _task_outcome=TaskOutcome(TaskStatus.QUEUED))
+        await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
+        delivered = await self._speak_response(VERIFICATION_REPLY)
+        result["voice_delivery"] = delivered.delivery.value
+        if window is not None:
+            attributor.verify(window, source)
         return True
 
     async def _try_home_command(self, text: str, result: dict, *, room_id: str | None,
@@ -757,6 +793,11 @@ class RequestRouter:
                 _reason, text or "", {}, room_id, wake_score, wake_rms,
                 outcome="gate_rejected",
             )
+            return result
+
+        # 0. U3b-4b-2: a verification phrase never reaches the gate, its log or the ASR event.
+        if await self._try_voice_verification(text, result, room_id=room_id, textual_wake=textual_wake):
+            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
         # 1a. Command acceptance gate: corta antes del orchestrator si el texto
@@ -1194,6 +1235,11 @@ class RequestRouter:
                 _reason, text or "", {}, room_id, wake_score, wake_rms,
                 outcome="gate_rejected",
             )
+            return result
+
+        # 0. U3b-4b-2: a verification phrase never reaches the gate, its log or the ASR event.
+        if await self._try_voice_verification(text, result, room_id=room_id, textual_wake=textual_wake):
+            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
         # 1a. Command acceptance gate — mismo corto-circuito que el path orchestrated

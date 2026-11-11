@@ -56,6 +56,7 @@ from src.memory.index_erasure import build_erasure_services
 from src.ambient.erasure import build_capture_erasure
 from src.users.speaker_identifier import SpeakerIdentifier
 from src.users.voice_registry import build_voice_registry
+from src.users.voice_attributor import build_voice_attribution
 from src.users.voice_enrollment import VoiceEnrollment
 from src.users.emotion_detector import EmotionDetector
 from src.monitoring.latency_monitor import LatencyMonitor
@@ -810,6 +811,17 @@ async def build_application(
             review_required=True,
         )
         logger.info("Speaker identification habilitado")
+
+    # U3b-4b-2: the voice stage (attribution after the reply, verification
+    # phrases) exists only with memory.voice_proposals.enabled true; it reuses
+    # the registry's stored embeddings and adds no inference or device.
+    # The whisper wake engine logs transcripts, so it keeps the stage off;
+    # phrase words are kept away from this home's device and area names.
+    voice_attributor = build_voice_attribution(
+        privacy_services, voice_registry, dashboard_authority, shutdown=shutdown,
+        wake_engine=config.get("rooms", {}).get("wake_word", {}).get("engine", "openwakeword"),
+        home_names=home_capabilities.cached_names,
+    )
 
     # Emotion Detection (cuda:0 — pipeline de audio consolidado)
     # Fuente de verdad: settings.yaml § emotion. Comparte GPU con speaker_id por
@@ -1741,6 +1753,7 @@ async def build_application(
         fast_router=fast_router,
         memory_manager=memory_manager,
         privacy=privacy_services,
+        voice_attributor=voice_attributor,
         user_manager=user_manager,
         enrollment=voice_enrollment,
         conversation_collector=conversation_collector,

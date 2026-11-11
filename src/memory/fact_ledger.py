@@ -459,6 +459,12 @@ class VoiceSwitchState:
         return self.configured and self.enabled
 
 
+def _valid_fingerprint_id(value: object) -> bool:
+    """A voice fingerprint id: 'vf_' and 64 lowercase hex digits (src/users/voice_ledger.py put)."""
+    return (type(value) is str and len(value) == 67 and value.startswith("vf_")
+            and all(char in "0123456789abcdef" for char in value[3:]))
+
+
 @dataclass(frozen=True)
 class VoiceVerificationBinding:
     """What a verification window was opened against; any change makes the result 'unavailable'."""
@@ -2028,13 +2034,24 @@ class FactLedger:
             return False
 
     @staticmethod
-    def _snapshot(db, scorer: Callable) -> ScoringSnapshot | None:
+    def _snapshot(db, scorer: Callable) -> ScoringSnapshot | AttributionReason:
+        """The scorer's snapshot, or the closed reason it could not be read (U3b-4b-1).
+
+        A scorer that cannot find the utterance's fingerprint raises
+        LookupError('voice_fingerprint_unavailable') -> no_fingerprint; any
+        other failure or an invalid snapshot -> error.
+        """
         try:
             snapshot = scorer(db)
+        except LookupError as error:
+            if error.args == ("voice_fingerprint_unavailable",):
+                return AttributionReason.NO_FINGERPRINT
+            logger.warning("[FactLedger] voice scorer failed: %s", type(error).__name__)
+            return AttributionReason.ERROR
         except Exception as error:
             logger.warning("[FactLedger] voice scorer failed: %s", type(error).__name__)
-            return None
-        return snapshot if type(snapshot) is ScoringSnapshot and snapshot.valid() else None
+            return AttributionReason.ERROR
+        return snapshot if type(snapshot) is ScoringSnapshot and snapshot.valid() else AttributionReason.ERROR
 
     def _binding_current(self, db, binding: object) -> bool:
         """The window's binding still holds: switch on, same pending consent, same link, not suspended."""
@@ -2066,8 +2083,8 @@ class FactLedger:
         if self._suspended(db, binding.profile_id):
             return AttributionReason.SUSPENDED
         snapshot = self._snapshot(db, scorer)
-        if snapshot is None:
-            return AttributionReason.ERROR
+        if type(snapshot) is AttributionReason:
+            return snapshot
         if {item.profile_id: item.revision for item in snapshot.scores} != live or not self._scorable(db, live):
             return AttributionReason.INCOMPLETE_SCORING_SET
         links = self._profile_links(db)
@@ -2083,7 +2100,8 @@ class FactLedger:
 
     def verify_voice_consent(self, binding: VoiceVerificationBinding, scorer: Callable[[sqlite3.Connection], ScoringSnapshot],
                              capability: VoiceAttributionCapability, *, retired: Callable[[frozenset[str]], bool],
-                             active: Callable[[str], bool]) -> VoiceVerificationResult:
+                             active: Callable[[str], bool],
+                             review_fingerprint: str | None = None) -> VoiceVerificationResult:
         """Evaluate one verification utterance with the single linked profile as the grantable set.
 
         ``scorer(db)`` runs inside the ledger transaction (U3b-4b computes it
@@ -2091,14 +2109,21 @@ class FactLedger:
         unavailable person writes one attempt row (classification R8); a pass
         activates the consent with the profile snapshot; counted failures
         reaching verification_max_failures within the lock window lock it.
+        ``review_fingerprint`` (U3b-4b-2, N6) names the utterance's
+        fingerprint: its review clip (audio and transcript, i.e. the phrase) is
+        deleted in the same transaction, whatever the outcome.
         """
         if type(capability) is not VoiceAttributionCapability:
             raise PermissionError("memory_voice_capability_denied")
         if type(binding) is not VoiceVerificationBinding or not callable(scorer) or not _valid_person(binding.person_id):
             raise ValueError("memory_voice_binding_invalid")
+        if review_fingerprint is not None and not _valid_fingerprint_id(review_fingerprint):
+            raise ValueError("memory_voice_binding_invalid")
         person = binding.person_id
         with self._owner_transaction() as db:
             scan_voice_attribution_rows(db)
+            if review_fingerprint is not None:
+                db.execute("DELETE FROM voice_capture_reviews WHERE fingerprint_id=?", (review_fingerprint,))
             reason = self._verification_reason(db, binding, scorer, retired, active)
             outcome = verification_outcome(reason)
             consent = self._consent_row(db, person)
@@ -2117,6 +2142,21 @@ class FactLedger:
                 state = self._write_consent(db, person, VoiceConsentState.VERIFICATION_LOCKED, consent[1] + 1,
                                             _VERIFIER).state
             return VoiceVerificationResult(outcome, reason, state)
+
+    def discard_voice_review(self, fingerprint_id: str, capability: VoiceAttributionCapability) -> bool:
+        """Delete one verification utterance's review clip (U3b-4b-2, N6) when it lands after evaluation.
+
+        Only the system capability may call it; the fingerprint itself stays
+        (it holds no text and expires with its source). Returns whether a row
+        was deleted.
+        """
+        if type(capability) is not VoiceAttributionCapability:
+            raise PermissionError("memory_voice_capability_denied")
+        if not _valid_fingerprint_id(fingerprint_id):
+            raise ValueError("memory_voice_binding_invalid")
+        with self._transaction() as db:
+            return db.execute("DELETE FROM voice_capture_reviews WHERE fingerprint_id=?",
+                              (fingerprint_id,)).rowcount > 0
 
     def _attribution_read(self, db, fact_id: object, scorer: Callable | None, retired: object, active: object,
                           expected: dict | None) -> tuple[GateDecision, dict | None]:
@@ -2145,8 +2185,8 @@ class FactLedger:
                 return changed, None
         else:
             snapshot = self._snapshot(db, scorer)
-            if snapshot is None:
-                return GateDecision(AttributionReason.ERROR), None
+            if type(snapshot) is AttributionReason:
+                return GateDecision(snapshot), None
             if {item.profile_id: item.revision for item in snapshot.scores} != live or not self._scorable(db, live):
                 return GateDecision(AttributionReason.INCOMPLETE_SCORING_SET), None
 

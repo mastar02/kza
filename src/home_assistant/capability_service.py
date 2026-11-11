@@ -91,6 +91,26 @@ class HomeCapabilityService:
         """Return the observation clock shared by consumers of this service."""
         return self._clock()
 
+    def cached_names(self) -> tuple[str, ...]:
+        """Device and area names of the last snapshot, without I/O (empty before the first one).
+
+        Friendly names, entity object ids (underscores as spaces) and area
+        names; the voice stage keeps verification phrase words away from them.
+        """
+        snapshot = self._last_snapshot
+        if snapshot is None:
+            return ()
+        names = []
+        for state in snapshot.states.states:
+            friendly = (state.get("attributes") or {}).get("friendly_name")
+            if type(friendly) is str:
+                names.append(friendly)
+            entity_id = state.get("entity_id")
+            if type(entity_id) is str:
+                names.append(entity_id.partition(".")[2].replace("_", " "))
+        names.extend(name for name in snapshot.areas.area_names.values() if type(name) is str)
+        return tuple(names)
+
     async def snapshot(self) -> CapabilitySnapshot:
         """Share simultaneous reads without hiding subsequent policy changes."""
         if self._closed:
