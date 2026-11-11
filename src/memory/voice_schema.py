@@ -248,7 +248,7 @@ def _revision(value: object) -> bool:
     return type(value) is int and value >= 1
 
 
-def _scan_voice_attribution_rows(db: sqlite3.Connection) -> None:
+def scan_voice_attribution_rows(db: sqlite3.Connection) -> None:
     """Validate every voice-attribution row; an unknown value fails closed (1a-F4 read point)."""
     from src.memory.voice_attribution import (
         VoiceAttributionEventKind,
@@ -312,7 +312,7 @@ def initialize_voice_attribution_schema(db: sqlite3.Connection) -> None:
         if (_attribution_objects(db) != objects or _attribution_pragmas(db) != shape
                 or len(versions) != 1 or type(versions[0][0]) is not int or versions[0][0] != 1):
             raise RuntimeError("voice_attribution_schema_unavailable")
-        _scan_voice_attribution_rows(db)
+        scan_voice_attribution_rows(db)
         db.commit()
     except BaseException:
         db.rollback()

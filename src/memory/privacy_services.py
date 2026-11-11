@@ -18,6 +18,7 @@ from weakref import WeakMethod
 from src.core.owned_work import ClosePhase, OwnedBlockingWork, WorkCloseTimeout, observe_native
 from src.core.runtime_admission import verify_privacy_admission
 from src.memory.fact_ledger import FactLedger, MemoryOrigin, MemorySource
+from src.memory.voice_attribution import VoiceProposalSettings
 from src.memory.sources import CaptureScopes
 
 logger = logging.getLogger(__name__)
@@ -34,8 +35,8 @@ class PrivacyServices:
     """Own the sole privacy writer until its native users actually finish."""
 
     def __init__(self, path: str, *, clock=None, automatic_days: float = 30,
-                 close_timeout_s: float = 1):
-        self.ledger = FactLedger(path, clock=clock, automatic_days=automatic_days)
+                 close_timeout_s: float = 1, voice_settings: VoiceProposalSettings | None = None):
+        self.ledger = FactLedger(path, clock=clock, automatic_days=automatic_days, voice_settings=voice_settings)
         self.scopes = CaptureScopes(self.ledger, admission_started_at=self.ledger.clock())
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="kza-privacy")
         self._work = OwnedBlockingWork(worker=self._offload, close_timeout_s=close_timeout_s)
@@ -184,6 +185,13 @@ class PrivacyServices:
                 try:
                     await self._retry_retired_owner_prune()
                     await self.acall(self.ledger.expire)
+                    # N4: its own try, so a voice-prune failure never skips expiry or the delay.
+                    try:
+                        await self.acall(self.ledger.prune_voice_attribution)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as error:
+                        logger.warning("Voice attribution prune deferred: %s", type(error).__name__)
                     delay = await self.acall(self.ledger.next_maintenance_delay)
                 except asyncio.CancelledError:
                     raise
@@ -265,6 +273,15 @@ class PrivacyServices:
             raise asyncio.CancelledError
 
 
+def voice_proposal_settings(config: dict) -> VoiceProposalSettings:
+    """G2: read memory.voice_proposals without writing back; invalid values leave the voice stage off."""
+    try:
+        return VoiceProposalSettings.from_config(config)
+    except ValueError as error:
+        logger.warning("Voice proposals disabled: invalid settings (%s)", type(error).__name__)
+        return VoiceProposalSettings()
+
+
 async def build_privacy_services(config: dict, *, shutdown: AsyncExitStack, clock=None) -> PrivacyServices:
     """Register ownership before unconditional initialization; never load Chroma."""
     settings = config.get("memory", {})
@@ -272,7 +289,8 @@ async def build_privacy_services(config: dict, *, shutdown: AsyncExitStack, cloc
     if not path or path == ":memory:" or path.startswith("file:"):
         raise ValueError("privacy_requires_persistent_file")
     services = PrivacyServices(path,
-        clock=clock, automatic_days=settings.get("automatic_retention_days", 30))
+        clock=clock, automatic_days=settings.get("automatic_retention_days", 30),
+        voice_settings=voice_proposal_settings(config))
     shutdown.push_async_callback(services.aclose)
     await output_registration.attach_output(services, "privacy_authority")
     await services.acall(services.initialize)

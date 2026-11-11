@@ -146,12 +146,15 @@ class VoicePersonLinks:
                 raise ValueError('voice_person_link_conflict')
             revision = previous['revision']
             if previous['user_id'] != user_id:
+                # U3b-4a-1: a consent verified on this profile no longer holds.
+                self.ledger._invalidate_voice_consents(db, profile_id, actor.subject)
                 revision += 1
                 self.ledger._voice_projection_revision += 1
                 db.execute('''INSERT INTO voice_profile_people VALUES (?,?,?,?,?)
                     ON CONFLICT(profile_id) DO UPDATE SET user_id=excluded.user_id,revision=excluded.revision,
                     updated_at=excluded.updated_at,updated_by=excluded.updated_by''',
                     (profile_id, user_id, revision, self.ledger.clock(), actor.subject))
+        self.ledger.republish_owner_proof()
         return VoicePersonReceipt(profile_id, revision)
 
     def clear_user_links(self, identities: frozenset[str], retired: Callable[[frozenset[str]], bool]) -> int:
@@ -167,16 +170,23 @@ class VoicePersonLinks:
                 raise PermissionError('voice_person_retirement_required')
         current()
         with self._transaction(current) as db:
+            # Defensive (N3): clear_user_facts already removed the voice rows and proposals.
+            self.ledger._retire_voice_people(db, identities)
             placeholders = ','.join('?' for _ in identities)
             changed = db.execute(f'''UPDATE voice_profile_people SET user_id=NULL,revision=revision+1,
                 updated_at=?,updated_by=? WHERE user_id IN ({placeholders})''',
                 (self.ledger.clock(), 'system:retired-account', *sorted(identities))).rowcount
             if changed:
                 self.ledger._voice_projection_revision += 1
+        self.ledger.republish_owner_proof()
         return changed
 
-    def unlink_profile(self, db: sqlite3.Connection, profile_id: str) -> int:
-        """Only remove metadata; an older proof may conservatively retain the former ID."""
+    def unlink_profile(self, db: sqlite3.Connection, profile_id: str, label: str = 'system:retired-profile') -> int:
+        """Only remove metadata; an older proof may conservatively retain the former ID.
+
+        U3b-4a-1: consents verified on the profile are invalidated in the same transaction.
+        """
+        self.ledger._invalidate_voice_consents(db, profile_id, label)
         return db.execute('''UPDATE voice_profile_people SET user_id=NULL,revision=revision+1,
             updated_at=?,updated_by=? WHERE profile_id=? AND user_id IS NOT NULL''',
             (self.ledger.clock(), 'system:retired-profile', profile_id)).rowcount

@@ -8,6 +8,7 @@ byte-identical (review R1). Every failure leaves the file unchanged.
 import json
 from pathlib import Path
 import sqlite3
+import time
 
 import pytest
 
@@ -84,13 +85,20 @@ def test_fresh_ledger_has_exactly_the_ddl_objects_and_the_marker(path):
             assert db.execute("SELECT COUNT(*) FROM " + table).fetchone()[0] == 0  # nothing at open (G1)
 
 
-def test_reopening_a_populated_ledger_changes_nothing_even_long_after_every_window(path):
-    """R1: no time-based pruning at open; a clock years ahead leaves the file byte-identical."""
+@pytest.mark.parametrize("seeded", ["fixed_2033", "real_clock"])
+def test_reopening_a_populated_ledger_changes_nothing_even_long_after_every_window(path, seeded):
+    """R1: no time-based pruning at open; a clock years ahead leaves the file byte-identical.
+
+    4a-0 review F2: the 'real_clock' seed is relative to time.time(), so the
+    rows are already past every window by the wall clock too; an open-time
+    prune by wall-clock time (mutant M3) deletes them and fails this test.
+    """
+    base = time.time() if seeded == "real_clock" else NOW
     with sqlite3.connect(path) as db:
-        seed_voice_attribution_rows(db, NOW)
+        seed_voice_attribution_rows(db, base)
     before = path.read_bytes()
-    for clock in (NOW, NOW + 400 * DAY):
-        ledger = FactLedger(str(path), clock=lambda clock=clock: clock)
+    for clock in (None, base, base + 400 * DAY):
+        ledger = FactLedger(str(path), clock=None if clock is None else (lambda clock=clock: clock))
         ledger.initialize()
         assert ledger.authority_available
         ledger.close()

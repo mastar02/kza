@@ -362,3 +362,130 @@ def test_p0_editing_the_source_states_voice_flag_before_prepare_is_refused(artif
     assert outcome == {"refused_at": "delegate", "error": "ValueError", "code": "privacy_authority_stale"}
     assert stage.read_admission_head(root) == head
     assert os.readlink(root / "current") == "slots/a/runtime"
+
+
+# --- U3b-4a-1: G1 behavioural rehearsal with the real writers ------------------------------------
+
+_OPEN_WITH_SETTINGS = _OPEN_DIRECTLY[:-2] + [
+    "import yaml",
+    "from src.memory.voice_attribution import (ProfileScore, ScoringSnapshot, VoiceAttributionCapability,",
+    "    VoiceProposalSettings)",
+    "from src.memory.fact_ledger import MemoryOrigin, MemorySource, MemoryVoiceConsentActor, VoiceSwitchActor",
+    "with open(os.path.realpath(os.path.join('config', 'settings.yaml'))) as handle:",
+    "    settings = VoiceProposalSettings.from_config(yaml.safe_load(handle))",
+    "ledger = FactLedger(os.path.join(state, 'privacy.db'), voice_settings=settings)",
+    "ledger.initialize()",
+    "switch = VoiceSwitchActor('rehearsal-operator')",
+    "allow = {'retired': lambda ids: False, 'active': lambda person: True}",
+    "capability = VoiceAttributionCapability('rehearsal')",
+    "def report(**values):",
+    "    values['switch'] = vars(ledger.voice_switch()) | {'effective': ledger.voice_switch().effective}",
+    "    values['owners'] = sorted(map(list, ledger._db.execute(",
+    "        'SELECT o.person_id, o.method, r.last_change FROM fact_owners o JOIN fact_owner_revisions r USING(fact_id)')))",
+    "    values['consents'] = sorted(map(list, ledger._db.execute(",
+    "        'SELECT person_id, state, verified_profile_id FROM voice_attribution_consents')))",
+    "    values['control'] = sorted(map(list, ledger._db.execute(",
+    "        'SELECT id, enabled, revision, changed_by FROM voice_attribution_control')))",
+    "    with open(sys.argv[1], 'x') as output:",
+    "        json.dump(values, output, sort_keys=True)",
+    "def proposal(text):",
+    "    now = time.time()",
+    "    source = MemorySource(str(__import__('uuid').uuid4()), str(__import__('uuid').uuid4()), now - 1,",
+    "                          now + 47 * 3600, MemoryOrigin.VOICE)",
+    "    return ledger.store(text, 'fact', 1.0, (source,), proposed=True)",
+    "def scores(top):",
+    "    return lambda db: ScoringSnapshot('enc_rehearsal', tuple(ProfileScore(p, 1, .95 if p == top else .3)",
+    "        for p in sorted(r[0] for r in db.execute('SELECT id FROM voice_profiles WHERE deleted_at IS NULL'))),",
+    "        True, 3.0)",
+]
+P1, P2 = "00000000-0000-4000-8000-0000000000b1", "00000000-0000-4000-8000-0000000000b2"
+# The enabling release (voice on in settings): the operator switches voice on,
+# a person opts in and verifies, and one spoken proposal becomes theirs.
+_ENABLE = "\n".join(_OPEN_WITH_SETTINGS + [
+    "from src.memory.erasure_journal import ErasureParticipant",
+    "assert settings.enabled is True",
+    "assert ledger.set_voice_switch(True, 0, switch).effective",
+    "now = time.time()",
+    "db = ledger._db",
+    "db.execute('BEGIN IMMEDIATE')",
+    "for index, (profile, person) in enumerate(((%r, 'user_rehearsal_a'), (%r, None))):" % (P1, P2),
+    "    source = MemorySource('00000000-0000-4000-8000-00000000e00%d' % index,",
+    "        '00000000-0000-4000-8000-00000000f00%d' % index, now - 10, now + 47 * 3600, MemoryOrigin.VOICE)",
+    "    db.execute(\"INSERT INTO voice_profiles VALUES (?,?,'enc_rehearsal',2,?,?,?,'rehearsal-reviewer',1,NULL)\",",
+    "        (profile, 'Rehearsal ' + str(index), bytes(8), json.dumps([source.to_dict()], sort_keys=True), now - 5))",
+    "    db.execute('INSERT INTO voice_profile_sources VALUES (?,?)', (profile, source.conversation_id))",
+    "    if person is not None:",
+    "        db.execute(\"INSERT INTO voice_profile_people VALUES (?,?,1,?,'rehearsal-reviewer')\", (profile, person, now))",
+    "db.commit()",
+    "me = MemoryVoiceConsentActor('rehearsal-home', 'user_rehearsal_a')",
+    "ledger.request_voice_consent(me, 0)",
+    "binding = ledger.open_voice_verification(me, 1)",
+    "assert ledger.verify_voice_consent(binding, scores(%r), capability, **allow).outcome.value == 'passed'" % P1,
+    "assert ledger.attribute_voice_proposal(proposal('Rehearsal voice proposal').id, scores(%r), capability,"
+    % P1,
+    "    **allow).owner",
+    "ledger.erasures.register_target(ErasureParticipant.COLLECTORS, 1,",
+    "    {'kind': 'wake_clips', 'root': os.path.join(state, 'clips')})",
+    "os.makedirs(os.path.join(state, 'clips'), exist_ok=True)",
+    "db.execute('INSERT INTO voice_group_schema VALUES (1)')",
+    "report(stage='enabled')",
+    "ledger.close()",
+] + _RECEIPT)
+# R1 after the rollback, in a state whose settings enable voice: voice is on
+# until an operator turns the switch off in-run; then attribution stops.
+_R1_SWITCH_OFF = "\n".join(_OPEN_WITH_SETTINGS + [
+    "before = ledger.voice_switch()",
+    "assert before.effective",
+    "ledger.set_voice_switch(False, before.revision, switch)",
+    "decision = ledger.attribute_voice_proposal(proposal('Rehearsal after the switch').id, scores(%r),"
+    % P1,
+    "    capability, **allow)",
+    "report(stage='r1', before_effective=before.effective, decision=decision.reason.value)",
+    "ledger.close()",
+] + _RECEIPT)
+_REPORT = "\n".join(_OPEN_WITH_SETTINGS + ["report(stage='later')", "ledger.close()"] + _RECEIPT)
+
+
+def test_rollback_to_r1_with_voice_on_then_the_operator_switches_it_off(artifacts, tmp_path):
+    """G1 (4a-1): A(Y, voice enabled) -> B(X = R1) is voice-on until the in-run switch; C(Y) keeps it off.
+
+    The settings keep voice enabled in every state (F-CFG: only an admitted
+    procedure could change them); the protected switch row is the off path.
+    """
+    source = tmp_path / "offline"
+    (source / "config").mkdir(parents=True)
+    (source / "data").mkdir()
+    settings = SETTINGS + VOICE_SECTION
+    (source / "config" / "settings.yaml").write_text(settings)
+    root = (tmp_path / "staging").resolve()
+    stage.prepare_slot(artifacts["archives"]["y"], root, "a", source)
+    root = root.resolve()
+    state_a = root / "slots" / "a" / "state"
+    _run(root, "a", _child(_ENABLE, tmp_path / "a.json"))
+    enabled = json.loads((tmp_path / "a.json").read_text())
+    assert enabled["switch"] == {"configured": True, "enabled": True, "revision": 1, "effective": True}
+    assert enabled["owners"] == [["user_rehearsal_a", "voice_proposal", "voice_proposed"]]
+    assert enabled["consents"] == [["user_rehearsal_a", "active", P1]]
+
+    stage.prepare_slot(artifacts["archives"]["x"], root, "b", state_a)  # rollback to R1 (user decision, Q7)
+    state_b = root / "slots" / "b" / "state"
+    assert stage.delegate_slot(root, "b")["targets"]
+    assert stage.activate_slot(root, "b") == "slots/a/runtime"
+    _run(root, "b", _child(_R1_SWITCH_OFF, tmp_path / "b.json"))
+    r1 = json.loads((tmp_path / "b.json").read_text())
+    assert r1["before_effective"] is True
+    assert r1["switch"] == {"configured": True, "enabled": False, "revision": 2, "effective": False}
+    assert r1["control"] == [[1, 0, 2, "rehearsal-operator"]]
+    assert r1["decision"] == "disabled"
+    assert r1["owners"] == enabled["owners"] and r1["consents"] == enabled["consents"]  # person data untouched
+
+    stage.prepare_slot(artifacts["archives"]["y"], root, "c", state_b)
+    state_c = root / "slots" / "c" / "state"
+    assert stage.delegate_slot(root, "c")["targets"]
+    assert stage.activate_slot(root, "c") == "slots/b/runtime"
+    _run(root, "c", _child(_REPORT, tmp_path / "c.json"))
+    later = json.loads((tmp_path / "c.json").read_text())
+    assert later["switch"] == r1["switch"] and later["control"] == r1["control"]
+    assert os.readlink(root / "current") == "slots/c/runtime"
+    for state in (state_a, state_b, state_c):
+        assert (state / "config" / "settings.yaml").read_text() == settings

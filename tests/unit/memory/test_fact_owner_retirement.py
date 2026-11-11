@@ -183,7 +183,7 @@ def test_proof_stays_unavailable_when_the_state_cannot_be_read(ledger, clock, mo
     def broken(db):
         raise sqlite3.OperationalError("synthetic unreadable owner rows")
 
-    monkeypatch.setattr(module, "_owner_people", broken)
+    monkeypatch.setattr(module, "_owner_refs", broken)
     with pytest.raises(sqlite3.OperationalError):
         _assign(ledger, fact)
     monkeypatch.undo()
@@ -467,14 +467,15 @@ def test_the_assign_route_is_the_only_production_assignment_and_it_is_wired():
     assert calls == ["src/dashboard/memory_api.py"]
 
 
-def test_account_delete_orders_retirement_links_memories_then_catalog():
+def test_account_delete_orders_retirement_memories_links_then_catalog():
+    """G3/N3 (U3b-4a-1): memories (pending voice proposals included) go before the voice links."""
     tree = ast.parse((ROOT / "src/dashboard/admin.py").read_text(encoding="utf-8"))
     function = next(node for node in ast.walk(tree)
                     if isinstance(node, ast.AsyncFunctionDef) and node.name == "_delete_account")
     steps = {"retire_user", "clear_user_links", "clear_user_facts", "remove_user"}
     lines = {node.attr: node.lineno for node in ast.walk(function)
              if isinstance(node, ast.Attribute) and node.attr in steps}
-    assert sorted(lines, key=lines.get) == ["retire_user", "clear_user_links", "clear_user_facts", "remove_user"]
+    assert sorted(lines, key=lines.get) == ["retire_user", "clear_user_facts", "clear_user_links", "remove_user"]
     assert function.args.args and len(function.args.args) == 7  # output_registration_v2 _delete_step shape
 
 

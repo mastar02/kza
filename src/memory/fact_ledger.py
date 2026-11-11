@@ -29,9 +29,14 @@ from src.core.voice_person_index import VoicePersonIndex
 from src.memory.erasure_journal import ERASURE_SCHEMA, ErasureJournal
 from src.dashboard.live_receipts import LIVE_RECEIPT_SCHEMA
 from src.memory.index_deletions import INDEX_DELETION_SCHEMA, IndexDeletionQueue
+from src.memory.voice_attribution import (
+    AttributionReason, GateDecision, ScoringSnapshot, VoiceAttributionCapability, VoiceAttributionEventKind,
+    VoiceConsentState, VoiceProposalSettings, VoiceSuspensionReason, VoiceVerificationOutcome,
+    evaluate_gate, verification_outcome,
+)
 from src.memory.voice_schema import (
     VOICE_SCHEMA, initialize_voice_attribution_schema, initialize_voice_people_schema,
-    initialize_voice_review_schema,
+    initialize_voice_review_schema, scan_voice_attribution_rows,
 )
 
 logger = logging.getLogger(__name__)
@@ -283,6 +288,67 @@ class MemoryOwnerReader:
                 raise PermissionError("memory_owner_actor_denied")
 
 
+@dataclass(frozen=True)
+class MemoryVoiceConsentActor:
+    """Server-minted capability of one person managing their own voice consent (U3b-4a-1).
+
+    Requires ``memory:own:voice`` (a separate biometric grant) and a household
+    principal bound to a user id. No DashboardPermission member grants it
+    until U3b-4a-2, so production cannot mint one in 4a-1.
+    """
+
+    subject: str
+    person_id: str
+    _current: Callable[[], bool] | None = field(default=None, repr=False, compare=False)
+
+    @classmethod
+    def from_dashboard(cls, principal: object,
+                       current: Callable[[], bool] | None = None) -> "MemoryVoiceConsentActor":
+        """Mint consent authority from a person-bound dashboard session."""
+        if not _person_principal(principal, "memory:own:voice"):
+            raise PermissionError("memory_voice_actor_denied")
+        return cls(principal.subject, principal.user_id, current)
+
+    def require_current(self) -> None:
+        """A queued consent action cannot outlive its original session."""
+        if self._current is not None:
+            try:
+                allowed = self._current()
+            except Exception:
+                raise PermissionError("memory_voice_actor_denied") from None
+            if allowed is not True:
+                raise PermissionError("memory_voice_actor_denied")
+
+
+@dataclass(frozen=True)
+class VoiceSwitchActor:
+    """Operator capability to turn the voice stage off or on (G1); never HOME or EVALUATOR."""
+
+    subject: str
+    _current: Callable[[], bool] | None = field(default=None, repr=False, compare=False)
+
+    @classmethod
+    def from_dashboard(cls, principal: object, current: Callable[[], bool] | None = None) -> "VoiceSwitchActor":
+        """Require an operator session holding admin:manage and memory:assign."""
+        from src.dashboard.auth import DashboardPrincipal
+        from src.dashboard.authority import DashboardRole
+        if (not isinstance(principal, DashboardPrincipal) or principal.role is not DashboardRole.OPERATOR
+                or not {"admin:manage", "memory:assign"} <= principal.permissions
+                or type(principal.subject) is not str or not principal.subject):
+            raise PermissionError("memory_voice_switch_denied")
+        return cls(principal.subject, current)
+
+    def require_current(self) -> None:
+        """A queued switch write cannot outlive its original session."""
+        if self._current is not None:
+            try:
+                allowed = self._current()
+            except Exception:
+                raise PermissionError("memory_voice_switch_denied") from None
+            if allowed is not True:
+                raise PermissionError("memory_voice_switch_denied")
+
+
 def _person_principal(principal: object, permission: str) -> bool:
     """A household dashboard principal bound to a person and holding ``permission``."""
     from src.dashboard.auth import DashboardPrincipal
@@ -354,6 +420,62 @@ class AssignmentReceipt:
     fact_revision: int
     owner_revision: int
     deleted_dependents: int = 0
+
+
+@dataclass(frozen=True)
+class ReturnReceipt:
+    """Result of «No es mío» (N5); truthy exactly when the fact was returned."""
+
+    returned: bool
+    voice_proposal: bool = False
+
+    def __bool__(self) -> bool:
+        return self.returned
+
+
+@dataclass(frozen=True)
+class VoiceConsent:
+    """One person's consent row, content-free; revision 0 and state None mean no row."""
+
+    person_id: str
+    state: VoiceConsentState | None
+    revision: int
+    verified_profile_id: str | None = None
+
+
+@dataclass(frozen=True)
+class VoiceSwitchState:
+    """G1: configured (settings) and enabled (protected row); effective only when both."""
+
+    configured: bool
+    enabled: bool
+    revision: int
+
+    @property
+    def effective(self) -> bool:
+        """The voice stage runs only when settings and the switch row both enable it."""
+        return self.configured and self.enabled
+
+
+@dataclass(frozen=True)
+class VoiceVerificationBinding:
+    """What a verification window was opened against; any change makes the result 'unavailable'."""
+
+    person_id: str
+    consent_revision: int
+    profile_id: str
+    profile_revision: int
+    link_revision: int
+    opened_at: float
+
+
+@dataclass(frozen=True)
+class VoiceVerificationResult:
+    """The recorded outcome and the closed gate reason; no score or profile detail."""
+
+    outcome: VoiceVerificationOutcome
+    reason: AttributionReason
+    state: VoiceConsentState | None
 
 
 @dataclass(frozen=True)
@@ -435,6 +557,36 @@ _REVISION_SELECT = ("SELECT fact_id,revision,last_change,confirmed_by_assignment
                     "FROM fact_owner_revisions")
 
 
+_VOICE_EVIDENCE_KEYS = ("v", "profile_id", "profile_revision", "link_revision", "consent_revision",
+                        "score_bucket", "margin_bucket")
+
+
+def _voice_evidence(profile_id: str, profile_revision: int, link_revision: int, consent_revision: int,
+                    decision: GateDecision) -> str:
+    """Canonical evidence of an unconfirmed voice proposal; cleared on confirmation (R5)."""
+    return json.dumps({"v": 1, "profile_id": profile_id, "profile_revision": profile_revision,
+                       "link_revision": link_revision, "consent_revision": consent_revision,
+                       "score_bucket": decision.score_bucket, "margin_bucket": decision.margin_bucket},
+                      sort_keys=True, separators=(",", ":"))
+
+
+def _evidence_valid(owner: FactOwner, record: FactOwnerRevision) -> bool:
+    """Only an unconfirmed voice proposal carries evidence, and only the canonical shape."""
+    if record.last_change is not FactOwnerChange.VOICE_PROPOSED:
+        return owner.evidence == "{}"
+    try:
+        value = json.loads(owner.evidence)
+    except ValueError:
+        return False
+    return (owner.method is FactOwnerMethod.VOICE_PROPOSAL and type(value) is dict
+            and sorted(value) == sorted(_VOICE_EVIDENCE_KEYS) and value["v"] == 1
+            and _valid_person(value["profile_id"])
+            and all(type(value[key]) is int and value[key] >= 1
+                    for key in ("profile_revision", "link_revision", "consent_revision"))
+            and all(type(value[key]) is int and -20 <= value[key] <= 20 for key in ("score_bucket", "margin_bucket"))
+            and owner.evidence == json.dumps(value, sort_keys=True, separators=(",", ":")))
+
+
 def _scan_fact_owner_rows(db: sqlite3.Connection) -> None:
     """Validate every owner and revision row; unknown values fail closed (1a-F4)."""
     owners = [_owner_from_row(row) for row in db.execute(_OWNER_SELECT)]
@@ -443,14 +595,28 @@ def _scan_fact_owner_rows(db: sqlite3.Connection) -> None:
         record = revisions.get(owner.fact_id)
         if record is None or record.revision != owner.revision:
             raise RuntimeError("fact_owner_revision_mismatch")
+        if not _evidence_valid(owner, record):
+            raise RuntimeError("fact_owner_value_unknown")
 
 
-def _owner_people(db: sqlite3.Connection) -> frozenset[str]:
-    """Every person id referenced by an owner row; an invalid id fails closed."""
-    people = frozenset(row[0] for row in db.execute("SELECT DISTINCT person_id FROM fact_owners"))
+def _owner_refs(db: sqlite3.Connection) -> frozenset[str]:
+    """Every person id an owner, consent or verification-attempt row names (R4); invalid ids fail closed."""
+    people = frozenset(row[0] for row in db.execute(
+        "SELECT person_id FROM fact_owners UNION SELECT person_id FROM voice_attribution_consents "
+        "UNION SELECT person_id FROM voice_verification_attempts"))
     if not all(_valid_person(person) for person in people):
         raise RuntimeError("fact_owner_value_unknown")
     return people
+
+
+_VERIFIER = "system:voice-verification"
+
+
+def _subject(value: object) -> str:
+    """The real acting subject for a changed_by column; a malformed one refuses the write (never relabelled)."""
+    if not _valid_person(value):
+        raise PermissionError("memory_voice_subject_invalid")
+    return value
 
 
 def _retirement_proven(retired: Callable[[frozenset[str]], bool], identities: frozenset[str]) -> bool:
@@ -659,11 +825,15 @@ class FactLedger:
     """Own expiry, source links, review transitions and durable deletion intent."""
 
     def __init__(self, path: str = ":memory:", *, clock: Callable[[], float] | None = None,
-                 automatic_days: float = 30.0):
+                 automatic_days: float = 30.0, voice_settings: VoiceProposalSettings | None = None):
         if type(automatic_days) not in (int, float) or not math.isfinite(automatic_days) or not 0 < automatic_days <= 30:
             raise ValueError("automatic_memory_retention_must_be_at_most_30_days")
         self.path, self.automatic_days = path, automatic_days
         self.clock = time.time if clock is None else clock
+        if voice_settings is not None and type(voice_settings) is not VoiceProposalSettings:
+            raise ValueError("voice_proposals_config_invalid")
+        # G2: absent settings mean the voice stage is off; the switch row alone never enables it.
+        self.voice_settings = VoiceProposalSettings() if voice_settings is None else voice_settings
         self._lock = threading.RLock()
         self._db: sqlite3.Connection | None = None
         self._authority_available = False
@@ -680,6 +850,8 @@ class FactLedger:
         # Same content-free proof pattern for owner rows (U3b-1b): the account
         # catalog reads it without ledger locks before removing an account.
         self._fact_owner_proof = VoicePersonIndex()
+        # A voice-side hook removed owner references; republish the proof after its transaction.
+        self._owner_proof_dirty = False
         # Content-free health signal (U3b-1b F2): the boot prune of retired
         # owners failed and the privacy maintenance tick is retrying it.
         self.retired_owner_prune_pending = False
@@ -751,7 +923,7 @@ class FactLedger:
                 initialize_fact_owner_schema(db)
                 # U3b-4a-0: voice-attribution authority (validated, never pruned at open).
                 initialize_voice_attribution_schema(db)
-                owners = _owner_people(db)
+                owners = _owner_refs(db)
                 receipts = self._read_fact_receipts(db)
                 deleted_times = dict(db.execute("SELECT conversation_id, deleted_at FROM conversation_tombstones"))
                 self._fact_receipts = receipts
@@ -1091,7 +1263,10 @@ class FactLedger:
             if not self._eligible(db, fact, review=True):
                 raise LookupError("memory_proposal_unavailable")
             if fact.state is FactState.CONFIRMED:
-                return fact
+                return fact  # idempotent, owned or not (writes nothing, so R5 is unaffected)
+            if db.execute("SELECT 1 FROM fact_owners WHERE fact_id=?", (fact_id,)).fetchone() is not None:
+                # An owned proposal is confirmed only through the owner route (Q1 A).
+                raise ValueError("memory_owner_confirm_required")
             if fact.state is not FactState.PROPOSED:
                 raise ValueError("memory_proposal_required")
             revision = fact.revision + 1
@@ -1155,9 +1330,15 @@ class FactLedger:
 
     def _write_owner(self, db, fact_id: str, record: FactOwnerRevision | None, change: FactOwnerChange, *,
                      person_id: str | None = None, method: FactOwnerMethod | None = None,
-                     assigned_by: str | None = None, confirmed: bool = False) -> int:
-        """Apply one owner change: upsert or remove the owner row, then bump the revision row."""
+                     assigned_by: str | None = None, confirmed: bool = False, evidence: str = "{}") -> int:
+        """Apply one owner change: upsert or remove the owner row, then bump the revision row.
+
+        Only a 'voice_proposed' change may carry evidence; every other change
+        writes '{}' (R5: no biometric-derived data after confirmation).
+        """
         if type(change) is not FactOwnerChange or (person_id is not None and type(method) is not FactOwnerMethod):
+            raise RuntimeError("fact_owner_value_unknown")
+        if type(evidence) is not str or (evidence != "{}" and change is not FactOwnerChange.VOICE_PROPOSED):
             raise RuntimeError("fact_owner_value_unknown")
         revision = (0 if record is None else record.revision) + 1
         sticky = 1 if confirmed or (record is not None and record.confirmed_by_assignment == 1) else 0
@@ -1167,10 +1348,10 @@ class FactLedger:
         else:
             db.execute(
                 "INSERT INTO fact_owners(fact_id,person_id,method,revision,assigned_at,assigned_by,evidence) "
-                "VALUES (?,?,?,?,?,?,'{}') ON CONFLICT(fact_id) DO UPDATE SET person_id=excluded.person_id, "
+                "VALUES (?,?,?,?,?,?,?) ON CONFLICT(fact_id) DO UPDATE SET person_id=excluded.person_id, "
                 "method=excluded.method, revision=excluded.revision, assigned_at=excluded.assigned_at, "
                 "assigned_by=excluded.assigned_by, evidence=excluded.evidence",
-                (fact_id, person_id, method.value, revision, now, assigned_by))
+                (fact_id, person_id, method.value, revision, now, assigned_by, evidence))
         db.execute(
             "INSERT INTO fact_owner_revisions(fact_id,revision,last_change,confirmed_by_assignment,changed_at) "
             "VALUES (?,?,?,?,?) ON CONFLICT(fact_id) DO UPDATE SET revision=excluded.revision, "
@@ -1239,7 +1420,19 @@ class FactLedger:
             if delete_dependents and fact.state is not FactState.AUTOMATIC:
                 raise ValueError("memory_owner_dependents_not_applicable")
             if owner is not None and owner.person_id == person_id:
-                return AssignmentReceipt(fact.revision, record.revision)
+                if fact.state is not FactState.PROPOSED:
+                    return AssignmentReceipt(fact.revision, record.revision)
+                # Q1 A: the operator confirms a same-person voice proposal. The
+                # method stays voice_proposal; the evidence is cleared (R5).
+                fact_revision = fact.revision + 1
+                db.execute("UPDATE facts SET state=?, expires_at=NULL, confirmed_at=?, confirmed_by=?, revision=? "
+                           "WHERE id=?", (FactState.CONFIRMED.value, self.clock(), actor.subject, fact_revision,
+                                          fact_id))
+                self._queue(db, fact_id, fact_revision, "upsert")
+                owner_revision = self._write_owner(db, fact_id, record, FactOwnerChange.OPERATOR_CONFIRMED,
+                                                   person_id=person_id, method=owner.method,
+                                                   assigned_by=actor.subject, confirmed=True)
+                return AssignmentReceipt(fact_revision, owner_revision)
             deleted = 0
             confirming = fact.state in (FactState.AUTOMATIC, FactState.PROPOSED)
             if fact.state is FactState.AUTOMATIC:
@@ -1278,12 +1471,16 @@ class FactLedger:
             return AssignmentReceipt(fact.revision, self._write_owner(
                 db, fact_id, record, FactOwnerChange.OPERATOR_UNASSIGNED))
 
-    def return_owned(self, fact_id: str, person_id: str, actor: MemoryOwnerActor) -> bool:
+    def return_owned(self, fact_id: str, person_id: str, actor: MemoryOwnerActor) -> ReturnReceipt:
         """'No es mío': the owner hands the fact back to the operator's 'Devueltos' queue.
 
-        The fact stays as it is (CONFIRMED, no expiry) and ownerless. A fact the
-        actor's person does not own returns False, like a missing one, after
-        exactly the same statements (U3b-2: no timing class between the two).
+        The fact stays as it is (CONFIRMED with no expiry, or an unconfirmed
+        voice proposal keeping its deadline, Q3 A) and ownerless. A fact the
+        actor's person does not own returns ReturnReceipt(False, False), like a
+        missing one, after exactly the same statements (U3b-2: no timing class).
+        Only an unconfirmed voice proposal (last change 'voice_proposed')
+        counts against its profile; the event insert is capped and the
+        suspension insert is idempotent (design v4 data_model.return_counter).
         """
         if (type(actor) is not MemoryOwnerActor or type(actor.subject) is not str or not actor.subject
                 or not _valid_person(actor.person_id) or person_id != actor.person_id):
@@ -1292,10 +1489,16 @@ class FactLedger:
         with self._owner_transaction(actor.require_current, withdraw=False) as db:
             fact = self._owned_fact(db, fact_id, person_id)
             if fact is None:
-                return False
-            _owner, record = self._owner_state(db, fact_id)
+                return ReturnReceipt(False, False)
+            owner, record = self._owner_state(db, fact_id)
+            voice = record.last_change is FactOwnerChange.VOICE_PROPOSED
+            if voice and not _evidence_valid(owner, record):
+                raise RuntimeError("fact_owner_value_unknown")
+            evidence = json.loads(owner.evidence) if voice else None
             self._write_owner(db, fact_id, record, FactOwnerChange.OWNER_RETURNED)
-            return True
+            if voice:
+                self._count_not_mine(db, evidence["profile_id"], evidence["score_bucket"])
+            return ReturnReceipt(True, voice)
 
     def _owner_actor(self, actor: object, kind: type) -> None:
         if (type(actor) is not kind or type(actor.subject) is not str or not actor.subject
@@ -1418,7 +1621,12 @@ class FactLedger:
             return FactPage(tuple(self._person_projection(db, fact, actor.person_id) for fact in facts), cursor)
 
     def _person_projection(self, db, fact: StoredFact, person_id: str) -> dict:
-        owner, _record = self._owner_state(db, fact.id)
+        owner, record = self._owner_state(db, fact.id)
+        if record is not None and record.last_change is FactOwnerChange.VOICE_PROPOSED:
+            # Q5: content-free until administration confirms; hour-rounded times (N7).
+            return {"id": fact.id, "kind": "voice_proposal_pending",
+                    "created_at": math.floor(fact.extracted_at / 3600) * 3600.0,
+                    "expires_at": None if fact.expires_at is None else math.floor(fact.expires_at / 3600) * 3600.0}
         dependents = [identity for identity, _state in self._dependents(db, fact.id)]
         owned = [identity for identity in dependents if db.execute(
             "SELECT 1 FROM fact_owners WHERE fact_id=? AND person_id=?", (identity, person_id)).fetchone()]
@@ -1448,6 +1656,556 @@ class FactLedger:
                                            "WHERE f.state=?", (FactState.PROPOSED.value,)).fetchone()[0])
 
 
+    # --- U3b-4a-1: voice attribution. Dark: no production caller until U3b-4b. ------------------
+
+    def _voice_switch_row(self, db) -> tuple[bool, int]:
+        row = db.execute("SELECT enabled, revision FROM voice_attribution_control WHERE id=1").fetchone()
+        return (False, 0) if row is None else (row[0] == 1, row[1])
+
+    def _voice_effective(self, db) -> bool:
+        """G1 + G2: settings enable the stage AND the protected switch row says enabled=1."""
+        return self.voice_settings.enabled is True and self._voice_switch_row(db)[0]
+
+    def voice_switch(self) -> VoiceSwitchState:
+        """Read the switch; a missing row reads off (revision 0)."""
+        with self._transaction() as db:
+            scan_voice_attribution_rows(db)
+            enabled, revision = self._voice_switch_row(db)
+            return VoiceSwitchState(self.voice_settings.enabled is True, enabled, revision)
+
+    def set_voice_switch(self, enabled: bool, expected_revision: int, actor: VoiceSwitchActor) -> VoiceSwitchState:
+        """G1: CAS write of the single switch row; turning it off needs no release or config change.
+
+        Turning it on is refused with ``memory_voice_not_configured`` unless the
+        settings enable voice, so enabling still needs F-CFG. Writing the value
+        the row already has (or off over a missing row) changes nothing.
+        """
+        if type(actor) is not VoiceSwitchActor or type(actor.subject) is not str or not actor.subject:
+            raise PermissionError("memory_voice_switch_denied")
+        actor.require_current()
+        if type(enabled) is not bool or type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError("memory_voice_switch_invalid")
+        if enabled and self.voice_settings.enabled is not True:
+            raise ValueError("memory_voice_not_configured")
+        with self._transaction(actor.require_current) as db:
+            scan_voice_attribution_rows(db)
+            current, revision = self._voice_switch_row(db)
+            if revision != expected_revision:
+                raise ValueError("memory_voice_switch_conflict")
+            if current != enabled:
+                revision += 1
+                db.execute("INSERT INTO voice_attribution_control VALUES (1,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                           "enabled=excluded.enabled, revision=excluded.revision, changed_at=excluded.changed_at, "
+                           "changed_by=excluded.changed_by",
+                           (int(enabled), revision, self.clock(), _subject(actor.subject)))
+            return VoiceSwitchState(self.voice_settings.enabled is True, enabled, revision)
+
+    def _consent_row(self, db, person_id: str) -> tuple | None:
+        row = db.execute("SELECT state, revision, verified_profile_id, verified_profile_revision, "
+                         "verified_link_revision FROM voice_attribution_consents WHERE person_id=?",
+                         (person_id,)).fetchone()
+        return None if row is None else (VoiceConsentState(row[0]), row[1], (row[2], row[3], row[4]))
+
+    def _consent(self, db, person_id: str) -> VoiceConsent:
+        row = self._consent_row(db, person_id)
+        return VoiceConsent(person_id, None, 0) if row is None else VoiceConsent(person_id, row[0], row[1], row[2][0])
+
+    def _write_consent(self, db, person_id: str, state: VoiceConsentState, revision: int, changed_by: str,
+                       verified: tuple = (None, None, None)) -> VoiceConsent:
+        db.execute("INSERT INTO voice_attribution_consents VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(person_id) DO UPDATE "
+                   "SET state=excluded.state, revision=excluded.revision, "
+                   "verified_profile_id=excluded.verified_profile_id, "
+                   "verified_profile_revision=excluded.verified_profile_revision, "
+                   "verified_link_revision=excluded.verified_link_revision, changed_at=excluded.changed_at, "
+                   "changed_by=excluded.changed_by",
+                   (person_id, state.value, revision, *verified, self.clock(), _subject(changed_by)))
+        return VoiceConsent(person_id, state, revision, verified[0])
+
+    def voice_profile_live(self, encoded: object, confirmed_at: object, confirmed_by: object,
+                           deleted_at: object) -> bool:
+        """The single definition of a live reviewed voice profile.
+
+        VoiceLedger._live(confirmed=True) delegates here, so the scoring set
+        and the voice ledger cannot drift (4a-1 review F). Malformed sources
+        are not live.
+        """
+        now = self.clock()
+        try:
+            decoded = json.loads(encoded)
+            if type(decoded) is not list or not 1 <= len(decoded) <= 256:
+                return False
+            sources = tuple(MemorySource.from_dict(item) for item in decoded)
+        except (ValueError, KeyError, TypeError):
+            return False
+        return (deleted_at is None and type(confirmed_by) is str and bool(confirmed_by) and _finite(confirmed_at)
+                and confirmed_at <= now and self.activity_sources_available(sources))
+
+    def _live_voice_profiles(self, db) -> dict[str, int]:
+        """The scoring set: every live reviewed profile, linked or not, with or without an embedding."""
+        return {identity: revision for identity, revision, encoded, confirmed_at, confirmed_by, deleted_at
+                in db.execute("SELECT id, revision, sources_json, confirmed_at, confirmed_by, deleted_at "
+                              "FROM voice_profiles WHERE deleted_at IS NULL")
+                if self.voice_profile_live(encoded, confirmed_at, confirmed_by, deleted_at)}
+
+    @staticmethod
+    def _scorable(db, live: dict[str, int]) -> bool:
+        """4a-1 review D: a live profile without a stored embedding makes the scoring set incomplete."""
+        return not any(db.execute("SELECT 1 FROM voice_profiles WHERE id=? AND embedding IS NULL",
+                                  (identity,)).fetchone() for identity in live)
+
+    def _profile_links(self, db) -> dict[str, tuple[str, int]]:
+        return {row[0]: (row[1], row[2]) for row in db.execute(
+            "SELECT profile_id, user_id, revision FROM voice_profile_people WHERE user_id IS NOT NULL")}
+
+    def _linked_profiles(self, db, person_id: str, live: dict[str, int] | None = None) -> dict[str, tuple[int, int]]:
+        """The person's live linked profiles: profile -> (profile revision, link revision)."""
+        live = self._live_voice_profiles(db) if live is None else live
+        return {profile: (live[profile], link_revision) for profile, (user, link_revision)
+                in self._profile_links(db).items() if user == person_id and profile in live}
+
+    @staticmethod
+    def _suspended(db, profile_id: str) -> bool:
+        return db.execute("SELECT 1 FROM voice_attribution_suspensions WHERE profile_id=?",
+                          (profile_id,)).fetchone() is not None
+
+    def _attempt(self, db, person_id: str, outcome: VoiceVerificationOutcome) -> float:
+        """Write one attempt row at the ledger clock; a key collision bumps by the smallest float step."""
+        at = self.clock()
+        while db.execute("SELECT 1 FROM voice_verification_attempts WHERE person_id=? AND attempted_at=?",
+                         (person_id, at)).fetchone() is not None:
+            at = math.nextafter(at, math.inf)
+        db.execute("INSERT INTO voice_verification_attempts VALUES (?,?,?)", (person_id, at, outcome.value))
+        return at
+
+    def _attempts_since(self, db, person_id: str, outcome: VoiceVerificationOutcome, window_s: float) -> int:
+        """Time-filtered count (N4): rows past their window never count, pruned or not."""
+        return db.execute("SELECT COUNT(*) FROM voice_verification_attempts WHERE person_id=? AND outcome=? "
+                          "AND attempted_at>=?", (person_id, outcome.value, self.clock() - window_s)).fetchone()[0]
+
+    @staticmethod
+    def _consent_actor(actor: object) -> None:
+        if (type(actor) is not MemoryVoiceConsentActor or type(actor.subject) is not str or not actor.subject
+                or not _valid_person(actor.person_id)):
+            raise PermissionError("memory_voice_actor_denied")
+        actor.require_current()
+
+    @staticmethod
+    def _expected(revision: object) -> int:
+        if type(revision) is not int or revision < 0:
+            raise ValueError("memory_voice_consent_conflict")
+        return revision
+
+    def voice_consent(self, actor: MemoryVoiceConsentActor) -> VoiceConsent:
+        """The caller's own consent; available with the voice stage off (revocation stays possible)."""
+        self._consent_actor(actor)
+        with self._transaction(actor.require_current) as db:
+            scan_voice_attribution_rows(db)
+            return self._consent(db, actor.person_id)
+
+    def request_voice_consent(self, actor: MemoryVoiceConsentActor, expected_revision: int) -> VoiceConsent:
+        """none | revoked | invalidated -> pending_verification; it grants nothing yet.
+
+        Requires the effective switch and exactly one live reviewed profile
+        linked to the person. Adds a person reference, so the owner proof is
+        withdrawn while it runs (R4).
+        """
+        self._consent_actor(actor)
+        expected = self._expected(expected_revision)
+        with self._owner_transaction(actor.require_current) as db:
+            scan_voice_attribution_rows(db)
+            if not self._voice_effective(db):
+                raise ValueError("memory_voice_disabled")
+            consent = self._consent(db, actor.person_id)
+            if consent.revision != expected:
+                raise ValueError("memory_voice_consent_conflict")
+            if consent.state is VoiceConsentState.VERIFICATION_LOCKED:
+                raise ValueError("memory_voice_consent_locked")
+            if consent.state not in (None, VoiceConsentState.REVOKED, VoiceConsentState.INVALIDATED):
+                raise ValueError("memory_voice_consent_state")
+            linked = self._linked_profiles(db, actor.person_id)
+            if not linked:
+                raise ValueError("memory_voice_no_profile")
+            if len(linked) > 1:
+                raise ValueError("memory_voice_profile_ambiguous")
+            return self._write_consent(db, actor.person_id, VoiceConsentState.PENDING_VERIFICATION,
+                                       consent.revision + 1, actor.subject)
+
+    def revoke_voice_consent(self, actor: MemoryVoiceConsentActor, expected_revision: int) -> VoiceConsent:
+        """Any existing consent -> revoked, also with the voice stage off.
+
+        A locked consent stays locked (4a-1 review B): it already grants
+        nothing, the revocation is recorded in changed_by, and only an operator
+        reopen lifts the lock (it then lands in revoked, not pending). Pending
+        voice-owned proposals stay pending: the person keeps «No es mío» and
+        «Descartar» on them.
+        """
+        self._consent_actor(actor)
+        expected = self._expected(expected_revision)
+        with self._owner_transaction(actor.require_current, withdraw=False) as db:
+            scan_voice_attribution_rows(db)
+            consent = self._consent(db, actor.person_id)
+            if consent.revision != expected:
+                raise ValueError("memory_voice_consent_conflict")
+            if consent.state in (None, VoiceConsentState.REVOKED):
+                raise ValueError("memory_voice_consent_state")
+            state = (VoiceConsentState.VERIFICATION_LOCKED if consent.state is VoiceConsentState.VERIFICATION_LOCKED
+                     else VoiceConsentState.REVOKED)
+            return self._write_consent(db, actor.person_id, state, consent.revision + 1, actor.subject)
+
+    def reopen_voice_consent(self, person_id: str, expected_revision: int, actor: MemoryAssigner) -> VoiceConsent:
+        """Operator: verification_locked -> pending_verification; any other state or no row is the same refusal.
+
+        The person's counted failures are deleted, so the reopen restores a
+        full set of attempts (4a-1 review A); window openings stay for the rate
+        limit. A lock the person revoked while locked reopens to 'revoked'.
+        """
+        self._assigner(actor)
+        expected = self._expected(expected_revision)
+        if not _valid_person(person_id):
+            raise ValueError("memory_voice_consent_state")
+        with self._owner_transaction(actor.require_current, withdraw=False) as db:
+            scan_voice_attribution_rows(db)
+            consent = self._consent(db, person_id)
+            if consent.state is not VoiceConsentState.VERIFICATION_LOCKED or consent.revision != expected:
+                raise ValueError("memory_voice_consent_state")
+            changed_by = db.execute("SELECT changed_by FROM voice_attribution_consents WHERE person_id=?",
+                                    (person_id,)).fetchone()[0]
+            db.execute("DELETE FROM voice_verification_attempts WHERE person_id=? AND outcome=?",
+                       (person_id, VoiceVerificationOutcome.FAILED.value))
+            state = (VoiceConsentState.PENDING_VERIFICATION if changed_by == _VERIFIER
+                     else VoiceConsentState.REVOKED)
+            return self._write_consent(db, person_id, state, consent.revision + 1, actor.subject)
+
+    def open_voice_verification(self, actor: MemoryVoiceConsentActor,
+                                expected_revision: int) -> VoiceVerificationBinding:
+        """Record a 'window_opened' attempt and return what the window is bound to.
+
+        Only in pending_verification, with exactly one live linked profile that
+        is not suspended and a scoring set of at least min_scoring_profiles
+        (Q4). More than verification_windows_per_day openings in 24 h, counted
+        from the durable table, are refused (rate limit survives a restart).
+        The in-memory window itself (room, phrase) belongs to U3b-4b.
+        """
+        self._consent_actor(actor)
+        expected = self._expected(expected_revision)
+        person = actor.person_id
+        with self._owner_transaction(actor.require_current) as db:
+            scan_voice_attribution_rows(db)
+            if not self._voice_effective(db):
+                raise ValueError("memory_voice_disabled")
+            consent = self._consent(db, person)
+            if consent.revision != expected:
+                raise ValueError("memory_voice_consent_conflict")
+            if consent.state is not VoiceConsentState.PENDING_VERIFICATION:
+                raise ValueError("memory_voice_consent_state")
+            live = self._live_voice_profiles(db)
+            linked = self._linked_profiles(db, person, live)
+            if not linked:
+                raise ValueError("memory_voice_no_profile")
+            if len(linked) > 1:
+                raise ValueError("memory_voice_profile_ambiguous")
+            (profile, (profile_revision, link_revision)), = linked.items()
+            if self._suspended(db, profile):
+                raise ValueError("memory_voice_profile_suspended")
+            if len(live) < self.voice_settings.min_scoring_profiles:
+                raise ValueError("memory_voice_insufficient_profiles")
+            if not self._scorable(db, live):
+                raise ValueError("memory_voice_scoring_incomplete")
+            if self._attempts_since(db, person, VoiceVerificationOutcome.WINDOW_OPENED,
+                                    86400.0) >= self.voice_settings.verification_windows_per_day:
+                raise PermissionError("memory_voice_rate_limited")
+            opened_at = self._attempt(db, person, VoiceVerificationOutcome.WINDOW_OPENED)
+            return VoiceVerificationBinding(person, consent.revision, profile, profile_revision, link_revision,
+                                            opened_at)
+
+    @staticmethod
+    def _person_available(retired: object, active: object, person_id: str) -> bool:
+        """Only an exact False from ``retired`` and an exact True from ``active`` count; errors never do."""
+        if not callable(retired) or not callable(active):
+            return False
+        try:
+            return retired(frozenset({person_id})) is False and active(person_id) is True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _snapshot(db, scorer: Callable) -> ScoringSnapshot | None:
+        try:
+            snapshot = scorer(db)
+        except Exception as error:
+            logger.warning("[FactLedger] voice scorer failed: %s", type(error).__name__)
+            return None
+        return snapshot if type(snapshot) is ScoringSnapshot and snapshot.valid() else None
+
+    def _verification_reason(self, db, binding: VoiceVerificationBinding, scorer: Callable,
+                             retired: object, active: object) -> AttributionReason:
+        person = binding.person_id
+        if not self._voice_effective(db):
+            return AttributionReason.DISABLED
+        if not self._person_available(retired, active, person):
+            return AttributionReason.PERSON_UNAVAILABLE
+        consent = self._consent_row(db, person)
+        if (consent is None or consent[0] is not VoiceConsentState.PENDING_VERIFICATION
+                or consent[1] != binding.consent_revision):
+            return AttributionReason.CONSENT_STALE
+        live = self._live_voice_profiles(db)
+        if self._linked_profiles(db, person, live) != {
+                binding.profile_id: (binding.profile_revision, binding.link_revision)}:
+            return AttributionReason.CONSENT_STALE
+        if self._suspended(db, binding.profile_id):
+            return AttributionReason.SUSPENDED
+        snapshot = self._snapshot(db, scorer)
+        if snapshot is None:
+            return AttributionReason.ERROR
+        if {item.profile_id: item.revision for item in snapshot.scores} != live or not self._scorable(db, live):
+            return AttributionReason.INCOMPLETE_SCORING_SET
+        links = self._profile_links(db)
+
+        def grantable(top: str) -> AttributionReason | None:
+            if top == binding.profile_id:
+                return None
+            owner = links.get(top)
+            return (AttributionReason.TOP_FOREIGN if owner is not None and owner[0] != person
+                    else AttributionReason.TOP_NOT_GRANTABLE)
+
+        return evaluate_gate(snapshot, self.voice_settings, grantable).reason
+
+    def verify_voice_consent(self, binding: VoiceVerificationBinding, scorer: Callable[[sqlite3.Connection], ScoringSnapshot],
+                             capability: VoiceAttributionCapability, *, retired: Callable[[frozenset[str]], bool],
+                             active: Callable[[str], bool]) -> VoiceVerificationResult:
+        """Evaluate one verification utterance with the single linked profile as the grantable set.
+
+        ``scorer(db)`` runs inside the ledger transaction (U3b-4b computes it
+        from stored embeddings; 4a-1 injects it). Every outcome except an
+        unavailable person writes one attempt row (classification R8); a pass
+        activates the consent with the profile snapshot; counted failures
+        reaching verification_max_failures within the lock window lock it.
+        """
+        if type(capability) is not VoiceAttributionCapability:
+            raise PermissionError("memory_voice_capability_denied")
+        if type(binding) is not VoiceVerificationBinding or not callable(scorer) or not _valid_person(binding.person_id):
+            raise ValueError("memory_voice_binding_invalid")
+        person = binding.person_id
+        with self._owner_transaction() as db:
+            scan_voice_attribution_rows(db)
+            reason = self._verification_reason(db, binding, scorer, retired, active)
+            outcome = verification_outcome(reason)
+            consent = self._consent_row(db, person)
+            state = None if consent is None else consent[0]
+            if reason is AttributionReason.PERSON_UNAVAILABLE:
+                return VoiceVerificationResult(outcome, reason, state)
+            self._attempt(db, person, outcome)
+            if outcome is VoiceVerificationOutcome.PASSED:
+                state = self._write_consent(db, person, VoiceConsentState.ACTIVE, consent[1] + 1,
+                                            _VERIFIER,
+                                            (binding.profile_id, binding.profile_revision,
+                                             binding.link_revision)).state
+            elif outcome is VoiceVerificationOutcome.FAILED and self._attempts_since(
+                    db, person, VoiceVerificationOutcome.FAILED,
+                    self.voice_settings.verification_lock_window_s) >= self.voice_settings.verification_max_failures:
+                state = self._write_consent(db, person, VoiceConsentState.VERIFICATION_LOCKED, consent[1] + 1,
+                                            _VERIFIER).state
+            return VoiceVerificationResult(outcome, reason, state)
+
+    def _attribution_read(self, db, fact_id: object, scorer: Callable | None, retired: object, active: object,
+                          expected: dict | None) -> tuple[GateDecision, dict | None]:
+        """Step 1 (``expected`` None) decides; step 2 re-reads every revision step 1 read (R13)."""
+        changed = GateDecision(AttributionReason.FACT_CHANGED)
+        if not self._voice_effective(db):
+            return GateDecision(AttributionReason.DISABLED), None
+        fact = self._fact(db, fact_id) if type(fact_id) is str else None
+        if (not self._eligible(db, fact, review=True) or fact.state is not FactState.PROPOSED or fact.revision != 1
+                or db.execute("SELECT 1 FROM fact_owner_revisions WHERE fact_id=?", (fact_id,)).fetchone()):
+            return changed, None
+        if len(fact.sources) != 1:
+            return GateDecision(AttributionReason.MULTI_SOURCE), None
+        if fact.sources[0].origin is not MemoryOrigin.VOICE:
+            return GateDecision(AttributionReason.ORIGIN_NOT_VOICE), None
+        live = self._live_voice_profiles(db)
+        links = self._profile_links(db)
+        if expected is not None:
+            decision, context = expected["decision"], expected
+            top = decision.profile_id
+            consent = self._consent_row(db, context["person"])
+            if (live != context["live"] or not self._scorable(db, live)
+                    or links.get(top) != (context["person"], context["link_revision"])
+                    or consent is None or consent[0] is not VoiceConsentState.ACTIVE
+                    or consent[1] != context["consent_revision"] or consent[2] != context["verified"]):
+                return changed, None
+        else:
+            snapshot = self._snapshot(db, scorer)
+            if snapshot is None:
+                return GateDecision(AttributionReason.ERROR), None
+            if {item.profile_id: item.revision for item in snapshot.scores} != live or not self._scorable(db, live):
+                return GateDecision(AttributionReason.INCOMPLETE_SCORING_SET), None
+
+            def grantable(top: str) -> AttributionReason | None:
+                link = links.get(top)
+                if link is None:
+                    return AttributionReason.TOP_NOT_GRANTABLE
+                consent = self._consent_row(db, link[0])
+                if consent is None or consent[0] is not VoiceConsentState.ACTIVE:
+                    return AttributionReason.CONSENT_NOT_ACTIVE
+                if consent[2][0] != top:
+                    return AttributionReason.TOP_NOT_GRANTABLE  # the person's other, unverified profile
+                if consent[2] != (top, live[top], link[1]):
+                    return AttributionReason.CONSENT_STALE
+                return None
+
+            decision = evaluate_gate(snapshot, self.voice_settings, grantable)
+            if not decision.owner:
+                return decision, None
+            top = decision.profile_id
+            consent = self._consent_row(db, links[top][0])
+            context = {"decision": decision, "person": links[top][0], "link_revision": links[top][1],
+                       "consent_revision": consent[1], "verified": consent[2], "live": live}
+        if self._suspended(db, top):
+            return GateDecision(AttributionReason.SUSPENDED), None
+        if not self._person_available(retired, active, context["person"]):
+            return GateDecision(AttributionReason.PERSON_UNAVAILABLE), None
+        return decision, context
+
+    def attribute_voice_proposal(self, fact_id: str, scorer: Callable[[sqlite3.Connection], ScoringSnapshot],
+                                 capability: VoiceAttributionCapability, *, retired: Callable[[frozenset[str]], bool],
+                                 active: Callable[[str], bool]) -> GateDecision:
+        """Make an unowned voice proposal the verified person's, or leave it unowned (reject-only).
+
+        Step 1 reads and runs the gate without withdrawing the owner proof;
+        every outcome other than owner commits nothing. Step 2, only on owner,
+        withdraws the proof, re-validates every revision step 1 read and the
+        switch, and writes the owner row (method voice_proposal, change
+        voice_proposed, canonical evidence). The fact stays PROPOSED with its
+        deadline. Any difference returns fact_changed (or disabled) and writes
+        nothing.
+        """
+        if type(capability) is not VoiceAttributionCapability:
+            raise PermissionError("memory_voice_capability_denied")
+        if not callable(scorer):
+            raise ValueError("memory_voice_scorer_required")
+        with self._owner_transaction(withdraw=False) as db:
+            scan_voice_attribution_rows(db)
+            _scan_fact_owner_rows(db)
+            decision, context = self._attribution_read(db, fact_id, scorer, retired, active, None)
+        if not decision.owner:
+            return decision
+        with self._owner_transaction() as db:
+            scan_voice_attribution_rows(db)
+            _scan_fact_owner_rows(db)
+            again, _context = self._attribution_read(db, fact_id, None, retired, active, context)
+            if not again.owner:
+                return again
+            profile_id, profile_revision, link_revision = context["verified"]
+            self._write_owner(db, fact_id, None, FactOwnerChange.VOICE_PROPOSED, person_id=context["person"],
+                              method=FactOwnerMethod.VOICE_PROPOSAL, assigned_by="system:voice-attribution",
+                              evidence=_voice_evidence(profile_id, profile_revision, link_revision,
+                                                       context["consent_revision"], decision))
+            return decision
+
+    def _count_not_mine(self, db, profile_id: str, score_bucket: int) -> None:
+        """Capped event insert plus idempotent suspension (data_model.return_counter)."""
+        if db.execute("SELECT 1 FROM voice_profiles WHERE id=?", (profile_id,)).fetchone() is None:
+            return
+        cap = self.voice_settings.not_mine_suspend_count
+        count = db.execute("SELECT COUNT(*) FROM voice_attribution_events WHERE profile_id=? AND kind=? AND at>=?",
+                           (profile_id, VoiceAttributionEventKind.NOT_MINE.value,
+                            self.clock() - self.voice_settings.not_mine_window_days * 86400)).fetchone()[0]
+        if count < cap:
+            db.execute("INSERT INTO voice_attribution_events VALUES (?,?,?,?,?)",
+                       ("vae_" + os.urandom(16).hex(), profile_id, VoiceAttributionEventKind.NOT_MINE.value,
+                        score_bucket, self.clock()))
+            count += 1
+        if count >= cap:
+            db.execute("INSERT INTO voice_attribution_suspensions VALUES (?,1,?,?) ON CONFLICT(profile_id) DO NOTHING",
+                       (profile_id, self.clock(), VoiceSuspensionReason.NOT_MINE_THRESHOLD.value))
+
+    def voice_suspension(self, profile_id: str) -> int:
+        """The suspension revision of one profile, 0 when it is not suspended."""
+        with self._transaction() as db:
+            scan_voice_attribution_rows(db)
+            row = db.execute("SELECT revision FROM voice_attribution_suspensions WHERE profile_id=?",
+                             (profile_id,)).fetchone()
+            return 0 if row is None else row[0]
+
+    def resume_voice_attribution(self, profile_id: str, expected_revision: int, actor: MemoryAssigner) -> bool:
+        """Operator: delete a profile's suspension (CAS) and its counted events, so a new suspension needs new returns."""
+        self._assigner(actor)
+        if type(expected_revision) is not int or expected_revision < 1:
+            raise ValueError("memory_voice_suspension_conflict")
+        with self._transaction(actor.require_current) as db:
+            scan_voice_attribution_rows(db)
+            row = db.execute("SELECT revision FROM voice_attribution_suspensions WHERE profile_id=?",
+                             (profile_id,)).fetchone()
+            if row is None or row[0] != expected_revision:
+                raise ValueError("memory_voice_suspension_conflict")
+            db.execute("DELETE FROM voice_attribution_suspensions WHERE profile_id=?", (profile_id,))
+            db.execute("DELETE FROM voice_attribution_events WHERE profile_id=?", (profile_id,))
+            return True
+
+    def prune_voice_attribution(self) -> int:
+        """In-run maintenance only (R1, N4): delete attempts and events past their windows.
+
+        Never called at open. Runs in _owner_transaction(withdraw=False), so the
+        owner proof is republished from SQL after rows naming a person go.
+        """
+        with self._owner_transaction(withdraw=False) as db:
+            now = self.clock()
+            attempts = max(self.voice_settings.verification_lock_window_s, 86400.0)
+            removed = db.execute("DELETE FROM voice_verification_attempts WHERE attempted_at<?",
+                                 (now - attempts,)).rowcount
+            removed += db.execute("DELETE FROM voice_attribution_events WHERE at<?",
+                                  (now - self.voice_settings.not_mine_window_days * 86400,)).rowcount
+            return removed
+
+    def _release_voice_proposals(self, db, person_id: str, *, retiring: bool) -> int:
+        """Unassign (or, in retirement, delete) the person's unconfirmed voice proposals."""
+        facts = [row[0] for row in db.execute(
+            "SELECT o.fact_id FROM fact_owners o JOIN fact_owner_revisions r ON r.fact_id=o.fact_id "
+            "WHERE o.person_id=? AND r.last_change=? ORDER BY o.fact_id",
+            (person_id, FactOwnerChange.VOICE_PROPOSED.value))]
+        for fact_id in facts:
+            if retiring:
+                self._delete(db, fact_id)
+            else:
+                _owner, record = self._owner_state(db, fact_id)
+                self._write_owner(db, fact_id, record, FactOwnerChange.OPERATOR_UNASSIGNED)
+        if facts:
+            self._owner_proof_dirty = True
+        return len(facts)
+
+    def _invalidate_voice_consents(self, db, profile_id: str, actor_label: str) -> int:
+        """Hook inside the caller's transaction: a verified profile changed, was unlinked or deleted.
+
+        Active consents verified on it -> invalidated (revision+1), and that
+        person's unconfirmed voice proposals are unassigned. Never creates or
+        activates anything. Returns the number of consents invalidated.
+        """
+        rows = db.execute("SELECT person_id, revision FROM voice_attribution_consents "
+                          "WHERE verified_profile_id=? AND state=?",
+                          (profile_id, VoiceConsentState.ACTIVE.value)).fetchall()
+        for person, revision in rows:
+            self._write_consent(db, person, VoiceConsentState.INVALIDATED, revision + 1, actor_label)
+            self._release_voice_proposals(db, person, retiring=False)
+        return len(rows)
+
+    def _retire_voice_people(self, db, identities: frozenset[str]) -> int:
+        """Defensive retirement hook (clear_user_links): with the N3 order clear_user_facts already did this."""
+        removed = 0
+        for person in sorted(identities):
+            removed += self._release_voice_proposals(db, person, retiring=True)
+            removed += db.execute("DELETE FROM voice_attribution_consents WHERE person_id=?", (person,)).rowcount
+            removed += db.execute("DELETE FROM voice_verification_attempts WHERE person_id=?", (person,)).rowcount
+        if removed:
+            self._owner_proof_dirty = True
+        return removed
+
+    def republish_owner_proof(self) -> None:
+        """After a voice-side hook removed references: rebuild the owner proof from SQL (outside the transaction)."""
+        if not self._owner_proof_dirty:
+            return
+        with self._owner_transaction(withdraw=False):
+            pass
+        self._owner_proof_dirty = False
+
     # --- retirement participant (U3b-1b) --------------------------------------------
 
     @contextmanager
@@ -1465,13 +2223,13 @@ class FactLedger:
             try:
                 with self._transaction(guard) as db:
                     yield db
-                    people = _owner_people(db)
+                    people = _owner_refs(db)
                 known = True
             finally:
                 if not known and self._db is not None and self._authority_available \
                         and not self._db.in_transaction:
                     try:
-                        people, known = _owner_people(self._db), True
+                        people, known = _owner_refs(self._db), True
                     except Exception:
                         people, known = None, False
                 self._fact_owner_proof.finish(known, people)
@@ -1518,6 +2276,10 @@ class FactLedger:
                 "SELECT fact_id FROM fact_owners WHERE person_id IN (" + ",".join("?" for _ in targets)
                 + ") ORDER BY fact_id", targets)]
             deleted = sum(self._delete(db, fact_id) for fact_id in owned)
+            # R4: the retired identities' consent and verification rows go too.
+            placeholders = ",".join("?" for _ in targets)
+            db.execute("DELETE FROM voice_attribution_consents WHERE person_id IN (" + placeholders + ")", targets)
+            db.execute("DELETE FROM voice_verification_attempts WHERE person_id IN (" + placeholders + ")", targets)
         if owned:
             logger.info("[FactLedger] retired-account owner cleanup: %d owned, %d deleted", len(owned), deleted)
         return deleted
@@ -1542,7 +2304,7 @@ class FactLedger:
             raise PermissionError("memory_owner_retirement_required")
         with self._lock:
             with self._owner_transaction(withdraw=False) as db:
-                people = _owner_people(db)
+                people = _owner_refs(db)
             targets, unknown = [], False
             for person in sorted(people):
                 if _retirement_proven(retired, frozenset({person})):

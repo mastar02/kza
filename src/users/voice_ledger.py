@@ -131,11 +131,11 @@ class VoiceLedger:
 
     def _live(self, row, *, confirmed=False):
         try:
-            sources = self._sources(row['sources_json'])
             if confirmed:
-                return (row['deleted_at'] is None and type(row['confirmed_by']) is str and bool(row['confirmed_by'])
-                    and type(row['confirmed_at']) in (int,float) and math.isfinite(row['confirmed_at'])
-                    and row['confirmed_at']<=self.ledger.clock() and self.ledger.activity_sources_available(sources))
+                # One definition with the attribution scoring set (U3b-4a-1 review F).
+                return self.ledger.voice_profile_live(row['sources_json'],row['confirmed_at'],
+                    row['confirmed_by'],row['deleted_at'])
+            sources = self._sources(row['sources_json'])
             return self.ledger.clock()<row['expires_at'] and self.ledger.sources_available(sources)
         except (ValueError,KeyError,TypeError):
             return False
@@ -530,12 +530,13 @@ class VoiceLedger:
                 return False
             if type(revision) is not int or revision!=row['revision']:
                 raise ValueError('voice_profile_revision_conflict')
-            self._delete(db,identity)
-            return True
+            self._delete(db,identity,actor.subject)
+        self.ledger.republish_owner_proof()
+        return True
 
-    def _delete(self, db, identity):
+    def _delete(self, db, identity, label='system:pruned-profile'):
         self.ledger._voice_projection_revision+=1
-        self.people.unlink_profile(db,identity)
+        self.people.unlink_profile(db,identity,label)
         db.execute('UPDATE voice_profiles SET name=NULL,embedding=NULL,deleted_at=?,revision=revision+1 WHERE id=? AND deleted_at IS NULL',
             (self.ledger.clock(),identity))
         db.execute('UPDATE voice_fingerprints SET suggested_profile=NULL,suggested_revision=NULL,similarity=NULL WHERE suggested_profile=?',(identity,))
@@ -552,6 +553,7 @@ class VoiceLedger:
             for row in db.execute('SELECT * FROM voice_profiles WHERE deleted_at IS NULL').fetchall():
                 if self.ledger.sources_committed_unavailable(self._sources(row['sources_json'])):
                     self._delete(db,row['id'])
+        self.ledger.republish_owner_proof()
         self.people.reconcile()
 
     def pending(self, conversation: str) -> int:

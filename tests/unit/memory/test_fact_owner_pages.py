@@ -12,7 +12,7 @@ import pytest
 
 from src.memory.fact_ledger import (
     MEMORY_PAGE_LIMIT, FactDependency, FactLedger, FactOwnerChange, FactPageCursor, MemoryAssigner,
-    MemoryOrigin, MemoryOwnerActor, MemoryOwnerReader, MemoryReviewer, MemorySource,
+    MemoryOrigin, MemoryOwnerActor, MemoryOwnerReader, MemoryReviewer, MemorySource, ReturnReceipt,
 )
 
 NOW = 2_000_000_000.0
@@ -202,13 +202,16 @@ def test_owned_proposals_share_the_same_ordering(ledger, clock):
     clock.value += 1
     proposal = _proposed(ledger, clock, "Synthetic owned proposal")
     # No 1a/2 API owns a proposal (voice stage); insert the rows by SQL as 1a tests do.
-    ledger._db.execute("INSERT INTO fact_owners VALUES (?,?, 'voice_proposal', 1, ?, 'synthetic', '{}')",
-                       (proposal.id, PERSON, clock()))
+    # U3b-4a-1: an unconfirmed voice proposal carries the canonical evidence and is content-free (Q5).
+    evidence = ('{"consent_revision":2,"link_revision":1,"margin_bucket":13,'
+                '"profile_id":"00000000-0000-4000-8000-0000000000a1","profile_revision":1,"score_bucket":19,"v":1}')
+    ledger._db.execute("INSERT INTO fact_owners VALUES (?,?, 'voice_proposal', 1, ?, 'synthetic', ?)",
+                       (proposal.id, PERSON, clock(), evidence))
     ledger._db.execute("INSERT INTO fact_owner_revisions VALUES (?,1,'voice_proposed',0,?)", (proposal.id, clock()))
     ledger._db.commit()
     page = ledger.owned_page(READ_MINE)
     assert _ids(page) == [proposal.id, confirmed[0]]
-    assert page.items[0]["state"] == "proposed" and page.items[0]["owner_method"] == "voice_proposal"
+    assert page.items[0]["kind"] == "voice_proposal_pending" and "content" not in page.items[0]
 
 
 def test_person_projection_carries_no_sources_subject_counts_or_foreign_ids(ledger, clock):
@@ -265,7 +268,9 @@ def test_foreign_unassigned_and_missing_ids_run_identical_statements(ledger, clo
     outcomes = {name: _trace(ledger, lambda fid=fid: call(fid)) for name, fid in
                 (("missing", "fact_" + "0" * 64), ("foreign", foreign.id), ("unassigned", unassigned.id),
                  ("returned", returned.id), ("malformed", "not-a-fact"))}
-    assert {name: result for name, (result, _) in outcomes.items()} == dict.fromkeys(outcomes, False)
+    # return_owned answers ReturnReceipt(False, False) (N5), falsy like delete_owned's False.
+    assert {name: bool(result) for name, (result, _) in outcomes.items()} == dict.fromkeys(outcomes, False)
+    assert all(result in (False, ReturnReceipt(False, False)) for result, _ in outcomes.values())
     reference = outcomes["missing"][1]
     assert all(statements == reference for _, statements in outcomes.values())
     assert not any("facts WHERE id" in s for s in reference)  # nothing but the ownership probe
@@ -286,7 +291,7 @@ def test_owner_delete_cascades_and_prunes_owner_rows(ledger, clock):
 
 def test_return_leaves_the_fact_in_devueltos_and_out_of_the_person_view(ledger, clock):
     fact = _owned(ledger, clock, 1)[0]
-    assert ledger.return_owned(fact, PERSON, MINE) is True
+    assert ledger.return_owned(fact, PERSON, MINE).returned is True
     assert _ids(ledger.owned_page(READ_MINE)) == []
     page = ledger.returned_page(OPERATOR)
     assert _ids(page) == [fact] and page.items[0]["owner"] is None

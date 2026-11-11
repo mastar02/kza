@@ -496,14 +496,14 @@ def test_owner_return_goes_to_devueltos_and_can_be_reassigned(ledger, clock):
     _assign(ledger, fact)
     row = _row(ledger, "facts", fact.id)
     actor = MemoryOwnerActor("synthetic-home", PERSON)
-    assert ledger.return_owned(fact.id, PERSON, actor) is True
+    assert ledger.return_owned(fact.id, PERSON, actor).returned is True
     assert _row(ledger, "facts", fact.id) == row and row["state"] == "confirmed" and row["expires_at"] is None
     assert _row(ledger, "fact_owners", fact.id) is None
     record = _row(ledger, "fact_owner_revisions", fact.id)
     assert (record["revision"], record["last_change"], record["confirmed_by_assignment"]) == (
         2, "owner_returned", 1)
     assert ledger.owned_counts(OPERATOR) == OwnedCounts(0, 1, 1, 0)
-    assert ledger.return_owned(fact.id, PERSON, actor) is False
+    assert ledger.return_owned(fact.id, PERSON, actor).returned is False
     fact = ledger.get(fact.id)
     _refused(ledger, ValueError, "memory_owner_conflict", lambda: _assign(ledger, fact, OTHER, owner_revision=1))
     assert _assign(ledger, fact, OTHER, owner_revision=2) == AssignmentReceipt(fact.revision, 3, 0)
@@ -516,8 +516,8 @@ def test_return_of_a_fact_not_owned_by_the_actor_is_indistinguishable_from_missi
     _assign(ledger, fact)
     other = MemoryOwnerActor("synthetic-home", OTHER)
     before = _bytes(ledger)
-    assert ledger.return_owned(fact.id, OTHER, other) is False
-    assert ledger.return_owned("fact_" + "0" * 64, OTHER, other) is False
+    assert ledger.return_owned(fact.id, OTHER, other).returned is False
+    assert ledger.return_owned("fact_" + "0" * 64, OTHER, other).returned is False
     assert _bytes(ledger) == before
     for actor, person in ((other, PERSON), (OPERATOR, PERSON), (MemoryOwnerActor("s", PERSON, lambda: False), PERSON)):
         _refused(ledger, PermissionError, "memory_owner_actor_denied",
