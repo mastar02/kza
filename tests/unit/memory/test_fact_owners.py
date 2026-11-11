@@ -667,10 +667,14 @@ def test_long_term_search_resolves_index_candidates_inside_the_scope(tmp_path, c
     memory.ledger = ledger
     collection = client.get_or_create_collection.return_value
     collection.count.return_value = 6
+    # The index holds every candidate; it is only narrowed to them.
+    collection.get.side_effect = lambda ids, include: {"ids": list(ids)}
     collection.query.return_value = {"ids": [[]], "distances": [[]]}
     memory.search_relevant("q", scope="person", person_id=PERSON)
+    assert set(collection.get.call_args.kwargs["ids"]) == scoped[PERSON]
     assert set(collection.query.call_args.kwargs["ids"]) == scoped[PERSON]
     memory.search_relevant("q", scope="household")
+    assert set(collection.get.call_args.kwargs["ids"]) == scoped["household"]
     assert set(collection.query.call_args.kwargs["ids"]) == scoped["household"]
     assert {fact["id"] for fact in memory.get_by_category("fact", 10, scope="all")} == scoped["all"]
 

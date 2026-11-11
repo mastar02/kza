@@ -18,6 +18,12 @@ from src.memory.prompt_context import PromptContext
 
 logger = logging.getLogger(__name__)
 
+# Longest a search waits for the index writer barrier (one bounded reconcile or
+# erasure batch) before failing fast with memory_search_busy. A hung index call
+# must not hold every memory worker slot; prompt reads then report the memory
+# as unavailable instead of queueing without limit.
+SEARCH_BARRIER_TIMEOUT_S = 5.0
+
 
 class MemoryCloseTimeout(RuntimeError):
     """A native memory operation still owns resources after close deadline."""
@@ -235,29 +241,44 @@ class LongTermMemory:
         if type(n_results) is not int or not 0 < n_results <= 100:
             raise ValueError("invalid_memory_query_limit")
         self.initialize()
-        if not self._query_lock.acquire(blocking=False):
+        # The ledger is authoritative and the index trails it: a fact stays
+        # eligible while its index job is queued, retried after an upsert error,
+        # or held by a reconcile pass another thread owns. Chroma rejects the
+        # whole query ("Error finding id") when any filter ID is absent, so
+        # filter only on IDs the index holds. The writer barrier keeps
+        # reconcile and erasure deletes from removing one between that read
+        # and the query. It is taken before the query lock, in close's order,
+        # and only for SEARCH_BARRIER_TIMEOUT_S.
+        if not self._index_lock.acquire(timeout=SEARCH_BARRIER_TIMEOUT_S):
             raise RuntimeError("memory_search_busy")
         try:
-            count = self._collection.count()
-            eligible = self.ledger.eligible_ids(min_confidence, scope=scope, person_id=person_id)
-            if not count or not eligible:
-                return []
-            results = self._collection.query(query_texts=[query], n_results=min(count, n_results),
-                                              ids=eligible, include=["distances"])
-            output = []
-            ids = results.get("ids") or [[]]
-            distances = results.get("distances") or [[]]
-            for index, fact_id in enumerate(ids[0]):
-                fact = self.ledger.get(fact_id)
-                if fact is None or fact.confidence < min_confidence:
-                    continue
-                distance = distances[0][index] if distances[0] and index < len(distances[0]) else None
-                item = fact.to_dict()
-                item["similarity"] = 1-distance/2 if type(distance) in (int, float) and math.isfinite(distance) else None
-                output.append(item)
-            return output
+            if not self._query_lock.acquire(blocking=False):
+                raise RuntimeError("memory_search_busy")
+            try:
+                eligible = self.ledger.eligible_ids(min_confidence, scope=scope, person_id=person_id)
+                if not eligible or not self._collection.count():
+                    return []
+                indexed = self._collection.get(ids=eligible, include=[])["ids"]
+                if not indexed:
+                    return []
+                results = self._collection.query(query_texts=[query], n_results=min(len(indexed), n_results),
+                                                  ids=indexed, include=["distances"])
+                output = []
+                ids = results.get("ids") or [[]]
+                distances = results.get("distances") or [[]]
+                for index, fact_id in enumerate(ids[0]):
+                    fact = self.ledger.get(fact_id)
+                    if fact is None or fact.confidence < min_confidence:
+                        continue
+                    distance = distances[0][index] if distances[0] and index < len(distances[0]) else None
+                    item = fact.to_dict()
+                    item["similarity"] = 1-distance/2 if type(distance) in (int, float) and math.isfinite(distance) else None
+                    output.append(item)
+                return output
+            finally:
+                self._query_lock.release()
         finally:
-            self._query_lock.release()
+            self._index_lock.release()
 
     def get_by_category(self, category: str, limit: int = 10, *, scope: str,
                         person_id: str | None = None) -> list[dict]:

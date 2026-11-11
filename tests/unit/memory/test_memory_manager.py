@@ -271,12 +271,15 @@ class TestLongTermMemory:
         first = ltm.store_fact("Fact 1", "personal", .9, sources=(_source(),))
         second = ltm.store_fact("Fact 2", "preference", .7, sources=(_source(),))
         collection.count.return_value = 2
+        collection.get.return_value = {"ids": [first, second]}
         collection.query.return_value = {
             "ids": [[first, second]], "distances": [[.2, .5]],
             "documents": [["untrusted index content", "also untrusted"]],
             "metadatas": [[{"state": "confirmed"}, {}]],
         }
         results = ltm.search_relevant("¿Dónde vive Juan?", scope='all')
+        assert collection.query.call_args.kwargs["ids"] == [first, second]
+        assert collection.query.call_args.kwargs["n_results"] == 2
         assert [row["content"] for row in results] == ["Fact 1", "Fact 2"]
         assert results[0]["state"] == "automatic" and results[0]["confirmed_by"] is None
 
