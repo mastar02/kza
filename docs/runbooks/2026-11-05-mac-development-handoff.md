@@ -679,7 +679,22 @@ U3b-0b: delegación de varios saltos en `scripts/stage_runtime.py` (cadenas en `
 - Tope de dueños: el usuario eligió **compactar** (2026-11-11). Unidad nueva antes de la primera release gestionada en producción.
 - Falta medir con un estado del tamaño de producción.
 
-Siguiente: U3b-4a/4b (etapa de voz sintética y local), huecos de backend (ids en el recibo, persona en whoami) y una ronda full nueva.
+U3b-4 (voz, sintético y local): diseño v4 en `t040-t041/u3b-4-design-v4.json`, tres revisiones independientes. Decisiones del usuario Q1–Q7 en `u3b_4_voice`:
+- R1 sale con todo U3b y la voz apagada.
+- Antes de que la administración confirme, la persona ve un aviso sin texto, con «Descartar» y «No es mío».
+- Con una sola voz registrada no se atribuye nada hasta P7.
+
+`389a18c` (U3b-4a-0): tablas de voz protegidas e interruptor de administración (G1). La fila faltante significa apagado y un cambio del interruptor cambia el digest de autoridad. Revisión `accept_with_changes`.
+
+P0 confirmó que editar `settings.yaml` del estado se rechaza con `privacy_authority_stale`. Prender la voz requiere un procedimiento nuevo de cambio de configuración; apagarla usa G1.
+
+Siguiente:
+- U3b-4a-1: consentimientos y verificación. Antes, sembrar filas relativas al reloj real (F2) y correr los tests G2 (a)–(c).
+- 4a-2: API.
+- 4a-3: NEXO.
+- 4b: atribución.
+- Huecos de backend: ids en el recibo, persona en whoami.
+- Una ronda full nueva.
 
 Decisiones del usuario en `t040-t041/user-decisions-20261110.json` (`u3b_*`).
 
