@@ -329,13 +329,20 @@ async def _prune_retired_memory_owners(privacy_services, dashboard_authority) ->
     Deletes facts still owned by a durably retired account (a crash between
     retirement and cleanup, or rows brought back by a restore). Failure keeps
     the rows and is logged: assignment to such a person is already refused,
-    and account removal stays blocked by the owner proof until a retry.
+    and account removal stays blocked by the owner proof. An authority that
+    cannot answer counts as a failure (review R1). The privacy maintenance
+    tick retries a pending prune, runs it hourly regardless, and operators
+    see it pending (F2).
     """
+    privacy_services.attach_retired_owner_prune(dashboard_authority.users_retired,
+                                                dashboard_authority.memory_owner_retired)
     try:
         deleted = await privacy_services.acall(privacy_services.ledger.prune_retired_owners,
-                                               dashboard_authority.users_retired)
+                                               dashboard_authority.users_retired,
+                                               probe=dashboard_authority.memory_owner_retired)
     except Exception as error:
         logger.error(f"[MemoryOwners] retired-owner prune failed at boot: {type(error).__name__}")
+        privacy_services.defer_retired_owner_prune()
         return 0
     if deleted:
         logger.info(f"[MemoryOwners] boot prune deleted {deleted} facts of retired accounts")

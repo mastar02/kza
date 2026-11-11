@@ -15,7 +15,8 @@ import pytest
 
 from src.memory.fact_ledger import (
     FACT_OWNER_SCHEMA, AssignmentReceipt, FactDependency, FactLedger, FactOwnerChange, FactOwnerMethod,
-    MemoryAssigner, MemoryOrigin, MemoryOwnerActor, MemoryOwnerDependents, MemoryReviewer, MemoryScope,
+    MemoryAssigner, MemoryOrigin, MemoryOwnerActor, MemoryOwnerDependents, MemoryOwnerReader, MemoryReviewer,
+    MemoryScope,
     MemorySource, OwnedCounts,
 )
 from src.memory.long_term import LongTermMemory
@@ -627,7 +628,6 @@ def test_scopes_partition_owned_household_and_returned_facts(ledger, scoped):
     assert {f.id for f in ledger.list(scope="household")} == scoped["household"]
     assert {f.id for f in ledger.list(scope="person", person_id=PERSON)} == scoped[PERSON]
     assert {f.id for f in ledger.list(scope="all")} == scoped["all"]
-    assert {f.id for f in ledger.list()} == scoped["all"]  # operator route default (memory_api.py)
     assert set(ledger.eligible_ids(category="fact", scope="person", person_id=OTHER)) == scoped[OTHER]
 
 
@@ -644,7 +644,9 @@ def test_invalid_scopes_are_refused(ledger, arguments):
 
 def test_scope_is_a_required_keyword_on_fact_readers(ledger):
     memory = LongTermMemory(MagicMock(), ledger_path=":memory:")
+    # U3b-2 (A16 R7): FactLedger.list lost its 'all' default with the operator route.
     for call in (lambda: ledger.eligible_ids(), lambda: ledger.eligible_ids(0, category="fact"),
+                 lambda: ledger.list(), lambda: ledger.list(limit=1),
                  lambda: memory.search_relevant("q"), lambda: memory.get_by_category("fact")):
         with pytest.raises(TypeError, match="scope"):
             call()
@@ -751,30 +753,53 @@ def test_owner_enums_are_closed_and_include_the_voice_stage():
     assert [s.value for s in MemoryScope] == ["household", "person", "all"]
 
 
-def test_no_dashboard_permission_or_role_grants_the_owner_permissions():
-    from src.dashboard import authority
-    values = {permission.value for permission in authority.DashboardPermission}
-    assert "memory:assign" not in values and "memory:own:write" not in values
-    assert not {"memory:assign", "memory:own:write"} & {p.value for p in authority._HOME_PERMISSIONS}
+def test_owner_permissions_are_granted_only_to_their_roles():
+    """U3b-2 replaced the 1a 'no grant' pin: memory:assign is operator-only and
+    memory:own:* belongs only to a household credential bound to a person."""
+    from src.dashboard.authority import DashboardRole, _permissions
+    own = {"memory:own:read", "memory:own:write"}
+    assert "memory:assign" in _permissions(DashboardRole.OPERATOR, None)
+    assert not own & _permissions(DashboardRole.OPERATOR, None)
+    assert own <= _permissions(DashboardRole.HOME, PERSON)
+    assert "memory:assign" not in _permissions(DashboardRole.HOME, PERSON)
+    assert not (own | {"memory:assign"}) & _permissions(DashboardRole.HOME, None)
+    assert not (own | {"memory:assign"}) & _permissions(DashboardRole.EVALUATOR, None)
 
 
 def test_minting_requires_the_exact_permission():
-    from src.dashboard.authority import DashboardPermission, DashboardPrincipal, DashboardRole
-    everything = frozenset(p.value for p in DashboardPermission)
+    from src.dashboard.authority import DashboardPrincipal, DashboardRole, _permissions
+    operator = _permissions(DashboardRole.OPERATOR, None)
+    assert MemoryAssigner.from_dashboard(DashboardPrincipal("operator", operator)).subject == "operator"
     with pytest.raises(PermissionError, match="memory_assign_denied"):
-        MemoryAssigner.from_dashboard(DashboardPrincipal("operator", everything))
+        MemoryAssigner.from_dashboard(DashboardPrincipal("home", _permissions(DashboardRole.HOME, PERSON),
+                                                         DashboardRole.HOME, PERSON))
     with pytest.raises(PermissionError, match="memory_owner_actor_denied"):
-        MemoryOwnerActor.from_dashboard(DashboardPrincipal("home", everything, DashboardRole.HOME, PERSON))
+        MemoryOwnerActor.from_dashboard(DashboardPrincipal("operator", operator))
+    # A principal that somehow held the strings without the HOME role or a person is still refused.
+    everything = operator | {"memory:own:read", "memory:own:write"}
+    with pytest.raises(PermissionError, match="memory_owner_actor_denied"):
+        MemoryOwnerActor.from_dashboard(DashboardPrincipal("operator", everything, DashboardRole.OPERATOR, PERSON))
     with pytest.raises(PermissionError, match="memory_owner_actor_denied"):
         MemoryOwnerActor.from_dashboard(DashboardPrincipal("home", frozenset({"memory:own:write"}),
                                                            DashboardRole.HOME, None))
+    with pytest.raises(PermissionError, match="memory_owner_actor_denied"):
+        MemoryOwnerActor.from_dashboard(DashboardPrincipal("home", frozenset({"memory:own:read"}),
+                                                           DashboardRole.HOME, PERSON))
+    with pytest.raises(PermissionError, match="memory_owner_actor_denied"):
+        MemoryOwnerReader.from_dashboard(DashboardPrincipal("home", frozenset({"memory:own:write"}),
+                                                            DashboardRole.HOME, PERSON))
     assert MemoryAssigner.from_dashboard(DashboardPrincipal("op", frozenset({"memory:assign"}))).subject == "op"
     actor = MemoryOwnerActor.from_dashboard(DashboardPrincipal("home", frozenset({"memory:own:write"}),
                                                                DashboardRole.HOME, PERSON))
     assert (actor.subject, actor.person_id) == ("home", PERSON)
+    reader = MemoryOwnerReader.from_dashboard(DashboardPrincipal("home", frozenset({"memory:own:read"}),
+                                                                 DashboardRole.HOME, PERSON))
+    assert (reader.subject, reader.person_id) == ("home", PERSON)
     for invalid in (object(), None):
         with pytest.raises(PermissionError):
             MemoryAssigner.from_dashboard(invalid)
+        with pytest.raises(PermissionError):
+            MemoryOwnerReader.from_dashboard(invalid)
 
 
 _ASSIGNMENT_NAMES = frozenset({"assign_owner", "return_owned", "unassign_owner", "MemoryAssigner",
@@ -796,16 +821,25 @@ def _references(source, names):
     return found
 
 
-def test_no_production_module_references_the_assignment_api():
-    """U3b-1a ships the API with zero production callers until U3b-1b/U3b-2 replace this pin."""
-    offenders = {}
+# U3b-2 replaced the 1a zero-callers pin: these are the only production references.
+_ASSIGNMENT_REFERENCES = {
+    "src/dashboard/authority.py": {"'memory:assign'", "'memory:own:write'"},
+    "src/dashboard/memory_api.py": {"MemoryAssigner", "MemoryOwnerActor", "import MemoryAssigner",
+                                    "import MemoryOwnerActor", "assign_owner", "unassign_owner", "return_owned",
+                                    "'memory:assign'", "'memory:own:write'"},
+    "src/memory/long_term.py": {"import MemoryOwnerActor", "MemoryOwnerActor"},
+}
+
+
+def test_assignment_api_has_exactly_the_u3b2_production_references():
+    found = {}
     for path in sorted((ROOT / "src").rglob("*.py")):
         if path == ROOT / "src/memory/fact_ledger.py":
             continue
-        uses = _references(path.read_text(encoding="utf-8"), _ASSIGNMENT_NAMES)
+        uses = {use.split(":", 1)[1] for use in _references(path.read_text(encoding="utf-8"), _ASSIGNMENT_NAMES)}
         if uses:
-            offenders[str(path.relative_to(ROOT))] = uses
-    assert offenders == {}
+            found[str(path.relative_to(ROOT))] = uses
+    assert found == _ASSIGNMENT_REFERENCES
 
 
 def test_the_assignment_scan_detects_each_name():
@@ -851,12 +885,96 @@ def test_every_existing_fact_reader_call_passes_scope_all():
     assert sorted(_reader_calls()) == sorted(_SCOPED_CALLS)
 
 
-def test_the_only_reader_relying_on_the_list_default_is_the_operator_route():
-    found = {}
+def test_no_reader_relies_on_a_list_default():
+    """U3b-2 replaced the 1a list-default pin (A5/A16 R7): the keyword is required everywhere.
+
+    Signature-level, so an aliased receiver cannot escape it.
+    """
+    import inspect
+    from src.memory.fact_ledger import FactLedger
+    parameter = inspect.signature(FactLedger.list).parameters["scope"]
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY and parameter.default is inspect.Parameter.empty
+    calls = []
     for path in sorted((ROOT / "src").rglob("*.py")):
-        if (ROOT / "src/memory") in path.parents:
-            continue
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.Attribute) and node.attr == "list" and ast.unparse(node.value).endswith("ledger"):
-                found.setdefault(str(path.relative_to(ROOT)), []).append(ast.unparse(node))
-    assert found == {"src/dashboard/memory_api.py": ["service.ledger.list"]}
+            if not isinstance(node, ast.Call):
+                continue
+            # Direct calls and worker hand-offs such as service.acall(service.ledger.list, ...).
+            targets = [node.func, *node.args]
+            if any(isinstance(t, ast.Attribute) and t.attr == "list" and ast.unparse(t.value).endswith("ledger")
+                   for t in targets):
+                scope = next((ast.unparse(k.value) for k in node.keywords if k.arg == "scope"), None)
+                calls.append((str(path.relative_to(ROOT)), scope))
+    assert sorted(calls) == [("src/dashboard/memory_api.py", "MemoryScope.ALL"),
+                             ("src/memory/long_term.py", "'all'"), ("src/memory/long_term.py", "scope")]
+
+
+# Review R0: the scope-required readers, scanned everywhere a caller can live, including
+# code embedded in string literals (scripts run against compiled slots).
+_SCOPE_READERS = {"list", "eligible_ids", "search_relevant", "asearch_relevant", "get_by_category"}
+_UNSCOPED_ALLOWED = {
+    # LongTermMemory.asearch_relevant forwards the caller's kwargs (scope included) to its worker.
+    ("src/memory/long_term.py", "self._run(self.search_relevant, args, kwargs)"),
+    # Deliberate negatives asserting the TypeError.
+    ("tests/unit/memory/test_fact_owners.py", "ledger.eligible_ids()"),
+    ("tests/unit/memory/test_fact_owners.py", "ledger.eligible_ids(0, category='fact')"),
+    ("tests/unit/memory/test_fact_owners.py", "ledger.list()"),
+    ("tests/unit/memory/test_fact_owners.py", "ledger.list(limit=1)"),
+    ("tests/unit/memory/test_fact_owners.py", "memory.search_relevant('q')"),
+    ("tests/unit/memory/test_fact_owners.py", "memory.get_by_category('fact')"),
+    ("tests/unit/memory/test_fact_owners.py", "memory.asearch_relevant('q')"),
+    # A synthetic source fed to the caller scanner of test_fact_reader_callers.
+    ("tests/unit/memory/test_fact_reader_callers.py", "memory.long_term.acall(memory.long_term.search_relevant, 'q')"),
+}
+
+
+def _parse_all(text):
+    return compile(text, "<scan>", "exec", ast.PyCF_ONLY_AST | ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+
+
+def _unscoped_reader_calls(source, *, embedded=True):
+    """Calls or worker hand-offs of a scope-required reader without scope= (or **kwargs)."""
+    tree = _parse_all(source)
+    trees = [tree]
+    for node in ast.walk(tree) if embedded else ():
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                and any(name in node.value for name in _SCOPE_READERS):
+            try:
+                trees.append(_parse_all(node.value.strip()))
+            except SyntaxError:
+                pass
+    found = []
+    for candidate in trees:
+        for node in ast.walk(candidate):
+            if not isinstance(node, ast.Call):
+                continue
+            for target in (node.func, *node.args):
+                if not (isinstance(target, ast.Attribute) and target.attr in _SCOPE_READERS):
+                    continue
+                if target.attr == "list" and not ast.unparse(target.value).endswith("ledger"):
+                    continue
+                if not any(k.arg in ("scope", None) for k in node.keywords):
+                    found.append(ast.unparse(node))
+    return found
+
+
+def test_every_scope_required_reader_call_passes_a_scope_in_src_tests_scripts_and_tools():
+    found = set()
+    for base in ("src", "tests", "scripts", "tools"):
+        for path in sorted((ROOT / base).rglob("*.py")):
+            relative = str(path.relative_to(ROOT))
+            # This file's string literals are scanner fixtures; its real calls are still scanned.
+            embedded = path != Path(__file__).resolve()
+            found |= {(relative, call) for call in _unscoped_reader_calls(path.read_text(encoding="utf-8"),
+                                                                         embedded=embedded)}
+    assert found == _UNSCOPED_ALLOWED
+
+
+def test_the_scope_scan_sees_hand_offs_and_embedded_scripts():
+    assert _unscoped_reader_calls("x = await privacy.acall(privacy.ledger.list)\n")
+    assert not _unscoped_reader_calls("x = await privacy.acall(privacy.ledger.list, scope='all')\n")
+    embedded = 'script = "            facts = await policy.acall(policy.ledger.list)"\n'
+    assert _unscoped_reader_calls(embedded)
+    assert not _unscoped_reader_calls(embedded.replace("ledger.list)", "ledger.list, scope='all')"))
+    assert _unscoped_reader_calls("memory.search_relevant('q')\n")
+    assert not _unscoped_reader_calls("ids = ledger.eligible_ids(**query)\n")

@@ -163,6 +163,13 @@ def _route_permissions(request: HTTPConnection) -> frozenset[str]:
             return frozenset({DashboardPermission.VOICES_REVIEW,DashboardPermission.ADMIN_MANAGE,
                               *({DashboardPermission.VOICES_READ} if read else set())})
         return frozenset({DashboardPermission.VOICES_READ if read else DashboardPermission.VOICES_REVIEW})
+    # 'Mis recuerdos' (U3b-2) must be matched before the generic memory branch:
+    # every /api/memory/mine path, known or not, stays in the person's branch.
+    if path == "/api/memory/mine" or path.startswith("/api/memory/mine/"):
+        return frozenset({DashboardPermission.MEMORY_OWN_READ if read else DashboardPermission.MEMORY_OWN_WRITE})
+    if path in {"/api/memory/returned", "/api/memory/owners/counts"} or (
+            path.startswith("/api/memory/facts/") and path.endswith("/owner") and path.count("/") == 5):
+        return frozenset({DashboardPermission.MEMORY_ASSIGN, *({DashboardPermission.MEMORY_READ} if read else ())})
     if path == "/api/memory" or path.startswith("/api/memory/"):
         return frozenset({DashboardPermission.MEMORY_READ if read else DashboardPermission.MEMORY_REVIEW})
     if path == "/api/capture" or path.startswith("/api/capture/"):

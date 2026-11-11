@@ -41,7 +41,7 @@ async def test_original_session_retirement_prevents_private_body(
 
     async def held_read(function, *args, **kwargs):
         value = await original(function, *args, **kwargs)
-        if stage == 'read' and function.__name__ in {'snapshot', 'list', 'proposals'}:
+        if stage == 'read' and function.__name__ in {'snapshot', 'review_page', 'list', 'proposals'}:
             entered.set()
             await release.wait()
         return value

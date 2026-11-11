@@ -45,7 +45,7 @@ async def test_copy_preserves_selected_documents_metadata_and_vectors_without_in
     ledger = FactLedger(str(source.output/'candidate.sqlite3'))
     ledger.initialize()
     try:
-        assert ledger.eligible_ids(scope='all')==ledger.list()==ledger.jobs()==[]
+        assert ledger.eligible_ids(scope='all')==ledger.list(scope='all')==ledger.jobs()==[]
         assert ledger.snapshot()['facts']==ledger.snapshot()['proposals']==[]
         assert ledger.status()['states']=={}
         for identifier in source.selected:

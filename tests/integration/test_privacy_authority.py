@@ -471,7 +471,7 @@ async def test_disabling_semantic_recall_keeps_fresh_conversation_and_single_voi
         result = await router.process_command(command_event(clock))
         assert result['success'] and result['response'] == 'Una respuesta completa.'
         assert len(engine.calls) == 1
-        assert await privacy.acall(privacy.ledger.list) == []
+        assert await privacy.acall(privacy.ledger.list, scope='all') == []
         if owner is not None:
             assert owner.context_manager.get('unknown') is None
             ctx = owner.context_manager.get_household('origin')

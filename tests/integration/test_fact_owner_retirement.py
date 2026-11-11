@@ -306,7 +306,7 @@ async def test_startup_prune_failure_is_logged_and_keeps_rows(owners, monkeypatc
     await assign(g, fact, g.a)
     await g.authority.retire_user(g.root, g.a)
 
-    def broken(retired):
+    def broken(retired, *, probe=None):  # U3b-2 R1: the boot prune also passes the tri-state probe
         raise sqlite3.OperationalError("synthetic private detail")
 
     monkeypatch.setattr(g.ledger, "prune_retired_owners", broken)

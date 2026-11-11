@@ -53,6 +53,9 @@ class DashboardPermission(StrEnum):
     CONVERSATIONS_READ = "conversations:read"
     MEMORY_READ = "memory:read"
     MEMORY_REVIEW = "memory:review"
+    MEMORY_ASSIGN = "memory:assign"
+    MEMORY_OWN_READ = "memory:own:read"
+    MEMORY_OWN_WRITE = "memory:own:write"
     VOICES_READ = "voices:read"
     VOICES_REVIEW = "voices:review"
     EVALUATION_READ = "evaluation:read"
@@ -72,6 +75,11 @@ _HOME_PERMISSIONS = frozenset({
     DashboardPermission.HOME_READ, DashboardPermission.HOME_CONTROL,
     DashboardPermission.TASKS_READ, DashboardPermission.TASKS_WRITE,
     DashboardPermission.ROUTINES_EXECUTE,
+})
+# 'Mis recuerdos' (U3b-2): only a household credential bound to a person holds
+# these. Operator credentials can never carry a user_id, so they do not get them.
+_PERSON_MEMORY_PERMISSIONS = frozenset({
+    DashboardPermission.MEMORY_OWN_READ, DashboardPermission.MEMORY_OWN_WRITE,
 })
 MAX_CREDENTIAL_TTL_S = 30 * 86400
 DEFAULT_SESSION_TTL_S = 30 * 86400
@@ -234,9 +242,10 @@ def _expected_token() -> str | None:
 
 def _permissions(role: DashboardRole, user_id: str | None) -> frozenset[str]:
     if role is DashboardRole.OPERATOR:
-        values = frozenset(DashboardPermission)
+        values = frozenset(DashboardPermission) - _PERSON_MEMORY_PERMISSIONS
     elif role is DashboardRole.HOME:
-        values = _HOME_PERMISSIONS | (frozenset({DashboardPermission.PERSONAL_TASKS}) if user_id else frozenset())
+        values = _HOME_PERMISSIONS | (frozenset({DashboardPermission.PERSONAL_TASKS}) | _PERSON_MEMORY_PERMISSIONS
+                                      if user_id else frozenset())
     else:
         values = frozenset({DashboardPermission.EVALUATION_READ})
     return frozenset(value.value for value in values)

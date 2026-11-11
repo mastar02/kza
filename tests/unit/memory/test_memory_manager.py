@@ -261,7 +261,7 @@ class TestLongTermMemory:
             metadata={"origin": "ambient"}, sources=(_source(),)
         )
 
-        stored = ltm.ledger.list()[0]
+        stored = ltm.ledger.list(scope='all')[0]
         assert stored.sources[0].origin is MemoryOrigin.INTERACTION
         assert stored.confirmed_by is None
     def test_search_relevant(self):

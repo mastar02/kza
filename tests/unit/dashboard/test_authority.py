@@ -95,9 +95,14 @@ async def test_server_roles_do_not_inherit_admin_personal_or_review_authority(au
     lease = service.resolve("Bearer " + credential.token)
     assert lease.principal.role is role
     assert lease.principal.user_id == ("synthetic-user" if personal else None)
+    own = frozenset({Permission.MEMORY_OWN_READ, Permission.MEMORY_OWN_WRITE})
+    # U3b-2: memory:own:* belongs only to a household credential bound to a person.
+    assert lease.current(own) is (role is Role.HOME and personal)
     if role is Role.OPERATOR:
-        assert lease.current(frozenset(Permission))
+        assert lease.current(frozenset(Permission) - own)
+        assert not lease.current(frozenset({Permission.MEMORY_OWN_READ}))
     else:
+        assert not lease.current(frozenset({Permission.MEMORY_ASSIGN}))
         for permission in (Permission.ADMIN_MANAGE, Permission.AUTH_MANAGE, Permission.MEMORY_REVIEW,
                            Permission.VOICES_REVIEW, Permission.CONVERSATIONS_READ, Permission.ROUTINES_MANAGE):
             assert not lease.current(frozenset({permission}))

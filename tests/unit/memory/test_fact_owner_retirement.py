@@ -410,14 +410,19 @@ def _attribute_uses(names):
 def test_retirement_participant_has_exactly_the_wired_production_callers():
     assert _attribute_uses(_PARTICIPANT) == {
         "src/dashboard/admin.py": ["clear_user_facts"],
-        "src/main.py": ["prune_retired_owners", "owner_refs_cleared"],
+        "src/dashboard/memory_api.py": ["memory_owner_retired", "memory_owner_active"],  # U3b-2 assign route
+        # U3b-2 R1: the boot prune passes memory_owner_retired as the tri-state probe.
+        "src/main.py": ["memory_owner_retired", "prune_retired_owners", "memory_owner_retired", "owner_refs_cleared"],
+        "src/memory/privacy_services.py": ["prune_retired_owners"],  # F2 maintenance-tick retry
     }
 
 
 def _assign_calls_with_unwired_callables(source):
     bad = []
     for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "assign_owner":
+        # Direct calls and worker hand-offs such as service.acall(ledger.assign_owner, ..., retired=..., active=...).
+        if isinstance(node, ast.Call) and any(isinstance(target, ast.Attribute) and target.attr == "assign_owner"
+                                              for target in (node.func, *node.args)):
             keywords = {k.arg: k.value for k in node.keywords}
             wired = all(isinstance(keywords.get(name), ast.Attribute) and keywords[name].attr == "memory_owner_" + name
                         for name in ("retired", "active"))
@@ -444,6 +449,22 @@ def test_the_wiring_scan_detects_unwired_callables():
     assert _assign_calls_with_unwired_callables(wired.replace("auth.memory_owner_retired", "auth.users_retired"))
     assert _assign_calls_with_unwired_callables(wired.replace("auth.memory_owner_active", "lambda p: True"))
     assert _assign_calls_with_unwired_callables("ledger.assign_owner(f, p, 1, 0, a, **checks)\n")
+    handoff = "await run(svc.ledger.assign_owner, f, p, 1, 0, a, retired=auth.memory_owner_retired, active=auth.memory_owner_active)\n"
+    assert _assign_calls_with_unwired_callables(handoff) == []
+    assert _assign_calls_with_unwired_callables(handoff.replace("auth.memory_owner_active", "auth.users_linkable"))
+
+
+def test_the_assign_route_is_the_only_production_assignment_and_it_is_wired():
+    """U3b-2: the forward rule is no longer vacuous; exactly one assignment call exists."""
+    calls = []
+    for path in sorted((ROOT / "src").rglob("*.py")):
+        if path == ROOT / "src/memory/fact_ledger.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call) and any(isinstance(t, ast.Attribute) and t.attr == "assign_owner"
+                                                  for t in (node.func, *node.args)):
+                calls.append(str(path.relative_to(ROOT)))
+    assert calls == ["src/dashboard/memory_api.py"]
 
 
 def test_account_delete_orders_retirement_links_memories_then_catalog():

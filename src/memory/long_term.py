@@ -11,7 +11,7 @@ import os
 import threading
 from pathlib import Path
 
-from src.memory.fact_ledger import FactLedger, MemoryReviewer, MemorySource
+from src.memory.fact_ledger import FactLedger, MemoryOwnerActor, MemoryReviewer, MemorySource
 from src.memory.privacy_services import PrivacyServices
 from src.memory.producer_scopes import ProducerScope, current_producer_scope
 from src.memory.prompt_context import PromptContext
@@ -176,6 +176,23 @@ class LongTermMemory:
         self._notify()
         self.reconcile()
         return deleted
+
+    def delete_owned(self, fact_id: str, actor: MemoryOwnerActor) -> bool:
+        """Delete one of a person's own facts and clean its index copy (U3b-2).
+
+        A fact the person does not own returns False, like a missing one.
+        """
+        self.initialize()
+        deleted = self.ledger.delete_owned(fact_id, actor)
+        if deleted:
+            self._notify()
+            self.reconcile()
+        return deleted
+
+    def owner_index_changed(self) -> None:
+        """Index the revision an owner assignment just confirmed (U3b-2)."""
+        self._notify()
+        self.reconcile()
 
     def delete_conversation(self, conversation_id: str, actor: MemoryReviewer) -> int:
         """Block future derivations before removing current conversation facts."""

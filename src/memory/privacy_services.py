@@ -12,6 +12,7 @@ import logging
 import os
 from pathlib import Path
 import threading
+import time
 from weakref import WeakMethod
 
 from src.core.owned_work import ClosePhase, OwnedBlockingWork, WorkCloseTimeout, observe_native
@@ -20,6 +21,13 @@ from src.memory.fact_ledger import FactLedger, MemoryOrigin, MemorySource
 from src.memory.sources import CaptureScopes
 
 logger = logging.getLogger(__name__)
+
+# Unconditional retired-owner prune cadence (review R1): one owner-row read under the
+# writer lock per hour bounds how long restored or stranded rows of a removed account
+# survive once the authority is usable, without taking the lock on every 30 s tick.
+RETIRED_OWNER_PRUNE_INTERVAL_S = 3600.0
+# While the prune keeps failing, repeat the warning at most this often (review R6).
+RETIRED_OWNER_PRUNE_LOG_S = 600.0
 
 
 class PrivacyServices:
@@ -41,6 +49,10 @@ class PrivacyServices:
         self._ready = False
         self._closing: asyncio.Task | None = None
         self.maintenance: asyncio.Task | None = None
+        self._retired_owner_prune: tuple[Callable, Callable] | None = None
+        self._retired_owner_prune_pending = False
+        self._retired_owner_prune_at = 0.0
+        self._retired_owner_prune_failed_at: float | None = None
 
     def initialize(self) -> None:
         """Acquire the private writer lease before opening or migrating SQLite."""
@@ -107,6 +119,62 @@ class PrivacyServices:
         return self.scopes.source_for_capture(capture_id, captured_at, room_id,
             conversation_id=conversation_id, expires_at=expires_at, origin=origin)
 
+    def attach_retired_owner_prune(self, retired: Callable[[frozenset[str]], bool],
+                                   probe: Callable[[frozenset[str]], bool | None]) -> None:
+        """Register the retired-owner prune for the maintenance tick (U3b-1b F2, review R1).
+
+        ``retired`` is the durable proof (DashboardAuthority.users_retired) and
+        ``probe`` the tri-state check that answers None when the authority is
+        unusable (DashboardAuthority.memory_owner_retired). Called at boot, right
+        before the boot prune itself, so the next unconditional run is one
+        interval later.
+        """
+        if not callable(retired) or not callable(probe):
+            raise PermissionError("memory_owner_retirement_required")
+        self._retired_owner_prune = (retired, probe)
+        self._retired_owner_prune_at = time.monotonic()
+
+    def defer_retired_owner_prune(self) -> None:
+        """Mark the prune pending after a failure: retried on every tick until it succeeds.
+
+        Until then the ledger reports ``retired_owner_prune_pending``, a
+        content-free health signal shown to operators.
+        """
+        if self._retired_owner_prune is None:
+            raise PermissionError("memory_owner_retirement_required")
+        if not self._retired_owner_prune_pending:
+            self._retired_owner_prune_failed_at = None
+        self._retired_owner_prune_pending = True
+        self.ledger.retired_owner_prune_pending = True
+
+    async def _retry_retired_owner_prune(self) -> None:
+        """Run the prune while pending (every tick) or, unconditionally, once per interval."""
+        if self._retired_owner_prune is None:
+            return
+        now = time.monotonic()
+        if not self._retired_owner_prune_pending and now - self._retired_owner_prune_at < RETIRED_OWNER_PRUNE_INTERVAL_S:
+            return
+        self._retired_owner_prune_at = now
+        retired, probe = self._retired_owner_prune
+        try:
+            deleted = await self.acall(self.ledger.prune_retired_owners, retired, probe=probe)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            # Log on the transition to failing, then at most once per interval of quiet (R6).
+            last = self._retired_owner_prune_failed_at
+            if not self._retired_owner_prune_pending or last is None or now - last >= RETIRED_OWNER_PRUNE_LOG_S:
+                logger.warning("Retired-owner prune pending: %s", type(error).__name__)
+                self._retired_owner_prune_failed_at = now
+            self._retired_owner_prune_pending = True
+            self.ledger.retired_owner_prune_pending = True
+            return
+        if self._retired_owner_prune_pending:
+            logger.info("Retired-owner prune completed on the maintenance tick (%d deleted)", deleted)
+        self._retired_owner_prune_pending = False
+        self._retired_owner_prune_failed_at = None
+        self.ledger.retired_owner_prune_pending = False
+
     def start(self) -> None:
         """Maintain fact deadlines independently of optional index reconciliation."""
         if self.maintenance is not None:
@@ -114,6 +182,7 @@ class PrivacyServices:
         async def maintain():
             while not self._closed:
                 try:
+                    await self._retry_retired_owner_prune()
                     await self.acall(self.ledger.expire)
                     delay = await self.acall(self.ledger.next_maintenance_delay)
                 except asyncio.CancelledError:

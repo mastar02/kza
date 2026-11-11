@@ -96,6 +96,8 @@ def test_retirement_changes_no_permission():
         "home:read", "home:control", "tasks:read", "tasks:write", "tasks:personal", "routines:execute",
         "routines:manage", "diagnostics:read", "conversations:read", "memory:read", "memory:review",
         "voices:read", "voices:review", "evaluation:read", "ambient:control", "admin:manage", "auth:manage",
+        # Added by U3b-2 (per-person memory), not by the legacy retirement.
+        "memory:assign", "memory:own:read", "memory:own:write",
     }
     assert _HOME_PERMISSIONS == {"home:read", "home:control", "tasks:read", "tasks:write", "routines:execute"}
     expected = {

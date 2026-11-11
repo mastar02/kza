@@ -143,11 +143,11 @@ async def test_partial_derivation_failure_retries_without_duplicating_or_renewin
 
         distiller = Distiller(store, extract, save, min_batch=1)
         assert await distiller.distill_once() == 1
-        initial = services.manager.long_term.ledger.list()[0]
+        initial = services.manager.long_term.ledger.list(scope='all')[0]
         assert len(await store.undistilled_live(require_provenance=True)) == 1
         clock.now += 3600
         assert await distiller.distill_once() == 2
-        rows = services.manager.long_term.ledger.list()
+        rows = services.manager.long_term.ledger.list(scope='all')
         assert len(rows) == 2 and services.manager.long_term.ledger.get(initial.id).expires_at == initial.expires_at
         assert await store.undistilled_live(require_provenance=True) == []
 

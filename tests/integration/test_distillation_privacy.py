@@ -90,7 +90,7 @@ async def test_actual_catalog_fact_keeps_exact_batch_sources_and_original_30_day
 ):
     async with graph(tmp_path) as (privacy, store, distiller, clock, sources):
         assert await distiller.distill_once() == 1
-        facts = await privacy.acall(privacy.ledger.list)
+        facts = await privacy.acall(privacy.ledger.list, scope='all')
         assert len(facts) == 1 and set(facts[0].sources) == set(sources)
         assert facts[0].expires_at == clock.now + 30 * 86400
         clock.now += 60
@@ -136,7 +136,7 @@ async def test_inflight_chat_is_cancelled_and_inputs_not_marked_on_invalidation(
             await store._db.execute("SELECT distilled FROM utterances")
         ).fetchall()
         assert rows and all(not r[0] for r in rows)
-        assert await privacy.acall(privacy.ledger.list) == []
+        assert await privacy.acall(privacy.ledger.list, scope='all') == []
 
 
 async def test_revocation_after_read_before_prompt_prevents_model_admission(
@@ -181,7 +181,7 @@ async def test_mixed_batch_loses_entire_derivation_then_other_conversation_can_r
         assert await asyncio.wait_for(running, 2) == 0
         release.set()
         assert await distiller.distill_once() == 1
-        fact = (await privacy.acall(privacy.ledger.list))[0]
+        fact = (await privacy.acall(privacy.ledger.list, scope='all'))[0]
         assert fact.sources == (sources[1],)
         assert len(await store.undistilled_live()) == 0
 
@@ -262,7 +262,7 @@ async def test_native_store_is_retained_and_late_guard_rejects_invalid_sources(
             release.set()
             await asyncio.gather(observer, return_exceptions=True)
             await until(lambda: not distiller.snapshot_operations())
-        assert await privacy.acall(privacy.ledger.list) == []
+        assert await privacy.acall(privacy.ledger.list, scope='all') == []
         assert all(
             not r[0]
             for r in await (
@@ -337,7 +337,7 @@ async def test_valid_empty_response_acknowledges_inputs_without_creating_facts(
     async with graph(tmp_path, chat=extract) as (privacy, store, distiller, _, _):
         assert await distiller.distill_once() == 0
         assert await store.undistilled_live() == []
-        assert await privacy.acall(privacy.ledger.list) == []
+        assert await privacy.acall(privacy.ledger.list, scope='all') == []
 
 
 @pytest.mark.parametrize("stage", ["chat", "store"])
@@ -411,7 +411,7 @@ async def test_invalidated_native_callback_waiting_for_default_executor_never_en
             await until(lambda: not distiller.snapshot_operations())
             loop._default_executor = previous
             pool.shutdown(wait=True)
-        assert calls == [] and await privacy.acall(privacy.ledger.list) == []
+        assert calls == [] and await privacy.acall(privacy.ledger.list, scope='all') == []
 
 
 async def test_idle_periodic_distiller_stop_wakes_without_waiting_six_hours(tmp_path):

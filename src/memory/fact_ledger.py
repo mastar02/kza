@@ -12,7 +12,9 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sqlite3
+import struct
 import threading
 import time
 from collections.abc import Callable
@@ -223,8 +225,9 @@ class MemoryAssigner:
 class MemoryOwnerActor:
     """Server-minted capability of one person acting on facts they own.
 
-    Requires ``memory:own:write`` and a principal bound to a user id. In U3b-1a
-    it only authorizes ``return_owned``; U3b-2 adds the permission and routes.
+    Requires ``memory:own:write`` and a household principal bound to a user
+    id (the authenticated account -> person relation; never a voice label).
+    It authorizes ``return_owned`` and ``delete_owned`` (U3b-2).
     """
 
     subject: str
@@ -234,9 +237,7 @@ class MemoryOwnerActor:
     @classmethod
     def from_dashboard(cls, principal: object, current: Callable[[], bool] | None = None) -> "MemoryOwnerActor":
         """Mint owner authority from a person-bound dashboard session."""
-        from src.dashboard.auth import DashboardPrincipal
-        if (not isinstance(principal, DashboardPrincipal) or "memory:own:write" not in principal.permissions
-                or not _valid_person(principal.user_id)):
+        if not _person_principal(principal, "memory:own:write"):
             raise PermissionError("memory_owner_actor_denied")
         return cls(principal.subject, principal.user_id, current)
 
@@ -249,6 +250,90 @@ class MemoryOwnerActor:
                 raise PermissionError("memory_owner_actor_denied") from None
             if allowed is not True:
                 raise PermissionError("memory_owner_actor_denied")
+
+
+@dataclass(frozen=True)
+class MemoryOwnerReader:
+    """Server-minted capability of one person reading the facts they own (U3b-2).
+
+    Requires ``memory:own:read`` and a household principal bound to a user id.
+    The owner filter is applied in SQL from ``person_id``; nothing else selects it.
+    """
+
+    subject: str
+    person_id: str
+    _current: Callable[[], bool] | None = field(default=None, repr=False, compare=False)
+
+    @classmethod
+    def from_dashboard(cls, principal: object, current: Callable[[], bool] | None = None) -> "MemoryOwnerReader":
+        """Mint read authority from a person-bound dashboard session."""
+        if not _person_principal(principal, "memory:own:read"):
+            raise PermissionError("memory_owner_actor_denied")
+        return cls(principal.subject, principal.user_id, current)
+
+    def require_current(self) -> None:
+        """A queued owner read cannot outlive its original session."""
+        if self._current is not None:
+            try:
+                allowed = self._current()
+            except Exception:
+                raise PermissionError("memory_owner_actor_denied") from None
+            if allowed is not True:
+                raise PermissionError("memory_owner_actor_denied")
+
+
+def _person_principal(principal: object, permission: str) -> bool:
+    """A household dashboard principal bound to a person and holding ``permission``."""
+    from src.dashboard.auth import DashboardPrincipal
+    from src.dashboard.authority import DashboardRole
+    return (isinstance(principal, DashboardPrincipal) and principal.role is DashboardRole.HOME
+            and permission in principal.permissions and _valid_person(principal.user_id)
+            and type(principal.subject) is str and bool(principal.subject))
+
+
+MEMORY_PAGE_LIMIT = 100
+
+
+@dataclass(frozen=True)
+class FactPageCursor:
+    """Keyset position on (extracted_at DESC, id ASC) (U3b V13).
+
+    Encoded as ``k1.<16 hex digits of the big-endian IEEE-754 double>.<fact id>``:
+    exact, canonical and content-free. Any other shape is invalid.
+    """
+
+    extracted_at: float
+    fact_id: str
+
+    def encode(self) -> str:
+        """Serialize the position for a ``next`` field."""
+        return "k1." + struct.pack(">d", self.extracted_at).hex() + "." + self.fact_id
+
+    @classmethod
+    def decode(cls, value: object) -> "FactPageCursor":
+        """Parse a client cursor; any deviation raises ValueError('memory_cursor_invalid')."""
+        match = _CURSOR.fullmatch(value) if type(value) is str else None
+        if match is None:
+            raise ValueError("memory_cursor_invalid")
+        extracted_at = struct.unpack(">d", bytes.fromhex(match.group(1)))[0]
+        if not math.isfinite(extracted_at):
+            raise ValueError("memory_cursor_invalid")
+        return cls(extracted_at, match.group(2))
+
+
+_CURSOR = re.compile(r"k1\.([0-9a-f]{16})\.(fact_[0-9a-f]{64})")
+
+
+@dataclass(frozen=True)
+class FactPage:
+    """One keyset page of projected facts and the cursor of the next one."""
+
+    items: tuple[dict, ...]
+    next_cursor: FactPageCursor | None
+
+    def next(self) -> str | None:
+        """Encoded cursor, or None on the last page."""
+        return None if self.next_cursor is None else self.next_cursor.encode()
 
 
 class MemoryOwnerDependents(ValueError):
@@ -389,6 +474,14 @@ def _scope_filter(scope: object, person_id: object) -> tuple[str, tuple]:
     if scope is MemoryScope.HOUSEHOLD:
         return " AND id NOT IN (SELECT fact_id FROM fact_owner_revisions)", ()
     return "", ()
+
+
+def _page_arguments(limit: object, *cursors: object) -> None:
+    """Validate a keyset request before any read: 1..100 items, typed cursors."""
+    if type(limit) is not int or not 1 <= limit <= MEMORY_PAGE_LIMIT:
+        raise ValueError("memory_page_invalid")
+    if any(cursor is not None and type(cursor) is not FactPageCursor for cursor in cursors):
+        raise ValueError("memory_page_invalid")
 
 
 @dataclass(frozen=True)
@@ -586,6 +679,9 @@ class FactLedger:
         # Same content-free proof pattern for owner rows (U3b-1b): the account
         # catalog reads it without ledger locks before removing an account.
         self._fact_owner_proof = VoicePersonIndex()
+        # Content-free health signal (U3b-1b F2): the boot prune of retired
+        # owners failed and the privacy maintenance tick is retrying it.
+        self.retired_owner_prune_pending = False
         self._voice_group_revision = 0
         self._revocation_observers: list[WeakMethod] = []
         self.erasures = ErasureJournal(self)
@@ -950,13 +1046,12 @@ class FactLedger:
             fact = self._fact(db, fact_id)
             return fact if self._eligible(db, fact, review=review) else None
 
-    def list(self, *, scope: str = MemoryScope.ALL, person_id: str | None = None, category: str | None = None,
+    def list(self, *, scope: str, person_id: str | None = None, category: str | None = None,
              proposals: bool = False, limit: int = 100) -> list[StoredFact]:
         """Read live facts in one owner scope without refreshing their retention clock.
 
-        ``scope`` defaults to 'all' only for the operator review route
-        (src/dashboard/memory_api.py), which U3b-1a must not edit; every
-        caller in src/memory passes it explicitly (pinned by a test).
+        ``scope`` is required for every caller (U3b-2 removed the operator
+        route's 'all' default); each call site is pinned by a test.
         """
         if type(limit) is not int or not 0 < limit <= 1000:
             raise ValueError("invalid_memory_limit")
@@ -1184,21 +1279,150 @@ class FactLedger:
         """'No es mío': the owner hands the fact back to the operator's 'Devueltos' queue.
 
         The fact stays as it is (CONFIRMED, no expiry) and ownerless. A fact the
-        actor's person does not own returns False, like a missing one.
+        actor's person does not own returns False, like a missing one, after
+        exactly the same statements (U3b-2: no timing class between the two).
         """
         if (type(actor) is not MemoryOwnerActor or type(actor.subject) is not str or not actor.subject
                 or not _valid_person(actor.person_id) or person_id != actor.person_id):
             raise PermissionError("memory_owner_actor_denied")
         actor.require_current()
         with self._owner_transaction(actor.require_current, withdraw=False) as db:
-            fact = self._fact(db, fact_id) if type(fact_id) is str else None
-            if not self._eligible(db, fact, review=True):
+            fact = self._owned_fact(db, fact_id, person_id)
+            if fact is None:
                 return False
-            owner, record = self._owner_state(db, fact_id)
-            if owner is None or owner.person_id != person_id:
-                return False
+            _owner, record = self._owner_state(db, fact_id)
             self._write_owner(db, fact_id, record, FactOwnerChange.OWNER_RETURNED)
             return True
+
+    def _owner_actor(self, actor: object, kind: type) -> None:
+        if (type(actor) is not kind or type(actor.subject) is not str or not actor.subject
+                or not _valid_person(actor.person_id)):
+            raise PermissionError("memory_owner_actor_denied")
+        actor.require_current()
+
+    def _owned_fact(self, db, fact_id: object, person_id: str) -> StoredFact | None:
+        """The person's own live fact, or None.
+
+        The first statement decides ownership from SQL alone, with the same
+        parameters shape for a missing, a foreign and an unassigned id; only
+        an owned id reads anything else (no existence oracle, no timing class).
+        """
+        identity = fact_id if type(fact_id) is str else ""
+        if db.execute("SELECT 1 FROM fact_owners WHERE fact_id=? AND person_id=?",
+                      (identity, person_id)).fetchone() is None:
+            return None
+        fact = self._fact(db, identity)
+        if not self._eligible(db, fact, review=True):
+            return None
+        owner, _record = self._owner_state(db, identity)
+        return fact if owner is not None and owner.person_id == person_id else None
+
+    def delete_owned(self, fact_id: str, actor: MemoryOwnerActor) -> bool:
+        """Delete one of the actor's own facts (cascade as ``_delete``, D6).
+
+        A missing, foreign, unassigned or ineligible id returns False with the
+        ledger unchanged, indistinguishable from each other.
+        """
+        self._owner_actor(actor, MemoryOwnerActor)
+        with self._owner_transaction(actor.require_current, withdraw=False) as db:
+            if self._owned_fact(db, fact_id, actor.person_id) is None:
+                return False
+            return bool(self._delete(db, fact_id))
+
+    def _page(self, db, predicate: str, parameters: tuple, states: tuple[FactState, ...],
+              after: FactPageCursor | None, limit: int) -> tuple[list[StoredFact], FactPageCursor | None]:
+        """Keyset page: SQL selects the scope and position, eligibility is re-checked per row (V13)."""
+        sql = ("SELECT id FROM facts WHERE state IN (" + ",".join("?" for _ in states) + ") "
+               "AND (expires_at IS NULL OR expires_at>?) AND " + predicate)
+        values = (*(state.value for state in states), self.clock(), *parameters)
+        if after is not None:
+            sql += " AND (extracted_at<? OR (extracted_at=? AND id>?))"
+            values += (after.extracted_at, after.extracted_at, after.fact_id)
+        result: list[StoredFact] = []
+        more = False
+        for row in db.execute(sql + " ORDER BY extracted_at DESC, id", values):
+            fact = self._fact(db, row["id"])
+            if not self._eligible(db, fact, review=True):
+                continue
+            if len(result) == limit:
+                more = True
+                break
+            result.append(fact)
+        last = result[-1] if more else None
+        return result, None if last is None else FactPageCursor(float(last.extracted_at), last.id)
+
+    def _owner_projection(self, db, fact: StoredFact) -> dict:
+        """Operator view of one fact: full content (P2_A) plus its owner state."""
+        owner, record = self._owner_state(db, fact.id)
+        return {**fact.to_dict(),
+                "owner": None if owner is None else {"person_id": owner.person_id, "method": owner.method.value,
+                                                     "revision": owner.revision, "assigned_at": owner.assigned_at},
+                "owner_revision": 0 if record is None else record.revision,
+                "owner_change": None if record is None else record.last_change.value}
+
+    def review_page(self, *, facts_after: FactPageCursor | None = None,
+                    proposals_after: FactPageCursor | None = None, limit: int = MEMORY_PAGE_LIMIT) -> dict:
+        """Operator review read with keyset pagination on both lists (U3b-2).
+
+        Without cursors and with the default limit it returns the same lists
+        as ``snapshot`` (the U3 contract), plus owner fields and next cursors.
+        """
+        _page_arguments(limit, facts_after, proposals_after)
+        with self._transaction() as db:
+            _scan_fact_owner_rows(db)
+            facts, facts_next = self._page(db, "1", (), (FactState.AUTOMATIC, FactState.CONFIRMED),
+                                           facts_after, limit)
+            proposals, proposals_next = self._page(db, "1", (), (FactState.PROPOSED,), proposals_after, limit)
+            return {"facts": [self._owner_projection(db, fact) for fact in facts],
+                    "proposals": [self._owner_projection(db, fact) for fact in proposals],
+                    "observed_at": self.clock(), "legacy_policy": "quarantined",
+                    "pending_index_cleanup": db.execute(
+                        "SELECT COUNT(*) FROM policy_index_deletions WHERE state!='complete'").fetchone()[0],
+                    "pending_index": db.execute("SELECT COUNT(*) FROM index_jobs").fetchone()[0],
+                    "limit": limit,
+                    "facts_next": None if facts_next is None else facts_next.encode(),
+                    "proposals_next": None if proposals_next is None else proposals_next.encode()}
+
+    def returned_page(self, actor: MemoryAssigner, *, after: FactPageCursor | None = None,
+                      limit: int = MEMORY_PAGE_LIMIT) -> FactPage:
+        """The operator's 'Devueltos' queue: ownerless facts whose last change is owner_returned."""
+        self._assigner(actor)
+        _page_arguments(limit, after)
+        with self._transaction(actor.require_current) as db:
+            _scan_fact_owner_rows(db)
+            facts, cursor = self._page(
+                db, "id IN (SELECT fact_id FROM fact_owner_revisions WHERE last_change=?) "
+                    "AND id NOT IN (SELECT fact_id FROM fact_owners)",
+                (FactOwnerChange.OWNER_RETURNED.value,),
+                (FactState.AUTOMATIC, FactState.CONFIRMED, FactState.PROPOSED), after, limit)
+            return FactPage(tuple(self._owner_projection(db, fact) for fact in facts), cursor)
+
+    def owned_page(self, actor: MemoryOwnerReader, *, after: FactPageCursor | None = None,
+                   limit: int = MEMORY_PAGE_LIMIT) -> FactPage:
+        """'Mis recuerdos': the actor's own facts, proposals included, newest first.
+
+        The owner filter is part of the SQL before the page limit, so a page
+        never depends on other people's facts. The projection carries no
+        sources, confirming subject, confidence, revisions or household counts.
+        """
+        self._owner_actor(actor, MemoryOwnerReader)
+        _page_arguments(limit, after)
+        with self._transaction(actor.require_current) as db:
+            _scan_fact_owner_rows(db)
+            facts, cursor = self._page(
+                db, "id IN (SELECT fact_id FROM fact_owners WHERE person_id=?)", (actor.person_id,),
+                (FactState.AUTOMATIC, FactState.CONFIRMED, FactState.PROPOSED), after, limit)
+            return FactPage(tuple(self._person_projection(db, fact, actor.person_id) for fact in facts), cursor)
+
+    def _person_projection(self, db, fact: StoredFact, person_id: str) -> dict:
+        owner, _record = self._owner_state(db, fact.id)
+        dependents = [identity for identity, _state in self._dependents(db, fact.id)]
+        owned = [identity for identity in dependents if db.execute(
+            "SELECT 1 FROM fact_owners WHERE fact_id=? AND person_id=?", (identity, person_id)).fetchone()]
+        return {"id": fact.id, "content": fact.content, "category": fact.category, "state": fact.state.value,
+                "created_at": fact.extracted_at, "expires_at": fact.expires_at,
+                "owner_method": owner.method.value, "owner_assigned_at": owner.assigned_at,
+                "owned_dependents": owned, "has_hidden_dependents": len(owned) < len(dependents)}
 
     def owned_counts(self, actor: MemoryAssigner) -> OwnedCounts:
         """Count owner state over non-deleted facts; every owner row is validated first."""
@@ -1295,23 +1519,42 @@ class FactLedger:
             logger.info("[FactLedger] retired-account owner cleanup: %d owned, %d deleted", len(owned), deleted)
         return deleted
 
-    def prune_retired_owners(self, retired: Callable[[frozenset[str]], bool]) -> int:
-        """Startup re-run: delete facts still owned by any durably retired account.
+    def prune_retired_owners(self, retired: Callable[[frozenset[str]], bool], *,
+                             probe: Callable[[frozenset[str]], bool | None] | None = None) -> int:
+        """Re-run of the D7 cascade: delete facts still owned by any durably retired account.
 
         Covers a crash between the authority retirement and
         ``clear_user_facts`` and owner rows brought back by a restore. Each
-        referenced person is checked alone with ``retired``; anything but an
-        exact True leaves that person's rows untouched (never guesses). The
-        read also republishes the owner proof from SQL. Returns facts deleted.
+        referenced person is checked alone with ``retired`` (the durable
+        proof); only an exact True deletes (never guesses). ``probe`` is a
+        tri-state check (DashboardAuthority.memory_owner_retired) that answers
+        None when the authority cannot tell: for any person not proven
+        retired whose probe answer is None (or raises), the proven people are
+        still deleted and then ``PermissionError('memory_owner_authority_unavailable')``
+        is raised, so callers keep the prune pending instead of reporting a
+        silent success (review R1). The read also republishes the owner proof.
+        Returns facts deleted.
         """
-        if not callable(retired):
+        if not callable(retired) or (probe is not None and not callable(probe)):
             raise PermissionError("memory_owner_retirement_required")
         with self._lock:
             with self._owner_transaction(withdraw=False) as db:
                 people = _owner_people(db)
-            targets = sorted(person for person in people if _retirement_proven(retired, frozenset({person})))
-            return sum(self.clear_user_facts(frozenset(targets[start:start + 256]), retired)
-                       for start in range(0, len(targets), 256))
+            targets, unknown = [], False
+            for person in sorted(people):
+                if _retirement_proven(retired, frozenset({person})):
+                    targets.append(person)
+                elif probe is not None:
+                    try:
+                        answer = probe(frozenset({person}))
+                    except Exception:
+                        answer = None
+                    unknown = unknown or answer is None
+            deleted = sum(self.clear_user_facts(frozenset(targets[start:start + 256]), retired)
+                          for start in range(0, len(targets), 256))
+            if unknown:
+                raise PermissionError("memory_owner_authority_unavailable")
+            return deleted
 
     def snapshot(self) -> dict:
         """Read one coherent review snapshot with a server expiry clock."""
