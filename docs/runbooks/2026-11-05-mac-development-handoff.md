@@ -700,8 +700,11 @@ P0 confirmó que editar `settings.yaml` del estado se rechaza con `privacy_autho
 - Por ahora los puntajes son inyectados; el puntaje real llega en 4b.
 - Revisión `accept_with_changes`; A–I corregidos y 66/66 mutantes detectados.
 
+U3b-4a-2: permiso `memory:own:voice`, rutas de la persona y de administración, y matriz de 211 filas. La verificación no permite sondear el estado del micrófono. Revisión `accept_with_changes` (R, W, T, L, C, P), todo corregido; 74/74 mutantes muertos.
+
+La suite completa ya no entra en una corrida de 1500 s, así que se corre en dos tandas con el mismo límite (ver `u3b/full-4a1-r3/RESULT.md`).
+
 Siguiente:
-- 4a-2: API.
 - 4a-3: NEXO.
 - 4b: atribución.
 - Huecos de backend: ids en el recibo, persona en whoami.
