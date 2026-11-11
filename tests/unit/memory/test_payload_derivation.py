@@ -1150,6 +1150,36 @@ def test_mixed_cut_restores_owner_rows_only_from_the_latest_image(tmp_path, miss
         assert {table: sorted(map(tuple, db.execute("SELECT * FROM " + table))) for table in expected} == expected
 
 
+_DROP_VOICE_ATTRIBUTION_TABLES = tuple(("DROP TABLE " + table, ()) for table in (
+    "voice_attribution_consents", "voice_verification_attempts", "voice_attribution_events",
+    "voice_attribution_suspensions", "voice_attribution_control", "voice_attribution_schema"))
+
+
+@pytest.mark.parametrize("missing", ["voice_attribution", "voice_attribution_and_owner_schema"])
+def test_mixed_cut_restores_voice_attribution_rows_only_from_the_latest_image(tmp_path, missing):
+    """U3b-4a-0: the ordinary snapshot predates the voice-attribution group (and possibly the owner group).
+
+    The rows are protected authority, never payload: they are cloned from the
+    latest image, aged rows included (nothing time-based prunes them in a cut).
+    """
+    from tests.unit.memory.test_voice_attribution_schema import seed_voice_attribution_rows
+
+    drops = _DROP_VOICE_ATTRIBUTION_TABLES + (_DROP_OWNER_TABLES if missing != "voice_attribution" else ())
+    ordinary = _image(tmp_path, "O", statements=drops)
+    latest = _image(tmp_path, "N", seed=lambda ledger: seed_voice_attribution_rows(ledger._db, NOW))
+    names = {row["name"] for row in ordinary.manifest["databases"][PRIVACY]["schema"]}
+    assert "voice_attribution_consents" not in names
+    assert ("fact_owners" in names) is (missing == "voice_attribution")
+    tables = ("voice_attribution_consents", "voice_verification_attempts", "voice_attribution_events",
+              "voice_attribution_suspensions", "voice_attribution_control", "voice_attribution_schema")
+    with closing(sqlite3.connect(tmp_path / "N-source" / PRIVACY)) as db:
+        expected = {table: sorted(map(tuple, db.execute("SELECT * FROM " + table))) for table in tables}
+    assert all(expected[table] for table in tables)
+    with closing(_materialize_tables(tmp_path, ordinary, latest)) as db:
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert {table: sorted(map(tuple, db.execute("SELECT * FROM " + table))) for table in expected} == expected
+
+
 def test_pre_u3b_latest_image_has_no_owned_facts_and_plans_normally(tmp_path):
     ordinary = _image(tmp_path, "O", statements=_DROP_OWNER_TABLES)
     latest = _image(tmp_path, "N", statements=_DROP_OWNER_TABLES)
@@ -1168,19 +1198,24 @@ def test_latest_image_with_only_one_owner_table_is_invalid(tmp_path, dropped):
 
 def test_only_exact_additive_schema_groups_are_a_compatible_mixed_cut(tmp_path):
     post = _image(tmp_path, "N").manifest["databases"][PRIVACY]["schema"]
-    index, owner = payload._privacy_schema_additions()
-    assert len(index) == 1 and len(owner) == 7 and all(row in post for row in index + owner)
+    index, owner, voice = payload._privacy_schema_additions()
+    assert len(index) == 1 and len(owner) == 7 and len(voice) == 11
+    assert all(row in post for row in index + owner + voice)
 
     def without(*groups):
         return [row for row in post if not any(row in group for group in groups)]
 
-    for older in (without(index), without(owner), without(index, owner)):
+    for older in (without(index), without(owner), without(voice), without(index, owner),
+                  without(owner, voice), without(index, voice), without(index, owner, voice)):
         assert payload._privacy_schema_added(older, post)
         assert not payload._privacy_schema_added(post, older)  # Never towards an older latest image.
     assert not payload._privacy_schema_added(post, post)  # Equality is handled by the caller.
-    pre = without(index, owner)
+    pre = without(index, owner, voice)
     assert not payload._privacy_schema_added(pre, [row for row in post if row["name"] != "fact_owners_person"])
+    assert not payload._privacy_schema_added(pre, [row for row in post
+                                                   if row["name"] != "voice_attribution_events_profile"])
     assert not payload._privacy_schema_added(without(owner), without(owner) + [owner[0]])  # Partial group.
+    assert not payload._privacy_schema_added(without(voice), without(voice) + [voice[0]])  # Partial group.
     extra = {"type": "table", "name": "unrelated", "tbl_name": "unrelated", "sql": "CREATE TABLE unrelated (x)"}
     assert not payload._privacy_schema_added(pre, post + [extra])
     changed = [dict(row, sql=row["sql"].replace("NOT NULL PRIMARY KEY", "PRIMARY KEY"))

@@ -327,3 +327,26 @@ def test_journal_replacement_refuses_an_owner_row_change(journal, tmp_path, monk
         derivation._replace_current(ledger, records, mapping)
     monkeypatch.undo()
     assert derivation._projection(ledger._db) == before
+
+
+def test_voice_attribution_rows_survive_journal_replacement_with_an_advanced_clock(journal, tmp_path):
+    """U3b-4a-0 (R1): aged attempts and events are protected rows; replacement never prunes them."""
+    import time
+    from tests.unit.memory.test_voice_attribution_schema import seed_voice_attribution_rows
+    ledger = journal.ledger
+    seed_voice_attribution_rows(ledger._db, time.time())
+    tables = ("voice_attribution_consents", "voice_verification_attempts", "voice_attribution_events",
+              "voice_attribution_suspensions", "voice_attribution_control", "voice_attribution_schema")
+
+    def rows():  # Values and their SQLite storage types, row by row.
+        return {table: [(tuple(row), tuple(type(value).__name__ for value in row))
+                        for row in ledger._db.execute("SELECT * FROM " + table + " ORDER BY 1")]
+                for table in tables}
+
+    before = rows()
+    assert all(before[table] for table in tables)
+    ledger.clock = lambda: time.time() + 400 * 86400  # past every attempt and event window
+    _, mapping, records = _local(journal, tmp_path)
+    derivation._replace_current(ledger, records, mapping)
+    assert rows() == before
+    assert not ledger._db.execute("PRAGMA foreign_key_check").fetchall()

@@ -92,11 +92,15 @@ _PROTECTED_TABLES = frozenset({
     "legacy_quarantine_batches_v1", "legacy_quarantine_records_v1",
     "pending_audio_deletions", "audio_write_intents",
     "fact_owners", "fact_owner_revisions",
+    # U3b-4a-0: voice-attribution consents, attempts, misattribution events,
+    # suspensions and the admin voice switch (G1) are authority, never payload.
+    "voice_attribution_consents", "voice_verification_attempts", "voice_attribution_events",
+    "voice_attribution_suspensions", "voice_attribution_control",
 })
 
 # Single-row version markers; each must hold exactly [(1,)].
 _SCHEMA_MARKERS = frozenset({"voice_group_schema", "voice_person_schema", "voice_capture_review_schema",
-                             "fact_owner_schema"})
+                             "fact_owner_schema", "voice_attribution_schema"})
 
 # Source-owned v1 column contracts. Unknown additions need an explicit decision
 # about authority versus payload before a managed generation may serve them.
@@ -139,6 +143,12 @@ _TABLE_COLUMNS = {
     "fact_owners": "fact_id:TEXT person_id:TEXT method:TEXT revision:INTEGER assigned_at:REAL assigned_by:TEXT evidence:TEXT",
     "fact_owner_revisions": "fact_id:TEXT revision:INTEGER last_change:TEXT confirmed_by_assignment:INTEGER changed_at:REAL",
     "fact_owner_schema": "version:INTEGER",
+    "voice_attribution_consents": "person_id:TEXT state:TEXT revision:INTEGER verified_profile_id:TEXT verified_profile_revision:INTEGER verified_link_revision:INTEGER changed_at:REAL changed_by:TEXT",
+    "voice_verification_attempts": "person_id:TEXT attempted_at:REAL outcome:TEXT",
+    "voice_attribution_events": "id:TEXT profile_id:TEXT kind:TEXT score_bucket:INTEGER at:REAL",
+    "voice_attribution_suspensions": "profile_id:TEXT revision:INTEGER suspended_at:REAL reason:TEXT",
+    "voice_attribution_control": "id:INTEGER enabled:INTEGER revision:INTEGER changed_at:REAL changed_by:TEXT",
+    "voice_attribution_schema": "version:INTEGER",
     "auth_meta": "key:TEXT value:TEXT",
     "credentials": "id:TEXT digest:TEXT subject:TEXT role:TEXT user_id:TEXT issued_at:REAL expires_at:REAL revision:INTEGER samples:TEXT",
     "sessions": "digest:TEXT credential:TEXT legacy_digest:TEXT issued_at:REAL expires_at:REAL revision:INTEGER",
@@ -2228,33 +2238,41 @@ def _event_relocation_data(root: Path, source: dict, candidate: dict, target_rel
 
 # U3b-1a: the owner schema FactLedger.initialize migrates into a pre-owner ledger.
 _FACT_OWNER_ADDITION = ("fact_owners", "fact_owner_revisions", "fact_owner_schema")
+# U3b-4a-0: the voice-attribution schema FactLedger.initialize migrates into an older ledger.
+_VOICE_ATTRIBUTION_ADDITION = ("voice_attribution_consents", "voice_verification_attempts",
+                               "voice_attribution_events", "voice_attribution_suspensions",
+                               "voice_attribution_control", "voice_attribution_schema")
+# Each known additive schema group; a derivation may add a whole group, empty.
+_SCHEMA_ADDITIONS = (_FACT_OWNER_ADDITION, _VOICE_ATTRIBUTION_ADDITION)
 
 
-def _expect_empty_owner_schema(expected: dict, derived: dict) -> None:
-    """Admit only the empty owner schema a derivation migrates into a pre-U3b ledger.
+def _expect_empty_schema_additions(expected: dict, derived: dict) -> None:
+    """Admit only the empty additive schema groups a derivation migrates into an older ledger.
 
     Materialization opens the destination ledger with current code, and
-    FactLedger.initialize creates fact_owners, fact_owner_revisions and
-    fact_owner_schema when the source image predates them. Per database, that
-    addition is expected only when the source contract has none of the three
-    tables and the derived contract has all three; the expected projection then
-    carries their exact _TABLE_COLUMNS contract and no owner rows. Any owner row
-    or partial owner schema still mismatches, and an empty owner set pins no
-    further fact, so every other projection must still match exactly.
+    FactLedger.initialize creates each known group (the U3b owner tables, the
+    U3b-4a-0 voice-attribution tables) when the source image predates it. Per
+    database and per group, that addition is expected only when the source
+    contract has none of the group's tables and the derived contract has all
+    of them; the expected projection then carries their exact _TABLE_COLUMNS
+    contract and, for protected tables, no rows. Any row or partial group still
+    mismatches, and an empty owner set pins no further fact, so every other
+    projection must still match exactly.
     """
     for relative, tables in expected["tables"].items():
         contract = tables.get("schema_contract_v1")
         target = derived["tables"].get(relative)
         if contract is None or type(target) is not dict or "schema_contract_v1" not in target:
             continue
-        if (any(name in contract["columns"] for name in _FACT_OWNER_ADDITION)
-                or not all(name in target["schema_contract_v1"]["columns"] for name in _FACT_OWNER_ADDITION)):
-            continue
-        for name in _FACT_OWNER_ADDITION:
-            contract["columns"][name] = dict(item.split(":") for item in _TABLE_COLUMNS[name].split())
-        for name in ("fact_owners", "fact_owner_revisions"):
-            tables[name] = {"columns": [item.split(":")[0] for item in _TABLE_COLUMNS[name].split()],
-                            "row_hashes": []}
+        for group in _SCHEMA_ADDITIONS:
+            if (any(name in contract["columns"] for name in group)
+                    or not all(name in target["schema_contract_v1"]["columns"] for name in group)):
+                continue
+            for name in group:
+                contract["columns"][name] = dict(item.split(":") for item in _TABLE_COLUMNS[name].split())
+                if name in _PROTECTED_TABLES:
+                    tables[name] = {"columns": [item.split(":")[0] for item in _TABLE_COLUMNS[name].split()],
+                                    "row_hashes": []}
 
 
 def _derived_authority_equivalent(root: Path, source: dict, candidate: dict, target_relocations: dict) -> bool:
@@ -2268,7 +2286,7 @@ def _derived_authority_equivalent(root: Path, source: dict, candidate: dict, tar
         projection = _remapped_suggestion_projection(columns, rows, target_columns, target_rows,
                                                      mapping, before_events, after_events)
         expected["tables"][relative]["suggestions_policy_v1"] = projection
-    _expect_empty_owner_schema(expected, candidate["authority"]["projection"])
+    _expect_empty_schema_additions(expected, candidate["authority"]["projection"])
     return candidate["authority"] == {"schema_version": 1, "digest": _digest(expected), "projection": expected}
 
 

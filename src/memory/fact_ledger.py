@@ -30,7 +30,8 @@ from src.memory.erasure_journal import ERASURE_SCHEMA, ErasureJournal
 from src.dashboard.live_receipts import LIVE_RECEIPT_SCHEMA
 from src.memory.index_deletions import INDEX_DELETION_SCHEMA, IndexDeletionQueue
 from src.memory.voice_schema import (
-    VOICE_SCHEMA, initialize_voice_people_schema, initialize_voice_review_schema,
+    VOICE_SCHEMA, initialize_voice_attribution_schema, initialize_voice_people_schema,
+    initialize_voice_review_schema,
 )
 
 logger = logging.getLogger(__name__)
@@ -748,6 +749,8 @@ class FactLedger:
                         db.rollback()
                         raise
                 initialize_fact_owner_schema(db)
+                # U3b-4a-0: voice-attribution authority (validated, never pruned at open).
+                initialize_voice_attribution_schema(db)
                 owners = _owner_people(db)
                 receipts = self._read_fact_receipts(db)
                 deleted_times = dict(db.execute("SELECT conversation_id, deleted_at FROM conversation_tombstones"))

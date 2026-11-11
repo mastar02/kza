@@ -49,7 +49,7 @@ def test_registration_strings_are_exact():
     assert {"fact_owners", "fact_owner_revisions"} <= stage._PROTECTED_TABLES
     assert "fact_owner_schema" not in stage._PROTECTED_TABLES
     assert stage._SCHEMA_MARKERS == {"voice_group_schema", "voice_person_schema", "voice_capture_review_schema",
-                                     "fact_owner_schema"}
+                                     "fact_owner_schema", "voice_attribution_schema"}
 
 
 def _source():
@@ -158,7 +158,7 @@ def test_derived_expectation_admits_only_the_empty_owner_schema_migrated_by_deri
     derived = stage.capture_state_authority(state)["projection"]
     assert source != derived
     expected = copy.deepcopy(source)
-    stage._expect_empty_owner_schema(expected, derived)
+    stage._expect_empty_schema_additions(expected, derived)
     assert expected == derived
 
     ledger = FactLedger(str(state / PRIVACY), clock=lambda: NOW)
@@ -171,9 +171,9 @@ def test_derived_expectation_admits_only_the_empty_owner_schema_migrated_by_deri
         ledger.close()
     owned = stage.capture_state_authority(state)["projection"]
     expected = copy.deepcopy(source)
-    stage._expect_empty_owner_schema(expected, owned)
+    stage._expect_empty_schema_additions(expected, owned)
     assert expected != owned
 
     unchanged = copy.deepcopy(derived)
-    stage._expect_empty_owner_schema(unchanged, owned)
+    stage._expect_empty_schema_additions(unchanged, owned)
     assert unchanged == derived

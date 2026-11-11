@@ -1038,12 +1038,14 @@ _LOOKUP_INDEX = {"type": "index", "name": "idx_erasure_target_participant_id", "
 def _privacy_schema_additions() -> tuple[tuple[dict, ...], ...]:
     """Each known additive privacy-schema change, as its exact sqlite_master rows.
 
-    The erasure lookup index (014b422) and the U3b owner schema (all seven rows
-    of FACT_OWNER_SCHEMA together). A group is either wholly absent from an
-    older image or wholly present in both.
+    The erasure lookup index (014b422), the U3b owner schema (all seven rows
+    of FACT_OWNER_SCHEMA together) and the U3b-4a-0 voice-attribution schema
+    (every row of VOICE_ATTRIBUTION_SCHEMA together). A group is either wholly
+    absent from an older image or wholly present in both.
     """
     from src.memory.fact_ledger import fact_owner_schema_objects
-    return ((_LOOKUP_INDEX,), tuple(fact_owner_schema_objects()))
+    from src.memory.voice_schema import voice_attribution_schema_objects
+    return ((_LOOKUP_INDEX,), tuple(fact_owner_schema_objects()), tuple(voice_attribution_schema_objects()))
 
 
 def _privacy_schema_added(ordinary: list[dict], latest: list[dict]) -> bool:
