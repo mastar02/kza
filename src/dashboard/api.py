@@ -164,6 +164,30 @@ class ReminderCreateModel(BaseModel):
 
 # ==================== Dashboard API ====================
 
+
+GRACEFUL_SHUTDOWN_SECONDS = 5
+CONNECTION_DRAIN_SECONDS = 2.0
+_OWNED_SIGNAL_SERVERS: dict[type, type] = {}
+
+
+def _owned_signal_server(uvicorn_module) -> type:
+    """A uvicorn Server whose capture_signals() is a no-op (cached per base class)."""
+    base = uvicorn_module.Server
+    cached = _OWNED_SIGNAL_SERVERS.get(base)
+    if cached is None:
+        from contextlib import contextmanager
+
+        class OwnedSignalServer(base):
+            """Leave SIGTERM/SIGINT to the process owner; never re-raise them."""
+
+            @contextmanager
+            def capture_signals(self):
+                yield
+
+        cached = _OWNED_SIGNAL_SERVERS[base] = OwnedSignalServer
+    return cached
+
+
 class DashboardAPI:
     """
     API REST para el dashboard de KZA.
@@ -1111,13 +1135,17 @@ class DashboardAPI:
 
         logger.info(f"Dashboard API starting on {self.host}:{self.port}")
 
+        # KZA alone owns SIGTERM (U3b-0d1): uvicorn neither replaces the
+        # handler nor re-raises a captured signal, and open WebSockets are
+        # cancelled after a bounded graceful period.
         config = uvicorn.Config(
             self.app,
             host=self.host,
             port=self.port,
-            log_level="info"
+            log_level="info",
+            timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS,
         )
-        self._server = uvicorn.Server(config)
+        self._server = _owned_signal_server(uvicorn)(config)
         self._serve_task = asyncio.current_task()
         try:
             await self._server.serve()
@@ -1150,6 +1178,7 @@ class DashboardAPI:
                     await asyncio.shield(native_drain)
                     if serving is not None:
                         await asyncio.shield(serving)
+                        await self._await_cancelled_connections()
                 if observed is not None:
                     # Only after the whole original stack exited successfully.
                     await observed.account_publisher_drained(self)
@@ -1165,6 +1194,18 @@ class DashboardAPI:
         stopping.result()
         if cancelled:
             raise asyncio.CancelledError
+
+    async def _await_cancelled_connections(self) -> None:
+        """Await connection tasks uvicorn cancelled but did not await (review D6)."""
+        server = self._server
+        state = getattr(server, "server_state", None)
+        pending = [task for task in getattr(state, "tasks", ()) if not task.done()]
+        if not pending:
+            return
+        _, remaining = await asyncio.wait(pending, timeout=CONNECTION_DRAIN_SECONDS)
+        if remaining:
+            logger.warning("Dashboard stop: %d connection task(s) still running after %.0fs",
+                           len(remaining), CONNECTION_DRAIN_SECONDS)
 
     def run_sync(self):
         """Ejecutar servidor de forma síncrona (para testing)"""

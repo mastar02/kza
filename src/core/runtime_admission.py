@@ -186,6 +186,109 @@ def _check_serving_paths(config: dict, state: Path) -> None:
     inspect(config)
 
 
+def _relative_under(state: Path, target: str) -> str | None:
+    if not target.startswith("/"):
+        return None
+    path = Path(target.removesuffix(" (deleted)"))
+    if path != state and not path.is_relative_to(state):
+        return None
+    return path.relative_to(state).as_posix()
+
+
+def _descriptor_path(fd: int) -> str | None:
+    """The path an open descriptor refers to (Linux /proc, macOS F_GETPATH), or None."""
+    try:
+        if os.path.isdir("/proc/self/fd"):
+            return os.readlink(f"/proc/self/fd/{fd}")
+        import fcntl
+        if hasattr(fcntl, "F_GETPATH"):
+            raw = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024))
+            return os.fsdecode(raw.split(b"\0", 1)[0])
+    except OSError:
+        return None
+    return None
+
+
+def _check_log_targets(config: dict, state: Path) -> None:
+    """Refuse any log destination under the state (review D1).
+
+    A log written after the closure receipt (or after the controller's state
+    manifest) would change the state the receipt describes.
+    """
+    state = state.resolve()
+    configured = (config.get("logging") or {}).get("file") if isinstance(config.get("logging"), dict) else None
+    if isinstance(configured, (str, os.PathLike)) and configured:
+        if _relative_under(state, str(Path(configured).resolve(strict=False))) is not None:
+            raise RuntimeError("runtime_admission_log_under_state:logging.file")
+    import logging
+    owners = [logging.getLogger()]
+    owners.extend(item for item in logging.Logger.manager.loggerDict.values()
+                  if isinstance(item, logging.Logger))
+    for owner in owners:
+        for handler in owner.handlers:
+            name = getattr(handler, "baseFilename", None)
+            if isinstance(name, str) and _relative_under(state, str(Path(name).resolve(strict=False))) is not None:
+                raise RuntimeError("runtime_admission_log_under_state:handler")
+    for fd, label in ((1, "stdout"), (2, "stderr")):
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                continue
+        except OSError:
+            continue
+        target = _descriptor_path(fd)
+        if target is not None and _relative_under(state, str(Path(target).resolve(strict=False))) is not None:
+            raise RuntimeError("runtime_admission_log_under_state:" + label)
+
+
+def _open_state_writers(state: Path) -> tuple[str, list[str]]:
+    """Find descriptors or shared mappings open for writing under the state.
+
+    Returns:
+        (method, relative paths). Linux reads /proc/self/fdinfo flags and
+        /proc/self/maps 'rw-s' mappings; macOS uses /dev/fd, F_GETFL and
+        F_GETPATH; elsewhere the method is 'not_checked'.
+    """
+    state = state.resolve()
+    found: set[str] = set()
+    writable = (os.O_WRONLY, os.O_RDWR)
+    if os.path.isdir("/proc/self/fdinfo"):
+        for name in os.listdir("/proc/self/fd"):
+            try:
+                with open(f"/proc/self/fdinfo/{name}") as info:
+                    flags = next(int(line.split()[1], 8) for line in info if line.startswith("flags:"))
+                target = os.readlink(f"/proc/self/fd/{name}")
+            except (OSError, StopIteration, ValueError, IndexError):
+                continue
+            if flags & os.O_ACCMODE in writable and (relative := _relative_under(state, target)) is not None:
+                found.add(relative)
+        try:
+            with open("/proc/self/maps") as maps:
+                for line in maps:
+                    parts = line.split(maxsplit=5)
+                    if (len(parts) == 6 and parts[1][1] == "w" and parts[1][3] == "s"
+                            and (relative := _relative_under(state, parts[5].strip())) is not None):
+                        found.add(relative)
+        except OSError:
+            pass
+        return "proc", sorted(found)
+    import fcntl
+    if sys.platform == "darwin" and hasattr(fcntl, "F_GETPATH") and os.path.isdir("/dev/fd"):
+        for name in os.listdir("/dev/fd"):
+            try:
+                fd = int(name)
+                flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+                if flags & os.O_ACCMODE not in writable:
+                    continue
+                raw = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024))
+            except (OSError, ValueError):
+                continue
+            target = os.fsdecode(raw.split(b"\0", 1)[0])
+            if (relative := _relative_under(state, target)) is not None:
+                found.add(relative)
+        return "dev_fd", sorted(found)
+    return "not_checked", []
+
+
 async def _construction_return(task: asyncio.Task):
     """Consume an actual owned return before propagating observer cancellation."""
     cancelled = False
@@ -273,6 +376,14 @@ class RuntimeAdmission:
         self._validation_lock = threading.RLock()
         self._validation_snapshot = None
         self._native_validations = WeakKeyDictionary()
+        self._before_receipt: Callable[[], None] | None = None
+        self.receipt_written = False
+
+    def set_receipt_preparation(self, callback: Callable[[], None]) -> None:
+        """Run ``callback`` (close logging) right before the closure receipt."""
+        if self._before_receipt is not None:
+            raise RuntimeError("runtime_admission_receipt_preparation_already_set")
+        self._before_receipt = callback
 
     @property
     def state_root(self) -> Path:
@@ -520,7 +631,19 @@ class RuntimeAdmission:
         await asyncio.to_thread(self.revalidate)
         resources = {name: proof[name] for name in
             ("graph_closed", "privacy_closed", "sdk_closed", "native_closed")}
+        if self._before_receipt is not None:
+            # D1: logging is closed before the last state observation.
+            self._before_receipt()
+        method, writers = await asyncio.to_thread(_open_state_writers, self.state_root)
+        if writers:
+            import logging
+            logging.getLogger(__name__).error("[Admission] open writer under the state: %s", writers[0])
+            raise RuntimeError("runtime_admission_open_writer:" + writers[0])
+        if method == "not_checked":
+            import logging
+            logging.getLogger(__name__).warning("[Admission] open-writer check not_checked on this platform")
         await asyncio.to_thread(_stage().write_admission_receipt, self._ticket, resources)
+        self.receipt_written = True
         return False
 
     async def _before_owned_close(self, exc_type, exc, traceback) -> bool:
@@ -549,6 +672,7 @@ def verify_runtime_admission(config: dict, *, runtime_root: Path | None = None) 
     state = Path(binding["state_root"]).resolve()
     digest = _check_effective_config(config, state)
     _check_serving_paths(config, state)
+    _check_log_targets(config, state)
     # Detect a private-file change during decoding before the first constructor.
     _stage().validate_admission_ticket(state, ticket, check_state=True)
     admission = RuntimeAdmission(ticket, binding, path, digest)

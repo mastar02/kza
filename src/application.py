@@ -15,8 +15,11 @@ from dataclasses import dataclass, field
 import logging
 from typing import Any, TYPE_CHECKING
 
+from src.core.process_lifecycle import StopPhase, StopRequested
+
 if TYPE_CHECKING:
     from src.core.egress import CloudConsentGate
+    from src.core.process_lifecycle import ProcessLifecycle, StopSignal
     from src.core.state_configuration import ConfigurationChanges
     from src.dashboard.api import DashboardAPI
     from src.dashboard.authority import DashboardAuthority
@@ -263,7 +266,13 @@ class ApplicationGraph:
     producer_erasure: ProducersEraser | None = field(default=None, repr=False)
     configuration_changes: ConfigurationChanges | None = field(default=None, repr=False)
     consent_gate: CloudConsentGate | None = field(default=None, repr=False)
+    lifecycle: ProcessLifecycle | None = field(default=None, repr=False)
     _run_entered: bool = field(default=False, init=False, repr=False)
+
+    @property
+    def stop_signal(self) -> StopSignal | None:
+        """The process stop signal, when a lifecycle is attached."""
+        return None if self.lifecycle is None else self.lifecycle.stop
 
     async def warmup(self) -> None:
         """Warm the shared models and prepare the response cache, when enabled."""
@@ -321,14 +330,26 @@ class ApplicationGraph:
                 logger.info("Application nightly trainer scheduled")
 
     async def run(self) -> None:
-        """Start operational producers, run voice and drain admission on exit."""
+        """Start operational producers, run voice and drain admission on exit.
+
+        With a stop signal, a stop requested before or during start-up skips
+        the remaining start-up and voice, and a stop in steady state (or while
+        capture is blocked) returns normally, so the owned exit still runs.
+        """
         if self._run_entered:
             raise RuntimeError("application_graph_already_run")
         self._run_entered = True
         dashboard_task = None
         ambient_task = None
+        stop = self.stop_signal
         try:
+            if _stop_requested(stop, "services"):
+                return
+            if stop is not None:
+                stop.enter(StopPhase.SERVICES)
             await self._start_services()
+            if _stop_requested(stop, "dashboard"):
+                return
             if self.dashboard is not None:
                 dashboard_task = asyncio.create_task(self.dashboard.start(), name="application-dashboard")
             capture = self.capture_control.snapshot() if self.capture_control is not None else None
@@ -338,10 +359,19 @@ class ApplicationGraph:
             if self.ambient_path is not None and not blocked:
                 ambient_task = asyncio.create_task(self.ambient_path.start(), name="application-ambient")
                 ambient_task.add_done_callback(_report_ambient_failure)
-            if blocked:
+            if blocked and stop is None:
                 await asyncio.Future()
+            elif blocked:
+                # Serving without voice: READY plus a capture-blocked STATUS.
+                logger.warning("[Stop] capture blocked; voice idle until a stop request")
+                self.lifecycle.capture_blocked()
+                await stop.wait()
             else:
+                if stop is not None:
+                    stop.enter(StopPhase.PIPELINE)
                 await self.pipeline.run()
+        except StopRequested:
+            logger.info("[Stop] voice start-up ended by the stop request")
         except KeyboardInterrupt:
             logger.info("Application stopping")
         finally:
@@ -397,6 +427,13 @@ async def _stop_task(service: Any, task: asyncio.Task | None) -> None:
             if not task.done():
                 task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+
+def _stop_requested(stop: StopSignal | None, step: str) -> bool:
+    if stop is None or not stop.requested:
+        return False
+    logger.info("[Stop] start-up stopped before %s", step)
+    return True
 
 
 def _report_ambient_failure(task: asyncio.Task) -> None:

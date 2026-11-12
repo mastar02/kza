@@ -21,6 +21,7 @@ from src.pipeline.audio_loop import AudioLoop
 from src.pipeline.command_processor import CommandProcessor
 from src.pipeline.request_router import RequestRouter
 from src.pipeline.response_handler import ResponseHandler
+from src.core.process_lifecycle import ProcessLifecycle, run_until_stopped
 from src.core.task_outcome import project_turn_outcome
 from src.pipeline.feature_manager import FeatureManager
 from src.dashboard.live_event_bus import LiveEvent, LiveEventBus, LiveEventType
@@ -79,27 +80,26 @@ class VoicePipeline:
         self._close_dependencies = close_dependencies
         self._stopping: asyncio.Task | None = None
 
-        # State
+        self.lifecycle = ProcessLifecycle()  # process stop + READY; inert unless main binds its own
         self._running = False
 
     async def run(self) -> None:
         """Main listening loop — initialize services and delegate to audio_loop."""
         logger.info("Initializing pipeline...")
-
-        # Load models
+        self.lifecycle.stop.checkpoint("models")
         # Keep HA's pending snapshot and WS handshakes live during model warmup.
         if isinstance(self.command_processor, CommandProcessor):
             await self.command_processor.aload_models()
         else:
             await asyncio.to_thread(self.command_processor.load_models)
 
-        # Initialize vector DB
+        self.lifecycle.stop.checkpoint("vector_index")
         if self.chroma:
             self.chroma.initialize()
             stats = self.chroma.get_stats()
             logger.info(f"Vector DB: {stats.get('commands_phrases', 0)} phrases")
 
-        # Initialize memory
+        self.lifecycle.stop.checkpoint("memory")
         if self.memory:
             import inspect
             initialize = getattr(self.memory, "ainitialize", None)
@@ -108,8 +108,7 @@ class VoicePipeline:
             else:
                 await asyncio.to_thread(self.memory.initialize)
 
-        # Start orchestrator
-        if isinstance(self.request_router, RequestRouter):
+        if isinstance(self.request_router, RequestRouter):  # start orchestrator
             self.request_router.start()
         if self._orchestrator:
             try:
@@ -117,22 +116,22 @@ class VoicePipeline:
             except Exception as e:
                 logger.warning(f"Orchestrator start failed (non-fatal): {e}")
 
-        # Start features (timers, intercom, notifications, alerts, HA)
+        self.lifecycle.stop.checkpoint("features")  # timers, intercom, notifications, alerts, HA
         if self.features:
             try:
                 await self.features.start()
                 logger.info("FeatureManager started")
             except Exception as e:
                 logger.warning(f"FeatureManager start failed (non-fatal): {e}")
-
         self._running = True
         logger.info("System ready")
+        self.lifecycle.ready()
 
         # Audio loop — blocks until stop
         if self.audio_loop:
             self.audio_loop.on_command(self.process_command)
             await self.audio_loop.start()
-            await self.audio_loop.run()
+            await run_until_stopped(self.audio_loop.run(), self.lifecycle.stop)
         else:
             logger.warning("No AudioLoop configured — pipeline running without audio capture")
 

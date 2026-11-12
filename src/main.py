@@ -3,10 +3,16 @@
 Home Assistant Voice Control
 Entry point principal
 """
+# ruff: noqa: E402 -- the managed entry is armed before the (~5 s of) imports below.
+if __name__ == "__main__":
+    # U3b-0d1: unblock SIGTERM/SIGINT and record an early stop before any
+    # heavy import; process_lifecycle is stdlib-only.
+    from src.core.process_lifecycle import arm_process_entry
+    _ENTRY = arm_process_entry()
 
 from src.memory import output_registration_v2 as output_registration
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 import logging
 import os
@@ -24,7 +30,8 @@ from src.application import (
 )
 from src.core.egress import CloudConsentGate, ConsentWithdrawalSource
 from src.core.owned_work import OwnedBlockingWork
-from src.core.runtime_admission import seal_runtime_configuration, verify_runtime_admission
+from src.core.process_lifecycle import ProcessLifecycle, StopPhase, arm_process_entry
+from src.core.runtime_admission import TICKET_ENV, seal_runtime_configuration, verify_runtime_admission
 from src.core.state_configuration import ConfigurationChanges
 from src.core.settings_schema import (
     DEFAULT_LOCAL_LLM_GATEWAY,
@@ -350,12 +357,31 @@ async def _prune_retired_memory_owners(privacy_services, dashboard_authority) ->
     return deleted
 
 
-async def main():
-    """Own shutdown even when construction or warmup fails before voice runs."""
+async def main(*, managed_exit: bool = False, lifecycle: ProcessLifecycle | None = None,
+               build: Callable[[AsyncExitStack, ProcessLifecycle], Awaitable[ApplicationGraph]] | None = None,
+               ) -> None:
+    """Own shutdown even when construction or warmup fails before voice runs.
+
+    SIGTERM is routed to the lifecycle's stop signal before the graph is
+    built. A stop in any phase finishes construction, skips the remaining
+    start-up and closes the owned stack normally, so a managed admission still
+    writes its receipt.
+
+    Args:
+        managed_exit: Set by the managed entry. After a clean cleanup with a
+            written receipt, flush and ``os._exit(0)`` so no executor or
+            worker join can outlive the receipt. In-process callers return.
+        lifecycle: Stop/readiness contract; a fresh one when omitted.
+        build: Graph builder taking (shutdown, lifecycle); defaults to the
+            central configuration and ``build_application``.
+    """
+    lifecycle = lifecycle if lifecycle is not None else ProcessLifecycle()
+    lifecycle.stop.install(asyncio.get_running_loop())
     shutdown = AsyncExitStack()
     try:
-        await _run_main(shutdown)
+        await _run_main(shutdown, lifecycle=lifecycle, build=build)
     finally:
+        lifecycle.stop.enter(StopPhase.CLOSING)
         # Repeated cancellation must not close HA while action sends still drain.
         cleanup = asyncio.create_task(shutdown.aclose())
         cancelled = False
@@ -367,16 +393,53 @@ async def main():
         cleanup.result()
         if cancelled:
             raise asyncio.CancelledError
+    if managed_exit and lifecycle.receipt_written:
+        # N5: only here, after cleanup and the receipt; never in a callback.
+        lifecycle.flush_for_exit()
+        os._exit(0)
 
 
-async def _run_main(shutdown: AsyncExitStack) -> None:
-    """Load central configuration, build the shared graph and run it."""
+async def _build_configured_application(shutdown: AsyncExitStack,
+                                        lifecycle: ProcessLifecycle | None) -> ApplicationGraph:
     load_dotenv()
     config_path = os.getenv("CONFIG_PATH", "config/settings.yaml")
     logger.info("Loading application configuration: %s", config_path)
-    graph = await build_application(load_config(config_path), shutdown=shutdown)
-    await graph.warmup()
+    return await build_application(load_config(config_path), shutdown=shutdown, lifecycle=lifecycle)
+
+
+async def _run_main(shutdown: AsyncExitStack, *, lifecycle: ProcessLifecycle | None = None,
+                    build: Callable[..., Awaitable[ApplicationGraph]] | None = None) -> None:
+    """Load central configuration, build the shared graph and run it."""
+    stop = None if lifecycle is None else lifecycle.stop
+    if stop is not None:
+        stop.enter(StopPhase.CONSTRUCTION)
+    if build is None and lifecycle is None:
+        load_dotenv()
+        config_path = os.getenv("CONFIG_PATH", "config/settings.yaml")
+        logger.info("Loading application configuration: %s", config_path)
+        graph = await build_application(load_config(config_path), shutdown=shutdown)
+    else:
+        graph = await (build or _build_configured_application)(shutdown, lifecycle)
+    if lifecycle is not None and (graph.lifecycle is not lifecycle
+                                  or getattr(graph.pipeline, "lifecycle", None) is not lifecycle):
+        # A custom builder must wire both the graph and the pipeline it runs.
+        raise RuntimeError("main_stop_signal_not_wired")
+    if stop is not None and stop.requested:
+        logger.info("[Stop] construction finished after a stop; skipping warmup and voice")
+    else:
+        if stop is not None:
+            stop.enter(StopPhase.WARMUP)
+        await graph.warmup()
     await graph.run()
+
+
+def run_entry(lifecycle: ProcessLifecycle | None = None,
+              build: Callable[[AsyncExitStack, ProcessLifecycle], Awaitable[ApplicationGraph]] | None = None,
+              ) -> None:
+    """The managed process entry: arm signals first, then run main()."""
+    lifecycle = lifecycle if lifecycle is not None else arm_process_entry()
+    asyncio.run(main(managed_exit=os.environ.get(TICKET_ENV) is not None,
+                     lifecycle=lifecycle, build=build))
 
 
 def boot_consent_decision(registration) -> dict | None:
@@ -415,6 +478,7 @@ def _reasoner_is_cloud(reasoner_config: dict, reasoner_mode: str) -> bool:
 async def build_application(
     config: dict, *, shutdown: AsyncExitStack,
     factories: ApplicationFactories | None = None,
+    lifecycle: ProcessLifecycle | None = None,
 ) -> ApplicationGraph:
     """Construct the actual application graph without starting house producers.
 
@@ -425,6 +489,9 @@ async def build_application(
             factory cancellation. Private storage and retention start here.
         factories: Optional leaf adapters. Unspecified constructors resolve
             this module's globals at call time, including existing test patches.
+        lifecycle: Optional process stop/readiness contract. The graph and the
+            pipeline observe its stop signal; READY follows 'System ready'; a
+            managed admission closes logging before its receipt.
 
     Returns:
         The same graph run by main, with operational startup and warmup deferred.
@@ -434,6 +501,8 @@ async def build_application(
     destination_registration = None
     if admission is not None:
         admission.install_on(shutdown)
+        if lifecycle is not None:
+            lifecycle.attach_admission(admission)
         destination_registration = await admission.begin_destination_registration(config)
     # OQ-8: one runtime gate shared by every cloud-capable client; closed now
     # when the journal's recorded decision keeps a withdrawal in force.
@@ -2015,6 +2084,8 @@ async def build_application(
                wake_models.begin_close, http_reasoners.begin_close, hermes_reasoners.begin_close)
         ),
     )
+    if lifecycle is not None:
+        pipeline.lifecycle = lifecycle
 
     shutdown.push_async_callback(pipeline.stop)
 
@@ -2034,6 +2105,7 @@ async def build_application(
         capture_control=capture_control, fallback_audio_loop=audio_loop,
         hermes_reasoners=hermes_reasoners,
         erasure_services=erasure_services,
+        lifecycle=lifecycle,
     )
     from src.memory.producer_erasure import ProducerCoverage, build_producer_erasure
 
@@ -2058,4 +2130,4 @@ async def build_application(
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_entry(_ENTRY)
