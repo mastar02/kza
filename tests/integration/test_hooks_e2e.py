@@ -20,17 +20,6 @@ def registry_with_policies(tmp_path, monkeypatch):
     from src.hooks.registry import _global_registry
     _global_registry.clear()
 
-    # Redirect audit_sqlite to a temp DB
-    audit_db = tmp_path / "audit.db"
-
-    import src.policies.audit_sqlite as audit_mod
-    conn = sqlite3.connect(audit_db, check_same_thread=False)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS events ("
-        "timestamp REAL, kind TEXT, payload_json TEXT)"
-    )
-    monkeypatch.setattr(audit_mod, "_db", conn)
-
     # Importing the policy modules registers handlers via decorators.
     # If they're already imported, reload to re-run decorators against the
     # cleared global registry.
@@ -43,12 +32,19 @@ def registry_with_policies(tmp_path, monkeypatch):
         else:
             importlib.import_module(name)
 
-    # After reload, audit_sqlite._db was reset to None — re-patch.
-    monkeypatch.setattr(audit_mod, "_db", conn)
+    # The audit registers only through its own switch (U3b-0e N1), at a
+    # configured path.
+    from src.policies.audit_sqlite import register_audit_sqlite
+    audit_db = tmp_path / "audit.db"
+    policy = register_audit_sqlite(
+        _global_registry, {"audit_sqlite": {"enabled": True, "db_path": str(audit_db)}}, environ={})
+    policy._get_db()
+    conn = sqlite3.connect(audit_db, check_same_thread=False)
 
     yield _global_registry, conn, audit_db
     _global_registry.clear()
     conn.close()
+    policy.close()
 
 
 @pytest.mark.asyncio

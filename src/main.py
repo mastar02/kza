@@ -19,6 +19,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
 from dotenv import load_dotenv
@@ -30,6 +31,7 @@ from src.application import (
 )
 from src.core.egress import CloudConsentGate, ConsentWithdrawalSource
 from src.core.owned_work import OwnedBlockingWork
+from src.core.paths import TRAINING_OUTPUT_NIGHTLY, models_path, speaker_savedir
 from src.core.process_lifecycle import ProcessLifecycle, StopPhase, arm_process_entry
 from src.core.runtime_admission import TICKET_ENV, seal_runtime_configuration, verify_runtime_admission
 from src.core.state_configuration import ConfigurationChanges
@@ -103,11 +105,15 @@ from src.dashboard.live_erasure import build_live_services
 from src.monitoring.health_aggregator import HealthAggregator
 from src.nlu.command_gate import CommandAcceptanceGate
 
+if TYPE_CHECKING:
+    from src.hooks.registry import HookRegistry
+
 # Configurar logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
+
 logger = logging.getLogger(__name__)
 
 
@@ -474,6 +480,95 @@ def _reasoner_is_cloud(reasoner_config: dict, reasoner_mode: str) -> bool:
         return False
     return is_cloud_endpoint(reasoner_config.get("http_base_url", DEFAULT_LOCAL_LLM_GATEWAY),
                              destination=reasoner_config.get("destination", "cloud"))
+
+
+def load_policy_hooks(hooks_cfg: dict, shutdown: AsyncExitStack) -> "HookRegistry | None":
+    """Load the policy hooks when ``hooks.enabled`` is true.
+
+    Imports every module of ``hooks.policies_module`` (safety_alarm and
+    tts_rewrite_es register at import), then registers the SQLite audit only
+    when ``hooks.audit_sqlite.enabled`` is true (U3b-0e N1); its close goes on
+    ``shutdown``.
+
+    Args:
+        hooks_cfg: The ``hooks`` section of the central configuration.
+        shutdown: The application's owned exit stack.
+
+    Returns:
+        The global registry with at least one handler, or None.
+    """
+    hooks = None
+    if hooks_cfg.get("enabled", False):
+        import pkgutil
+        import importlib
+
+        try:
+            from src.hooks import _global_registry
+        except Exception as e:
+            logger.error(
+                f"[main] Hooks disabled — failed to import src.hooks: {e}",
+                exc_info=True,
+            )
+            hooks = None
+        else:
+            # Per-policy iteration: a single broken policy must NOT disable the
+            # entire hook system. We log each failure individually and continue.
+            policies_module_path = hooks_cfg.get("policies_module", "src.policies")
+            try:
+                pkg = importlib.import_module(policies_module_path)
+            except Exception as e:
+                logger.error(
+                    f"[main] Hooks disabled — failed to import policies package "
+                    f"'{policies_module_path}': {e}",
+                    exc_info=True,
+                )
+                hooks = None
+            else:
+                loaded, failed = [], []
+                for mod_info in pkgutil.iter_modules(pkg.__path__):
+                    mod_name = f"{policies_module_path}.{mod_info.name}"
+                    try:
+                        importlib.import_module(mod_name)
+                        loaded.append(mod_info.name)
+                    except Exception as e:
+                        failed.append((mod_info.name, str(e)))
+                        logger.error(
+                            f"[main] Policy '{mod_name}' failed to load: {e}",
+                            exc_info=True,
+                        )
+                if failed:
+                    logger.error(
+                        f"[main] Hooks PARTIAL: {len(failed)} policy(ies) failed: "
+                        f"{[n for n, _ in failed]}; loaded: {loaded}"
+                    )
+                # U3b-0e N1: the audit has its own switch; importing the policy
+                # registers nothing. Off: no handler and no path is opened.
+                from src.policies.audit_sqlite import register_audit_sqlite
+                audit_policy = register_audit_sqlite(_global_registry, hooks_cfg)
+                if audit_policy is not None:
+                    shutdown.push_async_callback(asyncio.to_thread, audit_policy.close)
+                stats = _global_registry.get_stats()
+                total_handlers = (
+                    sum(stats["before_handler_count"].values())
+                    + sum(stats["after_handler_count"].values())
+                )
+                if total_handlers == 0:
+                    logger.error(
+                        f"[main] Hooks ENABLED but zero handlers registered "
+                        f"(loaded: {loaded}). Check policy files for errors. "
+                        "Disabling hooks to avoid masquerade."
+                    )
+                    hooks = None
+                else:
+                    hooks = _global_registry
+                    logger.info(
+                        f"[main] Plugin hooks enabled — "
+                        f"before_ha={stats['before_handler_count']['before_ha_action']} "
+                        f"before_tts={stats['before_handler_count']['before_tts_speak']} "
+                        f"after_handlers={sum(stats['after_handler_count'].values())} "
+                        f"loaded={loaded}"
+                    )
+    return hooks
 
 
 async def build_application(
@@ -870,6 +965,7 @@ async def build_application(
             model_name=speaker_config["model"],
             device=speaker_config["device"],
             similarity_threshold=speaker_config.get("threshold", 0.75),
+            savedir=speaker_savedir(config, speaker_config["model"]),
         )
 
         speaker_models.add_model(speaker_identifier)
@@ -1194,14 +1290,17 @@ async def build_application(
                         access_key=_os.environ.get(
                             _pv.get("access_key_env", "PORCUPINE_ACCESS_KEY"), ""
                         ),
-                        keyword_path=_pv.get("keyword_path", "models/wakeword/nexa_es.ppn"),
-                        model_path=_pv.get("model_path", "models/wakeword/porcupine_params_es.pv"),
+                        keyword_path=(_pv["keyword_path"] if "keyword_path" in _pv
+                                      else models_path(config, "wakeword", "nexa_es.ppn")),
+                        model_path=(_pv["model_path"] if "model_path" in _pv
+                                    else models_path(config, "wakeword", "porcupine_params_es.pv")),
                         sensitivity=_pv.get("sensitivity", 0.6),
                         wake_word=(room_wake_cfg.get("words") or ["nexa"])[0],
                     )
                 else:
                     wake_detector = (factories.wake_detector or WakeWordDetector)(
                         models=[room_wake_cfg.get("model", "hey_jarvis")],
+                        custom_models_dir=models_path(config, "wakeword"),
                         threshold=room_wake_cfg.get("threshold", 0.5),
                     )
                 wake_models.add_model(wake_detector)
@@ -1424,6 +1523,7 @@ async def build_application(
                         register_stt_borrower=stt_executors.add_borrower,
                         register_speaker=speaker_models.add_model,
                         register_speaker_borrower=speaker_models.add_borrower,
+                        config=config,
                     )
                     shutdown.push_async_callback(ambient_path.stop)
                     await capture_erasure.attach(ambient_path)
@@ -1476,72 +1576,8 @@ async def build_application(
 
     # === Plan #3 OpenClaw — Plugin hooks (optional) ===
     hooks_cfg = config.get("hooks", {}) or {}
-    hooks = None
     self_warn_ms = float(hooks_cfg.get("before_handler_warn_ms", 5.0))
-    if hooks_cfg.get("enabled", False):
-        import pkgutil
-        import importlib
-
-        try:
-            from src.hooks import _global_registry
-        except Exception as e:
-            logger.error(
-                f"[main] Hooks disabled — failed to import src.hooks: {e}",
-                exc_info=True,
-            )
-            hooks = None
-        else:
-            # Per-policy iteration: a single broken policy must NOT disable the
-            # entire hook system. We log each failure individually and continue.
-            policies_module_path = hooks_cfg.get("policies_module", "src.policies")
-            try:
-                pkg = importlib.import_module(policies_module_path)
-            except Exception as e:
-                logger.error(
-                    f"[main] Hooks disabled — failed to import policies package "
-                    f"'{policies_module_path}': {e}",
-                    exc_info=True,
-                )
-                hooks = None
-            else:
-                loaded, failed = [], []
-                for mod_info in pkgutil.iter_modules(pkg.__path__):
-                    mod_name = f"{policies_module_path}.{mod_info.name}"
-                    try:
-                        importlib.import_module(mod_name)
-                        loaded.append(mod_info.name)
-                    except Exception as e:
-                        failed.append((mod_info.name, str(e)))
-                        logger.error(
-                            f"[main] Policy '{mod_name}' failed to load: {e}",
-                            exc_info=True,
-                        )
-                if failed:
-                    logger.error(
-                        f"[main] Hooks PARTIAL: {len(failed)} policy(ies) failed: "
-                        f"{[n for n, _ in failed]}; loaded: {loaded}"
-                    )
-                stats = _global_registry.get_stats()
-                total_handlers = (
-                    sum(stats["before_handler_count"].values())
-                    + sum(stats["after_handler_count"].values())
-                )
-                if total_handlers == 0:
-                    logger.error(
-                        f"[main] Hooks ENABLED but zero handlers registered "
-                        f"(loaded: {loaded}). Check policy files for errors. "
-                        "Disabling hooks to avoid masquerade."
-                    )
-                    hooks = None
-                else:
-                    hooks = _global_registry
-                    logger.info(
-                        f"[main] Plugin hooks enabled — "
-                        f"before_ha={stats['before_handler_count']['before_ha_action']} "
-                        f"before_tts={stats['before_handler_count']['before_tts_speak']} "
-                        f"after_handlers={sum(stats['after_handler_count'].values())} "
-                        f"loaded={loaded}"
-                    )
+    hooks = load_policy_hooks(hooks_cfg, shutdown)
 
     # Response handler (TTS + streaming + zone routing)
     # El response_cache (S2) se inicializa post-warmup abajo y se inyecta via
@@ -2055,7 +2091,7 @@ async def build_application(
             lora_dropout=lora_cfg.get("dropout", 0.05),
             epochs=nightly_config_data.get("training_params", {}).get("epochs", 3),
             batch_size=nightly_config_data.get("training_params", {}).get("batch_size", 2),
-            output_dir=nightly_config_data.get("output_dir", "./models/lora_adapters/nightly"),
+            output_dir=nightly_config_data.get("output_dir", TRAINING_OUTPUT_NIGHTLY),
             data_dir=nightly_config_data.get("data_dir", "./data/nightly_training"),
             conversations_dir=training_config.get("conversations_dir", "./data/conversations"),
         )

@@ -15,6 +15,8 @@ from typing import Callable
 
 import numpy as np
 
+from src.core.paths import models_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -198,7 +200,7 @@ class WakeWordDetector(_WakeLifecycle):
     def __init__(
         self,
         models: list[str] = None,
-        custom_models_dir: str = "./models/wakeword",
+        custom_models_dir: str | None = None,
         threshold: float = 0.5,
         refractory_period: float = 2.0,  # Segundos entre detecciones
         inference_framework: str = "onnx"
@@ -206,13 +208,16 @@ class WakeWordDetector(_WakeLifecycle):
         """
         Args:
             models: Lista de modelos a usar (pre-entrenados o paths a .onnx)
-            custom_models_dir: Directorio de modelos personalizados
+            custom_models_dir: Directorio de modelos personalizados. None usa
+                ``<paths.models_root>/wakeword`` de desarrollo (``./models``),
+                que bajo un ticket de admisión se rechaza (U3b-0e 2b).
             threshold: Umbral de detección (0-1)
             refractory_period: Tiempo mínimo entre detecciones
             inference_framework: Framework para inferencia ("onnx" o "tflite")
         """
         self.models = models or ["hey_jarvis"]
-        self.custom_models_dir = Path(custom_models_dir)
+        self.custom_models_dir = Path(custom_models_dir if custom_models_dir is not None
+                                      else models_path(None, "wakeword"))
         self.threshold = threshold
         self.refractory_period = refractory_period
         self.inference_framework = inference_framework

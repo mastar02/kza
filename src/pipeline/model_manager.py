@@ -25,6 +25,8 @@ from enum import StrEnum
 from typing import Any, Callable
 import time
 
+from src.core.paths import join_models_root, speaker_savedir
+
 logger = logging.getLogger(__name__)
 
 
@@ -56,6 +58,11 @@ class ModelManagerConfig:
     tts_model: str = "piper"  # "piper" o "vits"
     tts_gpu: int = 0
     tts_voice: str = "es_ES-mls_9972-medium"
+
+    # Models root (paths.models_root; None = development ./models, refused
+    # under an admission ticket; U3b-0e 2b)
+    models_root: str | None = None
+    speaker_savedir: str | None = None  # speaker_id.savedir
 
     # Embeddings
     embeddings_model: str = "BAAI/bge-small-en-v1.5"
@@ -275,7 +282,8 @@ class ModelManager:
         try:
             if self.config.tts_model == "piper":
                 from piper import PiperVoice
-                voice_path = f"./models/piper/{self.config.tts_voice}.onnx"
+                voice_path = join_models_root(self.config.models_root, "piper",
+                                              f"{self.config.tts_voice}.onnx")
                 return PiperVoice.load(voice_path)
             else:
                 # VITS o alternativa
@@ -311,8 +319,14 @@ class ModelManager:
 
             from speechbrain.inference.speaker import EncoderClassifier
             device = f"cuda:{self.config.speaker_id_gpu}"
+            # Explicit savedir: speechbrain's default is cwd-relative, which
+            # under a managed child is the read-only runtime (U3b-0e N10).
             model = EncoderClassifier.from_hparams(
                 source=self.config.speaker_id_model,
+                savedir=speaker_savedir(
+                    {"paths": {"models_root": self.config.models_root},
+                     "speaker_id": {"savedir": self.config.speaker_savedir}},
+                    self.config.speaker_id_model),
                 run_opts={"device": device}
             )
             return model

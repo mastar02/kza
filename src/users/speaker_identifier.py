@@ -16,6 +16,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from src.core.paths import speaker_savedir
+
 logger = logging.getLogger(__name__)
 
 
@@ -220,10 +222,23 @@ class SpeakerIdentifier(_SpeakerLifecycle):
         model_name: str,
         device: str,
         similarity_threshold: float = 0.75,
-        sample_rate: int = 16000
+        sample_rate: int = 16000,
+        savedir: str | None = None,
     ):
+        """
+        Args:
+            model_name: Hub id or name of the embedding model.
+            device: Torch device.
+            similarity_threshold: Minimum cosine similarity to identify.
+            sample_rate: Expected audio sample rate.
+            savedir: SpeechBrain cache directory, from
+                ``src.core.paths.speaker_savedir`` (U3b-0e 2b). None derives
+                it from the development models root at load time, which
+                refuses under an admission ticket.
+        """
         self.model_name = model_name
         self.device = device
+        self.savedir = savedir
         self.similarity_threshold = similarity_threshold
         self.sample_rate = sample_rate
 
@@ -265,7 +280,8 @@ class SpeakerIdentifier(_SpeakerLifecycle):
 
             self._model = EncoderClassifier.from_hparams(
                 source=self.model_name,
-                savedir=f"./models/speaker/{self.model_name.replace('/', '_')}",
+                savedir=(self.savedir if self.savedir is not None
+                         else speaker_savedir(None, self.model_name)),
                 run_opts={"device": self.device}
             )
             self._model_type = "speechbrain"

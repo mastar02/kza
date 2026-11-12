@@ -1,5 +1,13 @@
 # Home Assistant Voice Control - Configuration
 
+# Rutas de modelos (U3b-0e 2b). Todo default de modelo en código se resuelve
+# bajo paths.models_root (src/core/paths.py). Sin la clave, desarrollo usa
+# ./models; bajo un ticket de admisión (proceso gestionado) una raíz ausente o
+# relativa se rechaza, porque resolvería dentro del runtime de sólo lectura.
+# La adopción gestionada la fija a /home/kza/kza/models (ruta absoluta).
+paths:
+  models_root: "./models"
+
 # Home Assistant Connection
 home_assistant:
   # Private reviewed inventory data, outside Git. Empty denies all controls.
@@ -688,6 +696,9 @@ speaker_id:
   threshold: 0.75  # Similitud mínima para identificar usuario
   users_path: "./data/users.json"
   enrollment_samples: 3  # Muestras de voz para registrar usuario
+  # Caché de SpeechBrain (<savedir>/<modelo con / → _>). Vacío: usa
+  # <paths.models_root>/speaker. Bajo un ticket debe ser absoluto (U3b-0e 2b).
+  savedir: ""
 
 # Emotion Detection (cuda:0 — comparte GPU con speaker_id por diseño)
 # wav2vec2 sobre el audio post-STT, paralelo a SpeakerID.
@@ -1779,7 +1790,13 @@ hooks:
   before_handler_warn_ms: 5.0      # warn si un handler sync se come >5ms del
                                     # budget de 300ms del fast path. Plumbed
                                     # vía main.py → dispatcher / response_handler.
-  audit_sqlite_path: "./data/audit.db"   # consumido por audit_sqlite policy
+  # Auditoría SQLite de eventos, con su propio interruptor (U3b-0e N1):
+  # hooks.enabled también activa safety_alarm y tts_rewrite_es. Apagada por
+  # default; apagada no registra handler ni abre ninguna ruta. KZA_AUDIT_DB se
+  # ignora sin ticket y se rechaza bajo un ticket de admisión.
+  audit_sqlite:
+    enabled: false
+    db_path: "./data/audit.db"
 
 # ============================================================================
 # Ambient path — transcripción continua multi-pista (spec 2026-06-06)

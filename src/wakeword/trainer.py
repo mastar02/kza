@@ -8,6 +8,8 @@ import json
 import logging
 from pathlib import Path
 
+from src.core.paths import models_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,10 +29,17 @@ class WakeWordTrainer:
     def __init__(
         self,
         data_dir: str = "./data/wakeword_training",
-        models_dir: str = "./models/wakeword",
+        models_dir: str | None = None,
     ):
+        """
+        Args:
+            data_dir: Training samples directory.
+            models_dir: Output directory. None uses the development
+                ``<paths.models_root>/wakeword`` (refused under an admission
+                ticket; U3b-0e 2b).
+        """
         self.data_dir = Path(data_dir)
-        self.models_dir = Path(models_dir)
+        self.models_dir = Path(models_dir if models_dir is not None else models_path(None, "wakeword"))
         self.models_dir.mkdir(parents=True, exist_ok=True)
 
     def train(

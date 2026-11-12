@@ -42,7 +42,7 @@ Arquitectura multi-GPU:
                     ┌─────────────────┴───────────────────────────┐
                     │         MERGE & SAVE ADAPTER                 │
                     │  - Merge gradients                           │
-                    │  - Save to models/lora_adapters/nightly/     │
+                    │  - Save to data/training_outputs/nightly/    │
                     │  - Update active adapter                     │
                     └─────────────────────────────────────────────┘
 """
@@ -60,6 +60,7 @@ from typing import Callable
 from enum import StrEnum
 import threading
 
+from src.core.paths import TRAINING_OUTPUT_NIGHTLY
 from src.memory.fact_ledger import FactLedger
 from src.orchestrator.context_manager import ContextManager
 from src.training.habit_dataset_generator import HabitDatasetGenerator
@@ -149,7 +150,7 @@ class NightlyConfig:
     reload_after_training: bool = True  # Recargar después
 
     # Paths
-    output_dir: str = "./models/lora_adapters/nightly"
+    output_dir: str = TRAINING_OUTPUT_NIGHTLY  # state-relative (U3b-0e 2b)
     data_dir: str = "./data/nightly_training"
     contexts_dir: str = "./data/contexts"
     conversations_dir: str = "./data/conversations"

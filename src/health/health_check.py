@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from src.core.paths import models_root
+
 logger = logging.getLogger(__name__)
 
 
@@ -194,13 +196,13 @@ class HealthChecker:
 
     def check_models(self) -> ComponentHealth:
         """Verificar que los modelos están descargados"""
-        models_path = Path(self.config.get("models_path", "./models"))
+        models_dir = Path(models_root(self.config))
 
-        if not models_path.exists():
+        if not models_dir.exists():
             return ComponentHealth(
                 name="Models",
                 status=HealthStatus.UNHEALTHY,
-                message=f"Directorio {models_path} no existe"
+                message=f"Directorio {models_dir} no existe"
             )
 
         # Check for essential model files
@@ -211,7 +213,7 @@ class HealthChecker:
 
         found_models = []
         for pattern in expected_patterns:
-            matches = list(models_path.glob(f"**/{pattern}"))
+            matches = list(models_dir.glob(f"**/{pattern}"))
             found_models.extend([m.name for m in matches])
 
         if not found_models:
@@ -219,7 +221,7 @@ class HealthChecker:
                 name="Models",
                 status=HealthStatus.UNHEALTHY,
                 message="No se encontraron modelos",
-                details={"path": str(models_path)}
+                details={"path": str(models_dir)}
             )
 
         return ComponentHealth(
@@ -368,7 +370,9 @@ if __name__ == "__main__":
             "url": os.environ.get("HOME_ASSISTANT_URL"),
             "token": os.environ.get("HOME_ASSISTANT_TOKEN")
         },
-        "models_path": os.environ.get("MODELS_PATH", "./models"),
+        # paths.models_root; without MODELS_PATH the development fallback
+        # (./models) applies through src.core.paths.
+        "paths": {"models_root": os.environ.get("MODELS_PATH")},
         "vector_db": {
             "path": os.environ.get("CHROMA_PATH", "./data/chroma_db")
         }

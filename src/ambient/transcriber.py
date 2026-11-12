@@ -21,6 +21,7 @@ from src.ambient.types import AmbientUtterance, RawSegment
 from src.ambient.room_producer import RoomProducer
 from src.core.capture_opening import CaptureOpening
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
+from src.core.paths import models_path, speaker_savedir
 from src.evaluation.provenance import CaptureLane
 from src.memory.producer_context import producer_context
 from src.memory.producer_scopes import ProducerScopes
@@ -701,14 +702,16 @@ class AmbientPath:
         return self._closing
 
 
-def _build_ambient_stt_engine(stt_cfg: dict, stt_base_cfg: dict):
+def _build_ambient_stt_engine(stt_cfg: dict, stt_base_cfg: dict, config: dict | None = None):
     """Seleccionar el motor ASR del ambient path según ``ambient.stt.engine``.
 
     - ``parakeet`` (swap 2026-06-07): Parakeet-TDT-0.6B-v3 onnx en CPU —
       0/5 alucinaciones sobre no-voz vs 5/5 del turbo en el benchmark A/B
       con audio real (doc 2026-06-07_SOTA_ASR_ESPANOL_INVESTIGACION.md).
     - ``whisper`` (default, compat): FastWhisperSTT dedicado en cuda:0,
-      hereda model/compute_type del bloque ``stt:`` top-level.
+      hereda model/compute_type del bloque ``stt:`` top-level. Sin modelo
+      configurado, usa ``<paths.models_root>/whisper-v3-turbo`` (``config``
+      es la configuración central; U3b-0e 2b).
     """
     engine = stt_cfg.get("engine", "whisper")
     if engine == "parakeet":
@@ -720,8 +723,11 @@ def _build_ambient_stt_engine(stt_cfg: dict, stt_base_cfg: dict):
         )
     from src.stt.whisper_fast import FastWhisperSTT
 
+    model = stt_cfg.get("model", stt_base_cfg.get("model"))
+    if model is None:
+        model = models_path(config, "whisper-v3-turbo")
     return FastWhisperSTT(
-        model=stt_cfg.get("model", stt_base_cfg.get("model", "./models/whisper-v3-turbo")),
+        model=model,
         device=stt_cfg.get("device", "cuda:0"),
         compute_type=stt_cfg.get("compute_type", stt_base_cfg.get("compute_type", "int8_float16")),
         language=stt_base_cfg.get("language", "es"),
@@ -742,6 +748,7 @@ def build_ambient_path(
     register_stt_borrower: Callable | None = None,
     register_speaker: Callable[[object], None] | None = None,
     register_speaker_borrower: Callable | None = None,
+    config: dict | None = None,
 ) -> AmbientPath:
     """Construir el ambient path completo desde config (wiring de main.py).
 
@@ -758,6 +765,8 @@ def build_ambient_path(
         register_speaker: Registrar el encoder dedicado antes de dependientes.
         register_speaker_borrower: Drenajes de tagger/transcriber; el dueño del
             grafo también debe esperar VoiceRegistry si recibe observaciones.
+        config: Configuración central, para ``paths.models_root`` y
+            ``speaker_id.savedir`` (U3b-0e 2b). None en desarrollo usa ./models.
     """
     from src.ambient.ambient_stt import AmbientSTT
     from src.ambient.audio_archive import AudioArchiver
@@ -772,7 +781,7 @@ def build_ambient_path(
     from src.users.speaker_identifier import SpeakerIdentifier
 
     stt_cfg = ambient_cfg.get("stt", {}) or {}
-    ambient_engine = _build_ambient_stt_engine(stt_cfg, stt_base_cfg)
+    ambient_engine = _build_ambient_stt_engine(stt_cfg, stt_base_cfg, config)
     if register_stt is not None:
         register_stt(ambient_engine)
     # This builder creates a dedicated ambient engine, separate from command STT.
@@ -806,10 +815,12 @@ def build_ambient_path(
             raise
 
     sp_cfg = ambient_cfg.get("speaker", {}) or {}
+    speaker_model = "speechbrain/spkrec-ecapa-voxceleb"
     identifier = SpeakerIdentifier(
-        model_name="speechbrain/spkrec-ecapa-voxceleb",
+        model_name=speaker_model,
         device=stt_cfg.get("device", "cuda:0"),
         similarity_threshold=0.75,
+        savedir=speaker_savedir(config, speaker_model),
     )
     if register_speaker is not None:
         register_speaker(identifier)

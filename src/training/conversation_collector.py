@@ -17,6 +17,7 @@ from uuid import UUID, uuid4
 from weakref import WeakSet, ref
 
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
+from src.core.paths import TRAINING_OUTPUT_LORA
 from src.memory.fact_ledger import MemorySource
 from src.memory.producer_context import PRODUCER_CONTEXT
 from src.memory.prompt_context import merge_sources
@@ -790,7 +791,7 @@ class LoRATrainer:
         self,
         base_model: str = DEFAULT_BASE_MODEL,
         revision: str | None = None,
-        output_dir: str = "./models/lora_adapters",
+        output_dir: str = TRAINING_OUTPUT_LORA,
         device: str = "cuda:0"
     ):
         if revision is None:

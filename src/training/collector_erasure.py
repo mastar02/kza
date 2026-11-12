@@ -12,6 +12,7 @@ import stat
 from uuid import UUID
 
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
+from src.core.paths import TRAINING_OUTPUT_LORA, TRAINING_OUTPUT_NIGHTLY, TRAINING_OUTPUT_WHISPER
 from src.memory.erasure_coordinator import ErasureCoordinator
 from src.memory.erasure_journal import ErasureParticipant, ErasureResult, ErasureStep
 from src.wakeword.clip_store import ClipTarget, CollectorKind, WakeClipStore, clip_sources
@@ -359,9 +360,9 @@ async def build_collector_erasure(config: dict, *, store: WakeClipStore,
     nightly = training.get('nightly',{})
     roots = (training.get('habits',{}).get('data_dir','data/habit_training'),
         nightly.get('data_dir','data/nightly_training'),
-        training.get('lora',{}).get('output_dir','models/lora_adapters'),
-        nightly.get('output_dir','models/lora_adapters/nightly'),
-        nightly.get('whisper_finetune',{}).get('output_dir','models/lora_adapters/whisper'))
+        training.get('lora',{}).get('output_dir',TRAINING_OUTPUT_LORA),
+        nightly.get('output_dir',TRAINING_OUTPUT_NIGHTLY),
+        nightly.get('whisper_finetune',{}).get('output_dir',TRAINING_OUTPUT_WHISPER))
     for root in roots:
         descriptor = await driver._work.run(lambda root=root: {'kind':'legacy_training','root':str(Path(root).resolve())})
         await store.privacy.acall(store.ledger.erasures.register_target,ErasureParticipant.COLLECTORS,1,descriptor)
