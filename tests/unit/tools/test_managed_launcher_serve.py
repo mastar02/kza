@@ -185,9 +185,11 @@ def test_stop_between_cas_and_popen_is_forwarded_after_the_run_record(root, tmp_
         _kill_self()
         return original(self, *args)
     monkeypatch.setattr(launcher.Serve, "_spawn", spawn)
-    result = _serve(root, tmp_path, "clean", stop_when=None)
+    # The child holds READY until the stop lands (bounded), so the outcome does not depend on load.
+    result = _serve(root, tmp_path, "stop_before_ready", stop_when=None, seconds=30.0)
     assert result.code == 0, result.serve.events
     assert _head(root)["status"] == "closed"
+    assert dict(result.phases).get("held_for_stop") == "True"
     # Deferred until the child armed its handler (ARMED=1), then a clean close before READY.
     assert dict(result.phases).get("stop_received") == "entry"
     assert "ready_skipped" in dict(result.phases) and "READY=1" not in result.serve.notifier.sent

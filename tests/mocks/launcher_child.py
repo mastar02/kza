@@ -7,7 +7,7 @@ receipt with the runtime's own compiled ``scripts/stage_runtime.pyc``. The
 blocked signal mask is read before arming, so a controller that masked
 SIGTERM around Popen is visible (v3 N1).
 
-Scenarios: clean, no_ready, crash, self_end, exit_no_receipt, hang,
+Scenarios: clean, stop_before_ready, no_ready, crash, self_end, exit_no_receipt, hang,
 receipt_then_hang, watchdog_silent, slow_stop, restore_after_receipt.
 """
 
@@ -69,6 +69,12 @@ async def main() -> None:
         phase("executed")
     if scenario == "watchdog_silent":
         LIFECYCLE.notifier.watchdog_usec = None
+    if scenario == "stop_before_ready":
+        # Hold READY until the forwarded stop lands, so the rehearsal does not race the controller.
+        deadline = time.monotonic() + ARGS.seconds
+        while not LIFECYCLE.stop.requested and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        phase("held_for_stop", LIFECYCLE.stop.requested)
     if scenario != "no_ready":
         try:
             LIFECYCLE.ready()
