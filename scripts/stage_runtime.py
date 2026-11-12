@@ -1086,6 +1086,55 @@ def _copy_private_tree(source: Path, destination: Path) -> None:
     destination.chmod(0o700)
 
 
+RUNTIME_FILE_MODE = 0o444
+RUNTIME_DIRECTORY_MODE = 0o555
+
+
+def make_runtime_read_only(runtime: Path) -> None:
+    """Files 0444 and directories 0555, bottom-up; links are left as links.
+
+    U3b-0e (design v3 2b, reviews F2 and N10): a write by the managed child
+    into its own runtime (a cwd-relative default) fails loudly with EACCES at
+    the first run instead of changing the artifact tree for the next start.
+    """
+    for _directory, _names, files, descriptor in os.fwalk(runtime, topdown=False, follow_symlinks=False):
+        for name in files:
+            info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if stat.S_ISREG(info.st_mode):
+                os.chmod(name, RUNTIME_FILE_MODE, dir_fd=descriptor)
+            elif not stat.S_ISLNK(info.st_mode):
+                raise ValueError("runtime_read_only_special_file")
+        os.fchmod(descriptor, RUNTIME_DIRECTORY_MODE)
+
+
+def make_writable_then_remove(path: Path) -> None:
+    """Remove a tree that contains a read-only runtime (abort, Q5 and 0c).
+
+    Never follows a symlink (a link is removed as a link) and never crosses a
+    mount: a directory on another device refuses before any mode changes.
+    Only directories gain owner rwx; the target of any link is untouched.
+
+    Raises:
+        FileNotFoundError: ``path`` does not exist.
+        ValueError: ``make_writable_mount_crossing``.
+    """
+    path = Path(path)
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode):
+        path.unlink()
+        return
+    def fail(error: OSError) -> None:
+        raise error
+    for _directory, _names, _files, descriptor in os.fwalk(path, follow_symlinks=False, onerror=fail):
+        if os.fstat(descriptor).st_dev != info.st_dev:
+            raise ValueError("make_writable_mount_crossing")
+    for _directory, _names, _files, descriptor in os.fwalk(path, follow_symlinks=False, onerror=fail):
+        mode = stat.S_IMODE(os.fstat(descriptor).st_mode)
+        if mode & stat.S_IRWXU != stat.S_IRWXU:
+            os.fchmod(descriptor, mode | stat.S_IRWXU)
+    shutil.rmtree(path)
+
+
 def prepare_slot(archive: Path, root: Path, name: str, state_source: Path) -> dict:
     """Verify an archive and copy offline config/data into a new private slot.
 
@@ -1095,6 +1144,9 @@ def prepare_slot(archive: Path, root: Path, name: str, state_source: Path) -> di
         name: New slot name, independent of the commit (allows repeated trials).
         state_source: Offline directory containing config/ and data/. Optional
             .env is copied privately. Models, logs and dependencies stay external.
+
+    The runtime is made read-only (files 0444, directories 0555) before
+    anything observes it; remove a slot with ``make_writable_then_remove``.
 
     Returns:
         Runtime manifest, without the private state's contents.
@@ -1133,6 +1185,8 @@ def prepare_slot(archive: Path, root: Path, name: str, state_source: Path) -> di
                 shutil.copyfile(env_file, state / ".env")
                 (state / ".env").chmod(0o600)
                 (runtime / ".env").symlink_to(Path("..") / "state" / ".env")
+            # Before any artifact observation (activation binds the tree).
+            make_runtime_read_only(runtime)
             os.rename(staging, target)
     return manifest
 
