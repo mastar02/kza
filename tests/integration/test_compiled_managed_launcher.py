@@ -96,6 +96,8 @@ class Deployment:
                     "HOME": os.environ.get("HOME", str(tmp_path)), "LANG": "C.UTF-8"}
         self.console = tmp_path / "logs" / "console.log"
         self.console.parent.mkdir()
+        # Review P5: install-launcher refuses a console log the rotation does not name.
+        (self.root / launcher.LOGROTATE_NAME).write_text(launcher.render_console_logrotate(str(self.console)))
         result = _cli(self.controller, self.root, "install-launcher", "--unit-dir", str(self.unit_dir),
                       "--template", str(TEMPLATE), "--python", sys.executable, "--stop-grace", f"{stop_grace:g}",
                       "--timeout-start", "120", "--timeout-stop", f"{timeout_stop:g}",
@@ -352,7 +354,10 @@ def test_tc4_pre_launcher_artifact_is_refused_78(artifacts, tmp_path, deployment
         pytest.skip("no pre-0d ancestor")
     deployment = _deploy(artifacts, tmp_path, deployments)
     stage.prepare_slot(artifacts["archives"]["pre"], deployment.root, "pre", deployment.state)
-    assert stage.activate_slot(deployment.root, "pre") == "slots/s/runtime"
+    with pytest.raises(ValueError, match="runtime_admission_launcher_contract_missing"):  # review P10
+        stage.activate_slot(deployment.root, "pre")
+    # serve's own refusal, rehearsed past the operator check
+    assert stage.activate_slot(deployment.root, "pre", launcher_checks=False) == "slots/s/runtime"
     unit = deployment.supervise("clean")
     unit.start()
     unit.wait_inactive(60)

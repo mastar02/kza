@@ -10,6 +10,7 @@ from contextlib import closing
 import hashlib
 import os
 from pathlib import Path
+import shutil
 import signal
 import socket
 import sqlite3
@@ -230,6 +231,63 @@ def test_managed_conf_refuses_injected_values():
         launcher.render_managed_conf("ExecStart={unknown}", Path("/r"), _settings())
 
 
+def test_managed_properties_need_the_exact_exit_status_set_and_the_rendered_exec_start():
+    """Review P9 (exact set, never a subset test) and P7 (a later release.conf must be visible)."""
+    root = Path("/home/kza/releases")
+    text = launcher.render_managed_conf(TEMPLATE.read_text(), root, _settings())
+    shown = fake_systemd.show_properties(fake_systemd.parse_dropins([text]))
+    assert launcher.verify_managed_properties(shown, text, root) == []
+    for status in ("69 1", "69", "78 69 1", ""):
+        assert launcher.verify_managed_properties(dict(shown, RestartPreventExitStatus=status), text, root) == [
+            "RestartPreventExitStatus"]
+    restored = ("[Service]\nExecStart=\nExecStart=/home/kza/kza/.venv/bin/python -B -P -m src.main\n"
+                "WorkingDirectory=/home/kza/releases/slots/legacy/state\n")
+    later = fake_systemd.show_properties(fake_systemd.parse_dropins([text, restored]))
+    assert launcher.verify_managed_properties(later, text, root) == ["ExecStart", "WorkingDirectory"]
+    assert launcher.verify_managed_properties(None, text, root) == ["properties_unavailable"]
+
+
+def test_console_logrotate_stanza_is_rendered_and_detected(tmp_path):
+    """Review P5: the managed console log must be rotated with copytruncate."""
+    console = "/home/kza/releases/logs/console.log"
+    stanza = launcher.render_console_logrotate(console)
+    assert stanza.splitlines()[0] == console + " {" and "    copytruncate" in stanza.splitlines()
+    conf = tmp_path / "console-logrotate.conf"
+    assert not launcher.console_rotated(conf, console)  # missing file
+    conf.write_text("/home/kza/releases/slots/old/state/logs/console.log {\n    copytruncate\n}\n")
+    assert not launcher.console_rotated(conf, console)  # only the old slot's console
+    conf.write_text(conf.read_text() + "/home/kza/releases/logs/console.log {\n    rotate 24\n}\n")
+    assert not launcher.console_rotated(conf, console)  # no copytruncate: systemd keeps the old fd
+    conf.write_text(conf.read_text() + stanza)
+    assert launcher.console_rotated(conf, console)
+    with pytest.raises(launcher.LauncherRefusal, match="runtime_admission_launcher_value:console_log"):
+        launcher.render_console_logrotate("logs/console.log")
+
+
+def test_legacy_conf_replaces_only_the_pythonpath_assignment_and_keeps_other_directives(tmp_path):
+    """Review P8: a mixed Environment line keeps CONFIG_PATH; directives outside the list carry over."""
+    unmanaged = tmp_path / "release.conf.unmanaged"
+    unmanaged.write_text("[Unit]\nDescription=kza voice\n[Service]\nExecStart=\nExecStart=/py -m src.main\n"
+                         "Environment=PYTHONPATH=/home/kza/releases/current CONFIG_PATH=config/settings.yaml\n"
+                         "Environment=\"KZA_LABEL=a b\"\nLimitNOFILE=4096\nUnsetEnvironment=HTTP_PROXY\n"
+                         "WorkingDirectory=/home/kza/releases/slots/old/state\nKillMode=control-group\n")
+    record = {"properties": {"TimeoutStartUSec": "2min", "TimeoutStopUSec": "1min 30s",
+                             "StandardOutput": "append:/c.log", "StandardError": "append:/c.log"},
+              "legacy_exec_start": ["/py", "-B", "-P", "-m", "src.main"]}
+    runtime, state = Path("/r/slots/legacy/runtime"), Path("/r/slots/legacy/state")
+    text = launcher.render_legacy_conf(record, runtime, state, unmanaged)
+    directives = fake_systemd.parse_dropins([text])
+    assert directives["Environment"] == ["CONFIG_PATH=config/settings.yaml", "KZA_LABEL=a b",
+                                         "PYTHONPATH=/r/slots/legacy/runtime"]
+    assert directives["LimitNOFILE"] == "4096" and directives["UnsetEnvironment"] == "HTTP_PROXY"
+    assert directives["KillMode"] == "control-group" and directives["WorkingDirectory"] == str(state)
+    assert directives["ExecStart"] == ["/py -B -P -m src.main"]
+    assert "current" not in text and text.count("WorkingDirectory=") == 1
+    assert text.index("[Unit]") > text.index("LimitNOFILE") and "Description=kza voice" in text
+    assert launcher.carried_directives(unmanaged) == ["[Service]KillMode", "[Service]LimitNOFILE",
+                                                      "[Service]UnsetEnvironment", "[Unit]Description"]
+
+
 def test_exec_start_argv_parses_systemctl_show():
     value = ("{ path=/home/kza/kza/.venv/bin/python ; argv[]=/home/kza/kza/.venv/bin/python -B -P -m src.main ;"
              " ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }")
@@ -350,10 +408,6 @@ def test_resurrection_counts_each_family_and_skips_pending_erasures(tmp_path):
         db.executemany("INSERT INTO utterances VALUES (?)", [("c-erased",), ("c-pending",), ("c-live",)])
         db.execute("CREATE TABLE events_policy_v1 (sources_json TEXT)")
         db.execute("INSERT INTO events_policy_v1 VALUES (?)", ('[{"conversation_id": "c-erased"}]',))
-    (state / "data" / "chroma").mkdir()
-    with closing(sqlite3.connect(state / "data" / "chroma" / "chroma.sqlite3")) as db, db:
-        db.execute("CREATE TABLE embedding_metadata (key TEXT, string_value TEXT)")
-        db.executemany("INSERT INTO embedding_metadata VALUES (?,?)", [("fact_id", "f-gone"), ("fact_id", "f-ok")])
     (state / "data" / "contexts" / "u.json").write_text('{"history": [{"conversation_id": "c-erased"}]}')
     counts = launcher.resurrection_counts(state)
     assert counts == {"conversation": 1, "fact": 1, "voice_profile": 1, "voice_consent": 1}
@@ -362,6 +416,63 @@ def test_resurrection_counts_each_family_and_skips_pending_erasures(tmp_path):
         db.execute("DELETE FROM events_policy_v1")
     (state / "data" / "contexts" / "u.json").write_text("{}")
     assert launcher.resurrection_counts(state)["conversation"] == 0
+
+
+def _memory(state: Path, *, delete_error: Exception | None = None):
+    """The real long-term memory: FactLedger in privacy.db and a real Chroma policy index."""
+    from src.memory.long_term import LongTermMemory
+    from tests.mocks.memory_graph import MemoryClient
+    client = MemoryClient(state / "data" / "memory_db")
+    memory = LongTermMemory(client, ledger_path=str(state / "data" / "privacy.db"), close_client=client.close)
+    memory.initialize()
+    if delete_error is not None:
+        client.collections[memory.index_collection_name].delete_error = delete_error
+    return memory
+
+
+def test_resurrection_sees_fact_ids_as_the_memory_index_stores_them(tmp_path):
+    """Review P1: LongTermMemory writes ids=[fact.id] with {fact_policy, revision}; no fact_id metadata."""
+    from src.memory.fact_ledger import MemoryReviewer
+    from tests.mocks.memory_sources import memory_source
+    state = tmp_path / "state"
+    (state / "data").mkdir(parents=True)
+    memory = _memory(state)
+    kept = memory.store_fact("Synthetic kept fact", "fact", sources=(memory_source(),))
+    gone = memory.store_fact("Synthetic deleted fact", "fact", sources=(memory_source(),))
+    asyncio.run(memory.aclose())
+    older = tmp_path / "memory_db.older"
+    shutil.copytree(state / "data" / "memory_db", older)  # a backup holding both facts' embeddings
+    memory = _memory(state)
+    assert memory.delete_fact(gone, MemoryReviewer("synthetic-reviewer")) is True  # reconciled: index cleaned
+    asyncio.run(memory.aclose())
+    with closing(sqlite3.connect(state / "data" / "memory_db" / "chroma.sqlite3")) as db:
+        assert {row[0] for row in db.execute("SELECT embedding_id FROM embeddings")} == {kept}
+        keys = {row[0] for row in db.execute("SELECT DISTINCT key FROM embedding_metadata")}
+        assert "fact_id" not in keys  # the shape the old check looked for is never written
+    assert launcher.resurrection_counts(state)["fact"] == 0
+    shutil.rmtree(state / "data" / "memory_db")
+    shutil.copytree(older, state / "data" / "memory_db")  # the older index restored after the deletion
+    assert launcher.resurrection_counts(state)["fact"] == 1
+
+
+def test_a_pending_index_deletion_is_not_a_resurrection(tmp_path):
+    """A crash before reconciliation leaves the embedding legitimately: index_jobs still holds it."""
+    from src.memory.fact_ledger import MemoryReviewer
+    from tests.mocks.memory_sources import memory_source
+    state = tmp_path / "state"
+    (state / "data").mkdir(parents=True)
+    memory = _memory(state, delete_error=RuntimeError("synthetic index outage"))
+    gone = memory.store_fact("Synthetic deleted fact", "fact", sources=(memory_source(),))
+    assert memory.delete_fact(gone, MemoryReviewer("synthetic-reviewer")) is True
+    asyncio.run(memory.aclose())
+    with closing(sqlite3.connect(state / "data" / "privacy.db")) as db:
+        assert db.execute("SELECT fact_id, operation FROM index_jobs").fetchall() == [(gone, "delete")]
+    with closing(sqlite3.connect(state / "data" / "memory_db" / "chroma.sqlite3")) as db:
+        assert [row[0] for row in db.execute("SELECT embedding_id FROM embeddings")] == [gone]
+    assert launcher.resurrection_counts(state)["fact"] == 0
+    with closing(sqlite3.connect(state / "data" / "privacy.db")) as db, db:
+        db.execute("DELETE FROM index_jobs")  # acknowledged, yet the embedding is back: a resurrection
+    assert launcher.resurrection_counts(state)["fact"] == 1
 
 
 def test_resurrection_without_any_ledger_counts_nothing(tmp_path):

@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, field
 from enum import IntEnum
+import fcntl
 import hashlib
 import hmac
 import json
@@ -82,6 +83,8 @@ class ExitCode(IntEnum):
 
 RECOVER_MODES = ("bounded", "operator", "off")
 ARM_WAIT_SECONDS = 10.0  # longest wait for ARMED=1 before a stop is forwarded anyway
+# Start-time extension asked of systemd before recovery and between R-b steps (review P6).
+RECOVERY_EXTEND_SECONDS = 120
 CRASH_BUDGET_SECONDS = 24 * 3600
 STATUS_LIMIT = 200
 NOTIFY_FD_ENV = "KZA_NOTIFY_FD"
@@ -98,6 +101,7 @@ UNINSTALL_PHRASE = "revivir datos borrados"
 LEGACY_COMMITS = ("b0866e8", "63ea8d3")
 UNIT = "kza-voice.service"
 DROP_IN_NAME = "zz-kza-stop-timeout.conf"
+LOGROTATE_NAME = "console-logrotate.conf"  # <root>/console-logrotate.conf, run hourly by kza-console-rotate.timer
 # Pre-managed properties recorded at install (v3 N8) and verified at uninstall.
 RECORDED_PROPERTIES = ("Type", "NotifyAccess", "WatchdogUSec", "RestartPreventExitStatus",
                        "TimeoutStartUSec", "TimeoutStopUSec", "StandardOutput", "StandardError",
@@ -161,12 +165,18 @@ _PREFLIGHT_SOURCE = "\n".join([
 
 
 class LauncherRefusal(ValueError):
-    """A coded, content-free refusal that maps to one exit code."""
+    """A coded, content-free refusal that maps to one exit code.
 
-    def __init__(self, code: str, exit_code: ExitCode = ExitCode.REFUSED) -> None:
-        super().__init__(code)
+    ``problems`` lists every coded problem found when one refusal covers
+    several checks (the install-launcher preflight).
+    """
+
+    def __init__(self, code: str, exit_code: ExitCode = ExitCode.REFUSED,
+                 problems: list[str] | None = None) -> None:
+        super().__init__(code if not problems else code + ": " + ", ".join(problems))
         self.code = code
         self.exit_code = exit_code
+        self.problems = list(problems or [])
 
 
 # --------------------------------------------------------------------------
@@ -707,6 +717,84 @@ def _chroma_problems(state: Path) -> list[str]:
     return problems
 
 
+def _assert_writers_closed_read_only(state: Path) -> None:
+    """The writers check without opening anything for writing (adopt --dry-run, review P3).
+
+    flock works on a read-only descriptor, so a held writer lease is still seen.
+    """
+    for path in sorted(state.rglob("*")):
+        if path.is_file() and not path.is_symlink() and path.name.endswith((".lock", ".lease")):
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise ValueError("runtime_admission_writer_active") from None
+            finally:
+                os.close(descriptor)
+
+
+def _shadow_wanted(relative: Path) -> bool:
+    name = relative.name
+    if relative.suffix in _SQLITE_SUFFIXES or relative.suffix == ".json" or name == ".env":
+        return True
+    if relative.parts[0] == "config":
+        return True
+    for suffix in ("-wal", "-journal"):  # never -shm: SQLite rebuilds it from the -wal
+        if name.endswith(suffix) and Path(name[:-len(suffix)]).suffix in _SQLITE_SUFFIXES:
+            return True
+    return False
+
+
+def _shadow_state(state: Path, destination: Path) -> Path:
+    """A private copy of what the R-b checks read: SQLite files with their -wal, JSON, config, .env.
+
+    The originals are only read (O_RDONLY): no SQLite connection, no lock,
+    no -shm created, no WAL checkpoint. The checks then run on the copy, so
+    a dry run cannot change the state manifest a pending R-a depends on.
+    """
+    shadow = Path(destination).resolve()
+    for path in sorted(state.rglob("*")):
+        if path.is_symlink():
+            raise ValueError("runtime_admission_state_symlink")
+        if not path.is_file():
+            continue
+        relative = path.relative_to(state)
+        if not _shadow_wanted(relative):
+            continue
+        target = shadow / relative
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as source, open(target, "xb") as copy:
+            while chunk := source.read(1 << 20):
+                copy.write(chunk)
+        os.chmod(target, 0o600)
+    return shadow
+
+
+def _chroma_ids(db: sqlite3.Connection, names: set[str]) -> set[str]:
+    """Embedding ids a Chroma store holds, read from its SQLite tables (no SDK; review P1).
+
+    src/memory/long_term.py stores each fact as ``ids=[fact.id]`` with
+    metadata {fact_policy, revision}: the fact id lives only in
+    ``embeddings.embedding_id`` (per collection, through the metadata
+    segment). Every collection is read, the policy index included. An id
+    whose newest ``embeddings_queue`` operation is not a delete also counts,
+    in case the log was not yet applied to ``embeddings``.
+    """
+    found: set[str] = set()
+    if {"embeddings", "segments", "collections"} <= names:
+        found.update(row[0] for row in db.execute(
+            "SELECT e.embedding_id FROM embeddings e JOIN segments s ON e.segment_id=s.id"
+            " JOIN collections c ON s.collection=c.id") if isinstance(row[0], str) and row[0])
+    if "embeddings_queue" in names:
+        latest: dict[str, int] = {}
+        for identifier, operation in db.execute("SELECT id, operation FROM embeddings_queue ORDER BY seq_id"):
+            if isinstance(identifier, str) and identifier:
+                latest[identifier] = operation
+        found.update(identifier for identifier, operation in latest.items() if operation != 3)  # 3 = DELETE
+    return found
+
+
 def _walk_conversation_ids(value, found: set) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
@@ -738,12 +826,15 @@ def resurrection_counts(state: Path) -> dict[str, int]:
     Ids are hashed in memory with each ledger's own salt. Conversations with a
     pending erasure (steps not complete) are expected to still have payload
     and are not counted: leased start-up resumes their erasure. Chroma is read
-    only through a read-only image of chroma.sqlite3 (review D2).
+    only through a read-only image of chroma.sqlite3 (review D2); its fact
+    candidates are the embedding ids (review P1), minus facts whose index
+    deletion is still pending.
     """
     ledgers: list[tuple[str, dict[str, set]]] = []
     candidates = {"conversation": set(), "fact": set(), "voice_profile": set()}
     consents: set[tuple[str, int]] = set()
     pending: set[str] = set()
+    pending_index: set[str] = set()
     for path in _sqlite_files(state):
         with stage._database_image(path) as db:
             names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -779,11 +870,19 @@ def resurrection_counts(state: Path) -> dict[str, int]:
                 pending.update(row[0] for row in db.execute(
                     "SELECT DISTINCT e.conversation_id FROM conversation_erasures e JOIN erasure_steps s"
                     " ON s.operation_id=e.id WHERE s.state!='complete'"))
+            # A deletion still queued for the index (a crash before reconciliation)
+            # leaves the fact's embedding in place legitimately: not a resurrection.
+            if "index_jobs" in names:
+                pending_index.update(row[0] for row in db.execute("SELECT fact_id FROM index_jobs"))
+            if "policy_index_deletions" in names:
+                pending_index.update(row[0] for row in db.execute(
+                    "SELECT fact_id FROM policy_index_deletions WHERE state!='complete'"))
+            candidates["fact"].update(_chroma_ids(db, names))
             if "embedding_metadata" in names:
-                for key, value in db.execute("SELECT key, string_value FROM embedding_metadata"
-                                             " WHERE key IN ('conversation_id','fact_id')"):
+                for (value,) in db.execute("SELECT string_value FROM embedding_metadata"
+                                           " WHERE key='conversation_id'"):
                     if isinstance(value, str) and value:
-                        candidates["conversation" if key == "conversation_id" else "fact"].add(value)
+                        candidates["conversation"].add(value)
     for path in sorted(state.rglob("*.json")):
         if "contexts" in path.relative_to(state).parts and path.is_file() and not path.is_symlink():
             try:
@@ -791,6 +890,7 @@ def resurrection_counts(state: Path) -> dict[str, int]:
             except (OSError, ValueError):
                 continue
     candidates["conversation"] -= pending
+    candidates["fact"] -= pending_index
     counts = {}
     for family, kinds in _RESURRECTION_KINDS.items():
         count = 0
@@ -811,43 +911,101 @@ def resurrection_counts(state: Path) -> dict[str, int]:
     return counts
 
 
-def recovery_report(root: Path, head: dict) -> dict:
+def receipt_eligibility(root: Path, head: dict) -> dict:
+    """Read-only R-a outlook: receipt present, record valid, manifest still matching (review P3).
+
+    Only lstat and JSON reads: nothing under the state is opened, so the
+    answer cannot change what it reports.
+    """
+    receipt_path = _records(root, "receipts", head["run_id"] + ".json")
+    outlook = {"receipt": False, "receipt_state": None, "manifest_matches": None}
+    if head["status"] != "running" or not receipt_path.exists():
+        return outlook
+    outlook["receipt"] = True
+    binding = stage.read_binding(root, head["binding_id"])
+    try:
+        record = stage.read_receipt_state(root, stage._read_json(receipt_path))
+    except (ValueError, OSError, KeyError):
+        outlook["receipt_state"] = "invalid"
+        return outlook
+    if record is None:
+        outlook["receipt_state"] = "missing"
+        return outlook
+    outlook["receipt_state"] = "present"
+    try:
+        outlook["manifest_matches"] = (stage.state_manifest_sha256(Path(binding["state_root"]))
+                                       == record["state_manifest_sha256"])
+    except (ValueError, OSError):
+        outlook["manifest_matches"] = False
+    return outlook
+
+
+def recovery_report(root: Path, head: dict, *, read_only: bool = False, progress=None) -> dict:
     """The R-b checks on the head's state: failures refuse; regressions need the operator.
 
     Order: writers, SQLite WAL recovery plus quick_check, JSON stores,
     Chroma structure, deletion-ledger forward evolution, append-only
     families, resurrection. Ownership and manual-capture equivalence are
     enforced by stage_runtime.adopt_recovered_state itself.
+
+    ``read_only`` (adopt --dry-run, review P3) opens nothing under the state
+    for writing: the writers check uses read-only descriptors, and the
+    database checks run on a private copy (_shadow_state) outside the state.
+    ``progress(step)`` is called between steps (the serve start-time
+    extension, review P6).
     """
     binding = stage.read_binding(root, head["binding_id"])
     state = Path(binding["state_root"])
     report = {"failures": [], "regressions": [], "resurrected": {}, "ledger_bound": False, "databases": 0}
+
+    def step(name: str) -> None:
+        if progress is not None:
+            progress(name)
+    step("writers")
     try:
-        stage._assert_writers_closed(state)
+        (_assert_writers_closed_read_only if read_only else stage._assert_writers_closed)(state)
     except ValueError as error:
         report["failures"].append(str(error))
         return report
-    databases = _sqlite_files(state)
+    if not read_only:
+        return _recovery_checks(state, state, binding, report, step)
+    with tempfile.TemporaryDirectory(prefix="kza-adopt-dry-run-") as temporary:
+        try:
+            shadow = _shadow_state(state, Path(temporary) / "state")
+        except (ValueError, OSError) as error:
+            report["failures"].append(str(error) if isinstance(error, ValueError) else "shadow_copy_failed")
+            return report
+        return _recovery_checks(state, shadow, binding, report, step)
+
+
+def _recovery_checks(state: Path, checked: Path, binding: dict, report: dict, step) -> dict:
+    """The R-b checks after the writers check; database reads go to ``checked``."""
+    databases = _sqlite_files(checked)
     report["databases"] = len(databases)
     for path in databases:
+        step("quick_check")
         if not _quick_check(path):
-            report["failures"].append("quick_check:" + path.relative_to(state).as_posix())
-    for path in _json_files(state):
+            report["failures"].append("quick_check:" + path.relative_to(checked).as_posix())
+    step("json")
+    for path in _json_files(checked):
         try:
             json.loads(path.read_bytes())
         except (OSError, ValueError):
-            report["failures"].append("json:" + path.relative_to(state).as_posix())
-    report["failures"].extend(_chroma_problems(state))
+            report["failures"].append("json:" + path.relative_to(checked).as_posix())
+    step("chroma")
+    report["failures"].extend(_chroma_problems(state))  # stat and listing only, on the state itself
     if report["failures"]:
         return report
     tables = binding["authority"]["projection"]["tables"]
     report["ledger_bound"] = any("deletion_ledger_v1" in item for item in tables.values())
     # Nothing protected is bound (a fresh state): there is no deletion to regress.
     report["ledger_required"] = bool(tables)
+    step("ledger")
     report["regressions"].extend("deletion_ledger_v1:" + item
-                                 for item in stage.deletion_ledger_regressions(binding, state))
+                                 for item in stage.deletion_ledger_regressions(binding, checked))
+    step("authority")
     try:
-        current = stage.capture_state_authority(state)["projection"]["tables"]
+        current = stage.capture_state_authority(checked)["projection"]["tables"]
     except ValueError as error:
         report["failures"].append(str(error))
         return report
@@ -858,7 +1016,8 @@ def recovery_report(root: Path, head: dict) -> dict:
             now = current.get(relative, {}).get(family)
             if now is None or not set(bound[family]["row_hashes"]) <= set(now["row_hashes"]):
                 report["regressions"].append(family + ":" + relative)
-    report["resurrected"] = resurrection_counts(state)
+    step("resurrection")
+    report["resurrected"] = resurrection_counts(checked)
     return report
 
 
@@ -881,14 +1040,21 @@ def _try_receipt_seal(root: Path, head: dict, run: dict | None) -> RecoveryDecis
 
 
 def recover_open_head(root: Path, head: dict, *, mode: str, boot_id: str, wall: float,
-                      operator: dict | None = None) -> RecoveryDecision:
+                      operator: dict | None = None, progress=None) -> RecoveryDecision:
     """Recover a running or unknown head (R-a, then R-b per mode and budget).
 
     ``operator`` is set only by the ``adopt`` command: {"head_sha256",
     "regressions"} confirmed by the operator. R-a runs in every mode and
     consumes no budget; a digest mismatch bars R-a and automatic R-b.
+    ``progress(step)`` is called before R-a, between the R-b steps and
+    before adoption (serve extends its start timeout there, review P6).
     """
     root = Path(root)
+
+    def step(name: str) -> None:
+        if progress is not None:
+            progress(name)
+    step("R-a")
     run = read_run_record(root, head["run_id"])
     if run is not None and child_alive(run["child_pid"], run.get("child_start_time")):
         return RecoveryDecision(exit_code=ExitCode.REFUSED, code="runtime_admission_recovery_child_alive",
@@ -916,7 +1082,7 @@ def recover_open_head(root: Path, head: dict, *, mode: str, boot_id: str, wall: 
             return RecoveryDecision(exit_code=ExitCode.UNRECOVERABLE, code=refused, path="R-b")
     else:
         klass = "operator"
-    report = recovery_report(root, head)
+    report = recovery_report(root, head, progress=progress)
     report["state_changed_after_close"] = state_changed
     if report["failures"]:
         return RecoveryDecision(exit_code=ExitCode.UNRECOVERABLE, code="runtime_admission_recovery_check_failed",
@@ -935,6 +1101,7 @@ def recover_open_head(root: Path, head: dict, *, mode: str, boot_id: str, wall: 
                                 path="R-b", report=report)
     checks = {"databases": report["databases"], "regressed": regressed,
               "resurrected": report["resurrected"]}
+    step("adopt")
     try:
         closed = stage.adopt_recovered_state(root, head, {
             "mode": "automatic" if operator is None else "operator", "class": klass, "boot_id": boot_id,
@@ -1029,12 +1196,28 @@ def path_preflight(binding: dict, python: str, timeout: float = 60.0) -> list[st
 
 
 def check_controller_epoch(root: Path) -> None:
-    """Refuse a controller older than the installed one (L3 = A, K13)."""
+    """Refuse a controller older than the installed one (L3 = A, K13), or a damaged install (P4).
+
+    The files of controller/current are re-hashed against the manifest the
+    install wrote beside them: a power loss after a non-durable install
+    must refuse (78) instead of crash-looping on a partial .pyc.
+    """
     record = _read_optional(_records(root, "controller.json"))
     if record is None:
         raise LauncherRefusal("runtime_admission_controller_not_installed")
     if type(record.get("controller_epoch")) is not int or record["controller_epoch"] > stage.CONTROLLER_EPOCH:
         raise LauncherRefusal("runtime_admission_controller_downgrade")
+    current = Path(root) / "controller" / "current"
+    try:
+        manifest = json.loads((current / "release.json").read_bytes())
+        intact = isinstance(manifest.get("files"), dict) and bool(manifest["files"]) and all(
+            not (current / name).is_symlink() and (current / name).is_file()
+            and hashlib.sha256((current / name).read_bytes()).hexdigest() == digest
+            for name, digest in manifest["files"].items())
+    except (OSError, ValueError, AttributeError):
+        intact = False
+    if not intact:
+        raise LauncherRefusal("runtime_admission_controller_tampered")
 
 
 def check_slot(root: Path, binding: dict) -> dict:
@@ -1044,13 +1227,10 @@ def check_slot(root: Path, binding: dict) -> dict:
     if not current.is_symlink() or os.readlink(current) != expected:
         raise LauncherRefusal("runtime_admission_launcher_selection_mismatch")
     try:
-        values = stage.release_integers(binding)
-    except (ValueError, OSError):
-        raise LauncherRefusal("runtime_admission_launcher_contract_missing") from None
-    if values["launcher_contract"] < stage.LAUNCHER_CONTRACT:
-        raise LauncherRefusal("runtime_admission_launcher_contract_missing")
-    if values["format_epoch"] < stage.MIN_FORMAT_EPOCH:
-        raise LauncherRefusal("runtime_admission_rollback_format_closed")
+        stage._require_launcher_slot(binding)  # the same integers operator activate applies (P10)
+    except ValueError as error:
+        raise LauncherRefusal(str(error)) from None
+    values = stage.release_integers(binding)
     runtime = Path(binding["runtime_root"])
     for companion in stage._PROBE_COMPANIONS:
         path = runtime / companion
@@ -1100,6 +1280,11 @@ class Serve:
         self._event(f"exit {int(code)}")
         return int(code)
 
+    def _extend_start(self, step: str) -> None:
+        """EXTEND_TIMEOUT_USEC for one more recovery step (systemd honours it while activating)."""
+        self.notifier.send(f"EXTEND_TIMEOUT_USEC={RECOVERY_EXTEND_SECONDS * 1_000_000}")
+        self.events.append("extend " + step)
+
     def _stopped_before_start(self) -> bool:
         if self.stop.drain():
             self._event("stop before CAS running; head unchanged")
@@ -1140,8 +1325,12 @@ class Serve:
             raise LauncherRefusal("runtime_admission_launcher_no_managed_head")
         if head["status"] != "closed":
             self.notifier.status("recovering")
+            # R-b runs quick_check on every database, a full authority capture and
+            # a whole-state scan: ask for start time before it and between its
+            # steps, so TimeoutStartSec never lands inside an adoption (P6).
+            self._extend_start("recovery")
             decision = recover_open_head(root, head, mode=self.options.recover, boot_id=self.boot_id,
-                                         wall=self.wall())
+                                         wall=self.wall(), progress=self._extend_start)
             self._event(f"recovery {decision.path} {'closed' if decision.closed_head else decision.code}")
             if decision.closed_head is None:
                 self.notifier.status("recovery refused: " + decision.code)
@@ -1351,7 +1540,8 @@ def adopt(root: Path, *, confirm: str, regressions: list[str], boot_id_path: str
     ``confirm`` must be the head's sha256 (the digest of head.json's
     content); ``regressions`` must list exactly the regressed families the
     checks report (forward evolution, resurrection, state changed after
-    close, no ledger). With ``dry_run`` only the report is returned.
+    close, no ledger). With ``dry_run`` only the report is returned, and
+    nothing under the state is opened for writing.
     """
     root = Path(root).resolve()
     with stage.AdmissionController(root, allow_open_head=True):
@@ -1360,8 +1550,12 @@ def adopt(root: Path, *, confirm: str, regressions: list[str], boot_id_path: str
             raise LauncherRefusal("runtime_admission_adopt_head_closed")
         head_sha = stage._digest(head)
         if dry_run:
-            report = recovery_report(root, head)
-            return {"head_sha256": head_sha, "status": head["status"], "report": report}
+            # Read-only (review P3): the R-a outlook first (lstat and JSON only),
+            # then the R-b checks on a private copy. A dry run must never
+            # checkpoint a -wal the receipt's manifest still names.
+            outlook = receipt_eligibility(root, head)
+            report = recovery_report(root, head, read_only=True)
+            return {"head_sha256": head_sha, "status": head["status"], "r_a": outlook, "report": report}
         if confirm != head_sha:
             raise LauncherRefusal("runtime_admission_adopt_confirmation")
         decision = recover_open_head(root, head, mode="operator", boot_id=read_boot_id(boot_id_path),
@@ -1376,6 +1570,27 @@ def adopt(root: Path, *, confirm: str, regressions: list[str], boot_id_path: str
 
 # --------------------------------------------------------------------------
 # install-controller (L3 = A)
+
+
+def _fsync_path(path: Path) -> None:
+    """fsync one file or directory (opened read-only; directories with O_DIRECTORY)."""
+    flags = os.O_RDONLY | (os.O_DIRECTORY if path.is_dir() else 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_tree(directory: Path) -> None:
+    """fsync every regular file under ``directory``, then each directory deepest first."""
+    paths = sorted(Path(directory).rglob("*"), key=lambda item: (-len(item.parts), item.as_posix()))
+    for path in paths:
+        if path.is_file() and not path.is_symlink():
+            _fsync_path(path)
+    for path in [*paths, Path(directory)]:
+        if path.is_dir() and not path.is_symlink():
+            _fsync_path(path)
 
 
 def install_controller(root: Path, archive: Path, *, wall=time.time) -> dict:
@@ -1415,11 +1630,16 @@ def install_controller(root: Path, archive: Path, *, wall=time.time) -> dict:
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     destination.write_bytes(data)
                 (staging / "release.json").write_text(json.dumps(manifest, indent=2) + "\n")
+                # Durable before it is reachable (P4): every file, then every directory.
+                _fsync_tree(staging)
                 os.rename(staging, target)
+                _fsync_path(Path(temporary))
+                _fsync_path(controllers)
         with tempfile.TemporaryDirectory(prefix=".current-", dir=controllers) as temporary:
             link = Path(temporary) / "current"
             link.symlink_to(commit)
             os.replace(link, controllers / "current")
+            _fsync_path(controllers)  # the switch itself
         closed = []
         for release in sorted((root / "slots").glob("*/runtime/release.json")):
             try:
@@ -1453,6 +1673,7 @@ class LauncherSettings:
     watchdog_sec: float
     console_log: str
     recover: str = "bounded"
+    logrotate_conf: str | None = None  # default <root>/console-logrotate.conf
 
 
 def render_managed_conf(template: str, root: Path, settings: LauncherSettings) -> str:
@@ -1511,6 +1732,103 @@ def exec_start_argv(value: str) -> list[str]:
     return shlex.split(match.group(1))
 
 
+def render_console_logrotate(console_log: str) -> str:
+    """The logrotate stanza for the managed console log (review P5); kza applies it, never root.
+
+    Mirrors the existing console rotation (hourly timer, 24 rotations,
+    maxage 1, compression). copytruncate is required: systemd holds the
+    StandardOutput=append: descriptor for the life of the unit.
+    """
+    path = str(console_log)
+    if not Path(path).is_absolute() or any(char.isspace() or char in "{}\"'#" for char in path):
+        raise LauncherRefusal("runtime_admission_launcher_value:console_log")
+    return (f"{path} {{\n    hourly\n    rotate 24\n    maxage 1\n    compress\n    delaycompress\n"
+            "    copytruncate\n    missingok\n    notifempty\n}\n")
+
+
+def console_rotated(conf: Path, console_log: str) -> bool:
+    """Whether a logrotate configuration rotates ``console_log`` with copytruncate."""
+    try:
+        text = Path(conf).read_text()
+    except (OSError, UnicodeDecodeError):
+        return False
+    target = str(console_log)
+    names: list[str] = []
+    body: list[str] = []
+    inside = False
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if not inside and "{" in line:
+            header, _, rest = line.partition("{")
+            try:
+                names = shlex.split(header)
+            except ValueError:
+                names = []
+            body, inside = [rest.strip()], True
+            line = rest
+        elif inside:
+            body.append(line)
+        if inside and "}" in line:
+            inside = False
+            if target in names and "copytruncate" in " ".join(body).split():
+                return True
+    return False
+
+
+def install_preflight(root: Path, binding: dict, settings: LauncherSettings, *, timeout: float = 60.0) -> list[str]:
+    """The serve start gates, run before install-launcher touches the unit directory (review P2, P5).
+
+    Exactly what serve checks at S3 on the head binding (selection, launcher
+    contract, format epoch, companions, the path preflight with the
+    rendered interpreter), plus what systemd needs before serve even runs:
+    the console directory must exist and be writable (StandardOutput=append:
+    creates no directories; status 209/STDOUT otherwise), and the console
+    must be rotated. Relocating production paths is U3b-0e's job: this
+    only detects and refuses.
+    """
+    problems = []
+    try:
+        check_slot(root, binding)
+    except LauncherRefusal as refusal:
+        problems.append(refusal.code)
+    problems.extend("path:" + item for item in path_preflight(binding, settings.python, timeout=timeout))
+    console = Path(settings.console_log)
+    parent = console.parent
+    if not parent.is_dir() or not os.access(parent, os.W_OK | os.X_OK):
+        problems.append("console_directory_missing_or_not_writable")
+    elif console.exists() and (console.is_symlink() or not console.is_file() or not os.access(console, os.W_OK)):
+        problems.append("console_log_not_writable")
+    conf = Path(settings.logrotate_conf) if settings.logrotate_conf else Path(root) / LOGROTATE_NAME
+    if not console_rotated(conf, settings.console_log):
+        problems.append("console_not_rotated")
+    return problems
+
+
+def _rendered_exec_start(text: str) -> list[str]:
+    lines = [line[len("ExecStart="):] for line in text.splitlines() if line.startswith("ExecStart=")]
+    return shlex.split(lines[-1]) if lines and lines[-1] else []
+
+
+def verify_managed_properties(shown: dict | None, text: str, root: Path) -> list[str]:
+    """Mismatches between the effective unit and the rendered managed.conf (review P7, P9)."""
+    if shown is None:
+        return ["properties_unavailable"]
+    expected = {"Type": "notify", "NotifyAccess": "main", "KillMode": "mixed"}
+    mismatched = sorted(key for key, value in expected.items() if shown.get(key) != value)
+    if set((shown.get("RestartPreventExitStatus") or "").split()) != {"69", "78"}:
+        mismatched.append("RestartPreventExitStatus")
+    try:
+        if exec_start_argv(shown.get("ExecStart", "")) != _rendered_exec_start(text):
+            mismatched.append("ExecStart")
+    except LauncherRefusal:
+        mismatched.append("ExecStart")
+    if shown.get("WorkingDirectory") != str(root):
+        mismatched.append("WorkingDirectory")
+    return mismatched
+
+
 def _require_inactive(manager: ServiceManager) -> None:
     state = manager.user_show(UNIT, ("ActiveState",))
     if state is None or state["ActiveState"] not in {"inactive", "failed"}:
@@ -1523,9 +1841,12 @@ def install_launcher(root: Path, *, unit_dir: Path, template: str, settings: Lau
     """Render managed.conf, set release.conf aside and record the pre-managed properties.
 
     Runs only with the unit stopped and a managed head present; refuses a
-    console path under <root>/slots/. Never edits credential drop-ins and
-    never writes the sudo drop-in: its text is returned (and recorded) for
-    the user to apply in an authorized window (N1 = B).
+    console path under <root>/slots/, and refuses before touching the unit
+    directory whatever serve would refuse at start (install_preflight).
+    Never edits credential drop-ins and never writes the sudo drop-in: its
+    text is returned (and recorded) for the user to apply in an authorized
+    window (N1 = B). The effective unit is verified after the reload; any
+    mismatch is returned and the CLI exits 78.
     """
     root = Path(root).resolve()
     unit_dir = Path(unit_dir)
@@ -1539,9 +1860,14 @@ def install_launcher(root: Path, *, unit_dir: Path, template: str, settings: Lau
         raise LauncherRefusal("runtime_admission_launcher_stop_budget")
     _require_inactive(manager)
     with stage.AdmissionController(root, allow_open_head=True):
-        if stage.read_admission_head(root) is None:
+        head = stage.read_admission_head(root)
+        if head is None:
             raise LauncherRefusal("runtime_admission_launcher_no_managed_head")
         check_controller_epoch(root)
+        # Never install a unit that serve would refuse with 78 (no restart).
+        problems = install_preflight(root, stage.read_binding(root, head["binding_id"]), settings)
+        if problems:
+            raise LauncherRefusal("runtime_admission_launcher_preflight", problems=problems)
         properties = manager.user_show(UNIT, RECORDED_PROPERTIES)
         if properties is None:
             raise LauncherRefusal("runtime_admission_launcher_properties_unavailable")
@@ -1569,17 +1895,19 @@ def install_launcher(root: Path, *, unit_dir: Path, template: str, settings: Lau
                                "timeout_stop": settings.timeout_stop, "watchdog_sec": settings.watchdog_sec,
                                "recover": settings.recover, "console_log": settings.console_log},
                   "stop_timeout_dropin": {key: dropin[key] for key in ("path", "value_seconds", "text")},
+                  "logrotate_conf": str(Path(settings.logrotate_conf) if settings.logrotate_conf
+                                        else root / LOGROTATE_NAME),
                   "retired_tools": ["2026-10-29 publication tool --rollback (restores release.conf)"],
                   "installed_at": stamp}
         stage._atomic_record(_records(root, "launcher", f"install-{stamp}.json"), record, immutable=True)
     reloaded = manager.daemon_reload()
-    shown = manager.user_show(UNIT, ("Type", "NotifyAccess", "KillMode", "RestartPreventExitStatus"))
-    expected = {"Type": "notify", "NotifyAccess": "main", "KillMode": "mixed"}
-    mismatched = sorted(key for key, value in expected.items() if (shown or {}).get(key) != value)
-    if shown is None or set((shown.get("RestartPreventExitStatus") or "").split()) < {"69", "78"}:
-        mismatched.append("RestartPreventExitStatus")
+    shown = manager.user_show(UNIT, ("Type", "NotifyAccess", "KillMode", "RestartPreventExitStatus", "ExecStart",
+                                     "WorkingDirectory", "DropInPaths"))
+    # Any mismatch fails the command (78) and leaves managed.conf in place for the operator.
+    mismatched = verify_managed_properties(shown, text, root)
     return {"managed_conf": str(managed), "record": f"install-{stamp}.json", "reloaded": reloaded,
-            "verification_mismatches": mismatched, "stop_timeout_dropin": dropin}
+            "verification_mismatches": mismatched, "drop_in_paths": (shown or {}).get("DropInPaths", "").split(),
+            "stop_timeout_dropin": dropin}
 
 
 def _latest_install(root: Path) -> dict:
@@ -1606,23 +1934,60 @@ def _verify_legacy_slot(root: Path, legacy_slot: str, legacy_commits: tuple[str,
     return runtime, state, commit
 
 
+# [Service] directives legacy.conf sets itself; every other directive of
+# release.conf.unmanaged is carried over verbatim (review P8).
+_LEGACY_FIXED = frozenset({"Type", "NotifyAccess", "WatchdogSec", "RestartPreventExitStatus", "ExecStart",
+                           "WorkingDirectory", "TimeoutStartSec", "TimeoutStopSec", "StandardOutput",
+                           "StandardError", "Environment"})
+
+
+def _legacy_carry(text: str) -> tuple[list[str], dict[str, list[str]]]:
+    """Environment lines without their PYTHONPATH assignment, and every other directive by section."""
+    environment: list[str] = []
+    carried: dict[str, list[str]] = {}
+    section = "[Service]"
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line
+            continue
+        key = line.split("=", 1)[0].strip()
+        if section == "[Service]" and key == "Environment":
+            # Only the PYTHONPATH assignment goes: CONFIG_PATH or any other
+            # variable on the same line stays (token by token).
+            try:
+                tokens = shlex.split(line.split("=", 1)[1])
+            except ValueError:
+                raise LauncherRefusal("runtime_admission_uninstall_release_conf") from None
+            kept = [token for token in tokens if not token.startswith("PYTHONPATH=")]
+            if kept:
+                environment.append("Environment=" + " ".join(shlex.quote(token) for token in kept))
+        elif section == "[Service]" and key in _LEGACY_FIXED:
+            continue
+        else:
+            carried.setdefault(section, []).append(line)
+    return environment, carried
+
+
 def render_legacy_conf(record: dict, runtime: Path, state: Path, release_conf_unmanaged: Path) -> str:
     """legacy.conf: the pre-managed service with the legacy slot's explicit paths (v3 N8).
 
-    Environment lines come from release.conf.unmanaged (moved aside at
-    install) except PYTHONPATH, which names the legacy runtime explicitly;
-    'current' is never used.
+    Starts from release.conf.unmanaged (moved aside at install): only the
+    PYTHONPATH assignment is replaced, by the legacy runtime named
+    explicitly ('current' is never used), and WorkingDirectory by the
+    legacy state. Directives outside the fixed list (UnsetEnvironment,
+    Limit*, KillMode, ...) are carried over verbatim (review P8).
     """
     properties = record["properties"]
     argv = record.get("legacy_exec_start")
     if not argv:
         raise LauncherRefusal("runtime_admission_launcher_exec_start")
-    environment = []
+    environment: list[str] = []
+    carried: dict[str, list[str]] = {}
     if release_conf_unmanaged.is_file():
-        for line in release_conf_unmanaged.read_text().splitlines():
-            stripped = line.strip()
-            if stripped.startswith("Environment=") and "PYTHONPATH=" not in stripped:
-                environment.append(stripped)
+        environment, carried = _legacy_carry(release_conf_unmanaged.read_text())
     lines = ["# Legacy (unmanaged) service rendered by stage_runtime uninstall-launcher (U3b-0d, L4).",
              "[Service]", "Type=simple", "NotifyAccess=none", "WatchdogSec=0", "RestartPreventExitStatus=",
              "ExecStart=", "ExecStart=" + shlex.join(argv), *environment,
@@ -1634,7 +1999,19 @@ def render_legacy_conf(record: dict, runtime: Path, state: Path, release_conf_un
     for key in ("StandardOutput", "StandardError"):
         if properties.get(key):
             lines.append(f"{key}={properties[key]}")
+    lines.extend(carried.pop("[Service]", []))
+    for section, entries in carried.items():
+        lines += [section, *entries]
     return "\n".join(lines) + "\n"
+
+
+def carried_directives(release_conf_unmanaged: Path) -> list[str]:
+    """Names of the release.conf.unmanaged directives legacy.conf carries over verbatim."""
+    if not release_conf_unmanaged.is_file():
+        return []
+    _environment, carried = _legacy_carry(release_conf_unmanaged.read_text())
+    return sorted({section + entry.split("=", 1)[0].strip() for section, entries in carried.items()
+                   for entry in entries})
 
 
 def uninstall_launcher(root: Path, *, unit_dir: Path, decision_id: str, phrase: str, legacy_slot: str,
@@ -1663,6 +2040,7 @@ def uninstall_launcher(root: Path, *, unit_dir: Path, decision_id: str, phrase: 
         if managed_sha is None:
             raise LauncherRefusal("runtime_admission_uninstall_not_managed")
         text = render_legacy_conf(record, runtime, state, unit_dir / "release.conf.unmanaged")
+        carried = carried_directives(unit_dir / "release.conf.unmanaged")
         os.replace(managed, unit_dir / "managed.conf.disabled")
         legacy = unit_dir / "legacy.conf"
         _write_text_atomic(legacy, text)
@@ -1676,8 +2054,9 @@ def uninstall_launcher(root: Path, *, unit_dir: Path, decision_id: str, phrase: 
             "head": stage.read_admission_head(root), "legacy_slot": legacy_slot, "legacy_commit": commit,
             "managed_conf_sha256": managed_sha, "legacy_conf_sha256": hashlib.sha256(text.encode()).hexdigest(),
             "verified_properties_sha256": stage._digest(shown or {}), "mismatches": problems,
-            "uninstalled_at": stamp}, immutable=True)
-    return {"legacy_conf": str(legacy), "mismatches": problems, "record": f"uninstall-{stamp}.json"}
+            "carried_directives": carried, "uninstalled_at": stamp}, immutable=True)
+    return {"legacy_conf": str(legacy), "mismatches": problems, "record": f"uninstall-{stamp}.json",
+            "carried_directives": carried}
 
 
 def _legacy_mismatches(record: dict, shown: dict | None, runtime: Path, state: Path) -> list[str]:
@@ -1710,7 +2089,8 @@ def _legacy_mismatches(record: dict, shown: dict | None, runtime: Path, state: P
 # CLI (dispatched from stage_runtime.main)
 
 
-COMMANDS = ("serve", "adopt", "install-controller", "install-launcher", "uninstall-launcher", "stop-timeout-dropin")
+COMMANDS = ("serve", "adopt", "install-controller", "install-launcher", "uninstall-launcher", "stop-timeout-dropin",
+            "console-logrotate")
 
 
 def add_commands(commands) -> None:
@@ -1742,6 +2122,9 @@ def add_commands(commands) -> None:
     launcher.add_argument("--watchdog-sec", type=float, default=0.0)
     launcher.add_argument("--console-log", required=True)
     launcher.add_argument("--recover", choices=RECOVER_MODES, default="bounded")
+    launcher.add_argument("--logrotate-conf", default=None,
+                          help="logrotate configuration that must rotate --console-log (default <root>/"
+                               + LOGROTATE_NAME + ")")
     uninstall = commands.add_parser("uninstall-launcher")
     uninstall.add_argument("--unit-dir", type=Path, required=True)
     uninstall.add_argument("--user-decision", required=True)
@@ -1750,6 +2133,9 @@ def add_commands(commands) -> None:
     dropin = commands.add_parser("stop-timeout-dropin", help="Print the sudo drop-in text (never writes it)")
     dropin.add_argument("--unit-timeout-stop", type=float, required=True)
     dropin.add_argument("--chain-extra", type=float, default=0.0)
+    rotate = commands.add_parser("console-logrotate",
+                                 help="Print the logrotate stanza for the console log (kza applies it)")
+    rotate.add_argument("--console-log", required=True)
 
 
 def run_command(args) -> int:
@@ -1774,14 +2160,25 @@ def run_command(args) -> int:
                                           python=args.python, stop_grace=args.stop_grace,
                                           timeout_start=args.timeout_start, timeout_stop=args.timeout_stop,
                                           watchdog_sec=args.watchdog_sec, console_log=args.console_log,
-                                          recover=args.recover))
+                                          recover=args.recover, logrotate_conf=args.logrotate_conf))
+            if result["verification_mismatches"]:
+                # managed.conf stays in place; the operator sees exactly what differs (P9).
+                sys.stdout.write(json.dumps(result, sort_keys=True, default=str) + "\n")
+                sys.stderr.write(json.dumps({"refused": "runtime_admission_launcher_verification",
+                                             "problems": result["verification_mismatches"]}) + "\n")
+                return int(ExitCode.REFUSED)
         elif args.command == "uninstall-launcher":
             result = uninstall_launcher(args.root, unit_dir=args.unit_dir, decision_id=args.user_decision,
                                         phrase=args.phrase, legacy_slot=args.legacy_slot, manager=ServiceManager())
+        elif args.command == "console-logrotate":
+            result = {"stanza": render_console_logrotate(args.console_log)}
         else:
             result = render_stop_timeout_dropin(os.getuid(), args.unit_timeout_stop, args.chain_extra)
     except LauncherRefusal as refusal:
-        sys.stderr.write(json.dumps({"refused": refusal.code}) + "\n")
+        refused = {"refused": refusal.code}
+        if refusal.problems:
+            refused["problems"] = refusal.problems
+        sys.stderr.write(json.dumps(refused) + "\n")
         return int(refusal.exit_code)
     sys.stdout.write(json.dumps(result, sort_keys=True, default=str) + "\n")
     return 0

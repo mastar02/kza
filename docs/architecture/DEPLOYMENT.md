@@ -371,8 +371,24 @@ nueva se descarta y queda el índice anterior.
 
 Estado: código y ensayos en la rama de desarrollo. **No está instalado** y no
 se instala hasta la ventana de R1. Antes hacen falta U3b-0e (el primer head
-gestionado a partir del estado de producción), correr 0d1 en Linux y medir en
-el server los presupuestos de parada (L6) y del watchdog (L2).
+gestionado a partir del estado de producción, con rutas absolutas), correr 0d1
+en Linux y medir en el server los presupuestos de parada (L6) y del watchdog
+(L2).
+
+Huecos que quedan en Linux (la revisión independiente de U3b-0d, P12 y P13):
+
+- **T-C8** (cgroup real) y **T-C10** (matriz de parada en el server) no se
+  ensayaron: el supervisor falso de los tests usa un grupo de procesos, no un
+  cgroup, y no aplica `NotifyAccess=main` en macOS. Correrlos en el server o
+  en CI Linux antes de instalar. Agregar ahí dos casos que el falso no
+  modela: la parada pedida por `STOPPING=1` (systemd arma `TimeoutStopSec`) y
+  `EXTEND_TIMEOUT_USEC` durante la parada. T-C8 verifica además el parseo de
+  `0::/user.slice/.../kza-voice.service` que usa la limpieza de rezagados.
+- **Drop-in sudo en la misma ventana que R1.** Sin él, cada reinicio del host
+  deja el head `unknown` (el manager tiene 5 s) y la recuperación por
+  `boot_id` lo adopta sin límite de 24 h (L8): la seguridad queda entera en
+  los chequeos de R-b. Aplicarlo en la misma ventana autorizada que la
+  instalación (ver "Presupuesto de reinicio").
 
 Cómo arranca:
 
@@ -432,14 +448,25 @@ Recuperación al arrancar (L1 = A):
   - que los JSON parseen;
   - la estructura de los segmentos de Chroma (sin abrir el SDK);
   - que el registro de borrados y las familias de sólo-agregar avancen;
-  - que ningún id borrado haya resucitado en los almacenes de payload;
+  - que ningún id borrado haya resucitado en los almacenes de payload. En
+    Chroma, los hechos se ven como `embeddings.embedding_id` (así guarda
+    `src/memory/long_term.py` cada hecho: `ids=[fact.id]`), por colección,
+    más la cola `embeddings_queue` aún no aplicada. Un hecho con su borrado
+    todavía pendiente en `index_jobs` o `policy_index_deletions` no cuenta;
   - la propiedad de destinos;
   - la equivalencia de componentes manuales.
+- Antes de recuperar y entre cada paso de R-b (y antes de adoptar) el
+  controlador envía `EXTEND_TIMEOUT_USEC` de 120 s, para que
+  `TimeoutStartSec` no caiga a mitad de una adopción. `--timeout-start` se
+  dimensiona con un R-b medido en el server (L2, L6).
 - **Recuperación por arranque**: si el run quedó del boot anterior (reinicio o
   corte de luz), hay una recuperación por `boot_id` y no gasta el cupo de 24 h.
 - **Operador** (`UNKNOWN` sin adopción automática): primero
   `stage_runtime --root /home/kza/releases --offline adopt --dry-run`, que
-  imprime el sha del head y sólo conteos. Después
+  imprime el sha del head, si R-a sigue siendo posible (recibo, registro y
+  manifiesto) y sólo conteos. Es de sólo lectura: no abre nada del estado
+  para escribir y corre los chequeos de bases sobre una copia privada (con su
+  `-wal`, sin `-shm`), así que no puede romper un R-a pendiente. Después
   `adopt --confirm <sha> --confirm-regressions <familias>`, con las familias
   exactamente como las informó el dry-run.
 - Un head recuperado no puede delegar hasta un cierre limpio posterior.
@@ -454,24 +481,50 @@ Instalación en la ventana de R1 (bajo `kza`, sin sudo; el servicio detenido):
 3. Extraer el archivo en un directorio temporal y correr
    `<tmp>/scripts/stage_runtime.pyc --root /home/kza/releases --offline install-controller <archivo>`.
    Instala en `controller/<commit>` y cambia `controller/current` de forma
-   atómica. Rechaza bajar de época e informa qué slots quedan fuera de
+   atómica. Antes del cambio hace fsync de cada archivo y directorio del
+   árbol, y después fsync del directorio `controller/`. Cada `serve` vuelve
+   a verificar los hashes de `controller/current` contra su `release.json` y
+   rechaza con 78 (`runtime_admission_controller_tampered`) una instalación
+   dañada. Rechaza bajar de época e informa qué slots quedan fuera de
    rollback.
 4. Con `systemctl --user stop kza-voice.service` ya hecho, correr
    `controller/current/scripts/stage_runtime.pyc ... install-launcher`.
    - Argumentos: `--unit-dir ~/.config/systemd/user/kza-voice.service.d`,
      `--template`, `--python /home/kza/kza/.venv/bin/python`,
-     `--stop-grace`, `--timeout-start`, `--timeout-stop`, `--watchdog-sec`
-     y `--console-log /home/kza/releases/logs/console.log`.
+     `--stop-grace`, `--timeout-start`, `--timeout-stop`, `--watchdog-sec`,
+     `--console-log /home/kza/releases/logs/console.log` y, si no es el de
+     siempre, `--logrotate-conf` (por defecto
+     `/home/kza/releases/console-logrotate.conf`).
    - Rechaza si la unidad está activa o si no existe un head gestionado.
      También rechaza un `--console-log` bajo `slots/`.
+   - Antes de tocar el directorio de la unidad corre los mismos chequeos que
+     `serve` al arrancar, sobre el binding del head: selección, contrato,
+     época, compañeros y el preflight de rutas con el intérprete de
+     `--python`. Con el `settings.yaml` del repo (rutas relativas de modelos
+     y log, `training.output_dir` fuera del estado) rechaza: no instala algo
+     que saldría con 78. Reubicar esas rutas es trabajo de U3b-0e; esto sólo
+     detecta y rechaza. También exige que el directorio de `--console-log`
+     exista y sea escribible (`StandardOutput=append:` no crea
+     directorios) y que la configuración de logrotate rote esa ruta con
+     `copytruncate`. Rechaza con `runtime_admission_launcher_preflight` y la
+     lista exacta de problemas.
+   - Rotación de la consola nueva: `stage_runtime ... console-logrotate
+     --console-log /home/kza/releases/logs/console.log` imprime la estrofa
+     (horaria, 24 rotaciones, `maxage 1`, compresión, `copytruncate`). `kza`
+     la agrega a `console-logrotate.conf` en la misma ventana; el timer
+     existente la ejecuta. No requiere sudo.
    - Guarda las propiedades previas: `Environment` sólo como digest.
    - Mueve `release.conf` a `release.conf.unmanaged`, escribe `managed.conf`,
-     hace `daemon-reload` y verifica `Type`, `NotifyAccess`, `KillMode` y
-     `RestartPreventExitStatus`.
+     hace `daemon-reload` y verifica `Type`, `NotifyAccess`, `KillMode`,
+     `RestartPreventExitStatus` (exactamente `69 78`), `ExecStart` y
+     `WorkingDirectory` contra lo generado, e informa `DropInPaths`.
+     Cualquier diferencia sale con 78 y deja `managed.conf` en su lugar para
+     que el operador la vea.
    - Imprime el texto del drop-in sudo.
-   - Hay que apuntar logrotate a la nueva consola.
-   - No volver a usar el `--rollback` de la herramienta de publicación del
-     2026-10-29: restauraría `release.conf`.
+   - La herramienta de publicación del 2026-10-29 queda retirada: su
+     `--apply` y su `--rollback` se niegan (`managed_launcher_installed`) si
+     existe `managed.conf`, porque `release.conf` ordena después y pisaría
+     el `ExecStart` del controlador.
 5. Arrancar sólo con un head gestionado: sin head, `serve` sale con 78.
 
 Valores (L2, L6): `stop_grace` es el máximo entre 3 veces la mediana medida
@@ -528,7 +581,12 @@ stage_runtime --root /home/kza/releases --offline uninstall-launcher \
   legacy.
 - Mueve `managed.conf` a `managed.conf.disabled` y genera `legacy.conf`:
   `Type=simple`, sin watchdog, y `PYTHONPATH` y `WorkingDirectory` explícitos
-  del slot legacy. Nunca usa `current`.
+  del slot legacy. Nunca usa `current`. Parte de `release.conf.unmanaged`:
+  de cada línea `Environment=` quita sólo la asignación `PYTHONPATH` (las
+  demás variables de la misma línea, como `CONFIG_PATH`, quedan) y copia
+  tal cual las directivas fuera de la lista fija (`LimitNOFILE`,
+  `UnsetEnvironment`, `KillMode`...). El resultado y el registro listan las
+  directivas copiadas.
 - Verifica con `systemctl --user show`.
 - El único cambio en `admission/` es `launcher/uninstall-<ts>.json`.
 - El código viejo corre sobre los datos anteriores a R1: devuelve recuerdos,
@@ -538,11 +596,17 @@ stage_runtime --root /home/kza/releases --offline uninstall-launcher \
 Rollback gestionado: un slot destino necesita `launcher_contract >= 3` y
 `format_epoch` igual o mayor que el mínimo del controlador. Si no, `serve`
 lo rechaza con 78 (`runtime_admission_launcher_contract_missing` o
-`runtime_admission_rollback_format_closed`). `activate` y `run()` siguen
-aceptando slots anteriores para los ensayos de linajes viejos.
+`runtime_admission_rollback_format_closed`). Con un controlador instalado
+(`admission/controller.json`), `stage_runtime activate` aplica los mismos
+enteros y rechaza antes de mover el head o `current`, así un activate del
+operador no deja un arranque que sale con 78. La API acepta
+`launcher_checks=False` sólo para ensayar ese rechazo de `serve`; la CLI no
+lo expone. `run()` sigue aceptando slots anteriores para los ensayos de
+linajes viejos.
 
 Evidencia: `data/autonomous-roadmap-20261102/t040-t041/u3b-0d-evidence.json`
-(local, fuera de Git).
+y, para las correcciones de la revisión independiente,
+`u3b-0d-fix-evidence.json` (local, fuera de Git).
 
 ## Limpieza del checkout anterior — pendiente
 

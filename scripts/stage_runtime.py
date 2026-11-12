@@ -765,6 +765,18 @@ def release_integers(binding: dict) -> dict:
     return values
 
 
+def _require_launcher_slot(binding: dict) -> None:
+    """serve's slot integers (managed_launcher.check_slot): launcher contract and format epoch."""
+    try:
+        values = release_integers(binding)
+    except (ValueError, OSError):
+        raise ValueError("runtime_admission_launcher_contract_missing") from None
+    if values["launcher_contract"] < LAUNCHER_CONTRACT:
+        raise ValueError("runtime_admission_launcher_contract_missing")
+    if values["format_epoch"] < MIN_FORMAT_EPOCH:
+        raise ValueError("runtime_admission_rollback_format_closed")
+
+
 def receipt_state_required(binding: dict) -> bool:
     """Whether the slot declares a schema-2 receipt-state record (review 0d3 K2).
 
@@ -3205,8 +3217,15 @@ class AdmissionController:
             return identity
 
     def activate(self, name: str, *, expected_head: dict | None = None,
-                 managed: bool = False) -> str | None:
-        """Select a compatible closed state, rejecting stale authority first."""
+                 managed: bool = False, launcher_checks: bool = True) -> str | None:
+        """Select a compatible closed state, rejecting stale authority first.
+
+        Once a managed launcher controller is installed (admission/
+        controller.json), the slot must also pass serve's acceptance
+        integers, so an operator activate cannot select a slot the next
+        start refuses with 78 (review P10). ``launcher_checks=False`` is for
+        rehearsals of that refusal only.
+        """
         self._require_lease()
         name = _slot_name(name)
         with _locked_root(self.root):
@@ -3216,6 +3235,8 @@ class AdmissionController:
             if head is not None and head["status"] != "closed":
                 raise ValueError("runtime_admission_not_closed")
             binding = _binding_snapshot(self.root, name)
+            if launcher_checks and (self.root / "admission" / "controller.json").exists():
+                _require_launcher_slot(binding)
             validate_target_ownership(self.root, binding)
             if head is not None:
                 latest = read_binding(self.root, head["binding_id"])
@@ -3349,10 +3370,11 @@ def delegate_slot(root: Path, name: str) -> dict:
         return controller.delegate(name)
 
 
-def activate_slot(root: Path, name: str, *, probe_timeout: float = _PROBE_TIMEOUT_SECONDS) -> str | None:
+def activate_slot(root: Path, name: str, *, probe_timeout: float = _PROBE_TIMEOUT_SECONDS,
+                  launcher_checks: bool = True) -> str | None:
     """Atomically select an integrity-checked slot with non-regressing authority."""
     with AdmissionController(root, probe_timeout=probe_timeout) as controller:
-        return controller.activate(name)
+        return controller.activate(name, launcher_checks=launcher_checks)
 
 
 def run_slot(root: Path, name: str, argv: list[str] | None = None, *, timeout: float,

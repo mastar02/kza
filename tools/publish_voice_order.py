@@ -354,6 +354,11 @@ def publish(bundle: Path, rollback: bool = False) -> dict:
         raise ReleaseError('runtime_operator_required')
     root = Path('/home/kza/releases')
     override = Path('/home/kza/.config/systemd/user/kza-voice.service.d/release.conf')
+    # Retired by the managed launcher (U3b-0d, review P7): release.conf sorts
+    # after managed.conf, so restoring it would override the controller's
+    # ExecStart. Refuse both --apply and --rollback once managed.conf exists.
+    if override.parent.joinpath('managed.conf').exists():
+        raise ReleaseError('managed_launcher_installed')
     journal = root / ('deployments/' + RELEASE_TAG + '-' + COMMIT[:7] + '.json')
     token = dotenv_values('/home/kza/secrets/.env').get('KZA_DASHBOARD_TOKEN')
     if not token:

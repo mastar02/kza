@@ -7,6 +7,8 @@ The child is tests/mocks/launcher_child.py running the slot's compiled
 process_lifecycle and receipt writer.
 """
 
+import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -14,6 +16,7 @@ from pathlib import Path
 import signal
 import sqlite3
 from contextlib import closing
+import sys
 import time
 
 import pytest
@@ -24,7 +27,8 @@ from tests.mocks import fake_systemd
 from tests.mocks import launcher_rehearsal as rehearsal
 
 REPO = Path(__file__).resolve().parents[3]
-TEMPLATE = (REPO / "systemd" / "kza-voice.service.d" / "managed.conf.template").read_text()
+TEMPLATE_PATH = REPO / "systemd" / "kza-voice.service.d" / "managed.conf.template"
+TEMPLATE = TEMPLATE_PATH.read_text()
 RESOURCES = dict.fromkeys(["graph_closed", "privacy_closed", "sdk_closed", "native_closed"], True)
 
 
@@ -543,20 +547,35 @@ RELEASE_CONF = ("[Service]\nExecStart=\nExecStart=/home/kza/kza/.venv/bin/python
                 "WorkingDirectory=/home/kza/releases/slots/legacy/state\n")
 
 
-def _systemctl(tmp_path, active="inactive"):
+# Review P8: one Environment= line with PYTHONPATH and CONFIG_PATH, plus directives outside the fixed list.
+RELEASE_CONF_MIXED = ("[Service]\nExecStart=\nExecStart=/home/kza/kza/.venv/bin/python -B -P -m src.main\n"
+                      "Environment=PYTHONPATH=/home/kza/releases/current CONFIG_PATH=config/settings.yaml\n"
+                      "LimitNOFILE=4096\nUnsetEnvironment=HTTP_PROXY\n"
+                      "WorkingDirectory=/home/kza/releases/slots/legacy/state\n")
+
+
+def _systemctl(tmp_path, active="inactive", release_conf=RELEASE_CONF):
     unit_dir = tmp_path / "unit.d"
     unit_dir.mkdir()
-    (unit_dir / "release.conf").write_text(RELEASE_CONF)
+    (unit_dir / "release.conf").write_text(release_conf)
     (unit_dir / "credentials.conf").write_text("[Service]\nEnvironmentFile=/home/kza/secrets/kza.env\n")
     shim = fake_systemd.write_systemctl_shim(tmp_path / "bin", tmp_path / "sd-state", unit_dir, base=BASE_UNIT,
                                              active_state=active)
     return unit_dir, launcher.ServiceManager(executable=str(shim))
 
 
-def _settings(root, **overrides):
-    values = dict(python="/home/kza/kza/.venv/bin/python", stop_grace=120, timeout_start=180, timeout_stop=200,
+def _settings(root, *, prepare_console=True, **overrides):
+    """Install settings; the console directory and its logrotate stanza exist unless told otherwise.
+
+    The interpreter is this one: install-launcher runs serve's path
+    preflight with the interpreter it renders into ExecStart.
+    """
+    values = dict(python=sys.executable, stop_grace=120, timeout_start=180, timeout_stop=200,
                   watchdog_sec=0, console_log=str(root.parent / "logs" / "console.log"))
     values.update(overrides)
+    if prepare_console:
+        Path(values["console_log"]).parent.mkdir(parents=True, exist_ok=True)
+        (root / launcher.LOGROTATE_NAME).write_text(launcher.render_console_logrotate(values["console_log"]))
     return launcher.LauncherSettings(**values)
 
 
@@ -569,7 +588,9 @@ def test_install_launcher_renders_managed_conf_and_records_pre_managed_propertie
     assert not (unit_dir / "release.conf").exists()
     assert (unit_dir / "release.conf.unmanaged").read_text() == RELEASE_CONF
     assert (unit_dir / "credentials.conf").exists()  # credential drop-ins untouched
+    assert result["drop_in_paths"] == []  # the shim does not list them; systemd does
     record = launcher._latest_install(root)
+    assert record["logrotate_conf"] == str(root / launcher.LOGROTATE_NAME)
     assert record["properties"]["Type"] == "simple" and "Environment" not in record["properties"]
     assert record["legacy_exec_start"] == ["/home/kza/kza/.venv/bin/python", "-B", "-P", "-m", "src.main"]
     assert record["stop_timeout_dropin"]["value_seconds"] == 200 + 90 + 15  # kza-llm-ik after kza-voice
@@ -591,8 +612,10 @@ def test_install_launcher_refusals(root, tmp_path, problem, code):
     assert (unit_dir / "release.conf").exists() and not (unit_dir / "managed.conf").exists()
 
 
-def test_uninstall_launcher_pins_the_legacy_slot_and_leaves_admission_untouched(artifacts, root, tmp_path):
-    unit_dir, manager = _systemctl(tmp_path)
+@pytest.mark.parametrize("release_conf", [RELEASE_CONF, RELEASE_CONF_MIXED], ids=["separate", "mixed"])
+def test_uninstall_launcher_pins_the_legacy_slot_and_leaves_admission_untouched(artifacts, root, tmp_path,
+                                                                                release_conf):
+    unit_dir, manager = _systemctl(tmp_path, release_conf=release_conf)
     launcher.install_launcher(root, unit_dir=unit_dir, template=TEMPLATE, settings=_settings(root), manager=manager)
     legacy_archive = artifacts["archives"].get("pre", artifacts["archives"]["x"])
     legacy_commit = artifacts["commits"]["pre"] or artifacts["commits"]["x"]
@@ -619,6 +642,10 @@ def test_uninstall_launcher_pins_the_legacy_slot_and_leaves_admission_untouched(
     assert "Environment=PYTHONPATH=" + str(root / "slots" / "legacy" / "runtime") in legacy
     assert "WorkingDirectory=" + str(root / "slots" / "legacy" / "state") in legacy
     assert "current" not in legacy and "Type=simple" in legacy and "WatchdogSec=0" in legacy
+    assert "Environment=CONFIG_PATH=config/settings.yaml" in legacy  # review P8: kept even on a mixed line
+    if release_conf == RELEASE_CONF_MIXED:
+        assert "LimitNOFILE=4096" in legacy and "UnsetEnvironment=HTTP_PROXY" in legacy
+        assert result["carried_directives"] == ["[Service]LimitNOFILE", "[Service]UnsetEnvironment"]
     after = _admission_files(root)
     added = set(after) - set(before)
     assert len(added) == 1 and next(iter(added)).startswith("launcher/uninstall-")
@@ -721,3 +748,258 @@ def test_a_removed_recovery_record_invalidates_the_recovered_head(root, tmp_path
         stage.read_manual_head(root, decision.closed_head)
     refused = _serve(root, tmp_path, "clean", name="b.txt")
     assert refused.code == 78 and "refused runtime_admission_recovery_record_missing" in refused.serve.events
+
+
+# --- review fixes P2-P10, P14 ----------------------------------------------------------------------
+
+# The repository settings.yaml shape (U3b-0e relocates these; until then install must refuse).
+PRODUCTION_SHAPED = ("schema: t\nwhisper:\n  model: ./models/whisper-v3-turbo\n"
+                     "logging:\n  file: ./logs/voice_assistant.log\n"
+                     "training:\n  output_dir: ./models/lora_adapters\n")
+
+
+def _install_cli_args(root, unit_dir, settings, **overrides):
+    values = dict(command="install-launcher", root=root, unit_dir=unit_dir, template=TEMPLATE_PATH,
+                  python=settings.python, stop_grace=settings.stop_grace, timeout_start=settings.timeout_start,
+                  timeout_stop=settings.timeout_stop, watchdog_sec=settings.watchdog_sec,
+                  console_log=settings.console_log, recover=settings.recover, logrotate_conf=None)
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+def test_install_launcher_runs_the_serve_gates_before_touching_the_unit(artifacts, tmp_path, capsys, monkeypatch):
+    """Review P2: a state serve would refuse with 78 (no restart) is never installed."""
+    root, _state = rehearsal.managed_root(artifacts["archives"]["x"], tmp_path, settings=PRODUCTION_SHAPED)
+    unit_dir, manager = _systemctl(tmp_path)
+    with pytest.raises(launcher.LauncherRefusal) as refused:
+        launcher.install_launcher(root, unit_dir=unit_dir, template=TEMPLATE, settings=_settings(root),
+                                  manager=manager)
+    assert refused.value.code == "runtime_admission_launcher_preflight"
+    assert refused.value.problems == ["path:foreign_serving_store:training.output_dir",
+                                      "path:relative_path:logging.file", "path:relative_path:whisper.model"]
+    assert (unit_dir / "release.conf").read_text() == RELEASE_CONF and not (unit_dir / "managed.conf").exists()
+    assert not list((root / "admission" / "launcher").glob("install-*.json"))
+    _refused(root, tmp_path, "runtime_admission_launcher_path:foreign_serving_store:training.output_dir")
+    # The CLI names every problem and exits 78.
+    monkeypatch.setenv("PATH", str(Path(manager.executable).parent) + os.pathsep + os.environ.get("PATH", ""))
+    assert launcher.run_command(_install_cli_args(root, unit_dir, _settings(root))) == 78
+    error = json.loads(capsys.readouterr().err)
+    assert error == {"refused": "runtime_admission_launcher_preflight", "problems": refused.value.problems}
+
+
+def test_install_launcher_refuses_a_missing_console_directory_an_unrotated_console_and_a_foreign_selection(
+        root, tmp_path):
+    """Review P2 (StandardOutput=append: creates no directory) and P5 (the console must be rotated)."""
+    unit_dir, manager = _systemctl(tmp_path)
+    settings = _settings(root, prepare_console=False, console_log=str(tmp_path / "nowhere" / "console.log"))
+    (root / "current").unlink()
+    (root / "current").symlink_to("slots/other/runtime")
+    with pytest.raises(launcher.LauncherRefusal) as refused:
+        launcher.install_launcher(root, unit_dir=unit_dir, template=TEMPLATE, settings=settings, manager=manager)
+    assert refused.value.problems == ["runtime_admission_launcher_selection_mismatch",
+                                      "console_directory_missing_or_not_writable", "console_not_rotated"]
+    assert (unit_dir / "release.conf").exists() and not (unit_dir / "managed.conf").exists()
+    (root / "current").unlink()
+    (root / "current").symlink_to("slots/s/runtime")
+    (tmp_path / "nowhere").mkdir()
+    with pytest.raises(launcher.LauncherRefusal) as refused:
+        launcher.install_launcher(root, unit_dir=unit_dir, template=TEMPLATE, settings=settings, manager=manager)
+    assert refused.value.problems == ["console_not_rotated"]
+    conf = tmp_path / "rotate.conf"
+    conf.write_text(launcher.render_console_logrotate(settings.console_log))
+    settings.logrotate_conf = str(conf)
+    result = launcher.install_launcher(root, unit_dir=unit_dir, template=TEMPLATE, settings=settings,
+                                       manager=manager)
+    assert result["verification_mismatches"] == []
+
+
+def test_install_launcher_cli_exits_78_on_any_verification_mismatch(root, tmp_path, monkeypatch, capsys):
+    """Review P9: {'69', '1'} is not {'69', '78'}, and a mismatch fails the command."""
+    unit_dir, manager = _systemctl(tmp_path)
+    (unit_dir / "zz-operator.conf").write_text("[Service]\nRestartPreventExitStatus=69 1\n")
+    monkeypatch.setenv("PATH", str(Path(manager.executable).parent) + os.pathsep + os.environ.get("PATH", ""))
+    assert launcher.run_command(_install_cli_args(root, unit_dir, _settings(root))) == 78
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["verification_mismatches"] == ["RestartPreventExitStatus"]
+    assert json.loads(captured.err) == {"refused": "runtime_admission_launcher_verification",
+                                        "problems": ["RestartPreventExitStatus"]}
+    assert (unit_dir / "managed.conf").exists()  # left in place, reported
+
+
+def _state_files(directory: Path) -> dict:
+    return {path.relative_to(directory).as_posix(): (hashlib.sha256(path.read_bytes()).hexdigest(),
+                                                     path.stat().st_mtime_ns)
+            for path in sorted(directory.rglob("*")) if path.is_file()}
+
+
+# A WAL database the child leaves with its -wal (no checkpoint on close) and no -shm.
+WAL_LEFT = "\n".join([
+    "import sqlite3",
+    "db = sqlite3.connect(state / 'data' / 'cache.db', isolation_level=None)",
+    "db.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)",
+    "db.execute('PRAGMA journal_mode=WAL')",
+    "db.execute('CREATE TABLE memories (x TEXT)')",
+    "db.execute(\"INSERT INTO memories VALUES ('synthetic')\")",
+    "db.close()",
+    "(state / 'data' / 'cache.db-shm').unlink(missing_ok=True)",
+])
+
+
+def test_adopt_dry_run_is_read_only_and_keeps_a_pending_r_a(root, tmp_path, monkeypatch):
+    """Review P3: the dry run must not checkpoint a -wal the receipt's manifest names, nor create a -shm."""
+    class Killed(BaseException):
+        pass
+
+    def die(*args, **kwargs):
+        raise Killed
+    monkeypatch.setattr(stage, "seal_admission_run", die)
+    with pytest.raises(Killed):
+        _serve(root, tmp_path, "clean", name="a.txt", execute=WAL_LEFT)
+    monkeypatch.undo()
+    state = root / "slots" / "s" / "state"
+    # Read-only image opens (receipt, seal) may have recreated the -shm; it is never authoritative
+    # and excluded from the manifest. Without it, a read-only SQLite open would have to create it.
+    (state / "data" / "cache.db-shm").unlink(missing_ok=True)
+    assert (state / "data" / "cache.db-wal").stat().st_size > 0
+    before, admission = _state_files(state), _admission_files(root)
+    dry = launcher.adopt(root, confirm="", regressions=[], dry_run=True)
+    assert _state_files(state) == before and _admission_files(root) == admission
+    assert dry["r_a"] == {"receipt": True, "receipt_state": "present", "manifest_matches": True}
+    assert dry["report"]["failures"] == [] and dry["report"]["databases"] == 1
+    result = _serve(root, tmp_path, "clean", name="b.txt")
+    assert result.code == 0 and "recovery R-a closed" in result.serve.events
+    assert launcher._recoveries(root) == []
+
+
+def test_install_controller_is_durable_before_switching_current(artifacts, tmp_path, monkeypatch):
+    """Review P4: every staged file and directory is fsynced before 'current' moves, and the switch after."""
+    root, _state = rehearsal.managed_root(artifacts["archives"]["x"], tmp_path)
+    events = []
+    fsync_path, replace = launcher._fsync_path, os.replace
+
+    def recorded_fsync(path):
+        events.append(("fsync", Path(path)))
+        fsync_path(path)
+
+    def recorded_replace(source, destination, *args, **kwargs):
+        events.append(("replace", Path(destination)))
+        return replace(source, destination, *args, **kwargs)
+    monkeypatch.setattr(launcher, "_fsync_path", recorded_fsync)
+    monkeypatch.setattr(os, "replace", recorded_replace)
+    commit = launcher.install_controller(root, artifacts["archives"]["y"])["commit"]
+    monkeypatch.undo()
+    controllers = root / "controller"
+    switch = events.index(("replace", controllers / "current"))
+    staged = set()
+    for kind, path in events[:switch]:
+        if kind == "fsync" and commit in path.parts:
+            staged.add(Path(*path.parts[path.parts.index(commit) + 1:]).as_posix())
+    installed = {path.relative_to(controllers / commit).as_posix() for path in (controllers / commit).rglob("*")}
+    assert installed | {"."} == staged  # every file, every directory and the tree root
+    assert ("fsync", controllers) in events[:switch] and ("fsync", controllers) in events[switch:]
+
+
+def test_a_damaged_controller_install_is_refused_78(root, tmp_path):
+    """Review P4: serve re-verifies controller/current against the installed manifest."""
+    current = root / "controller" / "current"
+    target = current / "scripts" / "managed_launcher.pyc"
+    data = target.read_bytes()
+    target.write_bytes(data[: len(data) // 2])  # a partial .pyc after a power loss
+    _refused(root, tmp_path, "runtime_admission_controller_tampered")
+
+
+def test_recovery_extends_the_start_timeout_before_and_between_r_b_steps(root, tmp_path):
+    """Review P6: EXTEND_TIMEOUT_USEC before recovery and at every R-b step, adoption included."""
+    assert _serve(root, tmp_path, "crash", stop_when=None, seconds=0.1, name="a.txt").code == 68
+    served = _serve(root, tmp_path, "clean", name="b.txt")
+    assert served.code == 0 and "recovery R-b closed" in served.serve.events
+    sent, events = served.serve.notifier.sent, served.serve.events
+    line = f"EXTEND_TIMEOUT_USEC={launcher.RECOVERY_EXTEND_SECONDS * 1_000_000}"
+    window = sent[sent.index("STATUS=recovering"):sent.index("EXTEND_TIMEOUT_USEC=90000000")]
+    steps = [item for item in events if item.startswith("extend ")]
+    assert window.count(line) == len(steps) and window[1] == line  # the first thing after 'recovering'
+    assert steps[:3] == ["extend recovery", "extend R-a", "extend writers"] and steps[-1] == "extend adopt"
+    assert {"extend json", "extend chroma", "extend ledger", "extend authority", "extend resurrection"} <= set(steps)
+    assert events.index("extend adopt") < events.index("recovery R-b closed")
+
+
+def test_operator_activate_applies_serves_slot_checks_once_a_controller_is_installed(artifacts, root, monkeypatch):
+    """Review P10: activate cannot select a slot the next serve start refuses with 78."""
+    state = root / "slots" / "s" / "state"
+    stage.prepare_slot(artifacts["archives"]["y"], root, "next", state)
+    head, current = _head(root), os.readlink(root / "current")
+    with monkeypatch.context() as patch:
+        patch.setattr(stage, "MIN_FORMAT_EPOCH", stage.FORMAT_EPOCH + 1)
+        with pytest.raises(ValueError, match="runtime_admission_rollback_format_closed"):
+            stage.activate_slot(root, "next")
+    assert _head(root) == head and os.readlink(root / "current") == current
+    if "pre" in artifacts["archives"]:
+        stage.prepare_slot(artifacts["archives"]["pre"], root, "old", state)
+        with pytest.raises(ValueError, match="runtime_admission_launcher_contract_missing"):
+            stage.activate_slot(root, "old")
+        assert _head(root) == head
+    assert stage.activate_slot(root, "next") == "slots/s/runtime"
+
+
+# --- P14: each R-b check refuses automatic adoption with its own code ------------------------------
+
+def test_a_restored_older_append_only_family_is_a_regression(root, tmp_path):
+    """Q1: a conversation_tombstones row set older than the binding needs the operator."""
+    state = root / "slots" / "s" / "state"
+    assert _serve(root, tmp_path, "clean", name="a.txt", execute=TOMBSTONE + "\n" + _append("c-1")).code == 0
+    assert _serve(root, tmp_path, "crash", stop_when=None, seconds=0.1, name="b.txt").code == 68
+    with closing(sqlite3.connect(state / "data" / "privacy.db")) as db, db:
+        db.execute("DELETE FROM conversation_tombstones")  # the older (restored) row set
+    refused = _serve(root, tmp_path, "clean", name="c.txt")
+    assert refused.code == 69 and "recovery R-b runtime_admission_recovery_regression" in refused.serve.events
+    report = launcher.adopt(root, confirm="", regressions=[], dry_run=True)["report"]
+    assert report["failures"] == [] and report["regressions"] == ["conversation_tombstones:data/privacy.db"]
+    assert report["ledger_bound"] is True
+
+
+def _corrupt_page(state):
+    path = state / "data" / "corrupt.db"
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute("CREATE TABLE memories (x TEXT)")
+        db.executemany("INSERT INTO memories VALUES (?)", [("synthetic " * 50,) for _ in range(200)])
+        page = db.execute("PRAGMA page_size").fetchone()[0]
+    with open(path, "r+b") as stream:  # a b-tree page, not page 1 (the schema still reads)
+        stream.seek(2 * page)
+        stream.write(b"\xff" * page)
+
+
+def _truncate_json(state):
+    (state / "data" / "notes.json").write_text('{"v": ')
+
+
+def _headerless_segment(state):
+    chroma = state / "data" / "memory_db"
+    chroma.mkdir()
+    with closing(sqlite3.connect(chroma / "chroma.sqlite3")) as db, db:
+        for table in ("collections", "segments", "migrations"):
+            db.execute(f"CREATE TABLE {table} (id TEXT)")
+    segment = chroma / "0f1e2d3c-0000-4000-8000-000000000000"
+    segment.mkdir()
+    (segment / "data_level0.bin").write_bytes(b"\0" * 64)
+    (segment / "length.bin").write_bytes(b"\0" * 8)
+
+
+@pytest.mark.parametrize("damage, failure", [
+    (_corrupt_page, "quick_check:data/corrupt.db"),
+    (_truncate_json, "json:data/notes.json"),
+    (_headerless_segment, "chroma_segment:data/memory_db/0f1e2d3c-0000-4000-8000-000000000000"),
+], ids=["quick_check", "json", "chroma_structure"])
+def test_a_damaged_store_after_a_crash_refuses_automatic_r_b(root, tmp_path, damage, failure):
+    """Q2-Q4: quick_check, JSON parse and Chroma structure each refuse with check_failed."""
+    state = root / "slots" / "s" / "state"
+    assert _serve(root, tmp_path, "crash", stop_when=None, seconds=0.1, name="a.txt").code == 68
+    damage(state)
+    refused = _serve(root, tmp_path, "clean", name="b.txt")
+    assert refused.code == 69 and "recovery R-b runtime_admission_recovery_check_failed" in refused.serve.events
+    before = _state_files(state)
+    report = launcher.adopt(root, confirm="", regressions=[], dry_run=True)["report"]
+    assert report["failures"] == [failure]
+    assert _state_files(state) == before
+    with pytest.raises(launcher.LauncherRefusal, match="runtime_admission_recovery_check_failed"):
+        launcher.adopt(root, confirm=launcher.adopt(root, confirm="", regressions=[], dry_run=True)["head_sha256"],
+                       regressions=[])

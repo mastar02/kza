@@ -128,6 +128,31 @@ def test_override_changes_only_working_directory(layout):
         release.service_override(original,layout.root/'wrong',selected)
 
 
+@pytest.mark.parametrize('rollback',[True,False],ids=['rollback','apply'])
+def test_retired_publication_refuses_once_the_managed_launcher_is_installed(layout,monkeypatch,rollback):
+    """U3b-0d review P7: release.conf sorts after managed.conf and would override the controller."""
+    override=layout.root.parent/'.config/systemd/user/kza-voice.service.d/release.conf.unmanaged'
+    override.parent.mkdir(parents=True)
+    override.write_bytes(b'[Service]\nEnvironment=PYTHONPATH=/home/kza/releases/current\n')
+    managed=override.parent/'managed.conf'
+    managed.write_bytes(b'[Service]\nType=notify\n')
+    original_path=Path
+    def mapped_path(value):
+        value=str(value)
+        if value.startswith('/home/kza/'):
+            return layout.root.parent/value.removeprefix('/home/kza/')
+        return original_path(value)
+    monkeypatch.setattr(release,'Path',mapped_path)
+    monkeypatch.setattr(release.os,'getuid',lambda:1000)
+    events=[]
+    monkeypatch.setattr(release,'_control',lambda action:events.append(action))
+    with pytest.raises(release.ReleaseError,match='managed_launcher_installed'):
+        release.publish(layout.bundle,rollback=rollback)
+    assert events==[] and not (override.parent/'release.conf').exists()
+    assert sorted(path.name for path in override.parent.iterdir())==['managed.conf','release.conf.unmanaged']
+    assert (layout.root/'current').resolve()==layout.previous
+
+
 @pytest.mark.parametrize('fail_postcheck',[False,True])
 def test_operator_publication_and_automatic_code_rollback_preserve_current_data(layout,monkeypatch,fail_postcheck):
     import dotenv
