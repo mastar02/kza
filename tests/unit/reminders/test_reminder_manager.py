@@ -1,5 +1,6 @@
 """Tests for ReminderManager — CRUD and cancellation logic."""
 import time
+from datetime import datetime
 from unittest.mock import MagicMock
 from tests.mocks.home_control import selected_actions
 import pytest
@@ -56,14 +57,34 @@ async def test_get_active(manager):
     active = await manager.get_active(user_id="u1")
     assert len(active) == 2
 
+def _manager_at(store, local_now: datetime) -> ReminderManager:
+    """Manager whose clock is frozen at a local wall-clock instant."""
+    return ReminderManager(store=store, config={}, clock=lambda: local_now.timestamp())
+
+
 @pytest.mark.asyncio
-async def test_get_today(manager):
-    now = time.time()
+async def test_get_today(store):
+    # "now + offset" is only "today" when the injected clock leaves room for
+    # the offset before local midnight; the wall clock gave no such guarantee.
+    now = datetime(2026, 11, 11, 12, 0).timestamp()
+    manager = _manager_at(store, datetime.fromtimestamp(now))
     await manager.create(user_id="u1", text="hoy", trigger_at=now + 100)
     await manager.create(user_id="u1", text="manana", trigger_at=now + 90000)
     today = await manager.get_today(user_id="u1")
     assert len(today) == 1
     assert today[0].text == "hoy"
+
+
+@pytest.mark.asyncio
+async def test_get_today_uses_the_injected_clock_at_the_day_boundary(store):
+    """Regression: the shard-a run reached get_today at 23:58:20 local."""
+    manager = _manager_at(store, datetime(2026, 11, 11, 23, 58, 20))
+    await manager.create(user_id="u1", text="antes", trigger_at=datetime(2026, 11, 11, 23, 59, 59).timestamp())
+    await manager.create(user_id="u1", text="medianoche", trigger_at=datetime(2026, 11, 12, 0, 0).timestamp())
+    await manager.create(user_id="u1", text="vencido", trigger_at=datetime(2026, 11, 10, 8, 0).timestamp())
+    assert [r.text for r in await manager.get_today(user_id="u1")] == ["vencido", "antes"]
+    after_midnight = _manager_at(store, datetime(2026, 11, 12, 0, 0, 1))
+    assert [r.text for r in await after_midnight.get_today(user_id="u1")] == ["vencido", "antes", "medianoche"]
 
 @pytest.mark.asyncio
 async def test_format_for_voice(manager):

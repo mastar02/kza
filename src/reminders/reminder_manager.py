@@ -1,5 +1,7 @@
 """ReminderManager — CRUD, fuzzy cancellation, and voice formatting."""
 import logging
+import time
+from collections.abc import Callable
 from datetime import datetime
 from difflib import SequenceMatcher
 
@@ -14,8 +16,19 @@ logger = logging.getLogger(__name__)
 class ReminderManager:
     """High-level reminder operations with fuzzy search and voice output."""
 
-    def __init__(self, store: ReminderStore, config: dict | None = None, *, home_actions: HomeActionService | None = None):
+    def __init__(self, store: ReminderStore, config: dict | None = None, *,
+                 home_actions: HomeActionService | None = None,
+                 clock: Callable[[], float] | None = None):
+        """Build the manager.
+
+        Args:
+            store: Durable reminder store.
+            config: Reminder section of the settings.
+            home_actions: Admission service for reminder home actions.
+            clock: Epoch-seconds clock; "today" is its local calendar day.
+        """
         self._store = store
+        self._clock = clock or time.time
         self._config = config or {}
         self.home_actions = home_actions if home_actions is not None else HomeActionService(None)
         self._tts_prefix = self._config.get("tts_prefix", "Recuerda")
@@ -82,7 +95,7 @@ class ReminderManager:
     async def get_today(self, user_id: str | None, *, shared_only: bool = False,
                         guard: AuthorityGuard | None = None) -> list[Reminder]:
         """Return eligible active jobs before the end of the current day."""
-        now = datetime.now()
+        now = datetime.fromtimestamp(self._clock())
         cutoff = now.replace(hour=23, minute=59, second=59, microsecond=999999).timestamp()
         active = await self._store.get_active_for_user(user_id, shared_only=shared_only, guard=guard)
         return [reminder for reminder in active if reminder.trigger_at <= cutoff]
