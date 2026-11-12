@@ -133,7 +133,15 @@ _PREFLIGHT_SOURCE = "\n".join([
     "runtime, state = Path(sys.argv[1]), Path(sys.argv[2]).resolve()",
     "serving = set(json.loads(sys.argv[3]))",
     "special = {('vectordb', 'path'), ('ambient', 'keep_audio', 'dir'), ('rooms', 'wake_word', 'capture_clips', 'dir')}",
-    "pathlike = re.compile(r'(^|_)(path|dir|file|model|root)$')",
+    "pathlike = re.compile(r'(^|_)(path|dir|file|model|root|savedir)$')",
+    # A1 (U3b-0e): Hugging Face hub ids at these exact keys are not paths. One
+    # slash, no leading '.' or '/', and not a local tree name; anything else
+    # with '/' is still a relative path.
+    "hub_keys = {('tts', 'kokoro', 'model'), ('embeddings', 'model'), ('speaker_id', 'model'), ('emotion', 'model'),",
+    "            ('training', 'lora', 'base_model'), ('training', 'nightly', 'base_model'),",
+    "            ('training', 'nightly', 'whisper_finetune', 'base_model'), ('code_index', 'embedder', 'model')}",
+    "hub_id = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+')",
+    "local_heads = {'models', 'logs', 'data', 'config', 'src', 'scripts', 'tools'}",
     "config = yaml.safe_load((state / 'config' / 'settings.yaml').read_text())",
     "problems = []",
     "def resolved(value):",
@@ -157,7 +165,9 @@ _PREFLIGHT_SOURCE = "\n".join([
     "            if not resolved(value).is_relative_to(state):",
     "                problems.append('foreign_serving_store:' + dotted)",
     "        elif pathlike.search(name) and '/' in value and not value.startswith('/'):",
-    "            if not resolved(value).is_relative_to(state):",
+    "            if prefix in hub_keys and hub_id.fullmatch(value) and value.split('/')[0] not in local_heads:",
+    "                pass",
+    "            elif not resolved(value).is_relative_to(state):",
     "                problems.append('relative_path:' + dotted)",
     "visit(config if isinstance(config, dict) else {}, ())",
     "sys.stdout.write(json.dumps({'problems': sorted(problems)}))",
