@@ -746,10 +746,16 @@ U3b-0d3: registro de borrados sin contenido (7 tipos) y resúmenes del estado en
 - K2: release.json declara que el sidecar es obligatorio.
 - K7: el presupuesto de parada cuenta 3 snapshots.
 
-La suite completa corre en 3 tandas: unit, integration y unit/tools.
+La suite completa corre en 3 tandas: unit, integration y unit/tools. `40aa05b` quedó verde; los 5 ensayos compilados con presupuesto de tiempo pasaron solos (`u3b/full-0d3-r2/RESULT.md`). Esos ensayos corren sin otro pytest en paralelo.
+
+U3b-0d: lanzador gestionado (`6288e15`, `55cdc42`, `a96780d`, `9cf0b1b`).
+- systemd arranca kza-voice a través del controlador; SIGTERM cierra con recibo; recuperación desde UNKNOWN (una por 24 h en crash, una por arranque tras reinicio).
+- Decisiones nuevas: L7 (componentes manuales distintos ⇒ siempre rechazar, aun con operador) y L8 (la recuperación por reinicio no consume el cupo de 24 h).
+- Revisión independiente: P1–P11 y P14 corregidos (`t040-t041/u3b-0d-fix-evidence.json`); P12/P13 documentados en DEPLOYMENT. 28/28 mutantes muertos.
+- Validación: `tests/unit/tools` 651 passed + 1 xfail; ensayos compilados del lanzador 34 passed, 1 skip opcional (`u3b/u3b-0d-import/`).
+- Antes de instalar: T-C8 y T-C10 en Linux, medir R-b en el server, aplicar la excepción sudo en la misma ventana que R1, y U3b-0e.
 
 Siguiente:
-- U3b-0d: lanzador gestionado.
 - U3b-0e: adopción.
 - U3b-0c: compactación.
 - F8.
