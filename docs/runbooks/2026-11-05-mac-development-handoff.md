@@ -723,8 +723,24 @@ Antes de prender la voz (4c):
 - verificar el codificador real en el servidor;
 - contar con el procedimiento de cambio de configuración, porque P0 mostró que editar `settings.yaml` se rechaza.
 
+Huecos de backend (`c343b94`):
+- El recibo de asignación incluye `deleted_dependent_ids`.
+- `whoami` devuelve `account_binding`, una marca opaca que no otorga acceso.
+
+Privacidad: hay copias que el borrado no alcanza. Está documentado en DEPLOYMENT (`04db45f`).
+
+Lanzador y compactación:
+- Diseños revisados: `managed-launcher-design-v3.json` y `owner-compaction-design-v5.json`.
+- Decisiones del usuario: `u3b_0c_*` y `u3b_0d_launcher`.
+- Orden previo a R1: 0d1 → 0d2 (bucle sin bloqueos) → 0d3 (registro de borrados) → 0d (lanzador) → 0e (adopción) → 0c (compactación). F8 va antes de la segunda release gestionada.
+
+`U3b-0d1`: contrato de parada y readiness. Antes de instalar 0d falta:
+- correrlo en Linux;
+- medir en el server el presupuesto de parada.
+
+La excepción sudo `zz-kza-stop-timeout.conf` la aplica el usuario. La causa de los 5 s es el `timeout.conf` del paquete systemd de Ubuntu.
+
 Siguiente:
-- Huecos de backend: ids en el recibo, persona en whoami.
 - Una ronda full nueva.
 
 Decisiones del usuario en `t040-t041/user-decisions-20261110.json` (`u3b_*`).
