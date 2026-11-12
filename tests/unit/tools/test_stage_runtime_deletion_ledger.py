@@ -22,6 +22,7 @@ from src.memory.deletion_ledger import (
     DELETION_LEDGER_TABLES, DeletionKind, append_deletion, initialize_deletion_ledger, row_sha256,
 )
 from src.memory.fact_ledger import FactLedger, MemoryReviewer
+from tests.mocks.runtime_tree import writable_runtime
 from tests.mocks.memory_sources import memory_source
 
 REPO = Path(__file__).resolve().parents[3]
@@ -475,7 +476,7 @@ def test_schema_one_child_is_sealed_only_for_a_slot_that_declares_no_record(admi
     deleting the sidecar cannot downgrade it to 'older'.
     """
     root, _state_root = _prepared(admission_archive, tmp_path)
-    release = root / "slots" / "candidate" / "runtime" / "release.json"
+    release = writable_runtime(root / "slots" / "candidate" / "runtime") / "release.json"  # an older slot's shape
     manifest = json.loads(release.read_text())
     for key in stage._RELEASE_INTEGER_KEYS:
         manifest.pop(key, None)

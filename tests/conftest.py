@@ -111,6 +111,26 @@ def pytest_configure(config):
     )
 
 
+def pytest_sessionfinish(session, exitstatus):
+    """Give the owner rwx on read-only directories left in this session's basetemp.
+
+    U3b-0e1: prepare_slot makes runtimes read-only (directories 0555), which
+    pytest's own rm_rf cannot remove. Restoring owner write here lets the
+    next session's basetemp rotation delete them. Links are not followed.
+    """
+    import os
+    import stat
+    factory = getattr(session.config, "_tmp_path_factory", None)
+    basetemp = getattr(factory, "_basetemp", None)
+    if basetemp is None or not Path(basetemp).is_dir():
+        return
+    for _directory, _names, _files, descriptor in os.fwalk(basetemp, follow_symlinks=False,
+                                                          onerror=lambda error: None):
+        mode = stat.S_IMODE(os.fstat(descriptor).st_mode)
+        if mode & stat.S_IRWXU != stat.S_IRWXU:
+            os.fchmod(descriptor, mode | stat.S_IRWXU)
+
+
 def pytest_collection_modifyitems(config, items):
     """Modify test collection"""
     # Skip GPU tests if torch.cuda is not available

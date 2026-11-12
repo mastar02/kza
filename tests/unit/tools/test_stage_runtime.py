@@ -15,6 +15,7 @@ import pytest
 
 from scripts.build_runtime import build_runtime
 from scripts.stage_runtime import activate_slot, prepare_slot
+from tests.mocks.runtime_tree import writable_runtime
 
 
 @pytest.fixture
@@ -608,6 +609,7 @@ def test_bad_candidate_does_not_replace_active_slot(archive, state, tmp_path):
     prepare_slot(archive, root, "old", state)
     activate_slot(root, "old")
     prepare_slot(archive, root, "broken", state)
+    writable_runtime(root / "slots" / "broken" / "runtime")  # owner-level tampering
     (root / "slots" / "broken" / "runtime" / "src" / "main.pyc").write_bytes(b"corrupt")
     with pytest.raises(ValueError, match="integrity"):
         activate_slot(root, "broken")
@@ -617,7 +619,7 @@ def test_bad_candidate_does_not_replace_active_slot(archive, state, tmp_path):
 def test_extra_sources_or_redirected_state_cannot_be_activated(archive, state, tmp_path):
     root = tmp_path / "staging"
     prepare_slot(archive, root, "candidate", state)
-    runtime = root / "slots" / "candidate" / "runtime"
+    runtime = writable_runtime(root / "slots" / "candidate" / "runtime")  # owner-level tampering
     (runtime / "src" / "main.py").write_text("raise RuntimeError('unexpected source')")
     with pytest.raises(ValueError, match="Unexpected"):
         activate_slot(root, "candidate")

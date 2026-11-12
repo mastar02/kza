@@ -22,6 +22,7 @@ import pytest
 from scripts import stage_runtime as stage
 from src.core import runtime_admission
 from src.core.owned_work import OwnedBlockingWork, current_native_execution
+from tests.mocks.runtime_tree import writable_runtime
 from tests.unit.tools.test_stage_runtime_admission import admission_archive, admission_root
 
 
@@ -44,14 +45,14 @@ def _registry(state: Path, target: dict) -> None:
 def artifact_admission(admission_root, admission_archive, monkeypatch, request):
     root = admission_root
     state = root / "slots/candidate/state"
-    runtime = root / "slots/candidate/runtime"
+    runtime = writable_runtime(root / "slots/candidate/runtime")  # scaffolding before any observation
     (state / ".env").write_text("UNIT_ARTIFACT_OBSERVATION=ordinary\n")
     (runtime / ".env").symlink_to("../state/.env")
     inspected = runtime
     if getattr(request, "param", "current") == "source":
         stage.prepare_slot(admission_archive, root, "source", state)
         source_state = root / "slots/source/state"
-        inspected = root / "slots/source/runtime"
+        inspected = writable_runtime(root / "slots/source/runtime")
         descriptor = {"path": str(source_state / "data/events.db"), "table": "events_policy_v1"}
         encoded = json.dumps(descriptor, sort_keys=True, separators=(",", ":"), allow_nan=False)
         target = {"id": hashlib.sha256(json.dumps(["events", 1, encoded]).encode()).hexdigest(),
