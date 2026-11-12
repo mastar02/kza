@@ -516,8 +516,12 @@ class HomeAssistantClient:
                 return False
         return True
 
-    async def _project_state(self, kind, raw, options, *, purpose):
-        """Serialize decode/reduction and publish the exact computed frame on-loop."""
+    async def _project_state(self, kind, raw, options, *, purpose, published=None):
+        """Serialize decode/reduction and publish the exact computed frame on-loop.
+
+        ``published`` runs synchronously with the frame replacement, so evidence
+        derived from that frame (channel health) is never observable apart from it.
+        """
         result = replacement = base = notices = callbacks = None
         try:
             async with self._state_projection_lock:
@@ -538,6 +542,8 @@ class HomeAssistantClient:
                     self._state_frame = replacement
                 if kind in ('initial', 'delta', 'rest') and self._entity_now() >= options['observed_at'] + STATE_OBSERVATION_TTL_S:
                     raise aiohttp.ClientConnectionError('ha_state_projection_expired')
+                if published is not None:
+                    published()
                 for identity, payloads in notices:
                     for callback, payload in zip(callbacks, payloads):
                         value = self._state_frame.entries.get(identity)
@@ -551,7 +557,7 @@ class HomeAssistantClient:
                             logger.debug('HA state callback failed: %s', type(error).__name__)
                 return result
         finally:
-            raw = options = result = replacement = base = notices = callbacks = None
+            raw = options = result = replacement = base = notices = callbacks = published = None
             identity = payloads = payload = value = None
 
     async def _decode_state_message(self, raw, *, deadline, state_generation=None):
@@ -2151,15 +2157,20 @@ class HomeAssistantClient:
                 if (not self._state_current(generation) or monotonic() >= deadline
                         or stream_generation != self._entity_stream_generation):
                     return
+                def subscribed(observed_at=observed_at):
+                    # Runs inside the frame publication: the projection task
+                    # finishes before this coroutine resumes, and readers in
+                    # between must not see recovered entities beside stale
+                    # startup health (AUTH_ERROR after a 401/403 warmup).
+                    self._record_success((time.perf_counter() - started) * 1000, channel='events',
+                        observed_at=observed_at)
+                    self._observe_channel('events', 'subscribed', HAConnectionState.CONNECTED)
+                    self._state_sync_baseline_serial += 1
                 await self._publish_entities_initial(first, stream_generation=stream_generation,
                     admitted_revision=admitted_revision, subscribe_id=subscribe_id,
-                    observed_at=observed_at, deadline=deadline)
+                    observed_at=observed_at, deadline=deadline, published=subscribed)
                 if not self._state_current(generation) or stream_generation != self._entity_stream_generation:
                     return
-                self._record_success((time.perf_counter() - started) * 1000, channel='events',
-                    observed_at=observed_at)
-                self._observe_channel('events', 'subscribed', HAConnectionState.CONNECTED)
-                self._state_sync_baseline_serial += 1
                 self._kick_required_calls_recovery()
             full_deadline = monotonic() + self._state_full_refresh_interval_s
             while (self._state_current(generation) and self._ws_events is ws
@@ -2201,14 +2212,15 @@ class HomeAssistantClient:
         return message['event']
 
     async def _publish_entities_initial(self, payload, *, stream_generation: int,
-            admitted_revision: int | None = None, subscribe_id=None, observed_at=None, deadline=None) -> None:
+            admitted_revision: int | None = None, subscribe_id=None, observed_at=None, deadline=None,
+            published=None) -> None:
         observed = self._entity_now() if observed_at is None else observed_at
         options = dict(transport_generation=self._transport_generation,
             state_generation=self._state_generation, stream_generation=stream_generation,
             admitted_revision=admitted_revision, subscribe_id=subscribe_id, require_running=True,
             observed_at=observed, deadline=monotonic() + STATE_OBSERVATION_TTL_S if deadline is None else deadline)
         await self._state_operation('events', self._project_state,
-            'initial', payload, options, purpose='events')
+            'initial', payload, options, purpose='events', published=published)
         self._state_last_full_refresh = observed
 
 

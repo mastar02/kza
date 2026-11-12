@@ -103,3 +103,41 @@ async def test_deferred_state_sync_recovers_through_same_client_and_existing_bac
         finally:
             await client.close()
         assert client._state_subscribe_task is None and client._session.closed
+
+
+@pytest.mark.parametrize('status',[403,503])
+async def test_recovered_entity_frame_is_never_visible_before_recovered_health(status):
+    """The initial entity frame and the channel success are one publication.
+
+    The subscriber resumes only after the projection task that published the
+    frame has finished, so any reader scheduled in between used to see a
+    current WS-sourced entity while health still reported the startup
+    rejection. Hold the subscriber right after publication and read there.
+    """
+    async with endpoint(status) as (url,state):
+        client = HomeAssistantClient(url,'synthetic-token')
+        published, release = asyncio.Event(), asyncio.Event()
+        operation = client._state_operation
+        async def held_after_initial(scope, function, *args, **kwargs):
+            result = await operation(scope, function, *args, **kwargs)
+            if args[:1] == ('initial',):
+                published.set()
+                await release.wait()
+            return result
+        client._state_operation = held_after_initial
+        try:
+            assert not await client.test_connection()
+            await client.start_state_sync()
+            async with asyncio.timeout(3):
+                while state['ws_attempts']<1:
+                    await asyncio.sleep(.001)
+            state['ready']=True
+            async with asyncio.timeout(8):
+                await published.wait()
+            assert client.get_entity_state_cached('light.synthetic') is not None
+            health = client.get_health_status()
+            assert health.state is HAConnectionState.CONNECTED
+            assert (health.events.phase, health.events.state) == ('subscribed', HAConnectionState.CONNECTED)
+        finally:
+            release.set()
+            await client.close()
