@@ -740,8 +740,19 @@ Lanzador y compactación:
 
 La excepción sudo `zz-kza-stop-timeout.conf` la aplica el usuario. La causa de los 5 s es el `timeout.conf` del paquete systemd de Ubuntu.
 
+`cc73f39` (U3b-0d2): el bucle principal queda sin bloqueos y el índice de comandos se reconstruye de forma segura (staging + puntero). El rollback conserva la colección legacy.
+
+U3b-0d3: registro de borrados sin contenido (7 tipos) y resúmenes del estado en `admission/receipt-states/`. Prerrequisitos para 0d:
+- K2: release.json declara que el sidecar es obligatorio.
+- K7: el presupuesto de parada cuenta 3 snapshots.
+
+La suite completa corre en 3 tandas: unit, integration y unit/tools.
+
 Siguiente:
-- Una ronda full nueva.
+- U3b-0d: lanzador gestionado.
+- U3b-0e: adopción.
+- U3b-0c: compactación.
+- F8.
 
 Decisiones del usuario en `t040-t041/user-decisions-20261110.json` (`u3b_*`).
 
