@@ -70,7 +70,7 @@ class Deployment:
     """A temporary /home/kza/releases: slot, compiled controller, rendered managed.conf, fake systemd."""
 
     def __init__(self, artifacts, tmp_path, *, archive="x", settings=rehearsal.SETTINGS, stop_grace=20.0,
-                 timeout_stop=60.0, manager_timeout_stop="5s"):
+                 timeout_stop=60.0, manager_timeout_stop="5s", install_refused=False):
         self.tmp = tmp_path
         self.artifacts = artifacts
         self.root, self.state = rehearsal.managed_root(artifacts["archives"][archive], tmp_path, settings=settings,
@@ -102,9 +102,20 @@ class Deployment:
                       "--template", str(TEMPLATE), "--python", sys.executable, "--stop-grace", f"{stop_grace:g}",
                       "--timeout-start", "120", "--timeout-stop", f"{timeout_stop:g}",
                       "--console-log", str(self.console), env=self.env)
-        assert result.returncode == 0, result.stderr
-        self.install = json.loads(result.stdout)
-        assert self.install["verification_mismatches"] == []
+        self.install_result = result
+        if install_refused:
+            # Review P2: the compiled install-launcher refuses what serve would refuse with 78.
+            # Render managed.conf as an earlier install would have, to rehearse serve's own gate.
+            assert result.returncode == 78, result.stderr
+            (self.unit_dir / "release.conf").rename(self.unit_dir / "release.conf.unmanaged")
+            (self.unit_dir / "managed.conf").write_text(launcher.render_managed_conf(
+                TEMPLATE.read_text(), self.root, launcher.LauncherSettings(
+                    python=sys.executable, stop_grace=stop_grace, timeout_start=120, timeout_stop=timeout_stop,
+                    watchdog_sec=0, console_log=str(self.console))))
+        else:
+            assert result.returncode == 0, result.stderr
+            self.install = json.loads(result.stdout)
+            assert self.install["verification_mismatches"] == []
         self.boot_id = tmp_path / "boot_id"
         self.boot_id.write_text("boot-1\n")
         self.phase_file = tmp_path / "phases.txt"
@@ -414,7 +425,9 @@ def test_tc7_reboot_with_the_zz_dropin_budget_closes_cleanly(artifacts, tmp_path
 
 def test_tc9_relative_model_path_is_refused_at_s3(artifacts, tmp_path, deployments):
     settings = "schema: t\nstt:\n  model: ./models/whisper-v3-turbo\nmemory:\n  db_path: ./data/memory.db\n"
-    deployment = _deploy(artifacts, tmp_path, deployments, settings=settings)
+    deployment = _deploy(artifacts, tmp_path, deployments, settings=settings, install_refused=True)
+    assert json.loads(deployment.install_result.stderr) == {
+        "refused": "runtime_admission_launcher_preflight", "problems": ["path:relative_path:stt.model"]}
     unit = deployment.supervise("clean")
     unit.start()
     unit.wait_inactive(60)
