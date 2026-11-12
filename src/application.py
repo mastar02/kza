@@ -20,6 +20,7 @@ from src.core.process_lifecycle import StopPhase, StopRequested
 if TYPE_CHECKING:
     from src.core.egress import CloudConsentGate
     from src.core.process_lifecycle import ProcessLifecycle, StopSignal
+    from src.monitoring.loop_lag import LoopLagProbe
     from src.core.state_configuration import ConfigurationChanges
     from src.dashboard.api import DashboardAPI
     from src.dashboard.authority import DashboardAuthority
@@ -267,6 +268,7 @@ class ApplicationGraph:
     configuration_changes: ConfigurationChanges | None = field(default=None, repr=False)
     consent_gate: CloudConsentGate | None = field(default=None, repr=False)
     lifecycle: ProcessLifecycle | None = field(default=None, repr=False)
+    loop_lag: LoopLagProbe | None = field(default=None, repr=False)
     _run_entered: bool = field(default=False, init=False, repr=False)
 
     @property
@@ -347,6 +349,8 @@ class ApplicationGraph:
                 return
             if stop is not None:
                 stop.enter(StopPhase.SERVICES)
+            if self.loop_lag is not None:
+                self.loop_lag.start()
             await self._start_services()
             if _stop_requested(stop, "dashboard"):
                 return
@@ -417,6 +421,8 @@ class ApplicationGraph:
                 stopping.push_async_callback(self.routine_scheduler.stop)
             if dashboard_task is not None:
                 stopping.push_async_callback(_stop_task, self.dashboard, dashboard_task)
+            if self.loop_lag is not None:
+                stopping.push_async_callback(self.loop_lag.stop)
 
 
 async def _stop_task(service: Any, task: asyncio.Task | None) -> None:

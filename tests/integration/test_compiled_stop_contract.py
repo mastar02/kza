@@ -284,6 +284,25 @@ def test_receipt_then_exit_without_joining_an_in_flight_executor_job(artifact, t
     assert elapsed < 30, elapsed
 
 
+@pytest.mark.parametrize("scenario", ["sync", "sync_encode"])
+def test_sigterm_during_a_command_sync_aborts_it_and_writes_the_receipt(artifact, tmp_path, scenario):
+    """U3b-0d2 S2: chroma.aclose (1 s bound) aborts the sync instead of timing out.
+
+    "sync": the cloud call is cancelled. "sync_encode": the owned worker (300
+    encodes of 100 ms) stops at its next phrase, so the close drains in time.
+    """
+    slot = Slot(artifact, tmp_path)
+    outcome = slot.run(scenario, lambda slot: slot.phase("syncing") is not None and "READY=1" in slot.notify)
+    elapsed = _assert_clean(slot, outcome, phase="ready", ready=True)
+    assert slot.phase("sync_ended") == "chroma_sync_aborted"
+    # The HTTP reasoner owner waits (unbounded) for its chroma borrower before
+    # chroma.aclose runs: an unaborted sync would stretch the stop by its
+    # remaining work (about 30 s of encodes) toward stop_grace.
+    print(f"stop seconds {scenario}: {elapsed:.2f}")
+    assert elapsed < 10, elapsed
+    assert "chroma_sync_still_running" not in outcome["log"]
+
+
 def test_hung_stop_never_writes_a_receipt(artifact, tmp_path):
     slot = Slot(artifact, tmp_path)
     outcome = slot.run("hung", _steady, timeout=40)

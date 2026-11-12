@@ -21,6 +21,8 @@ from tests.mocks.home_control import selected_actions
 
 from tests.mocks.responses import response_handler_mock
 from src.pipeline.command_processor import ProcessedCommand
+from src.core.task_outcome import PersistenceState, TaskStatus
+from src.vectordb.chroma_sync import CommandSyncError
 
 
 class TestVoicePipelineIntegration:
@@ -111,12 +113,14 @@ class TestVoicePipelineIntegration:
 
     @pytest.mark.asyncio
     async def test_process_sync_command(self, pipeline, sample_audio):
-        """Test processing a sync command"""
+        """An authorized sync is awaited and its count reaches the reply."""
         pipeline.command_processor.process_command = AsyncMock(return_value=ProcessedCommand(
             text="nexa sincroniza los comandos",
             timings={"stt": 40.0},
             success=True,
         ))
+        # Voice turns bind no account today; authorize explicitly to reach the sync.
+        pipeline.request_router._may_sync_commands = lambda user: True
 
         result = await pipeline.process_command(sample_audio)
 
@@ -124,6 +128,71 @@ class TestVoicePipelineIntegration:
         assert result["task_completed"] is True
         assert result["response_completed"] is False
         assert result["success"] is False
+        # U3b-0d2: the coroutine is awaited, and its count reaches the reply.
+        pipeline.request_router.chroma.sync_commands.assert_awaited_once()
+        assert result["response"] == "Listo, actualicé 100 comandos"
+
+    @pytest.mark.asyncio
+    async def test_unidentified_speaker_cannot_sync(self, pipeline, sample_audio):
+        """S1: without an identified ADULT the index is never touched."""
+        pipeline.command_processor.process_command = AsyncMock(return_value=ProcessedCommand(
+            text="nexa sincroniza los comandos", timings={"stt": 40.0}, success=True,
+        ))
+        pipeline.request_router._run_command_sync = AsyncMock()
+
+        result = await pipeline.process_command(sample_audio)
+
+        assert result["intent"] == "sync" and result["task_completed"] is False
+        assert result["response"] == "Solo un adulto identificado puede sincronizar los comandos."
+        pipeline.request_router.chroma.sync_commands.assert_not_awaited()
+        pipeline.request_router._run_command_sync.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_casual_update_phrase_does_not_sync(self, pipeline, sample_audio):
+        """S1: 'actualiza la lista de compras' is not a sync request."""
+        router = pipeline.request_router
+        router._may_sync_commands = lambda user: True
+        assert router._is_sync_command("nexa actualiza la lista de compras") is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error,status,persistence,response", [
+        (CommandSyncError("chroma_sync_failed"), TaskStatus.FAILED, PersistenceState.NOT_WRITTEN,
+         "No pude sincronizar los comandos; los anteriores siguen activos."),
+        (CommandSyncError("chroma_sync_reasoner_unavailable"), TaskStatus.FAILED,
+         PersistenceState.NOT_WRITTEN, "No pude sincronizar los comandos; los anteriores siguen activos."),
+        (CommandSyncError("chroma_sync_already_running"), TaskStatus.FAILED,
+         PersistenceState.NOT_WRITTEN, "Ya estoy sincronizando los comandos."),
+        (CommandSyncError("chroma_sync_aborted"), TaskStatus.CANCELLED, PersistenceState.NOT_WRITTEN,
+         "Cancelé la sincronización; los comandos anteriores siguen activos."),
+        (CommandSyncError("chroma_sync_switch_uncertain", index_kept=False), TaskStatus.FAILED,
+         PersistenceState.UNKNOWN, "No pude sincronizar los comandos"),
+        (RuntimeError("unexpected"), TaskStatus.FAILED, PersistenceState.UNKNOWN,
+         "No pude sincronizar los comandos"),
+    ])
+    async def test_failed_sync_command_is_reported_not_raised(
+            self, pipeline, sample_audio, error, status, persistence, response):
+        """S3: the reported persistence says whether the previous index was kept."""
+        router = pipeline.request_router
+        router._may_sync_commands = lambda user: True
+        router.chroma.sync_commands = AsyncMock(side_effect=error)
+        outcome = {}
+        original = router._run_command_sync
+
+        async def capture(result):
+            await original(result)
+            outcome.update(result)
+        router._run_command_sync = capture
+        pipeline.command_processor.process_command = AsyncMock(return_value=ProcessedCommand(
+            text="nexa sincroniza los comandos", timings={"stt": 40.0}, success=True,
+        ))
+
+        result = await pipeline.process_command(sample_audio)
+
+        assert result["intent"] == "sync"
+        assert result["task_completed"] is False
+        assert result["response"] == response
+        assert outcome["_task_outcome"].status is status
+        assert outcome["_task_outcome"].persistence is persistence
 
     @pytest.mark.asyncio
     async def test_process_routine_command(self, pipeline, sample_audio):
@@ -235,14 +304,21 @@ class TestSyncCommandDetection:
 
     @pytest.mark.parametrize("command", [
         "sincroniza los comandos",
-        "actualiza la base de datos",
-        "refresca todo",
-        "sync",
-        "aprende los comandos"
+        "sincronizá los comandos",
+        "actualizá los comandos",
+        "nexa actualizar los comandos",
     ])
     def test_sync_command_detection(self, router, command):
-        """Test various sync command phrases"""
+        """Test the exact sync phrases"""
         assert router._is_sync_command(command) is True
+
+    @pytest.mark.parametrize("command", [
+        "actualiza la base de datos", "refresca todo", "sync", "aprende los comandos",
+        "actualiza la lista de compras",
+    ])
+    def test_loose_phrases_no_longer_sync(self, router, command):
+        """S1: substrings that used to trigger a rebuild do not"""
+        assert router._is_sync_command(command) is False
 
     @pytest.mark.parametrize("command", [
         "prende la luz",

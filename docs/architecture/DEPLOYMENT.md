@@ -329,6 +329,43 @@ descompilación. Requiere el intérprete y las dependencias del entorno de
 ejecución. Ver [py_compile](https://docs.python.org/3.13/library/py_compile.html)
 y [SourcelessFileLoader](https://docs.python.org/3.13/library/importlib.html#importlib.machinery.SourcelessFileLoader).
 
+### Índice de comandos: puntero, colección legacy y rollback (U3b-0d2)
+
+Desde U3b-0d2, la sincronización de comandos del runtime construye el índice
+en una colección nueva (`home_assistant_commands__<fecha><hex>`) y la activa con
+una sola escritura en el puntero: la metadata `active` de la colección
+`home_assistant_commands__pointer`. Hasta que no está completa, las búsquedas
+siguen usando el índice anterior. Si falla, o se cierra a mitad, la colección
+nueva se descarta y queda el índice anterior.
+
+- **Rollback a código anterior a 0d2.** Ese código abre sólo
+  `home_assistant_commands` e ignora el puntero. Por eso ninguna
+  sincronización borra nunca esa colección legacy: tras un rollback se sirve
+  tal como estaba antes de la primera sincronización 0d2 (o tras la última
+  corrida de `scripts/sync_ha_to_chroma.py` anterior a 0d2). Si para entonces
+  quedó vieja, después del rollback corré `scripts/sync_ha_to_chroma.py` con el
+  código restaurado, que escribe esa misma colección. La colección legacy se
+  puede retirar recién en la release que deje de admitir rollback a antes de
+  0d2.
+- **Herramientas offline.** `scripts/sync_ha_to_chroma.py` (la vía real de
+  sincronización hoy), `tools/clean_contaminated_chroma_docs.py` y
+  `scripts/test_voice_command.py` resuelven la colección activa con
+  `src/vectordb/command_index.py`, el mismo resolvedor que usa el runtime.
+  `--wipe` borra y recrea la colección activa con el mismo nombre, así que el
+  puntero sigue nombrándola.
+- **Puntero a una colección que falta.** Nunca se crea vacía en silencio: el
+  runtime registra el error, sirve la colección legacy y `/api/health` muestra
+  `command_index` como `degraded` hasta la próxima sincronización correcta.
+- **Escritura del puntero con resultado incierto.** No se sabe si el puntero
+  quedó en la colección vieja o en la nueva. Por eso se conservan las dos en
+  disco, y el proceso rechaza más sincronizaciones hasta reiniciarse
+  (`chroma_sync_restart_required`; `command_index` aparece como `degraded`). Al
+  reiniciar se abre la que nombre el puntero.
+- **Restos en disco aceptados.** Si el proceso muere entre la escritura del
+  puntero y el borrado de la colección anterior, esa colección anterior queda
+  en disco. Una colección `__<fecha>` sobrante la limpia la próxima
+  sincronización. La legacy se conserva siempre, por el rollback.
+
 ## Limpieza del checkout anterior — pendiente
 
 La inspección del 2026-10-25 encontró:

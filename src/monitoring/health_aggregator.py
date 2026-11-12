@@ -72,9 +72,13 @@ class HealthAggregator:
         reminder_scheduler=None,
         audio_health_provider=None,
         health_clock=None,
+        loop_lag_provider=None,
+        command_index_provider=None,
     ):
         self._health_clock = health_clock or time.time
         self._audio_health_provider = audio_health_provider
+        self._loop_lag_provider = loop_lag_provider
+        self._command_index_provider = command_index_provider
         self._ha_client = ha_client
         self._latency_monitor = latency_monitor
         self._priority_queue = priority_queue
@@ -363,6 +367,22 @@ class HealthAggregator:
         except Exception as exc:
             return SubsystemHealth(name="audio_capture", status=OverallStatus.UNHEALTHY, detail=f"Audio health unavailable: {type(exc).__name__}")
 
+    def _check_command_index(self) -> SubsystemHealth:
+        """Command index (U3b-0d2 R3): degraded when the pointer names a missing
+        collection or a sync left the pointer uncertain."""
+        try:
+            state = self._command_index_provider() or {}
+        except Exception as exc:
+            return SubsystemHealth(name="command_index", status=OverallStatus.UNHEALTHY,
+                                   detail=f"Command index state unavailable: {type(exc).__name__}")
+        problems = [value for value in (state.get("degraded"), state.get("sync_latched")) if value]
+        if problems:
+            return SubsystemHealth(name="command_index", status=OverallStatus.DEGRADED,
+                                   detail="Command index degraded: " + ", ".join(problems),
+                                   extra={"degraded": state.get("degraded"),
+                                          "sync_latched": state.get("sync_latched")})
+        return SubsystemHealth(name="command_index", status=OverallStatus.HEALTHY, detail="Command index active")
+
     def get_system_health(self) -> SystemHealth:
         """Collect health from all subsystems and compute overall status.
 
@@ -378,6 +398,8 @@ class HealthAggregator:
 
         if self._audio_health_provider is not None:
             subsystems.append(self._check_audio())
+        if self._command_index_provider is not None:
+            subsystems.append(self._check_command_index())
 
         # Overall status: worst of all subsystems
         statuses = [s.status for s in subsystems]
@@ -425,5 +447,9 @@ class HealthAggregator:
         if self._priority_queue is not None:
             q_stats = self._priority_queue.get_stats()
             metrics["queue_depth"] = q_stats.get("queue_size", 0)
+
+        if self._loop_lag_provider is not None:
+            # Worst event-loop block (U3b-0d2), content-free.
+            metrics["loop_lag"] = self._loop_lag_provider()
 
         return metrics

@@ -38,9 +38,9 @@ class TestChromaSyncUnit:
         assert "routines" in stats
         assert stats["commands_phrases"] >= 0
 
-    def test_sync_commands(self, mock_chroma):
+    async def test_sync_commands(self, mock_chroma):
         """Test syncing commands"""
-        count = mock_chroma.sync_commands(MagicMock(), MagicMock())
+        count = await mock_chroma.sync_commands(MagicMock(), MagicMock())
 
         assert count >= 0
 

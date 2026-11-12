@@ -199,7 +199,8 @@ def mock_chroma():
         "description": "Prendiendo luz del living",
         "similarity": 0.95
     })
-    chroma.sync_commands = MagicMock(return_value=100)
+    # U3b-0d2: sync_commands is a coroutine (its blocking work runs off the loop).
+    chroma.sync_commands = AsyncMock(return_value=100)
     return chroma
 
 

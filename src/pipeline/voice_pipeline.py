@@ -95,8 +95,8 @@ class VoicePipeline:
 
         self.lifecycle.stop.checkpoint("vector_index")
         if self.chroma:
-            self.chroma.initialize()
-            stats = self.chroma.get_stats()
+            await asyncio.to_thread(self.chroma.initialize)  # no-op after warmup; else SDK + BGE-M3 load
+            stats = await asyncio.to_thread(self.chroma.get_stats)
             logger.info(f"Vector DB: {stats.get('commands_phrases', 0)} phrases")
 
         self.lifecycle.stop.checkpoint("memory")

@@ -182,6 +182,10 @@ class ManualCommandLeaves(ZoneCaptureLeaves):
                 leaf.checkpoint('chroma-construct')
 
             def get_collection(self, name):
+                if name == 'home_assistant_commands__pointer':
+                    # No pointer: the base collection is active (src/vectordb/command_index.py).
+                    from chromadb.errors import NotFoundError
+                    raise NotFoundError(f'Collection [{name}] does not exist')
                 assert name == 'home_assistant_commands'
                 return Collection(self)
 

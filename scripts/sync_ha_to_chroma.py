@@ -574,16 +574,19 @@ def main():
     chroma_path = str(ROOT / "data/chroma_db")
     logger.info(f"Abriendo Chroma en {chroma_path}")
     client = chromadb.PersistentClient(path=chroma_path, settings=Settings(anonymized_telemetry=False))
+    # U3b-0d2 R5: write the collection the runtime reads, resolved through the
+    # command-index pointer (the runtime's staging syncs move it off the base name).
+    from src.vectordb.command_index import COSINE, open_active_commands
+    collection, active = open_active_commands(client)
+    if active.degraded:
+        logger.error(f"Índice de comandos degradado ({active.degraded}); se escribe {active.name}, "
+                     "que es la que lee el runtime en este estado")
+    logger.info(f"Colección activa: {active.name}")
     if args.wipe:
-        try:
-            client.delete_collection("home_assistant_commands")
-            logger.info("Colección home_assistant_commands borrada (--wipe)")
-        except Exception as e:
-            logger.debug(f"delete_collection: {e}")
-    collection = client.get_or_create_collection(
-        name="home_assistant_commands",
-        metadata={"hnsw:space": "cosine"},
-    )
+        # Same name, so the pointer (or the base fallback) keeps naming it.
+        client.delete_collection(active.name)
+        collection = client.create_collection(name=active.name, metadata=COSINE)
+        logger.info(f"Colección {active.name} borrada y recreada (--wipe)")
     existing = collection.get(include=["metadatas"])
     existing_keys = {m.get("cache_key") for m in (existing.get("metadatas") or []) if m.get("cache_key")}
     logger.info(f"Cache keys ya indexados: {len(existing_keys)}")

@@ -65,6 +65,16 @@ class Client:
         self.collections.append(collection)
         return collection
 
+    def get_collection(self, **kwargs):
+        # The command-index resolver opens pointer targets without creating them.
+        collection = Collection(self.sdk.get_collection(embedding_function=None, **kwargs))
+        self.collections.append(collection)
+        return collection
+
+    def named(self, name):
+        # Opened collections by name: the command-index pointer opens first (U3b-0d2 S1).
+        return next(collection for collection in self.collections if collection.sdk.name == name)
+
     def list_collections(self):
         return self.sdk.list_collections()
 
@@ -128,7 +138,7 @@ async def test_initialization_is_idempotent_and_close_preserves_persisted_index(
 async def test_cancelled_async_search_retains_real_query_before_sdk_close(graph):
     owner, clients, _ = graph
     await seed(owner)
-    query = clients[0].collections[0]
+    query = clients[0].named('home_assistant_commands')
     query.release.clear()
     caller = asyncio.create_task(owner.asearch_command('Synthetic query'))
     await until(query.entered.is_set)
@@ -184,7 +194,7 @@ async def test_cancelled_sync_routine_write_keeps_encoder_and_client_until_actua
     finally:
         release.set()
     await closing
-    assert clients[0].collections[1].sdk is not None and clients[0].sdk._closed
+    assert clients[0].named('home_assistant_routines').sdk is not None and clients[0].sdk._closed
 
 
 async def test_encoder_initialization_failure_closes_partial_client_once_with_safe_error(graph, monkeypatch):
@@ -317,6 +327,8 @@ class Client:
     def __init__(self,sdk):self.sdk=sdk
     def get_or_create_collection(self,**kwargs):
         return self.sdk.get_or_create_collection(embedding_function=None,**kwargs)
+    def get_collection(self,**kwargs):
+        return self.sdk.get_collection(embedding_function=None,**kwargs)
     def close(self):
         self.calls+=1
         self.sdk.close()

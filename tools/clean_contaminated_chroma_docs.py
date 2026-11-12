@@ -27,6 +27,11 @@ import re
 import sys
 import unicodedata
 from collections import defaultdict
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.vectordb.command_index import open_active_commands  # noqa: E402
 
 
 # Aliases por area conocidos. Mantener sincronizado con
@@ -98,8 +103,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--collection",
-        default="home_assistant_commands",
-        help="Nombre de la collection",
+        default=None,
+        help="Nombre de la collection (por defecto, la activa según el puntero del índice)",
     )
     parser.add_argument(
         "--apply",
@@ -116,6 +121,13 @@ def main() -> int:
         return 1
 
     client = chromadb.PersistentClient(path=args.chroma_path, settings=Settings(anonymized_telemetry=False))
+    if args.collection is None:
+        # U3b-0d2 R5: the collection the runtime reads, resolved through the pointer.
+        _, active = open_active_commands(client, create_base=False)
+        if active.degraded:
+            print(f"AVISO: índice degradado ({active.degraded}); se usa {active.name}.")
+        args.collection = active.name
+    print(f"Colección: {args.collection}")
     contaminated = find_contaminated(client, args.collection)
 
     if not contaminated:

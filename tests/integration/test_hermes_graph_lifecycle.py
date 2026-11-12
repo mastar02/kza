@@ -79,6 +79,13 @@ def _child(base: Path, case: str):
         def get_or_create_collection(self, name, **kwargs):
             return self.collections.setdefault(name, Collection())
 
+        def get_collection(self, name, **kwargs):
+            # The command-index resolver opens a pointer target without creating it.
+            if name not in self.collections:
+                from chromadb.errors import NotFoundError
+                raise NotFoundError(f"Collection [{name}] does not exist")
+            return self.collections[name]
+
         def close(self):
             pass  # Synthetic SDK leaf, not invented model disposal.
 

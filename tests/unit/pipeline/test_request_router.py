@@ -440,23 +440,60 @@ class TestFeedbackDetection:
 
 
 class TestSyncCommandDetection:
-    """Test sync command detection."""
+    """Only the exact sync phrases rebuild the command index (U3b-0d2 S1)."""
 
     @pytest.mark.parametrize("text", [
-        "sincroniza",
-        "sincronizar comandos",
-        "actualiza los comandos",
-        "sync",
+        "sincroniza los comandos",
+        "Sincronizá los comandos.",
+        "nexa, actualizá los comandos",
+        "actualizar los comandos",
+        "sincronizar los comandos",
     ])
     def test_sync_command_detection(self, text):
         """Sync phrases are detected correctly."""
         router = _build_router()
         assert router._is_sync_command(text) is True
 
-    def test_non_sync_command(self):
-        """Non-sync text is not detected."""
+    @pytest.mark.parametrize("text", [
+        "enciende la luz", "sincroniza", "sync", "update", "refresca todo",
+        "actualiza la lista de compras", "actualiza la base de datos",
+        "actualiza los comandos de la tele", "aprende los comandos", "",
+    ])
+    def test_non_sync_command(self, text):
+        """Substrings such as 'actualiza' or 'sync' no longer trigger a sync."""
         router = _build_router()
-        assert router._is_sync_command("enciende la luz") is False
+        assert router._is_sync_command(text) is False
+
+
+class TestSyncCommandPermission:
+    """The voice sync enforces the ADULT 'sync_commands' action permission."""
+
+    @staticmethod
+    def _user(level):
+        from src.users.user_manager import PermissionLevel, User
+        return User(user_id=f"u_{level.name.lower()}", name=level.name.title(),
+                    permission_level=PermissionLevel[level.name])
+
+    @pytest.mark.parametrize("level,allowed", [
+        ("GUEST", False), ("CHILD", False), ("TEEN", False), ("ADULT", True), ("ADMIN", True),
+    ])
+    def test_permission_matrix(self, level, allowed, tmp_path):
+        from src.users.user_manager import PermissionLevel, UserManager
+        router = _build_router()
+        router.user_manager = UserManager(data_path=str(tmp_path / "users.json"))
+        assert router._may_sync_commands(self._user(PermissionLevel[level])) is allowed
+
+    def test_unidentified_speaker_is_refused(self, tmp_path):
+        from src.users.user_manager import UserManager
+        router = _build_router()
+        router.user_manager = UserManager(data_path=str(tmp_path / "users.json"))
+        assert router._may_sync_commands(None) is False
+
+    def test_without_a_user_manager_nobody_may_sync(self):
+        from src.users.user_manager import PermissionLevel
+        router = _build_router()
+        router.user_manager = None
+        assert router._may_sync_commands(self._user(PermissionLevel.ADMIN)) is False
 
 
 class TestEnrollmentCommandDetection:

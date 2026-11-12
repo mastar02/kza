@@ -768,6 +768,14 @@ monitoring:
   enabled: true
   db_path: "./data/latency.db"
   alert_on_high_latency: true
+  # U3b-0d2: event-loop lag probe. Logs the worst loop block per window and
+  # publishes it in /api/metrics (loop_lag). Input for sizing the future
+  # systemd watchdog; it never restarts anything itself.
+  loop_lag:
+    enabled: true
+    interval_s: 0.1          # sampling period (resolution of the measurement)
+    report_interval_s: 3600  # one log line with the window maximum per hour
+    warn_ms: 200             # WARNING for each block at least this long
 
 # Warmup de modelos al startup. Elimina cold-start de ~600ms en el primer
 # comando post-restart ejecutando una inferencia dummy por modelo al boot.

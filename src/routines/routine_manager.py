@@ -3,6 +3,7 @@ Routine Manager Module
 Creación y gestión de rutinas/automatizaciones por voz
 """
 
+import asyncio
 import json
 import logging
 import uuid
@@ -173,20 +174,24 @@ class RoutineManager:
         """Manejar creación de rutina"""
         result["handled"] = True
         
+        if self.llm is None:
+            result["response"] = "No puedo crear rutinas por voz sin el modelo de lenguaje."
+            return result
+
         logger.info("Extrayendo rutina con LLM...")
-        
-        # Obtener entidades disponibles
-        entities = self.ha_client.get_domotics_entities()
-        
-        # Extraer con LLM
-        routine_data = self._extract_routine_with_llm(text, entities)
+
+        # Obtener entidades disponibles (lectura async de HA)
+        entities = await self.ha_client.get_domotics_entities()
+
+        # Extraer con LLM: cliente síncrono, fuera del event loop (U3b-0d2)
+        routine_data = await asyncio.to_thread(self._extract_routine_with_llm, text, entities)
         
         if not routine_data:
             result["response"] = "No pude entender la rutina. ¿Puedes reformularla?"
             return result
         
-        # Validar entidades
-        is_valid, errors = self._validate_entities(routine_data, entities)
+        # Validar entidades (búsqueda vectorial síncrona, fuera del loop)
+        is_valid, errors = await asyncio.to_thread(self._validate_entities, routine_data, entities)
         
         if not is_valid:
             result["response"] = f"Hay problemas: {', '.join(errors)}. ¿Puedes ser más específico?"
@@ -220,7 +225,7 @@ class RoutineManager:
         """Listar rutinas"""
         result["handled"] = True
         
-        routines = self.chroma.list_routines()
+        routines = await asyncio.to_thread(self.chroma.list_routines)
         
         if routines:
             names = [r["name"] for r in routines]

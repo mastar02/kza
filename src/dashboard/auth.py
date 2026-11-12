@@ -147,6 +147,10 @@ def _route_permissions(request: HTTPConnection) -> frozenset[str]:
         return frozenset({DashboardPermission.ADMIN_MANAGE, DashboardPermission.AUTH_MANAGE})
     if path == "/api/home/microphones":
         return frozenset({DashboardPermission.DIAGNOSTICS_READ})
+    # U3b-0d2 S7: operational metrics (latency, loop lag, uptime) are diagnosis.
+    # Explicit so a later default change cannot open them; writes stay admin.
+    if path == "/api/metrics":
+        return frozenset({DashboardPermission.DIAGNOSTICS_READ if read else DashboardPermission.ADMIN_MANAGE})
     if path.startswith("/api/home/"):
         return frozenset({DashboardPermission.HOME_READ if read else DashboardPermission.HOME_CONTROL})
     if not read and path.startswith("/api/entities/") and path.endswith("/call") and path.count("/") == 4:

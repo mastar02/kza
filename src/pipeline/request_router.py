@@ -14,6 +14,7 @@ from contextvars import ContextVar
 import logging
 import threading
 import time
+import unicodedata
 from dataclasses import asdict
 
 import numpy as np
@@ -1393,15 +1394,16 @@ class RequestRouter:
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
                 return result
 
-        # 6. Check sync command
+        # 6. Check sync command (exact phrases; ADULT 'sync_commands' permission)
         if self._is_sync_command(text):
             result["intent"] = "sync"
-            await self._speak_response("Sincronizando comandos...")
-            count = self.chroma.sync_commands(self.ha, self.llm)
-            result["response"] = f"Listo, actualicé {count} comandos"
-            result["success"] = True
-            result["_task_outcome"] = TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
-                effect=EffectState.OBSERVED, observation_scope="software_state")
+            if not self._may_sync_commands(user):
+                logger.info("[Sync] command sync refused: no identified user with sync_commands")
+                result["response"] = "Solo un adulto identificado puede sincronizar los comandos."
+                result["_task_outcome"] = TaskOutcome(TaskStatus.FAILED, persistence=PersistenceState.NOT_WRITTEN)
+            else:
+                await self._speak_response("Sincronizando comandos...")
+                await self._run_command_sync(result)
             await self._speak_response(result["response"])
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
@@ -1843,14 +1845,56 @@ class RequestRouter:
         finally:
             text = correction = None
 
+    # Whole-utterance matches only (accents and punctuation ignored): a phrase
+    # that merely contains "actualiza" or "sync" never rebuilds the index.
+    SYNC_PHRASES = frozenset({
+        "sincroniza los comandos", "sincronizar los comandos",
+        "actualiza los comandos", "actualizar los comandos",
+    })
+
     def _is_sync_command(self, text: str) -> bool:
-        """Detect sync/update command."""
-        sync_phrases = [
-            "sincroniza", "sincronizar", "actualiza", "actualizar",
-            "refresca", "refrescar", "sync", "update",
-            "aprende los comandos", "actualiza los comandos"
-        ]
-        return any(phrase in text.lower() for phrase in sync_phrases)
+        """Detect the explicit command-index sync request."""
+        decomposed = unicodedata.normalize("NFKD", (text or "").lower())
+        plain = "".join(c for c in decomposed if not unicodedata.combining(c))
+        words = "".join(c if c.isalnum() else " " for c in plain).split()
+        if words[:1] == ["nexa"]:
+            words = words[1:]
+        return " ".join(words) in self.SYNC_PHRASES
+
+    def _may_sync_commands(self, user) -> bool:
+        """The sync_commands action permission (ADULT) for an identified user."""
+        if user is None or self.user_manager is None:
+            return False
+        return self.user_manager.check_action_permission(user, "sync_commands").allowed
+
+    async def _run_command_sync(self, result: dict) -> None:
+        """Run the guarded index rebuild and record what it left persisted."""
+        try:
+            # U3b-0d2: HA reads and LLM calls await on the loop; BGE-M3 and the
+            # Chroma staging writes run in ChromaSync's owned worker thread.
+            count = await self.chroma.sync_commands(self.ha, self.llm)
+        except Exception as error:
+            code = getattr(error, "code", type(error).__name__)
+            logger.warning("[Sync] command sync failed: %s", code)
+            # A sync switches the index only when complete: on failure the
+            # previous index is kept, unless the switch itself was uncertain.
+            kept = getattr(error, "index_kept", False)
+            persistence = PersistenceState.NOT_WRITTEN if kept else PersistenceState.UNKNOWN
+            if code == "chroma_sync_already_running":
+                result["response"] = "Ya estoy sincronizando los comandos."
+            elif code in ("chroma_sync_aborted", "chroma_sync_closed"):
+                result["response"] = "Cancelé la sincronización; los comandos anteriores siguen activos."
+                result["_task_outcome"] = TaskOutcome(TaskStatus.CANCELLED, persistence=persistence)
+                return
+            else:
+                result["response"] = ("No pude sincronizar los comandos; los anteriores siguen activos."
+                                      if kept else "No pude sincronizar los comandos")
+            result["_task_outcome"] = TaskOutcome(TaskStatus.FAILED, persistence=persistence)
+        else:
+            result["response"] = f"Listo, actualicé {count} comandos"
+            result["success"] = True
+            result["_task_outcome"] = TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
+                effect=EffectState.OBSERVED, observation_scope="software_state")
 
     def _is_enrollment_command(self, text: str) -> bool:
         """Detect voice enrollment command."""

@@ -67,6 +67,7 @@ from src.users.voice_attributor import build_voice_attribution
 from src.users.voice_enrollment import VoiceEnrollment
 from src.users.emotion_detector import EmotionDetector
 from src.monitoring.latency_monitor import LatencyMonitor
+from src.monitoring.loop_lag import LoopLagConfig, LoopLagProbe
 from src.analytics.services import build_event_logger
 from src.analytics.erasure import build_event_erasure
 from src.obs.diagnostic_erasure import build_diagnostic_services
@@ -933,6 +934,9 @@ async def build_application(
             alert_callback=on_latency_alert
         )
         logger.info("Latency monitor habilitado")
+
+    # U3b-0d2: worst event-loop block, for the later watchdog sizing.
+    loop_lag = LoopLagProbe(LoopLagConfig.from_config(monitoring_config.get("loop_lag")))
 
     # Smart Automations - Event Logger y Suggestion Engine
     analytics_config = config.get("analytics", {})
@@ -1967,6 +1971,10 @@ async def build_application(
             priority_queue=getattr(orchestrator, "_queue", None) if orchestrator else None,
             reminder_scheduler=reminder_scheduler,
             audio_health_provider=multi_room_loop.get_audio_health if multi_room_loop else None,
+            loop_lag_provider=loop_lag.snapshot,
+            # Only an index type that defines it (test doubles report nothing).
+            command_index_provider=(chroma.index_health
+                                    if callable(getattr(type(chroma), "index_health", None)) else None),
         )
 
         dashboard = DashboardAPI(
@@ -2106,6 +2114,7 @@ async def build_application(
         hermes_reasoners=hermes_reasoners,
         erasure_services=erasure_services,
         lifecycle=lifecycle,
+        loop_lag=loop_lag,
     )
     from src.memory.producer_erasure import ProducerCoverage, build_producer_erasure
 

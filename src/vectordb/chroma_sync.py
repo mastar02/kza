@@ -7,10 +7,10 @@ import asyncio
 import json
 import logging
 import re
+import secrets
 import time
 from contextlib import contextmanager
 from contextvars import Context
-from datetime import datetime
 from functools import wraps
 import threading
 
@@ -19,6 +19,7 @@ from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 
 from src.core.owned_work import ClosePhase, OwnedBlockingWork, WorkCloseTimeout
+from src.vectordb.command_index import COSINE, open_active_commands, pointer_name, pointer_target
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,22 @@ def _owned_operation(function):
         with self._operation():
             return function(self, *args, **kwargs)
     return invoke
+
+
+class CommandSyncError(RuntimeError):
+    """A command sync that did not switch the index.
+
+    Args:
+        code: Stable error code (also the message).
+        index_kept: True when the active index is provably the previous one
+            (every failure before the pointer switch); False when the switch
+            itself failed and the persisted pointer is uncertain.
+    """
+
+    def __init__(self, code: str, *, index_kept: bool = True) -> None:
+        super().__init__(code)
+        self.code = code
+        self.index_kept = index_kept
 
 
 class _CollectionView:
@@ -125,9 +142,21 @@ class ChromaSync:
 
         self._client = None
         self._commands_collection = None
+        self._pointer_collection = None
         self._routines_collection = None
         self._embedder = None
         self._ready = False
+        # Command sync (S1/S2): single flight, abort on close, cancellable LLM call.
+        self._sync_running = False
+        self._sync_abort = threading.Event()
+        # R2: held by the owned worker itself, so a cancelled caller cannot let a
+        # second sync's worker run beside it.
+        self._index_lock = threading.Lock()
+        # R1: after an uncertain pointer write no further sync runs in this process.
+        self._sync_latched: str | None = None
+        # R3: set when the pointer names a missing collection (health reports it).
+        self._index_degraded: str | None = None
+        self._sync_call: asyncio.Task | None = None
         self._admission_closed = False
         self._active = 0
         self._condition = threading.Condition()
@@ -196,11 +225,24 @@ class ChromaSync:
     def _construct(self) -> None:
         self._client = chromadb.PersistentClient(path=self.chroma_path,
             settings=Settings(anonymized_telemetry=False))
-        self._commands_collection = self._client.get_or_create_collection(
-            name=self.commands_collection_name, metadata={"hnsw:space": "cosine"})
+        # The active command collection is named by a pointer record, so a sync
+        # can build a complete staging collection and switch to it in one write.
+        # A pointer target is opened, never created (src/vectordb/command_index.py).
+        self._commands_collection, active = open_active_commands(self._client, self.commands_collection_name)
+        self._index_degraded = active.degraded
+        self._pointer_collection = self._client.get_or_create_collection(name=self._pointer_name)
         self._routines_collection = self._client.get_or_create_collection(
             name=self.routines_collection_name, metadata={"hnsw:space": "cosine"})
         self._embedder = SentenceTransformer(self.embedder_model, device=self.embedder_device)
+
+    @property
+    def _pointer_name(self) -> str:
+        return pointer_name(self.commands_collection_name)
+
+    def index_health(self) -> dict:
+        """Content-free command-index state for the health aggregator."""
+        return {"degraded": self._index_degraded, "sync_latched": self._sync_latched,
+                "ready": self._ready}
 
     @property
     def commands(self):
@@ -230,6 +272,7 @@ class ChromaSync:
                 raise RuntimeError('chroma_sync_sdk_close_failed') from None
             self._client_closed = True
         self._client = self._commands_collection = self._routines_collection = self._embedder = None
+        self._pointer_collection = None
         self._ready = False
 
     def close(self) -> None:
@@ -248,6 +291,11 @@ class ChromaSync:
     def begin_close(self) -> asyncio.Task:
         """Close admission now and retain actual cleanup independently of callers."""
         self._admission_closed = True
+        # S2: a running sync stops at its next check and drops its staging work;
+        # its in-flight LLM call (on the loop) is cancelled rather than awaited.
+        self._sync_abort.set()
+        if self._sync_call is not None and not self._sync_call.done():
+            self._sync_call.cancel()
         if self._closing is None:
             draining = self._async_work.begin_close()
             self._phase = ClosePhase.DRAIN
@@ -301,67 +349,91 @@ class ChromaSync:
 
     # ==================== Sincronización de Comandos ====================
     
-    @_owned_operation
-    def sync_commands(
+    async def sync_commands(
         self,
         ha_client,
         llm_reasoner,
         max_entities: int = 100
     ) -> int:
-        """
-        Sincronizar comandos de Home Assistant
-        
-        Args:
-            ha_client: Cliente de Home Assistant
-            llm_reasoner: LLM para generar descripciones
-            max_entities: Máximo de entidades a procesar por batch
-        
-        Returns:
-            Número de frases indexadas
-        """
-        logger.info(f"Iniciando sincronización ({datetime.now().strftime('%H:%M:%S')})")
-        start_time = time.time()
-        
-        # 1. Obtener datos de HA
-        logger.info("Consultando Home Assistant...")
-        entities = ha_client.get_domotics_entities()
-        services_by_domain = ha_client.get_services_by_domain()
-        
-        logger.info(f"Encontradas {len(entities)} entidades de domótica")
-        
-        # 2. Limpiar colección anterior
-        existing = self.commands.get()
-        if existing["ids"]:
-            logger.info(f"Eliminando {len(existing['ids'])} registros anteriores...")
-            self.commands.delete(ids=existing["ids"])
-        
-        # 3. Generar descripciones con LLM
-        logger.info("Generando descripciones con LLM...")
-        
-        all_phrases = []
+        """Rebuild the command index without touching the active one until done.
 
-        for i, entity in enumerate(entities[:max_entities]):
+        HA reads and the LLM descriptions (``llm_reasoner.complete``) await on
+        the loop. BGE-M3 encodes and Chroma writes run in the owned worker
+        thread into a fresh staging collection; only a complete, verified
+        staging collection is made active, by one write to the pointer record.
+        Searches keep using the previous index throughout, and any failure or a
+        close drops the staging collection and keeps the previous index.
+
+        Only one sync runs at a time. ``begin_close`` aborts a running sync: the
+        in-flight LLM call is cancelled and the worker stops at its next check.
+
+        Args:
+            ha_client: Home Assistant client (async reads).
+            llm_reasoner: Reasoner exposing ``async complete(prompt, ...)``.
+            max_entities: Maximum entities to describe.
+
+        Returns:
+            Number of indexed phrases.
+
+        Raises:
+            CommandSyncError: The index was not switched (``index_kept`` says
+                whether the previous index is provably still active).
+        """
+        if llm_reasoner is None or not callable(getattr(llm_reasoner, "complete", None)):
+            raise CommandSyncError("chroma_sync_reasoner_unavailable")
+        if self._admission_closed:
+            raise CommandSyncError("chroma_sync_closed")
+        if self._sync_latched is not None:
+            raise CommandSyncError("chroma_sync_restart_required")
+        if self._sync_running or self._index_lock.locked():
+            raise CommandSyncError("chroma_sync_already_running")
+        self._sync_running = True
+        try:
+            logger.info("[Sync] command sync started")
+            entities = await ha_client.get_domotics_entities()
+            services_by_domain = await ha_client.get_services_by_domain()
+            self._check_sync_abort()
+            logger.info("[Sync] %d domotics entities", len(entities))
+            phrases = await self._describe_entities(
+                entities[:max_entities], services_by_domain, llm_reasoner)
+            if not phrases:
+                raise CommandSyncError("chroma_sync_no_phrases")
+            return await self._async_work.run(self._index_commands, phrases)
+        except CommandSyncError:
+            raise
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            if self._sync_abort.is_set():
+                raise CommandSyncError("chroma_sync_aborted") from error
+            raise CommandSyncError("chroma_sync_failed") from error
+        finally:
+            self._sync_running = False
+
+    def _check_sync_abort(self) -> None:
+        if self._sync_abort.is_set():
+            raise CommandSyncError("chroma_sync_aborted")
+
+    async def _describe_entities(self, entities: list[dict], services_by_domain: dict,
+                                 llm_reasoner) -> list[dict]:
+        """LLM descriptions on the loop, checking for an abort between entities."""
+        all_phrases = []
+        for i, entity in enumerate(entities):
+            self._check_sync_abort()
             entity_id = entity["entity_id"]
             domain = entity_id.split(".")[0]
             services = services_by_domain.get(domain, [])
-
             if not services:
                 continue
-
             # Excluidas por config (lista + patrones). Default light.hogar
             # (grupo global). Ver _is_excluded / settings.yaml vectordb.
             if self._is_excluded(entity_id):
                 logger.info(f"Skip {entity_id} (excluido del vector search)")
                 continue
-            
             logger.debug(f"[{i+1}/{len(entities)}] {entity_id}")
-            
-            # Generar descripciones
-            commands = self._generate_command_descriptions(
-                entity, services, llm_reasoner
-            )
-            
-            for cmd in commands:
+            response = await self._abortable_complete(
+                llm_reasoner, self._command_prompt(entity, services))
+            for cmd in self._parse_commands(entity_id, response):
                 for phrase in cmd.get("phrases", []):
                     all_phrases.append({
                         "phrase": phrase,
@@ -371,22 +443,52 @@ class ChromaSync:
                         "description": cmd["description"],
                         "data": cmd.get("data", {})
                     })
-        
         logger.info(f"Generadas {len(all_phrases)} frases")
-        
-        # 4. Crear embeddings y guardar
-        logger.info("Generando embeddings...")
-        
-        ids = []
-        embeddings = []
-        metadatas = []
-        documents = []
-        
-        for i, item in enumerate(all_phrases):
-            embedding = self.embedder.encode(item["phrase"]).tolist()
-            
+        return all_phrases
+
+    async def _abortable_complete(self, llm_reasoner, prompt: str) -> str:
+        """One LLM call that ``begin_close`` cancels instead of waiting for it."""
+        call = asyncio.ensure_future(llm_reasoner.complete(prompt, max_tokens=1024, temperature=0.3))
+        self._sync_call = call
+        try:
+            await asyncio.wait({call})
+        finally:
+            self._sync_call = None
+            if not call.done():
+                call.cancel()
+                await asyncio.gather(call, return_exceptions=True)
+        if call.cancelled():
+            self._check_sync_abort()
+            raise CommandSyncError("chroma_sync_failed")
+        # An abort that lands after a completed call is caught by the next
+        # entity's check or by the worker before any write.
+        value = call.result()
+        text = getattr(value, "text", value)  # LLMRouter.complete returns a RouterResult
+        if not isinstance(text, str):
+            raise CommandSyncError("chroma_sync_failed")
+        return text
+
+    @_owned_operation
+    def _index_commands(self, phrases: list[dict]) -> int:
+        """Encode into a staging collection and switch to it (worker thread)."""
+        if not self._index_lock.acquire(blocking=False):
+            raise CommandSyncError("chroma_sync_already_running")
+        try:
+            if self._sync_latched is not None:
+                raise CommandSyncError("chroma_sync_restart_required")
+            return self._index_commands_locked(phrases)
+        finally:
+            self._index_lock.release()
+
+    def _index_commands_locked(self, phrases: list[dict]) -> int:
+        start_time = time.time()
+        if self._client is None or not self._ready:
+            self.initialize()
+        ids, embeddings, metadatas, documents = [], [], [], []
+        for i, item in enumerate(phrases):
+            self._check_sync_abort()
             ids.append(f"cmd_{i}")
-            embeddings.append(embedding)
+            embeddings.append(self.embedder.encode(item["phrase"]).tolist())
             documents.append(item["phrase"])
             metadatas.append({
                 "entity_id": item["entity_id"],
@@ -395,35 +497,75 @@ class ChromaSync:
                 "description": item["description"],
                 "data": json.dumps(item.get("data", {}))
             })
-        
-        # Guardar en batches
-        BATCH_SIZE = 500
-        for i in range(0, len(ids), BATCH_SIZE):
-            batch_end = min(i + BATCH_SIZE, len(ids))
-            self.commands.add(
-                ids=ids[i:batch_end],
-                embeddings=embeddings[i:batch_end],
-                metadatas=metadatas[i:batch_end],
-                documents=documents[i:batch_end]
-            )
-        
-        elapsed = time.time() - start_time
-        logger.info(f"Sincronización completada en {elapsed:.1f}s - {len(ids)} frases")
-        
+        self._check_sync_abort()
+        previous = self._commands_collection
+        self._drop_stale_collections(keep={previous.name})
+        staging_name = (f"{self.commands_collection_name}__"
+                        f"{time.strftime('%Y%m%d%H%M%S')}{secrets.token_hex(3)}")
+        staging = self._client.create_collection(name=staging_name, metadata=COSINE)
+        switched = uncertain = False
+        try:
+            batch_size = 500
+            for i in range(0, len(ids), batch_size):
+                self._check_sync_abort()
+                staging.add(ids=ids[i:i + batch_size], embeddings=embeddings[i:i + batch_size],
+                            metadatas=metadatas[i:i + batch_size], documents=documents[i:i + batch_size])
+            if staging.count() != len(ids):
+                raise CommandSyncError("chroma_sync_staging_incomplete")
+            self._check_sync_abort()
+            try:
+                # Commit point: one write to the pointer record.
+                self._pointer_collection.modify(metadata={"active": staging_name})
+            except Exception as error:
+                # The pointer may or may not name the staging collection now: keep
+                # it on disk so neither outcome points at a dropped collection.
+                uncertain = True
+                self._sync_latched = "switch_uncertain"
+                logger.error("[Sync] pointer write failed; command syncs disabled until restart")
+                raise CommandSyncError("chroma_sync_switch_uncertain", index_kept=False) from error
+            switched = True
+            self._commands_collection = staging
+            self._index_degraded = None
+        finally:
+            if not switched and not uncertain:
+                self._drop_collection(staging_name)
+        # R4: the base (legacy) collection is what pre-0d2 code opens; it is kept
+        # for rollback and is never dropped by a sync (docs/architecture/DEPLOYMENT.md).
+        if previous.name != self.commands_collection_name:
+            self._drop_collection(previous.name)
+        logger.info("[Sync] command index switched in %.1fs - %d phrases", time.time() - start_time, len(ids))
         return len(ids)
-    
-    def _generate_command_descriptions(
-        self,
-        entity: dict,
-        services: list[str],
-        llm_reasoner
-    ) -> list[dict]:
-        """Generar descripciones de comandos usando LLM"""
+
+    def _drop_collection(self, name: str) -> None:
+        """Best effort: a leftover collection is only disk, never the active index."""
+        try:
+            self._client.delete_collection(name=name)
+        except Exception as error:
+            logger.warning("[Sync] could not drop a retired command collection: %s", type(error).__name__)
+
+    def _drop_stale_collections(self, keep: set[str]) -> None:
+        """Drop staging leftovers of an interrupted sync.
+
+        Never drops the in-memory active collection, the collection the
+        persisted pointer names (re-read now: it may differ after an uncertain
+        write), the pointer itself or the base collection.
+        """
+        keep = set(keep) | {self._pointer_name, self.commands_collection_name}
+        persisted = pointer_target(self._client, self.commands_collection_name)
+        if persisted is not None:
+            keep.add(persisted)
+        prefix = f"{self.commands_collection_name}__"
+        for collection in self._client.list_collections():
+            name = getattr(collection, "name", collection)
+            if name.startswith(prefix) and name not in keep:
+                self._drop_collection(name)
+
+    @staticmethod
+    def _command_prompt(entity: dict, services: list[str]) -> str:
         entity_id = entity["entity_id"]
         domain = entity_id.split(".")[0]
         friendly_name = entity["attributes"].get("friendly_name", entity_id)
-        
-        prompt = f"""Genera comandos de voz para esta entidad de domótica.
+        return f"""Genera comandos de voz para esta entidad de domótica.
 
 Entidad: {entity_id}
 Nombre: {friendly_name}
@@ -441,9 +583,8 @@ Ejemplo:
 
 Solo JSON, sin explicaciones:"""
 
-        result = llm_reasoner(prompt, max_tokens=1024, temperature=0.3)
-        response = result["choices"][0]["text"]
-        
+    @staticmethod
+    def _parse_commands(entity_id: str, response: str) -> list[dict]:
         try:
             json_start = response.find("[")
             json_end = response.rfind("]") + 1
@@ -451,9 +592,8 @@ Solo JSON, sin explicaciones:"""
                 return json.loads(response[json_start:json_end])
         except json.JSONDecodeError:
             logger.warning(f"Error parseando JSON para {entity_id}")
-        
         return []
-    
+
     # ==================== Búsqueda de Comandos ====================
     
     @_owned_operation

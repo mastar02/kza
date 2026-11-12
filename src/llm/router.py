@@ -118,7 +118,8 @@ class LLMRouter:
 
                 if kind is not ErrorKind.CONSENT_WITHDRAWN:
                     # Consent is policy, not endpoint health: no cooldown for it.
-                    self._cd.record_failure(ep.id, kind)
+                    # U3b-0d2: the cooldown save fsyncs; keep it off the loop.
+                    await asyncio.to_thread(self._cd.record_failure, ep.id, kind)
                 attempts.append(FailedAttempt(
                     endpoint_id=ep.id,
                     error_kind=kind,
@@ -127,7 +128,7 @@ class LLMRouter:
                 continue
 
             # Éxito
-            self._cd.record_success(ep.id)
+            await asyncio.to_thread(self._cd.record_success, ep.id)
             elapsed_ms = (time.perf_counter() - start) * 1000
 
             # Sample metrics si el cliente las dejó en _last_metrics tras la call.

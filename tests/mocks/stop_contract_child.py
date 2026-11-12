@@ -7,6 +7,7 @@ when this child reports a phase on ``--phase-file``, and reads READY from the
 FIFO given in ``--notify-fifo`` (handed to the child as KZA_NOTIFY_FD).
 """
 import argparse
+import json
 import os
 from pathlib import Path
 import sys
@@ -108,6 +109,26 @@ def wrap(owner, attribute: str, name: str) -> None:
     setattr(owner, attribute, hooked)
 
 
+class _OneLight:
+    async def get_domotics_entities(self):
+        return [{"entity_id": "light.living", "attributes": {"friendly_name": "Living"}}]
+
+    async def get_services_by_domain(self):
+        return {"light": ["turn_on"]}
+
+
+class _HungLLM:
+    async def complete(self, prompt, **kwargs):
+        phase("syncing")
+        await asyncio.Event().wait()
+
+
+class _ManyPhrases:
+    async def complete(self, prompt, **kwargs):
+        return json.dumps([{"entity_id": "light.living", "domain": "light", "service": "turn_on",
+                            "description": "Encender", "phrases": [f"prende el living {n}" for n in range(300)]}])
+
+
 def hold_audio(graph) -> None:
     loop = graph.pipeline.audio_loop
 
@@ -120,6 +141,23 @@ def hold_audio(graph) -> None:
         if ARGS.scenario == "executor":
             # An in-flight default-executor job asyncio.run would join for 60 s.
             asyncio.get_running_loop().run_in_executor(None, time.sleep, 60)
+        elif ARGS.scenario in {"sync", "sync_encode"}:
+            # U3b-0d2 S2: a command sync whose cloud call never answers ("sync"),
+            # or one held in the owned worker's BGE-M3 encodes ("sync_encode").
+            chroma = graph.models.chroma
+            llm = _HungLLM()
+            if ARGS.scenario == "sync_encode":
+                llm = _ManyPhrases()
+                encode = chroma._embedder.encode
+
+                def slow_encode(*args, **kwargs):
+                    phase("syncing")
+                    time.sleep(0.1)
+                    return encode(*args, **kwargs)
+                chroma._embedder.encode = slow_encode
+            hold_audio.sync = asyncio.create_task(chroma.sync_commands(_OneLight(), llm))
+            hold_audio.sync.add_done_callback(lambda task: phase(
+                "sync_ended", "cancelled" if task.cancelled() else getattr(task.exception(), "code", "ok")))
         elif ARGS.scenario == "writer":
             # A writable descriptor left open under the state.
             hold_audio.writer = open(Path(ARGS.graph_root) / "held-writer.bin", "ab")

@@ -351,7 +351,11 @@ def main(argv=None):
                     path=args.chroma_path, settings=Settings(anonymized_telemetry=False),
                 ), close=True)
                 capture.require_current()
-                col = client.get_collection("home_assistant_commands")
+                # U3b-0d2 R5: the collection the runtime reads (pointer-resolved).
+                from src.vectordb.command_index import open_active_commands
+                col, active = open_active_commands(client, create_base=False)
+                if active.degraded:
+                    capture.publish(logger.error, f"Índice de comandos degradado ({active.degraded})")
                 capture.require_current()
                 count = col.count()
                 capture.publish(logger.info, f"Chroma: {count} frases indexadas")
