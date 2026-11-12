@@ -355,6 +355,10 @@ _CLOSING_CHILD = "\n".join([
     "for database, statement, parameters in json.loads(sys.argv[1]):",
     "    with closing(sqlite3.connect(database)) as db, db:",
     "        db.execute(statement, parameters)",
+    "# U3b-0d3: the receipt-state record captures the closed state with this slot's own",
+    "# code; KZA_TEST_KNOWN_TABLES (test fixture only) registers tables this release knows.",
+    "if os.environ.get('KZA_TEST_KNOWN_TABLES'):",
+    "    module._TABLE_COLUMNS.update(json.loads(os.environ['KZA_TEST_KNOWN_TABLES']))",
     "module.write_admission_receipt(os.environ['KZA_RUNTIME_ADMISSION'], dict.fromkeys(",
     "    ['graph_closed', 'privacy_closed', 'sdk_closed', 'native_closed'], True))",
 ])
@@ -368,7 +372,7 @@ def _registration(participant, version, descriptor):
     return [identity, participant, version, encoded]
 
 
-def _closed_head(archive, tmp_path, statements=lambda state: [], *, slot="old"):
+def _closed_head(archive, tmp_path, statements=lambda state: [], *, slot="old", known_tables=None):
     """Establish a real closed head through an admitted child and its receipt."""
     source = tmp_path / ("offline-" + slot)
     (source / "config").mkdir(parents=True)
@@ -378,7 +382,8 @@ def _closed_head(archive, tmp_path, statements=lambda state: [], *, slot="old"):
     stage.prepare_slot(archive, root, slot, source)
     root = root.resolve()
     state = root / "slots" / slot / "state"
-    stage.run_slot(root, slot, _command(_CLOSING_CHILD, json.dumps(statements(state))), timeout=30)
+    env = dict(os.environ, KZA_TEST_KNOWN_TABLES=json.dumps(known_tables)) if known_tables else None
+    stage.run_slot(root, slot, _command(_CLOSING_CHILD, json.dumps(statements(state))), timeout=30, env=env)
     assert stage.read_admission_head(root)["status"] == "closed"
     return root, state
 
@@ -423,10 +428,13 @@ def _refused(root, states, action, match):
 
 def test_candidate_whose_own_code_rejects_state_is_refused_before_head_moves(
         admission_archive, tmp_path, monkeypatch):
-    # W3: the controller knows a table the candidate's own companion rejects.
+    # W3: the controller knows a table the candidate's own companion rejects. The
+    # closing release knows it too: since U3b-0d3 its receipt-state record is a
+    # closed-state capture by the child's own code, which must accept the state.
     monkeypatch.setitem(stage._TABLE_COLUMNS, "u3b_probe_extra", "id:TEXT")
     root, state = _closed_head(admission_archive, tmp_path, lambda state: [
-        ["data/extra.db", "CREATE TABLE u3b_probe_extra (id TEXT)", []]])
+        ["data/extra.db", "CREATE TABLE u3b_probe_extra (id TEXT)", []]],
+        known_tables={"u3b_probe_extra": "id:TEXT"})
     candidate = _copy_candidate(admission_archive, root, state)
     head = stage.read_admission_head(root)
     with stage.AdmissionController(root) as controller:

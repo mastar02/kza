@@ -1227,3 +1227,19 @@ def test_only_exact_additive_schema_groups_are_a_compatible_mixed_cut(tmp_path):
     retyped = [dict(row, sql=row["sql"] + " ") if row["name"] == "idx_erasure_target_participant_id" else row
                for row in post]
     assert not payload._privacy_schema_added(without(index), retyped)
+
+
+def test_a_non_privacy_database_admits_only_the_deletion_ledger_group():
+    """U3b-0d3: dashboard_auth.db gains the ledger at migrate_schema, so an older ordinary image lacks it."""
+    base = [{"type": "table", "name": "auth_meta", "tbl_name": "auth_meta",
+             "sql": "CREATE TABLE auth_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"}]
+    (ledger,) = payload._authority_schema_additions()
+    _index, owner, _voice, privacy_ledger = payload._privacy_schema_additions()
+    assert ledger == privacy_ledger
+    groups = payload._authority_schema_additions()
+    assert payload._privacy_schema_added(base, base + list(ledger), groups)
+    assert not payload._privacy_schema_added(base + list(ledger), base, groups)
+    assert not payload._privacy_schema_added(base, base + list(ledger[:1]), groups)  # partial group
+    assert not payload._privacy_schema_added(base, base + list(owner), groups)  # privacy-only groups
+    extra = {"type": "table", "name": "unrelated", "tbl_name": "unrelated", "sql": "CREATE TABLE unrelated (x)"}
+    assert not payload._privacy_schema_added(base, base + list(ledger) + [extra], groups)

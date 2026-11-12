@@ -1053,7 +1053,18 @@ def _privacy_schema_additions() -> tuple[tuple[dict, ...], ...]:
             tuple(deletion_ledger_schema_objects()))
 
 
-def _privacy_schema_added(ordinary: list[dict], latest: list[dict]) -> bool:
+def _authority_schema_additions() -> tuple[tuple[dict, ...], ...]:
+    """Known additive groups of a non-privacy database: only the U3b-0d3 deletion ledger.
+
+    The dashboard authority (credential_journal.migrate_schema) creates it in
+    dashboard_auth.db, so an older ordinary image of that database lacks it.
+    """
+    from src.memory.deletion_ledger import deletion_ledger_schema_objects
+    return (tuple(deletion_ledger_schema_objects()),)
+
+
+def _privacy_schema_added(ordinary: list[dict], latest: list[dict],
+                          groups: tuple[tuple[dict, ...], ...] | None = None) -> bool:
     """Recognize latest == ordinary + any non-empty subset of the known additive groups.
 
     Each source schema is already authenticated by _database_contract. An
@@ -1065,7 +1076,7 @@ def _privacy_schema_added(ordinary: list[dict], latest: list[dict]) -> bool:
     """
     names = {row["name"] for row in ordinary}
     added = []
-    for group in _privacy_schema_additions():
+    for group in _privacy_schema_additions() if groups is None else groups:
         if any(row["name"] in names for row in group):
             continue  # Already in the older image: it must then match like any other row.
         if all(latest.count(row) == 1 for row in group):
@@ -1112,9 +1123,10 @@ def plan_payload_cut(ordinary: ClosedStateSnapshot, latest: ClosedStateSnapshot,
                     for value in row.values():
                         if type(value) is dict:
                             read_blob(snapshot, value)
-        compatible_schema = (old["schema"] == new["schema"] or
-            mapping.destination_relative == layout.privacy_relative
-            and _privacy_schema_added(old["schema"], new["schema"]))
+        compatible_schema = (old["schema"] == new["schema"] or (
+            _privacy_schema_added(old["schema"], new["schema"])
+            if mapping.destination_relative == layout.privacy_relative
+            else _privacy_schema_added(old["schema"], new["schema"], _authority_schema_additions())))
         _require(compatible_schema and old["application_id"] == new["application_id"]
             and old["user_version"] == new["user_version"], "payload_database_schema_changed")
         for name in ("pending_audio_deletions", "audio_write_intents", "quarantines", "staged"):
