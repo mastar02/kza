@@ -8,6 +8,7 @@ process_lifecycle and receipt writer.
 """
 
 import argparse
+import asyncio
 import hashlib
 import json
 import os
@@ -391,6 +392,87 @@ def test_an_unrelated_payload_after_a_crash_is_adopted(root, tmp_path):
     _utterance_store(state, "c-live")
     served = _serve(root, tmp_path, "clean", name="c.txt")
     assert served.code == 0 and "recovery R-b closed" in served.serve.events
+
+
+# --- U3b-0d4a: production-shaped conversation resurrection -------------------------------------
+
+def _erased_root(artifacts, tmp_path, *, restart: bool = False):
+    """A managed root whose crashed run is followed by the real erased state (the three literals pending).
+
+    Under the slot state the real code refuses to write without a ticket
+    (runtime_admission_ticket_missing) or an output registration, and a
+    bootstrap head refuses a state with authority (adoption is U3b-0e). So
+    the state is written by the real code at the slot's own state path first
+    (its descriptors name that path), set aside, and copied back byte for byte
+    after the crash, as an out-of-band restore. With ``restart`` the real
+    leased journal recovery has also reopened every local participant's step.
+    """
+    from tests.mocks import conversation_resurrection as erasure
+    state = tmp_path / "root" / "slots" / "s" / "state"
+    erased = asyncio.run(erasure.build_erased_state(state, tmp_path / "before"))
+    if restart:
+        erasure.restart_journal(erased)
+    shutil.copytree(state / "data", tmp_path / "built")
+    shutil.rmtree(tmp_path / "root")
+    root, staged = rehearsal.managed_root(artifacts["archives"]["x"], tmp_path)
+    assert staged == state
+    assert _serve(root, tmp_path, "clean", name="a.txt").code == 0
+    assert _serve(root, tmp_path, "crash", stop_when=None, seconds=0.1, name="b.txt").code == 68
+    shutil.copytree(tmp_path / "built", state / "data", dirs_exist_ok=True)
+    return root, erasure, erased
+
+
+def _restore(erasure, erased, store):
+    if store == "clip store":
+        erasure.restore_clip_rows(erased)
+    else:
+        erasure.restore_file(erased, store)
+
+
+@pytest.mark.parametrize("store", ["data/events.db", "data/ambient.db", "clip store"])
+def test_an_older_store_restored_after_a_crash_is_refused_with_literal_targets_pending(artifacts, tmp_path, store):
+    """F5/N6: the unresolved_* literals stay pending forever, yet the restore is a resurrection."""
+    root, erasure, erased = _erased_root(artifacts, tmp_path)
+    pending = {(step["participant"], step["version"]) for step in erasure.steps(erased) if step["state"] != "complete"}
+    assert {("diagnostics", 1), ("streams", 2), ("voices", 2)} <= pending
+    _restore(erasure, erased, store)
+    refused = _serve(root, tmp_path, "clean", name="c.txt")
+    assert refused.code == 69 and "recovery R-b runtime_admission_recovery_resurrection" in refused.serve.events
+    dry = launcher.adopt(root, confirm="", regressions=[], dry_run=True)["report"]  # the shadow-copy path
+    assert dry["failures"] == [] and dry["regressions"] == []
+    assert dry["resurrected"]["conversation"] >= 1
+    participant = {"data/events.db": "events", "data/ambient.db": "captures", "clip store": "collectors"}[store]
+    assert dry["resurrection_detail"]["conversation"][participant] >= 1
+
+
+@pytest.mark.parametrize("store", ["data/events.db", "data/ambient.db", "clip store"])
+def test_the_same_restore_with_its_own_step_pending_is_not_a_resurrection(artifacts, tmp_path, store):
+    """Its own step pending: count 0, so R-b passes the resurrection check.
+
+    The adoption that follows refuses with privacy_authority_stale: in this
+    fixture the whole authority appeared out of band after the crash (the
+    bootstrap head cannot hold it), which stage_runtime refuses on its own.
+    """
+    root, erasure, erased = _erased_root(artifacts, tmp_path, restart=True)  # its own step reopened
+    _restore(erasure, erased, store)
+    dry = launcher.adopt(root, confirm="", regressions=[], dry_run=True)["report"]
+    assert dry["failures"] == [] and dry["regressions"] == []
+    assert dry["resurrected"] == dict.fromkeys(launcher._RESURRECTION_KINDS, 0)
+    served = _serve(root, tmp_path, "clean", name="c.txt")
+    assert served.code == 69 and "recovery R-b privacy_authority_stale" in served.serve.events
+    assert not any("resurrection" in event for event in served.serve.events if event.startswith("recovery"))
+
+
+def test_two_erasure_journals_refuse_automatic_and_operator_r_b(artifacts, tmp_path):
+    root, erasure, erased = _erased_root(artifacts, tmp_path)
+    shutil.copy2(erased.state / "data" / "privacy.db", erased.state / "data" / "privacy-restored.db")
+    refused = _serve(root, tmp_path, "clean", name="c.txt")
+    assert refused.code == 69
+    assert "recovery R-b runtime_admission_recovery_erasure_journal_ambiguous" in refused.serve.events
+    dry = launcher.adopt(root, confirm="", regressions=[], dry_run=True)
+    assert dry["report"]["failures"] == ["runtime_admission_recovery_erasure_journal_ambiguous"]
+    with pytest.raises(launcher.LauncherRefusal, match="runtime_admission_recovery_erasure_journal_ambiguous"):
+        launcher.adopt(root, confirm=dry["head_sha256"], regressions=[])
 
 
 TOMBSTONE = "\n".join([
