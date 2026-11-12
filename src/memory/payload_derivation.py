@@ -1039,13 +1039,18 @@ def _privacy_schema_additions() -> tuple[tuple[dict, ...], ...]:
     """Each known additive privacy-schema change, as its exact sqlite_master rows.
 
     The erasure lookup index (014b422), the U3b owner schema (all seven rows
-    of FACT_OWNER_SCHEMA together) and the U3b-4a-0 voice-attribution schema
-    (every row of VOICE_ATTRIBUTION_SCHEMA together). A group is either wholly
-    absent from an older image or wholly present in both.
+    of FACT_OWNER_SCHEMA together), the U3b-4a-0 voice-attribution schema
+    (every row of VOICE_ATTRIBUTION_SCHEMA together) and the U3b-0d3 deletion
+    ledger (DELETION_LEDGER_SCHEMA). A group is either wholly absent from an
+    older image or wholly present in both. Ledger rows are authority, cloned
+    from the latest image like every other non-payload table: derivation never
+    appends to the ledger.
     """
+    from src.memory.deletion_ledger import deletion_ledger_schema_objects
     from src.memory.fact_ledger import fact_owner_schema_objects
     from src.memory.voice_schema import voice_attribution_schema_objects
-    return ((_LOOKUP_INDEX,), tuple(fact_owner_schema_objects()), tuple(voice_attribution_schema_objects()))
+    return ((_LOOKUP_INDEX,), tuple(fact_owner_schema_objects()), tuple(voice_attribution_schema_objects()),
+            tuple(deletion_ledger_schema_objects()))
 
 
 def _privacy_schema_added(ordinary: list[dict], latest: list[dict]) -> bool:

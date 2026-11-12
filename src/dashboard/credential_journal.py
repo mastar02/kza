@@ -8,6 +8,7 @@ from uuid import UUID
 
 from src.dashboard.authority import DashboardRole, _identifier, _timestamp
 from src.dashboard.evaluation_grants import EvaluationGrantSelection
+from src.memory.deletion_ledger import ensure_deletion_ledger
 
 MAX_CREDENTIAL_ATTEMPTS = 4096
 MAX_CREDENTIAL_REVISION = (1<<63)-1
@@ -236,6 +237,8 @@ def migrate_schema(db,base_schema):
             db.execute(JOURNAL_DDL)
     for name in TABLES:
         validate_table(db,name)
+    # U3b-0d3: retirements and revocations are recorded in this database's own ledger.
+    ensure_deletion_ledger(db)
     floor,_,_ = read_metadata(db)
     for name,column in (('credentials','issued_at'),('sessions','issued_at'),
             ('retired_users','retired_at'),('credential_attempts','completed_at')):

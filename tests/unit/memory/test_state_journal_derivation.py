@@ -350,3 +350,20 @@ def test_voice_attribution_rows_survive_journal_replacement_with_an_advanced_clo
     derivation._replace_current(ledger, records, mapping)
     assert rows() == before
     assert not ledger._db.execute("PRAGMA foreign_key_check").fetchall()
+
+
+def test_deletion_ledger_rows_survive_journal_replacement(journal, tmp_path):
+    """U3b-0d3 (D3/E3): derivation copies the ledger; replacement and recovery never append."""
+    from uuid import uuid4 as fresh
+    ledger = journal.ledger
+    ledger.erasures.request(str(fresh()), MemoryReviewer("synthetic-reviewer"))
+
+    def rows():
+        return [tuple(row) for row in ledger._db.execute("SELECT * FROM deletion_ledger_v1 ORDER BY seq")]
+
+    before = rows()
+    assert "conversation_erased" in [row[1] for row in before]
+    _, mapping, records = _local(journal, tmp_path)
+    derivation._replace_current(ledger, records, mapping)
+    ledger.erasures.recover()
+    assert rows() == before

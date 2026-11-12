@@ -96,6 +96,9 @@ _PROTECTED_TABLES = frozenset({
     # suspensions and the admin voice switch (G1) are authority, never payload.
     "voice_attribution_consents", "voice_verification_attempts", "voice_attribution_events",
     "voice_attribution_suspensions", "voice_attribution_control",
+    # U3b-0d3: the content-free deletion ledger and its write-once salt. The
+    # ledger is projected as a constant-size hash chain, never row by row.
+    "deletion_ledger_v1", "deletion_ledger_salt_v1",
 })
 
 # Single-row version markers; each must hold exactly [(1,)].
@@ -149,6 +152,8 @@ _TABLE_COLUMNS = {
     "voice_attribution_suspensions": "profile_id:TEXT revision:INTEGER suspended_at:REAL reason:TEXT",
     "voice_attribution_control": "id:INTEGER enabled:INTEGER revision:INTEGER changed_at:REAL changed_by:TEXT",
     "voice_attribution_schema": "version:INTEGER",
+    "deletion_ledger_v1": "seq:INTEGER kind:TEXT subject_sha256:TEXT at:REAL prev_sha256:TEXT row_sha256:TEXT",
+    "deletion_ledger_salt_v1": "id:INTEGER salt:TEXT",
     "auth_meta": "key:TEXT value:TEXT",
     "credentials": "id:TEXT digest:TEXT subject:TEXT role:TEXT user_id:TEXT issued_at:REAL expires_at:REAL revision:INTEGER samples:TEXT",
     "sessions": "digest:TEXT credential:TEXT legacy_digest:TEXT issued_at:REAL expires_at:REAL revision:INTEGER",
@@ -175,6 +180,20 @@ _TABLE_COLUMNS = {
     "legacy_quarantine_records_v1": "batch_id:TEXT record_id:TEXT state:TEXT document:TEXT metadata_json:TEXT vector:BLOB encoding:TEXT digest:TEXT",
 }
 
+
+# U3b-0d3 (design v3 N3): the chain src/memory/deletion_ledger.py appends.
+# row_sha256 = sha256(prev_sha256 || canonical([seq, kind, subject_sha256, at])).
+_LEDGER_TABLE = "deletion_ledger_v1"
+_LEDGER_KINDS = frozenset({"conversation_erased", "fact_deleted", "fact_pruned_retired_owner",
+                           "voice_profile_deleted", "user_retired", "credential_revoked",
+                           "voice_consent_withdrawn"})
+_LEDGER_GENESIS = "0" * 64
+# Receipt schema 2 (design v2 U3b-0d3, v3 N2): the closed state the child observed,
+# in a record beside the unchanged schema-1 receipt (read_receipt_state).
+_RECEIPT_STATE_KEYS = ("closed_state_sha256", "state_manifest_sha256")
+# Rewritten by the controller's own seal, so never part of the state manifest.
+_MANIFEST_EXCLUDED = frozenset({_MARKER, ".kza-target-ownership.json"})
+_CLOSED_STATE_KEYS = ("state_identity", "store_roots", "schemas", "sdk_versions", "ownership_sha256")
 
 _ADMISSION_VALIDATION_LOCK = threading.RLock()
 
@@ -455,8 +474,24 @@ def _require_copy_not_observed(root: Path, state_root: Path) -> None:
             raise ValueError("runtime_admission_copy_observed")
 
 
+def _durable_parents(directory: Path) -> None:
+    """Create ``directory`` and fsync the parent of every level it created (review K6)."""
+    missing = []
+    current = directory
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
+    _safe_directory(directory, create=True)
+    for created in reversed(missing):
+        descriptor = os.open(created.parent, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
 def _atomic_record(path: Path, value: dict, *, immutable: bool = False) -> None:
-    _safe_directory(path.parent, create=True)
+    _durable_parents(path.parent)
     raw = _canonical_json(value) + b"\n"
     descriptor, name = tempfile.mkstemp(prefix=".admission-", dir=path.parent)
     temporary = Path(name)
@@ -561,6 +596,151 @@ def _row_projection(db: sqlite3.Connection, table: str, where: str = "",
     columns = [item[0] for item in cursor.description]
     hashes = sorted(_digest([_typed(value) for value in row]) for row in cursor)
     return {"columns": columns, "row_hashes": hashes}
+
+
+def _ledger_row_sha256(prev: str, seq: int, kind: str, subject: str, at: float) -> str:
+    return hashlib.sha256(prev.encode() + _canonical_json([seq, kind, subject, at])).hexdigest()
+
+
+def _deletion_ledger_projection(db: sqlite3.Connection, *, upto: int | None = None) -> dict:
+    """Constant-size chain projection; any break refuses (runtime_admission_ledger_chain_broken).
+
+    Recomputes every row in seq order (contiguous from 1, known kind, 64-hex
+    subject, finite REAL time, prev equal to the running head, row hash
+    recomputed). Linear only in time: the binding holds count, max_seq and
+    the head, never per-row digests (design v3 N3, review N3).
+    """
+    head, expected = _LEDGER_GENESIS, 1
+    query = "SELECT seq,kind,subject_sha256,at,prev_sha256,row_sha256 FROM " + _LEDGER_TABLE
+    parameters: tuple = ()
+    if upto is not None:
+        query, parameters = query + " WHERE seq<=?", (upto,)
+    for seq, kind, subject, at, prev, row in db.execute(query + " ORDER BY seq", parameters):
+        if (type(seq) is not int or seq != expected or kind not in _LEDGER_KINDS or not _hex64(subject)
+                or type(at) is not float or not math.isfinite(at) or prev != head
+                or row != _ledger_row_sha256(prev, seq, kind, subject, at)):
+            raise ValueError("runtime_admission_ledger_chain_broken")
+        head, expected = row, expected + 1
+    return {"count": expected - 1, "max_seq": expected - 1, "chain_head": head, "chain_valid": True}
+
+
+def _empty_protected_projection(name: str) -> dict:
+    if name == _LEDGER_TABLE:
+        return {"count": 0, "max_seq": 0, "chain_head": _LEDGER_GENESIS, "chain_valid": True}
+    return {"columns": [item.split(":")[0] for item in _TABLE_COLUMNS[name].split()], "row_hashes": []}
+
+
+def deletion_ledger_regressions(previous: dict, state_root: Path) -> list[str]:
+    """Databases whose deletion ledger did not evolve forward from a binding (verification helper).
+
+    Forward evolution (design v3 N3): current count >= the bound count, and the
+    chain recomputed over seq <= the bound max_seq ends at the bound head. A
+    missing database or table, or a broken chain, is a regression. Returns the
+    regressed relative database paths, content-free; empty means forward.
+    """
+    state = _safe_directory(Path(state_root).resolve(strict=True))
+    regressed = []
+    for relative, tables in sorted(previous["authority"]["projection"]["tables"].items()):
+        bound = tables.get(_LEDGER_TABLE)
+        if bound is None:
+            continue
+        path = state / relative
+        try:
+            with _database_image(path) as db:
+                current = _deletion_ledger_projection(db)
+                prefix = _deletion_ledger_projection(db, upto=bound["max_seq"])
+        except (ValueError, OSError, sqlite3.Error):
+            regressed.append(relative)
+            continue
+        if (current["count"] < bound["count"] or prefix["max_seq"] != bound["max_seq"]
+                or prefix["chain_head"] != bound["chain_head"]):
+            regressed.append(relative)
+    return regressed
+
+
+def state_manifest_sha256(state_root: Path) -> str:
+    """sha256 of the sorted (relative path, st_ino, st_size, st_mtime_ns) of every regular file.
+
+    Covers every payload store (SQLite files with their -wal, Chroma,
+    contexts, captures, collectors, voices, diagnostics) and excludes only
+    the marker and the target-ownership policy the seal rewrites, plus every
+    ``*-shm`` file: never authoritative (SQLite rebuilds it from the -wal) and
+    touched by any read-only reader, so including it would turn an innocent
+    reader between close and seal into UNKNOWN (review K1). lstat only:
+    nothing is opened, so it must run before any database image (design v3 N2).
+    """
+    state = Path(state_root)
+    if state.is_symlink() or not state.is_dir():
+        raise ValueError("runtime_admission_unsafe_directory")
+    entries, pending = [], [state]
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as iterator:
+            for entry in iterator:
+                info = entry.stat(follow_symlinks=False)
+                relative = Path(entry.path).relative_to(state).as_posix()
+                if stat.S_ISLNK(info.st_mode):
+                    raise ValueError("runtime_admission_state_symlink")
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append(Path(entry.path))
+                elif (stat.S_ISREG(info.st_mode) and relative not in _MANIFEST_EXCLUDED
+                        and not entry.name.endswith("-shm")):
+                    entries.append([relative, info.st_ino, info.st_size, info.st_mtime_ns])
+    return _digest(sorted(entries))
+
+
+def closed_state_sha256(binding: dict) -> str:
+    """Digest of the binding subset the seal does not change before its own snapshot."""
+    value = {key: binding[key] for key in _CLOSED_STATE_KEYS}
+    value["authority_digest"] = binding["authority"]["digest"]
+    return _digest(value)
+
+
+def _receipt_state_path(root: Path, run_id: str) -> Path:
+    # Its own directory: readers and tests that list admission/receipts see only receipts.
+    return Path(root) / "admission" / "receipt-states" / (run_id + ".json")
+
+
+def read_receipt_state(root: Path, receipt: dict) -> dict | None:
+    """The closed-state record a receipt-schema-2 child wrote beside its receipt, or None.
+
+    The receipt file itself keeps its exact schema-1 shape: older slots read
+    it when they validate delegation-chain hops and manual heads (probe and
+    child), so changing it would close rollback (a shared format, design v3
+    N7). The record names the same binding, generation, run and child pid and
+    carries closed_state_sha256 and state_manifest_sha256. None means an
+    older slot (no record), which run() still seals; a malformed or
+    mismatching record raises runtime_admission_receipt_state.
+    """
+    path = _receipt_state_path(root, receipt["run_id"])
+    if not path.exists() and not path.is_symlink():
+        return None
+    record = _read_json(path)
+    identity = {key: receipt[key] for key in ("binding_id", "generation", "run_id", "child_pid")}
+    if (set(record) != {"schema_version", *identity, *_RECEIPT_STATE_KEYS}
+            or type(record["schema_version"]) is not int or record["schema_version"] != 2
+            or {key: record[key] for key in identity} != identity
+            or not all(_hex64(record[key]) for key in _RECEIPT_STATE_KEYS)):
+        raise ValueError("runtime_admission_receipt_state")
+    return record
+
+
+def verify_receipt_state(record: dict, state_root: Path, binding: dict | None = None) -> None:
+    """Check a closed-state record against the state now (verification helper for recovery).
+
+    The manifest is recomputed first, before any database image is opened;
+    then, when a fresh pre-seal binding (captured after this manifest) is
+    given, its closed-state digest. Never recompute the manifest after the
+    binding: its read-only images may create or touch -shm files. Raises
+    runtime_admission_state_manifest_mismatch or
+    runtime_admission_closed_state_mismatch.
+    """
+    if type(record) is not dict or record.get("schema_version") != 2:
+        raise ValueError("runtime_admission_receipt_state")
+    if state_manifest_sha256(state_root) != record["state_manifest_sha256"]:
+        raise ValueError("runtime_admission_state_manifest_mismatch")
+    if binding is not None and closed_state_sha256(binding) != record["closed_state_sha256"]:
+        raise ValueError("runtime_admission_closed_state_mismatch")
 
 
 def _schema_contract(db: sqlite3.Connection, names: set[str]) -> dict | None:
@@ -689,7 +869,10 @@ def capture_state_authority(state_root: Path) -> dict:
                 contract = _schema_contract(db, names)
                 if contract is None:
                     continue
-                selected = {name: _row_projection(db, name) for name in sorted(names & _PROTECTED_TABLES)}
+                selected = {name: _row_projection(db, name)
+                            for name in sorted(names & _PROTECTED_TABLES - {_LEDGER_TABLE})}
+                if _LEDGER_TABLE in names:
+                    selected[_LEDGER_TABLE] = _deletion_ledger_projection(db)
                 selected["schema_contract_v1"] = contract
                 if "facts" in names:
                     condition = " WHERE state IN ('confirmed','deleted','quarantined')"
@@ -2242,8 +2425,10 @@ _FACT_OWNER_ADDITION = ("fact_owners", "fact_owner_revisions", "fact_owner_schem
 _VOICE_ATTRIBUTION_ADDITION = ("voice_attribution_consents", "voice_verification_attempts",
                                "voice_attribution_events", "voice_attribution_suspensions",
                                "voice_attribution_control", "voice_attribution_schema")
+# U3b-0d3: the deletion ledger FactLedger.initialize (and the dashboard authority) creates.
+_DELETION_LEDGER_ADDITION = ("deletion_ledger_v1", "deletion_ledger_salt_v1")
 # Each known additive schema group; a derivation may add a whole group, empty.
-_SCHEMA_ADDITIONS = (_FACT_OWNER_ADDITION, _VOICE_ATTRIBUTION_ADDITION)
+_SCHEMA_ADDITIONS = (_FACT_OWNER_ADDITION, _VOICE_ATTRIBUTION_ADDITION, _DELETION_LEDGER_ADDITION)
 
 
 def _expect_empty_schema_additions(expected: dict, derived: dict) -> None:
@@ -2271,8 +2456,7 @@ def _expect_empty_schema_additions(expected: dict, derived: dict) -> None:
             for name in group:
                 contract["columns"][name] = dict(item.split(":") for item in _TABLE_COLUMNS[name].split())
                 if name in _PROTECTED_TABLES:
-                    tables[name] = {"columns": [item.split(":")[0] for item in _TABLE_COLUMNS[name].split()],
-                                    "row_hashes": []}
+                    tables[name] = _empty_protected_projection(name)
 
 
 def _derived_authority_equivalent(root: Path, source: dict, candidate: dict, target_relocations: dict) -> bool:
@@ -2558,6 +2742,17 @@ def write_admission_receipt(ticket: dict | str, resources: dict) -> Path:
     receipt = {"schema_version": 1, "binding_id": ticket["binding_id"],
                "generation": ticket["generation"], "run_id": ticket["run_id"],
                "child_pid": os.getpid(), "status": "closed", "resources": resources}
+    # Receipt schema 2 (U3b-0d3): first the closed-state record, the closed
+    # digest from a fresh snapshot and then the file manifest as the very last
+    # state observation (the snapshot's read-only images may leave -shm
+    # files, which the manifest must include). The receipt stays the commit point.
+    root = Path(ticket["admission_root"])
+    closed = _binding_snapshot(root, binding["slot"])
+    _atomic_record(_receipt_state_path(root, ticket["run_id"]), {
+        "schema_version": 2, "binding_id": ticket["binding_id"], "generation": ticket["generation"],
+        "run_id": ticket["run_id"], "child_pid": os.getpid(),
+        "closed_state_sha256": closed_state_sha256(closed),
+        "state_manifest_sha256": state_manifest_sha256(Path(binding["state_root"]))}, immutable=True)
     path = Path(ticket["admission_root"]) / "admission" / "receipts" / (ticket["run_id"] + ".json")
     _atomic_record(path, receipt, immutable=True)
     return path
@@ -2832,10 +3027,19 @@ class AdmissionController:
                         "resources": dict.fromkeys(_CLOSED_RESOURCES, True)}
             if receipt != expected:
                 raise ValueError("runtime_admission_close_receipt_mismatch")
+            # Receipt schema 2: reaped above; the manifest comes before any
+            # database image. No record means an older slot (design v3 N7).
+            closed_record = read_receipt_state(root, receipt)
+            if closed_record is not None:
+                verify_receipt_state(closed_record, Path(binding["state_root"]))
             with _locked_root(root):
                 if read_admission_head(root) != running:
                     raise ValueError("runtime_admission_head_changed")
-                _seal_local_targets(root, _binding_snapshot(root, name))
+                pre_seal = _binding_snapshot(root, name)
+                if (closed_record is not None
+                        and closed_state_sha256(pre_seal) != closed_record["closed_state_sha256"]):
+                    raise ValueError("runtime_admission_closed_state_mismatch")
+                _seal_local_targets(root, pre_seal)
                 closed = _binding_snapshot(root, name)
                 validate_target_ownership(root, closed)
                 identity = _store_binding(root, closed)

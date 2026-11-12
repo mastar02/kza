@@ -1198,19 +1198,22 @@ def test_latest_image_with_only_one_owner_table_is_invalid(tmp_path, dropped):
 
 def test_only_exact_additive_schema_groups_are_a_compatible_mixed_cut(tmp_path):
     post = _image(tmp_path, "N").manifest["databases"][PRIVACY]["schema"]
-    index, owner, voice = payload._privacy_schema_additions()
-    assert len(index) == 1 and len(owner) == 7 and len(voice) == 11
-    assert all(row in post for row in index + owner + voice)
+    index, owner, voice, ledger = payload._privacy_schema_additions()
+    assert len(index) == 1 and len(owner) == 7 and len(voice) == 11 and len(ledger) == 3
+    assert all(row in post for row in index + owner + voice + ledger)
 
     def without(*groups):
         return [row for row in post if not any(row in group for group in groups)]
 
     for older in (without(index), without(owner), without(voice), without(index, owner),
-                  without(owner, voice), without(index, voice), without(index, owner, voice)):
+                  without(owner, voice), without(index, voice), without(index, owner, voice),
+                  without(ledger), without(voice, ledger), without(index, owner, voice, ledger)):
         assert payload._privacy_schema_added(older, post)
         assert not payload._privacy_schema_added(post, older)  # Never towards an older latest image.
     assert not payload._privacy_schema_added(post, post)  # Equality is handled by the caller.
-    pre = without(index, owner, voice)
+    # U3b-0d3: the ledger group is all-or-nothing too (no salt table alone, no autoindex alone).
+    assert not payload._privacy_schema_added(without(ledger), without(ledger) + [ledger[0]])
+    pre = without(index, owner, voice, ledger)
     assert not payload._privacy_schema_added(pre, [row for row in post if row["name"] != "fact_owners_person"])
     assert not payload._privacy_schema_added(pre, [row for row in post
                                                    if row["name"] != "voice_attribution_events_profile"])

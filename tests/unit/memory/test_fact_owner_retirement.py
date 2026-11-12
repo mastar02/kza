@@ -277,11 +277,11 @@ def test_crash_inside_the_cascade_rolls_back_every_deletion_and_rerun_completes(
     ids = _owned_world(ledger, clock)
     original, calls = ledger._delete, []
 
-    def delete(db, fact_id):
+    def delete(db, fact_id, record=None):  # U3b-0d3: the cascade passes its ledger kind
         calls.append(fact_id)
         if len(calls) == 2:
             raise OSError("synthetic crash between cascade steps")
-        return original(db, fact_id)
+        return original(db, fact_id, record)
 
     before = _bytes(ledger)
     monkeypatch.setattr(ledger, "_delete", delete)

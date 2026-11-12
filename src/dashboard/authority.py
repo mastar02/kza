@@ -26,6 +26,7 @@ from uuid import uuid4
 from src.core.owned_work import OwnedBlockingWork
 from src.core.account_metadata import ActiveAccounts
 from src.core.reader_binding import ReaderBinding
+from src.memory.deletion_ledger import DeletionKind, append_deletion, deletion_recorded
 
 if TYPE_CHECKING:
     from src.dashboard.evaluation_grants import EvaluationGrantCatalog
@@ -742,7 +743,8 @@ class DashboardAuthority:
                 db.executemany("INSERT OR REPLACE INTO auth_meta VALUES (?,?)", (
                     ("legacy_digest", digest or ""), ("legacy_epoch", str(epoch))))
             elif action == "issue":
-                if db.execute("SELECT 1 FROM credential_attempts WHERE credential_id=? AND kind='revoke' AND outcome='committed'",(args[0],)).fetchone():
+                if (db.execute("SELECT 1 FROM credential_attempts WHERE credential_id=? AND kind='revoke' AND outcome='committed'",(args[0],)).fetchone()
+                        or deletion_recorded(db, DeletionKind.CREDENTIAL_REVOKED, args[0])):
                     raise AuthorityRejected("dashboard_credential_retired")
                 if db.execute("SELECT count(*) FROM credentials").fetchone()[0] >= MAX_CREDENTIALS:
                     raise AuthorityRejected("dashboard_credential_capacity")
@@ -765,6 +767,8 @@ class DashboardAuthority:
                 user_id, admitted = args
                 targets = admitted | {row[0] for row in db.execute("SELECT id FROM credentials WHERE user_id=?", (user_id,))}
                 db.execute("INSERT OR IGNORE INTO retired_users VALUES (?,?)", (user_id, floor))
+                # U3b-0d3: the retirement request is the append point (its credential cascade is not).
+                append_deletion(db, DeletionKind.USER_RETIRED, user_id, floor)
                 for identity in targets:
                     db.execute("DELETE FROM sessions WHERE credential=?", (identity,))
                     db.execute("DELETE FROM credentials WHERE id=?", (identity,))
@@ -772,6 +776,8 @@ class DashboardAuthority:
             elif action == "revoke_credential":
                 result = db.execute("DELETE FROM credentials WHERE id=?", args).rowcount == 1
                 db.execute("DELETE FROM sessions WHERE credential=?", args)
+                if result:
+                    append_deletion(db, DeletionKind.CREDENTIAL_REVOKED, args[0], floor)
             elif action == "logout":
                 result = db.execute("DELETE FROM sessions WHERE digest=?", args).rowcount == 1
             elif action == "credential_command":

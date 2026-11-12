@@ -26,6 +26,9 @@ from uuid import UUID
 from weakref import WeakMethod
 
 from src.core.voice_person_index import VoicePersonIndex
+from src.memory.deletion_ledger import (
+    DeletionKind, append_deletion, consent_withdrawal_subject, initialize_deletion_ledger,
+)
 from src.memory.erasure_journal import ERASURE_SCHEMA, ErasureJournal
 from src.dashboard.live_receipts import LIVE_RECEIPT_SCHEMA
 from src.memory.index_deletions import INDEX_DELETION_SCHEMA, IndexDeletionQueue
@@ -939,6 +942,8 @@ class FactLedger:
                 initialize_fact_owner_schema(db)
                 # U3b-4a-0: voice-attribution authority (validated, never pruned at open).
                 initialize_voice_attribution_schema(db)
+                # U3b-0d3: the deletion ledger (validated and chained, never written at open).
+                initialize_deletion_ledger(db)
                 owners = _owner_refs(db)
                 receipts = self._read_fact_receipts(db)
                 deleted_times = dict(db.execute("SELECT conversation_id, deleted_at FROM conversation_tombstones"))
@@ -1292,7 +1297,13 @@ class FactLedger:
             self._authority_version += 1
             return self._fact(db, fact_id)
 
-    def _delete(self, db, fact_id: str) -> int:
+    def _delete(self, db, fact_id: str, record: DeletionKind | None = None) -> int:
+        """Scrub one fact and its transitive dependents in the caller's transaction.
+
+        ``record`` is set only by the paths that create a user-requested
+        deletion (U3b-0d3): every fact this call deletes is then appended to
+        the deletion ledger with that kind. Expiry and voice prune pass None.
+        """
         rows = list(db.execute("""WITH RECURSIVE affected(id) AS (
             SELECT ? UNION SELECT d.fact_id FROM fact_dependencies d JOIN affected a ON d.source_fact_id=a.id
             ) SELECT f.id, f.revision FROM facts f JOIN affected a ON f.id=a.id WHERE f.state!=?""",
@@ -1306,6 +1317,8 @@ class FactLedger:
             db.execute("DELETE FROM fact_owners WHERE fact_id=?", (row["id"],))
             db.execute("DELETE FROM fact_owner_revisions WHERE fact_id=?", (row["id"],))
             self._queue(db, row["id"], revision, "delete")
+            if record is not None:
+                append_deletion(db, record, row["id"], self.clock())
         if rows:
             self._authority_version += 1
         return len(rows)
@@ -1314,7 +1327,7 @@ class FactLedger:
         """Reject/delete a fact through the authenticated review boundary."""
         self._reviewer(actor)
         with self._transaction(actor.require_current) as db:
-            return bool(self._delete(db, fact_id))
+            return bool(self._delete(db, fact_id, DeletionKind.FACT_DELETED))
 
     def reject_proposal(self, fact_id: str, actor: MemoryReviewer) -> bool:
         """A stale rejection must not delete a proposal confirmed elsewhere."""
@@ -1325,7 +1338,7 @@ class FactLedger:
                 return False
             if fact.state is not FactState.PROPOSED:
                 raise ValueError("memory_proposal_state_changed")
-            return bool(self._delete(db, fact_id))
+            return bool(self._delete(db, fact_id, DeletionKind.FACT_DELETED))
 
     # --- U3b-1a: per-person ownership. No production caller until U3b-1b/U3b-2. ---
 
@@ -1455,7 +1468,8 @@ class FactLedger:
                 dependents = self._dependents(db, fact_id)
                 if dependents and not delete_dependents:
                     raise MemoryOwnerDependents(dependents)
-                deleted = sum(self._delete(db, identity) for identity, _state in dependents)
+                deleted = sum(self._delete(db, identity, DeletionKind.FACT_DELETED)
+                              for identity, _state in dependents)
                 # _dependents is the transitive closure, so every listed id is now deleted.
                 deleted_ids = tuple(identity for identity, _state in dependents)
             fact_revision = fact.revision
@@ -1551,7 +1565,7 @@ class FactLedger:
         with self._owner_transaction(actor.require_current, withdraw=False) as db:
             if self._owned_fact(db, fact_id, actor.person_id) is None:
                 return False
-            return bool(self._delete(db, fact_id))
+            return bool(self._delete(db, fact_id, DeletionKind.FACT_DELETED))
 
     def _page(self, db, predicate: str, parameters: tuple, states: tuple[FactState, ...],
               after: FactPageCursor | None, limit: int) -> tuple[list[StoredFact], FactPageCursor | None]:
@@ -1926,6 +1940,9 @@ class FactLedger:
             state = (VoiceConsentState.VERIFICATION_LOCKED if consent.state is VoiceConsentState.VERIFICATION_LOCKED
                      else VoiceConsentState.REVOKED)
             written = self._write_consent(db, actor.person_id, state, consent.revision + 1, actor.subject)
+            # User decision 2026-11-12: a person's own withdrawal is recorded (an operator reopen is not).
+            append_deletion(db, DeletionKind.VOICE_CONSENT_WITHDRAWN,
+                            consent_withdrawal_subject(actor.person_id, written.revision), self.clock())
         self.voice_windows.close(actor.person_id)
         return written
 
@@ -2323,7 +2340,7 @@ class FactLedger:
             (person_id, FactOwnerChange.VOICE_PROPOSED.value))]
         for fact_id in facts:
             if retiring:
-                self._delete(db, fact_id)
+                self._delete(db, fact_id, DeletionKind.FACT_PRUNED_RETIRED_OWNER)
             else:
                 _owner, record = self._owner_state(db, fact_id)
                 self._write_owner(db, fact_id, record, FactOwnerChange.OPERATOR_UNASSIGNED)
@@ -2437,7 +2454,7 @@ class FactLedger:
             owned = [row[0] for row in db.execute(
                 "SELECT fact_id FROM fact_owners WHERE person_id IN (" + ",".join("?" for _ in targets)
                 + ") ORDER BY fact_id", targets)]
-            deleted = sum(self._delete(db, fact_id) for fact_id in owned)
+            deleted = sum(self._delete(db, fact_id, DeletionKind.FACT_PRUNED_RETIRED_OWNER) for fact_id in owned)
             # R4: the retired identities' consent and verification rows go too.
             placeholders = ",".join("?" for _ in targets)
             db.execute("DELETE FROM voice_attribution_consents WHERE person_id IN (" + placeholders + ")", targets)
@@ -2507,10 +2524,13 @@ class FactLedger:
             with self._transaction(actor.require_current) as db:
                 db.execute("INSERT OR IGNORE INTO conversation_tombstones VALUES (?,?,?)",
                            (conversation_id, self.clock(), actor.subject))
+                # U3b-0d3: the erasure request itself is the only append point;
+                # recover() and participant steps never reach this method.
+                append_deletion(db, DeletionKind.CONVERSATION_ERASED, conversation_id, self.clock())
                 self._authority_version += 1
                 self.erasures.ensure_operation(db, conversation_id, actor)
                 ids = [r[0] for r in db.execute("SELECT DISTINCT fact_id FROM fact_sources WHERE conversation_id=?", (conversation_id,))]
-                deleted = sum(self._delete(db, fact_id) for fact_id in ids)
+                deleted = sum(self._delete(db, fact_id, DeletionKind.FACT_DELETED) for fact_id in ids)
             self._deleted_conversations = self._deleted_conversations | {conversation_id}
             return deleted
 

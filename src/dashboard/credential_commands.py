@@ -14,6 +14,7 @@ from src.dashboard.credential_journal import (
     CredentialReceipt, MAX_CREDENTIAL_ATTEMPTS, canonical_attempt, insert_receipt,
 )
 from src.dashboard.evaluation_grants import PreparedEvaluationScope
+from src.memory.deletion_ledger import DeletionKind,append_deletion,deletion_recorded
 
 AUTH = frozenset({'auth:manage'})
 
@@ -253,7 +254,10 @@ class NativeCredentialCommands:
             if db.execute('SELECT COUNT(*) FROM credentials').fetchone()[0]>=authority_types.MAX_CREDENTIALS:
                 reason = 'capacity'
             elif (db.execute('SELECT 1 FROM credentials WHERE id=?',(command.target,)).fetchone()
-                    or db.execute("SELECT 1 FROM credential_attempts WHERE credential_id=? AND kind='revoke' AND outcome='committed'",(command.target,)).fetchone()):
+                    or db.execute("SELECT 1 FROM credential_attempts WHERE credential_id=? AND kind='revoke' AND outcome='committed'",(command.target,)).fetchone()
+                    # Review K5: the ISSUE target is the client's request_id, and a legacy
+                    # revocation leaves no attempt row; a revoked id is never reissued.
+                    or deletion_recorded(db,DeletionKind.CREDENTIAL_REVOKED,command.target)):
                 reason = 'revision_conflict'
             else:
                 grant = command.grant
@@ -276,6 +280,9 @@ class NativeCredentialCommands:
             else:
                 db.execute('DELETE FROM credentials WHERE id=? AND revision=?',(command.target,command.expected_revision))
                 db.execute('DELETE FROM sessions WHERE credential=?',(command.target,))
+                # U3b-0d3: inside the credential_effect savepoint, so an actor retired
+                # before commit rolls the append back with the revocation.
+                append_deletion(db,DeletionKind.CREDENTIAL_REVOKED,command.target,floor)
         receipt = CredentialReceipt(command.request_id,plan.actor_key,command.digest,command.action,
             command.target,command.expected_revision,CredentialOutcome.COMMITTED if reason is None else CredentialOutcome.NO_EFFECT,
             plan.revision if reason is None else None,'applied' if reason is None else reason,floor)

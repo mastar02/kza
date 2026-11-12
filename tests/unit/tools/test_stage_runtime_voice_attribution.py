@@ -59,7 +59,8 @@ def test_registration_strings_are_exact():
     assert PROTECTED <= stage._PROTECTED_TABLES and "voice_attribution_schema" not in stage._PROTECTED_TABLES
     assert "voice_attribution_schema" in stage._SCHEMA_MARKERS
     assert stage._VOICE_ATTRIBUTION_ADDITION == VOICE_ATTRIBUTION_TABLES
-    assert stage._SCHEMA_ADDITIONS == (stage._FACT_OWNER_ADDITION, stage._VOICE_ATTRIBUTION_ADDITION)
+    assert stage._SCHEMA_ADDITIONS == (stage._FACT_OWNER_ADDITION, stage._VOICE_ATTRIBUTION_ADDITION,
+                                       stage._DELETION_LEDGER_ADDITION)
 
 
 def _state(tmp_path, *, pre_4a):

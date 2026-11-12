@@ -15,6 +15,7 @@ import numpy as np
 
 from src.dashboard.auth import DashboardPrincipal
 from src.dashboard.authority import DashboardAuthority
+from src.memory.deletion_ledger import DeletionKind,append_deletion
 from src.memory.fact_ledger import MemorySource
 from src.users.voice_capture import VoiceCaptureReview
 from src.users.voice_capture_metadata import (
@@ -541,6 +542,8 @@ class VoiceLedger:
             if type(revision) is not int or revision!=row['revision']:
                 raise ValueError('voice_profile_revision_conflict')
             self._delete(db,identity,actor.subject)
+            # U3b-0d3: only the explicit deletion is recorded; prune() is a consequence of erasure.
+            append_deletion(db,DeletionKind.VOICE_PROFILE_DELETED,identity,self.ledger.clock())
         self.ledger.republish_owner_proof()
         return True
 
