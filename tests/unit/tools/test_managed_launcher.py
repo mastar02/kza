@@ -8,6 +8,7 @@ watchdog/control additions to src/core/process_lifecycle.
 import asyncio
 from contextlib import closing
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -27,6 +28,7 @@ from src.core import process_lifecycle as lifecycle_module
 from src.memory.deletion_ledger import (
     DeletionKind, append_deletion, consent_withdrawal_subject, initialize_deletion_ledger, subject_digest,
 )
+from src.memory.erasure_journal import ERASURE_SCHEMA
 from tests.mocks import fake_systemd
 
 REPO = Path(__file__).resolve().parents[3]
@@ -384,8 +386,17 @@ def _ledger_db(path: Path, deletions: list[tuple[DeletionKind, str]]) -> None:
         db.execute("COMMIT")
 
 
+def _target(db, participant: str, descriptor: dict) -> str:
+    """The erasure_targets row ErasureJournal._register_target writes (version 1)."""
+    encoded = json.dumps(descriptor, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    key = hashlib.sha256(json.dumps([participant, 1, encoded]).encode()).hexdigest()
+    db.execute("INSERT INTO erasure_targets VALUES (?,?,?,?)", (key, participant, 1, encoded))
+    return key
+
+
 def test_resurrection_counts_each_family_and_skips_pending_erasures(tmp_path):
-    state = tmp_path / "state"
+    """Fact, voice and consent rows as in U3b-0d; the journal now has the real ERASURE_SCHEMA shape (0d4a)."""
+    state = tmp_path.resolve() / "state"
     (state / "data" / "contexts").mkdir(parents=True)
     _ledger_db(state / "data" / "privacy.db", [
         (DeletionKind.CONVERSATION_ERASED, "c-erased"), (DeletionKind.CONVERSATION_ERASED, "c-pending"),
@@ -399,10 +410,19 @@ def test_resurrection_counts_each_family_and_skips_pending_erasures(tmp_path):
         db.executemany("INSERT INTO voice_profiles VALUES (?,?)", [("v-gone", None), ("v-ok", None)])
         db.execute("CREATE TABLE voice_attribution_consents (person_id TEXT, revision INTEGER)")
         db.executemany("INSERT INTO voice_attribution_consents VALUES (?,?)", [("p1", 2), ("p2", 2)])
-        db.execute("CREATE TABLE conversation_erasures (id TEXT, conversation_id TEXT)")
-        db.execute("CREATE TABLE erasure_steps (operation_id TEXT, state TEXT)")
-        db.executemany("INSERT INTO conversation_erasures VALUES (?,?)", [("o1", "c-erased"), ("o2", "c-pending")])
-        db.executemany("INSERT INTO erasure_steps VALUES (?,?)", [("o1", "complete"), ("o2", "pending")])
+        db.execute("CREATE TABLE conversation_tombstones (conversation_id TEXT PRIMARY KEY)")
+        db.executescript(ERASURE_SCHEMA)
+        events = _target(db, "events", {"path": str(state / "data" / "events.db"), "table": "events_policy_v1"})
+        captures = _target(db, "captures", {"db_path": str(state / "data" / "events.db"),
+                                            "audio_dir": str(state / "data" / "audio")})
+        literal = _target(db, "diagnostics", {"kind": "unresolved_diagnostic_inventory"})
+        db.executemany("INSERT INTO conversation_erasures VALUES (?,?,0,'synthetic')",
+                       [("o1", "c-erased"), ("o2", "c-pending")])
+        db.executemany("INSERT INTO erasure_steps(operation_id, participant, target_id, version, state)"
+                       " VALUES (?,?,?,1,?)", [
+                           ("o1", "events", events, "complete"), ("o1", "captures", captures, "complete"),
+                           ("o1", "diagnostics", literal, "pending"),  # never exempts another store
+                           ("o2", "events", events, "pending"), ("o2", "captures", captures, "pending")])
     with closing(sqlite3.connect(state / "data" / "events.db")) as db, db:
         db.execute("CREATE TABLE utterances (conversation_id TEXT)")
         db.executemany("INSERT INTO utterances VALUES (?)", [("c-erased",), ("c-pending",), ("c-live",)])
@@ -416,6 +436,41 @@ def test_resurrection_counts_each_family_and_skips_pending_erasures(tmp_path):
         db.execute("DELETE FROM events_policy_v1")
     (state / "data" / "contexts" / "u.json").write_text("{}")
     assert launcher.resurrection_counts(state)["conversation"] == 0
+
+
+def _conversation_columns() -> set[str]:
+    """Every contract column that can carry a conversation id: conversation_id or *sources_json."""
+    found = set()
+    for table, columns in stage._TABLE_COLUMNS.items():
+        for item in columns.split():
+            name = item.split(":")[0]
+            if name == "conversation_id" or name.endswith("sources_json"):
+                found.add(f"{table}.{name}")
+    return found
+
+
+def test_every_conversation_source_is_mapped_or_classified_not_scanned():
+    """0d4a build-time classification: a new unclassified column fails here."""
+    mapped = {entry.source for entry in launcher.CONVERSATION_SOURCES}
+    classified = set(launcher.CONVERSATION_NOT_SCANNED)
+    assert not mapped & classified
+    unclassified = (_conversation_columns() | {"contexts:*.json", "chroma:embedding_metadata.conversation_id"}) \
+        - mapped - classified
+    assert unclassified == set()
+    # The classification names only real columns, and the map covers the seven sources of v3 0d4a.
+    assert classified <= _conversation_columns()
+    assert mapped == {"utterances.conversation_id", "capture_conversations.id", "events_policy_v1.sources_json",
+                      "wake_clips_v1.sources_json", "conversation_turns_v1.input_sources_json",
+                      "chroma:embedding_metadata.conversation_id", "contexts:*.json"}
+    for entry in launcher.CONVERSATION_SOURCES:
+        assert entry.version == 1 and callable(entry.resolver) and callable(entry.scan)
+        assert entry.participant in {"captures", "events", "collectors", "semantic_index", "contexts"}
+
+
+def test_an_unclassified_conversation_column_fails_the_classification(monkeypatch):
+    monkeypatch.setitem(stage._TABLE_COLUMNS, "new_store_v1", "id:TEXT conversation_id:TEXT")
+    with pytest.raises(AssertionError):
+        test_every_conversation_source_is_mapped_or_classified_not_scanned()
 
 
 def _memory(state: Path, *, delete_error: Exception | None = None):

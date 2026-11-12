@@ -807,12 +807,13 @@ def _walk_conversation_ids(value, found: set) -> None:
             _walk_conversation_ids(child, found)
 
 
-def _json_column(db: sqlite3.Connection, table: str, column: str, found: set) -> None:
-    for (encoded,) in db.execute(f'SELECT "{column}" FROM "{table}" WHERE "{column}" IS NOT NULL'):
-        try:
-            _walk_conversation_ids(json.loads(encoded), found)
-        except (TypeError, ValueError):
-            continue
+def _json_conversation_ids(encoded) -> set[str]:
+    found: set[str] = set()
+    try:
+        _walk_conversation_ids(json.loads(encoded), found)
+    except (TypeError, ValueError):
+        pass
+    return found
 
 
 def subject_digest(salt: str, subject: str) -> str:
@@ -820,22 +821,240 @@ def subject_digest(salt: str, subject: str) -> str:
     return hmac.new(bytes.fromhex(salt), subject.encode(), hashlib.sha256).hexdigest()
 
 
-def resurrection_counts(state: Path) -> dict[str, int]:
-    """Content-free counts of payload ids whose deletion the ledger records (v3 N2 R-b).
+# --------------------------------------------------------------------------
+# Conversation resurrection per store (U3b-0d4a; u3b-0e-adoption-design-v3
+# section U3b-0d4a, review findings F5 and N6).
+#
+# An erased conversation's payload occurrence is exempt only while the erasure
+# step on the target that governs that store is not complete. Steps on other
+# targets (the cleaner-less unresolved_* literals included) never exempt it.
 
-    Ids are hashed in memory with each ledger's own salt. Conversations with a
-    pending erasure (steps not complete) are expected to still have payload
-    and are not counted: leased start-up resumes their erasure. Chroma is read
-    only through a read-only image of chroma.sqlite3 (review D2); its fact
-    candidates are the embedding ids (review P1), minus facts whose index
-    deletion is still pending.
+_JOURNAL_TABLES = frozenset({"erasure_targets", "conversation_erasures", "erasure_steps"})
+
+
+@dataclass(frozen=True)
+class _Target:
+    id: str
+    participant: str
+    version: int
+    descriptor: dict
+
+
+@dataclass
+class _ErasureJournal:
+    """What the scan reads from the single erasure journal: targets and unfinished steps."""
+
+    targets: tuple[_Target, ...] = ()
+    unfinished: frozenset = frozenset()  # (conversation_id, target_id) with a step state != 'complete'
+    roots: tuple[Path, ...] = ()  # descriptor_root, and its resolved form when it differs
+
+    def registered(self, participant: str, version: int = 1):
+        return (target for target in self.targets
+                if target.participant == participant and target.version == version)
+
+    def relative(self, value) -> Path | None:
+        """A descriptor path relativized against descriptor_root; None when it is not under it."""
+        if type(value) is not str or not os.path.isabs(value):
+            return None
+        normal = Path(os.path.normpath(value))
+        for root in self.roots:
+            try:
+                return normal.relative_to(root)
+            except ValueError:
+                continue
+        return None
+
+
+def _scan_utterances(db, names, relative):
+    if "utterances" in names:
+        for (value,) in db.execute("SELECT DISTINCT conversation_id FROM utterances"
+                                   " WHERE conversation_id IS NOT NULL"):
+            yield value, relative
+
+
+def _scan_capture_conversations(db, names, relative):
+    if "capture_conversations" in names:
+        for (value,) in db.execute("SELECT id FROM capture_conversations WHERE id IS NOT NULL"):
+            yield value, relative
+
+
+def _scan_events(db, names, relative):
+    if "events_policy_v1" in names:
+        for (encoded,) in db.execute("SELECT sources_json FROM events_policy_v1 WHERE sources_json IS NOT NULL"):
+            for value in _json_conversation_ids(encoded):
+                yield value, relative
+
+
+def _scan_wake_clips(db, names, relative):
+    if "wake_clips_v1" in names:
+        for target_id, encoded in db.execute("SELECT target_id, sources_json FROM wake_clips_v1"
+                                             " WHERE sources_json IS NOT NULL"):
+            for value in _json_conversation_ids(encoded):
+                yield value, target_id
+
+
+def _scan_conversation_turns(db, names, relative):
+    """Each turn with its ON DELETE CASCADE parent's target (None for an orphan turn)."""
+    if "conversation_turns_v1" not in names:
+        return
+    query = ("SELECT t.input_sources_json, w.target_id FROM conversation_turns_v1 t"
+             " LEFT JOIN wake_clips_v1 w ON w.id=t.id WHERE t.input_sources_json IS NOT NULL"
+             if "wake_clips_v1" in names else
+             "SELECT input_sources_json, NULL FROM conversation_turns_v1 WHERE input_sources_json IS NOT NULL")
+    for encoded, parent_target in db.execute(query):
+        for value in _json_conversation_ids(encoded):
+            yield value, parent_target
+
+
+def _scan_chroma_metadata(db, names, relative):
+    """conversation_id metadata with the owning collection's name (None when unresolvable)."""
+    if "embedding_metadata" not in names:
+        return
+    query = ("SELECT m.string_value, c.name FROM embedding_metadata m LEFT JOIN embeddings e ON e.id=m.id"
+             " LEFT JOIN segments s ON s.id=e.segment_id LEFT JOIN collections c ON c.id=s.collection"
+             " WHERE m.key='conversation_id'"
+             if {"embeddings", "segments", "collections"} <= names else
+             "SELECT string_value, NULL FROM embedding_metadata WHERE key='conversation_id'")
+    for value, collection in db.execute(query):
+        yield value, (relative.parent, collection)
+
+
+def _scan_contexts_json(path: Path, relative: Path):
+    try:
+        values = _json_conversation_ids(path.read_bytes())
+    except OSError:
+        return
+    for value in values:
+        yield value, relative
+
+
+def _governing_captures(journal: _ErasureJournal, relative: Path) -> frozenset:
+    return frozenset(target.id for target in journal.registered("captures")
+                     if journal.relative(target.descriptor.get("db_path")) == relative)
+
+
+def _governing_events(journal: _ErasureJournal, relative: Path) -> frozenset:
+    return frozenset(target.id for target in journal.registered("events")
+                     if target.descriptor.get("table") == "events_policy_v1"
+                     and journal.relative(target.descriptor.get("path")) == relative)
+
+
+def _governing_clip(journal: _ErasureJournal, target_id) -> frozenset:
+    """wake_clips_v1 rows name their target; conversation_turns_v1 rows arrive with their parent's."""
+    return frozenset(target.id for target in journal.registered("collectors") if target.id == target_id)
+
+
+def _governing_chroma(journal: _ErasureJournal, locator) -> frozenset:
+    directory, collection = locator
+    if type(collection) is not str:
+        return frozenset()
+    return frozenset(target.id for target in journal.registered("semantic_index")
+                     if target.descriptor.get("collection") == collection
+                     and journal.relative(target.descriptor.get("path")) == directory)
+
+
+def _governing_contexts(journal: _ErasureJournal, relative: Path) -> frozenset:
+    """The registered contexts directory that is the longest prefix of the file (ties: all of them)."""
+    matches = []
+    for target in journal.registered("contexts"):
+        if "path" not in target.descriptor:
+            continue  # {'kind': 'runtime', 'name': 'conversation_buffers'} never governs a file
+        directory = journal.relative(target.descriptor["path"])
+        if directory is not None and (directory == relative or directory in relative.parents):
+            matches.append((len(directory.parts), target.id))
+    if not matches:
+        return frozenset()
+    longest = max(length for length, _ in matches)
+    return frozenset(identifier for length, identifier in matches if length == longest)
+
+
+@dataclass(frozen=True)
+class ConversationSource:
+    """One place a conversation id is read from, and how its governing erasure target is found.
+
+    ``scan`` yields (conversation_id, locator) per occurrence; ``resolver``
+    maps a locator to the ids of the governing ``participant``/``version``
+    targets (empty: the occurrence has no governing target and counts).
     """
+
+    source: str
+    participant: str
+    version: int
+    resolver: object
+    scan: object
+    kind: str = "sqlite"  # "sqlite" (per database image) or "contexts_json" (per JSON file)
+
+
+CONVERSATION_SOURCES: tuple[ConversationSource, ...] = (
+    ConversationSource("utterances.conversation_id", "captures", 1, _governing_captures, _scan_utterances),
+    ConversationSource("capture_conversations.id", "captures", 1, _governing_captures,
+                       _scan_capture_conversations),
+    ConversationSource("events_policy_v1.sources_json", "events", 1, _governing_events, _scan_events),
+    ConversationSource("wake_clips_v1.sources_json", "collectors", 1, _governing_clip, _scan_wake_clips),
+    ConversationSource("conversation_turns_v1.input_sources_json", "collectors", 1, _governing_clip,
+                       _scan_conversation_turns),
+    ConversationSource("chroma:embedding_metadata.conversation_id", "semantic_index", 1, _governing_chroma,
+                       _scan_chroma_metadata),
+    ConversationSource("contexts:*.json", "contexts", 1, _governing_contexts, _scan_contexts_json,
+                       kind="contexts_json"),
+)
+
+# Conversation-bearing columns deliberately not scanned, with the reason
+# (u3b-0e-adoption-design-v3 0d4a not_scanned_with_reason). A build-time test
+# pins that every conversation_id / *sources_json column of
+# stage_runtime._TABLE_COLUMNS is either here or in CONVERSATION_SOURCES.
+CONVERSATION_NOT_SCANNED: dict[str, str] = {
+    "conversation_erasures.conversation_id": "erasure record",
+    "conversation_tombstones.conversation_id": "erasure record",
+    "audio_write_intents.conversation_id": "cleanup obligation",
+    "pending_audio_deletions.conversation_id": "cleanup obligation",
+    "fact_sources.conversation_id": "fact provenance (producers participant); 0d4b",
+    "voice_fingerprint_sources.conversation_id": "voice provenance (voices participant); 0d4b",
+    "voice_profile_sources.conversation_id": "voice provenance (voices participant); 0d4b",
+    "voice_fingerprints.sources_json": "voice provenance (voices participant); 0d4b",
+    "voice_profiles.sources_json": "voice provenance (voices participant); 0d4b",
+    "voice_groups.sources_json": "voice provenance (voices participant); 0d4b",
+    "voice_group_requests.sources_json": "voice provenance (voices participant); 0d4b",
+    "lineage.conversation_id": "diagnostics v2 catalog; 0d4b",
+    "live_delivery_sources.conversation_id": "streams; 0d4b",
+    "suggestions_policy_v1.sources_json": "suggestions participant; 0d4b",
+}
+
+
+def _read_journal(db: sqlite3.Connection, names: set[str]) -> _ErasureJournal:
+    """Targets and unfinished (conversation, target) steps; a missing table reads as empty."""
+    targets = []
+    if "erasure_targets" in names:
+        for identifier, participant, version, encoded in db.execute(
+                "SELECT id, participant, version, descriptor FROM erasure_targets"):
+            try:
+                descriptor = json.loads(encoded)
+            except (TypeError, ValueError, RecursionError):
+                continue  # an unreadable target governs nothing: its occurrences count
+            if type(identifier) is str and type(participant) is str and type(version) is int \
+                    and type(descriptor) is dict:
+                targets.append(_Target(identifier, participant, version, descriptor))
+    unfinished: frozenset = frozenset()
+    if {"conversation_erasures", "erasure_steps"} <= names:
+        unfinished = frozenset((conversation, target) for conversation, target in db.execute(
+            "SELECT e.conversation_id, s.target_id FROM conversation_erasures e"
+            " JOIN erasure_steps s ON s.operation_id=e.id WHERE s.state!='complete'"))
+    return _ErasureJournal(tuple(targets), unfinished)
+
+
+def _resurrection_scan(state: Path, descriptor_root: Path | None) -> tuple[dict, dict]:
+    """One read of the state: (family counts, content-free counts per family and participant/source)."""
+    state = Path(state)
+    root = Path(descriptor_root) if descriptor_root is not None else state
     ledgers: list[tuple[str, dict[str, set]]] = []
-    candidates = {"conversation": set(), "fact": set(), "voice_profile": set()}
+    sources = {"fact": {"facts": set(), "semantic_index": set()},
+               "voice_profile": {"voice_profiles": set(), "voice_fingerprints": set()}}
     consents: set[tuple[str, int]] = set()
-    pending: set[str] = set()
     pending_index: set[str] = set()
+    occurrences: list[tuple[str, ConversationSource, object]] = []
+    journals: list[_ErasureJournal] = []
     for path in _sqlite_files(state):
+        relative = path.relative_to(state)
         with stage._database_image(path) as db:
             names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if {"deletion_ledger_v1", "deletion_ledger_salt_v1"} <= names:
@@ -845,31 +1064,25 @@ def resurrection_counts(state: Path) -> dict[str, int]:
                     for kind, subject in db.execute("SELECT kind, subject_sha256 FROM deletion_ledger_v1"):
                         subjects.setdefault(kind, set()).add(subject)
                     ledgers.append((salt[0], subjects))
-            if "utterances" in names:
-                candidates["conversation"].update(row[0] for row in db.execute(
-                    "SELECT conversation_id FROM utterances WHERE conversation_id IS NOT NULL"))
-            if "capture_conversations" in names:
-                candidates["conversation"].update(row[0] for row in db.execute("SELECT id FROM capture_conversations"))
-            for table, column in (("events_policy_v1", "sources_json"), ("wake_clips_v1", "sources_json"),
-                                  ("conversation_turns_v1", "input_sources_json")):
-                if table in names:
-                    _json_column(db, table, column, candidates["conversation"])
+            if names & _JOURNAL_TABLES:
+                journals.append(_read_journal(db, names))
+            for entry in CONVERSATION_SOURCES:
+                if entry.kind == "sqlite":
+                    occurrences.extend((value, entry, locator) for value, locator in entry.scan(db, names, relative)
+                                       if type(value) is str and value)
             if "facts" in names:
-                candidates["fact"].update(row[0] for row in db.execute("SELECT id FROM facts WHERE state!='deleted'"))
+                sources["fact"]["facts"].update(row[0] for row in db.execute(
+                    "SELECT id FROM facts WHERE state!='deleted'"))
             if "voice_profiles" in names:
-                candidates["voice_profile"].update(row[0] for row in db.execute(
+                sources["voice_profile"]["voice_profiles"].update(row[0] for row in db.execute(
                     "SELECT id FROM voice_profiles WHERE deleted_at IS NULL"))
             if "voice_fingerprints" in names:
-                candidates["voice_profile"].update(row[0] for row in db.execute(
+                sources["voice_profile"]["voice_fingerprints"].update(row[0] for row in db.execute(
                     "SELECT suggested_profile FROM voice_fingerprints WHERE suggested_profile IS NOT NULL"))
             if "voice_attribution_consents" in names:
                 consents.update((row[0], row[1]) for row in db.execute(
                     "SELECT person_id, revision FROM voice_attribution_consents")
                     if type(row[0]) is str and type(row[1]) is int)
-            if {"conversation_erasures", "erasure_steps"} <= names:
-                pending.update(row[0] for row in db.execute(
-                    "SELECT DISTINCT e.conversation_id FROM conversation_erasures e JOIN erasure_steps s"
-                    " ON s.operation_id=e.id WHERE s.state!='complete'"))
             # A deletion still queued for the index (a crash before reconciliation)
             # leaves the fact's embedding in place legitimately: not a resurrection.
             if "index_jobs" in names:
@@ -877,38 +1090,81 @@ def resurrection_counts(state: Path) -> dict[str, int]:
             if "policy_index_deletions" in names:
                 pending_index.update(row[0] for row in db.execute(
                     "SELECT fact_id FROM policy_index_deletions WHERE state!='complete'"))
-            candidates["fact"].update(_chroma_ids(db, names))
-            if "embedding_metadata" in names:
-                for (value,) in db.execute("SELECT string_value FROM embedding_metadata"
-                                           " WHERE key='conversation_id'"):
-                    if isinstance(value, str) and value:
-                        candidates["conversation"].add(value)
+            sources["fact"]["semantic_index"].update(_chroma_ids(db, names))
+    if len(journals) > 1:
+        raise ValueError("runtime_admission_recovery_erasure_journal_ambiguous")
+    journal = journals[0] if journals else _ErasureJournal()
+    journal.roots = tuple(dict.fromkeys((root, root.resolve())))
+    contexts = [entry for entry in CONVERSATION_SOURCES if entry.kind == "contexts_json"]
     for path in sorted(state.rglob("*.json")):
-        if "contexts" in path.relative_to(state).parts and path.is_file() and not path.is_symlink():
-            try:
-                _walk_conversation_ids(json.loads(path.read_text()), candidates["conversation"])
-            except (OSError, ValueError):
-                continue
-    candidates["conversation"] -= pending
-    candidates["fact"] -= pending_index
-    counts = {}
-    for family, kinds in _RESURRECTION_KINDS.items():
-        count = 0
-        if family == "voice_consent":
-            for salt, subjects in ledgers:
-                recorded = subjects.get("voice_consent_withdrawn", set())
-                window = len(recorded)
-                count += sum(1 for person, revision in consents if any(
-                    subject_digest(salt, f"{person}#{later}") in recorded
-                    for later in range(revision + 1, revision + window + 1)))
-        else:
-            for candidate in candidates[family]:
-                if type(candidate) is str and candidate and any(
-                        subject_digest(salt, candidate) in subjects.get(kind, set())
-                        for salt, subjects in ledgers for kind in kinds):
-                    count += 1
-        counts[family] = count
-    return counts
+        relative = path.relative_to(state)
+        if "contexts" in relative.parts and path.is_file() and not path.is_symlink():
+            for entry in contexts:
+                occurrences.extend((value, entry, locator) for value, locator in entry.scan(path, relative)
+                                   if type(value) is str and value)
+
+    def recorded(candidate, kinds) -> bool:
+        return type(candidate) is str and bool(candidate) and any(
+            subject_digest(salt, candidate) in subjects.get(kind, set())
+            for salt, subjects in ledgers for kind in kinds)
+
+    erased: dict[str, bool] = {}
+    counted = {entry.participant: set() for entry in CONVERSATION_SOURCES}
+    for conversation, entry, locator in occurrences:
+        if conversation not in erased:
+            erased[conversation] = recorded(conversation, _RESURRECTION_KINDS["conversation"])
+        if not erased[conversation]:
+            continue
+        governing = entry.resolver(journal, locator)
+        if governing and all((conversation, target) in journal.unfinished for target in governing):
+            continue  # its own store's step is still pending: the next leased run cleans it
+        counted[entry.participant].add(conversation)
+    counts = {"conversation": len(set().union(*counted.values()))}
+    detail = {"conversation": {participant: len(found) for participant, found in sorted(counted.items())}}
+    for family in ("fact", "voice_profile"):
+        found = {name: {candidate for candidate in values - (pending_index if family == "fact" else set())
+                        if recorded(candidate, _RESURRECTION_KINDS[family])}
+                 for name, values in sources[family].items()}
+        counts[family] = len(set().union(*found.values()))
+        detail[family] = {name: len(values) for name, values in found.items()}
+    count = 0
+    for salt, subjects in ledgers:
+        withdrawn = subjects.get("voice_consent_withdrawn", set())
+        window = len(withdrawn)
+        count += sum(1 for person, revision in consents if any(
+            subject_digest(salt, f"{person}#{later}") in withdrawn
+            for later in range(revision + 1, revision + window + 1)))
+    counts["voice_consent"] = count
+    detail["voice_consent"] = {"voice_attribution_consents": count}
+    return {family: counts[family] for family in _RESURRECTION_KINDS}, detail
+
+
+def resurrection_counts(state: Path, *, descriptor_root: Path | None = None) -> dict[str, int]:
+    """Content-free counts of payload ids whose deletion the ledger records (v3 N2 R-b, U3b-0d4a).
+
+    Ids are hashed in memory with each ledger's own salt. A conversation
+    counts when at least one of its occurrences (CONVERSATION_SOURCES) is
+    not exempt: an occurrence is exempt only while some erasure operation
+    for that conversation has a non-complete step on the target governing
+    its store. Exactly one SQLite file may hold the erasure journal; more
+    than one refuses (runtime_admission_recovery_erasure_journal_ambiguous).
+    ``descriptor_root`` is the binding's state_root when ``state`` is a
+    shadow copy: descriptor paths are relativized against it, candidate
+    files against ``state``. Chroma is read only through a read-only image
+    of chroma.sqlite3 (review D2); its fact candidates are the embedding ids
+    (review P1), minus facts whose index deletion is still pending.
+    """
+    return _resurrection_scan(state, descriptor_root)[0]
+
+
+def resurrection_detail(state: Path, *, descriptor_root: Path | None = None) -> dict[str, dict[str, int]]:
+    """Content-free counts per family and participant (conversation) or source table (other families).
+
+    For the R-b report and the adoption plan. A fact or voice profile found in
+    two sources is counted under each; the family totals are those of
+    resurrection_counts.
+    """
+    return _resurrection_scan(state, descriptor_root)[1]
 
 
 def receipt_eligibility(root: Path, head: dict) -> dict:
@@ -1017,7 +1273,13 @@ def _recovery_checks(state: Path, checked: Path, binding: dict, report: dict, st
             if now is None or not set(bound[family]["row_hashes"]) <= set(now["row_hashes"]):
                 report["regressions"].append(family + ":" + relative)
     step("resurrection")
-    report["resurrected"] = resurrection_counts(checked)
+    try:
+        # Descriptors name paths under the binding's state_root; ``checked`` may be a shadow copy.
+        report["resurrected"], report["resurrection_detail"] = _resurrection_scan(checked, state)
+    except ValueError as error:
+        report["failures"].append(str(error))
+    except sqlite3.Error:
+        report["failures"].append("runtime_admission_recovery_resurrection_unreadable")
     return report
 
 
@@ -1085,8 +1347,10 @@ def recover_open_head(root: Path, head: dict, *, mode: str, boot_id: str, wall: 
     report = recovery_report(root, head, progress=progress)
     report["state_changed_after_close"] = state_changed
     if report["failures"]:
-        return RecoveryDecision(exit_code=ExitCode.UNRECOVERABLE, code="runtime_admission_recovery_check_failed",
-                                path="R-b", report=report)
+        code = ("runtime_admission_recovery_erasure_journal_ambiguous"
+                if "runtime_admission_recovery_erasure_journal_ambiguous" in report["failures"]
+                else "runtime_admission_recovery_check_failed")
+        return RecoveryDecision(exit_code=ExitCode.UNRECOVERABLE, code=code, path="R-b", report=report)
     regressed = sorted({item.split(":", 1)[0] for item in report["regressions"]}
                        | {"resurrected_" + name for name, count in report["resurrected"].items() if count}
                        | ({"state_changed_after_close"} if state_changed else set())
