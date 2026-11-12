@@ -42,6 +42,7 @@ logger = logging.getLogger("sync_ha")
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+import src  # noqa: E402,F401 -- G1 (U3b-0e): refuses an unmanaged run under a managed root (exit 78)
 
 _env_path = ROOT / ".env"
 if _env_path.exists():

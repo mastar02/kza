@@ -223,6 +223,9 @@ def bench_doa(iterations: int) -> None:
 
 
 def main() -> None:
+    # G1 (U3b-0e): importing src refuses an unmanaged run under a managed
+    # release root (exit 78) before any store opens.
+    import src  # noqa: F401
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--stt", action="store_true")
     ap.add_argument("--vad", action="store_true")

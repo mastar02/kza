@@ -10,6 +10,7 @@ from pathlib import Path
 
 # Agregar src al path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+import src  # noqa: E402,F401 -- G1 (U3b-0e): refuses an unmanaged run under a managed root (exit 78)
 
 
 def _authority_factory(args: argparse.Namespace):
@@ -68,7 +69,7 @@ def cmd_record(args: argparse.Namespace) -> None:
 
     # Mostrar estado final
     stats = recorder.get_stats()
-    print(f"\n📊 Estado actual:")
+    print("\n📊 Estado actual:")
     print(f"   Positivas: {stats['positive_samples']}")
     print(f"   Negativas: {stats['negative_samples']}")
     print(f"   Listo para entrenar: {'✅' if stats['ready_for_training'] else '❌ (necesitas mínimo 30 de cada)'}")
@@ -87,13 +88,13 @@ def cmd_train(args):
     stats = recorder.get_stats()
 
     if not stats['ready_for_training']:
-        print(f"❌ Datos insuficientes:")
+        print("❌ Datos insuficientes:")
         print(f"   Positivas: {stats['positive_samples']} (mínimo 30)")
         print(f"   Negativas: {stats['negative_samples']} (mínimo 30)")
         print(f"\nUsa: python {sys.argv[0]} record --name '{args.name}' --positive --negative")
         return 1
 
-    print(f"📊 Datos de entrenamiento:")
+    print("📊 Datos de entrenamiento:")
     print(f"   Positivas: {stats['positive_samples']}")
     print(f"   Negativas: {stats['negative_samples']}")
     print()
@@ -103,21 +104,21 @@ def cmd_train(args):
         models_dir=args.output_dir
     )
 
-    print(f"⏳ Entrenando (esto puede tomar varios minutos)...")
+    print("⏳ Entrenando (esto puede tomar varios minutos)...")
     model_path = trainer.train(
         wake_word_name=args.name,
         epochs=args.epochs
     )
 
     if model_path:
-        print(f"\n✅ Modelo entrenado exitosamente!")
+        print("\n✅ Modelo entrenado exitosamente!")
         print(f"   Path: {model_path}")
-        print(f"\nPara usar este wake word, actualiza config/settings.yaml:")
-        print(f"   wake_word:")
+        print("\nPara usar este wake word, actualiza config/settings.yaml:")
+        print("   wake_word:")
         print(f"     model: '{args.name}'")
         return 0
     else:
-        print(f"\n❌ Error en entrenamiento")
+        print("\n❌ Error en entrenamiento")
         return 1
 
 

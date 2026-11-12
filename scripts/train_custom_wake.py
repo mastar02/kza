@@ -37,7 +37,6 @@ import json
 import logging
 import random
 import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -329,10 +328,6 @@ def cmd_export(args) -> int:
     saved = MODEL_DIR / f"{WAKE_WORD}_keras"
     model = load_model(saved)
     onnx_path = MODEL_DIR / f"{WAKE_WORD}.onnx"
-    input_signature = [
-        # openwakeword expects (batch, time_steps, feat_dim)
-        ...
-    ]
     # Simplificado: usar spec directo
     import tensorflow as tf
     spec = (tf.TensorSpec(model.inputs[0].shape, tf.float32, name="input"),)
@@ -364,6 +359,12 @@ def cmd_all(args) -> int:
 
 
 def main() -> int:
+    # G1 (U3b-0e): importing src refuses an unmanaged run under a managed
+    # release root (exit 78) before this tool writes under data/.
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    import src  # noqa: F401
+
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
 

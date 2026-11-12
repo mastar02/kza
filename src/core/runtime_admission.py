@@ -662,6 +662,13 @@ def verify_runtime_admission(config: dict, *, runtime_root: Path | None = None) 
         A lifetime observer, or None for an unmanaged development configuration.
     """
     path = os.fspath(config.get("memory", {}).get("privacy_db_path", "./data/memory_privacy.db"))
+    # G1 (U3b-0e F1/N8): without a ticket, refuse under a managed root before
+    # any store opens; the schema-only capability is never a serve entry.
+    from src.core.entry_guard import check_serve_entry
+    check_serve_entry((path,), runtime_root=runtime_root)
+    if TICKET_ENV in os.environ and "KZA_AUDIT_DB" in os.environ:
+        # U3b-0e N1: the audit path comes only from hooks.audit_sqlite.db_path.
+        raise RuntimeError("runtime_admission_audit_env_refused")
     verified = _validate_path(path, initial=True)
     if verified is None:
         return None

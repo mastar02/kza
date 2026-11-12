@@ -18,6 +18,7 @@ import asyncio
 
 # Agregar src al path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import src  # noqa: E402,F401 -- G1 (U3b-0e): refuses an unmanaged run under a managed root (exit 78)
 
 from dotenv import load_dotenv
 

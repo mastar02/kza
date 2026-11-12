@@ -12,6 +12,7 @@ from pathlib import Path
 
 # Agregar src al path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+import src  # noqa: E402,F401 -- G1 (U3b-0e): refuses an unmanaged run under a managed root (exit 78)
 
 
 def cmd_stats(args):

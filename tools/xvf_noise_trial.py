@@ -237,6 +237,9 @@ def run_trial(restore: bool) -> dict:
 
 def main() -> None:
     """Apply the single-value trial or restore its saved baseline, emitting JSON."""
+    # G1 (U3b-0e): importing src refuses an unmanaged run under a managed
+    # release root (exit 78) before any store opens.
+    import src  # noqa: F401
     parser = argparse.ArgumentParser(description=__doc__)
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument('--apply', action='store_true')

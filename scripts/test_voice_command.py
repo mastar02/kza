@@ -26,6 +26,7 @@ logger = logging.getLogger("voice_test")
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+import src  # noqa: E402,F401 -- G1 (U3b-0e): refuses an unmanaged run under a managed root (exit 78)
 
 # Credentials are selected explicitly by main; importing never reads .env.
 

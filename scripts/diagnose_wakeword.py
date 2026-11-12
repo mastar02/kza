@@ -19,6 +19,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+import src  # noqa: E402,F401 -- G1 (U3b-0e): refuses an unmanaged run under a managed root (exit 78)
 
 if TYPE_CHECKING:
     from src.wakeword.live_capture import LiveWakewordDiagnosticsCapture

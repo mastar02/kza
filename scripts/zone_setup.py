@@ -11,6 +11,7 @@ from pathlib import Path
 
 # Agregar src al path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+import src  # noqa: E402,F401 -- G1 (U3b-0e): refuses an unmanaged run under a managed root (exit 78)
 
 
 def cmd_list_devices(args):
@@ -100,10 +101,10 @@ def cmd_test_mic(args: argparse.Namespace) -> int:
 def cmd_test_zone(args):
     """Probar una zona completa (mic -> TTS -> speaker)"""
     from src.audio.zone_manager import ZoneManager, Zone
-    from src.audio.ma1260_controller import MA1260Controller, MA1260Source
+    from src.audio.ma1260_controller import MA1260Controller
     import numpy as np
     
-    print(f"\n🔊 Probando zona...")
+    print("\n🔊 Probando zona...")
     print(f"   Micrófono: dispositivo {args.mic}")
     print(f"   MA1260 zona: {args.ma1260_zone}")
     print(f"   Modo: {'simulación' if args.simulate else 'real'}")
@@ -213,7 +214,7 @@ def cmd_ma1260_status(args):
     """Ver estado del MA1260"""
     from src.audio.ma1260_controller import MA1260Controller
     
-    print(f"\n📊 Estado del Dayton MA1260")
+    print("\n📊 Estado del Dayton MA1260")
     print("=" * 60)
     
     if args.simulate:

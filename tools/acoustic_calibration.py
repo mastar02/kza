@@ -545,6 +545,9 @@ def print_report(directory: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # G1 (U3b-0e): importing src refuses an unmanaged run under a managed
+    # release root (exit 78) before any store opens.
+    import src  # noqa: F401
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--condition", choices=CONDITIONS)

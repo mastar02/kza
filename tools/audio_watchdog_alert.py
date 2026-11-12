@@ -94,6 +94,11 @@ def check_once(health_path: str, deaf_after_s: float, base_url: str, token: str)
 
 
 def main(argv: list[str] | None = None) -> int:
+    # G1 (U3b-0e): importing src refuses an unmanaged run under a managed
+    # release root (exit 78) before any check reads state.
+    if _REPO_ROOT not in sys.path:
+        sys.path.insert(0, _REPO_ROOT)
+    import src  # noqa: F401
     ap = argparse.ArgumentParser()
     ap.add_argument("--health-path", default=os.environ.get("KZA_AUDIO_HEALTH", DEFAULT_HEALTH))
     ap.add_argument("--deaf-after-s", type=float, default=300.0)
