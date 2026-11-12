@@ -1,0 +1,31 @@
+# kza-voice managed launcher drop-in (U3b-0d). Deployment material, not
+# application configuration: rendered by
+#   stage_runtime --root <root> --offline install-controller/install-launcher
+# into ~/.config/systemd/user/kza-voice.service.d/managed.conf, which replaces
+# release.conf (moved aside as release.conf.unmanaged). Values in braces are
+# measured on the server (L2, L6) and filled by install-launcher.
+# Type=notify is a recorded deviation from the R10 native form (Type=simple):
+# the controller relays the child's READY/WATCHDOG as the main PID.
+[Unit]
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=notify
+NotifyAccess=main
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStartSec={timeout_start}
+TimeoutStopSec={timeout_stop}
+TimeoutAbortSec={timeout_stop}
+WatchdogSec={watchdog_sec}
+WatchdogSignal=SIGTERM
+Restart=on-failure
+RestartSec=10s
+RestartPreventExitStatus=69 78
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory={root}
+StandardOutput=append:{console_log}
+StandardError=append:{console_log}
+ExecStart=
+ExecStart={python} -I -B {controller} --root {root} --offline serve --stop-grace {stop_grace} --recover {recover} --unit-timeout-stop {timeout_stop}

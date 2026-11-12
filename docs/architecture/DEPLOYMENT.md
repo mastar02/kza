@@ -56,7 +56,8 @@ y Escritorio; Living y Cocina siguen sin captura útil. HA conserva `auth_error`
   los registros de retención conservan sus localizadores absolutos. El directorio
   de trabajo es el nuevo contenedor; `runtime/config`, `runtime/data` y
   `runtime/.env` enlazan a él. No retirar el estado del slot anterior.
-- `kza-voice.service` conserva su unit original y usa el drop-in `release.conf`.
+- `kza-voice.service` conserva su unit original y usa el drop-in `release.conf`
+  (el lanzador gestionado U3b-0d lo reemplazará en R1; ver «Lanzador gestionado (U3b-0d)»).
   Ejecuta `/home/kza/kza/.venv/bin/python -B -P -m src.main`, con
   `PYTHONPATH=/home/kza/releases/current`. El venv y los modelos existentes
   permanecen externos; no se instalaron dependencias ni se reasignaron GPUs.
@@ -365,6 +366,183 @@ nueva se descarta y queda el índice anterior.
   puntero y el borrado de la colección anterior, esa colección anterior queda
   en disco. Una colección `__<fecha>` sobrante la limpia la próxima
   sincronización. La legacy se conserva siempre, por el rollback.
+
+### Lanzador gestionado (U3b-0d) — desarrollado, no instalado
+
+Estado: código y ensayos en la rama de desarrollo. **No está instalado** y no
+se instala hasta la ventana de R1. Antes hacen falta U3b-0e (el primer head
+gestionado a partir del estado de producción), correr 0d1 en Linux y medir en
+el server los presupuestos de parada (L6) y del watchdog (L2).
+
+Cómo arranca:
+
+- systemd (`kza --user`) inicia el controlador:
+  `/home/kza/kza/.venv/bin/python -I -B /home/kza/releases/controller/current/scripts/stage_runtime.pyc --root /home/kza/releases --offline serve --stop-grace <S> --recover bounded --unit-timeout-stop <T>`.
+- El controlador es el proceso principal y el único que escribe el head.
+  Lanza `src.main` del slot del head con `cwd` en su `runtime`,
+  `PYTHONPATH` en ese runtime, `CONFIG_PATH=config/settings.yaml` y el ticket.
+  Hereda el lease y dos pipes privados: notificaciones y control.
+- Unit: `Type=notify`, `NotifyAccess=main`, `KillMode=mixed`,
+  `RestartPreventExitStatus=69 78`, `Restart=on-failure`,
+  `StartLimitBurst=5` en 300 s. Es un desvío registrado en
+  `SERVER_CONVENTIONS.md` (excepción R10 #6).
+- El hijo nunca recibe `NOTIFY_SOCKET` ni `WATCHDOG_*`. Escribe líneas en su
+  pipe y el controlador las valida y las retransmite: READY una sola vez,
+  WATCHDOG sólo después de READY, STATUS, STOPPING y EXTEND_TIMEOUT_USEC.
+  El hijo avisa `ARMED=1` cuando su manejador de SIGTERM existe. El
+  controlador consume esa línea, no la retransmite y retiene un stop hasta
+  recibirla (máximo 10 s), para que un SIGTERM no llegue al intérprete antes
+  de ese manejador.
+- SIGTERM al controlador sólo escribe un byte en un self-pipe. No se enmascara
+  ninguna señal. El controlador reenvía SIGTERM al hijo y recién después
+  consulta `systemctl is-system-running`. Si el sistema está apagándose,
+  escribe `fast` en el pipe de control y acota el plazo con el presupuesto del
+  manager.
+- El cierre se sella con una sola regla: recibo exacto, hijo cosechado,
+  registro `receipt-states/` cuando el slot lo declara (`release.json`), y el
+  manifiesto del estado recalculado bajo el lock antes de abrir cualquier
+  base. El código de salida del hijo no decide.
+
+Códigos de salida del controlador:
+
+| Código | Significado | systemd |
+|---|---|---|
+| 0 | parada limpia, head cerrado | no reinicia |
+| 75 | el hijo terminó solo y se selló | reinicia |
+| 68 | head `unknown` o `running`, apto para una recuperación automática | reinicia |
+| 69 | head `unknown` o `running`, no apto | no reinicia |
+| 78 | rechazado antes de CAS `running` (selección, contrato, época, rutas, lease ocupado) | no reinicia |
+| 70 | error transitorio antes de CAS `running` | reinicia dentro de StartLimit |
+
+Registros nuevos en `admission/`: `runs/<run>.json` y `runs/<run>.exit.json`
+(inmutables), `recoveries/`, `seal-intents/`, `controller.json` y
+`launcher/` (instalaciones del controlador y del lanzador, retiro). Todos son
+sin contenido.
+
+Recuperación al arrancar (L1 = A):
+
+- **R-a** (con recibo): si el controlador murió después del recibo, el
+  arranque siguiente completa el sello. No gasta cupo. Si el manifiesto o el
+  digest de estado cerrado no coinciden, el estado cambió después del cierre:
+  no se sella y sólo el operador puede adoptar.
+- **R-b** (sin recibo): se adopta el estado una vez cada 24 h. Nunca dos veces
+  seguidas sin un cierre limpio en el medio. Antes se comprueba:
+  - que no haya escritores;
+  - `quick_check` de cada SQLite, con recuperación del WAL;
+  - que los JSON parseen;
+  - la estructura de los segmentos de Chroma (sin abrir el SDK);
+  - que el registro de borrados y las familias de sólo-agregar avancen;
+  - que ningún id borrado haya resucitado en los almacenes de payload;
+  - la propiedad de destinos;
+  - la equivalencia de componentes manuales.
+- **Recuperación por arranque**: si el run quedó del boot anterior (reinicio o
+  corte de luz), hay una recuperación por `boot_id` y no gasta el cupo de 24 h.
+- **Operador** (`UNKNOWN` sin adopción automática): primero
+  `stage_runtime --root /home/kza/releases --offline adopt --dry-run`, que
+  imprime el sha del head y sólo conteos. Después
+  `adopt --confirm <sha> --confirm-regressions <familias>`, con las familias
+  exactamente como las informó el dry-run.
+- Un head recuperado no puede delegar hasta un cierre limpio posterior.
+
+Instalación en la ventana de R1 (bajo `kza`, sin sudo; el servicio detenido):
+
+1. Bajo `yo`: construir la release con `scripts/build_runtime.py`. Su
+   `release.json` declara `launcher_contract`, `format_epoch`,
+   `receipt_state` y `controller_epoch`, tomados del propio
+   `scripts/stage_runtime.py` de esa revisión.
+2. Transferir el archivo y `systemd/kza-voice.service.d/managed.conf.template`.
+3. Extraer el archivo en un directorio temporal y correr
+   `<tmp>/scripts/stage_runtime.pyc --root /home/kza/releases --offline install-controller <archivo>`.
+   Instala en `controller/<commit>` y cambia `controller/current` de forma
+   atómica. Rechaza bajar de época e informa qué slots quedan fuera de
+   rollback.
+4. Con `systemctl --user stop kza-voice.service` ya hecho, correr
+   `controller/current/scripts/stage_runtime.pyc ... install-launcher`.
+   - Argumentos: `--unit-dir ~/.config/systemd/user/kza-voice.service.d`,
+     `--template`, `--python /home/kza/kza/.venv/bin/python`,
+     `--stop-grace`, `--timeout-start`, `--timeout-stop`, `--watchdog-sec`
+     y `--console-log /home/kza/releases/logs/console.log`.
+   - Rechaza si la unidad está activa o si no existe un head gestionado.
+     También rechaza un `--console-log` bajo `slots/`.
+   - Guarda las propiedades previas: `Environment` sólo como digest.
+   - Mueve `release.conf` a `release.conf.unmanaged`, escribe `managed.conf`,
+     hace `daemon-reload` y verifica `Type`, `NotifyAccess`, `KillMode` y
+     `RestartPreventExitStatus`.
+   - Imprime el texto del drop-in sudo.
+   - Hay que apuntar logrotate a la nueva consola.
+   - No volver a usar el `--rollback` de la herramienta de publicación del
+     2026-10-29: restauraría `release.conf`.
+5. Arrancar sólo con un head gestionado: sin head, `serve` sale con 78.
+
+Valores (L2, L6): `stop_grace` es el máximo entre 3 veces la mediana medida
+en el server, 1,5 veces el máximo observado y 120 s. `TimeoutStopSec` es
+`stop_grace` más el sello medido más 30 s. El sello toma tres snapshots
+completos: del hijo, el previo al sello y el cerrado. Cada uno cuesta unos
+2,6 s por millón de filas del registro de borrados (0d3 K7). `WatchdogSec`
+queda en 0 hasta medir el bucle (0d2) y después vale
+`max(60 s, 3 × el peor bloqueo)`.
+
+Presupuesto de reinicio (decisión N1 = B del usuario):
+
+- Hoy el manager de `kza` tiene 5 s para cerrar (el `timeout.conf` del paquete
+  systemd).
+- El controlador lee el presupuesto efectivo en cada arranque:
+  `systemctl show user@<uid>.service -p TimeoutStopUSec`.
+- Si no alcanza (presupuesto < `TimeoutStopSec` de kza-voice + 10 s), opera
+  en modo de respaldo:
+  - publica `STATUS=reboot budget insufficient (<n>s)`;
+  - en un apagado pide cierre rápido y acota el plazo a presupuesto − 2 s;
+  - si no llega a cerrar, el arranque siguiente usa la recuperación por
+    `boot_id`.
+- La excepción la aplica sólo el usuario u operador, en una ventana
+  autorizada. Esta unidad no la crea.
+
+  ```
+  sudo install -d -m 0755 /etc/systemd/system/user@1000.service.d
+  printf '[Service]\nTimeoutStopSec=<B>s\n' | sudo install -m 0644 /dev/stdin /etc/systemd/system/user@1000.service.d/zz-kza-stop-timeout.conf
+  sudo systemctl daemon-reload        # no reiniciar user@1000.service
+  ```
+
+- Verificación de sólo lectura:
+  - `systemctl show user@1000.service -p TimeoutStopUSec,DropInPaths`
+    (B, y el drop-in `zz-` último);
+  - `systemctl cat user@1000.service`;
+  - `ls /etc/systemd/system.control /run/systemd/system.control`.
+- Repetir la verificación después de cada actualización del paquete systemd.
+- Registrar el valor y la fecha aquí y en `SERVER_CONVENTIONS.md` (#7).
+- Para reinicios planificados, igual conviene detener kza-voice antes.
+
+Dependencias que quedan fuera de los slots: el intérprete y las dependencias
+de `/home/kza/kza/.venv` (controlador e hijo) y el directorio de modelos.
+Ambos pasan a la lista de conservación de la unidad de retiro Q5.
+
+Volver a b0866e8 o 63ea8d3 (L4 = A):
+
+```
+stage_runtime --root /home/kza/releases --offline uninstall-launcher \
+  --unit-dir ~/.config/systemd/user/kza-voice.service.d \
+  --user-decision <id> --phrase 'revivir datos borrados' --legacy-slot <slot>
+```
+
+- Requiere la unidad detenida y verifica el commit y el manifiesto del slot
+  legacy.
+- Mueve `managed.conf` a `managed.conf.disabled` y genera `legacy.conf`:
+  `Type=simple`, sin watchdog, y `PYTHONPATH` y `WorkingDirectory` explícitos
+  del slot legacy. Nunca usa `current`.
+- Verifica con `systemctl --user show`.
+- El único cambio en `admission/` es `launcher/uninstall-<ts>.json`.
+- El código viejo corre sobre los datos anteriores a R1: devuelve recuerdos,
+  conversaciones y perfiles de voz borrados desde entonces. Decide el usuario,
+  no el operador.
+
+Rollback gestionado: un slot destino necesita `launcher_contract >= 3` y
+`format_epoch` igual o mayor que el mínimo del controlador. Si no, `serve`
+lo rechaza con 78 (`runtime_admission_launcher_contract_missing` o
+`runtime_admission_rollback_format_closed`). `activate` y `run()` siguen
+aceptando slots anteriores para los ensayos de linajes viejos.
+
+Evidencia: `data/autonomous-roadmap-20261102/t040-t041/u3b-0d-evidence.json`
+(local, fuera de Git).
 
 ## Limpieza del checkout anterior — pendiente
 

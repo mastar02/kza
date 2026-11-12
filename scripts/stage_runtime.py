@@ -195,6 +195,27 @@ _RECEIPT_STATE_KEYS = ("closed_state_sha256", "state_manifest_sha256")
 _MANIFEST_EXCLUDED = frozenset({_MARKER, ".kza-target-ownership.json"})
 _CLOSED_STATE_KEYS = ("state_identity", "store_roots", "schemas", "sdk_versions", "ownership_sha256")
 
+# U3b-0d (managed launcher, design v3 N7). build_runtime copies these three
+# integers from this file's text into release.json ("launcher_contract",
+# "format_epoch", "receipt_state", "controller_epoch"); the controller reads
+# them as JSON from a verified release.json and never imports candidate code.
+# A missing key counts as 0.
+# LAUNCHER_CONTRACT: the child-side contract a slot implements (U3b-0d1 stop
+#   and readiness, schema-2 receipt-state record). serve requires >= 3.
+# FORMAT_EPOCH: shared formats written by the controller and read by slot code
+#   (binding, head, ticket, manual head, delegation records). 1 adds the
+#   'recovery' manual head kind. Slots below the controller's minimum are
+#   refused at activation (runtime_admission_rollback_format_closed).
+# RECEIPT_STATE_SCHEMA: 2 when the slot's child writes the receipt-state
+#   record; the controller then refuses a missing record (review 0d3 K2).
+# CONTROLLER_EPOCH: monotonic controller version (admission/controller.json).
+LAUNCHER_CONTRACT = 3
+FORMAT_EPOCH = 1
+RECEIPT_STATE_SCHEMA = 2
+CONTROLLER_EPOCH = 1
+MIN_FORMAT_EPOCH = 1
+_RELEASE_INTEGER_KEYS = ("launcher_contract", "format_epoch", "receipt_state", "controller_epoch")
+
 _ADMISSION_VALIDATION_LOCK = threading.RLock()
 
 
@@ -723,6 +744,35 @@ def read_receipt_state(root: Path, receipt: dict) -> dict | None:
             or not all(_hex64(record[key]) for key in _RECEIPT_STATE_KEYS)):
         raise ValueError("runtime_admission_receipt_state")
     return record
+
+
+def release_integers(binding: dict) -> dict:
+    """The launcher integers of a binding's verified release.json (missing = 0).
+
+    Read as JSON after the file's sha256 matched the binding's release hash;
+    candidate code is never imported (design v3 N7).
+    """
+    raw = (Path(binding["runtime_root"]) / "release.json").read_bytes()
+    if hashlib.sha256(raw).hexdigest() != binding["release_sha256"]:
+        raise ValueError("runtime_admission_release_changed")
+    manifest = json.loads(raw)
+    values = {}
+    for key in _RELEASE_INTEGER_KEYS:
+        value = manifest.get(key, 0)
+        if type(value) is not int or value < 0:
+            raise ValueError("runtime_admission_release_integer")
+        values[key] = value
+    return values
+
+
+def receipt_state_required(binding: dict) -> bool:
+    """Whether the slot declares a schema-2 receipt-state record (review 0d3 K2).
+
+    The declaration lives in release.json, covered by the binding's release
+    hash, so deleting the record cannot downgrade the slot to 'older'.
+    """
+    values = release_integers(binding)
+    return values["receipt_state"] >= 2 or values["launcher_contract"] >= 3
 
 
 def verify_receipt_state(record: dict, state_root: Path, binding: dict | None = None) -> None:
@@ -1953,6 +2003,36 @@ def _read_manual_seal(root: Path, identity: str) -> dict:
     return record
 
 
+_RECOVERY_KEYS = frozenset({"schema_version", "closed_head", "head_before", "run_id", "new_binding_id",
+                            "previous", "mode", "class", "boot_id", "at", "checks", "confirmation"})
+
+
+def recovery_record_path(root: Path, head: dict) -> Path:
+    """Where the immutable recovery record of one adopted closed head lives."""
+    return Path(root) / "admission" / "recoveries" / (_digest(head) + ".json")
+
+
+def _read_recovery_record(root: Path, head: dict) -> dict:
+    try:
+        record = _read_json(recovery_record_path(root, head))
+    except FileNotFoundError:
+        raise ValueError("runtime_admission_recovery_record_missing") from None
+    before = record.get("head_before")
+    if (set(record) != _RECOVERY_KEYS or type(record["schema_version"]) is not int
+            or record["schema_version"] != 1
+            or _canonical_json(record["closed_head"]) != _canonical_json(head)
+            or type(before) is not dict or before.get("status") not in {"running", "unknown"}
+            or not _manual_head_shape(before, before["status"])
+            or record["run_id"] != before["run_id"]
+            or record["mode"] not in {"automatic", "operator"}
+            or record["class"] not in {"crash", "boot", "operator"}
+            or type(record["at"]) is not float or not math.isfinite(record["at"])
+            or type(record["checks"]) is not dict
+            or type(record["previous"]) is not dict):
+        raise ValueError("runtime_admission_recovery_record_schema")
+    return record
+
+
 def _read_manual_head(root: Path, head: dict) -> dict:
     if not _manual_head_shape(head, "closed"):
         raise ValueError("runtime_admission_manual_companion_schema")
@@ -1965,7 +2045,7 @@ def _read_manual_head(root: Path, head: dict) -> dict:
             or _canonical_json(record["head"]) != _canonical_json(head)
             or head["status"] != "closed" or head["run_id"] is not None
             or type(record["capture"]) is not dict
-            or record["kind"] not in {"bootstrap", "selection", "closure"}):
+            or record["kind"] not in {"bootstrap", "selection", "closure", "recovery"}):
         raise ValueError("runtime_admission_manual_companion_schema")
     binding = read_binding(root, head["binding_id"])
     if (record["capture"].get("state_root") != binding["state_root"]
@@ -1993,7 +2073,26 @@ def _read_manual_head(root: Path, head: dict) -> dict:
                 or record["authority_seal"] != prior["authority_seal"]):
             raise ValueError("runtime_admission_manual_companion_changed")
         if record["authority_seal"] is None:
-            if prior["kind"] not in {"bootstrap", "selection"} or _has_authority(binding):
+            if prior["kind"] not in {"bootstrap", "selection", "recovery"} or _has_authority(binding):
+                raise ValueError("runtime_admission_manual_bootstrap_invalid")
+            _require_manual_equivalent(prior["capture"], record["capture"])
+            return record
+    if record["kind"] == "recovery":
+        # U3b-0d: an adopted state after a run without a usable receipt. The
+        # immutable recovery record binds the open head it replaced; the
+        # authority seal is the last real closure's, so the capture must stay
+        # equivalent to it and delegation still needs a later clean close.
+        recovery = _read_recovery_record(root, head)
+        before = recovery["head_before"]
+        distance = before["generation"] - prior["head"]["generation"]
+        if (recovery["previous"] != previous or recovery["new_binding_id"] != head["binding_id"]
+                or before["binding_id"] != prior["head"]["binding_id"]
+                or before["generation"] + 1 != head["generation"]
+                or distance != (1 if before["status"] == "running" else 2)
+                or record["authority_seal"] != prior["authority_seal"]):
+            raise ValueError("runtime_admission_manual_companion_changed")
+        if record["authority_seal"] is None:
+            if prior["kind"] not in {"bootstrap", "selection", "recovery"} or _has_authority(binding):
                 raise ValueError("runtime_admission_manual_bootstrap_invalid")
             _require_manual_equivalent(prior["capture"], record["capture"])
             return record
@@ -2024,9 +2123,16 @@ def _verify_manual_head(root: Path, head: dict, binding: dict) -> dict:
 
 
 def _prepare_manual_head(root: Path, expected: dict | None, binding: dict, *,
-                         previous: dict | None, proof: dict | None = None) -> dict:
+                         previous: dict | None, proof: dict | None = None,
+                         recovery: dict | None = None) -> dict:
     """Write immutable metadata before its corresponding V1 CLOSED CAS."""
-    if expected is not None and not _manual_head_shape(expected, "running" if proof is not None else "closed"):
+    if recovery is not None:
+        if (proof is not None or previous is None or type(expected) is not dict
+                or expected.get("status") not in {"running", "unknown"}
+                or not _manual_head_shape(expected, expected["status"])
+                or _canonical_json(recovery.get("head_before")) != _canonical_json(expected)):
+            raise ValueError("runtime_admission_manual_companion_schema")
+    elif expected is not None and not _manual_head_shape(expected, "running" if proof is not None else "closed"):
         raise ValueError("runtime_admission_manual_companion_schema")
     head = {"schema_version": 1, "generation": 1 if expected is None else expected["generation"] + 1,
             "binding_id": _digest(binding), "status": "closed", "run_id": None}
@@ -2045,6 +2151,16 @@ def _prepare_manual_head(root: Path, expected: dict | None, binding: dict, *,
         seal_id = _digest(seal)
         _atomic_record(root / "admission" / "manual-components" / "seals" / (seal_id + ".json"), seal, immutable=True)
         kind = "closure"
+    elif recovery is not None:
+        if _canonical_json(recovery["closed_head"]) != _canonical_json(head):
+            raise ValueError("runtime_admission_manual_companion_schema")
+        if previous["authority_seal"] is None:
+            if _has_authority(binding):
+                raise ValueError("runtime_admission_recovery_unsealed_authority")
+            _require_manual_equivalent(previous["capture"], capture)
+        else:
+            _require_manual_equivalent(_read_manual_seal(root, previous["authority_seal"])["capture"], capture)
+        kind, seal_id = "recovery", previous["authority_seal"]
     elif previous is None:
         if expected is not None or _has_authority(binding) or capture["stores"]:
             raise ValueError("runtime_admission_manual_legacy_unsealed")
@@ -2118,8 +2234,13 @@ def verify_closed_binding(root: Path, binding_id: str) -> dict:
     return binding
 
 
-def _seal_local_targets(root: Path, binding: dict) -> None:
-    """Adopt only locally verified registrations after actual owned closure."""
+def _seal_local_targets(root: Path, binding: dict, *, run_id: str | None = None) -> None:
+    """Adopt only locally verified registrations after actual owned closure.
+
+    With ``run_id`` an immutable intent (pre- and post-seal policy digests) is
+    recorded before the policy is rewritten, so a controller killed after the
+    rewrite can resume the seal from the receipt (U3b-0d R-a).
+    """
     validate_target_ownership(root, binding, allow_new_local=True)
     if binding["ownership_sha256"] is None:
         return
@@ -2127,7 +2248,141 @@ def _seal_local_targets(root: Path, binding: dict) -> None:
     path = state / ".kza-target-ownership.json"
     policy = _read_json(path)
     policy["owned_targets"] = sorted(set(_target_inventory(state)) - set(policy["delegated_targets"]))
+    if run_id is not None:
+        sealed = hashlib.sha256(_canonical_json(policy) + b"\n").hexdigest()
+        if sealed != binding["ownership_sha256"]:
+            _atomic_record(_seal_intent_path(root, run_id), {
+                "schema_version": 1, "run_id": run_id, "pre_seal_ownership_sha256": binding["ownership_sha256"],
+                "sealed_ownership_sha256": sealed}, immutable=True)
     _atomic_record(path, policy)
+
+
+def _seal_intent_path(root: Path, run_id: str) -> Path:
+    return Path(root) / "admission" / "seal-intents" / (run_id + ".json")
+
+
+def _closed_state_matches(root: Path, run_id: str, pre_seal: dict, record: dict) -> bool:
+    """The pre-seal binding still describes the closed state the child recorded.
+
+    A resumed seal may find the ownership policy already rewritten by the
+    interrupted controller; its intent record then restores the pre-seal digest.
+    """
+    if closed_state_sha256(pre_seal) == record["closed_state_sha256"]:
+        return True
+    path = _seal_intent_path(root, run_id)
+    if not path.exists() and not path.is_symlink():
+        return False
+    intent = _read_json(path)
+    if (set(intent) != {"schema_version", "run_id", "pre_seal_ownership_sha256", "sealed_ownership_sha256"}
+            or intent["schema_version"] != 1 or intent["run_id"] != run_id
+            or pre_seal["ownership_sha256"] != intent["sealed_ownership_sha256"]):
+        return False
+    return closed_state_sha256(dict(pre_seal, ownership_sha256=intent["pre_seal_ownership_sha256"])) \
+        == record["closed_state_sha256"]
+
+
+def expected_receipt(running: dict, child_pid: int) -> dict:
+    """The exact schema-1 receipt a run's child writes."""
+    return {"schema_version": 1, "binding_id": running["binding_id"], "generation": running["generation"],
+            "run_id": running["run_id"], "child_pid": child_pid, "status": "closed",
+            "resources": dict.fromkeys(_CLOSED_RESOURCES, True)}
+
+
+def seal_admission_run(root: Path, running: dict, child_pid: int, previous_manual: dict) -> dict:
+    """Seal one reaped run from its exact receipt (seal rule, design v2 M5 / v3 N2).
+
+    The caller holds the root lease and has reaped the child. The seal needs
+    the exact receipt, the receipt-state record when the slot declares one
+    (review 0d3 K2), a state manifest recomputed under the root lock before
+    any database image (K7, N2), and a closed-state digest equal to the
+    record's. Every step is idempotent, so a controller killed mid-seal
+    resumes here from the same receipt (R-a). Returns the closed head.
+    """
+    root = Path(root)
+    run_id = running["run_id"]
+    receipt_path = root / "admission" / "receipts" / (run_id + ".json")
+    try:
+        receipt = _read_json(receipt_path)
+    except FileNotFoundError:
+        raise ValueError("runtime_admission_close_receipt_missing") from None
+    if receipt != expected_receipt(running, child_pid):
+        raise ValueError("runtime_admission_close_receipt_mismatch")
+    binding = read_binding(root, running["binding_id"])
+    closed_record = read_receipt_state(root, receipt)
+    if closed_record is None and receipt_state_required(binding):
+        raise ValueError("runtime_admission_receipt_state")
+    with _locked_root(root):
+        if read_admission_head(root) != running:
+            raise ValueError("runtime_admission_head_changed")
+        if closed_record is not None:
+            # Manifest first: lstat only, before any database image (N2, K7).
+            verify_receipt_state(closed_record, Path(binding["state_root"]))
+        pre_seal = _binding_snapshot(root, binding["slot"])
+        if closed_record is not None and not _closed_state_matches(root, run_id, pre_seal, closed_record):
+            raise ValueError("runtime_admission_closed_state_mismatch")
+        _seal_local_targets(root, pre_seal, run_id=run_id)
+        closed = _binding_snapshot(root, binding["slot"])
+        validate_target_ownership(root, closed)
+        identity = _store_binding(root, closed)
+        proof = {"schema_version": 1, "binding_id": identity, "running_head": running,
+                 "receipt_sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+                 "child_pid": child_pid}
+        _atomic_record(root / "admission" / "closures" / (identity + ".json"), proof)
+        _prepare_manual_head(root, running, closed, previous=previous_manual, proof=proof)
+        _write_marker(root, identity, closed)
+        return _cas_head(root, running, identity, "closed")
+
+
+def manual_reference(previous: dict) -> dict:
+    """The previous-companion reference a manual head record carries."""
+    return {"head_sha256": _digest(previous["head"]), "companion_sha256": _digest(previous)}
+
+
+def previous_closed_head(head: dict) -> dict:
+    """The closed head an open (running or unknown) head was started from."""
+    distance = 1 if head["status"] == "running" else 2
+    if head["status"] not in {"running", "unknown"} or head["generation"] <= distance:
+        raise ValueError("runtime_admission_head_schema")
+    return {"schema_version": 1, "generation": head["generation"] - distance,
+            "binding_id": head["binding_id"], "status": "closed", "run_id": None}
+
+
+def read_manual_head(root: Path, head: dict) -> dict:
+    """Read and validate one closed head's manual companion without re-snapshotting."""
+    return _read_manual_head(Path(root), head)
+
+
+def adopt_recovered_state(root: Path, head_before: dict, recovery: dict) -> dict:
+    """Adopt the current state of an open head after recovery checks (R-b).
+
+    The caller holds the lease and made the policy decision. ``recovery``
+    carries every record field except closed_head, new_binding_id, previous
+    and head_before, which are derived here under the root lock. Writes the
+    binding, the immutable recovery record, a 'recovery' manual head, the
+    marker and the CAS to closed. A recovered head has no closure proof, so
+    delegation stays refused until a later clean close.
+    """
+    root = Path(root)
+    with _locked_root(root):
+        if read_admission_head(root) != head_before:
+            raise ValueError("runtime_admission_head_changed")
+        prior_head = previous_closed_head(head_before)
+        previous = _read_manual_head(root, prior_head)
+        slot = read_binding(root, head_before["binding_id"])["slot"]
+        binding = _binding_snapshot(root, slot)
+        validate_target_ownership(root, binding, allow_new_local=True)
+        identity = _store_binding(root, binding)
+        closed_head = {"schema_version": 1, "generation": head_before["generation"] + 1,
+                       "binding_id": identity, "status": "closed", "run_id": None}
+        record = dict(recovery, schema_version=1, closed_head=closed_head, head_before=head_before,
+                      run_id=head_before["run_id"], new_binding_id=identity,
+                      previous=manual_reference(previous))
+        if set(record) != _RECOVERY_KEYS:
+            raise ValueError("runtime_admission_recovery_record_schema")
+        _atomic_record(recovery_record_path(root, closed_head), record, immutable=True)
+        _prepare_manual_head(root, head_before, binding, previous=previous, recovery=record)
+        _write_marker(root, identity, binding)
+        return _cas_head(root, head_before, identity, "closed")
 
 
 def _authorize_target_delegation(root: Path, destination_state: Path, source_binding: str,
@@ -2828,9 +3083,13 @@ class AdmissionController:
     changes cannot be adopted as a new authority merely by selecting that slot.
     """
 
-    def __init__(self, root: Path, *, probe_timeout: float = _PROBE_TIMEOUT_SECONDS):
+    def __init__(self, root: Path, *, probe_timeout: float = _PROBE_TIMEOUT_SECONDS,
+                 allow_open_head: bool = False):
         self.root = Path(root).resolve()
         self.probe_timeout = _probe_timeout(probe_timeout)
+        # U3b-0d serve/adopt: enter over a running or unknown head so recovery
+        # can run under the lease. Every other entry refuses an open head.
+        self.allow_open_head = allow_open_head
         self._descriptor = None
 
     def __enter__(self):
@@ -2844,7 +3103,7 @@ class AdmissionController:
             except BlockingIOError:
                 raise ValueError("runtime_admission_busy") from None
             head = read_admission_head(self.root)
-            if head is not None and head["status"] != "closed":
+            if head is not None and head["status"] != "closed" and not self.allow_open_head:
                 raise ValueError("runtime_admission_not_closed")
             os.ftruncate(descriptor, 0)
             os.write(descriptor, _canonical_json({"controller_pid": os.getpid(), "lease_fd": descriptor}))
@@ -2982,6 +3241,36 @@ class AdmissionController:
                 _cas_head(self.root, head, identity, "closed")
             return _publish_selection(self.root, name)
 
+    def begin_run(self) -> tuple[dict, dict, dict, dict]:
+        """CAS the closed head to running and mint the child's admission ticket.
+
+        Returns the head binding, the running head, the closed head's manual
+        companion (verified now, before the child changes the state) and the
+        ticket. The caller spawns the child with the lease descriptor.
+        """
+        self._require_lease()
+        root = self.root
+        with _locked_root(root):
+            head = read_admission_head(root)
+            if head is None or head["status"] != "closed":
+                raise ValueError("runtime_admission_not_closed")
+            binding = read_binding(root, head["binding_id"])
+            validate_target_ownership(root, binding)
+            previous_manual = _verify_manual_head(root, head, binding)
+            run_id = uuid4().hex
+            running = _cas_head(root, head, head["binding_id"], "running", run_id)
+        ticket = {"schema_version": 1, "admission_root": str(root),
+                  "binding_id": head["binding_id"], "generation": running["generation"],
+                  "run_id": run_id, "lease_fd": self._descriptor,
+                  "lease_identity": _identity(root / ".admission.lock"), "controller_pid": os.getpid()}
+        return binding, running, previous_manual, ticket
+
+    @property
+    def lease_descriptor(self) -> int:
+        """The held lease descriptor (inherited by the managed child)."""
+        self._require_lease()
+        return self._descriptor
+
     def run(self, name: str, argv: list[str] | None = None, *, timeout: float,
             env: dict | None = None, stdout=None, stderr=None) -> subprocess.CompletedProcess:
         """Run under the root lease; only a real closure receipt plus wait closes it.
@@ -2994,17 +3283,8 @@ class AdmissionController:
             raise ValueError("runtime_admission_timeout")
         self.activate(name, managed=True)
         root = self.root
-        with _locked_root(root):
-            head = read_admission_head(root)
-            binding = read_binding(root, head["binding_id"])
-            validate_target_ownership(root, binding)
-            previous_manual = _verify_manual_head(root, head, binding)
-            run_id = uuid4().hex
-            running = _cas_head(root, head, head["binding_id"], "running", run_id)
-        ticket = {"schema_version": 1, "admission_root": str(root),
-                  "binding_id": head["binding_id"], "generation": running["generation"],
-                  "run_id": run_id, "lease_fd": self._descriptor,
-                  "lease_identity": _identity(root / ".admission.lock"), "controller_pid": os.getpid()}
+        binding, running, previous_manual, ticket = self.begin_run()
+        run_id = running["run_id"]
         child_env = os.environ.copy() if env is None else dict(env)
         child_env["KZA_RUNTIME_ADMISSION"] = _canonical_json(ticket).decode()
         command = list(argv) if argv is not None else [sys.executable, "-B", "-m", "src.main"]
@@ -3016,40 +3296,9 @@ class AdmissionController:
             returncode = process.wait()
             if returncode != 0:
                 raise subprocess.CalledProcessError(returncode, command, output=output, stderr=error)
-            receipt_path = root / "admission" / "receipts" / (run_id + ".json")
-            try:
-                receipt = _read_json(receipt_path)
-            except FileNotFoundError:
-                raise ValueError("runtime_admission_close_receipt_missing") from None
-            expected = {"schema_version": 1, "binding_id": ticket["binding_id"],
-                        "generation": running["generation"], "run_id": run_id,
-                        "child_pid": process.pid, "status": "closed",
-                        "resources": dict.fromkeys(_CLOSED_RESOURCES, True)}
-            if receipt != expected:
-                raise ValueError("runtime_admission_close_receipt_mismatch")
-            # Receipt schema 2: reaped above; the manifest comes before any
-            # database image. No record means an older slot (design v3 N7).
-            closed_record = read_receipt_state(root, receipt)
-            if closed_record is not None:
-                verify_receipt_state(closed_record, Path(binding["state_root"]))
-            with _locked_root(root):
-                if read_admission_head(root) != running:
-                    raise ValueError("runtime_admission_head_changed")
-                pre_seal = _binding_snapshot(root, name)
-                if (closed_record is not None
-                        and closed_state_sha256(pre_seal) != closed_record["closed_state_sha256"]):
-                    raise ValueError("runtime_admission_closed_state_mismatch")
-                _seal_local_targets(root, pre_seal)
-                closed = _binding_snapshot(root, name)
-                validate_target_ownership(root, closed)
-                identity = _store_binding(root, closed)
-                proof = {"schema_version": 1, "binding_id": identity, "running_head": running,
-                         "receipt_sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
-                         "child_pid": process.pid}
-                _atomic_record(root / "admission" / "closures" / (identity + ".json"), proof)
-                _prepare_manual_head(root, running, closed, previous=previous_manual, proof=proof)
-                _write_marker(root, identity, closed)
-                _cas_head(root, running, identity, "closed")
+            # Reaped above. A slot that declares the receipt-state record must
+            # have one (0d3 K2); one that does not is an older slot (v3 N7).
+            seal_admission_run(root, running, process.pid, previous_manual)
             return subprocess.CompletedProcess(command, returncode, output, error)
         except BaseException as original:
             failures = []
@@ -3113,6 +3362,38 @@ def run_slot(root: Path, name: str, argv: list[str] | None = None, *, timeout: f
         return controller.run(name, argv, timeout=timeout, env=env, stdout=stdout, stderr=stderr)
 
 
+_launcher = None
+
+
+def _launcher_module():
+    """The managed launcher (U3b-0d) beside this file, bound to this module.
+
+    Loaded by path like the manual-components contract: the controller runs
+    as ``python -I -B .../scripts/stage_runtime.pyc`` with no package path.
+    """
+    global _launcher
+    if _launcher is None:
+        own = Path(__file__).resolve()
+        suffix = ".pyc" if own.suffix == ".pyc" else ".py"
+        path = own.parent / ("managed_launcher" + suffix)
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("runtime_admission_launcher_missing")
+        name = "_kza_managed_launcher_" + hashlib.sha256(str(path).encode()).hexdigest()[:16]
+        spec = importlib.util.spec_from_file_location(name, path)
+        if spec is None or spec.loader is None:
+            raise ValueError("runtime_admission_launcher_missing")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(name, None)
+            raise
+        module.bind_stage(sys.modules[__name__])
+        _launcher = module
+    return _launcher
+
+
 def main() -> None:
     """Prepare or select a slot after the operator has stopped all state writers."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -3132,7 +3413,11 @@ def main() -> None:
         "delegate", help="Delegate the erasure targets the closed head holds (local and inherited) "
                          "to a copied slot")
     delegate.add_argument("name")
+    launcher = _launcher_module()
+    launcher.add_commands(commands)
     args = parser.parse_args()
+    if args.command in launcher.COMMANDS:
+        raise SystemExit(launcher.run_command(args))
     if args.command == "prepare":
         manifest = prepare_slot(args.archive, args.root, args.name, args.state_source)
         print(json.dumps({"slot": args.name, "commit": manifest["git_commit"]}))

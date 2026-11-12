@@ -9,8 +9,11 @@ stack closes and the admission receipt is written as on any other exit.
 
 Readiness goes to a private descriptor passed by the parent in
 ``KZA_NOTIFY_FD`` (a pipe or socket). Without one, notifications are no-ops.
-The controller relay to systemd is a later unit; this module never sees
-``NOTIFY_SOCKET``.
+The managed launcher (U3b-0d) relays the lines to systemd as the main PID;
+this module never sees ``NOTIFY_SOCKET``. After READY the event loop itself
+sends WATCHDOG=1 every ``KZA_WATCHDOG_INTERVAL_USEC``, so a blocked loop stops
+the pings. The launcher may write ``fast`` to ``KZA_CONTROL_FD`` when the
+service manager is shutting down; the stop then skips optional work.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 NOTIFY_FD_ENV = "KZA_NOTIFY_FD"
 WATCHDOG_INTERVAL_ENV = "KZA_WATCHDOG_INTERVAL_USEC"
+CONTROL_FD_ENV = "KZA_CONTROL_FD"
 STOP_SIGNALS = frozenset({signal.SIGTERM, signal.SIGINT})
 _STATUS_LIMIT = 200
 
@@ -158,7 +162,8 @@ class StopSignal:
 class ReadinessNotifier:
     """Write notification lines to a private pipe passed in by the parent.
 
-    Allowed lines: READY=1, STOPPING=1 and STATUS=<ascii, at most 200>. The
+    Allowed lines: ARMED=1, READY=1, STOPPING=1, WATCHDOG=1 and STATUS=<ascii,
+    at most 200>. The
     descriptor is non-blocking: a full pipe drops the line instead of blocking
     the event loop.
     """
@@ -207,6 +212,10 @@ class ReadinessNotifier:
         """Lines written so far (content-free protocol lines)."""
         return tuple(self._sent)
 
+    def armed(self) -> None:
+        """Send ARMED=1 once: the stop handler is installed (consumed by the launcher, never relayed)."""
+        self._send_once("ARMED=1")
+
     def ready(self) -> None:
         """Send READY=1 once."""
         self._send_once("READY=1")
@@ -214,6 +223,17 @@ class ReadinessNotifier:
     def stopping(self) -> None:
         """Send STOPPING=1 once."""
         self._send_once("STOPPING=1")
+
+    def watchdog(self) -> None:
+        """Send one WATCHDOG=1 keep-alive (repeated; never recorded in ``sent``)."""
+        if self._fd is None:
+            return
+        try:
+            os.write(self._fd, b"WATCHDOG=1\n")
+        except OSError as error:
+            self._dropped += 1
+            if self._dropped == 1:
+                logger.warning("[Notify] notification dropped: %s", type(error).__name__)
 
     def status(self, text: str) -> None:
         """Send a short ASCII status line."""
@@ -239,6 +259,49 @@ class ReadinessNotifier:
         self._sent.append(line)
 
 
+class ControlChannel:
+    """Read-only control pipe from the managed launcher (``KZA_CONTROL_FD``).
+
+    The only message is ``fast``: the service manager is stopping (a reboot),
+    so the stop skips optional work. Local privacy closes, the drain and the
+    receipt are never skipped.
+    """
+
+    def __init__(self, fd: int | None = None) -> None:
+        self._fd = fd
+        self._fast = False
+
+    @classmethod
+    def from_environment(cls, environ: dict | None = None) -> ControlChannel:
+        """Take the descriptor from the environment; never inherited further."""
+        environ = os.environ if environ is None else environ
+        fd = _positive_int(environ.pop(CONTROL_FD_ENV, None) or "")
+        if fd is None:
+            return cls(None)
+        try:
+            if fd < 3 or not stat.S_ISFIFO(os.fstat(fd).st_mode):
+                raise ValueError("control_fd_invalid")
+            os.set_inheritable(fd, False)
+            os.set_blocking(fd, False)
+        except (OSError, ValueError) as error:
+            logger.warning("[Notify] control channel disabled: %s", type(error).__name__)
+            return cls(None)
+        return cls(fd)
+
+    def fast_close(self) -> bool:
+        """Whether the launcher asked for a fast close (non-blocking read)."""
+        if self._fast or self._fd is None:
+            return self._fast
+        try:
+            data = os.read(self._fd, 64)
+        except (BlockingIOError, OSError):
+            return False
+        if b"fast" in data:
+            self._fast = True
+            logger.info("[Stop] fast close requested: the service manager is stopping")
+        return self._fast
+
+
 class ProcessLifecycle:
     """The stop signal, readiness notifier and receipt hook of one process.
 
@@ -247,11 +310,45 @@ class ProcessLifecycle:
         notifier: Readiness notifications to the parent.
     """
 
-    def __init__(self, stop: StopSignal | None = None, notifier: ReadinessNotifier | None = None) -> None:
+    def __init__(self, stop: StopSignal | None = None, notifier: ReadinessNotifier | None = None,
+                 control: ControlChannel | None = None) -> None:
         self.stop = stop if stop is not None else StopSignal()
         self.notifier = notifier if notifier is not None else ReadinessNotifier()
+        self.control = control if control is not None else ControlChannel()
         self._admission = None
+        self._watchdog: asyncio.TimerHandle | None = None
         self.stop.add_listener(self.notifier.stopping)
+        self.stop.add_listener(self._stop_watchdog)
+
+    @property
+    def fast_close(self) -> bool:
+        """Whether the launcher asked for a fast close (service manager stopping)."""
+        return self.control.fast_close()
+
+    def _start_watchdog(self) -> None:
+        """Ping WATCHDOG=1 from the event loop after READY (relayed only after READY)."""
+        interval = self.notifier.watchdog_usec
+        if interval is None or not self.notifier.enabled or self._watchdog is not None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        seconds = interval / 1_000_000
+
+        def tick() -> None:
+            if self.stop.requested:
+                self._watchdog = None
+                return
+            self.notifier.watchdog()
+            self._watchdog = loop.call_later(seconds, tick)
+
+        tick()
+
+    def _stop_watchdog(self) -> None:
+        if self._watchdog is not None:
+            self._watchdog.cancel()
+            self._watchdog = None
 
     def ready(self) -> None:
         """Called by the pipeline right after 'System ready'.
@@ -262,6 +359,7 @@ class ProcessLifecycle:
         self.stop.checkpoint("ready")
         self.stop.enter(StopPhase.READY)
         self.notifier.ready()
+        self._start_watchdog()
 
     def capture_blocked(self) -> None:
         """Announce a degraded but serving process: capture is blocked.
@@ -276,6 +374,7 @@ class ProcessLifecycle:
         self.stop.enter(StopPhase.CAPTURE_BLOCKED)
         self.notifier.ready()
         self.notifier.status("capture blocked")
+        self._start_watchdog()
 
     def attach_admission(self, admission: object) -> None:
         """Bind the managed admission; logging closes before its receipt."""
@@ -291,8 +390,8 @@ class ProcessLifecycle:
 
     def before_receipt(self) -> None:
         """Log the receipt intent, then close logging (review D1)."""
-        logger.info("[Stop] closure receipt next; closing logging (phase=%s, elapsed=%s)",
-                    self.stop.phase.value, _seconds(self.stop.elapsed()))
+        logger.info("[Stop] closure receipt next; closing logging (phase=%s, elapsed=%s, fast=%s)",
+                    self.stop.phase.value, _seconds(self.stop.elapsed()), self.fast_close)
         close_logging()
 
     def flush_for_exit(self) -> None:
@@ -315,8 +414,12 @@ def arm_process_entry(environ: dict | None = None) -> ProcessLifecycle:
         The lifecycle that ``main()`` uses for this process.
     """
     signal.pthread_sigmask(signal.SIG_UNBLOCK, STOP_SIGNALS)
-    lifecycle = ProcessLifecycle(StopSignal(), ReadinessNotifier.from_environment(environ))
+    lifecycle = ProcessLifecycle(StopSignal(), ReadinessNotifier.from_environment(environ),
+                                 ControlChannel.from_environment(environ))
     signal.signal(signal.SIGTERM, lifecycle.stop._early_signal)
+    # U3b-0d: the launcher defers a stop that arrives before this line, so a
+    # SIGTERM never meets the interpreter's default disposition at start-up.
+    lifecycle.notifier.armed()
     return lifecycle
 
 

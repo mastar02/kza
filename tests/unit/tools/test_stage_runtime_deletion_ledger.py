@@ -466,9 +466,22 @@ def test_a_file_restored_after_the_receipt_is_refused_as_unknown(admission_archi
     assert head["status"] == "unknown"
 
 
-def test_schema_one_child_is_still_sealed_by_run(admission_archive, tmp_path):
-    """Design v3 N7: run() still seals an older slot that writes no closed-state record."""
+@pytest.mark.parametrize("declared", [False, True])
+def test_schema_one_child_is_sealed_only_for_a_slot_that_declares_no_record(admission_archive, tmp_path, declared):
+    """Design v3 N7: run() still seals an older slot that writes no closed-state record.
+
+    Review 0d3 K2 (unit 0d): a slot whose release.json declares the record
+    (launcher_contract >= 3 or receipt_state >= 2) is refused without it, so
+    deleting the sidecar cannot downgrade it to 'older'.
+    """
     root, _state_root = _prepared(admission_archive, tmp_path)
+    release = root / "slots" / "candidate" / "runtime" / "release.json"
+    manifest = json.loads(release.read_text())
+    for key in stage._RELEASE_INTEGER_KEYS:
+        manifest.pop(key, None)
+    if declared:
+        manifest["receipt_state"] = 2
+    release.write_text(json.dumps(manifest, indent=2) + "\n")
     child = "\n".join([
         "import importlib.util, json, os",
         "from pathlib import Path",
@@ -480,8 +493,13 @@ def test_schema_one_child_is_still_sealed_by_run(admission_archive, tmp_path):
         "path.parent.mkdir(parents=True, exist_ok=True)",
         "path.write_text(json.dumps(receipt, sort_keys=True, separators=(',', ':')))",
     ])
-    stage.run_slot(root, "candidate", [sys.executable, "-I", "-B", "-c", child], timeout=60)
-    assert stage.read_admission_head(root)["status"] == "closed"
+    if declared:
+        with pytest.raises(ValueError, match="runtime_admission_receipt_state"):
+            stage.run_slot(root, "candidate", [sys.executable, "-I", "-B", "-c", child], timeout=60)
+        assert stage.read_admission_head(root)["status"] == "unknown"
+    else:
+        stage.run_slot(root, "candidate", [sys.executable, "-I", "-B", "-c", child], timeout=60)
+        assert stage.read_admission_head(root)["status"] == "closed"
 
 
 def test_a_policy_change_after_the_receipt_is_refused_by_the_closed_state_digest(admission_archive, tmp_path):

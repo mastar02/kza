@@ -8,8 +8,8 @@ dist/
 build/
 .eggs/
 
-# Virtual environments
-.venv/
+# Virtual environments (a directory, or a symlink to one in a local clone)
+.venv
 venv/
 env/
 

@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import py_compile
+import re
 import subprocess
 import sys
 import tarfile
@@ -19,6 +20,14 @@ import warnings
 
 ASSET_SUFFIXES = {".html", ".css", ".js", ".jsx", ".json", ".csv", ".svg", ".txt",
                   ".png", ".jpg", ".ico", ".woff", ".woff2", ".ttf", ".wav"}
+
+# U3b-0d (design v3 N7, review 0d3 K2): integers the managed launcher reads
+# from release.json. They are copied from the built revision's own
+# scripts/stage_runtime.py text (``NAME = <int>`` at column 0), never from this
+# builder and never by importing it, so an older revision built today gets no
+# key (read as 0) and cannot claim a contract it does not implement.
+RELEASE_INTEGERS = {"launcher_contract": "LAUNCHER_CONTRACT", "format_epoch": "FORMAT_EPOCH",
+                    "receipt_state": "RECEIPT_STATE_SCHEMA", "controller_epoch": "CONTROLLER_EPOCH"}
 
 _WARNING_TYPES = {"SyntaxWarning": SyntaxWarning, "DeprecationWarning": DeprecationWarning}
 _SYNTAX_FIELDS = ("msg", "filename", "lineno", "offset", "text", "end_lineno",
@@ -294,6 +303,18 @@ def _compile_modules(staging: Path, modules: list[dict]) -> dict[str, bytes]:
     return accepted
 
 
+def release_integers(source: bytes) -> dict:
+    """The launcher integers a stage_runtime.py source declares (absent ones omitted)."""
+    values = {}
+    for key, name in RELEASE_INTEGERS.items():
+        found = re.findall(rb"^" + name.encode() + rb" = ([0-9]{1,6})[ \t]*(?:#.*)?$", source, re.MULTILINE)
+        if len(found) > 1:
+            raise ValueError(f"Ambiguous release integer {name}")
+        if found:
+            values[key] = int(found[0])
+    return values
+
+
 def build_runtime(repo: Path, output: Path, revision: str = "HEAD") -> dict:
     """Compile tracked runtime modules and bundle assets without runtime state.
 
@@ -319,6 +340,7 @@ def build_runtime(repo: Path, output: Path, revision: str = "HEAD") -> dict:
         ["git", "ls-tree", "-rz", commit, "--", "src", "tools", "scripts"], cwd=repo,
     )
     files = {}
+    declared = {}
     with tempfile.TemporaryDirectory(prefix="kza-runtime-") as temporary:
         staging = Path(temporary).resolve()
         modules = []
@@ -345,6 +367,8 @@ def build_runtime(repo: Path, output: Path, revision: str = "HEAD") -> dict:
             if path.is_absolute() or ".." in path.parts:
                 raise ValueError(f"Invalid runtime path: {path}")
             data = subprocess.check_output(["git", "cat-file", "blob", object_id], cwd=repo)
+            if path == PurePosixPath("scripts/stage_runtime.py"):
+                declared = release_integers(data)
             if python_module:
                 source = staging / str(path)
                 source.parent.mkdir(parents=True, exist_ok=True)
@@ -364,6 +388,7 @@ def build_runtime(repo: Path, output: Path, revision: str = "HEAD") -> dict:
         "external_paths": ["config", "data", "models", "logs"],
         "files": {name: hashlib.sha256(data).hexdigest()
                   for name, data in sorted(files.items())},
+        **declared,
     }
     files["release.json"] = (json.dumps(manifest, indent=2) + "\n").encode()
     output.parent.mkdir(parents=True, exist_ok=True)

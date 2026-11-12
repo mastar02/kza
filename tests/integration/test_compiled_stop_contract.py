@@ -207,6 +207,7 @@ def _assert_clean(slot, outcome, *, phase, ready, system_ready=None):
     assert "[Stop] closure receipt next; closing logging" in outcome["log"]
     assert slot.phase("returned") is None  # os._exit after the receipt
     assert ("READY=1" in slot.notify) is ready
+    assert slot.notify[0] == "ARMED=1"  # U3b-0d: the launcher defers a stop until the entry is armed
     assert slot.notify[-1] == "STOPPING=1"
     if ready:
         assert slot.notify.index("READY=1") < slot.notify.index("STOPPING=1")
@@ -255,7 +256,7 @@ def test_sigterm_while_capture_is_blocked(artifact, tmp_path):
     outcome = slot.run("blocked", lambda slot: slot.phase("blocked") is not None and "READY=1" in slot.notify)
     _assert_clean(slot, outcome, phase="capture_blocked", ready=True, system_ready=False)
     # U1: degraded but serving -> READY plus a capture-blocked STATUS, once.
-    assert slot.notify == ["READY=1", "STATUS=capture blocked", "STOPPING=1"]
+    assert slot.notify == ["ARMED=1", "READY=1", "STATUS=capture blocked", "STOPPING=1"]
     assert "System ready" not in outcome["log"]
 
 

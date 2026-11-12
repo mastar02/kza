@@ -1,0 +1,1787 @@
+"""Managed launcher (U3b-0d): systemd starts kza-voice through the admission controller.
+
+Stdlib only; loaded by ``scripts/stage_runtime`` (by path, beside it) for the
+``serve``, ``adopt``, ``install-controller``, ``install-launcher`` and
+``uninstall-launcher`` commands. Design: managed-launcher-design-v3.json with
+v2/v1 for sections v3 does not restate, the v3 review amendments D1-D6, the
+U3b-0d3 review prerequisites K2 and K7, and user decisions L1-L6, N1 = B, N3.
+
+Process tree: systemd (kza --user, Type=notify, NotifyAccess=main,
+KillMode=mixed) -> this controller (main PID, holds the admission lease,
+the only writer of the head, relays notifications) -> the child ``src.main``
+(cwd = the head slot's runtime; lease, notify and control descriptors
+inherited).
+
+Rules this module keeps:
+
+* SIGTERM/SIGINT handlers only write one byte to a self-pipe. Nothing is
+  masked, so the child never inherits a blocked mask (v3 N1). The loop reads
+  the pipe after the run record exists and after any seal completes.
+* The child never sees NOTIFY_SOCKET or WATCHDOG_*. It writes lines to a
+  private pipe; READY=1 is relayed once, WATCHDOG=1 only after READY,
+  STATUS/STOPPING/EXTEND_TIMEOUT_USEC as validated lines (v2 notify_relay).
+* One seal rule for the immediate seal and for R-a: an exact receipt, a
+  reaped child, the receipt-state record when the slot declares it (K2), a
+  manifest recomputed under the root lock before any image (K7, N2) and a
+  matching closed-state digest. The exit code does not decide.
+* Exit codes: 0 clean stop, 75 the child ended by itself and was sealed,
+  68 open head eligible for one automatic recovery, 69 open head not
+  eligible, 78 refused before CAS running, 70 transient error before CAS.
+"""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass, field
+from enum import IntEnum
+import hashlib
+import hmac
+import json
+import logging
+import math
+import os
+from pathlib import Path
+import re
+import selectors
+import shlex
+import signal
+import socket
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+
+logger = logging.getLogger("kza.launcher")
+
+stage = None  # scripts/stage_runtime, bound by bind_stage()
+
+
+def bind_stage(module) -> None:
+    """Use ``module`` as the admission controller (stage_runtime) implementation."""
+    global stage
+    stage = module
+
+
+if __package__ == "scripts":  # in-process users (tests); the CLI binds by path
+    from scripts import stage_runtime as _stage_module  # noqa: E402
+
+    bind_stage(_stage_module)
+
+
+class ExitCode(IntEnum):
+    """Controller exit codes (design v2 exit_codes_H1)."""
+
+    CLEAN = 0
+    RECOVERABLE = 68
+    UNRECOVERABLE = 69
+    TRANSIENT = 70
+    CHILD_ENDED = 75
+    REFUSED = 78
+
+
+RECOVER_MODES = ("bounded", "operator", "off")
+ARM_WAIT_SECONDS = 10.0  # longest wait for ARMED=1 before a stop is forwarded anyway
+CRASH_BUDGET_SECONDS = 24 * 3600
+STATUS_LIMIT = 200
+NOTIFY_FD_ENV = "KZA_NOTIFY_FD"
+WATCHDOG_INTERVAL_ENV = "KZA_WATCHDOG_INTERVAL_USEC"
+CONTROL_FD_ENV = "KZA_CONTROL_FD"
+TICKET_ENV = "KZA_RUNTIME_ADMISSION"
+# Removed from the controller environment before the child gets it; the
+# KZA_RUNTIME_* prefix is removed as well (v1 child_environment, v2 relay).
+_CHILD_ENV_DROPPED = frozenset({"PYTHONPATH", "CONFIG_PATH", "PYTHONHOME", "NOTIFY_SOCKET",
+                                "WATCHDOG_USEC", "WATCHDOG_PID", NOTIFY_FD_ENV,
+                                WATCHDOG_INTERVAL_ENV, CONTROL_FD_ENV})
+_PROBE_ENVIRONMENT = ("LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SQLITE_TMPDIR")
+UNINSTALL_PHRASE = "revivir datos borrados"
+LEGACY_COMMITS = ("b0866e8", "63ea8d3")
+UNIT = "kza-voice.service"
+DROP_IN_NAME = "zz-kza-stop-timeout.conf"
+# Pre-managed properties recorded at install (v3 N8) and verified at uninstall.
+RECORDED_PROPERTIES = ("Type", "NotifyAccess", "WatchdogUSec", "RestartPreventExitStatus",
+                       "TimeoutStartUSec", "TimeoutStopUSec", "StandardOutput", "StandardError",
+                       "WorkingDirectory", "ExecStart", "Environment")
+# Immutable append-only families whose bound rows must survive (v2 R-b forward evolution).
+_APPEND_ONLY_FAMILIES = ("conversation_tombstones", "conversation_erasures", "fact_owner_revisions",
+                         "retired_users")
+# Resurrection families and the ledger kinds that record them (v3 N2 R-b).
+_RESURRECTION_KINDS = {"conversation": ("conversation_erased",),
+                       "fact": ("fact_deleted", "fact_pruned_retired_owner"),
+                       "voice_profile": ("voice_profile_deleted",),
+                       "voice_consent": ("voice_consent_withdrawn",)}
+_SQLITE_SUFFIXES = (".db", ".sqlite", ".sqlite3")
+_DIGEST_MISMATCH = ("runtime_admission_state_manifest_mismatch", "runtime_admission_closed_state_mismatch")
+_RECEIPT_PROBLEMS = ("runtime_admission_close_receipt_mismatch", "runtime_admission_receipt_state")
+# Serving-store keys the child's own _check_serving_paths pins under the state.
+_SERVING_KEYS = ("db_path", "privacy_db_path", "chroma_path", "preferences_path", "data_path",
+                 "data_dir", "conversations_dir", "exports_dir", "metrics_path", "events_db",
+                 "suggestions_path", "base_path", "control_selection_path", "output_dir",
+                 "manifest_path", "ledger_path", "storage_path")
+
+# Runs in a fresh "-I -B" interpreter with an allow-listed environment: the
+# controller's own read-only path preflight (S3). It needs yaml, which the
+# stdlib controller does not import. It never imports slot code.
+_PREFLIGHT_SOURCE = "\n".join([
+    "import json, re, sys",
+    "from pathlib import Path",
+    "import yaml",
+    "runtime, state = Path(sys.argv[1]), Path(sys.argv[2]).resolve()",
+    "serving = set(json.loads(sys.argv[3]))",
+    "special = {('vectordb', 'path'), ('ambient', 'keep_audio', 'dir'), ('rooms', 'wake_word', 'capture_clips', 'dir')}",
+    "pathlike = re.compile(r'(^|_)(path|dir|file|model|root)$')",
+    "config = yaml.safe_load((state / 'config' / 'settings.yaml').read_text())",
+    "problems = []",
+    "def resolved(value):",
+    "    return (runtime / value).resolve(strict=False)",
+    "def visit(value, prefix):",
+    "    if isinstance(value, dict):",
+    "        for key, child in value.items():",
+    "            visit(child, prefix + (str(key),))",
+    "    elif isinstance(value, list):",
+    "        for number, child in enumerate(value):",
+    "            visit(child, prefix + (str(number),))",
+    "    elif isinstance(value, str) and value and prefix and '${' not in value and '://' not in value:",
+    "        name, dotted = prefix[-1], '.'.join(prefix)",
+    "        if prefix == ('logging', 'file'):",
+    "            target = resolved(value)",
+    "            if target == state or target.is_relative_to(state):",
+    "                problems.append('log_under_state:' + dotted)",
+    "            elif not value.startswith('/'):",
+    "                problems.append('relative_path:' + dotted)",
+    "        elif name in serving or prefix in special:",
+    "            if not resolved(value).is_relative_to(state):",
+    "                problems.append('foreign_serving_store:' + dotted)",
+    "        elif pathlike.search(name) and '/' in value and not value.startswith('/'):",
+    "            if not resolved(value).is_relative_to(state):",
+    "                problems.append('relative_path:' + dotted)",
+    "visit(config if isinstance(config, dict) else {}, ())",
+    "sys.stdout.write(json.dumps({'problems': sorted(problems)}))",
+])
+
+
+class LauncherRefusal(ValueError):
+    """A coded, content-free refusal that maps to one exit code."""
+
+    def __init__(self, code: str, exit_code: ExitCode = ExitCode.REFUSED) -> None:
+        super().__init__(code)
+        self.code = code
+        self.exit_code = exit_code
+
+
+# --------------------------------------------------------------------------
+# systemd notifications
+
+
+class SystemdNotifier:
+    """Send sd_notify datagrams to NOTIFY_SOCKET as the main PID (no-op without it)."""
+
+    def __init__(self, path: str | None) -> None:
+        self._path = path or None
+        self._socket: socket.socket | None = None
+        self.sent: list[str] = []
+        self._failures = 0
+
+    @classmethod
+    def from_environment(cls, environ: dict) -> SystemdNotifier:
+        """Keep NOTIFY_SOCKET for the controller only."""
+        return cls(environ.get("NOTIFY_SOCKET"))
+
+    def send(self, line: str) -> None:
+        """Send one notification line; a failure is logged once and never raises."""
+        self.sent.append(line)
+        if self._path is None:
+            return
+        address = self._path
+        if address.startswith("@"):
+            address = "\0" + address[1:]
+        try:
+            if self._socket is None:
+                self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            self._socket.sendto(line.encode("ascii"), address)
+        except OSError as error:
+            self._failures += 1
+            if self._failures == 1:
+                logger.warning("[Launcher] notification to the service manager failed: %s",
+                               type(error).__name__)
+
+    def status(self, text: str) -> None:
+        """Send a short ASCII STATUS= line (truncated, never raises)."""
+        clean = "".join(char if char.isascii() and char.isprintable() else "?" for char in text)
+        self.send("STATUS=" + clean[:STATUS_LIMIT])
+
+    def close(self) -> None:
+        """Close the datagram socket."""
+        if self._socket is not None:
+            self._socket.close()
+            self._socket = None
+
+
+class NotifyRelay:
+    """Validate the child's notification lines and relay them to systemd (NotifyAccess=main).
+
+    READY=1 is relayed once; WATCHDOG=1 only after READY; STATUS=<ascii,
+    at most 200>, STOPPING=1 and EXTEND_TIMEOUT_USEC=<int> as given. ARMED=1
+    (the child's stop handler is installed) is consumed, never relayed. Any
+    other line, or a malformed one, is dropped and counted.
+    """
+
+    def __init__(self, notifier: SystemdNotifier) -> None:
+        self._notifier = notifier
+        self._buffer = b""
+        self.ready = False
+        self.armed = False
+        self.dropped = 0
+        self.watchdog_relayed = 0
+
+    def feed(self, data: bytes) -> None:
+        """Consume raw bytes from the child's pipe."""
+        self._buffer += data
+        if len(self._buffer) > 65536:  # a flood without newlines: drop it
+            self._buffer = b""
+            self.dropped += 1
+            return
+        *lines, self._buffer = self._buffer.split(b"\n")
+        for raw in lines:
+            self._line(raw)
+
+    def _line(self, raw: bytes) -> None:
+        try:
+            line = raw.decode("ascii")
+        except UnicodeDecodeError:
+            self.dropped += 1
+            return
+        if line == "ARMED=1":  # the child's stop handler exists; private, never relayed
+            self.armed = True
+            return
+        if line == "READY=1":
+            if not self.ready:
+                self.ready = True
+                self._notifier.send(line)
+            return
+        if line == "WATCHDOG=1":
+            if self.ready:
+                self.watchdog_relayed += 1
+                self._notifier.send(line)
+            else:
+                self.dropped += 1
+            return
+        if line == "STOPPING=1":
+            self._notifier.send(line)
+            return
+        if line.startswith("STATUS="):
+            text = line[len("STATUS="):]
+            if 0 < len(text) <= STATUS_LIMIT and text.isprintable():
+                self._notifier.send(line)
+                return
+        elif line.startswith("EXTEND_TIMEOUT_USEC="):
+            value = line[len("EXTEND_TIMEOUT_USEC="):]
+            if value.isdigit() and len(value) <= 18:
+                self._notifier.send(line)
+                return
+        self.dropped += 1
+
+
+# --------------------------------------------------------------------------
+# stop requests
+
+
+class StopPipe:
+    """Self-pipe stop requests: the handler writes one byte and never raises (v2 M1, v3 N1)."""
+
+    def __init__(self) -> None:
+        self.read_fd, self.write_fd = os.pipe()
+        os.set_blocking(self.read_fd, False)
+        os.set_blocking(self.write_fd, False)
+        self._previous: dict[int, object] = {}
+        self.requested = False
+        self.signals = 0
+
+    def install(self) -> StopPipe:
+        """Route SIGTERM and SIGINT to the pipe (main thread only)."""
+        for number in (signal.SIGTERM, signal.SIGINT):
+            self._previous[number] = signal.signal(number, self._handler)
+        return self
+
+    def _handler(self, signum, frame) -> None:
+        try:
+            os.write(self.write_fd, b"T" if signum == signal.SIGTERM else b"I")
+        except OSError:
+            pass
+
+    def drain(self) -> bool:
+        """Read pending stop bytes; return whether a stop has ever been requested."""
+        while True:
+            try:
+                data = os.read(self.read_fd, 64)
+            except (BlockingIOError, InterruptedError):
+                break
+            if not data:
+                break
+            self.signals += len(data)
+            self.requested = True
+        return self.requested
+
+    def close(self) -> None:
+        """Restore the previous handlers and close the pipe."""
+        for number, previous in self._previous.items():
+            signal.signal(number, previous)
+        self._previous.clear()
+        for descriptor in (self.read_fd, self.write_fd):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+# --------------------------------------------------------------------------
+# service manager queries (unprivileged systemctl; injectable for tests)
+
+
+def parse_timespan(text: str | None) -> float | None:
+    """Seconds of a systemd timespan as ``systemctl show`` prints it; None if unknown."""
+    if text is None:
+        return None
+    text = text.strip()
+    if not text or text in {"infinity", "[not set]"}:
+        return None
+    units = {"us": 1e-6, "usec": 1e-6, "ms": 1e-3, "msec": 1e-3, "s": 1.0, "sec": 1.0, "min": 60.0,
+             "h": 3600.0, "hr": 3600.0, "d": 86400.0, "": 1.0}
+    total = 0.0
+    position = 0
+    for match in re.finditer(r"\s*([0-9]+(?:\.[0-9]+)?)\s*([a-z]*)", text):
+        if match.start() != position or match.group(2) not in units:
+            return None
+        total += float(match.group(1)) * units[match.group(2)]
+        position = match.end()
+    if position != len(text):
+        return None
+    return total
+
+
+class ServiceManager:
+    """Read-only systemctl queries plus ``--user daemon-reload`` (never sudo)."""
+
+    def __init__(self, executable: str = "systemctl", timeout: float = 2.0) -> None:
+        self.executable = executable
+        self.timeout = timeout
+        self.calls: list[tuple[str, ...]] = []
+
+    def _run(self, *arguments: str, timeout: float | None = None) -> str | None:
+        command = (self.executable, *arguments)
+        self.calls.append(tuple(arguments))
+        environment = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "XDG_RUNTIME_DIR",
+                                                        "DBUS_SESSION_BUS_ADDRESS", "HOME")
+                       if key in os.environ}
+        try:
+            completed = subprocess.run(command, capture_output=True, text=True, check=False,
+                                       stdin=subprocess.DEVNULL, env=environment,
+                                       timeout=self.timeout if timeout is None else timeout)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if completed.returncode not in (0, 1):  # is-system-running exits 1 for 'stopping'
+            return None
+        return completed.stdout
+
+    def stop_budget(self, uid: int) -> float | None:
+        """The effective TimeoutStopUSec of user@<uid>.service (system manager), in seconds."""
+        output = self._run("show", f"user@{uid}.service", "-p", "TimeoutStopUSec", "--value")
+        return None if output is None else parse_timespan(output.strip())
+
+    def system_state(self) -> str | None:
+        """``systemctl is-system-running`` against the system manager (0.5 s bound)."""
+        output = self._run("is-system-running", timeout=0.5)
+        return None if output is None else output.strip() or None
+
+    def user_show(self, unit: str, properties: tuple[str, ...]) -> dict[str, str] | None:
+        """``systemctl --user show <unit> -p P ...`` as a dict (None if unavailable)."""
+        arguments = ["--user", "show", unit]
+        for name in properties:
+            arguments += ["-p", name]
+        output = self._run(*arguments)
+        if output is None:
+            return None
+        values = {}
+        for line in output.splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                values[key] = value
+        return {name: values.get(name, "") for name in properties}
+
+    def daemon_reload(self) -> bool:
+        """``systemctl --user daemon-reload``."""
+        return self._run("--user", "daemon-reload", timeout=30.0) is not None
+
+
+@dataclass
+class RebootBudget:
+    """The effective user-manager stop budget and the reboot mode it allows (v3 N4)."""
+
+    budget: float | None
+    unit_timeout_stop: float
+    mode: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        clean = self.budget is not None and self.budget >= self.unit_timeout_stop + 10
+        self.mode = "clean" if clean else "fallback"
+
+    def status(self) -> str | None:
+        """STATUS text for the fallback mode."""
+        if self.mode == "clean":
+            return None
+        if self.budget is None:
+            return "reboot budget unknown"
+        return f"reboot budget insufficient ({self.budget:g}s)"
+
+    def deadline_seconds(self, stop_grace: float, elapsed: float) -> float:
+        """Seconds left for the child once the manager is stopping (v3 N9)."""
+        if self.budget is None:
+            return stop_grace
+        return max(0.0, min(stop_grace, self.budget - elapsed - 2.0))
+
+
+def render_stop_timeout_dropin(uid: int, unit_timeout_stop: float, chain_extra: float = 0.0) -> dict:
+    """The sudo drop-in the user applies (N1 = B; v3 N4, review D4). Never written here.
+
+    B = the longest After=-ordered stop chain from kza-voice (its own
+    TimeoutStopSec plus the units that stop after it) plus 15 s. The file
+    sorts after the vendor timeout.conf and lives in the instance directory,
+    so the vendor 5 s stays in force for every other user manager.
+    """
+    value = int(math.ceil(unit_timeout_stop + chain_extra + 15))
+    directory = f"/etc/systemd/system/user@{uid}.service.d"
+    return {"path": f"{directory}/{DROP_IN_NAME}", "directory": directory, "value_seconds": value,
+            "text": f"[Service]\nTimeoutStopSec={value}s\n", "mode": "0644 root:root",
+            "apply": [f"sudo install -d -m 0755 {directory}",
+                      f"sudo install -m 0644 /dev/stdin {directory}/{DROP_IN_NAME}",
+                      "sudo systemctl daemon-reload"],
+            "verify": [f"systemctl show user@{uid}.service -p TimeoutStopUSec,DropInPaths",
+                       f"systemctl cat user@{uid}.service",
+                       "ls /etc/systemd/system.control /run/systemd/system.control"],
+            "never": f"do not restart user@{uid}.service (it would stop every kza unit)"}
+
+
+# --------------------------------------------------------------------------
+# process identity
+
+
+def read_boot_id(path: str | None = None) -> str:
+    """The current boot id (Linux /proc; macOS kern.boottime; a test file when given)."""
+    candidates = [path] if path else ["/proc/sys/kernel/random/boot_id"]
+    for candidate in candidates:
+        try:
+            value = Path(candidate).read_text().strip()
+        except OSError:
+            continue
+        if value:
+            return value
+    if path is None:
+        try:
+            completed = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True,
+                                       timeout=2, check=False)
+            if completed.returncode == 0 and completed.stdout.strip():
+                return "boottime-" + hashlib.sha256(completed.stdout.strip().encode()).hexdigest()[:32]
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return "unknown"
+
+
+def process_start_time(pid: int) -> str | None:
+    """An opaque start-time token for a live pid, or None when it does not exist."""
+    if type(pid) is not int or pid <= 0:
+        return None
+    if os.path.isdir("/proc/self"):
+        try:
+            raw = Path(f"/proc/{pid}/stat").read_text()
+        except OSError:
+            return None
+        fields = raw.rsplit(")", 1)[-1].split()
+        if len(fields) > 19 and fields[0] != "Z":
+            return "ticks-" + fields[19]
+        return None
+    try:
+        completed = subprocess.run(["ps", "-o", "stat=,lstart=", "-p", str(pid)], capture_output=True,
+                                   text=True, timeout=2, check=False, env={"LC_ALL": "C", "PATH": "/bin:/usr/bin"})
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    output = completed.stdout.strip()
+    if completed.returncode != 0 or not output or output.startswith("Z"):
+        return None
+    return "lstart-" + output.split(None, 1)[-1]
+
+
+def child_alive(pid: int, start_time: str | None) -> bool:
+    """Whether the recorded child (pid plus start time) is still alive."""
+    current = process_start_time(pid)
+    return current is not None and (start_time is None or current == start_time)
+
+
+def _cgroup_procs_path() -> Path | None:
+    """This process's unit cgroup.procs, only when systemd runs it as a service."""
+    if "INVOCATION_ID" not in os.environ:
+        return None
+    try:
+        lines = Path("/proc/self/cgroup").read_text().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        if line.startswith("0::"):
+            relative = line[3:].strip()
+            if relative.endswith(".service"):
+                return Path("/sys/fs/cgroup") / relative.lstrip("/") / "cgroup.procs"
+    return None
+
+
+def kill_stragglers(procs_path: Path | None, *, wait: float = 2.0) -> int | None:
+    """SIGKILL every process left in the unit cgroup except this one (review D1).
+
+    Returns the number killed, or None when not checked (no unit cgroup).
+    """
+    if procs_path is None:
+        return None
+    own = os.getpid()
+
+    def others() -> list[int]:
+        try:
+            return [int(item) for item in procs_path.read_text().split() if int(item) != own]
+        except (OSError, ValueError):
+            return []
+
+    found = others()
+    for pid in found:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    deadline = time.monotonic() + wait
+    while others() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return len(found)
+
+
+# --------------------------------------------------------------------------
+# records
+
+
+def _records(root: Path, *parts: str) -> Path:
+    return Path(root) / "admission" / Path(*parts)
+
+
+def run_record_path(root: Path, run_id: str) -> Path:
+    """admission/runs/<run_id>.json."""
+    return _records(root, "runs", run_id + ".json")
+
+
+def exit_record_path(root: Path, run_id: str) -> Path:
+    """admission/runs/<run_id>.exit.json."""
+    return _records(root, "runs", run_id + ".exit.json")
+
+
+def _read_optional(path: Path) -> dict | None:
+    if not path.exists() and not path.is_symlink():
+        return None
+    return stage._read_json(path)
+
+
+def read_run_record(root: Path, run_id: str) -> dict | None:
+    """The immutable record of one started run, or None."""
+    record = _read_optional(run_record_path(root, run_id))
+    if record is not None and (record.get("run_id") != run_id or type(record.get("child_pid")) is not int):
+        raise LauncherRefusal("runtime_admission_run_record_schema", ExitCode.UNRECOVERABLE)
+    return record
+
+
+def read_exit_record(root: Path, run_id: str) -> dict | None:
+    """The immutable exit record of one run, or None (power loss or controller SIGKILL)."""
+    record = _read_optional(exit_record_path(root, run_id))
+    if record is not None and record.get("run_id") != run_id:
+        raise LauncherRefusal("runtime_admission_run_record_schema", ExitCode.UNRECOVERABLE)
+    return record
+
+
+def _now_stamp(wall: float) -> str:
+    return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(wall)) + f"{int((wall % 1) * 1e6):06d}"
+
+
+# --------------------------------------------------------------------------
+# recovery (R-a with a receipt, R-b without one)
+
+
+@dataclass
+class RecoveryDecision:
+    """Outcome of recovering an open head at serve start or by the operator."""
+
+    closed_head: dict | None = None
+    exit_code: ExitCode | None = None
+    code: str = ""
+    path: str = ""
+    report: dict = field(default_factory=dict)
+
+
+def _origin_kind(root: Path, record: dict, limit: int = 4096) -> str:
+    """The first non-selection kind behind a manual head record (selection chains are copies)."""
+    current = record
+    for _ in range(limit):
+        if current["kind"] != "selection" or current["previous"] is None:
+            return current["kind"]
+        path = root / "admission" / "manual-components" / "heads" / (current["previous"]["head_sha256"] + ".json")
+        current = stage._read_json(path)
+    raise LauncherRefusal("runtime_admission_manual_chain_too_long", ExitCode.UNRECOVERABLE)
+
+
+def _recoveries(root: Path) -> list[dict]:
+    directory = _records(root, "recoveries")
+    if not directory.is_dir():
+        return []
+    records = []
+    for path in sorted(directory.glob("*.json")):
+        records.append(stage._read_json(path))
+    return records
+
+
+def classify_run(run: dict | None, exit_record: dict | None, boot_id: str) -> str:
+    """'boot' when the run ended with the previous boot (v2 boot_class_H4), else 'crash'."""
+    if run is None or run.get("boot_id") in (None, "unknown") or run["boot_id"] == boot_id:
+        return "crash"
+    if exit_record is None or exit_record.get("manager_stopping") is True:
+        return "boot"
+    return "crash"
+
+
+def automatic_budget(root: Path, head: dict, klass: str, boot_id: str, wall: float) -> str | None:
+    """Why automatic R-b is not allowed now, or None (L1 = A; v2 budget_L1).
+
+    Crash class: at most once per 24 h, and never twice in a row without a
+    clean close in between (the run must not have started from a recovered
+    head). Boot class: once per boot id, without consuming the crash budget.
+    """
+    records = _recoveries(root)
+    if klass == "boot":
+        if any(item.get("mode") == "automatic" and item.get("class") == "boot"
+               and item.get("boot_id") == boot_id for item in records):
+            return "runtime_admission_recovery_boot_budget_spent"
+        return None
+    if any(item.get("mode") == "automatic" and item.get("class") == "crash"
+           and type(item.get("at")) is float and item["at"] > wall - CRASH_BUDGET_SECONDS for item in records):
+        return "runtime_admission_recovery_crash_budget_spent"
+    start = stage.read_manual_head(root, stage.previous_closed_head(head))
+    if _origin_kind(root, start) == "recovery":
+        return "runtime_admission_recovery_second_in_a_row"
+    return None
+
+
+def _sqlite_files(state: Path) -> list[Path]:
+    return sorted(path for path in state.rglob("*")
+                  if path.is_file() and not path.is_symlink() and path.suffix in _SQLITE_SUFFIXES)
+
+
+def _quick_check(path: Path) -> bool:
+    """Open read-write under the lease (WAL recovery), run quick_check, close (checkpoint)."""
+    try:
+        connection = sqlite3.connect(path, timeout=1.0, isolation_level=None)
+        try:
+            rows = connection.execute("PRAGMA quick_check").fetchall()
+        finally:
+            connection.close()
+    except sqlite3.Error:
+        return False
+    return rows == [("ok",)]
+
+
+def _json_files(state: Path) -> list[Path]:
+    return sorted(path for path in state.rglob("*.json")
+                  if path.is_file() and not path.is_symlink() and path.name not in {stage._MARKER})
+
+
+def _chroma_problems(state: Path) -> list[str]:
+    """Structural segment check without the SDK (review D2: no PersistentClient open)."""
+    problems = []
+    for database in state.rglob("chroma.sqlite3"):
+        for segment in sorted(item for item in database.parent.iterdir() if item.is_dir()):
+            names = {item.name for item in segment.iterdir()}
+            if not names & {"header.bin", "data_level0.bin", "length.bin", "link_lists.bin"}:
+                continue
+            header = segment / "header.bin"
+            if "header.bin" not in names or "data_level0.bin" not in names or header.stat().st_size == 0:
+                problems.append("chroma_segment:" + segment.relative_to(state).as_posix())
+    return problems
+
+
+def _walk_conversation_ids(value, found: set) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "conversation_id" and isinstance(child, str) and child:
+                found.add(child)
+            else:
+                _walk_conversation_ids(child, found)
+    elif isinstance(value, list):
+        for child in value:
+            _walk_conversation_ids(child, found)
+
+
+def _json_column(db: sqlite3.Connection, table: str, column: str, found: set) -> None:
+    for (encoded,) in db.execute(f'SELECT "{column}" FROM "{table}" WHERE "{column}" IS NOT NULL'):
+        try:
+            _walk_conversation_ids(json.loads(encoded), found)
+        except (TypeError, ValueError):
+            continue
+
+
+def subject_digest(salt: str, subject: str) -> str:
+    """HMAC-SHA256 of a subject id keyed by a ledger salt (parity with src/memory/deletion_ledger)."""
+    return hmac.new(bytes.fromhex(salt), subject.encode(), hashlib.sha256).hexdigest()
+
+
+def resurrection_counts(state: Path) -> dict[str, int]:
+    """Content-free counts of payload ids whose deletion the ledger records (v3 N2 R-b).
+
+    Ids are hashed in memory with each ledger's own salt. Conversations with a
+    pending erasure (steps not complete) are expected to still have payload
+    and are not counted: leased start-up resumes their erasure. Chroma is read
+    only through a read-only image of chroma.sqlite3 (review D2).
+    """
+    ledgers: list[tuple[str, dict[str, set]]] = []
+    candidates = {"conversation": set(), "fact": set(), "voice_profile": set()}
+    consents: set[tuple[str, int]] = set()
+    pending: set[str] = set()
+    for path in _sqlite_files(state):
+        with stage._database_image(path) as db:
+            names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if {"deletion_ledger_v1", "deletion_ledger_salt_v1"} <= names:
+                salt = db.execute("SELECT salt FROM deletion_ledger_salt_v1 WHERE id=1").fetchone()
+                if salt is not None and type(salt[0]) is str and re.fullmatch("[0-9a-f]{64}", salt[0]):
+                    subjects: dict[str, set] = {}
+                    for kind, subject in db.execute("SELECT kind, subject_sha256 FROM deletion_ledger_v1"):
+                        subjects.setdefault(kind, set()).add(subject)
+                    ledgers.append((salt[0], subjects))
+            if "utterances" in names:
+                candidates["conversation"].update(row[0] for row in db.execute(
+                    "SELECT conversation_id FROM utterances WHERE conversation_id IS NOT NULL"))
+            if "capture_conversations" in names:
+                candidates["conversation"].update(row[0] for row in db.execute("SELECT id FROM capture_conversations"))
+            for table, column in (("events_policy_v1", "sources_json"), ("wake_clips_v1", "sources_json"),
+                                  ("conversation_turns_v1", "input_sources_json")):
+                if table in names:
+                    _json_column(db, table, column, candidates["conversation"])
+            if "facts" in names:
+                candidates["fact"].update(row[0] for row in db.execute("SELECT id FROM facts WHERE state!='deleted'"))
+            if "voice_profiles" in names:
+                candidates["voice_profile"].update(row[0] for row in db.execute(
+                    "SELECT id FROM voice_profiles WHERE deleted_at IS NULL"))
+            if "voice_fingerprints" in names:
+                candidates["voice_profile"].update(row[0] for row in db.execute(
+                    "SELECT suggested_profile FROM voice_fingerprints WHERE suggested_profile IS NOT NULL"))
+            if "voice_attribution_consents" in names:
+                consents.update((row[0], row[1]) for row in db.execute(
+                    "SELECT person_id, revision FROM voice_attribution_consents")
+                    if type(row[0]) is str and type(row[1]) is int)
+            if {"conversation_erasures", "erasure_steps"} <= names:
+                pending.update(row[0] for row in db.execute(
+                    "SELECT DISTINCT e.conversation_id FROM conversation_erasures e JOIN erasure_steps s"
+                    " ON s.operation_id=e.id WHERE s.state!='complete'"))
+            if "embedding_metadata" in names:
+                for key, value in db.execute("SELECT key, string_value FROM embedding_metadata"
+                                             " WHERE key IN ('conversation_id','fact_id')"):
+                    if isinstance(value, str) and value:
+                        candidates["conversation" if key == "conversation_id" else "fact"].add(value)
+    for path in sorted(state.rglob("*.json")):
+        if "contexts" in path.relative_to(state).parts and path.is_file() and not path.is_symlink():
+            try:
+                _walk_conversation_ids(json.loads(path.read_text()), candidates["conversation"])
+            except (OSError, ValueError):
+                continue
+    candidates["conversation"] -= pending
+    counts = {}
+    for family, kinds in _RESURRECTION_KINDS.items():
+        count = 0
+        if family == "voice_consent":
+            for salt, subjects in ledgers:
+                recorded = subjects.get("voice_consent_withdrawn", set())
+                window = len(recorded)
+                count += sum(1 for person, revision in consents if any(
+                    subject_digest(salt, f"{person}#{later}") in recorded
+                    for later in range(revision + 1, revision + window + 1)))
+        else:
+            for candidate in candidates[family]:
+                if type(candidate) is str and candidate and any(
+                        subject_digest(salt, candidate) in subjects.get(kind, set())
+                        for salt, subjects in ledgers for kind in kinds):
+                    count += 1
+        counts[family] = count
+    return counts
+
+
+def recovery_report(root: Path, head: dict) -> dict:
+    """The R-b checks on the head's state: failures refuse; regressions need the operator.
+
+    Order: writers, SQLite WAL recovery plus quick_check, JSON stores,
+    Chroma structure, deletion-ledger forward evolution, append-only
+    families, resurrection. Ownership and manual-capture equivalence are
+    enforced by stage_runtime.adopt_recovered_state itself.
+    """
+    binding = stage.read_binding(root, head["binding_id"])
+    state = Path(binding["state_root"])
+    report = {"failures": [], "regressions": [], "resurrected": {}, "ledger_bound": False, "databases": 0}
+    try:
+        stage._assert_writers_closed(state)
+    except ValueError as error:
+        report["failures"].append(str(error))
+        return report
+    databases = _sqlite_files(state)
+    report["databases"] = len(databases)
+    for path in databases:
+        if not _quick_check(path):
+            report["failures"].append("quick_check:" + path.relative_to(state).as_posix())
+    for path in _json_files(state):
+        try:
+            json.loads(path.read_bytes())
+        except (OSError, ValueError):
+            report["failures"].append("json:" + path.relative_to(state).as_posix())
+    report["failures"].extend(_chroma_problems(state))
+    if report["failures"]:
+        return report
+    tables = binding["authority"]["projection"]["tables"]
+    report["ledger_bound"] = any("deletion_ledger_v1" in item for item in tables.values())
+    # Nothing protected is bound (a fresh state): there is no deletion to regress.
+    report["ledger_required"] = bool(tables)
+    report["regressions"].extend("deletion_ledger_v1:" + item
+                                 for item in stage.deletion_ledger_regressions(binding, state))
+    try:
+        current = stage.capture_state_authority(state)["projection"]["tables"]
+    except ValueError as error:
+        report["failures"].append(str(error))
+        return report
+    for relative, bound in sorted(tables.items()):
+        for family in _APPEND_ONLY_FAMILIES:
+            if family not in bound:
+                continue
+            now = current.get(relative, {}).get(family)
+            if now is None or not set(bound[family]["row_hashes"]) <= set(now["row_hashes"]):
+                report["regressions"].append(family + ":" + relative)
+    report["resurrected"] = resurrection_counts(state)
+    return report
+
+
+def _try_receipt_seal(root: Path, head: dict, run: dict | None) -> RecoveryDecision | None:
+    """R-a: resume the seal from an exact receipt; None when there is no receipt."""
+    receipt_path = _records(root, "receipts", head["run_id"] + ".json")
+    if head["status"] != "running" or not receipt_path.exists():
+        return None
+    receipt = stage._read_json(receipt_path)
+    child_pid = run["child_pid"] if run is not None else receipt.get("child_pid")
+    if type(child_pid) is not int:
+        return RecoveryDecision(exit_code=ExitCode.UNRECOVERABLE, code="runtime_admission_close_receipt_mismatch",
+                                path="R-a")
+    previous = stage.read_manual_head(root, stage.previous_closed_head(head))
+    try:
+        closed = stage.seal_admission_run(root, head, child_pid, previous)
+    except ValueError as error:
+        return RecoveryDecision(exit_code=ExitCode.UNRECOVERABLE, code=str(error), path="R-a")
+    return RecoveryDecision(closed_head=closed, path="R-a")
+
+
+def recover_open_head(root: Path, head: dict, *, mode: str, boot_id: str, wall: float,
+                      operator: dict | None = None) -> RecoveryDecision:
+    """Recover a running or unknown head (R-a, then R-b per mode and budget).
+
+    ``operator`` is set only by the ``adopt`` command: {"head_sha256",
+    "regressions"} confirmed by the operator. R-a runs in every mode and
+    consumes no budget; a digest mismatch bars R-a and automatic R-b.
+    """
+    root = Path(root)
+    run = read_run_record(root, head["run_id"])
+    if run is not None and child_alive(run["child_pid"], run.get("child_start_time")):
+        return RecoveryDecision(exit_code=ExitCode.REFUSED, code="runtime_admission_recovery_child_alive",
+                                path="R-c")
+    exit_record = read_exit_record(root, head["run_id"])
+    sealed = _try_receipt_seal(root, head, run)
+    if sealed is not None and sealed.closed_head is not None:
+        logger.info("[Launcher] recovery R-a sealed run from its receipt")
+        return sealed
+    state_changed = ((exit_record or {}).get("state_changed_after_close") is True
+                     or (sealed is not None and sealed.code in _DIGEST_MISMATCH))
+    if operator is None:
+        if mode == "off":
+            return RecoveryDecision(exit_code=ExitCode.UNRECOVERABLE, code="runtime_admission_recovery_off",
+                                    path="R-b")
+        if mode != "bounded":
+            return RecoveryDecision(exit_code=ExitCode.UNRECOVERABLE, code="runtime_admission_recovery_operator",
+                                    path="R-b")
+        if state_changed:
+            return RecoveryDecision(exit_code=ExitCode.UNRECOVERABLE,
+                                    code="runtime_admission_recovery_state_changed_after_close", path="R-b")
+        klass = classify_run(run, exit_record, boot_id)
+        refused = automatic_budget(root, head, klass, boot_id, wall)
+        if refused is not None:
+            return RecoveryDecision(exit_code=ExitCode.UNRECOVERABLE, code=refused, path="R-b")
+    else:
+        klass = "operator"
+    report = recovery_report(root, head)
+    report["state_changed_after_close"] = state_changed
+    if report["failures"]:
+        return RecoveryDecision(exit_code=ExitCode.UNRECOVERABLE, code="runtime_admission_recovery_check_failed",
+                                path="R-b", report=report)
+    regressed = sorted({item.split(":", 1)[0] for item in report["regressions"]}
+                       | {"resurrected_" + name for name, count in report["resurrected"].items() if count}
+                       | ({"state_changed_after_close"} if state_changed else set())
+                       | ({"no_deletion_ledger"} if report.get("ledger_required") and not report["ledger_bound"]
+                          else set()))
+    if operator is None and regressed:
+        code = ("runtime_admission_recovery_resurrection" if any(item.startswith("resurrected_") for item in regressed)
+                else "runtime_admission_recovery_regression")
+        return RecoveryDecision(exit_code=ExitCode.UNRECOVERABLE, code=code, path="R-b", report=report)
+    if operator is not None and sorted(operator.get("regressions", [])) != regressed:
+        return RecoveryDecision(exit_code=ExitCode.UNRECOVERABLE, code="runtime_admission_recovery_confirmation",
+                                path="R-b", report=report)
+    checks = {"databases": report["databases"], "regressed": regressed,
+              "resurrected": report["resurrected"]}
+    try:
+        closed = stage.adopt_recovered_state(root, head, {
+            "mode": "automatic" if operator is None else "operator", "class": klass, "boot_id": boot_id,
+            "at": float(wall), "checks": checks,
+            "confirmation": None if operator is None else {"head_sha256": operator["head_sha256"],
+                                                          "regressions": regressed}})
+    except ValueError as error:
+        return RecoveryDecision(exit_code=ExitCode.UNRECOVERABLE, code=str(error), path="R-b", report=report)
+    logger.info("[Launcher] recovery R-b adopted the state (%s, class=%s)",
+                "automatic" if operator is None else "operator", klass)
+    return RecoveryDecision(closed_head=closed, path="R-b", report=report)
+
+
+def eligible_exit(root: Path, running: dict, *, mode: str, boot_id: str, wall: float, manager_stopping: bool,
+                  state_changed: bool) -> ExitCode:
+    """68 when the next start may recover automatically, else 69 (v2 exit_codes_H1)."""
+    if mode != "bounded" or state_changed:
+        return ExitCode.UNRECOVERABLE
+    if manager_stopping:
+        return ExitCode.RECOVERABLE
+    try:
+        refused = automatic_budget(root, running, "crash", boot_id, wall)
+    except (ValueError, OSError):
+        return ExitCode.UNRECOVERABLE
+    return ExitCode.RECOVERABLE if refused is None else ExitCode.UNRECOVERABLE
+
+
+# --------------------------------------------------------------------------
+# serve (S0-S7)
+
+
+@dataclass
+class ServeOptions:
+    """Inputs of one ``serve`` invocation."""
+
+    root: Path
+    stop_grace: float
+    recover: str = "bounded"
+    unit_timeout_stop: float = 0.0
+    python: str = sys.executable
+    child_command: list[str] | None = None
+    boot_id_path: str | None = None
+    probe_timeout: float = 60.0
+    uid: int = field(default_factory=os.getuid)
+
+
+def child_environment(environ: dict, runtime: Path, ticket: dict, notify_fd: int, control_fd: int,
+                      watchdog_interval_usec: int | None) -> dict:
+    """The child's environment: the controller's minus manager and loader variables.
+
+    Credentials from the unit's EnvironmentFiles are kept. PYTHONPATH names
+    the slot runtime; CONFIG_PATH is relative to that runtime (its config
+    link resolves to the slot state).
+    """
+    child = {key: value for key, value in environ.items()
+             if key not in _CHILD_ENV_DROPPED and not key.startswith("KZA_RUNTIME_")}
+    child["PYTHONPATH"] = str(runtime)
+    child["CONFIG_PATH"] = "config/settings.yaml"
+    child[TICKET_ENV] = stage._canonical_json(ticket).decode()
+    child[NOTIFY_FD_ENV] = str(notify_fd)
+    child[CONTROL_FD_ENV] = str(control_fd)
+    if watchdog_interval_usec:
+        child[WATCHDOG_INTERVAL_ENV] = str(watchdog_interval_usec)
+    return child
+
+
+def watchdog_interval(environ: dict) -> int | None:
+    """Half of WATCHDOG_USEC when systemd armed it for this process."""
+    raw = environ.get("WATCHDOG_USEC")
+    owner = environ.get("WATCHDOG_PID")
+    if not raw or not raw.isdigit() or (owner is not None and owner != str(os.getpid())):
+        return None
+    value = int(raw) // 2
+    return value if value > 0 else None
+
+
+def path_preflight(binding: dict, python: str, timeout: float = 60.0) -> list[str]:
+    """Relative model/log paths, logs under the state and foreign serving stores (S3, v2 M8)."""
+    runtime, state = binding["runtime_root"], binding["state_root"]
+    environment = {key: os.environ[key] for key in _PROBE_ENVIRONMENT if key in os.environ}
+    try:
+        completed = subprocess.run([python, "-I", "-B", "-c", _PREFLIGHT_SOURCE, runtime, state,
+                                    json.dumps(sorted(_SERVING_KEYS))], cwd=runtime, env=environment,
+                                   stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        return ["preflight_timeout"]
+    try:
+        problems = json.loads(completed.stdout)["problems"]
+    except (ValueError, KeyError, TypeError):
+        return ["preflight_failed"]
+    return [str(item)[:200] for item in problems] if completed.returncode == 0 else ["preflight_failed"]
+
+
+def check_controller_epoch(root: Path) -> None:
+    """Refuse a controller older than the installed one (L3 = A, K13)."""
+    record = _read_optional(_records(root, "controller.json"))
+    if record is None:
+        raise LauncherRefusal("runtime_admission_controller_not_installed")
+    if type(record.get("controller_epoch")) is not int or record["controller_epoch"] > stage.CONTROLLER_EPOCH:
+        raise LauncherRefusal("runtime_admission_controller_downgrade")
+
+
+def check_slot(root: Path, binding: dict) -> dict:
+    """S3: selection, launcher contract, format epoch and companions (78 on refusal)."""
+    current = root / "current"
+    expected = "slots/" + binding["slot"] + "/runtime"
+    if not current.is_symlink() or os.readlink(current) != expected:
+        raise LauncherRefusal("runtime_admission_launcher_selection_mismatch")
+    try:
+        values = stage.release_integers(binding)
+    except (ValueError, OSError):
+        raise LauncherRefusal("runtime_admission_launcher_contract_missing") from None
+    if values["launcher_contract"] < stage.LAUNCHER_CONTRACT:
+        raise LauncherRefusal("runtime_admission_launcher_contract_missing")
+    if values["format_epoch"] < stage.MIN_FORMAT_EPOCH:
+        raise LauncherRefusal("runtime_admission_rollback_format_closed")
+    runtime = Path(binding["runtime_root"])
+    for companion in stage._PROBE_COMPANIONS:
+        path = runtime / companion
+        if path.is_symlink() or not path.is_file():
+            raise LauncherRefusal("runtime_admission_candidate_unmanaged")
+    return values
+
+
+class Serve:
+    """One ``serve`` run: recovery, checks, the child and its seal (design v2 S0-S7)."""
+
+    def __init__(self, options: ServeOptions, *, manager: ServiceManager | None = None,
+                 notifier: SystemdNotifier | None = None, environ: dict | None = None,
+                 clock=time.monotonic, wall=time.time, straggler_procs: Path | None = None) -> None:
+        self.options = options
+        self.root = Path(options.root).resolve()
+        self.manager = manager if manager is not None else ServiceManager()
+        self.environ = dict(os.environ if environ is None else environ)
+        self.notifier = notifier if notifier is not None else SystemdNotifier.from_environment(self.environ)
+        self.clock = clock
+        self.wall = wall
+        self.straggler_procs = straggler_procs if straggler_procs is not None else _cgroup_procs_path()
+        self.stop = StopPipe()
+        self.boot_id = read_boot_id(options.boot_id_path)
+        self.events: list[str] = []  # content-free order log (tests, evidence)
+
+    def _event(self, name: str) -> None:
+        self.events.append(name)
+        logger.info("[Launcher] %s", name)
+
+    def run(self) -> int:
+        """Serve until the child ends or a stop arrives; returns the exit code."""
+        self.stop.install()
+        try:
+            code = self._serve()
+        except LauncherRefusal as refusal:
+            self._event("refused " + refusal.code)
+            self.notifier.status("refused: " + refusal.code)
+            code = refusal.exit_code
+        except Exception as error:  # noqa: BLE001 - a coded transient refusal
+            self._event("controller error " + type(error).__name__ + " " + str(error)[:120])
+            self.notifier.status("controller error")
+            code = ExitCode.TRANSIENT
+        finally:
+            self.stop.close()
+            self.notifier.close()
+        self._event(f"exit {int(code)}")
+        return int(code)
+
+    def _stopped_before_start(self) -> bool:
+        if self.stop.drain():
+            self._event("stop before CAS running; head unchanged")
+            return True
+        return False
+
+    def _serve(self) -> int:
+        options = self.options
+        if options.recover not in RECOVER_MODES:
+            raise LauncherRefusal("runtime_admission_recover_mode")
+        if not (type(options.stop_grace) in (int, float) and math.isfinite(options.stop_grace)
+                and options.stop_grace > 0):
+            raise LauncherRefusal("runtime_admission_stop_grace")
+        self.notifier.status("starting")
+        budget = RebootBudget(self.manager.stop_budget(options.uid), float(options.unit_timeout_stop))
+        self.budget = budget
+        self._event(f"reboot budget mode={budget.mode} budget={budget.budget}")
+        try:
+            controller = stage.AdmissionController(self.root, probe_timeout=options.probe_timeout,
+                                                   allow_open_head=True)
+            controller.__enter__()
+        except ValueError as error:
+            # runtime_admission_busy: a live child of a dead controller still holds
+            # the lease (R-c), or an operator command runs.
+            raise LauncherRefusal(str(error)) from None
+        try:
+            return self._serve_leased(controller, budget)
+        finally:
+            controller.__exit__(None, None, None)
+
+    def _serve_leased(self, controller, budget: RebootBudget) -> int:
+        root = self.root
+        if self._stopped_before_start():
+            return ExitCode.CLEAN
+        check_controller_epoch(root)
+        head = stage.read_admission_head(root)
+        if head is None:
+            raise LauncherRefusal("runtime_admission_launcher_no_managed_head")
+        if head["status"] != "closed":
+            self.notifier.status("recovering")
+            decision = recover_open_head(root, head, mode=self.options.recover, boot_id=self.boot_id,
+                                         wall=self.wall())
+            self._event(f"recovery {decision.path} {'closed' if decision.closed_head else decision.code}")
+            if decision.closed_head is None:
+                self.notifier.status("recovery refused: " + decision.code)
+                return decision.exit_code
+            head = decision.closed_head
+        if self._stopped_before_start():
+            return ExitCode.CLEAN
+        binding = stage.read_binding(root, head["binding_id"])
+        try:
+            check_slot(root, binding)
+        except LauncherRefusal:
+            raise
+        problems = path_preflight(binding, self.options.python, timeout=self.options.probe_timeout)
+        if problems:
+            raise LauncherRefusal("runtime_admission_launcher_path:" + problems[0])
+        if budget.status() is not None:
+            self.notifier.status(budget.status())
+        if self._stopped_before_start():
+            return ExitCode.CLEAN
+        self.notifier.send(f"EXTEND_TIMEOUT_USEC={int((self.options.probe_timeout + 30) * 1_000_000)}")
+        try:
+            controller.activate(binding["slot"], managed=True)
+        except ValueError as error:
+            raise LauncherRefusal(str(error)[:200]) from None
+        if self._stopped_before_start():
+            return ExitCode.CLEAN
+        return self._run_child(controller, budget)
+
+    def _spawn(self, controller, binding: dict, ticket: dict):
+        runtime = Path(binding["runtime_root"])
+        notify_read, notify_write = os.pipe()
+        control_read, control_write = os.pipe()
+        os.set_blocking(notify_read, False)
+        os.set_blocking(control_write, False)
+        environment = child_environment(self.environ, runtime, ticket, notify_write, control_read,
+                                        watchdog_interval(self.environ))
+        command = (list(self.options.child_command) if self.options.child_command is not None
+                   else [self.options.python, "-B", "-P", "-m", "src.main"])
+        try:
+            process = subprocess.Popen(command, cwd=runtime, env=environment, stdin=subprocess.DEVNULL,
+                                       pass_fds=(controller.lease_descriptor, notify_write, control_read))
+        finally:
+            os.close(notify_write)
+            os.close(control_read)
+        return process, notify_read, control_write
+
+    def _run_child(self, controller, budget: RebootBudget) -> int:
+        root = self.root
+        binding, running, previous_manual, ticket = controller.begin_run()
+        self._event("head running")
+        process = None
+        notify_read = control_write = None
+        try:
+            process, notify_read, control_write = self._spawn(controller, binding, ticket)
+            stage._atomic_record(run_record_path(root, running["run_id"]), {
+                "schema_version": 1, "run_id": running["run_id"], "generation": running["generation"],
+                "binding_id": running["binding_id"], "child_pid": process.pid,
+                "child_start_time": process_start_time(process.pid), "controller_pid": os.getpid(),
+                "boot_id": self.boot_id, "started_at": float(self.wall())}, immutable=True)
+            self._event("child started")
+            outcome = self._wait(process, notify_read, control_write, budget)
+        except Exception as error:  # noqa: BLE001 - a controller bug after CAS: stop the child, UNKNOWN
+            self._event("controller error after CAS " + type(error).__name__)
+            outcome = {"reason": "controller_error", "manager_stopping": False}
+            if process is not None and process.poll() is None:
+                process.send_signal(signal.SIGTERM)
+                try:
+                    process.wait(timeout=self.options.stop_grace)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+        finally:
+            for descriptor in (notify_read, control_write):
+                if descriptor is not None:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+        returncode = process.returncode if process is not None else None
+        stragglers = kill_stragglers(self.straggler_procs)
+        sealed, seal_error, transient = None, None, False
+        if process is not None:
+            try:
+                sealed = stage.seal_admission_run(root, running, process.pid, previous_manual)
+            except ValueError as error:
+                seal_error = str(error)
+            except OSError as error:
+                seal_error, transient = "seal_os_error:" + type(error).__name__, True
+        state_changed = seal_error in _DIGEST_MISMATCH
+        stop_requested = self.stop.drain()
+        stage._atomic_record(exit_record_path(root, running["run_id"]), {
+            "schema_version": 1, "run_id": running["run_id"], "returncode": returncode,
+            "reason": outcome["reason"], "manager_stopping": outcome["manager_stopping"],
+            "boot_id": self.boot_id, "stragglers": stragglers, "sealed": sealed is not None,
+            "seal_error": seal_error, "state_changed_after_close": state_changed,
+            "stop_requested": stop_requested, "ended_at": float(self.wall())}, immutable=True)
+        if sealed is not None:
+            self._event("sealed closed")
+            return ExitCode.CLEAN if stop_requested else ExitCode.CHILD_ENDED
+        if transient:
+            # The receipt may still prove the close: leave the head running for R-a.
+            self._event("seal deferred " + seal_error)
+            return ExitCode.TRANSIENT
+        with stage._locked_root(root):
+            if stage.read_admission_head(root) == running:
+                stage._cas_head(root, running, running["binding_id"], "unknown", running["run_id"])
+        self._event("head unknown " + (seal_error or ""))
+        code = eligible_exit(root, running, mode=self.options.recover, boot_id=self.boot_id,
+                             wall=self.wall(), manager_stopping=outcome["manager_stopping"],
+                             state_changed=state_changed)
+        self.notifier.status("head unknown: " + (seal_error or "no receipt"))
+        return code
+
+    def _wait(self, process, notify_read: int, control_write: int, budget: RebootBudget) -> dict:
+        """The controller loop (v2 M1): self-pipe, notify pipe, 0.5 s poll; never an unbounded wait."""
+        relay = NotifyRelay(self.notifier)
+        self.relay = relay
+        selector = selectors.DefaultSelector()
+        selector.register(self.stop.read_fd, selectors.EVENT_READ, "stop")
+        selector.register(notify_read, selectors.EVENT_READ, "notify")
+        deadline = None
+        stop_at = None
+        forwarded = False
+        manager_stopping = False
+        reason = "child_exit"
+        try:
+            while process.poll() is None:
+                timeout = 0.5 if deadline is None else max(0.0, min(0.5, deadline - self.clock()))
+                for key, _ in selector.select(timeout):
+                    if key.data == "notify":
+                        self._read_notify(selector, notify_read, relay)
+                    elif self.stop.drain() and stop_at is None:
+                        stop_at = self.clock()
+                        reason = "stop"
+                        # (1) forward at once (as soon as the child's handler exists),
+                        # (2) only then ask the system manager (v3 N9).
+                        forwarded = self._forward(process, relay, stop_at)
+                        state = self.manager.system_state()
+                        self._event(f"system state {state}")
+                        grace = self.options.stop_grace
+                        if state == "stopping":
+                            manager_stopping = True
+                            reason = "manager_stopping"
+                            try:
+                                os.write(control_write, b"fast\n")
+                            except OSError:
+                                pass
+                            grace = budget.deadline_seconds(grace, self.clock() - stop_at)
+                            self._event(f"shutdown mode grace={grace:.1f}")
+                        deadline = stop_at + grace
+                        self.notifier.status("stopping")
+                if stop_at is not None and not forwarded:
+                    forwarded = self._forward(process, relay, stop_at)
+                if deadline is not None and self.clock() >= deadline and process.poll() is None:
+                    self._event("stop grace exceeded; SIGKILL")
+                    process.kill()
+                    process.wait()
+                    reason = "stop_grace_exceeded" if not manager_stopping else "manager_stopping"
+            self._read_notify(selector, notify_read, relay)
+        finally:
+            selector.close()
+        if relay.dropped:
+            self._event(f"notify lines dropped {relay.dropped}")
+        return {"reason": reason, "manager_stopping": manager_stopping}
+
+    def _forward(self, process, relay: NotifyRelay, stop_at: float) -> bool:
+        """SIGTERM the child once its stop handler is armed (ARMED=1), or after ARM_WAIT.
+
+        A SIGTERM that reached the child before arm_process_entry ran would
+        meet the default disposition and kill it without a receipt.
+        """
+        if not relay.armed and self.clock() - stop_at < ARM_WAIT_SECONDS:
+            return False
+        try:
+            process.send_signal(signal.SIGTERM)
+        except OSError:
+            pass
+        self._event("stop forwarded" if relay.armed else "stop forwarded unarmed")
+        return True
+
+    @staticmethod
+    def _read_notify(selector, descriptor: int, relay: NotifyRelay) -> None:
+        while True:
+            try:
+                data = os.read(descriptor, 4096)
+            except (BlockingIOError, InterruptedError):
+                return
+            except OSError:
+                data = b""
+            if not data:
+                try:
+                    selector.unregister(descriptor)
+                except (KeyError, ValueError):
+                    pass
+                return
+            relay.feed(data)
+
+
+# --------------------------------------------------------------------------
+# operator adoption
+
+
+def adopt(root: Path, *, confirm: str, regressions: list[str], boot_id_path: str | None = None,
+          wall=time.time, dry_run: bool = False) -> dict:
+    """Operator R-b (or R-a) for an open head; prints counts only (L1, v1 modes.operator).
+
+    ``confirm`` must be the head's sha256 (the digest of head.json's
+    content); ``regressions`` must list exactly the regressed families the
+    checks report (forward evolution, resurrection, state changed after
+    close, no ledger). With ``dry_run`` only the report is returned.
+    """
+    root = Path(root).resolve()
+    with stage.AdmissionController(root, allow_open_head=True):
+        head = stage.read_admission_head(root)
+        if head is None or head["status"] == "closed":
+            raise LauncherRefusal("runtime_admission_adopt_head_closed")
+        head_sha = stage._digest(head)
+        if dry_run:
+            report = recovery_report(root, head)
+            return {"head_sha256": head_sha, "status": head["status"], "report": report}
+        if confirm != head_sha:
+            raise LauncherRefusal("runtime_admission_adopt_confirmation")
+        decision = recover_open_head(root, head, mode="operator", boot_id=read_boot_id(boot_id_path),
+                                     wall=wall(), operator={"head_sha256": head_sha,
+                                                            "regressions": sorted(regressions)})
+        if decision.closed_head is None:
+            raise LauncherRefusal(decision.code, decision.exit_code or ExitCode.UNRECOVERABLE)
+        return {"head": decision.closed_head, "path": decision.path,
+                "checks": {"regressed": decision.report.get("regressions", []),
+                           "resurrected": decision.report.get("resurrected", {})}}
+
+
+# --------------------------------------------------------------------------
+# install-controller (L3 = A)
+
+
+def install_controller(root: Path, archive: Path, *, wall=time.time) -> dict:
+    """Install a controller under <root>/controller/<commit>; monotonic epoch, atomic switch.
+
+    The archive is verified (manifest hashes, CPython 3.13) and must declare
+    launcher_contract >= 3 and a controller_epoch at least the installed one.
+    Returns which installed slots the new controller closes for rollback
+    (format_epoch below its minimum) -- the rollback window.
+    """
+    root = Path(root).resolve()
+    manifest, files = stage._read_archive(Path(archive))
+    epoch = manifest.get("controller_epoch", 0)
+    if type(epoch) is not int or epoch < 1 or manifest.get("launcher_contract", 0) < stage.LAUNCHER_CONTRACT:
+        raise LauncherRefusal("runtime_admission_controller_unmanaged")
+    if "scripts/managed_launcher.pyc" not in files or "scripts/stage_runtime.pyc" not in files:
+        raise LauncherRefusal("runtime_admission_controller_unmanaged")
+    commit = manifest["git_commit"]
+    with stage.AdmissionController(root, allow_open_head=True):
+        record_path = _records(root, "controller.json")
+        installed = _read_optional(record_path)
+        if installed is not None and installed.get("controller_epoch", 0) > epoch:
+            raise LauncherRefusal("runtime_admission_controller_downgrade")
+        controllers = root / "controller"
+        controllers.mkdir(mode=0o700, exist_ok=True)
+        target = controllers / commit
+        if target.exists():
+            for name, digest in manifest["files"].items():
+                path = target / name
+                if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+                    raise LauncherRefusal("runtime_admission_controller_tampered")
+        else:
+            with tempfile.TemporaryDirectory(prefix=".install-", dir=controllers) as temporary:
+                staging = Path(temporary) / commit
+                for name, data in files.items():
+                    destination = staging / name
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(data)
+                (staging / "release.json").write_text(json.dumps(manifest, indent=2) + "\n")
+                os.rename(staging, target)
+        with tempfile.TemporaryDirectory(prefix=".current-", dir=controllers) as temporary:
+            link = Path(temporary) / "current"
+            link.symlink_to(commit)
+            os.replace(link, controllers / "current")
+        closed = []
+        for release in sorted((root / "slots").glob("*/runtime/release.json")):
+            try:
+                value = json.loads(release.read_text()).get("format_epoch", 0)
+            except (OSError, ValueError):
+                value = 0
+            if type(value) is not int or value < stage.MIN_FORMAT_EPOCH:
+                closed.append(release.parent.parent.name)
+        stamp = _now_stamp(wall())
+        record = {"schema_version": 1, "controller_epoch": epoch, "commit": commit,
+                  "min_format_epoch": stage.MIN_FORMAT_EPOCH, "installed_at": stamp}
+        stage._atomic_record(record_path, record)
+        stage._atomic_record(_records(root, "launcher", f"controller-{stamp}.json"),
+                             dict(record, closed_for_rollback=closed, previous=installed), immutable=True)
+    return {"commit": commit, "controller_epoch": epoch, "closed_for_rollback": closed,
+            "path": str(controllers / "current" / "scripts" / "stage_runtime.pyc")}
+
+
+# --------------------------------------------------------------------------
+# install-launcher / uninstall-launcher (v1 I4, v2 install_M9, v3 N8)
+
+
+@dataclass
+class LauncherSettings:
+    """Values rendered into managed.conf (measured on the server, L2/L6)."""
+
+    python: str
+    stop_grace: float
+    timeout_start: float
+    timeout_stop: float
+    watchdog_sec: float
+    console_log: str
+    recover: str = "bounded"
+
+
+def render_managed_conf(template: str, root: Path, settings: LauncherSettings) -> str:
+    """Render the tracked managed.conf template with absolute values."""
+    values = {"python": settings.python, "root": str(root),
+              "controller": str(Path(root) / "controller" / "current" / "scripts" / "stage_runtime.pyc"),
+              "stop_grace": f"{settings.stop_grace:g}", "recover": settings.recover,
+              "timeout_start": f"{settings.timeout_start:g}", "timeout_stop": f"{settings.timeout_stop:g}",
+              "watchdog_sec": f"{settings.watchdog_sec:g}", "console_log": settings.console_log}
+    for key, value in values.items():
+        if any(char in str(value) for char in "\n\r%$"):
+            raise LauncherRefusal("runtime_admission_launcher_value:" + key)
+    text = template
+    for key, value in values.items():
+        text = text.replace("{" + key + "}", str(value))
+    if re.search(r"\{[a-z_]+\}", text):
+        raise LauncherRefusal("runtime_admission_launcher_template")
+    return text
+
+
+def _sha256(path: Path) -> str | None:
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+
+
+def _write_text_atomic(path: Path, text: str, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=".launcher-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(name, mode)
+        os.replace(name, path)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+def _environment_digest(environment: str) -> str:
+    entries = sorted(item for item in shlex.split(environment or "") if not item.startswith("PYTHONPATH="))
+    return hashlib.sha256(json.dumps(entries).encode()).hexdigest()
+
+
+def _content_free_properties(properties: dict) -> dict:
+    """Recorded pre-managed properties; Environment only as a digest (it may hold values)."""
+    recorded = {key: value for key, value in properties.items() if key != "Environment"}
+    recorded["Environment_sha256"] = _environment_digest(properties.get("Environment", ""))
+    return recorded
+
+
+def exec_start_argv(value: str) -> list[str]:
+    """argv of a ``systemctl show -p ExecStart`` value (``{ path=... ; argv[]=... ; ... }``)."""
+    match = re.search(r"argv\[\]=(.*?) ;", value or "")
+    if match is None:
+        raise LauncherRefusal("runtime_admission_launcher_exec_start")
+    return shlex.split(match.group(1))
+
+
+def _require_inactive(manager: ServiceManager) -> None:
+    state = manager.user_show(UNIT, ("ActiveState",))
+    if state is None or state["ActiveState"] not in {"inactive", "failed"}:
+        raise LauncherRefusal("runtime_admission_launcher_unit_active")
+
+
+def install_launcher(root: Path, *, unit_dir: Path, template: str, settings: LauncherSettings,
+                     manager: ServiceManager, uid: int | None = None,
+                     after_chain_units: tuple[str, ...] = ("kza-llm-ik.service",), wall=time.time) -> dict:
+    """Render managed.conf, set release.conf aside and record the pre-managed properties.
+
+    Runs only with the unit stopped and a managed head present; refuses a
+    console path under <root>/slots/. Never edits credential drop-ins and
+    never writes the sudo drop-in: its text is returned (and recorded) for
+    the user to apply in an authorized window (N1 = B).
+    """
+    root = Path(root).resolve()
+    unit_dir = Path(unit_dir)
+    uid = os.getuid() if uid is None else uid
+    if settings.recover not in RECOVER_MODES:
+        raise LauncherRefusal("runtime_admission_recover_mode")
+    console = Path(settings.console_log)
+    if not console.is_absolute() or console.resolve(strict=False).is_relative_to(root / "slots"):
+        raise LauncherRefusal("runtime_admission_launcher_console_under_slots")
+    if settings.stop_grace + 30 > settings.timeout_stop:
+        raise LauncherRefusal("runtime_admission_launcher_stop_budget")
+    _require_inactive(manager)
+    with stage.AdmissionController(root, allow_open_head=True):
+        if stage.read_admission_head(root) is None:
+            raise LauncherRefusal("runtime_admission_launcher_no_managed_head")
+        check_controller_epoch(root)
+        properties = manager.user_show(UNIT, RECORDED_PROPERTIES)
+        if properties is None:
+            raise LauncherRefusal("runtime_admission_launcher_properties_unavailable")
+        text = render_managed_conf(template, root, settings)
+        release_conf = unit_dir / "release.conf"
+        aside = unit_dir / "release.conf.unmanaged"
+        release_sha = _sha256(release_conf)
+        if release_conf.exists():
+            if aside.exists() and _sha256(aside) != release_sha:
+                raise LauncherRefusal("runtime_admission_launcher_release_conf_conflict")
+            os.replace(release_conf, aside)
+        managed = unit_dir / "managed.conf"
+        _write_text_atomic(managed, text)
+        chain = 0.0
+        for unit in after_chain_units:
+            shown = manager.user_show(unit, ("TimeoutStopUSec",))
+            chain += parse_timespan((shown or {}).get("TimeoutStopUSec")) or 0.0
+        dropin = render_stop_timeout_dropin(uid, settings.timeout_stop, chain)
+        stamp = _now_stamp(wall())
+        record = {"schema_version": 1, "launcher_contract": stage.LAUNCHER_CONTRACT,
+                  "managed_conf_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                  "release_conf_sha256": release_sha, "properties": _content_free_properties(properties),
+                  "legacy_exec_start": exec_start_argv(properties["ExecStart"]) if properties["ExecStart"] else None,
+                  "settings": {"stop_grace": settings.stop_grace, "timeout_start": settings.timeout_start,
+                               "timeout_stop": settings.timeout_stop, "watchdog_sec": settings.watchdog_sec,
+                               "recover": settings.recover, "console_log": settings.console_log},
+                  "stop_timeout_dropin": {key: dropin[key] for key in ("path", "value_seconds", "text")},
+                  "retired_tools": ["2026-10-29 publication tool --rollback (restores release.conf)"],
+                  "installed_at": stamp}
+        stage._atomic_record(_records(root, "launcher", f"install-{stamp}.json"), record, immutable=True)
+    reloaded = manager.daemon_reload()
+    shown = manager.user_show(UNIT, ("Type", "NotifyAccess", "KillMode", "RestartPreventExitStatus"))
+    expected = {"Type": "notify", "NotifyAccess": "main", "KillMode": "mixed"}
+    mismatched = sorted(key for key, value in expected.items() if (shown or {}).get(key) != value)
+    if shown is None or set((shown.get("RestartPreventExitStatus") or "").split()) < {"69", "78"}:
+        mismatched.append("RestartPreventExitStatus")
+    return {"managed_conf": str(managed), "record": f"install-{stamp}.json", "reloaded": reloaded,
+            "verification_mismatches": mismatched, "stop_timeout_dropin": dropin}
+
+
+def _latest_install(root: Path) -> dict:
+    records = sorted(_records(root, "launcher").glob("install-*.json"))
+    if not records:
+        raise LauncherRefusal("runtime_admission_launcher_not_installed")
+    return stage._read_json(records[-1])
+
+
+def _verify_legacy_slot(root: Path, legacy_slot: str, legacy_commits: tuple[str, ...]) -> tuple[Path, Path, str]:
+    name = stage._slot_name(legacy_slot)
+    runtime = root / "slots" / name / "runtime"
+    state = root / "slots" / name / "state"
+    if runtime.is_symlink() or not runtime.is_dir() or state.is_symlink() or not state.is_dir():
+        raise LauncherRefusal("runtime_admission_uninstall_legacy_slot")
+    manifest = json.loads((runtime / "release.json").read_text())
+    commit = manifest.get("git_commit", "")
+    if not any(commit.startswith(prefix) for prefix in legacy_commits):
+        raise LauncherRefusal("runtime_admission_uninstall_legacy_commit")
+    for relative, digest in manifest.get("files", {}).items():
+        path = runtime / relative
+        if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise LauncherRefusal("runtime_admission_uninstall_legacy_integrity")
+    return runtime, state, commit
+
+
+def render_legacy_conf(record: dict, runtime: Path, state: Path, release_conf_unmanaged: Path) -> str:
+    """legacy.conf: the pre-managed service with the legacy slot's explicit paths (v3 N8).
+
+    Environment lines come from release.conf.unmanaged (moved aside at
+    install) except PYTHONPATH, which names the legacy runtime explicitly;
+    'current' is never used.
+    """
+    properties = record["properties"]
+    argv = record.get("legacy_exec_start")
+    if not argv:
+        raise LauncherRefusal("runtime_admission_launcher_exec_start")
+    environment = []
+    if release_conf_unmanaged.is_file():
+        for line in release_conf_unmanaged.read_text().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("Environment=") and "PYTHONPATH=" not in stripped:
+                environment.append(stripped)
+    lines = ["# Legacy (unmanaged) service rendered by stage_runtime uninstall-launcher (U3b-0d, L4).",
+             "[Service]", "Type=simple", "NotifyAccess=none", "WatchdogSec=0", "RestartPreventExitStatus=",
+             "ExecStart=", "ExecStart=" + shlex.join(argv), *environment,
+             "Environment=PYTHONPATH=" + str(runtime), "WorkingDirectory=" + str(state)]
+    for key, directive in (("TimeoutStartUSec", "TimeoutStartSec"), ("TimeoutStopUSec", "TimeoutStopSec")):
+        seconds = parse_timespan(properties.get(key))
+        if seconds is not None:
+            lines.append(f"{directive}={seconds:g}s")
+    for key in ("StandardOutput", "StandardError"):
+        if properties.get(key):
+            lines.append(f"{key}={properties[key]}")
+    return "\n".join(lines) + "\n"
+
+
+def uninstall_launcher(root: Path, *, unit_dir: Path, decision_id: str, phrase: str, legacy_slot: str,
+                       manager: ServiceManager, legacy_commits: tuple[str, ...] = LEGACY_COMMITS,
+                       wall=time.time) -> dict:
+    """Leave management for a legacy slot (L4 = A): decision id, typed phrase, unit stopped.
+
+    Moves managed.conf aside, renders legacy.conf with the legacy slot's
+    explicit runtime and state, reloads and verifies. The only change under
+    admission/ is the immutable uninstall record; 'current', the head, the
+    bindings and the slots stay byte-identical. Erased data comes back with
+    the legacy slot: the user decides, not the operator.
+    """
+    root = Path(root).resolve()
+    unit_dir = Path(unit_dir)
+    if phrase != UNINSTALL_PHRASE:
+        raise LauncherRefusal("runtime_admission_uninstall_phrase")
+    if type(decision_id) is not str or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{2,79}", decision_id) is None:
+        raise LauncherRefusal("runtime_admission_uninstall_decision")
+    _require_inactive(manager)
+    with stage.AdmissionController(root, allow_open_head=True):
+        record = _latest_install(root)
+        runtime, state, commit = _verify_legacy_slot(root, legacy_slot, legacy_commits)
+        managed = unit_dir / "managed.conf"
+        managed_sha = _sha256(managed)
+        if managed_sha is None:
+            raise LauncherRefusal("runtime_admission_uninstall_not_managed")
+        text = render_legacy_conf(record, runtime, state, unit_dir / "release.conf.unmanaged")
+        os.replace(managed, unit_dir / "managed.conf.disabled")
+        legacy = unit_dir / "legacy.conf"
+        _write_text_atomic(legacy, text)
+        manager.daemon_reload()
+        shown = manager.user_show(UNIT, RECORDED_PROPERTIES)
+        problems = _legacy_mismatches(record, shown, runtime, state)
+        stamp = _now_stamp(wall())
+        stage._atomic_record(_records(root, "launcher", f"uninstall-{stamp}.json"), {
+            "schema_version": 1, "decision_id": decision_id,
+            "phrase_sha256": hashlib.sha256(phrase.encode()).hexdigest(),
+            "head": stage.read_admission_head(root), "legacy_slot": legacy_slot, "legacy_commit": commit,
+            "managed_conf_sha256": managed_sha, "legacy_conf_sha256": hashlib.sha256(text.encode()).hexdigest(),
+            "verified_properties_sha256": stage._digest(shown or {}), "mismatches": problems,
+            "uninstalled_at": stamp}, immutable=True)
+    return {"legacy_conf": str(legacy), "mismatches": problems, "record": f"uninstall-{stamp}.json"}
+
+
+def _legacy_mismatches(record: dict, shown: dict | None, runtime: Path, state: Path) -> list[str]:
+    if shown is None:
+        return ["properties_unavailable"]
+    before = record["properties"]
+    problems = []
+    for key in ("Type", "NotifyAccess", "RestartPreventExitStatus", "StandardOutput", "StandardError"):
+        if shown.get(key, "") != before.get(key, ""):
+            problems.append(key)
+    for key in ("WatchdogUSec", "TimeoutStartUSec", "TimeoutStopUSec"):
+        if parse_timespan(shown.get(key)) != parse_timespan(before.get(key)):
+            problems.append(key)
+    if shown.get("WorkingDirectory") != str(state):
+        problems.append("WorkingDirectory")
+    try:
+        if exec_start_argv(shown.get("ExecStart", "")) != record.get("legacy_exec_start"):
+            problems.append("ExecStart")
+    except LauncherRefusal:
+        problems.append("ExecStart")
+    entries = shlex.split(shown.get("Environment", ""))
+    if "PYTHONPATH=" + str(runtime) not in entries:
+        problems.append("PYTHONPATH")
+    if _environment_digest(shown.get("Environment", "")) != before.get("Environment_sha256"):
+        problems.append("Environment")
+    return problems
+
+
+# --------------------------------------------------------------------------
+# CLI (dispatched from stage_runtime.main)
+
+
+COMMANDS = ("serve", "adopt", "install-controller", "install-launcher", "uninstall-launcher", "stop-timeout-dropin")
+
+
+def add_commands(commands) -> None:
+    """Register the launcher subcommands on stage_runtime's parser."""
+    serve = commands.add_parser("serve", help="Run the head slot under systemd (Type=notify, U3b-0d)")
+    serve.add_argument("--stop-grace", type=float, required=True)
+    serve.add_argument("--recover", choices=RECOVER_MODES, default="bounded")
+    serve.add_argument("--unit-timeout-stop", type=float, default=0.0,
+                       help="kza-voice TimeoutStopSec, for the reboot budget check")
+    serve.add_argument("--probe-timeout", type=float, default=60.0)
+    # Rehearsal-only (compiled launcher tests); production managed.conf never sets them.
+    serve.add_argument("--child-command", help=argparse.SUPPRESS)
+    serve.add_argument("--boot-id-file", help=argparse.SUPPRESS)
+    adopt_parser = commands.add_parser("adopt", help="Operator recovery of an UNKNOWN or running head")
+    adopt_parser.add_argument("--confirm", default="", help="sha256 of the head (printed by --dry-run)")
+    adopt_parser.add_argument("--confirm-regressions", default="",
+                              help="Comma-separated regressed families exactly as --dry-run reports them")
+    adopt_parser.add_argument("--dry-run", action="store_true")
+    adopt_parser.add_argument("--boot-id-file", help=argparse.SUPPRESS)
+    controller = commands.add_parser("install-controller")
+    controller.add_argument("archive", type=Path)
+    launcher = commands.add_parser("install-launcher")
+    launcher.add_argument("--unit-dir", type=Path, required=True)
+    launcher.add_argument("--template", type=Path, required=True)
+    launcher.add_argument("--python", required=True)
+    launcher.add_argument("--stop-grace", type=float, required=True)
+    launcher.add_argument("--timeout-start", type=float, required=True)
+    launcher.add_argument("--timeout-stop", type=float, required=True)
+    launcher.add_argument("--watchdog-sec", type=float, default=0.0)
+    launcher.add_argument("--console-log", required=True)
+    launcher.add_argument("--recover", choices=RECOVER_MODES, default="bounded")
+    uninstall = commands.add_parser("uninstall-launcher")
+    uninstall.add_argument("--unit-dir", type=Path, required=True)
+    uninstall.add_argument("--user-decision", required=True)
+    uninstall.add_argument("--phrase", required=True)
+    uninstall.add_argument("--legacy-slot", required=True)
+    dropin = commands.add_parser("stop-timeout-dropin", help="Print the sudo drop-in text (never writes it)")
+    dropin.add_argument("--unit-timeout-stop", type=float, required=True)
+    dropin.add_argument("--chain-extra", type=float, default=0.0)
+
+
+def run_command(args) -> int:
+    """Execute one launcher subcommand; returns the process exit code."""
+    if args.command == "serve":
+        logging.basicConfig(level=logging.INFO, stream=sys.stderr,
+                            format="%(asctime)s %(levelname)s %(name)s %(message)s")
+        options = ServeOptions(root=args.root, stop_grace=args.stop_grace, recover=args.recover,
+                               unit_timeout_stop=args.unit_timeout_stop, probe_timeout=args.probe_timeout,
+                               child_command=json.loads(args.child_command) if args.child_command else None,
+                               boot_id_path=args.boot_id_file)
+        return Serve(options).run()
+    try:
+        if args.command == "adopt":
+            result = adopt(args.root, confirm=args.confirm, dry_run=args.dry_run, boot_id_path=args.boot_id_file,
+                           regressions=[item for item in args.confirm_regressions.split(",") if item])
+        elif args.command == "install-controller":
+            result = install_controller(args.root, args.archive)
+        elif args.command == "install-launcher":
+            result = install_launcher(args.root, unit_dir=args.unit_dir, template=args.template.read_text(),
+                                      manager=ServiceManager(), settings=LauncherSettings(
+                                          python=args.python, stop_grace=args.stop_grace,
+                                          timeout_start=args.timeout_start, timeout_stop=args.timeout_stop,
+                                          watchdog_sec=args.watchdog_sec, console_log=args.console_log,
+                                          recover=args.recover))
+        elif args.command == "uninstall-launcher":
+            result = uninstall_launcher(args.root, unit_dir=args.unit_dir, decision_id=args.user_decision,
+                                        phrase=args.phrase, legacy_slot=args.legacy_slot, manager=ServiceManager())
+        else:
+            result = render_stop_timeout_dropin(os.getuid(), args.unit_timeout_stop, args.chain_extra)
+    except LauncherRefusal as refusal:
+        sys.stderr.write(json.dumps({"refused": refusal.code}) + "\n")
+        return int(refusal.exit_code)
+    sys.stdout.write(json.dumps(result, sort_keys=True, default=str) + "\n")
+    return 0
