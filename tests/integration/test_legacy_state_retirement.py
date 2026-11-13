@@ -21,6 +21,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -747,3 +748,35 @@ def test_a_directory_vanishing_during_the_dry_run_walk_is_a_refusal(world, monke
         dry(world)
     monkeypatch.undo()
     assert dry(world)["dry_run"] is True  # the same walk without the vanishing directory reports
+
+
+# --- the server's umask -----------------------------------------------------------------------------
+
+def test_the_whole_lifecycle_runs_under_the_server_umask(tmp_path, tree, artifacts):  # noqa: F811
+    """yo, kza and the kza-voice unit all run with umask 0002: build, adopt, close, retire, serve.
+
+    The production-shaped root is written under that umask too, so every
+    directory and file the commands, the controller and the launcher create
+    inside it is created group-writable wherever no explicit mode is given;
+    no later check of any of them may refuse what an earlier one wrote.
+    """
+    previous = os.umask(0o002)
+    try:
+        world = World(tmp_path.resolve(), tree, artifacts, adapters=True)
+        assert stat.S_IMODE(os.lstat(world.root).st_mode) == 0o710  # /home/kza/releases
+        assert world.retire()["record"]  # retire-legacy-training (the LoRA roots)
+        adopted(world)  # dry-run inside prepare, install-controller, commit, a clean managed close
+        install_record(world)
+        assert launcher._verify_legacy_slot(world.root, CONTAINER, launcher.LEGACY_COMMITS)
+        plan = dry(world)
+        assert plan["eligible"] is True and plan["target_slot"] == LEGACY
+        result = retire(world, confirm=plan["plan_sha256"])
+        assert result["record"] == "legacy-retirement/retired-" + plan["plan_sha256"] + ".json"
+        assert not os.path.lexists(legacy_state(world))
+        with stage.AdmissionController(world.root) as controller:
+            controller.activate("r1", managed=True)
+            _binding, running, _previous, _ticket = controller.begin_run()
+        assert running["status"] == "running" and running["generation"] == 6
+        assert stat.S_IMODE(os.lstat(world.root).st_mode) == 0o710
+    finally:
+        os.umask(previous)

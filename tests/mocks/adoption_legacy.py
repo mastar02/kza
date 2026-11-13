@@ -80,6 +80,22 @@ def _hot_journal(database: Path) -> None:
     work.unlink()
 
 
+def production_modes(root: Path, layout: SourceLayout) -> tuple:
+    """(directory, mode) in creation order, as stat reports them on the production host (2026-11-13).
+
+    /home/kza 0751; releases, slots, each slot and its state 0710; the
+    legacy state's config/ (and data/) 0700, its logs/ 0710; the checkout
+    and its models 0755; the metrics root 0775. The slot runtime is 0700.
+    """
+    root = Path(root)
+    releases = root / "releases"
+    state = layout.legacy_state
+    return ((root, 0o751), (releases, 0o710), (releases / "slots", 0o710),
+            (state.parent, 0o710), (state, 0o710), (state / "config", 0o700), (state / "logs", 0o710),
+            (layout.container.parent, 0o710), (layout.container, 0o710),
+            (layout.legacy_checkout, 0o755), (layout.models_root, 0o755), (layout.metrics_root, 0o775))
+
+
 def build_legacy(root: Path, tree: Path, *, adapters: bool = False, pre_slot: Path | None = None) -> SourceLayout:
     """Write the legacy layout under ``root`` with b0866e8's code from ``tree``.
 
@@ -89,9 +105,11 @@ def build_legacy(root: Path, tree: Path, *, adapters: bool = False, pre_slot: Pa
     """
     layout = layout_of(root)
     state = layout.legacy_state
-    for directory in (state / "config", state / "logs", layout.container, layout.models_root,
-                      layout.metrics_root):
-        directory.mkdir(parents=True)
+    for directory, mode in production_modes(root, layout):
+        directory.mkdir(parents=directory == Path(root))
+        # Explicit, umask-independent: the server's umask is 0002 and the
+        # managed root refuses a group-writable mode (checked_root).
+        os.chmod(directory, mode)
     if pre_slot is None:
         (state / "data").mkdir()
     else:
@@ -100,6 +118,7 @@ def build_legacy(root: Path, tree: Path, *, adapters: bool = False, pre_slot: Pa
         if result.returncode != 0:
             raise RuntimeError(result.stderr[-4000:])
         shutil.copytree(layout.legacy_checkout / "data", state / "data")
+    os.chmod(state / "data", 0o700)
     shutil.copyfile(tree / "config" / "settings.yaml", state / "config" / "settings.yaml")
     (state / ".env").write_text("HOME_ASSISTANT_URL=http://192.168.1.100:8123\nCONFIG_PATH=config/settings.yaml\n")
     (state / "logs" / "voice_assistant.log").write_text("legacy log\n")

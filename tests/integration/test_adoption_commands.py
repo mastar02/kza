@@ -130,7 +130,7 @@ class World:
         self.layout = fixture.build_legacy(base / "legacy", tree, **build)
         self.root = base / "legacy" / "releases"
         runtime = self.root / "slots" / CONTAINER / "runtime"
-        runtime.mkdir()
+        runtime.mkdir(mode=0o700)  # Production mode; 0o700 holds under any umask.
         (runtime / "release.json").write_text(json.dumps({"git_commit": "63ea8d3" + "0" * 33, "files": {}}))
         (self.root / "current").symlink_to(Path("slots") / CONTAINER / "runtime")
         self.scratch = base / "tmpfs"
