@@ -921,7 +921,8 @@ def test_the_voice_stage_has_exactly_the_4b_production_callers():
     """4a-2 wires the routes; 4b-2 adds one attributor/verifier module, its DI call and the router hook.
 
     Pinned per name as a count of referencing lines (4a-2 review P), so a second call site of an
-    already-listed writer fails too.
+    already-listed writer fails too. U3b-0e2 adds adoption_schema.py, which only reads the
+    ``voice_consent`` residue count to abort an adoption with voice residue (P3=A); it calls nothing.
     """
     from collections import Counter
     from tests.unit.memory.test_fact_owners import _references
@@ -934,6 +935,7 @@ def test_the_voice_stage_has_exactly_the_4b_production_callers():
         if uses:
             found[relative] = dict(Counter(use.split(":", 1)[1] for use in uses))
     assert found == {
+        "src/core/adoption_schema.py": {"'voice_consent'": 2},
         "src/dashboard/authority.py": {"'memory:own:voice'": 1},
         "src/dashboard/memory_voice_api.py": {
             "'memory:own:voice'": 1, "MemoryVoiceConsentActor": 6, "VoiceSwitchActor": 1,
