@@ -2,9 +2,12 @@
 import os
 from pathlib import Path
 import stat
+import sys
+from types import SimpleNamespace
 
 import pytest
 
+from scripts import adoption
 from scripts import stage_runtime as stage
 
 
@@ -85,3 +88,33 @@ def test_the_private_state_copy_is_0700_and_0600_whatever_the_source(tmp_path, c
         os.umask(previous)
     copy = tmp_path / "copy"
     assert [mode(copy), mode(copy / "sub"), mode(copy / "sub" / "x.db")] == [0o700, 0o700, 0o600]
+
+
+def test_a_level_another_writer_creates_first_is_kept_as_it_is(tmp_path, monkeypatch, umask):
+    """The mkdir race: a level that appears between the check and mkdir is accepted unchanged."""
+    real_mkdir, raced = os.mkdir, []
+
+    def mkdir(path, mode=0o777, *args, **kwargs):
+        if not raced:
+            raced.append(path)
+            real_mkdir(path, 0o700)
+            os.chmod(path, 0o775)  # An older version's level, created just before ours.
+            raise FileExistsError(path)
+        return real_mkdir(path, mode, *args, **kwargs)
+    monkeypatch.setattr(stage.os, "mkdir", mkdir)
+    stage.private_directories(tmp_path / "admission" / "heads")
+    assert raced == [tmp_path / "admission"]
+    assert mode(tmp_path / "admission") == 0o775 and mode(tmp_path / "admission" / "heads") == 0o700
+
+
+def test_the_schema_only_child_runs_with_a_private_umask(tmp_path, monkeypatch):
+    """Whatever the controller's umask, the child creates private entries in the prepared copy."""
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(returncode=0, stdout='{"phase": "schema", "schema_only": true}\n', stderr="")
+    monkeypatch.setattr(adoption.subprocess, "run", run)
+    state = tmp_path / "copy" / "state"
+    assert adoption.run_child(sys.executable, tmp_path / "runtime", state, "schema")["schema_only"] is True
+    assert [call["umask"] for call in calls] == [0o077] and calls[0]["cwd"] == os.fspath(state.parent)

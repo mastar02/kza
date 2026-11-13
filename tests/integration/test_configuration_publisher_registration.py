@@ -945,6 +945,25 @@ async def test_unregistered_change_is_caught_by_the_drained_observation(tmp_path
         assert_poisoned(g, last="opening" if change == "after_commit" else "attached")
 
 
+async def test_a_destination_replaced_while_the_attach_pins_it_refuses_the_attach(tmp_path, monkeypatch):
+    """The plan's identity must be the pinned inode: a replace between pin and plan refuses and poisons."""
+    async with configuration_graph(tmp_path, monkeypatch, attach=False) as g:
+        real_open_at, replaced = registration._DestinationPin.open_at, []
+
+        def open_at(pin, path):
+            real_open_at(pin, path)
+            if not replaced:
+                raw = Path(path).read_bytes()
+                Path(path).unlink()
+                Path(path).write_bytes(raw)  # Same bytes, a new inode (the old one is pinned).
+                replaced.append(path)
+        monkeypatch.setattr(registration._DestinationPin, "open_at", open_at)
+        with pytest.raises(registration.OutputRegistrationError, match="^output_registration_destination_changed$"):
+            await g.owner.attach_configuration(g.changes, g.authority)
+        assert replaced == [g.settings] and g.owner._failed
+        assert "attached" not in phases(g.owner)
+
+
 @pytest.mark.parametrize("when", ["before_shutdown", "queued", "before_temporary", "after_temporary",
                                   "after_commit"])
 @pytest.mark.parametrize("reuse", [False, True], ids=["fresh_inode", "reused_inode_number"])

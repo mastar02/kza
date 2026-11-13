@@ -1300,7 +1300,10 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             publisher.pin.open_at(manager.data_path)  # Before the plan observes its identity.
             plan = account_plan(manager.data_path, manager.legacy_path, manager.legacy_path,
                                 self.admission.state_root)
-            publisher.pin.require(plan["initial_identity"])
+            try:
+                publisher.pin.require(plan["initial_identity"])
+            except (OSError, RuntimeError, ValueError):
+                _reject("destination_changed", self)
             return plan
         plan = await self._run(planned)
         await self._run(self._append_account, "intent", plan)
@@ -1439,7 +1442,10 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             # Pinned before the plan observes it: the recorded identity stays this inode.
             publisher.pin.open_at(configuration_path(Path(self.admission.state_root)))
             plan = configuration_plan(self.admission.state_root)
-            publisher.pin.require(plan["initial_identity"])
+            try:
+                publisher.pin.require(plan["initial_identity"])
+            except (OSError, RuntimeError, ValueError):
+                _reject("destination_changed", self)
             return plan
         plan = await self._run(planned)
         if plan["path"] != self._expected["configuration"]:

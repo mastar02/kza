@@ -386,6 +386,23 @@ async def test_handle_path_or_external_identity_change_stays_managed_and_rejects
         assert graph.owner._accounts.pin.descriptor is None  # Released by the epoch's close.
 
 
+async def test_a_destination_created_while_the_attach_pins_it_refuses_the_attach(tmp_path, monkeypatch, dashboard_auth):
+    """The plan's identity must be the pinned inode (here: none): a file appearing in between refuses."""
+    async with account_graph(tmp_path, monkeypatch, token(dashboard_auth), attach=False) as graph:
+        real_open_at, created = registration._DestinationPin.open_at, []
+
+        def open_at(pin, path):
+            real_open_at(pin, path)
+            if not created:
+                Path(path).write_text('{"users": []}')
+                created.append(Path(path))
+        monkeypatch.setattr(registration._DestinationPin, "open_at", open_at)
+        with pytest.raises(registration.OutputRegistrationError, match="^output_registration_destination_changed$"):
+            await graph.owner.attach_accounts(graph.users, graph.api)
+        assert created == [Path(graph.users.data_path)] and graph.owner._failed
+        assert "attached" not in [event["phase"] for event in account_events(graph.owner)]
+
+
 # A-T06
 async def test_revoked_lease_during_real_temp_write_cleans_attempt_and_keeps_file_and_ram(
     tmp_path, monkeypatch, dashboard_auth,

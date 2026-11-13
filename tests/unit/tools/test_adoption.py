@@ -269,7 +269,12 @@ def test_the_drop_runs_in_the_scratch_and_only_vacuum_into_reaches_the_destinati
     scratch, destination = tmp_path / "scratch", tmp_path / "work"
     _legacy_events(scratch / "data" / "events.db")
     assert MARKER in (scratch / "data" / "events.db").read_bytes()
-    assert adoption.drop_and_vacuum(scratch, destination) == {"data/events.db": {"tables_dropped": 1, "temp_store": "memory", "temp_directory": "scratch"}}
+    previous = os.umask(0o002)  # The server's umask: the created parents are still private.
+    try:
+        assert adoption.drop_and_vacuum(scratch, destination) == {"data/events.db": {"tables_dropped": 1, "temp_store": "memory", "temp_directory": "scratch"}}
+    finally:
+        os.umask(previous)
+    assert [destination.stat().st_mode & 0o777, (destination / "data").stat().st_mode & 0o777] == [0o700, 0o700]
     target = destination / "data" / "events.db"
     assert MARKER not in target.read_bytes()
     assert not any(scratch.rglob("events.db*"))
