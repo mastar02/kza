@@ -74,6 +74,8 @@ class OfflineTTS:
 def offline_config(root: Path, ha_url: str, *, rooms: bool = False) -> dict:
     """Isolate all private paths and explicitly disable optional cloud/models."""
     return {
+        # U3b-0e1: a managed (ticketed) run requires an absolute models root.
+        "paths": {"models_root": str(root / "models")},
         "home_assistant": {"url": ha_url, "token": "synthetic-token", "control_selection_path": "",
                            "state_prefetch": {"enabled": False}},
         "embeddings": {"model": "synthetic", "device": "cpu"},

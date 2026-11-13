@@ -24,6 +24,7 @@ import pytest
 
 from scripts import managed_launcher as launcher
 from scripts import stage_runtime as stage
+from tests.mocks.runtime_tree import writable_runtime
 from tests.mocks import fake_systemd
 from tests.mocks import launcher_rehearsal as rehearsal
 
@@ -377,7 +378,8 @@ def test_tc4_pre_launcher_artifact_is_refused_78(artifacts, tmp_path, deployment
 
 def test_tc4_unmanaged_runtime_is_refused_at_selection(artifacts, tmp_path, deployments):
     deployment = _deploy(artifacts, tmp_path, deployments)
-    (deployment.root / "slots" / "s" / "runtime" / "src" / "core" / "runtime_admission.pyc").unlink()
+    runtime = writable_runtime(deployment.root / "slots" / "s" / "runtime")  # owner-level tampering
+    (runtime / "src" / "core" / "runtime_admission.pyc").unlink()
     unit = deployment.supervise("clean")
     unit.start()
     unit.wait_inactive(60)
