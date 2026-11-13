@@ -56,8 +56,8 @@ y Escritorio; Living y Cocina siguen sin captura útil. HA conserva `auth_error`
   los registros de retención conservan sus localizadores absolutos. El directorio
   de trabajo es el nuevo contenedor; `runtime/config`, `runtime/data` y
   `runtime/.env` enlazan a él. No retirar el estado del slot anterior: sólo
-  lo retira `retire-legacy-state` el día 15 después del primer cierre limpio
-  gestionado (ver «Retiro del estado congelado de b0866e8 (Q5, P7)»).
+  lo retira `retire-legacy-state` desde DÍA 0 + 14 × 24 h, contado desde el
+  primer cierre limpio gestionado (ver «Retiro del estado congelado de b0866e8 (Q5, P7)»).
 - `kza-voice.service` conserva su unit original y usa el drop-in `release.conf`
   (el lanzador gestionado U3b-0d lo reemplazará en R1; ver «Lanzador gestionado (U3b-0d)»).
   Ejecuta `/home/kza/kza/.venv/bin/python -B -P -m src.main`, con
@@ -286,10 +286,11 @@ La base de privacidad no es un destino de borrado. Ningún participante la nombr
 - la `privacy.db` de cada slot gestionado anterior, sea dueño o no;
 - los snapshots y estados derivados que registra el catálogo de copias (`admission/copies`, con `acknowledges_retained_copy_cleanup = false`);
 - copias que no son miembros del linaje gestionado, aunque algunas estén dentro de `/home/kza/releases`:
-  - el estado de producción anterior a la adopción, el del slot `release_20261028T145442Z_b0866e8`, al que enlaza el contenedor del slot 63ea8d3. Queda congelado como imagen de rollback (L4) y en él ya no corre la retención: audio ambiente, transcripciones, texto de eventos y recuerdos vencidos siguen ahí. Contiene además `data/audit.db` (si la auditoría estuvo activa) y la tabla heredada `events` de `data/events.db`, con transcripciones y texto personal, que no se llevaron al estado gestionado. Se retira 14 días después del primer cierre limpio gestionado: el día 15 (decisión P7 = B; plazo y responsable en «Retiro del estado congelado de b0866e8 (Q5, P7)»);
+  - el estado de producción anterior a la adopción, el del slot `release_20261028T145442Z_b0866e8`, al que enlaza el contenedor del slot 63ea8d3. Queda congelado como imagen de rollback (L4) y en él ya no corre la retención: audio ambiente, transcripciones, texto de eventos y recuerdos vencidos siguen ahí. Contiene además `data/audit.db` (si la auditoría estuvo activa) y la tabla heredada `events` de `data/events.db`, con transcripciones y texto personal, que no se llevaron al estado gestionado. Se retira desde DÍA 0 + 14 × 24 h, contado desde el primer cierre limpio gestionado (decisiones P7 = B y Q1 = A; plazo y responsable en «Retiro del estado congelado de b0866e8 (Q5, P7)»);
   - el original anterior al 2026-10-28 en `/home/kza/kza` (`config`, `data`, `.env`). Está congelado y sin retención desde esa fecha, así que guarda más datos vencidos que la imagen anterior;
-  - los respaldos de `/home/kza/releases/backups/`, incluidas las diez bases SQLite que el 2026-10-29 se copiaron del estado de b0866e8 (`backups/release_20261029T174830709997Z_63ea8d3/`). El retiro Q5 no los toca;
-  - las métricas anteriores en `/home/kza/logs/` y los logs y la consola anteriores, que pueden contener texto. Los que viven dentro del estado de b0866e8 se van con él el día 15; los demás quedan;
+  - las diez bases SQLite que el 2026-10-29 se copiaron de ese estado (`backups/release_20261029T174830709997Z_63ea8d3/databases/`). Se retiran en el mismo paso y con el mismo registro (Q2 = A);
+  - los demás respaldos de `/home/kza/releases/backups/`: `release.conf`, `config` y `.env` del respaldo del 2026-10-29, y el respaldo de `/home/kza/kza` (`release_20261028T144002Z_2c5adb4`). El retiro Q5 no los toca;
+  - las métricas anteriores en `/home/kza/logs/` y los logs y la consola anteriores, que pueden contener texto. Los que viven dentro del estado de b0866e8 se van con él; los demás quedan;
   - cualquier snapshot del disco, y los respaldos que contengan los adaptadores LoRA retirados en la ventana por decisión P1 = D.
 
 Los embeddings de esos recuerdos en los índices semánticos de los estados dueños sí se borran, porque esos índices son destinos con ruta.
@@ -298,7 +299,7 @@ Al adoptar (U3b-0e), el registro de borrados se siembra con las marcas que ya ha
 
 Desde R1 (con U3b-0d4a), la comprobación de resurrección mira cada almacén mapeado por separado y detecta conversaciones, recuerdos y perfiles de voz restaurados. Para conversaciones, los almacenes mapeados son `utterances`, `capture_conversations`, `events_policy_v1`, `wake_clips_v1`, `conversation_turns_v1`, la metadata de Chroma, los JSON de contextos y los JSON/JSONL de colectores (`CONVERSATION_SOURCES` en `scripts/managed_launcher.py`). No detecta una conversación restaurada sólo en lo que `CONVERSATION_NOT_SCANNED` lista con su motivo: el audio de clips y de ambiente (se ve sólo por su fila), la procedencia de voz y de hechos, las sugerencias, los streams, el catálogo de diagnósticos y la cuarentena heredada; eso queda para U3b-0d4b. Los borrados de conversaciones siguen mostrándose «pendiente» hasta U3b-0d4b, porque tres inventarios todavía no tienen limpiador (P8 = A).
 
-Rollback no gestionado: hasta el final del día 14 después del primer cierre limpio gestionado, sólo a 63ea8d3 con decisión registrada y la frase 'revivir datos borrados'. Desde el día 15 no hay rollback no gestionado soportado: sólo se avanza con una release gestionada.
+Rollback no gestionado: hasta DÍA 0 + 14 × 24 h, contado desde el primer cierre limpio gestionado, sólo a 63ea8d3 con decisión registrada y la frase 'revivir datos borrados'. Después del retiro no hay rollback no gestionado: sólo se avanza con una release gestionada, y `/home/kza/kza` no es un destino de rollback (Q3 = A).
 
 Consecuencia: si una persona pide «olvidá mi voz» u «olvidá esto», su perfil de voz o su recuerdo desaparece del estado activo, pero sigue en cada slot anterior y en cada copia hasta que esa copia se destruya. Con la compactación (U3b-0c, en diseño; requiere antes la unidad del lanzador gestionado), esas copias se destruyen al compactar. Mientras tanto pueden ser hasta 5 slots anteriores si se compacta al llegar a 6 dueños. El borrado de la compactación es sólo unlink: no sobrescribe. Las copias fuera de la raíz no las alcanza ningún mecanismo actual.
 
@@ -640,18 +641,52 @@ sigue siendo el estado servido hasta la ventana de R1. La ventana de R1 no se
 programa hasta que los dos estén revisados y ensayados (T-A17; ver el
 [runbook de la ventana](../runbooks/2026-11-13-r1-adoption-window.md)).
 
-Plazo (decisión P7 = B del usuario, ya registrada en `u3b_0e_adoption`):
+Plazo (decisiones del usuario P7 = B y `u3b_0e5_retirement` Q1 = A, ya
+registradas):
 
 - DÍA 0 es el primer cierre limpio gestionado: el sello de cierre de W9 (el
   `ended_at` del registro de salida de esa corrida).
-- Hasta el final del día 14 (DÍA 0 + 15 × 24 h) vale L4 hacia 63ea8d3, con
-  decisión registrada y la frase.
-- El día 15 el operador corre el retiro. El comando rechaza
-  `runtime_admission_legacy_retire_too_early` antes de DÍA 0 + 15 × 24 h y
+- «Día 14» quiere decir DÍA 0 + 14 × 24 h, no un día de calendario. Hasta ese
+  momento vale L4 hacia 63ea8d3, con decisión registrada y la frase.
+- Desde DÍA 0 + 14 × 24 h el operador corre el retiro. El comando rechaza
+  `runtime_admission_legacy_retire_too_early` un segundo antes y
   `runtime_admission_legacy_retire_no_clean_close` si todavía no hubo un cierre
   limpio gestionado.
 - Responsable: el usuario, como operador de `kza`. En W10 se anota la fecha
   exacta en el handoff y aquí.
+
+Qué borra (Q2 = A), siempre desde rutas fijas y nunca desde la línea de
+comandos:
+
+- `slots/release_20261028T145442Z_b0866e8/state`, tomado del registro de
+  adopción;
+- las diez bases SQLite que la publicación del 2026-10-29 copió de ese estado:
+  `backups/release_20261029T174830709997Z_63ea8d3/databases/` (el nombre del
+  respaldo es el del slot 63ea8d3 del registro; ver `backup_databases` en
+  `tools/publish_voice_order.py`). El conjunto tiene que ser exactamente el
+  revisado:
+  - diez archivos regulares `.db` o `.sqlite3`, con cabecera SQLite;
+  - cada uno con el mismo nombre relativo que una base del `data/` del estado
+    congelado;
+  - ningún otro archivo (`-journal`, `-wal` incluidos), ni enlaces, ni
+    montajes.
+
+  Si no, rechaza `runtime_admission_legacy_retire_backups_set`. La corrida de
+  prueba lista sus nombres relativos para revisarlos.
+
+Qué queda:
+
+- el contenedor de 63ea8d3 (sólo enlaces, que quedan colgando) y el runtime de
+  b0866e8;
+- `release.conf`, `config` y `.env` del mismo respaldo del 2026-10-29;
+- los demás respaldos de `backups/`;
+- `/home/kza/kza`, con sus modelos y su `.venv`.
+
+Cada uno es una exclusión comprobada. Si un destino contiene alguno, o está
+dentro de alguno (también a través de un enlace), rechaza
+`runtime_admission_legacy_retire_excluded:<cuál>`: `models_root`, `venv`,
+`legacy_checkout`, `backups_kept`, `r1_slot`, `head_slot`, `controller`,
+`current` o `head_state`.
 
 Cómo se corre (bajo `kza`, nunca como root):
 
@@ -662,55 +697,61 @@ $ST retire-legacy-state --decision <id P7> --container-slot release_20261029T174
 systemctl --user start kza-voice.service
 ```
 
-- La corrida de prueba sólo lee. Imprime `plan_sha256`, `eligible`,
-  `eligible_from` y conteos del estado (archivos, directorios, enlaces, bytes y
-  los nombres de primer nivel).
+- La corrida de prueba sólo lee. Imprime:
+  - `plan_sha256`, `eligible` y `eligible_from`;
+  - conteos del estado (archivos, directorios, enlaces, bytes y los nombres de
+    primer nivel);
+  - los nombres relativos de las diez bases del respaldo.
 - La corrida real exige kza-voice inactivo, el head cerrado y el lease de la
   raíz, y que `--confirm` sea el plan que se recalcula en ese momento.
-- Borra sólo `slots/release_20261028T145442Z_b0866e8/state`, tomado del
-  registro de adopción y no de la línea de comandos. El contenedor de
-  63ea8d3 (sólo enlaces) y el runtime de b0866e8 quedan; sus enlaces quedan
-  colgando.
-- Nunca entran en el borrado: `/home/kza/kza/models`, `/home/kza/kza/.venv`,
-  el slot de R1, el slot y el estado del head, `current`, `controller/`,
-  `/home/kza/kza` y los respaldos. Si el destino contiene alguno o está dentro
-  de alguno, rechaza `runtime_admission_legacy_retire_excluded:<cuál>`.
+- El id de decisión se valida sólo por formato, como en los demás comandos. El
+  plan y el registro nombran además la autorización registrada (P7 = B y
+  `u3b_0e5_retirement`).
+- Rechaza `runtime_admission_legacy_retire_l4_used` si existe algún registro
+  `admission/launcher/uninstall-*.json`: L4 volvió a servir el estado
+  congelado, y sus datos de ese período necesitan una decisión nueva del
+  usuario.
 - Rechaza `runtime_admission_legacy_retire_referenced:<qué>` si algo todavía
-  apunta a los slots de b0866e8 o 63ea8d3:
+  apunta a los slots de b0866e8 o 63ea8d3 o a las bases del respaldo:
   - un enlace bajo la raíz (`current` y `controller/current` incluidos);
   - un registro de `admission/` fuera de los históricos (`adoption/`,
     `launcher/` y los propios del retiro);
   - una unidad de usuario cargada (`ExecStart`, `Environment`,
     `EnvironmentFile`, `WorkingDirectory` o un bind de contenedor);
-  - la configuración de logrotate de la consola. Antes del día 15 hay que
-    quitar la estrofa de la consola vieja (`state/logs/console.log` del
-    contenedor);
+  - la configuración de logrotate de la consola: el mismo día, antes de la
+    corrida de prueba, hay que quitar la estrofa de la consola vieja (ver el
+    runbook);
   - el `settings.yaml` o el `.env` del estado servido.
-- No sigue enlaces ni cruza montajes: un montaje dentro del estado rechaza
-  (`runtime_admission_legacy_retire_mount`) y una entrada del slot que no sea
-  `runtime` ni `state` también (`runtime_admission_legacy_retire_slot_unexpected`).
+- Un directorio que desaparece mientras la corrida de prueba recorre el estado
+  vivo rechaza `runtime_admission_legacy_retire_scan` (no un traceback).
+- No sigue enlaces ni cruza montajes: un montaje dentro de un destino rechaza
+  (`runtime_admission_legacy_retire_mount`), y también una entrada del slot que
+  no sea `runtime` ni `state` (`runtime_admission_legacy_retire_slot_unexpected`).
 - Antes del primer borrado escribe `admission/legacy-retirement/intent-<plan>.json`,
   inmutable. Desde ese momento L4 ya rechaza los dos slots. Si se corta, repetir
   el mismo comando con el mismo id y el mismo `--confirm` lo completa. Al final
-  deja `admission/legacy-retirement/retired-<plan>.json`, sin contenido: id de la
-  decisión, conteos y la prueba de ausencia.
+  deja `admission/legacy-retirement/retired-<plan>.json`, sin contenido: id y
+  autorización de la decisión, conteos, nombres de las bases y la prueba de
+  ausencia de los dos destinos.
 - Es irreversible. Una segunda ejecución rechaza `already_retired`.
 
-Desde el día 15 **no hay rollback no gestionado soportado**:
+Después del retiro **no hay rollback no gestionado** (decisión Q3 = A):
 
-- el estado de b0866e8 ya no existe y los enlaces del slot 63ea8d3 cuelgan;
+- el estado de b0866e8 y sus copias SQLite del 2026-10-29 ya no existen, y los
+  enlaces del slot 63ea8d3 cuelgan;
 - `uninstall-launcher` rechaza los dos slots con
   `runtime_admission_uninstall_legacy_retired` y el nombre del registro;
-- el original del 2026-10-28 en `/home/kza/kza` no es un slot: ninguna
-  herramienta lo puede usar como destino, y su unidad original corría desde
-  `/home/kza/app`. Volver a él necesitaría una unidad propia revisada, que no
-  existe;
+- **`/home/kza/kza` no es un destino de rollback.** No es un slot, ninguna
+  herramienta lo usa como destino y no se va a construir una: su unidad
+  original corría desde `/home/kza/app`;
 - la recuperación sólo avanza: una release gestionada nueva, o un rollback
   gestionado dentro del linaje gestionado.
 
 `/home/kza/kza` está congelado y sin retención desde el 2026-10-28, así que
-guarda más datos vencidos que la imagen que se retira. Queda hasta una
-decisión Q5 aparte sobre `/home/kza/kza`.
+guarda más datos vencidos que la imagen que se retira. Queda como copia, no
+como destino, hasta una decisión Q5 aparte sobre `/home/kza/kza`. Lo mismo
+vale para el respaldo `backups/release_20261028T144002Z_2c5adb4/`, que es de
+`/home/kza/kza`.
 
 Época del controlador (revisión 0e3 F14): desde R1 no se puede instalar un
 controlador anterior a la época 2. Un rollback gestionado puede volver a slots

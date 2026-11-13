@@ -5,7 +5,7 @@ Procedimiento del operador para la ventana W0–W10 del diseño
 decisiones P1–P8 de `user-decisions-20261110.json`. Los comandos están en
 `scripts/adoption_commands.py` y se llaman desde `stage_runtime`. U3b-0e5
 agrega `retire-legacy-state` (Q5), la comprobación de enlaces del destino de
-rollback, el paso del día 15 y el texto de DEPLOYMENT. Este runbook todavía no
+rollback, el paso del día 14 y el texto de DEPLOYMENT. Este runbook todavía no
 autoriza la ventana.
 
 ## Compuerta de programación (P7, Q5)
@@ -21,12 +21,14 @@ autoriza la ventana.
   `_verify_legacy_slot`), con T-A17 ensayado en proceso. Faltan su revisión
   independiente y el T-A17 compilado en Linux (U3b-0e4): hasta entonces la
   ventana sigue sin programarse.
-- **Paso del día 15**: el borrado Q5 corre el DÍA 0 + 15 (DÍA 0 = el sello de
-  cierre de W9, el `ended_at` de esa corrida). Responsable: el usuario, como
-  operador de `kza`; la autorización ya está registrada (P7 = B). En W10 se
-  anota en el handoff la fecha exacta y el responsable. Hasta el final del día
-  14 (DÍA 0 + 15 × 24 h) sólo vale L4 hacia 63ea8d3 (decisión registrada y
-  frase); desde el día 15 no hay rollback no gestionado.
+- **Paso del día 14**: el borrado Q5 corre desde DÍA 0 + 14 × 24 h (DÍA 0 = el
+  sello de cierre de W9, el `ended_at` de esa corrida; Q1 = A). Borra el estado
+  de b0866e8 y sus diez copias SQLite del 2026-10-29 (Q2 = A). Responsable: el
+  usuario, como operador de `kza`; la autorización ya está registrada (P7 = B,
+  `u3b_0e5_retirement`). En W10 se anota en el handoff la fecha exacta y el
+  responsable. Hasta ese momento sólo vale L4 hacia 63ea8d3 (decisión
+  registrada y frase); después no hay rollback no gestionado y `/home/kza/kza`
+  no es un destino (Q3 = A).
 
 Todo corre como `kza` y nunca como root. Cada comando rechaza con salida 78
 y `{"refused": <código>}` en estos casos:
@@ -242,40 +244,87 @@ C=release_20261029T174830709997Z_63ea8d3
 - **W9**: un stop y un start limpios, con recibo y sello de cierre. Ese sello
   es el DÍA 0 de P7.
 - **W10**: evidencia. Anotar en el handoff y en DEPLOYMENT («Retiro del estado
-  congelado de b0866e8») el DÍA 0 (sello de W9), la fecha del día 15 y el
+  congelado de b0866e8») el DÍA 0 (sello de W9), la fecha de DÍA 0 + 14 × 24 h y el
   responsable (el usuario, como operador de `kza`).
 
-## Día 15: retiro Q5 del estado de b0866e8
+## Día 14: retiro Q5 del estado de b0866e8 y sus copias del 2026-10-29
 
-No antes de DÍA 0 + 15 × 24 h; el comando lo rechaza
-(`runtime_admission_legacy_retire_too_early`, con `eligible_from`).
+Desde DÍA 0 + 14 × 24 h exactas («día 14», decisión Q1 = A), nunca antes: el
+comando lo rechaza (`runtime_admission_legacy_retire_too_early`, con
+`eligible_from`). Borra el estado del slot de b0866e8 y las diez bases de
+`backups/$C/databases/` (Q2 = A). Después no hay rollback no gestionado y
+`/home/kza/kza` no es un destino (Q3 = A).
 
-1. Antes del día 15, quitar de `console-logrotate.conf` la estrofa de la
-   consola vieja (`slots/$C/state/logs/console.log`): mientras exista, el
-   retiro rechaza `referenced:logrotate`.
-2. Corrida de prueba, con el servicio en marcha (sólo lee):
+0. Si L4 se usó desde la adopción (existe algún
+   `/home/kza/releases/admission/launcher/uninstall-*.json`), parar aquí: el
+   retiro rechaza `runtime_admission_legacy_retire_l4_used`, y los datos que
+   L4 sirvió en ese período necesitan una decisión nueva del usuario.
+1. El mismo día, antes de la corrida de prueba, quitar la estrofa de la
+   consola vieja de `console-logrotate.conf`. Mientras exista, el retiro
+   rechaza `referenced:logrotate`. Su texto exacto se escribió en el server
+   el 2026-10-28 y no está en Git: es el bloque que empieza en la línea con
+   la ruta de la consola bajo `/home/kza/releases/slots/` (la de
+   `state/logs/console.log`) y termina en su `}`. Según el runbook del
+   2026-10-28 tiene esta forma (horario, 24 rotaciones, `maxage 1`,
+   `copytruncate`):
+   ```
+   /home/kza/releases/slots/<slot>/state/logs/console.log {
+       hourly
+       rotate 24
+       maxage 1
+       copytruncate
+       ...
+   }
+   ```
+   Mostrarlo (sólo lee) y borrar exactamente esas líneas, sin tocar la
+   estrofa de `/home/kza/releases/logs/console.log`:
+   ```bash
+   CONF=/home/kza/releases/console-logrotate.conf
+   awk '/\/home\/kza\/releases\/slots\//{p=1} p{print NR": "$0} p&&/}/{p=0}' "$CONF"
+   ```
+   Comprobar que ya no está (sólo lee):
+   ```bash
+   grep -n '/slots/' "$CONF"                                # sin salida (salida 1)
+   grep -n '^/home/kza/releases/logs/console.log' "$CONF"   # la estrofa gestionada sigue
+   /usr/sbin/logrotate -d "$CONF"                           # modo de prueba: no cambia nada
+   ```
+2. Corrida de prueba (sólo lee; puede ir con el servicio en marcha):
    ```bash
    $ST retire-legacy-state --decision <id P7> --container-slot $C --dry-run
    ```
-   Tiene que decir `"eligible": true`. Anotar `plan_sha256`. Si rechaza
-   `referenced:<qué>`, `problems` lista todo lo que todavía apunta a los slots
-   de b0866e8 o 63ea8d3: corregirlo antes de seguir. No borrar a mano.
+   Tiene que decir `"eligible": true` y listar diez nombres en
+   `backups.databases`. Anotar `plan_sha256`.
+   - `referenced:<qué>`: `problems` lista todo lo que todavía apunta a los
+     slots de b0866e8 o 63ea8d3 o a esas bases. Corregirlo antes de seguir. No
+     borrar a mano.
+   - `backups_set`: el respaldo no es el conjunto revisado (diez SQLite de ese
+     estado). Parar y avisar.
+   - `scan`: un directorio del estado vivo desapareció durante el recorrido.
+     Repetir, o correrla con el servicio detenido.
 3. Retiro:
    ```bash
    systemctl --user stop kza-voice.service
    $ST retire-legacy-state --decision <id P7> --container-slot $C --confirm <plan_sha256>
    systemctl --user start kza-voice.service
    ```
-   `confirm_mismatch` significa que algo cambió desde la corrida de prueba:
-   repetir el paso 2.
-4. Si se corta (corte de luz, SIGKILL): repetir el mismo comando con el mismo
-   id y el mismo `--confirm`; termina desde
+   - Termina con `record` = `legacy-retirement/retired-<plan>.json`.
+   - `confirm_mismatch` quiere decir que algo cambió desde la corrida de
+     prueba: repetir el paso 2.
+   - Comprobar sólo leyendo. No probar L4 con `uninstall-launcher`: si el retiro
+     no hubiera ocurrido, ese comando cambiaría la unidad a L4.
+     ```bash
+     ls /home/kza/releases/admission/legacy-retirement/      # intent-<plan>.json y retired-<plan>.json
+     ls -d /home/kza/releases/slots/release_20261028T145442Z_b0866e8/state \
+           /home/kza/releases/backups/$C/databases           # ambos: No such file or directory
+     ls /home/kza/releases/backups/$C                        # quedan release.conf, config y .env
+     ```
+     Con ese registro, `uninstall-launcher` rechaza los dos slots con
+     `runtime_admission_uninstall_legacy_retired` (ensayado en T-A17).
+4. Si se corta (corte de luz, SIGKILL), repetir el mismo comando con el mismo
+   id y el mismo `--confirm`: termina desde
    `admission/legacy-retirement/intent-<plan>.json`. Desde que existe esa
    intención, L4 ya rechaza.
-5. Comprobar: `uninstall-launcher --legacy-slot $C ...` rechaza
-   `runtime_admission_uninstall_legacy_retired` con
-   `legacy-retirement/retired-<plan>.json` en `problems` (no cambia nada), y
-   kza-voice volvió a READY.
+5. Comprobar que kza-voice volvió a READY.
 
 ## Abortar
 
@@ -325,8 +374,9 @@ No antes de DÍA 0 + 15 × 24 h; el comando lo rechaza
   de otra ventana.
 - **Si existe un ticket** (W8 escribió uno, aunque el arranque fallara antes de
   READY): solo vale L4, con `uninstall-launcher`, el id de decisión y la frase
-  `revivir datos borrados`. Vale hasta el final del día 14; desde el día 15
-  (o desde que exista una intención Q5) rechaza `legacy_retired`.
+  `revivir datos borrados`. Vale hasta el retiro Q5 (desde DÍA 0 + 14 × 24 h);
+  desde que existe una intención Q5 rechaza `legacy_retired`. Usarlo bloquea
+  el retiro (`l4_used`) hasta una decisión nueva del usuario.
 - Los dos aborts y L4 comprueban primero los enlaces del contenedor de
   63ea8d3: si alguno cuelga, rechazan `runtime_admission_uninstall_legacy_state`
   sin cambiar nada.
