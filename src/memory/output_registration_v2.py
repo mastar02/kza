@@ -2187,7 +2187,8 @@ class _DestinationPin:
     then always has another number, and ``holds`` compares the name's lstat
     with the pinned inode itself. Only the atomic JSON/YAML publishers are
     pinned: closing an extra descriptor on a SQLite file would drop the
-    process's POSIX locks on it.
+    process's POSIX locks on it. After a publish the pin is the writer's own
+    temporary descriptor (read-write from mkstemp); nothing writes through it.
     """
 
     __slots__ = ("descriptor",)
@@ -2216,13 +2217,29 @@ class _DestinationPin:
         base._require(stat.S_ISREG(held.st_mode) and (held.st_dev, held.st_ino) == _pair(identity),
                       "destination_changed")
 
-    def repin(self, path: str | Path, own: tuple) -> None:
-        """After a replace: pin the published inode, which must be the own temporary's ``own``."""
-        self.open_at(path)
-        self.require({"device": own[0], "inode": own[1]})
+    def adopt(self, descriptor: int) -> None:
+        """Take over the writer's own temporary pin as the destination pin after its replace.
+
+        The path is never reopened, so nothing at the name between the replace
+        and this point can be pinned instead, and no open can fail after a
+        durable publish. The previous generation's pin is closed.
+        """
+        previous, self.descriptor = self.descriptor, descriptor
+        if previous is not None:
+            try:
+                os.close(previous)
+            except OSError:
+                pass  # The descriptor is released either way; the new pin is already in place.
 
     def holds(self, info: os.stat_result) -> bool:
-        """``info`` (an lstat of the name) is the pinned inode, unchanged."""
+        """``info`` (an lstat of the name) is the pinned inode.
+
+        While the pin is open its inode cannot be freed, so its number cannot
+        name another file: (st_dev, st_ino) alone decides. Size, mtime and
+        ctime come from the same inode and add nothing on such a filesystem;
+        they are a belt-and-braces check for one whose st_ino is not unique
+        (and what the tests' simulated number reuse exercises).
+        """
         if self.descriptor is None:
             return False
         held = os.fstat(self.descriptor)
@@ -2481,6 +2498,20 @@ def before_account_remove(manager: object, user_id: object, requesting_user: obj
         step.consumed = True
 
 
+def _pinned_stat(info: os.stat_result, pin: int | None) -> bool:
+    """``info`` (an lstat of the own temporary's name) is the writer's pinned own inode.
+
+    The writer's pin keeps the inode allocated, so (st_dev, st_ino) decides;
+    size, mtime and ctime are belt-and-braces for a filesystem whose st_ino
+    is not unique (and what the tests' simulated number reuse exercises).
+    """
+    if pin is None:
+        return False
+    held = os.fstat(pin)
+    return ((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            == (held.st_dev, held.st_ino, held.st_size, held.st_mtime_ns, held.st_ctime_ns))
+
+
 def _directory_pair(path: Path) -> tuple | None:
     info = os.lstat(path)
     return (info.st_dev, info.st_ino) if stat.S_ISDIR(info.st_mode) else None
@@ -2495,7 +2526,8 @@ class _AccountSave:
         self.coordinator, self.publisher, self.execution = coordinator, publisher, execution
         self.confirmed = False
 
-    def before_replace(self, temporary: str, own: tuple | None, parent: tuple | None, final: tuple | None) -> None:
+    def before_replace(self, temporary: str, own: tuple | None, parent: tuple | None, final: tuple | None,
+                       pin: int | None) -> None:
         """Recheck live execution, destination generation and the own temp inode."""
         coordinator, publisher = self.coordinator, self.publisher
         try:
@@ -2505,21 +2537,25 @@ class _AccountSave:
             base._require(own is not None and final is not None and parent is not None
                 and stat.S_ISREG(info.st_mode) and info.st_nlink == 1
                 and (info.st_dev, info.st_ino) == own and (info.st_size, info.st_mtime_ns) == final
+                and _pinned_stat(info, pin)
                 and _directory_pair(Path(temporary).parent) == parent, "temporary_changed")
         except (OSError, RuntimeError, ValueError):
             coordinator._failed = True
             raise OutputRegistrationError("output_registration_temporary_changed") from None
 
-    def replaced(self, own: tuple, parent: tuple | None) -> None:
-        """After original RAM publication: join the destination to the own temp inode."""
+    def replaced(self, own: tuple, parent: tuple | None, pin: int) -> None:
+        """After original RAM publication: join the destination to the own temp inode.
+
+        On success the writer's own pin (``pin``, still holding ``own``) becomes
+        the destination pin; on a refusal the writer keeps and closes it.
+        """
         coordinator, publisher = self.coordinator, self.publisher
         try:
             info = os.lstat(publisher.manager.data_path)
+            held = os.fstat(pin)
             base._require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
-                and (info.st_dev, info.st_ino) == own
+                and (info.st_dev, info.st_ino) == own == (held.st_dev, held.st_ino)
                 and _directory_pair(Path(publisher.manager.data_path).parent) == parent, "destination_changed")
-            # The writer still pins its own temporary, so ``own`` cannot be a reused number here.
-            publisher.pin.repin(publisher.manager.data_path, own)
         except (OSError, RuntimeError, ValueError):
             publisher.pin.release()
             publisher.uncertain = True
@@ -2528,6 +2564,7 @@ class _AccountSave:
         publisher.expected_identity = {"device": own[0], "inode": own[1]}
         publisher.committed += 1
         self.confirmed = True
+        publisher.pin.adopt(pin)  # Last: nothing after it can fail, so ownership moves exactly once.
 
     def finish(self, *, published: bool, cleanup_proven: bool) -> None:
         """Release the extent; unproven cleanup or unconfirmed publication poisons."""
@@ -2656,7 +2693,8 @@ class _ConfigurationCommit:
             self._poison("configuration_extent")
         self.state, self.attempts = "temporary", 1
 
-    def before_replace(self, temporary: str, own: tuple | None, parent: tuple | None, final: tuple | None) -> None:
+    def before_replace(self, temporary: str, own: tuple | None, parent: tuple | None, final: tuple | None,
+                       pin: int | None) -> None:
         """Recheck the own temp inode, its directory and the still-original destination."""
         plan = self.publisher.plan
         try:
@@ -2665,6 +2703,7 @@ class _ConfigurationCommit:
             base._require(own is not None and final is not None and parent is not None
                 and stat.S_ISREG(info.st_mode) and info.st_nlink == 1
                 and (info.st_dev, info.st_ino) == own and (info.st_size, info.st_mtime_ns) == final
+                and _pinned_stat(info, pin)
                 and str(Path(temporary).parent) == plan["parent"]
                 and Path(temporary).name.startswith(plan["temporary_scope"]["prefix"])
                 and parent == _pair(plan["parent_identity"])
@@ -2678,23 +2717,27 @@ class _ConfigurationCommit:
             self._poison("temporary_changed")
         self.state, self.temporary, self.own = "replacing", temporary, own
 
-    def replaced(self, own: tuple, sha256: str) -> None:
-        """Immediately after os.replace: join the destination to the own temp inode."""
+    def replaced(self, own: tuple, sha256: str, pin: int) -> None:
+        """Immediately after os.replace: join the destination to the own temp inode.
+
+        On success the writer's own pin (``pin``, still holding ``own``) becomes
+        the destination pin; on a refusal the writer keeps and closes it.
+        """
         plan = self.publisher.plan
         try:
             base._require(self.state == "replacing" and own == self.own, "destination_changed")
             info = os.lstat(plan["path"])
+            held = os.fstat(pin)
             base._require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
-                and (info.st_dev, info.st_ino) == own
+                and (info.st_dev, info.st_ino) == own == (held.st_dev, held.st_ino)
                 and _directory_pair(Path(plan["parent"])) == _pair(plan["parent_identity"]), "destination_changed")
-            # The writer still pins its own temporary, so ``own`` cannot be a reused number here.
-            self.publisher.pin.repin(plan["path"], own)
         except (OSError, RuntimeError, ValueError):
             self.publisher.pin.release()
             self.state = "published"
             self._poison("destination_changed")
         self.state, self.confirmed = "published", True
         self.committed_identity, self.committed_sha256 = {"device": own[0], "inode": own[1]}, sha256
+        self.publisher.pin.adopt(pin)  # Last: nothing after it can fail, so ownership moves exactly once.
 
     def finish(self, *, temporary: str | None, published: bool, durable: bool, cleanup_proven: bool) -> None:
         """Release the extent; an unconfirmed or undurable publication, or unproven cleanup, poisons."""

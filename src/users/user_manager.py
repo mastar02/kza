@@ -307,7 +307,7 @@ class UserManager:
                     if cleared is not True:
                         raise PermissionError("account_voice_links_retirement_required")
                 if extent is not None:
-                    extent.before_replace(temporary, own, parent, final)
+                    extent.before_replace(temporary, own, parent, final, pin)
                 self._check_authority(before_save)
                 os.replace(temporary, self.data_path)
                 # Approved replacement must publish without another fallible check.
@@ -315,7 +315,8 @@ class UserManager:
                 self._version = snapshot.revision
                 published = True
                 if extent is not None:
-                    extent.replaced(own, parent)
+                    extent.replaced(own, parent, pin)
+                    pin = None  # The extent took the own pin over as its destination pin.
             finally:
                 proven = False
                 try:
@@ -388,7 +389,12 @@ class UserManager:
 
     @staticmethod
     def _is_pinned(info: os.stat_result, pin: int | None) -> bool:
-        """The name's lstat is the pinned own inode, unchanged since it was written."""
+        """The name's lstat is the pinned own inode.
+
+        While the pin is open the inode cannot be freed, so (st_dev, st_ino)
+        alone decides; size, mtime and ctime come from the same inode and are
+        a belt-and-braces check for a filesystem whose st_ino is not unique.
+        """
         if pin is None:
             return False
         held = os.fstat(pin)

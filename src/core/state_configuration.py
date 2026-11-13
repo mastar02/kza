@@ -422,7 +422,12 @@ class ConfigurationChanges:
 
     @staticmethod
     def _is_pinned(info: os.stat_result, pin: int | None, own: tuple[int, int] | None) -> bool:
-        """The name's lstat is the pinned own inode, unchanged since it was written."""
+        """The name's lstat is the pinned own inode.
+
+        While the pin is open the inode cannot be freed, so (st_dev, st_ino)
+        alone decides; size, mtime and ctime come from the same inode and are
+        a belt-and-braces check for a filesystem whose st_ino is not unique.
+        """
         if pin is None or own is None:
             return False
         held = os.fstat(pin)
@@ -502,11 +507,12 @@ class ConfigurationChanges:
                     if (check[0], check[1], check[2], check[5]) != self._pin:
                         raise RuntimeError("configuration_file_changed")
                     if extent is not None:
-                        extent.before_replace(temporary, own, parent, final)
+                        extent.before_replace(temporary, own, parent, final, pin)
                     os.replace(temporary, path)
                     published = True
                     if extent is not None:
-                        extent.replaced(own, hashlib.sha256(encoded).hexdigest())
+                        extent.replaced(own, hashlib.sha256(encoded).hexdigest(), pin)
+                        pin = None  # The extent took the own pin over as its destination pin.
                     directory = os.open(path.parent, os.O_RDONLY)
                     try:
                         os.fsync(directory)
