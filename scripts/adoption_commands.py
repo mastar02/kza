@@ -706,7 +706,7 @@ def unit_view(manager, unit: str) -> dict:
         if argv and os.path.basename(argv[0]) in _CONTAINER_TOOLS:
             binds += _container_volumes(unit, argv)
         tokens += argv
-    tokens += _with_words(environment.values()) + ([base] if explicit or directory.startswith("~/") else [])
+    tokens += _with_words(environment.values()) + [base]  # a home or '/' base is never under the models
     return {"unit": unit, "load_state": shown["LoadState"], "base": base, "tokens": tokens, "raw": raw,
             "environment_file_keys": sorted(set(keys)), "container_binds": binds}
 
@@ -762,8 +762,8 @@ def discover_units(manager, listed: tuple[str, ...], layout) -> tuple[list[dict]
             _refuse("runtime_admission_retire_unit_not_loaded:" + unit)
         views[unit] = view
     for unit in sorted(set(names) - set(named)):
-        if not unit.endswith(".service") or unit.endswith("@.service"):  # a template runs only as instances,
-            continue                                                      # which list-units names
+        if not unit.endswith(".service"):  # templates are read too: one that shows as loaded and
+            continue                       # names the models must be listed (stricter than skipping)
         view = unit_view(manager, unit)
         if view["load_state"] == "loaded" and _relevant(view, models, checkout):
             _refuse("runtime_admission_retire_unit_not_listed:" + unit)

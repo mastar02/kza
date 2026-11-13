@@ -1647,6 +1647,23 @@ def test_commit_refuses_a_retire_intent_between_prepare_and_commit(world):
 
 # --- round 2 re-review (R2-1..R2-4) -------------------------------------------------------------------------
 
+@pytest.mark.parametrize("case", ["quoted_argument", "unreferenced_environment"])
+def test_retire_word_splits_literal_arguments_and_unreferenced_values(adapter_world, case):
+    """R2-2: a quoted multi-word argument, and an environment value the program reads itself."""
+    world = adapter_world
+    lora = os.fspath(world.layout.models_root / "lora_adapters" / "custom_adapter")
+    if case == "quoted_argument":
+        unit = _llama("/usr/bin/llama-server -m /srv/q.gguf " + shlex.quote("--lora " + lora))
+    else:
+        unit = _llama("/usr/bin/llama-server -m /srv/q.gguf")
+        unit["Environment"] = shlex.quote("LLAMA_EXTRA=--lora " + lora + " --ctx-size 4096")
+    world.units.properties[commands.LLM_FAST_UNIT] = unit
+    with pytest.raises(commands.CommandRefusal,
+                       match="^runtime_admission_retire_unit_under_root:kza-llm-fast.service$"):
+        world.retire()
+    assert (world.layout.models_root / "lora_adapters" / "custom_adapter").is_dir()
+
+
 @pytest.mark.parametrize("source", ["Environment", "EnvironmentFile"])
 @pytest.mark.parametrize("reference", ["$ARGS", "${ARGS}"])
 def test_retire_word_splits_a_multi_word_variable(adapter_world, tmp_path, source, reference):
@@ -1683,6 +1700,9 @@ def _unrelated_units(world) -> None:
         "LoadState": "loaded", "Environment": "", "WorkingDirectory": "!/",
         "ExecStart": "{ path=/usr/bin/pipewire ; argv[]=/usr/bin/pipewire ; ignore_errors=no }"}
     world.units.extra_units += ["kza-backup@.service", "podman-user-wait-network-online.service"]
+    world.units.properties["kza-sync@.service"] = {  # a template that shows as loaded and names nothing
+        "LoadState": "loaded", "Environment": "", "WorkingDirectory": "",
+        "ExecStart": "{ path=/usr/bin/rsync ; argv[]=/usr/bin/rsync -a /srv/%i/ /backup/%i/ ; ignore_errors=no }"}
 
 
 def test_retire_ignores_unrelated_units_without_a_working_directory(adapter_world):
@@ -1800,3 +1820,43 @@ def test_a_later_retire_intent_stops_the_abort_resume(world):
     world.units.user_enable = lambda unit: pytest.fail("a later window started: kza-voice must stay disabled")
     with pytest.raises(commands.CommandRefusal, match="^runtime_admission_adoption_already_aborted$"):
         world.abort()
+
+
+def test_an_abort_that_lost_its_enabled_record_is_still_complete(world):
+    """R2-4 / M51: without the record (a stop between enable and record), nothing pending means done."""
+    world.adopt()
+    head = world.head()
+    world.units.properties[VOICE]["UnitFileState"] = "disabled"
+    world.abort()
+    os.unlink(stage.adoption_directory(world.root)
+              / (commands.ENABLED_AFTER_ABORT_PREFIX + stage._digest(head) + ".json"))
+    world.units.enabled.clear()
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_adoption_already_aborted$"):
+        world.abort()
+    assert world.units.enabled == []
+
+
+def test_a_plan_over_the_aborted_head_stops_the_resume_whatever_its_mtime(world):
+    """R2-4 / R37: a later W2's plan refuses the resume even when file times cannot be trusted."""
+    world.adopt()
+    head = world.head()
+    world.units.properties[VOICE]["UnitFileState"] = "disabled"
+    world.units.user_enable = lambda unit: False
+    world.abort()
+    prepared = world.prepare("r2")
+    aborted = stage.abort_record_path(world.root, head).lstat().st_mtime_ns
+    os.utime(stage.adoption_directory(world.root) / ("plan-" + prepared["plan_sha256"] + ".json"),
+             ns=(aborted - 10**9, aborted - 10**9))
+    world.units.user_enable = lambda unit: pytest.fail("a later window prepared: kza-voice must stay disabled")
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_adoption_already_aborted$"):
+        world.abort()
+
+
+def test_a_loaded_template_that_names_the_models_must_be_listed(adapter_world):
+    """R2-3: templates are read like any unit; one that reaches the models refuses until listed."""
+    world = adapter_world
+    lora = os.fspath(world.layout.models_root / "lora_adapters")
+    world.units.properties["kza-lora-sync@.service"] = _llama("/usr/bin/rsync -a " + lora + "/%i /backup/")
+    with pytest.raises(commands.CommandRefusal,
+                       match="^runtime_admission_retire_unit_not_listed:kza-lora-sync@.service$"):
+        world.retire()
