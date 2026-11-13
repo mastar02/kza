@@ -495,6 +495,22 @@ def test_a_crash_mid_deletion_completes_from_the_intent_and_l4_stays_refused(wor
     assert refused.value.problems == [result["record"]]
 
 
+def test_a_resume_with_the_clock_moved_back_is_still_never_early(world, monkeypatch):
+    adopted(world)
+    plan = dry(world)["plan_sha256"]
+
+    def crash(path):
+        raise _Crash()
+    monkeypatch.setattr(stage, "make_writable_then_remove", crash)
+    with pytest.raises(_Crash):
+        retire(world, confirm=plan)
+    monkeypatch.undo()
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_legacy_retire_too_early$"):
+        retire(world, wall=DUE - 1, confirm=plan)
+    assert legacy_state(world).is_dir()
+    assert retire(world, confirm=plan)["resumed"] is True
+
+
 def test_a_crash_after_the_deletion_writes_the_record_on_the_rerun(world, monkeypatch):
     adopted(world)
     plan = dry(world)["plan_sha256"]
