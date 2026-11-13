@@ -55,7 +55,9 @@ y Escritorio; Living y Cocina siguen sin captura útil. HA conserva `auth_error`
   del slot `release_20261028T145442Z_b0866e8`. No se movieron ni reemplazaron datos:
   los registros de retención conservan sus localizadores absolutos. El directorio
   de trabajo es el nuevo contenedor; `runtime/config`, `runtime/data` y
-  `runtime/.env` enlazan a él. No retirar el estado del slot anterior.
+  `runtime/.env` enlazan a él. No retirar el estado del slot anterior: sólo
+  lo retira `retire-legacy-state` el día 15 después del primer cierre limpio
+  gestionado (ver «Retiro del estado congelado de b0866e8 (Q5, P7)»).
 - `kza-voice.service` conserva su unit original y usa el drop-in `release.conf`
   (el lanzador gestionado U3b-0d lo reemplazará en R1; ver «Lanzador gestionado (U3b-0d)»).
   Ejecuta `/home/kza/kza/.venv/bin/python -B -P -m src.main`, con
@@ -283,9 +285,20 @@ La base de privacidad no es un destino de borrado. Ningún participante la nombr
 
 - la `privacy.db` de cada slot gestionado anterior, sea dueño o no;
 - los snapshots y estados derivados que registra el catálogo de copias (`admission/copies`, con `acknowledges_retained_copy_cleanup = false`);
-- fuera de la raíz de admisión: el estado de producción de b0866e8 (`/home/kza/kza`), los respaldos de `/home/kza/releases/backups/` y cualquier snapshot del disco.
+- copias que no son miembros del linaje gestionado, aunque algunas estén dentro de `/home/kza/releases`:
+  - el estado de producción anterior a la adopción, el del slot `release_20261028T145442Z_b0866e8`, al que enlaza el contenedor del slot 63ea8d3. Queda congelado como imagen de rollback (L4) y en él ya no corre la retención: audio ambiente, transcripciones, texto de eventos y recuerdos vencidos siguen ahí. Contiene además `data/audit.db` (si la auditoría estuvo activa) y la tabla heredada `events` de `data/events.db`, con transcripciones y texto personal, que no se llevaron al estado gestionado. Se retira 14 días después del primer cierre limpio gestionado: el día 15 (decisión P7 = B; plazo y responsable en «Retiro del estado congelado de b0866e8 (Q5, P7)»);
+  - el original anterior al 2026-10-28 en `/home/kza/kza` (`config`, `data`, `.env`). Está congelado y sin retención desde esa fecha, así que guarda más datos vencidos que la imagen anterior;
+  - los respaldos de `/home/kza/releases/backups/`, incluidas las diez bases SQLite que el 2026-10-29 se copiaron del estado de b0866e8 (`backups/release_20261029T174830709997Z_63ea8d3/`). El retiro Q5 no los toca;
+  - las métricas anteriores en `/home/kza/logs/` y los logs y la consola anteriores, que pueden contener texto. Los que viven dentro del estado de b0866e8 se van con él el día 15; los demás quedan;
+  - cualquier snapshot del disco, y los respaldos que contengan los adaptadores LoRA retirados en la ventana por decisión P1 = D.
 
 Los embeddings de esos recuerdos en los índices semánticos de los estados dueños sí se borran, porque esos índices son destinos con ruta.
+
+Al adoptar (U3b-0e), el registro de borrados se siembra con las marcas que ya había en los datos: conversaciones con tombstone, recuerdos en estado borrado, perfiles de voz con `deleted_at` y usuarios retirados. Lo que b0866e8 borró del todo, sin dejar marca, no se puede sembrar. La adopción no guarda nombres ni hashes de los archivos del estado anterior: el plan, el sello y el registro conservan sólo el digest de ese manifiesto (revisión 0e3 F10).
+
+Desde R1 (con U3b-0d4a), la comprobación de resurrección mira cada almacén mapeado por separado y detecta conversaciones, recuerdos y perfiles de voz restaurados. Para conversaciones, los almacenes mapeados son `utterances`, `capture_conversations`, `events_policy_v1`, `wake_clips_v1`, `conversation_turns_v1`, la metadata de Chroma, los JSON de contextos y los JSON/JSONL de colectores (`CONVERSATION_SOURCES` en `scripts/managed_launcher.py`). No detecta una conversación restaurada sólo en lo que `CONVERSATION_NOT_SCANNED` lista con su motivo: el audio de clips y de ambiente (se ve sólo por su fila), la procedencia de voz y de hechos, las sugerencias, los streams, el catálogo de diagnósticos y la cuarentena heredada; eso queda para U3b-0d4b. Los borrados de conversaciones siguen mostrándose «pendiente» hasta U3b-0d4b, porque tres inventarios todavía no tienen limpiador (P8 = A).
+
+Rollback no gestionado: hasta el final del día 14 después del primer cierre limpio gestionado, sólo a 63ea8d3 con decisión registrada y la frase 'revivir datos borrados'. Desde el día 15 no hay rollback no gestionado soportado: sólo se avanza con una release gestionada.
 
 Consecuencia: si una persona pide «olvidá mi voz» u «olvidá esto», su perfil de voz o su recuerdo desaparece del estado activo, pero sigue en cada slot anterior y en cada copia hasta que esa copia se destruya. Con la compactación (U3b-0c, en diseño; requiere antes la unidad del lanzador gestionado), esas copias se destruyen al compactar. Mientras tanto pueden ser hasta 5 slots anteriores si se compacta al llegar a 6 dueños. El borrado de la compactación es sólo unlink: no sobrescribe. Las copias fuera de la raíz no las alcanza ningún mecanismo actual.
 
@@ -567,7 +580,8 @@ Presupuesto de reinicio (decisión N1 = B del usuario):
 
 Dependencias que quedan fuera de los slots: el intérprete y las dependencias
 de `/home/kza/kza/.venv` (controlador e hijo) y el directorio de modelos.
-Ambos pasan a la lista de conservación de la unidad de retiro Q5.
+El retiro Q5 del estado de b0866e8 los excluye y rechaza si su destino los
+contiene o está dentro de ellos (ver «Retiro del estado congelado de b0866e8»).
 
 Volver a b0866e8 o 63ea8d3 (L4 = A):
 
@@ -579,6 +593,16 @@ stage_runtime --root /home/kza/releases --offline uninstall-launcher \
 
 - Requiere la unidad detenida y verifica el commit y el manifiesto del slot
   legacy.
+- Comprobación de enlaces (U3b-0e5): cada enlace directo del `runtime` y del
+  `state` del slot legacy (en 63ea8d3, los cinco del contenedor) tiene que
+  resolver, salto por salto, a algo que existe, y `config` y `data` a
+  directorios. Un enlace colgante, en bucle o faltante rechaza con
+  `runtime_admission_uninstall_legacy_state` antes de tocar el directorio de
+  la unidad. `adoption-abort` (W-abort-1 y W-abort-2) hace la misma
+  comprobación antes de cambiar nada.
+- Un slot que nombra un registro o una intención de retiro Q5 rechaza con
+  `runtime_admission_uninstall_legacy_retired` y el nombre de ese archivo
+  en `problems` (`legacy-retirement/retired-<plan>.json`).
 - Mueve `managed.conf` a `managed.conf.disabled` y genera `legacy.conf`:
   `Type=simple`, sin watchdog, y `PYTHONPATH` y `WorkingDirectory` explícitos
   del slot legacy. Nunca usa `current`. Parte de `release.conf.unmanaged`:
@@ -607,6 +631,93 @@ linajes viejos.
 Evidencia: `data/autonomous-roadmap-20261102/t040-t041/u3b-0d-evidence.json`
 y, para las correcciones de la revisión independiente,
 `u3b-0d-fix-evidence.json` (local, fuera de Git).
+
+### Retiro del estado congelado de b0866e8 (Q5, P7) — desarrollado, no ejecutado
+
+Estado: `retire-legacy-state` y la comprobación de enlaces están en la rama de
+desarrollo (U3b-0e5). No se ejecutaron en producción: el estado de b0866e8
+sigue siendo el estado servido hasta la ventana de R1. La ventana de R1 no se
+programa hasta que los dos estén revisados y ensayados (T-A17; ver el
+[runbook de la ventana](../runbooks/2026-11-13-r1-adoption-window.md)).
+
+Plazo (decisión P7 = B del usuario, ya registrada en `u3b_0e_adoption`):
+
+- DÍA 0 es el primer cierre limpio gestionado: el sello de cierre de W9 (el
+  `ended_at` del registro de salida de esa corrida).
+- Hasta el final del día 14 (DÍA 0 + 15 × 24 h) vale L4 hacia 63ea8d3, con
+  decisión registrada y la frase.
+- El día 15 el operador corre el retiro. El comando rechaza
+  `runtime_admission_legacy_retire_too_early` antes de DÍA 0 + 15 × 24 h y
+  `runtime_admission_legacy_retire_no_clean_close` si todavía no hubo un cierre
+  limpio gestionado.
+- Responsable: el usuario, como operador de `kza`. En W10 se anota la fecha
+  exacta en el handoff y aquí.
+
+Cómo se corre (bajo `kza`, nunca como root):
+
+```bash
+$ST retire-legacy-state --decision <id P7> --container-slot release_20261029T174830709997Z_63ea8d3 --dry-run
+systemctl --user stop kza-voice.service
+$ST retire-legacy-state --decision <id P7> --container-slot release_20261029T174830709997Z_63ea8d3 --confirm <plan_sha256>
+systemctl --user start kza-voice.service
+```
+
+- La corrida de prueba sólo lee. Imprime `plan_sha256`, `eligible`,
+  `eligible_from` y conteos del estado (archivos, directorios, enlaces, bytes y
+  los nombres de primer nivel).
+- La corrida real exige kza-voice inactivo, el head cerrado y el lease de la
+  raíz, y que `--confirm` sea el plan que se recalcula en ese momento.
+- Borra sólo `slots/release_20261028T145442Z_b0866e8/state`, tomado del
+  registro de adopción y no de la línea de comandos. El contenedor de
+  63ea8d3 (sólo enlaces) y el runtime de b0866e8 quedan; sus enlaces quedan
+  colgando.
+- Nunca entran en el borrado: `/home/kza/kza/models`, `/home/kza/kza/.venv`,
+  el slot de R1, el slot y el estado del head, `current`, `controller/`,
+  `/home/kza/kza` y los respaldos. Si el destino contiene alguno o está dentro
+  de alguno, rechaza `runtime_admission_legacy_retire_excluded:<cuál>`.
+- Rechaza `runtime_admission_legacy_retire_referenced:<qué>` si algo todavía
+  apunta a los slots de b0866e8 o 63ea8d3:
+  - un enlace bajo la raíz (`current` y `controller/current` incluidos);
+  - un registro de `admission/` fuera de los históricos (`adoption/`,
+    `launcher/` y los propios del retiro);
+  - una unidad de usuario cargada (`ExecStart`, `Environment`,
+    `EnvironmentFile`, `WorkingDirectory` o un bind de contenedor);
+  - la configuración de logrotate de la consola. Antes del día 15 hay que
+    quitar la estrofa de la consola vieja (`state/logs/console.log` del
+    contenedor);
+  - el `settings.yaml` o el `.env` del estado servido.
+- No sigue enlaces ni cruza montajes: un montaje dentro del estado rechaza
+  (`runtime_admission_legacy_retire_mount`) y una entrada del slot que no sea
+  `runtime` ni `state` también (`runtime_admission_legacy_retire_slot_unexpected`).
+- Antes del primer borrado escribe `admission/legacy-retirement/intent-<plan>.json`,
+  inmutable. Desde ese momento L4 ya rechaza los dos slots. Si se corta, repetir
+  el mismo comando con el mismo id y el mismo `--confirm` lo completa. Al final
+  deja `admission/legacy-retirement/retired-<plan>.json`, sin contenido: id de la
+  decisión, conteos y la prueba de ausencia.
+- Es irreversible. Una segunda ejecución rechaza `already_retired`.
+
+Desde el día 15 **no hay rollback no gestionado soportado**:
+
+- el estado de b0866e8 ya no existe y los enlaces del slot 63ea8d3 cuelgan;
+- `uninstall-launcher` rechaza los dos slots con
+  `runtime_admission_uninstall_legacy_retired` y el nombre del registro;
+- el original del 2026-10-28 en `/home/kza/kza` no es un slot: ninguna
+  herramienta lo puede usar como destino, y su unidad original corría desde
+  `/home/kza/app`. Volver a él necesitaría una unidad propia revisada, que no
+  existe;
+- la recuperación sólo avanza: una release gestionada nueva, o un rollback
+  gestionado dentro del linaje gestionado.
+
+`/home/kza/kza` está congelado y sin retención desde el 2026-10-28, así que
+guarda más datos vencidos que la imagen que se retira. Queda hasta una
+decisión Q5 aparte sobre `/home/kza/kza`.
+
+Época del controlador (revisión 0e3 F14): desde R1 no se puede instalar un
+controlador anterior a la época 2. Un rollback gestionado puede volver a slots
+anteriores, pero no el controlador por debajo de la época 2.
+
+Evidencia: `data/autonomous-roadmap-20261102/t040-t041/u3b-0e5-evidence.json`
+(local, fuera de Git).
 
 ## Limpieza del checkout anterior — pendiente
 

@@ -786,6 +786,13 @@ Siguiente:
 - U3b-0c: compactación.
 - F8.
 
+`U3b-0e5` (rama `u3b-0e5`, sobre la cabeza de 0e3): preparación de P7.
+- `retire-legacy-state` (Q5) borra sólo el estado congelado de b0866e8 y saca 63ea8d3 y b0866e8 de L4 con un registro inmutable. Se escribe una intención antes del primer borrado, para que un corte se complete repitiendo el comando.
+- `_verify_legacy_slot` resuelve cada enlace del destino de rollback. La usan `uninstall-launcher` y los dos `adoption-abort`.
+- DEPLOYMENT: hueco de privacidad acotado a los almacenes mapeados (0d4a F1), sección del retiro Q5 y la época 2 del controlador (0e3 F14).
+- **Plazo P7, con responsable**: DÍA 0 es el sello de cierre de W9. L4 vale hasta el final del día 14 (DÍA 0 + 15 × 24 h), y el retiro corre el día 15. Responsable: el usuario, como operador de `kza`, con la autorización ya registrada (P7 = B). Fecha exacta: se anota aquí en W10 (todavía no hay ventana). Desde el día 15 no hay rollback no gestionado.
+- Falta la revisión independiente y el T-A17 compilado en Linux. La ventana de R1 no se programa hasta tenerlos.
+
 Decisiones del usuario en `t040-t041/user-decisions-20261110.json` (`u3b_*`).
 
 ## Prompt para la sesión nueva

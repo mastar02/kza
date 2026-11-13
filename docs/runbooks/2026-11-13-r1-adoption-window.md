@@ -4,7 +4,8 @@ Procedimiento del operador para la ventana W0–W10 del diseño
 `t040-t041/u3b-0e-adoption-design-v3.json` (secciones 6 y 7), con las
 decisiones P1–P8 de `user-decisions-20261110.json`. Los comandos están en
 `scripts/adoption_commands.py` y se llaman desde `stage_runtime`. U3b-0e5
-agrega el texto de DEPLOYMENT y la fecha de P7. Este runbook todavía no
+agrega `retire-legacy-state` (Q5), la comprobación de enlaces del destino de
+rollback, el paso del día 15 y el texto de DEPLOYMENT. Este runbook todavía no
 autoriza la ventana.
 
 ## Compuerta de programación (P7, Q5)
@@ -16,11 +17,16 @@ autoriza la ventana.
   - el retiro Q5 del estado b0866e8 (registro inmutable que saca 63ea8d3 y
     b0866e8 de L4; excluye `/home/kza/kza/models`, `/home/kza/kza/.venv` y el
     slot R1).
+- Estado: los dos están implementados en U3b-0e5 (`retire-legacy-state` y
+  `_verify_legacy_slot`), con T-A17 ensayado en proceso. Faltan su revisión
+  independiente y el T-A17 compilado en Linux (U3b-0e4): hasta entonces la
+  ventana sigue sin programarse.
 - **Paso del día 15**: el borrado Q5 corre el DÍA 0 + 15 (DÍA 0 = el sello de
-  cierre de W9). Responsable: el usuario, como operador de `kza`. En W10 se
-  anota en el handoff la fecha exacta y el responsable. Hasta el día 14 sólo
-  vale L4 hacia 63ea8d3 (decisión registrada y frase); desde el día 15 no hay
-  rollback no gestionado.
+  cierre de W9, el `ended_at` de esa corrida). Responsable: el usuario, como
+  operador de `kza`; la autorización ya está registrada (P7 = B). En W10 se
+  anota en el handoff la fecha exacta y el responsable. Hasta el final del día
+  14 (DÍA 0 + 15 × 24 h) sólo vale L4 hacia 63ea8d3 (decisión registrada y
+  frase); desde el día 15 no hay rollback no gestionado.
 
 Todo corre como `kza` y nunca como root. Cada comando rechaza con salida 78
 y `{"refused": <código>}` en estos casos:
@@ -235,7 +241,41 @@ C=release_20261029T174830709997Z_63ea8d3
   - Confirmar que no existe `data/audit.db` en el estado gestionado.
 - **W9**: un stop y un start limpios, con recibo y sello de cierre. Ese sello
   es el DÍA 0 de P7.
-- **W10**: evidencia y DEPLOYMENT (U3b-0e5).
+- **W10**: evidencia. Anotar en el handoff y en DEPLOYMENT («Retiro del estado
+  congelado de b0866e8») el DÍA 0 (sello de W9), la fecha del día 15 y el
+  responsable (el usuario, como operador de `kza`).
+
+## Día 15: retiro Q5 del estado de b0866e8
+
+No antes de DÍA 0 + 15 × 24 h; el comando lo rechaza
+(`runtime_admission_legacy_retire_too_early`, con `eligible_from`).
+
+1. Antes del día 15, quitar de `console-logrotate.conf` la estrofa de la
+   consola vieja (`slots/$C/state/logs/console.log`): mientras exista, el
+   retiro rechaza `referenced:logrotate`.
+2. Corrida de prueba, con el servicio en marcha (sólo lee):
+   ```bash
+   $ST retire-legacy-state --decision <id P7> --container-slot $C --dry-run
+   ```
+   Tiene que decir `"eligible": true`. Anotar `plan_sha256`. Si rechaza
+   `referenced:<qué>`, `problems` lista todo lo que todavía apunta a los slots
+   de b0866e8 o 63ea8d3: corregirlo antes de seguir. No borrar a mano.
+3. Retiro:
+   ```bash
+   systemctl --user stop kza-voice.service
+   $ST retire-legacy-state --decision <id P7> --container-slot $C --confirm <plan_sha256>
+   systemctl --user start kza-voice.service
+   ```
+   `confirm_mismatch` significa que algo cambió desde la corrida de prueba:
+   repetir el paso 2.
+4. Si se corta (corte de luz, SIGKILL): repetir el mismo comando con el mismo
+   id y el mismo `--confirm`; termina desde
+   `admission/legacy-retirement/intent-<plan>.json`. Desde que existe esa
+   intención, L4 ya rechaza.
+5. Comprobar: `uninstall-launcher --legacy-slot $C ...` rechaza
+   `runtime_admission_uninstall_legacy_retired` con
+   `legacy-retirement/retired-<plan>.json` en `problems` (no cambia nada), y
+   kza-voice volvió a READY.
 
 ## Abortar
 
@@ -285,7 +325,11 @@ C=release_20261029T174830709997Z_63ea8d3
   de otra ventana.
 - **Si existe un ticket** (W8 escribió uno, aunque el arranque fallara antes de
   READY): solo vale L4, con `uninstall-launcher`, el id de decisión y la frase
-  `revivir datos borrados`.
+  `revivir datos borrados`. Vale hasta el final del día 14; desde el día 15
+  (o desde que exista una intención Q5) rechaza `legacy_retired`.
+- Los dos aborts y L4 comprueban primero los enlaces del contenedor de
+  63ea8d3: si alguno cuelga, rechazan `runtime_admission_uninstall_legacy_state`
+  sin cambiar nada.
 - **Después de que W8 empezó**: la activación de W8 deja un head `selection`
   aunque todavía no haya ticket, y `adoption-abort` rechaza
   `runtime_admission_adoption_abort_head`. Cualquier `abort_head` a partir de
