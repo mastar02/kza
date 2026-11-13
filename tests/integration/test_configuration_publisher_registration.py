@@ -34,7 +34,7 @@ from src.memory import output_registration_v2 as registration
 from src.memory.privacy_services import build_privacy_services
 from src.users.user_manager import UserManager
 from tests.integration.test_account_publisher_registration import _voice_links
-from tests.mocks.inode_reuse import report_inode_reuse
+from tests.mocks.inode_reuse import report_inode_reuse, substitute_same_stat
 
 RAW = b'reasoner:\n  cloud:\n    consent: true\n  api_key_env: "${SYNTHETIC_KEY}"\nother: untouched\n'
 TOKEN = "synthetic-configuration-root"
@@ -499,16 +499,18 @@ async def test_substituted_temporary_is_never_replaced_or_deleted(tmp_path, monk
     async with configuration_graph(tmp_path, monkeypatch) as g:
         graph_ready(g)
         await queue(g)
-        created = own_temporaries(monkeypatch, reuse=reuse)
+        created, substituted = own_temporaries(monkeypatch, reuse=reuse), []
 
         def revalidate():
-            if created and Path(created[0]).read_bytes() != b"canary":
-                Path(created[0]).unlink()
-                Path(created[0]).write_bytes(b"canary")  # A new inode at the own name.
+            if created and not substituted:
+                # Same size and mtime at the own name (F2): only the pin tells it apart.
+                substituted.append(substitute_same_stat(created[0]))
         monkeypatch.setattr(g.admission, "revalidate", revalidate)
         await shutdown(g)
         assert "configuration_write_unconfirmed" in messages(config_error(g))
-        assert Path(created[0]).read_bytes() == b"canary" and g.settings.read_bytes() == RAW
+        canary, own, substitute = substituted[0]
+        assert substitute != own  # Real: while the pin is held, ext4 cannot hand the number out again.
+        assert Path(created[0]).read_bytes() == canary and g.settings.read_bytes() == RAW
         assert g.changes.registration_failure == "output_registration_temporary_changed"
         assert_poisoned(g)
 
@@ -869,12 +871,11 @@ async def test_unmanaged_cleanup_never_deletes_a_substituted_temporary(tmp_path,
     monkeypatch.setattr(runtime_admission, "_verified_admissions", {})
     monkeypatch.setattr(base, "_ACTIVE", set())
     original_replace = os.replace
-    created = own_temporaries(monkeypatch, reuse=reuse)
+    created, substituted = own_temporaries(monkeypatch, reuse=reuse), []
 
     def revalidate():
-        if created and Path(created[0]).read_bytes() != b"canary":
-            Path(created[0]).unlink()
-            Path(created[0]).write_bytes(b"canary")
+        if created and not substituted:
+            substituted.append(substitute_same_stat(created[0]))  # Same size and mtime (F2).
 
     def replace(source, destination, *args, **kwargs):
         if Path(destination) == settings:
@@ -899,7 +900,9 @@ async def test_unmanaged_cleanup_never_deletes_a_substituted_temporary(tmp_path,
             await stack.__aexit__(None, None, None)
     finally:
         await authority.aclose()
-    assert Path(created[0]).read_bytes() == b"canary" and settings.read_bytes() == RAW
+    canary, own, substitute = substituted[0]
+    assert substitute != own  # Real: no number reuse while the pin is held.
+    assert Path(created[0]).read_bytes() == canary and settings.read_bytes() == RAW
     assert owner.registration_failure is None
 
 
@@ -945,6 +948,49 @@ async def test_unregistered_change_is_caught_by_the_drained_observation(tmp_path
         assert_poisoned(g, last="opening" if change == "after_commit" else "attached")
 
 
+async def test_a_destination_swapped_right_after_the_replace_check_never_becomes_the_pin(tmp_path, monkeypatch):
+    """F7: the destination pin is the writer's own descriptor, never a reopen of the path.
+
+    The swap lands between replaced()'s identity check and the point where
+    the path used to be reopened; the pin still holds the published inode,
+    so the drained check sees the swap.
+    """
+    async with configuration_graph(tmp_path, monkeypatch) as g:
+        graph_ready(g)
+        await queue(g)
+        real_replace, real_pair, real_release = os.replace, registration._directory_pair, registration._DestinationPin.release
+        replaced, swapped, pinned = [], [], []
+
+        def replace(source, destination, *args, **kwargs):
+            result = real_replace(source, destination, *args, **kwargs)
+            if Path(destination) == g.settings:
+                replaced.append(True)
+            return result
+
+        def pair(path):
+            result = real_pair(path)
+            if replaced and not swapped:
+                published, raw = os.lstat(g.settings), g.settings.read_bytes()
+                g.settings.unlink()
+                g.settings.write_bytes(raw)
+                swapped.append((published.st_dev, published.st_ino))
+            return result
+
+        def release(pin):
+            if pin.descriptor is not None:
+                held = os.fstat(pin.descriptor)
+                pinned.append((held.st_dev, held.st_ino))
+            real_release(pin)
+        monkeypatch.setattr(state_configuration.os, "replace", replace)
+        monkeypatch.setattr(registration, "_directory_pair", pair)
+        monkeypatch.setattr(registration._DestinationPin, "release", release)
+        await shutdown(g)
+        current = os.lstat(g.settings)
+        assert len(swapped) == 1 and pinned == swapped and (current.st_dev, current.st_ino) != swapped[0]
+        assert g.changes.registration_failure == "output_registration_destination_changed"
+        assert_poisoned(g)
+
+
 async def test_a_destination_replaced_while_the_attach_pins_it_refuses_the_attach(tmp_path, monkeypatch):
     """The plan's identity must be the pinned inode: a replace between pin and plan refuses and poisons."""
     async with configuration_graph(tmp_path, monkeypatch, attach=False) as g:
@@ -980,10 +1026,10 @@ async def test_a_destination_rewritten_at_its_name_is_caught_even_with_a_reused_
         done = []
 
         def rewrite() -> None:
-            original, raw = os.lstat(g.settings), g.settings.read_bytes()
-            g.settings.unlink()
-            g.settings.write_bytes(raw)
-            os.chmod(g.settings, stat.S_IMODE(original.st_mode))
+            # Same bytes, mode, size and mtime; the real number differs while the pin is held.
+            original = os.lstat(g.settings)
+            _data, own, substitute = substitute_same_stat(g.settings, g.settings.read_bytes())
+            assert substitute != own
             done.append(True)
             if reuse:
                 report_inode_reuse(monkeypatch, os.lstat(g.settings), original)
@@ -1045,19 +1091,21 @@ async def test_unproven_cleanup_after_a_failed_replace_poisons(tmp_path, monkeyp
         graph_ready(g)
         await queue(g)
         real_replace = os.replace
-        created = own_temporaries(monkeypatch, reuse=reuse)
+        created, substituted = own_temporaries(monkeypatch, reuse=reuse), []
 
         def replace(source, destination, *args, **kwargs):
             if Path(destination) == g.settings:
-                # before_replace already accepted the own temp; now its name is taken.
-                Path(source).unlink()
-                Path(source).write_bytes(b"canary")
+                # before_replace already accepted the own temp; now its name is taken by a
+                # same-size, same-mtime substitute (F2).
+                substituted.append(substitute_same_stat(source))
                 raise OSError("synthetic replace failure")
             return real_replace(source, destination, *args, **kwargs)
         monkeypatch.setattr(state_configuration.os, "replace", replace)
         await shutdown(g)
         assert "configuration_write_unconfirmed" in messages(config_error(g))
-        assert Path(created[0]).read_bytes() == b"canary" and g.settings.read_bytes() == RAW
+        canary, own, substitute = substituted[0]
+        assert substitute != own  # Real: no number reuse while the pin is held.
+        assert Path(created[0]).read_bytes() == canary and g.settings.read_bytes() == RAW
         assert g.changes.registration_failure == "output_registration_cleanup_unproven"
         assert_poisoned(g)
 

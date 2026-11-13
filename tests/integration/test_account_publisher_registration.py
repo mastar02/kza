@@ -31,7 +31,7 @@ from src.memory import output_registration as base
 from src.memory import output_registration_v2 as registration
 from src.users import user_manager as catalog
 from src.users.user_manager import PermissionLevel, UserManager
-from tests.mocks.inode_reuse import report_inode_reuse
+from tests.mocks.inode_reuse import report_inode_reuse, substitute_same_stat
 
 PRIVATE = ("Synthetic Alba", "Synthetic Bruno", "Synthetic Carla")
 
@@ -364,10 +364,11 @@ async def test_handle_path_or_external_identity_change_stays_managed_and_rejects
             copy.write_bytes(path.read_bytes())
             os.replace(copy, path)
         elif change.startswith("rewritten"):
-            # Same bytes, unlinked and written again at the name: on ext4 the number is reused.
-            original, raw = os.lstat(path), path.read_bytes()
-            path.unlink()
-            path.write_bytes(raw)
+            # Same bytes, size and mtime, unlinked and written again at the name: without the
+            # pin ext4 would reuse the number; with it the real number differs.
+            original = os.lstat(path)
+            _data, own, substitute = substitute_same_stat(path, path.read_bytes())
+            assert substitute != own
             if change == "rewritten_with_reused_inode_number":
                 report_inode_reuse(monkeypatch, os.lstat(path), original)
         else:
@@ -384,6 +385,46 @@ async def test_handle_path_or_external_identity_change_stays_managed_and_rejects
         await close(graph)
         assert_poisoned_close(graph)
         assert graph.owner._accounts.pin.descriptor is None  # Released by the epoch's close.
+
+
+async def test_a_destination_swapped_right_after_the_replace_check_never_becomes_the_pin(
+    tmp_path, monkeypatch, dashboard_auth,
+):
+    """F7: the destination pin is the writer's own descriptor, never a reopen of the path."""
+    async with account_graph(tmp_path, monkeypatch, token(dashboard_auth)) as graph:
+        path = Path(graph.users.data_path)
+        real_replace, real_pair, real_release = catalog.os.replace, registration._directory_pair, registration._DestinationPin.release
+        replaced, swapped, pinned = [], [], []
+
+        def replace(source, destination, *args, **kwargs):
+            result = real_replace(source, destination, *args, **kwargs)
+            if Path(destination) == path:
+                replaced.append(True)
+            return result
+
+        def pair(directory):
+            result = real_pair(directory)
+            if replaced and not swapped:
+                published, raw = os.lstat(path), path.read_bytes()
+                path.unlink()
+                path.write_bytes(raw)
+                swapped.append((published.st_dev, published.st_ino))
+            return result
+
+        def release(pin):
+            if pin.descriptor is not None:
+                held = os.fstat(pin.descriptor)
+                pinned.append((held.st_dev, held.st_ino))
+            real_release(pin)
+        monkeypatch.setattr(catalog.os, "replace", replace)
+        monkeypatch.setattr(registration, "_directory_pair", pair)
+        monkeypatch.setattr(registration._DestinationPin, "release", release)
+        assert (await create(graph, PRIVATE[0])).status_code == 200
+        assert (await create(graph, PRIVATE[1])).status_code == 503  # The gate sees the swap.
+        await close(graph)
+        assert_poisoned_close(graph)
+        current = os.lstat(path)
+        assert len(swapped) == 1 and pinned == swapped and (current.st_dev, current.st_ino) != swapped[0]
 
 
 async def test_a_destination_created_while_the_attach_pins_it_refuses_the_attach(tmp_path, monkeypatch, dashboard_auth):

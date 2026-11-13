@@ -8,6 +8,7 @@ import pytest
 
 from src.users import user_manager as catalog
 from src.users.user_manager import PermissionLevel, UserManager
+from tests.mocks.inode_reuse import substitute_same_stat
 
 
 @pytest.fixture
@@ -192,7 +193,7 @@ def test_cleanup_never_deletes_a_substitute_with_the_freed_own_inode_number(
     """
     allocated, _closes = descriptors
     users = UserManager(str(tmp_path / "users.json"))
-    owned, calls, real_lstat = {}, [], os.lstat
+    owned, calls, real_lstat, substituted = {}, [], os.lstat, []
 
     def lstat(path, *args, **kwargs):
         info = real_lstat(path, *args, **kwargs)
@@ -209,8 +210,7 @@ def test_cleanup_never_deletes_a_substitute_with_the_freed_own_inode_number(
             temporary = allocated[-1][1]
             info = real_lstat(temporary)
             owned[temporary] = (info.st_dev, info.st_ino)
-            Path(temporary).unlink()
-            Path(temporary).write_bytes(b"canary")
+            substituted.append(substitute_same_stat(temporary))  # Same size and mtime (F2).
             return False
         return None
 
@@ -220,7 +220,9 @@ def test_cleanup_never_deletes_a_substitute_with_the_freed_own_inode_number(
         users.add_user("Synthetic", PermissionLevel.GUEST, before_save=before_save)
     descriptor, temporary = allocated[-1]
     _assert_closed(descriptor)
-    assert calls == [False, False, True] and Path(temporary).read_bytes() == b"canary"
+    canary, own, substitute = substituted[0]
+    assert substitute != own  # Real: no number reuse while the pin is held.
+    assert calls == [False, False, True] and Path(temporary).read_bytes() == canary
     assert not users.data_path.exists() and users._users == {}
 
 
