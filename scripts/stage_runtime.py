@@ -3711,6 +3711,10 @@ def _launcher_module():
 
 
 _adoption_commands = None
+# The adoption subcommands (= scripts/adoption_commands.COMMANDS; a test pins it). main() loads the
+# adoption library only when the command line names one of them (U3b-0e3 review F8): serve never does.
+ADOPTION_COMMANDS = ("retire-legacy-training", "adoption-dry-run", "adoption-prepare", "adoption-commit",
+                     "adoption-abort")
 
 
 def _load_beside(stem: str, prefix: str):
@@ -3768,12 +3772,14 @@ def main() -> None:
     delegate.add_argument("name")
     launcher = _launcher_module()
     launcher.add_commands(commands)
-    adoption_commands = _adoption_commands_module()
-    adoption_commands.add_commands(commands)
+    adoption_commands = None
+    if any(argument in ADOPTION_COMMANDS for argument in sys.argv[1:]):
+        adoption_commands = _adoption_commands_module()
+        adoption_commands.add_commands(commands)
     args = parser.parse_args()
     if args.command in launcher.COMMANDS:
         raise SystemExit(launcher.run_command(args))
-    if args.command in adoption_commands.COMMANDS:
+    if adoption_commands is not None and args.command in adoption_commands.COMMANDS:
         raise SystemExit(adoption_commands.run_command(args))
     if args.command == "prepare":
         manifest = prepare_slot(args.archive, args.root, args.name, args.state_source)

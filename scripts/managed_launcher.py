@@ -387,7 +387,8 @@ class ServiceManager:
         self.timeout = timeout
         self.calls: list[tuple[str, ...]] = []
 
-    def _run(self, *arguments: str, timeout: float | None = None) -> str | None:
+    def _run(self, *arguments: str, timeout: float | None = None, strict: bool = False) -> str | None:
+        """stdout, or None on failure; ``strict`` accepts exit 0 only (state changes, U3b-0e3 F3)."""
         command = (self.executable, *arguments)
         self.calls.append(tuple(arguments))
         environment = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "XDG_RUNTIME_DIR",
@@ -399,7 +400,7 @@ class ServiceManager:
                                        timeout=self.timeout if timeout is None else timeout)
         except (OSError, subprocess.TimeoutExpired):
             return None
-        if completed.returncode not in (0, 1):  # is-system-running exits 1 for 'stopping'
+        if completed.returncode not in ((0,) if strict else (0, 1)):  # is-system-running exits 1 for 'stopping'
             return None
         return completed.stdout
 
@@ -428,13 +429,48 @@ class ServiceManager:
                 values[key] = value
         return {name: values.get(name, "") for name in properties}
 
-    def daemon_reload(self) -> bool:
-        """``systemctl --user daemon-reload``."""
-        return self._run("--user", "daemon-reload", timeout=30.0) is not None
+    def user_show_all(self, unit: str, name: str) -> list[str] | None:
+        """Every ``<name>=`` line of ``systemctl --user show <unit> -p <name>`` (ExecStart, EnvironmentFiles)."""
+        output = self._run("--user", "show", unit, "-p", name)
+        if output is None:
+            return None
+        return [line.split("=", 1)[1] for line in output.splitlines() if line.startswith(name + "=")]
+
+    def daemon_reload(self, *, strict: bool = False) -> bool:
+        """``systemctl --user daemon-reload`` (``strict``: exit 0 only)."""
+        return self._run("--user", "daemon-reload", timeout=30.0, strict=strict) is not None
+
+    def user_unit_command(self, verb: str, unit: str) -> bool:
+        """``systemctl --user enable|disable|stop <unit>``; success is exit 0 only (systemctl exits 1 on failure)."""
+        if verb not in ("enable", "disable", "stop"):
+            raise ValueError("runtime_admission_unit_verb")
+        return self._run("--user", verb, unit, timeout=90.0, strict=True) is not None
+
+    def user_is_enabled(self, unit: str) -> str | None:
+        """``systemctl --user is-enabled <unit>``: the state word when it exits 0, else None."""
+        output = self._run("--user", "is-enabled", unit, strict=True)
+        return None if output is None else (output.strip().splitlines() or [""])[-1].strip()
 
     def user_enable(self, unit: str) -> bool:
-        """``systemctl --user enable <unit>`` (adoption abort, U3b-0e3); never starts it."""
-        return self._run("--user", "enable", unit, timeout=30.0) is not None
+        """Enable ``unit`` (adoption abort, U3b-0e3) and read it back: True only if is-enabled says 'enabled'.
+
+        Never starts the unit.
+        """
+        return self.user_unit_command("enable", unit) and self.user_is_enabled(unit) == "enabled"
+
+    def user_units(self) -> list[str] | None:
+        """Every user unit name systemd knows (list-unit-files plus loaded units), or None on failure."""
+        names = set()
+        for arguments in (("--user", "list-unit-files", "--no-legend", "--plain", "--no-pager"),
+                          ("--user", "list-units", "--all", "--no-legend", "--plain", "--no-pager")):
+            output = self._run(*arguments, strict=True)
+            if output is None:
+                return None
+            for line in output.splitlines():  # list-units marks failed units with a leading bullet
+                words = [word for word in line.split() if word not in ("\u25cf", "*")]
+                if words:
+                    names.add(words[0])
+        return sorted(names)
 
 
 @dataclass

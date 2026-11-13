@@ -80,13 +80,26 @@ P_ANSWERS = ("P1=D", "P2=A", "P3=A", "P4=A", "P5=A", "P6=A", "P7=B", "P8=A")
 DECISION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{2,79}")  # = uninstall-launcher's decision id
 _HEX64 = re.compile("[0-9a-f]{64}")
 UNIT_PROPERTIES = ("LoadState", "ActiveState", "UnitFileState", "InvocationID", "InactiveEnterTimestampMonotonic")
-REVERSE_PROPERTIES = ("WantedBy", "RequiredBy", "BoundBy", "ConsistsOf", "RequisiteOf", "UpheldBy")
+# Who can start or restart kza-voice (U3b-0e3 review F5): the reverse dependency properties, the
+# .timer/.path/.socket that trigger it, OnFailure=/OnSuccess= handlers, and the units it is PartOf
+# (PartOf is read on kza-voice itself; ConsistsOf lists the units that are PartOf kza-voice).
+REVERSE_PROPERTIES = ("WantedBy", "RequiredBy", "BoundBy", "ConsistsOf", "RequisiteOf", "UpheldBy",
+                      "TriggeredBy", "OnFailureOf", "OnSuccessOf", "PartOf")
 REVERSE_ALLOWED = frozenset({"default.target"})
 CODE_INDEX_UNIT = "kza-code-index.service"
+# The llama-server fast-path NLU unit on :8101 (config/settings.yaml, docs/SERVER_CONVENTIONS.md):
+# retire-legacy-training always reads it, whatever --unit lists (review F4).
+LLM_FAST_UNIT = "kza-llm-fast.service"
+# What makes a user unit relevant to the LoRA roots besides a path under the models root.
+_UNIT_NEEDLES = ("llama-server", "--lora", "lora_adapters")
+_CONTAINER_TOOLS = frozenset({"podman", "docker"})
+_ENV_REFERENCE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+_ENV_FILE_LIMIT = 1 << 20
 WORK_DIRECTORY = "adoption"  # <root>/adoption/<slot>: built here, then renamed into slots/<slot>
 RETIREMENT_PREFIX = "retire-legacy-training-"
+RETIRE_INTENT_PREFIX = "retire-intent-"
+COMMIT_INTENT_PREFIX = "commit-intent-"
 PLAN_PREFIX = "plan-"
-MANIFEST_PREFIX = "source-manifest-"
 PREPARED_ABORT_PREFIX = "abort-prepared-"
 # Records whose presence means a managed run happened (P6: then only L4).
 RUN_RECORD_DIRECTORIES = ("runs", "receipts", "receipt-states", "recoveries", "closures", "seal-intents")
@@ -99,7 +112,6 @@ PROC_MEMINFO = "/proc/meminfo"
 RETIRED_CONFIG_KEYS = frozenset({("llm", "lora_path"), ("training", "lora", "output_dir"),
                                  ("training", "nightly", "output_dir"),
                                  ("training", "nightly", "whisper_finetune", "output_dir")})
-_SOURCE_MANIFEST_LIMIT = 1 << 30
 
 
 def _euid() -> int:
@@ -235,6 +247,9 @@ def observe_units(manager, timers: tuple[str, ...], *, window: bool) -> tuple[di
         _refuse("runtime_admission_adoption_units_unavailable")
     pulled = sorted({token for value in reverse.values() for token in value.split()} - REVERSE_ALLOWED)
     voice = observed[launcher.UNIT]
+    for unit in (launcher.UNIT, *timers):  # a misspelled timer is 'not-found' and 'inactive' (review F4)
+        if observed[unit]["LoadState"] != "loaded":
+            problems.append("runtime_admission_adoption_unit_not_loaded:" + unit)
     if window:
         if voice["ActiveState"] not in ("inactive", "failed"):
             problems.append("runtime_admission_adoption_unit_active")
@@ -458,9 +473,9 @@ def retirement_absence(record: dict | None) -> list[list[str]] | None:
 
 # --- retire-legacy-training (W1b, P1=D, design 2c) ---------------------------------------------------
 
-RETIREMENT_KEYS = frozenset({"schema_version", "kind", "decision_id", "container_slot", "roots",
-                             "models_manifest_sha256", "models_entries", "units_checked", "config_keys_checked",
-                             "fsynced", "retired_at"})
+RETIREMENT_KEYS = frozenset({"schema_version", "kind", "decision_id", "container_slot", "roots", "intent",
+                             "models_manifest_sha256", "models_entries", "units_checked", "units",
+                             "config_keys_checked", "fsynced", "retired_at"})
 
 
 def _tree_census(root: Path, device: int) -> dict:
@@ -548,23 +563,215 @@ def config_paths_under(layout, roots: list[str]) -> tuple[list[str], int]:
     return sorted(offending), checked
 
 
-def units_under(manager, units: tuple[str, ...], roots: list[str]) -> list[str]:
-    """Units whose ExecStart argument, Environment value or WorkingDirectory resolves under a root."""
-    offending = []
-    for unit in units:
-        shown = manager.user_show(unit, ("ExecStart", "Environment", "WorkingDirectory"))
-        if shown is None:
-            _refuse("runtime_admission_adoption_units_unavailable")
-        base = Path(shown["WorkingDirectory"].lstrip("!-") or "/")
+def _env_file_values(unit: str, specification: str) -> tuple[dict, list[str]]:
+    """KEY=VALUE pairs of one EnvironmentFile= (O_NOFOLLOW, bounded); values stay in memory, keys are reported."""
+    path = specification.rsplit(" (ignore_errors=", 1)[0].strip()
+    optional = specification.endswith("(ignore_errors=yes)") or path.startswith("-")
+    path = path.lstrip("-")
+    if not os.path.isabs(path):
+        _refuse("runtime_admission_retire_environment_file:" + unit)
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        if optional:
+            return {}, []
+        _refuse("runtime_admission_retire_environment_file:" + unit)
+    except OSError:
+        _refuse("runtime_admission_retire_environment_file:" + unit)
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            _refuse("runtime_admission_retire_environment_file:" + unit)
+        raw = stream.read(_ENV_FILE_LIMIT + 1)
+    if len(raw) > _ENV_FILE_LIMIT:
+        _refuse("runtime_admission_retire_environment_file:" + unit)
+    values = {}
+    try:
+        lines = raw.decode().splitlines()
+    except UnicodeDecodeError:
+        _refuse("runtime_admission_retire_environment_file:" + unit)
+    for line in lines:
+        if not line.strip() or line.lstrip().startswith(("#", ";")):
+            continue
+        match = adoption._ENV_LINE.match(line)
+        if match is None:
+            _refuse("runtime_admission_retire_environment_file:" + unit)
+        value = match.group(2).strip()
         try:
-            tokens = launcher.exec_start_argv(shown["ExecStart"]) if shown["ExecStart"] else []
-            tokens += shlex.split(shown["Environment"])
-        except (ValueError, launcher.LauncherRefusal):
+            value = " ".join(shlex.split(value)) if value[:1] in ("'", '"') else value
+        except ValueError:
+            _refuse("runtime_admission_retire_environment_file:" + unit)
+        values[match.group(1)] = value
+    return values, sorted(values)
+
+
+def _expanded(unit: str, token: str, environment: dict) -> str:
+    def substitute(match):
+        name = match.group(1) or match.group(2)
+        if name not in environment:
+            _refuse("runtime_admission_retire_unit_unresolved:" + unit)
+        return environment[name]
+    return _ENV_REFERENCE.sub(substitute, token)
+
+
+def _container_volumes(unit: str, argv: list[str]) -> list[str]:
+    """Host sides of a podman/docker run's binds; a named or unparsed volume is returned as ''."""
+    hosts = []
+    for index, token in enumerate(argv):
+        value = None
+        if token in ("-v", "--volume", "--mount") and index + 1 < len(argv):
+            value, kind = argv[index + 1], token
+        elif token.startswith(("--volume=", "--mount=")):
+            kind, value = token.split("=", 1)
+        elif token.startswith("-v") and len(token) > 2:
+            value, kind = token[2:], "-v"
+        if value is None:
+            continue
+        if kind == "--mount":
+            fields = dict(item.split("=", 1) for item in value.split(",") if "=" in item)
+            host = fields.get("source", fields.get("src", ""))
+        else:
+            host = value.split(":", 1)[0]
+        hosts.append(host if host.startswith("/") else "")
+    return hosts
+
+
+def unit_view(manager, unit: str) -> dict:
+    """One user unit as retire reads it: LoadState, expanded argv tokens, env file keys, container binds.
+
+    ExecStart is shown unexpanded by systemd: ${VAR} and $VAR are resolved
+    from Environment= and every EnvironmentFile= (read O_NOFOLLOW; only key
+    names are kept). An unresolvable reference or env file refuses.
+    """
+    shown = manager.user_show(unit, ("LoadState", "Environment", "WorkingDirectory"))
+    commands_shown = manager.user_show_all(unit, "ExecStart")
+    files = manager.user_show_all(unit, "EnvironmentFiles")
+    if shown is None or commands_shown is None or files is None:
+        _refuse("runtime_admission_adoption_units_unavailable")
+    base = shown["WorkingDirectory"].lstrip("!-~") or "/"
+    environment, keys = {}, []
+    try:
+        for token in shlex.split(shown["Environment"]):
+            name, _sep, value = token.partition("=")
+            environment[name] = value
+    except ValueError:
+        _refuse("runtime_admission_retire_unit_unparsed:" + unit)
+    for specification in files:
+        values, names = _env_file_values(unit, specification)
+        environment.update(values)
+        keys += names
+    tokens, binds, raw = [], [], []
+    for value in commands_shown:
+        if not value:
+            continue
+        try:
+            argv = launcher.exec_start_argv(value)
+        except launcher.LauncherRefusal:
             _refuse("runtime_admission_retire_unit_unparsed:" + unit)
-        tokens.append(os.fspath(base))
-        if any(_under(candidate, roots) for token in tokens for candidate in _path_candidates(token, base)):
-            offending.append(unit)
+        argv = [_expanded(unit, token, environment) for token in argv]
+        raw += argv
+        if argv and os.path.basename(argv[0]) in _CONTAINER_TOOLS:
+            binds += _container_volumes(unit, argv)
+        tokens += argv
+    tokens += list(environment.values()) + [base]
+    return {"unit": unit, "load_state": shown["LoadState"], "base": base, "tokens": tokens, "raw": raw,
+            "environment_file_keys": sorted(set(keys)), "container_binds": binds}
+
+
+def _covers(path: str, roots: list[str]) -> bool:
+    """``path`` is under a root, or a root is under ``path`` (a bind of a parent exposes the root)."""
+    return _under(path, roots) or any(_under(root, [path]) for root in roots)
+
+
+def _relevant(view: dict, models: str, checkout: str) -> bool:
+    text = " ".join(view["raw"] + view["tokens"])
+    if any(needle in text for needle in _UNIT_NEEDLES):
+        return True
+    if any(not host or _covers(os.path.realpath(host), [models, checkout]) for host in view["container_binds"]):
+        return True  # a named or unparsed volume cannot be resolved here: the W0 list must name the unit
+    return any(_covers(candidate, [models, checkout]) for token in view["tokens"]
+               for candidate in _path_candidates(token, Path(view["base"])))
+
+
+def units_under(views: list[dict], roots: list[str]) -> list[str]:
+    """Units whose argument, Environment(File) value or WorkingDirectory resolves under a root,
+    or whose container bind covers one or cannot be resolved."""
+    offending = []
+    for view in views:
+        paths = [candidate for token in view["tokens"] for candidate in _path_candidates(token, Path(view["base"]))]
+        if (any(_under(candidate, roots) for candidate in paths)
+                or any(not host or _covers(os.path.realpath(host), roots) for host in view["container_binds"])):
+            offending.append(view["unit"])
     return offending
+
+
+def discover_units(manager, listed: tuple[str, ...], layout) -> tuple[list[dict], dict]:
+    """Every user service that can reach the models (review F4): read, never trusted from --unit alone.
+
+    Always kza-voice and the :8101 llama-server unit; plus each listed unit;
+    plus every user service whose command, environment (files included) or
+    working directory names llama-server, --lora, lora_adapters, a container
+    bind, the models root or the legacy checkout. A discovered unit missing
+    from ``listed`` refuses (the W0 list must name it); a named unit that is
+    not loaded refuses.
+    """
+    names = manager.user_units()
+    if names is None:
+        _refuse("runtime_admission_adoption_units_unavailable")
+    models = os.path.realpath(layout.models_root)
+    checkout = os.path.realpath(layout.legacy_checkout)
+    named = sorted({launcher.UNIT, LLM_FAST_UNIT, *listed})
+    views = {}
+    for unit in named:
+        view = unit_view(manager, unit)
+        if view["load_state"] != "loaded":
+            _refuse("runtime_admission_retire_unit_not_loaded:" + unit)
+        views[unit] = view
+    for unit in sorted(set(names) - set(named)):
+        if not unit.endswith(".service"):
+            continue
+        view = unit_view(manager, unit)
+        if view["load_state"] == "loaded" and _relevant(view, models, checkout):
+            _refuse("runtime_admission_retire_unit_not_listed:" + unit)
+    summary = {"discovered": len(names), "checked": named,
+               "environment_file_keys": {unit: view["environment_file_keys"] for unit, view in views.items()
+                                         if view["environment_file_keys"]},
+               "container_units": sorted(unit for unit, view in views.items() if view["container_binds"])}
+    return list(views.values()), summary
+
+
+RETIRE_INTENT_KEYS = frozenset({"schema_version", "kind", "decision_id", "container_slot", "roots", "pre",
+                                "models_manifest_sha256", "units", "config_keys_checked", "intended_at"})
+
+
+def _retire_intents(root: Path) -> list[tuple[str, dict]]:
+    directory = stage.adoption_directory(root)
+    if not os.path.isdir(directory):
+        return []
+    found = []
+    for name in sorted(os.listdir(directory)):
+        if name.startswith(RETIRE_INTENT_PREFIX) and name.endswith(".json"):
+            intent = stage._read_json(directory / name)
+            if (set(intent) != RETIRE_INTENT_KEYS or intent.get("schema_version") != 1
+                    or intent.get("kind") != "retire_intent"):
+                _refuse("runtime_admission_retire_intent_invalid")
+            found.append((name, intent))
+    return found
+
+
+def pending_retire_intent(root: Path) -> tuple[str, dict] | tuple[None, None]:
+    """The retire intent no retirement record completes yet (a crash between deletion and record, F6)."""
+    intents = _retire_intents(root)
+    if not intents:
+        return None, None
+    directory = stage.adoption_directory(root)
+    completed = set()
+    for name in os.listdir(directory):
+        if name.startswith(RETIREMENT_PREFIX) and name.endswith(".json"):
+            completed.add(stage._read_json(directory / name).get("intent"))
+    pending = [(name, intent) for name, intent in intents if name not in completed]
+    if len(pending) > 1:
+        _refuse("runtime_admission_retire_intent_invalid")
+    return pending[0] if pending else (None, None)
 
 
 def retire_legacy_training(root, *, decision_id: str, container_slot: str, manager, units: tuple[str, ...] = (),
@@ -575,9 +782,12 @@ def retire_legacy_training(root, *, decision_id: str, container_slot: str, manag
     nightly and whisper) under the container's resolved models link, never a
     path read from data. Refuses before deleting anything on: a link,
     device, FIFO or socket inside, a mount crossing, a configured model path
-    or a kza unit argument (llama-server --lora included) under a root, or
-    when nothing needs retiring. The models tree outside the roots must be
-    unchanged afterwards.
+    or a kza unit argument (llama-server --lora included, EnvironmentFile
+    values resolved, container binds) under a root, a user unit that can
+    reach the models and is missing from ``units``, or when nothing needs
+    retiring. An immutable intent (decision, roots, pre-census, manifest
+    digest) is written before the deletion; a re-run after a crash completes
+    from it (review F6). The models tree outside the roots must be unchanged.
     """
     if type(decision_id) is not str or DECISION.fullmatch(decision_id) is None:
         _refuse("runtime_admission_retire_decision")
@@ -591,22 +801,38 @@ def retire_legacy_training(root, *, decision_id: str, container_slot: str, manag
         head = stage.read_admission_head(root)
         if head is not None and not stage.head_aborted(root, head):
             _refuse("runtime_admission_retire_head_present")
+        intent_name, intent = pending_retire_intent(root)
+        if intent is not None and (intent["decision_id"] != decision_id or intent["container_slot"] != container_slot):
+            _refuse("runtime_admission_retire_intent_mismatch")
         models = Path(os.path.realpath(layout.models_root))
         base = models / adoption.LEGACY_TRAINING_OUTSIDE[0][0]
         device = os.lstat(models).st_dev
         tails = [tail for tail, _new in adoption.LEGACY_TRAINING_OUTSIDE]
         roots = [os.fspath(models / tail) for tail in tails]
         census = {tail: _tree_census(models / tail, device) for tail in tails}
-        if not census[tails[0]]["exists"] or not any(item["files"] for item in census.values()):
+        if intent is None and (not census[tails[0]]["exists"] or not any(item["files"] for item in census.values())):
             _refuse("runtime_admission_retire_not_needed")
+        if intent is not None and intent["roots"] != roots:
+            _refuse("runtime_admission_retire_intent_mismatch")
         keys, checked = config_paths_under(layout, roots)
         if keys:
             _refuse("runtime_admission_retire_model_under_root:" + keys[0])
-        offending = units_under(manager, (launcher.UNIT, *units), roots)
+        views, unit_summary = discover_units(manager, tuple(units), layout)
+        offending = units_under(views, roots)
         if offending:
             _refuse("runtime_admission_retire_unit_under_root:" + offending[0])
         before = models_manifest(models, base)
-        stage.make_writable_then_remove(base)  # the three roots all live under lora_adapters
+        if intent is None:
+            intent = {"schema_version": 1, "kind": "retire_intent", "decision_id": decision_id,
+                      "container_slot": container_slot, "roots": roots, "pre": census,
+                      "models_manifest_sha256": stage._digest(before), "units": unit_summary,
+                      "config_keys_checked": checked, "intended_at": launcher._now_stamp(wall())}
+            intent_name = RETIRE_INTENT_PREFIX + intent["intended_at"] + ".json"
+            stage._atomic_record(stage.adoption_directory(root) / intent_name, intent, immutable=True)
+        elif stage._digest(before) != intent["models_manifest_sha256"]:
+            _refuse("runtime_admission_retire_outside_changed")
+        if os.path.lexists(base):
+            stage.make_writable_then_remove(base)  # the three roots all live under lora_adapters
         launcher._fsync_path(models)
         after = models_manifest(models, base)
         if after != before:
@@ -615,19 +841,21 @@ def retire_legacy_training(root, *, decision_id: str, container_slot: str, manag
         for tail, root_path in zip(tails, roots):
             if os.path.lexists(root_path):
                 _refuse("runtime_admission_retire_absence")
-            record_roots.append({"class": tail, "root": root_path, "pre": census[tail], "absence": "enoent"})
+            record_roots.append({"class": tail, "root": root_path, "pre": intent["pre"][tail], "absence": "enoent"})
         stamp = launcher._now_stamp(wall())
         record = {"schema_version": 1, "kind": "retire_legacy_training", "decision_id": decision_id,
-                  "container_slot": container_slot, "roots": record_roots,
-                  "models_manifest_sha256": {"before": stage._digest(before), "after": stage._digest(after)},
-                  "models_entries": len(after), "units_checked": sorted({launcher.UNIT, *units}),
-                  "config_keys_checked": checked, "fsynced": [os.fspath(models)], "retired_at": stamp}
+                  "container_slot": container_slot, "roots": record_roots, "intent": intent_name,
+                  "models_manifest_sha256": {"before": intent["models_manifest_sha256"],
+                                             "after": stage._digest(after)},
+                  "models_entries": len(after), "units_checked": unit_summary["checked"],
+                  "units": unit_summary, "config_keys_checked": checked, "fsynced": [os.fspath(models)],
+                  "retired_at": stamp}
         name = RETIREMENT_PREFIX + stamp + ".json"
         stage._atomic_record(stage.adoption_directory(root) / name, record, immutable=True)
-    return {"record": name, "decision_id": decision_id,
+    return {"record": name, "decision_id": decision_id, "intent": intent_name,
             "roots": [{"class": item["class"], "files": item["pre"]["files"], "bytes": item["pre"]["bytes"],
                        "absence": item["absence"]} for item in record_roots],
-            "models_entries_unchanged": len(after)}
+            "models_entries_unchanged": len(after), "units_checked": unit_summary["checked"]}
 
 
 # --- the shared pipeline ----------------------------------------------------------------------------
@@ -642,11 +870,25 @@ def _head_state(root: Path) -> tuple[dict | None, str | None]:
     return head, None
 
 
+def _head_slot(root: Path) -> str | None:
+    head = stage.read_admission_head(root)
+    return None if head is None else stage.read_binding(root, head["binding_id"])["slot"]
+
+
 def _pending_prepared(root: Path) -> list[str]:
-    """Marked (never committed) slots and leftover work directories."""
+    """Marked (never committed) slots, unmarked slots of a commit that never reached its CAS, leftovers.
+
+    A commit removes the copy marker after its intent record (review F1); an
+    unmarked slot named by an intent and bound by no head is a full copy
+    of the production state outside every lineage until W-abort-1 removes it.
+    """
     found = []
+    intended = {intent["slot"] for intent in _commit_intents(root)}
+    bound = _head_slot(root) if intended else None
     for entry in sorted(os.listdir(root / "slots")):
         if os.path.lexists(root / "slots" / entry / "state" / adoption.COPY_MARKER):
+            found.append("slots/" + entry)
+        elif entry in intended and entry != bound:
             found.append("slots/" + entry)
     work = root / WORK_DIRECTORY
     if os.path.lexists(work) and (not os.path.isdir(work) or os.path.islink(work) or os.listdir(work)):
@@ -690,6 +932,7 @@ def adoption_dry_run(root, *, container_slot: str, archive, slot: str, scratch_p
     report: dict = {"schema_version": SCHEMA_VERSION, "kind": "adoption_dry_run", "container_slot": container_slot,
                     "slot": slot, "p_answers": list(P_ANSWERS)}
     problems: list[str] = []
+    warnings: list[str] = []
     layout, links = source_layout(root, container_slot, paths)
     report["readlinks"] = links
     try:
@@ -714,6 +957,8 @@ def adoption_dry_run(root, *, container_slot: str, archive, slot: str, scratch_p
     report["timer_dispositions"] = timer_dispositions(manager, timers, root, layout)
     problems += unit_problems + index_problems
     report["swap"] = swap_report()
+    if pending_retire_intent(root)[1] is not None:
+        problems.append("runtime_admission_adoption_retirement_incomplete")
     record, record_sha, record_name = latest_retirement(root)
     report["retirement"] = None if record is None else {"record": record_name, "sha256": record_sha,
                                                         "decision_id": record["decision_id"],
@@ -744,11 +989,16 @@ def adoption_dry_run(root, *, container_slot: str, archive, slot: str, scratch_p
             adopted = adoption.adopt_copy(layout, work=private / "work", scratch=drop,
                                           state_root=root / "slots" / slot / "state", plan_sha256=dry_id,
                                           adoption_time=float(wall()), python=python, runtime_root=runtime,
-                                          retirement=retirement_view(record), rows=paths.rows())
+                                          retirement=retirement_view(record), rows=paths.rows(), advisory=True)
         except adoption.AdoptionRefusal as refusal:
             adopted = dict(getattr(refusal, "report", None) or {}, refused=str(refusal))
             problems.append(str(refusal))
         adopted.pop("plan_sha256", None)
+        problems += adopted.get("refusals", [])
+        if any(adopted.get("source_moving", {}).values()):
+            warnings.append("advisory: source moving")
+        if (adopted.get("legacy_training") or {}).get("retirement") == "assumed":
+            warnings.append("advisory: legacy_training assumed retired (P1=D pending, W1b)")
         report["adoption"] = adopted
         report["legacy_path_census"] = _census_summary(adopted)
         if (private / "work").is_dir():
@@ -761,6 +1011,7 @@ def adoption_dry_run(root, *, container_slot: str, archive, slot: str, scratch_p
     if not removed:
         problems.append("runtime_admission_adoption_scratch_not_removed")
     report["problems"] = problems
+    report["warnings"] = warnings
     report["dry_run_sha256"] = stage._digest({key: value for key, value in report.items() if key not in _VOLATILE})
     report["timings"] = {"seconds": round(clock() - started, 3)}
     return (0 if not problems else int(launcher.ExitCode.REFUSED)), report
@@ -783,45 +1034,14 @@ def _plan_path(root: Path, plan_sha256: str) -> Path:
     return stage.adoption_directory(root) / (PLAN_PREFIX + plan_sha256 + ".json")
 
 
-def _manifest_path(root: Path, digest: str) -> Path:
-    return stage.adoption_directory(root) / (MANIFEST_PREFIX + digest + ".json")
+def source_manifest_digest(layout, metrics_path: str) -> str:
+    """The full-file source manifest's digest, recomputed now (read-only).
 
-
-def _write_source_manifest(root: Path, entries: list) -> str:
-    digest = adoption.manifest_digest(entries)
-    path = _manifest_path(root, digest)
-    stage._durable_parents(path.parent)
-    raw = stage._canonical_json(entries) + b"\n"
-    descriptor, name = tempfile.mkstemp(prefix=".admission-", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(raw)
-            stream.flush()
-            os.fsync(stream.fileno())
-        try:
-            os.link(name, path)
-        except FileExistsError:
-            if Path(path).read_bytes() != raw:
-                _refuse("runtime_admission_adoption_manifest_conflict")
-        launcher._fsync_path(path.parent)
-    finally:
-        os.unlink(name)
-    return digest
-
-
-def read_source_manifest(root: Path, digest: str) -> list:
-    path = _manifest_path(root, digest)
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    with os.fdopen(descriptor, "rb") as stream:
-        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-            _refuse("runtime_admission_adoption_manifest_invalid")
-        raw = stream.read(_SOURCE_MANIFEST_LIMIT + 1)
-    if len(raw) > _SOURCE_MANIFEST_LIMIT:
-        _refuse("runtime_admission_adoption_manifest_invalid")
-    entries = json.loads(raw)
-    if type(entries) is not list or adoption.manifest_digest(entries) != digest:
-        _refuse("runtime_admission_adoption_manifest_invalid")
-    return entries
+    Only the digest is kept under admission/ (plan, seal, adoption record):
+    the per-file list (names, inodes, hashes) is never written, so nothing
+    names a legacy file once P7 retires the legacy state (review F10).
+    """
+    return adoption.manifest_digest(adoption.source_manifest(layout, metrics_path))
 
 
 def adoption_prepare(root, *, container_slot: str, archive, slot: str, decision_id: str, scratch_parent,
@@ -835,7 +1055,7 @@ def adoption_prepare(root, *, container_slot: str, archive, slot: str, decision_
     slot = _slot(slot, "runtime_admission_adoption_slot")
     units, problems = observe_units(manager, timers, window=True)
     layout, links = source_layout(root, container_slot, paths)
-    _index, index_problems = code_index_check(manager, code_index_unit, layout)
+    index, index_problems = code_index_check(manager, code_index_unit, layout)
     if problems or index_problems:
         _refuse((problems + index_problems)[0])
     manifest, files, archive_summary = read_r1_archive(archive)
@@ -856,6 +1076,8 @@ def adoption_prepare(root, *, container_slot: str, archive, slot: str, decision_
         if os.path.lexists(target):
             _refuse("runtime_admission_adoption_slot_exists")
         current = current_link(root, container_slot)
+        if pending_retire_intent(root)[1] is not None:
+            _refuse("runtime_admission_adoption_retirement_incomplete")
         record, record_sha, record_name = latest_retirement(root)
         prepare_id = _identifier("prepare", os.fspath(root), slot, archive_summary["sha256"])
         staging = root / WORK_DIRECTORY / slot
@@ -894,7 +1116,7 @@ def adoption_prepare(root, *, container_slot: str, archive, slot: str, decision_
             # After the snapshot: its read-only images may leave a WAL database's empty -wal.
             entries = prepared_manifest(target / "state")
             committed = [entry for entry in entries if entry[0] != adoption.COPY_MARKER]
-            source_digest = _write_source_manifest(root, secret["source_manifest"])
+            source_digest = adoption.manifest_digest(secret["source_manifest"])
             if source_digest != report["source_manifest_sha256"]:
                 _refuse("runtime_admission_adoption_manifest_invalid")
             plan = {
@@ -912,6 +1134,7 @@ def adoption_prepare(root, *, container_slot: str, archive, slot: str, decision_
                 "confirm_foreign": report["confirm_foreign"], "p_answers": list(P_ANSWERS),
                 "window_decision_id": decision_id, "units": units, "adoption_time": adoption_time,
                 "timer_dispositions": timer_dispositions(manager, timers, root, layout),
+                "code_index": index,
                 "report": report,
                 "prepared": {"manifest_sha256": adoption.manifest_digest(entries),
                              "library_manifest_sha256": report["prepared_manifest_sha256"],
@@ -968,16 +1191,35 @@ def _layout_of(plan: dict):
     return adoption.SourceLayout(**{key: Path(value) for key, value in values.items()})
 
 
+def _without_binding_marker(root: Path, state: Path, binding: dict) -> list[list]:
+    """prepared_manifest(state) without the state's binding marker, which must name exactly ``binding``.
+
+    commit_adoption_head writes the marker just before its CAS; a commit
+    re-run after a crash there finds it (review F1). Any other content refuses.
+    """
+    entries = prepared_manifest(state)
+    path = state / stage._MARKER
+    if not os.path.lexists(path):
+        return entries
+    if os.path.islink(path) or stage._read_json(path) != {
+            "schema_version": 1, "admission_root": str(root), "binding_id": stage._digest(binding),
+            "state_root": binding["state_root"]}:
+        _refuse("runtime_admission_adoption_binding_marker")
+    return [entry for entry in entries if entry[0] != stage._MARKER]
+
+
 def _check_prepared(root: Path, plan: dict) -> bool:
     """The prepared slot is byte-for-byte the planned one; returns whether the copy marker is still there."""
     prepared = plan["prepared"]
     state = root / "slots" / plan["slot"] / "state"
     marker = state / adoption.COPY_MARKER
     try:
-        digest = adoption.manifest_digest(prepared_manifest(state))
-    except (OSError, ValueError):
+        digest = adoption.manifest_digest(_without_binding_marker(root, state, prepared["binding"]))
+    except (OSError, ValueError, CommandRefusal):
         _mismatch("prepared")
     marked = os.path.lexists(marker)
+    if marked and os.path.lexists(state / stage._MARKER):
+        _mismatch("prepared")
     if marked:
         try:
             value = json.loads(Path(marker).read_text())
@@ -1044,6 +1286,21 @@ def verify_plan(root: Path, plan: dict, manager, paths: ProductionPaths) -> bool
             or retirement_absence(record) != retirement["absence"]
             or any(state == "present" for _root, state in retirement["absence"]))):
         _mismatch("retirement")
+    if pending_retire_intent(root)[1] is not None:
+        _mismatch("retirement")
+    if retirement is None:  # review F7a: the roots prepare saw empty or absent must still hold no file
+        models = Path(os.path.realpath(layout.models_root))
+        try:
+            if any(adoption._root_census(models / tail)["files"] for tail, _new in adoption.LEGACY_TRAINING_OUTSIDE):
+                _mismatch("retirement")
+        except adoption.AdoptionRefusal:
+            _mismatch("retirement")
+    timers = tuple(item for item in plan["units"]["units"] if item != launcher.UNIT)
+    if timer_dispositions(manager, timers, root, layout) != plan["timer_dispositions"]:
+        _mismatch("units")  # review F7b
+    index, index_problems = code_index_check(manager, plan["code_index"]["unit"], layout)
+    if index_problems or index != plan["code_index"]:
+        _mismatch("code_index")  # review F7c
     archive = Path(plan["archive"]["path"])
     try:
         if _sha256(archive) != plan["archive"]["sha256"]:
@@ -1055,11 +1312,10 @@ def verify_plan(root: Path, plan: dict, manager, paths: ProductionPaths) -> bool
             or plan["confirm_foreign"] != [] or plan["p_answers"] != list(P_ANSWERS)):
         _mismatch("tables")
     try:
-        stored = read_source_manifest(root, plan["source"]["manifest_sha256"])
-        now = adoption.source_manifest(layout, plan["source"]["metrics_path"])
+        now = source_manifest_digest(layout, plan["source"]["metrics_path"])
     except (OSError, ValueError):
         _mismatch("source")
-    if now != stored:
+    if now != plan["source"]["manifest_sha256"]:
         _mismatch("source")
     return _check_prepared(root, plan)
 
@@ -1070,28 +1326,95 @@ def _publish(root: Path, slot: str) -> None:
         launcher._fsync_path(root)
 
 
+def _commit_intent_path(root: Path, plan_sha256: str) -> Path:
+    return stage.adoption_directory(root) / (COMMIT_INTENT_PREFIX + plan_sha256 + ".json")
+
+
+COMMIT_INTENT_KEYS = frozenset({"schema_version", "kind", "plan_sha256", "slot", "prepare_id", "committed_at"})
+
+
+def _commit_intents(root: Path) -> list[dict]:
+    directory = stage.adoption_directory(root)
+    if not os.path.isdir(directory):
+        return []
+    found = []
+    for name in sorted(os.listdir(directory)):
+        if name.startswith(COMMIT_INTENT_PREFIX) and name.endswith(".json"):
+            intent = stage._read_json(directory / name)
+            if (set(intent) != COMMIT_INTENT_KEYS or intent.get("schema_version") != 1
+                    or name != COMMIT_INTENT_PREFIX + str(intent.get("plan_sha256")) + ".json"):
+                _refuse("runtime_admission_adoption_commit_intent_invalid")
+            found.append(intent)
+    return found
+
+
+def _commit_intent(root: Path, plan: dict, plan_sha256: str, wall) -> dict:
+    """The immutable commit intent: written once before the copy marker goes; every re-run reuses it.
+
+    It fixes committed_at, so every record commit_adoption_head writes is
+    the same on a re-run and the immutable writes match (review F1).
+    """
+    path = _commit_intent_path(root, plan_sha256)
+    if os.path.lexists(path):
+        intent = stage._read_json(path)
+        if (set(intent) != COMMIT_INTENT_KEYS or intent["plan_sha256"] != plan_sha256
+                or intent["slot"] != plan["slot"] or intent["prepare_id"] != plan["prepare_id"]):
+            _refuse("runtime_admission_adoption_commit_intent_invalid")
+        return intent
+    intent = {"schema_version": 1, "kind": "adoption_commit_intent", "plan_sha256": plan_sha256,
+              "slot": plan["slot"], "prepare_id": plan["prepare_id"],
+              "committed_at": launcher._now_stamp(float(wall()))}
+    stage._atomic_record(path, intent, immutable=True)
+    return intent
+
+
+def _prepared_aborted(root: Path, plan_sha256: str) -> bool:
+    directory = stage.adoption_directory(root)
+    if not os.path.isdir(directory):
+        return False
+    return any(stage._read_json(directory / name).get("plan_sha256") == plan_sha256
+               for name in os.listdir(directory) if name.startswith(PREPARED_ABORT_PREFIX))
+
+
 def adoption_commit(root, *, confirm: str, manager, paths: ProductionPaths | None = None, wall=time.time) -> dict:
-    """W4: re-verify the whole plan, then the records, seal, adoption head, marker removal and 'current'."""
+    """W4: re-verify the whole plan, then the records, seal, adoption head, marker removal and 'current'.
+
+    Recoverable at every crash point (review F1): the commit intent is
+    written before the copy marker is removed and fixes every record field;
+    a re-run before the CAS re-verifies the whole plan (an unmarked slot and
+    the matching binding marker included) and re-enters
+    commit_adoption_head, whose immutable writes then match; a re-run after
+    the CAS only publishes 'current'. W-abort-1 removes a slot whose CAS
+    never happened.
+    """
     paths = paths or production_paths()
     root = checked_root(root)
     with stage.AdmissionController(root):
         plan = load_plan(root, confirm)
         slot = plan["slot"]
+        if _prepared_aborted(root, confirm):
+            _refuse("runtime_admission_adoption_plan_aborted")
+        head = stage.read_admission_head(root)
         for _path, record in _adoption_records(root):
-            if record.get("plan_sha256") == confirm:
-                head = stage.read_admission_head(root)
-                runtime = os.fspath(root / "slots" / slot / "runtime")
-                if head == record.get("head") and not stage.head_aborted(root, head) and \
-                        os.path.realpath(root / "current") != runtime:
+            if record.get("plan_sha256") != confirm:
+                continue
+            runtime = os.fspath(root / "slots" / slot / "runtime")
+            if head == record.get("head"):
+                if not stage.head_aborted(root, head) and os.path.realpath(root / "current") != runtime:
                     _publish(root, slot)  # resume: CAS done, 'current' not yet published
                     return {"head": head, "slot": slot, "resumed": "publish"}
                 _refuse("runtime_admission_adoption_already_committed")
+            if head != plan["expected_head"]:
+                _refuse("runtime_admission_adoption_already_committed")
+            # else: the records exist but the CAS never happened; re-verify and re-enter below.
         marked = verify_plan(root, plan, manager, paths)
+        intent = _commit_intent(root, plan, confirm, wall)
         state = root / "slots" / slot / "state"
         if marked:
             os.unlink(state / adoption.COPY_MARKER)
             launcher._fsync_path(state)
-        if adoption.manifest_digest(prepared_manifest(state)) != plan["prepared"]["committed_manifest_sha256"]:
+        if (adoption.manifest_digest(_without_binding_marker(root, state, plan["prepared"]["binding"]))
+                != plan["prepared"]["committed_manifest_sha256"]):
             _mismatch("prepared")
         served_manifest = stage.state_manifest_sha256(state)
         retirement = plan["retirement"]
@@ -1120,7 +1443,7 @@ def adoption_commit(root, *, confirm: str, manager, paths: ProductionPaths | Non
                                 "the pending legacy_training steps complete at the first managed run because of "
                                 "retirement record " + retirement["record"] + " (decision " + decision + ")"),
             "seeded": report["seed"], "requeued": report["residue"],
-            "committed_at": launcher._now_stamp(float(wall()))}
+            "committed_at": intent["committed_at"]}
         head = stage.commit_adoption_head(root, plan["expected_head"], plan["prepared"]["binding"],
                                           seal_fields=seal_fields, record_fields=record_fields)
         _publish(root, slot)
@@ -1149,15 +1472,19 @@ def _restore_current(root: Path, raw: str) -> None:
 
 def _legacy_conf(root: Path, unit_dir: Path, container_slot: str, manager) -> dict | None:
     """As uninstall-launcher renders it, when install-launcher already ran (W6)."""
-    managed = unit_dir / "managed.conf"
-    if not os.path.lexists(managed):
+    managed, disabled, legacy = unit_dir / "managed.conf", unit_dir / "managed.conf.disabled", unit_dir / "legacy.conf"
+    if not os.path.lexists(managed) and not os.path.lexists(disabled):
         return None
     record = launcher._latest_install(root)
     runtime, state, _commit = launcher._verify_legacy_slot(root, container_slot, launcher.LEGACY_COMMITS)
     text = launcher.render_legacy_conf(record, runtime, state, unit_dir / "release.conf.unmanaged")
-    os.replace(managed, unit_dir / "managed.conf.disabled")
-    launcher._write_text_atomic(unit_dir / "legacy.conf", text)
-    manager.daemon_reload()
+    if os.path.lexists(managed):
+        os.replace(managed, disabled)
+    # A re-run after a stop between the rename and the abort record re-renders and re-verifies (review F11).
+    if not os.path.lexists(legacy) or os.path.islink(legacy) or Path(legacy).read_text() != text:
+        launcher._write_text_atomic(legacy, text)
+    if not manager.daemon_reload(strict=True):  # review F3: exit 0 only
+        _refuse("runtime_admission_adoption_daemon_reload")
     shown = manager.user_show(launcher.UNIT, launcher.RECORDED_PROPERTIES)
     return {"sha256": hashlib.sha256(text.encode()).hexdigest(),
             "mismatches": launcher._legacy_mismatches(record, shown, runtime, state)}
@@ -1201,6 +1528,10 @@ def adoption_abort(root, *, manager, unit_dir, paths: ProductionPaths | None = N
         target = root / "slots" / slot
         if stage.head_aborted(root, head):
             stage.read_abort_record(root, head)
+            # Resume only while this abort is the newest adoption event (review F11): a plan built
+            # over the aborted head means a later window started, and enabling kza-voice then is wrong.
+            if any(plan["expected_head"] == head for _digest, plan in _plans(root)):
+                _refuse("runtime_admission_adoption_already_aborted")
             pending = os.path.lexists(target) or voice["UnitFileState"] != "enabled"
             if not pending:
                 _refuse("runtime_admission_adoption_already_aborted")
@@ -1212,11 +1543,10 @@ def adoption_abort(root, *, manager, unit_dir, paths: ProductionPaths | None = N
             _refuse("runtime_admission_adoption_abort_after_run")
         layout = adoption.SourceLayout(**{key: Path(value) for key, value in record["layout"].items()})
         try:
-            stored = read_source_manifest(root, record["source_manifest_sha256"])
-            now = adoption.source_manifest(layout, record["metrics_path"])
+            now = source_manifest_digest(layout, record["metrics_path"])
         except (OSError, ValueError):
             _refuse("runtime_admission_adoption_abort_legacy_changed")
-        if now != stored:
+        if now != record["source_manifest_sha256"]:
             _refuse("runtime_admission_adoption_abort_legacy_changed")
         legacy_conf = _legacy_conf(root, unit_dir, record["container_slot"], manager)
         _restore_current(root, record["current_before"])
@@ -1231,11 +1561,48 @@ def adoption_abort(root, *, manager, unit_dir, paths: ProductionPaths | None = N
             "current": "restored", "legacy_conf": legacy_conf, "enabled": enabled}
 
 
+def _plans(root: Path) -> list[tuple[str, dict]]:
+    directory = stage.adoption_directory(root)
+    if not os.path.isdir(directory):
+        return []
+    found = []
+    for name in sorted(os.listdir(directory)):
+        if name.startswith(PLAN_PREFIX) and name.endswith(".json"):
+            digest = name[len(PLAN_PREFIX):-len(".json")]
+            found.append((digest, load_plan(root, digest)))
+    return found
+
+
+def _plan_of_prepare(root: Path, slot: str, prepare_id) -> str | None:
+    """The plan a marked slot was prepared for (None when prepare stopped before writing it)."""
+    return next((digest for digest, plan in _plans(root)
+                 if plan["slot"] == slot and plan["prepare_id"] == prepare_id), None)
+
+
+def _uncommitted_plan(root: Path, slot: str) -> str | None:
+    """The plan whose commit intent names this unmarked slot and whose committed manifest it still is."""
+    state = root / "slots" / slot / "state"
+    for intent in reversed(_commit_intents(root)):
+        if intent["slot"] != slot:
+            continue
+        plan = load_plan(root, intent["plan_sha256"])
+        try:
+            digest = adoption.manifest_digest(_without_binding_marker(root, state, plan["prepared"]["binding"]))
+        except (OSError, ValueError):
+            continue
+        if digest == plan["prepared"]["committed_manifest_sha256"]:
+            return intent["plan_sha256"]
+    return None
+
+
 def adoption_abort_prepared(root, *, slot: str, manager, wall=time.time) -> dict:
     """W-abort-1: remove a prepared, never-committed slot (or a prepare's leftover work directory).
 
     The retirement stays (irreversible, by decision). 'current' never
-    changed. kza-voice is re-enabled, not started.
+    changed. kza-voice is re-enabled, not started. An unmarked slot is
+    removed only when a commit intent names it, its state is still that
+    plan's committed manifest and no head binds it (a commit stopped before
+    its CAS, review F1); the plan is then refused by adoption-commit.
     """
     root = checked_root(root)
     slot = _slot(slot, "runtime_admission_adoption_slot")
@@ -1247,10 +1614,15 @@ def adoption_abort_prepared(root, *, slot: str, manager, wall=time.time) -> dict
         target, work = root / "slots" / slot, root / WORK_DIRECTORY / slot
         if os.path.realpath(root / "current") == os.fspath(target / "runtime"):
             _refuse("runtime_admission_adoption_abort_prepared_committed")
-        removed = []
+        removed, plan_sha256 = [], None
         if os.path.lexists(target):
-            if not os.path.lexists(target / "state" / adoption.COPY_MARKER):
-                _refuse("runtime_admission_adoption_abort_prepared_unmarked")
+            marker = target / "state" / adoption.COPY_MARKER
+            if os.path.lexists(marker):
+                plan_sha256 = _plan_of_prepare(root, slot, stage._read_json(marker).get("plan_sha256"))
+            else:
+                plan_sha256 = _uncommitted_plan(root, slot)  # a commit that never reached its CAS (F1)
+                if plan_sha256 is None:
+                    _refuse("runtime_admission_adoption_abort_prepared_unmarked")
             removed.append("slots/" + slot)
         if os.path.lexists(work):
             removed.append(WORK_DIRECTORY + "/" + slot)
@@ -1259,7 +1631,7 @@ def adoption_abort_prepared(root, *, slot: str, manager, wall=time.time) -> dict
         stamp = launcher._now_stamp(float(wall()))
         stage._atomic_record(stage.adoption_directory(root) / (PREPARED_ABORT_PREFIX + slot + "-" + stamp + ".json"),
                              {"schema_version": 1, "kind": "abort_prepared", "slot": slot, "removed": removed,
-                              "head": head, "aborted_at": stamp}, immutable=True)
+                              "plan_sha256": plan_sha256, "head": head, "aborted_at": stamp}, immutable=True)
         for relative in removed:
             stage.make_writable_then_remove(root / relative)
         launcher._fsync_path(root / "slots")

@@ -310,8 +310,12 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _copy_file(source: Path, destination: Path | None) -> tuple[list, bytes]:
-    """Read ``source`` once (nofollow), hash it, optionally write ``destination``; return entry and header."""
+def _copy_file(source: Path, destination: Path | None, moving: Counter | None = None) -> tuple[list, bytes]:
+    """Read ``source`` once (nofollow), hash it, optionally write ``destination``; return entry and header.
+
+    A file that changes while it is read refuses (source_changed); only the
+    advisory dry-run passes ``moving``, which counts it instead (U3b-0e3 F2).
+    """
     descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     digest, header = hashlib.sha256(), b""
     with os.fdopen(descriptor, "rb") as stream:
@@ -337,7 +341,9 @@ def _copy_file(source: Path, destination: Path | None) -> tuple[list, bytes]:
                 output.close()
         after = os.fstat(stream.fileno())
     if (before.st_size, before.st_mtime_ns, before.st_ino) != (after.st_size, after.st_mtime_ns, after.st_ino):
-        _refuse("runtime_admission_adoption_source_changed")
+        if moving is None:
+            _refuse("runtime_admission_adoption_source_changed")
+        moving["during_copy"] += 1
     entry = [before.st_ino, before.st_size, before.st_mtime_ns, digest.hexdigest()]
     if destination is not None and _sha256_file(destination) != entry[3]:
         _refuse("runtime_admission_adoption_copy_mismatch")
@@ -370,7 +376,7 @@ def _side_of(relative: str) -> tuple[str, str]:
     return relative, ""
 
 
-def copy_source(layout: SourceLayout, destination: Path, scratch: Path) -> dict:
+def copy_source(layout: SourceLayout, destination: Path, scratch: Path, moving: Counter | None = None) -> dict:
     """Byte-copy the legacy state's carried trees into ``destination`` (N7, F9, P2=A).
 
     Every regular file under the legacy state is read once and hashed (the
@@ -406,7 +412,7 @@ def copy_source(layout: SourceLayout, destination: Path, scratch: Path) -> dict:
             report["shm_not_copied"] += 1
         else:
             report["outside_carried_files"] += 1
-        entry, header = _copy_file(path, target)
+        entry, header = _copy_file(path, target, moving)
         entries.append([relative, *entry])
         if suffix:
             sides[relative] = (main, suffix)
@@ -448,13 +454,14 @@ def metrics_store_set(layout: SourceLayout, metrics_path: str) -> dict:
     return {"policy_name": name, "members": members, "outside": outside}
 
 
-def copy_metrics_store(layout: SourceLayout, metrics_path: str, destination: Path) -> dict:
+def copy_metrics_store(layout: SourceLayout, metrics_path: str, destination: Path,
+                       moving: Counter | None = None) -> dict:
     """Copy the metrics store set to <state>/data/obs/ under the same names; staged must be empty."""
     found = metrics_store_set(layout, metrics_path)
     entries = []
     obs = Path(destination) / "data" / "obs"
     for item in found["members"]:
-        entry, _header = _copy_file(Path(layout.metrics_root) / item, obs / item)
+        entry, _header = _copy_file(Path(layout.metrics_root) / item, obs / item, moving)
         entries.append(["metrics/" + item, *entry])
     catalog = obs / (found["policy_name"] + ".sqlite3")
     if catalog.is_file():
@@ -998,7 +1005,8 @@ def _root_census(root: Path) -> dict:
     return {"exists": True, "files": files, "bytes": size}
 
 
-def legacy_training_disposition(layout: SourceLayout, roots: list[str], retirement: dict | None = None) -> dict:
+def legacy_training_disposition(layout: SourceLayout, roots: list[str], retirement: dict | None = None,
+                                *, assume_retired: bool = False) -> dict:
     """Decide how the outside legacy_training roots are relocated (P1=D, design v3 2c).
 
     ``roots`` are the registered legacy_training roots outside the legacy
@@ -1006,6 +1014,10 @@ def legacy_training_disposition(layout: SourceLayout, roots: list[str], retireme
     Absent or empty roots are relocated directly ('no retirement needed');
     roots with files refuse unless ``retirement`` (the retire-legacy-training
     record, U3b-0e3) names them and their absence still holds.
+
+    ``assume_retired`` (advisory dry-run only, U3b-0e3 F2) treats roots with
+    files as retired by the pending P1=D step: the disposition is 'assumed'
+    and the census is what retire-legacy-training would delete.
 
     Returns:
         ``mapping`` (old root -> state-relative new root) and the census.
@@ -1021,6 +1033,8 @@ def legacy_training_disposition(layout: SourceLayout, roots: list[str], retireme
         census[key] = _root_census(Path(key))
         mapping[root] = allowed[key]
     if any(value["files"] for value in census.values()):
+        if assume_retired and retirement is None:
+            return {"mapping": mapping, "retirement": "assumed", "census": census}
         # Files under a root: no retirement can have proven their absence.
         _refuse("runtime_admission_adoption_legacy_training_present")
     if retirement is None:
@@ -1790,11 +1804,20 @@ def source_manifest(layout: SourceLayout, metrics_path: str) -> list:
     return entries
 
 
-def verify_source_unchanged(layout: SourceLayout, metrics_path: str, manifest: list) -> None:
-    """Re-walk the sources after the copy: any changed, added or removed file refuses (review F6)."""
+def verify_source_unchanged(layout: SourceLayout, metrics_path: str, manifest: list,
+                            moving: Counter | None = None) -> None:
+    """Re-walk the sources after the copy: any changed, added or removed file refuses (review F6).
+
+    The advisory dry-run passes ``moving`` and gets the count of differing
+    files instead (U3b-0e3 F2: the service may run during it).
+    """
     expected = {entry[0]: list(entry[1:4]) for entry in manifest}
-    if source_stat_map(layout, metrics_path) != expected:
-        _refuse("runtime_admission_adoption_source_changed")
+    now = source_stat_map(layout, metrics_path)
+    if now != expected:
+        if moving is None:
+            _refuse("runtime_admission_adoption_source_changed")
+        moving["after_copy"] = max(moving["after_copy"], sum(
+            1 for name in set(now) | set(expected) if now.get(name) != expected.get(name)))
 
 
 # --- the library pipeline ---------------------------------------------------------------------------
@@ -1808,7 +1831,8 @@ def _legacy_metrics_path(work: Path) -> str:
 
 def adopt_copy(layout: SourceLayout, *, work: Path, scratch: Path, state_root: Path, plan_sha256: str,
                adoption_time: float, python: str, runtime_root: Path, retirement: dict | None = None,
-               rows: tuple[TransformRow, ...] | None = None, confirm_foreign=(), private: dict | None = None) -> dict:
+               rows: tuple[TransformRow, ...] | None = None, confirm_foreign=(), private: dict | None = None,
+               advisory: bool = False) -> dict:
     """Turn a byte copy of the production state into the first managed state, in ``work``.
 
     ``work`` is the adoption copy (it gets the marker), ``scratch`` the
@@ -1821,6 +1845,13 @@ def adopt_copy(layout: SourceLayout, *, work: Path, scratch: Path, state_root: P
     ``private`` is a dict it receives what the operator commands keep
     privately under admission/ and never print: the full source manifest
     (``source_manifest``) and the legacy metrics path (``metrics_path``).
+
+    ``advisory`` (the dry-run only, U3b-0e3 F2) delivers the whole census:
+    a moving source is counted (``source_moving``) and the copied bytes are
+    used; roots with LoRA files are assumed retired; the soft refusals
+    (contracts, foreign targets, relocation, children, residue, S3, target
+    set) are collected in ``refusals`` and the pipeline continues. Prepare
+    and commit never pass it: every one of those refuses there.
     """
     work, scratch = Path(work), Path(scratch)
     rows = transform_table() if rows is None else rows
@@ -1828,26 +1859,48 @@ def adopt_copy(layout: SourceLayout, *, work: Path, scratch: Path, state_root: P
     private = {} if private is None else private
     try:
         _adopt(report, layout, work, scratch, state_root, plan_sha256, adoption_time, python, runtime_root,
-               retirement, rows, confirm_foreign, private)
+               retirement, rows, confirm_foreign, private, advisory)
     except AdoptionRefusal as refusal:
         refusal.report = report
         raise
     return report
 
 
+def residue_census(residue: dict) -> dict:
+    """Content-free counts of resurrection_residue; the 'unmarkable' families refuse at P3=A (design v3 4)."""
+    conversation = residue["conversation"]
+    return {"conversation": len(conversation),
+            "conversation_unmarkable": sum(1 for occurrences in conversation.values()
+                                           if any(not governing for _participant, governing in occurrences)),
+            "fact": len(residue["fact"]), "voice_profile": len(residue["voice_profile"]),
+            "voice_consent": residue["voice_consent"]}
+
+
 def _adopt(report, layout, work, scratch, state_root, plan_sha256, adoption_time, python, runtime_root,
-           retirement, rows, confirm_foreign, private) -> None:
+           retirement, rows, confirm_foreign, private, advisory=False) -> None:
+    moving = Counter() if advisory else None
+
+    def soft(call):
+        """Run one step: refuse (prepare/commit) or record the refusal and go on (advisory)."""
+        try:
+            return call()
+        except AdoptionRefusal as refusal:
+            if not advisory:
+                raise
+            report.setdefault("refusals", []).append(str(refusal))
+            return None
+
     report["confirm_foreign"] = check_confirm_foreign(confirm_foreign)
     with SourceGuard(*source_roots(layout)) as guard:
         report["layout"] = read_source_layout(layout)
         report["scratch"] = check_scratch(scratch, work=work, state_root=state_root, layout=layout,
                                           plan_sha256=plan_sha256)
         work.mkdir(mode=0o700)
-        copied = copy_source(layout, work, scratch)
+        copied = copy_source(layout, work, scratch, moving)
         metrics_path = _legacy_metrics_path(work)
-        metrics = copy_metrics_store(layout, metrics_path, work)
+        metrics = copy_metrics_store(layout, metrics_path, work, moving)
         manifest = copied["manifest"] + metrics["manifest"]
-        verify_source_unchanged(layout, metrics_path, manifest)
+        verify_source_unchanged(layout, metrics_path, manifest, moving)
         private["source_manifest"], private["metrics_path"] = manifest, metrics_path
         report["source_manifest_sha256"] = manifest_digest(manifest)
         report["source_files"] = len(manifest)
@@ -1856,7 +1909,8 @@ def _adopt(report, layout, work, scratch, state_root, plan_sha256, adoption_time
         report["recovery"] = recover_copies(work)
         report["drops"] = drop_and_vacuum(scratch, work)
         write_copy_marker(work, plan_sha256)
-        contract_census(work)
+        soft(lambda: contract_census(work))
+        report["contracts_outside"] = contract_census(work, refuse=False)["outside_contracts"]
         settings_path = work / "config" / "settings.yaml"
         settings_path.write_text(transform_config_text(settings_path.read_text(), rows))
         report["transform_sha256"] = transform_digest(rows)
@@ -1866,29 +1920,40 @@ def _adopt(report, layout, work, scratch, state_root, plan_sha256, adoption_time
         foreign = foreign_targets(work, layout, metrics["policy_name"])
         report["foreign_targets"] = foreign
         if foreign:
-            _refuse("runtime_admission_adoption_foreign_target:" + ":".join(foreign[0]))
+            soft(lambda: _refuse("runtime_admission_adoption_foreign_target:" + ":".join(foreign[0])))
         outside = [item["descriptor"]["root"] for item in registered_targets(work)
                    if item["participant"] == "collectors" and item["descriptor"].get("kind") == "legacy_training"
                    and classify(item["descriptor"]["root"], layout) not in ("legacy_state", "container")]
-        training = legacy_training_disposition(layout, outside, retirement)
+        training = legacy_training_disposition(layout, outside, retirement, assume_retired=advisory)
         report["legacy_training"] = {"retirement": training["retirement"], "roots": len(outside)}
+        if training["retirement"] == "assumed":
+            report["legacy_training"]["would_retire"] = {
+                "files": sum(item["files"] for item in training["census"].values()),
+                "bytes": sum(item["bytes"] for item in training["census"].values())}
         report["census_before"] = path_census(work, layout)
         before = table_snapshot(work)  # S3's source: f includes the relocation (review F1)
-        report["relocation"] = relocate(work, state_root, layout, training["mapping"], metrics["policy_name"])
+        report["relocation"] = soft(lambda: relocate(work, state_root, layout, training["mapping"],
+                                                     metrics["policy_name"]))
         report["census_after"] = path_census(work, layout)
-        expected = relocation_model(before, Relocation(layout, state_root, training["mapping"],
-                                                       metrics["policy_name"]))
-        report["schema"] = run_child(python, runtime_root, work, "schema")
-        report["seed"] = run_child(python, runtime_root, work, "seed", at=adoption_time)["seeded"]
+        expected = soft(lambda: relocation_model(before, Relocation(layout, state_root, training["mapping"],
+                                                                    metrics["policy_name"])))
+        report["schema"] = soft(lambda: run_child(python, runtime_root, work, "schema"))
+        seeded = soft(lambda: run_child(python, runtime_root, work, "seed", at=adoption_time))
+        report["seed"] = None if seeded is None else seeded["seeded"]
         residue = launcher.resurrection_residue(work, descriptor_root=Path(state_root))
-        report["residue"] = run_child(python, runtime_root, work, "residue", at=adoption_time,
-                                      state_root=state_root)["requeued"]
-        report["s3"] = verify_s3(expected, table_snapshot(work), adoption_time=adoption_time,
-                                 plan_sha256=plan_sha256, residue=residue)
-        report["contracts"] = verify_contracts(work)
-        targets = run_child(python, runtime_root, work, "targets", state_root=state_root)["targets"]
-        report["targets"] = check_target_set(work, targets, state_root)
+        report["residue_census"] = residue_census(residue)
+        requeued = soft(lambda: run_child(python, runtime_root, work, "residue", at=adoption_time,
+                                          state_root=state_root))
+        report["residue"] = None if requeued is None else requeued["requeued"]
+        report["s3"] = None if expected is None else soft(lambda: verify_s3(
+            expected, table_snapshot(work), adoption_time=adoption_time, plan_sha256=plan_sha256, residue=residue))
+        report["contracts"] = soft(lambda: verify_contracts(work))
+        targets = soft(lambda: run_child(python, runtime_root, work, "targets", state_root=state_root))
+        report["targets"] = None if targets is None else soft(
+            lambda: check_target_set(work, targets["targets"], state_root))
         finish_copies(work)
-        verify_source_unchanged(layout, metrics_path, manifest)
+        verify_source_unchanged(layout, metrics_path, manifest, moving)
+        if moving is not None:
+            report["source_moving"] = dict(sorted(moving.items()))
         report["guard"] = {"refused": guard.refused, "connects_observed": guard.connects}
     report["prepared_manifest_sha256"] = manifest_digest(file_manifest(work))
