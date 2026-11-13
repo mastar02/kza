@@ -44,6 +44,40 @@ def v4():
     return output_registration_v4
 
 
+def own_temporaries(monkeypatch, *, reuse: bool) -> list:
+    """Record each own mkstemp name; with reuse, report ext4 inode-number reuse.
+
+    ext4 hands a freed inode number to the next allocation at once, so a
+    substitute written at the own name after an unlink can carry the own
+    (st_dev, st_ino). With reuse=True every platform reports exactly that for
+    any other file at an own name, so cleanup can only tell them apart by the
+    pinned own inode, never by its number.
+    """
+    created, owned = [], {}
+    real_mkstemp, real_lstat = state_configuration.tempfile.mkstemp, os.lstat
+
+    def mkstemp(*args, **kwargs):
+        descriptor, name = real_mkstemp(*args, **kwargs)
+        info = os.fstat(descriptor)
+        owned[name] = (info.st_dev, info.st_ino)
+        created.append(name)
+        return descriptor, name
+
+    def lstat(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        own = owned.get(os.fspath(path))
+        if own is None or (info.st_dev, info.st_ino) == own:
+            return info
+        fields = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+        fields.update(st_dev=own[0], st_ino=own[1])
+        return SimpleNamespace(**fields)
+
+    monkeypatch.setattr(state_configuration.tempfile, "mkstemp", mkstemp)
+    if reuse:
+        monkeypatch.setattr(os, "lstat", lstat)
+    return created
+
+
 @asynccontextmanager
 async def configuration_graph(tmp_path, monkeypatch, *, dashboard=True, attach=True, accounts=False,
                               raw=RAW, binding_sha=None, privacy=True, poison_before_configuration=None):
@@ -459,22 +493,17 @@ async def test_failure_after_temporary_unlinks_only_own_temp_and_drains_clean_fa
 # T10: uncertain publication and the extent.
 # ----------------------------------------------------------------------
 
-async def test_substituted_temporary_is_never_replaced_or_deleted(tmp_path, monkeypatch):
+@pytest.mark.parametrize("reuse", [False, True], ids=["fresh_inode", "reused_inode_number"])
+async def test_substituted_temporary_is_never_replaced_or_deleted(tmp_path, monkeypatch, reuse):
     async with configuration_graph(tmp_path, monkeypatch) as g:
         graph_ready(g)
         await queue(g)
-        created, original_mkstemp = [], state_configuration.tempfile.mkstemp
-
-        def mkstemp(*args, **kwargs):
-            result = original_mkstemp(*args, **kwargs)
-            created.append(result[1])
-            return result
+        created = own_temporaries(monkeypatch, reuse=reuse)
 
         def revalidate():
             if created and Path(created[0]).read_bytes() != b"canary":
                 Path(created[0]).unlink()
                 Path(created[0]).write_bytes(b"canary")  # A new inode at the own name.
-        monkeypatch.setattr(state_configuration.tempfile, "mkstemp", mkstemp)
         monkeypatch.setattr(g.admission, "revalidate", revalidate)
         await shutdown(g)
         assert "configuration_write_unconfirmed" in messages(config_error(g))
@@ -787,7 +816,8 @@ async def test_registration_failure_withholds_the_receipt_so_no_next_generation_
             pass
 
 
-async def test_unmanaged_cleanup_never_deletes_a_substituted_temporary(tmp_path, monkeypatch):
+@pytest.mark.parametrize("reuse", [False, True], ids=["fresh_inode", "reused_inode_number"])
+async def test_unmanaged_cleanup_never_deletes_a_substituted_temporary(tmp_path, monkeypatch, reuse):
     """OQ-5: identity-checked cleanup also applies without a coordinator."""
     state = tmp_path / "state"
     settings = state / "config" / "settings.yaml"
@@ -799,12 +829,8 @@ async def test_unmanaged_cleanup_never_deletes_a_substituted_temporary(tmp_path,
                                                    config["memory"]["privacy_db_path"], config_digest="0" * 64)
     monkeypatch.setattr(runtime_admission, "_verified_admissions", {})
     monkeypatch.setattr(base, "_ACTIVE", set())
-    created, original_mkstemp, original_replace = [], state_configuration.tempfile.mkstemp, os.replace
-
-    def mkstemp(*args, **kwargs):
-        result = original_mkstemp(*args, **kwargs)
-        created.append(result[1])
-        return result
+    original_replace = os.replace
+    created = own_temporaries(monkeypatch, reuse=reuse)
 
     def revalidate():
         if created and Path(created[0]).read_bytes() != b"canary":
@@ -816,7 +842,6 @@ async def test_unmanaged_cleanup_never_deletes_a_substituted_temporary(tmp_path,
             raise OSError("synthetic replace failure")
         return original_replace(source, destination, *args, **kwargs)
     monkeypatch.setattr(admission, "revalidate", revalidate)
-    monkeypatch.setattr(state_configuration.tempfile, "mkstemp", mkstemp)
     monkeypatch.setattr(state_configuration.os, "replace", replace)
     authority = DashboardAuthority(tmp_path / "auth.db", expected_token=lambda: TOKEN)
     await authority.initialize()
@@ -881,17 +906,14 @@ async def test_unregistered_change_is_caught_by_the_drained_observation(tmp_path
         assert_poisoned(g, last="opening" if change == "after_commit" else "attached")
 
 
-async def test_unproven_cleanup_after_a_failed_replace_poisons(tmp_path, monkeypatch):
+@pytest.mark.parametrize("reuse", [False, True], ids=["fresh_inode", "reused_inode_number"])
+async def test_unproven_cleanup_after_a_failed_replace_poisons(tmp_path, monkeypatch, reuse):
     """R2: a name left at the own temp path is never drained as clean_failed."""
     async with configuration_graph(tmp_path, monkeypatch) as g:
         graph_ready(g)
         await queue(g)
-        created, real_mkstemp, real_replace = [], state_configuration.tempfile.mkstemp, os.replace
-
-        def mkstemp(*args, **kwargs):
-            result = real_mkstemp(*args, **kwargs)
-            created.append(result[1])
-            return result
+        real_replace = os.replace
+        created = own_temporaries(monkeypatch, reuse=reuse)
 
         def replace(source, destination, *args, **kwargs):
             if Path(destination) == g.settings:
@@ -900,7 +922,6 @@ async def test_unproven_cleanup_after_a_failed_replace_poisons(tmp_path, monkeyp
                 Path(source).write_bytes(b"canary")
                 raise OSError("synthetic replace failure")
             return real_replace(source, destination, *args, **kwargs)
-        monkeypatch.setattr(state_configuration.tempfile, "mkstemp", mkstemp)
         monkeypatch.setattr(state_configuration.os, "replace", replace)
         await shutdown(g)
         assert "configuration_write_unconfirmed" in messages(config_error(g))

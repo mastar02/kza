@@ -412,14 +412,32 @@ class ConfigurationChanges:
         return info.st_size, info.st_mtime_ns
 
     @staticmethod
-    def _remove_own_temporary(temporary: str | None, own: tuple[int, int] | None,
-                              parent: tuple[int, int]) -> bool:
-        """Unlink only the exact own allocation; a foreign or unproven name stays."""
+    def _pin_temporary(descriptor: int) -> int:
+        """Hold the own inode open: its number cannot be reused while the pin lives.
+
+        ext4 hands a freed inode number to the next allocation at once, so a
+        (st_dev, st_ino) pair names the own temporary only while it is pinned.
+        """
+        return os.dup(descriptor)
+
+    @staticmethod
+    def _is_pinned(info: os.stat_result, pin: int | None, own: tuple[int, int] | None) -> bool:
+        """The name's lstat is the pinned own inode, unchanged since it was written."""
+        if pin is None or own is None:
+            return False
+        held = os.fstat(pin)
+        return ((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                == (held.st_dev, held.st_ino, held.st_size, held.st_mtime_ns, held.st_ctime_ns))
+
+    @classmethod
+    def _remove_own_temporary(cls, temporary: str | None, own: tuple[int, int] | None,
+                              parent: tuple[int, int], pin: int | None) -> bool:
+        """Unlink only the exact own pinned allocation; a foreign or unproven name stays."""
         if temporary is None:
             return True
         try:
             info = os.lstat(temporary)
-            if info.st_nlink == 1 and stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == own:
+            if info.st_nlink == 1 and stat.S_ISREG(info.st_mode) and cls._is_pinned(info, pin, own):
                 directory = os.lstat(Path(temporary).parent)
                 if stat.S_ISDIR(directory.st_mode) and (directory.st_dev, directory.st_ino) == parent:
                     os.unlink(temporary)
@@ -446,11 +464,17 @@ class ConfigurationChanges:
                 if extent is not None:
                     # Managed: the registered attempt is admitted before any allocation.
                     extent.before_temporary(self, path, roots, identity, digest)
-                temporary = own = None
+                temporary = own = pin = None
                 published = durable = False
                 try:
                     # Work on RAW YAML, never serialize graph.config with resolved secrets.
                     descriptor, temporary = tempfile.mkstemp(prefix=".consent-", dir=path.parent)
+                    try:
+                        pin = self._pin_temporary(descriptor)
+                    except BaseException:
+                        # Unpinned: own stays None, so the name is never unlinked.
+                        self._close_raw_descriptor(descriptor)
+                        raise
                     try:
                         raw_file = FileIO(descriptor, "w", closefd=True)
                     except BaseException:
@@ -492,11 +516,15 @@ class ConfigurationChanges:
                 finally:
                     proven = False
                     try:
-                        proven = self._remove_own_temporary(temporary, own, parent)
+                        proven = self._remove_own_temporary(temporary, own, parent, pin)
                     finally:
-                        if extent is not None:
-                            extent.finish(temporary=temporary, published=published, durable=durable,
-                                          cleanup_proven=proven)
+                        try:
+                            if pin is not None:
+                                os.close(pin)
+                        finally:
+                            if extent is not None:
+                                extent.finish(temporary=temporary, published=published, durable=durable,
+                                              cleanup_proven=proven)
                 receipt = ConsentWithdrawalReceipt(digest, hashlib.sha256(encoded).hexdigest())
                 return receipt, None
         except BaseException as error:

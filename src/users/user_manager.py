@@ -262,12 +262,18 @@ class UserManager:
             # A managed publisher is admitted (and its extent reserved) before
             # any directory or temporary allocation; unmanaged use returns None.
             extent = output_registration.before_account_save(self, before_save)
-            temporary = own = parent = final = None
+            temporary = own = parent = final = pin = None
             published = False
             try:
                 self.data_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 parent = self._directory_identity(self.data_path.parent)
                 descriptor, temporary = tempfile.mkstemp(prefix=".accounts-", dir=self.data_path.parent)
+                try:
+                    pin = self._pin_temporary(descriptor)
+                except BaseException:
+                    # Unpinned: own stays None, so the name is never unlinked.
+                    self._close_raw_descriptor(descriptor)
+                    raise
                 try:
                     raw = FileIO(descriptor, "w", closefd=True)
                 except BaseException:
@@ -313,10 +319,14 @@ class UserManager:
             finally:
                 proven = False
                 try:
-                    proven = temporary is None or self._remove_own_temporary(temporary, own, parent)
+                    proven = temporary is None or self._remove_own_temporary(temporary, own, parent, pin)
                 finally:
-                    if extent is not None:
-                        extent.finish(published=published, cleanup_proven=proven)
+                    try:
+                        if pin is not None:
+                            os.close(pin)
+                    finally:
+                        if extent is not None:
+                            extent.finish(published=published, cleanup_proven=proven)
 
     @staticmethod
     def _directory_identity(path: Path) -> tuple[int, int] | None:
@@ -367,16 +377,34 @@ class UserManager:
             raise OSError("account_temporary_changed")
         return info.st_size, info.st_mtime_ns
 
+    @staticmethod
+    def _pin_temporary(descriptor: int) -> int:
+        """Hold the own inode open: its number cannot be reused while the pin lives.
+
+        ext4 hands a freed inode number to the next allocation at once, so a
+        (st_dev, st_ino) pair names the own temporary only while it is pinned.
+        """
+        return os.dup(descriptor)
+
+    @staticmethod
+    def _is_pinned(info: os.stat_result, pin: int | None, own: tuple[int, int] | None) -> bool:
+        """The name's lstat is the pinned own inode, unchanged since it was written."""
+        if pin is None or own is None:
+            return False
+        held = os.fstat(pin)
+        return ((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                == (held.st_dev, held.st_ino, held.st_size, held.st_mtime_ns, held.st_ctime_ns))
+
     @classmethod
     def _remove_own_temporary(cls, temporary: str, own: tuple[int, int] | None,
-                              parent: tuple[int, int] | None) -> bool:
-        """Unlink only the exact own allocation; a foreign or unproven name stays."""
+                              parent: tuple[int, int] | None, pin: int | None) -> bool:
+        """Unlink only the exact own pinned allocation; a foreign or unproven name stays."""
         try:
             info = os.lstat(temporary)
         except FileNotFoundError:
             return True
         if (own is None or parent is None or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                or (info.st_dev, info.st_ino) != own
+                or not cls._is_pinned(info, pin, own)
                 or cls._directory_identity(Path(temporary).parent) != parent):
             logger.warning("Account temporary cleanup unproven; name retained")
             return False

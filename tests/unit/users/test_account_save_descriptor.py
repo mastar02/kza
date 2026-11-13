@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -177,3 +178,47 @@ def test_two_stage_transfer_writes_bytes_identical_to_original_fdopen(tmp_path, 
     with os.fdopen(descriptor, "w") as stream:  # The original publisher call.
         json.dump(data, stream, indent=2)
     assert Path(reference).read_bytes() == published
+
+
+@pytest.mark.parametrize("reuse", [False, True], ids=["fresh_inode", "reused_inode_number"])
+def test_cleanup_never_deletes_a_substitute_with_the_freed_own_inode_number(
+    tmp_path, monkeypatch, descriptors, reuse,
+):
+    """ext4 hands a freed inode number to the next allocation at once.
+
+    The substitute is written at the own name after the own temporary is
+    unlinked. With reuse=True its lstat reports the own (st_dev, st_ino) on
+    every platform, as ext4 does, so only the pinned own inode tells them apart.
+    """
+    allocated, _closes = descriptors
+    users = UserManager(str(tmp_path / "users.json"))
+    owned, calls, real_lstat = {}, [], os.lstat
+
+    def lstat(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        own = owned.get(os.fspath(path))
+        if own is None or (info.st_dev, info.st_ino) == own:
+            return info
+        fields = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+        fields.update(st_dev=own[0], st_ino=own[1])
+        return SimpleNamespace(**fields)
+
+    def before_save():
+        calls.append(bool(allocated))
+        if allocated:  # After the own temporary was written and closed.
+            temporary = allocated[-1][1]
+            info = real_lstat(temporary)
+            owned[temporary] = (info.st_dev, info.st_ino)
+            Path(temporary).unlink()
+            Path(temporary).write_bytes(b"canary")
+            return False
+        return None
+
+    if reuse:
+        monkeypatch.setattr(catalog.os, "lstat", lstat)
+    with pytest.raises(PermissionError, match="user_catalog_authority_retired"):
+        users.add_user("Synthetic", PermissionLevel.GUEST, before_save=before_save)
+    descriptor, temporary = allocated[-1]
+    _assert_closed(descriptor)
+    assert calls == [False, False, True] and Path(temporary).read_bytes() == b"canary"
+    assert not users.data_path.exists() and users._users == {}
