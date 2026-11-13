@@ -394,6 +394,19 @@ def test_entry_decision_table(tmp_path):
     assert entry_decision(environ={TICKET_ENV: _ticket(root, lease_fd=-1)}, paths=inside) == TICKET_CODE
     assert entry_decision(environ={TICKET_ENV: _ticket(root, binding_id="../" + "b" * 61)},
                           paths=inside) == TICKET_CODE
+    other = tmp_path / "other-root"
+    other.mkdir()
+    assert entry_decision(environ={TICKET_ENV: _ticket(root, admission_root=str(other))},
+                          paths=inside) == TICKET_CODE  # binding recorded here, ticket names another root
+    binding = root / "admission" / "bindings" / ("b" * 64 + ".json")
+    binding.unlink()
+    binding.mkdir()
+    assert entry_decision(environ={TICKET_ENV: json.dumps(dict(json.loads(_ticket(other)), admission_root=str(root)))},
+                          paths=inside) == TICKET_CODE  # a directory is not a recorded binding
+    binding.rmdir()
+    binding.symlink_to(other / "admission" / "bindings" / ("b" * 64 + ".json"))
+    assert entry_decision(environ={TICKET_ENV: json.dumps(dict(json.loads(_ticket(other)), admission_root=str(root)))},
+                          paths=inside) == TICKET_CODE  # nor is a link to one elsewhere
     assert entry_decision(environ={TICKET_ENV: "{}"}, paths=[tmp_path / "other"]) is None
     assert entry_decision(environ={SCHEMA_ONLY_ENV: "1"}, paths=inside, argv=["py", "-c", "x"]) == CAPABILITY_CODE
     assert entry_decision(environ={SCHEMA_ONLY_ENV: "1"}, paths=[], argv=None) == CAPABILITY_CODE
