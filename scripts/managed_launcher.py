@@ -2074,7 +2074,7 @@ def install_controller(root: Path, archive: Path, *, wall=time.time) -> dict:
         if installed is not None and installed.get("controller_epoch", 0) > epoch:
             raise LauncherRefusal("runtime_admission_controller_downgrade")
         controllers = root / "controller"
-        controllers.mkdir(mode=0o700, exist_ok=True)
+        stage.private_directories(controllers)
         target = controllers / commit
         if target.exists():
             for name, digest in manifest["files"].items():
@@ -2084,11 +2084,12 @@ def install_controller(root: Path, archive: Path, *, wall=time.time) -> dict:
         else:
             with tempfile.TemporaryDirectory(prefix=".install-", dir=controllers) as temporary:
                 staging = Path(temporary) / commit
+                # 0700/0600 whatever the umask: only the controller's user reads it.
                 for name, data in files.items():
                     destination = staging / name
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    destination.write_bytes(data)
-                (staging / "release.json").write_text(json.dumps(manifest, indent=2) + "\n")
+                    stage.private_directories(destination.parent)
+                    stage.write_private_file(destination, data)
+                stage.write_private_file(staging / "release.json", (json.dumps(manifest, indent=2) + "\n").encode())
                 # Durable before it is reachable (P4): every file, then every directory.
                 _fsync_tree(staging)
                 os.rename(staging, target)

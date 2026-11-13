@@ -279,9 +279,62 @@ def _identity(path: Path) -> dict:
     return {"device": info.st_dev, "inode": info.st_ino}
 
 
+PRIVATE_DIRECTORY_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
+
+
+def private_directories(path: Path) -> None:
+    """Create ``path`` and every missing parent exactly 0700, whatever the umask.
+
+    Same contract as ``mkdir(parents=True, exist_ok=True)``; levels that
+    already exist are accepted as they are (an older controller may have left
+    them 0775), only the levels created here get the explicit mode.
+    """
+    path = Path(path)
+    missing = []
+    current = path
+    while not os.path.lexists(current):
+        missing.append(current)
+        current = current.parent
+    for level in reversed(missing):
+        try:
+            os.mkdir(level, PRIVATE_DIRECTORY_MODE)
+        except FileExistsError:
+            continue
+        descriptor = os.open(level, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fchmod(descriptor, PRIVATE_DIRECTORY_MODE)
+        finally:
+            os.close(descriptor)
+    if not path.is_dir():
+        raise FileExistsError(path)
+
+
+def open_private_file(path: Path, flags: int) -> int:
+    """Open ``path``, creating it exactly 0600 whatever the umask; an existing file keeps its mode."""
+    try:
+        descriptor = os.open(path, flags | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, PRIVATE_FILE_MODE)
+    except FileExistsError:
+        return os.open(path, flags | os.O_NOFOLLOW)
+    try:
+        os.fchmod(descriptor, PRIVATE_FILE_MODE)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def write_private_file(path: Path, data: bytes) -> None:
+    """Write a new file exactly 0600, whatever the umask; an existing name refuses."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, PRIVATE_FILE_MODE)
+    with os.fdopen(descriptor, "wb") as stream:
+        os.fchmod(stream.fileno(), PRIVATE_FILE_MODE)
+        stream.write(data)
+
+
 def _safe_directory(path: Path, *, create: bool = False) -> Path:
     if create:
-        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        private_directories(path)
     if path.resolve(strict=True) != path or not path.is_dir():
         raise ValueError("runtime_admission_unsafe_directory")
     return path
@@ -1055,8 +1108,8 @@ def _slot_name(name: str) -> str:
 
 @contextmanager
 def _locked_root(root: Path):
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with (root / ".stage.lock").open("a") as lock:
+    private_directories(root)
+    with os.fdopen(open_private_file(root / ".stage.lock", os.O_WRONLY | os.O_APPEND), "ab") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         yield
 
@@ -1103,7 +1156,11 @@ def _copy_private_tree(source: Path, destination: Path) -> None:
         if entry.is_symlink() or not (entry.is_file() or entry.is_dir()):
             raise ValueError("State links and special files require separate review")
     shutil.copytree(source, destination)
-    destination.chmod(0o700)
+    # The copy is private whatever the source's modes or the umask.
+    for _directory, _names, files, descriptor in os.fwalk(destination, follow_symlinks=False):
+        for name in files:
+            os.chmod(name, PRIVATE_FILE_MODE, dir_fd=descriptor)
+        os.fchmod(descriptor, PRIVATE_DIRECTORY_MODE)
 
 
 RUNTIME_FILE_MODE = 0o444
@@ -1210,7 +1267,7 @@ def prepare_slot(archive: Path, root: Path, name: str, state_source: Path) -> di
     manifest, files = _read_archive(archive)
     with _locked_root(root):
         slots = root / "slots"
-        slots.mkdir(exist_ok=True, mode=0o700)
+        private_directories(slots)
         target = slots / name
         if target.exists() or target.is_symlink():
             raise FileExistsError(target)

@@ -752,18 +752,38 @@ def test_a_directory_vanishing_during_the_dry_run_walk_is_a_refusal(world, monke
 
 # --- the server's umask -----------------------------------------------------------------------------
 
+def created_modes(world: World, before: set) -> dict:
+    """Mode of every non-link entry created under the root since ``before`` (the backups are the test's own)."""
+    return {path.relative_to(world.root).as_posix(): stat.S_IMODE(os.lstat(path).st_mode)
+            for path in set(world.root.rglob("*")) - before
+            if not path.is_symlink() and not path.relative_to(world.root).as_posix().startswith("backups")}
+
+
+def assert_private(world: World, modes: dict) -> None:
+    """0700 directories and 0600 files; the slot runtimes keep their read-only 0555/0444 contract."""
+    assert modes and any(name.startswith("controller/") for name in modes)
+    assert "admission" in modes and ".stage.lock" in modes and any("/state/data/" in name for name in modes)
+    for name, mode in modes.items():
+        directory = (world.root / name).is_dir()
+        if name.startswith("slots/") and name.split("/")[2:3] == ["runtime"]:
+            assert mode == (stage.RUNTIME_DIRECTORY_MODE if directory else stage.RUNTIME_FILE_MODE), name
+        else:
+            assert mode == (0o700 if directory else 0o600), (name, oct(mode))
+
+
 def test_the_whole_lifecycle_runs_under_the_server_umask(tmp_path, tree, artifacts):  # noqa: F811
     """yo, kza and the kza-voice unit all run with umask 0002: build, adopt, close, retire, serve.
 
-    The production-shaped root is written under that umask too, so every
-    directory and file the commands, the controller and the launcher create
-    inside it is created group-writable wherever no explicit mode is given;
-    no later check of any of them may refuse what an earlier one wrote.
+    The production-shaped root is written under that umask too. Every entry the
+    commands, the controller, the launcher and stage_runtime create under the
+    managed root gets an explicit private mode (0700/0600), never the umask's
+    0775/0664; and no later check refuses what an earlier one wrote.
     """
     previous = os.umask(0o002)
     try:
         world = World(tmp_path.resolve(), tree, artifacts, adapters=True)
         assert stat.S_IMODE(os.lstat(world.root).st_mode) == 0o710  # /home/kza/releases
+        before = set(world.root.rglob("*"))
         assert world.retire()["record"]  # retire-legacy-training (the LoRA roots)
         adopted(world)  # dry-run inside prepare, install-controller, commit, a clean managed close
         install_record(world)
@@ -778,5 +798,49 @@ def test_the_whole_lifecycle_runs_under_the_server_umask(tmp_path, tree, artifac
             _binding, running, _previous, _ticket = controller.begin_run()
         assert running["status"] == "running" and running["generation"] == 6
         assert stat.S_IMODE(os.lstat(world.root).st_mode) == 0o710
+        assert_private(world, created_modes(world, before))
+    finally:
+        os.umask(previous)
+
+
+def test_a_later_run_accepts_what_an_older_version_left_group_writable(tmp_path, tree, artifacts):  # noqa: F811
+    """Entries an earlier controller created under umask 0002 (0775/0664) are accepted as they are.
+
+    The adopted root is loosened to the older modes everywhere outside the
+    read-only slot runtime; the next install-controller, managed close, Q5
+    retirement and activation all run, leave the older entries unchanged and
+    create only private new ones.
+    """
+    previous = os.umask(0o002)
+    try:
+        world = World(tmp_path.resolve(), tree, artifacts, adapters=True)
+        before = set(world.root.rglob("*"))
+        world.retire()
+        adopted(world, close=False)
+        older = {}
+        for name in sorted(created_modes(world, before)):
+            if not (name.startswith("slots/") and name.split("/")[2:3] == ["runtime"]):
+                path = world.root / name
+                os.chmod(path, 0o775 if path.is_dir() else 0o664)
+                older[name] = (os.lstat(path).st_ino, stat.S_IMODE(os.lstat(path).st_mode))
+        assert older[".stage.lock"][1] == 0o664 and older["admission"][1] == 0o775
+        loosened = set(world.root.rglob("*"))
+        assert world.install_controller()["controller_epoch"] == 2  # the installed tree is re-verified
+        clean_close(world)
+        install_record(world)
+        result = confirm(world)
+        assert result["record"].startswith("legacy-retirement/retired-")
+        with stage.AdmissionController(world.root) as controller:
+            controller.activate("r1", managed=True)
+            _binding, running, _previous, _ticket = controller.begin_run()
+        assert running["status"] == "running"
+        # Same inode (not replaced by an atomic record rewrite): the older mode is kept as it was.
+        kept = {name: (os.lstat(world.root / name).st_ino, stat.S_IMODE(os.lstat(world.root / name).st_mode))
+                for name in older if os.path.lexists(world.root / name)}
+        kept = {name: value for name, value in kept.items() if value[0] == older[name][0]}
+        assert kept == {name: older[name] for name in kept}
+        assert {"admission", ".stage.lock", "controller"} <= set(kept) and len(kept) > len(older) // 2
+        new = created_modes(world, loosened)
+        assert new and all(mode == (0o700 if (world.root / name).is_dir() else 0o600) for name, mode in new.items())
     finally:
         os.umask(previous)

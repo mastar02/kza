@@ -324,7 +324,7 @@ def _copy_file(source: Path, destination: Path | None, moving: Counter | None = 
             _refuse("runtime_admission_adoption_source_special")
         output = None
         if destination is not None:
-            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            stage.private_directories(destination.parent)
             output = os.fdopen(os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "wb")
         try:
             while chunk := stream.read(1 << 20):
@@ -575,7 +575,7 @@ def drop_and_vacuum(scratch: Path, destination: Path) -> dict:
         recover_sqlite_file(source)
         if target.exists() or target.is_symlink():
             _refuse("runtime_admission_adoption_drop_destination")
-        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        stage.private_directories(target.parent)
         dropped = 0
         with closing(sqlite3.connect(source, isolation_level=None)) as db, _scratch_temp(db, scratch):
             names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -1663,8 +1663,11 @@ def run_child(python: str, runtime_root: Path, state: Path, phase: str, *, at: f
         arguments += ["--state-root", os.fspath(state_root)]
     environment = {key: os.environ[key] for key in _CHILD_ENVIRONMENT if key in os.environ}
     environment[SCHEMA_ONLY_ENV] = "1"
+    # umask 0o077: what the child creates in the copy (data subdirectories, stores) is private
+    # whatever the controller's own umask (0002 on the server).
     result = subprocess.run(schema_only_command(python, runtime_root, *arguments), env=environment,
-                            cwd=os.fspath(Path(state).parent), capture_output=True, text=True, timeout=timeout)
+                            cwd=os.fspath(Path(state).parent), capture_output=True, text=True, timeout=timeout,
+                            umask=0o077)
     if result.returncode != 0:
         match = re.findall(r"refused: ([A-Za-z0-9_:.-]+)", result.stderr)
         _refuse(match[-1] if match else "runtime_admission_adoption_child_failed:" + phase)
