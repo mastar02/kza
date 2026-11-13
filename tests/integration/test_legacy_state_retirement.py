@@ -546,6 +546,40 @@ def test_a_crash_mid_deletion_completes_from_the_intent_and_l4_stays_refused(wor
     assert refused.value.problems == [result["record"]]
 
 
+@pytest.mark.parametrize("linked", ["backups", "container"])
+def test_a_resume_refuses_a_backup_path_turned_into_a_link_after_the_crash(world, monkeypatch, linked):
+    """R2-1: the resume skips the census (a partial delete), so backups/ and backups/<C> are rechecked."""
+    adopted(world)
+    install_record(world)
+    plan = dry(world)["plan_sha256"]
+    original, removed = stage.make_writable_then_remove, []
+
+    def crash_at_the_backups(path):
+        if Path(path) == backup_databases(world):
+            raise _Crash()  # The frozen state is gone; the power fails before the backups go.
+        removed.append(Path(path))
+        original(path)
+    monkeypatch.setattr(stage, "make_writable_then_remove", crash_at_the_backups)
+    with pytest.raises(_Crash):
+        retire(world, confirm=plan)
+    monkeypatch.setattr(stage, "make_writable_then_remove", original)
+    assert removed == [legacy_state(world)] and backup_databases(world).is_dir()
+    # Between the crash and the resume, a link moves the backup target elsewhere.
+    moved = world.root / "backups" if linked == "backups" else world.root / "backups" / CONTAINER
+    elsewhere = world.base / ("elsewhere-" + linked)
+    os.rename(moved, elsewhere)
+    moved.symlink_to(elsewhere)
+    before = tree_manifest(elsewhere)
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_legacy_retire_backups_set$"):
+        retire(world, confirm=plan)
+    assert tree_manifest(elsewhere) == before and moved.is_symlink()
+    # Restored to its own real path, the same resume completes.
+    moved.unlink()
+    os.rename(elsewhere, moved)
+    result = retire(world, confirm=plan)
+    assert result["resumed"] is True and not os.path.lexists(backup_databases(world))
+
+
 def test_a_resume_with_the_clock_moved_back_is_still_never_early(world, monkeypatch):
     adopted(world)
     plan = dry(world)["plan_sha256"]

@@ -2067,6 +2067,11 @@ def _legacy_scope(root: Path, container_slot: str) -> dict:
                 "head_state": binding["state_root"]}
     # Every backup that is not the retired set stays (F5): the other backup directories, and the
     # release.conf, config and .env the 2026-10-29 publication kept beside its databases.
+    # R2-1: on every path, and so on a resume whose census is skipped after a partial delete,
+    # backups/ and backups/<C> must be their own real paths; a link there would move the target.
+    for directory in (root / "backups", backup.parent):
+        if os.path.lexists(directory) and os.path.realpath(directory) != os.fspath(directory):
+            _refuse("runtime_admission_legacy_retire_backups_set")
     kept = []
     for directory in (root / "backups", backup.parent):
         if os.path.isdir(directory) and not os.path.islink(directory):
