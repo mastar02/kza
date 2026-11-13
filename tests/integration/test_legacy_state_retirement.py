@@ -305,15 +305,21 @@ def test_a_decision_id_is_required_before_anything(world):
     assert tree_manifest(world.root) == before
 
 
-@pytest.mark.parametrize("case", ["no_run", "not_sealed", "not_requested", "crashed", "no_receipt", "seal_error"])
+@pytest.mark.parametrize("case", ["no_run", "not_sealed", "not_requested", "crashed", "no_receipt", "seal_error",
+                                  "foreign_receipt"])
 def test_no_retirement_before_the_first_clean_managed_close(world, case):
     adopted(world, close=False)
     if case != "no_run":
         changes = {"not_sealed": {"sealed": False}, "not_requested": {"stop_requested": False},
                    "crashed": {"reason": "child_exit"}, "seal_error": {"seal_error": "x"}}.get(case, {})
         running = clean_close(world, **changes)
+        receipt = world.root / "admission" / "receipts" / (running["run_id"] + ".json")
         if case == "no_receipt":
-            os.unlink(world.root / "admission" / "receipts" / (running["run_id"] + ".json"))
+            os.unlink(receipt)
+        elif case == "foreign_receipt":  # a receipt that is not this run's child's own
+            value = json.loads(receipt.read_text())
+            receipt.unlink()
+            receipt.write_text(json.dumps(dict(value, child_pid=value["child_pid"] + 1)))
     with pytest.raises(commands.CommandRefusal, match="^runtime_admission_legacy_retire_no_clean_close$"):
         dry(world, wall=DUE + 365 * DAY)
     assert legacy_state(world).is_dir()
