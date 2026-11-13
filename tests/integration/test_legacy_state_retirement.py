@@ -431,6 +431,7 @@ def test_the_run_refuses_outside_its_preconditions(world, case, code):
 
 @pytest.mark.parametrize("case, problem", [
     ("slot_link", "link:slots/r1"),
+    ("backup_link", "link:slots/r1"),
     ("current", "link:current"),
     ("unit", "unit:kza-legacy-tool.service"),
     ("unit_environment", "unit:kza-legacy-tool.service"),
@@ -445,6 +446,8 @@ def test_anything_pointing_at_the_copies_refuses(world, case, problem):
     r1_state = world.root / "slots" / "r1" / "state"
     if case == "slot_link":
         os.symlink(legacy_state(world) / "data", r1_state / "data" / "old-data")
+    elif case == "backup_link":  # Q2: the retired backup set is a target too
+        os.symlink(backup_databases(world), r1_state / "data" / "old-backups")
     elif case == "current":
         os.unlink(world.root / "current")
         os.symlink(Path("slots") / CONTAINER / "runtime", world.root / "current")
