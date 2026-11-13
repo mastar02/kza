@@ -1147,8 +1147,12 @@ def _read_journal(db: sqlite3.Connection, names: set[str]) -> _ErasureJournal:
     return _ErasureJournal(tuple(targets), unfinished)
 
 
-def _resurrection_scan(state: Path, descriptor_root: Path | None) -> tuple[dict, dict]:
-    """One read of the state: (family counts, content-free counts per family and participant/source)."""
+def _resurrection_scan(state: Path, descriptor_root: Path | None, residue: dict | None = None) -> tuple[dict, dict]:
+    """One read of the state: (family counts, content-free counts per family and participant/source).
+
+    ``residue``, when given, receives the counted ids themselves (in memory
+    only, for the adoption's re-queue; see resurrection_residue).
+    """
     state = Path(state)
     root = Path(descriptor_root) if descriptor_root is not None else state
     ledgers: list[tuple[str, dict[str, set]]] = []
@@ -1234,6 +1238,9 @@ def _resurrection_scan(state: Path, descriptor_root: Path | None) -> tuple[dict,
             exempt[entry.participant].add(conversation)  # its own store's step is pending: the next run cleans it
             continue
         counted[entry.participant].add(conversation)
+        if residue is not None:
+            residue.setdefault("conversation", {}).setdefault(conversation, set()).add(
+                (entry.participant, governing))
     counts = {"conversation": len(set().union(*counted.values()))}
     # 'conversation_exempt' (review F7): a store exempt run after run shows a step that never completes.
     detail = {"conversation": {participant: len(found) for participant, found in sorted(counted.items())},
@@ -1244,6 +1251,8 @@ def _resurrection_scan(state: Path, descriptor_root: Path | None) -> tuple[dict,
                  for name, values in sources[family].items()}
         counts[family] = len(set().union(*found.values()))
         detail[family] = {name: len(values) for name, values in found.items()}
+        if residue is not None:
+            residue[family] = set().union(*found.values())
     count = 0
     for salt, subjects in ledgers:
         withdrawn = subjects.get("voice_consent_withdrawn", set())
@@ -1283,6 +1292,20 @@ def resurrection_detail(state: Path, *, descriptor_root: Path | None = None) -> 
     erased conversations with an occurrence exempted by a pending step.
     """
     return _resurrection_scan(state, descriptor_root)[1]
+
+
+def resurrection_residue(state: Path, *, descriptor_root: Path | None = None) -> dict:
+    """The counted residue ids per family, for the adoption's re-queue (U3b-0e2, P3=A).
+
+    Same semantics as resurrection_counts. 'conversation' maps each counted
+    conversation to its (participant, governing target ids) occurrences; an
+    empty governing set means no target governs that store. 'fact' and
+    'voice_profile' are id sets. The ids stay in memory: callers report counts.
+    """
+    residue: dict = {"conversation": {}, "fact": set(), "voice_profile": set()}
+    counts, _detail = _resurrection_scan(state, descriptor_root, residue)
+    residue["voice_consent"] = counts["voice_consent"]
+    return residue
 
 
 def receipt_eligibility(root: Path, head: dict) -> dict:

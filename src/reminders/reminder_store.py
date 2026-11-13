@@ -67,6 +67,38 @@ class Reminder:
     scope: ReminderScope = ReminderScope.PRIVATE
 
 
+def reminder_schema(db) -> None:
+    """Create or migrate the reminder tables: DDL only, no row changes (U3b-0e2 S1).
+
+    ReminderStore.initialize runs it before its interrupted-send recovery; the
+    adoption's schema-only child runs it alone on the adoption copy. The SQL
+    text is kept byte-identical: sqlite_master stores it verbatim.
+    """
+    db.execute("""
+                    CREATE TABLE IF NOT EXISTS reminders (
+                        id TEXT PRIMARY KEY, user_id TEXT NOT NULL, text TEXT NOT NULL,
+                        trigger_at REAL NOT NULL, created_at REAL NOT NULL,
+                        recurrence TEXT, recurrence_end REAL, ha_actions TEXT,
+                        state TEXT NOT NULL DEFAULT 'active', last_fired_at REAL,
+                        fire_count INTEGER NOT NULL DEFAULT 0,
+                        scope TEXT NOT NULL DEFAULT 'private' CHECK (scope IN ('private', 'shared'))
+                    )
+                """)
+    columns = {row[1] for row in db.execute("PRAGMA table_info(reminders)").fetchall()}
+    if "scope" not in columns:
+        db.execute("ALTER TABLE reminders ADD COLUMN scope TEXT NOT NULL DEFAULT 'private' "
+                   "CHECK (scope IN ('private', 'shared'))")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_reminders_trigger "
+               "ON reminders (trigger_at) WHERE state = 'active'")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders (user_id, state)")
+    db.execute("""
+                    CREATE TABLE IF NOT EXISTS reminder_home_actions (
+                        request_id TEXT PRIMARY KEY, body TEXT NOT NULL,
+                        status TEXT NOT NULL, reason TEXT
+                    )
+                """)
+
+
 class ReminderStore:
     """Async SQLite store for reminder CRUD operations."""
 
@@ -101,29 +133,7 @@ class ReminderStore:
             self._work = SQLiteWork(self._db)
 
             def schema(db):
-                db.execute("""
-                    CREATE TABLE IF NOT EXISTS reminders (
-                        id TEXT PRIMARY KEY, user_id TEXT NOT NULL, text TEXT NOT NULL,
-                        trigger_at REAL NOT NULL, created_at REAL NOT NULL,
-                        recurrence TEXT, recurrence_end REAL, ha_actions TEXT,
-                        state TEXT NOT NULL DEFAULT 'active', last_fired_at REAL,
-                        fire_count INTEGER NOT NULL DEFAULT 0,
-                        scope TEXT NOT NULL DEFAULT 'private' CHECK (scope IN ('private', 'shared'))
-                    )
-                """)
-                columns = {row[1] for row in db.execute("PRAGMA table_info(reminders)").fetchall()}
-                if "scope" not in columns:
-                    db.execute("ALTER TABLE reminders ADD COLUMN scope TEXT NOT NULL DEFAULT 'private' "
-                               "CHECK (scope IN ('private', 'shared'))")
-                db.execute("CREATE INDEX IF NOT EXISTS idx_reminders_trigger "
-                           "ON reminders (trigger_at) WHERE state = 'active'")
-                db.execute("CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders (user_id, state)")
-                db.execute("""
-                    CREATE TABLE IF NOT EXISTS reminder_home_actions (
-                        request_id TEXT PRIMARY KEY, body TEXT NOT NULL,
-                        status TEXT NOT NULL, reason TEXT
-                    )
-                """)
+                reminder_schema(db)
                 db.execute("UPDATE reminder_home_actions SET status = 'uncertain', "
                            "reason = 'interrupted_send' WHERE status = 'sending'")
             await self._work.write(schema)

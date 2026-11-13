@@ -172,7 +172,8 @@ def test_schema_only_child_is_not_refused_and_opens_no_serving_store(managed, tm
     result = _run(schema_only_command(sys.executable, managed["current"], "--state", str(copy)),
                   cwd=managed["root"], env=_environment(**{SCHEMA_ONLY_ENV: "1"}))
     assert result.returncode == 0, result.stderr[-2000:]
-    assert json.loads(result.stdout) == {"schema_only": True, "initializers": 0}
+    # U3b-0e2: the R1 initializers run (privacy, reminders); this copy has neither store.
+    assert json.loads(result.stdout) == {"schema_only": True, "phase": "schema", "initializers": 2}
     assert _tree(managed["root"]) == before
     assert _tree(copy) == copy_before
 

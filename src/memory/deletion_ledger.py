@@ -311,3 +311,52 @@ def resurrected(db: sqlite3.Connection, kinds: frozenset[DeletionKind], candidat
         return 0
     recorded = recorded_subjects(db, kinds)
     return sum(1 for candidate in set(candidates) if subject_digest(salt, candidate) in recorded)
+
+
+# U3b-0e2 (adoption design v3 section 4 'seed'): the order kinds are seeded in.
+ADOPTION_SEED_KINDS = (DeletionKind.CONVERSATION_ERASED, DeletionKind.FACT_DELETED,
+                       DeletionKind.VOICE_PROFILE_DELETED, DeletionKind.USER_RETIRED)
+
+
+def seed_adoption_baseline(db: sqlite3.Connection, entries) -> LedgerChain:
+    """Seed an empty, saltless ledger with the deletion marks a legacy state already holds.
+
+    Runs inside the caller's open transaction, on the adoption copy only. The
+    ledger must exist with the exact schema, hold no row and no salt; a fresh
+    salt is written once and every entry is appended in the order
+    :func:`adoption_seed_order` gives (kind, then time, then subject), so the
+    chain depends only on the entries and the salt. A repeated
+    ``(kind, subject)`` or any other kind refuses.
+
+    Args:
+        db: The authority connection, with a transaction open.
+        entries: ``(DeletionKind, subject, at)`` triples.
+
+    Returns:
+        The chain after seeding.
+    """
+    if not db.in_transaction:
+        raise DeletionLedgerError("deletion_ledger_transaction_required")
+    if ensure_deletion_ledger(db).count or _salt(db) is not None:
+        raise DeletionLedgerError("deletion_ledger_seed_not_empty")
+    ordered = adoption_seed_order(entries)
+    if len({(kind, subject) for kind, subject, _at in ordered}) != len(ordered):
+        raise DeletionLedgerError("deletion_ledger_seed_duplicate")
+    for kind, subject, at in ordered:
+        append_deletion(db, kind, subject, at)
+    return verify_chain(db)
+
+
+def adoption_seed_order(entries) -> list[tuple[DeletionKind, str, float]]:
+    """The deterministic seed order: ADOPTION_SEED_KINDS order, then time, then subject."""
+    values = []
+    for kind, subject, at in entries:
+        if type(kind) is not DeletionKind or kind not in ADOPTION_SEED_KINDS:
+            raise DeletionLedgerError("deletion_ledger_kind_invalid")
+        if type(subject) is not str or not subject:
+            raise DeletionLedgerError("deletion_ledger_subject_invalid")
+        if type(at) not in (int, float) or not math.isfinite(at):
+            raise DeletionLedgerError("deletion_ledger_time_invalid")
+        values.append((kind, subject, float(at)))
+    rank = {kind: index for index, kind in enumerate(ADOPTION_SEED_KINDS)}
+    return sorted(values, key=lambda item: (rank[item[0]], item[2], item[1]))

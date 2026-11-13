@@ -180,6 +180,16 @@ _TABLE_COLUMNS = {
     "legacy_quarantine_records_v1": "batch_id:TEXT record_id:TEXT state:TEXT document:TEXT metadata_json:TEXT vector:BLOB encoding:TEXT digest:TEXT",
 }
 
+# U3b-0e2 (adoption design v3 section 3 'contracts', review v1 F6): payload
+# tables accepted only in one database, keyed by its state-relative path. The
+# same name in any other database is unknown (runtime_admission_unknown_schema).
+_DATABASE_TABLE_COLUMNS = {
+    "data/latency.db": {
+        "latency_records": "id:INTEGER timestamp:REAL total_ms:REAL target_ms:REAL met_target:INTEGER"
+                           " user:TEXT intent:TEXT components_json:TEXT created_at:TEXT",
+    },
+}
+
 
 # U3b-0d3 (design v3 N3): the chain src/memory/deletion_ledger.py appends.
 # row_sha256 = sha256(prev_sha256 || canonical([seq, kind, subject_sha256, at])).
@@ -805,19 +815,26 @@ def verify_receipt_state(record: dict, state_root: Path, binding: dict | None = 
         raise ValueError("runtime_admission_closed_state_mismatch")
 
 
-def _schema_contract(db: sqlite3.Connection, names: set[str]) -> dict | None:
+def _schema_contract(db: sqlite3.Connection, names: set[str], relative: str | None = None) -> dict | None:
+    """The column contract of one database, or None for SDK internals and empty files.
+
+    ``relative`` is the database's state-relative path: it admits that
+    database's own scoped tables (_DATABASE_TABLE_COLUMNS) and no other's.
+    """
     names = names - {"sqlite_sequence", "sqlite_stat1", "sqlite_stat4"}
     if not names or names == {"memories"}:
         return None
     if not names.intersection(_TABLE_COLUMNS) and {"collections", "segments", "migrations"} <= names:
         return None  # SDK internals are separately bound to their actual version.
-    if names - _TABLE_COLUMNS.keys() or db.execute(
+    known = dict(_TABLE_COLUMNS)
+    known.update(_DATABASE_TABLE_COLUMNS.get(relative, {}))
+    if names - known.keys() or db.execute(
             "SELECT 1 FROM sqlite_master WHERE type IN ('view','trigger') LIMIT 1").fetchone():
         raise ValueError("runtime_admission_unknown_schema")
     columns = {}
     for name in sorted(names):
         actual = {row[1]: row[2].upper() for row in db.execute("PRAGMA table_info(" + _quote(name) + ")")}
-        if actual != dict(item.split(":") for item in _TABLE_COLUMNS[name].split()):
+        if actual != dict(item.split(":") for item in known[name].split()):
             raise ValueError("runtime_admission_unknown_schema")
         columns[name] = actual
         if name in _SCHEMA_MARKERS:
@@ -928,7 +945,7 @@ def capture_state_authority(state_root: Path) -> dict:
         if path.suffix in {".db", ".sqlite", ".sqlite3"}:
             with _database_image(path) as db:
                 names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-                contract = _schema_contract(db, names)
+                contract = _schema_contract(db, names, relative)
                 if contract is None:
                     continue
                 selected = {name: _row_projection(db, name)
