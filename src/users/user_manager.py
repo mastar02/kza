@@ -387,9 +387,9 @@ class UserManager:
         return os.dup(descriptor)
 
     @staticmethod
-    def _is_pinned(info: os.stat_result, pin: int | None, own: tuple[int, int] | None) -> bool:
+    def _is_pinned(info: os.stat_result, pin: int | None) -> bool:
         """The name's lstat is the pinned own inode, unchanged since it was written."""
-        if pin is None or own is None:
+        if pin is None:
             return False
         held = os.fstat(pin)
         return ((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
@@ -404,7 +404,7 @@ class UserManager:
         except FileNotFoundError:
             return True
         if (own is None or parent is None or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                or not cls._is_pinned(info, pin, own)
+                or not cls._is_pinned(info, pin)
                 or cls._directory_identity(Path(temporary).parent) != parent):
             logger.warning("Account temporary cleanup unproven; name retained")
             return False
