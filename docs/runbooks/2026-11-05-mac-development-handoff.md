@@ -755,8 +755,34 @@ U3b-0d: lanzador gestionado (`6288e15`, `55cdc42`, `a96780d`, `9cf0b1b`).
 - Validación: `tests/unit/tools` 651 passed + 1 xfail; ensayos compilados del lanzador 34 passed, 1 skip opcional (`u3b/u3b-0d-import/`).
 - Antes de instalar: T-C8 y T-C10 en Linux, medir R-b en el server, aplicar la excepción sudo en la misma ventana que R1, y U3b-0e.
 
+U3b-0e: adopción del estado de producción como primer estado gestionado.
+- Diseño `t040-t041/u3b-0e-adoption-design-v3.json`, tras dos revisiones independientes (v1: F1–F19, v2: N1–N12).
+- Decisiones del usuario P1–P8 en `u3b_0e_adoption`:
+  - los LoRA se retiran en la ventana;
+  - `audit.db` y la tabla `events` vieja no se llevan, y la auditoría queda apagada en R1;
+  - los borrados a medias quedan anotados como pendientes;
+  - la vuelta atrás es a 63ea8d3; sin frase solo antes de la primera corrida gestionada;
+  - la copia vieja se retira 14 días después del primer cierre limpio;
+  - los limpiadores faltantes van después de R1 (0d4b).
+- Orden: 0d4a → 0e1 → 0e2 → 0e3 → 0e4 (Linux) → 0e5 (Q5 + chequeo del destino de vuelta, antes de agendar R1).
+
+`U3b-0d4a` (`1df524b`, `196f5cc`, `c62e38b`): detección de conversaciones borradas que reaparecen, por almacén. Antes, todo almacén restaurado contaba 0.
+- Revisión independiente: F1–F3 y F5–F7 corregidos; F4 y F8 pasan a 0e2/0e3. 42/42 mutantes muertos.
+- Un archivo de colector restaurado sin su fila deja el paso pendiente hasta 0d4b; se ve en `conversation_exempt`.
+
+`U3b-0e1` (`836d5a8`..`ab7ad8c`): código de R1 para la adopción.
+- `paths.models_root` y su lint.
+- `hooks.audit_sqlite.enabled`, apagado por defecto y rechazado bajo ticket.
+- G1: no se arranca sin gestionar dentro de una raíz gestionada.
+- Runtime de solo lectura.
+- Hijo de solo esquema limitado a copias de adopción.
+- Revisión independiente: F1–F10 corregidos. 75 mutantes muertos.
+
+Validación por tanda 0d4a + 0e1: 11223 passed, 2 xfail y 1 skip opcional; los ensayos compilados de presupuesto corrieron solos (`u3b/full-0e1/RESULT.md`).
+
 Siguiente:
-- U3b-0e: adopción.
+- U3b-0e2: biblioteca de adopción (copia, migración de solo esquema con VACUUM, reubicador, sembrado del registro de borrados y restos con reapertura del paso).
+- U3b-0e3: comandos.
 - U3b-0c: compactación.
 - F8.
 
