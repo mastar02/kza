@@ -712,8 +712,9 @@ def test_the_backup_set_must_be_the_reviewed_one(world, monkeypatch, case, code)
         os.symlink(legacy_state(world) / "data" / files[0].relative_to(databases), files[0])
     elif case == "not_sqlite":
         files[0].write_bytes(b"plain text, not a database")
-    elif case == "not_from_state":
+    elif case == "not_from_state":  # ten counted only if the unknown name were skipped: the source check refuses
         files[0].rename(files[0].with_name("renamed.db"))
+        shutil.copyfile(legacy_state(world) / "data" / "lists.db", databases / "lists.db")
     elif case == "directory_link":
         os.rename(databases, world.root / "databases-aside")
         os.symlink(world.root / "databases-aside", databases)
