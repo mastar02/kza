@@ -219,10 +219,13 @@ _CLOSED_STATE_KEYS = ("state_identity", "store_roots", "schemas", "sdk_versions"
 # RECEIPT_STATE_SCHEMA: 2 when the slot's child writes the receipt-state
 #   record; the controller then refuses a missing record (review 0d3 K2).
 # CONTROLLER_EPOCH: monotonic controller version (admission/controller.json).
+#   2 (U3b-0e3) adds the 'adoption' manual head kind, the adoption seal and
+#   the abort record; only the controller reads them, so FORMAT_EPOCH stays.
+#   install-controller refuses an archive below this epoch.
 LAUNCHER_CONTRACT = 3
 FORMAT_EPOCH = 1
 RECEIPT_STATE_SCHEMA = 2
-CONTROLLER_EPOCH = 1
+CONTROLLER_EPOCH = 2
 MIN_FORMAT_EPOCH = 1
 _RELEASE_INTEGER_KEYS = ("launcher_contract", "format_epoch", "receipt_state", "controller_epoch")
 
@@ -2116,6 +2119,186 @@ def _read_manual_seal(root: Path, identity: str) -> dict:
     return record
 
 
+# --------------------------------------------------------------------------
+# U3b-0e3: the adoption manual head, its seal and the abort record
+# (u3b-0e-adoption-design-v3 sections 4 and 7; CONTROLLER_EPOCH 2).
+
+# Section 4 contents plus what makes the seal an authority seal (binding,
+# closed head, capture) and the bound abort a re-adoption follows.
+ADOPTION_SEAL_KEYS = frozenset({
+    "schema_version", "kind", "binding_id", "closed_head", "capture", "previous_abort",
+    "plan_sha256", "archive_sha256", "controller_commit", "source_manifest_sha256",
+    "prepared_manifest_sha256", "committed_manifest_sha256", "state_manifest_sha256",
+    "closed_state_sha256", "artifact_observation_sha256", "transform_sha256", "tables",
+    "retirement_record_sha256", "window_decision_id", "p_answers"})
+_ADOPTION_SEAL_DIGESTS = ("plan_sha256", "archive_sha256", "source_manifest_sha256", "prepared_manifest_sha256",
+                          "committed_manifest_sha256", "state_manifest_sha256", "closed_state_sha256",
+                          "artifact_observation_sha256", "transform_sha256")
+ABORT_KEYS = frozenset({"schema_version", "adoption_head", "companion_sha256", "adoption_record_sha256",
+                        "plan_sha256", "slot", "current_restored", "legacy_conf", "source_manifest_sha256",
+                        "aborted_at"})
+
+
+def adoption_directory(root: Path) -> Path:
+    """admission/adoption: plans, source manifests, retirement, adoption and abort records."""
+    return Path(root) / "admission" / "adoption"
+
+
+def adoption_seal_path(root: Path, identity: str) -> Path:
+    """Where one immutable adoption seal lives (beside, never among, the closure seals)."""
+    return Path(root) / "admission" / "manual-components" / "adoption-seals" / (identity + ".json")
+
+
+def adoption_record_path(root: Path, head: dict) -> Path:
+    """The immutable adoption record of one adoption head, keyed by the head digest."""
+    return adoption_directory(root) / ("adoption-" + _digest(head) + ".json")
+
+
+def abort_record_path(root: Path, head: dict) -> Path:
+    """The immutable abort record of one adoption head, keyed by the head digest (section 7)."""
+    return adoption_directory(root) / ("abort-" + _digest(head) + ".json")
+
+
+def head_aborted(root: Path, head: dict | None) -> bool:
+    """Whether ``head`` carries an abort record; an aborted head is terminal for begin_run."""
+    return head is not None and os.path.lexists(abort_record_path(root, head))
+
+
+def _read_adoption_seal(root: Path, identity: str) -> dict:
+    if type(identity) is not str or re.fullmatch("[0-9a-f]{64}", identity) is None:
+        raise ValueError("runtime_admission_adoption_seal_schema")
+    record = _read_json(adoption_seal_path(root, identity))
+    if (set(record) != ADOPTION_SEAL_KEYS or type(record["schema_version"]) is not int
+            or record["schema_version"] != 1 or record["kind"] != "adoption" or _digest(record) != identity
+            or not _manual_head_shape(record["closed_head"], "closed")
+            or record["closed_head"]["binding_id"] != record["binding_id"]
+            or type(record["capture"]) is not dict or type(record["tables"]) is not dict
+            or not all(_hex64(record[key]) for key in _ADOPTION_SEAL_DIGESTS)
+            or not (record["previous_abort"] is None or _hex64(record["previous_abort"]))
+            or not (record["retirement_record_sha256"] is None or _hex64(record["retirement_record_sha256"]))
+            or type(record["controller_commit"]) is not str
+            or re.fullmatch("[0-9a-f]{40}", record["controller_commit"]) is None
+            or type(record["window_decision_id"]) is not str or not record["window_decision_id"]
+            or type(record["p_answers"]) is not list
+            or not all(type(item) is str for item in record["p_answers"])):
+        raise ValueError("runtime_admission_adoption_seal_schema")
+    binding = read_binding(root, record["binding_id"])
+    if (record["capture"].get("state_root") != binding["state_root"]
+            or record["capture"].get("state_identity") != binding["state_identity"]):
+        raise ValueError("runtime_admission_adoption_seal_schema")
+    return record
+
+
+def _read_authority_seal(root: Path, identity: str) -> dict:
+    """A closure seal, or (U3b-0e3) the adoption seal an adopted lineage starts from."""
+    if (type(identity) is str and re.fullmatch("[0-9a-f]{64}", identity) is not None
+            and os.path.lexists(adoption_seal_path(root, identity))):
+        return _read_adoption_seal(root, identity)
+    return _read_manual_seal(root, identity)
+
+
+def read_abort_record(root: Path, head: dict) -> dict:
+    """The validated abort record of ``head`` (an adoption head); raises if absent or malformed."""
+    try:
+        record = _read_json(abort_record_path(root, head))
+    except FileNotFoundError:
+        raise ValueError("runtime_admission_adoption_abort_missing") from None
+    companion = _manual_head_path(root, head)
+    if (set(record) != ABORT_KEYS or type(record["schema_version"]) is not int or record["schema_version"] != 1
+            or _canonical_json(record["adoption_head"]) != _canonical_json(head)
+            or not _hex64(record["companion_sha256"]) or not _hex64(record["adoption_record_sha256"])
+            or _digest(_read_json(companion)) != record["companion_sha256"]
+            or _digest(_read_json(adoption_record_path(root, head))) != record["adoption_record_sha256"]):
+        raise ValueError("runtime_admission_adoption_abort_schema")
+    return record
+
+
+def _check_adoption_companion(root: Path, head: dict, record: dict) -> None:
+    """The 'adoption' kind: generation 1, or exactly one generation after a bound abort.
+
+    Its authority seal is the adoption seal, whose closed head and capture
+    are this companion's own. A re-adoption names the aborted head's
+    companion, and the seal binds that head's abort record by digest.
+    """
+    seal = _read_adoption_seal(root, record["authority_seal"])
+    if (_canonical_json(seal["closed_head"]) != _canonical_json(head)
+            or _canonical_json(seal["capture"]) != _canonical_json(record["capture"])):
+        raise ValueError("runtime_admission_adoption_kind_invalid")
+    previous = record["previous"]
+    if previous is None:
+        if head["generation"] != 1 or seal["previous_abort"] is not None:
+            raise ValueError("runtime_admission_adoption_kind_invalid")
+        return
+    if (type(previous) is not dict or set(previous) != {"head_sha256", "companion_sha256"}
+            or not all(_hex64(value) for value in previous.values())):
+        raise ValueError("runtime_admission_manual_companion_schema")
+    prior = _read_json(root / "admission" / "manual-components" / "heads" / (previous["head_sha256"] + ".json"))
+    if (prior.get("kind") != "adoption" or not _manual_head_shape(prior.get("head"), "closed")
+            or _digest(prior) != previous["companion_sha256"] or _digest(prior["head"]) != previous["head_sha256"]
+            or prior["head"]["generation"] + 1 != head["generation"]):
+        raise ValueError("runtime_admission_adoption_kind_invalid")
+    abort = read_abort_record(root, prior["head"])
+    if abort["companion_sha256"] != previous["companion_sha256"] or _digest(abort) != seal["previous_abort"]:
+        raise ValueError("runtime_admission_adoption_kind_invalid")
+
+
+def commit_adoption_head(root: Path, expected: dict | None, binding: dict, *, seal_fields: dict,
+                         record_fields: dict) -> dict:
+    """Write the adoption binding, seal, record, manual head and marker, then CAS the head closed.
+
+    The caller holds the lease and has re-verified the whole plan. ``expected``
+    is None (the first head) or an aborted adoption head (re-adoption, one
+    generation later). Nothing here publishes 'current'.
+    """
+    root = Path(root)
+    with _locked_root(root):
+        if read_admission_head(root) != expected:
+            raise ValueError("runtime_admission_head_changed")
+        previous, abort_sha = None, None
+        if expected is not None:
+            previous = _read_manual_head(root, expected)
+            if previous["kind"] != "adoption":
+                raise ValueError("runtime_admission_adoption_kind_invalid")
+            abort_sha = _digest(read_abort_record(root, expected))
+        if _binding_snapshot(root, binding["slot"]) != binding:
+            raise ValueError("privacy_authority_stale")
+        validate_target_ownership(root, binding)
+        identity = _store_binding(root, binding)
+        head = {"schema_version": 1, "generation": 1 if expected is None else expected["generation"] + 1,
+                "binding_id": identity, "status": "closed", "run_id": None}
+        capture = _manual_capture(root, binding)
+        seal = dict(seal_fields, schema_version=1, kind="adoption", binding_id=identity, closed_head=head,
+                    capture=capture, previous_abort=abort_sha)
+        if set(seal) != ADOPTION_SEAL_KEYS:
+            raise ValueError("runtime_admission_adoption_seal_schema")
+        seal_id = _digest(seal)
+        _atomic_record(adoption_seal_path(root, seal_id), seal, immutable=True)
+        _read_adoption_seal(root, seal_id)
+        _atomic_record(adoption_record_path(root, head),
+                       dict(record_fields, schema_version=1, head=head, previous_head=expected,
+                            seal_sha256=seal_id, binding_id=identity), immutable=True)
+        _atomic_record(_manual_head_path(root, head), {
+            "schema_version": 1, "head": head, "kind": "adoption", "capture": capture, "authority_seal": seal_id,
+            "previous": None if previous is None else manual_reference(previous)}, immutable=True)
+        _write_marker(root, identity, binding)
+        return _cas_head(root, expected, identity, "closed")
+
+
+def record_adoption_abort(root: Path, head: dict, record: dict) -> dict:
+    """Write the immutable abort record of the current adoption head (section 7)."""
+    root = Path(root)
+    with _locked_root(root):
+        if read_admission_head(root) != head:
+            raise ValueError("runtime_admission_head_changed")
+        value = dict(record, schema_version=1, adoption_head=head,
+                     companion_sha256=_digest(_read_json(_manual_head_path(root, head))),
+                     adoption_record_sha256=_digest(_read_json(adoption_record_path(root, head))))
+        if set(value) != ABORT_KEYS:
+            raise ValueError("runtime_admission_adoption_abort_schema")
+        _atomic_record(abort_record_path(root, head), value, immutable=True)
+        return read_abort_record(root, head)
+
+
 _RECOVERY_KEYS = frozenset({"schema_version", "closed_head", "head_before", "run_id", "new_binding_id",
                             "previous", "mode", "class", "boot_id", "at", "checks", "confirmation"})
 
@@ -2158,7 +2341,7 @@ def _read_manual_head(root: Path, head: dict) -> dict:
             or _canonical_json(record["head"]) != _canonical_json(head)
             or head["status"] != "closed" or head["run_id"] is not None
             or type(record["capture"]) is not dict
-            or record["kind"] not in {"bootstrap", "selection", "closure", "recovery"}):
+            or record["kind"] not in {"bootstrap", "selection", "closure", "recovery", "adoption"}):
         raise ValueError("runtime_admission_manual_companion_schema")
     binding = read_binding(root, head["binding_id"])
     if (record["capture"].get("state_root") != binding["state_root"]
@@ -2169,6 +2352,9 @@ def _read_manual_head(root: Path, head: dict) -> dict:
                 or record["authority_seal"] is not None or _has_authority(binding)
                 or record["capture"].get("stores") != {}):
             raise ValueError("runtime_admission_manual_bootstrap_invalid")
+        return record
+    if record["kind"] == "adoption":
+        _check_adoption_companion(root, head, record)
         return record
     previous = record["previous"]
     if (type(previous) is not dict or set(previous) != {"head_sha256", "companion_sha256"}
@@ -2209,7 +2395,10 @@ def _read_manual_head(root: Path, head: dict) -> dict:
                 raise ValueError("runtime_admission_manual_bootstrap_invalid")
             _require_manual_equivalent(prior["capture"], record["capture"])
             return record
-    seal = _read_manual_seal(root, record["authority_seal"])
+    # A selection or recovery after an adoption head inherits the adoption
+    # seal (U3b-0e3); a closure always has its own closure seal.
+    seal = (_read_manual_seal(root, record["authority_seal"]) if record["kind"] == "closure"
+            else _read_authority_seal(root, record["authority_seal"]))
     if record["kind"] == "closure":
         running = seal["closure_proof"]["running_head"]
         if (_canonical_json(seal["closed_head"]) != _canonical_json(head)
@@ -2272,7 +2461,7 @@ def _prepare_manual_head(root: Path, expected: dict | None, binding: dict, *,
                 raise ValueError("runtime_admission_recovery_unsealed_authority")
             _require_manual_equivalent(previous["capture"], capture)
         else:
-            _require_manual_equivalent(_read_manual_seal(root, previous["authority_seal"])["capture"], capture)
+            _require_manual_equivalent(_read_authority_seal(root, previous["authority_seal"])["capture"], capture)
         kind, seal_id = "recovery", previous["authority_seal"]
     elif previous is None:
         if expected is not None or _has_authority(binding) or capture["stores"]:
@@ -3335,6 +3524,8 @@ class AdmissionController:
                 raise ValueError("runtime_admission_head_changed")
             if head is not None and head["status"] != "closed":
                 raise ValueError("runtime_admission_not_closed")
+            if head_aborted(self.root, head):  # only a re-adoption follows an aborted head
+                raise ValueError("runtime_admission_adoption_aborted_head")
             binding = _binding_snapshot(self.root, name)
             if launcher_checks and (self.root / "admission" / "controller.json").exists():
                 _require_launcher_slot(binding)
@@ -3376,6 +3567,8 @@ class AdmissionController:
             head = read_admission_head(root)
             if head is None or head["status"] != "closed":
                 raise ValueError("runtime_admission_not_closed")
+            if head_aborted(root, head):  # U3b-0e3: an aborted adoption head is terminal
+                raise ValueError("runtime_admission_adoption_aborted_head")
             binding = read_binding(root, head["binding_id"])
             validate_target_ownership(root, binding)
             previous_manual = _verify_manual_head(root, head, binding)
@@ -3517,6 +3710,43 @@ def _launcher_module():
     return _launcher
 
 
+_adoption_commands = None
+
+
+def _load_beside(stem: str, prefix: str):
+    """Load scripts/<stem>.py(c) beside this file under a private module name (no package path)."""
+    own = Path(__file__).resolve()
+    suffix = ".pyc" if own.suffix == ".pyc" else ".py"
+    path = own.parent / (stem + suffix)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("runtime_admission_" + stem + "_missing")
+    name = prefix + hashlib.sha256(str(path).encode()).hexdigest()[:16]
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ValueError("runtime_admission_" + stem + "_missing")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
+
+
+def _adoption_commands_module():
+    """The adoption operator commands (U3b-0e3) and their library, bound to this module and the launcher."""
+    global _adoption_commands
+    if _adoption_commands is None:
+        launcher = _launcher_module()
+        library = _load_beside("adoption", "_kza_adoption_")
+        library.bind(sys.modules[__name__], launcher)
+        commands = _load_beside("adoption_commands", "_kza_adoption_commands_")
+        commands.bind(sys.modules[__name__], launcher, library)
+        _adoption_commands = commands
+    return _adoption_commands
+
+
 def main() -> None:
     """Prepare or select a slot after the operator has stopped all state writers."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -3538,9 +3768,13 @@ def main() -> None:
     delegate.add_argument("name")
     launcher = _launcher_module()
     launcher.add_commands(commands)
+    adoption_commands = _adoption_commands_module()
+    adoption_commands.add_commands(commands)
     args = parser.parse_args()
     if args.command in launcher.COMMANDS:
         raise SystemExit(launcher.run_command(args))
+    if args.command in adoption_commands.COMMANDS:
+        raise SystemExit(adoption_commands.run_command(args))
     if args.command == "prepare":
         manifest = prepare_slot(args.archive, args.root, args.name, args.state_source)
         print(json.dumps({"slot": args.name, "commit": manifest["git_commit"]}))

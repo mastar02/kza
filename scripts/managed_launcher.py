@@ -432,6 +432,10 @@ class ServiceManager:
         """``systemctl --user daemon-reload``."""
         return self._run("--user", "daemon-reload", timeout=30.0) is not None
 
+    def user_enable(self, unit: str) -> bool:
+        """``systemctl --user enable <unit>`` (adoption abort, U3b-0e3); never starts it."""
+        return self._run("--user", "enable", unit, timeout=30.0) is not None
+
 
 @dataclass
 class RebootBudget:
@@ -2014,6 +2018,9 @@ def install_controller(root: Path, archive: Path, *, wall=time.time) -> dict:
     epoch = manifest.get("controller_epoch", 0)
     if type(epoch) is not int or epoch < 1 or manifest.get("launcher_contract", 0) < stage.LAUNCHER_CONTRACT:
         raise LauncherRefusal("runtime_admission_controller_unmanaged")
+    if epoch < stage.CONTROLLER_EPOCH:
+        # U3b-0e3: an older controller cannot read the adoption head and seal.
+        raise LauncherRefusal("runtime_admission_controller_epoch_too_old")
     if "scripts/managed_launcher.pyc" not in files or "scripts/stage_runtime.pyc" not in files:
         raise LauncherRefusal("runtime_admission_controller_unmanaged")
     commit = manifest["git_commit"]

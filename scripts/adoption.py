@@ -1775,6 +1775,21 @@ def source_stat_map(layout: SourceLayout, metrics_path: str) -> dict:
     return found
 
 
+def source_manifest(layout: SourceLayout, metrics_path: str) -> list:
+    """The full-file source manifest recomputed now, in adopt_copy's order (U3b-0e3 commit and abort).
+
+    Every regular file of the legacy state (sorted), then the metrics store
+    set members as ``metrics/<name>``; each (relative, inode, size,
+    mtime_ns, sha256). Read-only: lstat and O_RDONLY|O_NOFOLLOW only.
+    """
+    entries = file_manifest(layout.legacy_state)
+    root = Path(layout.metrics_root)
+    for item in metrics_store_set(layout, metrics_path)["members"]:
+        info = (root / item).lstat()
+        entries.append(["metrics/" + item, info.st_ino, info.st_size, info.st_mtime_ns, _sha256_file(root / item)])
+    return entries
+
+
 def verify_source_unchanged(layout: SourceLayout, metrics_path: str, manifest: list) -> None:
     """Re-walk the sources after the copy: any changed, added or removed file refuses (review F6)."""
     expected = {entry[0]: list(entry[1:4]) for entry in manifest}
@@ -1793,7 +1808,7 @@ def _legacy_metrics_path(work: Path) -> str:
 
 def adopt_copy(layout: SourceLayout, *, work: Path, scratch: Path, state_root: Path, plan_sha256: str,
                adoption_time: float, python: str, runtime_root: Path, retirement: dict | None = None,
-               rows: tuple[TransformRow, ...] | None = None, confirm_foreign=()) -> dict:
+               rows: tuple[TransformRow, ...] | None = None, confirm_foreign=(), private: dict | None = None) -> dict:
     """Turn a byte copy of the production state into the first managed state, in ``work``.
 
     ``work`` is the adoption copy (it gets the marker), ``scratch`` the
@@ -1802,14 +1817,18 @@ def adopt_copy(layout: SourceLayout, *, work: Path, scratch: Path, state_root: P
     (descriptors name it). The source is only read, under a SourceGuard, and
     re-walked after the copy; the R1 steps run in the schema-only child.
     Returns a content-free report; any refusal raises AdoptionRefusal with
-    the report so far as ``refusal.report`` (the dry-run census).
+    the report so far as ``refusal.report`` (the dry-run census). When
+    ``private`` is a dict it receives what the operator commands keep
+    privately under admission/ and never print: the full source manifest
+    (``source_manifest``) and the legacy metrics path (``metrics_path``).
     """
     work, scratch = Path(work), Path(scratch)
     rows = transform_table() if rows is None else rows
     report: dict = {"schema_version": SCHEMA_VERSION, "plan_sha256": plan_sha256}
+    private = {} if private is None else private
     try:
         _adopt(report, layout, work, scratch, state_root, plan_sha256, adoption_time, python, runtime_root,
-               retirement, rows, confirm_foreign)
+               retirement, rows, confirm_foreign, private)
     except AdoptionRefusal as refusal:
         refusal.report = report
         raise
@@ -1817,7 +1836,7 @@ def adopt_copy(layout: SourceLayout, *, work: Path, scratch: Path, state_root: P
 
 
 def _adopt(report, layout, work, scratch, state_root, plan_sha256, adoption_time, python, runtime_root,
-           retirement, rows, confirm_foreign) -> None:
+           retirement, rows, confirm_foreign, private) -> None:
     report["confirm_foreign"] = check_confirm_foreign(confirm_foreign)
     with SourceGuard(*source_roots(layout)) as guard:
         report["layout"] = read_source_layout(layout)
@@ -1829,6 +1848,7 @@ def _adopt(report, layout, work, scratch, state_root, plan_sha256, adoption_time
         metrics = copy_metrics_store(layout, metrics_path, work)
         manifest = copied["manifest"] + metrics["manifest"]
         verify_source_unchanged(layout, metrics_path, manifest)
+        private["source_manifest"], private["metrics_path"] = manifest, metrics_path
         report["source_manifest_sha256"] = manifest_digest(manifest)
         report["source_files"] = len(manifest)
         report["copy"] = copied["counts"]
