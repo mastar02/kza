@@ -22,7 +22,7 @@ columns, never values.
 from __future__ import annotations
 
 from collections import Counter
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 import hashlib
 import hmac
@@ -534,8 +534,10 @@ def drop_and_vacuum(scratch: Path, destination: Path) -> dict:
     """P2=A in the scratch: drop each listed table, then VACUUM INTO the destination (N2).
 
     The scratch files are removed afterwards, so the dropped text never
-    touches the destination's disk. The destination must have freelist 0, no
-    -wal or -journal, a clean quick_check and none of the dropped tables.
+    touches the destination's disk. SQLite's temporary storage is memory and
+    its temporary directory the scratch for the drop (review F5). The
+    destination must have freelist 0, no -wal or -journal, a clean
+    quick_check and none of the dropped tables.
     """
     report = {}
     for relative, drops in sorted(DROP_LIST.items()):
@@ -547,7 +549,7 @@ def drop_and_vacuum(scratch: Path, destination: Path) -> dict:
             _refuse("runtime_admission_adoption_drop_destination")
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         dropped = 0
-        with closing(sqlite3.connect(source, isolation_level=None)) as db:
+        with closing(sqlite3.connect(source, isolation_level=None)) as db, _scratch_temp(db, scratch):
             names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             for table, columns in drops.items():
                 if table not in names:
@@ -571,8 +573,22 @@ def drop_and_vacuum(scratch: Path, destination: Path) -> dict:
             _refuse("runtime_admission_adoption_vacuum:" + relative)
         if any(Path(str(target) + suffix).exists() for suffix in ("-wal", "-journal")):
             _refuse("runtime_admission_adoption_vacuum:" + relative)
-        report[relative] = {"tables_dropped": dropped}
+        report[relative] = {"tables_dropped": dropped, "temp_store": "memory", "temp_directory": "scratch"}
     return report
+
+
+@contextmanager
+def _scratch_temp(db: sqlite3.Connection, scratch: Path):
+    """temp_store=MEMORY and temp_store_directory=<scratch> for one drop; the directory is reset after."""
+    db.execute("PRAGMA temp_store=MEMORY")
+    db.execute("PRAGMA temp_store_directory='" + os.fspath(Path(scratch).resolve()).replace("'", "''") + "'")
+    if (db.execute("PRAGMA temp_store").fetchone()[0] != 2
+            or db.execute("PRAGMA temp_store_directory").fetchone()[0] != os.fspath(Path(scratch).resolve())):
+        _refuse("runtime_admission_adoption_scratch_temp")
+    try:
+        yield
+    finally:
+        db.execute("PRAGMA temp_store_directory=''")
 
 
 def write_copy_marker(state: Path, plan_sha256: str) -> None:
@@ -1077,27 +1093,64 @@ class Relocation:
         self.rules = sorted({rule for rule in rules if rule[0] != rule[1]}, key=lambda rule: (-len(rule[0]), rule))
 
     def path(self, value: str) -> str:
-        """The relocated absolute path (applied to a fixpoint), or ``value`` unchanged."""
-        current = os.path.normpath(value)
+        """The relocated path (rules applied to a fixpoint), or ``value`` itself (review F3).
+
+        Matching is lexical on the stored string: only a matched prefix is
+        replaced and the rest is kept byte for byte (no normpath, so '..'
+        and '//' are never collapsed). A string no rule matches is returned
+        unchanged; a legacy string left this way is caught by the
+        completeness scan.
+        """
+        current = value
         for _round in range(4):
-            changed = False
             for old, new in self.rules:
                 if current == old or current.startswith(old.rstrip("/") + "/"):
                     current = new + current[len(old):]
-                    changed = True
                     break
-            if not changed:
+            else:
                 return current
         return current
+
+    def string(self, value):
+        """``path`` for an absolute-path string; any other value unchanged."""
+        return self.path(value) if type(value) is str and value.startswith("/") else value
 
     def json_value(self, value):
         if isinstance(value, dict):
             return {key: self.json_value(child) for key, child in value.items()}
         if isinstance(value, list):
             return [self.json_value(child) for child in value]
-        if isinstance(value, str) and value.startswith("/"):
-            return self.path(value)
-        return value
+        return self.string(value)
+
+    def descriptor(self, descriptor: dict) -> dict:
+        """A target descriptor with its locator keys relocated (= state_journal_derivation._LOCATORS)."""
+        return {key: (self.string(value) if key in _LOCATORS else value) for key, value in descriptor.items()}
+
+
+_JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
+_JSON_KEY_COLON = re.compile(r"\s*:")
+
+
+def rewrite_json_text(text: str, mapper) -> str:
+    """Rewrite the JSON string values ``mapper`` changes, keeping every other byte (review F3).
+
+    Object keys are never mapped. A changed value is re-encoded in its
+    token's own style (ensure_ascii or not); indent, key order, spacing and
+    every unchanged token stay as they were.
+    """
+    parts, last = [], 0
+    for match in _JSON_STRING.finditer(text):
+        if _JSON_KEY_COLON.match(text, match.end()):
+            continue
+        token = match.group(0)
+        value = json.loads(token)
+        new = mapper(value)
+        if new == value:
+            continue
+        ascii_style = token == json.dumps(value) and token != json.dumps(value, ensure_ascii=False)
+        parts += [text[last:match.start()], json.dumps(new, ensure_ascii=ascii_style)]
+        last = match.end()
+    return "".join(parts) + text[last:] if parts else text
 
 
 def _privacy_databases(state: Path) -> list[Path]:
@@ -1138,15 +1191,37 @@ def registered_targets(state: Path) -> list[dict]:
                 for row in db.execute("SELECT id, participant, version, descriptor FROM erasure_targets ORDER BY id")]
 
 
+def _relocate_cell(how: str, value, rules: Relocation, ids: dict, evidence: dict):
+    """The relocated value of one REMAP cell; shared by relocate() and the S3 model."""
+    if type(value) is not str:
+        return value
+    if how == "target_id":
+        return ids.get(value, value)
+    if how == "path":
+        return rules.string(value)
+    if how == "evidence":
+        new = rewrite_json_text(value, lambda item: evidence.get(item, item))
+        expected = [dict(item, target_id=evidence.get(item.get("target_id"), item.get("target_id")))
+                    if isinstance(item, dict) else item for item in json.loads(value)]
+    else:
+        new = rewrite_json_text(value, rules.string)
+        expected = rules.json_value(json.loads(value))
+    if json.loads(new) != expected:
+        _refuse("runtime_admission_adoption_relocation_json")
+    return new
+
+
 def relocate(state: Path, state_root: Path, layout: SourceLayout, training: dict,
              metrics_policy: str | None) -> dict:
     """Rewrite every legacy locator of the copy into ``state_root`` (never cutting rows).
 
-    Only the REMAP columns and the context snapshot JSON files change. Target
-    ids are recomputed from the relocated descriptors and every referencing
-    row follows; event-evidence ids follow their events target. Afterwards
-    row counts are unchanged, no legacy_state/container string remains, and
-    PRAGMA foreign_key_check is clean.
+    Only the REMAP columns and the context snapshot JSON files change, and
+    within them only the strings a rule matches (review F3). Target ids are
+    recomputed from the relocated descriptors and every referencing row
+    follows; event-evidence ids follow their events target. Afterwards row
+    counts are unchanged, no legacy_state/container string remains, and no
+    new foreign-key violation exists. S3 models the same change from the
+    pre-relocation snapshot (relocation_model, review F1).
     """
     state = Path(state)
     rules = Relocation(layout, state_root, training, metrics_policy)
@@ -1164,8 +1239,7 @@ def relocate(state: Path, state_root: Path, layout: SourceLayout, training: dict
             old = json.loads(encoded)
             stage._validate_target_record({"id": identity, "participant": participant, "version": version,
                                            "descriptor": old})
-            new = {key: (rules.path(value) if key in _LOCATORS and type(value) is str and value.startswith("/")
-                         else value) for key, value in old.items()}
+            new = rules.descriptor(old)
             fresh = target_id(participant, version, new)
             record = {"id": fresh, "participant": participant, "version": version, "descriptor": new}
             stage._validate_target_record(record)
@@ -1205,28 +1279,20 @@ def relocate(state: Path, state_root: Path, layout: SourceLayout, training: dict
                 if table not in names:
                     continue
                 for rowid, value in db.execute('SELECT rowid, "' + column + '" FROM "' + table + '"').fetchall():
-                    if type(value) is not str:
-                        continue
-                    if how == "path":
-                        new = rules.path(value) if value.startswith("/") else value
-                    elif how == "evidence":
-                        items = json.loads(value)
-                        new = _canonical_like(value, [dict(item, target_id=evidence.get(item.get("target_id"),
-                                                                                          item.get("target_id")))
-                                                      if isinstance(item, dict) else item for item in items])
-                    else:
-                        new = _canonical_like(value, rules.json_value(json.loads(value)))
+                    new = _relocate_cell(how, value, rules, ids, evidence)
                     if new != value:
                         db.execute('UPDATE "' + table + '" SET "' + column + '"=? WHERE rowid=?', (new, rowid))
                         changed[table] += 1
             db.execute("COMMIT")
     for path in sorted(state.rglob("*.json")):
         relative = path.relative_to(state)
-        if _CONTEXT_JSON in relative.parts and path.is_file():
-            raw = path.read_text()
-            new = _canonical_like(raw, rules.json_value(json.loads(raw)))
+        if _CONTEXT_JSON in relative.parts and path.is_file() and not path.is_symlink():
+            raw = path.read_bytes().decode("utf-8")
+            new = rewrite_json_text(raw, rules.string)
+            if json.loads(new) != rules.json_value(json.loads(raw)):
+                _refuse("runtime_admission_adoption_relocation_json")
             if new != raw:
-                path.write_text(new)
+                path.write_bytes(new.encode("utf-8"))  # in place: same inode and mode
                 changed["contexts:*.json"] += 1
     if _row_counts(state) != before:
         _refuse("runtime_admission_adoption_relocation_rows")
@@ -1239,15 +1305,42 @@ def relocate(state: Path, state_root: Path, layout: SourceLayout, training: dict
     return {"changed": dict(sorted(changed.items())), "targets": len(ids)}
 
 
-def _canonical_like(original: str, value) -> str:
-    """Re-encode JSON in the original's style (compact canonical or json.dumps default)."""
-    compact = _canonical(value)
-    try:
-        if _canonical(json.loads(original)) == original:
-            return compact
-    except ValueError:
-        pass
-    return json.dumps(value)
+def relocation_model(before: dict, rules: Relocation) -> dict:
+    """S3's f for the relocation (review F1): ``before`` with only the REMAP columns relocated.
+
+    The target-id and event-evidence maps are derived here from the
+    snapshot's own erasure_targets rows, not taken from relocate(). Every
+    non-REMAP column of every table must stay byte-equal; verify_s3 compares
+    the result's row digests with the adopted copy's.
+    """
+    ids, evidence = {}, {}
+    for tables in before.values():
+        for row in (tables.get("erasure_targets") or {}).get("rows") or []:
+            old = json.loads(row["descriptor"])
+            new = rules.descriptor(old)
+            ids[row["id"]] = target_id(row["participant"], row["version"], new)
+            if row["participant"] == "events":
+                evidence[event_target_id(old)] = event_target_id(new)
+    model = {}
+    for relative, tables in before.items():
+        model[relative] = dict(tables)
+        for table, column, how in REMAP:
+            entry = tables.get(table)
+            if entry is None:
+                continue
+            rows = []
+            for row in entry["rows"]:
+                row = dict(row)
+                if how == "target":
+                    descriptor = rules.descriptor(json.loads(row[column]))
+                    row[column] = _canonical(descriptor)
+                    row["id"] = target_id(row["participant"], row["version"], descriptor)
+                else:
+                    row[column] = _relocate_cell(how, row[column], rules, ids, evidence)
+                rows.append(row)
+            model[relative][table] = {"columns": entry["columns"], "rows": rows,
+                                      "digests": Counter(_row_digest(list(row.values())) for row in rows)}
+    return model
 
 
 def check_target_set(state: Path, expected: list[dict], state_root: Path) -> dict:
@@ -1287,6 +1380,8 @@ ERASURE_PARTICIPANTS = ("producers", "captures", "contexts", "semantic_index", "
 _KEPT = frozenset({"erasure_targets", "erasure_steps", "conversation_erasures", "policy_index_deletions", "conversation_tombstones",
                    "facts", "voice_profiles", "retired_users", "deletion_ledger_v1", "deletion_ledger_salt_v1"})
 
+_REMAP_TABLES = frozenset(table for table, _column, _how in REMAP)
+
 
 def table_snapshot(state: Path) -> dict:
     """Columns and row digests of every table of every database; full rows of the S3-modelled tables."""
@@ -1300,7 +1395,7 @@ def table_snapshot(state: Path) -> dict:
                 columns = [item[0] for item in cursor.description]
                 rows = cursor.fetchall()
                 additions = {item[1] for item in COLUMN_ADDITIONS if item[0] == relative}
-                kept = table in _KEPT or table in additions
+                kept = table in _KEPT or table in additions or table in _REMAP_TABLES
                 tables[table] = {"columns": columns, "digests": Counter(_row_digest(row) for row in rows),
                                  "rows": [dict(zip(columns, row)) for row in rows] if kept else None}
         snapshot[relative] = tables
@@ -1547,6 +1642,146 @@ def run_child(python: str, runtime_root: Path, state: Path, phase: str, *, at: f
     return value
 
 
+# --- foreign targets (design v1 outside_targets, v3 plan binding; review F2) -------------------------
+
+def descriptor_census(state: Path, layout: SourceLayout) -> dict:
+    """Locator classes per erasure participant of the copy (content-free counts, review F2)."""
+    census: dict[str, Counter] = {}
+    for item in registered_targets(state):
+        for value in stage._descriptor_paths(item["descriptor"]):
+            census.setdefault(item["participant"], Counter())[classify(value, layout)] += 1
+    return {participant: dict(sorted(counts.items())) for participant, counts in sorted(census.items())}
+
+
+def foreign_targets(state: Path, layout: SourceLayout, metrics_policy: str | None) -> list[list[str]]:
+    """(participant, class) of every target locator the relocator has no reviewed rule for.
+
+    Relocated: legacy_state and container locators; the outside
+    legacy_training roots (models class, collectors, P1=D); the metrics
+    policy file (logs class, exactly that path). Anything else (a
+    pre-2026-10-28 /home/kza/kza or /home/kza/app locator, code_index, other)
+    is foreign.
+    """
+    metrics = _prefixes(Path(layout.metrics_root) / metrics_policy) if metrics_policy else ()
+    found = set()
+    for item in registered_targets(state):
+        for value in stage._descriptor_paths(item["descriptor"]):
+            kind = classify(value, layout)
+            if kind in ("legacy_state", "container"):
+                continue
+            if (kind == "models" and item["participant"] == "collectors"
+                    and item["descriptor"].get("kind") == "legacy_training"):
+                continue
+            if kind == "logs" and value in metrics:
+                continue
+            found.add((item["participant"], kind))
+    return [list(item) for item in sorted(found)]
+
+
+# The confirm-foreign set the plan binds. Design v1 lets the operator confirm
+# per participant that a foreign locator is "copied in and relocated", but
+# never defines the source of that copy (the retained /home/kza/kza tree or
+# the 10-28 copy already in the slot state) nor how a relocated target that
+# collides with the slot's own target merges its steps. Until a reviewed
+# rule exists every confirmation refuses, so the bound set is always empty.
+CONFIRM_FOREIGN_SUPPORTED: frozenset = frozenset()
+
+
+def check_confirm_foreign(confirm_foreign) -> list[str]:
+    """The bound confirm-foreign set; any participant without a reviewed rule refuses."""
+    items = sorted(set(confirm_foreign or ()))
+    if any(item not in CONFIRM_FOREIGN_SUPPORTED for item in items):
+        _refuse("runtime_admission_adoption_foreign_confirm_undefined")
+    return items
+
+
+# --- scratch and source stability (review F5, F6) ---------------------------------------------------
+
+SCRATCH_MARKER = ".kza-adoption-scratch.json"
+
+
+def _mount_type(path: str) -> str | None:
+    """The filesystem type of the mount holding ``path`` (Linux mountinfo); None when unknown."""
+    try:
+        lines = Path("/proc/self/mountinfo").read_text().splitlines()
+    except OSError:
+        return None
+    best, kind = -1, None
+    for line in lines:
+        fields = line.split(" ")
+        if "-" not in fields:
+            continue
+        mount = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), fields[4])
+        if _under(path, (mount,)) and len(mount) > best:
+            best, kind = len(mount), fields[fields.index("-") + 1]
+    return kind
+
+
+def check_scratch(scratch: Path, *, work: Path, state_root: Path, layout: SourceLayout, plan_sha256: str) -> str:
+    """The P2=A scratch: private, disjoint from the copy, the slot and the sources, and tmpfs or marked.
+
+    On tmpfs (P4) it must be empty or hold only the scratch marker;
+    elsewhere it must hold exactly the marker ``{"schema_version": 1,
+    "plan_sha256": <plan>}`` (tests, non-Linux). Returns 'tmpfs' or 'marker'.
+    """
+    code = "runtime_admission_adoption_scratch"
+    scratch = Path(scratch)
+    try:
+        info = scratch.lstat()
+    except OSError:
+        _refuse(code)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        _refuse(code)
+    real = os.path.realpath(scratch)
+    for other in (work, state_root, *source_roots(layout)):
+        resolved = os.path.realpath(other)
+        if _under(real, (resolved,)) or _under(resolved, (real,)):
+            _refuse(code + "_overlap")
+    entries = sorted(os.listdir(scratch))
+    if _mount_type(real) == "tmpfs" and entries in ([], [SCRATCH_MARKER]):
+        return "tmpfs"
+    if entries != [SCRATCH_MARKER]:
+        _refuse(code + "_unmarked")
+    try:
+        descriptor = os.open(scratch / SCRATCH_MARKER, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(descriptor) as stream:
+            marker = json.load(stream)
+    except (OSError, ValueError):
+        _refuse(code + "_unmarked")
+    if marker != {"schema_version": 1, "plan_sha256": plan_sha256}:
+        _refuse(code + "_unmarked")
+    return "marker"
+
+
+def write_scratch_marker(scratch: Path, plan_sha256: str) -> None:
+    """Mark a non-tmpfs scratch for one plan (tests, non-Linux)."""
+    if type(plan_sha256) is not str or re.fullmatch("[0-9a-f]{64}", plan_sha256) is None:
+        _refuse("runtime_admission_adoption_plan_invalid")
+    descriptor = os.open(Path(scratch) / SCRATCH_MARKER, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "w") as stream:
+        json.dump({"schema_version": 1, "plan_sha256": plan_sha256}, stream, sort_keys=True)
+
+
+def source_stat_map(layout: SourceLayout, metrics_path: str) -> dict:
+    """(inode, size, mtime_ns) of every source file the manifest covers, re-walked now."""
+    found = {}
+    root = Path(layout.legacy_state)
+    for path in _walk_files(root):
+        info = path.lstat()
+        found[path.relative_to(root).as_posix()] = [info.st_ino, info.st_size, info.st_mtime_ns]
+    for item in metrics_store_set(layout, metrics_path)["members"]:
+        info = (Path(layout.metrics_root) / item).lstat()
+        found["metrics/" + item] = [info.st_ino, info.st_size, info.st_mtime_ns]
+    return found
+
+
+def verify_source_unchanged(layout: SourceLayout, metrics_path: str, manifest: list) -> None:
+    """Re-walk the sources after the copy: any changed, added or removed file refuses (review F6)."""
+    expected = {entry[0]: list(entry[1:4]) for entry in manifest}
+    if source_stat_map(layout, metrics_path) != expected:
+        _refuse("runtime_admission_adoption_source_changed")
+
+
 # --- the library pipeline ---------------------------------------------------------------------------
 
 def _legacy_metrics_path(work: Path) -> str:
@@ -1558,25 +1793,44 @@ def _legacy_metrics_path(work: Path) -> str:
 
 def adopt_copy(layout: SourceLayout, *, work: Path, scratch: Path, state_root: Path, plan_sha256: str,
                adoption_time: float, python: str, runtime_root: Path, retirement: dict | None = None,
-               rows: tuple[TransformRow, ...] | None = None) -> dict:
+               rows: tuple[TransformRow, ...] | None = None, confirm_foreign=()) -> dict:
     """Turn a byte copy of the production state into the first managed state, in ``work``.
 
-    ``work`` is the adoption copy (it gets the marker), ``scratch`` the tmpfs
-    scratch for DROP_LIST databases, ``state_root`` where the state will be
-    served from (descriptors name it). The source is only read, under a
-    SourceGuard, and the R1 steps run in the schema-only child. Returns a
-    content-free report; any refusal raises AdoptionRefusal.
+    ``work`` is the adoption copy (it gets the marker), ``scratch`` the
+    P2=A scratch (tmpfs or marked, disjoint from everything else) for the
+    DROP_LIST databases, ``state_root`` where the state will be served from
+    (descriptors name it). The source is only read, under a SourceGuard, and
+    re-walked after the copy; the R1 steps run in the schema-only child.
+    Returns a content-free report; any refusal raises AdoptionRefusal with
+    the report so far as ``refusal.report`` (the dry-run census).
     """
     work, scratch = Path(work), Path(scratch)
     rows = transform_table() if rows is None else rows
     report: dict = {"schema_version": SCHEMA_VERSION, "plan_sha256": plan_sha256}
+    try:
+        _adopt(report, layout, work, scratch, state_root, plan_sha256, adoption_time, python, runtime_root,
+               retirement, rows, confirm_foreign)
+    except AdoptionRefusal as refusal:
+        refusal.report = report
+        raise
+    return report
+
+
+def _adopt(report, layout, work, scratch, state_root, plan_sha256, adoption_time, python, runtime_root,
+           retirement, rows, confirm_foreign) -> None:
+    report["confirm_foreign"] = check_confirm_foreign(confirm_foreign)
     with SourceGuard(*source_roots(layout)) as guard:
         report["layout"] = read_source_layout(layout)
+        report["scratch"] = check_scratch(scratch, work=work, state_root=state_root, layout=layout,
+                                          plan_sha256=plan_sha256)
         work.mkdir(mode=0o700)
         copied = copy_source(layout, work, scratch)
-        metrics = copy_metrics_store(layout, _legacy_metrics_path(work), work)
-        report["source_manifest_sha256"] = manifest_digest(copied["manifest"] + metrics["manifest"])
-        report["source_files"] = len(copied["manifest"]) + len(metrics["manifest"])
+        metrics_path = _legacy_metrics_path(work)
+        metrics = copy_metrics_store(layout, metrics_path, work)
+        manifest = copied["manifest"] + metrics["manifest"]
+        verify_source_unchanged(layout, metrics_path, manifest)
+        report["source_manifest_sha256"] = manifest_digest(manifest)
+        report["source_files"] = len(manifest)
         report["copy"] = copied["counts"]
         report["metrics"] = {key: metrics[key] for key in ("members", "outside_pre_policy")}
         report["recovery"] = recover_copies(work)
@@ -1588,26 +1842,33 @@ def adopt_copy(layout: SourceLayout, *, work: Path, scratch: Path, state_root: P
         report["transform_sha256"] = transform_digest(rows)
         report["tables"] = table_digests()
         report["env"] = env_census(work / ".env", layout)
+        report["descriptor_classes"] = descriptor_census(work, layout)
+        foreign = foreign_targets(work, layout, metrics["policy_name"])
+        report["foreign_targets"] = foreign
+        if foreign:
+            _refuse("runtime_admission_adoption_foreign_target:" + ":".join(foreign[0]))
         outside = [item["descriptor"]["root"] for item in registered_targets(work)
                    if item["participant"] == "collectors" and item["descriptor"].get("kind") == "legacy_training"
                    and classify(item["descriptor"]["root"], layout) not in ("legacy_state", "container")]
         training = legacy_training_disposition(layout, outside, retirement)
         report["legacy_training"] = {"retirement": training["retirement"], "roots": len(outside)}
         report["census_before"] = path_census(work, layout)
+        before = table_snapshot(work)  # S3's source: f includes the relocation (review F1)
         report["relocation"] = relocate(work, state_root, layout, training["mapping"], metrics["policy_name"])
         report["census_after"] = path_census(work, layout)
-        before = table_snapshot(work)
+        expected = relocation_model(before, Relocation(layout, state_root, training["mapping"],
+                                                       metrics["policy_name"]))
         report["schema"] = run_child(python, runtime_root, work, "schema")
         report["seed"] = run_child(python, runtime_root, work, "seed", at=adoption_time)["seeded"]
         residue = launcher.resurrection_residue(work, descriptor_root=Path(state_root))
         report["residue"] = run_child(python, runtime_root, work, "residue", at=adoption_time,
                                       state_root=state_root)["requeued"]
-        report["s3"] = verify_s3(before, table_snapshot(work), adoption_time=adoption_time,
+        report["s3"] = verify_s3(expected, table_snapshot(work), adoption_time=adoption_time,
                                  plan_sha256=plan_sha256, residue=residue)
         report["contracts"] = verify_contracts(work)
-        expected = run_child(python, runtime_root, work, "targets", state_root=state_root)["targets"]
-        report["targets"] = check_target_set(work, expected, state_root)
+        targets = run_child(python, runtime_root, work, "targets", state_root=state_root)["targets"]
+        report["targets"] = check_target_set(work, targets, state_root)
         finish_copies(work)
+        verify_source_unchanged(layout, metrics_path, manifest)
         report["guard"] = {"refused": guard.refused, "connects_observed": guard.connects}
     report["prepared_manifest_sha256"] = manifest_digest(file_manifest(work))
-    return report

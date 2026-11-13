@@ -24,7 +24,9 @@ from scripts.adoption import SourceLayout
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 CHILD = Path(__file__).with_name("adoption_legacy_child.py")
+CHILD_30DA279 = Path(__file__).with_name("adoption_legacy_child_30da279.py")
 LEGACY = "b0866e8"
+PRE_SLOT = "30da279"  # 2026-10-26: the erasure journal's first registrations, run from the checkout
 OLD_EVENTS = "8558ff1^"  # the last commit whose EventLogger created the pre-policy events table
 B_SLOT = "release_20261028T145442Z_b0866e8"
 C_SLOT = "release_20261029T174830709997Z_63ea8d3"
@@ -34,13 +36,13 @@ UNCOMMITTED = "KZA-UNCOMMITTED-LIST"
 def available() -> bool:
     """Whether this clone holds the legacy commits."""
     return all(subprocess.run(["git", "cat-file", "-e", commit + "^{commit}"], cwd=REPOSITORY,
-                              capture_output=True).returncode == 0 for commit in (LEGACY, "8558ff1"))
+                              capture_output=True).returncode == 0 for commit in (LEGACY, "8558ff1", PRE_SLOT))
 
 
-def b0866e8_tree(destination: Path) -> Path:
-    """Extract b0866e8's src/ and config/ into ``destination``."""
+def b0866e8_tree(destination: Path, commit: str = LEGACY) -> Path:
+    """Extract ``commit``'s (default b0866e8) src/ and config/ into ``destination``."""
     destination.mkdir(parents=True)
-    archive = subprocess.run(["git", "archive", "--format=tar", LEGACY, "src", "config"], cwd=REPOSITORY,
+    archive = subprocess.run(["git", "archive", "--format=tar", commit, "src", "config"], cwd=REPOSITORY,
                              check=True, capture_output=True).stdout
     subprocess.run(["tar", "-x", "-C", str(destination)], input=archive, check=True)
     return destination
@@ -78,13 +80,26 @@ def _hot_journal(database: Path) -> None:
     work.unlink()
 
 
-def build_legacy(root: Path, tree: Path, *, adapters: bool = False) -> SourceLayout:
-    """Write the legacy layout under ``root`` with b0866e8's code from ``tree``."""
+def build_legacy(root: Path, tree: Path, *, adapters: bool = False, pre_slot: Path | None = None) -> SourceLayout:
+    """Write the legacy layout under ``root`` with b0866e8's code from ``tree``.
+
+    ``pre_slot`` (a 30da279 tree) first runs the pre-10-28 service from the
+    legacy checkout, then copies its data/ into the slot state (the 10-28
+    prepare_slot copy); the checkout's data/ is retained, as in production.
+    """
     layout = layout_of(root)
     state = layout.legacy_state
-    for directory in (state / "config", state / "data", state / "logs", layout.container, layout.models_root,
+    for directory in (state / "config", state / "logs", layout.container, layout.models_root,
                       layout.metrics_root):
         directory.mkdir(parents=True)
+    if pre_slot is None:
+        (state / "data").mkdir()
+    else:
+        result = subprocess.run([sys.executable, "-I", "-B", str(CHILD_30DA279), str(pre_slot),
+                                 str(layout.legacy_checkout)], capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr[-4000:])
+        shutil.copytree(layout.legacy_checkout / "data", state / "data")
     shutil.copyfile(tree / "config" / "settings.yaml", state / "config" / "settings.yaml")
     (state / ".env").write_text("HOME_ASSISTANT_URL=http://192.168.1.100:8123\nCONFIG_PATH=config/settings.yaml\n")
     (state / "logs" / "voice_assistant.log").write_text("legacy log\n")

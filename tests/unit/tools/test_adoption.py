@@ -269,7 +269,7 @@ def test_the_drop_runs_in_the_scratch_and_only_vacuum_into_reaches_the_destinati
     scratch, destination = tmp_path / "scratch", tmp_path / "work"
     _legacy_events(scratch / "data" / "events.db")
     assert MARKER in (scratch / "data" / "events.db").read_bytes()
-    assert adoption.drop_and_vacuum(scratch, destination) == {"data/events.db": {"tables_dropped": 1}}
+    assert adoption.drop_and_vacuum(scratch, destination) == {"data/events.db": {"tables_dropped": 1, "temp_store": "memory", "temp_directory": "scratch"}}
     target = destination / "data" / "events.db"
     assert MARKER not in target.read_bytes()
     assert not any(scratch.rglob("events.db*"))
@@ -512,3 +512,213 @@ def test_the_childs_refusal_becomes_the_adoptions(tmp_path):
         adoption.run_child(sys.executable, REPOSITORY, copy, "residue", at=1.0)
     with pytest.raises(adoption.AdoptionRefusal, match="plan_invalid"):
         adoption.write_copy_marker(tmp_path, "nothex")
+
+
+# --- the relocator's string discipline (review F3) ---------------------------------------------------
+
+def test_only_a_matched_prefix_is_rewritten(tmp_path):
+    layout = _layout(tmp_path)
+    rules = adoption.Relocation(layout, tmp_path / "slot" / "state", {}, None)
+    legacy, new = str(layout.legacy_state), str(tmp_path / "slot" / "state")
+    assert rules.path(legacy + "/data//x/../y.flac") == new + "/data//x/../y.flac"
+    assert rules.path(str(layout.container) + "/data/a.db") == new + "/data/a.db"  # de-container, then relocate
+    for value in ("/srv/other//x/../y.flac", "/a/../b", "/x//y/", legacy + "-other/data", "relative/x"):
+        assert rules.path(value) == value
+    assert rules.string(3) == 3 and rules.string("acción /ruta") == "acción /ruta"
+    assert rules.descriptor({"path": legacy + "/data/e.db", "table": legacy}) == {"path": new + "/data/e.db",
+                                                                                   "table": legacy}
+
+
+def test_json_text_keeps_every_unchanged_byte():
+    text = '{\n  "/legacy/k": "/legacy/v",\n  "n": "canción",\n  "l": ["/legacy/a", "/x//y", 3],\n  "u": "caf\\u00e9 /legacy/b"\n}'
+    mapper = lambda value: "/new" + value[len("/legacy"):] if type(value) is str and value.startswith("/legacy/") else value  # noqa: E731
+    result = adoption.rewrite_json_text(text, mapper)
+    assert result == text.replace('"/legacy/v"', '"/new/v"').replace('"/legacy/a"', '"/new/a"')
+    assert adoption.rewrite_json_text(text, lambda value: value) is text
+    ascii_text = '["\\u00e9/legacy", "/legacy/\\u00e9"]'
+    assert adoption.rewrite_json_text(ascii_text, mapper) == '["\\u00e9/legacy", "/new/\\u00e9"]'
+    assert adoption.rewrite_json_text('["/legacy/é"]', mapper) == '["/new/é"]'
+
+
+def test_a_json_cell_that_diverges_from_its_structured_relocation_refuses(tmp_path):
+    layout = _layout(tmp_path)
+    rules = adoption.Relocation(layout, tmp_path / "slot" / "state", {}, None)
+    legacy = str(layout.legacy_state)
+    escaped = json.dumps({"root": legacy + "/data/q"}).replace("/", "\\/")  # tokens are decoded before mapping
+    assert json.loads(adoption._relocate_cell("json", escaped, rules, {}, {})) == {
+        "root": str(tmp_path / "slot" / "state") + "/data/q"}
+    stray = json.dumps([{"target_id": "a"}, "a"])  # an evidence id outside a target_id field
+    with pytest.raises(adoption.AdoptionRefusal, match="^runtime_admission_adoption_relocation_json$"):
+        adoption._relocate_cell("evidence", stray, rules, {}, {"a": "b"})
+    assert adoption._relocate_cell("evidence", json.dumps([{"target_id": "a"}]), rules, {}, {"a": "b"}) == \
+        json.dumps([{"target_id": "b"}])
+
+
+# --- foreign targets (review F2) --------------------------------------------------------------------
+
+def test_foreign_targets_are_classed_per_participant(tmp_path):
+    from src.memory.erasure_journal import ErasureParticipant
+    from src.memory.fact_ledger import FactLedger
+
+    layout = _layout(tmp_path)
+    work = tmp_path / "work"
+    (work / "data").mkdir(parents=True)
+    ledger = FactLedger(str(work / "data" / "memory_privacy.db"))
+    ledger.initialize()
+    lora = str(layout.models_root / "lora_adapters")
+    policy = "kza-metrics_policy_v1.jsonl"
+    try:
+        for participant, descriptor in (
+                (ErasureParticipant.EVENTS, {"path": str(layout.legacy_state / "data/events.db"), "table": "e"}),
+                (ErasureParticipant.COLLECTORS, {"kind": "legacy_training", "root": lora}),
+                (ErasureParticipant.DIAGNOSTICS, {"path": str(layout.metrics_root / policy)})):
+            ledger.erasures.register_target(participant, 1, descriptor)
+    finally:
+        ledger.close()
+    assert adoption.foreign_targets(work, layout, policy) == []
+    assert adoption.descriptor_census(work, layout) == {"collectors": {"models": 1}, "diagnostics": {"logs": 1},
+                                                        "events": {"legacy_state": 1}}
+    assert adoption.foreign_targets(work, layout, None) == [["diagnostics", "logs"]]
+    ledger = FactLedger(str(work / "data" / "memory_privacy.db"))
+    ledger.initialize()
+    try:
+        for participant, descriptor in (
+                (ErasureParticipant.SEMANTIC_INDEX, {"path": str(layout.legacy_checkout / "data/memory_db"),
+                                                     "collection": "c"}),
+                (ErasureParticipant.CAPTURES, {"root": str(layout.models_root / "whisper")}),
+                (ErasureParticipant.CONTEXTS, {"root": "/srv/elsewhere"}),
+                (ErasureParticipant.STREAMS, {"path": str(layout.metrics_root / "kza-metrics.jsonl")})):
+            ledger.erasures.register_target(participant, 1, descriptor)
+    finally:
+        ledger.close()
+    assert adoption.foreign_targets(work, layout, policy) == [
+        ["captures", "models"], ["contexts", "other"], ["semantic_index", "legacy_checkout"], ["streams", "logs"]]
+
+
+def test_every_confirm_foreign_refuses_until_a_rule_is_reviewed():
+    assert adoption.check_confirm_foreign(()) == [] and adoption.check_confirm_foreign(None) == []
+    with pytest.raises(adoption.AdoptionRefusal, match="^runtime_admission_adoption_foreign_confirm_undefined$"):
+        adoption.check_confirm_foreign({"semantic_index"})
+
+
+# --- the scratch (review F5) and source stability (review F6) ---------------------------------------
+
+def _scratch_case(tmp_path):
+    layout = _layout(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    os.chmod(scratch, 0o700)
+    return layout, scratch, {"work": tmp_path / "work", "state_root": tmp_path / "slot" / "state",
+                             "layout": layout, "plan_sha256": "a" * 64}
+
+
+def test_a_marked_private_disjoint_scratch_is_accepted(tmp_path):
+    _layout_, scratch, options = _scratch_case(tmp_path)
+    with pytest.raises(adoption.AdoptionRefusal, match="^runtime_admission_adoption_scratch_unmarked$"):
+        adoption.check_scratch(scratch, **options)
+    adoption.write_scratch_marker(scratch, "a" * 64)
+    assert adoption.check_scratch(scratch, **options) == "marker"
+    with pytest.raises(adoption.AdoptionRefusal, match="^runtime_admission_adoption_scratch_unmarked$"):
+        adoption.check_scratch(scratch, **dict(options, plan_sha256="b" * 64))
+    (scratch / "left.db").write_bytes(b"")
+    with pytest.raises(adoption.AdoptionRefusal, match="^runtime_admission_adoption_scratch_unmarked$"):
+        adoption.check_scratch(scratch, **options)
+
+
+def test_a_tmpfs_scratch_needs_no_marker(tmp_path, monkeypatch):
+    _layout_, scratch, options = _scratch_case(tmp_path)
+    monkeypatch.setattr(adoption, "_mount_type", lambda path: "tmpfs")
+    assert adoption.check_scratch(scratch, **options) == "tmpfs"
+    (scratch / "left.db").write_bytes(b"")
+    with pytest.raises(adoption.AdoptionRefusal, match="^runtime_admission_adoption_scratch_unmarked$"):
+        adoption.check_scratch(scratch, **options)
+
+
+def test_mountinfo_is_read_by_longest_mount(tmp_path, monkeypatch):
+    info = tmp_path / "mountinfo"
+    info.write_text("22 1 8:1 / / rw - ext4 /dev/sda1 rw\n"
+                    "40 22 0:5 / /run/user/1000 rw,nosuid - tmpfs tmpfs rw\n"
+                    "41 22 0:6 / /run/user/1000/a\\040b rw - ext4 /dev/sdb rw\n")
+    original = Path.read_text
+    monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: original(info if str(self) == "/proc/self/mountinfo"
+                                                                         else self, *a, **k))
+    assert adoption._mount_type("/run/user/1000/kza-scratch") == "tmpfs"
+    assert adoption._mount_type("/run/user/1000/a b/x") == "ext4"
+    assert adoption._mount_type("/home/kza") == "ext4"
+
+
+@pytest.mark.parametrize("bad", ["mode", "symlink", "inside_work", "contains_slot", "inside_source"])
+def test_an_unsafe_scratch_refuses(tmp_path, bad):
+    layout, scratch, options = _scratch_case(tmp_path)
+    adoption.write_scratch_marker(scratch, "a" * 64)
+    code = "^runtime_admission_adoption_scratch_overlap$"
+    if bad == "mode":
+        os.chmod(scratch, 0o755)
+        code = "^runtime_admission_adoption_scratch$"
+    elif bad == "symlink":
+        os.symlink(scratch, tmp_path / "link")
+        scratch = tmp_path / "link"
+        code = "^runtime_admission_adoption_scratch$"
+    elif bad == "inside_work":
+        options["work"] = scratch / "work"
+    elif bad == "contains_slot":
+        options["state_root"] = scratch / "slot" / "state"
+    else:
+        scratch = layout.legacy_state / "tmp"
+        scratch.mkdir(mode=0o700)
+        os.chmod(scratch, 0o700)
+        adoption.write_scratch_marker(scratch, "a" * 64)
+    with pytest.raises(adoption.AdoptionRefusal, match=code):
+        adoption.check_scratch(scratch, **options)
+
+
+def test_the_drop_runs_with_memory_temp_storage_in_the_scratch(tmp_path, monkeypatch):
+    scratch, destination = tmp_path / "scratch", tmp_path / "work"
+    _legacy_events(scratch / "data" / "events.db", rows=10)
+    seen = []
+
+    class Recording:
+        def __init__(self, connection):
+            self._connection = connection
+
+        def execute(self, sql, *arguments):
+            if sql.startswith("VACUUM INTO"):
+                seen.append((self._connection.execute("PRAGMA temp_store").fetchone()[0],
+                             self._connection.execute("PRAGMA temp_store_directory").fetchone()[0]))
+            return self._connection.execute(sql, *arguments)
+
+        def close(self):
+            self._connection.close()
+
+    class Shim:
+        def __getattr__(self, name):
+            return getattr(sqlite3, name)
+
+        def connect(self, *arguments, **options):
+            return Recording(sqlite3.connect(*arguments, **options))
+    monkeypatch.setattr(adoption, "sqlite3", Shim())
+    adoption.drop_and_vacuum(scratch, destination)
+    assert seen == [(2, str(scratch.resolve()))]
+    with closing(sqlite3.connect(":memory:")) as db:
+        assert db.execute("PRAGMA temp_store_directory").fetchall() in ([], [("",)])  # reset after the drop
+
+
+def test_the_sources_are_re_walked_after_the_copy(tmp_path):
+    layout = _layout(tmp_path)
+    data = layout.legacy_state / "data"
+    _db(data / "lists.db", ["CREATE TABLE lists(id)"])
+    (data / "users.json").write_text("{}")
+    copied = adoption.copy_source(layout, tmp_path / "work", tmp_path / "scratch")
+    metrics = adoption.copy_metrics_store(layout, "/home/kza/logs/kza-metrics.jsonl", tmp_path / "work")
+    manifest = copied["manifest"] + metrics["manifest"]
+    adoption.verify_source_unchanged(layout, "/home/kza/logs/kza-metrics.jsonl", manifest)
+    for change in (lambda: (data / "users.json").write_text("{} "), lambda: (data / "late.json").write_text("{}"),
+                   lambda: (layout.metrics_root / "kza-metrics_policy_v1.jsonl").write_text("{}\n")):
+        change()
+        with pytest.raises(adoption.AdoptionRefusal, match="^runtime_admission_adoption_source_changed$"):
+            adoption.verify_source_unchanged(layout, "/home/kza/logs/kza-metrics.jsonl", manifest)
+        copied = adoption.file_manifest(layout.legacy_state)
+        members = adoption.metrics_store_set(layout, "/home/kza/logs/kza-metrics.jsonl")["members"]
+        manifest = copied + [["metrics/" + item[0], *item[1:]] for item in adoption.file_manifest(layout.metrics_root)
+                             if item[0] in members]
+        adoption.verify_source_unchanged(layout, "/home/kza/logs/kza-metrics.jsonl", manifest)

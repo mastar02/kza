@@ -15,9 +15,11 @@ from contextlib import AsyncExitStack, closing
 import hashlib
 import hmac
 import json
+import os
 from pathlib import Path
 import shutil
 import sqlite3
+import subprocess
 import sys
 
 import pytest
@@ -42,6 +44,11 @@ def tree(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
+def pre_slot_tree(tmp_path_factory):
+    return fixture.b0866e8_tree(tmp_path_factory.mktemp("30da279") / "tree", fixture.PRE_SLOT)
+
+
+@pytest.fixture(scope="module")
 def adopted(tmp_path_factory, tree):
     """One legacy layout, adopted once; the tests below only read it."""
     root = tmp_path_factory.mktemp("adopted").resolve()
@@ -55,7 +62,11 @@ def adopted(tmp_path_factory, tree):
 
 
 def _adopt(layout, root, **options):
-    return adoption.adopt_copy(layout, work=root / "work", scratch=root / "scratch",
+    scratch = root / "scratch"
+    if not scratch.exists():  # not tmpfs here: a scratch marked for this plan (review F5)
+        scratch.mkdir(mode=0o700)
+        adoption.write_scratch_marker(scratch, PLAN)
+    return adoption.adopt_copy(layout, work=root / "work", scratch=scratch,
                                state_root=root / "slot" / "state", plan_sha256=PLAN, adoption_time=AT,
                                python=sys.executable, runtime_root=REPOSITORY, **options)
 
@@ -116,6 +127,45 @@ def test_a_source_access_inside_the_pipeline_is_refused(tmp_path, tree, monkeypa
     assert fixture.tree_bytes(root / "legacy") == before
 
 
+@pytest.mark.parametrize("change", ["append", "new_file"])
+def test_a_source_change_during_the_copy_refuses(tmp_path, tree, monkeypatch, change):
+    """Review F6: the sources are re-walked after the copy (another process changes one meanwhile)."""
+    layout, root = _variant(tmp_path, tree)
+    original = adoption.copy_metrics_store
+    target = layout.legacy_state / ("logs/voice_assistant.log" if change == "append" else "data/late.json")
+
+    def change_source(*args, **kwargs):
+        result = original(*args, **kwargs)
+        subprocess.run([sys.executable, "-c", "import sys; open(sys.argv[1], 'a').write('x')", str(target)],
+                       check=True)  # a separate process: the audit hook is in-process only
+        return result
+    monkeypatch.setattr(adoption, "copy_metrics_store", change_source)
+    with pytest.raises(adoption.AdoptionRefusal, match="^runtime_admission_adoption_source_changed$"):
+        _adopt(layout, root)
+
+
+@pytest.mark.parametrize("scratch", ["unmarked", "inside_work_parent_slot"])
+def test_the_scratch_is_checked_before_anything_is_copied(tmp_path, tree, scratch):
+    """Review F5: tmpfs or marked, private, and disjoint from the copy, the slot and the sources."""
+    layout, root = _variant(tmp_path, tree)
+    if scratch == "unmarked":
+        (root / "scratch").mkdir(mode=0o700)
+        code = "^runtime_admission_adoption_scratch_unmarked$"
+    else:
+        (root / "slot" / "state" / "tmp").mkdir(parents=True, mode=0o700)
+        os.chmod(root / "slot" / "state" / "tmp", 0o700)
+        adoption.write_scratch_marker(root / "slot" / "state" / "tmp", PLAN)
+        code = "^runtime_admission_adoption_scratch_overlap$"
+    with pytest.raises(adoption.AdoptionRefusal, match=code):
+        if scratch == "unmarked":
+            _adopt(layout, root)
+        else:
+            adoption.adopt_copy(layout, work=root / "work", scratch=root / "slot" / "state" / "tmp",
+                                state_root=root / "slot" / "state", plan_sha256=PLAN, adoption_time=AT,
+                                python=sys.executable, runtime_root=REPOSITORY)
+    assert not (root / "work").exists()
+
+
 # --- A2: the hot journal --------------------------------------------------------------------------
 
 def test_the_hot_journal_is_recovered_on_the_copy_and_counted(adopted):
@@ -133,7 +183,7 @@ def test_the_hot_journal_is_recovered_on_the_copy_and_counted(adopted):
 def test_audit_db_and_the_legacy_events_table_reach_no_byte_of_the_copy(adopted):
     work = adopted["work"]
     assert not (work / "data" / "audit.db").exists()
-    assert adopted["report"]["drops"] == {"data/events.db": {"tables_dropped": 1}}
+    assert adopted["report"]["drops"] == {"data/events.db": {"tables_dropped": 1, "temp_store": "memory", "temp_directory": "scratch"}}
     events = work / "data" / "events.db"
     assert _rows(events, "PRAGMA freelist_count") == [(0,)]
     assert "events" not in {row[0] for row in _rows(events, "SELECT name FROM sqlite_master WHERE type='table'")}
@@ -212,37 +262,63 @@ async def _r1_fresh_schema(root: Path, monkeypatch) -> dict:
 
 
 def _schema(root: Path) -> dict:
+    """Per database: tables -> [(name, type, notnull, default, pk)], plus '<indexes>' -> {name: sql}."""
     result = {}
     for path in adoption.sqlite_files(root):
         tables = {}
         with closing(sqlite3.connect(path)) as db:  # test-owned copies only (a WAL needs a writer)
             for (table,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
-                tables[table] = [(row[1], row[4]) for row in db.execute('PRAGMA table_info("' + table + '")')]
+                tables[table] = [tuple(row[1:6]) for row in db.execute('PRAGMA table_info("' + table + '")')]
+            tables["<indexes>"] = {name: (table, " ".join((sql or "").split())) for name, table, sql in db.execute(
+                "SELECT name, tbl_name, sql FROM sqlite_master WHERE type='index'")}
         result[path.relative_to(root).as_posix()] = tables
     return result
 
 
-def _generated_diff(legacy: dict, fresh: dict) -> tuple[set, set, dict]:
-    """Column additions (with their stored default), tables rebuilt without a default, tables added."""
-    additions, rebuilt, added = set(), set(), {}
+def _generated_diff(legacy: dict, fresh: dict) -> dict:
+    """b0866e8 -> R1 per database: column additions (with their stored default), tables rebuilt
+    without a default, tables added, and (review F7) tables/columns/indexes removed or changed."""
+    diff = {"additions": set(), "rebuilt": set(), "added": {}, "removed": set(), "changed": set()}
     for relative, tables in legacy.items():
         if relative not in fresh:
+            diff["removed"].add((relative, None, None))
             continue
-        for table, columns in fresh[relative].items():
-            if table in ("sqlite_sequence",):
+        new_tables = fresh[relative]
+        old_indexes, new_indexes = tables["<indexes>"], new_tables["<indexes>"]
+        for name, (table, sql) in old_indexes.items():
+            if name not in new_indexes:
+                diff["removed"].add((relative, table, "index:" + name))
+            elif new_indexes[name] != (table, sql):
+                diff["changed"].add((relative, table, "index:" + name))
+        for table, columns in tables.items():
+            if table in ("sqlite_sequence", "<indexes>"):
+                continue
+            if table not in new_tables:
+                diff["removed"].add((relative, table, None))
+                continue
+            new = {column[0]: column for column in new_tables[table]}
+            for column in columns:
+                if column[0] not in new:
+                    diff["removed"].add((relative, table, column[0]))
+                elif new[column[0]] != column:
+                    diff["changed"].add((relative, table, column[0]))
+            if [column[0] for column in new_tables[table]][:len(columns)] != [column[0] for column in columns]:
+                diff["changed"].add((relative, table, "<order>"))
+        for table, columns in new_tables.items():
+            if table in ("sqlite_sequence", "<indexes>"):
                 continue
             if table not in tables:
-                added.setdefault(relative, set()).add(table)
+                diff["added"].setdefault(relative, set()).add(table)
                 continue
-            old = [name for name, _default in tables[table]]
-            for name, default in columns:
+            old = [column[0] for column in tables[table]]
+            for name, _type, _notnull, default, _pk in columns:
                 if name not in old:
                     if default is None and table in {item[1] for item in adoption.REBUILT_LEASES}:
-                        rebuilt.add((relative, table, name))
+                        diff["rebuilt"].add((relative, table, name))
                     else:
-                        additions.add((relative, table, name,
-                                       None if default is None else default.strip("'")))
-    return additions, rebuilt, added
+                        diff["additions"].add((relative, table, name,
+                                               None if default is None else default.strip("'")))
+    return diff
 
 
 async def test_the_hand_written_table_equals_the_generated_b0866e8_vs_r1_diff(adopted, tmp_path, monkeypatch):
@@ -253,13 +329,19 @@ async def test_the_hand_written_table_equals_the_generated_b0866e8_vs_r1_diff(ad
     for relative in list(legacy):
         if "chroma" in relative:
             legacy.pop(relative)
-    additions, rebuilt, added = _generated_diff(legacy, fresh)
-    assert additions == set(adoption.COLUMN_ADDITIONS)
-    assert rebuilt == {(db, table, column) for db, table, columns in adoption.REBUILT_LEASES for column in columns}
+    diff = _generated_diff(legacy, fresh)
+    assert diff["additions"] == set(adoption.COLUMN_ADDITIONS)
+    assert diff["rebuilt"] == {(db, table, column) for db, table, columns in adoption.REBUILT_LEASES
+                               for column in columns}
     # Tables R1 adds lazily at its first start (not by the schema-only open) are not in ADDITIVE_TABLES.
     lazy = {"capture_browser_recorders", "capture_runtime_control"}
-    assert {db: tables - lazy for db, tables in added.items()} == {
+    assert {db: tables - lazy for db, tables in diff["added"].items()} == {
         db: set(tables) for db, tables in adoption.ADDITIVE_TABLES.items()}
+    # Review F7: nothing is removed or changed except the P2=A drop (the table and its indexes).
+    dropped = {(relative, table) for relative, drops in adoption.DROP_LIST.items() for table in drops}
+    assert {item for item in diff["removed"] if item[:2] not in dropped} == set()
+    assert {item[:2] for item in diff["removed"]} == dropped
+    assert diff["changed"] == set()
 
 
 def test_an_unlisted_column_drift_refuses(tmp_path, tree, monkeypatch):
@@ -287,6 +369,28 @@ def test_a_changed_protected_row_refuses(tmp_path, tree, monkeypatch):
         return result
     monkeypatch.setattr(adoption, "run_child", tamper)
     with pytest.raises(adoption.AdoptionRefusal, match="runtime_admission_adoption_s3:data/lists.db:lists"):
+        _adopt(layout, root)
+
+
+@pytest.mark.parametrize("database, table, statement", [
+    ("ambient.db", "utterances", "UPDATE utterances SET text='MANGLED'"),
+    ("memory_privacy.db", "facts", "UPDATE facts SET content='MANGLED' WHERE state!='deleted'"),
+    ("memory_privacy.db", "erasure_steps", "UPDATE erasure_steps SET attempts=attempts+7"),
+])
+def test_a_relocator_that_changes_a_non_remap_column_refuses(tmp_path, tree, monkeypatch, database, table,
+                                                             statement):
+    """Review F1: S3's f starts before the relocation, so only REMAP columns may change there."""
+    layout, root = _variant(tmp_path, tree)
+    original = adoption.relocate
+
+    def mangled(state, *args, **kwargs):
+        result = original(state, *args, **kwargs)
+        with closing(sqlite3.connect(Path(state) / "data" / database)) as db, db:
+            assert db.execute(statement).rowcount > 0
+        return result
+    monkeypatch.setattr(adoption, "relocate", mangled)
+    with pytest.raises(adoption.AdoptionRefusal, match="^runtime_admission_adoption_s3:data/" + database + ":"
+                       + table + "$"):
         _adopt(layout, root)
 
 
@@ -346,6 +450,44 @@ async def test_first_start_targets_mirror_the_main_factory(tmp_path, monkeypatch
     assert sorted(map(key, registered)) == sorted(map(key, first_start_targets(config, root)))
 
 
+async def test_first_start_targets_mirror_r1_on_production_shaped_settings(tmp_path, monkeypatch):
+    """Review F8: the mirror equals R1's real registration with the transformed b0866e8 settings subtrees."""
+    import yaml
+    import src.vectordb.chroma_sync as index_module
+    from src.application import ApplicationFactories
+    from src.core.adoption_schema import first_start_targets
+    from src.main import build_application
+    from tests.mocks.application_graph import OfflineEncoder, OfflineSTT, OfflineTTS, offline_config, offline_home
+
+    text = subprocess.run(["git", "show", fixture.LEGACY + ":config/settings.yaml"], cwd=REPOSITORY,
+                          capture_output=True, text=True, check=True).stdout
+    production = yaml.safe_load(adoption.transform_config_text(text, adoption.transform_table()))
+    root = tmp_path.resolve()
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(index_module, "SentenceTransformer", lambda *args, **kwargs: OfflineEncoder())
+    stt, tts = OfflineSTT(), OfflineTTS()
+    leaves = ApplicationFactories(stt=lambda _: stt, tts=lambda _: tts, preflight=lambda: None)
+    async with offline_home() as (url, _observations):
+        config = offline_config(root, url)
+        for key in ("memory", "analytics", "training", "observability"):
+            config[key] = production[key]
+        # The production subtrees with the services kept offline (no recall, ambient, rooms or nightly run).
+        config["memory"] = dict(production["memory"], enabled=False)
+        config["ambient"] = dict(production["ambient"], enabled=False)
+        config["orchestrator"] = dict(production.get("orchestrator") or {}, enabled=True)
+        config["rooms"] = {"enabled": False, "wake_word": production["rooms"]["wake_word"]}
+        config["analytics"] = dict(production["analytics"], enabled=False)
+        config["training"]["nightly"]["enabled"] = False
+        async with AsyncExitStack() as stack:
+            await build_application(config, shutdown=stack, factories=leaves)
+        registered = [{"participant": row[0], "version": row[1], "descriptor": json.loads(row[2])}
+                      for row in _rows(root / "data" / "memory_privacy.db",
+                                       "SELECT participant, version, descriptor FROM erasure_targets")]
+    key = lambda item: json.dumps(item, sort_keys=True)  # noqa: E731
+    assert len(registered) > 20
+    assert sorted(map(key, registered)) == sorted(map(key, first_start_targets(config, root)))
+
+
 def test_an_extra_or_missing_target_refuses(adopted):
     work, state_root = adopted["work"], adopted["state_root"]
     expected = [{key: item[key] for key in ("participant", "version", "descriptor")}
@@ -361,13 +503,13 @@ def test_an_extra_or_missing_target_refuses(adopted):
 def test_a_dropped_row_during_relocation_refuses(tmp_path, tree, monkeypatch):
     """Rows are never cut: a relocation that loses one row refuses."""
     layout, root = _variant(tmp_path, tree)
-    original = adoption._canonical_like
+    original = adoption.Relocation.descriptor
 
-    def lose_a_row(text, value):
+    def lose_a_row(self, descriptor):
         with closing(sqlite3.connect(root / "work" / "data" / "lists.db")) as db, db:
             db.execute("DELETE FROM lists WHERE rowid IN (SELECT rowid FROM lists LIMIT 1)")
-        return original(text, value)
-    monkeypatch.setattr(adoption, "_canonical_like", lose_a_row)
+        return original(self, descriptor)
+    monkeypatch.setattr(adoption.Relocation, "descriptor", lose_a_row)
     with closing(sqlite3.connect(layout.legacy_state / "data" / "lists.db")) as db:
         db.execute("INSERT INTO lists(id,name,owner_type,owner_id,created_at,updated_at) VALUES"
                    " ('kept','compras','user','user_a',1,1)")
@@ -403,6 +545,55 @@ def test_a_context_locator_is_relocated(tmp_path, tree):
     assert report["relocation"]["changed"]["contexts:*.json"] == 1
     value = json.loads((root / "work" / "data" / "contexts" / "policy_v3" / "user_b.json").read_text())
     assert value["audio"] == str(root / "slot" / "state" / "data" / "ambient_audio" / "x.flac")
+
+
+def test_only_legacy_strings_change_and_context_bytes_are_kept(tmp_path, tree):
+    """Review F3: no normalisation of other strings; context JSON keeps its encoding and indent."""
+    def mutate(data):
+        value = {"user_id": "user_a", "history": ["/a/../b", "/x//y/", "acción /ruta/./z"], "note": "canción",
+                 "audio": str(data / "ambient_audio" / "x.flac"), "odd": str(data) + "//y/../z.flac"}
+        (data / "contexts" / "policy_v3" / "user_a.json").write_bytes(
+            json.dumps(value, ensure_ascii=False, indent=2).encode())
+        with closing(sqlite3.connect(data / "ambient.db")) as db, db:
+            db.execute("UPDATE utterances SET audio_path='/srv/other//x/../y.flac'")
+    layout, root = _variant(tmp_path, tree, mutate)
+    raw = (layout.legacy_state / "data" / "contexts" / "policy_v3" / "user_a.json").read_bytes()
+    _adopt(layout, root)
+    new = (root / "work" / "data" / "contexts" / "policy_v3" / "user_a.json").read_bytes()
+    assert new == raw.replace(str(layout.legacy_state).encode(), str(root / "slot" / "state").encode())
+    assert "canción".encode() in new and b"\n  " in new
+    assert _rows(root / "work" / "data" / "ambient.db", "SELECT audio_path FROM utterances") == [
+        ("/srv/other//x/../y.flac",)]
+
+
+def test_a_pre_slot_checkout_target_is_censused_and_refused_by_class(tmp_path, tree, pre_slot_tree):
+    """Review F2: a 30da279-registered /home/kza/kza target, carried by the 10-28 copy."""
+    layout, root = _variant(tmp_path, tree, pre_slot=pre_slot_tree)
+    with pytest.raises(adoption.AdoptionRefusal,
+                       match="^runtime_admission_adoption_foreign_target:semantic_index:legacy_checkout$") as refusal:
+        _adopt(layout, root)
+    report = refusal.value.report
+    assert report["descriptor_classes"]["semantic_index"] == {"legacy_checkout": 1, "legacy_state": 1}
+    assert report["foreign_targets"] == [["semantic_index", "legacy_checkout"]]
+    assert report["confirm_foreign"] == []
+    assert str(root) not in json.dumps(report)  # content-free: classes and counts only
+    assert "census_before" not in report and not (root / "slot").exists()
+
+
+def test_a_confirm_foreign_set_without_a_reviewed_rule_refuses(tmp_path, tree, pre_slot_tree):
+    layout, root = _variant(tmp_path, tree, pre_slot=pre_slot_tree)
+    with pytest.raises(adoption.AdoptionRefusal, match="^runtime_admission_adoption_foreign_confirm_undefined$"):
+        _adopt(layout, root, confirm_foreign={"semantic_index"})
+    assert not (root / "work").exists()
+
+
+def test_the_adopted_fixture_has_no_foreign_target(adopted):
+    report = adopted["report"]
+    assert report["foreign_targets"] == [] and report["confirm_foreign"] == []
+    assert report["scratch"] == "marker"
+    assert set(report["descriptor_classes"]["diagnostics"]) <= {"legacy_state", "logs"}
+    assert all(set(classes) <= {"legacy_state", "container", "models", "logs"}
+               for classes in report["descriptor_classes"].values())
 
 
 # --- A7: legacy_training (P1=D) --------------------------------------------------------------------
