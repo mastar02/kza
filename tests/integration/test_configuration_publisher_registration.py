@@ -512,6 +512,44 @@ async def test_substituted_temporary_is_never_replaced_or_deleted(tmp_path, monk
         assert_poisoned(g)
 
 
+@pytest.mark.parametrize("failure", ["pin", "fileio_and_fstat"])
+async def test_an_unpinned_or_unobserved_own_temporary_is_retained_and_poisons(tmp_path, monkeypatch, failure):
+    """Without the pin, or without an observed own identity, cleanup never unlinks the name."""
+    async with configuration_graph(tmp_path, monkeypatch) as g:
+        graph_ready(g)
+        await queue(g)
+        created = own_temporaries(monkeypatch, reuse=False)
+        descriptors, inner, injected = [], state_configuration.tempfile.mkstemp, []
+
+        def mkstemp(*args, **kwargs):
+            result = inner(*args, **kwargs)
+            descriptors.append(result[0])
+            return result
+
+        def once(real, message):
+            def call(descriptor, *args, **kwargs):
+                if descriptors and descriptor == descriptors[0] and not injected:
+                    injected.append(message)  # Once: the number is reusable after its close.
+                    raise OSError(message)
+                return real(descriptor, *args, **kwargs)
+            return call
+        monkeypatch.setattr(state_configuration.tempfile, "mkstemp", mkstemp)
+        if failure == "pin":
+            monkeypatch.setattr(state_configuration.os, "dup", once(os.dup, "synthetic dup failure"))
+        else:
+            monkeypatch.setattr(state_configuration.os, "fstat", once(os.fstat, "synthetic fstat failure"))
+
+            def file_io(descriptor, *args, **kwargs):
+                raise OSError("synthetic FileIO failure")
+            monkeypatch.setattr(state_configuration, "FileIO", file_io)
+        await shutdown(g)
+        assert len(injected) == 1 and len(created) == 1
+        assert "configuration_write_unconfirmed" in messages(config_error(g))
+        assert os.path.lexists(created[0]) and g.settings.read_bytes() == RAW
+        assert g.changes.registration_failure == "output_registration_cleanup_unproven"
+        assert_poisoned(g)
+
+
 async def test_destination_substituted_after_replace_is_uncertain(tmp_path, monkeypatch):
     async with configuration_graph(tmp_path, monkeypatch) as g:
         graph_ready(g)

@@ -222,3 +222,23 @@ def test_cleanup_never_deletes_a_substitute_with_the_freed_own_inode_number(
     _assert_closed(descriptor)
     assert calls == [False, False, True] and Path(temporary).read_bytes() == b"canary"
     assert not users.data_path.exists() and users._users == {}
+
+
+def test_a_failed_pin_closes_the_raw_descriptor_once_and_keeps_the_unproven_name(tmp_path, monkeypatch, descriptors):
+    allocated, closes = descriptors
+    users = UserManager(str(tmp_path / "users.json"))
+    real_dup, injected = os.dup, []
+
+    def dup(descriptor):
+        if allocated and descriptor == allocated[-1][0] and not injected:
+            injected.append(descriptor)
+            raise OSError("synthetic dup failure")
+        return real_dup(descriptor)
+
+    monkeypatch.setattr(catalog.os, "dup", dup)
+    with pytest.raises(OSError, match="synthetic dup failure"):
+        users.add_user("Synthetic", PermissionLevel.GUEST)
+    descriptor, temporary = allocated[-1]
+    assert injected == [descriptor] and closes == [descriptor]
+    _assert_closed(descriptor)
+    assert Path(temporary).exists() and not users.data_path.exists() and users._users == {}
