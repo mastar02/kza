@@ -99,8 +99,13 @@ WORK_DIRECTORY = "adoption"  # <root>/adoption/<slot>: built here, then renamed 
 RETIREMENT_PREFIX = "retire-legacy-training-"
 RETIRE_INTENT_PREFIX = "retire-intent-"
 COMMIT_INTENT_PREFIX = "commit-intent-"
+ENABLED_AFTER_ABORT_PREFIX = "enabled-after-abort-"
 PLAN_PREFIX = "plan-"
 PREPARED_ABORT_PREFIX = "abort-prepared-"
+# Adoption events that only a later window writes (W1b, W2, W4, W-abort-1): after an abort record,
+# any of them means that window started, and abort must not re-enable kza-voice (review R2-4).
+_WINDOW_EVENT_PREFIXES = (RETIRE_INTENT_PREFIX, RETIREMENT_PREFIX, PLAN_PREFIX, COMMIT_INTENT_PREFIX,
+                          PREPARED_ABORT_PREFIX)
 # Records whose presence means a managed run happened (P6: then only L4).
 RUN_RECORD_DIRECTORIES = ("runs", "receipts", "receipt-states", "recoveries", "closures", "seal-intents")
 # Free space (checked as a threshold, never hashed): 2 x the source plus a margin.
@@ -613,6 +618,25 @@ def _expanded(unit: str, token: str, environment: dict) -> str:
     return _ENV_REFERENCE.sub(substitute, token)
 
 
+def _words(value: str) -> list[str]:
+    """systemd's word splitting of an expanded $VAR (review R2-2); plain whitespace if shlex cannot parse it."""
+    try:
+        return shlex.split(value)
+    except ValueError:
+        return value.split()
+
+
+def _with_words(values) -> list[str]:
+    """Each value whole and, when it holds several words, each word too (stricter than systemd for ${VAR})."""
+    found = []
+    for value in values:
+        found.append(value)
+        words = _words(value)
+        if words != [value]:
+            found += words
+    return found
+
+
 def _container_volumes(unit: str, argv: list[str]) -> list[str]:
     """Host sides of a podman/docker run's binds; a named or unparsed volume is returned as ''."""
     hosts = []
@@ -640,14 +664,24 @@ def unit_view(manager, unit: str) -> dict:
 
     ExecStart is shown unexpanded by systemd: ${VAR} and $VAR are resolved
     from Environment= and every EnvironmentFile= (read O_NOFOLLOW; only key
-    names are kept). An unresolvable reference or env file refuses.
+    names are kept). An unresolvable reference or env file refuses. Expanded
+    arguments and environment values are also word-split, so '--lora <path>'
+    inside a multi-word variable is seen (review R2-2).
+
+    Only explicit references count (review R2-3): WorkingDirectory is a
+    token only when set to a path; empty (the user manager's default, the
+    home directory) and '~' are used to resolve relative arguments but are
+    not themselves a reference to the models or the checkout.
     """
     shown = manager.user_show(unit, ("LoadState", "Environment", "WorkingDirectory"))
     commands_shown = manager.user_show_all(unit, "ExecStart")
     files = manager.user_show_all(unit, "EnvironmentFiles")
     if shown is None or commands_shown is None or files is None:
         _refuse("runtime_admission_adoption_units_unavailable")
-    base = shown["WorkingDirectory"].lstrip("!-~") or "/"
+    directory = shown["WorkingDirectory"].lstrip("!-")
+    home = os.path.expanduser("~")
+    explicit = bool(directory) and not directory.startswith("~")
+    base = directory if explicit else home + directory[1:] if directory.startswith("~/") else home
     environment, keys = {}, []
     try:
         for token in shlex.split(shown["Environment"]):
@@ -667,12 +701,12 @@ def unit_view(manager, unit: str) -> dict:
             argv = launcher.exec_start_argv(value)
         except launcher.LauncherRefusal:
             _refuse("runtime_admission_retire_unit_unparsed:" + unit)
-        argv = [_expanded(unit, token, environment) for token in argv]
+        argv = _with_words([_expanded(unit, token, environment) for token in argv])
         raw += argv
         if argv and os.path.basename(argv[0]) in _CONTAINER_TOOLS:
             binds += _container_volumes(unit, argv)
         tokens += argv
-    tokens += list(environment.values()) + [base]
+    tokens += _with_words(environment.values()) + ([base] if explicit or directory.startswith("~/") else [])
     return {"unit": unit, "load_state": shown["LoadState"], "base": base, "tokens": tokens, "raw": raw,
             "environment_file_keys": sorted(set(keys)), "container_binds": binds}
 
@@ -688,7 +722,8 @@ def _relevant(view: dict, models: str, checkout: str) -> bool:
         return True
     if any(not host or _covers(os.path.realpath(host), [models, checkout]) for host in view["container_binds"]):
         return True  # a named or unparsed volume cannot be resolved here: the W0 list must name the unit
-    return any(_covers(candidate, [models, checkout]) for token in view["tokens"]
+    # Under the models or the checkout only: a home or '/' that merely contains them is no reference (R2-3).
+    return any(_under(candidate, [models, checkout]) for token in view["tokens"]
                for candidate in _path_candidates(token, Path(view["base"])))
 
 
@@ -727,8 +762,8 @@ def discover_units(manager, listed: tuple[str, ...], layout) -> tuple[list[dict]
             _refuse("runtime_admission_retire_unit_not_loaded:" + unit)
         views[unit] = view
     for unit in sorted(set(names) - set(named)):
-        if not unit.endswith(".service"):
-            continue
+        if not unit.endswith(".service") or unit.endswith("@.service"):  # a template runs only as instances,
+            continue                                                      # which list-units names
         view = unit_view(manager, unit)
         if view["load_state"] == "loaded" and _relevant(view, models, checkout):
             _refuse("runtime_admission_retire_unit_not_listed:" + unit)
@@ -995,7 +1030,10 @@ def adoption_dry_run(root, *, container_slot: str, archive, slot: str, scratch_p
             problems.append(str(refusal))
         adopted.pop("plan_sha256", None)
         problems += adopted.get("refusals", [])
-        if any(adopted.get("source_moving", {}).values()):
+        moving = adopted.get("source_moving", {})
+        if moving.get("torn"):  # review R2-1: a database left out of the census; retry the dry-run
+            warnings.append("advisory: source moving, retry")
+        elif any(moving.values()):
             warnings.append("advisory: source moving")
         if (adopted.get("legacy_training") or {}).get("retirement") == "assumed":
             warnings.append("advisory: legacy_training assumed retired (P1=D pending, W1b)")
@@ -1502,6 +1540,38 @@ def _enable(manager) -> bool:
     return bool(manager.user_enable(launcher.UNIT))
 
 
+def _enabled_marker(root: Path, head: dict) -> Path:
+    return stage.adoption_directory(root) / (ENABLED_AFTER_ABORT_PREFIX + stage._digest(head) + ".json")
+
+
+def _enable_after_abort(root: Path, head: dict, manager, wall) -> bool:
+    """Enable kza-voice and, once that is verified, record it (the abort is then complete, review R2-4)."""
+    enabled = _enable(manager)
+    if enabled:
+        stage._atomic_record(_enabled_marker(root, head), {
+            "schema_version": 1, "kind": "enabled_after_abort", "head_sha256": stage._digest(head),
+            "enabled_at": launcher._now_stamp(float(wall()))}, immutable=True)
+    return enabled
+
+
+def _later_window_started(root: Path, head: dict) -> bool:
+    """Whether any adoption event of a later window is newer than this head's abort record (R2-4).
+
+    The durable signals: the enabled-after-abort record (the abort finished,
+    so a disabled kza-voice now is a later W1's doing), a plan over the
+    aborted head (W2), and any retire intent or record, plan, commit intent
+    or abort-prepared record written after the abort record (W1b to W4).
+    """
+    if os.path.lexists(_enabled_marker(root, head)):
+        return True
+    if any(plan["expected_head"] == head for _digest, plan in _plans(root)):
+        return True
+    directory = stage.adoption_directory(root)
+    aborted = os.lstat(stage.abort_record_path(root, head)).st_mtime_ns
+    return any(name.startswith(_WINDOW_EVENT_PREFIXES) and os.lstat(directory / name).st_mtime_ns > aborted
+               for name in os.listdir(directory))
+
+
 def adoption_abort(root, *, manager, unit_dir, paths: ProductionPaths | None = None, wall=time.time) -> dict:
     """W-abort-2 (section 7, P6=A): back to the legacy unit before any managed run, without the phrase.
 
@@ -1527,9 +1597,9 @@ def adoption_abort(root, *, manager, unit_dir, paths: ProductionPaths | None = N
         target = root / "slots" / slot
         if stage.head_aborted(root, head):
             stage.read_abort_record(root, head)
-            # Resume only while this abort is the newest adoption event (review F11): a plan built
-            # over the aborted head means a later window started, and enabling kza-voice then is wrong.
-            if any(plan["expected_head"] == head for _digest, plan in _plans(root)):
+            # Resume only while this abort is the newest adoption event (review F11, R2-4): once a later
+            # window started (or this abort already enabled kza-voice), enabling it again is wrong.
+            if _later_window_started(root, head):
                 _refuse("runtime_admission_adoption_already_aborted")
             pending = os.path.lexists(target) or voice["UnitFileState"] != "enabled"
             if not pending:
@@ -1537,7 +1607,8 @@ def adoption_abort(root, *, manager, unit_dir, paths: ProductionPaths | None = N
             if os.path.lexists(target):
                 stage.make_writable_then_remove(target)
                 launcher._fsync_path(root / "slots")
-            return {"head": head, "resumed": True, "slot_removed": True, "enabled": _enable(manager)}
+            return {"head": head, "resumed": True, "slot_removed": True,
+                    "enabled": _enable_after_abort(root, head, manager, wall)}
         if _runs_happened(root):
             _refuse("runtime_admission_adoption_abort_after_run")
         layout = adoption.SourceLayout(**{key: Path(value) for key, value in record["layout"].items()})
@@ -1555,7 +1626,7 @@ def adoption_abort(root, *, manager, unit_dir, paths: ProductionPaths | None = N
             "aborted_at": launcher._now_stamp(float(wall()))})
         stage.make_writable_then_remove(target)
         launcher._fsync_path(root / "slots")
-    enabled = _enable(manager)
+        enabled = _enable_after_abort(root, head, manager, wall)
     return {"head": head, "abort_record": stage.abort_record_path(root, head).name, "slot_removed": True,
             "current": "restored", "legacy_conf": legacy_conf, "enabled": enabled}
 

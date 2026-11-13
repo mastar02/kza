@@ -529,6 +529,27 @@ def recover_copies(state: Path) -> dict:
             "databases": sum(counts.values())}
 
 
+def drop_torn_copies(roots: tuple[Path, ...], moving: Counter) -> None:
+    """Advisory only (U3b-0e3 review R2-1): a copy a live writer tore is left out and counted.
+
+    A database whose recovery fails (quick_check, an unexpected or leftover
+    journal, or sqlite3.DatabaseError such as 'malformed' or 'not a
+    database') is removed from the private copy with its -wal/-journal/-shm
+    and counted in ``moving['torn']``; the census continues without it.
+    Prepare and commit never call this: there a torn copy refuses.
+    """
+    for root in roots:
+        if not Path(root).is_dir():
+            continue
+        for path in sqlite_files(Path(root)):
+            try:
+                recover_sqlite_file(path)
+            except (AdoptionRefusal, sqlite3.DatabaseError):
+                for suffix in ("", *SIDE_SUFFIXES):
+                    Path(str(path) + suffix).unlink(missing_ok=True)
+                moving["torn"] += 1
+
+
 def finish_copies(state: Path) -> None:
     """Checkpoint every database once more (read-only readers may leave a -wal); none may remain."""
     recover_copies(state)
@@ -1863,6 +1884,10 @@ def adopt_copy(layout: SourceLayout, *, work: Path, scratch: Path, state_root: P
     except AdoptionRefusal as refusal:
         refusal.report = report
         raise
+    except sqlite3.DatabaseError:  # a corrupt copy is a refusal, never a traceback (review R2-1)
+        refusal = AdoptionRefusal("runtime_admission_adoption_sqlite_corrupt")
+        refusal.report = report
+        raise refusal from None
     return report
 
 
@@ -1906,6 +1931,8 @@ def _adopt(report, layout, work, scratch, state_root, plan_sha256, adoption_time
         report["source_files"] = len(manifest)
         report["copy"] = copied["counts"]
         report["metrics"] = {key: metrics[key] for key in ("members", "outside_pre_policy")}
+        if moving is not None:
+            drop_torn_copies((work, scratch), moving)
         report["recovery"] = recover_copies(work)
         report["drops"] = drop_and_vacuum(scratch, work)
         write_copy_marker(work, plan_sha256)
