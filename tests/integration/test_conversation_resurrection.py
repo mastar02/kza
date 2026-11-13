@@ -75,7 +75,18 @@ RESTORES = {
     "wake_clips_v1": ("collectors", lambda s, erased: fixture.restore_clip_rows(s, tables=("wake_clips_v1",))),
     "contexts": ("contexts", lambda s, erased: fixture.restore_context_files(s)),
     "chroma": ("semantic_index", lambda s, erased: fixture.restore_index_with_conversation_metadata(s)),
+    # Review F1: only the collector JSON/JSONL files under policy_v1, without their wake_clips_v1 rows.
+    "collector_files": ("collectors", lambda s, erased: fixture.restore_collector_files(s)),
 }
+
+
+def _restore_for_cleaner(state, source: str) -> None:
+    """The cleaner needs the file's row: an orphan collector file keeps the step pending by design."""
+    if source == "collector_files":
+        fixture.restore_clip_rows(state)
+        fixture.restore_collector_files(state, suffixes=(".json", ".jsonl", ".wav"))
+    else:
+        RESTORES[source][1](state, state)
 
 
 # --- the production-shaped fixture itself ---------------------------------------------------------
@@ -114,16 +125,19 @@ def test_the_stores_own_pending_step_exempts_it(erased, state, source):
     assert _step_states(state, participant) == {"pending"}
     assert launcher.resurrection_counts(state.state) == NONE | (
         {"fact": 1} if participant == "semantic_index" else {})  # the restored embedding is also a fact id
+    exempt = launcher.resurrection_detail(state.state)["conversation_exempt"]  # review F7
+    assert exempt[participant] == 1 and sum(exempt.values()) == 1
 
 
 @pytest.mark.parametrize("source", sorted(RESTORES))
 def test_the_entrys_cleaner_removes_the_occurrence_and_completes_its_step(erased, state, source):
-    participant, restore = RESTORES[source]
-    restore(state, erased)
+    participant, _ = RESTORES[source]
+    _restore_for_cleaner(state, source)
     assert _participant(state, participant) == 1
     asyncio.run(fixture.run_cleaners(state))  # real graph: leased recovery, then every cleaner, settled
     assert _step_states(state, participant) == {"complete"}
     assert launcher.resurrection_counts(state.state) == NONE
+    assert set(launcher.resurrection_detail(state.state)["conversation_exempt"].values()) == {0}
 
 
 # --- the acceptance cases of 0d4a -----------------------------------------------------------------
@@ -253,3 +267,181 @@ def test_fact_voice_and_consent_counts_are_unchanged_by_conversation_restores(er
     assert counts["conversation"] == 1
     assert {family: counts[family] for family in ("fact", "voice_profile", "voice_consent")} == {
         "fact": 1, "voice_profile": 0, "voice_consent": 0}  # the restored embedding is the erased fact id
+
+
+# --- review F2: branches the first round left unpinned ---------------------------------------------
+
+def _target_id(state, participant: str, **match) -> str:
+    with sqlite3.connect(state.state / "data" / "privacy.db") as db:
+        rows = [(identifier, json.loads(encoded)) for identifier, encoded in db.execute(
+            "SELECT id, descriptor FROM erasure_targets WHERE participant=? AND version=1", (participant,))]
+    found = [identifier for identifier, descriptor in rows
+             if all(descriptor.get(key) == value for key, value in match.items())]
+    assert len(found) == 1
+    return found[0]
+
+
+def _set_target_step(state, target: str, value: str) -> None:
+    with sqlite3.connect(state.state / "data" / "privacy.db") as db:
+        assert db.execute("UPDATE erasure_steps SET state=? WHERE operation_id=? AND target_id=?",
+                          (value, state.operation, target)).rowcount == 1
+
+
+def _recovery_checks(state, checked):
+    """R-b's own check sequence (minimal binding: nothing bound), as serve and adopt --dry-run run it."""
+    report = {"failures": [], "regressions": [], "resurrected": {}, "ledger_bound": False, "databases": 0}
+    return launcher._recovery_checks(state.state, checked, {"authority": {"projection": {"tables": {}}}},
+                                     report, lambda name: None)
+
+
+@pytest.mark.parametrize("step_state", ["running", "blocked"])
+def test_a_running_or_blocked_own_step_is_unfinished(erased, state, step_state):
+    """A crash in mid-step leaves 'running' (R-b runs before recover() turns it into 'pending')."""
+    fixture.restore_file(state, "data/events.db")
+    assert fixture.set_step(state, "events", step_state) == 1
+    assert _conversation(state) == 0
+    assert launcher.resurrection_detail(state.state)["conversation_exempt"]["events"] == 1
+
+
+def test_a_clip_row_naming_a_non_collector_target_is_not_governed(erased, state):
+    fixture.restore_clip_rows(state, tables=("wake_clips_v1",))
+    fixture.restart_journal(state)  # every local step pending, the events step included
+    events = _target_id(state, "events")
+    with sqlite3.connect(state.state / "data" / "privacy.db") as db:
+        assert db.execute("UPDATE wake_clips_v1 SET target_id=? WHERE sources_json LIKE ?",
+                          (events, "%" + state.subject + "%")).rowcount >= 1
+    assert _participant(state, "collectors") == 1
+
+
+def test_the_chroma_collection_name_must_match(erased, state):
+    fixture.restore_index_with_conversation_metadata(state)
+    own = _target_id(state, "semantic_index")
+    with sqlite3.connect(state.state / "data" / "privacy.db") as db:
+        (encoded,), = db.execute("SELECT descriptor FROM erasure_targets WHERE id=?", (own,))
+        other = _register(db, "semantic_index", dict(json.loads(encoded), collection="other_policy_v1"))
+        db.execute("INSERT INTO erasure_steps(operation_id, participant, target_id, version, state)"
+                   " VALUES (?,?,?,1,'complete')", (state.operation, "semantic_index", other))
+    _set_target_step(state, own, "pending")
+    assert _participant(state, "semantic_index") == 0  # the other collection's complete step is irrelevant
+
+
+def test_the_events_table_must_be_events_policy_v1(erased, state):
+    fixture.restore_file(state, "data/events.db")
+    own = _target_id(state, "events")
+    with sqlite3.connect(state.state / "data" / "privacy.db") as db:
+        (encoded,), = db.execute("SELECT descriptor FROM erasure_targets WHERE id=?", (own,))
+        other = _register(db, "events", dict(json.loads(encoded), table="suggestions_policy_v1"))
+        db.execute("INSERT INTO erasure_steps(operation_id, participant, target_id, version, state)"
+                   " VALUES (?,?,?,1,'complete')", (state.operation, "events", other))
+    _set_target_step(state, own, "pending")
+    assert _participant(state, "events") == 0
+
+
+def test_a_journal_fragment_in_a_second_file_is_ambiguous(erased, state):
+    with sqlite3.connect(state.state / "data" / "stray.db") as db:
+        db.execute("CREATE TABLE erasure_steps (operation_id TEXT)")
+    with pytest.raises(ValueError, match="runtime_admission_recovery_erasure_journal_ambiguous"):
+        launcher.resurrection_counts(state.state)
+
+
+def test_a_symlinked_descriptor_root_still_governs(erased, state, tmp_path):
+    """Descriptors are resolved paths; a binding state_root reached through a link must still match."""
+    fixture.restore_file(state, "data/events.db")
+    fixture.restart_journal(state)
+    link = tmp_path / "state-link"
+    link.symlink_to(state.state)
+    shadow = launcher._shadow_state(state.state, tmp_path / "shadow")
+    assert launcher.resurrection_counts(shadow, descriptor_root=link)["conversation"] == 0
+
+
+def test_recovery_checks_relativize_against_the_state_not_the_shadow(erased, state, tmp_path):
+    fixture.restore_file(state, "data/events.db")
+    fixture.restart_journal(state)
+    shadow = launcher._shadow_state(state.state, tmp_path / "shadow")
+    report = _recovery_checks(state, shadow)
+    assert report["failures"] == [] and report["resurrected"]["conversation"] == 0
+    assert report["resurrection_detail"]["conversation_exempt"]["events"] == 1
+
+
+@pytest.mark.parametrize("error", [sqlite3.OperationalError("synthetic"), RecursionError()])
+def test_an_unreadable_scan_is_a_refusal_not_an_exception(erased, state, monkeypatch, error):
+    def fail(*args, **kwargs):
+        raise error
+    monkeypatch.setattr(launcher, "_resurrection_scan", fail)
+    assert _recovery_checks(state, state.state)["failures"] == ["runtime_admission_recovery_resurrection_unreadable"]
+
+
+# --- review F5: scanned JSON that does not parse refuses ------------------------------------------
+
+@pytest.mark.parametrize("payload", ["[" * 200000, "{not json", "7"])
+def test_unparsable_or_deep_json_in_a_scanned_column_refuses(erased, state, payload):
+    with sqlite3.connect(state.state / "data" / "events.db") as db:
+        columns = [row[1] for row in db.execute("PRAGMA table_info(events_policy_v1)")]
+        row = db.execute("SELECT * FROM events_policy_v1 LIMIT 1").fetchone()
+        values = dict(zip(columns, row), id=None, sources_json=payload)
+        db.execute(f"INSERT INTO events_policy_v1 ({','.join(values)}) VALUES ({','.join('?' * len(values))})",
+                   tuple(values.values()))
+    if payload == "7":  # valid JSON without conversation ids: nothing to refuse
+        assert _conversation(state) == 0
+        return
+    with pytest.raises(ValueError, match="runtime_admission_recovery_resurrection_unreadable"):
+        launcher.resurrection_counts(state.state)
+    failures = _recovery_checks(state, state.state)["failures"]  # never an exception out of R-b
+    if payload.startswith("["):
+        assert failures == ["runtime_admission_recovery_resurrection_unreadable"]
+    else:  # the authority capture, which runs first, already refuses invalid JSON with its own message
+        assert len(failures) == 1
+
+
+def test_a_corrupt_collector_jsonl_line_refuses(erased, state):
+    path = next((state.state / "data" / "exports" / "policy_v1").glob("*.jsonl"))
+    path.write_bytes(path.read_bytes() + b"[" * 200000 + b"\n")
+    with pytest.raises(ValueError, match="runtime_admission_recovery_resurrection_unreadable"):
+        launcher.resurrection_counts(state.state)
+
+
+# --- review F1: every file the real code writes is mapped or classified ----------------------------
+
+def test_every_file_kind_the_real_code_writes_is_mapped_or_classified(erased):
+    mapped = {entry.source for entry in launcher.CONVERSATION_SOURCES}
+    classified = set(launcher.CONVERSATION_NOT_SCANNED)
+    kinds = {}
+    for directory in (erased.before, erased.state):  # before the erasure every store holds both cohorts
+        for path in directory.rglob("*"):
+            if path.is_file():
+                kinds.setdefault(launcher.conversation_file_kind(path.relative_to(directory)), path.name)
+    unknown = {kind: name for kind, name in kinds.items()
+               if kind != "sqlite" and kind not in mapped and kind not in classified}
+    assert unknown == {}
+    assert {"collectors:policy_v1/*.json", "collectors:policy_v1/*.jsonl", "contexts:*.json",
+            "file:policy_v1/*.wav", "file:policy_v1/*.flac"} <= set(kinds)
+
+
+# --- second-round mutants (F1 files, F3 cache) ------------------------------------------------------
+
+def test_a_multi_record_export_jsonl_is_read_line_by_line(erased, state):
+    """Export files hold one JSON record per line; a later line can carry the erased conversation."""
+    restored = fixture.restore_collector_files(state, suffixes=(".jsonl",))
+    foreign = [path for path in (state.state / "data" / "exports" / "policy_v1").glob("*.jsonl")
+               if path not in restored]
+    assert foreign
+    for path in restored:  # prepend a surviving record so the subject's record is the second line
+        path.write_bytes(foreign[0].read_bytes().rstrip(b"\n") + b"\n" + path.read_bytes())
+    assert _participant(state, "collectors") == 1
+
+
+def test_a_shadow_copy_carries_the_export_jsonl(erased, state, tmp_path):
+    fixture.restore_collector_files(state, suffixes=(".jsonl",))
+    assert _participant(state, "collectors") == 1
+    shadow = launcher._shadow_state(state.state, tmp_path / "shadow")
+    assert launcher.resurrection_detail(shadow, descriptor_root=state.state) == launcher.resurrection_detail(
+        state.state)
+
+
+def test_each_locator_of_one_source_has_its_own_governing_target(erased, state):
+    """events.db (its step pending: exempt) and an unregistered copy beside it (counted)."""
+    fixture.restore_file(state, "data/events.db")
+    shutil.copy2(state.state / "data" / "events.db", state.state / "data" / "events-restored.db")
+    fixture.restart_journal(state)
+    detail = launcher.resurrection_detail(state.state)
+    assert detail["conversation"]["events"] == 1 and detail["conversation_exempt"]["events"] == 1

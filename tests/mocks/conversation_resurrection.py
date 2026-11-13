@@ -122,6 +122,18 @@ def restore_context_files(erased: ErasedState) -> list[Path]:
     return written
 
 
+def restore_collector_files(erased: ErasedState, suffixes=(".json", ".jsonl")) -> list[Path]:
+    """Write the subject's saved collector files (under a collectors root's policy_v1) back."""
+    written = []
+    for path, raw in erased.saved.data["files"].items():
+        target = Path(path)
+        if target.parent.name == "policy_v1" and "audio" not in target.parts and target.suffix in suffixes:
+            target.write_bytes(raw)
+            written.append(target)
+    assert written
+    return written
+
+
 def restore_index_with_conversation_metadata(erased: ErasedState) -> None:
     """Upsert the subject's saved embedding, carrying conversation_id in its metadata.
 

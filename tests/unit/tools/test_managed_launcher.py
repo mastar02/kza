@@ -449,19 +449,54 @@ def _conversation_columns() -> set[str]:
     return found
 
 
+# Payload-bearing columns outside the conversation_id/*sources_json name predicate (review F1),
+# listed by hand: each must stay classified while the column exists.
+PAYLOAD_COLUMNS = {
+    "stt_corrections_v1.original_text", "stt_corrections_v1.corrected_text",
+    "conversation_export_parents_v1.parent_id",
+    "voice_capture_reviews.transcript", "voice_capture_reviews.audio_wav",
+    "voice_capture_reviews.audio_metadata_json", "voice_capture_reviews.transcript_metadata_json",
+    "legacy_quarantine_records_v1.document", "legacy_quarantine_records_v1.metadata_json",
+}
+# One representative path per file kind of the state (the integration test checks every file the
+# real code writes: test_every_file_kind_the_real_code_writes_is_mapped_or_classified).
+FILE_KINDS = {
+    "data/contexts/policy_v3/u.json": "contexts:*.json",
+    "data/conversations/policy_v1/0b6f3c1e-1111-4222-8333-444455556666.json": "collectors:policy_v1/*.json",
+    "data/exports/policy_v1/0b6f3c1e-1111-4222-8333-444455556666.jsonl": "collectors:policy_v1/*.jsonl",
+    "data/wake/policy_v1/0b6f3c1e-1111-4222-8333-444455556666.wav": "file:policy_v1/*.wav",
+    "data/audio/policy_v1/0b6f3c1e-1111-4222-8333-444455556666.flac": "file:policy_v1/*.flac",
+    "data/stt/policy_v1/0b6f3c1e-1111-4222-8333-444455556666.wav.part": "file:policy_v1/*.part",
+    "data/metrics_policy_v1.jsonl.1": "file:diagnostics *.jsonl[.N]",
+    "data/chroma/0b6f3c1e-1111-4222-8333-444455556666/header.bin": "file:chroma segment",
+    "data/privacy.db.lock": "file:*.lock / *.lease",
+    "data/privacy.db-wal": "sqlite",
+    "data/chroma/chroma.sqlite3": "sqlite",
+}
+
+
 def test_every_conversation_source_is_mapped_or_classified_not_scanned():
-    """0d4a build-time classification: a new unclassified column fails here."""
+    """0d4a build-time classification: a new unclassified column or file kind fails here."""
     mapped = {entry.source for entry in launcher.CONVERSATION_SOURCES}
     classified = set(launcher.CONVERSATION_NOT_SCANNED)
     assert not mapped & classified
-    unclassified = (_conversation_columns() | {"contexts:*.json", "chroma:embedding_metadata.conversation_id"}) \
-        - mapped - classified
+    columns = _conversation_columns() | PAYLOAD_COLUMNS
+    unclassified = (columns | {"chroma:embedding_metadata.conversation_id"} | set(FILE_KINDS.values())) \
+        - {"sqlite"} - mapped - classified
     assert unclassified == set()
-    # The classification names only real columns, and the map covers the seven sources of v3 0d4a.
-    assert classified <= _conversation_columns()
+    # Column keys name real contract columns; file keys are produced by conversation_file_kind.
+    contract = {f"{table}.{item.split(':')[0]}" for table, items in stage._TABLE_COLUMNS.items()
+                for item in items.split()}
+    assert {key for key in classified if not key.startswith("file:")} <= contract
+    assert PAYLOAD_COLUMNS <= contract
+    for relative, kind in FILE_KINDS.items():
+        assert launcher.conversation_file_kind(Path(relative)) == kind, relative
+    assert {key for key in classified if key.startswith("file:")} <= set(FILE_KINDS.values())
+    assert launcher.conversation_file_kind(Path("data/new_store/x.bin")).startswith("unclassified:")
     assert mapped == {"utterances.conversation_id", "capture_conversations.id", "events_policy_v1.sources_json",
                       "wake_clips_v1.sources_json", "conversation_turns_v1.input_sources_json",
-                      "chroma:embedding_metadata.conversation_id", "contexts:*.json"}
+                      "chroma:embedding_metadata.conversation_id", "contexts:*.json",
+                      "collectors:policy_v1/*.json", "collectors:policy_v1/*.jsonl"}
     for entry in launcher.CONVERSATION_SOURCES:
         assert entry.version == 1 and callable(entry.resolver) and callable(entry.scan)
         assert entry.participant in {"captures", "events", "collectors", "semantic_index", "contexts"}

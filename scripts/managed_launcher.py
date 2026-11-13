@@ -737,6 +737,8 @@ def _shadow_wanted(relative: Path) -> bool:
     name = relative.name
     if relative.suffix in _SQLITE_SUFFIXES or relative.suffix == ".json" or name == ".env":
         return True
+    if _file_source(relative) is not None:  # collector .jsonl exports the resurrection scan reads
+        return True
     if relative.parts[0] == "config":
         return True
     for suffix in ("-wal", "-journal"):  # never -shm: SQLite rebuilds it from the -wal
@@ -807,12 +809,21 @@ def _walk_conversation_ids(value, found: set) -> None:
             _walk_conversation_ids(child, found)
 
 
+_UNREADABLE = "runtime_admission_recovery_resurrection_unreadable"
+
+
 def _json_conversation_ids(encoded) -> set[str]:
+    """conversation_id values anywhere in one JSON document; any parse failure refuses (review F5).
+
+    Writers produce bounded, valid JSON, so a document that does not parse
+    (invalid, wrong type, or nested past the recursion limit) is a corrupt
+    state that the scan cannot vouch for.
+    """
     found: set[str] = set()
     try:
         _walk_conversation_ids(json.loads(encoded), found)
-    except (TypeError, ValueError):
-        pass
+    except (TypeError, ValueError, RecursionError):
+        raise ValueError(_UNREADABLE) from None
     return found
 
 
@@ -919,13 +930,25 @@ def _scan_chroma_metadata(db, names, relative):
         yield value, (relative.parent, collection)
 
 
-def _scan_contexts_json(path: Path, relative: Path):
+def _scan_json_file(path: Path, relative: Path):
+    """One JSON document (.json) or one per non-empty line (.jsonl); unreadable refuses."""
     try:
-        values = _json_conversation_ids(path.read_bytes())
+        raw = path.read_bytes()
     except OSError:
-        return
-    for value in values:
-        yield value, relative
+        raise ValueError(_UNREADABLE) from None
+    documents = [line for line in raw.splitlines() if line.strip()] if path.suffix == ".jsonl" else [raw]
+    for document in documents:
+        for value in _json_conversation_ids(document):
+            yield value, relative
+
+
+def _file_source(relative: Path) -> str | None:
+    """The CONVERSATION_SOURCES key of a JSON file the scan reads, or None."""
+    if relative.suffix == ".json" and "contexts" in relative.parts:
+        return "contexts:*.json"
+    if relative.parent.name == "policy_v1" and relative.suffix in (".json", ".jsonl"):
+        return "collectors:policy_v1/*" + relative.suffix
+    return None
 
 
 def _governing_captures(journal: _ErasureJournal, relative: Path) -> frozenset:
@@ -953,19 +976,30 @@ def _governing_chroma(journal: _ErasureJournal, locator) -> frozenset:
                      and journal.relative(target.descriptor.get("path")) == directory)
 
 
-def _governing_contexts(journal: _ErasureJournal, relative: Path) -> frozenset:
-    """The registered contexts directory that is the longest prefix of the file (ties: all of them)."""
+def _longest_directory(journal: _ErasureJournal, participant: str, key: str, relative: Path) -> frozenset:
+    """The registered directory (descriptor[key]) that is the longest prefix of the file (ties: all of them)."""
     matches = []
-    for target in journal.registered("contexts"):
-        if "path" not in target.descriptor:
-            continue  # {'kind': 'runtime', 'name': 'conversation_buffers'} never governs a file
-        directory = journal.relative(target.descriptor["path"])
+    for target in journal.registered(participant):
+        if key not in target.descriptor:
+            continue
+        directory = journal.relative(target.descriptor[key])
         if directory is not None and (directory == relative or directory in relative.parents):
             matches.append((len(directory.parts), target.id))
     if not matches:
         return frozenset()
     longest = max(length for length, _ in matches)
     return frozenset(identifier for length, identifier in matches if length == longest)
+
+
+def _governing_contexts(journal: _ErasureJournal, relative: Path) -> frozenset:
+    """{'kind': 'runtime', 'name': 'conversation_buffers'} has no 'path' and never governs a file."""
+    return _longest_directory(journal, "contexts", "path", relative)
+
+
+def _governing_collector_file(journal: _ErasureJournal, relative: Path) -> frozenset:
+    """The collectors target whose 'root' holds the file: its cleaner unlinks <root>/policy_v1/<id>.<ext>,
+    and its audit keeps the step pending while an unattributed file remains (collector_erasure.py)."""
+    return _longest_directory(journal, "collectors", "root", relative)
 
 
 @dataclass(frozen=True)
@@ -982,7 +1016,7 @@ class ConversationSource:
     version: int
     resolver: object
     scan: object
-    kind: str = "sqlite"  # "sqlite" (per database image) or "contexts_json" (per JSON file)
+    kind: str = "sqlite"  # "sqlite" (per database image) or "file" (per JSON file, see _file_source)
 
 
 CONVERSATION_SOURCES: tuple[ConversationSource, ...] = (
@@ -993,10 +1027,19 @@ CONVERSATION_SOURCES: tuple[ConversationSource, ...] = (
     ConversationSource("wake_clips_v1.sources_json", "collectors", 1, _governing_clip, _scan_wake_clips),
     ConversationSource("conversation_turns_v1.input_sources_json", "collectors", 1, _governing_clip,
                        _scan_conversation_turns),
+    # Defensive: no writer puts conversation_id into Chroma metadata today. Only
+    # embedding_metadata is read, not the embeddings_queue write log. If a writer
+    # ever adds conversation_id metadata, apply _chroma_ids' newest-queue-operation
+    # rule here too: a queue-only upsert would otherwise be missed, and a queued but
+    # unapplied delete would count while the step is complete (review F6).
     ConversationSource("chroma:embedding_metadata.conversation_id", "semantic_index", 1, _governing_chroma,
                        _scan_chroma_metadata),
-    ConversationSource("contexts:*.json", "contexts", 1, _governing_contexts, _scan_contexts_json,
-                       kind="contexts_json"),
+    ConversationSource("contexts:*.json", "contexts", 1, _governing_contexts, _scan_json_file, kind="file"),
+    # Collector payload files (review F1): turn/record JSON and export JSONL carry their sources.
+    ConversationSource("collectors:policy_v1/*.json", "collectors", 1, _governing_collector_file,
+                       _scan_json_file, kind="file"),
+    ConversationSource("collectors:policy_v1/*.jsonl", "collectors", 1, _governing_collector_file,
+                       _scan_json_file, kind="file"),
 )
 
 # Conversation-bearing columns deliberately not scanned, with the reason
@@ -1018,7 +1061,59 @@ CONVERSATION_NOT_SCANNED: dict[str, str] = {
     "lineage.conversation_id": "diagnostics v2 catalog; 0d4b",
     "live_delivery_sources.conversation_id": "streams; 0d4b",
     "suggestions_policy_v1.sources_json": "suggestions participant; 0d4b",
+    # Payload outside the name predicate (review F1). Columns:
+    "stt_corrections_v1.original_text": "child of wake_clips_v1 (ON DELETE CASCADE) without its own sources;"
+                                        " its parent clip's sources_json is scanned",
+    "stt_corrections_v1.corrected_text": "same as stt_corrections_v1.original_text",
+    "conversation_export_parents_v1.parent_id": "child of wake_clips_v1 (ON DELETE CASCADE); the export clip's"
+                                                " sources_json is scanned",
+    "voice_capture_reviews.transcript": "voice provenance keyed by fingerprint_id, no conversation id"
+                                       " (voices participant, v2 unresolved); 0d4b",
+    "voice_capture_reviews.audio_wav": "same as voice_capture_reviews.transcript",
+    "voice_capture_reviews.audio_metadata_json": "same as voice_capture_reviews.transcript",
+    "voice_capture_reviews.transcript_metadata_json": "same as voice_capture_reviews.transcript",
+    "legacy_quarantine_records_v1.document": "quarantined legacy records: the collectors legacy_quarantine"
+                                             " target counts them by batch_id, not by conversation; 0d4b",
+    "legacy_quarantine_records_v1.metadata_json": "same as legacy_quarantine_records_v1.document",
+    # Files (review F1). conversation_file_kind() names every file kind of the state.
+    "file:policy_v1/*.wav": "wake-clip and STT-correction audio: no conversation id in the bytes; attributed only"
+                            " through its wake_clips_v1 row, which is scanned; 0d4b",
+    "file:policy_v1/*.flac": "ambient keep_audio archive: no conversation id in the bytes; attributed only through"
+                             " utterances.audio_path, which is scanned; 0d4b",
+    "file:policy_v1/*.part": "partial collector write: the audit keeps the collectors step pending while it exists",
+    "file:diagnostics *.jsonl[.N]": "diagnostics v2 metric log: numeric records, lineage lives in the catalog; 0d4b",
+    "file:chroma segment": "HNSW segment files (*.bin, index_metadata.pickle): ids and metadata live in"
+                            " chroma.sqlite3, which is scanned",
+    "file:*.lock / *.lease": "writer locks, no payload",
 }
+
+
+def conversation_file_kind(relative: Path) -> str:
+    """The classification key of one state file (build-time test, review F1).
+
+    'sqlite' files are covered by the column classification; every other key
+    is in CONVERSATION_SOURCES or CONVERSATION_NOT_SCANNED, or starts with
+    'unclassified:' (which the test refuses).
+    """
+    relative = Path(relative)
+    name = relative.name
+    if relative.suffix in _SQLITE_SUFFIXES or any(
+            name.endswith(suffix) and Path(name[:-len(suffix)]).suffix in _SQLITE_SUFFIXES
+            for suffix in ("-wal", "-journal", "-shm")):
+        return "sqlite"
+    source = _file_source(relative)
+    if source is not None:
+        return source
+    if relative.suffix in (".lock", ".lease"):
+        return "file:*.lock / *.lease"
+    if relative.parent.name == "policy_v1" and relative.suffix in (".wav", ".flac", ".part"):
+        return "file:policy_v1/*" + relative.suffix
+    if re.fullmatch(r"metrics_policy_v1\.jsonl(\.\d+)?", name):
+        return "file:diagnostics *.jsonl[.N]"
+    if name in {"header.bin", "data_level0.bin", "length.bin", "link_lists.bin", "index_metadata.pickle"} \
+            and re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", relative.parent.name):
+        return "file:chroma segment"
+    return "unclassified:" + (relative.suffix or name)
 
 
 def _read_journal(db: sqlite3.Connection, names: set[str]) -> _ErasureJournal:
@@ -1051,7 +1146,9 @@ def _resurrection_scan(state: Path, descriptor_root: Path | None) -> tuple[dict,
                "voice_profile": {"voice_profiles": set(), "voice_fingerprints": set()}}
     consents: set[tuple[str, int]] = set()
     pending_index: set[str] = set()
-    occurrences: list[tuple[str, ConversationSource, object]] = []
+    # Deduplicated (conversation_id, entry index, locator): locators are per file,
+    # per (directory, collection) or per clip target, so few distinct ones (review F3).
+    occurrences: set[tuple[str, int, object]] = set()
     journals: list[_ErasureJournal] = []
     for path in _sqlite_files(state):
         relative = path.relative_to(state)
@@ -1066,9 +1163,9 @@ def _resurrection_scan(state: Path, descriptor_root: Path | None) -> tuple[dict,
                     ledgers.append((salt[0], subjects))
             if names & _JOURNAL_TABLES:
                 journals.append(_read_journal(db, names))
-            for entry in CONVERSATION_SOURCES:
+            for index, entry in enumerate(CONVERSATION_SOURCES):
                 if entry.kind == "sqlite":
-                    occurrences.extend((value, entry, locator) for value, locator in entry.scan(db, names, relative)
+                    occurrences.update((value, index, locator) for value, locator in entry.scan(db, names, relative)
                                        if type(value) is str and value)
             if "facts" in names:
                 sources["fact"]["facts"].update(row[0] for row in db.execute(
@@ -1095,13 +1192,14 @@ def _resurrection_scan(state: Path, descriptor_root: Path | None) -> tuple[dict,
         raise ValueError("runtime_admission_recovery_erasure_journal_ambiguous")
     journal = journals[0] if journals else _ErasureJournal()
     journal.roots = tuple(dict.fromkeys((root, root.resolve())))
-    contexts = [entry for entry in CONVERSATION_SOURCES if entry.kind == "contexts_json"]
-    for path in sorted(state.rglob("*.json")):
+    files = {entry.source: index for index, entry in enumerate(CONVERSATION_SOURCES) if entry.kind == "file"}
+    for path in sorted(state.rglob("*.json*")):
         relative = path.relative_to(state)
-        if "contexts" in relative.parts and path.is_file() and not path.is_symlink():
-            for entry in contexts:
-                occurrences.extend((value, entry, locator) for value, locator in entry.scan(path, relative)
-                                   if type(value) is str and value)
+        index = files.get(_file_source(relative))
+        if index is not None and path.is_file() and not path.is_symlink():
+            occurrences.update((value, index, locator)
+                               for value, locator in CONVERSATION_SOURCES[index].scan(path, relative)
+                               if type(value) is str and value)
 
     def recorded(candidate, kinds) -> bool:
         return type(candidate) is str and bool(candidate) and any(
@@ -1109,18 +1207,27 @@ def _resurrection_scan(state: Path, descriptor_root: Path | None) -> tuple[dict,
             for salt, subjects in ledgers for kind in kinds)
 
     erased: dict[str, bool] = {}
+    governing_of: dict[tuple[int, object], frozenset] = {}
     counted = {entry.participant: set() for entry in CONVERSATION_SOURCES}
-    for conversation, entry, locator in occurrences:
+    exempt = {entry.participant: set() for entry in CONVERSATION_SOURCES}
+    for conversation, index, locator in occurrences:
         if conversation not in erased:
             erased[conversation] = recorded(conversation, _RESURRECTION_KINDS["conversation"])
         if not erased[conversation]:
             continue
-        governing = entry.resolver(journal, locator)
+        entry = CONVERSATION_SOURCES[index]
+        key = (index, locator)
+        if key not in governing_of:
+            governing_of[key] = entry.resolver(journal, locator)
+        governing = governing_of[key]
         if governing and all((conversation, target) in journal.unfinished for target in governing):
-            continue  # its own store's step is still pending: the next leased run cleans it
+            exempt[entry.participant].add(conversation)  # its own store's step is pending: the next run cleans it
+            continue
         counted[entry.participant].add(conversation)
     counts = {"conversation": len(set().union(*counted.values()))}
-    detail = {"conversation": {participant: len(found) for participant, found in sorted(counted.items())}}
+    # 'conversation_exempt' (review F7): a store exempt run after run shows a step that never completes.
+    detail = {"conversation": {participant: len(found) for participant, found in sorted(counted.items())},
+              "conversation_exempt": {participant: len(found) for participant, found in sorted(exempt.items())}}
     for family in ("fact", "voice_profile"):
         found = {name: {candidate for candidate in values - (pending_index if family == "fact" else set())
                         if recorded(candidate, _RESURRECTION_KINDS[family])}
@@ -1162,7 +1269,8 @@ def resurrection_detail(state: Path, *, descriptor_root: Path | None = None) -> 
 
     For the R-b report and the adoption plan. A fact or voice profile found in
     two sources is counted under each; the family totals are those of
-    resurrection_counts.
+    resurrection_counts. 'conversation_exempt' counts, per participant, the
+    erased conversations with an occurrence exempted by a pending step.
     """
     return _resurrection_scan(state, descriptor_root)[1]
 
@@ -1265,6 +1373,9 @@ def _recovery_checks(state: Path, checked: Path, binding: dict, report: dict, st
     except ValueError as error:
         report["failures"].append(str(error))
         return report
+    except RecursionError:  # a scanned JSON column nested past the limit (review F5)
+        report["failures"].append(_UNREADABLE)
+        return report
     for relative, bound in sorted(tables.items()):
         for family in _APPEND_ONLY_FAMILIES:
             if family not in bound:
@@ -1278,8 +1389,8 @@ def _recovery_checks(state: Path, checked: Path, binding: dict, report: dict, st
         report["resurrected"], report["resurrection_detail"] = _resurrection_scan(checked, state)
     except ValueError as error:
         report["failures"].append(str(error))
-    except sqlite3.Error:
-        report["failures"].append("runtime_admission_recovery_resurrection_unreadable")
+    except (sqlite3.Error, RecursionError):
+        report["failures"].append(_UNREADABLE)
     return report
 
 
@@ -1347,9 +1458,9 @@ def recover_open_head(root: Path, head: dict, *, mode: str, boot_id: str, wall: 
     report = recovery_report(root, head, progress=progress)
     report["state_changed_after_close"] = state_changed
     if report["failures"]:
-        code = ("runtime_admission_recovery_erasure_journal_ambiguous"
-                if "runtime_admission_recovery_erasure_journal_ambiguous" in report["failures"]
-                else "runtime_admission_recovery_check_failed")
+        code = next((failure for failure in report["failures"]
+                     if failure in ("runtime_admission_recovery_erasure_journal_ambiguous", _UNREADABLE)),
+                    "runtime_admission_recovery_check_failed")
         return RecoveryDecision(exit_code=ExitCode.UNRECOVERABLE, code=code, path="R-b", report=report)
     regressed = sorted({item.split(":", 1)[0] for item in report["regressions"]}
                        | {"resurrected_" + name for name, count in report["resurrected"].items() if count}
