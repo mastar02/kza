@@ -191,3 +191,76 @@ def test_training_defaults_are_the_relocated_roots():
     from src.training.nightly_trainer import NightlyConfig
     assert NightlyConfig().output_dir == "./data/training_outputs/nightly"
     assert inspect.signature(LoRATrainer).parameters["output_dir"].default == "./data/training_outputs/lora"
+
+
+# --- review F3: tts.piper.model ---------------------------------------------------------------------
+
+def test_model_file_puts_a_bare_name_under_the_models_root():
+    config = {"paths": {"models_root": "/m"}}
+    assert paths.model_file(config, "v.onnx", "piper", environ={}) == "/m/piper/v.onnx"
+    assert paths.model_file(config, "v.onnx", "piper", environ=TICKET) == "/m/piper/v.onnx"
+    assert paths.model_file(config, "/abs/v.onnx", "piper", environ=TICKET) == "/abs/v.onnx"
+    assert paths.model_file(config, "dir/v.onnx", "piper", environ={}) == "dir/v.onnx"  # preflight judges it
+    for value in ("", ".", ".."):
+        assert paths.model_file(config, value, "piper", environ={}) == value
+    with pytest.raises(RuntimeError, match="runtime_admission_models_root_missing"):
+        paths.model_file({}, "v.onnx", "piper", environ=TICKET)
+
+
+def test_tts_settings_resolve_the_piper_model_only_for_piper_engines():
+    config = {"paths": {"models_root": "/m"}, "tts": {"engine": "piper", "piper": {"model": "v.onnx"}}}
+    resolved = paths.tts_settings(config, environ=TICKET)
+    assert resolved["piper"]["model"] == "/m/piper/v.onnx"
+    assert config["tts"]["piper"]["model"] == "v.onnx"  # the caller's mapping is not mutated
+    hybrid = paths.tts_settings({"paths": {"models_root": "/m"}, "tts": {"engine": "hybrid"}}, environ=TICKET)
+    assert hybrid["piper"]["model"] == f"/m/piper/{paths.PIPER_DEFAULT_MODEL}"
+    assert paths.tts_settings({"paths": {"models_root": "/m"}}, environ={})["piper"]["model"] == \
+        f"/m/piper/{paths.PIPER_DEFAULT_MODEL}"  # the factory's default engine is piper
+    dual = {"tts": {"engine": "dual", "piper": {"model": "v.onnx"}}}
+    assert paths.tts_settings(dual, environ=TICKET) == dual["tts"]  # no models root needed
+
+
+# --- review F10: development defaults follow paths.models_root --------------------------------------
+
+def test_development_settings_follow_the_configured_file(tmp_path):
+    settings = tmp_path / "settings.yaml"
+    settings.write_text("paths:\n  models_root: /dev-models\nspeaker_id:\n  savedir: /sv\nhome_assistant:\n  token: x\n")
+    environ = {"CONFIG_PATH": str(settings)}
+    loaded = paths.development_settings(environ=environ)
+    assert loaded == {"paths": {"models_root": "/dev-models"}, "speaker_id": {"savedir": "/sv"}}
+    assert paths.models_path(loaded, "wakeword", environ=environ) == "/dev-models/wakeword"
+    loaded["paths"]["models_root"] = "/mutated"
+    assert paths.development_settings(environ=environ)["paths"]["models_root"] == "/dev-models"  # a copy
+    settings.write_text("paths:\n  models_root: /changed-root\n")
+    assert paths.development_settings(environ=environ) == {"paths": {"models_root": "/changed-root"}}
+    assert paths.development_settings(environ={**environ, **TICKET}) == {}
+    assert paths.development_settings(environ={"CONFIG_PATH": str(tmp_path / "missing.yaml")}) == {}
+    settings.write_text("- not\n- a mapping\n")
+    assert paths.development_settings(environ=environ) == {}
+    settings.write_text("paths: [unclosed\n")
+    assert paths.development_settings(environ=environ) == {}
+
+
+def test_constructor_defaults_follow_the_development_settings(monkeypatch, tmp_path):
+    """Review F10: a configured paths.models_root moves every unconfigured default with it."""
+    import asyncio
+    import sys
+    import types
+    from src.pipeline.model_manager import ModelManager, ModelManagerConfig
+    from src.wakeword.detector import WakeWordDetector
+    from src.wakeword.trainer import WakeWordTrainer
+    settings = tmp_path / "settings.yaml"
+    root = tmp_path / "dev-models"
+    settings.write_text(f"paths:\n  models_root: {root}\n")
+    monkeypatch.delenv(TICKET_ENV, raising=False)
+    monkeypatch.setenv("CONFIG_PATH", str(settings))
+    assert WakeWordDetector().custom_models_dir == root / "wakeword"
+    assert WakeWordTrainer().models_dir == root / "wakeword"
+    loads = []
+    piper = types.ModuleType("piper")
+    piper.PiperVoice = types.SimpleNamespace(load=lambda path: loads.append(path))
+    monkeypatch.setitem(sys.modules, "piper", piper)
+    asyncio.run(ModelManager(ModelManagerConfig(tts_voice="v"))._load_tts())
+    assert loads == [f"{root}/piper/v.onnx"]
+    asyncio.run(ModelManager(ModelManagerConfig(models_root="/explicit", tts_voice="v"))._load_tts())
+    assert loads[-1] == "/explicit/piper/v.onnx"  # an explicit value still wins

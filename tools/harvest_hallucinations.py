@@ -121,7 +121,12 @@ def _load_existing_blocklist():
 def main() -> int:
     # G1 (U3b-0e): importing src refuses an unmanaged run under a managed
     # release root (exit 78) before any store opens.
-    import src  # noqa: F401
+    try:
+        import src  # noqa: F401
+    except ModuleNotFoundError as error:
+        if error.name != "src":
+            raise  # src exists but is broken: fail loudly
+        # Standalone mode without src: no KZA store is reachable through it.
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--min-count", type=int, default=3)
     parser.add_argument("--file", help="export del journal (default: stdin)")

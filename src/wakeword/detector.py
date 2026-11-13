@@ -15,7 +15,7 @@ from typing import Callable
 
 import numpy as np
 
-from src.core.paths import models_path
+from src.core.paths import development_settings, models_path
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +217,7 @@ class WakeWordDetector(_WakeLifecycle):
         """
         self.models = models or ["hey_jarvis"]
         self.custom_models_dir = Path(custom_models_dir if custom_models_dir is not None
-                                      else models_path(None, "wakeword"))
+                                      else models_path(development_settings(), "wakeword"))
         self.threshold = threshold
         self.refractory_period = refractory_period
         self.inference_framework = inference_framework

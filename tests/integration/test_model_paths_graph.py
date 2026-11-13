@@ -77,3 +77,26 @@ async def test_porcupine_defaults_come_from_the_configured_root(leaves, tmp_path
             await build_application(config, shutdown=stack, factories=leaves)
     assert [(call['keyword_path'], call['model_path']) for call in seen] == [
         (str(models / 'wakeword' / 'nexa_es.ppn'), str(models / 'wakeword' / 'porcupine_params_es.pv'))]
+
+
+async def test_the_tts_factory_receives_the_piper_model_under_the_root(leaves, tmp_path, monkeypatch):
+    """Review F3: a bare tts.piper.model is resolved under paths.models_root, not the cwd."""
+    import src.ambient.transcriber as ambient_module
+
+    install_sdk(monkeypatch)
+    monkeypatch.setattr(ambient_module, '_build_ambient_stt_engine', lambda *_args: OfflineSTT())
+    monkeypatch.chdir(tmp_path)
+    models = tmp_path / 'models-root'
+    seen = []
+
+    def tts_factory(settings):
+        seen.append(settings)
+        return leaves.tts(settings)
+    async with offline_home() as (url, _observations):
+        config = configured(tmp_path, url, ambient=False)
+        config['paths'] = {'models_root': str(models)}
+        config['tts'] = {**config.get('tts', {}), 'engine': 'piper', 'piper': {'model': 'voz.onnx'}}
+        async with AsyncExitStack() as stack:
+            await build_application(config, shutdown=stack, factories=replace(leaves, tts=tts_factory))
+    assert [settings['piper']['model'] for settings in seen] == [str(models / 'piper' / 'voz.onnx')]
+    assert config['tts']['piper']['model'] == 'voz.onnx'

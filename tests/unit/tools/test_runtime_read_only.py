@@ -143,6 +143,58 @@ def test_make_writable_then_remove_refuses_a_mount_crossing(tmp_path, monkeypatc
     stage.make_writable_then_remove(tree)
 
 
+@pytest.mark.parametrize("case", ["mounted_root", "nested_ismount", "table_bind", "table_bind_root",
+                                  "parent_device"])
+def test_make_writable_then_remove_refuses_bind_mounts_before_any_change(tmp_path, monkeypatch, case):
+    """Review F7: a same-device bind mount is seen through ismount or the mount table."""
+    tree = tmp_path / "tree"
+    (tree / "bound" / "x").mkdir(parents=True)
+    stage.make_runtime_read_only(tree)
+    real = os.path.realpath(tree)
+    if case == "mounted_root":
+        monkeypatch.setattr(stage.os.path, "ismount", lambda path: os.fspath(path) == os.fspath(tree))
+    elif case == "nested_ismount":
+        monkeypatch.setattr(stage.os.path, "ismount", lambda path: os.fspath(path).endswith("/bound"))
+    elif case == "table_bind":
+        monkeypatch.setattr(stage, "_mount_points", lambda: ["/", real + "/bound"])
+    elif case == "table_bind_root":
+        monkeypatch.setattr(stage, "_mount_points", lambda: [real])
+    else:
+        original = Path.lstat
+
+        def lstat(self):
+            info = original(self)
+            if self == tmp_path:
+                values = list(info)
+                values[stat.ST_DEV] = info.st_dev + 1
+                return os.stat_result(values)
+            return info
+        monkeypatch.setattr(Path, "lstat", lstat)
+    with pytest.raises(ValueError, match="make_writable_mount_crossing"):
+        stage.make_writable_then_remove(tree)
+    monkeypatch.undo()
+    assert stat.S_IMODE(tree.lstat().st_mode) == 0o555
+    assert stat.S_IMODE((tree / "bound").lstat().st_mode) == 0o555
+
+
+def test_a_sibling_mount_with_a_shared_prefix_is_not_a_crossing(tmp_path, monkeypatch):
+    tree = tmp_path / "tree"
+    (tree / "x").mkdir(parents=True)
+    monkeypatch.setattr(stage, "_mount_points", lambda: [os.path.realpath(tree) + "-other", "/"])
+    stage.make_writable_then_remove(tree)
+    assert not tree.exists()
+
+
+def test_mount_points_unescape_the_table(monkeypatch, tmp_path):
+    table = tmp_path / "mountinfo"
+    table.write_text("36 35 98:0 /mnt1 /mnt\\040point rw,noatime master:1 - ext3 /dev/root rw\n"
+                     "37 35 98:0 / /a\\011b\\134c rw - ext4 /dev/x rw\nshort line\n")
+    real_open = open
+    monkeypatch.setattr("builtins.open", lambda path, *a, **k: real_open(
+        table if path == "/proc/self/mountinfo" else path, *a, **k))
+    assert stage._mount_points() == ["/mnt point", "/a\tb\\c"]
+
+
 def test_make_runtime_read_only_refuses_special_files(tmp_path):
     tree = tmp_path / "tree"
     tree.mkdir()

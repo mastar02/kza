@@ -31,7 +31,7 @@ from src.application import (
 )
 from src.core.egress import CloudConsentGate, ConsentWithdrawalSource
 from src.core.owned_work import OwnedBlockingWork
-from src.core.paths import TRAINING_OUTPUT_NIGHTLY, models_path, speaker_savedir
+from src.core.paths import TRAINING_OUTPUT_NIGHTLY, models_path, speaker_savedir, tts_settings
 from src.core.process_lifecycle import ProcessLifecycle, StopPhase, arm_process_entry
 from src.core.runtime_admission import TICKET_ENV, seal_runtime_configuration, verify_runtime_admission
 from src.core.state_configuration import ConfigurationChanges
@@ -504,6 +504,7 @@ def load_policy_hooks(hooks_cfg: dict, shutdown: AsyncExitStack) -> "HookRegistr
 
         try:
             from src.hooks import _global_registry
+            from src.hooks.audit_switch import audit_enabled
         except Exception as e:
             logger.error(
                 f"[main] Hooks disabled — failed to import src.hooks: {e}",
@@ -536,17 +537,25 @@ def load_policy_hooks(hooks_cfg: dict, shutdown: AsyncExitStack) -> "HookRegistr
                             f"[main] Policy '{mod_name}' failed to load: {e}",
                             exc_info=True,
                         )
+                # U3b-0e N1: the audit has its own switch. Off: src.policies is
+                # not imported for it, no handler and no path (review F5). On:
+                # an import failure follows the per-policy rule above, while a
+                # refusal (KZA_AUDIT_DB or the audit under a ticket) propagates.
+                if audit_enabled(hooks_cfg):
+                    try:
+                        from src.policies.audit_sqlite import register_audit_sqlite
+                    except Exception as e:
+                        failed.append(("audit_sqlite", str(e)))
+                        logger.error(f"[main] Policy 'audit_sqlite' failed to load: {e}", exc_info=True)
+                    else:
+                        audit_policy = register_audit_sqlite(_global_registry, hooks_cfg)
+                        if audit_policy is not None:
+                            shutdown.push_async_callback(asyncio.to_thread, audit_policy.close)
                 if failed:
                     logger.error(
                         f"[main] Hooks PARTIAL: {len(failed)} policy(ies) failed: "
                         f"{[n for n, _ in failed]}; loaded: {loaded}"
                     )
-                # U3b-0e N1: the audit has its own switch; importing the policy
-                # registers nothing. Off: no handler and no path is opened.
-                from src.policies.audit_sqlite import register_audit_sqlite
-                audit_policy = register_audit_sqlite(_global_registry, hooks_cfg)
-                if audit_policy is not None:
-                    shutdown.push_async_callback(asyncio.to_thread, audit_policy.close)
                 stats = _global_registry.get_stats()
                 total_handlers = (
                     sum(stats["before_handler_count"].values())
@@ -690,7 +699,8 @@ async def build_application(
     tts_models = TTSModelOwner()
     shutdown.push_async_callback(tts_models.aclose)
     # Text-to-Speech
-    tts = (factories.tts or create_tts)(config.get("tts", {}))
+    # Review F3: a bare Piper model name resolves under paths.models_root.
+    tts = (factories.tts or create_tts)(tts_settings(config))
     tts_models.add_model(tts)
 
     # Vector Database — embedder_model y embedder_device son obligatorios.

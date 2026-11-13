@@ -165,7 +165,7 @@ def _test(capture, args):
     try:
         det = capture.own_detector(lambda: WakeWordDetector(
             models=[WAKE_WORD_NAME] if args.custom else ["hey_jarvis"],
-            threshold=args.threshold, custom_models_dir="./models/wakeword"))
+            threshold=args.threshold, custom_models_dir=_wake_models_dir()))
         capture.publish(print, f"Threshold: {args.threshold}. Modelos activos: {det.get_active_models() if hasattr(det, 'get_active_models') else 'hey_jarvis'}")
         capture.publish(print, "Hablá al mic del escritorio. El countdown muestra RMS y score en vivo.")
         q = capture.own_queue(queue.Queue())
@@ -307,9 +307,15 @@ def cmd_record_negative(args):
     return _drive_capture(_authority_factory(args), lambda capture: _record_negative(capture, args))
 
 
+def _wake_models_dir() -> str:
+    """<paths.models_root>/wakeword from the development settings (U3b-0e review F10)."""
+    from src.core.paths import development_settings, models_path
+    return models_path(development_settings(), "wakeword")
+
+
 def cmd_train(args):
     from src.wakeword.trainer import WakeWordTrainer
-    trainer = WakeWordTrainer(data_dir="./data/wakeword_training", models_dir="./models/wakeword")
+    trainer = WakeWordTrainer(data_dir="./data/wakeword_training", models_dir=_wake_models_dir())
     print(f"Entrenando '{WAKE_WORD_NAME}' ({args.epochs} epochs)...")
     model_path = trainer.train(
         wake_word_name=WAKE_WORD_NAME,
@@ -325,12 +331,12 @@ def cmd_train(args):
 
 def cmd_deploy(args):
     """Copia el .onnx entrenado al path del detector + update settings."""
-    src = ROOT / "models/wakeword" / f"{WAKE_WORD_NAME}.onnx"
+    src = ROOT / _wake_models_dir() / f"{WAKE_WORD_NAME}.onnx"  # an absolute root wins
     if not src.exists():
         print(f"❌ No encuentro {src} — ¿entrenaste ya?")
         return
     print(f"✅ Modelo custom: {src}")
-    print(f"   El detector lo levanta vía custom_models_dir='./models/wakeword' + model='{WAKE_WORD_NAME}'.")
+    print(f"   El detector lo levanta vía custom_models_dir='{_wake_models_dir()}' + model='{WAKE_WORD_NAME}'.")
     print("\nEditá config/settings.yaml:")
     print(f"  wake_word.model: '{WAKE_WORD_NAME}'")
     print(f"  rooms.wake_word.model: '{WAKE_WORD_NAME}'")

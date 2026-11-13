@@ -25,7 +25,7 @@ from enum import StrEnum
 from typing import Any, Callable
 import time
 
-from src.core.paths import join_models_root, speaker_savedir
+from src.core.paths import development_settings, join_models_root, speaker_savedir
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,8 @@ class ModelManagerConfig:
     tts_gpu: int = 0
     tts_voice: str = "es_ES-mls_9972-medium"
 
-    # Models root (paths.models_root; None = development ./models, refused
+    # Models root (paths.models_root; None = the development settings'
+    # paths.models_root, else ./models; refused under an admission ticket
     # under an admission ticket; U3b-0e 2b)
     models_root: str | None = None
     speaker_savedir: str | None = None  # speaker_id.savedir
@@ -276,13 +277,24 @@ class ModelManager:
             logger.error(f"  ✗ Error cargando {name}: {e}")
             return False
 
+    def _models_root(self) -> str | None:
+        """Configured root, else the development settings' (review F10)."""
+        if self.config.models_root is not None:
+            return self.config.models_root
+        return (development_settings().get("paths") or {}).get("models_root")
+
+    def _speaker_savedir(self) -> str | None:
+        if self.config.speaker_savedir is not None:
+            return self.config.speaker_savedir
+        return (development_settings().get("speaker_id") or {}).get("savedir")
+
     async def _load_tts(self):
         """Cargar modelo TTS"""
         # Importar aquí para evitar dependencias circulares
         try:
             if self.config.tts_model == "piper":
                 from piper import PiperVoice
-                voice_path = join_models_root(self.config.models_root, "piper",
+                voice_path = join_models_root(self._models_root(), "piper",
                                               f"{self.config.tts_voice}.onnx")
                 return PiperVoice.load(voice_path)
             else:
@@ -324,8 +336,8 @@ class ModelManager:
             model = EncoderClassifier.from_hparams(
                 source=self.config.speaker_id_model,
                 savedir=speaker_savedir(
-                    {"paths": {"models_root": self.config.models_root},
-                     "speaker_id": {"savedir": self.config.speaker_savedir}},
+                    {"paths": {"models_root": self._models_root()},
+                     "speaker_id": {"savedir": self._speaker_savedir()}},
                     self.config.speaker_id_model),
                 run_opts={"device": device}
             )

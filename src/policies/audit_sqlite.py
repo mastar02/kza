@@ -23,6 +23,7 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 
 from src.core.runtime_admission import TICKET_ENV
+from src.hooks.audit_switch import AUDIT_ENV, UNSUPPORTED_CODE, audit_enabled
 from src.hooks import (
     HaActionCall,  # noqa: F401  — used in tests / payloads
     HaActionDispatchedPayload, HaActionBlockedPayload,
@@ -33,7 +34,6 @@ from src.hooks.registry import HookRegistry
 logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = "./data/audit.db"
-AUDIT_ENV = "KZA_AUDIT_DB"
 AUDIT_EVENTS = ("wake", "stt", "intent", "ha_action_dispatched", "ha_action_blocked", "llm_call", "tts")
 
 # Explicit map from payload class → event_name string. Keep in sync with
@@ -145,12 +145,6 @@ class AuditSqlitePolicy:
                 self._db = None
 
 
-def audit_enabled(hooks_cfg: Mapping | None) -> bool:
-    """True only for ``hooks.audit_sqlite.enabled: true`` (a real boolean)."""
-    section = (hooks_cfg or {}).get("audit_sqlite") if isinstance(hooks_cfg, Mapping) else None
-    return isinstance(section, Mapping) and section.get("enabled") is True
-
-
 def register_audit_sqlite(registry: HookRegistry, hooks_cfg: Mapping | None, *,
                           environ: Mapping[str, str] | None = None) -> AuditSqlitePolicy | None:
     """Register the audit handler iff ``hooks.audit_sqlite.enabled`` is true.
@@ -165,7 +159,8 @@ def register_audit_sqlite(registry: HookRegistry, hooks_cfg: Mapping | None, *,
         registered and no path is opened).
 
     Raises:
-        RuntimeError: ``KZA_AUDIT_DB`` set under an admission ticket.
+        RuntimeError: ``KZA_AUDIT_DB`` set, or the audit enabled, under an
+            admission ticket.
     """
     environ = os.environ if environ is None else environ
     if AUDIT_ENV in environ:
@@ -179,6 +174,8 @@ def register_audit_sqlite(registry: HookRegistry, hooks_cfg: Mapping | None, *,
     if not audit_enabled(hooks_cfg):
         logger.info("[Policy:audit_sqlite] disabled (hooks.audit_sqlite.enabled is not true)")
         return None
+    if TICKET_ENV in environ:
+        raise RuntimeError(UNSUPPORTED_CODE)  # review F6: P2=A, no erasure participant
     path = hooks_cfg["audit_sqlite"].get("db_path") or DEFAULT_DB_PATH
     if not isinstance(path, (str, os.PathLike)):
         raise RuntimeError("audit_sqlite_db_path_invalid")

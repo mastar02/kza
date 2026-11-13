@@ -8,7 +8,7 @@ import json
 import logging
 from pathlib import Path
 
-from src.core.paths import models_path
+from src.core.paths import development_settings, models_path
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ class WakeWordTrainer:
                 ticket; U3b-0e 2b).
         """
         self.data_dir = Path(data_dir)
-        self.models_dir = Path(models_dir if models_dir is not None else models_path(None, "wakeword"))
+        self.models_dir = Path(models_dir if models_dir is not None else models_path(development_settings(), "wakeword"))
         self.models_dir.mkdir(parents=True, exist_ok=True)
 
     def train(

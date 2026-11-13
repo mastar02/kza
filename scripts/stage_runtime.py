@@ -1107,11 +1107,33 @@ def make_runtime_read_only(runtime: Path) -> None:
         os.fchmod(descriptor, RUNTIME_DIRECTORY_MODE)
 
 
+def _mount_points() -> list[str]:
+    """Mount points from /proc/self/mountinfo (Linux); empty where it is absent.
+
+    Same-filesystem bind mounts keep st_dev, so only the mount table sees them.
+    """
+    try:
+        with open("/proc/self/mountinfo", encoding="utf-8", errors="surrogateescape") as table:
+            lines = table.read().splitlines()
+    except OSError:
+        return []
+    points = []
+    for line in lines:
+        fields = line.split()
+        if len(fields) > 4:
+            points.append(fields[4].replace("\\040", " ").replace("\\011", "\t")
+                          .replace("\\012", "\n").replace("\\134", "\\"))
+    return points
+
+
 def make_writable_then_remove(path: Path) -> None:
     """Remove a tree that contains a read-only runtime (abort, Q5 and 0c).
 
     Never follows a symlink (a link is removed as a link) and never crosses a
-    mount: a directory on another device refuses before any mode changes.
+    mount. Before any mode changes it refuses when the path's device differs
+    from its parent's, when any directory in the tree is a mount point
+    (os.path.ismount) or on another device, or when the mount table lists a
+    mount point at or under the path (same-filesystem bind mounts; review F7).
     Only directories gain owner rwx; the target of any link is untouched.
 
     Raises:
@@ -1123,10 +1145,18 @@ def make_writable_then_remove(path: Path) -> None:
     if not stat.S_ISDIR(info.st_mode):
         path.unlink()
         return
+    absolute = Path(os.path.abspath(path))
+    if absolute.parent.lstat().st_dev != info.st_dev or os.path.ismount(absolute):
+        raise ValueError("make_writable_mount_crossing")
+    real = os.path.realpath(absolute)
+    for point in _mount_points():
+        if point == real or point.startswith(real.rstrip("/") + "/"):
+            raise ValueError("make_writable_mount_crossing")
+
     def fail(error: OSError) -> None:
         raise error
-    for _directory, _names, _files, descriptor in os.fwalk(path, follow_symlinks=False, onerror=fail):
-        if os.fstat(descriptor).st_dev != info.st_dev:
+    for directory, _names, _files, descriptor in os.fwalk(path, follow_symlinks=False, onerror=fail):
+        if os.fstat(descriptor).st_dev != info.st_dev or (directory != os.fspath(path) and os.path.ismount(directory)):
             raise ValueError("make_writable_mount_crossing")
     for _directory, _names, _files, descriptor in os.fwalk(path, follow_symlinks=False, onerror=fail):
         mode = stat.S_IMODE(os.fstat(descriptor).st_mode)

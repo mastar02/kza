@@ -18,9 +18,10 @@ import pytest
 
 from src.core import entry_guard
 from src.core.entry_guard import (
-    CAPABILITY_CODE, SCHEMA_ONLY_ENV, TICKET_ENV, UNMANAGED_CODE, entry_decision, managed_root_of,
-    schema_only_command,
+    CAPABILITY_CODE, SCHEMA_ONLY_ENV, TICKET_CODE, TICKET_ENV, UNMANAGED_CODE, entry_decision,
+    managed_root_of, schema_only_command,
 )
+from src.core.schema_only import BINDING_MARKER, COPY_MARKER
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 TIMEOUT = 120
@@ -75,6 +76,25 @@ def _run(command, *, cwd, env) -> subprocess.CompletedProcess:
                           stdin=subprocess.DEVNULL)
 
 
+def _ticket(root: Path, **changes) -> str:
+    """A ticket of the controller's shape whose binding is recorded under ``root``."""
+    binding = "b" * 64
+    bindings = root / "admission" / "bindings"
+    bindings.mkdir(parents=True, exist_ok=True)
+    (bindings / (binding + ".json")).write_text("{}")
+    ticket = {"schema_version": 1, "admission_root": str(root), "binding_id": binding, "run_id": "c" * 32,
+              "generation": 1, "controller_pid": 1, "lease_fd": 3,
+              "lease_identity": {"device": 1, "inode": 2}}
+    ticket.update(changes)
+    return json.dumps(ticket)
+
+
+def _marked_copy(source: Path, destination: Path) -> Path:
+    shutil.copytree(source, destination)
+    (destination / COPY_MARKER).write_text(json.dumps({"schema_version": 1, "plan_sha256": "d" * 64}))
+    return destination
+
+
 @pytest.fixture
 def managed(tmp_path, code):
     return _layout(tmp_path, code)
@@ -122,16 +142,32 @@ def test_without_a_controller_record_nothing_is_refused(tmp_path, code):
 
 
 def test_a_ticket_defers_to_the_runtime_admission(managed):
+    ticket = _ticket(managed["root"])
     result = _run([sys.executable, "-B", "-c", "import src"], cwd=managed["runtime"],
-                  env=_environment(PYTHONPATH=str(managed["current"]), **{TICKET_ENV: "{}"}))
+                  env=_environment(PYTHONPATH=str(managed["current"]), **{TICKET_ENV: ticket}))
     assert result.returncode == 0, result.stderr[-2000:]
+
+
+@pytest.mark.parametrize("ticket", ["{}", "bogus", "", "STALE_OTHER_ROOT", "UNRECORDED_BINDING", "BAD_RUN_ID"])
+def test_a_ticket_of_the_wrong_shape_refuses_under_a_managed_root(managed, tmp_path, ticket):
+    """Review F4: G1 checks the ticket's shape, root and recorded binding, not only its presence."""
+    if ticket == "STALE_OTHER_ROOT":
+        ticket = _ticket(tmp_path / "other-root")
+    elif ticket == "UNRECORDED_BINDING":
+        ticket = json.dumps(dict(json.loads(_ticket(managed["root"])), binding_id="e" * 64))
+    elif ticket == "BAD_RUN_ID":
+        ticket = _ticket(managed["root"], run_id="X" * 32)
+    before = _tree(managed["root"])
+    result = _run([sys.executable, "-B", "-c", "import src"], cwd=managed["state"],
+                  env=_environment(PYTHONPATH=str(managed["current"]), **{TICKET_ENV: ticket}))
+    assert result.returncode == 78 and TICKET_CODE in result.stderr
+    assert _tree(managed["root"]) == before
 
 
 # --- the adoption's schema-only capability -------------------------------------------------------
 
 def test_schema_only_child_is_not_refused_and_opens_no_serving_store(managed, tmp_path):
-    copy = tmp_path / "adoption-copy"
-    shutil.copytree(managed["state"], copy)
+    copy = _marked_copy(managed["state"], tmp_path / "adoption-copy")
     before, copy_before = _tree(managed["root"]), _tree(copy)
     result = _run(schema_only_command(sys.executable, managed["current"], "--state", str(copy)),
                   cwd=managed["root"], env=_environment(**{SCHEMA_ONLY_ENV: "1"}))
@@ -141,7 +177,7 @@ def test_schema_only_child_is_not_refused_and_opens_no_serving_store(managed, tm
     assert _tree(copy) == copy_before
 
 
-@pytest.mark.parametrize("variant", ["other_entry", "serve", "ticket", "value", "flags", "no_runtime_arg"])
+@pytest.mark.parametrize("variant", ["other_entry", "serve", "ticket", "value", "flags", "x_dev", "no_runtime_arg"])
 def test_the_capability_is_accepted_only_by_its_bootstrap(managed, variant):
     environment = _environment(**{SCHEMA_ONLY_ENV: "1"})
     command = schema_only_command(sys.executable, managed["current"], "--state", str(managed["state"]))
@@ -152,11 +188,13 @@ def test_the_capability_is_accepted_only_by_its_bootstrap(managed, variant):
         command = [sys.executable, "-B", "-P", "-m", "src.main"]
         environment["PYTHONPATH"] = str(managed["current"])
     elif variant == "ticket":
-        environment[TICKET_ENV] = "{}"
+        environment[TICKET_ENV] = _ticket(managed["root"])
     elif variant == "value":
         environment[SCHEMA_ONLY_ENV] = "yes"
     elif variant == "flags":
         command = [command[0], "-B", *command[3:]]
+    elif variant == "x_dev":  # review RM3: an extra option between the exact flags
+        command = [command[0], "-X", "dev", *command[1:]]
     elif variant == "no_runtime_arg":
         command = command[:5]
         environment["PYTHONPATH"] = str(managed["current"])
@@ -166,6 +204,63 @@ def test_the_capability_is_accepted_only_by_its_bootstrap(managed, variant):
     if variant != "no_runtime_arg":  # that one fails closed before importing src
         assert result.returncode == 78 and CAPABILITY_CODE in result.stderr
     assert _tree(managed["root"]) == before
+
+
+@pytest.mark.parametrize("target", ["slot_state", "aliased_state", "bound", "unmarked", "symlink"])
+def test_schema_only_refuses_a_serving_or_unmarked_state(managed, tmp_path, target):
+    """Review F1/F8 (RM2): only a marked adoption copy (or the P4 tmpfs) is opened."""
+    marker = json.dumps({"schema_version": 1, "plan_sha256": "d" * 64})
+    if target == "slot_state":  # even a marker does not make a slot's state a copy
+        state, code_name = managed["state"], "schema_only_state_serving"
+        (state / COPY_MARKER).write_text(marker)
+    elif target == "aliased_state":  # the slot's state reached through an alias of the root
+        (tmp_path / "alias").symlink_to(managed["root"], target_is_directory=True)
+        state, code_name = tmp_path / "alias" / "slots" / "s" / "state", "schema_only_state_serving"
+    elif target == "bound":
+        state = _marked_copy(managed["state"], tmp_path / "bound-copy")
+        (state / BINDING_MARKER).write_text("{}")
+        code_name = "schema_only_state_bound"
+    elif target == "unmarked":
+        state = tmp_path / "unmarked-copy"
+        shutil.copytree(managed["state"], state)
+        code_name = "schema_only_state_unmarked"
+    else:
+        real = _marked_copy(managed["state"], tmp_path / "real-copy")
+        state = tmp_path / "link-copy"
+        state.symlink_to(real, target_is_directory=True)
+        code_name = "schema_only_state_invalid"
+    before = _tree(managed["root"])
+    result = _run(schema_only_command(sys.executable, managed["current"], "--state", str(state)),
+                  cwd=tmp_path, env=_environment(**{SCHEMA_ONLY_ENV: "1"}))
+    assert result.returncode == 78 and code_name in result.stderr, result.stderr[-2000:]
+    assert _tree(managed["root"]) == before
+
+
+def test_schema_only_refuses_a_runtime_argument_that_is_not_its_own(monkeypatch, tmp_path, caplog):
+    from src.core import schema_only
+    monkeypatch.setenv(SCHEMA_ONLY_ENV, "1")
+    monkeypatch.delenv(TICKET_ENV, raising=False)
+    monkeypatch.setattr(schema_only, "schema_only_invocation", lambda argv: True)
+    monkeypatch.setattr(sys, "argv", ["-c", str(tmp_path), "--state", str(tmp_path)])
+    assert schema_only.main(["--state", str(tmp_path)]) == 78
+    assert "schema_only_runtime_mismatch" in caplog.text
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_schema_only_state_decision_tmpfs_and_marker(tmp_path):
+    from src.core import schema_only
+    scratch = tmp_path / "run-user" / "adoption"
+    scratch.mkdir(parents=True)
+    assert schema_only.state_decision(scratch, tmpfs_roots=(str(tmp_path / "run-user"),)) is None
+    assert schema_only.state_decision(scratch, tmpfs_roots=(str(tmp_path / "elsewhere"),)) == "schema_only_state_unmarked"
+    assert schema_only.state_decision(tmp_path / "run-user", tmpfs_roots=(str(tmp_path / "run-user"),)) == \
+        "schema_only_state_unmarked"  # the tmpfs root itself is not a scratch copy
+    for bad in ({"schema_version": 1, "plan_sha256": "x"}, {"schema_version": 2, "plan_sha256": "d" * 64}, []):
+        (scratch / COPY_MARKER).write_text(json.dumps(bad))
+        assert schema_only.state_decision(scratch, tmpfs_roots=()) == "schema_only_state_unmarked"
+    (scratch / COPY_MARKER).write_text(json.dumps({"schema_version": 1, "plan_sha256": "d" * 64}))
+    assert schema_only.state_decision(scratch, tmpfs_roots=()) is None
+    assert schema_only.default_tmpfs_roots() == (f"/run/user/{os.getuid()}",)
 
 
 def test_the_capability_outside_a_managed_root_still_needs_its_bootstrap(tmp_path, code):
@@ -232,6 +327,21 @@ def test_managed_root_of_lexical_resolved_and_damaged(tmp_path):
     assert managed_root_of([outside]) is None
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 0000 directory")
+def test_an_unreadable_controller_record_still_counts_as_managed(tmp_path):
+    """Review F8 (RM1): a PermissionError while looking for the record fails closed."""
+    root = tmp_path / "releases"
+    (root / "slots" / "s" / "runtime").mkdir(parents=True)
+    (root / "admission").mkdir()
+    (root / "admission" / "controller.json").write_text("{}")
+    (root / "admission").chmod(0)
+    try:
+        assert managed_root_of([root / "slots" / "s" / "runtime"]) == root
+        assert entry_decision(environ={}, paths=[root / "slots"]) == UNMANAGED_CODE
+    finally:
+        (root / "admission").chmod(0o755)
+
+
 def test_refused_from_a_managed_cwd_even_with_code_elsewhere(managed, code, tmp_path):
     """The legacy unit's WorkingDirectory is the container under the root (F1)."""
     elsewhere = tmp_path / "elsewhere-code"
@@ -277,7 +387,14 @@ def test_entry_decision_table(tmp_path):
     inside = [root / "slots"]
     assert entry_decision(environ={}, paths=inside) == UNMANAGED_CODE
     assert entry_decision(environ={}, paths=[tmp_path / "other"]) is None
-    assert entry_decision(environ={TICKET_ENV: "{}"}, paths=inside) is None
+    assert entry_decision(environ={TICKET_ENV: "{}"}, paths=inside) == TICKET_CODE
+    assert entry_decision(environ={TICKET_ENV: _ticket(root)}, paths=inside) is None
+    assert entry_decision(environ={TICKET_ENV: _ticket(root, generation=True)}, paths=inside) == TICKET_CODE
+    assert entry_decision(environ={TICKET_ENV: _ticket(root, extra=1)}, paths=inside) == TICKET_CODE
+    assert entry_decision(environ={TICKET_ENV: _ticket(root, lease_fd=-1)}, paths=inside) == TICKET_CODE
+    assert entry_decision(environ={TICKET_ENV: _ticket(root, binding_id="../" + "b" * 61)},
+                          paths=inside) == TICKET_CODE
+    assert entry_decision(environ={TICKET_ENV: "{}"}, paths=[tmp_path / "other"]) is None
     assert entry_decision(environ={SCHEMA_ONLY_ENV: "1"}, paths=inside, argv=["py", "-c", "x"]) == CAPABILITY_CODE
     assert entry_decision(environ={SCHEMA_ONLY_ENV: "1"}, paths=[], argv=None) == CAPABILITY_CODE
 
@@ -323,14 +440,25 @@ def _path_setup(node) -> bool:
     return "sys.path" in ast.unparse(node) and isinstance(node, (ast.If, ast.Expr))
 
 
+def _optional_src_import(node) -> bool:
+    """``try: import src`` whose only handler is ModuleNotFoundError re-raised unless name is 'src'."""
+    return (isinstance(node, ast.Try) and len(node.body) == 1 and _is_src_import(node.body[0])
+            and len(node.handlers) == 1 and ast.unparse(node.handlers[0].type) == "ModuleNotFoundError"
+            and "!= 'src'" in ast.unparse(node.handlers[0]) and "raise" in ast.unparse(node.handlers[0]))
+
+
 def _guarded(tree) -> bool:
-    """src is imported at module level, or first thing in main() (after sys.path setup)."""
-    if any(_is_src_import(node) for node in tree.body):
+    """src is imported at module level, or first thing in main() (after sys.path setup).
+
+    Standalone tools may import it optionally (review F2): the guard still runs
+    whenever the package is importable, which is the only case it can protect.
+    """
+    if any(_is_src_import(node) or _optional_src_import(node) for node in tree.body):
         return True
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == "main":
             for statement in node.body:
-                if _is_src_import(statement):
+                if _is_src_import(statement) or _optional_src_import(statement):
                     return True
                 docstring = isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant)
                 if not (docstring or _path_setup(statement)):
@@ -351,3 +479,31 @@ def test_every_entry_refuses_before_any_store_or_is_listed_with_a_reason():
             unguarded.append(relative)
     assert unguarded == []
     assert stale == set()
+
+
+# --- standalone tools (review F2) -------------------------------------------------------------------
+
+@pytest.mark.parametrize("tool, extra, argv", [
+    ("tools/xvf_noise_trial.py", ["src/audio/xvf_controller.py"], ["--help"]),
+    ("tools/harvest_hallucinations.py", [], ["--file", os.devnull]),
+    ("tools/benchmark_ambient.py", [], ["--help"]),
+    ("tools/audio_watchdog_alert.py", [], ["--help"]),
+    ("scripts/train_custom_wake.py", [], ["--help"]),
+])
+def test_standalone_tools_still_run_without_src(tmp_path, tool, extra, argv):
+    """A tool copied alone (no src package anywhere) keeps working; G1 only guards src."""
+    for relative in (tool, *extra):
+        shutil.copy2(REPOSITORY / relative, tmp_path / Path(relative).name)
+    result = _run([sys.executable, "-B", str(tmp_path / Path(tool).name), *argv], cwd=tmp_path,
+                  env=_environment())
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert "ModuleNotFoundError" not in result.stderr
+
+
+def test_a_broken_src_is_not_mistaken_for_a_standalone_run(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "__init__.py").write_text("import kza_missing_dependency\n")
+    shutil.copy2(REPOSITORY / "tools" / "harvest_hallucinations.py", tmp_path / "harvest.py")
+    result = _run([sys.executable, "-B", str(tmp_path / "harvest.py"), "--file", os.devnull], cwd=tmp_path,
+                  env=_environment(PYTHONPATH=str(tmp_path)))
+    assert result.returncode != 0 and "kza_missing_dependency" in result.stderr

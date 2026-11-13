@@ -237,7 +237,8 @@ Ejemplos:
     train_parser.add_argument("--name", required=True, help="Nombre del wake word")
     train_parser.add_argument("--epochs", type=int, default=100, help="Épocas de entrenamiento (default: 100)")
     train_parser.add_argument("--data-dir", default="./data/wakeword_training", help="Directorio de datos")
-    train_parser.add_argument("--output-dir", default="./models/wakeword", help="Directorio de modelos")
+    train_parser.add_argument("--output-dir", default=None,
+                              help="Directorio de modelos (default: <paths.models_root>/wakeword)")
 
     # Test
     test_parser = subparsers.add_parser("test", help="Probar detección de wake word")

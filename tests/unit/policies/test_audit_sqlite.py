@@ -200,3 +200,81 @@ async def test_hooks_off_registers_nothing(tmp_path, monkeypatch):
         assert load_policy_hooks({"enabled": False, "audit_sqlite": {"enabled": True}}, stack) is None
     assert sum(registry.get_stats()["after_handler_count"].values()) == 0
     assert list(tmp_path.iterdir()) == []
+
+
+# --- review F5/F6 -----------------------------------------------------------------------------------
+
+def test_an_enabled_audit_under_a_ticket_is_refused(tmp_path):
+    """Review F6 (P2=A): the audit store has no erasure participant, so R1 refuses it."""
+    from src.hooks.audit_switch import UNSUPPORTED_CODE, refuse_managed_audit
+    from src.hooks.registry import HookRegistry
+    registry = HookRegistry()
+    enabled = {"audit_sqlite": {"enabled": True, "db_path": str(tmp_path / "a.db")}}
+    with pytest.raises(RuntimeError, match=UNSUPPORTED_CODE):
+        register_audit_sqlite(registry, enabled, environ={TICKET_ENV: "{}"})
+    with pytest.raises(RuntimeError, match=UNSUPPORTED_CODE):
+        refuse_managed_audit({"hooks": {"enabled": False, **enabled}}, environ={TICKET_ENV: "{}"})
+    refuse_managed_audit({"hooks": enabled}, environ={})  # development: allowed
+    refuse_managed_audit({"hooks": {"audit_sqlite": {"enabled": "true"}}}, environ={TICKET_ENV: "{}"})
+    assert register_audit_sqlite(registry, {"audit_sqlite": {"enabled": False}}, environ={TICKET_ENV: "{}"}) is None
+    assert sum(registry.get_stats()["after_handler_count"].values()) == 0
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_the_serve_entry_refuses_an_enabled_audit_under_a_ticket(tmp_path, monkeypatch):
+    from src.core.runtime_admission import verify_runtime_admission
+    from src.hooks.audit_switch import UNSUPPORTED_CODE
+    monkeypatch.setenv(TICKET_ENV, "{}")
+    monkeypatch.delenv(AUDIT_ENV, raising=False)
+    config = {"memory": {"privacy_db_path": str(tmp_path / "p.db")},
+              "hooks": {"enabled": True, "audit_sqlite": {"enabled": True, "db_path": str(tmp_path / "a.db")}}}
+    with pytest.raises(RuntimeError, match=UNSUPPORTED_CODE):
+        verify_runtime_admission(config)
+    assert list(tmp_path.iterdir()) == []
+
+
+def _custom_policies(tmp_path, monkeypatch, name="kza_custom_policies"):
+    package = tmp_path / name
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "rewrite.py").write_text(
+        "from src.hooks import before_tts_speak\n\n"
+        "@before_tts_speak()\n"
+        "def keep(call):\n"
+        "    return None\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.delitem(sys.modules, f"{name}.rewrite", raising=False)
+    return name
+
+
+@pytest.mark.asyncio
+async def test_a_custom_policies_module_with_the_audit_off_never_imports_src_policies(tmp_path, monkeypatch):
+    """Review F5: src.policies is imported for the audit only when the audit is on."""
+    from src.main import load_policy_hooks
+    registry = _fresh_policies(monkeypatch)
+    module = _custom_policies(tmp_path, monkeypatch)
+    async with AsyncExitStack() as stack:
+        hooks = load_policy_hooks({"enabled": True, "policies_module": module,
+                                   "audit_sqlite": {"enabled": False}}, stack)
+        assert hooks is registry
+        assert registry.get_stats()["before_handler_count"]["before_tts_speak"] == 1
+    assert not any(name == "src.policies" or name.startswith("src.policies.") for name in sys.modules)
+    registry.clear()
+
+
+@pytest.mark.asyncio
+async def test_a_broken_audit_import_is_one_failed_policy(tmp_path, monkeypatch, caplog):
+    """Review F5: the audit import failing follows the per-policy rule (hooks stay up)."""
+    from src.main import load_policy_hooks
+    registry = _fresh_policies(monkeypatch)
+    module = _custom_policies(tmp_path, monkeypatch)
+    monkeypatch.setitem(sys.modules, "src.policies.audit_sqlite", None)  # import raises ImportError
+    async with AsyncExitStack() as stack:
+        hooks = load_policy_hooks({"enabled": True, "policies_module": module,
+                                   "audit_sqlite": {"enabled": True, "db_path": str(tmp_path / "a.db")}}, stack)
+        assert hooks is registry
+        assert sum(registry.get_stats()["after_handler_count"].values()) == 0
+    assert "Policy 'audit_sqlite' failed to load" in caplog.text and "PARTIAL" in caplog.text
+    assert not (tmp_path / "a.db").exists()
+    registry.clear()

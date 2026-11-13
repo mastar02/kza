@@ -5,7 +5,9 @@ holding ``admission/controller.json`` (written by install-controller). Under
 such a root, R1 code may run only:
 
 - as the managed child, which carries the admission ticket
-  (``KZA_RUNTIME_ADMISSION``) and passes the full runtime admission; or
+  (``KZA_RUNTIME_ADMISSION``) and passes the full runtime admission. G1 itself
+  checks only that the ticket has the controller's shape, names this root and
+  names a binding recorded under it (cheap, stdlib-only); or
 - as the adoption's schema-only child, whose capability
   (``KZA_ADOPTION_SCHEMA_ONLY=1``) is accepted only when the process command is
   exactly :func:`schema_only_command` ('-I -B -c' with the fixed bootstrap).
@@ -23,9 +25,11 @@ This module is stdlib-only and must stay importable from ``src/__init__``.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+import json
 import logging
 import os
 from pathlib import Path
+import stat
 import sys
 
 logger = logging.getLogger(__name__)
@@ -37,6 +41,10 @@ SCHEMA_ONLY_VALUE = "1"
 CONTROLLER_RECORD = ("admission", "controller.json")
 REFUSED_EXIT = 78  # EX_CONFIG: the managed unit's RestartPreventExitStatus
 UNMANAGED_CODE = "runtime_admission_unmanaged_under_managed_root"
+TICKET_CODE = "runtime_admission_ticket_invalid_under_managed_root"
+_TICKET_KEYS = frozenset({"schema_version", "admission_root", "binding_id", "generation", "run_id",
+                          "lease_fd", "lease_identity", "controller_pid"})
+_HEX = frozenset("0123456789abcdef")
 CAPABILITY_CODE = "runtime_admission_schema_only_capability_refused"
 
 # The only command form that may carry the schema-only capability. argv after
@@ -94,6 +102,43 @@ def managed_root_of(paths: Iterable[str | os.PathLike]) -> Path | None:
     return None
 
 
+def _hex(value, length: int) -> bool:
+    return type(value) is str and len(value) == length and set(value) <= _HEX
+
+
+def ticket_shape_ok(raw: str, root: Path) -> bool:
+    """Cheap structural check of a ticket seen under managed root ``root`` (F4).
+
+    The full validation stays in the serve entry. Here the ticket must have
+    the controller's exact shape (stage_runtime._ticket_value), name this
+    root as its admission root, and name a binding recorded under it.
+    """
+    if not raw or len(raw.encode()) > 16384:
+        return False
+    try:
+        ticket = json.loads(raw)
+    except (ValueError, UnicodeError):
+        return False
+    if (type(ticket) is not dict or set(ticket) != _TICKET_KEYS or ticket["schema_version"] != 1
+            or type(ticket["schema_version"]) is not int
+            or not _hex(ticket["binding_id"], 64) or not _hex(ticket["run_id"], 32)
+            or type(ticket["generation"]) is not int or ticket["generation"] < 1
+            or type(ticket["controller_pid"]) is not int or ticket["controller_pid"] < 1
+            or type(ticket["lease_fd"]) is not int or ticket["lease_fd"] < 0
+            or type(ticket["lease_identity"]) is not dict
+            or set(ticket["lease_identity"]) != {"device", "inode"}
+            or any(type(value) is not int for value in ticket["lease_identity"].values())
+            or type(ticket["admission_root"]) is not str):
+        return False
+    try:
+        if os.path.realpath(ticket["admission_root"]) != os.path.realpath(root):
+            return False
+        info = os.lstat(Path(root, "admission", "bindings", ticket["binding_id"] + ".json"))
+    except (OSError, ValueError):
+        return False
+    return stat.S_ISREG(info.st_mode)
+
+
 def schema_only_invocation(argv: list[str] | None, flags=None) -> bool:
     """True iff this process is exactly the schema-only bootstrap under -I -B.
 
@@ -108,9 +153,8 @@ def schema_only_invocation(argv: list[str] | None, flags=None) -> bool:
         index = argv.index("-c")
     except ValueError:
         return False
-    options = argv[1:index]
-    return (set(options) <= {"-I", "-B"} and {"-I", "-B"} <= set(options)
-            and index + 2 < len(argv) and argv[index + 1] == SCHEMA_ONLY_BOOTSTRAP)
+    # Exactly the bootstrap's options, in order: no -X, -W or repeated flag (review RM3).
+    return (argv[1:index] == ["-I", "-B"] and index + 2 < len(argv) and argv[index + 1] == SCHEMA_ONLY_BOOTSTRAP)
 
 
 def entry_decision(*, environ: Mapping[str, str] | None = None,
@@ -136,9 +180,14 @@ def entry_decision(*, environ: Mapping[str, str] | None = None,
                 or not schema_only_invocation(argv, flags)):
             return CAPABILITY_CODE
         return None
+    root = managed_root_of(paths)
+    if root is None:
+        return None  # a ticket outside any managed root: the serve entry refuses it
     if TICKET_ENV in environ:
-        return None  # the managed child: the full runtime admission decides
-    return UNMANAGED_CODE if managed_root_of(paths) is not None else None
+        # The managed child: the full runtime admission decides; G1 only
+        # requires a ticket of the controller's shape for this root (F4).
+        return None if ticket_shape_ok(environ[TICKET_ENV], root) else TICKET_CODE
+    return UNMANAGED_CODE
 
 
 def _default_paths() -> list[str]:

@@ -98,7 +98,12 @@ def main(argv: list[str] | None = None) -> int:
     # release root (exit 78) before any check reads state.
     if _REPO_ROOT not in sys.path:
         sys.path.insert(0, _REPO_ROOT)
-    import src  # noqa: F401
+    try:
+        import src  # noqa: F401
+    except ModuleNotFoundError as error:
+        if error.name != "src":
+            raise  # src exists but is broken: fail loudly
+        # Standalone mode without src: no KZA store is reachable through it.
     ap = argparse.ArgumentParser()
     ap.add_argument("--health-path", default=os.environ.get("KZA_AUDIO_HEALTH", DEFAULT_HEALTH))
     ap.add_argument("--deaf-after-s", type=float, default=300.0)

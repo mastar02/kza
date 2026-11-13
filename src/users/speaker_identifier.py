@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from src.core.paths import speaker_savedir
+from src.core.paths import development_settings, speaker_savedir
 
 logger = logging.getLogger(__name__)
 
@@ -281,7 +281,7 @@ class SpeakerIdentifier(_SpeakerLifecycle):
             self._model = EncoderClassifier.from_hparams(
                 source=self.model_name,
                 savedir=(self.savedir if self.savedir is not None
-                         else speaker_savedir(None, self.model_name)),
+                         else speaker_savedir(development_settings(), self.model_name)),
                 run_opts={"device": self.device}
             )
             self._model_type = "speechbrain"

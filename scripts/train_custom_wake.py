@@ -363,7 +363,12 @@ def main() -> int:
     # release root (exit 78) before this tool writes under data/.
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
-    import src  # noqa: F401
+    try:
+        import src  # noqa: F401
+    except ModuleNotFoundError as error:
+        if error.name != "src":
+            raise  # src exists but is broken: fail loudly
+        # Standalone mode without src: no KZA store is reachable through it.
 
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)

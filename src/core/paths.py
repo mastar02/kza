@@ -19,6 +19,8 @@ Rules:
 from __future__ import annotations
 
 from collections.abc import Mapping
+import copy
+import functools
 import os
 from pathlib import PurePosixPath
 
@@ -31,6 +33,45 @@ TRAINING_OUTPUT_ROOT = "./data/training_outputs"
 TRAINING_OUTPUT_LORA = TRAINING_OUTPUT_ROOT + "/lora"
 TRAINING_OUTPUT_NIGHTLY = TRAINING_OUTPUT_ROOT + "/nightly"
 TRAINING_OUTPUT_WHISPER = TRAINING_OUTPUT_ROOT + "/whisper"
+
+
+def development_settings(*, environ: Mapping[str, str] | None = None) -> dict:
+    """The central configuration's paths for constructor defaults (review F10).
+
+    Without a ticket, defaults of classes built without configuration
+    (WakeWordDetector, WakeWordTrainer, SpeakerIdentifier, ModelManager) and
+    of the development scripts follow ``paths.models_root`` and
+    ``speaker_id.savedir`` from ``CONFIG_PATH`` (default
+    config/settings.yaml). Under a ticket this returns {}, so those defaults
+    refuse; the serve graph always passes explicit values. An unreadable or
+    absent file gives {} (the ./models fallback).
+    """
+    environ = os.environ if environ is None else environ
+    if _managed(environ):
+        return {}
+    path = os.path.abspath(environ.get("CONFIG_PATH", "config/settings.yaml"))
+    try:
+        info = os.stat(path)
+    except OSError:
+        return {}
+    return copy.deepcopy(_development_settings(path, info.st_mtime_ns, info.st_size))
+
+
+@functools.lru_cache(maxsize=8)
+def _development_settings(path: str, _mtime_ns: int, _size: int) -> dict:
+    import yaml
+    try:
+        with open(path, encoding="utf-8") as handle:
+            loaded = yaml.safe_load(handle)
+    except (OSError, ValueError, yaml.YAMLError):
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    keep = {}
+    for name in ("paths", "speaker_id"):
+        if isinstance(loaded.get(name), dict):
+            keep[name] = dict(loaded[name])
+    return keep
 
 
 def _managed(environ: Mapping[str, str] | None) -> bool:
@@ -122,3 +163,35 @@ def speaker_savedir(config: Mapping | None, model_name: str, *,
     if _managed(environ) and not os.path.isabs(os.fspath(configured)):
         raise RuntimeError("runtime_admission_speaker_savedir_relative")
     return os.path.join(os.fspath(configured), *_checked_parts((leaf,)))
+
+
+PIPER_DEFAULT_MODEL = "es_ES-davefx-medium.onnx"
+PIPER_ENGINES = frozenset({"piper", "hybrid"})
+
+
+def model_file(config: Mapping | None, value: str, *subdir: str,
+               environ: Mapping[str, str] | None = None) -> str:
+    """Resolve a model file value: a bare file name goes under ``<models_root>/<subdir>``.
+
+    A value with a directory part or an absolute path is returned unchanged
+    (the preflight judges those). Review F3: a bare name such as
+    'es_ES-davefx-medium.onnx' would otherwise be read relative to the cwd,
+    which under management is the read-only runtime.
+    """
+    if not isinstance(value, str) or not value or os.path.isabs(value) or "/" in value or value in {".", ".."}:
+        return value
+    return models_path(config, *subdir, value, environ=environ)
+
+
+def tts_settings(config: Mapping | None, *, environ: Mapping[str, str] | None = None) -> dict:
+    """The ``tts`` section with tts.piper.model resolved, when the engine uses Piper.
+
+    Other engines (Kokoro/Qwen3 'dual', XTTS) are returned unchanged, so a
+    dormant Piper value never requires the models root.
+    """
+    tts = dict(_section(config, "tts"))
+    if tts.get("engine", "piper") in PIPER_ENGINES:
+        piper = dict(tts.get("piper") or {})
+        piper["model"] = model_file(config, piper.get("model") or PIPER_DEFAULT_MODEL, "piper", environ=environ)
+        tts["piper"] = piper
+    return tts
