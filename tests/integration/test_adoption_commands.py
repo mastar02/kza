@@ -702,7 +702,8 @@ def _touch_same_stat(path: Path) -> None:
     os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
 
 
-@pytest.mark.parametrize("item", ["source", "source_same_stat", "prepared", "units", "retirement", "current",
+@pytest.mark.parametrize("item", ["source", "source_same_stat", "prepared", "prepared_same_stat", "units",
+                                  "retirement", "current",
                                   "controller", "controller_commit", "archive", "layout"])
 def test_commit_refuses_any_binding_difference_before_the_cas(adapter_world, item):
     world = adapter_world
@@ -727,6 +728,8 @@ def test_commit_refuses_any_binding_difference_before_the_cas(adapter_world, ite
     elif item == "prepared":
         with open(state / "config" / "settings.yaml", "a") as stream:
             stream.write("# edited\n")
+    elif item == "prepared_same_stat":  # only the full-file hash sees it (not the binding, not lstat)
+        _touch_same_stat(state / "data" / "ambient_audio" / "policy_v1" / "live.flac")
     elif item == "units":
         world.units.properties[VOICE]["InactiveEnterTimestampMonotonic"] = "2000"
     elif item == "retirement":
@@ -771,6 +774,16 @@ def test_the_adoption_kind_is_only_valid_at_the_first_head_or_after_a_bound_abor
     forged_head = dict(head, generation=2)
     path = world.root / "admission" / "manual-components" / "heads" / (stage._digest(forged_head) + ".json")
     path.write_text(json.dumps(dict(companion, head=forged_head)))
+    with pytest.raises(ValueError, match="^runtime_admission_adoption_kind_invalid$"):
+        stage.read_manual_head(world.root, forged_head)  # the seal names another head
+    # Even with a well-formed seal of its own, generation 2 without a bound abort is refused.
+    seal = json.loads(stage.adoption_seal_path(world.root, companion["authority_seal"]).read_text())
+    forged_seal = dict(seal, closed_head=forged_head)
+    forged_id = stage._digest(forged_seal)
+    stage.adoption_seal_path(world.root, forged_id).write_text(json.dumps(forged_seal))
+    os.unlink(path)
+    path.write_text(json.dumps(dict(companion, head=forged_head, authority_seal=forged_id)))
+    assert stage._read_adoption_seal(world.root, forged_id)["closed_head"] == forged_head
     with pytest.raises(ValueError, match="^runtime_admission_adoption_kind_invalid$"):
         stage.read_manual_head(world.root, forged_head)
     # Re-adoption over a head that was never aborted is refused at prepare and in the writer.
@@ -853,12 +866,19 @@ def test_abort_renders_legacy_conf_when_the_launcher_was_installed(world):
 
 
 @pytest.mark.parametrize("case,code", [
+    ("no_head", "runtime_admission_adoption_abort_head"),
     ("unit_active", "runtime_admission_adoption_unit_active"),
     ("selected", "runtime_admission_adoption_abort_head"),
     ("run_record", "runtime_admission_adoption_abort_after_run"),
     ("legacy_changed", "runtime_admission_adoption_abort_legacy_changed"),
 ])
 def test_abort_refuses_outside_the_section_7_conditions(world, case, code):
+    if case == "no_head":
+        world.prepare()  # prepared, never committed: W-abort-1 territory, not this command
+        with pytest.raises(commands.CommandRefusal, match="^" + code + "$"):
+            world.abort()
+        assert world.head() is None and (world.root / "slots" / "r1").is_dir() and world.units.enabled == []
+        return
     world.adopt()
     if case == "unit_active":
         world.units.properties[VOICE]["ActiveState"] = "active"
@@ -880,6 +900,10 @@ def test_abort_refuses_outside_the_section_7_conditions(world, case, code):
 
 def test_abort_of_a_prepared_slot_before_commit(world):
     """W-abort-1: the marked slot is removed, 'current' never changed, the unit is re-enabled."""
+    legacy = tree_manifest(world.layout.legacy_state)
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_adoption_abort_prepared_unmarked$"):
+        commands.adoption_abort_prepared(world.root, slot=fixture.B_SLOT, manager=world.units)  # never the legacy
+    assert tree_manifest(world.layout.legacy_state) == legacy
     world.prepare()
     result = commands.adoption_abort_prepared(world.root, slot="r1", manager=world.units)
     assert result == {"removed": ["slots/r1"], "enabled": True}
