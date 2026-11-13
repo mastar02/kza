@@ -2290,7 +2290,9 @@ def verify_managed_properties(shown: dict | None, text: str, root: Path) -> list
 
 def _require_inactive(manager: ServiceManager) -> None:
     state = manager.user_show(UNIT, ("ActiveState",))
-    if state is None or state["ActiveState"] not in {"inactive", "failed"}:
+    if state is None:  # systemctl failed or timed out: unknown, never reported as active (0e5 review F6)
+        raise LauncherRefusal("runtime_admission_launcher_unit_state_unavailable")
+    if state["ActiveState"] not in {"inactive", "failed"}:
         raise LauncherRefusal("runtime_admission_launcher_unit_active")
 
 
@@ -2421,7 +2423,7 @@ def legacy_retirement_naming(root: Path, slot: str) -> str | None:
 
 
 def verify_legacy_links(runtime: Path, state: Path) -> None:
-    """The rollback-target link check (design v3 7 'from day 15', review N4a).
+    """The rollback-target link check (design v3 7, review N4a).
 
     Every link directly inside the legacy slot's runtime and state (the
     63ea8d3 container is five of them) must resolve, through every hop, to
@@ -2453,7 +2455,7 @@ def verify_legacy_links(runtime: Path, state: Path) -> None:
 def _verify_legacy_slot(root: Path, legacy_slot: str, legacy_commits: tuple[str, ...]) -> tuple[Path, Path, str]:
     name = stage._slot_name(legacy_slot)
     retired = legacy_retirement_naming(root, name)
-    if retired is not None:  # Q5 (P7=B): from day 15 there is no supported unmanaged rollback
+    if retired is not None:  # Q5 (P7=B, Q3=A): after the retirement there is no unmanaged rollback
         raise LauncherRefusal("runtime_admission_uninstall_legacy_retired", problems=[retired])
     runtime = root / "slots" / name / "runtime"
     state = root / "slots" / name / "state"

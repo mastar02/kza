@@ -850,10 +850,32 @@ def _install_cli_args(root, unit_dir, settings, **overrides):
     return argparse.Namespace(**values)
 
 
+class _StateOnly:
+    """In-process ServiceManager double (0e5 review F6): answers only the ActiveState read.
+
+    This test pins the preflight order, not the systemctl shim, so it does
+    not depend on a subprocess finishing within ServiceManager's bound.
+    Any other manager call before the preflight refusal fails the test.
+    """
+
+    def __init__(self, active_state: str | None = "inactive") -> None:
+        self.active_state = active_state
+        self.calls: list[tuple] = []
+
+    def user_show(self, unit: str, properties: tuple[str, ...]):
+        self.calls.append((unit, properties))
+        assert properties == ("ActiveState",), "only the state is read before the preflight"
+        return None if self.active_state is None else {"ActiveState": self.active_state}
+
+    def __getattr__(self, name):
+        raise AssertionError("unexpected manager call before the preflight refusal: " + name)
+
+
 def test_install_launcher_runs_the_serve_gates_before_touching_the_unit(artifacts, tmp_path, capsys, monkeypatch):
     """Review P2: a state serve would refuse with 78 (no restart) is never installed."""
     root, _state = rehearsal.managed_root(artifacts["archives"]["x"], tmp_path, settings=PRODUCTION_SHAPED)
-    unit_dir, manager = _systemctl(tmp_path)
+    unit_dir, _shim = _systemctl(tmp_path)
+    manager = _StateOnly()
     with pytest.raises(launcher.LauncherRefusal) as refused:
         launcher.install_launcher(root, unit_dir=unit_dir, template=TEMPLATE, settings=_settings(root),
                                   manager=manager)
@@ -864,10 +886,31 @@ def test_install_launcher_runs_the_serve_gates_before_touching_the_unit(artifact
     assert not list((root / "admission" / "launcher").glob("install-*.json"))
     _refused(root, tmp_path, "runtime_admission_launcher_path:foreign_serving_store:training.output_dir")
     # The CLI names every problem and exits 78.
-    monkeypatch.setenv("PATH", str(Path(manager.executable).parent) + os.pathsep + os.environ.get("PATH", ""))
+    monkeypatch.setattr(launcher, "ServiceManager", _StateOnly)
     assert launcher.run_command(_install_cli_args(root, unit_dir, _settings(root))) == 78
     error = json.loads(capsys.readouterr().err)
     assert error == {"refused": "runtime_admission_launcher_preflight", "problems": refused.value.problems}
+
+
+def test_an_unknown_unit_state_is_never_reported_as_active(root, tmp_path):
+    """0e5 review F6: systemctl failing or timing out is its own refusal, before anything is touched."""
+    unit_dir, _shim = _systemctl(tmp_path)
+    manager = _StateOnly(active_state=None)
+    with pytest.raises(launcher.LauncherRefusal) as refused:
+        launcher.install_launcher(root, unit_dir=unit_dir, template=TEMPLATE, settings=_settings(root),
+                                  manager=manager)
+    assert refused.value.code == "runtime_admission_launcher_unit_state_unavailable"
+    assert (unit_dir / "release.conf").read_text() == RELEASE_CONF and not (unit_dir / "managed.conf").exists()
+    for state, code in (("active", "runtime_admission_launcher_unit_active"),
+                        ("activating", "runtime_admission_launcher_unit_active")):
+        with pytest.raises(launcher.LauncherRefusal) as refused:
+            launcher.install_launcher(root, unit_dir=unit_dir, template=TEMPLATE, settings=_settings(root),
+                                      manager=_StateOnly(active_state=state))
+        assert refused.value.code == code
+    with pytest.raises(launcher.LauncherRefusal) as refused:
+        launcher.uninstall_launcher(root, unit_dir=unit_dir, decision_id="d-123", phrase=launcher.UNINSTALL_PHRASE,
+                                    legacy_slot="legacy", manager=manager)
+    assert refused.value.code == "runtime_admission_launcher_unit_state_unavailable"
 
 
 def test_install_launcher_refuses_a_missing_console_directory_an_unrotated_console_and_a_foreign_selection(

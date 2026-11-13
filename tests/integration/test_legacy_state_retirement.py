@@ -1,6 +1,8 @@
 """U3b-0e5: Q5 retirement of the frozen b0866e8 state (P7=B) and the rollback-target link check (N4).
 
-Design v3 section 7 'from day 15' and sub-unit U3b-0e5. On the
+Design v3 section 7 and sub-unit U3b-0e5, with the user decisions
+u3b_0e5_retirement Q1-Q3 (DAY 0 + 14 x 24 h; the 2026-10-29 SQLite backups
+retired in the same step; no unmanaged rollback afterwards). On the
 production-shaped root of the 0e3 tests (written by b0866e8's own code,
 adopted by the R1 archive of this tree), with a real clean managed close:
 the launcher's begin_run ticket, the child's receipt writer and the
@@ -9,7 +11,7 @@ the U3b-0e4 rehearsals.
 
 Groups: the link check (uninstall-launcher and both aborts), T-A17
 (retire, then L4 refuses with the record; with only the link check it
-refuses with legacy_state; the managed slot is unaffected), the day-15 and
+refuses with legacy_state; the managed slot is unaffected), the day-14 and
 first-close gates, the reference scan, the exclusions, crash safety from
 the intent, links never followed, and the CLI.
 """
@@ -18,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -33,7 +36,8 @@ LEGACY = fixture.B_SLOT
 P7 = "u3b-0e-P7-B-20261112"
 DAY = 86400
 T0 = 1_800_000_000.0  # the first clean managed close (DAY 0), a fixed wall clock
-DUE = T0 + 15 * DAY
+DUE = T0 + 14 * DAY  # user decision u3b_0e5_retirement Q1=A: exactly 14 x 24 h
+OLD_BACKUP = "release_20261028T144002Z_2c5adb4"  # the /home/kza/kza backup: never part of Q5
 RESOURCES = dict.fromkeys(["graph_closed", "privacy_closed", "sdk_closed", "native_closed"], True)
 REPOSITORY = Path(__file__).resolve().parents[2]
 
@@ -73,8 +77,34 @@ def clean_close(world: World, ended_at: float = T0, **exit_changes) -> dict:
     return running
 
 
-def adopted(world: World, *, close: bool = True) -> World:
+def make_backups(world: World) -> Path:
+    """The 2026-10-29 publication's backup (tools/publish_voice_order.py): release.conf, config, .env and
+    databases/ with ten SQLite snapshots of the b0866e8 state's data; plus the older /home/kza/kza backup."""
+    backup = world.root / "backups" / CONTAINER
+    (backup / "databases").mkdir(parents=True)
+    (backup / "release.conf").write_text("[Service]\nWorkingDirectory=/old\n")
+    shutil.copytree(legacy_state(world) / "config", backup / "config")
+    shutil.copyfile(legacy_state(world) / ".env", backup / ".env")
+    data = legacy_state(world) / "data"
+    databases = sorted(path.relative_to(data) for path in data.rglob("*")
+                       if path.suffix in (".db", ".sqlite3") and path.is_file() and path.name != "lists.db")
+    assert len(databases) >= commands.LEGACY_BACKUP_DATABASES
+    for relative in databases[:commands.LEGACY_BACKUP_DATABASES]:
+        (backup / "databases" / relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(data / relative, backup / "databases" / relative)
+    (world.root / "backups" / OLD_BACKUP).mkdir()
+    (world.root / "backups" / OLD_BACKUP / "settings.yaml").write_text("old: 1\n")
+    return backup / "databases"
+
+
+def backup_databases(world: World) -> Path:
+    return world.root / "backups" / CONTAINER / "databases"
+
+
+def adopted(world: World, *, close: bool = True, backups: bool = True) -> World:
     world.adopt()
+    if backups:
+        make_backups(world)
     world.units.properties[VOICE]["ActiveState"] = "inactive"
     if close:
         clean_close(world)
@@ -103,7 +133,11 @@ def kept_trees(world: World) -> dict:
     """Everything Q5 must leave byte-identical: the adopted slot, the container, the checkout, the metrics."""
     return {"r1": tree_manifest(world.root / "slots" / "r1"), "container": tree_manifest(world.root / "slots" / CONTAINER),
             "checkout": tree_manifest(world.base / "legacy" / "kza"),
-            "logs": tree_manifest(world.base / "legacy" / "logs")}
+            "logs": tree_manifest(world.base / "legacy" / "logs"),
+            "backup_kept": {name: tree_manifest(world.root / "backups" / CONTAINER / name) if (
+                world.root / "backups" / CONTAINER / name).is_dir() else (world.root / "backups" / CONTAINER / name).read_bytes()
+                for name in ("release.conf", "config", ".env")},
+            "old_backup": tree_manifest(world.root / "backups" / OLD_BACKUP)}
 
 
 def install_record(world: World) -> None:
@@ -248,9 +282,11 @@ def test_t_a17_q5_retires_only_the_frozen_state_and_l4_refuses_with_the_record(w
     assert plan["ineligible_slots"] == sorted([CONTAINER, LEGACY])
     assert plan["census"]["exists"] and plan["census"]["files"] > 0
     assert set(plan["census"]["top_level"]) == {".env", "config", "data", "logs"}
+    assert len(plan["backups"]["databases"]) == 10 and "lists.db" not in plan["backups"]["databases"]
     assert not launcher.legacy_retirement_directory(world.root).exists()  # the dry run writes nothing
     result = retire(world, confirm=plan["plan_sha256"])
     assert not os.path.lexists(target) and (world.root / "slots" / LEGACY).is_dir()
+    assert not os.path.lexists(backup_databases(world)) and (world.root / "backups" / CONTAINER).is_dir()
     assert kept_trees(world) == kept and world.head() == head
     directory = launcher.legacy_retirement_directory(world.root)
     record = json.loads((directory / ("retired-" + plan["plan_sha256"] + ".json")).read_text())
@@ -260,6 +296,10 @@ def test_t_a17_q5_retires_only_the_frozen_state_and_l4_refuses_with_the_record(w
     assert record["intent"] == "intent-" + plan["plan_sha256"] + ".json" and record["absence"] == "enoent"
     assert record["ineligible_slots"] == intent["ineligible_slots"] == sorted([CONTAINER, LEGACY])
     assert intent["plan"]["p_answer"] == "P7=B" and stage._digest(intent["plan"]) == plan["plan_sha256"]
+    assert record["authorization"] == commands.LEGACY_RETIRE_AUTHORIZATION and "Q2=A" in record["authorization"]
+    assert record["removed"] == [{"target": os.fspath(target), "absence": "enoent"},
+                                 {"target": os.fspath(backup_databases(world)), "absence": "enoent"}]
+    assert record["backups"]["databases"] == plan["backups"]["databases"]
     assert intent["plan"]["first_clean_close"]["ended_at"] == T0 and intent["plan"]["eligible_from"] == DUE
     # L4 is gone for both legacy slots, and the refusal names the record.
     units = unit_dir_files(world)
@@ -292,7 +332,7 @@ def test_the_retirement_never_follows_a_link_inside_the_frozen_state(world):
     assert kept_trees(world) == kept and (venv / "bin" / "python").read_text() == "interpreter"
 
 
-# --- gates: decision, adoption, first clean close, day 15, confirm, unit ---------------------------
+# --- gates: decision, adoption, first clean close, day 14, confirm, unit ---------------------------
 
 def test_a_decision_id_is_required_before_anything(world):
     adopted(world)
@@ -332,16 +372,17 @@ def test_day_zero_is_the_earliest_clean_close(world):
     assert dry(world)["eligible_from"] == launcher._now_stamp(DUE)
 
 
-def test_no_retirement_before_day_15(world):
-    """DAY 0 + 14 days still serves L4 (until the end of day 14); the deletion is allowed from DAY 0 + 15 x 24 h."""
+def test_no_retirement_before_day_0_plus_14_x_24_h(world):
+    """Q1=A: the deletion is allowed from exactly DAY 0 + 14 x 24 h, not a second earlier."""
     adopted(world)
-    for wall in (T0 + 14 * DAY, DUE - 1):
+    for wall in (T0 + 13 * DAY, DUE - 1):
         plan = dry(world, wall=wall)
         assert plan["eligible"] is False and plan["eligible_from"] == launcher._now_stamp(DUE)
         with pytest.raises(commands.CommandRefusal, match="^runtime_admission_legacy_retire_too_early$") as refused:
             retire(world, wall=wall, confirm=plan["plan_sha256"])
         assert refused.value.report == {"eligible_from": launcher._now_stamp(DUE)}
     assert legacy_state(world).is_dir() and not launcher.legacy_retirement_directory(world.root).exists()
+    assert dry(world, wall=DUE)["eligible"] is True
     assert confirm(world, wall=DUE)["resumed"] is False
 
 
@@ -551,3 +592,151 @@ def test_the_cli_requires_a_mode_and_refuses_with_78(world):
     assert result.returncode == 78
     assert json.loads(result.stderr.splitlines()[-1]) == {"refused": "runtime_admission_legacy_retire_adoption"}
     assert legacy_state(world).is_dir()
+
+
+# --- review round (0e5 independent review F3-F7, user decisions Q1-Q3) ------------------------------
+
+def test_an_l4_use_after_the_adoption_refuses_whatever_the_unit_view_shows(world):
+    """F3: uninstall-launcher served the frozen state again; its data needs a new user decision."""
+    adopted(world)
+    record = world.root / "admission" / "launcher" / "uninstall-20261125T000000Z000000.json"
+    stage._atomic_record(record, {"schema_version": 1, "decision_id": "l4-decision-20261125",
+                                  "uninstalled_at": "20261125T000000Z000000"}, immutable=True)
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_legacy_retire_l4_used$") as refused:
+        dry(world)
+    assert refused.value.report == {"problems": ["launcher/" + record.name]}
+    assert legacy_state(world).is_dir() and backup_databases(world).is_dir()
+
+
+def test_abort_prepared_after_the_commit_still_removes_a_leftover_work_directory(world):
+    """F4: after the commit 'current' is the managed slot; the legacy link check does not apply."""
+    adopted(world, close=False, backups=False)
+    leftover = world.root / commands.WORK_DIRECTORY / "r2"
+    (leftover / "state").mkdir(parents=True)
+    result = commands.adoption_abort_prepared(world.root, slot="r2", manager=world.units)
+    assert result["removed"] == [commands.WORK_DIRECTORY + "/r2"] and not leftover.exists()
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_adoption_abort_prepared_committed$"):
+        commands.adoption_abort_prepared(world.root, slot="r1", manager=world.units)
+
+
+@pytest.mark.parametrize("case, code", [
+    ("checkout", "runtime_admission_legacy_retire_excluded:legacy_checkout"),
+    ("kept_backup", "runtime_admission_legacy_retire_excluded:backups_kept"),
+    ("kept_beside", "runtime_admission_legacy_retire_excluded:backups_kept"),
+    ("head_slot", "runtime_admission_legacy_retire_excluded:head_slot"),
+    ("current", "runtime_admission_legacy_retire_excluded:current"),
+    ("controller", "runtime_admission_legacy_retire_excluded:controller"),
+    ("slot_link", "runtime_admission_legacy_retire_target"),
+    ("layout", "runtime_admission_legacy_retire_layout"),
+    ("slot_name", "runtime_admission_legacy_retire_slot"),
+    ("target_file", "runtime_admission_legacy_retire_target"),
+])
+def test_the_scope_guards_refuse_before_any_deletion(world, monkeypatch, case, code):
+    """F5: /home/kza/kza and every backup outside the retired set are real exclusions; the fixed target holds."""
+    adopted(world)
+    slot, target = world.root / "slots" / LEGACY, legacy_state(world)
+    name, record = commands.committed_adoption(world.root)
+    record = json.loads(json.dumps(record))
+    if case == "checkout":
+        record["layout"]["legacy_checkout"] = os.fspath(slot)
+        monkeypatch.setattr(commands, "committed_adoption", lambda root: (name, record))
+    elif case == "kept_backup":
+        shutil.rmtree(world.root / "backups" / OLD_BACKUP)
+        os.symlink(target / "data", world.root / "backups" / OLD_BACKUP)
+    elif case == "kept_beside":
+        shutil.rmtree(world.root / "backups" / CONTAINER / "config")
+        os.symlink(backup_databases(world), world.root / "backups" / CONTAINER / "config")
+    elif case == "head_slot":
+        binding = stage.read_binding(world.root, world.head()["binding_id"])
+        monkeypatch.setattr(stage, "read_binding", lambda root, identity: dict(binding, slot=LEGACY))
+    elif case == "current":
+        (slot / "runtime").mkdir()
+        os.unlink(world.root / "current")
+        os.symlink(Path("slots") / LEGACY / "runtime", world.root / "current")
+    elif case == "controller":
+        os.rename(world.root / "controller", world.root / "controller-aside")
+        os.symlink(target, world.root / "controller")
+    elif case == "slot_link":
+        os.rename(slot, world.root / "elsewhere")
+        os.symlink(world.root / "elsewhere", slot)
+    elif case == "layout":
+        container_config = world.root / "slots" / CONTAINER / "state" / "config"
+        os.unlink(container_config)
+        os.symlink(world.layout.models_root, container_config)
+    elif case == "slot_name":
+        record["layout"]["legacy_state"] = os.fspath(world.root / "slots" / "release_x_1234567" / "state")
+        monkeypatch.setattr(commands, "committed_adoption", lambda root: (name, record))
+    else:
+        moved = world.root / "frozen-aside"
+        os.rename(target, moved)
+        target.write_text("not a directory")
+    before = tree_manifest(world.root / "backups")
+    with pytest.raises(commands.CommandRefusal, match="^" + code + "$"):
+        dry(world)
+    assert tree_manifest(world.root / "backups") == before
+    assert not launcher.legacy_retirement_directory(world.root).exists()
+
+
+@pytest.mark.parametrize("case, code", [
+    ("missing", "runtime_admission_legacy_retire_backups_set"),
+    ("nine", "runtime_admission_legacy_retire_backups_set"),
+    ("eleven", "runtime_admission_legacy_retire_backups_set"),
+    ("other_file", "runtime_admission_legacy_retire_backups_set"),
+    ("journal", "runtime_admission_legacy_retire_backups_set"),
+    ("link_inside", "runtime_admission_legacy_retire_backups_set"),
+    ("not_sqlite", "runtime_admission_legacy_retire_backups_set"),
+    ("not_from_state", "runtime_admission_legacy_retire_backups_set"),
+    ("directory_link", "runtime_admission_legacy_retire_backups_set"),
+    ("mount", "runtime_admission_legacy_retire_mount"),
+])
+def test_the_backup_set_must_be_the_reviewed_one(world, monkeypatch, case, code):
+    """Q2=A: exactly the ten SQLite snapshots of the b0866e8 state, regular files, no link, no mount."""
+    adopted(world)
+    databases = backup_databases(world)
+    files = sorted(path for path in databases.rglob("*") if path.is_file())
+    if case == "missing":
+        shutil.rmtree(databases)
+    elif case == "nine":
+        files[0].unlink()
+    elif case == "eleven":
+        shutil.copyfile(legacy_state(world) / "data" / "lists.db", databases / "lists.db")
+    elif case == "other_file":
+        (databases / "notes.txt").write_text("x")
+    elif case == "journal":
+        (databases / (files[0].name + "-journal")).write_bytes(b"x")
+    elif case == "link_inside":
+        files[0].unlink()
+        os.symlink(legacy_state(world) / "data" / files[0].relative_to(databases), files[0])
+    elif case == "not_sqlite":
+        files[0].write_bytes(b"plain text, not a database")
+    elif case == "not_from_state":
+        files[0].rename(files[0].with_name("renamed.db"))
+    elif case == "directory_link":
+        os.rename(databases, world.root / "databases-aside")
+        os.symlink(world.root / "databases-aside", databases)
+    else:
+        point = os.fspath(databases / files[0].relative_to(databases).parts[0]) if len(
+            files[0].relative_to(databases).parts) > 1 else os.fspath(databases)
+        monkeypatch.setattr(stage, "_mount_points", lambda: [point])
+    with pytest.raises(commands.CommandRefusal, match="^" + code + "$"):
+        dry(world)
+    assert legacy_state(world).is_dir() and not launcher.legacy_retirement_directory(world.root).exists()
+
+
+def test_a_directory_vanishing_during_the_dry_run_walk_is_a_refusal(world, monkeypatch):
+    """F7: the dry run walks the live state; a vanished directory gives a code, not a traceback."""
+    adopted(world)
+    vanishing = world.root / "slots" / "r1" / "state" / "data" / "zz-vanishing" / "inner"
+    vanishing.mkdir(parents=True)
+    original = os.walk
+
+    def walk(top, *args, **kwargs):
+        for item in original(top, *args, **kwargs):
+            if vanishing.parent.exists() and item[0] == os.fspath(vanishing.parent.parent):
+                shutil.rmtree(vanishing.parent)
+            yield item
+    monkeypatch.setattr(commands.os, "walk", walk)
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_legacy_retire_scan$"):
+        dry(world)
+    monkeypatch.undo()
+    assert dry(world)["dry_run"] is True  # the same walk without the vanishing directory reports
