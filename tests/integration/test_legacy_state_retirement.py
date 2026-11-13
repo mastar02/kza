@@ -689,6 +689,7 @@ def test_the_scope_guards_refuse_before_any_deletion(world, monkeypatch, case, c
     ("link_inside", "runtime_admission_legacy_retire_backups_set"),
     ("not_sqlite", "runtime_admission_legacy_retire_backups_set"),
     ("not_from_state", "runtime_admission_legacy_retire_backups_set"),
+    ("not_from_state_extra", "runtime_admission_legacy_retire_backups_set"),
     ("directory_link", "runtime_admission_legacy_retire_backups_set"),
     ("mount", "runtime_admission_legacy_retire_mount"),
 ])
@@ -712,7 +713,9 @@ def test_the_backup_set_must_be_the_reviewed_one(world, monkeypatch, case, code)
         os.symlink(legacy_state(world) / "data" / files[0].relative_to(databases), files[0])
     elif case == "not_sqlite":
         files[0].write_bytes(b"plain text, not a database")
-    elif case == "not_from_state":  # ten counted only if the unknown name were skipped: the source check refuses
+    elif case == "not_from_state":  # still ten files: only the source check can refuse
+        files[0].rename(files[0].with_name("renamed.db"))
+    elif case == "not_from_state_extra":  # ten would count only if the unknown name were skipped
         files[0].rename(files[0].with_name("renamed.db"))
         shutil.copyfile(legacy_state(world) / "data" / "lists.db", databases / "lists.db")
     elif case == "directory_link":
