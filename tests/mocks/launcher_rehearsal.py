@@ -77,8 +77,6 @@ def build_artifacts(base: Path) -> dict:
     pre = pre_launcher_revision(clone, x)
     archives = {}
     for name, revision in (("x", x), ("y", y), ("pre", pre)):
-        if revision is None:
-            continue
         archive = base / (name + ".tar.gz")
         manifest = build_runtime(clone, archive, revision)
         assert manifest["git_commit"] == revision
@@ -86,14 +84,20 @@ def build_artifacts(base: Path) -> dict:
     return {"archives": archives, "commits": {"x": x, "y": y, "pre": pre}, "clone": clone}
 
 
-def pre_launcher_revision(clone: Path, x: str) -> str | None:
-    """The newest ancestor of X whose stage_runtime declares no LAUNCHER_CONTRACT (a pre-0d slot)."""
-    for revision in _git(clone, "rev-list", "--max-count=20", x + "^").split():
-        source = subprocess.run(["git", "show", revision + ":scripts/stage_runtime.py"], cwd=clone,
-                                capture_output=True, timeout=60)
-        if source.returncode == 0 and b"\nLAUNCHER_CONTRACT = " not in source.stdout:
-            return revision
-    return None
+# The newest commit before U3b-0d (6288e15^). Pinned so the pre-launcher rehearsals never
+# skip as the branch grows; a bounded ancestor search silently lost them once it fell out of range.
+PRE_LAUNCHER_COMMIT = "40aa05b8d56ffb608e79f3c26b55a9386a9a0605"
+
+
+def pre_launcher_revision(clone: Path, x: str) -> str:
+    """The pinned pre-0d ancestor of X; it must be an ancestor and declare no LAUNCHER_CONTRACT."""
+    ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", PRE_LAUNCHER_COMMIT, x], cwd=clone,
+                              capture_output=True, timeout=60)
+    assert ancestor.returncode == 0, "the pinned pre-0d commit is not an ancestor of the rehearsal commit"
+    source = subprocess.run(["git", "show", PRE_LAUNCHER_COMMIT + ":scripts/stage_runtime.py"], cwd=clone,
+                            capture_output=True, timeout=60, check=True)
+    assert b"\nLAUNCHER_CONTRACT = " not in source.stdout, "the pinned pre-0d commit declares a launcher contract"
+    return PRE_LAUNCHER_COMMIT
 
 
 def offline_source(tmp_path: Path, settings: str = SETTINGS) -> Path:

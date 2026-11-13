@@ -362,8 +362,7 @@ def test_tc4_managed_rollback_to_an_older_launcher_slot_runs(artifacts, tmp_path
 
 
 def test_tc4_pre_launcher_artifact_is_refused_78(artifacts, tmp_path, deployments):
-    if "pre" not in artifacts["archives"]:
-        pytest.skip("no pre-0d ancestor")
+    assert "pre" in artifacts["archives"], "the pre-0d artifact must be built"
     deployment = _deploy(artifacts, tmp_path, deployments)
     stage.prepare_slot(artifacts["archives"]["pre"], deployment.root, "pre", deployment.state)
     with pytest.raises(ValueError, match="runtime_admission_launcher_contract_missing"):  # review P10

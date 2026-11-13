@@ -583,8 +583,7 @@ def test_format_epoch_below_the_minimum_is_refused(root, tmp_path, monkeypatch):
 
 
 def test_pre_launcher_slot_is_refused_by_serve(artifacts, tmp_path):
-    if "pre" not in artifacts["archives"]:
-        pytest.skip("no pre-0d ancestor")
+    assert "pre" in artifacts["archives"], "the pre-0d artifact must be built"
     root, _state = rehearsal.managed_root(artifacts["archives"]["pre"], tmp_path, controller=False)
     launcher.install_controller(root, artifacts["archives"]["x"])
     _refused(root, tmp_path, "runtime_admission_launcher_contract_missing")
@@ -701,8 +700,8 @@ def test_uninstall_launcher_pins_the_legacy_slot_and_leaves_admission_untouched(
                                                                                 release_conf):
     unit_dir, manager = _systemctl(tmp_path, release_conf=release_conf)
     launcher.install_launcher(root, unit_dir=unit_dir, template=TEMPLATE, settings=_settings(root), manager=manager)
-    legacy_archive = artifacts["archives"].get("pre", artifacts["archives"]["x"])
-    legacy_commit = artifacts["commits"]["pre"] or artifacts["commits"]["x"]
+    legacy_archive = artifacts["archives"]["pre"]
+    legacy_commit = artifacts["commits"]["pre"]
     source = rehearsal.offline_source(tmp_path / "legacy-source")
     stage.prepare_slot(legacy_archive, root, "legacy", source)
     before = _admission_files(root)
