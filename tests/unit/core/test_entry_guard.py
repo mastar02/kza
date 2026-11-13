@@ -232,6 +232,44 @@ def test_managed_root_of_lexical_resolved_and_damaged(tmp_path):
     assert managed_root_of([outside]) is None
 
 
+def test_refused_from_a_managed_cwd_even_with_code_elsewhere(managed, code, tmp_path):
+    """The legacy unit's WorkingDirectory is the container under the root (F1)."""
+    elsewhere = tmp_path / "elsewhere-code"
+    shutil.copytree(code, elsewhere, symlinks=True)
+    before = _tree(managed["root"])
+    result = _run([sys.executable, "-B", "-c", "import src"], cwd=managed["state"],
+                  env=_environment(PYTHONPATH=str(elsewhere)))
+    assert result.returncode == 78 and UNMANAGED_CODE in result.stderr
+    assert _tree(managed["root"]) == before
+
+
+def test_serve_entry_refuses_from_a_managed_cwd(managed, monkeypatch):
+    from src.core.runtime_admission import verify_runtime_admission
+    monkeypatch.delenv(TICKET_ENV, raising=False)
+    monkeypatch.chdir(managed["state"])
+    with pytest.raises(RuntimeError, match=UNMANAGED_CODE):
+        verify_runtime_admission({"memory": {"privacy_db_path": ":memory:"}})
+
+
+def test_schema_only_capability_decision(tmp_path):
+    root = tmp_path / "r"
+    (root / "admission").mkdir(parents=True)
+    (root / "admission" / "controller.json").write_text("{}")
+    exact = schema_only_command("/py", root, "--state", "x")
+    isolated = type("Flags", (), {"isolated": 1, "dont_write_bytecode": True})()
+    plain = type("Flags", (), {"isolated": 0, "dont_write_bytecode": True})()
+    capability = {SCHEMA_ONLY_ENV: "1"}
+    assert entry_decision(environ=capability, paths=[root], argv=exact, flags=isolated) is None
+    assert entry_decision(environ={**capability, TICKET_ENV: "{}"}, paths=[root], argv=exact,
+                          flags=isolated) == CAPABILITY_CODE
+    assert entry_decision(environ=capability, paths=[root], argv=exact, flags=plain) == CAPABILITY_CODE
+    assert entry_decision(environ={SCHEMA_ONLY_ENV: "2"}, paths=[root], argv=exact, flags=isolated) == CAPABILITY_CODE
+    assert entry_decision(environ=capability, paths=[root], argv=[*exact[:4], exact[4] + " ", *exact[5:]],
+                          flags=isolated) == CAPABILITY_CODE
+    assert entry_decision(environ=capability, paths=[root], argv=exact[:5], flags=isolated) == CAPABILITY_CODE
+    assert entry_decision(environ=capability, paths=[root], argv=None, flags=isolated) == CAPABILITY_CODE
+
+
 def test_entry_decision_table(tmp_path):
     root = tmp_path / "r"
     (root / "admission").mkdir(parents=True)

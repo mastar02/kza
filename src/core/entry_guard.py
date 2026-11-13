@@ -94,9 +94,15 @@ def managed_root_of(paths: Iterable[str | os.PathLike]) -> Path | None:
     return None
 
 
-def schema_only_invocation(argv: list[str] | None) -> bool:
-    """True iff this process is exactly the schema-only bootstrap under -I -B."""
-    if argv is None or not sys.flags.isolated or not sys.flags.dont_write_bytecode:
+def schema_only_invocation(argv: list[str] | None, flags=None) -> bool:
+    """True iff this process is exactly the schema-only bootstrap under -I -B.
+
+    Args:
+        argv: The original interpreter argv (sys.orig_argv).
+        flags: Interpreter flags (sys.flags; injectable for tests).
+    """
+    flags = sys.flags if flags is None else flags
+    if argv is None or not flags.isolated or not flags.dont_write_bytecode:
         return False
     try:
         index = argv.index("-c")
@@ -109,13 +115,15 @@ def schema_only_invocation(argv: list[str] | None) -> bool:
 
 def entry_decision(*, environ: Mapping[str, str] | None = None,
                    paths: Iterable[str | os.PathLike] = (),
-                   argv: list[str] | None = None) -> str | None:
+                   argv: list[str] | None = None, flags=None) -> str | None:
     """Return None to allow, or the refusal code, for one process entry.
 
     Args:
         environ: Process environment (os.environ).
         paths: Locations this entry runs from or would open (code, cwd, state).
-        argv: The original interpreter argv (sys.orig_argv).
+        argv: The original interpreter argv (sys.orig_argv); None never
+            matches the schema-only bootstrap.
+        flags: Interpreter flags (sys.flags; injectable for tests).
 
     Returns:
         None, ``UNMANAGED_CODE`` or ``CAPABILITY_CODE``.
@@ -125,7 +133,7 @@ def entry_decision(*, environ: Mapping[str, str] | None = None,
     if capability is not None:
         # Accepted only by the schema-only bootstrap, never with a ticket.
         if (capability != SCHEMA_ONLY_VALUE or TICKET_ENV in environ
-                or not schema_only_invocation(argv)):
+                or not schema_only_invocation(argv, flags)):
             return CAPABILITY_CODE
         return None
     if TICKET_ENV in environ:
@@ -154,10 +162,9 @@ def check_serve_entry(state_paths: Iterable[str | os.PathLike] = (), *,
                       runtime_root: str | os.PathLike | None = None) -> None:
     """The serve entry's G1 (runtime_admission): RuntimeError instead of exit.
 
-    The schema-only capability is never accepted here.
+    The schema-only capability is never accepted here: argv=None never
+    matches its bootstrap, so a present capability refuses.
     """
-    if SCHEMA_ONLY_ENV in os.environ:
-        raise RuntimeError(CAPABILITY_CODE)
     paths = [*_default_paths(), *state_paths]
     if runtime_root is not None:
         paths.append(runtime_root)
