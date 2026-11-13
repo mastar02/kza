@@ -3714,7 +3714,7 @@ _adoption_commands = None
 # The adoption subcommands (= scripts/adoption_commands.COMMANDS; a test pins it). main() loads the
 # adoption library only when the command line names one of them (U3b-0e3 review F8): serve never does.
 ADOPTION_COMMANDS = ("retire-legacy-training", "adoption-dry-run", "adoption-prepare", "adoption-commit",
-                     "adoption-abort")
+                     "adoption-abort", "retire-legacy-state")
 
 
 def _load_beside(stem: str, prefix: str):

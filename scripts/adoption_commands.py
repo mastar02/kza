@@ -19,7 +19,10 @@ the window around it:
   item, removes the copy marker, then writes the binding, the adoption seal
   and record, the 'adoption' manual head and the CAS, and publishes 'current'.
 * ``adoption-abort`` (W-abort-2, P6=A) and ``adoption-abort --prepared-slot``
-  (W-abort-1).
+  (W-abort-1). Both first run the rollback-target check (U3b-0e5).
+* ``retire-legacy-state`` (Q5, P7=B, U3b-0e5): on day 15 after the first
+  clean managed close, deletes the frozen b0866e8 state and makes the
+  63ea8d3 and b0866e8 slots ineligible for L4, from an immutable intent.
 
 Every command refuses as root, as a user other than the root's owner, on a
 root that is not the managed layout, and when run twice. Outputs are
@@ -73,7 +76,8 @@ def _refuse(code: str, report: dict | None = None):
     raise CommandRefusal(code, report)
 
 
-COMMANDS = ("retire-legacy-training", "adoption-dry-run", "adoption-prepare", "adoption-commit", "adoption-abort")
+COMMANDS = ("retire-legacy-training", "adoption-dry-run", "adoption-prepare", "adoption-commit", "adoption-abort",
+            "retire-legacy-state")
 SCHEMA_VERSION = 1
 # The user's final answers (user-decisions-20261110.json u3b_0e_adoption), bound in plan and seal.
 P_ANSWERS = ("P1=D", "P2=A", "P3=A", "P4=A", "P5=A", "P6=A", "P7=B", "P8=A")
@@ -1527,6 +1531,33 @@ def _legacy_conf(root: Path, unit_dir: Path, container_slot: str, manager) -> di
             "mismatches": launcher._legacy_mismatches(record, shown, runtime, state)}
 
 
+def rollback_target(root: Path, container_slot: str) -> None:
+    """The L4/abort rollback target must still serve (U3b-0e5): not retired by Q5, links resolving.
+
+    The same check uninstall-launcher runs (``_verify_legacy_slot``): a Q5
+    record or intent naming the slot refuses with
+    runtime_admission_uninstall_legacy_retired, a dangling, looping or
+    missing container link with runtime_admission_uninstall_legacy_state.
+    Called before anything changes, so a refusal leaves 'current', the unit
+    directory and the slots as they were.
+    """
+    try:
+        launcher._verify_legacy_slot(root, container_slot, launcher.LEGACY_COMMITS)
+    except launcher.LauncherRefusal as refusal:
+        _refuse(refusal.code, {"problems": refusal.problems} if refusal.problems else None)
+    except (OSError, ValueError):
+        _refuse("runtime_admission_uninstall_legacy_slot")
+
+
+def _current_slot(root: Path) -> str:
+    """The slot whose runtime 'current' resolves to (before W4: the 63ea8d3 container slot)."""
+    current = os.path.realpath(root / "current")
+    slots = os.fspath(root / "slots")
+    if os.path.dirname(os.path.dirname(current)) != slots or os.path.basename(current) != "runtime":
+        _refuse("runtime_admission_adoption_current")
+    return os.path.basename(os.path.dirname(current))
+
+
 def _require_inactive(manager) -> dict:
     shown = manager.user_show(launcher.UNIT, UNIT_PROPERTIES)
     if shown is None:
@@ -1611,6 +1642,7 @@ def adoption_abort(root, *, manager, unit_dir, paths: ProductionPaths | None = N
                     "enabled": _enable_after_abort(root, head, manager, wall)}
         if _runs_happened(root):
             _refuse("runtime_admission_adoption_abort_after_run")
+        rollback_target(root, record["container_slot"])  # before any change (U3b-0e5, N4a)
         layout = adoption.SourceLayout(**{key: Path(value) for key, value in record["layout"].items()})
         try:
             now = source_manifest_digest(layout, record["metrics_path"])
@@ -1684,6 +1716,7 @@ def adoption_abort_prepared(root, *, slot: str, manager, wall=time.time) -> dict
         target, work = root / "slots" / slot, root / WORK_DIRECTORY / slot
         if os.path.realpath(root / "current") == os.fspath(target / "runtime"):
             _refuse("runtime_admission_adoption_abort_prepared_committed")
+        rollback_target(root, _current_slot(root))  # kza-voice is re-enabled on it (U3b-0e5)
         removed, plan_sha256 = [], None
         if os.path.lexists(target):
             marker = target / "state" / adoption.COPY_MARKER
@@ -1708,6 +1741,391 @@ def adoption_abort_prepared(root, *, slot: str, manager, wall=time.time) -> dict
         if os.path.isdir(root / WORK_DIRECTORY) and not os.listdir(root / WORK_DIRECTORY):
             os.rmdir(root / WORK_DIRECTORY)
     return {"removed": removed, "enabled": _enable(manager)}
+
+
+# --- retire-legacy-state (Q5 of the frozen b0866e8 state, P7=B, U3b-0e5) ---------------------------
+
+# DAY 0 is the first clean managed close (W9's closure seal). L4 stays valid until the end of day 14,
+# so the deletion is allowed from DAY 0 + 15 x 24 h (design v3 7: 'the deletion itself runs on day 15').
+LEGACY_STATE_RETIREMENT_DAYS = 15
+_DAY_SECONDS = 86400
+LEGACY_RETIRE_PLAN_KEYS = frozenset({"kind", "decision_id", "container_slot", "legacy_slot", "target",
+                                     "ineligible_slots", "adoption_record", "adoption_record_sha256",
+                                     "first_clean_close", "eligible_from", "census", "excluded", "p_answer"})
+def _historical_admission() -> frozenset:
+    """admission/ subdirectories that only record history by name (the adoption layout, the pre-managed unit
+    properties, the Q5 records); the reference scan reads every other admission record."""
+    return frozenset({"adoption", "launcher", launcher.LEGACY_RETIREMENT_DIRECTORY})
+
+
+def committed_adoption(root: Path) -> tuple[str, dict]:
+    """The one adoption record no abort record follows: (file name, record)."""
+    directory = stage.adoption_directory(root)
+    found = []
+    if os.path.isdir(directory):
+        for name in sorted(os.listdir(directory)):
+            if not (name.startswith("adoption-") and name.endswith(".json")):
+                continue
+            record = stage._read_json(directory / name)
+            head = record.get("head")
+            if (record.get("kind") != "adoption" or type(head) is not dict
+                    or stage.adoption_record_path(root, head).name != name):
+                _refuse("runtime_admission_legacy_retire_adoption")
+            if stage.head_aborted(root, head):
+                continue
+            if stage.read_manual_head(root, head)["kind"] != "adoption":
+                _refuse("runtime_admission_legacy_retire_adoption")
+            found.append((name, record))
+    if len(found) != 1:
+        _refuse("runtime_admission_legacy_retire_adoption")
+    return found[0]
+
+
+def first_clean_close(root: Path, adoption_head: dict) -> dict | None:
+    """The earliest clean managed close after the adoption: DAY 0 of P7.
+
+    Clean means the controller's immutable exit record says the stop was
+    requested (SIGTERM), the reason is 'stop', the run was sealed with no
+    seal error, and the run's exact receipt exists. The run belongs to the
+    adopted lineage (its generation is above the adoption head's). The
+    mutable closures/<binding> proof is not used: a later run may rewrite it.
+    """
+    runs = root / "admission" / "runs"
+    if not os.path.isdir(runs):
+        return None
+    found = []
+    for name in sorted(os.listdir(runs)):
+        if not name.endswith(".exit.json"):
+            continue
+        run_id = name[:-len(".exit.json")]
+        exit_record = launcher.read_exit_record(root, run_id)
+        run = launcher.read_run_record(root, run_id)
+        if (exit_record is None or run is None or exit_record.get("reason") != "stop"
+                or exit_record.get("sealed") is not True or exit_record.get("stop_requested") is not True
+                or exit_record.get("seal_error") is not None or exit_record.get("state_changed_after_close")
+                or type(exit_record.get("ended_at")) not in (int, float)
+                or type(run.get("generation")) is not int or run["generation"] <= adoption_head["generation"]):
+            continue
+        try:
+            receipt = stage._read_json(root / "admission" / "receipts" / (run_id + ".json"))
+        except (OSError, ValueError):
+            continue
+        running = {"binding_id": run.get("binding_id"), "generation": run["generation"], "run_id": run_id}
+        if receipt != stage.expected_receipt(running, run["child_pid"]):
+            continue
+        found.append({"run_id": run_id, "ended_at": float(exit_record["ended_at"])})
+    return min(found, key=lambda item: (item["ended_at"], item["run_id"])) if found else None
+
+
+def _legacy_census(target: Path) -> dict:
+    """lstat walk of the frozen state, never following a link: counts only; a mount crossing refuses."""
+    try:
+        info = os.lstat(target)
+    except FileNotFoundError:
+        return {"exists": False}
+    if not stat.S_ISDIR(info.st_mode):
+        _refuse("runtime_admission_legacy_retire_target")
+    device = info.st_dev
+    real = os.path.realpath(target)
+    if (os.lstat(target.parent).st_dev != device or os.path.ismount(target)
+            or any(point == real or point.startswith(real.rstrip("/") + "/") for point in stage._mount_points())):
+        _refuse("runtime_admission_legacy_retire_mount")
+    counts = dict.fromkeys(("files", "directories", "links", "other", "bytes"), 0)
+
+    def fail(error: OSError) -> None:
+        raise error
+    for directory, names, filenames in os.walk(target, followlinks=False, onerror=fail):
+        for name in names + filenames:
+            path = os.path.join(directory, name)
+            entry = os.lstat(path)
+            if entry.st_dev != device or (stat.S_ISDIR(entry.st_mode) and os.path.ismount(path)):
+                _refuse("runtime_admission_legacy_retire_mount")
+            if stat.S_ISLNK(entry.st_mode):
+                counts["links"] += 1
+            elif stat.S_ISDIR(entry.st_mode):
+                counts["directories"] += 1
+            elif stat.S_ISREG(entry.st_mode):
+                counts["files"] += 1
+                counts["bytes"] += entry.st_size
+            else:
+                counts["other"] += 1
+    return dict(counts, exists=True, top_level=sorted(os.listdir(target)))
+
+
+def _points_into(value: str, roots: list[str]) -> bool:
+    return _under(os.path.realpath(value), roots)
+
+
+def _env_values(path: Path) -> dict:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        _refuse("runtime_admission_legacy_retire_referenced:env")
+    with os.fdopen(descriptor, "rb") as stream:
+        lines = stream.read(_ENV_FILE_LIMIT).decode(errors="replace").splitlines()
+    values = {}
+    for line in lines:
+        match = adoption._ENV_LINE.match(line)
+        if match is not None and not line.lstrip().startswith("#"):
+            values[match.group(1)] = match.group(2).strip().strip("'\"")
+    return values
+
+
+def legacy_references(root: Path, *, roots: list[str], skip: list[Path], head_state: Path, manager) -> list[str]:
+    """Everything that still points into the copies being retired (content-free problem names).
+
+    Read: every link under the root outside the two legacy slots ('current'
+    and controller/current included), resolved through every hop; every
+    admission record except the historical ones, as raw text; every loaded
+    user service (ExecStart, Environment and EnvironmentFile values,
+    WorkingDirectory, container binds, as retire-legacy-training reads them);
+    the console logrotate configuration; the served state's settings.yaml
+    leaves and .env values.
+    """
+    problems = []
+    skipped = {os.fspath(path) for path in skip}
+
+    def fail(error: OSError) -> None:
+        raise error
+    for directory, names, filenames in os.walk(root, followlinks=False, onerror=fail):
+        names[:] = [name for name in names if os.path.join(directory, name) not in skipped
+                    or os.path.islink(os.path.join(directory, name))]
+        for name in names + filenames:
+            path = os.path.join(directory, name)
+            if os.path.islink(path) and _points_into(path, roots):
+                parts = Path(os.path.relpath(path, root)).parts
+                problems.append("link:" + "/".join(parts[:2]))
+    admission = root / "admission"
+    needles = [item.encode() for item in roots]
+    if os.path.isdir(admission):
+        for directory, names, filenames in os.walk(admission, followlinks=False, onerror=fail):
+            relative = Path(directory).relative_to(admission).parts
+            if relative and relative[0] in _historical_admission():
+                names[:] = []
+                continue
+            for name in filenames:
+                path = Path(directory, name)
+                if name.endswith(".json") and not path.is_symlink():
+                    raw = path.read_bytes()
+                    if any(needle in raw for needle in needles):
+                        problems.append("admission:" + (relative[0] if relative else name))
+    units = manager.user_units()
+    if units is None:
+        _refuse("runtime_admission_adoption_units_unavailable")
+    for unit in sorted(units):
+        if not unit.endswith(".service"):
+            continue
+        view = unit_view(manager, unit)
+        if view["load_state"] != "loaded":
+            continue
+        paths = [candidate for token in view["tokens"] for candidate in _path_candidates(token, Path(view["base"]))]
+        if (any(_under(candidate, roots) for candidate in paths)
+                or any(not host or _covers(os.path.realpath(host), roots) for host in view["container_binds"])):
+            problems.append("unit:" + unit)
+    records = sorted(launcher._records(root, "launcher").glob("install-*.json")) if os.path.isdir(
+        launcher._records(root, "launcher")) else []
+    rotate = Path(stage._read_json(records[-1]).get("logrotate_conf") or root / launcher.LOGROTATE_NAME) \
+        if records else root / launcher.LOGROTATE_NAME
+    if os.path.lexists(rotate):
+        for line in Path(rotate).read_text().splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            for token in line.replace("{", " ").split():
+                if token.startswith("/") and _points_into(token, roots):
+                    problems.append("logrotate")
+    import yaml
+
+    settings = head_state / "config" / "settings.yaml"
+    if os.path.lexists(settings):
+        descriptor = os.open(settings, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as stream:
+            config = yaml.safe_load(stream.read()) or {}
+        for key, value in _config_leaves(config):
+            if any(_under(candidate, roots) for candidate in _path_candidates(value, head_state)):
+                problems.append("config:" + ".".join(key))
+    for key, value in _env_values(head_state / ".env").items():
+        if any(_under(candidate, roots) for candidate in _path_candidates(value, head_state)):
+            problems.append("env:" + key)
+    return sorted(set(problems))
+
+
+def _legacy_scope(root: Path, container_slot: str) -> dict:
+    """The Q5 scope from the committed adoption record; every exclusion and name check refuses first."""
+    container = _slot(container_slot, "runtime_admission_legacy_retire_slot")
+    name, record = committed_adoption(root)
+    if record.get("container_slot") != container:
+        _refuse("runtime_admission_legacy_retire_container_mismatch")
+    layout = record["layout"]
+    target = Path(layout["legacy_state"])
+    legacy = target.parent.name
+    if (target.name != "state" or target.parent.parent != root / "slots" or legacy == container
+            or not legacy.endswith("_" + launcher.LEGACY_COMMITS[0])
+            or not container.endswith("_" + launcher.LEGACY_COMMITS[1])
+            or Path(layout["container"]) != root / "slots" / container / "state"):
+        _refuse("runtime_admission_legacy_retire_slot")
+    if os.path.realpath(root / "slots" / legacy) != os.fspath(root / "slots" / legacy):
+        _refuse("runtime_admission_legacy_retire_target")
+    # The container's config link names this target (lexically; it still does once the target is gone).
+    if os.path.realpath(root / "slots" / container / "state" / "config") != os.fspath(target / "config"):
+        _refuse("runtime_admission_legacy_retire_layout")
+    unexpected = sorted(set(os.listdir(root / "slots" / legacy)) - {"runtime", "state"})
+    if unexpected:
+        _refuse("runtime_admission_legacy_retire_slot_unexpected")
+    head = stage.read_admission_head(root)
+    if head is None or stage.head_aborted(root, head):
+        _refuse("runtime_admission_legacy_retire_adoption")
+    binding = stage.read_binding(root, head["binding_id"])
+    head_slot = binding["slot"]
+    checkout = Path(layout["legacy_checkout"])
+    excluded = {"models_root": layout["models_root"], "venv": os.fspath(checkout / ".venv"),
+                "r1_slot": os.fspath(root / "slots" / record["slot"]),
+                "head_slot": os.fspath(root / "slots" / head_slot), "controller": os.fspath(root / "controller"),
+                "current": os.path.dirname(os.path.realpath(root / "current")),
+                "head_state": binding["state_root"]}
+    real_target = os.fspath(target)
+    for key, value in excluded.items():
+        real = os.path.realpath(value)
+        if _under(real, [real_target]) or _under(real_target, [real]):
+            _refuse("runtime_admission_legacy_retire_excluded:" + key)
+    if head_slot in (legacy, container):
+        _refuse("runtime_admission_legacy_retire_excluded:head_slot")
+    return {"adoption_record": name, "record": record, "target": target, "legacy": legacy,
+            "container": container, "head": head, "head_state": Path(binding["state_root"]),
+            "excluded": excluded}
+
+
+def _legacy_plan(root: Path, scope: dict, decision_id: str, close: dict, census: dict) -> dict:
+    return {"kind": "legacy_state_retirement", "decision_id": decision_id,
+            "container_slot": scope["container"], "legacy_slot": scope["legacy"],
+            "target": os.fspath(scope["target"]),
+            "ineligible_slots": sorted([scope["container"], scope["legacy"]]),
+            "adoption_record": scope["adoption_record"],
+            "adoption_record_sha256": _sha256(stage.adoption_directory(root) / scope["adoption_record"]),
+            "first_clean_close": close,
+            "eligible_from": close["ended_at"] + LEGACY_STATE_RETIREMENT_DAYS * _DAY_SECONDS,
+            "census": census, "excluded": scope["excluded"], "p_answer": "P7=B"}
+
+
+def _legacy_entries(root: Path) -> tuple[list[tuple[str, dict]], list[tuple[str, dict]]]:
+    try:
+        entries = launcher.legacy_retirements(root)
+    except launcher.LauncherRefusal:
+        _refuse("runtime_admission_legacy_retire_record_invalid")
+    intents = [(name, value) for name, value in entries if name.startswith(launcher.LEGACY_RETIRE_INTENT_PREFIX)]
+    retired = [(name, value) for name, value in entries if name.startswith(launcher.LEGACY_RETIRED_PREFIX)]
+    for _name, value in intents:
+        if set(value) != {"schema_version", "kind", "plan_sha256", "plan", "ineligible_slots", "intended_at"} \
+                or set(value["plan"]) != LEGACY_RETIRE_PLAN_KEYS or stage._digest(value["plan"]) != value["plan_sha256"]:
+            _refuse("runtime_admission_legacy_retire_record_invalid")
+    return intents, retired
+
+
+def retire_legacy_state(root, *, decision_id: str, container_slot: str, manager, confirm: str | None = None,
+                        dry_run: bool = False, wall=time.time) -> dict:
+    """Q5 (P7=B): delete the frozen b0866e8 state 15 x 24 h after the first clean managed close.
+
+    Scope: only ``slots/<b0866e8 slot>/state``, named by the committed
+    adoption record's layout, never a path given on the command line. The
+    63ea8d3 container (links only) stays and both slots leave L4 for good:
+    the immutable intent, written before the first unlink, already makes
+    uninstall-launcher and adoption-abort refuse
+    (runtime_admission_uninstall_legacy_retired). Never in scope: the models
+    root and .venv of /home/kza/kza, the adopted (R1) slot, the head's slot
+    and state, 'current', the controller, /home/kza/kza itself and the
+    backups (design v3 8 keeps them as their own items).
+
+    ``dry_run`` reads only and prints the plan and its plan_sha256; the run
+    itself needs ``confirm`` equal to it, kza-voice inactive and the root
+    lease (a closed head). Refuses before deleting anything on: a decision
+    id that is not one; no committed adoption or no clean managed close yet;
+    before DAY 0 + 15 days; anything that still points into the two legacy
+    slots (links, admission records, user units, logrotate, the served
+    config and .env); a mount crossing; an entry in the legacy slot other
+    than runtime and state. The removal never follows a link and never
+    crosses a mount (make_writable_then_remove). A re-run after a crash
+    completes from the intent with the same decision and plan_sha256.
+    """
+    if type(decision_id) is not str or DECISION.fullmatch(decision_id) is None:
+        _refuse("runtime_admission_legacy_retire_decision")
+    if not dry_run and (type(confirm) is not str or _HEX64.fullmatch(confirm) is None):
+        _refuse("runtime_admission_legacy_retire_confirm")
+    root = checked_root(root)
+    if dry_run:
+        return _legacy_retire_body(root, decision_id, container_slot, manager, None, wall)
+    _require_inactive(manager)
+    with stage.AdmissionController(root):
+        return _legacy_retire_body(root, decision_id, container_slot, manager, confirm, wall)
+
+
+def _legacy_retire_body(root: Path, decision_id: str, container_slot: str, manager, confirm: str | None,
+                        wall) -> dict:
+    intents, retired = _legacy_entries(root)
+    if retired:
+        _refuse("runtime_admission_legacy_retire_already_retired",
+                {"record": launcher.LEGACY_RETIREMENT_DIRECTORY + "/" + retired[0][0]})
+    pending = intents[0] if intents else None
+    if len(intents) > 1:
+        _refuse("runtime_admission_legacy_retire_record_invalid")
+    scope = _legacy_scope(root, container_slot)
+    close = first_clean_close(root, scope["record"]["head"])
+    if close is None:
+        _refuse("runtime_admission_legacy_retire_no_clean_close")
+    roots = [os.fspath(root / "slots" / scope["legacy"]), os.fspath(root / "slots" / scope["container"])]
+    problems = legacy_references(root, roots=roots, skip=[Path(item) for item in roots],
+                                 head_state=scope["head_state"], manager=manager)
+    if problems:
+        _refuse("runtime_admission_legacy_retire_referenced:" + problems[0], {"problems": problems})
+    now = float(wall())
+    if pending is not None:
+        intent_name, intent = pending
+        plan = intent["plan"]
+        if (confirm is None or plan["decision_id"] != decision_id or plan["container_slot"] != scope["container"]
+                or intent["plan_sha256"] != confirm or plan["target"] != os.fspath(scope["target"])
+                or plan["first_clean_close"] != close):
+            _refuse("runtime_admission_legacy_retire_intent_mismatch")
+        plan_sha256 = confirm
+    else:
+        plan = _legacy_plan(root, scope, decision_id, close, _legacy_census(scope["target"]))
+        plan_sha256 = stage._digest(plan)
+        eligible = now >= plan["eligible_from"]
+        if confirm is None:
+            return {"dry_run": True, "plan_sha256": plan_sha256, "eligible": eligible,
+                    "eligible_from": launcher._now_stamp(plan["eligible_from"]),
+                    "first_clean_close": launcher._now_stamp(close["ended_at"]),
+                    "target_slot": scope["legacy"], "ineligible_slots": plan["ineligible_slots"],
+                    "census": plan["census"]}
+        if not plan["census"].get("exists"):
+            _refuse("runtime_admission_legacy_retire_target")
+        if not eligible:
+            _refuse("runtime_admission_legacy_retire_too_early",
+                    {"eligible_from": launcher._now_stamp(plan["eligible_from"])})
+        if plan_sha256 != confirm:
+            _refuse("runtime_admission_legacy_retire_confirm_mismatch")
+        intent_name = launcher.LEGACY_RETIRE_INTENT_PREFIX + plan_sha256 + ".json"
+        stage._atomic_record(launcher.legacy_retirement_directory(root) / intent_name, {
+            "schema_version": 1, "kind": "legacy_state_retire_intent", "plan_sha256": plan_sha256, "plan": plan,
+            "ineligible_slots": plan["ineligible_slots"], "intended_at": launcher._now_stamp(now)}, immutable=True)
+    if now < plan["eligible_from"]:  # a clock moved back after the intent: still never early
+        _refuse("runtime_admission_legacy_retire_too_early",
+                {"eligible_from": launcher._now_stamp(plan["eligible_from"])})
+    target = scope["target"]
+    if os.path.lexists(target):
+        stage.make_writable_then_remove(target)
+    launcher._fsync_path(target.parent)
+    if os.path.lexists(target):
+        _refuse("runtime_admission_legacy_retire_absence")
+    stamp = launcher._now_stamp(float(wall()))
+    name = launcher.LEGACY_RETIRED_PREFIX + plan_sha256 + ".json"
+    stage._atomic_record(launcher.legacy_retirement_directory(root) / name, {
+        "schema_version": 1, "kind": "legacy_state_retired", "plan_sha256": plan_sha256,
+        "decision_id": decision_id, "intent": intent_name, "ineligible_slots": plan["ineligible_slots"],
+        "target": plan["target"], "census": plan["census"], "absence": "enoent",
+        "fsynced": [os.fspath(target.parent)], "retired_at": stamp}, immutable=True)
+    return {"record": launcher.LEGACY_RETIREMENT_DIRECTORY + "/" + name, "intent": intent_name,
+            "plan_sha256": plan_sha256, "decision_id": decision_id, "retired_slot_state": plan["legacy_slot"],
+            "ineligible_slots": plan["ineligible_slots"], "census": plan["census"], "resumed": pending is not None}
 
 
 # --- CLI (dispatched from stage_runtime.main) -------------------------------------------------------
@@ -1736,6 +2154,13 @@ def add_commands(commands) -> None:
     group = abort.add_mutually_exclusive_group(required=True)
     group.add_argument("--unit-dir", type=Path)
     group.add_argument("--prepared-slot")
+    legacy = commands.add_parser("retire-legacy-state",
+                                 help="Q5 (P7=B): delete the frozen b0866e8 state on day 15 (recorded decision)")
+    legacy.add_argument("--decision", required=True, help="The recorded P7 decision id")
+    legacy.add_argument("--container-slot", required=True)
+    mode = legacy.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--confirm", help="plan_sha256 printed by --dry-run")
 
 
 class _Terminated(BaseException):
@@ -1771,6 +2196,9 @@ def run_command(args, *, manager=None) -> int:
                                       code_index_unit=args.code_index_unit)
         elif args.command == "adoption-commit":
             result = adoption_commit(args.root, confirm=args.confirm, manager=manager)
+        elif args.command == "retire-legacy-state":
+            result = retire_legacy_state(args.root, decision_id=args.decision, container_slot=args.container_slot,
+                                         manager=manager, confirm=args.confirm, dry_run=args.dry_run)
         elif args.prepared_slot is not None:
             result = adoption_abort_prepared(args.root, slot=args.prepared_slot, manager=manager)
         else:

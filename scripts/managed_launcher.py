@@ -99,6 +99,14 @@ _CHILD_ENV_DROPPED = frozenset({"PYTHONPATH", "CONFIG_PATH", "PYTHONHOME", "NOTI
 _PROBE_ENVIRONMENT = ("LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SQLITE_TMPDIR")
 UNINSTALL_PHRASE = "revivir datos borrados"
 LEGACY_COMMITS = ("b0866e8", "63ea8d3")
+# Q5 retirement of the frozen b0866e8 state (U3b-0e5, P7=B): admission/legacy-retirement/
+# intent-<plan>.json before the deletion, retired-<plan>.json after it. Both name the slots
+# that leave L4 eligibility; uninstall-launcher and adoption-abort refuse them.
+LEGACY_RETIREMENT_DIRECTORY = "legacy-retirement"
+LEGACY_RETIRE_INTENT_PREFIX = "intent-"
+LEGACY_RETIRED_PREFIX = "retired-"
+_LEGACY_RETIREMENT_NAME = re.compile(r"(intent|retired)-([0-9a-f]{64})\.json")
+_LEGACY_RETIREMENT_KINDS = {"intent": "legacy_state_retire_intent", "retired": "legacy_state_retired"}
 UNIT = "kza-voice.service"
 DROP_IN_NAME = "zz-kza-stop-timeout.conf"
 LOGROTATE_NAME = "console-logrotate.conf"  # <root>/console-logrotate.conf, run hourly by kza-console-rotate.timer
@@ -2368,8 +2376,85 @@ def _latest_install(root: Path) -> dict:
     return stage._read_json(records[-1])
 
 
+def legacy_retirement_directory(root: Path) -> Path:
+    """admission/legacy-retirement: the Q5 intents and records of the b0866e8-state retirement (U3b-0e5)."""
+    return _records(root, LEGACY_RETIREMENT_DIRECTORY)
+
+
+def legacy_retirements(root: Path) -> list[tuple[str, dict]]:
+    """Every Q5 intent and record as (name, value), validated; anything else in the directory refuses.
+
+    An intent alone already makes its slots ineligible for L4: the deletion
+    may have started (design v3 7, N4b).
+    """
+    directory = legacy_retirement_directory(root)
+    if not os.path.lexists(directory):
+        return []
+    if os.path.islink(directory) or not directory.is_dir():
+        raise LauncherRefusal("runtime_admission_uninstall_legacy_retirement_invalid")
+    found = []
+    for name in sorted(os.listdir(directory)):
+        if name.startswith("."):  # an interrupted atomic write's temporary file
+            continue
+        match = _LEGACY_RETIREMENT_NAME.fullmatch(name)
+        try:
+            value = stage._read_json(directory / name) if match else None
+        except (OSError, ValueError):
+            value = None
+        if (match is None or type(value) is not dict or value.get("schema_version") != 1
+                or value.get("kind") != _LEGACY_RETIREMENT_KINDS[match.group(1)]
+                or value.get("plan_sha256") != match.group(2)
+                or type(value.get("ineligible_slots")) is not list or not value["ineligible_slots"]
+                or not all(type(slot) is str for slot in value["ineligible_slots"])):
+            raise LauncherRefusal("runtime_admission_uninstall_legacy_retirement_invalid")
+        found.append((name, value))
+    return found
+
+
+def legacy_retirement_naming(root: Path, slot: str) -> str | None:
+    """The Q5 record (or, while it is pending, the intent) that makes ``slot`` ineligible for L4."""
+    named = [name for name, value in legacy_retirements(root) if slot in value["ineligible_slots"]]
+    if not named:
+        return None
+    retired = [name for name in named if name.startswith(LEGACY_RETIRED_PREFIX)]
+    return LEGACY_RETIREMENT_DIRECTORY + "/" + (retired or named)[0]
+
+
+def verify_legacy_links(runtime: Path, state: Path) -> None:
+    """The rollback-target link check (design v3 7 'from day 15', review N4a).
+
+    Every link directly inside the legacy slot's runtime and state (the
+    63ea8d3 container is five of them) must resolve, through every hop, to
+    an existing target; config and data must resolve to directories. A
+    dangling, looping or missing target refuses with
+    runtime_admission_uninstall_legacy_state, so L4 never renders a
+    legacy.conf whose WorkingDirectory cannot serve.
+    """
+    for directory in (runtime, state):
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            raise LauncherRefusal("runtime_admission_uninstall_legacy_state") from None
+        for entry in entries:
+            if entry.is_symlink():
+                try:
+                    os.path.realpath(entry.path, strict=True)
+                except OSError:
+                    raise LauncherRefusal("runtime_admission_uninstall_legacy_state") from None
+    for name in ("config", "data"):
+        try:
+            target = os.path.realpath(state / name, strict=True)
+        except OSError:
+            raise LauncherRefusal("runtime_admission_uninstall_legacy_state") from None
+        if not os.path.isdir(target):
+            raise LauncherRefusal("runtime_admission_uninstall_legacy_state")
+
+
 def _verify_legacy_slot(root: Path, legacy_slot: str, legacy_commits: tuple[str, ...]) -> tuple[Path, Path, str]:
     name = stage._slot_name(legacy_slot)
+    retired = legacy_retirement_naming(root, name)
+    if retired is not None:  # Q5 (P7=B): from day 15 there is no supported unmanaged rollback
+        raise LauncherRefusal("runtime_admission_uninstall_legacy_retired", problems=[retired])
     runtime = root / "slots" / name / "runtime"
     state = root / "slots" / name / "state"
     if runtime.is_symlink() or not runtime.is_dir() or state.is_symlink() or not state.is_dir():
@@ -2382,6 +2467,7 @@ def _verify_legacy_slot(root: Path, legacy_slot: str, legacy_commits: tuple[str,
         path = runtime / relative
         if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
             raise LauncherRefusal("runtime_admission_uninstall_legacy_integrity")
+    verify_legacy_links(runtime, state)
     return runtime, state, commit
 
 
