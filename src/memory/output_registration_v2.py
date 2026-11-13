@@ -14,7 +14,6 @@ import re
 import sqlite3
 import stat
 import threading
-from types import MethodType
 import weakref
 from weakref import WeakKeyDictionary
 from typing import Callable, Iterator, Any, TYPE_CHECKING
@@ -1297,8 +1296,13 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         work._install_native_preflight(self, self._preflight)
         from src.memory.output_registration_v3 import account_plan
         await self._run(self.admission.revalidate)
-        plan = await self._run(account_plan, manager.data_path, manager.legacy_path, manager.legacy_path,
-                               self.admission.state_root)
+        def planned() -> dict:
+            publisher.pin.open_at(manager.data_path)  # Before the plan observes its identity.
+            plan = account_plan(manager.data_path, manager.legacy_path, manager.legacy_path,
+                                self.admission.state_root)
+            publisher.pin.require(plan["initial_identity"])
+            return plan
+        plan = await self._run(planned)
         await self._run(self._append_account, "intent", plan)
         await self._run(self._append_account, "attached", plan)
         publisher.plan, publisher.expected_identity = plan, plan["initial_identity"]
@@ -1350,7 +1354,8 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                 base._require(publisher.expected_identity is None, "destination_changed")
             else:
                 base._require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
-                    and {"device": info.st_dev, "inode": info.st_ino} == publisher.expected_identity, "destination_changed")
+                    and {"device": info.st_dev, "inode": info.st_ino} == publisher.expected_identity
+                    and publisher.pin.holds(info), "destination_changed")
         except (OSError, RuntimeError, ValueError):
             _reject("destination_changed", self)
 
@@ -1428,8 +1433,15 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         # Retain the exact owner before the first fallible await.
         self._configuration = publisher
         owner._output_coordinator = self
-        from src.memory.output_registration_v4 import configuration_plan
-        plan = await self._run(configuration_plan, self.admission.state_root)
+        from src.memory.output_registration_v4 import configuration_path, configuration_plan
+
+        def planned() -> dict:
+            # Pinned before the plan observes it: the recorded identity stays this inode.
+            publisher.pin.open_at(configuration_path(Path(self.admission.state_root)))
+            plan = configuration_plan(self.admission.state_root)
+            publisher.pin.require(plan["initial_identity"])
+            return plan
+        plan = await self._run(planned)
         if plan["path"] != self._expected["configuration"]:
             _reject("configured_path", self)
         try:
@@ -1506,7 +1518,8 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                 from src.memory.output_registration_v4 import configuration_plan
                 with self._lock:
                     # The physical file must still be the attached one.
-                    if configuration_plan(self.admission.state_root) != publisher.plan:
+                    if (configuration_plan(self.admission.state_root) != publisher.plan
+                            or not publisher.pin.holds_path(publisher.plan["path"])):
                         _reject("destination_changed", self)
                     self._append_configuration("opening", publisher.plan)
             await self._run(publish)
@@ -1560,7 +1573,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         def publish() -> None:
             from src.memory.output_registration_v4 import configuration_observation
             observed = configuration_observation(plan)
-            if (observed != (identity, digest)
+            if (observed != (identity, digest) or not publisher.pin.holds_path(plan["path"])
                     or base._directory(Path(plan["parent"])) != plan["parent_identity"]
                     or (temporary is not None and os.path.lexists(temporary))):
                 _reject("destination_changed", self)
@@ -1598,6 +1611,10 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                         if self._configuration_disabled:
                             base._require(states.get("configuration", {}).get("phase") == "disabled", "epoch_incomplete")
                 finally:
+                    # Every destination pin lives until the epoch closes, poisoned or not.
+                    for pinned in (publisher, self._configuration):
+                        if pinned is not None:
+                            pinned.pin.release()
                     await self._disk.aclose()
                 base._require(not self._failed, "epoch_incomplete")
             self._closing = asyncio.create_task(finish(), context=Context())
@@ -2155,6 +2172,69 @@ async def run_final_rotation(owner: object, work: object, args: tuple) -> Any:
 # guards and before_save remain the authority; nothing here grants it.
 # ----------------------------------------------------------------------
 
+class _DestinationPin:
+    """Hold a publisher destination's current inode open across its before/after checks.
+
+    ext4 hands a freed inode number to the next allocation at once, so a
+    recorded (st_dev, st_ino) names the destination only while that inode
+    stays allocated. While the pin is open it does; a replacement at the name
+    then always has another number, and ``holds`` compares the name's lstat
+    with the pinned inode itself. Only the atomic JSON/YAML publishers are
+    pinned: closing an extra descriptor on a SQLite file would drop the
+    process's POSIX locks on it.
+    """
+
+    __slots__ = ("descriptor",)
+
+    def __init__(self) -> None:
+        self.descriptor = None
+
+    def __reduce_ex__(self, protocol: int):
+        raise TypeError("destination_pin_not_serializable")
+
+    def open_at(self, path: str | Path) -> None:
+        """Pin whatever is at ``path`` now (nothing when absent or unopenable); then ``require``."""
+        self.release()
+        try:
+            self.descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError:
+            self.descriptor = None
+
+    def require(self, identity: dict | None) -> None:
+        """The pin is exactly the regular file ``identity`` names; None requires nothing pinned."""
+        if identity is None:
+            base._require(self.descriptor is None, "destination_changed")
+            return
+        base._require(self.descriptor is not None, "destination_changed")
+        held = os.fstat(self.descriptor)
+        base._require(stat.S_ISREG(held.st_mode) and (held.st_dev, held.st_ino) == _pair(identity),
+                      "destination_changed")
+
+    def repin(self, path: str | Path, own: tuple) -> None:
+        """After a replace: pin the published inode, which must be the own temporary's ``own``."""
+        self.open_at(path)
+        self.require({"device": own[0], "inode": own[1]})
+
+    def holds(self, info: os.stat_result) -> bool:
+        """``info`` (an lstat of the name) is the pinned inode, unchanged."""
+        if self.descriptor is None:
+            return False
+        held = os.fstat(self.descriptor)
+        return ((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                == (held.st_dev, held.st_ino, held.st_size, held.st_mtime_ns, held.st_ctime_ns))
+
+    def holds_path(self, path: str | Path) -> bool:
+        try:
+            return self.holds(os.lstat(path))
+        except OSError:
+            return False
+
+    def release(self) -> None:
+        descriptor, self.descriptor = self.descriptor, None
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 @dataclass(eq=False)
 class _AccountPublisher:
     manager: object
@@ -2163,6 +2243,7 @@ class _AccountPublisher:
     phase: str = "waiting"
     plan: dict | None = None
     expected_identity: dict | None = None
+    pin: _DestinationPin = field(default_factory=_DestinationPin)
     attempts: int = 0
     committed: int = 0
     clean_failed: int = 0
@@ -2431,7 +2512,10 @@ class _AccountSave:
             base._require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
                 and (info.st_dev, info.st_ino) == own
                 and _directory_pair(Path(publisher.manager.data_path).parent) == parent, "destination_changed")
+            # The writer still pins its own temporary, so ``own`` cannot be a reused number here.
+            publisher.pin.repin(publisher.manager.data_path, own)
         except (OSError, RuntimeError, ValueError):
+            publisher.pin.release()
             publisher.uncertain = True
             coordinator._failed = True
             raise OutputRegistrationError("output_registration_destination_changed") from None
@@ -2513,6 +2597,7 @@ class _ConfigurationPublisher:
     plan: dict | None = None
     uncertain: bool = False
     extent: _ConfigurationCommit | None = None
+    pin: _DestinationPin = field(default_factory=_DestinationPin)
 
 
 def _pair(identity: dict) -> tuple[int, int]:
@@ -2559,7 +2644,8 @@ class _ConfigurationCommit:
                 or publisher.phase != "opening" or publisher.uncertain
                 or str(path) != plan["path"]
                 or tuple(roots) != (_pair(plan["state_identity"]), _pair(plan["parent_identity"]))
-                or tuple(identity) != _pair(plan["initial_identity"]) or digest != plan["initial_sha256"]):
+                or tuple(identity) != _pair(plan["initial_identity"]) or digest != plan["initial_sha256"]
+                or not publisher.pin.holds_path(plan["path"])):
             self.state = "refused"
             self._poison("configuration_extent")
         self.state, self.attempts = "temporary", 1
@@ -2579,7 +2665,8 @@ class _ConfigurationCommit:
                 and _directory_pair(Path(temporary).parent) == parent, "temporary_changed")
             destination = os.lstat(plan["path"])
             base._require(stat.S_ISREG(destination.st_mode) and destination.st_nlink == 1
-                and (destination.st_dev, destination.st_ino) == _pair(plan["initial_identity"]), "temporary_changed")
+                and (destination.st_dev, destination.st_ino) == _pair(plan["initial_identity"])
+                and self.publisher.pin.holds(destination), "temporary_changed")
         except (OSError, RuntimeError, ValueError):
             self.state = "refused"
             self._poison("temporary_changed")
@@ -2594,7 +2681,10 @@ class _ConfigurationCommit:
             base._require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
                 and (info.st_dev, info.st_ino) == own
                 and _directory_pair(Path(plan["parent"])) == _pair(plan["parent_identity"]), "destination_changed")
+            # The writer still pins its own temporary, so ``own`` cannot be a reused number here.
+            self.publisher.pin.repin(plan["path"], own)
         except (OSError, RuntimeError, ValueError):
+            self.publisher.pin.release()
             self.state = "published"
             self._poison("destination_changed")
         self.state, self.confirmed = "published", True

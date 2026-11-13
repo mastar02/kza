@@ -34,6 +34,7 @@ from src.memory import output_registration_v2 as registration
 from src.memory.privacy_services import build_privacy_services
 from src.users.user_manager import UserManager
 from tests.integration.test_account_publisher_registration import _voice_links
+from tests.mocks.inode_reuse import report_inode_reuse
 
 RAW = b'reasoner:\n  cloud:\n    consent: true\n  api_key_env: "${SYNTHETIC_KEY}"\nother: untouched\n'
 TOKEN = "synthetic-configuration-root"
@@ -942,6 +943,80 @@ async def test_unregistered_change_is_caught_by_the_drained_observation(tmp_path
         assert "output_registration_destination_changed" in messages(config_error(g))
         assert g.changes.registration_failure == "output_registration_destination_changed"
         assert_poisoned(g, last="opening" if change == "after_commit" else "attached")
+
+
+@pytest.mark.parametrize("when", ["before_shutdown", "queued", "before_temporary", "after_temporary",
+                                  "after_commit"])
+@pytest.mark.parametrize("reuse", [False, True], ids=["fresh_inode", "reused_inode_number"])
+async def test_a_destination_rewritten_at_its_name_is_caught_even_with_a_reused_inode_number(
+    tmp_path, monkeypatch, when, reuse,
+):
+    """The same bytes, unlinked and written again at the name, as an unregistered writer would.
+
+    ext4 reuses the freed number at once, so (st_dev, st_ino) and the digest
+    both match; only the pinned destination inode tells the new file apart.
+    """
+    async with configuration_graph(tmp_path, monkeypatch) as g:
+        graph_ready(g)
+        done = []
+
+        def rewrite() -> None:
+            original, raw = os.lstat(g.settings), g.settings.read_bytes()
+            g.settings.unlink()
+            g.settings.write_bytes(raw)
+            os.chmod(g.settings, stat.S_IMODE(original.st_mode))
+            done.append(True)
+            if reuse:
+                report_inode_reuse(monkeypatch, os.lstat(g.settings), original)
+        if when == "before_shutdown":
+            rewrite()
+        else:
+            await queue(g)
+            if when == "queued":
+                rewrite()
+            real_replace, real_fsync, replaced = os.replace, os.fsync, []
+
+            def replace(source, destination, *args, **kwargs):
+                if Path(destination) == g.settings:
+                    replaced.append(True)
+                return real_replace(source, destination, *args, **kwargs)
+
+            def revalidate():
+                # The writer's first admission check precedes the temporary; the second follows it.
+                temporary = bool(list(g.settings.parent.glob(".consent-*")))
+                if not done and (when, temporary) in {("before_temporary", False), ("after_temporary", True)}:
+                    rewrite()
+                g.checks.append("full")
+            monkeypatch.setattr(g.admission, "revalidate", revalidate)
+
+            def fsync(descriptor):
+                result = real_fsync(descriptor)
+                if when == "after_commit" and replaced and not done and stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                    rewrite()  # Durable commit, then the unregistered rewrite.
+                return result
+            monkeypatch.setattr(state_configuration.os, "replace", replace)
+            monkeypatch.setattr(state_configuration.os, "fsync", fsync)
+        await shutdown(g)
+        assert done == [True]
+        if when in {"before_temporary", "after_temporary"} and reuse:
+            # The owner's own (identity, digest) check is fooled by the reused number; the
+            # extent's pinned destination refuses (before_temporary, before_replace).
+            assert g.changes.registration_failure == ("output_registration_configuration_extent"
+                if when == "before_temporary" else "output_registration_temporary_changed")
+            assert "configuration_write_unconfirmed" in messages(config_error(g))
+            assert g.settings.read_bytes() == RAW and temporaries(g) == []
+            assert_poisoned(g)
+        else:
+            assert g.changes.registration_failure == "output_registration_destination_changed"
+            assert "output_registration_destination_changed" in messages(config_error(g))
+            # A fresh number is already refused by the owner's (identity, digest) check; after
+            # the commit the rewrite carries the committed bytes.
+            published = yaml.safe_load(g.settings.read_bytes())["reasoner"]["cloud"]["consent"]
+            assert published is (when != "after_commit")
+            assert when == "after_commit" or g.settings.read_bytes() == RAW
+            assert temporaries(g) == []
+            assert_poisoned(g, last={"before_shutdown": "attached", "queued": "withdrawn"}.get(when, "opening"))
+        assert g.owner._configuration.pin.descriptor is None  # Released by the epoch's close.
 
 
 @pytest.mark.parametrize("reuse", [False, True], ids=["fresh_inode", "reused_inode_number"])

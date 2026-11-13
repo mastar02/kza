@@ -31,6 +31,7 @@ from src.memory import output_registration as base
 from src.memory import output_registration_v2 as registration
 from src.users import user_manager as catalog
 from src.users.user_manager import PermissionLevel, UserManager
+from tests.mocks.inode_reuse import report_inode_reuse
 
 PRIVATE = ("Synthetic Alba", "Synthetic Bruno", "Synthetic Carla")
 
@@ -336,7 +337,8 @@ async def test_attachment_failure_refuses_first_save_while_original_stop_drains(
         assert_poisoned_close(graph)
 
 
-@pytest.mark.parametrize("change", ["removed_handle", "moved_path", "hardlink", "replaced_inode", "symlink"])
+@pytest.mark.parametrize("change", ["removed_handle", "moved_path", "hardlink", "replaced_inode", "symlink",
+                                    "rewritten_at_name", "rewritten_with_reused_inode_number"])
 async def test_handle_path_or_external_identity_change_stays_managed_and_rejects(
     tmp_path, monkeypatch, dashboard_auth, change,
 ):
@@ -361,6 +363,13 @@ async def test_handle_path_or_external_identity_change_stays_managed_and_rejects
             copy = graph.data / "external-copy"
             copy.write_bytes(path.read_bytes())
             os.replace(copy, path)
+        elif change.startswith("rewritten"):
+            # Same bytes, unlinked and written again at the name: on ext4 the number is reused.
+            original, raw = os.lstat(path), path.read_bytes()
+            path.unlink()
+            path.write_bytes(raw)
+            if change == "rewritten_with_reused_inode_number":
+                report_inode_reuse(monkeypatch, os.lstat(path), original)
         else:
             outside = graph.data / "outside.json"
             outside.write_bytes(path.read_bytes())
@@ -374,6 +383,7 @@ async def test_handle_path_or_external_identity_change_stays_managed_and_rejects
         assert not (graph.data / "moved_accounts_v1.json").exists()
         await close(graph)
         assert_poisoned_close(graph)
+        assert graph.owner._accounts.pin.descriptor is None  # Released by the epoch's close.
 
 
 # A-T06
