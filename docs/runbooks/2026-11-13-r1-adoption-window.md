@@ -52,6 +52,12 @@ C=release_20261029T174830709997Z_63ea8d3
       (`adoption.source_moving` cuenta los archivos); el censo usa los bytes
       copiados. Prepare y commit sí rechazan ese cambio (ahí el servicio está
       parado).
+    - `advisory: source moving, retry`: una escritura en vivo dejó una copia
+      SQLite inconsistente (`adoption.source_moving.torn`); esa base quedó
+      fuera del censo. Repetir la corrida de prueba hasta que `torn` sea 0.
+      Parar kza-voice para la corrida solo con autorización registrada del
+      usuario. Prepare y commit rechazan la misma situación
+      (`quick_check` o `sqlite_corrupt`).
     - `advisory: legacy_training assumed retired (P1=D pending, W1b)`: hay
       archivos LoRA; la corrida los da por retirados y sigue.
       `adoption.legacy_training.would_retire` cuenta lo que W1b borrará.
@@ -74,7 +80,7 @@ C=release_20261029T174830709997Z_63ea8d3
     `conversation_unmarkable` deben ser 0 (si no, P3=A aborta en W2).
   - `problems` y `warnings`.
 - **Precondición de W1b**: una corrida de prueba con `problems` vacío
-  (`warnings` permitidos) sobre el estado actual. W1b es irreversible; si W2
+  (`warnings` permitidos, salvo `retry`) sobre el estado actual. W1b es irreversible; si W2
   rechazara después, la ventana fallaría con los adaptadores ya borrados.
 - `legacy_path_census.legacy_checkout_targets > 0` aparece como
   `runtime_admission_adoption_foreign_target:<participante>:legacy_checkout`.
@@ -271,8 +277,12 @@ C=release_20261029T174830709997Z_63ea8d3
 
   Ese head queda terminal: `begin_run` y `activate` lo rechazan. Solo se puede
   volver a adoptar en un head nuevo con un prepare nuevo. Repetir
-  `adoption-abort` solo completa el mismo abort mientras no exista un plan
-  posterior; con una ventana nueva preparada rechaza `already_aborted`.
+  `adoption-abort` solo completa el mismo abort (por ejemplo, si el `enable`
+  falló). Rechaza `already_aborted` cuando el abort ya habilitó kza-voice
+  (`admission/adoption/enabled-after-abort-<sha256 del head>.json`) o cuando
+  una ventana posterior ya escribió algo (intento o registro de retiro, plan,
+  intento de commit o W-abort-1): nunca vuelve a habilitar kza-voice en medio
+  de otra ventana.
 - **Si existe un ticket** (W8 escribió uno, aunque el arranque fallara antes de
   READY): solo vale L4, con `uninstall-launcher`, el id de decisión y la frase
   `revivir datos borrados`.

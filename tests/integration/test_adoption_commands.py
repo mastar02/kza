@@ -19,6 +19,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
 import signal
 import sqlite3
 import stat
@@ -1642,3 +1643,160 @@ def test_commit_refuses_a_retire_intent_between_prepare_and_commit(world):
     with pytest.raises(commands.CommandRefusal, match="^runtime_admission_adoption_plan_mismatch:retirement$"):
         world.commit(prepared["plan_sha256"])
     assert world.head() is None
+
+
+# --- round 2 re-review (R2-1..R2-4) -------------------------------------------------------------------------
+
+@pytest.mark.parametrize("source", ["Environment", "EnvironmentFile"])
+@pytest.mark.parametrize("reference", ["$ARGS", "${ARGS}"])
+def test_retire_word_splits_a_multi_word_variable(adapter_world, tmp_path, source, reference):
+    """R2-2: '--lora <root>' inside a multi-word variable on a named unit is seen (systemd splits $VAR)."""
+    world = adapter_world
+    lora = os.fspath(world.layout.models_root / "lora_adapters" / "custom_adapter")
+    value = "-m /srv/q.gguf --lora " + lora + " --port 8101"
+    unit = _llama("/usr/bin/llama-server " + reference)
+    if source == "Environment":
+        unit["Environment"] = shlex.quote("ARGS=" + value)
+    else:
+        env = tmp_path / "llm.env"
+        env.write_text('ARGS="' + value + '"\n')
+        unit["EnvironmentFiles"] = [os.fspath(env) + " (ignore_errors=no)"]
+    world.units.properties[commands.LLM_FAST_UNIT] = unit
+    before = tree_manifest(world.layout.models_root)
+    with pytest.raises(commands.CommandRefusal,
+                       match="^runtime_admission_retire_unit_under_root:kza-llm-fast.service$"):
+        world.retire()
+    assert tree_manifest(world.layout.models_root) == before
+
+
+def _unrelated_units(world) -> None:
+    """Realistic user units that never name the models: no WorkingDirectory, '~', a template."""
+    world.units.properties["dbus-broker.service"] = {
+        "LoadState": "loaded", "Environment": "", "WorkingDirectory": "",
+        "ExecStart": "{ path=/usr/bin/dbus-broker-launch ; argv[]=/usr/bin/dbus-broker-launch --scope user ; "
+                     "ignore_errors=no }"}
+    world.units.properties["kza-chroma.service"] = {
+        "LoadState": "loaded", "Environment": "PODMAN_SYSTEMD_UNIT=kza-chroma.service", "WorkingDirectory": "~",
+        "ExecStart": "{ path=/usr/bin/podman ; argv[]=/usr/bin/podman run --name kza-chroma --rm -v "
+                     "/home/kza/data/chroma-svc:/data:Z docker.io/chromadb/chroma:1.5.9 ; ignore_errors=no }"}
+    world.units.properties["pipewire.service"] = {
+        "LoadState": "loaded", "Environment": "", "WorkingDirectory": "!/",
+        "ExecStart": "{ path=/usr/bin/pipewire ; argv[]=/usr/bin/pipewire ; ignore_errors=no }"}
+    world.units.extra_units += ["kza-backup@.service", "podman-user-wait-network-online.service"]
+
+
+def test_retire_ignores_unrelated_units_without_a_working_directory(adapter_world):
+    """R2-3: an empty, '!/' or '~' WorkingDirectory is not a reference to the models or the checkout."""
+    _unrelated_units(adapter_world)
+    result = adapter_world.retire()
+    assert result["units_checked"] == sorted([VOICE, commands.LLM_FAST_UNIT])
+    assert not (adapter_world.layout.models_root / "lora_adapters").exists()
+
+
+@pytest.mark.parametrize("directory, relevant", [
+    ("", False), ("~", False), ("!/", False), ("/", False), ("checkout", True), ("~/models_child", False)])
+def test_only_explicit_references_make_a_unit_relevant(adapter_world, directory, relevant):
+    world = adapter_world
+    _unrelated_units(world)
+    cwd = os.fspath(world.layout.legacy_checkout) if directory == "checkout" else directory
+    world.units.properties["kza-tool.service"] = {
+        "LoadState": "loaded", "Environment": "", "WorkingDirectory": cwd,
+        "ExecStart": "{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -m tool ; ignore_errors=no }"}
+    if relevant:
+        with pytest.raises(commands.CommandRefusal, match="^runtime_admission_retire_unit_not_listed:kza-tool.service$"):
+            world.retire()
+    else:
+        assert world.retire()["units_checked"] == sorted([VOICE, commands.LLM_FAST_UNIT])
+
+
+def test_the_unit_listing_reads_real_list_unit_files_output(tmp_path):
+    """R2-3: list-unit-files and list-units output with templates, as systemd prints them (--no-legend --plain)."""
+    shim = tmp_path / "systemctl"
+    shim.write_text("#!/bin/sh\ncase \"$*\" in\n"
+                    "  *list-unit-files*) printf 'dbus-broker.service             enabled   enabled\\n"
+                    "kza-backup@.service             static    -\\nkza-voice.service               disabled  enabled\\n"
+                    "kza-audio-watchdog.timer        enabled   enabled\\n' ;;\n"
+                    "  *list-units*) printf '  kza-backup@nightly.service loaded inactive dead KZA backup\\n"
+                    "\\342\\227\\217 kza-llm-fast.service loaded failed failed llama\\n' ;;\nesac\nexit 0\n")
+    shim.chmod(0o755)
+    names = launcher.ServiceManager(executable=os.fspath(shim)).user_units()
+    assert names == ["dbus-broker.service", "kza-audio-watchdog.timer", "kza-backup@.service",
+                     "kza-backup@nightly.service", "kza-llm-fast.service", "kza-voice.service"]
+
+
+def _tear_copies(monkeypatch, how: str) -> None:
+    """A live writer tore one database copy: the private copy of ambient.db is left inconsistent."""
+    original = adoption._copy_file
+
+    def copy(source, destination, moving=None):
+        result = original(source, destination, moving)
+        if destination is not None and Path(destination).name == "ambient.db":
+            raw = bytearray(Path(destination).read_bytes())
+            if how == "header":  # the magic stays; the header fields a commit rewrites are torn
+                raw[16:100] = b"\xff" * 84
+            else:
+                raw = raw[:len(raw) // 2] + b"\xff" * 64
+            Path(destination).write_bytes(bytes(raw))
+        return result
+    monkeypatch.setattr(adoption, "_copy_file", copy)
+
+
+@pytest.mark.parametrize("how", ["header", "truncated"])
+def test_a_torn_sqlite_copy_asks_for_a_retry_in_the_advisory_run_only(world, monkeypatch, how):
+    """R2-1: the dry-run leaves the torn copy out, counts it and warns; prepare refuses; never a traceback."""
+    with monkeypatch.context() as patch:
+        _tear_copies(patch, how)
+        code, report = world.dry_run()
+    adopted = report["adoption"]
+    assert adopted["source_moving"]["torn"] == 1, (adopted.get("refused"), report["problems"])
+    assert "advisory: source moving, retry" in report["warnings"]
+    assert "refused" not in adopted and "residue_census" in adopted and "targets" in adopted
+    assert report["scratch"]["removed"] is True and os.listdir(world.scratch) == []
+    with monkeypatch.context() as patch:
+        _tear_copies(patch, how)
+        with pytest.raises(adoption.AdoptionRefusal,
+                           match="^runtime_admission_adoption_(quick_check|sqlite_corrupt)$"):
+            world.prepare()
+    assert not (world.root / "slots" / "r1").exists()
+
+
+def test_abort_never_re_enables_once_complete_or_after_a_later_window_started(world):
+    """R2-4: the enabled-after-abort record and any later window event stop a stray abort."""
+    world.adopt()
+    head = world.head()
+    world.units.properties[VOICE]["UnitFileState"] = "disabled"
+    world.abort()
+    assert (stage.adoption_directory(world.root)
+            / (commands.ENABLED_AFTER_ABORT_PREFIX + stage._digest(head) + ".json")).exists()
+    world.units.properties[VOICE]["UnitFileState"] = "disabled"  # a later window's W1
+    world.units.enabled.clear()
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_adoption_already_aborted$"):
+        world.abort()
+    assert world.units.enabled == [] and world.units.properties[VOICE]["UnitFileState"] == "disabled"
+
+
+def test_a_failed_enable_resumes_only_until_a_later_window_writes(world):
+    world.adopt()
+    head = world.head()
+    world.units.properties[VOICE]["UnitFileState"] = "disabled"
+    original = world.units.user_enable
+    world.units.user_enable = lambda unit: False
+    assert world.abort()["enabled"] is False
+    assert not (stage.adoption_directory(world.root)
+                / (commands.ENABLED_AFTER_ABORT_PREFIX + stage._digest(head) + ".json")).exists()
+    # Nothing later happened: the resume enables and completes the abort.
+    world.units.user_enable = original
+    assert world.abort() == {"head": head, "resumed": True, "slot_removed": True, "enabled": True}
+
+
+def test_a_later_retire_intent_stops_the_abort_resume(world):
+    world.adopt()
+    world.units.properties[VOICE]["UnitFileState"] = "disabled"
+    world.units.user_enable = lambda unit: False
+    world.abort()
+    time.sleep(0.01)
+    stage._atomic_record(stage.adoption_directory(world.root) / (commands.RETIRE_INTENT_PREFIX + "x.json"),
+                         {"schema_version": 1}, immutable=True)
+    world.units.user_enable = lambda unit: pytest.fail("a later window started: kza-voice must stay disabled")
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_adoption_already_aborted$"):
+        world.abort()
