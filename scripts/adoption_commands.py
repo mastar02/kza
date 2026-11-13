@@ -1399,12 +1399,11 @@ def adoption_commit(root, *, confirm: str, manager, paths: ProductionPaths | Non
             if record.get("plan_sha256") != confirm:
                 continue
             runtime = os.fspath(root / "slots" / slot / "runtime")
-            if head == record.get("head"):
-                if not stage.head_aborted(root, head) and os.path.realpath(root / "current") != runtime:
-                    _publish(root, slot)  # resume: CAS done, 'current' not yet published
-                    return {"head": head, "slot": slot, "resumed": "publish"}
-                _refuse("runtime_admission_adoption_already_committed")
-            if head != plan["expected_head"]:
+            if (head == record.get("head") and not stage.head_aborted(root, head)
+                    and os.path.realpath(root / "current") != runtime):
+                _publish(root, slot)  # resume: CAS done, 'current' not yet published
+                return {"head": head, "slot": slot, "resumed": "publish"}
+            if head != plan["expected_head"]:  # committed (published, aborted or followed by another head)
                 _refuse("runtime_admission_adoption_already_committed")
             # else: the records exist but the CAS never happened; re-verify and re-enter below.
         marked = verify_plan(root, plan, manager, paths)

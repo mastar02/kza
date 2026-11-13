@@ -833,6 +833,10 @@ def test_an_aborted_head_is_terminal_and_a_bound_re_adoption_follows_it(world):
     assert companion["previous"] == stage.manual_reference(stage.read_manual_head(world.root, aborted))
     seal = json.loads(stage.adoption_seal_path(world.root, companion["authority_seal"]).read_text())
     assert seal["previous_abort"] == stage._digest(stage.read_abort_record(world.root, aborted))
+    # Both plans are committed: neither commits again (the first one's head is neither current nor expected).
+    for plan_sha256 in (first["plan_sha256"], second["plan_sha256"]):
+        with pytest.raises(commands.CommandRefusal, match="^runtime_admission_adoption_already_committed$"):
+            world.commit(plan_sha256)
     # The re-adoption stands on that abort record: without it the companion no longer validates.
     os.unlink(stage.abort_record_path(world.root, aborted))
     with pytest.raises(ValueError, match="^runtime_admission_adoption_abort_missing$"):
