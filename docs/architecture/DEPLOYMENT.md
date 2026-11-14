@@ -950,7 +950,15 @@ mientras su inodo sigue asignado.
   observe, y el plan debe nombrar ese inodo. Un destino que crea su primera
   apertura se fija al registrar `active`. Las reaperturas y los objetivos
   históricos comparan contra ese inodo retenido. Todos los descriptores se
-  cierran al cerrar la época, envenenada o no.
+  cierran al cerrar la época, envenenada o no, después de drenar el ejecutor de
+  disco del coordinador. Desde ese momento no se entrega ningún pin nuevo: una
+  llamada nativa posterior (por ejemplo tras un cierre con `epoch_incomplete`,
+  que no envenena) se rechaza con `output_registration_native_pins_closed` y
+  envenena la época. Un objetivo histórico cuyo pin ya se cerró se rechaza con
+  `destination_changed`; nunca se acepta por `(st_dev, st_ino)` sin pin.
+- Si no se puede abrir el pin por algo distinto de un destino ausente (por
+  ejemplo `EMFILE`/`ENFILE`), el rechazo es
+  `output_registration_native_pin_unavailable`, no `destination_changed`.
 - Por qué `O_PATH`: cerrar un descriptor `O_PATH` no suelta los locks POSIX de
   SQLite del proceso (el kernel omite `locks_remove_posix` para
   `FMODE_PATH`). Un descriptor `O_RDONLY` extra sí los suelta, en Linux y en
@@ -959,17 +967,32 @@ mientras su inodo sigue asignado.
   que allí no se fija nada.
 - Efecto visible: hasta el cierre de la época, un destino borrado por otro
   conserva sus bloques en disco, y cualquier proceso del mismo uid puede leerlo
-  por `/proc/<pid>/fd`. Ningún dueño nativo borra sus propios destinos.
+  por `/proc/<pid>/fd`. La época dura lo que dura el servicio (días o semanas),
+  no un plazo fijo. Ningún dueño nativo borra sus propios destinos, y los
+  retiros del controlador corren con el servicio detenido.
 - Temporales propios (`mkstemp`): `stage_runtime`, `managed_launcher`,
   `build_runtime`, catálogo y observaciones de copias, derivación de payload,
   cooldown, contextos, `audio_health` y diagnósticos retienen un `dup` del
   descriptor hasta limpiar. Sólo borran el nombre si sigue siendo ese inodo, y
-  si hay otro archivo en ese nombre lo dejan. Ayudante común en
+  si hay otro archivo en ese nombre lo dejan. Si el `dup` falla (`EMFILE`), el
+  descriptor de `mkstemp`, todavía abierto, hace de pin: el temporal vacío se
+  borra igual y el error se propaga. Ayudante común en
   `src/core/own_temporary.py`; `stage_runtime` y `build_runtime` tienen copias
   propias porque se cargan por ruta.
-- Fuera de alcance: la recuperación de `diagnostic_store` después de un corte
-  (`_cleanup_staged`) borra todavía por nombre, porque el descriptor no
-  sobrevive al proceso.
+- Huecos conocidos (comparaciones que siguen sin pin):
+  - un destino que crea su primera apertura no tiene identidad entre la creación
+    de SQLite y el registro `active`; si se sustituye en esa ventana, el pin se
+    toma sobre el sustituto;
+  - un objetivo histórico ausente en el refresco del registro no tiene pin ni
+    identidad (`allow_absent`): un archivo que aparezca después se acepta hasta
+    que cambie el digest del registro;
+  - `observe()` deduplica observaciones físicas por un `lstat` sin pin; una
+    reutilización sólo suprime una observación del journal y no concede
+    autoridad;
+  - las identidades de `epoch.json` y del namespace del journal (fuera de F4);
+  - la recuperación de `diagnostic_store` después de un corte
+    (`_cleanup_staged`) borra todavía por nombre, porque el descriptor no
+    sobrevive al proceso.
 
 Evidencia: `data/autonomous-roadmap-20261102/t040-t041/f4-f10-evidence.json`
 (local, fuera de Git).

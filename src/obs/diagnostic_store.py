@@ -393,14 +393,15 @@ class DiagnosticStore:
                     os.fsync(stream.fileno())
                 os.replace(stage, target)
             finally:
-                if fd is not None:
-                    os.close(fd)
                 try:
                     # Only the own inode is unlinked; a foreign file at the name stays.
-                    remove_own_temporary(stage, pin)
+                    # A failed dup leaves the still-open mkstemp descriptor as the pin.
+                    remove_own_temporary(stage, fd if pin is None else pin)
                 finally:
                     if pin is not None:
                         os.close(pin)
+                    if fd is not None:
+                        os.close(fd)
                 db.execute('DELETE FROM staged WHERE name=?', (stage.name,))
                 db.commit()
         self._sync_directory()

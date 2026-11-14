@@ -855,10 +855,10 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             self._admit_history(binding, physical, execution, path)
         else:
             expected = binding.native_identity or plan["existing_identity"]
+            pin = self._native_pin(binding.key)  # Refused (poisoning) once the epoch released its pins.
             try:
                 _plan_shape(plan, self.admission.state_root)
-                _physical_shape(path, plan, expected_identity=expected, allow_absent=expected is None,
-                                pin=self._native_pin(binding.key))
+                _physical_shape(path, plan, expected_identity=expected, allow_absent=expected is None, pin=pin)
             except (OSError, RuntimeError, ValueError):
                 _reject("destination_changed", self)
         if binding.phase == "attached":
@@ -1122,13 +1122,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         if identity is None or pin.descriptor is None:
             return plan, scope_json, policy_json, pin
         key = ("history", plan["path"], identity["device"], identity["inode"])
-        with self._lock:
-            held = self._native_pins.get(key)
-            if held is None:
-                self._native_pins[key] = pin
-                return plan, scope_json, policy_json, pin
-        pin.release()
-        return plan, scope_json, policy_json, held
+        return plan, scope_json, policy_json, self._keep_native_pin(key, pin)
 
     def _record_historical_policy(self, policy_json: bytes) -> None:
         """Publish the exact running policy once; no event becomes a grant."""
@@ -1658,8 +1652,12 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                     for pinned in (publisher, self._configuration):
                         if pinned is not None:
                             pinned.pin.release()
-                    self._release_native_pins()
-                    await self._disk.aclose()
+                    try:
+                        await self._disk.aclose()
+                    finally:
+                        # After the drain, so no queued disk task opens a pin nobody releases;
+                        # any later request is refused (native_pins_closed).
+                        self._release_native_pins()
                 base._require(not self._failed, "epoch_incomplete")
             self._closing = asyncio.create_task(finish(), context=Context())
             self._closing.add_done_callback(lambda t: None if t.cancelled() else t.exception())

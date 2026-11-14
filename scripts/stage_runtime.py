@@ -368,7 +368,10 @@ def own_temporary(directory: Path, *, prefix: str):
     try:
         pin = os.dup(descriptor)
     except OSError:
-        os.close(descriptor)  # Unproven: the name stays rather than risk a foreign unlink.
+        try:
+            remove_own_temporary(name, descriptor)  # The open mkstemp descriptor is the pin.
+        finally:
+            os.close(descriptor)
         raise
     try:
         yield descriptor, name

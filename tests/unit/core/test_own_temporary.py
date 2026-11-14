@@ -114,24 +114,75 @@ def test_the_pin_is_closed_after_cleanup(tmp_path, monkeypatch):
     assert error.value.errno == errno.EBADF
 
 
-def test_a_failed_pin_closes_the_descriptor_and_keeps_the_unproven_name(tmp_path, monkeypatch):
+@pytest.fixture
+def failing_dup(monkeypatch, tmp_path):
+    """os.dup of an own ``.own-`` temporary fails (EMFILE); records the closes of those descriptors."""
     closed = []
-    real_close = os.close
+    real_close, real_dup = os.close, os.dup
 
-    def failing_dup(descriptor):
-        raise OSError(errno.EMFILE, "synthetic descriptor exhaustion")
+    def own(descriptor):
+        try:
+            held = os.fstat(descriptor)
+        except OSError:
+            return False
+        return any(os.lstat(name).st_ino == held.st_ino for name in tmp_path.glob(".own-*"))
+
+    refused = set()
+
+    def failing(descriptor):
+        if own(descriptor):
+            refused.add(descriptor)
+            raise OSError(errno.EMFILE, "synthetic descriptor exhaustion")
+        return real_dup(descriptor)
 
     def recording_close(descriptor):
-        closed.append(descriptor)
+        if descriptor in refused:
+            closed.append(descriptor)
         real_close(descriptor)
 
-    monkeypatch.setattr(module.os, "dup", failing_dup)
-    monkeypatch.setattr(module.os, "close", recording_close)
+    monkeypatch.setattr(os, "dup", failing)
+    monkeypatch.setattr(os, "close", recording_close)
+    return closed
+
+
+def test_a_failed_pin_removes_the_own_temporary_through_its_mkstemp_descriptor(tmp_path, failing_dup):
+    """Review R7: the open mkstemp descriptor is itself a valid pin; nothing is left behind."""
     with pytest.raises(OSError, match="synthetic descriptor exhaustion"):
         with own_temporary(tmp_path, prefix=".own-"):
             raise AssertionError("the body must not run unpinned")
-    assert len(closed) == 1
-    assert [p.name.startswith(".own-") for p in tmp_path.iterdir()] == [True]
+    assert len(failing_dup) == 1
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_the_stage_copy_removes_its_own_temporary_when_the_pin_fails(tmp_path, failing_dup):
+    with pytest.raises(OSError, match="synthetic descriptor exhaustion"):
+        with stage.own_temporary(tmp_path, prefix=".own-"):
+            raise AssertionError("the body must not run unpinned")
+    assert len(failing_dup) == 1
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_diagnostic_projection_removes_its_stage_when_the_pin_fails(tmp_path, monkeypatch):
+    from contextlib import closing
+    from src.obs import diagnostic_store
+    from src.obs.diagnostic_store import DiagnosticStore
+    from src.obs.metrics_emitter import project_diagnostic
+    path = tmp_path / "diagnostics.jsonl"
+    real_dup = os.dup
+
+    def failing(descriptor):
+        held = os.fstat(descriptor)
+        if any(os.lstat(own).st_ino == held.st_ino for own in tmp_path.glob(".diag-*.tmp")):
+            raise OSError(errno.EMFILE, "synthetic descriptor exhaustion")
+        return real_dup(descriptor)
+
+    monkeypatch.setattr(diagnostic_store.os, "dup", failing)
+    with closing(DiagnosticStore(path, clock=lambda: 2_000_000_000.0, retention_days=1, rotate_bytes=10**6,
+                                 project=project_diagnostic)) as store:
+        with pytest.raises(OSError, match="synthetic descriptor exhaustion"):
+            store.prune()
+        monkeypatch.setattr(diagnostic_store.os, "dup", real_dup)
+    assert not list(tmp_path.glob(".diag-*.tmp"))
 
 
 def test_an_unpinned_name_is_never_unlinked(tmp_path):

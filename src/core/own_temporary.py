@@ -61,7 +61,9 @@ def own_temporary(directory: str | os.PathLike, *, prefix: str,
     Yields the raw mkstemp descriptor (the caller owns and closes it, e.g.
     through ``os.fdopen``) and the name. On exit the name is unlinked only if
     it is still the own inode; after a successful ``os.replace`` it is
-    normally absent and nothing is unlinked.
+    normally absent and nothing is unlinked. If the pin cannot be duplicated
+    the empty temporary is removed through the mkstemp descriptor and the
+    error is raised before the body runs.
 
     Args:
         directory: Directory for the temporary.
@@ -75,8 +77,12 @@ def own_temporary(directory: str | os.PathLike, *, prefix: str,
     try:
         pin = os.dup(descriptor)
     except OSError:
-        # Unproven: the name stays rather than risking a foreign unlink.
-        os.close(descriptor)
+        # The still-open mkstemp descriptor is itself the pin: remove the own
+        # empty temporary through it, then close it once.
+        try:
+            remove_own_temporary(name, descriptor)
+        finally:
+            os.close(descriptor)
         raise
     try:
         yield descriptor, name

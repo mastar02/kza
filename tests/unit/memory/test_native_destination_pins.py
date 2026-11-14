@@ -13,6 +13,7 @@ APFS never reuses ids. The Linux-only cases need O_PATH itself.
 from __future__ import annotations
 
 from contextlib import closing, nullcontext
+import errno
 import fcntl
 import os
 from pathlib import Path
@@ -211,6 +212,123 @@ async def test_a_recreated_historical_target_is_rejected_before_connect(tmp_path
             body_completed = True
     assert body_completed
     assert_failed_registry_cleanup(owner, privacy, cleanup.value)
+
+
+# ----------------------------------------------------------------------
+# After the epoch released its pins (review R1/R2)
+# ----------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_native_call_after_a_failed_epoch_close_is_refused_unpinned(tmp_path, monkeypatch):
+    """R1: epoch_incomplete does not poison, but no later native call gets a fresh empty pin."""
+    async with managed(tmp_path, monkeypatch) as (owner, stack, config):
+        store = EventLogger(config["analytics"]["events_db"])
+        stack.push_async_callback(store.aclose)
+        _sqlite_file(store.db_path)
+        await registration.attach_output(store, "events")
+        await store.acall(store.initialize)
+        with pytest.raises(RuntimeError, match="^output_registration_epoch_incomplete$"):
+            await owner.aclose()
+        assert owner._native_pins_closed and owner._native_pins == {}
+        connects = _forbid_connect(monkeypatch)
+        with pytest.raises(RuntimeError, match="^output_registration_native_pins_closed$"):
+            await store.acall(store.get_stats)
+        assert connects == [] and owner._failed
+
+
+@pytest.mark.asyncio
+async def test_no_pin_is_handed_out_or_kept_once_released(tmp_path, monkeypatch):
+    async with managed(tmp_path, monkeypatch) as (owner, stack, config):
+        target = tmp_path / "late.db"
+        _sqlite_file(target)
+        owner._release_native_pins()
+        with pytest.raises(RuntimeError, match="^output_registration_native_pins_closed$"):
+            owner._native_pin("events")
+        assert owner._failed
+        late = base.NativePin()
+        late.open_at(target)
+        with pytest.raises(RuntimeError, match="^output_registration_native_pins_closed$"):
+            owner._keep_native_pin(("history", str(target), 0, 0), late)
+        assert late.descriptor is None and owner._native_pins == {}
+
+
+@pytest.mark.asyncio
+async def test_native_pins_are_released_only_after_the_disk_executor_drained(tmp_path, monkeypatch):
+    """R2: a disk task still queued at close can take its pin, and that pin is released too."""
+    async with managed(tmp_path, monkeypatch) as (owner, stack, config):
+        target = tmp_path / "held.db"
+        _sqlite_file(target)
+        pin = owner._native_pin("probe")
+        pin.open_at(target)
+        held = pin.descriptor
+        drain, observed = owner._disk.aclose, []
+
+        async def draining():
+            observed.append((owner._native_pins_closed, pin.descriptor))
+            await drain()
+
+        monkeypatch.setattr(owner._disk, "aclose", draining)
+        await owner.aclose()
+        assert observed == [(False, held)]
+        assert owner._native_pins_closed and pin.descriptor is None
+
+
+@LINUX_PIN
+@pytest.mark.asyncio
+async def test_a_released_historical_pin_never_falls_back_to_an_unpinned_comparison(tmp_path, monkeypatch):
+    """R1/N9: once a grant's pin is released, an unchanged lstat must not pass on (dev, ino) alone."""
+    from src.analytics.erasure import build_event_erasure
+    from src.analytics.retention import EventRetention
+    from src.memory.erasure_coordinator import ErasureCoordinator
+    monkeypatch.setattr(EventRetention, "start", lambda self: None)
+    body_completed = False
+    with pytest.raises(registration.OutputRegistrationError,
+            match="^output_registration_registry_unavailable$") as cleanup:
+        async with managed(tmp_path, monkeypatch) as (owner, stack, config):
+            privacy = await build_privacy_services(config, shutdown=stack)
+            erasures = ErasureCoordinator(privacy)
+            stack.push_async_callback(erasures.aclose)
+            path = Path(config["analytics"]["events_db"])
+            _sqlite_file(path)
+            await build_event_erasure(config, privacy=privacy, owner=erasures)
+            physical = str(path.resolve())
+            grant = owner._roles["events.retention"].grants[physical]
+            assert grant.pin is not None and grant.pin.descriptor is not None
+            owner._history_path(physical, grant, None)  # Pinned: the unchanged target passes.
+            owner._release_native_pins()
+            assert grant.pin.descriptor is None
+            with pytest.raises(registration.OutputRegistrationError, match="destination_changed"):
+                owner._history_path(physical, grant, None)
+            assert owner._failed
+            body_completed = True
+    assert body_completed
+    assert_failed_registry_cleanup(owner, privacy, cleanup.value)
+
+
+@pytest.mark.parametrize("failure", [errno.EMFILE, errno.ENFILE])
+def test_descriptor_exhaustion_is_not_reported_as_a_changed_destination(tmp_path, monkeypatch, failure):
+    """R6: only an absent destination leaves the pin empty; anything else has its own code."""
+    if base.NATIVE_PIN_FLAGS is None:
+        monkeypatch.setattr(base, "NATIVE_PIN_FLAGS", os.O_RDONLY | os.O_NOFOLLOW)  # Control flow only.
+    flags, real_open = base.NATIVE_PIN_FLAGS, os.open
+
+    def exhausted(path, mode, *args, **kwargs):
+        if mode == flags:
+            raise OSError(failure, os.strerror(failure))
+        return real_open(path, mode, *args, **kwargs)
+
+    target = tmp_path / "present.db"
+    _sqlite_file(target)
+    monkeypatch.setattr(base.os, "open", exhausted)
+    pin = base.NativePin()
+    with pytest.raises(RuntimeError, match="^output_registration_native_pin_unavailable$"):
+        pin.open_at(target)
+    assert pin.descriptor is None
+    monkeypatch.setattr(base.os, "open", real_open)
+    pin.open_at(tmp_path / "absent.db")
+    assert pin.descriptor is None
+    pin.open_at(tmp_path / "present.db" / "below")  # NotADirectoryError: absent too.
+    assert pin.descriptor is None
 
 
 # ----------------------------------------------------------------------

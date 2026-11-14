@@ -298,8 +298,11 @@ class NativePin:
         self.release()
         try:
             self.descriptor = os.open(path, NATIVE_PIN_FLAGS)
-        except OSError:
-            self.descriptor = None
+        except (FileNotFoundError, NotADirectoryError):
+            self.descriptor = None  # Absent: ``require`` decides whether that is allowed.
+        except OSError as error:
+            # Descriptor exhaustion or any other failure is not a changed destination.
+            raise RuntimeError("output_registration_native_pin_unavailable") from error
 
     def require(self, identity: dict | None, reason: str = "destination_changed") -> None:
         """The pin is exactly the regular file ``identity`` names; None requires nothing pinned."""
@@ -353,16 +356,36 @@ class DestinationRegistrationCoordinator:
         # Native destination pins by owner key; every one lives until the
         # epoch closes (OutputRegistrationV2.aclose, the only coordinator built).
         self._native_pins: dict[object, NativePin] = {}
+        self._native_pins_closed = False
 
     def _native_pin(self, key: object) -> NativePin:
+        """The owner's pin; after release none is handed out, so nothing proceeds unpinned."""
         with self._lock:
+            if self._native_pins_closed:
+                self._failed = True
+                raise RuntimeError("output_registration_native_pins_closed")
             pin = self._native_pins.get(key)
             if pin is None:
                 pin = self._native_pins[key] = NativePin()
             return pin
 
-    def _release_native_pins(self) -> None:
+    def _keep_native_pin(self, key: object, pin: NativePin) -> NativePin:
+        """Share the held pin for ``key`` or keep ``pin``; refused once pins are released."""
         with self._lock:
+            closed = self._native_pins_closed
+            held = None if closed else self._native_pins.setdefault(key, pin)
+        if held is pin:
+            return pin
+        pin.release()
+        if closed:
+            self._failed = True
+            raise RuntimeError("output_registration_native_pins_closed")
+        return held
+
+    def _release_native_pins(self) -> None:
+        """Close every native pin for good; later pin requests are refused."""
+        with self._lock:
+            self._native_pins_closed = True
             pins, self._native_pins = tuple(self._native_pins.values()), {}
         for pin in pins:
             pin.release()

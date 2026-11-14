@@ -413,7 +413,10 @@ def build_runtime(repo: Path, output: Path, revision: str = "HEAD") -> dict:
     try:
         pin = os.dup(descriptor)  # Held until cleanup: the own inode keeps its number.
     except OSError:
-        os.close(descriptor)
+        try:
+            _remove_own_temporary(temporary_output, descriptor)  # The open descriptor is the pin.
+        finally:
+            os.close(descriptor)
         raise
     try:
         with os.fdopen(descriptor, "wb") as raw:

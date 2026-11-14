@@ -112,6 +112,26 @@ def test_a_failed_archive_build_removes_its_own_temporary(committed_app, tmp_pat
     assert list(output.parent.iterdir()) == []
 
 
+def test_a_failed_pin_removes_the_archive_temporary(committed_app, tmp_path, monkeypatch):
+    """Review R7: when dup fails the open mkstemp descriptor proves the own inode."""
+    import errno
+    output = tmp_path / "out" / "runtime.tar.gz"
+    output.parent.mkdir()
+
+    real_dup = os.dup
+
+    def failing(descriptor):
+        held = os.fstat(descriptor)
+        if any(os.lstat(own).st_ino == held.st_ino for own in output.parent.glob(".kza-release-*")):
+            raise OSError(errno.EMFILE, "synthetic descriptor exhaustion")
+        return real_dup(descriptor)
+
+    monkeypatch.setattr(builder.os, "dup", failing)
+    with pytest.raises(OSError, match="synthetic descriptor exhaustion"):
+        builder.build_runtime(committed_app, output)
+    assert list(output.parent.iterdir()) == []
+
+
 def test_runtime_symlink_is_not_followed(committed_app, tmp_path):
     target = committed_app / "src/feature.py"
     target.unlink()
