@@ -1023,11 +1023,11 @@ def test_every_command_refuses_the_wrong_root(adapter_world, command, case):
 
 
 def test_controller_epoch_two_and_an_epoch_one_install_refuses(world, artifacts):
-    assert stage.CONTROLLER_EPOCH == 2
+    assert stage.CONTROLLER_EPOCH == 3  # U3b-0c raised it from 2 (the compaction gate)
     with pytest.raises(launcher.LauncherRefusal, match="runtime_admission_controller_epoch_too_old"):
         launcher.install_controller(world.root, artifacts["epoch1"])
     assert not (world.root / "admission" / "controller.json").exists()
-    assert launcher.install_controller(world.root, artifacts["archive"])["controller_epoch"] == 2
+    assert launcher.install_controller(world.root, artifacts["archive"])["controller_epoch"] == 3
 
 
 # --- the CLI (stage_runtime loads the commands by path, as the compiled controller does) --------------

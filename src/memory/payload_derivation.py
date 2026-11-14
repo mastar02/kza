@@ -231,7 +231,13 @@ def _validate_cut_proof_shape(proof):
         "ordinary_manifest_sha256", "latest_manifest_sha256", "plan_sha256", "destination_root",
         "destination_identity", "removed_rows", "removed_files"}
     _require(type(proof) is dict and set(proof) == fields and type(proof["schema_version"]) is int
-        and proof["schema_version"] == 1 and proof["kind"] == "ordinary_payload_cut",
+        and proof["schema_version"] == 1 and proof["kind"] in {"ordinary_payload_cut", "compaction_identity"},
+        "payload_cut_history_schema_invalid")
+    # U3b-0c (owner-compaction v2 D3): the identity clone removes nothing from its single source.
+    _require(proof["kind"] != "compaction_identity" or (
+        proof["removed_rows"] == [] and proof["removed_files"] == []
+        and proof["ordinary_binding_id"] == proof["latest_binding_id"]
+        and proof["ordinary_manifest_sha256"] == proof["latest_manifest_sha256"]),
         "payload_cut_history_schema_invalid")
     _require(all(_sha_token(proof[name]) for name in ("ordinary_binding_id", "latest_binding_id",
         "ordinary_manifest_sha256", "latest_manifest_sha256", "plan_sha256")),

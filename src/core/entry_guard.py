@@ -47,6 +47,17 @@ _TICKET_KEYS = frozenset({"schema_version", "admission_root", "binding_id", "gen
 _HEX = frozenset("0123456789abcdef")
 CAPABILITY_CODE = "runtime_admission_schema_only_capability_refused"
 
+# U3b-0c: the owner-compaction worker's capability (snapshot and identity clone of the
+# closed head into K under the controller's gate). Same discipline as schema-only.
+COMPACTION_WORKER_ENV = "KZA_COMPACTION_WORKER"
+COMPACTION_WORKER_VALUE = "1"
+COMPACTION_WORKER_BOOTSTRAP = "\n".join([
+    "import sys",
+    "sys.path.insert(0, sys.argv[1])",
+    "from src.core.compaction_worker import main",
+    "raise SystemExit(main(sys.argv[2:]))",
+])
+
 # The only command form that may carry the schema-only capability. argv after
 # the source: <runtime root> then the entry's own arguments.
 SCHEMA_ONLY_BOOTSTRAP = "\n".join([
@@ -139,6 +150,27 @@ def ticket_shape_ok(raw: str, root: Path) -> bool:
     return stat.S_ISREG(info.st_mode)
 
 
+def compaction_worker_command(python: str, runtime_root: str | os.PathLike, *arguments: str) -> list[str]:
+    """argv of the owner-compaction worker (run with COMPACTION_WORKER_ENV=1, no ticket)."""
+    return [python, "-I", "-B", "-c", COMPACTION_WORKER_BOOTSTRAP, os.fspath(runtime_root), *arguments]
+
+
+def _bootstrap_invocation(argv: list[str] | None, flags, bootstrap: str) -> bool:
+    flags = sys.flags if flags is None else flags
+    if argv is None or not flags.isolated or not flags.dont_write_bytecode:
+        return False
+    try:
+        index = argv.index("-c")
+    except ValueError:
+        return False
+    return argv[1:index] == ["-I", "-B"] and index + 2 < len(argv) and argv[index + 1] == bootstrap
+
+
+def compaction_worker_invocation(argv: list[str] | None, flags=None) -> bool:
+    """True iff this process is exactly the compaction-worker bootstrap under -I -B."""
+    return _bootstrap_invocation(argv, flags, COMPACTION_WORKER_BOOTSTRAP)
+
+
 def schema_only_invocation(argv: list[str] | None, flags=None) -> bool:
     """True iff this process is exactly the schema-only bootstrap under -I -B.
 
@@ -173,6 +205,14 @@ def entry_decision(*, environ: Mapping[str, str] | None = None,
         None, ``UNMANAGED_CODE`` or ``CAPABILITY_CODE``.
     """
     environ = os.environ if environ is None else environ
+    worker = environ.get(COMPACTION_WORKER_ENV)
+    if worker is not None:
+        # U3b-0c: accepted only by the compaction-worker bootstrap, never with a ticket or
+        # the schema-only capability.
+        if (worker != COMPACTION_WORKER_VALUE or TICKET_ENV in environ or SCHEMA_ONLY_ENV in environ
+                or not compaction_worker_invocation(argv, flags)):
+            return CAPABILITY_CODE
+        return None
     capability = environ.get(SCHEMA_ONLY_ENV)
     if capability is not None:
         # Accepted only by the schema-only bootstrap, never with a ticket.

@@ -881,7 +881,7 @@ def test_a_later_run_accepts_what_an_older_version_left_group_writable(tmp_path,
                 older[name] = (os.lstat(path).st_ino, stat.S_IMODE(os.lstat(path).st_mode))
         assert older[".stage.lock"][1] == 0o664 and older["admission"][1] == 0o775
         loosened = set(world.root.rglob("*"))
-        assert world.install_controller()["controller_epoch"] == 2  # the installed tree is re-verified
+        assert world.install_controller()["controller_epoch"] == stage.CONTROLLER_EPOCH  # re-verified tree
         clean_close(world)
         install_record(world)
         result = confirm(world)
