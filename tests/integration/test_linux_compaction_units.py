@@ -183,7 +183,7 @@ def test_a_template_without_instances_is_scanned_by_its_fixed_part(systemd, layo
     code = _refusal(systemd, layout)
     RESULTS.append({"case": "g_template_under_root", "code": code, "listed_by_list_unit_files": listed})
     assert code == PATH_HIT + name
-    systemd.write_unit(name, _service("A=1", "/bin/true /tmp/%i.out"))
+    systemd.write_unit(name, _service("A=1", "/bin/true %t/%i.out"))  # not /tmp: the test root is below it
     systemd.reload()
     report = _scan(systemd, layout)
     RESULTS.append({"case": "g_template_elsewhere", "templates": [unit for unit in report["templates_scanned"]
