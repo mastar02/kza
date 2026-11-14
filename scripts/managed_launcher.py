@@ -2177,6 +2177,15 @@ def install_controller(root: Path, archive: Path, *, wall=time.time) -> dict:
     if "scripts/managed_launcher.pyc" not in files or "scripts/stage_runtime.pyc" not in files:
         raise LauncherRefusal("runtime_admission_controller_unmanaged")
     commit = manifest["git_commit"]
+    try:
+        installed = _read_optional(_records(root, "controller.json"))
+    except (OSError, ValueError):
+        installed = None  # a damaged record: the checks under the lease decide
+    if installed is not None and type(installed.get("controller_epoch")) is int \
+            and installed["controller_epoch"] > epoch:
+        # Before the lease: the controller entry's own forward-epoch check (review F8) would
+        # refuse with the same code, but as a lease error rather than this command's refusal.
+        raise LauncherRefusal("runtime_admission_controller_downgrade")
     # The install gate (review D4): allowed under a pending or invalid compaction log, so a
     # corrected controller (epoch >= 3 above, never older than the installed one) can finish it.
     with stage.AdmissionController(root, allow_open_head=True, gate="install"):
