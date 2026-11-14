@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import sys
 import threading
 from typing import TYPE_CHECKING, NoReturn
 
@@ -260,6 +261,64 @@ def _chain(directory):
     raise RuntimeError("output_registration_schema")
 
 
+# A native SQLite destination is named by (st_dev, st_ino) between its plan
+# and its opens. ext4 hands a freed inode number to the next allocation at
+# once, so that pair names the destination only while its inode stays
+# allocated. On Linux an O_PATH descriptor keeps it allocated without opening
+# the file for I/O, and closing it never drops the process's POSIX record
+# locks (SQLite's): the kernel skips locks_remove_posix for FMODE_PATH files.
+# An ordinary extra descriptor cannot be used: closing it drops those locks.
+# macOS has no O_PATH, and APFS allocates file ids from a monotonic counter
+# and never reuses one, so there is no pin and nothing to pin against there.
+NATIVE_PIN_FLAGS = (os.O_PATH | os.O_NOFOLLOW) if sys.platform == "linux" else None
+
+
+class NativePin:
+    """Hold a native SQLite destination's inode from its plan until the epoch closes.
+
+    While the pin is open no other file can carry the pinned (st_dev, st_ino),
+    so a recorded identity compared with a later lstat of the name is sound.
+    The descriptor is O_PATH: no I/O goes through it and its close leaves
+    SQLite's locks alone. Where ``NATIVE_PIN_FLAGS`` is None (macOS) nothing is
+    pinned and ``require`` accepts, because file ids are never reused there.
+    """
+
+    __slots__ = ("descriptor",)
+
+    def __init__(self) -> None:
+        self.descriptor = None
+
+    def __reduce_ex__(self, protocol: int) -> NoReturn:
+        raise TypeError("native_pin_not_serializable")
+
+    def open_at(self, path: str | os.PathLike) -> None:
+        """Pin whatever is at ``path`` now (nothing when absent); then ``require``."""
+        if NATIVE_PIN_FLAGS is None:
+            return
+        self.release()
+        try:
+            self.descriptor = os.open(path, NATIVE_PIN_FLAGS)
+        except OSError:
+            self.descriptor = None
+
+    def require(self, identity: dict | None, reason: str = "destination_changed") -> None:
+        """The pin is exactly the regular file ``identity`` names; None requires nothing pinned."""
+        if NATIVE_PIN_FLAGS is None:
+            return
+        if identity is None:
+            _require(self.descriptor is None, reason)
+            return
+        _require(self.descriptor is not None, reason)
+        held = os.fstat(self.descriptor)
+        _require(stat.S_ISREG(held.st_mode)
+                 and {"device": held.st_dev, "inode": held.st_ino} == identity, reason)
+
+    def release(self) -> None:
+        descriptor, self.descriptor = self.descriptor, None
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 @dataclass(frozen=True)
 class DestinationRegistration:
     """Instance-bound registration; not a policy permission or cleanup receipt."""
@@ -291,6 +350,41 @@ class DestinationRegistrationCoordinator:
         self._closing = None
         self._directory = Path(admission._ticket["admission_root"]) / "admission/output-inventory/v1/runs" / admission._ticket["run_id"]
         self._directory_identity = None
+        # Native destination pins by owner key; every one lives until aclose.
+        self._native_pins: dict[object, NativePin] = {}
+
+    def _native_pin(self, key: object) -> NativePin:
+        with self._lock:
+            pin = self._native_pins.get(key)
+            if pin is None:
+                pin = self._native_pins[key] = NativePin()
+            return pin
+
+    def _release_native_pins(self) -> None:
+        with self._lock:
+            pins, self._native_pins = tuple(self._native_pins.values()), {}
+        for pin in pins:
+            pin.release()
+
+    def _pinned_plan(self, key: object, path: str | os.PathLike, planner, *args) -> dict:
+        """Pin the destination before ``planner`` observes it; the plan must name the pin."""
+        pin = self._native_pin(key)
+        pin.open_at(Path(path).absolute())
+        plan = planner(*args)
+        pin.require(plan["existing_identity"])
+        return plan
+
+    def _native_identity(self, key: object, path: Path, expected: dict | None) -> dict:
+        """The regular file at ``path`` as pinned; its first record pins a created destination."""
+        pin = self._native_pin(key)
+        if expected is None and pin.descriptor is None:
+            pin.open_at(path)
+        info = path.lstat()
+        _require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1, "native_identity")
+        native = _identity(path)
+        _require(expected is None or expected == native, "native_identity")
+        pin.require(native, "native_identity")
+        return native
 
     def _current(self):
         _require(self.admission._output_registration is self and not self._failed, "coordinator")
@@ -359,12 +453,8 @@ class DestinationRegistrationCoordinator:
             _require(previous is None or previous["plan"] == plan, "plan_changed")
             native_identity = None
             if phase in ("active", "closed"):
-                path = Path(plan["path"])
-                info = path.lstat()
-                _require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1, "native_identity")
-                native_identity = _identity(path)
                 expected = plan["existing_identity"] if phase == "active" else previous["native_identity"]
-                _require(expected is None or expected == native_identity, "native_identity")
+                native_identity = self._native_identity(producer, Path(plan["path"]), expected)
             revision = head["revision"] + 1
             raw = _encoded({"revision": revision, "previous_sha256": head["sha256"],
                 "producer": producer, "phase": phase, "plan": plan, "native_identity": native_identity})
@@ -386,7 +476,7 @@ class DestinationRegistrationCoordinator:
             and store._db is None and self._closing is None, "store")
         path = str(Path(store._db_path).absolute())
         _require(path == self._expected[producer], "configured_path")
-        plan = await self._run(_plan, producer, path, self.admission.state_root)
+        plan = await self._run(self._pinned_plan, producer, path, _plan, producer, path, self.admission.state_root)
         await self._run(self._append, producer, "intent", plan)
         handle = DestinationRegistration(self, store, producer, path)
         await self._run(self._append, producer, "attached", plan)
@@ -411,6 +501,7 @@ class DestinationRegistrationCoordinator:
         with self._lock:
             plan = self._check(handle, store, producer, path)
             _require(_plan(producer, path, self.admission.state_root) == plan, "destination_changed")
+            self._native_pin(producer).require(plan["existing_identity"])
             self._append(producer, "opening", plan)
 
     async def opening(
@@ -477,6 +568,7 @@ class DestinationRegistrationCoordinator:
                     if not self._failed:
                         await self._run(verify_observations)
                 finally:
+                    self._release_native_pins()  # Poisoned or not, pins end with the epoch.
                     await self._disk.aclose()
                 _require(not self._failed, "epoch_incomplete")
                 # Installed managed provenance remains sticky through process exit.

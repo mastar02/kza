@@ -82,6 +82,7 @@ class _HistoricalGrant:
     entry: object
     plan_json: bytes
     scope_json: bytes | None
+    pin: base.NativePin | None = None  # Holds plan["existing_identity"] until the epoch closes.
 
 
 @dataclass(eq=False, frozen=True)
@@ -271,8 +272,14 @@ def _owner_event_shape(event: dict, prior: dict | None, selected: dict) -> None:
 
 
 def _physical_shape(path: str | Path, plan: dict, *, expected_identity: dict | None = None,
-                    allow_absent: bool = True) -> None:
-    """Recheck the pinned physical extent immediately before its native open."""
+                    allow_absent: bool = True, pin: base.NativePin | None = None) -> None:
+    """Recheck the pinned physical extent immediately before its native open.
+
+    ``expected_identity`` decides only while ``pin`` holds that inode (on
+    Linux); an expected identity without its pin is refused.
+    """
+    if expected_identity is not None:
+        (base.NativePin() if pin is None else pin).require(expected_identity)
     supplied = Path(path)
     base._require(not supplied.is_symlink() and str(supplied.resolve(strict=False)) == plan["path"], "destination_changed")
     base._require(base._directory(Path(plan["ancestor"])) == plan["parent_identity"], "destination_changed")
@@ -726,16 +733,13 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             base._require(phase in _PHASES and (None if prior is None else prior["phase"]) in _PHASES[phase], "transition")
             native = None
             if phase in {"active", "closed"} and plan.get("path"):
-                path = Path(plan["path"])
-                info = path.lstat()
-                base._require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1, "native_identity")
-                native = base._identity(path)
                 expected = plan.get("existing_identity") if phase == "active" else prior["native_identity"]
-                base._require(expected is None or native == expected, "native_identity")
+                native = self._native_identity(producer, Path(plan["path"]), expected)
             event = {"kind": "owner", "owner": producer, "phase": phase, "plan": plan, "native_identity": native}
             _plan_shape(plan, self.admission.state_root)
             _owner_event_shape(event, prior, self._selected)
             self._record(event)
+            return native
 
     def _live(self) -> None:
         from src.core.runtime_admission import _verified_admissions
@@ -778,7 +782,10 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         if work is not None:
             work._install_native_preflight(self, self._preflight)
         await self._run(self.admission.revalidate)
-        plan = await self._run(_plan, producer, role, path, self.admission.state_root)
+        if path is None:
+            plan = await self._run(_plan, producer, role, path, self.admission.state_root)
+        else:
+            plan = await self._run(self._pinned_plan, key, path, _plan, producer, role, path, self.admission.state_root)
         handle = base.DestinationRegistration(self, owner, key, path or "")
         self._handles[key] = (handle, plan)
         await self._run(self._append, key, "intent", plan)
@@ -850,7 +857,8 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             expected = binding.native_identity or plan["existing_identity"]
             try:
                 _plan_shape(plan, self.admission.state_root)
-                _physical_shape(path, plan, expected_identity=expected, allow_absent=expected is None)
+                _physical_shape(path, plan, expected_identity=expected, allow_absent=expected is None,
+                                pin=self._native_pin(binding.key))
             except (OSError, RuntimeError, ValueError):
                 _reject("destination_changed", self)
         if binding.phase == "attached":
@@ -881,9 +889,9 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             _reject("initialization_owner", self)
         if not execution.task.done() or execution.task.cancelled() or execution.task.exception() is not None:
             _reject("initialization_pending", self)
-        await self._run(self._append, binding.key, "active", self._handles[binding.key][1])
+        native = await self._run(self._append, binding.key, "active", self._handles[binding.key][1])
         binding.phase = "active"
-        binding.native_identity = base._identity(Path(self._handles[binding.key][1]["path"]))
+        binding.native_identity = native  # The journaled, pinned identity; never a second lstat.
         if binding.producer == "privacy_authority":
             owner._ready = True
         elif binding.producer == "events":
@@ -898,9 +906,9 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             _reject("initialization_owner", self)
         if binding.producer == "routines" and (owner._db is None or owner._db._connection is None or owner._work is None or owner._work._connection is not owner._db or not owner._lock.locked()):
             _reject("initialization_owner", self)
-        await self._run(self._append, binding.key, "active", self._handles[binding.key][1])
+        native = await self._run(self._append, binding.key, "active", self._handles[binding.key][1])
         binding.phase = "active"
-        binding.native_identity = base._identity(Path(self._handles[binding.key][1]["path"]))
+        binding.native_identity = native  # The journaled, pinned identity; never a second lstat.
 
     async def routine_opening(self, owner: object) -> None:
         binding = self._owner(owner)
@@ -911,7 +919,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             self.admission.revalidate()
             self._current()
             _physical_shape(owner._db_path, plan, expected_identity=plan["existing_identity"],
-                allow_absent=plan["existing_identity"] is None)
+                allow_absent=plan["existing_identity"] is None, pin=self._native_pin(binding.key))
             self._append(binding.key, "opening", plan)
         await self._run(opening)
         binding.phase = "opening"
@@ -1013,7 +1021,9 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         if str(Path(path).absolute()) != str(Path(self._expected["suggestions"]).absolute()):
             _reject("configured_path", self)
         await self._run(self.admission.revalidate)
-        plan = await self._run(_plan, "suggestions", "primary", suggestion_descriptor(path)["path"], self.admission.state_root)
+        physical = suggestion_descriptor(path)["path"]
+        plan = await self._run(self._pinned_plan, "suggestions", physical, _plan, "suggestions", "primary",
+                               physical, self.admission.state_root)
         await self._run(self._append, "suggestions", "intent", plan)
         reservation = ConstructorReservation(self, events, path)
         self._reservations[id(reservation)] = reservation
@@ -1073,7 +1083,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                 from src.analytics.event_storage import validate_event_descriptor
                 from src.analytics.suggestion_storage import validate_suggestion_descriptor
                 (validate_event_descriptor if producer == "events" else validate_suggestion_descriptor)(descriptor)
-                plan, scope_json, policy_json = await self._disk.run(_historical_plan, self.admission, entry)
+                plan, scope_json, policy_json, pin = await self._disk.run(self._pinned_historical_plan, entry)
             except (ValueError, RuntimeError, OSError):
                 await self._run(self._record, {"kind": "target", "owner": binding.key, "id": entry.id,
                     "status": "unbound_or_unsupported", "opaque_digest": entry.opaque_digest})
@@ -1082,7 +1092,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                 continue
             if plan["path"] in grants and grants[plan["path"]].entry.id != entry.id:
                 _reject("target_path_conflict", self)
-            grants[plan["path"]] = _HistoricalGrant(entry, base._encoded(plan), scope_json)
+            grants[plan["path"]] = _HistoricalGrant(entry, base._encoded(plan), scope_json, pin)
             record = {"kind": "target", "owner": binding.key, "id": entry.id,
                 "status": "attached", "plan": plan, "borrowed_reader": binding.producer == "suggestions" and producer == "events"}
             if scope_json is not None:
@@ -1093,6 +1103,32 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         binding.registry_state = (snapshot, tuple(grants.items()))
         binding.grants, binding.snapshot = grants, snapshot
         return snapshot
+
+    def _pinned_historical_plan(self, entry: object) -> tuple[dict, bytes | None, bytes | None, base.NativePin]:
+        """Plan a historical target with its existing inode pinned until the epoch closes.
+
+        A pin already holding the same path and identity is shared, so repeated
+        registry refreshes add a descriptor only when a target's inode changes.
+        """
+        pin = base.NativePin()
+        pin.open_at(Path(entry.descriptor["path"]).absolute())
+        try:
+            plan, scope_json, policy_json = _historical_plan(self.admission, entry)
+            pin.require(plan["existing_identity"])
+        except BaseException:
+            pin.release()
+            raise
+        identity = plan["existing_identity"]
+        if identity is None or pin.descriptor is None:
+            return plan, scope_json, policy_json, pin
+        key = ("history", plan["path"], identity["device"], identity["inode"])
+        with self._lock:
+            held = self._native_pins.get(key)
+            if held is None:
+                self._native_pins[key] = pin
+                return plan, scope_json, policy_json, pin
+        pin.release()
+        return plan, scope_json, policy_json, held
 
     def _record_historical_policy(self, policy_json: bytes) -> None:
         """Publish the exact running policy once; no event becomes a grant."""
@@ -1144,7 +1180,8 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         try:
             _plan_shape(plan, source)
             base._require(str(Path(path).absolute()) == plan["path"] == grant.entry.descriptor["path"], "destination_changed")
-            _physical_shape(path, plan, expected_identity=plan["existing_identity"], allow_absent=True)
+            _physical_shape(path, plan, expected_identity=plan["existing_identity"], allow_absent=True,
+                            pin=grant.pin)
         except (OSError, RuntimeError, ValueError):
             _reject("destination_changed", self)
 
@@ -1621,6 +1658,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                     for pinned in (publisher, self._configuration):
                         if pinned is not None:
                             pinned.pin.release()
+                    self._release_native_pins()
                     await self._disk.aclose()
                 base._require(not self._failed, "epoch_incomplete")
             self._closing = asyncio.create_task(finish(), context=Context())
@@ -2087,9 +2125,9 @@ async def construct_suggestions(events: object, function: Callable, **kwargs: An
         binding = coordinator._owner(store)
         if engine.store is not store or binding.phase != "opening" or asyncio.current_task() not in events._work._tasks:
             _reject("constructor_return", coordinator)
-        await coordinator._run(coordinator._append, "suggestions", "active", coordinator._constructor_plan)
+        native = await coordinator._run(coordinator._append, "suggestions", "active", coordinator._constructor_plan)
         binding.phase = "active"
-        binding.native_identity = base._identity(Path(coordinator._constructor_plan["path"]))
+        binding.native_identity = native  # The journaled, pinned identity; never a second lstat.
         del coordinator._reservations[id(reservation)]
         del coordinator._constructor_returns[id(reservation)]
         return engine
@@ -2185,9 +2223,10 @@ class _DestinationPin:
     recorded (st_dev, st_ino) names the destination only while that inode
     stays allocated. While the pin is open it does; a replacement at the name
     then always has another number, and ``holds`` compares the name's lstat
-    with the pinned inode itself. Only the atomic JSON/YAML publishers are
-    pinned: closing an extra descriptor on a SQLite file would drop the
-    process's POSIX locks on it. After a publish the pin is the writer's own
+    with the pinned inode itself. This read-only pin serves the atomic
+    JSON/YAML publishers only: closing an extra ordinary descriptor on a
+    SQLite file would drop the process's POSIX locks on it, so native SQLite
+    destinations use ``base.NativePin`` (O_PATH) instead. After a publish the pin is the writer's own
     temporary descriptor (read-write from mkstemp); nothing writes through it.
     """
 
