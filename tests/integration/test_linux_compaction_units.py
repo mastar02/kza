@@ -87,7 +87,7 @@ def _refusal(systemd: real_systemd.UserSystemd, layout) -> str:
 
 
 def _service(environment: str, exec_start: str, extra: str = "") -> str:
-    # No [Install]: the unit file state is 'static', listed by list-unit-files --state=...static.
+    # No [Install]: the unit file state is 'static' (list-unit-files lists every state).
     return ("[Unit]\nDescription=KZA U3b-0c P14 rehearsal (test only)\n\n[Service]\nType=oneshot\n"
             f"Environment={environment}\nExecStart={exec_start}\n{extra}")
 

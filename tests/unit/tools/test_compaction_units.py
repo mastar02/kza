@@ -56,9 +56,9 @@ class FakeUserManager:
         if verb in self.fail or (verb, target) in self.fail:
             return None
         if verb == "list-unit-files":
-            states = arguments[2].split("=", 1)[1].split(",")
+            assert not any(word.startswith("--state") for word in arguments), arguments  # every state
             return "".join(f"{name} {item['state']} enabled\n" for name, item in self.units.items()
-                           if item["state"] in states)
+                           if item["state"] is not None)
         if verb == "list-units":
             assert "--all" in arguments
             return "".join(f"● {name} loaded failed failed test\n" for name, item in self.units.items()
@@ -318,6 +318,13 @@ def test_generated_and_static_units_are_scanned_and_vendor_units_are_not(layout)
                                      members=layout.members, home=layout.home, uid=UID, environ={})
     assert report["unit_names"] == []
     assert not [call for call in manager.calls if "worker@.service" in call]
+
+
+def test_a_disabled_inactive_unit_naming_a_member_is_scanned(layout):
+    """Neither loaded nor enabled, still startable: found by the real-systemd rehearsal."""
+    disabled = ours(layout, "kza-voice.service", state="disabled", loaded=False,
+                    ReadOnlyPaths=str(layout.member / "state" / "logs"))
+    assert refused(layout, disabled) == PATH_HIT + "kza-voice.service"
 
 
 def test_a_vendor_unit_with_a_user_drop_in_is_scanned(layout):

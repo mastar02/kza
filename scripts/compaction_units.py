@@ -61,10 +61,11 @@ PATH_HIT = "runtime_admission_compaction_unit_path:"
 MEMBERS_INVALID = "runtime_admission_compaction_unit_members"
 SYSTEMCTL_TIMEOUT = 30.0  # list-unit-files on a loaded manager can exceed ServiceManager's 2 s default
 
-# E2: the union of these two listings. The '-runtime' states are the same states for units under
-# /run/user/<uid>/systemd (stricter than the review's list).
-LIST_UNIT_FILES = ("list-unit-files", "--state=enabled,enabled-runtime,generated,static,linked,linked-runtime,alias",
-                   "--no-legend", "--plain", "--no-pager")
+# E2: the union of these two listings. Every unit file state is listed, not only E2's enabled,
+# generated, static and linked: a disabled, inactive unit is neither loaded (list-units) nor in
+# those states, yet the operator can start it (and the runbook disables kza-voice during a
+# compaction). Found by the real-systemd rehearsal; vendor units are still dropped by origin.
+LIST_UNIT_FILES = ("list-unit-files", "--no-legend", "--plain", "--no-pager")
 LIST_UNITS = ("list-units", "--all", "--type=service,timer,socket,path", "--no-legend", "--plain", "--no-pager")
 
 ORIGIN_PROPERTIES = ("LoadState", "FragmentPath", "SourcePath", "DropInPaths")
