@@ -760,12 +760,15 @@ def test_the_window_in_runbook_order_under_real_systemd(tmp_path, tree, built, s
     # the adopted bytes back, clears it.
     limits = systemd.raw_show(w.voice, "StartLimitBurst", "StartLimitIntervalUSec")
     assert limits == {"StartLimitBurst": "5", "StartLimitIntervalUSec": "5min"}, limits
-    before = w.voice_state()["InvocationID"]
+    before, runs = w.voice_state()["InvocationID"], w.managed_console().count("reboot budget")
     sixth = w.ctl("start", "kza-voice.service")  # refused by systemd before anything runs (review F11)
-    assert sixth.returncode != 0 and "too often" in sixth.stderr, (sixth.returncode, sixth.stderr)
-    assert w.voice_state()["InvocationID"] == before
+    journal = subprocess.run(["journalctl", "--user", "-u", w.voice, "-n", "5", "-o", "cat", "--no-pager"],
+                             capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL).stdout
+    assert sixth.returncode != 0 and "Start request repeated too quickly" in journal, (sixth.stderr, journal)
+    assert w.voice_state()["InvocationID"] == before and w.managed_console().count("reboot budget") == runs
     assert w.ctl("reset-failed", "kza-voice.service").returncode == 0
-    evidence["start_limit"] = dict(limits, sixth_start=sixth.stderr.strip().splitlines()[0][:200])
+    evidence["start_limit"] = dict(limits, sixth_start_exit=sixth.returncode,
+                                   journal="Start request repeated too quickly.")
     shown, seconds = w.start_managed()  # the adopted bytes back: automatic R-b closes it once
     assert shown["ActiveState"] == "active", (shown, w.managed_console()[-3000:])
     assert launcher._recoveries(w.root)[-1]["mode"] == "automatic"
