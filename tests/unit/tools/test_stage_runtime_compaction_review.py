@@ -536,3 +536,37 @@ def test_t_u10_pending_erasure_and_ttl_on_inherited_targets_run_on_k_prime(x_arc
     gone = clips[ERASED] | clips[EXPIRING]
     leftover = [path for path in root.rglob("*") if path.name.split(".")[0] in gone]
     assert leftover == []
+
+
+# --- F9 follow-up: kza's stock user units (IBus, podman, unity) do not block compaction ---
+
+def test_stock_user_units_with_unresolved_references_do_not_block_compaction(x_archive, tmp_path, monkeypatch):
+    """The U3b-0e4 rule in P14: the five stock units the coordinator found in kza's manager pass the
+    real scanner in plan, start and retire; a named unit with the same reference still refuses."""
+    from tests.unit.tools.test_compaction_units import KZA_MANAGER, FakeUserManager, _stock_units, exec_value, unit
+    world = cw.world(x_archive, tmp_path, hops=("b",))
+    root = world["root"]
+    (root / "logs").mkdir()  # the install record's console rotation, as install-launcher leaves it
+    (root / "console-logrotate.conf").write_text(launcher.render_console_logrotate(str(root / "logs" / "console.log")))
+    home = (tmp_path / "account-home").resolve()
+    user_dir = home / ".config" / "systemd" / "user"
+    user_dir.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    for name in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    stock = _stock_units(SimpleNamespace(user_dir=user_dir), podman_environment=False)
+    manager = FakeUserManager(stock, manager_environment=KZA_MANAGER)
+    scan = compaction._default_scan(manager=manager)
+    planned = cw.plan(root, world["archive"], scan=scan)
+    assert planned["units"]["units_scanned"] == 5
+    assert len(planned["units"]["tolerated_unresolved"]) == 5
+    compaction_id = cw.start(root, world["archive"], planned=planned, scan=scan)["compaction_id"]
+    compaction.compact_verify(root, compaction_id)
+    assert cw.serve(root, tmp_path, "verify").code == 0
+    assert compaction.compact_retire(root, compaction_id, scan=scan)["phase"] == "complete"
+    named = dict(stock, **{"kza-code-index.service": unit(str(user_dir / "kza-code-index.service"), loaded=True,
+                                                         cat="[Service]\nExecStart=/bin/tool $LOGGING\n",
+                                                         ExecStart=exec_value("/bin/tool", "$LOGGING"))})
+    _refusal("runtime_admission_compaction_unit_unparsed:kza-code-index.service:ExecStart", lambda: cw.plan(
+        root, world["archive"], k="k2", scan=compaction._default_scan(manager=FakeUserManager(
+            named, manager_environment=KZA_MANAGER))))

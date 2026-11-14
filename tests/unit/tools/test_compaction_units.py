@@ -86,8 +86,11 @@ class FakeUserManager:
 
 
 @pytest.fixture
-def layout(tmp_path):
+def layout(tmp_path, monkeypatch):
     base = tmp_path.resolve()
+    # The account's home, as for kza in production: kza_markers reads '~' (U3b-0e4 rule), so a
+    # unit naming <home>/kza or 'kza' relative to it is kza's.
+    monkeypatch.setenv("HOME", str(base / "home"))
     root = base / "releases"
     member = root / "slots" / "m1"
     (member / "state" / "logs").mkdir(parents=True)
@@ -105,11 +108,11 @@ def layout(tmp_path):
 
 
 def run_scan(layout, units: dict, *, fail: tuple = (), extra: tuple = (), members: list | None = None,
-             environ: dict | None = None, manager_environment: dict | None = None) -> dict:
+             environ: dict | None = None, manager_environment: dict | None = None, named: tuple = ()) -> dict:
     manager = FakeUserManager(units, fail, manager_environment)
     return units_module.scan_units(units_module.strict_systemctl(manager), root=layout.root,
                                    members=layout.members if members is None else members, home=layout.home,
-                                   uid=UID, extra_logrotate=extra, environ=environ or {})
+                                   uid=UID, extra_logrotate=extra, environ=environ or {}, named=named)
 
 
 def refused(layout, units: dict, **options) -> str:
@@ -165,7 +168,8 @@ def test_the_rendered_managed_conf_passes(layout):
     assert "${" not in found["kza-voice.service"]["props"]["ExecStart"]
     report = run_scan(layout, found, extra=(conf,))
     assert report == {"units_scanned": 3, "unit_names": ["kza-console-rotate.service", "kza-console-rotate.timer",
-                                                         "kza-voice.service"], "logrotate_files": 1}
+                                                         "kza-voice.service"], "logrotate_files": 1,
+                      "tolerated_unresolved": []}
 
 
 def test_a_variable_from_environment_naming_a_member_is_a_path_hit(layout):
@@ -233,6 +237,123 @@ def test_an_escaped_manager_value_stays_unresolved(layout):
 def test_a_malformed_environment_block_refuses(layout):
     found = ours(layout, "kza-tool.service", ExecStart=exec_value("/bin/tool"))
     assert refused(layout, found, manager_environment={"not a name": "x"}) == UNAVAILABLE
+
+
+# --- the U3b-0e4 rule for stock units (coordinator follow-up to review F9) ---------------------------
+
+def _shown(path: str, argv: str) -> str:
+    """A real ``systemctl show`` Exec* value (argv as systemd joins it), copied from kza-yo-lan1."""
+    return ("{ path=" + path + " ; argv[]=" + argv
+            + " ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }")
+
+
+_UNITY_TEXT = """[Unit]
+Description=Unity GTK Module Environment variables
+Before=unity7.service unity-panel-service.service gnome-session.service
+PartOf=graphical-session.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -ec '\\
+        GTK_MODULES="$${GTK_MODULES:+$GTK_MODULES:}unity-gtk-module";\\
+        dbus-update-activation-environment --verbose --systemd GTK_MODULES'
+ExecStopPost=/bin/sh -ec '\\
+        GTK_MODULES=$$(echo -n $${GTK_MODULES} | awk -v RS=: -v ORS=: "/^unity-gtk-module$/ {next} {print}" | sed -e "s/:*$//");\\
+        dbus-update-activation-environment --verbose --systemd GTK_MODULES'
+
+[Install]
+WantedBy=unity-session.target
+"""
+
+
+def _stock_units(layout, *, podman_environment: bool = True) -> dict:
+    """The five stock units kza's manager has, each with a user drop-in so that P14 scans it.
+
+    Exec lines and texts are the real ones (Ubuntu 24.04, read on kza-yo-lan1). podman's
+    ExecStart passes $LOGGING to 'podman system service'; its unit sets LOGGING, which the
+    coordinator's scan of kza did not resolve (``podman_environment=False`` is that reading).
+    """
+    found = {}
+
+    def stock(name: str, text: str, **props) -> None:
+        dropin = layout.user_dir / (name + ".d") / "override.conf"
+        cat = f"# /usr/lib/systemd/user/{name}\n{text}\n# {dropin}\n[Service]\nNice=5\n"
+        found[name] = unit(f"/usr/lib/systemd/user/{name}", loaded=True, cat=cat, DropInPaths=str(dropin), **props)
+
+    stock("org.freedesktop.IBus.session.generic.service",
+          "[Service]\nExecStart=sh -c 'exec /usr/bin/ibus-daemon $IBUS_DAEMON_ARGS'\n",
+          ExecStart=_shown("sh", "sh -c exec /usr/bin/ibus-daemon $IBUS_DAEMON_ARGS"))
+    stock("org.freedesktop.IBus.session.GNOME.service",
+          "[Service]\nExecStart=sh -c 'exec /usr/bin/ibus-daemon --panel disable "
+          "$([ \"$XDG_SESSION_TYPE\" = \"x11\" ] && echo \"--xim\")'\n",
+          ExecStart=_shown("sh", 'sh -c exec /usr/bin/ibus-daemon --panel disable '
+                                 '$([ "$XDG_SESSION_TYPE" = "x11" ] && echo "--xim")'))
+    logging = {"Environment": "LOGGING=--log-level=info"} if podman_environment else {}
+    stock("podman.service",
+          "[Service]\nEnvironment=LOGGING=\"--log-level=info\"\nExecStart=/usr/bin/podman $LOGGING system service\n",
+          ExecStart=_shown("/usr/bin/podman", "/usr/bin/podman $LOGGING system service"), **logging)
+    stock("podman-restart.service",
+          "[Service]\nEnvironment=LOGGING=\"--log-level=info\"\n"
+          "ExecStart=/usr/bin/podman $LOGGING start --all --filter restart-policy=always\n"
+          "ExecStop=/bin/sh -c '/usr/bin/podman $LOGGING stop $(/usr/bin/podman container ls "
+          "--filter restart-policy=always -q)'\n",
+          ExecStart=_shown("/usr/bin/podman", "/usr/bin/podman $LOGGING start --all --filter restart-policy=always"),
+          ExecStop=_shown("/bin/sh", "/bin/sh -c /usr/bin/podman $LOGGING stop $(/usr/bin/podman container ls "
+                                     "--filter restart-policy=always -q)"), **logging)
+    stock("unity-gtk-module.service", _UNITY_TEXT,
+          ExecStart=_shown("/bin/sh", '/bin/sh -ec          GTK_MODULES="$${GTK_MODULES:+$GTK_MODULES:}unity-gtk-module";'
+                                      '         dbus-update-activation-environment --verbose --systemd GTK_MODULES'),
+          ExecStopPost=_shown("/bin/sh", '/bin/sh -ec          GTK_MODULES=$$(echo -n $${GTK_MODULES} | awk -v RS=: '
+                                         '-v ORS=: "/^unity-gtk-module$/ {next} {print}" | sed -e "s/:*$//");'
+                                         '         dbus-update-activation-environment --verbose --systemd GTK_MODULES'))
+    return found
+
+
+# kza's real manager environment keys (coordinator's read-only scan, values made up).
+KZA_MANAGER = {"HOME": "/home/kza", "LANG": "C.UTF-8", "LOGNAME": "kza", "PATH": "/usr/bin:/bin", "SHELL": "/bin/bash",
+               "USER": "kza", "XDG_RUNTIME_DIR": "/run/user/1001", "QT_ACCESSIBILITY": "1",
+               "QTWEBENGINE_DICTIONARIES_PATH": "/usr/share/hunspell-bdic/", "XDG_DATA_DIRS": "/usr/share",
+               "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1001/bus", "GSM_SKIP_SSH_AGENT_WORKAROUND": "true",
+               "SSH_AUTH_SOCK": "/run/user/1001/keyring/ssh"}
+
+
+@pytest.mark.parametrize("podman_environment", [True, False])
+def test_the_five_stock_units_pass_under_the_0e4_rule(layout, podman_environment):
+    """Coordinator scan of kza: IBus generic/GNOME, podman, podman-restart, unity-gtk-module."""
+    found, conf = _managed_units(layout)
+    found.update(_stock_units(layout, podman_environment=podman_environment))
+    report = run_scan(layout, found, extra=(conf,), manager_environment=KZA_MANAGER)
+    stock = {"org.freedesktop.IBus.session.generic.service", "org.freedesktop.IBus.session.GNOME.service",
+             "unity-gtk-module.service"} | (set() if podman_environment else {"podman.service",
+                                                                              "podman-restart.service"})
+    assert set(report["tolerated_unresolved"]) == stock
+    assert {"kza-voice.service", "podman.service", "unity-gtk-module.service"} <= set(report["unit_names"])
+
+
+@pytest.mark.parametrize("name", ["kza-voice.service", "kza-llm-fast.service", "kza-code-index.service",
+                                  "listed-by-operator.service"])
+def test_a_named_unit_with_an_unresolved_reference_still_refuses(layout, name):
+    found = {name: unit(str(layout.user_dir / name), loaded=True, cat="[Service]\nExecStart=/bin/tool $Y\n",
+                        ExecStart=exec_value("/bin/tool", "$Y"))}
+    assert refused(layout, found, named=("listed-by-operator.service",)) == UNPARSED + name + ":ExecStart"
+
+
+@pytest.mark.parametrize("where", ["text_member", "text_root", "environment_root", "text_kza_home"])
+def test_an_unnamed_unit_mentioning_kza_a_member_or_the_root_still_refuses(layout, where):
+    text = "[Service]\nExecStart=/bin/tool $Y\n"
+    props = {"ExecStart": exec_value("/bin/tool", "$Y")}
+    if where == "text_member":
+        text += f"# see {layout.member}\n"
+    elif where == "text_root":
+        text += f"WorkingDirectory=/srv\n# {layout.root}/logs\n"
+    elif where == "environment_root":
+        props["Environment"] = f"BASE={layout.root}/logs"
+    else:
+        text += f"# copied from {layout.home / 'kza'}/systemd\n"
+    found = {"stock.service": unit("/usr/lib/systemd/user/stock.service", loaded=True, cat=text,
+                                   DropInPaths=str(layout.user_dir / "stock.service.d" / "x.conf"), **props)}
+    assert refused(layout, found) == UNPARSED + "stock.service:ExecStart"
 
 
 def test_dollar_dollar_is_a_literal_dollar(layout):

@@ -947,7 +947,7 @@ def advisory(root: Path, *, owners: int) -> dict:
 # --- the plan ----------------------------------------------------------------------------------------
 
 def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftovers: bool, manager_scan,
-                wall, compaction_id: str | None = None) -> dict:
+                wall, compaction_id: str | None = None, named_units: tuple[str, ...] = ()) -> dict:
     """Every read-only check of P1-P14 and the retirement set; the value whose digest the operator acks."""
     stage._slot_name(k_slot)
     head = stage.read_admission_head(root)
@@ -1012,7 +1012,8 @@ def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftov
              "coverage": covered["totals"], "coverage_members": covered["members"], "capacity": {
                  key: room[key] for key in ("binding_bytes", "history_archive_bytes", "state_bytes")},
              "units": scanned, "advisory": advice, "has_env": _lexists(state / ".env"),
-             "retire_prepare_leftovers": retire_prepare_leftovers, "decisions": list(DECISIONS)}
+             "retire_prepare_leftovers": retire_prepare_leftovers, "named_units": sorted(set(named_units)),
+             "decisions": list(DECISIONS)}
     return value
 
 
@@ -1022,28 +1023,29 @@ def plan_digest(value: dict) -> str:
     return stage._digest(stable)
 
 
-def _default_scan(manager=None):
+def _default_scan(manager=None, named: tuple[str, ...] = ()):
     def scan(root: Path, members: list[dict]) -> dict:
         roots = [{"path": member["path"], "identity": member["identity"]} for member in members]
         roots += [{"path": member["state_root"], "identity": member["state_identity"]}
                   for member in members if member.get("state_root")]
         try:
             return units.scan_units(units.strict_systemctl(manager or launcher.ServiceManager()), root=root,
-                                    members=roots, extra_logrotate=_install_logrotate(root))
+                                    members=roots, extra_logrotate=_install_logrotate(root), named=named)
         except units.UnitScanRefusal as refusal:
             _refuse(str(refusal))
     return scan
 
 
 def compact_plan(root, k_slot: str, archive, *, retire_prepare_leftovers: bool = False, scan=None,
-                 wall=time.time) -> dict:
+                 wall=time.time, units: tuple[str, ...] = ()) -> dict:
     """``compact plan``: read-only; returns the plan, its digest and the untouched-list digest."""
     root = checked_root(root)
     with stage.AdmissionController(root):
         if stage.pending_compaction(root) is not None:
             _refuse("runtime_admission_compaction_pending")
         value = _plan_value(root, k_slot, Path(archive), retire_prepare_leftovers=retire_prepare_leftovers,
-                            manager_scan=scan or _default_scan(), wall=wall)
+                            manager_scan=scan or _default_scan(named=tuple(units)), wall=wall,
+                            named_units=tuple(units))
     return {**_plan_view(value), "plan_sha256": plan_digest(value)}
 
 
@@ -1061,7 +1063,8 @@ def _plan_view(value: dict) -> dict:
 
 def compact_start(root, k_slot: str, archive, *, plan_sha256: str, acknowledge_untouched: str,
                   destroy_rollback_states: bool, accept_owner_only_loss: bool = False,
-                  retire_prepare_leftovers: bool = False, scan=None, worker=None, wall=time.time) -> dict:
+                  retire_prepare_leftovers: bool = False, scan=None, worker=None, wall=time.time,
+                  units: tuple[str, ...] = ()) -> dict:
     """``compact start``: P11/P12 acknowledgements, the intent, then C2a-C5 (resumable)."""
     root = checked_root(root)
     if not destroy_rollback_states:
@@ -1070,7 +1073,8 @@ def compact_start(root, k_slot: str, archive, *, plan_sha256: str, acknowledge_u
         if stage.pending_compaction(root) is not None:
             _refuse("runtime_admission_compaction_pending")
         value = _plan_value(root, k_slot, Path(archive), retire_prepare_leftovers=retire_prepare_leftovers,
-                            manager_scan=scan or _default_scan(), wall=wall)
+                            manager_scan=scan or _default_scan(named=tuple(units)), wall=wall,
+                            named_units=tuple(units))
         if plan_digest(value) != plan_sha256:
             _refuse("runtime_admission_compaction_plan_changed")
         if value["untouched_sha256"] != acknowledge_untouched:
@@ -1574,7 +1578,8 @@ def compact_retire(root, compaction_id: str, *, member: int | None = None, accep
         if accept_identity_change:
             log = _accept_identity(root, log, member, wall)
         if not _has(log, "retire_started"):
-            report = _pre_retire(root, log, head, scan or _default_scan(), now=_now(wall),
+            named = tuple(log["intent"].get("named_units", ()))
+            report = _pre_retire(root, log, head, scan or _default_scan(named=named), now=_now(wall),
                                  accept_owner_only_loss=accept_owner_only_loss)
             log = stage.append_compaction_event(root, log, "retire_started", report, at=_now(wall))
         return _finish_retire(root, log, wall, unlink_hook=unlink_hook)
@@ -2008,6 +2013,8 @@ def add_commands(commands) -> None:
     plan.add_argument("k_slot")
     plan.add_argument("--archive", type=Path, required=True)
     plan.add_argument("--retire-prepare-leftovers", action="store_true")
+    plan.add_argument("--unit", action="append", default=[],
+                      help="A user unit that is kza's besides kza-voice, kza-llm-fast and kza-code-index")
     start = sub.add_parser("start")
     start.add_argument("k_slot")
     start.add_argument("--archive", type=Path, required=True)
@@ -2016,6 +2023,7 @@ def add_commands(commands) -> None:
     start.add_argument("--destroy-rollback-states", action="store_true")
     start.add_argument("--accept-owner-only-loss", action="store_true")
     start.add_argument("--retire-prepare-leftovers", action="store_true")
+    start.add_argument("--unit", action="append", default=[])
     for name in ("verify", "retire", "resume", "abort", "allow-run", "status"):
         parser = sub.add_parser(name)
         parser.add_argument("compaction_id", nargs="?" if name == "status" else None)
@@ -2042,13 +2050,15 @@ def run_command(args, *, scan=None, worker=None) -> int:
     try:
         if command == "plan":
             result = compact_plan(args.root, args.k_slot, args.archive,
-                                  retire_prepare_leftovers=args.retire_prepare_leftovers, scan=scan)
+                                  retire_prepare_leftovers=args.retire_prepare_leftovers, scan=scan,
+                                  units=tuple(getattr(args, "unit", ()) or ()))
         elif command == "start":
             result = compact_start(args.root, args.k_slot, args.archive, plan_sha256=args.plan_sha256,
                                    acknowledge_untouched=args.acknowledge_untouched,
                                    destroy_rollback_states=args.destroy_rollback_states,
                                    accept_owner_only_loss=args.accept_owner_only_loss,
-                                   retire_prepare_leftovers=args.retire_prepare_leftovers, scan=scan, worker=worker)
+                                   retire_prepare_leftovers=args.retire_prepare_leftovers, scan=scan, worker=worker,
+                                   units=tuple(getattr(args, "unit", ()) or ()))
         elif command == "verify":
             result = compact_verify(args.root, args.compaction_id, smoke_seconds=args.smoke_seconds)
         elif command == "retire":

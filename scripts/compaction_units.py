@@ -206,7 +206,7 @@ class _Scan:
     """One P14 pass: the member forms, the unit walk and the logrotate parse."""
 
     def __init__(self, systemctl: Callable[..., str], root: Path, members: list[dict], home: Path, uid: int,
-                 environ: dict) -> None:
+                 environ: dict, named: tuple[str, ...] = ()) -> None:
         self.systemctl = systemctl
         self.home = os.path.normpath(os.fspath(home))
         self.environ = environ
@@ -226,6 +226,12 @@ class _Scan:
             self.identities.add((device, inode))
         self.unit_directories = self._unit_directories(uid)
         self._manager_environment: dict | None = None
+        # U3b-0e4 rule (review F9 follow-up): an unresolved reference is tolerated only in a unit nobody
+        # named whose text and own environment mention no kza path, no member and no root.
+        self.named = frozenset({launcher.UNIT, commands.LLM_FAST_UNIT, commands.CODE_INDEX_UNIT, *named})
+        self.markers = commands.kza_markers([os.fspath(root), os.path.join(self.home, "kza"), *self.members])
+        self._texts: dict[str, str] = {}
+        self.tolerated: set[str] = set()
         self.logrotate_configs: list[tuple[str, str]] = []
         self.logrotate_seen: set[str] = set()
         self.glob_entries = 0
@@ -417,7 +423,25 @@ class _Scan:
         self.check(unit, directory)
         return directory
 
-    def _exec(self, unit: str, directive: str, value: str, environment: dict, base: str, rooted: str | None) -> None:
+    def _tolerates_unresolved(self, unit: str, own: dict) -> bool:
+        """The U3b-0e4 leniency (adoption_commands.mentions_markers): not named, and not kza's by its text.
+
+        systemd substitutes an unset ``${NAME}`` with nothing and leaves a
+        ``$NAME`` inside a word to the program (stock IBus, unity and podman
+        units do this). A named unit, or one whose unit text or own
+        environment names a kza path, a member or the root, still refuses.
+        """
+        if unit in self.named:
+            return False
+        if unit not in self._texts:
+            self._texts[unit] = self.call("cat", unit)
+        if commands.mentions_markers(self._texts[unit], own, self.markers):
+            return False
+        self.tolerated.add(unit)
+        return True
+
+    def _exec(self, unit: str, directive: str, value: str, environment: dict, base: str, rooted: str | None,
+              own: dict | None = None) -> None:
         for argv in _exec_argv(unit, directive, value):
             texts = [(token, *self._substitute(token, environment)) for token in argv]
             rotate = next((index for index, (_token, text, _unresolved) in enumerate(texts)
@@ -437,7 +461,7 @@ class _Scan:
                         takes_value = token in LOGROTATE_VALUE_OPTIONS
                     else:
                         config = bearing = True
-                if unresolved:
+                if unresolved and not self._tolerates_unresolved(unit, own or {}):
                     # Review F9: a bare $VAR / ${VAR} is refused too; its value could name a member.
                     _refuse(UNPARSED + unit + ":" + directive)
                 if not bearing:
@@ -504,7 +528,7 @@ class _Scan:
         for directive in EXEC_PROPERTIES:
             for value in shown[directive]:
                 if value.strip():
-                    self._exec(unit, directive, value, environment, base, rooted)
+                    self._exec(unit, directive, value, environment, base, rooted, own)
         self._streams(unit, shown)
 
     # --- the unit walk (E2) ---------------------------------------------------------------------
@@ -721,7 +745,8 @@ class _Scan:
 
 
 def scan_units(systemctl: Callable[..., str], *, root: Path, members: list[dict], home: Path | None = None,
-               uid: int | None = None, extra_logrotate: tuple[Path, ...] = (), environ: dict | None = None) -> dict:
+               uid: int | None = None, extra_logrotate: tuple[Path, ...] = (), environ: dict | None = None,
+               named: tuple[str, ...] = ()) -> dict:
     """P14: refuse when any user unit or logrotate configuration names a retirement member.
 
     Args:
@@ -735,21 +760,26 @@ def scan_units(systemctl: Callable[..., str], *, root: Path, members: list[dict]
         extra_logrotate: Configurations to parse besides those the units
             reference (the launcher install record's ``logrotate_conf``).
         environ: XDG_* lookups (default ``os.environ``).
+        named: Units the operator lists besides kza-voice, kza-llm-fast and
+            kza-code-index; a named unit never gets the unresolved-reference
+            leniency (U3b-0e4 rule).
 
     Returns:
-        ``{"units_scanned", "unit_names", "logrotate_files"}`` (content-free).
+        ``{"units_scanned", "unit_names", "logrotate_files", "tolerated_unresolved"}`` (content-free).
 
     Raises:
         UnitScanRefusal: scan_unavailable, unit_unparsed or unit_path.
     """
     scan = _Scan(systemctl, Path(root), members, Path(home if home is not None else os.path.expanduser("~")),
-                 os.getuid() if uid is None else uid, dict(os.environ if environ is None else environ))
+                 os.getuid() if uid is None else uid, dict(os.environ if environ is None else environ),
+                 tuple(named))
     names = scan.units()
     for path, _unit in scan.logrotate_configs:  # each logrotate run starts from fresh global options
         scan.parse_logrotate(path, {"olddir": None})
     for path in extra_logrotate:
         scan.parse_logrotate(os.path.normpath(os.fspath(path)), {"olddir": None})
-    report = {"units_scanned": len(names), "unit_names": names, "logrotate_files": len(scan.logrotate_seen)}
+    report = {"units_scanned": len(names), "unit_names": names, "logrotate_files": len(scan.logrotate_seen),
+              "tolerated_unresolved": sorted(scan.tolerated)}
     logger.info("[CompactionUnits] scanned %d units, %d logrotate files", report["units_scanned"],
                 report["logrotate_files"])
     return report

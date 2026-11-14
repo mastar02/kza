@@ -671,6 +671,16 @@ def kza_markers(paths) -> tuple[str, ...]:
     return tuple(sorted(set(found)))
 
 
+def mentions_markers(text: str | None, environment: dict | None, markers: tuple[str, ...]) -> bool:
+    """The U3b-0e4 'kza unit' test: unreadable unit text, or text or own environment values naming any marker.
+
+    Shared by the retire/adoption leniency below and by U3b-0c's P14 scan, so
+    both decide 'not kza's' the same way (an unreadable unit is kza's: strict).
+    """
+    values = " ".join((environment or {}).values())
+    return text is None or any(marker in text or marker in values for marker in markers)
+
+
 def _embedded_only(manager, unit: str, markers: tuple[str, ...] | None = None, environment: dict | None = None):
     """name -> True when every ExecStart occurrence of ``$name`` is inside a word (systemd does not expand it).
 
@@ -693,9 +703,7 @@ def _embedded_only(manager, unit: str, markers: tuple[str, ...] | None = None, e
         if "words" not in cache:
             reader = getattr(manager, "user_cat", None)
             text = reader(unit) if reader is not None else None
-            values = " ".join((environment or {}).values())
-            cache["words"] = (None if text is None or any(marker in text or marker in values for marker in markers)
-                              else _exec_start_words(text))
+            cache["words"] = None if mentions_markers(text, environment, markers) else _exec_start_words(text)
         words = cache["words"]
         if words is None:
             return False

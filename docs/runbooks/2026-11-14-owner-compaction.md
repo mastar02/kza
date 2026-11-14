@@ -78,9 +78,14 @@ Requisitos (el comando los verifica y rechaza con un código si falta alguno):
 - ninguna unidad systemd del usuario ni configuración de logrotate nombra un
   miembro (P14). El escaneo falla cerrado si no hay bus de usuario. Las
   referencias `$VAR` / `${VAR}` de las líneas `Exec*` se resuelven con el
-  entorno de la unidad y con `systemctl --user show-environment`; una que no
-  se resuelve rechaza aunque no tenga `/` (salvo las que systemd pone y nunca
-  son rutas, como `$MAINPID`);
+  entorno de la unidad y con `systemctl --user show-environment` (las que
+  systemd pone y nunca son rutas, como `$MAINPID`, pasan). Una que no se
+  resuelve sigue la regla de U3b-0e4: se tolera sólo en una unidad que nadie
+  nombró (ni `kza-voice`, ni `kza-llm-fast`, ni `kza-code-index`, ni las que
+  el operador pase con `--unit`) y cuyo texto y entorno propio no mencionan
+  una ruta de kza, un miembro ni la raíz (así pasan las unidades de IBus,
+  podman y unity de la cuenta). En una unidad nombrada o que menciona kza,
+  rechaza aunque no tenga `/`;
 - ninguna copia del catálogo fuera de la raíz (P8,
   `compaction_copy_outside_root`). Una copia así sólo rechaza mientras
   existe: si es un snapshot viejo que ya no se quiere, **el usuario** decide
@@ -119,7 +124,7 @@ K=<nombre nuevo de slot, nunca usado antes>
 2. Plan (sólo lectura; se puede repetir):
 
    ```bash
-   $ST compact plan "$K" --archive "$H_ARCHIVE" [--retire-prepare-leftovers]
+   $ST compact plan "$K" --archive "$H_ARCHIVE" [--retire-prepare-leftovers] [--unit <unidad de kza> ...]
    ```
 
    Revisar, sin datos personales en la salida:
@@ -141,8 +146,11 @@ K=<nombre nuevo de slot, nunca usado antes>
    ```bash
    $ST compact start "$K" --archive "$H_ARCHIVE" --plan-sha256 <plan_sha256> \
        --acknowledge-untouched <untouched_sha256> --destroy-rollback-states \
-       [--accept-owner-only-loss] [--retire-prepare-leftovers]
+       [--accept-owner-only-loss] [--retire-prepare-leftovers] [--unit <unidad de kza> ...]
    ```
+
+   Las mismas `--unit` que en el plan (forman parte de su digest); el retiro
+   vuelve a escanear con esa lista.
 
    Si el plan cambió desde el paso 2 (otro slot, otra entrada en la raíz),
    rechaza con `runtime_admission_compaction_plan_changed`: repetir el plan.
@@ -335,9 +343,12 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
   desde el plan exigen reconocer el digest de la cobertura del retiro.
 - El retiro recalcula el plan y rechaza cualquier diferencia (más estricto que
   pedir un reconocimiento nuevo).
-- Una referencia `$VAR` sin resolver en una línea `Exec*` rechaza siempre;
-  un valor del entorno del gestor con escapes (`$'...'`) no se decodifica y
-  cuenta como sin resolver.
+- Una referencia `$VAR` sin resolver en una línea `Exec*` rechaza en las
+  unidades nombradas o que mencionan kza, un miembro o la raíz (regla de
+  U3b-0e4, mismo criterio `mentions_markers`); un valor del entorno del gestor
+  con escapes (`$'...'`) no se decodifica y cuenta como sin resolver. La
+  salida del plan lista por nombre las unidades toleradas
+  (`units.tolerated_unresolved`).
 - Un miembro que pasa a contener un enlace simbólico después de `start` no se
   reclasifica: el retiro se detiene sin recorrerlo hasta que el operador quite
   el enlace.
