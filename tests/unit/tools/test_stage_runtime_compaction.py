@@ -189,9 +189,12 @@ def test_full_compaction_on_a_production_like_root(x_archive, tmp_path, monkeypa
     monkeypatch.undo()
     monkeypatch.setattr(compaction, "controller_location", lambda root, members: None)
     assert retired["phase"] == "complete" and retired["destroyed"] == retired["members"] == 8
-    # T-Q4-4: no call ever names a path inside an untouched entry.
-    for _name, path in calls:
+    # T-Q4-4: no call ever names a path inside an untouched entry. The one exception is retire's
+    # recomputed plan (review F7) listing an .activate-* entry's names, the shape probe plan makes too.
+    for name, path in calls:
         if path is not None and os.path.isabs(path):
+            if (name, path) == ("listdir", str(root / ".activate-other")):
+                continue
             assert not any(Path(path).is_relative_to(root / name) for name in untouched_names), path
     assert sorted(os.listdir(root / "slots")) == [".prepare-unproven", "k", "legacy", "old"]
     assert not (root / ".activate-empty").exists()
@@ -657,7 +660,7 @@ def test_identity_change_refuses_until_the_narrow_logged_acceptance(x_archive, t
     intent = stage.read_compaction_log(root, compaction_id)["intent"]
     [member] = [item for item in intent["members"] if item.get("slot") == "a"]
     slot = Path(member["path"])
-    replacement = root / "slots" / ".swap"
+    replacement = tmp_path / "swap"  # moved out of the root (inside it, it would change the plan: F7)
     os.rename(slot, replacement)
     (slot / "state").mkdir(parents=True)  # same name, different inode, nothing member-only inside
     witness = cw.witness(root)
@@ -686,8 +689,9 @@ def test_symlink_container_member_is_never_walked(x_archive, tmp_path):
     _refusal("runtime_admission_compaction_symlink",
              lambda: compaction.compact_retire(root, compaction_id, scan=cw.no_units))
     assert (outside / "keep").read_text() == "keep"
+    assert "retire_started" not in _events(root, compaction_id)  # refused before anything is logged
     (world["states"]["a"]["state"] / "data" / "link").unlink()
-    assert compaction.compact_resume(root, compaction_id)["phase"] == "complete"
+    assert compaction.compact_retire(root, compaction_id, scan=cw.no_units)["phase"] == "complete"
     assert (outside / "keep").read_text() == "keep"
 
 

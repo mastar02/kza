@@ -127,7 +127,8 @@ elif verb in ("start", "stop", "restart", "enable", "disable", "reset-failed", "
         mapped.insert(mapped.index(verb), "--runtime")
 elif verb == "daemon-reload":
     pass
-elif verb not in ("show", "list-unit-files", "list-units", "is-enabled", "is-active", "is-failed", "cat"):
+elif verb not in ("show", "list-unit-files", "list-units", "is-enabled", "is-active", "is-failed", "cat",
+                  "show-environment"):
     refuse("verb not allowed")
 completed = subprocess.run([CONFIG["real"], *mapped], capture_output=True, text=True, stdin=subprocess.DEVNULL)
 output = completed.stdout

@@ -474,6 +474,10 @@ def shim_main(state_dir: str, argv: list[str]) -> int:
         # U3b-0c P14: the rehearsal's units live outside the user unit directories, so the
         # scanner selects none; the real listing is rehearsed by test_linux_compaction_units.
         return 0
+    if argv[:2] == ["--user", "show-environment"]:
+        # U3b-0c P14 (review F9): the manager's environment block, as a user manager prints it.
+        sys.stdout.write("HOME=" + os.path.expanduser("~") + "\nLANG=C.UTF-8\nPATH=/usr/bin:/bin\n")
+        return 0
     if argv[:2] == ["--user", "show"]:
         unit = argv[2]
         names = [argv[index + 1] for index, item in enumerate(argv) if item == "-p"]

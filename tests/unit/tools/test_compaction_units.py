@@ -43,9 +43,11 @@ def unit(fragment: str, *, state: str | None = "static", loaded: bool = False, c
 class FakeUserManager:
     """ServiceManager._run's contract over a dict of units; ``fail`` makes a verb (or verb, unit) exit non-zero."""
 
-    def __init__(self, units: dict, fail: tuple = ()) -> None:
+    def __init__(self, units: dict, fail: tuple = (), manager_environment: dict | None = None) -> None:
         self.units = units
         self.fail = fail
+        self.manager_environment = {"HOME": "/home/kza", "PATH": "/usr/bin:/bin"} \
+            if manager_environment is None else manager_environment
         self.calls: list[tuple] = []
 
     def _run(self, *arguments: str, timeout: float | None = None, strict: bool = False) -> str | None:
@@ -55,6 +57,8 @@ class FakeUserManager:
         target = arguments[2] if len(arguments) > 2 else None
         if verb in self.fail or (verb, target) in self.fail:
             return None
+        if verb == "show-environment":
+            return "".join(f"{name}={value}\n" for name, value in self.manager_environment.items())
         if verb == "list-unit-files":
             assert not any(word.startswith("--state") for word in arguments), arguments  # every state
             return "".join(f"{name} {item['state']} enabled\n" for name, item in self.units.items()
@@ -101,8 +105,8 @@ def layout(tmp_path):
 
 
 def run_scan(layout, units: dict, *, fail: tuple = (), extra: tuple = (), members: list | None = None,
-             environ: dict | None = None) -> dict:
-    manager = FakeUserManager(units, fail)
+             environ: dict | None = None, manager_environment: dict | None = None) -> dict:
+    manager = FakeUserManager(units, fail, manager_environment)
     return units_module.scan_units(units_module.strict_systemctl(manager), root=layout.root,
                                    members=layout.members if members is None else members, home=layout.home,
                                    uid=UID, extra_logrotate=extra, environ=environ or {})
@@ -192,9 +196,43 @@ def test_an_unresolved_reference_in_a_path_token_is_unparsed(layout, argv):
     assert refused(layout, found) == UNPARSED + "kza-tool.service:ExecStart"
 
 
-def test_an_unresolved_reference_in_a_plain_token_passes(layout):
-    found = ours(layout, "kza-tool.service", ExecStartPre=exec_value("/bin/echo", "$Y", "${Z}", "+%Y"))
+@pytest.mark.parametrize("token", ["$Y", "${Z}"])
+def test_an_unresolved_bare_reference_is_unparsed(layout, token):
+    """Review F9: '/usr/bin/rsync -a $SRC /elsewhere' could reach a member through the variable."""
+    found = ours(layout, "kza-tool.service", ExecStartPre=exec_value("/usr/bin/rsync", "-a", token, "/srv/x"))
+    assert refused(layout, found) == UNPARSED + "kza-tool.service:ExecStartPre"
+
+
+def test_a_plain_specifier_and_systemd_provided_variables_pass(layout):
+    found = ours(layout, "kza-tool.service", ExecStartPre=exec_value("/bin/echo", "+%Y"),
+                 ExecReload=exec_value("/bin/kill", "-HUP", "$MAINPID"))
     assert run_scan(layout, found)["units_scanned"] == 1
+
+
+def test_a_manager_environment_variable_naming_a_member_is_a_path_hit(layout):
+    """Review F9: set-environment / the session import reach $VAR substitution too."""
+    found = ours(layout, "kza-tool.service", ExecStart=exec_value("/usr/bin/cp", "-r", "${KZA_MEMBER}", "/srv/x"))
+    hit = {"HOME": str(layout.home), "KZA_MEMBER": str(layout.member)}
+    assert refused(layout, found, manager_environment=hit) == PATH_HIT + "kza-tool.service"
+    elsewhere = {"HOME": str(layout.home), "KZA_MEMBER": str(layout.home / "elsewhere")}
+    assert run_scan(layout, found, manager_environment=elsewhere)["units_scanned"] == 1
+
+
+def test_the_unit_environment_overrides_the_manager_environment(layout):
+    found = ours(layout, "kza-tool.service", Environment=f"X={layout.home}",
+                 ExecStart=exec_value("/bin/tool", "$X"))
+    assert run_scan(layout, found, manager_environment={"X": str(layout.member)})["units_scanned"] == 1
+
+
+def test_an_escaped_manager_value_stays_unresolved(layout):
+    found = ours(layout, "kza-tool.service", ExecStart=exec_value("/bin/tool", "$Q"))
+    assert refused(layout, found, manager_environment={"Q": "$'a\\nb'"}) == \
+        UNPARSED + "kza-tool.service:ExecStart"
+
+
+def test_a_malformed_environment_block_refuses(layout):
+    found = ours(layout, "kza-tool.service", ExecStart=exec_value("/bin/tool"))
+    assert refused(layout, found, manager_environment={"not a name": "x"}) == UNAVAILABLE
 
 
 def test_dollar_dollar_is_a_literal_dollar(layout):
@@ -346,7 +384,7 @@ def test_a_timer_scans_the_service_it_triggers(layout):
     assert refused(layout, found) == PATH_HIT + "vendor-tick.service"
 
 
-@pytest.mark.parametrize("fail", [("list-unit-files",), ("list-units",), ("show",), ("cat",),
+@pytest.mark.parametrize("fail", [("list-unit-files",), ("list-units",), ("show",), ("cat",), ("show-environment",),
                                   (("show", "kza-voice.service"),)])
 def test_any_failing_systemctl_call_refuses(layout, fail):
     """Mutant 'treat a systemctl failure as an empty list'."""
