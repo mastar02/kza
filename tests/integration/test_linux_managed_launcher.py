@@ -33,14 +33,17 @@ Covered here (design: managed-launcher v2/v3, 0d review P12/P13):
 The restore-after-crash refusal (design T-C8) runs on the adopted state in
 tests/integration/test_linux_adoption_window.py (T-A5).
 
-Skipped only off Linux or without a running user manager
-(real_systemd.unavailable). KZA_0E4_EVIDENCE=<dir> records the measurements.
+Skipped only off Linux, without a running user manager, or as root or the
+production account kza (real_systemd.unavailable). KZA_0E4_EVIDENCE=<dir>
+records the measurements. Each module first sweeps kza-rehearsal-* units a
+killed earlier run left behind (real_systemd.sweep_stale); run it under
+nohup so a dropped ssh does not kill it mid-test.
 
 Run test_linux_managed_launcher.py and test_linux_adoption_window.py one
 pytest at a time, never side by side: they share this account's user manager, and any
 ``daemon-reload`` re-arms every activating unit's start timer from
-TimeoutStartSec, dropping its EXTEND_TIMEOUT_USEC extension (T-A8's
-``--timeout-start 10`` start relies on that extension).
+TimeoutStartSec, dropping its EXTEND_TIMEOUT_USEC extension (the no-READY
+rehearsal's ~90 s start relies on that extension).
 """
 from __future__ import annotations
 
@@ -112,6 +115,8 @@ def archive(tmp_path_factory):
 
 @pytest.fixture(scope="module", autouse=True)
 def cleanup_evidence():
+    # A killed earlier run (SIGKILL, OOM, dropped ssh) skipped its finalizers: sweep its units first.
+    real_systemd.record("launcher-stale-sweep", real_systemd.sweep_stale())
     yield
     real_systemd.record("launcher-unit-cleanup", CLEANUPS)
 
@@ -325,7 +330,7 @@ def test_tc8_a_setsid_straggler_in_the_unit_cgroup_is_killed_before_the_seal(arc
 
 
 def test_tc8_no_ready_is_a_real_start_timeout_and_the_child_still_closes(archive, tmp_path, systemd):
-    deployment = RealDeployment(archive, tmp_path, systemd, timeout_start=15)
+    deployment = RealDeployment(archive, tmp_path, systemd, timeout_start=30)  # install-launcher's minimum
     deployment.launcher_child("no_ready", restart=False)
     started = deployment.start()
     activating = systemd.wait_for(deployment.unit, lambda shown: deployment.phase("pid") is not None, 60, *STATUS)
@@ -334,12 +339,12 @@ def test_tc8_no_ready_is_a_real_start_timeout_and_the_child_still_closes(archive
     elapsed = time.monotonic() - started
     assert shown["Result"] == "timeout", shown
     # EXTEND_TIMEOUT_USEC=(probe timeout + 30 s) before activation only lengthens the start: systemd
-    # times out at max(TimeoutStartSec, that message + its window), never at TimeoutStartSec=15 here.
+    # times out at max(TimeoutStartSec, that message + its window), never at TimeoutStartSec=30 here.
     window = 60 + 30
     assert window - 5 <= elapsed < window + 30, elapsed
     assert deployment.phase("stop_received") is not None and deployment.phase("receipt") is not None
     assert deployment.head()["status"] == "closed"  # SIGTERM forwarded, receipt, seal
-    real_systemd.record("tc8-start-timeout", {"timeout_start": 15, "extend_window_seconds": window,
+    real_systemd.record("tc8-start-timeout", {"timeout_start": 30, "extend_window_seconds": window,
                                               "seconds_to_inactive": round(elapsed, 2), "result": shown["Result"],
                                               "exec_main_status": shown["ExecMainStatus"]})
 
@@ -348,11 +353,11 @@ def test_a_daemon_reload_drops_the_start_extension_under_real_systemd(archive, t
     """Found by T-A8: systemd 255 re-arms the start timer from TimeoutStartSec on daemon-reload, so an
     EXTEND_TIMEOUT_USEC extension is lost and a start already past TimeoutStartSec times out at once.
     --timeout-start must cover the whole start; EXTEND is not a guarantee against a reload."""
-    deployment = RealDeployment(archive, tmp_path, systemd, timeout_start=15)
+    deployment = RealDeployment(archive, tmp_path, systemd, timeout_start=30)
     deployment.launcher_child("no_ready", restart=False)
     started = deployment.start()
     systemd.wait_for(deployment.unit, lambda shown: deployment.phase("pid") is not None, 60, *STATUS)
-    while time.monotonic() - started < 25:  # past TimeoutStartSec=15, inside the controller's 90 s EXTEND
+    while time.monotonic() - started < 40:  # past TimeoutStartSec=30, inside the controller's 90 s EXTEND
         time.sleep(0.5)
     assert systemd.raw_show(deployment.unit, "ActiveState")["ActiveState"] == "activating"
     reloaded = time.monotonic()
@@ -360,9 +365,9 @@ def test_a_daemon_reload_drops_the_start_extension_under_real_systemd(archive, t
     shown = deployment.wait_inactive(60)
     after_reload = time.monotonic() - reloaded
     assert shown["Result"] == "timeout", shown
-    assert after_reload < 15, after_reload  # at once (stop budget aside), not at the EXTEND deadline (~65 s on)
+    assert after_reload < 15, after_reload  # at once (stop budget aside), not at the EXTEND deadline (~50 s on)
     assert deployment.phase("stop_received") is not None and deployment.head()["status"] == "closed"
-    real_systemd.record("tc8-reload-drops-extend", {"timeout_start": 15, "reload_after_seconds": 25,
+    real_systemd.record("tc8-reload-drops-extend", {"timeout_start": 30, "reload_after_seconds": 40,
                                                     "seconds_from_reload_to_inactive": round(after_reload, 2),
                                                     "result": shown["Result"]})
 

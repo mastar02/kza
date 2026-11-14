@@ -28,14 +28,17 @@ literal targets, a hot -journal, the symlink container and the 2026-10-29
 backups. The legacy service itself is never started (it would load models):
 W1's stop is a real ``systemctl stop`` of an inactive unit.
 
-Skipped only off Linux or without a running user manager
-(real_systemd.unavailable). KZA_0E4_EVIDENCE=<dir> records the measurements.
+Skipped only off Linux, without a running user manager, or as root or the
+production account kza (real_systemd.unavailable). KZA_0E4_EVIDENCE=<dir>
+records the measurements. Each module first sweeps kza-rehearsal-* units a
+killed earlier run left behind (real_systemd.sweep_stale); run it under
+nohup so a dropped ssh does not kill it mid-test.
 
 Run test_linux_managed_launcher.py and test_linux_adoption_window.py one
 pytest at a time, never side by side: they share this account's user manager, and any
 ``daemon-reload`` re-arms every activating unit's start timer from
-TimeoutStartSec, dropping its EXTEND_TIMEOUT_USEC extension (T-A8's
-``--timeout-start 10`` start relies on that extension).
+TimeoutStartSec, dropping its EXTEND_TIMEOUT_USEC extension (the no-READY
+rehearsal's ~90 s start relies on that extension).
 """
 from __future__ import annotations
 
@@ -115,6 +118,8 @@ def tree(tmp_path_factory):
 
 @pytest.fixture(scope="module", autouse=True)
 def cleanup_evidence():
+    # A killed earlier run (SIGKILL, OOM, dropped ssh) skipped its finalizers: sweep its units first.
+    real_systemd.record("window-stale-sweep", real_systemd.sweep_stale())
     yield
     real_systemd.record("window-unit-cleanup", CLEANUPS)
 
@@ -649,6 +654,13 @@ def test_the_window_in_runbook_order_under_real_systemd(tmp_path, tree, built, s
     evidence["hooks"] = checks[0]
     exits = sorted((w.root / "admission" / "runs").glob("*.exit.json"))
     assert [json.loads(path.read_text())["sealed"] for path in exits] == [True, True]
+    # The runbook's check after W9 (review U3b-0e4 F5), compiled and read-only. The rehearsal child is not
+    # the application, so the fixture's queued index deletion stays open here (gap G1): recorded as found.
+    code, status, refused = w.launcher_cli("completion-status")
+    assert code == 0 and status["head_status"] == "closed", refused
+    assert status["index_delete_jobs"] == 1 and status["complete"] is False
+    assert set(status["conversation_exempt"].values()) <= {0} and not any(status["resurrected"].values())
+    evidence["completion_status_after_w9"] = status
 
     # Day 14 (T-A17, Q5). First the link check alone: with the b0866e8 state gone and no Q5 record,
     # L4 refuses with legacy_state and changes nothing.
@@ -747,8 +759,13 @@ def test_the_window_in_runbook_order_under_real_systemd(tmp_path, tree, built, s
     # start limit (StartLimitBurst=5 in 300 s, DEPLOYMENT): the operator's reset-failed, after putting
     # the adopted bytes back, clears it.
     limits = systemd.raw_show(w.voice, "StartLimitBurst", "StartLimitIntervalUSec")
+    assert limits == {"StartLimitBurst": "5", "StartLimitIntervalUSec": "5min"}, limits
+    before = w.voice_state()["InvocationID"]
+    sixth = w.ctl("start", "kza-voice.service")  # refused by systemd before anything runs (review F11)
+    assert sixth.returncode != 0 and "too often" in sixth.stderr, (sixth.returncode, sixth.stderr)
+    assert w.voice_state()["InvocationID"] == before
     assert w.ctl("reset-failed", "kza-voice.service").returncode == 0
-    evidence["start_limit"] = limits
+    evidence["start_limit"] = dict(limits, sixth_start=sixth.stderr.strip().splitlines()[0][:200])
     shown, seconds = w.start_managed()  # the adopted bytes back: automatic R-b closes it once
     assert shown["ActiveState"] == "active", (shown, w.managed_console()[-3000:])
     assert launcher._recoveries(w.root)[-1]["mode"] == "automatic"
@@ -907,7 +924,8 @@ def test_a_conversation_residue_is_requeued_in_the_compiled_commit(tmp_path, tre
 def test_t_a8_window_timings_and_r_b_on_a_production_sized_state(tmp_path, tree, built, systemd):
     """T-A8 and the --timeout-start input: the compiled steps with full-file hashing on a legacy state grown
     to the probe harness's row counts (events, utterances), then a crash and the automatic R-b under real
-    systemd with TimeoutStartSec=10: only the controller's EXTEND_TIMEOUT_USEC keeps that start alive."""
+    systemd with install-launcher's default TimeoutStartSec (240 s, user decision F1=C): the whole start,
+    R-b included, must fit in half of it with no help from EXTEND_TIMEOUT_USEC (review U3b-0e4 F2)."""
     w = Window(tmp_path.resolve(), tree, built, systemd, adapters=False)
     w.drop_pull()
     data = w.layout.legacy_state / "data"
@@ -940,7 +958,7 @@ def test_t_a8_window_timings_and_r_b_on_a_production_sized_state(tmp_path, tree,
     code, _out, refused = w.stage("adoption-commit", "--confirm", prepared["plan_sha256"], pyc=w.controller,
                                   step="commit")
     assert code == 0, (refused, _units_now(w, prepared["plan_sha256"]))
-    w.install_launcher(timeout_start=10)
+    w.install_launcher()
     w.child("crash", hooks=False, seconds=1.0)
     shown, first_start = w.start_managed()
     assert shown["ActiveState"] in ("active", "failed"), shown
@@ -961,12 +979,12 @@ def test_t_a8_window_timings_and_r_b_on_a_production_sized_state(tmp_path, tree,
                       if path.is_file() and not path.is_symlink())
     measured = {"legacy_sizes": report["sizes"], "adopted_state_bytes": state_bytes, "grow_seconds": round(grown, 1),
                 "dry_run_report_seconds": report["timings"]["seconds"], "steps": w.timings,
-                "first_start_seconds": round(first_start, 2), "timeout_start_seconds": 10,
+                "first_start_seconds": round(first_start, 2), "timeout_start_seconds": launcher.DEFAULT_TIMEOUT_START,
                 "r_b_start_to_ready_seconds": round(ready, 2), "r_b_seconds": round(recovered[0] - budget, 2),
                 "recovery_to_child_started_seconds": round(started_child - recovered[0], 2),
                 "stop_seconds": round(stop_seconds, 2), "free": report["free"]}
     real_systemd.record("t-a8-production-sized", measured)
-    assert ready > 10, measured  # longer than TimeoutStartSec: EXTEND_TIMEOUT_USEC held the start
+    assert ready < launcher.DEFAULT_TIMEOUT_START / 2, measured  # the default covers it without EXTEND
 
 
 def _launcher_events(console: str) -> list[tuple[float, str]]:

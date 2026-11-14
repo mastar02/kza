@@ -47,10 +47,25 @@ ROLES = {"kza-voice.service": "voice", "kza-llm-fast.service": "llm-fast",
 REFUSED = 97
 
 
+FORBIDDEN_ACCOUNTS = ("kza",)  # production runs in kza's user manager: never rehearse there
+
+
 def unavailable() -> str | None:
-    """Why the rehearsals cannot run here (not Linux with a running user manager), or None."""
+    """Why the rehearsals cannot run here (not Linux with a running user manager), or None.
+
+    Never as root or as the production account (review U3b-0e4 F6): the
+    rehearsal units and their daemon-reloads would land in that manager,
+    and a reload drops kza-voice's start extension.
+    """
     if not sys.platform.startswith("linux"):
         return "U3b-0e4 rehearsals need Linux with a user systemd manager"
+    import pwd
+    try:
+        account = pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        account = ""
+    if os.getuid() == 0 or account in FORBIDDEN_ACCOUNTS:
+        return "U3b-0e4 rehearsals never run as root or as the production account"
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     if not runtime or not os.path.isdir(runtime) or shutil.which("systemctl") is None:
         return "U3b-0e4 rehearsals need a user systemd manager (XDG_RUNTIME_DIR, systemctl)"
@@ -300,6 +315,42 @@ class UserSystemd:
                                                                       if call.get("refused")],
                         "guard_breaches": self.guard_breaches()}
         return self.cleaned
+
+
+def sweep_stale() -> dict:
+    """Remove every kza-rehearsal-* unit a killed pytest left in this account's user manager (review U3b-0e4
+    F7): stop, disable --runtime, delete the files, drop-ins and .wants, reset-failed, daemon-reload.
+
+    Called once per module before any rehearsal of that module exists, so
+    every rehearsal unit found is stale. The two modules never run side by
+    side (they share this manager), so another live run is not expected.
+    """
+    if unavailable() is not None:
+        return {"swept": [], "paths": []}
+    real = shutil.which("systemctl")
+    unit_dir = Path(os.environ["XDG_RUNTIME_DIR"]) / "systemd" / "user"
+    paths = sorted(unit_dir.glob("kza-rehearsal-*")) if unit_dir.is_dir() else []
+    loaded = subprocess.run([real, "--user", "list-units", "--all", "--plain", "--no-legend", "kza-rehearsal-*"],
+                            capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL).stdout
+    units = sorted({path.name for path in paths if not path.name.endswith((".d", ".wants"))}
+                   | {word for line in loaded.splitlines() for word in line.split()[:2]
+                      if word.startswith("kza-rehearsal-")})
+    for unit in units:
+        for verb in (("stop",), ("disable", "--runtime")):
+            subprocess.run([real, "--user", *verb, unit], capture_output=True, timeout=180, stdin=subprocess.DEVNULL)
+    for path in paths:
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink(missing_ok=True)
+    for unit in units:
+        subprocess.run([real, "--user", "reset-failed", unit], capture_output=True, timeout=60,
+                       stdin=subprocess.DEVNULL)
+    if units or paths:
+        subprocess.run([real, "--user", "daemon-reload"], capture_output=True, timeout=120, stdin=subprocess.DEVNULL)
+        if unit_dir.is_dir() and not any(unit_dir.iterdir()):
+            unit_dir.rmdir()
+    return {"swept": units, "paths": [path.name for path in paths]}
 
 
 def evidence_directory() -> Path | None:
