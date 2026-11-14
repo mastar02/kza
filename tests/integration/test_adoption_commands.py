@@ -1814,18 +1814,67 @@ def test_a_variable_inside_one_argument_is_left_to_the_program(adapter_world, te
         assert not (world.layout.models_root / "lora_adapters").exists()
 
 
-def test_an_embedded_variable_never_hides_a_resolved_path(adapter_world):
-    """A resolved name still expands next to an embedded one; the unit then reaches a LoRA root."""
+@pytest.mark.parametrize("script", ["home", "script_variable", "manager_environment", "no_marker"])
+@pytest.mark.parametrize("who", ["listed", "llm_fast"])
+def test_a_named_unit_still_refuses_an_embedded_name_its_shell_expands(adapter_world, script, who):
+    """Review U3b-0e4 F1: the shell expands $HOME, its own variables and the manager environment, so a
+    named unit (kza-voice, kza-llm-fast, any --unit) never gets the embedded-name leniency."""
     world = adapter_world
-    env = world.base / "box.env"
-    env.write_text("LORA=" + os.fspath(world.layout.models_root / "lora_adapters" / "custom_adapter") + "\n")
-    world.units.properties["kza-llm-box.service"] = {
+    models = os.fspath(world.layout.models_root)
+    body = {"home": "exec llama-server -m /m.gguf --lora $HOME/kza/models/lora_adapters/custom_adapter",
+            "script_variable": "D=" + models + "; exec llama-server -m /m.gguf --lora $D/lora_adapters/custom_adapter",
+            "manager_environment": "exec llama-server -m /m.gguf $EXTRA_ARGS",
+            # Named is enough: no needle and no kza path in the text, still strict.
+            "no_marker": "exec /usr/bin/tool $TOOL_ARGS"}[script]
+    unit = commands.LLM_FAST_UNIT if who == "llm_fast" else "kza-llm-box.service"
+    world.units.properties[unit] = {
+        "LoadState": "loaded", "ActiveState": "active", "Environment": "", "WorkingDirectory": "",
+        "ExecStart": "{ path=sh ; argv[]=sh -c " + body + " ; ignore_errors=no }",
+        "Text": "# /home/kza/.config/systemd/user/" + unit + "\n[Service]\nExecStart=sh -c '" + body + "'\n"}
+    before = tree_manifest(world.layout.models_root)
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_retire_unit_unresolved:" + unit + "$"):
+        world.retire(units=("kza-llm-box.service",) if who == "listed" else ())
+    assert tree_manifest(world.layout.models_root) == before
+    assert (world.layout.models_root / "lora_adapters").exists()
+
+
+@pytest.mark.parametrize("text", ["exec /usr/bin/tool $X {models}/whisper-v3-turbo",
+                                  "exec /usr/bin/tool $X --lora /srv/a",
+                                  "exec /usr/bin/llama-server $X"])
+def test_an_unlisted_unit_mentioning_kza_gets_no_leniency(adapter_world, text):
+    """An unlisted unit whose text names a kza path or a LoRA needle refuses its unresolved embedded name
+    (strict, as before 8d89cf9); only a unit that is not kza's keeps it (the stock IBus/unity units)."""
+    world = adapter_world
+    body = text.format(models=os.fspath(world.layout.models_root))
+    world.units.properties["tool.service"] = {
+        "LoadState": "loaded", "Environment": "", "WorkingDirectory": "",
+        "ExecStart": "{ path=sh ; argv[]=sh -c " + body + " ; ignore_errors=no }",
+        "Text": "[Service]\nExecStart=sh -c '" + body + "'\n"}
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_retire_unit_unresolved:tool.service$"):
+        world.retire()
+    assert (world.layout.models_root / "lora_adapters").exists()
+
+
+def test_an_unlisted_unit_whose_environment_names_kza_gets_no_leniency(adapter_world):
+    """A resolved value naming the models root makes the unit kza's, so its embedded name is not lenient."""
+    world = adapter_world
+    env = world.base / "tool.env"
+    env.write_text("WHERE=" + os.fspath(world.layout.models_root / "whisper-v3-turbo") + "\n")
+    world.units.properties["tool.service"] = {
         "LoadState": "loaded", "Environment": "", "WorkingDirectory": "",
         "EnvironmentFiles": [os.fspath(env) + " (ignore_errors=no)"],
-        "ExecStart": "{ path=sh ; argv[]=sh -c exec llama-server $EXTRA --lora ${LORA} ; ignore_errors=no }",
-        "Text": "[Service]\nExecStart=sh -c 'exec llama-server $EXTRA --lora ${LORA}'\n"}
-    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_retire_unit_under_root:kza-llm-box.service$"):
-        world.retire(units=("kza-llm-box.service",))
+        "ExecStart": "{ path=sh ; argv[]=sh -c exec /usr/bin/tool $X ; ignore_errors=no }",
+        "Text": "[Service]\nExecStart=sh -c 'exec /usr/bin/tool $X'\n"}
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_retire_unit_unresolved:tool.service$"):
+        world.retire()
+
+
+def test_kza_markers_include_home_relative_forms(tmp_path, monkeypatch):
+    """'$HOME/kza/models' shows only 'kza/models' in a unit's text: that form is a marker too."""
+    monkeypatch.setenv("HOME", os.fspath(tmp_path))
+    markers = commands.kza_markers([tmp_path / "kza" / "models", "/srv/elsewhere"])
+    assert {"kza/models", os.fspath(tmp_path / "kza" / "models"), "/srv/elsewhere"} <= set(markers)
+    assert {"llama-server", "--lora", "lora_adapters"} <= set(markers)
 
 
 def test_the_unit_listing_reads_real_list_unit_files_output(tmp_path):

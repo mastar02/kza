@@ -479,6 +479,28 @@ def test_anything_pointing_at_the_copies_refuses(world, case, problem):
     assert legacy_state(world).is_dir() and not launcher.legacy_retirement_directory(world.root).exists()
 
 
+_EMBEDDED = "exec /usr/bin/tool $TOOL_ARGS"
+
+
+@pytest.mark.parametrize("unit, refused", [
+    (commands.LLM_FAST_UNIT, True),   # named: its shell expands $TOOL_ARGS, so Q5 cannot read it (review F1)
+    (VOICE, True),
+    ("ibus-like.service", False),     # a stock unit that is not kza's: the program's own variable
+])
+def test_the_q5_scan_keeps_the_embedded_name_leniency_off_for_named_units(world, unit, refused):
+    adopted(world)
+    world.units.properties.setdefault(unit, {}).update({
+        "LoadState": "loaded", "Environment": "", "WorkingDirectory": "",
+        "ExecStart": "{ path=sh ; argv[]=sh -c " + _EMBEDDED + " ; ignore_errors=no }",
+        "Text": "[Service]\nExecStart=sh -c '" + _EMBEDDED + "'\n"})
+    if refused:
+        with pytest.raises(commands.CommandRefusal, match="^runtime_admission_retire_unit_unresolved:" + unit + "$"):
+            dry(world)
+        assert legacy_state(world).is_dir()
+    else:
+        assert dry(world)["eligible"] is True
+
+
 @pytest.mark.parametrize("key", ["models_root", "venv", "r1_slot", "head_state"])
 def test_the_exclusions_refuse_before_any_deletion(world, monkeypatch, key):
     adopted(world)

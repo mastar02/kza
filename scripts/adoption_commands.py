@@ -657,20 +657,45 @@ def _exec_start_words(text: str | None) -> list[list[str]] | None:
         return None
 
 
-def _embedded_only(manager, unit: str):
+def kza_markers(paths) -> tuple[str, ...]:
+    """What makes a unit kza's for the embedded-name leniency (review U3b-0e4 F1): the LoRA needles and
+    each kza path, as given, resolved and relative to the home directory (``$HOME/kza/models`` shows
+    only ``kza/models`` in the unit text)."""
+    home = os.path.expanduser("~").rstrip("/") + "/"
+    found = list(_UNIT_NEEDLES)
+    for path in paths:
+        for form in {os.fspath(path), os.path.realpath(path)}:
+            found.append(form)
+            if form.startswith(home) and len(form) > len(home):
+                found.append(form[len(home):])
+    return tuple(sorted(set(found)))
+
+
+def _embedded_only(manager, unit: str, markers: tuple[str, ...] | None = None, environment: dict | None = None):
     """name -> True when every ExecStart occurrence of ``$name`` is inside a word (systemd does not expand it).
 
     systemd substitutes ``${NAME}`` anywhere and ``$NAME`` only as a whole
     word; ``$$`` is a literal dollar (systemd.service, "Command lines"). A
     name that occurs nowhere in the unit text, or a unit whose text cannot be
     read, is never treated as embedded: the strict refusal stands.
+
+    The program is usually a shell that expands the name itself (``$HOME``,
+    the manager environment, a variable the script sets), so the leniency is
+    only for units that are not kza's (review U3b-0e4 F1): ``markers`` None
+    (a named unit) never allows it, nor does a unit whose text or resolved
+    environment mentions any marker (kza_markers).
     """
     cache: dict = {}
 
     def embedded(name: str) -> bool:
+        if markers is None:
+            return False
         if "words" not in cache:
             reader = getattr(manager, "user_cat", None)
-            cache["words"] = _exec_start_words(reader(unit) if reader is not None else None)
+            text = reader(unit) if reader is not None else None
+            values = " ".join((environment or {}).values())
+            cache["words"] = (None if text is None or any(marker in text or marker in values for marker in markers)
+                              else _exec_start_words(text))
         words = cache["words"]
         if words is None:
             return False
@@ -726,7 +751,7 @@ def _container_volumes(unit: str, argv: list[str]) -> list[str]:
     return hosts
 
 
-def unit_view(manager, unit: str) -> dict:
+def unit_view(manager, unit: str, *, markers: tuple[str, ...] | None = None) -> dict:
     """One user unit as retire reads it: LoadState, expanded argv tokens, env file keys, container binds.
 
     ExecStart is shown unexpanded by systemd: ${VAR} and $VAR are resolved
@@ -739,6 +764,11 @@ def unit_view(manager, unit: str) -> dict:
     token only when set to a path; empty (the user manager's default, the
     home directory) and '~' are used to resolve relative arguments but are
     not themselves a reference to the models or the checkout.
+
+    ``markers`` (kza_markers) is given only for units nobody named: then an
+    unresolved ``$NAME`` inside one argument of a unit that mentions no
+    marker is left to its program (stock IBus/unity units, U3b-0e4). A named
+    unit (markers None) refuses it, as before (review U3b-0e4 F1).
     """
     shown = manager.user_show(unit, ("LoadState", "Environment", "WorkingDirectory"))
     commands_shown = manager.user_show_all(unit, "ExecStart")
@@ -761,7 +791,7 @@ def unit_view(manager, unit: str) -> dict:
         environment.update(values)
         keys += names
     tokens, binds, raw = [], [], []
-    embedded = _embedded_only(manager, unit)
+    embedded = _embedded_only(manager, unit, markers, environment)
     for value in commands_shown:
         if not value:
             continue
@@ -823,6 +853,7 @@ def discover_units(manager, listed: tuple[str, ...], layout) -> tuple[list[dict]
     models = os.path.realpath(layout.models_root)
     checkout = os.path.realpath(layout.legacy_checkout)
     named = sorted({launcher.UNIT, LLM_FAST_UNIT, *listed})
+    markers = kza_markers([layout.models_root, layout.legacy_checkout, layout.container, layout.legacy_state])
     views = {}
     for unit in named:
         view = unit_view(manager, unit)
@@ -832,7 +863,7 @@ def discover_units(manager, listed: tuple[str, ...], layout) -> tuple[list[dict]
     for unit in sorted(set(names) - set(named)):
         if not unit.endswith(".service"):  # templates are read too: one that shows as loaded and
             continue                       # names the models must be listed (stricter than skipping)
-        view = unit_view(manager, unit)
+        view = unit_view(manager, unit, markers=markers)
         if view["load_state"] == "loaded" and _relevant(view, models, checkout):
             _refuse("runtime_admission_retire_unit_not_listed:" + unit)
     summary = {"discovered": len(names), "checked": named,
@@ -2060,10 +2091,11 @@ def legacy_references(root: Path, *, roots: list[str], skip: list[Path], head_st
     units = manager.user_units()
     if units is None:
         _refuse("runtime_admission_adoption_units_unavailable")
+    markers = kza_markers([*roots, root])
     for unit in sorted(units):
         if not unit.endswith(".service"):
             continue
-        view = unit_view(manager, unit)
+        view = unit_view(manager, unit, markers=None if unit in (launcher.UNIT, LLM_FAST_UNIT) else markers)
         if view["load_state"] != "loaded":
             continue
         paths = [candidate for token in view["tokens"] for candidate in _path_candidates(token, Path(view["base"]))]
