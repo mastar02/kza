@@ -565,6 +565,25 @@ def test_a_pending_index_deletion_is_not_a_resurrection(tmp_path):
     assert launcher.resurrection_counts(state)["fact"] == 1
 
 
+def test_a_pending_index_deletion_never_exempts_the_fact_row(tmp_path):
+    """Found by U3b-0e4 (T-A5): the pending job exempts only the embedding; a deleted fact row turned
+    live again is a resurrection whatever the index queue holds."""
+    from src.memory.fact_ledger import MemoryReviewer
+    from tests.mocks.memory_sources import memory_source
+    state = tmp_path / "state"
+    (state / "data").mkdir(parents=True)
+    memory = _memory(state, delete_error=RuntimeError("synthetic index outage"))
+    gone = memory.store_fact("Synthetic deleted fact", "fact", sources=(memory_source(),))
+    assert memory.delete_fact(gone, MemoryReviewer("synthetic-reviewer")) is True
+    asyncio.run(memory.aclose())
+    assert launcher.resurrection_counts(state)["fact"] == 0
+    with closing(sqlite3.connect(state / "data" / "privacy.db")) as db, db:
+        assert db.execute("SELECT fact_id FROM index_jobs").fetchall() == [(gone,)]
+        db.execute("UPDATE facts SET state='confirmed' WHERE id=?", (gone,))
+    assert launcher.resurrection_counts(state)["fact"] == 1
+    assert launcher.resurrection_detail(state)["fact"] == {"facts": 1, "semantic_index": 0}
+
+
 def test_resurrection_without_any_ledger_counts_nothing(tmp_path):
     state = tmp_path / "state"
     (state / "data").mkdir(parents=True)

@@ -1298,7 +1298,9 @@ def _resurrection_scan(state: Path, descriptor_root: Path | None, residue: dict 
     detail = {"conversation": {participant: len(found) for participant, found in sorted(counted.items())},
               "conversation_exempt": {participant: len(found) for participant, found in sorted(exempt.items())}}
     for family in ("fact", "voice_profile"):
-        found = {name: {candidate for candidate in values - (pending_index if family == "fact" else set())
+        # Only the embedding may outlive a deletion whose index job is pending: the
+        # facts row turns 'deleted' in the deletion's own transaction (review P1).
+        found = {name: {candidate for candidate in values - (pending_index if name == "semantic_index" else set())
                         if recorded(candidate, _RESURRECTION_KINDS[family])}
                  for name, values in sources[family].items()}
         counts[family] = len(set().union(*found.values()))
