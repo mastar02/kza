@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import threading
 
 
 def _variable(path):
@@ -99,6 +100,46 @@ def _bridge(control):
     return module
 
 
+def serialize_older_history(patch, admission, diagnostics) -> bool:
+    """Give an older application the history/writer-probe exclusion of 431e44e (G01).
+
+    An application whose ``src.main`` runs its own admission never reaches the
+    bridge below, so before 3fc5ac6/431e44e its historical diagnostic
+    maintenance can hold a delegated source's catalog flock
+    (``metrics_policy_v1.jsonl.sqlite3.lock``) while its own admission probes
+    that source: ``runtime_admission_writer_active`` from the application's
+    own serialized worker. Current code holds one mutex around both. This
+    backports only that mutex: the original probe still runs unchanged and
+    still refuses every holder other than this process's historical worker.
+
+    Args:
+        patch: The phase's MonkeyPatch; its undo removes both wrappers.
+        admission: The application's own ``src.core.runtime_admission``.
+        diagnostics: The application's own ``src.obs.diagnostic_erasure``.
+
+    Returns:
+        True when installed; False for an application that already has the gate.
+    """
+    if hasattr(diagnostics, "diagnostic_history_validation_gate"):
+        return False
+    stage = admission._stage()
+    gate = threading.RLock()
+    probe = stage._assert_writers_closed
+    history = diagnostics.DiagnosticServices._invoke_history
+
+    def serialized_probe(state):
+        with gate:
+            return probe(state)
+
+    def serialized_history(self, path, conversation):
+        with gate:
+            return history(self, path, conversation)
+
+    patch.setattr(stage, "_assert_writers_closed", serialized_probe)
+    patch.setattr(diagnostics.DiagnosticServices, "_invoke_history", serialized_history)
+    return True
+
+
 @asynccontextmanager
 async def managed_application_graph(root, patch, clock, *, control, **kwargs):
     """Run the real older factory with production admission and owned close."""
@@ -106,6 +147,10 @@ async def managed_application_graph(root, patch, clock, *, control, **kwargs):
     from tests.mocks.restore_application_graph import application_graph
 
     admission = _bridge(control)
+    if hasattr(main, "verify_runtime_admission"):
+        import src.core.runtime_admission as own_admission
+        import src.obs.diagnostic_erasure as own_diagnostics
+        serialize_older_history(patch, own_admission, own_diagnostics)
 
     async def build(config, *, shutdown, factories):
         if hasattr(main, "verify_runtime_admission"):
