@@ -264,6 +264,13 @@ def test_managed_properties_need_the_exact_exit_status_set_and_the_rendered_exec
     later = fake_systemd.show_properties(fake_systemd.parse_dropins([text, restored]))
     assert launcher.verify_managed_properties(later, text, root) == ["ExecStart", "WorkingDirectory"]
     assert launcher.verify_managed_properties(None, text, root) == ["properties_unavailable"]
+    # Review U3b-0e4 F3: TimeoutStartSec/TimeoutStopSec are read back; a later drop-in (systemctl edit)
+    # or a value systemd rejected (the base unit's 120 s then applies) is a mismatch.
+    edited = fake_systemd.show_properties(fake_systemd.parse_dropins([text, "[Service]\nTimeoutStartSec=120\n"]))
+    assert launcher.verify_managed_properties(edited, text, root) == ["TimeoutStartUSec"]
+    assert launcher.verify_managed_properties(dict(shown, TimeoutStartUSec="4min", TimeoutStopUSec="0"), text,
+                                              root) == ["TimeoutStartUSec", "TimeoutStopUSec"]
+    assert launcher.verify_managed_properties(dict(shown, TimeoutStartUSec="3min"), text, root) == []  # 180 s
 
 
 def test_console_logrotate_stanza_is_rendered_and_detected(tmp_path):
@@ -599,6 +606,43 @@ def test_a_pending_index_deletion_never_exempts_the_fact_row(tmp_path):
         db.execute("UPDATE facts SET state='confirmed' WHERE id=?", (gone,))
     assert launcher.resurrection_counts(state)["fact"] == 1
     assert launcher.resurrection_detail(state)["fact"] == {"facts": 1, "semantic_index": 0}
+
+
+def test_completion_status_counts_open_privacy_work_without_content(tmp_path, monkeypatch):
+    """Review U3b-0e4 F5: after W9 the re-queued and relocated steps, pending index deletions and exempt
+    occurrences must all be 0; the command reads images only and prints counts, never ids or text."""
+    root = tmp_path / "root"
+    state = tmp_path / "state"
+    (state / "data").mkdir(parents=True)
+    monkeypatch.setattr(stage, "read_admission_head", lambda path: {"status": "closed", "binding_id": "b"})
+    monkeypatch.setattr(stage, "read_binding", lambda path, identity: {"state_root": os.fspath(state)})
+    with closing(sqlite3.connect(state / "data" / "privacy.db")) as db, db:
+        db.execute("CREATE TABLE conversation_tombstones (conversation_id TEXT PRIMARY KEY)")
+        db.executescript(ERASURE_SCHEMA)
+        db.execute("INSERT INTO erasure_targets VALUES ('t-train','collectors',1,?)",
+                   (json.dumps({"kind": "legacy_training", "path": "/secret/lora"}),))
+        db.execute("INSERT INTO erasure_targets VALUES ('t-events','events',1,'{}')")
+        db.execute("INSERT INTO conversation_erasures VALUES ('o1','c-secret',0,'synthetic')")
+        db.executemany("INSERT INTO erasure_steps(operation_id, participant, target_id, version, state)"
+                       " VALUES (?,?,?,1,?)", [("o1", "collectors", "t-train", "pending"),
+                                               ("o1", "events", "t-events", "complete")])
+        db.execute("CREATE TABLE policy_index_deletions (target_id TEXT, fact_id TEXT, state TEXT)")
+        db.execute("INSERT INTO policy_index_deletions VALUES ('t-events','f-secret','pending')")
+        db.execute("CREATE TABLE index_jobs (fact_id TEXT, operation TEXT)")
+        db.executemany("INSERT INTO index_jobs VALUES (?,?)", [("f-secret", "delete"), ("f-new", "upsert")])
+    status = launcher.completion_status(root)
+    assert status["erasure_steps_not_complete"] == {"collectors": 1}
+    assert status["legacy_training_steps_not_complete"] == 1
+    assert status["policy_index_deletions_not_complete"] == 1 and status["index_delete_jobs"] == 1
+    assert status["complete"] is False and status["head_status"] == "closed"
+    assert "secret" not in json.dumps(status)
+    with closing(sqlite3.connect(state / "data" / "privacy.db")) as db, db:
+        db.execute("UPDATE erasure_steps SET state='complete'")
+        db.execute("UPDATE policy_index_deletions SET state='complete'")
+        db.execute("DELETE FROM index_jobs WHERE operation='delete'")
+    status = launcher.completion_status(root)
+    assert status["complete"] is True and status["erasure_steps_not_complete"] == {}
+    assert set(status["conversation_exempt"].values()) <= {0}
 
 
 def test_resurrection_without_any_ledger_counts_nothing(tmp_path):

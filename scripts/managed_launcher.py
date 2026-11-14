@@ -94,6 +94,9 @@ RECOVERY_EXTEND_SECONDS = 120
 # 180 s, almost nine times the measured R-b start: room for a state several times
 # larger and a loaded host. EXTEND stays as the extra margin.
 DEFAULT_TIMEOUT_START = 240.0
+# --timeout-start must be whole seconds in this range (review U3b-0e4 F3): 0 would disable the
+# start timeout and an exponent from :g would be rejected by systemd, silently keeping the base value.
+TIMEOUT_START_RANGE = (30, 3600)
 CRASH_BUDGET_SECONDS = 24 * 3600
 STATUS_LIMIT = 200
 NOTIFY_FD_ENV = "KZA_NOTIFY_FD"
@@ -2039,6 +2042,53 @@ def adopt(root: Path, *, confirm: str, regressions: list[str], boot_id_path: str
                            "resurrected": decision.report.get("resurrected", {})}}
 
 
+def completion_status(root: Path) -> dict:
+    """Content-free counts of privacy work still open in the head's state (review U3b-0e4 F5).
+
+    For the runbook's check after W9: the adoption re-queues residue and
+    relocates legacy_training steps, and the first managed runs must finish
+    them. A pending step exempts its occurrences from the resurrection check,
+    so they would otherwise stay unnoticed. Read only: every database is read
+    through a private image (``mode=ro`` then backup), so it can run with the
+    service up. ``complete`` is True only when every count is 0.
+    """
+    root = Path(root).resolve()
+    head = stage.read_admission_head(root)
+    if head is None:
+        raise LauncherRefusal("runtime_admission_launcher_no_managed_head")
+    state = Path(stage.read_binding(root, head["binding_id"])["state_root"])
+    steps: dict[str, int] = {}
+    training = index_deletions = index_jobs = 0
+    for path in _sqlite_files(state):
+        with stage._database_image(path) as db:
+            names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if {"erasure_steps", "erasure_targets"} <= names:
+                for participant, descriptor in db.execute(
+                        "SELECT s.participant, t.descriptor FROM erasure_steps s LEFT JOIN erasure_targets t"
+                        " ON t.id = s.target_id WHERE s.state != 'complete'"):
+                    steps[participant] = steps.get(participant, 0) + 1
+                    try:
+                        kind = json.loads(descriptor or "{}").get("kind")
+                    except (ValueError, AttributeError):
+                        kind = None
+                    training += kind == "legacy_training"
+            if "policy_index_deletions" in names:
+                index_deletions += db.execute(
+                    "SELECT COUNT(*) FROM policy_index_deletions WHERE state != 'complete'").fetchone()[0]
+            if "index_jobs" in names:
+                index_jobs += db.execute("SELECT COUNT(*) FROM index_jobs WHERE operation='delete'").fetchone()[0]
+    detail = resurrection_detail(state)
+    exempt = sum(detail["conversation_exempt"].values())
+    resurrected = {family: sum(values.values()) for family, values in detail.items() if family != "conversation_exempt"}
+    complete = (not steps and training == 0 and index_deletions == 0 and index_jobs == 0 and exempt == 0
+                and not any(resurrected.values()))
+    return {"head_status": head["status"], "erasure_steps_not_complete": dict(sorted(steps.items())),
+            "legacy_training_steps_not_complete": training,
+            "policy_index_deletions_not_complete": index_deletions, "index_delete_jobs": index_jobs,
+            "conversation_exempt": detail["conversation_exempt"], "resurrected": resurrected,
+            "complete": complete}
+
+
 # --------------------------------------------------------------------------
 # install-controller (L3 = A)
 
@@ -2292,6 +2342,10 @@ def verify_managed_properties(shown: dict | None, text: str, root: Path) -> list
         return ["properties_unavailable"]
     expected = {"Type": "notify", "NotifyAccess": "main", "KillMode": "mixed"}
     mismatched = sorted(key for key, value in expected.items() if shown.get(key) != value)
+    for key, directive in (("TimeoutStartUSec", "TimeoutStartSec"), ("TimeoutStopUSec", "TimeoutStopSec")):
+        rendered = re.search(r"^" + directive + r"=(\S+)\s*$", text, re.M)  # read back (review U3b-0e4 F3)
+        if rendered is None or parse_timespan(shown.get(key)) != parse_timespan(rendered.group(1)):
+            mismatched.append(key)
     if set((shown.get("RestartPreventExitStatus") or "").split()) != {"69", "78"}:
         mismatched.append("RestartPreventExitStatus")
     try:
@@ -2335,6 +2389,10 @@ def install_launcher(root: Path, *, unit_dir: Path, template: str, settings: Lau
         raise LauncherRefusal("runtime_admission_launcher_console_under_slots")
     if settings.stop_grace + 30 > settings.timeout_stop:
         raise LauncherRefusal("runtime_admission_launcher_stop_budget")
+    start = settings.timeout_start
+    if not (type(start) in (int, float) and math.isfinite(start) and float(start).is_integer()
+            and TIMEOUT_START_RANGE[0] <= start <= TIMEOUT_START_RANGE[1]):
+        raise LauncherRefusal("runtime_admission_launcher_timeout_start")
     _require_inactive(manager)
     with stage.AdmissionController(root, allow_open_head=True):
         head = stage.read_admission_head(root)
@@ -2379,7 +2437,7 @@ def install_launcher(root: Path, *, unit_dir: Path, template: str, settings: Lau
         stage._atomic_record(_records(root, "launcher", f"install-{stamp}.json"), record, immutable=True)
     reloaded = manager.daemon_reload()
     shown = manager.user_show(UNIT, ("Type", "NotifyAccess", "KillMode", "RestartPreventExitStatus", "ExecStart",
-                                     "WorkingDirectory", "DropInPaths"))
+                                     "WorkingDirectory", "TimeoutStartUSec", "TimeoutStopUSec", "DropInPaths"))
     # Any mismatch fails the command (78) and leaves managed.conf in place for the operator.
     mismatched = verify_managed_properties(shown, text, root)
     return {"managed_conf": str(managed), "record": f"install-{stamp}.json", "reloaded": reloaded,
@@ -2645,7 +2703,7 @@ def _legacy_mismatches(record: dict, shown: dict | None, runtime: Path, state: P
 
 
 COMMANDS = ("serve", "adopt", "install-controller", "install-launcher", "uninstall-launcher", "stop-timeout-dropin",
-            "console-logrotate")
+            "console-logrotate", "completion-status")
 
 
 def add_commands(commands) -> None:
@@ -2690,6 +2748,8 @@ def add_commands(commands) -> None:
     dropin = commands.add_parser("stop-timeout-dropin", help="Print the sudo drop-in text (never writes it)")
     dropin.add_argument("--unit-timeout-stop", type=float, required=True)
     dropin.add_argument("--chain-extra", type=float, default=0.0)
+    commands.add_parser("completion-status", help="Read-only counts of re-queued privacy work still open "
+                                                  "(after W9: every count must be 0)")
     rotate = commands.add_parser("console-logrotate",
                                  help="Print the logrotate stanza for the console log (kza applies it)")
     rotate.add_argument("--console-log", required=True)
@@ -2729,6 +2789,8 @@ def run_command(args) -> int:
                                         phrase=args.phrase, legacy_slot=args.legacy_slot, manager=ServiceManager())
         elif args.command == "console-logrotate":
             result = {"stanza": render_console_logrotate(args.console_log)}
+        elif args.command == "completion-status":
+            result = completion_status(args.root)
         else:
             result = render_stop_timeout_dropin(os.getuid(), args.unit_timeout_stop, args.chain_extra)
     except LauncherRefusal as refusal:

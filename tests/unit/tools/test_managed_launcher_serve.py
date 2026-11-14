@@ -685,11 +685,16 @@ def test_install_launcher_renders_managed_conf_and_records_pre_managed_propertie
     ("active", "runtime_admission_launcher_unit_active"),
     ("console", "runtime_admission_launcher_console_under_slots"),
     ("budget", "runtime_admission_launcher_stop_budget"),
+    # Review U3b-0e4 F3: whole seconds in 30..3600; 0 disables the timeout, the rest render badly.
+    *((("timeout_start", value), "runtime_admission_launcher_timeout_start")
+      for value in (0, -1, 29, 3601, 240.5, float("inf"), float("nan"), 1e6)),
 ])
 def test_install_launcher_refusals(root, tmp_path, problem, code):
     unit_dir, manager = _systemctl(tmp_path, active="active" if problem == "active" else "inactive")
-    settings = _settings(root, **({"console_log": str(root / "slots" / "s" / "state" / "console.log")}
-                                  if problem == "console" else {"timeout_stop": 100} if problem == "budget" else {}))
+    overrides = ({"console_log": str(root / "slots" / "s" / "state" / "console.log")} if problem == "console"
+                 else {"timeout_stop": 100} if problem == "budget"
+                 else {"timeout_start": problem[1]} if type(problem) is tuple else {})
+    settings = _settings(root, **overrides)
     with pytest.raises(launcher.LauncherRefusal, match=code):
         launcher.install_launcher(root, unit_dir=unit_dir, template=TEMPLATE, settings=settings, manager=manager)
     assert (unit_dir / "release.conf").exists() and not (unit_dir / "managed.conf").exists()
