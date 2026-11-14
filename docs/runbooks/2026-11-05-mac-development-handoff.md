@@ -808,7 +808,7 @@ Pruebas en el server: el usuario autorizó correrlas allí como `yo` y detener s
 - Revisión independiente: aceptada con arreglos (F1–F7, F11 corregidos).
 - Suite completa en `440617e`, en la Mac y en el server: verde sin fallas (`u3b/full-0e4/RESULT.md`). En el server, la parte de integración ahora va en tres tandas.
 
-`U3b-0c` (rama `u3b-0c`, sobre `b3cbcd0`, sin publicar): compactación de estados dueños, la última unidad antes de R1. Runbook: [2026-11-14-owner-compaction](2026-11-14-owner-compaction.md); sección nueva en DEPLOYMENT.
+`U3b-0c` (integrada en `a0209f2`, sobre `b3cbcd0` + `a526538`): compactación de estados dueños, la última unidad antes de R1. Runbook: [2026-11-14-owner-compaction](2026-11-14-owner-compaction.md); sección nueva en DEPLOYMENT.
 - `stage_runtime compact plan|start|verify|retire|resume|abort|allow-run|status`. El estado nuevo K es una copia idéntica del head con las rutas reubicadas; tras una corrida gestionada limpia de K se destruyen con `unlink` sólo las copias con prueba positiva. Lo demás queda intacto y se reconoce por digest.
 - Época del controlador 3; compuerta en la entrada del controlador y en `prepare`; serve deja pasar sólo la corrida armada o un `allow-run`; R-b automático apagado mientras haya compactación pendiente; head manual nuevo `compaction_return`.
 - La fase de datos corre en un proceso aparte con su capacidad G1 (`KZA_COMPACTION_WORKER=1`).
@@ -836,10 +836,17 @@ Pruebas en el server: el usuario autorizó correrlas allí como `yo` y detener s
   - R4-1/R4-3/R4-4: regla de subcadena en plantillas y entorno del gestor (raíz o miembro en cualquier lugar; trozos cortados en caracteres del shell, `=`, `,`, `:` y juzgados por su parte fija); `EnvironmentFile=` gana sobre `Environment=` y sus valores se comprueban; variable en un `sh -c` de una plantilla de kza rechaza; `check_value` corta en `,` y en cada `=`.
   - R4-2: K movido a mano tras construirlo rechaza `member_missing` y se acepta con `--member n --accept-missing`. R4-6: evento `walked` (con la cuarentena vacía) es la única prueba de borrado; un aceptado que vuelve rechaza `accepted_member_back`. R4-5: enlace del home (`/home/kza/app`), `//`, `/./`, `${HOME:-…}`, `WorkingDirectory="%h"`. R4-7: `ps` en UTC en el Mac. Runbook: contradicción sobre `$'...'` corregida.
 
+- Comprobación de cierre (`t040-t041/u3b-0c-independent-review-r5.json`, sobre `73e20f3`): **lista para R1**. R4-1 y R4-2 cerrados; con el entorno exacto del gestor de `kza` (leído en sólo lectura: ningún valor nombra `/home/kza/releases`) y sus unidades de serie, las 16 combinaciones pasan. Quedan R5-1 (bajo, previo: un glob de shell sobre los slots dentro de un `sh -c` pasa P14; arreglar antes de la primera compactación real, no antes de construir R1) y R5-2 (informativo: escapes C en plantillas).
+- Suite batch en `73e20f3` (`u3b/full-0c/RESULT.md`):
+  - Server: verde salvo `test_memory_home_denial[evaluator-False]`, una carrera de la prueba con el mantenimiento de memoria en segundo plano, ajena a 0c y corregida en `a526538` (5/5 en el server; sin el ajuste falla de forma intermitente).
+  - Mac: verde tras repetir las tandas cortadas por el límite bajo carga ajena (emulador Android, Docker, VM). En las rehearsals de tiempo, a solas, falló una vez `test_compiled_slot_rollback` con `runtime_admission_writer_active` en la revalidación final: la misma falla intermitente sin causa establecida del 2026-11-06/07 (T024/F1, G01). Pasa a solas en 0c y en el server; 0c no toca `_assert_writers_closed`.
+- Los corredores de la suite usan ahora seis tandas en ambas máquinas, con cortes en orden de bytes (`LC_ALL=C`): el `awk` de macOS comparaba por locale y desequilibró la división de tools.
+
 Siguiente:
+- R5-1 antes de la primera compactación real.
+- Investigar `runtime_admission_writer_active` en la revalidación final (G01): puede rechazar un arranque real si un lock de diagnóstico sigue tomado.
 - Los seguimientos F4/F5/F10 y el presupuesto de cierre del coordinador de borrados.
-- La suite batch (incluidos los archivos de presupuesto de tiempo) sobre la rama corregida.
-- Medir el tiempo de compactación una vez sobre una copia del estado de producción antes de la primera corrida real (recomendado por la revisión).
+- Medir el tiempo de compactación una vez sobre una copia del estado de producción antes de la primera corrida real (recomendado por la revisión), y en la ventana de R1 leer `units.templates_scanned` y `units.tolerated_unresolved` del `compact plan` real.
 
 `U3b-0e5` (rama `u3b-0e5`, sobre la cabeza de 0e3): preparación de P7.
 - `retire-legacy-state` (Q5) borra el estado congelado de b0866e8 y sus diez copias SQLite del 2026-10-29 (`backups/<63ea8d3>/databases`, Q2 = A), y saca 63ea8d3 y b0866e8 de L4 con un registro inmutable. Se escribe una intención antes del primer borrado, para que un corte se complete repitiendo el comando. Rechaza si L4 se usó desde la adopción.
