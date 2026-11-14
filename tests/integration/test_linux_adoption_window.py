@@ -738,8 +738,9 @@ def test_the_window_in_runbook_order_under_real_systemd(tmp_path, tree, built, s
     # ledger comparison (a restore across the adoption is never adopted, whichever check sees it).
     assert variants["legacy_memory_privacy"]["status_text"].endswith("check_failed"), variants
     assert variants["legacy_memory_privacy"]["dry_run"]["report"]["failures"] == ["runtime_admission_unknown_schema"]
-    # Five starts inside StartLimitIntervalSec (the crash and four refusals) exhaust systemd's default
-    # start limit: the operator's reset-failed, after putting the adopted bytes back, clears it.
+    # Five starts inside StartLimitIntervalSec (the crash and four refusals) exhaust the managed unit's
+    # start limit (StartLimitBurst=5 in 300 s, DEPLOYMENT): the operator's reset-failed, after putting
+    # the adopted bytes back, clears it.
     limits = systemd.raw_show(w.voice, "StartLimitBurst", "StartLimitIntervalUSec")
     assert w.ctl("reset-failed", "kza-voice.service").returncode == 0
     evidence["start_limit"] = limits
