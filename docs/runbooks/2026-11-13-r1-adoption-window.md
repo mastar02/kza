@@ -30,6 +30,11 @@ autoriza la ventana.
   registrada y frase); después no hay rollback no gestionado y `/home/kza/kza`
   no es un destino (Q3 = A).
 
+R1 se construye desde un árbol que ya contiene U3b-0c (decisión
+`u3b_0c_review` D1 = A): su `release.json` declara `controller_epoch` 3, que
+es lo que `adoption-commit` exige, y así ningún controlador de época 2 queda en
+la raíz gestionada.
+
 Todo corre como `kza` y nunca como root. Cada comando rechaza con salida 78
 y `{"refused": <código>}` en estos casos:
 
@@ -39,7 +44,7 @@ y `{"refused": <código>}` en estos casos:
 - una segunda ejecución.
 
 ```bash
-R1=<tmp privado>/r1            # R1 extraído (build_runtime.py, bajo yo)
+R1=<tmp privado>/r1            # R1 extraído (build_runtime.py, bajo yo; árbol con U3b-0c, época 3)
 PY=/home/kza/kza/.venv/bin/python
 ST="$PY -I -B $R1/scripts/stage_runtime.pyc --root /home/kza/releases --offline"
 C=release_20261029T174830709997Z_63ea8d3

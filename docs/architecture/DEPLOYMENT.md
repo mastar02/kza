@@ -819,7 +819,10 @@ raíz gestionada a un estado nuevo K (copia idéntica del head con las rutas
 reubicadas en K) y, después de una corrida gestionada limpia de K, destruir
 todas las demás copias que el controlador prueba haber creado: slots
 gestionados anteriores (dueños o no), slots preparados y nunca activados,
-copias del catálogo dentro de la raíz y restos de `prepare` y `activate`. Con
+copias del catálogo dentro de la raíz (también las que estén bajo `backups/`,
+decisión D3 = A) y restos de `prepare` y `activate`. Un slot es miembro sólo
+si contiene exactamente `runtime/` y `state/` con el `state/` del plan; los
+miembros se destruyen enteros. Con
 eso, una conversación, un recuerdo o un perfil de voz borrados en el head
 dejan de existir también en esas copias. La recomendación aparece en la salida
 de `delegate` y de `compact plan` (al llegar a 6 dueños, o cuando el registro
@@ -834,9 +837,17 @@ Límites que siguen valiendo (decisiones P5 = C y Q4):
   conservar residuos (opaco al SDK).
 - No toca nada fuera de `/home/kza/releases` (`/home/kza/kza`, respaldos
   externos, snapshots del disco) ni nada dentro de la raíz sin prueba
-  positiva: `backups/`, `logs/`, `deployments/`, `dashboard-proxy/`,
-  `controller/`, archivos de release, el contenedor de enlaces de 63ea8d3, el
-  slot de b0866e8 (lo retira Q5) y restos `.prepare-*` sin registro.
+  positiva: `backups/` (salvo los snapshots que el controlador catalogó; los
+  respaldos del 2026-10-29 y el resto quedan intactos), `logs/`,
+  `deployments/`, `dashboard-proxy/`, `controller/`, archivos de release, el
+  contenedor de enlaces de 63ea8d3, el slot de b0866e8 (lo retira Q5), slots
+  con entradas hechas a mano y restos `.prepare-*` sin registro. Una copia
+  del catálogo fuera de la raíz impide compactar mientras exista; borrarla o
+  no es decisión del usuario.
+- El retiro recalcula el plan (una entrada nueva en la raíz rechaza) y mide la
+  cobertura contra H: lo que la corrida de K borró se cuenta aparte y no
+  bloquea; datos nuevos sólo en miembros exigen reconocer el digest de la
+  cobertura del retiro.
 - Rollback: después de `complete` los slots anteriores ya no existen; sólo se
   avanza con una release gestionada. Antes de la verificación, `compact abort`
   vuelve a H. Después, `compact abort --to-h` vuelve a H sólo si durante la
@@ -846,9 +857,19 @@ Compatibilidad: la época del controlador sube a 3. Mientras haya una
 compactación pendiente, cualquier entrada al controlador que no sea `compact`
 (prepare, activate, run, delegate, adopción) rechaza con
 `runtime_admission_compaction_pending`, y serve sólo deja pasar la corrida de
-verificación armada o las corridas de un `allow-run` vigente. La
-recuperación automática R-b queda apagada mientras tanto. No reinicies el
-servidor durante una compactación.
+verificación armada o las corridas de un `allow-run` vigente.
+`install-controller` (época 3 o posterior, nunca menor que la instalada) sí
+entra, también con un log inválido: es la salida de una compactación trabada
+(D4 = A). La recuperación automática R-b queda apagada mientras tanto. No
+reinicies el servidor durante una compactación.
+
+Épocas (D1 = A): R1 se construye desde un árbol que ya contiene U3b-0c, así
+que ningún controlador de época 2 vive en la raíz gestionada; la adopción
+exige `controller_epoch == 3`. Una copia vieja de `stage_runtime` (en un slot o
+en `controller/<commit>`) puede correrse directamente y no conoce la
+compuerta: sólo se usa `controller/current`. Desde la época 3, la entrada al
+controlador y `prepare` rechazan cuando la época instalada es mayor que la
+propia.
 
 Evidencia: `data/autonomous-roadmap-20261102/t040-t041/u3b-0c-evidence.json`
 (local, fuera de Git).

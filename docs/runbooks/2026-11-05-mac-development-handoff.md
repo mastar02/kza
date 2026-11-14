@@ -814,12 +814,21 @@ Pruebas en el server: el usuario autorizó correrlas allí como `yo` y detener s
 - La fase de datos corre en un proceso aparte con su capacidad G1 (`KZA_COMPACTION_WORKER=1`).
 - P14 en el server con el systemd de usuario real de `yo` encontró un hueco: una unidad deshabilitada e inactiva no aparecía en el listado del diseño (E2). Ahora se listan todos los estados.
 - Mutantes: los 31 del diseño (v2, v4, v5), todos muertos, cada uno en su copia.
-- Huecos registrados en `t040-t041/u3b-0c-evidence.json`: sin corpus de reloj envejecido ni oráculo de mantenimiento; T-U10 (reproducción de un borrado en K) sólo por D5; canarios no en cada familia de datos; G2 medido con 20 000 filas, no 1 000 000; `compact verify --wait` no implementado.
+- Huecos registrados en `t040-t041/u3b-0c-evidence.json`: sin corpus de reloj envejecido completo; canarios no en cada familia de datos; G2 medido con 20 000 filas, no 1 000 000; `compact verify --wait` no implementado.
+- Revisión independiente (`t040-t041/u3b-0c-independent-review.json`): «arreglar antes de producción». Decisiones `u3b_0c_review` D1–D4 = A. Corregido en la misma rama:
+  - F1/F2: un corte entre el CAS de retorno y `returned`, o entre el `rename` de K y su registro de `prepare`, ya no traba la raíz (registro de retorno y registro de staging como prueba; `current` se vuelve a publicar hacia H). Inyección de cortes en cada borde de `abort` y de C2a.
+  - F3/D4: `install-controller` (época ≥ 3) entra con una compactación pendiente o un log inválido; `compact status` informa un log ilegible con su código; sección «Compactación trabada» en el runbook.
+  - F4: una corrida armada que falló antes del CAS de `begin_run` se puede abortar; `allow-run` rechaza `not_verified`.
+  - F5/D2: el retiro mide la cobertura contra H; lo que borró la corrida de K cuenta como `removed_by_k_run` y no bloquea; datos nuevos exigen `retire --accept-owner-only-loss <coverage_sha256>`.
+  - F6/F7: un slot es miembro sólo con exactamente `runtime/` y `state/`, y con el `state/` del plan; el retiro recalcula el plan y rechaza `plan_changed`.
+  - F8/D1: comprobación de época hacia adelante en la entrada del controlador y en `prepare`; R1 se construye con U3b-0c (época 3).
+  - F9: P14 resuelve `$VAR` con `show-environment` y rechaza toda referencia sin resolver. F10/D3 y F11 documentados. F12: rechazos con código en vez de tracebacks.
+  - Huecos de la revisión cerrados: T-U10 (un borrado pendiente en H sobre un target heredado lo ejecuta la corrida de K sobre la copia reubicada) y mantenimiento K' vs H (el barrido TTL encuentra el clip reubicado).
 
 Siguiente:
 - Los seguimientos F4/F5/F10 y el presupuesto de cierre del coordinador de borrados.
-- Revisión independiente de U3b-0c y la suite batch (incluidos los archivos de presupuesto de tiempo).
-- F8.
+- La suite batch (incluidos los archivos de presupuesto de tiempo) sobre la rama corregida.
+- Medir el tiempo de compactación una vez sobre una copia del estado de producción antes de la primera corrida real (recomendado por la revisión).
 
 `U3b-0e5` (rama `u3b-0e5`, sobre la cabeza de 0e3): preparación de P7.
 - `retire-legacy-state` (Q5) borra el estado congelado de b0866e8 y sus diez copias SQLite del 2026-10-29 (`backups/<63ea8d3>/databases`, Q2 = A), y saca 63ea8d3 y b0866e8 de L4 con un registro inmutable. Se escribe una intención antes del primer borrado, para que un corte se complete repitiendo el comando. Rechaza si L4 se usó desde la adopción.
