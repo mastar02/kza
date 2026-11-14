@@ -829,6 +829,9 @@ Pruebas en el server: el usuario autorizó correrlas allí como `yo` y detener s
   - N2/N9: números estables por evento (K con número fijo) y placeholder reservado antes del `mkdir`; un abort reanudado termina lo que quedó en la cuarentena y no registra `aborted`/`complete` con residuos.
   - N3: los enlaces de restos `.activate-*`/`.prepare-*` se borran como enlaces. N8: un miembro movido tras el plan rechaza `member_missing` (`--accept-missing`: sin lápida). N7: contenido probado de copias del catálogo y de `runtime/`; slot con sólo prueba de staging requiere `--retire-prepare-leftovers`. N10: copia en preparación con dueño vivo rechaza; abandonada se lista.
   - N4/N5/N6 (P14): unidades nombradas siempre, enlazadas y plantillas de los directorios del usuario; valores de `show-environment`; marcas de home con prefijo (también en 0e4). systemd 255 real en el server: una unidad enlazada informa el symlink de `~/.config/systemd/user` como FragmentPath; `show` de una plantilla falla, y una instancia sin cargar no aparece en `list-units`.
+- Tercera revisión (`t040-t041/u3b-0c-independent-review-r3.json`, sobre `f9f101f`): «arreglar primero», N1–N10 confirmados cerrados. Corregido, con prueba y mutante por hallazgo (sondas en `test_stage_runtime_compaction_review_r3.py`, `test_compaction_units.py`, `test_adoption_commands.py`):
+  - R3-1: `compact abort <id> --member n --accept-missing` (sin lápida). R3-4: evento `renamed` después del `rename`; `retiring` solo no prueba un borrado.
+  - R3-2: plantillas con continuaciones, `$HOME`/`${HOME}`, `Environment=`/`EnvironmentFile=` y palabras no juzgables (rechazo salvo tolerancia 0e4). R3-6: valores `$'...'` decodificados. R3-5: `kza*`, `~kza/`, `"$HOME"/`, relativo desde el home (también 0e4). R3-3: dueño de copia por pid y hora de arranque. R3-7: runbook, salida de `abort_revives`.
 
 Siguiente:
 - Los seguimientos F4/F5/F10 y el presupuesto de cierre del coordinador de borrados.

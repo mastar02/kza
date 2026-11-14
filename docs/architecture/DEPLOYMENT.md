@@ -860,12 +860,25 @@ Límites que siguen valiendo (decisiones P5 = C y Q4):
   cobertura del retiro.
 - El escaneo de unidades (P14) cubre las unidades nombradas donde estén, las
   enlazadas con `systemctl --user link`, las plantillas de los directorios del
-  usuario (por la parte fija de cada ruta) y los valores de
-  `show-environment`. Las marcas «de kza» son rutas: con `HOME=/home/kza`, un
-  `kza` suelto no marca nada (sólo `~/kza`, `%h/…`, `$HOME/…` o la ruta
-  absoluta), igual que en U3b-0e4.
-- Una copia del catálogo en preparación con su proceso vivo impide compactar
-  (`compaction_copy_in_progress`); una abandonada aparece en el plan.
+  usuario (con líneas de continuación unidas, `$VAR` sustituidas desde el
+  entorno del gestor, su `Environment=` y su `EnvironmentFile=`, y juzgadas
+  por la parte fija de cada ruta; una palabra que empieza con `%i` o un `$VAR`
+  sin valor rechaza salvo la tolerancia de U3b-0e4) y los valores de
+  `show-environment`, también los que systemd imprime como `$'...'`. Una
+  unidad es «de kza» por su nombre `kza*` o por una ruta de kza (`~/kza`,
+  `~kza/kza`, `%h/…`, `$HOME/…`, `"$HOME"/…`, la ruta absoluta, o un `kza`
+  relativo desde el home); un `kza` dentro de otra ruta no cuenta. Igual en
+  U3b-0e4.
+- Una copia del catálogo en preparación con su proceso vivo (mismo pid y
+  arrancado antes de la reserva) impide compactar
+  (`compaction_copy_in_progress`); una abandonada aparece en el plan y nunca
+  bloquea.
+- Un abort también acepta un miembro propio que falta (`--member n
+  --accept-missing`, sin lápida); `retiring` sin `renamed` nunca se cuenta como
+  borrado. Si una re-comprobación tras una corrida de K detrás del abort
+  rechaza `abort_revives`, el servicio queda detenido con H y K' intactos y la
+  salida es un controlador corregido que siga desde K' (D4); el runbook lo
+  detalla.
 - Rollback: después de `complete` los slots anteriores ya no existen; sólo se
   avanza con una release gestionada. Antes de la verificación, `compact abort`
   vuelve a H. Después, `compact abort --to-h` vuelve a H sólo si durante la
