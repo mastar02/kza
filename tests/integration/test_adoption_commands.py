@@ -111,6 +111,10 @@ class Units:
     def user_units(self) -> list[str]:
         return sorted({*self.properties, *self.extra_units})
 
+    def user_cat(self, unit: str) -> str | None:
+        """``systemctl cat`` text: the unit's 'Text' property when a test gives one (else unreadable)."""
+        return self.properties.get(unit, {}).get("Text")
+
     def daemon_reload(self, *, strict: bool = False) -> bool:
         self.reloads += 1
         self.strict_reloads += bool(strict)
@@ -1727,6 +1731,64 @@ def test_only_explicit_references_make_a_unit_relevant(adapter_world, directory,
             world.retire()
     else:
         assert world.retire()["units_checked"] == sorted([VOICE, commands.LLM_FAST_UNIT])
+
+
+_IBUS = "{ path=sh ; argv[]=sh -c exec /usr/bin/ibus-daemon $IBUS_DAEMON_ARGS ; ignore_errors=no }"
+
+
+@pytest.mark.parametrize("text, show, refused", [
+    # Ubuntu's org.freedesktop.IBus.session.generic.service: the variable is inside the sh -c argument,
+    # which systemctl show prints joined with spaces; systemd leaves it to the shell (U3b-0e4, real units).
+    ("ExecStart=sh -c 'exec /usr/bin/ibus-daemon $IBUS_DAEMON_ARGS'\n", _IBUS, False),
+    # unity-gtk-module.service: '$$' is a literal dollar; the inner $GTK_MODULES is inside a word.
+    ("ExecStart=/bin/sh -ec 'GTK_MODULES=\"$${GTK_MODULES:+$GTK_MODULES:}x\"'\n",
+     '{ path=/bin/sh ; argv[]=/bin/sh -ec GTK_MODULES="$${GTK_MODULES:+$GTK_MODULES:}x" ; ignore_errors=no }', False),
+    # '$$NAME' is the literal text $NAME, never a reference.
+    ("ExecStart=/bin/echo $$NOPE\n", "{ path=/bin/echo ; argv[]=/bin/echo $$NOPE ; ignore_errors=no }", False),
+    # The same name as a word of its own: systemd expands it, so an unresolved one still refuses.
+    ("ExecStart=sh -c exec /usr/bin/ibus-daemon $IBUS_DAEMON_ARGS\n", _IBUS, True),
+    # ${NAME} is expanded anywhere, even inside an argument.
+    ("ExecStart=sh -c 'exec /usr/bin/ibus-daemon ${IBUS_DAEMON_ARGS}'\n",
+     _IBUS.replace("$IBUS_DAEMON_ARGS", "${IBUS_DAEMON_ARGS}"), True),
+    # ${NAME} next to an embedded $NAME of the same name: the braces are still expanded.
+    ("ExecStart=sh -c 'exec /usr/bin/ibus-daemon $IBUS_DAEMON_ARGS ${IBUS_DAEMON_ARGS}'\n",
+     _IBUS.replace("$IBUS_DAEMON_ARGS", "$IBUS_DAEMON_ARGS ${IBUS_DAEMON_ARGS}"), True),
+    # A drop-in's empty ExecStart= resets the list: only the drop-in's own (embedded) line counts.
+    ("ExecStart=sh -c exec /usr/bin/ibus-daemon $IBUS_DAEMON_ARGS\n# /x.d/y.conf\n[Service]\nExecStart=\n"
+     "ExecStart=sh -c 'exec /usr/bin/ibus-daemon $IBUS_DAEMON_ARGS'\n", _IBUS, False),
+    # A name the unit text never mentions is not taken as embedded.
+    ("ExecStart=/usr/bin/true\n", _IBUS, True),
+    # The unit text cannot be read: the strict refusal stands.
+    (None, _IBUS, True),
+])
+def test_a_variable_inside_one_argument_is_left_to_the_program(adapter_world, text, show, refused):
+    """systemd substitutes $NAME only as a whole word and ${NAME} anywhere; '$$' is a literal dollar."""
+    world = adapter_world
+    world.units.properties["ibus-like.service"] = {
+        "LoadState": "loaded", "Environment": "", "WorkingDirectory": "", "ExecStart": show,
+        "Text": None if text is None else "# /usr/lib/systemd/user/ibus-like.service\n[Service]\n" + text}
+    if refused:
+        with pytest.raises(commands.CommandRefusal,
+                           match="^runtime_admission_retire_unit_unresolved:ibus-like.service$"):
+            world.retire()
+        assert (world.layout.models_root / "lora_adapters").exists()
+    else:
+        assert world.retire()["units_checked"] == sorted([VOICE, commands.LLM_FAST_UNIT])
+        assert not (world.layout.models_root / "lora_adapters").exists()
+
+
+def test_an_embedded_variable_never_hides_a_resolved_path(adapter_world):
+    """A resolved name still expands next to an embedded one; the unit then reaches a LoRA root."""
+    world = adapter_world
+    env = world.base / "box.env"
+    env.write_text("LORA=" + os.fspath(world.layout.models_root / "lora_adapters" / "custom_adapter") + "\n")
+    world.units.properties["kza-llm-box.service"] = {
+        "LoadState": "loaded", "Environment": "", "WorkingDirectory": "",
+        "EnvironmentFiles": [os.fspath(env) + " (ignore_errors=no)"],
+        "ExecStart": "{ path=sh ; argv[]=sh -c exec llama-server $EXTRA --lora ${LORA} ; ignore_errors=no }",
+        "Text": "[Service]\nExecStart=sh -c 'exec llama-server $EXTRA --lora ${LORA}'\n"}
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_retire_unit_under_root:kza-llm-box.service$"):
+        world.retire(units=("kza-llm-box.service",))
 
 
 def test_the_unit_listing_reads_real_list_unit_files_output(tmp_path):

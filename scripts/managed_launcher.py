@@ -444,6 +444,10 @@ class ServiceManager:
             return None
         return [line.split("=", 1)[1] for line in output.splitlines() if line.startswith(name + "=")]
 
+    def user_cat(self, unit: str) -> str | None:
+        """``systemctl --user cat <unit>``: the unit file and drop-ins as written (exit 0 only), or None."""
+        return self._run("--user", "cat", unit, strict=True)
+
     def daemon_reload(self, *, strict: bool = False) -> bool:
         """``systemctl --user daemon-reload`` (``strict``: exit 0 only)."""
         return self._run("--user", "daemon-reload", timeout=30.0, strict=strict) is not None

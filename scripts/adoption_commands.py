@@ -98,7 +98,7 @@ LLM_FAST_UNIT = "kza-llm-fast.service"
 # What makes a user unit relevant to the LoRA roots besides a path under the models root.
 _UNIT_NEEDLES = ("llama-server", "--lora", "lora_adapters")
 _CONTAINER_TOOLS = frozenset({"podman", "docker"})
-_ENV_REFERENCE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+_ENV_REFERENCE = re.compile(r"\$\$|\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
 _ENV_FILE_LIMIT = 1 << 20
 WORK_DIRECTORY = "adoption"  # <root>/adoption/<slot>: built here, then renamed into slots/<slot>
 RETIREMENT_PREFIX = "retire-legacy-training-"
@@ -614,13 +614,75 @@ def _env_file_values(unit: str, specification: str) -> tuple[dict, list[str]]:
     return values, sorted(values)
 
 
-def _expanded(unit: str, token: str, environment: dict) -> str:
+def _expanded(unit: str, token: str, environment: dict, embedded=lambda name: False) -> str:
+    """systemd's substitution of one ExecStart token: ``$$`` is a literal dollar; an unresolved name refuses
+    unless ``embedded(name)`` says systemd leaves it to the program (a ``$NAME`` inside a word, U3b-0e4)."""
     def substitute(match):
+        if match.group(0) == "$$":
+            return "$$"
         name = match.group(1) or match.group(2)
-        if name not in environment:
-            _refuse("runtime_admission_retire_unit_unresolved:" + unit)
-        return environment[name]
+        if name in environment:
+            return environment[name]
+        if match.group(2) and embedded(name):
+            return match.group(0)
+        _refuse("runtime_admission_retire_unit_unresolved:" + unit)
     return _ENV_REFERENCE.sub(substitute, token)
+
+
+def _exec_start_words(text: str | None) -> list[list[str]] | None:
+    """The effective ExecStart= lines of ``systemctl cat`` output as systemd splits them (quotes kept apart).
+
+    ``systemctl show`` joins each argv with spaces and no quoting, so a
+    ``$NAME`` inside one quoted argument (an ``sh -c`` script) looks like a
+    word of its own there. The unit text keeps the word boundaries. An empty
+    ExecStart= resets the list, as in a drop-in. None when unparsable.
+    """
+    if text is None:
+        return None
+    values, section = [], None
+    for raw in text.replace("\\\n", " ").splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line
+            continue
+        key, separator, value = line.partition("=")
+        if section == "[Service]" and separator and key.strip() == "ExecStart":
+            value = value.strip()
+            values = values + [value] if value else []
+    try:
+        return [shlex.split(value) for value in values]
+    except ValueError:
+        return None
+
+
+def _embedded_only(manager, unit: str):
+    """name -> True when every ExecStart occurrence of ``$name`` is inside a word (systemd does not expand it).
+
+    systemd substitutes ``${NAME}`` anywhere and ``$NAME`` only as a whole
+    word; ``$$`` is a literal dollar (systemd.service, "Command lines"). A
+    name that occurs nowhere in the unit text, or a unit whose text cannot be
+    read, is never treated as embedded: the strict refusal stands.
+    """
+    cache: dict = {}
+
+    def embedded(name: str) -> bool:
+        if "words" not in cache:
+            reader = getattr(manager, "user_cat", None)
+            cache["words"] = _exec_start_words(reader(unit) if reader is not None else None)
+        words = cache["words"]
+        if words is None:
+            return False
+        found = False
+        for argv in words:
+            for word in argv:
+                plain = word.replace("$$", "\0")
+                if plain == "$" + name or "${" + name + "}" in plain:
+                    return False
+                found = found or re.search(r"\$" + re.escape(name) + r"(?![A-Za-z0-9_])", plain) is not None
+        return found
+    return embedded
 
 
 def _words(value: str) -> list[str]:
@@ -699,6 +761,7 @@ def unit_view(manager, unit: str) -> dict:
         environment.update(values)
         keys += names
     tokens, binds, raw = [], [], []
+    embedded = _embedded_only(manager, unit)
     for value in commands_shown:
         if not value:
             continue
@@ -706,7 +769,7 @@ def unit_view(manager, unit: str) -> dict:
             argv = launcher.exec_start_argv(value)
         except launcher.LauncherRefusal:
             _refuse("runtime_admission_retire_unit_unparsed:" + unit)
-        argv = _with_words([_expanded(unit, token, environment) for token in argv])
+        argv = _with_words([_expanded(unit, token, environment, embedded) for token in argv])
         raw += argv
         if argv and os.path.basename(argv[0]) in _CONTAINER_TOOLS:
             binds += _container_volumes(unit, argv)
