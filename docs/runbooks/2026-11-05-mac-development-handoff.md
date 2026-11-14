@@ -795,8 +795,20 @@ Integrados y publicados hasta `2ad44c0` (2026-11-13):
 
 Pruebas en el server: el usuario autorizó correrlas allí como `yo` y detener servicios si hace falta (`server_test_runs`). El checkout anterior de `yo` lo había borrado la limpieza del 2026-11-09; el nuevo está en `/home/yo/projects/kza`, con venv Linux y runner `/home/yo/projects/runs/run-server.sh`.
 
+`U3b-0e4` (`8d89cf9`..`440617e`): ensayos compilados en Linux real, en el server como `yo`, con el systemd de usuario real. Las unidades son de prueba (`kza-rehearsal-*`) y se barren al terminar. Están en `tests/integration/test_linux_managed_launcher.py` y `test_linux_adoption_window.py`; corren sólo en Linux con systemd de usuario, de a un módulo por vez.
+- Defectos de producto encontrados y corregidos:
+  - `$VAR` dentro de un argumento de unidades estándar de Ubuntu (como IBus) trababa W1b. Con la corrección de la revisión, sólo se tolera en unidades que no se nombran y no tienen relación con kza.
+  - El orden de los timers.
+  - Un borrado pendiente del índice exceptuaba también la fila del hecho.
+- `TimeoutStartSec` por defecto: 240 s, validado (30–3600) y leído de vuelta de systemd (decisión `u3b_0e4_start_timeout`: valor amplio + regla de no hacer `daemon-reload` mientras kza-voice arranca).
+- Nuevo comando de solo lectura `completion-status` para después de W9.
+- Medido sobre un estado de tamaño de producción (161 MB): ensayo 22 s, preparación 24 s, confirmación 6 s, primer arranque 12 s, arranque con R-b 20 s, parada 8,5 s.
+- El swap del server está lleno (8 GB): el aviso de exposición a swap del ensayo se va a disparar.
+- Huecos: T-A12/14/18 (que la primera corrida real complete los pasos) necesitan la aplicación real; W7 (sudo) no se aplicó.
+- Revisión independiente: aceptada con arreglos (F1–F7, F11 corregidos).
+- Suite completa en `440617e`, en la Mac y en el server: verde sin fallas (`u3b/full-0e4/RESULT.md`). En el server, la parte de integración ahora va en tres tandas.
+
 Siguiente:
-- U3b-0e4: ensayos compilados en Linux (T-A1..T-A18, T-A17) y T-C8/T-C10 del lanzador, en el server como `yo`.
 - Los seguimientos F4/F5/F10 y el presupuesto de cierre del coordinador de borrados.
 - U3b-0c: compactación.
 - F8.
