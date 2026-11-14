@@ -124,7 +124,7 @@ def managed_root(archive: Path, tmp_path: Path, *, slot: str = "s", settings: st
 
 
 def child_command(phase_file: Path, scenario: str, *, seconds: float = 0.0, touch: Path | None = None,
-                  execute: Path | None = None) -> list[str]:
+                  execute: Path | None = None, extend_every: float = 0.0) -> list[str]:
     """argv of the rehearsal child (cwd = the slot runtime)."""
     command = [sys.executable, "-I", "-B", str(CHILD), "--scenario", scenario, "--phase-file", str(phase_file),
                "--seconds", str(seconds)]
@@ -132,6 +132,8 @@ def child_command(phase_file: Path, scenario: str, *, seconds: float = 0.0, touc
         command += ["--touch", str(touch)]
     if execute is not None:
         command += ["--exec", str(execute)]
+    if extend_every:
+        command += ["--extend-every", str(extend_every)]
     return command
 
 

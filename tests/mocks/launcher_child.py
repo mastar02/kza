@@ -8,7 +8,9 @@ blocked signal mask is read before arming, so a controller that masked
 SIGTERM around Popen is visible (v3 N1).
 
 Scenarios: clean, stop_before_ready, no_ready, crash, self_end, exit_no_receipt, hang,
-receipt_then_hang, watchdog_silent, slow_stop, restore_after_receipt.
+receipt_then_hang, watchdog_silent, slow_stop, restore_after_receipt, notify_stop (U3b-0e4: the
+child itself sends STOPPING=1 after READY, closes for --seconds, optionally sending
+EXTEND_TIMEOUT_USEC every --extend-every seconds, then writes its receipt and exits 0).
 """
 
 import argparse
@@ -31,6 +33,7 @@ parser.add_argument("--phase-file", required=True)
 parser.add_argument("--seconds", type=float, default=0.0)
 parser.add_argument("--touch", default="")
 parser.add_argument("--exec", dest="execute", default="")  # in-band state changes under the ticket
+parser.add_argument("--extend-every", type=float, default=0.0)
 ARGS = parser.parse_args()
 
 from src.core.process_lifecycle import StopRequested, arm_process_entry  # noqa: E402
@@ -85,6 +88,19 @@ async def main() -> None:
         await asyncio.sleep(ARGS.seconds)
         phase("crash")
         os._exit(1)
+    if scenario == "notify_stop":
+        await asyncio.sleep(0.5)
+        LIFECYCLE.notifier.stopping()
+        phase("stopping_sent")
+        deadline = time.monotonic() + ARGS.seconds
+        while time.monotonic() < deadline:
+            if ARGS.extend_every:
+                LIFECYCLE.notifier._send(f"EXTEND_TIMEOUT_USEC={int(ARGS.extend_every * 3 * 1_000_000)}")
+                phase("extend")
+            await asyncio.sleep(ARGS.extend_every or 0.2)
+        receipt()
+        phase("self_closed")
+        os._exit(0)
     if scenario in {"self_end", "exit_no_receipt"}:
         await asyncio.sleep(ARGS.seconds)
         if scenario == "self_end":

@@ -5,6 +5,9 @@ admission ticket. ``src`` is imported only from the runtime's bytecode; the
 checkout contributes the ``tests`` fixtures. The parent sends real SIGTERMs
 when this child reports a phase on ``--phase-file``, and reads READY from the
 FIFO given in ``--notify-fifo`` (handed to the child as KZA_NOTIFY_FD).
+Without ``--notify-fifo`` (U3b-0e4: the managed launcher under a real user
+systemd runs this child through ``serve --child-command``) the controller's
+own KZA_NOTIFY_FD pipe is used.
 """
 import argparse
 import json
@@ -20,13 +23,14 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--repo", required=True)
 parser.add_argument("--scenario", required=True)
 parser.add_argument("--phase-file", required=True)
-parser.add_argument("--notify-fifo", required=True)
+parser.add_argument("--notify-fifo", default="")
 parser.add_argument("--graph-root", required=True)
 parser.add_argument("--dashboard-port", type=int, required=True)
 ARGS = parser.parse_args()
 
 # The parent holds the FIFO's read end open, so this never blocks.
-os.environ["KZA_NOTIFY_FD"] = str(os.open(ARGS.notify_fifo, os.O_WRONLY | os.O_NONBLOCK))
+if ARGS.notify_fifo:
+    os.environ["KZA_NOTIFY_FD"] = str(os.open(ARGS.notify_fifo, os.O_WRONLY | os.O_NONBLOCK))
 
 from src.core.process_lifecycle import arm_process_entry, blocked_stop_signals  # noqa: E402
 
