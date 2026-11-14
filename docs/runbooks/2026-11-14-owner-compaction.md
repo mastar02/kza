@@ -26,14 +26,25 @@ gestionada limpia de K (la corrida de verificación, que deja K'), destruye con
   `state/`: cualquier otra entrada hecha a mano (por ejemplo
   `slots/a/respaldo-2026-10-29/`) lo deja **entero** en la lista intacta, con
   la clase `unexpected_entries` y los nombres de esas entradas (nunca su
-  contenido). Los miembros se destruyen enteros;
+  contenido). Lo mismo vale dentro de `runtime/`: sólo los archivos que lista
+  su `release.json` y los enlaces `config`, `data`, `.env`; un archivo más
+  (`runtime/notas.txt`) deja el slot entero con el nombre
+  `runtime/notas.txt`. Un slot probado sólo por un registro de staging (un
+  `prepare` cortado después del rename) no prueba qué hay en su `state/`: queda
+  intacto (`prepare_leftover_kept`) salvo con `--retire-prepare-leftovers`.
+  Los miembros se destruyen enteros;
 - restos `slots/.prepare-*` con registro de staging (sólo con
   `--retire-prepare-leftovers`) y restos `.activate-*` vacíos o con un único
-  enlace `current`;
+  enlace `current`. Sus enlaces (`runtime/config`, `runtime/data`,
+  `runtime/.env`, `current`) se borran como enlaces, nunca se siguen;
 - copias del catálogo dentro de la raíz, **incluidas las que estén bajo
   `backups/`** (decisión D3 = A): un snapshot que el controlador catalogó
-  es una copia que probó haber hecho, esté donde esté dentro de la raíz. El
-  resto de `backups/`, incluidos los respaldos del 2026-10-29, queda intacto;
+  es una copia que probó haber hecho, esté donde esté dentro de la raíz. Sólo
+  si cada entrada de primer nivel de la copia está en sus extents o en el
+  inventario de su preparación (por ejemplo `state/` y `manifest.json`):
+  algo puesto a mano adentro (`backups/snapshot-x/respaldo-a-mano/`) deja la
+  copia **entera** en la lista intacta (`unexpected_entries`, con los nombres).
+  El resto de `backups/`, incluidos los respaldos del 2026-10-29, queda intacto;
 - el trabajo propio de compactaciones anteriores.
 
 Así, lo que una persona pidió borrar (una conversación, un recuerdo, su voz)
@@ -85,7 +96,31 @@ Requisitos (el comando los verifica y rechaza con un código si falta alguno):
   el operador pase con `--unit`) y cuyo texto y entorno propio no mencionan
   una ruta de kza, un miembro ni la raíz (así pasan las unidades de IBus,
   podman y unity de la cuenta). En una unidad nombrada o que menciona kza,
-  rechaza aunque no tenga `/`;
+  rechaza aunque no tenga `/`. «Menciona kza» es una ruta: la raíz, un
+  miembro, `/home/kza/kza`, o su forma relativa al home con prefijo (`~/kza`,
+  `%h/releases`, `$HOME/kza`); un `kza` suelto no cuenta, porque con
+  `HOME=/home/kza` está en toda ruta de la cuenta (un drop-in de podman bajo
+  `/home/kza/.config` no hace de kza a la unidad). Además:
+  - las unidades nombradas se escanean siempre, vivan donde vivan; una que el
+    operador pasó con `--unit` y systemd no conoce rechaza
+    (`unit_unparsed:<unidad>:LoadState`);
+  - una unidad enlazada con `systemctl --user link` (estado `linked`) o con su
+    nombre en `~/.config/systemd/user` se escanea aunque su archivo esté
+    afuera;
+  - una plantilla (`nombre@.service`) en un directorio de unidades del usuario,
+    o con un drop-in ahí, se lee como texto aunque no haya instancias: rechaza
+    si nombra un miembro o si la parte fija de una ruta, antes de `%i` o de un
+    `$VAR`, es la raíz, está debajo o encima de ella (`/home/kza/releases/%i`,
+    `%h/%i`). La salida la lista en `units.templates_scanned`;
+  - un valor de `systemctl --user show-environment` que nombra un miembro
+    rechaza (`unit_path:show-environment`) como si fuera un `Environment=` de
+    la unidad: cualquier programa del gestor lo hereda;
+- ninguna copia del catálogo en preparación (P8,
+  `compaction_copy_in_progress`): `reserved` o `writing` con su proceso dueño
+  vivo, o un estado de preparación desconocido. Si el proceso dueño ya no
+  existe, la copia quedó abandonada: el plan la lista en `abandoned_copies` y
+  se trata como cualquier copia del catálogo (miembro sólo con contenido
+  probado);
 - ninguna copia del catálogo fuera de la raíz (P8,
   `compaction_copy_outside_root`). Una copia así sólo rechaza mientras
   existe: si es un snapshot viejo que ya no se quiere, **el usuario** decide
@@ -189,6 +224,14 @@ K=<nombre nuevo de slot, nunca usado antes>
      nueva en la raíz (por ejemplo un slot copiado después del plan) rechaza
      `compaction_plan_changed` con `untouched_added`. Quitarla (o decidir qué
      hacer con ella) y repetir `retire`;
+   - que cada miembro siga en su ruta: uno movido entero (por ejemplo a
+     `backups/` o `logs/`) o borrado después del plan rechaza
+     `compaction_member_missing` con su número. Devolverlo a su ruta y repetir
+     `retire`, o, si se decide no destruirlo, `compact retire <id> --member <n>
+     --accept-missing`: queda registrado (`missing_accepted`), sin lápida ni
+     registro `copies-retired`, y la copia sigue donde esté (el retiro no la
+     destruyó y no dice que lo hizo). Un miembro que esta compactación ya
+     renombró no se puede aceptar así;
    - el escaneo de unidades (P14);
    - la cobertura, ahora **contra H** (decisión D2 = A): una fila o archivo que
      sigue en K' está cubierto; lo que estaba en H y la corrida de K borró o
@@ -259,12 +302,28 @@ K=<nombre nuevo de slot, nunca usado antes>
   `compaction_special_file`, `compaction_cross_device`). Revisar y quitar la
   causa a mano, después `compact resume <id>`.
 - **Se cortó `retire`**: `compact resume <id>` termina el retiro; cada paso es
-  idempotente y deja el mismo resultado.
+  idempotente y deja el mismo resultado. Mientras el retiro no termine, serve
+  sale con 78 (`compaction_retire_in_progress`), aun con un `allow-run`
+  vigente.
 - **Se cortó `abort`** (en cualquier punto, también entre el cambio del head a
   H y el evento `returned`): repetir el mismo `compact abort <id> ...` o
   `compact resume <id>`. Un head H cerrado con el registro de retorno de esta
   compactación (`admission/compaction/v1/returns/`) cuenta como retorno
   hecho, y `current` se vuelve a publicar hacia H antes de borrar K.
+  Desde `abort_started`, serve sale con 78 (`compaction_abort_pending`):
+  ni la corrida armada ni un `allow-run` vigente arrancan K. Un abort
+  reanudado encuentra cada miembro por el número y la identidad que quedaron
+  registrados (también K y un snapshot a medias que ya estaban en
+  `compaction/<id>/retiring/`) y termina de borrarlo; `aborted` (y `complete`
+  en el retiro) no se registra mientras quede algo en esa cuarentena
+  (`compaction_retiring_residue`, con los nombres): revisar qué es.
+- **El head cambió después de empezar el abort** (una corrida de K que la
+  compuerta debió impedir, por ejemplo desde un controlador viejo): `resume` y
+  `abort` rechazan `compaction_abort_recheck_required`. Correr `compact abort
+  <id> --to-h --confirm-h <prefijo> [--discard-k-writes]`: vuelve a aplicar
+  Q6 y el descarte a lo que corrió (rechaza `compaction_abort_revives` si esa
+  corrida borró una conversación, un recuerdo o un perfil de voz) y registra
+  `abort_rechecked`.
 
 ## Compactación trabada
 
@@ -316,6 +375,12 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
 | `runtime_admission_controller_downgrade` | Este `stage_runtime` es de una época menor que la instalada: usar `controller/current`. |
 | `runtime_admission_compaction_not_verified` | `retire` antes de que K' cerrara limpio. |
 | `runtime_admission_retired_locator` | Un nombre o ruta ya retirado por una compactación; usar otro nombre. |
+| `runtime_admission_compaction_abort_pending` / `_retire_in_progress` | serve: hay un abort o un retiro empezado; terminarlo con `compact`. |
+| `runtime_admission_compaction_abort_recheck_required` | El head cambió después de `abort_started`: `compact abort <id> --to-h --confirm-h ...`. |
+| `runtime_admission_compaction_member_missing` | Un miembro ya no está en su ruta y esta compactación no lo movió; ver el paso 5. |
+| `runtime_admission_compaction_retiring_residue` | Quedó algo en `compaction/<id>/retiring/`; no se registra el final. |
+| `runtime_admission_compaction_copy_in_progress` | Una copia del catálogo se está preparando (o su estado es desconocido). |
+| `runtime_admission_compaction_unit_unparsed:<unidad>:LoadState` | Una unidad pasada con `--unit` no existe para systemd. |
 
 ## Decisiones tomadas en la implementación (la opción más estricta)
 
@@ -352,6 +417,14 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
 - Un miembro que pasa a contener un enlace simbólico después de `start` no se
   reclasifica: el retiro se detiene sin recorrerlo hasta que el operador quite
   el enlace.
+- Segunda revisión (N1-N10): el abort reanudado tras un cambio de head exige
+  `--to-h` y la confirmación de H aunque el abort original fuera «antes de la
+  corrida»; una plantilla se juzga por la parte fija de cada ruta (más
+  estricto que esperar a que exista una instancia); un nombre de unidad que
+  empieza con `kza-` no la vuelve «de kza» si no menciona una ruta de kza
+  (regla de U3b-0e4: la marca es una ruta), pero `--unit` la vuelve estricta;
+  una copia catalogada sin extents ni inventario no prueba ninguna entrada y
+  queda intacta.
 - Antes y después de la verificación se usa `disable` (no `mask`), como en la
   ventana R1: la unidad vive en `~/.config/systemd/user` y `mask` no puede
   reemplazarla.

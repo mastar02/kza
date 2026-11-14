@@ -821,8 +821,15 @@ todas las demás copias que el controlador prueba haber creado: slots
 gestionados anteriores (dueños o no), slots preparados y nunca activados,
 copias del catálogo dentro de la raíz (también las que estén bajo `backups/`,
 decisión D3 = A) y restos de `prepare` y `activate`. Un slot es miembro sólo
-si contiene exactamente `runtime/` y `state/` con el `state/` del plan; los
-miembros se destruyen enteros. Con
+si contiene exactamente `runtime/` y `state/` con el `state/` del plan, y su
+`runtime/` sólo los archivos de su `release.json` y los enlaces `config`,
+`data`, `.env`; una copia del catálogo, sólo si cada entrada de primer nivel
+está en sus extents o en el inventario de su preparación. Si no, queda entera
+en la lista intacta (`unexpected_entries`, con los nombres). Un slot probado
+sólo por un registro de staging se destruye únicamente con
+`--retire-prepare-leftovers`. Los enlaces de los restos de `prepare` y
+`activate` se borran como enlaces, sin seguirlos. Los miembros se destruyen
+enteros. Con
 eso, una conversación, un recuerdo o un perfil de voz borrados en el head
 dejan de existir también en esas copias. La recomendación aparece en la salida
 de `delegate` y de `compact plan` (al llegar a 6 dueños, o cuando el registro
@@ -844,10 +851,21 @@ Límites que siguen valiendo (decisiones P5 = C y Q4):
   con entradas hechas a mano y restos `.prepare-*` sin registro. Una copia
   del catálogo fuera de la raíz impide compactar mientras exista; borrarla o
   no es decisión del usuario.
-- El retiro recalcula el plan (una entrada nueva en la raíz rechaza) y mide la
-  cobertura contra H: lo que la corrida de K borró se cuenta aparte y no
+- El retiro recalcula el plan (una entrada nueva en la raíz rechaza, y un
+  miembro movido o borrado después del plan rechaza
+  `compaction_member_missing`; aceptarlo con `--accept-missing` lo deja fuera
+  sin lápida ni registro de copia retirada: nada dice que se destruyó) y mide
+  la cobertura contra H: lo que la corrida de K borró se cuenta aparte y no
   bloquea; datos nuevos sólo en miembros exigen reconocer el digest de la
   cobertura del retiro.
+- El escaneo de unidades (P14) cubre las unidades nombradas donde estén, las
+  enlazadas con `systemctl --user link`, las plantillas de los directorios del
+  usuario (por la parte fija de cada ruta) y los valores de
+  `show-environment`. Las marcas «de kza» son rutas: con `HOME=/home/kza`, un
+  `kza` suelto no marca nada (sólo `~/kza`, `%h/…`, `$HOME/…` o la ruta
+  absoluta), igual que en U3b-0e4.
+- Una copia del catálogo en preparación con su proceso vivo impide compactar
+  (`compaction_copy_in_progress`); una abandonada aparece en el plan.
 - Rollback: después de `complete` los slots anteriores ya no existen; sólo se
   avanza con una release gestionada. Antes de la verificación, `compact abort`
   vuelve a H. Después, `compact abort --to-h` vuelve a H sólo si durante la
@@ -857,7 +875,13 @@ Compatibilidad: la época del controlador sube a 3. Mientras haya una
 compactación pendiente, cualquier entrada al controlador que no sea `compact`
 (prepare, activate, run, delegate, adopción) rechaza con
 `runtime_admission_compaction_pending`, y serve sólo deja pasar la corrida de
-verificación armada o las corridas de un `allow-run` vigente.
+verificación armada o las corridas de un `allow-run` vigente; desde que
+empieza un abort o un retiro, ninguna (`compaction_abort_pending`,
+`compaction_retire_in_progress`). Si el head cambió igual después de
+`abort_started`, el abort exige repetir Q6 con `--to-h` antes de seguir
+(`compaction_abort_recheck_required`), y un abort o retiro reanudado termina
+cada miembro por su identidad registrada, sin registrar el final mientras
+quede algo en la cuarentena.
 `install-controller` (época 3 o posterior, nunca menor que la instalada) sí
 entra, también con un log inválido: es la salida de una compactación trabada
 (D4 = A). La recuperación automática R-b queda apagada mientras tanto. No
