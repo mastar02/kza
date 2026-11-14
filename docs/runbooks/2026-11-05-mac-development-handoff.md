@@ -822,7 +822,7 @@ Pruebas en el server: el usuario autorizó correrlas allí como `yo` y detener s
   - F5/D2: el retiro mide la cobertura contra H; lo que borró la corrida de K cuenta como `removed_by_k_run` y no bloquea; datos nuevos exigen `retire --accept-owner-only-loss <coverage_sha256>`.
   - F6/F7: un slot es miembro sólo con exactamente `runtime/` y `state/`, y con el `state/` del plan; el retiro recalcula el plan y rechaza `plan_changed`.
   - F8/D1: comprobación de época hacia adelante en la entrada del controlador y en `prepare`; R1 se construye con U3b-0c (época 3).
-  - F9: P14 resuelve `$VAR` con `show-environment` y rechaza toda referencia sin resolver. F10/D3 y F11 documentados. F12: rechazos con código en vez de tracebacks.
+  - F9: P14 resuelve `$VAR` con `show-environment`. Una referencia sin resolver sigue la regla de U3b-0e4 (`mentions_markers`, compartida): se tolera sólo en unidades no nombradas que no mencionan kza, un miembro ni la raíz (pasan IBus, podman y unity de la cuenta `kza`); `compact plan/start --unit` nombra más unidades. F10/D3 y F11 documentados. F12: rechazos con código en vez de tracebacks.
   - Huecos de la revisión cerrados: T-U10 (un borrado pendiente en H sobre un target heredado lo ejecuta la corrida de K sobre la copia reubicada) y mantenimiento K' vs H (el barrido TTL encuentra el clip reubicado).
 
 Siguiente:
