@@ -328,15 +328,18 @@ class Window:
         for timer in self.timers:
             assert self.ctl("stop", timer).returncode == 0
 
-    def install_launcher(self, *, timeout_start: float = 120) -> dict:
-        """W5 (console directory and rotation) and W6 (install-launcher, verified through real systemctl)."""
+    def install_launcher(self, *, timeout_start: float | None = None) -> dict:
+        """W5 (console directory and rotation) and W6 (install-launcher, verified through real systemctl).
+
+        Without ``timeout_start`` the runbook's W6: --timeout-start left at the product default."""
         (self.root / "logs").mkdir(mode=0o700, exist_ok=True)
         console = self.root / "logs" / "console.log"
         (self.root / launcher.LOGROTATE_NAME).write_text(launcher.render_console_logrotate(str(console)))
         started = time.monotonic()
         code, installed, refused = self.launcher_cli(
             "install-launcher", "--unit-dir", str(self.systemd.dropin_dir(self.voice)), "--template", str(TEMPLATE),
-            "--python", sys.executable, "--stop-grace", "20", "--timeout-start", f"{timeout_start:g}",
+            "--python", sys.executable, "--stop-grace", "20",
+            *(() if timeout_start is None else ("--timeout-start", f"{timeout_start:g}")),
             "--timeout-stop", "60", "--console-log", str(console))
         self.timings["install_launcher"] = round(time.monotonic() - started, 2)
         assert code == 0 and installed["verification_mismatches"] == [], (installed, refused)
@@ -604,6 +607,8 @@ def test_the_window_in_runbook_order_under_real_systemd(tmp_path, tree, built, s
 
     # W5 (console directory, rotation) and W6 (install-launcher, verified through real systemctl).
     installed = w.install_launcher()
+    # F1=C: the default TimeoutStartSec (240 s) reaches the real unit and covers a start without EXTEND.
+    assert systemd.raw_show(w.voice, "TimeoutStartUSec")["TimeoutStartUSec"] == "4min"
     w.child("clean")
     evidence["boots"].append(w.fake_boot("W6"))
     evidence["stop_timeout_dropin"] = installed["stop_timeout_dropin"]["value_seconds"]

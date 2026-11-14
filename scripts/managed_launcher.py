@@ -85,6 +85,15 @@ RECOVER_MODES = ("bounded", "operator", "off")
 ARM_WAIT_SECONDS = 10.0  # longest wait for ARMED=1 before a stop is forwarded anyway
 # Start-time extension asked of systemd before recovery and between R-b steps (review P6).
 RECOVERY_EXTEND_SECONDS = 120
+# install-launcher's TimeoutStartSec default (U3b-0e4, F1=C). systemd 255 drops any
+# EXTEND_TIMEOUT_USEC on a `systemctl --user daemon-reload` and re-arms the start
+# timer from TimeoutStartSec, so the value must cover a whole start on its own.
+# Measured on the server (U3b-0e4 T-A8, 161 MB adopted state, 500k events): first
+# managed start 12.2 s, crash + automatic R-b to READY 20.1 s, activation CPU-bound
+# and linear in rows. 240 s = the path probe's own budget (--probe-timeout 60) plus
+# 180 s, almost nine times the measured R-b start: room for a state several times
+# larger and a loaded host. EXTEND stays as the extra margin.
+DEFAULT_TIMEOUT_START = 240.0
 CRASH_BUDGET_SECONDS = 24 * 3600
 STATUS_LIMIT = 200
 NOTIFY_FD_ENV = "KZA_NOTIFY_FD"
@@ -2663,7 +2672,9 @@ def add_commands(commands) -> None:
     launcher.add_argument("--template", type=Path, required=True)
     launcher.add_argument("--python", required=True)
     launcher.add_argument("--stop-grace", type=float, required=True)
-    launcher.add_argument("--timeout-start", type=float, required=True)
+    launcher.add_argument("--timeout-start", type=float, default=DEFAULT_TIMEOUT_START,
+                          help="TimeoutStartSec of the managed unit; it must cover a whole start including R-b "
+                               f"without EXTEND (default {DEFAULT_TIMEOUT_START:g})")
     launcher.add_argument("--timeout-stop", type=float, required=True)
     launcher.add_argument("--watchdog-sec", type=float, default=0.0)
     launcher.add_argument("--console-log", required=True)

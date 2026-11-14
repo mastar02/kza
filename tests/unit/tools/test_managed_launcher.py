@@ -211,6 +211,23 @@ def _settings(**overrides):
     return launcher.LauncherSettings(**values)
 
 
+def test_the_default_timeout_start_covers_a_whole_start_without_extend():
+    """U3b-0e4 F1=C: a daemon-reload drops EXTEND_TIMEOUT_USEC, so TimeoutStartSec alone must cover the
+    path probe and a start measured at 12.2 s (first) and 20.1 s (crash + R-b) with a wide margin."""
+    import argparse
+    assert launcher.DEFAULT_TIMEOUT_START == 240.0
+    parser = argparse.ArgumentParser()
+    launcher.add_commands(parser.add_subparsers(dest="command"))
+    args = parser.parse_args(["install-launcher", "--unit-dir", "/u", "--template", "/t", "--python", "/p",
+                              "--stop-grace", "120", "--timeout-stop", "200", "--console-log", "/c"])
+    assert args.timeout_start == launcher.DEFAULT_TIMEOUT_START
+    serve = parser.parse_args(["serve", "--stop-grace", "120", "--unit-timeout-stop", "200"])
+    assert args.timeout_start >= serve.probe_timeout + 8 * 20.1  # the probe budget plus eight measured R-b starts
+    text = launcher.render_managed_conf(TEMPLATE.read_text(), Path("/home/kza/releases"),
+                                        _settings(timeout_start=args.timeout_start))
+    assert fake_systemd.parse_dropins([text])["TimeoutStartSec"] == "240"
+
+
 def test_managed_conf_renders_the_notify_service():
     text = launcher.render_managed_conf(TEMPLATE.read_text(), Path("/home/kza/releases"), _settings())
     directives = fake_systemd.parse_dropins([text])
