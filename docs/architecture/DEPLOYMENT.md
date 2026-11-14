@@ -416,6 +416,13 @@ Cómo arranca:
   `RestartPreventExitStatus=69 78`, `Restart=on-failure`,
   `StartLimitBurst=5` en 300 s. Es un desvío registrado en
   `SERVER_CONVENTIONS.md` (excepción R10 #6).
+- **Límite de arranques** (U3b-0e4, medido con systemd real): cinco
+  arranques en 300 s agotan el límite, contando los reinicios automáticos.
+  Un crash seguido de cuatro arranques rechazados con 69 alcanza. El
+  siguiente arranque falla con «Start request repeated too quickly» sin
+  ejecutar nada. Después de resolver la causa, correr
+  `systemctl --user reset-failed kza-voice.service` y recién entonces
+  arrancar.
 - El hijo nunca recibe `NOTIFY_SOCKET` ni `WATCHDOG_*`. Escribe líneas en su
   pipe y el controlador las valida y las retransmite: READY una sola vez,
   WATCHDOG sólo después de READY, STATUS, STOPPING y EXTEND_TIMEOUT_USEC.
@@ -471,8 +478,25 @@ Recuperación al arrancar (L1 = A):
   - la equivalencia de componentes manuales.
 - Antes de recuperar y entre cada paso de R-b (y antes de adoptar) el
   controlador envía `EXTEND_TIMEOUT_USEC` de 120 s, para que
-  `TimeoutStartSec` no caiga a mitad de una adopción. `--timeout-start` se
-  dimensiona con un R-b medido en el server (L2, L6).
+  `TimeoutStartSec` no caiga a mitad de una adopción.
+- **EXTEND no alcanza solo** (U3b-0e4, F1, decisión del usuario C): con
+  systemd 255, un `systemctl --user daemon-reload` en el manager de `kza`
+  descarta toda extensión y vuelve a armar el plazo desde `TimeoutStartSec`.
+  Un arranque que ya lo superó se corta en el acto. El corte es seguro (sale
+  antes del CAS `running`, el head no cambia y R-b se repite en el próximo
+  arranque), pero el arranque falla. Por eso:
+  - `--timeout-start` cubre un arranque completo sin EXTEND. Por defecto
+    vale 240 s (`DEFAULT_TIMEOUT_START`): los 60 s de la sonda de rutas más
+    180 s, casi nueve veces lo medido en el server sobre un estado adoptado
+    de 161 MB (500k eventos): 12,2 s el primer arranque y 20,1 s un crash
+    con R-b hasta READY. La activación crece lineal con las filas. No bajar
+    de ese valor sin medir un arranque con R-b sobre el estado real.
+  - Regla de operación: no correr `systemctl --user daemon-reload` en el
+    manager de `kza` mientras `kza-voice.service` esté `activating`
+    (`systemctl --user show -p ActiveState kza-voice.service`). Esperar a
+    `active`, `failed` o `inactive`. `install-launcher`,
+    `uninstall-launcher` y los comandos de adopción ya rechazan con la
+    unidad activa o arrancando.
 - **Recuperación por arranque**: si el run quedó del boot anterior (reinicio o
   corte de luz), hay una recuperación por `boot_id` y no gasta el cupo de 24 h.
 - **Operador** (`UNKNOWN` sin adopción automática): primero
@@ -505,7 +529,8 @@ Instalación en la ventana de R1 (bajo `kza`, sin sudo; el servicio detenido):
    `controller/current/scripts/stage_runtime.pyc ... install-launcher`.
    - Argumentos: `--unit-dir ~/.config/systemd/user/kza-voice.service.d`,
      `--template`, `--python /home/kza/kza/.venv/bin/python`,
-     `--stop-grace`, `--timeout-start`, `--timeout-stop`, `--watchdog-sec`,
+     `--stop-grace`, `--timeout-start` (por defecto 240 s, ver arriba),
+     `--timeout-stop`, `--watchdog-sec`,
      `--console-log /home/kza/releases/logs/console.log` y, si no es el de
      siempre, `--logrotate-conf` (por defecto
      `/home/kza/releases/console-logrotate.conf`).

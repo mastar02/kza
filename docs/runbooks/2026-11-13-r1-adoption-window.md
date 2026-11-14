@@ -213,6 +213,9 @@ C=release_20261029T174830709997Z_63ea8d3
   ```
   Después, agregar la estrofa de `console-logrotate`.
 - **W6**: `install-launcher`. La comprobación previa tiene que salir limpia.
+  - `--timeout-start`: dejar el valor por defecto, 240 s. Cubre un arranque
+    completo con R-b sin depender de `EXTEND_TIMEOUT_USEC` (DEPLOYMENT,
+    «EXTEND no alcanza solo»). No pasar un valor menor.
 - **W7**: el usuario aplica el drop-in sudo (N1=B) y lo verifica en lectura.
   - Texto y comandos exactos (no escribe nada):
     ```bash
@@ -237,6 +240,16 @@ C=release_20261029T174830709997Z_63ea8d3
     W-abort-2 es válido. Por defecto abortar y reprogramar. Seguir en modo de
     respaldo (presupuesto de 5 s) solo con una decisión registrada del usuario.
 - **W8**: habilitar y arrancar kza-voice.
+  - Desde aquí, nunca correr `systemctl --user daemon-reload` en el manager
+    de `kza` mientras kza-voice esté `activating`
+    (`systemctl --user show -p ActiveState kza-voice.service`). Un reload
+    descarta la extensión del arranque y lo corta si ya pasó
+    `TimeoutStartSec`. Esperar a `active`, `failed` o `inactive`.
+  - Límite de arranques: cinco en 300 s, contando los reinicios
+    automáticos. Si un arranque falla con «Start request repeated too
+    quickly», resolver la causa y correr
+    `systemctl --user reset-failed kza-voice.service` antes de volver a
+    arrancar. Pasa, por ejemplo, tras un crash y cuatro rechazos 69 seguidos.
   - Reiniciar solo los timers `restart unchanged`.
   - Hacer las comprobaciones de aceptación.
   - Volver a aplicar `PP_MIN_NN` de Hall.
