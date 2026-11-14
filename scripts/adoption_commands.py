@@ -1401,8 +1401,12 @@ def verify_plan(root: Path, plan: dict, manager, paths: ProductionPaths) -> bool
                 _mismatch("retirement")
         except adoption.AdoptionRefusal:
             _mismatch("retirement")
-    timers = tuple(item for item in plan["units"]["units"] if item != launcher.UNIT)
-    if timer_dispositions(manager, timers, root, layout) != plan["timer_dispositions"]:
+    # The plan keeps the --window-timer order; plan["units"]["units"] is a JSON object read back in key
+    # order. Compare per timer, never by list position (U3b-0e4: two timers out of order refused).
+    timers = tuple(item["unit"] for item in plan["timer_dispositions"])
+    if (sorted(item["unit"] for item in plan["timer_dispositions"])
+            != sorted(item for item in plan["units"]["units"] if item != launcher.UNIT)
+            or timer_dispositions(manager, timers, root, layout) != plan["timer_dispositions"]):
         _mismatch("units")  # review F7b
     index, index_problems = code_index_check(manager, plan["code_index"]["unit"], layout)
     if index_problems or index != plan["code_index"]:

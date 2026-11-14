@@ -1538,6 +1538,43 @@ def test_commit_rechecks_roots_timers_and_the_code_index(world, item):
     assert world.head() is None
 
 
+def test_commit_accepts_window_timers_given_out_of_order(world):
+    """U3b-0e4 (real systemd): the dispositions are compared per timer, not by the order the plan reads back."""
+    timers = ("kza-backup.timer", "kza-audio-watchdog.timer")  # not in key order
+    for timer, service, environment in (("kza-audio-watchdog.timer", "kza-audio-watchdog.service",
+                                         "PYTHONPATH=" + os.fspath(world.root / "current")),
+                                        ("kza-backup.timer", "kza-backup.service", "")):
+        world.units.properties[timer] = {"LoadState": "loaded", "ActiveState": "inactive", "UnitFileState": "static",
+                                         "InvocationID": "", "InactiveEnterTimestampMonotonic": "0",
+                                         "Triggers": service}
+        world.units.properties[service] = {"LoadState": "loaded", "Environment": environment, "WorkingDirectory": "/srv",
+                                           "ExecStart": "{ path=/usr/bin/true ; argv[]=/usr/bin/true ; ignore_errors=no }"}
+    prepared = world.prepare(timers=timers)
+    plan = world.plan(prepared["plan_sha256"])
+    assert [item["unit"] for item in plan["timer_dispositions"]] == list(timers)
+    assert list(plan["units"]["units"]) != [commands.launcher.UNIT, *timers]
+    world.install_controller()
+    assert world.commit(prepared["plan_sha256"])["seal"]
+    assert world.head()["generation"] == 1
+
+
+def test_commit_still_refuses_a_timer_whose_disposition_changed(world):
+    timers = ("kza-backup.timer", "kza-audio-watchdog.timer")
+    for timer, service in (("kza-audio-watchdog.timer", "kza-audio-watchdog.service"),
+                           ("kza-backup.timer", "kza-backup.service")):
+        world.units.properties[timer] = {"LoadState": "loaded", "ActiveState": "inactive", "UnitFileState": "static",
+                                         "InvocationID": "", "InactiveEnterTimestampMonotonic": "0",
+                                         "Triggers": service}
+        world.units.properties[service] = {"LoadState": "loaded", "Environment": "", "WorkingDirectory": "/srv",
+                                           "ExecStart": "{ path=/usr/bin/true ; argv[]=/usr/bin/true ; ignore_errors=no }"}
+    prepared = world.prepare(timers=timers)
+    world.install_controller()
+    world.units.properties["kza-backup.service"]["Environment"] = "PYTHONPATH=" + os.fspath(world.root / "current")
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_adoption_plan_mismatch:units$"):
+        world.commit(prepared["plan_sha256"])
+    assert world.head() is None
+
+
 # --- F8: serve never loads the adoption code ----------------------------------------------------------------
 
 def test_serve_starts_when_the_adoption_modules_are_broken(tmp_path):
