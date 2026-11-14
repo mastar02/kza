@@ -2177,7 +2177,9 @@ def install_controller(root: Path, archive: Path, *, wall=time.time) -> dict:
     if "scripts/managed_launcher.pyc" not in files or "scripts/stage_runtime.pyc" not in files:
         raise LauncherRefusal("runtime_admission_controller_unmanaged")
     commit = manifest["git_commit"]
-    with stage.AdmissionController(root, allow_open_head=True):
+    # The install gate (review D4): allowed under a pending or invalid compaction log, so a
+    # corrected controller (epoch >= 3 above, never older than the installed one) can finish it.
+    with stage.AdmissionController(root, allow_open_head=True, gate="install"):
         record_path = _records(root, "controller.json")
         installed = _read_optional(record_path)
         if installed is not None and installed.get("controller_epoch", 0) > epoch:

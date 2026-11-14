@@ -67,6 +67,19 @@ SYSTEMCTL_TIMEOUT = 30.0  # list-unit-files on a loaded manager can exceed Servi
 # compaction). Found by the real-systemd rehearsal; vendor units are still dropped by origin.
 LIST_UNIT_FILES = ("list-unit-files", "--no-legend", "--plain", "--no-pager")
 LIST_UNITS = ("list-units", "--all", "--type=service,timer,socket,path", "--no-legend", "--plain", "--no-pager")
+# Review F9: the manager's own environment block (set-environment, the user session's import) is
+# what systemd substitutes into $VAR / ${VAR} besides the unit's Environment= and EnvironmentFile=.
+SHOW_ENVIRONMENT = ("show-environment",)
+# Variables systemd itself sets per process whose values are never paths (pids, ids, results,
+# counters, unit names). A reference to one of them resolves to a non-path placeholder; every other
+# unresolved reference (the *_DIRECTORY and TRIGGER_PATH ones included) refuses.
+SYSTEMD_PROVIDED = frozenset({
+    "MAINPID", "MANAGERPID", "INVOCATION_ID", "SERVICE_RESULT", "EXIT_CODE", "EXIT_STATUS",
+    "MONITOR_SERVICE_RESULT", "MONITOR_EXIT_CODE", "MONITOR_EXIT_STATUS", "MONITOR_INVOCATION_ID",
+    "MONITOR_UNIT", "TRIGGER_UNIT", "TRIGGER_TIMER_REALTIME_USEC", "TRIGGER_TIMER_MONOTONIC_USEC",
+    "LISTEN_FDS", "LISTEN_PID", "LISTEN_FDNAMES", "WATCHDOG_PID", "WATCHDOG_USEC", "JOURNAL_STREAM",
+    "USER", "LOGNAME"})
+_PROVIDED_PLACEHOLDER = "0"
 
 ORIGIN_PROPERTIES = ("LoadState", "FragmentPath", "SourcePath", "DropInPaths")
 EXEC_PROPERTIES = ("ExecCondition", "ExecStartPre", "ExecStart", "ExecStartPost", "ExecReload", "ExecStop",
@@ -212,6 +225,7 @@ class _Scan:
             self.members += sorted({os.path.normpath(path), os.path.realpath(path)})
             self.identities.add((device, inode))
         self.unit_directories = self._unit_directories(uid)
+        self._manager_environment: dict | None = None
         self.logrotate_configs: list[tuple[str, str]] = []
         self.logrotate_seen: set[str] = set()
         self.glob_entries = 0
@@ -334,7 +348,7 @@ class _Scan:
     # --- one unit (rules 3 and 4) ---------------------------------------------------------------
 
     def _substitute(self, token: str, environment: dict) -> tuple[str, bool]:
-        """systemd's $VAR/${VAR} substitution from the unit's own environment; ``$$`` is a literal dollar."""
+        """systemd's $VAR/${VAR} substitution (manager, then unit environment); ``$$`` is a literal dollar."""
         unresolved = False
 
         def replace(match):
@@ -344,9 +358,29 @@ class _Scan:
             name = match.group(1) or match.group(2)
             if name in environment:
                 return environment[name]
+            if name in SYSTEMD_PROVIDED:
+                return _PROVIDED_PLACEHOLDER
             unresolved = True
             return match.group(0)
         return commands._ENV_REFERENCE.sub(replace, token), unresolved
+
+    def manager_environment(self) -> dict:
+        """``systemctl --user show-environment`` as name -> value (read once per scan).
+
+        systemd prints a value with special characters as ``$'...'`` (C-style
+        escapes). Such a value is not decoded here: a reference to it stays
+        unresolved, which refuses (fail closed).
+        """
+        if self._manager_environment is None:
+            environment: dict = {}
+            for line in self.call(*SHOW_ENVIRONMENT).splitlines():
+                name, separator, value = line.partition("=")
+                if not separator or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None:
+                    _refuse(SCAN_UNAVAILABLE)  # not the manager's environment block
+                if not value.startswith("$'"):
+                    environment[name] = value
+            self._manager_environment = environment
+        return self._manager_environment
 
     def _environment(self, unit: str, shown: dict[str, list[str]]) -> dict:
         environment: dict[str, str] = {}
@@ -403,9 +437,12 @@ class _Scan:
                         takes_value = token in LOGROTATE_VALUE_OPTIONS
                     else:
                         config = bearing = True
+                if unresolved:
+                    # Review F9: a bare $VAR / ${VAR} is refused too; its value could name a member.
+                    _refuse(UNPARSED + unit + ":" + directive)
                 if not bearing:
                     continue
-                if unresolved or "%" in text:
+                if "%" in text:
                     _refuse(UNPARSED + unit + ":" + directive)
                 self.check_value(unit, text, base, rooted)
                 if config:
@@ -436,7 +473,8 @@ class _Scan:
 
     def scan_unit(self, unit: str, shown: dict[str, list[str]]) -> None:
         """Every path one unit names (rule 3), after its environment (rule 4)."""
-        environment = self._environment(unit, shown)
+        own = self._environment(unit, shown)
+        environment = {**self.manager_environment(), **own}
         base = self._working_directory(unit, shown)
         rooted = None
         for value in shown["RootDirectory"]:
@@ -445,7 +483,7 @@ class _Scan:
                     _refuse(UNPARSED + unit + ":RootDirectory")
                 self.check(unit, value)
                 rooted = value
-        for value in environment.values():
+        for value in own.values():
             text, _unresolved = self._substitute(value, environment)  # systemd leaves these to the program
             if "/" in text or text.startswith("~"):
                 self.check_value(unit, text, base, rooted)

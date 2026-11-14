@@ -94,6 +94,7 @@ FIXED_ENTRIES = frozenset({"admission", "slots", "current", ".stage.lock", ".adm
 MEMBER_CLASSES = ("own_work", "earlier_compaction", "prepare_leftover", "selection_leftover", "catalog_copy",
                   "managed_slot")
 RUNTIME_LINKS = frozenset({"config", "data", ".env"})
+SLOT_ENTRIES = frozenset({"runtime", "state"})  # all that prepare_slot makes in a slot (review F6)
 _SLOT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}")
 _HEX64 = re.compile("[0-9a-f]{64}")
 _DEADLINES = ("expires_at", "expires")
@@ -392,6 +393,13 @@ def retirement_set(root: Path, *, k_slot: str, retire_prepare_leftovers: bool,
             if proof["state_identity"] != _identity(state) or _has_symlink(state) or not _runtime_links_ok(runtime):
                 keep(relative, "possible_managed_copy")  # identity changed or a link container: never walked
                 continue
+            extra = sorted(set(os.listdir(path)) - SLOT_ENTRIES)
+            if extra:
+                # Review F6: the proof covers what the controller made (runtime/, state/); anything
+                # else in a proven slot was made by hand, so the whole slot is kept. Names only.
+                keep(relative, "unexpected_entries")
+                untouched[-1]["names"] = extra[:32]
+                continue
             members.append({"class": "managed_slot", "path": str(path), "identity": _identity(path),
                             "proof": proof["proof"], "slot": name, "state_root": str(state),
                             "state_identity": proof["state_identity"], "binding_ids": proof["binding_ids"]})
@@ -411,7 +419,7 @@ def retirement_set(root: Path, *, k_slot: str, retire_prepare_leftovers: bool,
                                     "proof": "compaction_log:" + match["compaction_id"]})
                 else:
                     keep("compaction/" + name + "/" + entry, "unknown")
-    _attach_copies(root, members, copies, k_slot)
+    _attach_copies(root, members, copies, k_slot, compaction_id)
     for index, member in enumerate(sorted(members, key=_member_order), start=1):
         member["n"] = index
     members.sort(key=lambda item: item["n"])
@@ -451,12 +459,18 @@ def _member_order(member: dict) -> tuple:
     return (MEMBER_CLASSES.index(member["class"]), member["path"])
 
 
-def _attach_copies(root: Path, members: list, copies: list, k_slot: str) -> None:
-    """Catalog copies under the root: attached to the member that contains them, or members themselves."""
-    k_state = str(root / "slots" / k_slot / "state")
+def _attach_copies(root: Path, members: list, copies: list, k_slot: str, compaction_id: str | None = None) -> None:
+    """Catalog copies under the root: attached to the member that contains them, or members themselves.
+
+    Copies inside K's state, and inside this compaction's own scratch (its
+    snapshots, own work attached at retire), are not plan members.
+    """
+    skipped = [str(root / "slots" / k_slot / "state")]
+    if compaction_id is not None:
+        skipped.append(str(root / "compaction" / compaction_id))
     for record in copies:
         destination = record["destination"]
-        if destination == k_state or destination.startswith(k_state + "/"):
+        if any(destination == item or destination.startswith(item + "/") for item in skipped):
             continue
         holder = next((member for member in members if destination == member["path"]
                        or destination.startswith(member["path"].rstrip("/") + "/")), None)
@@ -643,9 +657,9 @@ def _databases(state: Path) -> dict:
     return found
 
 
-def _head_markers(head_state: Path) -> dict:
-    """The head's soft-deletion markers (and ledger) used to classify 'erased'."""
-    markers = {"tombstoned": set(), "deleted_facts": set(), "deleted_profiles": set()}
+def _head_markers(head_state: Path, markers: dict | None = None) -> dict:
+    """The head's soft-deletion markers (and ledger) used to classify 'erased'; merged into ``markers``."""
+    markers = markers or {"tombstoned": set(), "deleted_facts": set(), "deleted_profiles": set()}
     for _relative, path in _databases(head_state).items():
         with stage._database_image(path) as db:
             names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -711,22 +725,36 @@ def classify_row(name: str, row: dict, head_row: dict | None, markers: dict, now
     return "unexplained"
 
 
-def coverage(members: list[dict], head_state: Path, *, now: float) -> dict:
-    """Per member: counts of rows and files not present in H (= K), by class. Numbers only.
+COVERAGE_CLASSES = ("expired", "erased", "superseded", "scrubbed", "unexplained", "removed_by_k_run")
+
+
+def coverage(members: list[dict], head_state: Path, *, now: float, k_state: Path | None = None) -> dict:
+    """Per member: counts of rows and files not present in H (= K at activation), by class. Numbers only.
 
     Members are read through private SQLite images (never written). Rows
     identical in H are covered; the scheduling tables and SQLite internals are
     rebuilt per state and not counted. Untouched entries get no counts.
+
+    At retire (review F5, decision D2=A) ``k_state`` is K' after its run, and
+    the reference stays H: a row (or file) identical in K' is covered; one
+    identical in H but gone from K' was removed by K's own run and is counted
+    as 'removed_by_k_run', which never blocks. Everything else is classified
+    as at plan time, with K''s erasure markers added to H's.
     """
     head_dbs = _databases(head_state)
     markers = _head_markers(head_state)
+    k_dbs = _databases(k_state) if k_state is not None else {}
+    k_cache: dict = {}
+    k_shas: set = set()
+    k_files: dict = {}
+    if k_state is not None:
+        markers = _head_markers(k_state, markers)
+        k_files = _plain_files(k_state)
+        k_shas = set(k_files.values())
     head_cache: dict = {}
-    head_files = {}
-    for path in head_state.rglob("*") if _lexists(head_state) else []:
-        if path.is_file() and not path.is_symlink() and path.suffix not in _SQLITE_SUFFIXES:
-            head_files[path.relative_to(head_state).as_posix()] = (path.stat().st_size, _file_sha(path))
+    head_files = _plain_files(head_state)
     report = {}
-    totals = dict.fromkeys(("expired", "erased", "superseded", "scrubbed", "unexplained"), 0)
+    totals = dict.fromkeys(COVERAGE_CLASSES, 0)
     for member in members:
         states = []
         root = Path(member["path"])
@@ -738,34 +766,58 @@ def coverage(members: list[dict], head_state: Path, *, now: float) -> dict:
         expired_ids = set()
         for state in states:
             for relative, path in _databases(state).items():
-                with stage._database_image(path) as db:
-                    names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-                    for name in sorted(names - _INTERNAL_TABLES - _SCHEDULING):
-                        if relative.endswith("chroma.sqlite3"):
-                            continue
-                        _columns, rows = _table_rows(db, name)
-                        head_rows = _head_table(head_cache, head_dbs, relative, name)
-                        for key, row in rows.items():
-                            if head_rows.get(key) == row:
-                                continue
-                            klass = classify_row(name, row, head_rows.get(key), markers, now)
-                            counts[klass] += 1
-                            if klass in {"expired", "erased"} and type(row.get("id")) is str:
-                                expired_ids.add(row["id"])
-            for path in state.rglob("*"):
-                if not path.is_file() or path.is_symlink() or path.suffix in _SQLITE_SUFFIXES \
-                        or path.name.endswith(_SIDE_SUFFIXES) or path.name.startswith(".kza-"):
+                if relative.endswith("chroma.sqlite3"):
                     continue
-                relative = path.relative_to(state).as_posix()
-                if "/chroma/" in "/" + relative or relative.startswith("chroma/"):
+                try:
+                    with stage._database_image(path) as db:
+                        names = {row[0] for row in db.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table'")}
+                        for name in sorted(names - _INTERNAL_TABLES - _SCHEDULING):
+                            _columns, rows = _table_rows(db, name)
+                            head_rows = _head_table(head_cache, head_dbs, relative, name)
+                            k_rows = _head_table(k_cache, k_dbs, relative, name) if k_state is not None else None
+                            for key, row in rows.items():
+                                if k_rows is not None and k_rows.get(key) == row:
+                                    continue
+                                if head_rows.get(key) == row:
+                                    if k_rows is not None:
+                                        counts["removed_by_k_run"] += 1
+                                    continue
+                                klass = classify_row(name, row, head_rows.get(key), markers, now)
+                                counts[klass] += 1
+                                if klass in {"expired", "erased"} and type(row.get("id")) is str:
+                                    expired_ids.add(row["id"])
+                except sqlite3.Error:
+                    # Review F12: a member file named *.db that SQLite cannot read is a coded refusal.
+                    _refuse("runtime_admission_compaction_database_unreadable", {"member": member["n"]})
+            for relative, signature in _plain_files(state).items():
+                if k_state is not None and (k_files.get(relative) == signature or signature in k_shas):
+                    continue  # still in K' (relocated collector targets keep their bytes)
+                if head_files.get(relative) == signature:
+                    if k_state is not None:
+                        counts["removed_by_k_run"] += 1
                     continue
-                if head_files.get(relative) == (path.stat().st_size, _file_sha(path)):
-                    continue
-                counts["expired" if path.stem in expired_ids else "unexplained"] += 1
+                counts["expired" if Path(relative).stem in expired_ids else "unexplained"] += 1
         report[str(member["n"])] = counts
         for key, value in counts.items():
             totals[key] += value
     return {"members": report, "totals": totals}
+
+
+def _plain_files(state: Path) -> dict:
+    """relative path -> (size, sha256) of a state's non-SQLite files (side files, markers, chroma excluded)."""
+    found = {}
+    if not _lexists(state):
+        return found
+    for path in state.rglob("*"):
+        if not path.is_file() or path.is_symlink() or path.suffix in _SQLITE_SUFFIXES \
+                or path.name.endswith(_SIDE_SUFFIXES) or path.name.startswith(".kza-"):
+            continue
+        relative = path.relative_to(state).as_posix()
+        if "/chroma/" in "/" + relative or relative.startswith("chroma/"):
+            continue
+        found[relative] = (path.stat().st_size, _file_sha(path))
+    return found
 
 
 def _file_sha(path: Path) -> str:
@@ -1064,9 +1116,7 @@ def _k_runtime(root: Path, log: dict, archive: Path, wall) -> dict:
                 "path": str(placeholder), "identity": _identity(placeholder)}, at=_now(wall))
         stage._prepare_slot(archive, root, intent["k_slot"], placeholder, compaction=compaction_id,
                             env_link=intent["has_env"])
-    record = next((record for _name, record in _read_records(stage.prepared_directory(root))
-                   if record.get("kind") == "prepared" and record.get("slot") == intent["k_slot"]
-                   and record.get("compaction_id") == compaction_id), None)
+    record = _k_proof(root, log)
     if record is None or record["slot_identity"] != _identity(slot):
         _refuse("runtime_admission_compaction_k_identity")
     source = stage.read_binding(root, intent["source_binding_id"])
@@ -1079,6 +1129,36 @@ def _k_runtime(root: Path, log: dict, archive: Path, wall) -> dict:
         "slot": intent["k_slot"], "runtime_root": str(runtime), "state_root": str(slot / "state"),
         "slot_identity": record["slot_identity"], "state_identity": record["state_identity"],
         "release_sha256": record["release_sha256"]}, at=_now(wall))
+
+
+def _k_proof(root: Path, log: dict) -> dict | None:
+    """K's slot as this compaction prepared it: its prepare record, else its staging record (review F2).
+
+    _prepare_slot renames the staging directory to slots/<K> and only then
+    writes the prepare record. After a cut in between, slots/<K> still has
+    the staging directory's {device, inode}, which its staging record (kind
+    staging, this compaction_id, no completed prepare) names.
+    """
+    intent = log["intent"]
+    slot = root / "slots" / intent["k_slot"]
+    records = [record for _name, record in _read_records(stage.prepared_directory(root))]
+    for record in records:
+        if record.get("kind") == "prepared" and record.get("slot") == intent["k_slot"] \
+                and record.get("compaction_id") == log["compaction_id"]:
+            return record
+    completed = {record.get("staging_id") for record in records if record.get("kind") == "prepared"}
+    if not _lexists(slot) or _kind(slot) != "directory":
+        return None
+    for record in records:
+        if (record.get("kind") == "staging" and record.get("compaction_id") == log["compaction_id"]
+                and record.get("staging_id") not in completed and record.get("identity") == _identity(slot)):
+            release = slot / "runtime" / "release.json"
+            if not _lexists(release) or _kind(slot / "state") != "directory":
+                return None  # never: the rename happens after extraction; refuse rather than guess
+            return {"kind": "staging", "slot": intent["k_slot"], "slot_identity": record["identity"],
+                    "state_identity": _identity(slot / "state"),
+                    "release_sha256": _sha256_bytes(release.read_bytes())}
+    return None
 
 
 def _destroy_own_staging(root: Path, log: dict, wall) -> None:
@@ -1251,8 +1331,12 @@ def compact_allow_run(root, compaction_id: str, *, reason: str, hours: int, wall
         head = stage.read_admission_head(root)
         stage.record_compaction_verified(root, head, wall=_now(wall))
         log = _log(root, compaction_id)
-        if not _has(log, "verified") or _has(log, "abort_started") or _has(log, "retire_started"):
+        if _has(log, "abort_started") or _has(log, "retire_started"):
             _refuse("runtime_admission_compaction_phase")
+        if not _has(log, "verified"):
+            # Review F4: an allow-run needs K' verified; before that, serve (if the armed run was
+            # never consumed) or 'compact abort' are the ways forward.
+            _refuse("runtime_admission_compaction_not_verified")
         now = _now(wall)
         until = now + hours * 3600.0
         stage.append_compaction_event(root, log, "allow_run", {
@@ -1388,6 +1472,8 @@ def _retire_member(root: Path, log: dict, member: dict, k_inodes: set, wall, unl
         if _lexists(path) and not at_path or _lexists(quarantine) and not at_quarantine:
             _refuse("runtime_admission_compaction_identity", {"member": member["n"]})
         if at_path:
+            if not _slot_contents_ok(log, member):
+                _refuse("runtime_admission_compaction_identity", {"member": member["n"]})  # review F6
             if member["class"] == "managed_slot" and (
                     (_lexists(path / "state") and _has_symlink(path / "state"))
                     or (_lexists(path / "runtime") and not _runtime_links_ok(path / "runtime"))):
@@ -1472,7 +1558,8 @@ def _numbered(log: dict) -> list[dict]:
 # --- retire ------------------------------------------------------------------------------------------
 
 def compact_retire(root, compaction_id: str, *, member: int | None = None, accept_identity_change: bool = False,
-                   scan=None, wall=time.time, unlink_hook=None) -> dict:
+                   accept_owner_only_loss: str | None = None, scan=None, wall=time.time,
+                   unlink_hook=None) -> dict:
     """C7/C8: destroy every member after the verified run; tombstones; 'complete'."""
     root = checked_root(root)
     with stage.AdmissionController(root, gate="compaction:" + compaction_id):
@@ -1487,12 +1574,14 @@ def compact_retire(root, compaction_id: str, *, member: int | None = None, accep
         if accept_identity_change:
             log = _accept_identity(root, log, member, wall)
         if not _has(log, "retire_started"):
-            report = _pre_retire(root, log, head, scan or _default_scan(), now=_now(wall))
+            report = _pre_retire(root, log, head, scan or _default_scan(), now=_now(wall),
+                                 accept_owner_only_loss=accept_owner_only_loss)
             log = stage.append_compaction_event(root, log, "retire_started", report, at=_now(wall))
         return _finish_retire(root, log, wall, unlink_hook=unlink_hook)
 
 
-def _pre_retire(root: Path, log: dict, head: dict, scan, *, now: float) -> dict:
+def _pre_retire(root: Path, log: dict, head: dict, scan, *, now: float,
+                accept_owner_only_loss: str | None = None) -> dict:
     """Pre-retire checks (design v1 pre_retire_checks, v4 F2): K' verified and self-contained."""
     intent = log["intent"]
     binding = stage.verify_closed_binding(root, head["binding_id"])
@@ -1521,11 +1610,84 @@ def _pre_retire(root: Path, log: dict, head: dict, scan, *, now: float) -> dict:
                 info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
                 if stat.S_ISREG(info.st_mode) and (info.st_nlink != 1 or (info.st_dev, info.st_ino) in k_inodes):
                     _refuse("runtime_admission_compaction_hard_link", {"member": item["n"]})
+    for item in members:
+        path = Path(item["path"])
+        if item["class"] == "managed_slot" and _lexists(path) and (
+                (_lexists(path / "state") and _has_symlink(path / "state"))
+                or (_lexists(path / "runtime") and not _runtime_links_ok(path / "runtime"))):
+            _refuse("runtime_admission_compaction_symlink", {"member": item["n"]})  # never walked
+        if not _slot_contents_ok(log, item):
+            _refuse("runtime_admission_compaction_identity", {"member": item["n"]})  # review F6
+    _same_plan(root, log, members)  # review F7
     scanned = scan(root, [item for item in members if _lexists(Path(item["path"]))])  # P14 again
-    covered = coverage([item for item in members if _lexists(Path(item["path"]))], state, now=now)
-    if covered["totals"]["unexplained"] and not intent["accept_owner_only_loss"]:
-        _refuse("runtime_admission_compaction_owner_only_data", {"coverage": covered["totals"]})
-    return {"members": len(members), "coverage": covered["totals"], "units": scanned.get("units_scanned")}
+    h_member = next(item for item in intent["members"] if item.get("state_root") == _h_state(root, intent))
+    h_state = Path(h_member["state_root"])
+    if not _lexists(h_state) or _identity(h_state) != h_member["state_identity"]:
+        _refuse("runtime_admission_compaction_identity", {"member": h_member["n"]})
+    covered = coverage([item for item in members if _lexists(Path(item["path"]))], h_state, now=now,
+                       k_state=state)
+    new = {number: counts["unexplained"] - intent["coverage_members"].get(number, {}).get("unexplained", 0)
+           for number, counts in covered["members"].items()}
+    new = {number: count for number, count in new.items() if count > 0}
+    digest = stage._digest({"compaction_id": log["compaction_id"], "unexplained": {
+        number: counts["unexplained"] for number, counts in sorted(covered["members"].items())}})
+    if new and accept_owner_only_loss != digest:
+        # Review F5: the start flag covers the plan's counts only; data first seen at retire needs
+        # its own acknowledgement of this coverage (retire --accept-owner-only-loss <sha256>).
+        _refuse("runtime_admission_compaction_owner_only_data", {
+            "coverage": covered["totals"], "new_unexplained": new, "coverage_sha256": digest})
+    return {"members": len(members), "coverage": covered["totals"], "units": scanned.get("units_scanned"),
+            "coverage_sha256": digest, "accepted_new_unexplained": sum(new.values())}
+
+
+def _h_state(root: Path, intent: dict) -> str:
+    return stage.read_binding(root, intent["source_binding_id"])["state_root"]
+
+
+def _slot_contents_ok(log: dict, member: dict) -> bool:
+    """A managed slot still holds only runtime/ and state/, and state/ is the recorded one (review F6).
+
+    A member whose identity change was accepted (logged, narrow) is held to
+    the entry rule only. Members already moved away are checked by identity.
+    """
+    path = Path(member["path"])
+    if member["class"] != "managed_slot" or not _lexists(path) or _kind(path) != "directory":
+        return True
+    if set(os.listdir(path)) - SLOT_ENTRIES:
+        return False
+    state = path / "state"
+    accepted = any(event["data"]["member"] == member["n"] for event in stage.compaction_events(log, "identity_accepted"))
+    return accepted or not _lexists(state) or _identity(state) == member["state_identity"]
+
+
+def _member_shape(member: dict, identity: dict) -> tuple:
+    return (member["class"], member["path"], identity["device"], identity["inode"],
+            (member.get("state_identity") or {}).get("inode"), tuple(sorted(member.get("copy_ids", []))))
+
+
+def _same_plan(root: Path, log: dict, members: list[dict]) -> None:
+    """The retirement set and the untouched list, recomputed at retire, are the acknowledged ones (review F7).
+
+    Members whose identity change was accepted are compared by the accepted
+    identity, and their own paths are left out of both untouched lists.
+    """
+    intent = log["intent"]
+    current, untouched = retirement_set(root, k_slot=intent["k_slot"],
+                                        retire_prepare_leftovers=intent["retire_prepare_leftovers"],
+                                        compaction_id=log["compaction_id"])
+    accepted = {event["data"]["member"] for event in stage.compaction_events(log, "identity_accepted")}
+    skipped = {Path(item["path"]).relative_to(root).as_posix() for item in intent["members"] if item["n"] in accepted}
+    planned = sorted(_member_shape(item, _accepted_identity(log, item)) for item in intent["members"]
+                     if item["n"] not in accepted and _lexists(Path(item["path"])))
+    found = sorted(_member_shape(item, item["identity"]) for item in current
+                   if Path(item["path"]).relative_to(root).as_posix() not in skipped)
+    kept = [entry for entry in untouched if entry["path"] not in skipped]
+    acknowledged = [entry for entry in intent["untouched"] if entry["path"] not in skipped]
+    if planned != found or kept != acknowledged:
+        _refuse("runtime_admission_compaction_plan_changed", {
+            "untouched_added": sorted({entry["path"] for entry in kept} - {entry["path"] for entry in acknowledged}),
+            "untouched_gone": sorted({entry["path"] for entry in acknowledged} - {entry["path"] for entry in kept}),
+            "members_planned": len(planned), "members_found": len(found)})
 
 
 def _finish_retire(root: Path, log: dict, wall, unlink_hook=None) -> dict:
@@ -1673,7 +1835,7 @@ def compact_abort(root, compaction_id: str, *, to_h: bool = False, discard_k_wri
         if log["terminal"] or _has(log, "retire_started"):
             _refuse("runtime_admission_compaction_phase")
         intent = log["intent"]
-        started = _has(log, "verify_started")
+        started = _armed_run_consumed(root, log)
         if not _has(log, "abort_started"):
             if started and not to_h:
                 _refuse("runtime_admission_compaction_abort_after_run")
@@ -1699,19 +1861,58 @@ def compact_abort(root, compaction_id: str, *, to_h: bool = False, discard_k_wri
         return _finish_abort(root, log, wall)
 
 
+def _returned_here(root: Path, log: dict, head: dict) -> bool:
+    """The head is the closed H this compaction's own return record wrote (review F1).
+
+    compaction_return_to_h writes the return record and the manual head, then
+    CASes and publishes 'current'; 'returned' is logged after that. A crash in
+    between leaves H closed with this record: the return happened.
+    """
+    intent = log["intent"]
+    if head is None or head["status"] != "closed" or head["binding_id"] != intent["source_binding_id"]:
+        return False
+    if _has(log, "returned"):
+        return True
+    path = stage._compaction_return_path(root, head)
+    if not _lexists(path):
+        return False
+    record = stage._read_compaction_return(root, head)
+    return record["compaction_id"] == log["compaction_id"] and record["h_head"] == intent["head"]
+
+
+def _armed_run_consumed(root: Path, log: dict) -> bool:
+    """serve's 'unconsumed' rule (review F4): verify_started is logged before begin_run's CAS.
+
+    The armed run counts as started only if a running head of the logged
+    generation existed: the head is open, or it closed at that generation or
+    later, or the run was verified. A failure before the CAS leaves the head
+    closed below that generation: nothing ran, and a plain abort is still the
+    'before the run' abort.
+    """
+    _armed, started = stage._armed_run(log)
+    if started is None:
+        return False
+    head = stage.read_admission_head(root)
+    return not (head is not None and head["status"] == "closed"
+                and head["generation"] < started["data"]["generation"]
+                and head["binding_id"] == started["data"]["binding_id"]
+                and stage.compaction_verified(root, log, head) is None)
+
+
 def _finish_abort(root: Path, log: dict, wall) -> dict:
     intent = log["intent"]
     head = stage.read_admission_head(root)
-    if head != intent["head"]:
-        if head["binding_id"] == intent["source_binding_id"] and head["status"] == "closed" \
-                and _has(log, "returned"):
-            pass
-        else:
-            k_bindings = {binding_id for binding_id, binding in _bindings(root).items()
-                          if binding.get("slot") == intent["k_slot"]}
-            if head["binding_id"] not in k_bindings:
-                _refuse("runtime_admission_head_changed")
-            head = stage.compaction_return_to_h(root, head, intent["head"], log["compaction_id"])
+    if head != intent["head"] and not _returned_here(root, log, head):
+        k_bindings = {binding_id for binding_id, binding in _bindings(root).items()
+                      if binding.get("slot") == intent["k_slot"]}
+        if head is None or head["binding_id"] not in k_bindings:
+            _refuse("runtime_admission_head_changed")
+        head = stage.compaction_return_to_h(root, head, intent["head"], log["compaction_id"])
+    # 'current' names H's runtime before K is destroyed (a cut after the CAS, or inside an
+    # activation that published K's selection before its CAS, leaves it naming K).
+    h_slot = stage.read_binding(root, intent["source_binding_id"])["slot"]
+    if not os.path.islink(root / "current") or os.readlink(root / "current") != "slots/" + h_slot + "/runtime":
+        stage._publish_selection(root, h_slot)
     if not _has(log, "returned"):
         log = stage.append_compaction_event(root, log, "returned", {"head": head}, at=_now(wall))
     k_slot = root / "slots" / intent["k_slot"]
@@ -1720,10 +1921,8 @@ def _finish_abort(root: Path, log: dict, wall) -> dict:
     work = own_work(root, log)
     if _lexists(k_slot):
         identity = k_event["data"]["slot_identity"] if k_event else None
-        record = next((record for _name, record in _read_records(stage.prepared_directory(root))
-                       if record.get("kind") == "prepared" and record.get("slot") == intent["k_slot"]
-                       and record.get("compaction_id") == log["compaction_id"]), None)
-        identity = identity or (record or {}).get("slot_identity")
+        proof = _k_proof(root, log)
+        identity = identity or (proof or {}).get("slot_identity")
         if identity is None or _identity(k_slot) != identity:
             _refuse("runtime_admission_compaction_k_identity")
         copies = [record["copy_id"] for record in catalog_records(root)
@@ -1769,15 +1968,34 @@ def compact_resume(root, compaction_id: str, *, archive=None, worker=None, scan=
 
 
 def compact_status(root, compaction_id: str | None = None) -> dict:
-    """Read-only, content-free: each log's phase, without a lease."""
+    """Read-only, content-free: each log's phase, without a lease.
+
+    An unreadable log is reported by id with its code (review F3), never a
+    traceback: every lease-taking command refuses while it exists, and the
+    runbook's 'compactación trabada' section says what to do.
+    """
     root = checked_root(root)
-    logs = stage.compaction_logs(root)
-    if compaction_id is not None:
-        logs = [log for log in logs if log["compaction_id"] == compaction_id]
-    return {"compactions": [{"compaction_id": log["compaction_id"], "terminal": log["terminal"],
-                             "phase": log["events"][-1]["kind"] if log["events"] else "intent",
-                             "phases": [event["kind"] for event in log["events"]],
-                             "members": len(log["intent"]["members"])} for log in logs]}
+    directory = stage.compaction_directory(root)
+    names = sorted(name for name in os.listdir(directory) if name not in {"retired", "returns"}
+                   and not name.startswith(".")) if _lexists(directory) else []
+    found = []
+    for name in names:
+        if compaction_id is not None and name != compaction_id:
+            continue
+        try:
+            if not _lexists(directory / name / "intent.json"):
+                continue
+            log = stage.read_compaction_log(root, name)
+        except (OSError, ValueError) as error:
+            found.append({"compaction_id": name[:64], "invalid": True,
+                          "code": str(error)[:200] if str(error).startswith("runtime_admission_")
+                          else "runtime_admission_compaction_log_invalid"})
+            continue
+        found.append({"compaction_id": log["compaction_id"], "terminal": log["terminal"],
+                      "phase": log["events"][-1]["kind"] if log["events"] else "intent",
+                      "phases": [event["kind"] for event in log["events"]],
+                      "members": len(log["intent"]["members"])})
+    return {"compactions": found}
 
 
 # --- CLI ------------------------------------------------------------------------------------------------
@@ -1806,6 +2024,7 @@ def add_commands(commands) -> None:
         if name == "retire":
             parser.add_argument("--member", type=int)
             parser.add_argument("--accept-identity-change", action="store_true")
+            parser.add_argument("--accept-owner-only-loss", metavar="COVERAGE_SHA256")
         if name == "resume":
             parser.add_argument("--archive", type=Path)
         if name == "abort":
@@ -1834,7 +2053,8 @@ def run_command(args, *, scan=None, worker=None) -> int:
             result = compact_verify(args.root, args.compaction_id, smoke_seconds=args.smoke_seconds)
         elif command == "retire":
             result = compact_retire(args.root, args.compaction_id, member=args.member,
-                                    accept_identity_change=args.accept_identity_change, scan=scan)
+                                    accept_identity_change=args.accept_identity_change,
+                                    accept_owner_only_loss=args.accept_owner_only_loss, scan=scan)
         elif command == "resume":
             result = compact_resume(args.root, args.compaction_id, archive=args.archive, worker=worker, scan=scan)
         elif command == "abort":
@@ -1849,6 +2069,14 @@ def run_command(args, *, scan=None, worker=None) -> int:
         return 78
     except ValueError as error:
         print(json.dumps({"refused": str(error)[:200]}, sort_keys=True))
+        return 78
+    except sqlite3.Error:
+        # Review F12: coded and content-free (no path, no message text), never a traceback.
+        print(json.dumps({"refused": "runtime_admission_compaction_database_unreadable"}, sort_keys=True))
+        return 78
+    except OSError as error:
+        print(json.dumps({"refused": "runtime_admission_compaction_io_error",
+                          "errno": errno.errorcode.get(error.errno, "unknown")}, sort_keys=True))
         return 78
     print(json.dumps(result, sort_keys=True, default=str))
     return 0

@@ -657,7 +657,27 @@ _TOMBSTONE_KEYS = frozenset({"schema_version", "compaction_id", "member", "class
 # AdmissionController gates (design v2 gate.modes, v4 F1). "normal" refuses while a compaction is
 # pending; "serve" lets the launcher enter so that receipt-proven R-a runs before its own gate
 # decision (compaction_serve_decision); "compaction:<id>" is used only by that compaction's steps.
-GATES = ("normal", "serve")
+# "install" is install-controller's (review D4): the way out of a stuck compaction is a corrected
+# controller (epoch >= 3, monotonic), so it enters under a pending or an invalid log.
+GATES = ("normal", "serve", "install")
+
+
+def require_forward_epoch(root: Path) -> None:
+    """Refuse when admission/controller.json declares a newer controller epoch than this code (review F8).
+
+    Every slot runtime and every controller/<commit> ships its own
+    stage_runtime; a copy older than the installed controller must not take
+    the lease or prepare a slot. Only a readable integer epoch above ours
+    refuses here (a missing or damaged record is the launcher's refusal).
+    """
+    path = Path(root) / "admission" / "controller.json"
+    try:
+        value = _read_json(path) if path.is_file() and not path.is_symlink() else None
+    except (OSError, ValueError, UnicodeDecodeError):
+        return
+    epoch = value.get("controller_epoch") if type(value) is dict else None
+    if type(epoch) is int and epoch > CONTROLLER_EPOCH:
+        raise ValueError("runtime_admission_controller_downgrade")
 
 
 def compaction_directory(root: Path) -> Path:
@@ -1572,6 +1592,7 @@ def _prepare_slot(archive: Path, root: Path, name: str, state_source: Path, *,
     manifest, files = _read_archive(archive)
     with _locked_root(root):
         if os.path.lexists(root / "admission"):
+            require_forward_epoch(root)
             pending = pending_compaction(root)
             if pending is not None and pending["compaction_id"] != compaction:
                 raise ValueError("runtime_admission_compaction_pending")
@@ -3971,8 +3992,15 @@ class AdmissionController:
             head = read_admission_head(self.root)
             if head is not None and head["status"] != "closed" and not self.allow_open_head:
                 raise ValueError("runtime_admission_not_closed")
+            require_forward_epoch(self.root)
             # U3b-0c gate (design v2 gate.choke_points): every lease-taking path enters here.
-            pending = pending_compaction(self.root)
+            if self.gate == "install":
+                try:
+                    pending = pending_compaction(self.root)
+                except ValueError:
+                    pending = None  # an invalid log: only a corrected controller can read it
+            else:
+                pending = pending_compaction(self.root)
             if pending is not None and self.gate == "normal":
                 raise ValueError("runtime_admission_compaction_pending")
             if (pending is None or pending["compaction_id"] != self.gate.split(":", 1)[-1]) \
