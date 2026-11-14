@@ -198,31 +198,126 @@ _HOME_REFERENCE = re.compile(r"\$\$?(?:HOME(?![A-Za-z0-9_])|\{HOME(?::?[-=][^}]*
 # After specifier expansion ('%%' kept as \0) and '$$' protection (\1): a part only known at run time.
 _UNKNOWN = re.compile(r"[$%\x01]")
 _VARIABLE = re.compile(r"[$\x01]")
-# Review r5 R5-1: a shell (or a program) expands these in a path; '*' and '?' never cross a '/'.
-_GLOB = re.compile(r"[*?\[]")
 SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "ash", "mksh", "busybox"})
+
+
+_POSIX_CLASSES = {
+    "alpha": "a-zA-Z", "digit": "0-9", "alnum": "a-zA-Z0-9", "upper": "A-Z", "lower": "a-z",
+    "space": " \\t\\n\\r\\f\\v", "blank": " \\t", "xdigit": "0-9A-Fa-f", "cntrl": "\\x00-\\x1f\\x7f",
+    "print": "\\x20-\\x7e", "graph": "\\x21-\\x7e", "word": "a-zA-Z0-9_",
+    "punct": "".join(re.escape(char) for char in "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")}
+
+
+def _bracket(component: str, start: int) -> tuple[str, int] | None:
+    """The shell bracket expression at ``component[start] == '['`` as a regular expression matching one
+    character, and the index after its ']'; None when it is not closed (the '[' is then a literal).
+
+    Review r51 A-F2: glob(7) semantics. '!' or '^' negates, a ']' first is a
+    member, ranges and ``[:class:]`` are kept; an equivalence class
+    (``[=c=]``), a collating symbol (``[.c.]``) or an unknown class matches
+    any character (wider than the shell, never narrower).
+    """
+    index = start + 1
+    negate = index < len(component) and component[index] in "!^"
+    index += negate
+    items: list[str] = []
+    wide = False
+    first = True
+    while index < len(component):
+        char = component[index]
+        if char == "]" and not first:
+            if wide:
+                return ".", index + 1
+            body = "".join(items)
+            if not body:
+                return ("." if negate else "(?!)"), index + 1
+            return ("[^" if negate else "[") + body + "]", index + 1
+        first = False
+        if char == "[" and component[index + 1:index + 2] in (":", "=", "."):
+            kind = component[index + 1]
+            end = component.find(kind + "]", index + 2)
+            if end != -1:
+                name = component[index + 2:end]
+                if kind == ":" and name in _POSIX_CLASSES:
+                    items.append(_POSIX_CLASSES[name])
+                else:
+                    wide = True
+                index = end + 2
+                continue
+        if char == "\\" and index + 1 < len(component):
+            index += 1
+            char = component[index]
+        if (component[index + 1:index + 2] == "-" and index + 2 < len(component)
+                and component[index + 2] != "]"):
+            low, high = char, component[index + 2]
+            if low <= high:
+                items.append(re.escape(low) + "-" + re.escape(high))
+            index += 3
+            continue
+        items.append(re.escape(char))
+        index += 1
+    return None
 
 
 def _component_pattern(component: str, unknown: re.Pattern | None) -> tuple[str, bool]:
     """One path component of a glob as a regular expression, and whether it is open.
 
-    '*' is any run and '?' one character. A '[' set, or a part only known
-    at run time (``unknown``), makes the rest of the component, and what
-    follows it, unknown: the expression ends in ``.*`` and the component is
-    open (stricter than the shell, never looser). '\\0' is a literal '%'.
+    '*' is any run, '?' one character and a closed ``[...]`` one character
+    of its set (review r51 A-F2); an unclosed '[' is a literal. A part only
+    known at run time (``unknown``) makes the rest of the component, and
+    what follows it, unknown: the expression ends in ``.*`` and the
+    component is open (stricter than the shell, never looser). '\\0' is a
+    literal '%'.
     """
     out = []
-    for char in component:
+    index = 0
+    while index < len(component):
+        char = component[index]
         if char == "*":
             out.append(".*")
         elif char == "?":
             out.append(".")
-        elif char == "[" or (unknown is not None and unknown.match(char)):
+        elif char == "[" and (found := _bracket(component, index)) is not None:
+            if unknown is not None and unknown.search(component, index, found[1]):
+                out.append(".*")  # a run-time part inside the set: anything from here
+                return "".join(out), True
+            out.append(found[0])
+            index = found[1]
+            continue
+        elif unknown is not None and unknown.match(char):
             out.append(".*")
             return "".join(out), True
         else:
             out.append(re.escape("%" if char == "\0" else char))
+        index += 1
     return "".join(out), False
+
+
+def _first_glob(run: str) -> int | None:
+    """Index of the first glob character the shell would expand: '*', '?', or a '[' closed within its
+    path component (an unclosed '[', as in ``[ -f x ]`` or ``http://[``, is a literal; review r51 A-F2)."""
+    for index, char in enumerate(run):
+        if char in "*?":
+            return index
+        if char == "[":
+            end = run.find("/", index)
+            if _bracket(run[:end] if end != -1 else run, index) is not None:
+                return index
+    return None
+
+
+# Review r51 A-F2: a POSIX class ('[[:space:]]') holds ':', where _PATH_BREAK cuts; such a run is also read
+# with ':' kept.
+_GLOB_BREAK = re.compile(r"[\s;|&()<>`'\"=,]+")
+
+
+def _runs(text: str) -> list[str]:
+    """The runs of a text between path separators (_PATH_BREAK), plus, where a run holds '[:', the run
+    with ':' kept."""
+    found = [run for run in _PATH_BREAK.split(text) if run]
+    if "[:" in text:
+        found += [run for run in _GLOB_BREAK.split(text) if "[:" in run]
+    return found
 
 
 def _may_reach(parts: list[str], names: list[str], unknown: re.Pattern | None, exact: bool) -> bool:
@@ -290,6 +385,23 @@ def _c_unescaped(text: str) -> str:
             out += text[index].encode("utf-8", "surrogateescape")
             index += 1
     return out.decode("utf-8", "surrogateescape")
+
+
+_ANSI_C = re.compile(r"[$\x01]'((?:[^'\\]|\\.)*)'", re.DOTALL)
+
+
+def _shell_reading(script: str) -> str | None:
+    """Review r51 A-F3: the words of an ``sh -c`` script as the shell reads them, one per line: a bash
+    ``$'...'`` decoded and every quote removed (``rel''eases`` is ``releases``). None if it does not split."""
+    def decoded(match: re.Match) -> str:
+        try:
+            return "'" + _decode_ansi_c("$'" + match.group(1) + "'").replace("'", "'\"'\"'") + "'"
+        except ValueError:
+            return match.group(0)
+    try:
+        return "\n".join(shlex.split(_ANSI_C.sub(decoded, script)))
+    except ValueError:
+        return None
 
 
 def _systemd_words(value: str) -> list[str]:
@@ -554,16 +666,62 @@ class _Scan:
                 self.check(unit, os.path.join(rooted, piece.lstrip("/")))
         # Review r5 R5-1: a glob in a path (sh -c 'tar c <root>/slots/*/state') names whatever it matches,
         # so it is held to the fixed-part rule, as a logrotate target and a manager value are.
-        runs = {run.lstrip(EXEC_PREFIXES) for piece in pieces for run in _PATH_BREAK.split(piece)}
+        runs = {run.lstrip(EXEC_PREFIXES) for piece in pieces for run in _runs(piece)}
         for run in runs:
             run = self._home_run(run)
-            match = _GLOB.search(run)
-            if match is None or not run.startswith("/"):
-                continue  # a relative glob is usually a pattern a program reads (find -path, rsync --include)
-            literal, rest = run[:match.start()], run[match.start():]
-            self._fixed_part(unit, literal, rest, unknown=None, exact=False)
-            if rooted:
+            self._variable_tail(unit, run)
+            start = _first_glob(run)
+            if start is None:
+                continue
+            literal, rest = run[:start], run[start:]
+            anchored = self._glob_anchor(literal, base)
+            if anchored is None:
+                continue  # 'find -path */cache/*', '--include=*/': a pattern a program reads
+            self._fixed_part(unit, anchored, rest, unknown=None, exact=False)
+            if rooted and literal.startswith("/"):
                 self._fixed_part(unit, os.path.join(rooted, literal.lstrip("/")), rest, unknown=None, exact=False)
+
+    def _glob_anchor(self, literal: str, base: str) -> str | None:
+        """Where a glob's literal part names a directory: absolute as written; relative, against the working
+        directory when it holds a '/' (``releases/slots/*``) or the working directory is the root or below
+        it (``slots/*`` from <root>), review r51 A-F1. None: a bare relative pattern (``*/cache/*``)."""
+        if literal.startswith("/"):
+            return literal
+        if "/" in literal or any(_within(form, root) for form in {_normal(base), os.path.realpath(base)}
+                                 for root in self.roots):
+            return os.path.join(base, literal)
+        return None
+
+    def _variable_tail(self, unit: str, run: str) -> None:
+        """Review r51 A-F4: an absolute run with a '$' left in it (an unset $VAR the 0e4 leniency tolerated, or
+        a shell's own variable) refuses when what follows the variable can complete the path of a member,
+        or of a directory strictly below the root that holds one (``/home/kza/$D/slots/m1``,
+        ``/home/kza/r$D/slots/*``). The variable may stand for any number of components."""
+        index = run.find("$")
+        if index == -1 or not run.startswith("/"):
+            return
+        head, partial = os.path.split(run[:index])
+        tail = [part for part in run[index:].split("/")[1:] if part not in ("", ".")]
+        if not tail or ".." in tail:
+            return  # nothing after the variable to place, or a '..' that can go anywhere: not judged here
+        prefix = re.escape(partial) + ".*"
+        head = _normal(head or "/")
+        for directory in {head, os.path.realpath(head)}:
+            for root in self.roots:
+                if not _within(root, directory) or root == directory:
+                    continue
+                depth = len(os.path.relpath(root, directory).split("/"))
+                for member in self.members:
+                    if not _within(member, root):
+                        continue
+                    names = os.path.relpath(member, directory).split("/")
+                    if re.fullmatch(prefix, names[0], re.DOTALL) is None:
+                        continue
+                    for start in range(1, len(names)):  # the variable spans names[:start], the tail the rest
+                        aligned = names[start:start + len(tail)]
+                        if all(re.fullmatch(_component_pattern(part, None)[0], name, re.DOTALL)
+                               for part, name in zip(tail, aligned)) and start + len(tail) > depth:
+                            _refuse(PATH_HIT + unit)
 
     # --- systemctl ------------------------------------------------------------------------------
 
@@ -729,7 +887,8 @@ class _Scan:
                 options = PATH_OPTIONS | (LOGROTATE_PATH_OPTIONS if after_rotate else frozenset())
                 option = token.split("=", 1)[0] if token.startswith("-") and "=" in token else None
                 bearing = ((index > 0 and texts[index - 1][0] in options) or option in options
-                           or "/" in text or "/" in token or text.startswith("~"))
+                           or "/" in text or "/" in token or text.startswith("~")
+                           or _first_glob(text) is not None)  # review r51 A-F1: 'tar c *' from the root
                 config = False
                 if after_rotate:
                     if takes_value:
@@ -861,21 +1020,23 @@ class _Scan:
         only known at run time could land under the root. False when it cannot be judged (an unknown part
         before any '/': ``%i``, ``${SRC}``, ``-C${SRC}``).
 
-        Review r5 R5-1: an absolute run with a glob before any run-time part
-        is judged by the fixed-part rule over its components (``%h/rel*/slots/%i``
-        and ``%h/r?leases/slots/*/state`` refuse, ``%h/backups/*.tgz`` passes);
-        a glob that can name the root itself refuses here too (the substring
-        rule refuses the root by name in this text).
+        Review r5 R5-1: a run with a glob before any run-time part is judged
+        by the fixed-part rule over its components (``%h/rel*/slots/%i`` and
+        ``%h/r?leases/slots/*/state`` refuse, ``%h/backups/*.tgz`` passes); a
+        glob that can name the root itself refuses here too (the substring
+        rule refuses the root by name in this text). A relative one is judged
+        from the base when its literal part holds a '/' or the base is in the
+        root (review r51 A-F1, ``_glob_anchor``).
         """
         run = self._home_run(run.lstrip(EXEC_PREFIXES))
         match = _UNKNOWN.search(run)
-        glob_match = _GLOB.search(run)
-        if (glob_match is not None and (match is None or glob_match.start() < match.start())
-                and run.startswith("/")):
-            literal = run[:glob_match.start()].replace("\0", "%")
-            self.check(unit, literal)
-            self._fixed_part(unit, literal, run[glob_match.start():])
-            return True
+        start = _first_glob(run)
+        if start is not None and (match is None or start < match.start()):
+            anchored = self._glob_anchor(run[:start].replace("\0", "%"), base)
+            if anchored is not None:  # review r51 A-F1: a relative glob with a directory, from the base
+                self.check(unit, anchored)
+                self._fixed_part(unit, anchored, run[start:])
+                return True
         literal = (run[:match.start()] if match else run).replace("\0", "%")
         if "/" not in literal:
             return match is None
@@ -900,9 +1061,8 @@ class _Scan:
         for target in targets:
             if re.search(re.escape(target) + r"(?![\w.-])", text) is not None:
                 _refuse(PATH_HIT + unit)
-        for run in _PATH_BREAK.split(text):
-            if run:
-                self._judge(unit, run, base)
+        for run in _runs(text):
+            self._judge(unit, run, base)
 
     def _script_words(self, words: list[str]) -> set[int]:
         """Indexes of the scripts of ``sh -c '...'`` (any shell, any option cluster with 'c')."""
@@ -990,6 +1150,10 @@ class _Scan:
                 scripts = self._script_words(words) if key in EXEC_PROPERTIES else set()
                 for index, word in enumerate(words):
                     flat = self._flatten(word, environment)
+                    if index in scripts:
+                        reading = _shell_reading(flat)
+                        if reading is not None and reading != flat:
+                            self.check_text(unit, reading, base)  # review r51 A-F3: rel''eases, $'..\x65..'
                     if index in scripts and _VARIABLE.search(flat):
                         self._unjudged(unit, key, own)  # a variable in an sh -c script: unknown to the scan
                     for run in _PATH_BREAK.split(flat):
