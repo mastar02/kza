@@ -89,6 +89,8 @@ def test_final_probe_waits_for_the_applications_own_historical_catalog_close(tmp
     probe, probe_outcome = _run(stage._assert_writers_closed, state)
     # Unserialized, the probe reaches the held flock at once (the G01 refusal).
     probe.join(0.5)
+    # Serialized, it is still waiting for the worker's shared lock: no outcome yet.
+    assert probe.is_alive() and probe_outcome == {}, probe_outcome
     services.release.set()
     history.join(30)
     probe.join(30)

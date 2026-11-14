@@ -191,6 +191,14 @@ producción actual b0866e8 (o a 63ea8d3) queda rechazado; sólo una activación 
 gestionada, sin head ni autoridad, los acepta todavía. El rollback posterior
 debe apuntar a una release que incluya el par.
 
+Lista de releases (G01, 2026-11-14): no promover ni volver a una release
+gestionada anterior a 431e44e. Esas versiones (por ejemplo 80b47f5) tienen el
+par, pero su mantenimiento de diagnósticos puede tomar el lock del catálogo en
+el estado delegado durante la revalidación final y rechazar el arranque con
+`runtime_admission_writer_active` (`t024/g01-writer-active-20261114.json`).
+Ninguna se publicó; el ensayo compilado que usa 80b47f5 lo compensa sólo en el
+harness (`tests/mocks/managed_slot_graph.serialize_older_history`).
+
 La sonda corre con el intérprete del controlador, `-I -B`, sin el lease, sin
 ticket y con un entorno mínimo (`LANG`, `LC_ALL`, `LC_CTYPE`, `TMPDIR`,
 `SQLITE_TMPDIR`). Que sea de sólo lectura es una convención del código del
