@@ -470,6 +470,10 @@ def shim_main(state_dir: str, argv: list[str]) -> int:
         return 0
     if argv[:2] == ["--user", "daemon-reload"]:
         return 0
+    if argv[:2] in (["--user", "list-unit-files"], ["--user", "list-units"]):
+        # U3b-0c P14: the rehearsal's units live outside the user unit directories, so the
+        # scanner selects none; the real listing is rehearsed by test_linux_compaction_units.
+        return 0
     if argv[:2] == ["--user", "show"]:
         unit = argv[2]
         names = [argv[index + 1] for index, item in enumerate(argv) if item == "-p"]
