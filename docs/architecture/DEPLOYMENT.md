@@ -424,8 +424,14 @@ Cómo arranca:
   con `umask=0o077` (`stage_runtime.MANAGED_CHILD_UMASK`); lo mismo hace
   `AdmissionController.run` para corridas de operador y ensayos. Sin eso el
   hijo heredaba el `0002` de `kza` y lo que `src/` crea en
-  `slots/<slot>/state` quedaba `0664`/`0775` (bases SQLite con `-wal`/`-shm`,
-  directorios intermedios, archivos). Ahora es `0600`/`0700`. El drop-in
+  `slots/<slot>/state` quedaba abierto: directorios intermedios `0775`,
+  archivos `0664`, bases SQLite y sus `-wal`/`-shm` `0644` (medido en Mac y
+  Linux). Ahora es `0700`/`0600`. El trabajador de compactación
+  (`compaction.run_worker`, que `compact start` lanza desde un shell de `kza`)
+  usa la misma umask (revisión S1). Las sondas de lectura (candidato de
+  `activate` y `path_preflight`) no crean entradas propias; un `-shm` que
+  SQLite cree al abrir una base `?mode=ro` copia el modo de esa base, no la
+  umask. El drop-in
   agrega `UMask=0077` como defensa adicional; también cubre al controlador y a
   un `console.log` que systemd cree de cero (queda `0600`, medido con
   systemd 255). Un archivo que otro lector necesite conserva su `fchmod`

@@ -840,6 +840,42 @@ def test_walk_fsyncs_every_directory_and_the_parent(tmp_path, monkeypatch):
 
 # --- the compaction worker capability (G1) ---
 
+# A stand-in worker: what the real one may create in K's state (mkdir with parents, open('w'), a WAL
+# database with its -wal/-shm), recorded while the database is open, as the JSON line run_worker reads.
+UMASK_WORKER = "\n".join([
+    "import json, os, sqlite3, stat, sys",
+    "from pathlib import Path",
+    "mask = os.umask(0o077)",
+    "os.umask(mask)",
+    "data = Path(sys.argv[1])",
+    "(data / 'probe' / 'deep').mkdir(parents=True)",
+    "(data / 'probe' / 'deep' / 'plain.json').write_text('{}')",
+    "db = sqlite3.connect(data / 'probe.db', isolation_level=None)",
+    "db.execute('PRAGMA journal_mode=WAL')",
+    "db.execute('CREATE TABLE t (v)')",
+    "db.execute('INSERT INTO t VALUES (1)')",
+    "names = ('probe', 'probe/deep', 'probe/deep/plain.json', 'probe.db', 'probe.db-wal', 'probe.db-shm')",
+    "modes = {name: oct(stat.S_IMODE(os.lstat(data / name).st_mode)) for name in names}",
+    "db.close()",
+    "print(json.dumps({'umask': oct(mask), 'modes': modes}))",
+])
+
+
+def test_the_compaction_worker_is_spawned_with_the_managed_child_umask(tmp_path, monkeypatch):
+    """Review S1: 'compact start' runs from a kza shell with umask 0002; the worker must not inherit it."""
+    data = tmp_path / "k-data"
+    data.mkdir()
+    monkeypatch.setattr(compaction, "worker_command",
+                        lambda root, compaction_id: [sys.executable, "-I", "-B", "-c", UMASK_WORKER, str(data)])
+    previous = os.umask(0o002)
+    try:
+        result = compaction.run_worker(tmp_path / "root", "0" * 32)
+    finally:
+        os.umask(previous)
+    assert result == {"umask": "0o77", "modes": {
+        "probe": "0o700", "probe/deep": "0o700", "probe/deep/plain.json": "0o600",
+        "probe.db": "0o600", "probe.db-wal": "0o600", "probe.db-shm": "0o600"}}
+
 def test_worker_command_is_the_entry_guard_bootstrap_and_needs_its_capability(tmp_path):
     root = tmp_path / "root"
     command = compaction.worker_command(root, "0" * 32)

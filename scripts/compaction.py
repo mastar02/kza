@@ -1301,8 +1301,10 @@ def run_worker(root: Path, compaction_id: str) -> dict:
     environment = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
                                                      "SQLITE_TMPDIR", "HOME") if key in os.environ}
     environment["KZA_COMPACTION_WORKER"] = "1"
+    # Private whatever the operator shell's umask (0002 for kza): review S1, same class as F5.
     completed = subprocess.run(worker_command(root, compaction_id), capture_output=True, text=True,
-                               env=environment, stdin=subprocess.DEVNULL, check=False)
+                               env=environment, stdin=subprocess.DEVNULL, check=False,
+                               umask=stage.MANAGED_CHILD_UMASK)
     if completed.returncode != 0:
         code = (completed.stderr.strip().splitlines() or ["runtime_admission_compaction_worker_failed"])[-1]
         _refuse(code[:200] if code.startswith(("runtime_admission_", "payload_", "state_", "copy_catalog_"))
