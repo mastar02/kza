@@ -679,6 +679,10 @@ def kza_markers(paths) -> tuple[str, ...]:
     ``"$HOME"/kza``, and a relative ``kza`` in a unit that runs from the home
     (no WorkingDirectory=, or %h, ~, $HOME, the home itself), matched as a
     whole word (mentions_markers). A unit named ``kza*`` is kza's by its name.
+
+    0c review r4 R4-5: a link directly in the home that resolves to a kza
+    path or inside one (``~/app`` -> ``~/kza``) is a marker too, absolute
+    and behind a home prefix (never bare: ``app`` is a common word).
     """
     home = os.path.expanduser("~").rstrip("/") + "/"
     users = {os.path.basename(home.rstrip("/"))}
@@ -697,7 +701,35 @@ def kza_markers(paths) -> tuple[str, ...]:
                     found.append(relative)
                 found += [prefix + relative for prefix in prefixes]
                 found.append(RELATIVE_MARKER + relative)
+    for alias in _home_aliases(home, paths):
+        found.append(alias)
+        found += [prefix + alias[len(home):] for prefix in prefixes]
     return tuple(sorted(set(found)))
+
+
+def _home_aliases(home: str, paths) -> list[str]:
+    """Links directly in the home whose target is one of ``paths`` or inside one (review r4 R4-5)."""
+    targets = [os.path.realpath(path) for path in paths]
+    found = []
+    try:
+        with os.scandir(home) as entries:
+            links = [entry.path for entry in entries if entry.is_symlink()]
+    except OSError:
+        return found
+    for link in links:
+        resolved = os.path.realpath(link)
+        if any(resolved == target or resolved.startswith(target.rstrip("/") + "/") for target in targets):
+            found.append(link)
+    return found
+
+
+def _normal_text(text: str) -> str:
+    """Review r4 R4-5: '//' and '/./' collapsed, and a default form ``${HOME:-...}`` read as ``${HOME}``."""
+    text = re.sub(r"\$\{HOME:?[-=][^}]*\}", "${HOME}", text)
+    previous = None
+    while previous != text:
+        previous, text = text, re.sub(r"/\./", "/", re.sub(r"/{2,}", "/", text))
+    return text
 
 
 def mentions_markers(text: str | None, environment: dict | None, markers: tuple[str, ...],
@@ -712,7 +744,9 @@ def mentions_markers(text: str | None, environment: dict | None, markers: tuple[
     """
     if text is None or (unit is not None and unit.startswith("kza")):
         return True
+    text = text + "\n" + _normal_text(text)  # review r4 R4-5: the normalised reading as well
     values = " ".join((environment or {}).values())
+    values = values + " " + _normal_text(values)
     plain = [marker for marker in markers if not marker.startswith(RELATIVE_MARKER)]
     if any(marker in text or marker in values for marker in plain):
         return True
@@ -726,8 +760,8 @@ def mentions_markers(text: str | None, environment: dict | None, markers: tuple[
 def _runs_from_home(text: str) -> bool:
     """No WorkingDirectory= (a user unit then runs from the home) or one of %h, ~, $HOME, the home itself."""
     home = os.path.expanduser("~").rstrip("/")
-    found = [line.split("=", 1)[1].strip().lstrip("-!") for line in text.splitlines()
-             if line.strip().startswith("WorkingDirectory=")]
+    found = [line.split("=", 1)[1].strip().strip("'\"").lstrip("-!") for line in text.splitlines()
+             if line.strip().startswith("WorkingDirectory=")]  # review r4 R4-5: a quoted value too
     return not found or found[-1].rstrip("/") in _HOME_DIRECTORIES + (home,)
 
 

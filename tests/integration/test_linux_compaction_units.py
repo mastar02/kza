@@ -213,3 +213,22 @@ def test_a_template_naming_a_member_through_a_continuation_or_an_environment_fil
     RESULTS.append({"case": "h_template_" + form, "code": code,
                     "instance_show_names_member": str(member) in shown["ExecStart"]})
     assert code == PATH_HIT + name
+
+
+@pytest.mark.parametrize("form", ["sh_c_root_instance", "program_reads_file_value"])
+def test_a_template_naming_the_root_in_a_script_or_a_member_in_a_file_value(systemd, layout, tmp_path, form):
+    """Review r4 R4-1 (probe_templates4 S2, E3) under real systemd 255: 'sh -c "rm -rf <root>/%I"' and an
+    EnvironmentFile value only the program reads both refuse unit_path."""
+    root, member, _members = layout
+    name = f"{systemd.prefix}-r4{form[:4]}@.service"
+    if form == "sh_c_root_instance":
+        body = f"[Service]\nType=oneshot\nExecStart=/bin/sh -c 'echo rm -rf {root}/%I'\n"
+    else:
+        env_file = tmp_path / "r4.env"
+        env_file.write_text(f"SRC={member}/state\n")
+        body = f"[Service]\nType=oneshot\nEnvironmentFile={env_file}\nExecStart=/usr/bin/env\n"
+    systemd.write_unit(name, body)
+    systemd.reload()
+    code = _refusal(systemd, layout)
+    RESULTS.append({"case": "i_template_" + form, "code": code})
+    assert code == PATH_HIT + name

@@ -29,6 +29,7 @@ with their own capability (src.core.compaction_worker).
 """
 from __future__ import annotations
 
+import calendar
 import errno
 import hashlib
 import json
@@ -1064,6 +1065,7 @@ def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftov
 
 
 START_TIME_SLACK = 1.0  # seconds: ps lstart has one-second resolution
+PROC_SELF = "/proc/self"  # Linux: /proc; elsewhere (the Mac) ps lstart
 
 
 def _owner_alive(owner, reserved_at: float | None) -> bool:
@@ -1084,7 +1086,7 @@ def _owner_alive(owner, reserved_at: float | None) -> bool:
 
 def process_started_at(pid: int) -> float | None:
     """A live pid's start as wall-clock seconds (/proc on Linux, ps lstart elsewhere), or None."""
-    if os.path.isdir("/proc/self"):
+    if os.path.isdir(PROC_SELF):
         try:
             fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[-1].split()
             boot = next(float(line.split()[1]) for line in Path("/proc/stat").read_text().splitlines()
@@ -1095,15 +1097,18 @@ def process_started_at(pid: int) -> float | None:
             return None
         return boot + int(fields[19]) / os.sysconf("SC_CLK_TCK")
     try:
+        # Review r4 R4-7: ps prints lstart in its TZ; it gets UTC and the result is read as UTC, whatever
+        # the caller's TZ (time.mktime would use the caller's zone).
         completed = subprocess.run(["ps", "-o", "stat=,lstart=", "-p", str(pid)], capture_output=True, text=True,
-                                   timeout=2, check=False, env={"LC_ALL": "C", "PATH": "/bin:/usr/bin"})
+                                   timeout=2, check=False, env={"LC_ALL": "C", "PATH": "/bin:/usr/bin",
+                                                                "TZ": "UTC0"})
     except (OSError, subprocess.TimeoutExpired):
         return None
     output = completed.stdout.strip()
     if completed.returncode != 0 or not output or output.startswith("Z"):
         return None
     try:
-        return time.mktime(time.strptime(output.split(None, 1)[-1].strip(), "%a %b %d %H:%M:%S %Y"))
+        return float(calendar.timegm(time.strptime(output.split(None, 1)[-1].strip(), "%a %b %d %H:%M:%S %Y")))
     except ValueError:
         return None
 
@@ -1474,7 +1479,7 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _unlink_tree(root: Path, path: Path, *, k_inodes: set, runtime_links: bool, selection_link: bool = False,
-                 unlink_hook=None) -> int:
+                 unlink_hook=None, remove_top: bool = True) -> int:
     """Bottom-up, dir_fd-relative unlink of one member tree; delete only (P5 = C).
 
     Never follows a link. Only the slot runtime's own config, data and .env
@@ -1496,9 +1501,10 @@ def _unlink_tree(root: Path, path: Path, *, k_inodes: set, runtime_links: bool, 
                                    name=path.name, selection_link=selection_link)
     finally:
         os.close(top)
-    parent = path.parent
-    os.rmdir(path)
-    _fsync_directory(parent)
+    if remove_top:  # a member's quarantine is removed by _retire_member after 'walked' (review r4 R4-6)
+        parent = path.parent
+        os.rmdir(path)
+        _fsync_directory(parent)
     return removed
 
 
@@ -1571,6 +1577,11 @@ def _retire_member(root: Path, log: dict, member: dict, k_inodes: set, wall, unl
     identity = _accepted_identity(log, member)
     tombstone = _tombstone_path(root, member)
     if any(event["data"]["member"] == member["n"] for event in stage.compaction_events(log, "missing_accepted")):
+        if _lexists(path) or _lexists(quarantine):
+            # Review r4 R4-6: accepted as missing, then put back. The acceptance stands (it is in the
+            # log); move it away again (or delete it by hand) and repeat the command.
+            _refuse("runtime_admission_compaction_accepted_member_back", {
+                "member": member["n"], "path": str(path if _lexists(path) else quarantine)})
         return log  # review r2 N8: logged by the operator; no tombstone, no copies-retired
     done = [event for event in stage.compaction_events(log, "destroyed") if event["data"]["member"] == member["n"]]
     if done:  # resumed after 'destroyed': the copies-retired records are idempotent (immutable, same bytes)
@@ -1615,7 +1626,19 @@ def _retire_member(root: Path, log: dict, member: dict, k_inodes: set, wall, unl
             # are unlinked as links (never followed); any other link still refuses.
             _unlink_tree(root, quarantine, k_inodes=k_inodes,
                          runtime_links=member["class"] in {"managed_slot", "prepare_leftover"},
-                         selection_link=member["class"] == "selection_leftover", unlink_hook=unlink_hook)
+                         selection_link=member["class"] == "selection_leftover", unlink_hook=unlink_hook,
+                         remove_top=False)
+            if not _walked(log, member["n"]):
+                # Review r4 R4-6: logged while the emptied quarantine still exists, so 'absent everywhere'
+                # proves the walk only after it; before it, the quarantine was moved out by hand.
+                log = stage.append_compaction_event(root, log, "walked", {
+                    "member": member["n"], "identity": identity}, at=_now(wall))
+            os.rmdir(quarantine)
+            _fsync_directory(quarantine.parent)
+        elif not _walked(log, member["n"]):
+            # 'renamed' and gone from the quarantine before the walk finished: moved out by hand. A
+            # tombstone would claim files destroyed that may survive elsewhere; --accept-missing.
+            _refuse("runtime_admission_compaction_member_missing", {"member": member["n"]})
         # Absent everywhere (a crash after the last rmdir): nothing with the identity may remain.
         if (_lexists(path) and _identity(path) == identity) or _lexists(quarantine):
             _refuse("runtime_admission_compaction_identity", {"member": member["n"]})
@@ -1630,6 +1653,10 @@ def _retire_member(root: Path, log: dict, member: dict, k_inodes: set, wall, unl
 
 def _renamed(log: dict, number: int) -> bool:
     return any(event["data"]["member"] == number for event in stage.compaction_events(log, "renamed"))
+
+
+def _walked(log: dict, number: int) -> bool:
+    return any(event["data"]["member"] == number for event in stage.compaction_events(log, "walked"))
 
 
 def _copies_retired(root: Path, copy_id: str, compaction_id: str, tombstone_sha256: str) -> None:
@@ -1921,14 +1948,15 @@ def _accept_missing(root: Path, log: dict, number: int | None, wall, *, members:
     """``--member n --accept-missing`` (review r2 N8, r3 R3-1/R3-4): a member gone from its path and never
     renamed by this compaction is left out, logged. No tombstone and no copies-retired: nothing claims it
     destroyed. On retire the members are the plan's; on abort, its own work and K. A member whose
-    'retiring' is logged but not its 'renamed' was moved by hand after the cut and may be accepted."""
+    'retiring' is logged but not its 'renamed' was moved by hand after the cut and may be accepted, and
+    so may one 'renamed' but not 'walked' (review r4 R4-6: its quarantine was moved out mid-walk)."""
     members = {item["n"]: item for item in (_numbered(log) if members is None else members)}
     if number not in members:
         _refuse("runtime_admission_compaction_member")
     member = members[number]
     if _lexists(Path(member["path"])) or _lexists(_quarantine(root, log["compaction_id"], member)) \
-            or _renamed(log, number) or any(event["data"]["member"] == number
-                                            for event in stage.compaction_events(log, "destroyed")):
+            or _walked(log, number) or any(event["data"]["member"] == number
+                                           for event in stage.compaction_events(log, "destroyed")):
         _refuse("runtime_admission_compaction_member")
     return stage.append_compaction_event(root, log, "missing_accepted", {
         "member": number, "path": member["path"], "identity": member["identity"]}, at=_now(wall))
@@ -2197,7 +2225,12 @@ def _abort_members(root: Path, log: dict) -> list[dict]:
 
 
 def _k_abort_member(root: Path, log: dict) -> dict | None:
-    """K as an abort member, at its path or (after a cut mid-walk) in its quarantine; None if never made."""
+    """K as an abort member, at its path or (after a cut mid-walk) in its quarantine; None if never made.
+
+    Review r4 R4-2: once K is made (k_runtime, or its prepare record), K gone
+    from slots/<K> with no 'retiring' is still a member: _retire_member
+    refuses member_missing and ``--member n --accept-missing`` records it.
+    """
     intent = log["intent"]
     k_slot = root / "slots" / intent["k_slot"]
     number = len(intent["members"]) + K_ABORT_NUMBER
@@ -2206,7 +2239,7 @@ def _k_abort_member(root: Path, log: dict) -> dict | None:
     identity = (k_event["data"].get("slot_identity") if k_event else None) or (proof or {}).get("slot_identity") \
         or _retiring_identity(log, number)
     quarantine = root / "compaction" / log["compaction_id"] / "retiring" / str(number)
-    if not _lexists(k_slot) and _retiring_identity(log, number) is None:
+    if not _lexists(k_slot) and _retiring_identity(log, number) is None and k_event is None and proof is None:
         return None
     if _lexists(k_slot) and (identity is None or _identity(k_slot) != identity):
         _refuse("runtime_admission_compaction_k_identity")

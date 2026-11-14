@@ -530,10 +530,12 @@ def test_a_member_moved_after_the_plan_is_found_and_never_tombstoned(tmp_path, m
     _refusal("runtime_admission_compaction_member", lambda: compaction._accept_missing(root, log, 99, lambda: 8.0))
 
 
-@pytest.mark.parametrize("logged, accepted", [(("retiring", "renamed"), False), (("retiring",), True)])
+@pytest.mark.parametrize("logged, accepted", [(("retiring", "renamed", "walked"), False),
+                                              (("retiring", "renamed"), True), (("retiring",), True)])
 def test_accept_missing_refuses_a_member_this_compaction_renamed(tmp_path, monkeypatch, logged, accepted):
-    """A member gone from its path after 'renamed' was moved by this compaction: never 'accepted missing'.
-    'retiring' alone is logged before the rename (review r3 R3-4), so it proves nothing: accepted."""
+    """A member gone from its path after 'walked' was destroyed by this compaction: never 'accepted missing'.
+    'retiring' alone is logged before the rename (review r3 R3-4) and 'renamed' before the walk (review r4
+    R4-6: its quarantine can be moved out by hand mid-walk), so neither proves a destruction: accepted."""
     monkeypatch.setattr(compaction, "stage", _Stage())
     root = tmp_path.resolve() / "root"
     (root / "admission").mkdir(parents=True)

@@ -189,6 +189,23 @@ def _template_assignments(text: str) -> list[tuple[str, str]]:
     return found
 
 
+# Review r4 R4-1: what ends a path inside a shell script, a ':' or ',' list or an option value. A path
+# with a space in it is cut too, so each part is also judged on its own (stricter, never looser).
+_PATH_BREAK = re.compile(r"[\s;|&()<>`'\"=,:]+")
+EXEC_PREFIXES = "-@+!"
+# $HOME, ${HOME}, a default form ${HOME:-...} (systemd or the shell), and $$HOME (the shell, after systemd).
+_HOME_REFERENCE = re.compile(r"\$\$?(?:HOME(?![A-Za-z0-9_])|\{HOME(?::?[-=][^}]*)?\})")
+# After specifier expansion ('%%' kept as \0) and '$$' protection (\1): a part only known at run time.
+_UNKNOWN = re.compile(r"[$%\x01]")
+_VARIABLE = re.compile(r"[$\x01]")
+SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "ash", "mksh", "busybox"})
+
+
+def _normal(path: str) -> str:
+    """normpath with repeated slashes collapsed (normpath keeps a leading '//')."""
+    return os.path.normpath(re.sub(r"/{2,}", "/", path))
+
+
 def _decode_ansi_c(value: str) -> str:
     """systemd's ``$'...'`` form of an environment value (C escapes), decoded; ValueError if malformed."""
     if not (value.startswith("$'") and value.endswith("'")) or len(value) < 3:
@@ -369,7 +386,7 @@ class _Scan:
         the launcher's own unit names the root (WorkingDirectory, --root).
         ``ancestors`` False (a directory a glob walks through) drops that rule.
         """
-        literal = os.path.normpath(path)
+        literal = _normal(path)
         resolved = os.path.realpath(literal)
         for form in {literal, resolved}:
             for member in self.members:
@@ -391,6 +408,10 @@ class _Scan:
         for piece in list(pieces):
             if ":" in piece:
                 pieces.update(part for part in piece.split(":") if "/" in part)
+        # Review r4 R4-3/R4-4: a path glued to a shell character, inside a ',' list or after any '='
+        # (podman --mount type=bind,src=<member>, x;<member>) is a piece of its own.
+        pieces.update(part.lstrip(EXEC_PREFIXES) for part in _PATH_BREAK.split(text)
+                      if "/" in part or part.startswith("~"))
         for piece in pieces:
             if not piece:
                 continue
@@ -654,20 +675,111 @@ class _Scan:
                  "T": "/tmp", "V": "/var/tmp", "U": str(self.uid), "%": "\0"}
         return re.sub(r"%(.)", lambda match: fixed.get(match.group(1), match.group(0)), word)
 
+    def _flatten(self, text: str, environment: dict, specifiers: bool = True) -> str:
+        """Review r4 R4-1: a unit text, value or word as the program sees it, as far as the scan knows it.
+
+        Fixed specifiers are expanded ('%%' kept as \\0), every home reference
+        ($HOME, ${HOME}, ${HOME:-...}, $$HOME) becomes the home, '$$' is kept
+        as \\1 (a shell variable), and $VAR/${VAR} known to the manager or the
+        unit is substituted with its value (already in _value_form). What is
+        left of '$', '%' and \\1 is only known at run time (_UNKNOWN).
+        """
+        if specifiers:
+            text = self._specifiers(text)
+        text = _HOME_REFERENCE.sub(lambda _match: self.home, text).replace("$$", "\1")
+        text, _unresolved = self._substitute(text, environment)
+        return re.sub(r"/{2,}", "/", text)
+
+    def _value_form(self, value: str, literal_percent: bool) -> str:
+        """An environment value as _flatten inserts it: home references expanded, a literal '%' as \\0 (a
+        file or manager value; an Environment= value keeps its unexpanded specifiers), any '$' as \\1 (no
+        longer systemd's: a shell reading the value may expand it, so it is unknown)."""
+        value = _HOME_REFERENCE.sub(lambda _match: self.home, value)
+        if literal_percent:
+            value = value.replace("%", "\0")
+        return value.replace("$", "\1")
+
+    def _home_run(self, run: str) -> str:
+        users = {os.path.basename(self.home)}
+        match = re.match(r"~([\w.-]*)(?=/|$)", run)
+        if match and (not match.group(1) or match.group(1) in users | {self._user()}):
+            return self.home + run[match.end():]
+        return run
+
+    def _user(self) -> str:
+        try:
+            import pwd
+            return pwd.getpwuid(self.uid).pw_name
+        except (KeyError, ImportError):
+            return ""
+
+    def _judge(self, unit: str, run: str, base: str) -> bool:
+        """One path-shaped run: refuse if it reaches a member, or if its literal part before the first part
+        only known at run time could land under the root. False when it cannot be judged (an unknown part
+        before any '/': ``%i``, ``${SRC}``, ``-C${SRC}``)."""
+        run = self._home_run(run.lstrip(EXEC_PREFIXES))
+        match = _UNKNOWN.search(run)
+        literal = (run[:match.start()] if match else run).replace("\0", "%")
+        if "/" not in literal:
+            return match is None
+        path = literal if literal.startswith("/") else os.path.join(base, literal)
+        self.check(unit, path)
+        if match is not None:
+            self._fixed_part(unit, path)
+        return True
+
+    def check_text(self, unit: str, text: str, base: str, *, root: bool = True) -> None:
+        """Review r4 R4-1/R4-4, the substring rule over a whole (flattened) text.
+
+        Refuses on any occurrence of a member (or, with ``root``, of the
+        admission root) not followed by a name character, and on any run
+        between separators that reaches a member or whose literal part before
+        a run-time part could land under the root (a proper ancestor of a
+        member followed by ``%i``, ``$X``, ``${X}``). Never parses words:
+        an ``sh -c`` script, a ':' or ',' list, a comment and an unknown key
+        are all just text.
+        """
+        targets = list(self.members) + (sorted(self.roots) if root else [])
+        for target in targets:
+            if re.search(re.escape(target) + r"(?![\w.-])", text) is not None:
+                _refuse(PATH_HIT + unit)
+        for run in _PATH_BREAK.split(text):
+            if run:
+                self._judge(unit, run, base)
+
+    def _script_words(self, words: list[str]) -> set[int]:
+        """Indexes of the scripts of ``sh -c '...'`` (any shell, any option cluster with 'c')."""
+        found: set[int] = set()
+        shell = False
+        for index, word in enumerate(words):
+            if os.path.basename(word.lstrip(EXEC_PREFIXES)) in SHELLS:
+                shell = True
+            elif shell and re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", word) and index + 1 < len(words):
+                found.add(index + 1)
+        return found
+
+    def _unjudged(self, unit: str, key: str, own: dict) -> None:
+        if not self._tolerates_unresolved(unit, own):
+            _refuse(UNPARSED + unit + ":" + key)
+
     def scan_template(self, unit: str) -> None:
-        """Review r2 N4 / r3 R3-2: a template's path-bearing values, from its text, up to the first unknown part.
+        """Review r2 N4 / r3 R3-2 / r4 R4-1: a template's paths, from its text, up to the first unknown part.
 
         An instance can be started at any time with any instance name, so the
-        literal part of each word is what the template fixes. Continuation
-        lines are joined; the template's own Environment= and EnvironmentFile=
-        (checked, then read) and the manager environment are substituted, and
-        the account-fixed specifiers expanded. A word refuses when it reaches a
-        member, or when the part after its literal prefix (``%i``, an unset
-        ``$VAR``) could land under the root (the literal directory is the root,
-        under it or above it). A word that starts with an unknown part cannot
-        be judged: it refuses unit_unparsed unless the template gets the
-        U3b-0e4 leniency (not named, not kza*, no kza path), and is then listed
-        in tolerated_unresolved. Unparsable quoting refuses.
+        literal part of each path is what the template fixes. Continuation
+        lines are joined; the template's own Environment= and then its
+        EnvironmentFile= values (systemd: a file overrides Environment=; the
+        file is checked, then read) and the manager environment are
+        substituted, and the account-fixed specifiers expanded.
+
+        The whole text and every own value go through check_text (the
+        substring rule, the root included). Each path-bearing word is cut at
+        shell, list and option separators and each run is judged: a run whose
+        unknown part comes before any '/' cannot be judged, and in a script
+        of ``sh -c`` any variable is unknown. Either refuses unit_unparsed
+        unless the template gets the U3b-0e4 leniency (not named, not kza*,
+        no kza path), which lists it in tolerated_unresolved. Unparsable
+        quoting refuses.
         """
         text = self.call("cat", unit)
         self._texts[unit] = text
@@ -676,60 +788,50 @@ class _Scan:
         for key, value in assignments:
             if key == "Environment":
                 for assignment in self._template_words(unit, key, value):
-                    name, separator, item = self._specifiers(assignment).replace("\0", "%").partition("=")
+                    name, separator, item = self._specifiers(assignment).partition("=")
                     if separator:
-                        own[name] = item
-            elif key == "EnvironmentFile":
+                        own[name] = self._value_form(item, literal_percent=False)
+        for key, value in assignments:  # after every Environment=: a file's value wins (systemd.exec)
+            if key == "EnvironmentFile":
                 specification = self._specifiers(value.strip()).replace("\0", "%")
                 path = specification.lstrip("-")
                 if "%" in path or "$" in path or not os.path.isabs(path):
-                    if not self._tolerates_unresolved(unit, own):
-                        _refuse(UNPARSED + unit + ":EnvironmentFile")
+                    self._unjudged(unit, "EnvironmentFile", own)
                     continue
                 self.check(unit, path)  # before it is opened: nothing in a member is read
                 try:
                     values, _keys = commands._env_file_values(unit, specification)
                 except commands.CommandRefusal:
                     _refuse(UNPARSED + unit + ":EnvironmentFile")
-                own.update(values)
-        environment = {**self.manager_environment(), **own}
+                own.update((name, self._value_form(item, literal_percent=True)) for name, item in values.items())
+        manager = {name: self._value_form(item, literal_percent=True)
+                   for name, item in self.manager_environment().items()}
+        environment = {**manager, **own}
         base = self.home
         for key, value in assignments:
             if key == "WorkingDirectory":
-                directory = self._specifiers(value.strip().lstrip("-!")).replace("\0", "%")
-                directory = self.home + directory[1:] if directory == "~" or directory.startswith("~/") else directory
+                directory = self._specifiers(value.strip().strip("'\"").lstrip("-!")).replace("\0", "%")
+                directory = self._home_run(directory)
                 if os.path.isabs(directory) and "%" not in directory and "$" not in directory:
                     base = directory
+        self.check_text(unit, self._flatten(text, environment), base)
+        for item in own.values():  # a program (or a shell's $$NAME) reads these without the unit text
+            flat = re.sub(r"/{2,}", "/", item)
+            self.check_text(unit, flat, base)
+            if any(not self._judge(unit, run, base) for run in _PATH_BREAK.split(flat) if run):
+                self._unjudged(unit, "Environment", own)
         for key, value in assignments:
             if key not in TEMPLATE_KEYS or key == "EnvironmentFile":
                 continue
-            for word in self._template_words(unit, key, value):
-                if re.match(r"-*[A-Za-z_][\w.-]*=", word):
-                    word = word.split("=", 1)[1]  # NAME=value, --option=value
-                word = word.lstrip("-@:+!")  # Exec* prefixes, ignore-missing '-'
-                for prefix in FILE_OUTPUTS:
-                    if word.startswith(prefix):
-                        word = word[len(prefix):]
-                if not word:
-                    continue
-                protected = self._specifiers(word).replace("$$", "\1")
-                substituted, _unresolved = self._substitute(protected, environment)
-                literal = re.split(r"[%$]", substituted, maxsplit=1)[0]
-                cut = literal != substituted
-                literal = literal.replace("\0", "%").replace("\1", "$")
-                if literal == "~" or literal.startswith("~/"):
-                    literal = self.home + literal[1:]
-                if not literal and cut:
-                    if not self._tolerates_unresolved(unit, own):
-                        _refuse(UNPARSED + unit + ":" + key)  # starts with %i or an unset $VAR
-                    continue
-                if not literal.startswith("/"):
-                    if "/" not in literal:
-                        continue
-                    literal = os.path.join(base, literal)
-                self.check_value(unit, literal, base)
-                if cut:
-                    self._fixed_part(unit, literal)
+            words = self._template_words(unit, key, value)
+            scripts = self._script_words(words) if key in EXEC_PROPERTIES else set()
+            for index, word in enumerate(words):
+                flat = self._flatten(word, environment)
+                if index in scripts and _VARIABLE.search(flat):
+                    self._unjudged(unit, key, own)  # a variable in an sh -c script: unknown to the scan
+                for run in _PATH_BREAK.split(flat):
+                    if run and not self._judge(unit, run, base):
+                        self._unjudged(unit, key, own)
 
     def _template_words(self, unit: str, key: str, value: str) -> list[str]:
         try:
@@ -738,7 +840,8 @@ class _Scan:
             _refuse(UNPARSED + unit + ":" + key)  # unbalanced quoting: the template cannot be judged
 
     def check_manager_environment(self) -> None:
-        """Review r2 N5: a manager environment value is held to the unit Environment= rule.
+        """Review r2 N5 / r4 R4-4: a manager environment value is held to the unit Environment= rule and to the
+        substring rule (check_text, the root included).
 
         Every process of the manager inherits it, so a program (or a shell
         reading ``$$NAME``) can use a value no unit text shows.
@@ -746,6 +849,7 @@ class _Scan:
         for value in [*self.manager_environment().values(), *self.escaped_environment.values()]:
             if "/" in value or value.startswith("~"):
                 self.check_pattern("show-environment", value, self.home)
+            self.check_text("show-environment", self._flatten(value, {}, specifiers=False), self.home)
 
     def check_pattern(self, unit: str, text: str, base: str) -> None:
         """check_value, and for a piece holding a glob character (``*?[``) the fixed-part rule of templates:
@@ -753,22 +857,31 @@ class _Scan:
         self.check_value(unit, text, base)
         pieces = set(commands._words(text)) | {text}
         for piece in list(pieces):
-            pieces.update(part for part in re.split(r"[:=;]", piece) if part)
+            pieces.update(part for part in _PATH_BREAK.split(piece) if part)
         for piece in pieces:
             match = re.search(r"[*?\[]", piece)
             if match is None:
                 continue
-            literal = piece[:match.start()]
-            if literal == "~" or literal.startswith("~/"):
-                literal = self.home + literal[1:]
+            literal = self._home_run(piece[:match.start()])
             if literal.startswith("/"):
                 self._fixed_part(unit, literal)
 
     def _fixed_part(self, unit: str, literal: str) -> None:
-        """A path cut before a part only known at run time: refuse if it can land under the root."""
-        directory = os.path.normpath(literal if literal.endswith("/") else os.path.dirname(literal))
-        if any(_within(directory, root) or _within(root, directory) for root in self.roots):
-            _refuse(PATH_HIT + unit)
+        """A path cut before a part only known at run time: refuse if it can land under the root.
+
+        The literal directory may not be the root or under it; above the root
+        it refuses when the partial name after it can still begin the root's
+        next component (``%h/%i``, ``%h/rel%i``, but not ``%h/backup-%i``).
+        Both the literal and the resolved directory are compared.
+        """
+        head, partial = (literal, "") if literal.endswith("/") else os.path.split(literal)
+        head = _normal(head)
+        for directory in {head, os.path.realpath(head)}:
+            for root in self.roots:
+                if _within(directory, root):
+                    _refuse(PATH_HIT + unit)
+                if _within(root, directory) and os.path.relpath(root, directory).split("/")[0].startswith(partial):
+                    _refuse(PATH_HIT + unit)
 
     # --- the unit walk (E2) ---------------------------------------------------------------------
 

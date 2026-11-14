@@ -1944,6 +1944,48 @@ def test_the_0e4_embedded_name_leniency_refuses_a_kza_named_unit(tmp_path, monke
     assert commands._embedded_only(manager, "kza-tool.service", markers)("NAME") is False
 
 
+_R4_FORMS = {
+    "/home/kza//kza (double slash)": "ExecStart=/bin/sh -c '{home}//kza/.venv/bin/python run.py $X'",
+    "/home/kza/./kza": "ExecStart=/bin/sh -c '{home}/./kza/.venv/bin/python run.py $X'",
+    "/home/kza/app (alias link of /home/kza/kza)": "ExecStart=/bin/sh -c '{home}/app/.venv/bin/python run.py $X'",
+    "~/app (alias behind a home prefix)": "ExecStart=/bin/sh -c '~/app/.venv/bin/python run.py $X'",
+    "${HOME:-/home/kza}/kza": "ExecStart=/bin/sh -c '${{HOME:-{home}}}/kza/.venv/bin/python run.py $X'",
+    'WorkingDirectory="%h" (quoted) + cd kza': "WorkingDirectory=\"%h\"\nExecStart=/bin/sh -c 'cd kza && ./x $X'",
+}
+
+
+@pytest.mark.parametrize("label", sorted(_R4_FORMS))
+def test_r4_more_kza_reference_forms_make_a_unit_kzas(tmp_path, monkeypatch, label):
+    """0c review r4 R4-5 (probe_markers4 'form' lines): each was not kza's, so an unresolved $X was tolerated."""
+    home = tmp_path / "home" / "kza"
+    (home / "kza").mkdir(parents=True)
+    (home / "app").symlink_to("kza")  # DEPLOYMENT: /home/kza/app points to /home/kza/kza
+    monkeypatch.setenv("HOME", os.fspath(home))
+    markers = commands.kza_markers([home / "releases", home / "kza", home / "releases" / "slots" / "a"])
+    text = f"# {home}/.config/systemd/user/nexa-tool.service\n[Service]\n" + _R4_FORMS[label].format(home=home) + "\n"
+    assert commands.mentions_markers(text, {}, markers, "nexa-tool.service"), label
+
+
+def test_r4_an_unrelated_home_link_and_the_stock_units_stay_not_kzas(tmp_path, monkeypatch):
+    """R4-5 adds only links that resolve to a kza path; the bare alias name is never a marker."""
+    home = tmp_path / "home" / "kza"
+    (home / "kza").mkdir(parents=True)
+    (home / "Music").mkdir()
+    (home / "app").symlink_to("kza")
+    (home / "media").symlink_to("Music")
+    monkeypatch.setenv("HOME", os.fspath(home))
+    markers = commands.kza_markers([home / "releases", home / "kza"])
+    assert os.fspath(home / "app") in markers and os.fspath(home / "media") not in markers
+    assert not commands.mentions_markers(f"[Service]\nExecStart=/bin/sh -c '{home}/media/play $X'\n", {}, markers,
+                                         "player.service")
+    assert not commands.mentions_markers("[Service]\nExecStart=/usr/bin/tool --app $X\n", {}, markers,
+                                         "tool.service")
+    stock = ("# /usr/lib/systemd/user/podman.service\n[Service]\nEnvironment=LOGGING=\"--log-level=info\"\n"
+             "ExecStart=/usr/bin/podman $LOGGING system service\n"
+             f"# {home}/.config/systemd/user/podman.service.d/override.conf\n[Service]\nNice=5\n")
+    assert not commands.mentions_markers(stock, {"LOGGING": "--log-level=info"}, markers, "podman.service")
+
+
 def test_the_unit_listing_reads_real_list_unit_files_output(tmp_path):
     """R2-3: list-unit-files and list-units output with templates, as systemd prints them (--no-legend --plain)."""
     shim = tmp_path / "systemctl"

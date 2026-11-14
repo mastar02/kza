@@ -224,9 +224,13 @@ def test_a_manager_environment_variable_naming_a_member_is_a_path_hit(layout):
 
 
 def test_a_resolved_manager_reference_is_checked_where_the_unit_uses_it(layout):
-    """A manager value outside every member, made a member path by the unit's own suffix."""
-    found = ours(layout, "kza-tool.service", ExecStart=exec_value("/usr/bin/cp", "-r", "${BASE}/slots/m1", "/srv/x"))
-    assert refused(layout, found, manager_environment={"BASE": str(layout.root)}) == PATH_HIT + "kza-tool.service"
+    """A manager value outside every member, made a member path by the unit's own suffix. (Review r4: a
+    manager value naming the root itself refuses on its own, as the block.)"""
+    suffix = "${BASE}/" + layout.root.name + "/slots/m1"
+    found = ours(layout, "kza-tool.service", ExecStart=exec_value("/usr/bin/cp", "-r", suffix, "/srv/x"))
+    assert refused(layout, found, manager_environment={"BASE": str(layout.root.parent)}) == \
+        PATH_HIT + "kza-tool.service"
+    assert refused(layout, found, manager_environment={"BASE": str(layout.root)}) == PATH_HIT + "show-environment"
 
 
 @pytest.mark.parametrize("how", ["dollar_dollar", "program_reads_it", "unit_overrides_it"])
@@ -897,3 +901,127 @@ def test_a_kza_named_unit_gets_no_leniency(layout):
     assert refused(layout, found) == UNPARSED + "kza-sync.service:ExecStart"
     found["sync.service"] = found.pop("kza-sync.service")
     assert run_scan(layout, found)["tolerated_unresolved"] == ["sync.service"]
+
+
+# --- review r4: the substring rule (R4-1, R4-3, R4-4) and the fixed part; probe_templates4.py,
+# probe_manager_env4.py ------------------------------------------------------------------------------
+
+@pytest.fixture
+def kza_home(tmp_path, monkeypatch):
+    """Production's shape (probe_templates4): HOME=<base>/home/kza, root=HOME/releases, member root/slots/a."""
+    base = tmp_path.resolve()
+    home = base / "home" / "kza"
+    monkeypatch.setenv("HOME", str(home))
+    root = home / "releases"
+    member = root / "slots" / "a"
+    (member / "state").mkdir(parents=True)
+    (member / "runtime").mkdir()
+    user_dir = home / ".config" / "systemd" / "user"
+    user_dir.mkdir(parents=True)
+    env_file = home / ".config" / "kza-backup.env"
+    env_file.write_text(f"SRC={member / 'state'}\n")
+    info = member.stat()
+    return SimpleNamespace(base=base, root=root, member=member, home=home, user_dir=user_dir, env_file=env_file,
+                           members=[{"path": str(member), "identity": {"device": info.st_dev,
+                                                                       "inode": info.st_ino}}])
+
+
+def _r4_case(kza_home, case: str) -> str:
+    member, root, env_file = kza_home.member, kza_home.root, kza_home.env_file
+    return {
+        # probe_templates4 S1-S3, E1-E3, M1
+        "S1_sh_c_home_instance": "ExecStart=/bin/sh -c 'tar czf /srv/b/x.tgz %h/releases/%i'\n",
+        "S2_sh_c_root_instance": f"ExecStart=/bin/sh -c 'rm -rf {root}/%I'\n",
+        "S3_colon_list": "Environment=PYTHONPATH=/opt/x:%h/releases/%i\nExecStart=/usr/bin/true\n",
+        "E1_shell_reads_file_value": f"EnvironmentFile={env_file}\n"
+                                     "ExecStart=/bin/sh -c 'tar czf /srv/b/x.tgz \"$$SRC\"'\n",
+        "E2_file_overrides_environment": f"EnvironmentFile={env_file}\nEnvironment=SRC=/srv/safe\n"
+                                         "ExecStart=/usr/bin/tar czf /srv/b/%i.tgz ${SRC}\n",
+        "E3_program_reads_file_value": f"EnvironmentFile={env_file}\nExecStart=/usr/local/bin/kza-backup\n",
+        "M1_podman_mount": f"ExecStart=/usr/bin/podman run --rm --mount type=bind,src={member}/state,dst=/data img\n",
+        # what only the substring rule sees: a key no word rule reads, a member glued to a name, the root
+        "credential_key": "LoadCredential=db:%h/releases/slots/a/state/db\nExecStart=/usr/bin/true\n",
+        "glued_to_a_name": f"Description=copy of x{member}/state\nExecStart=/usr/bin/true\n",
+        "root_named": f"ExecStart=/usr/bin/tar czf /srv/b/%i.tgz -C {root} slots\n",
+        "ancestor_then_instance": "LoadCredential=x:%h/%i\nExecStart=/usr/bin/true\n",
+        "home_default_form": "ExecStart=/bin/sh -c 'rm -rf ${HOME:-/nowhere}/releases/%i'\n",
+        "double_slash": "ExecStart=/usr/bin/tar czf /srv/b/%i.tgz %h//releases/./slots/a/state\n",
+        "partial_root_name": "ExecStart=/usr/bin/tar czf /srv/b/x.tgz %h/rel%i\n",
+        # systemd.exec: a file's value wins over Environment= wherever the lines are
+        "precedence": f"Environment=BASE=/srv\nEnvironmentFile={kza_home.home / '.config' / 'base.env'}\n"
+                      "ExecStart=/usr/bin/tar czf /srv/b/%i.tgz ${BASE}/releases/%i\n",
+    }[case]
+
+
+@pytest.mark.parametrize("case", ["S1_sh_c_home_instance", "S2_sh_c_root_instance", "S3_colon_list",
+                                  "E1_shell_reads_file_value", "E2_file_overrides_environment",
+                                  "E3_program_reads_file_value", "M1_podman_mount", "credential_key",
+                                  "glued_to_a_name", "root_named", "ancestor_then_instance", "home_default_form",
+                                  "double_slash", "partial_root_name", "precedence"])
+@pytest.mark.parametrize("name", ["kza-backup@.service", "kb@.service"])
+def test_r4_a_template_naming_the_root_or_a_member_anywhere_refuses(kza_home, case, name):
+    """R4-1/R4-3: before r4 every case passed and was listed in templates_scanned. A path hit refuses in
+    any template, the 0e4 leniency notwithstanding."""
+    (kza_home.home / ".config" / "base.env").write_text(f"BASE={kza_home.home}\n")
+    found = _template_text(kza_home, name, _r4_case(kza_home, case))
+    assert refused(kza_home, found, manager_environment=_home_manager(kza_home)) == PATH_HIT + name
+
+
+@pytest.mark.parametrize("body", [
+    "ExecStart=/bin/sh -c 'tar czf /srv/b/x.tgz ${SRC}'\n",  # S4
+    "ExecStart=/usr/bin/tar czf /srv/b/x.tgz -C${SRC} .\n",  # S5
+    "ExecStart=/bin/sh -c 'tar czf /srv/b/x.tgz /srv/data/$$NAME'\n",  # any variable in an sh -c script
+    "ExecStart=/bin/bash -ec 'tar czf /srv/b/x.tgz /srv/data/${NAME}'\n",
+    "ExecStart=/usr/bin/tool --label=backup-%i\n",  # %i after a non-path prefix
+], ids=["S4_sh_c_unset", "S5_glued_unset", "shell_variable_in_script", "bash_ec_unset", "instance_in_a_name"])
+def test_r4_an_unknown_part_the_scan_cannot_place_is_strict_unless_the_0e4_leniency_applies(kza_home, body):
+    """R4-1 S4/S5: an unset variable or %i not at the start of a word, and any variable in an sh -c script,
+    refuse unit_unparsed in a kza template; a template not kza's is listed in tolerated_unresolved."""
+    found = _template_text(kza_home, "kza-backup@.service", body)
+    assert refused(kza_home, found, manager_environment=_home_manager(kza_home)) == \
+        UNPARSED + "kza-backup@.service:ExecStart"
+    found = _template_text(kza_home, "kb@.service", body)
+    report = run_scan(kza_home, found, manager_environment=_home_manager(kza_home))
+    assert report["tolerated_unresolved"] == ["kb@.service"] and report["templates_scanned"] == ["kb@.service"]
+
+
+def test_r4_a_kza_template_reaching_elsewhere_passes(kza_home):
+    """The substring rule is not a ban on paths: these fix nothing under the root and pass in a kza template."""
+    (kza_home.home / "backup").mkdir()
+    body = (f"EnvironmentFile={kza_home.home / '.config' / 'safe.env'}\nEnvironment=OUT=/srv/b\n"
+            "WorkingDirectory=\"%h\"\n"
+            "ExecStart=/usr/bin/tar czf %t/%i.tgz %h/backup-%i ${OUT}/%i %h/.cache/%i\n"
+            "ExecStartPost=/bin/sh -c 'gzip -t /srv/b/%i.tgz && date +%%s > %t/stamp'\n"
+            "LoadCredential=token:%h/.config/kza-token\n")
+    (kza_home.home / ".config" / "safe.env").write_text("DATA=/srv/data\n")
+    found = _template_text(kza_home, "kza-backup@.service", body)
+    report = run_scan(kza_home, found, manager_environment=_home_manager(kza_home))
+    assert report["templates_scanned"] == ["kza-backup@.service"] and report["tolerated_unresolved"] == []
+
+
+@pytest.mark.parametrize("program", ["--mount type=bind,src={state},dst=/data", "--mount=type=bind,source={state}",
+                                     "-v {state}:/data"])
+def test_r4_a_container_unit_binding_a_member_refuses(kza_home, program):
+    """R4-3 (probe_templates4 M2): check_value splits ',' and every '=', so a --mount source is a path;
+    the unit is what the Quadlet generator writes for Mount=type=bind,source=<member>."""
+    argv = ["/usr/bin/podman", "run", "--rm", *program.format(state=kza_home.member / "state").split(), "img"]
+    generated = f"/run/user/{UID}/systemd/generator/kza-chroma.service"
+    found = {"kza-chroma.service": unit(generated, ExecStart=exec_value(*argv))}
+    assert refused(kza_home, found, manager_environment=_home_manager(kza_home)) == PATH_HIT + "kza-chroma.service"
+
+
+@pytest.mark.parametrize("value", ["$'x;{member}/state'", "$'a|{member}/state'", "$'a&&{member}/state'",
+                                   "$'({member}/state)'", "$'--src={member}/state;x'", "{root}",
+                                   "$'cp -a x{member}/state'"])
+def test_r4_a_manager_value_gluing_a_member_or_naming_the_root_refuses(kza_home, value):
+    """R4-4 (probe_manager_env4 D1-D5): a member glued to a shell character, a member glued to a name, or
+    the root itself in the manager's environment refuses as the block."""
+    environment = dict(_home_manager(kza_home),
+                       KZA_CMD=value.format(member=kza_home.member, root=kza_home.root))
+    assert refused(kza_home, {}, manager_environment=environment) == PATH_HIT + "show-environment"
+
+
+def test_r4_a_double_slash_does_not_hide_a_member_in_a_regular_unit(kza_home):
+    found = ours(kza_home, "kza-tool.service",
+                 ExecStart=exec_value("/usr/bin/tar", "czf", "/srv/b.tgz", "/" + str(kza_home.member) + "/state"))
+    assert refused(kza_home, found, manager_environment=_home_manager(kza_home)) == PATH_HIT + "kza-tool.service"

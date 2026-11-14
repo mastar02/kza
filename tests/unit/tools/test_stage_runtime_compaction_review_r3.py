@@ -174,14 +174,17 @@ def test_a_cut_between_the_rename_and_renamed_resumes(tmp_path, monkeypatch):
     assert not list(root.rglob("*.db"))
 
 
-def test_accept_missing_refuses_after_renamed(tmp_path, monkeypatch):
+def test_accept_missing_refuses_after_walked(tmp_path, monkeypatch):
+    """r4 R4-6 moved this line from 'renamed' to 'walked': only the end of the walk proves a destruction."""
     monkeypatch.setattr(compaction, "stage", _Stage())
     root, snapshot = _snapshot_root(tmp_path)
     [own] = compaction.own_work(root, _log(root))
     log = stage.append_compaction_event(root, _log(root), "retiring", {"member": own["n"],
                                                                        "identity": own["identity"]}, at=1.5)
-    stage.append_compaction_event(root, log, "renamed", {"member": own["n"], "identity": own["identity"]}, at=1.6)
-    shutil.rmtree(snapshot)  # renamed and walked by this compaction (absent everywhere): a destruction
+    log = stage.append_compaction_event(root, log, "renamed", {"member": own["n"], "identity": own["identity"]},
+                                        at=1.6)
+    stage.append_compaction_event(root, log, "walked", {"member": own["n"], "identity": own["identity"]}, at=1.7)
+    shutil.rmtree(snapshot)  # walked by this compaction, cut before the tombstone: a destruction
     _refusal("runtime_admission_compaction_member", lambda: _accept(root, own["n"]))
     assert compaction._finish_abort(root, _log(root), lambda: 3.0)["phase"] == "aborted"
     assert len(list(stage.tombstone_directory(root).iterdir())) == 2
