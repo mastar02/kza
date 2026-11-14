@@ -101,7 +101,10 @@ Requisitos (el comando los verifica y rechaza con un código si falta alguno):
   `/home/kza/kza`, su forma relativa al home con prefijo (`~/kza`, `~kza/kza`,
   `%h/releases`, `$HOME/kza`, `"$HOME"/kza`), o un `kza` relativo como palabra
   entera en una unidad que corre desde el home (sin `WorkingDirectory=`, o
-  con `%h`, `~`, `$HOME`). Un `kza` dentro de otra ruta no cuenta, porque con
+  con `%h`, `~`, `$HOME`, también entre comillas). También cuentan un enlace
+  directo en el home que apunta a una ruta de kza (`/home/kza/app`, que
+  apunta a `/home/kza/kza`), las formas con `//` o `/./` y `${HOME:-...}`.
+  Un `kza` dentro de otra ruta no cuenta, porque con
   `HOME=/home/kza` está en toda ruta de la cuenta (un drop-in de podman bajo
   `/home/kza/.config` no hace de kza a la unidad). La adopción de U3b-0e4 usa
   la misma regla. Además:
@@ -114,25 +117,42 @@ Requisitos (el comando los verifica y rechaza con un código si falta alguno):
   - una plantilla (`nombre@.service`) en un directorio de unidades del usuario,
     o con un drop-in ahí, se lee como texto aunque no haya instancias. Se unen
     las líneas de continuación (`\`), se sustituyen `$VAR`/`${VAR}` con el
-    entorno del gestor, su `Environment=` y sus `EnvironmentFile=` (la ruta del
-    archivo se compara antes de leerlo) y se expanden `%h`, `%t` y los demás
-    especificadores fijos de la cuenta. Rechaza si nombra un miembro o si la
-    parte fija de una ruta, antes de `%i` o de un `$VAR` sin valor, es la
-    raíz, está debajo o encima de ella (`/home/kza/releases/%i`,
-    `$HOME/releases/%i`, `%h/%i`). Una palabra que **empieza** con `%i` o con
-    un `$VAR` sin valor no se puede juzgar: rechaza
-    (`unit_unparsed:<plantilla>:<clave>`) salvo que la plantilla tenga la
-    tolerancia de U3b-0e4 de arriba, y entonces aparece en
+    entorno del gestor, su `Environment=` y sus `EnvironmentFile=` (como en
+    systemd, el valor del archivo gana sobre `Environment=` esté donde esté la
+    línea; la ruta del archivo se compara antes de leerlo), se expanden `%h`,
+    `%t` y los demás especificadores fijos de la cuenta, y `$HOME`, `${HOME}`,
+    `${HOME:-...}`, `$$HOME`, `~` y `~kza` valen el home. Después, regla de
+    subcadena sobre **todo** el texto (comentarios y claves que el escaneo no
+    conoce incluidos) y sobre cada valor de su entorno, también los que sólo
+    lee el programa: rechaza (`unit_path`) si aparece la raíz o un miembro, o
+    si un trozo de ruta (cortado en espacios, `;|&()<>`, comillas, `=`, `,` y
+    `:`, así que vale dentro de un `sh -c '...'` o de una lista
+    `PYTHONPATH=a:b`) llega a un miembro o tiene una parte fija, antes de
+    `%i`/`%I` o de un `$VAR` sin valor, que es la raíz, está debajo, o está
+    encima y lo que sigue puede empezar el nombre de la raíz
+    (`/home/kza/releases/%I`, `%h/%i`, `%h/rel%i` rechazan; `%h/backup-%i` y
+    `%t/%i` pasan). Un trozo cuya parte desconocida viene antes de toda `/`
+    (`%i`, `${SRC}`, `-C${SRC}`, `backup-%i`) no se puede juzgar, ni
+    cualquier variable dentro del guion de un `sh -c` (o `bash -ec`, etc.):
+    rechaza (`unit_unparsed:<plantilla>:<clave>`) salvo que la plantilla
+    tenga la tolerancia de U3b-0e4 de arriba, y entonces aparece en
     `units.tolerated_unresolved`. Unas comillas sin cerrar o un
     `EnvironmentFile=` ilegible también rechazan. La salida lista las
     plantillas en `units.templates_scanned`;
+  - en cualquier unidad, un valor se corta también en `,`, en cada `=` y en
+    los caracteres del shell, así que `podman run --mount
+    type=bind,src=<miembro>` (y la unidad que genera un Quadlet `Mount=`)
+    rechaza como `-v <miembro>:/data`;
   - un valor de `systemctl --user show-environment` que nombra un miembro
     rechaza (`unit_path:show-environment`) como si fuera un `Environment=` de
     la unidad: cualquier programa del gestor lo hereda. Los valores que
     systemd imprime como `$'...'` (con `*`, `;`, espacios, comillas) se
     decodifican para esta comparación, y un comodín (`<raíz>/slots/*/state`)
     se juzga por su parte fija como en las plantillas; uno que no se puede
-    decodificar rechaza (`unit_unparsed:show-environment:<nombre>`);
+    decodificar rechaza (`unit_unparsed:show-environment:<nombre>`). La regla
+    de subcadena de las plantillas vale también aquí: un valor que nombra la
+    raíz misma, o un miembro pegado a cualquier carácter (`x;<miembro>`,
+    `a|<miembro>`, `(<miembro>)`), rechaza;
 - ninguna copia del catálogo en preparación (P8,
   `compaction_copy_in_progress`): `reserved` o `writing` con su proceso dueño
   vivo, o un estado de preparación desconocido. «Vivo» es el mismo proceso:
@@ -252,10 +272,16 @@ K=<nombre nuevo de slot, nunca usado antes>
      --accept-missing`: queda registrado (`missing_accepted`), sin lápida ni
      registro `copies-retired`, y la copia sigue donde esté (el retiro no la
      destruyó y no dice que lo hizo). Un miembro que esta compactación ya
-     renombró (evento `renamed`, que se registra después del `rename`) no se
-     puede aceptar así. Uno con `retiring` pero sin `renamed` (un corte antes
-     del `rename` y después un movimiento a mano) sí: no hay prueba de que
-     esta compactación lo haya borrado;
+     terminó de recorrer (evento `walked`, que se registra con la cuarentena
+     vacía y antes de quitarla) no se puede aceptar así. Uno con `retiring`
+     pero sin `renamed` (un corte antes del `rename` y después un movimiento a
+     mano), o con `renamed` pero sin `walked` (su cuarentena se sacó a mano a
+     mitad del borrado), sí: no hay prueba de que esta compactación lo haya
+     borrado entero. Lo aceptado tiene que quedar fuera: si vuelve a su ruta o
+     a la cuarentena, `retire` y `abort` rechazan
+     `compaction_accepted_member_back` con el número y la ruta. Moverlo otra
+     vez fuera de la raíz (o borrarlo a mano) y repetir el comando; la
+     aceptación registrada no se deshace;
    - el escaneo de unidades (P14);
    - la cobertura, ahora **contra H** (decisión D2 = A): una fila o archivo que
      sigue en K' está cubierto; lo que estaba en H y la corrida de K borró o
@@ -267,8 +293,9 @@ K=<nombre nuevo de slot, nunca usado antes>
      --accept-owner-only-loss <coverage_sha256>`. El flag de `start` no los
      cubre.
 
-   Por cada miembro escribe `retiring`, lo renombra dentro de la raíz, lo
-   borra de abajo hacia arriba sin seguir enlaces, escribe la lápida
+   Por cada miembro escribe `retiring`, lo renombra dentro de la raíz
+   (`renamed`), lo borra de abajo hacia arriba sin seguir enlaces (`walked`,
+   con la cuarentena ya vacía), quita la cuarentena, escribe la lápida
    (`admission/compaction/v1/retired/<digest>.json`) y después `destroyed`.
    Las copias del catálogo reciben un registro
    `admission/copies-retired/<copy_id>.json`; la cadena del catálogo no se
@@ -340,15 +367,23 @@ K=<nombre nuevo de slot, nunca usado antes>
   registrados (también K y un snapshot a medias que ya estaban en
   `compaction/<id>/retiring/`) y termina de borrarlo; `aborted` (y `complete`
   en el retiro) no se registra mientras quede algo en esa cuarentena
-  (`compaction_retiring_residue`, con los nombres): revisar qué es.
+  (`compaction_retiring_residue`, con los nombres): revisar qué es. **Nunca
+  sacar nada de `compaction/<id>/retiring/`**: lo que está ahí se está
+  borrando, y si se saca a medias el controlador no lo cuenta como destruido
+  (rechaza `compaction_member_missing`) pero lo que quedó sigue en disco.
 - **El abort rechaza `compaction_member_missing`** (por ejemplo, se borró a
-  mano `compaction/<id>/snapshot-N` o el `placeholder` para liberar espacio):
-  la salida trae el número del miembro. Si no se puede devolver a su ruta,
-  `compact abort <id> --member <n> --accept-missing` lo deja fuera, registrado
-  (`missing_accepted`), sin lápida ni registro `copies-retired`, y sigue con
-  el abort. Repetir con el próximo número si falta más de uno. Rechaza
-  (`compaction_member`) si el miembro sigue en su ruta o en la cuarentena, o
-  si esta compactación ya lo renombró (`renamed`).
+  mano `compaction/<id>/snapshot-N` o el `placeholder` para liberar espacio,
+  o se movió `slots/<K>` después de construirlo): la salida trae el número
+  del miembro (K es `<cantidad de miembros del plan> + 100000`). Si no se
+  puede devolver a su ruta, `compact abort <id> --member <n> --accept-missing`
+  lo deja fuera, registrado (`missing_accepted`), sin lápida ni registro
+  `copies-retired`, y sigue con el abort. Repetir con el próximo número si
+  falta más de uno. Rechaza (`compaction_member`) si el miembro sigue en su
+  ruta o en la cuarentena, o si esta compactación ya terminó de borrarlo
+  (`walked`). Lo aceptado no se borra: **K movido es una copia completa de
+  H** (conversaciones, recuerdos, perfiles de voz); si ya no se quiere,
+  borrarlo a mano donde quedó. Si algo aceptado vuelve a su ruta, el abort
+  rechaza `compaction_accepted_member_back` (ver el paso 5).
 - **El head cambió después de empezar el abort** (una corrida de K que la
   compuerta debió impedir, por ejemplo desde un controlador viejo): `resume` y
   `abort` rechazan `compaction_abort_recheck_required`. Correr `compact abort
@@ -426,7 +461,8 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
 | `runtime_admission_retired_locator` | Un nombre o ruta ya retirado por una compactación; usar otro nombre. |
 | `runtime_admission_compaction_abort_pending` / `_retire_in_progress` | serve: hay un abort o un retiro empezado; terminarlo con `compact`. |
 | `runtime_admission_compaction_abort_recheck_required` | El head cambió después de `abort_started`: `compact abort <id> --to-h --confirm-h ...`. |
-| `runtime_admission_compaction_member_missing` | Un miembro ya no está en su ruta y esta compactación no lo movió. En el retiro, ver el paso 5; en el abort, «El abort rechaza `compaction_member_missing`». En ambos: `--member <n> --accept-missing`. |
+| `runtime_admission_compaction_member_missing` | Un miembro (o K en el abort) ya no está en su ruta y esta compactación no terminó de borrarlo (sin `walked`). En el retiro, ver el paso 5; en el abort, «El abort rechaza `compaction_member_missing`». En ambos: `--member <n> --accept-missing`. |
+| `runtime_admission_compaction_accepted_member_back` | Un miembro aceptado como faltante volvió a su ruta o a la cuarentena (la salida trae número y ruta): moverlo otra vez fuera de la raíz o borrarlo a mano, y repetir. |
 | `runtime_admission_compaction_retiring_residue` | Quedó algo en `compaction/<id>/retiring/`; no se registra el final. |
 | `runtime_admission_compaction_copy_in_progress` | Una copia del catálogo se está preparando (o su estado es desconocido). |
 | `runtime_admission_compaction_unit_unparsed:<unidad>:LoadState` | Una unidad pasada con `--unit` no existe para systemd. |
@@ -459,10 +495,11 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
   pedir un reconocimiento nuevo).
 - Una referencia `$VAR` sin resolver en una línea `Exec*` rechaza en las
   unidades nombradas o que mencionan kza, un miembro o la raíz (regla de
-  U3b-0e4, mismo criterio `mentions_markers`); un valor del entorno del gestor
-  con escapes (`$'...'`) no se decodifica y cuenta como sin resolver. La
-  salida del plan lista por nombre las unidades toleradas
-  (`units.tolerated_unresolved`).
+  U3b-0e4, mismo criterio `mentions_markers`). Un valor del entorno del
+  gestor con escapes (`$'...'`) no se **sustituye** en las unidades (una
+  referencia a él cuenta como sin resolver), pero sí se decodifica para
+  compararlo con los miembros (ver «Antes de empezar»). La salida del plan
+  lista por nombre las unidades toleradas (`units.tolerated_unresolved`).
 - Un miembro que pasa a contener un enlace simbólico después de `start` no se
   reclasifica: el retiro se detiene sin recorrerlo hasta que el operador quite
   el enlace.
@@ -482,6 +519,17 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
   preparación se reconoce por pid y hora de arranque; el abort acepta un
   miembro faltante con el mismo reconocimiento que el retiro; `retiring` sin
   `renamed` nunca prueba un borrado.
+- Cuarta revisión (R4-1 a R4-7): en las plantillas y en el entorno del
+  gestor la regla es de subcadena (la raíz o un miembro en cualquier lugar del
+  texto, también en un comentario, rechaza) en vez de sumar una forma de
+  palabra más; cualquier variable dentro del guion de un `sh -c` de una
+  plantilla de kza rechaza, también las del propio shell (`$$f`); los valores
+  de entorno con `$` cuentan como desconocidos. Sólo prueba un borrado
+  `walked` (no `renamed`). Un miembro aceptado que vuelve rechaza con un
+  mensaje propio en vez de aceptarse solo: el operador decide de nuevo. K
+  movido a mano en un abort se acepta con el mismo comando y no se borra. Un
+  enlace del home es marcador de kza sólo con su ruta o un prefijo de home,
+  nunca su nombre suelto (`app` es una palabra común).
 - Antes y después de la verificación se usa `disable` (no `mask`), como en la
   ventana R1: la unidad vive en `~/.config/systemd/user` y `mask` no puede
   reemplazarla.

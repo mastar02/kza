@@ -861,21 +861,31 @@ Límites que siguen valiendo (decisiones P5 = C y Q4):
 - El escaneo de unidades (P14) cubre las unidades nombradas donde estén, las
   enlazadas con `systemctl --user link`, las plantillas de los directorios del
   usuario (con líneas de continuación unidas, `$VAR` sustituidas desde el
-  entorno del gestor, su `Environment=` y su `EnvironmentFile=`, y juzgadas
-  por la parte fija de cada ruta; una palabra que empieza con `%i` o un `$VAR`
-  sin valor rechaza salvo la tolerancia de U3b-0e4) y los valores de
-  `show-environment`, también los que systemd imprime como `$'...'`. Una
-  unidad es «de kza» por su nombre `kza*` o por una ruta de kza (`~/kza`,
-  `~kza/kza`, `%h/…`, `$HOME/…`, `"$HOME"/…`, la ruta absoluta, o un `kza`
-  relativo desde el home); un `kza` dentro de otra ruta no cuenta. Igual en
-  U3b-0e4.
+  entorno del gestor, su `Environment=` y su `EnvironmentFile=`, que gana como
+  en systemd) y los valores de `show-environment`, también los que systemd
+  imprime como `$'...'`. En plantillas y entorno del gestor la regla es de
+  subcadena: la raíz o un miembro en cualquier lugar del texto o de un valor
+  rechaza, y cada trozo de ruta (cortado en espacios, caracteres del shell,
+  `=`, `,` y `:`, así que vale dentro de `sh -c` y de listas) se juzga por la
+  parte fija antes de `%i` o de un `$VAR` sin valor; un trozo que no se puede
+  ubicar, o cualquier variable en el guion de un `sh -c`, rechaza salvo la
+  tolerancia de U3b-0e4. En toda unidad un valor se corta también en `,` y en
+  cada `=` (`podman --mount type=bind,src=<miembro>`). Una unidad es «de
+  kza» por su nombre `kza*` o por una ruta de kza (`~/kza`, `~kza/kza`,
+  `%h/…`, `$HOME/…`, `"$HOME"/…`, `${HOME:-…}/…`, la ruta absoluta aun con
+  `//` o `/./`, un enlace del home como `/home/kza/app`, o un `kza` relativo
+  desde el home); un `kza` dentro de otra ruta no cuenta. Igual en U3b-0e4.
 - Una copia del catálogo en preparación con su proceso vivo (mismo pid y
   arrancado antes de la reserva) impide compactar
   (`compaction_copy_in_progress`); una abandonada aparece en el plan y nunca
   bloquea.
-- Un abort también acepta un miembro propio que falta (`--member n
-  --accept-missing`, sin lápida); `retiring` sin `renamed` nunca se cuenta como
-  borrado. Si una re-comprobación tras una corrida de K detrás del abort
+- Un abort también acepta un miembro propio que falta, o K movido a mano
+  después de construirlo (`--member n --accept-missing`, sin lápida; K
+  aceptado sigue donde quedó y es una copia completa de H). Sólo `walked`
+  (registrado con la cuarentena vacía) prueba un borrado: `retiring` o
+  `renamed` sin `walked` y el miembro fuera de su lugar rechaza
+  `member_missing`. Un miembro aceptado que vuelve a su ruta rechaza
+  `compaction_accepted_member_back` con número y ruta; no se borra solo. Si una re-comprobación tras una corrida de K detrás del abort
   rechaza `abort_revives`, el servicio queda detenido con H y K' intactos y la
   salida es un controlador corregido que siga desde K' (D4); el runbook lo
   detalla.
