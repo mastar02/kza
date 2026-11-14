@@ -842,9 +842,18 @@ Pruebas en el server: el usuario autorizó correrlas allí como `yo` y detener s
   - Mac: verde tras repetir las tandas cortadas por el límite bajo carga ajena (emulador Android, Docker, VM). En las rehearsals de tiempo, a solas, falló una vez `test_compiled_slot_rollback` con `runtime_admission_writer_active` en la revalidación final: la misma falla intermitente sin causa establecida del 2026-11-06/07 (T024/F1, G01). Pasa a solas en 0c y en el server; 0c no toca `_assert_writers_closed`.
 - Los corredores de la suite usan ahora seis tandas en ambas máquinas, con cortes en orden de bytes (`LC_ALL=C`): el `awk` de macOS comparaba por locale y desequilibró la división de tools.
 
+- G01 (`runtime_admission_writer_active` en la revalidación final de `test_compiled_slot_rollback`), causa establecida el 2026-11-14 (`t024/g01-writer-active-20261114.json`, rama `g01-writer-active`):
+  - Desde 69a79e6 el ensayo corre la app de 80b47f5 (la primera con admisión). Su `src.main` hace su propia admisión, así que el puente de producción de 3fc5ac6 nunca se aplica.
+  - En 80b47f5, el mantenimiento histórico de `DiagnosticServices` del candidato abre `DiagnosticStore` sobre el catálogo delegado del slot viejo y retiene `slots/old/state/data/graph/metrics_policy_v1.jsonl.sqlite3.lock` entre `prune()` y `close()`. La revalidación final (`main.py:1943`, sin serializar) sondea ese estado con `_assert_writers_closed` y encuentra el lock del propio proceso. Bajo carga, el `prune` dura más y la ventana crece.
+  - Reproducción determinista: una copia descartable de 80b47f5 retiene ese mismo flock 10 s después de `prune()` y falla 3/3 con la traza idéntica. La misma copia pasa 2/2 con el arreglo.
+  - Producción no queda expuesta. HEAD ya serializa con `revalidate_constructed` (3fc5ac6) y con `diagnostic_history_validation_gate` (431e44e), y no hay otro dueño de flocks en un estado delegado. La release b0866e8 no tiene admisión.
+  - Arreglo, sólo en el ensayo: `managed_slot_graph.serialize_older_history` porta a una app vieja sin compuerta el mutex de 431e44e (trabajador histórico contra la sonda original). La sonda sigue igual y rechaza a cualquier otro escritor.
+  - Prueba: `tests/unit/tools/test_managed_slot_history_gate.py`. Los mutantes M1 (mutex nulo) y M2 (sin instalar) quedan muertos.
+  - En el server: la copia retenida falla sin el arreglo y pasa con él, y el ensayo normal pasa. Sin la copia, la falla natural es rara: 3/3 corridas sin arreglo pasaron con el Mac bajo carga de CPU.
+  - Pasar el ensayo a una revisión con la compuerta no sirve hoy: 431e44e, cdd3c84 y 740ca42 fallan por otras causas con este arnés, y HEAD falla en la copia.
+
 Siguiente:
 - R5-1 antes de la primera compactación real.
-- Investigar `runtime_admission_writer_active` en la revalidación final (G01): puede rechazar un arranque real si un lock de diagnóstico sigue tomado.
 - Los seguimientos F4/F5/F10 y el presupuesto de cierre del coordinador de borrados.
 - Medir el tiempo de compactación una vez sobre una copia del estado de producción antes de la primera corrida real (recomendado por la revisión), y en la ventana de R1 leer `units.templates_scanned` y `units.tolerated_unresolved` del `compact plan` real.
 
