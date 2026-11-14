@@ -808,9 +808,17 @@ Pruebas en el server: el usuario autorizó correrlas allí como `yo` y detener s
 - Revisión independiente: aceptada con arreglos (F1–F7, F11 corregidos).
 - Suite completa en `440617e`, en la Mac y en el server: verde sin fallas (`u3b/full-0e4/RESULT.md`). En el server, la parte de integración ahora va en tres tandas.
 
+`U3b-0c` (rama `u3b-0c`, sobre `b3cbcd0`, sin publicar): compactación de estados dueños, la última unidad antes de R1. Runbook: [2026-11-14-owner-compaction](2026-11-14-owner-compaction.md); sección nueva en DEPLOYMENT.
+- `stage_runtime compact plan|start|verify|retire|resume|abort|allow-run|status`. El estado nuevo K es una copia idéntica del head con las rutas reubicadas; tras una corrida gestionada limpia de K se destruyen con `unlink` sólo las copias con prueba positiva. Lo demás queda intacto y se reconoce por digest.
+- Época del controlador 3; compuerta en la entrada del controlador y en `prepare`; serve deja pasar sólo la corrida armada o un `allow-run`; R-b automático apagado mientras haya compactación pendiente; head manual nuevo `compaction_return`.
+- La fase de datos corre en un proceso aparte con su capacidad G1 (`KZA_COMPACTION_WORKER=1`).
+- P14 en el server con el systemd de usuario real de `yo` encontró un hueco: una unidad deshabilitada e inactiva no aparecía en el listado del diseño (E2). Ahora se listan todos los estados.
+- Mutantes: los 31 del diseño (v2, v4, v5), todos muertos, cada uno en su copia.
+- Huecos registrados en `t040-t041/u3b-0c-evidence.json`: sin corpus de reloj envejecido ni oráculo de mantenimiento; T-U10 (reproducción de un borrado en K) sólo por D5; canarios no en cada familia de datos; G2 medido con 20 000 filas, no 1 000 000; `compact verify --wait` no implementado.
+
 Siguiente:
 - Los seguimientos F4/F5/F10 y el presupuesto de cierre del coordinador de borrados.
-- U3b-0c: compactación.
+- Revisión independiente de U3b-0c y la suite batch (incluidos los archivos de presupuesto de tiempo).
 - F8.
 
 `U3b-0e5` (rama `u3b-0e5`, sobre la cabeza de 0e3): preparación de P7.
