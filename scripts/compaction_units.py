@@ -201,6 +201,248 @@ _VARIABLE = re.compile(r"[$\x01]")
 SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "ash", "mksh", "busybox"})
 
 
+_POSIX_CLASSES = {
+    "alpha": "a-zA-Z", "digit": "0-9", "alnum": "a-zA-Z0-9", "upper": "A-Z", "lower": "a-z",
+    "space": " \\t\\n\\r\\f\\v", "blank": " \\t", "xdigit": "0-9A-Fa-f", "cntrl": "\\x00-\\x1f\\x7f",
+    "print": "\\x20-\\x7e", "graph": "\\x21-\\x7e", "word": "a-zA-Z0-9_",
+    "punct": "".join(re.escape(char) for char in "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")}
+
+
+def _bracket(component: str, start: int) -> tuple[str, int] | None:
+    """The shell bracket expression at ``component[start] == '['`` as a regular expression matching one
+    character, and the index after its ']'; None when it is not closed (the '[' is then a literal).
+
+    Review r51 A-F2: glob(7) semantics. '!' or '^' negates, a ']' first is a
+    member, ranges and ``[:class:]`` are kept; an equivalence class
+    (``[=c=]``), a collating symbol (``[.c.]``) or an unknown class matches
+    any character (wider than the shell, never narrower).
+    """
+    index = start + 1
+    negate = index < len(component) and component[index] in "!^"
+    index += negate
+    items: list[str] = []
+    wide = False
+    first = True
+    while index < len(component):
+        char = component[index]
+        if char == "]" and not first:
+            if wide:
+                return ".", index + 1
+            body = "".join(items)
+            if not body:
+                return ("." if negate else "(?!)"), index + 1
+            return ("[^" if negate else "[") + body + "]", index + 1
+        first = False
+        if char == "[" and component[index + 1:index + 2] in (":", "=", "."):
+            kind = component[index + 1]
+            end = component.find(kind + "]", index + 2)
+            if end != -1:
+                name = component[index + 2:end]
+                if kind == ":" and name in _POSIX_CLASSES:
+                    items.append(_POSIX_CLASSES[name])
+                else:
+                    wide = True
+                index = end + 2
+                continue
+        if char == "\\" and index + 1 < len(component):
+            index += 1
+            char = component[index]
+        if (component[index + 1:index + 2] == "-" and index + 2 < len(component)
+                and component[index + 2] != "]"):
+            low, high = char, component[index + 2]
+            if low <= high:
+                items.append(re.escape(low) + "-" + re.escape(high))
+            index += 3
+            continue
+        items.append(re.escape(char))
+        index += 1
+    return None
+
+
+def _component_pattern(component: str, unknown: re.Pattern | None) -> tuple[str, bool]:
+    """One path component of a glob as a regular expression, and whether it is open.
+
+    '*' is any run, '?' one character and a closed ``[...]`` one character
+    of its set (review r51 A-F2); an unclosed '[' is a literal. A part only
+    known at run time (``unknown``) makes the rest of the component, and
+    what follows it, unknown: the expression ends in ``.*`` and the
+    component is open (stricter than the shell, never looser). '\\0' is a
+    literal '%'.
+    """
+    out = []
+    index = 0
+    while index < len(component):
+        char = component[index]
+        if char == "*":
+            out.append(".*")
+        elif char == "?":
+            out.append(".")
+        elif char == "[" and (found := _bracket(component, index)) is not None:
+            if unknown is not None and unknown.search(component, index, found[1]):
+                out.append(".*")  # a run-time part inside the set: anything from here
+                return "".join(out), True
+            out.append(found[0])
+            index = found[1]
+            continue
+        elif unknown is not None and unknown.match(char):
+            out.append(".*")
+            return "".join(out), True
+        else:
+            out.append(re.escape("%" if char == "\0" else char))
+        index += 1
+    return "".join(out), False
+
+
+def _first_glob(run: str) -> int | None:
+    """Index of the first glob character the shell would expand: '*', '?', or a '[' closed within its
+    path component (an unclosed '[', as in ``[ -f x ]`` or ``http://[``, is a literal; review r51 A-F2)."""
+    for index, char in enumerate(run):
+        if char in "*?":
+            return index
+        if char == "[":
+            end = run.find("/", index)
+            if _bracket(run[:end] if end != -1 else run, index) is not None:
+                return index
+    return None
+
+
+# Review r51 A-F2: a POSIX class ('[[:space:]]') holds ':', where _PATH_BREAK cuts; such a run is also read
+# with ':' kept.
+_GLOB_BREAK = re.compile(r"[\s;|&()<>`'\"=,]+")
+
+
+def _runs(text: str) -> list[str]:
+    """The runs of a text between path separators (_PATH_BREAK), plus, where a run holds '[:', the run
+    with ':' kept."""
+    found = [run for run in _PATH_BREAK.split(text) if run]
+    if "[:" in text:
+        found += [run for run in _GLOB_BREAK.split(text) if "[:" in run]
+    return found
+
+
+def _may_reach(parts: list[str], names: list[str], unknown: re.Pattern | None, exact: bool) -> bool:
+    """Whether path components ``parts`` (a glob, run-time parts) can name ``names`` (a target's components
+    below the same directory) or something under it; naming the target itself counts only when ``exact``."""
+    if ".." in parts:
+        return True  # a '..' after a glob or a run-time part can go anywhere back up
+    for index, part in enumerate(parts):
+        if index == len(names):
+            return True  # every component of the target matched and the path goes on below it
+        expression, opened = _component_pattern(part, unknown)
+        if re.fullmatch(expression, names[index], re.DOTALL) is None:
+            return False
+        if opened:
+            return True
+    return exact and len(parts) == len(names)
+
+
+_C_SIMPLE = {"a": "\a", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v", "\\": "\\", '"': '"',
+             "'": "'", "s": " "}
+
+
+def _c_unescape_one(text: str, index: int, out: bytearray) -> int:
+    """systemd's cunescape_one at ``text[index] == '\\'``, appended to ``out`` as bytes; the next index.
+
+    ``\\xHH`` (two digits) and ``\\ooo`` (three octal digits) are bytes,
+    ``\\uXXXX`` and ``\\UXXXXXXXX`` code points; NUL is refused. An unknown
+    or malformed escape is kept with its backslash, as unit file loading does
+    (extract_first_word_and_warn retries with EXTRACT_CUNESCAPE_RELAX).
+    """
+    code = text[index + 1:index + 2]
+    if not code:
+        out += b"\\"
+        return index + 1
+    if code in _C_SIMPLE:
+        out += _C_SIMPLE[code].encode()
+        return index + 2
+    width = {"x": 2, "u": 4, "U": 8}.get(code)
+    if width is not None:
+        digits = text[index + 2:index + 2 + width]
+        if len(digits) == width and re.fullmatch(r"[0-9a-fA-F]+", digits):
+            value = int(digits, 16)
+            if code == "x" and value:
+                out.append(value)
+                return index + 2 + width
+            if code != "x" and 0 < value < 0x110000 and not 0xD800 <= value < 0xE000:
+                out += chr(value).encode()
+                return index + 2 + width
+    elif code in "01234567":
+        digits = text[index + 1:index + 4]
+        if re.fullmatch(r"[0-7]{3}", digits) and 0 < int(digits, 8) < 256:
+            out.append(int(digits, 8))
+            return index + 4
+    out += ("\\" + code).encode()
+    return index + 2
+
+
+def _c_unescaped(text: str) -> str:
+    """Review r5 R5-2: ``text`` with every C escape decoded as systemd decodes it in unit file words."""
+    out, index = bytearray(), 0
+    while index < len(text):
+        if text[index] == "\\":
+            index = _c_unescape_one(text, index, out)
+        else:
+            out += text[index].encode("utf-8", "surrogateescape")
+            index += 1
+    return out.decode("utf-8", "surrogateescape")
+
+
+_ANSI_C = re.compile(r"[$\x01]'((?:[^'\\]|\\.)*)'", re.DOTALL)
+
+
+def _shell_reading(script: str) -> str | None:
+    """Review r51 A-F3: the words of an ``sh -c`` script as the shell reads them, one per line: a bash
+    ``$'...'`` decoded and every quote removed (``rel''eases`` is ``releases``). None if it does not split."""
+    def decoded(match: re.Match) -> str:
+        try:
+            return "'" + _decode_ansi_c("$'" + match.group(1) + "'").replace("'", "'\"'\"'") + "'"
+        except ValueError:
+            return match.group(0)
+    try:
+        return "\n".join(shlex.split(_ANSI_C.sub(decoded, script)))
+    except ValueError:
+        return None
+
+
+def _systemd_words(value: str) -> list[str]:
+    """Review r5 R5-2: the words of an Exec*/Environment= value as systemd extracts them.
+
+    extract_first_word with EXTRACT_UNQUOTE|EXTRACT_CUNESCAPE: whitespace
+    separates words, single and double quotes group anywhere in a word and
+    are removed, and C escapes are decoded inside quotes and out (so
+    ``rel\\x65ases`` is ``releases``, where a POSIX shell reading keeps
+    ``relx65ases``). ValueError on an unterminated quote.
+    """
+    words: list[str] = []
+    out, quote, started, index = bytearray(), None, False, 0
+    while index < len(value):
+        char = value[index]
+        if char == "\\":
+            index = _c_unescape_one(value, index, out)
+            started = True
+            continue
+        if quote is not None:
+            if char == quote:
+                quote = None
+            else:
+                out += char.encode("utf-8", "surrogateescape")
+        elif char in " \t\n\r":
+            if started:
+                words.append(out.decode("utf-8", "surrogateescape"))
+                out, started = bytearray(), False
+        elif char in "'\"":
+            quote, started = char, True
+        else:
+            out += char.encode("utf-8", "surrogateescape")
+            started = True
+        index += 1
+    if quote is not None:
+        raise ValueError("unterminated quote")
+    if started:
+        words.append(out.decode("utf-8", "surrogateescape"))
+    return words
+
+
 def _normal(path: str) -> str:
     """normpath with repeated slashes collapsed (normpath keeps a leading '//')."""
     return os.path.normpath(re.sub(r"/{2,}", "/", path))
@@ -339,6 +581,7 @@ class _Scan:
         self.glob_entries = 0
         self.templates: list[str] = []
         self.escaped_environment: dict[str, str] = {}
+        self._aliases: list[str] | None = None
 
     # --- matching (rule 5) ----------------------------------------------------------------------
 
@@ -421,6 +664,64 @@ class _Scan:
             self.check(unit, path)
             if rooted and os.path.isabs(piece):
                 self.check(unit, os.path.join(rooted, piece.lstrip("/")))
+        # Review r5 R5-1: a glob in a path (sh -c 'tar c <root>/slots/*/state') names whatever it matches,
+        # so it is held to the fixed-part rule, as a logrotate target and a manager value are.
+        runs = {run.lstrip(EXEC_PREFIXES) for piece in pieces for run in _runs(piece)}
+        for run in runs:
+            run = self._home_run(run)
+            self._variable_tail(unit, run)
+            start = _first_glob(run)
+            if start is None:
+                continue
+            literal, rest = run[:start], run[start:]
+            anchored = self._glob_anchor(literal, base)
+            if anchored is None:
+                continue  # 'find -path */cache/*', '--include=*/': a pattern a program reads
+            self._fixed_part(unit, anchored, rest, unknown=None, exact=False)
+            if rooted and literal.startswith("/"):
+                self._fixed_part(unit, os.path.join(rooted, literal.lstrip("/")), rest, unknown=None, exact=False)
+
+    def _glob_anchor(self, literal: str, base: str) -> str | None:
+        """Where a glob's literal part names a directory: absolute as written; relative, against the working
+        directory when it holds a '/' (``releases/slots/*``) or the working directory is the root or below
+        it (``slots/*`` from <root>), review r51 A-F1. None: a bare relative pattern (``*/cache/*``)."""
+        if literal.startswith("/"):
+            return literal
+        if "/" in literal or any(_within(form, root) for form in {_normal(base), os.path.realpath(base)}
+                                 for root in self.roots):
+            return os.path.join(base, literal)
+        return None
+
+    def _variable_tail(self, unit: str, run: str) -> None:
+        """Review r51 A-F4: an absolute run with a '$' left in it (an unset $VAR the 0e4 leniency tolerated, or
+        a shell's own variable) refuses when what follows the variable can complete the path of a member,
+        or of a directory strictly below the root that holds one (``/home/kza/$D/slots/m1``,
+        ``/home/kza/r$D/slots/*``). The variable may stand for any number of components."""
+        index = run.find("$")
+        if index == -1 or not run.startswith("/"):
+            return
+        head, partial = os.path.split(run[:index])
+        tail = [part for part in run[index:].split("/")[1:] if part not in ("", ".")]
+        if not tail or ".." in tail:
+            return  # nothing after the variable to place, or a '..' that can go anywhere: not judged here
+        prefix = re.escape(partial) + ".*"
+        head = _normal(head or "/")
+        for directory in {head, os.path.realpath(head)}:
+            for root in self.roots:
+                if not _within(root, directory) or root == directory:
+                    continue
+                depth = len(os.path.relpath(root, directory).split("/"))
+                for member in self.members:
+                    if not _within(member, root):
+                        continue
+                    names = os.path.relpath(member, directory).split("/")
+                    if re.fullmatch(prefix, names[0], re.DOTALL) is None:
+                        continue
+                    for start in range(1, len(names)):  # the variable spans names[:start], the tail the rest
+                        aligned = names[start:start + len(tail)]
+                        if all(re.fullmatch(_component_pattern(part, None)[0], name, re.DOTALL)
+                               for part, name in zip(tail, aligned)) and start + len(tail) > depth:
+                            _refuse(PATH_HIT + unit)
 
     # --- systemctl ------------------------------------------------------------------------------
 
@@ -586,7 +887,8 @@ class _Scan:
                 options = PATH_OPTIONS | (LOGROTATE_PATH_OPTIONS if after_rotate else frozenset())
                 option = token.split("=", 1)[0] if token.startswith("-") and "=" in token else None
                 bearing = ((index > 0 and texts[index - 1][0] in options) or option in options
-                           or "/" in text or "/" in token or text.startswith("~"))
+                           or "/" in text or "/" in token or text.startswith("~")
+                           or _first_glob(text) is not None)  # review r51 A-F1: 'tar c *' from the root
                 config = False
                 if after_rotate:
                     if takes_value:
@@ -716,16 +1018,32 @@ class _Scan:
     def _judge(self, unit: str, run: str, base: str) -> bool:
         """One path-shaped run: refuse if it reaches a member, or if its literal part before the first part
         only known at run time could land under the root. False when it cannot be judged (an unknown part
-        before any '/': ``%i``, ``${SRC}``, ``-C${SRC}``)."""
+        before any '/': ``%i``, ``${SRC}``, ``-C${SRC}``).
+
+        Review r5 R5-1: a run with a glob before any run-time part is judged
+        by the fixed-part rule over its components (``%h/rel*/slots/%i`` and
+        ``%h/r?leases/slots/*/state`` refuse, ``%h/backups/*.tgz`` passes); a
+        glob that can name the root itself refuses here too (the substring
+        rule refuses the root by name in this text). A relative one is judged
+        from the base when its literal part holds a '/' or the base is in the
+        root (review r51 A-F1, ``_glob_anchor``).
+        """
         run = self._home_run(run.lstrip(EXEC_PREFIXES))
         match = _UNKNOWN.search(run)
+        start = _first_glob(run)
+        if start is not None and (match is None or start < match.start()):
+            anchored = self._glob_anchor(run[:start].replace("\0", "%"), base)
+            if anchored is not None:  # review r51 A-F1: a relative glob with a directory, from the base
+                self.check(unit, anchored)
+                self._fixed_part(unit, anchored, run[start:])
+                return True
         literal = (run[:match.start()] if match else run).replace("\0", "%")
         if "/" not in literal:
             return match is None
         path = literal if literal.startswith("/") else os.path.join(base, literal)
         self.check(unit, path)
         if match is not None:
-            self._fixed_part(unit, path)
+            self._fixed_part(unit, path, run[match.start():])
         return True
 
     def check_text(self, unit: str, text: str, base: str, *, root: bool = True) -> None:
@@ -743,9 +1061,8 @@ class _Scan:
         for target in targets:
             if re.search(re.escape(target) + r"(?![\w.-])", text) is not None:
                 _refuse(PATH_HIT + unit)
-        for run in _PATH_BREAK.split(text):
-            if run:
-                self._judge(unit, run, base)
+        for run in _runs(text):
+            self._judge(unit, run, base)
 
     def _script_words(self, words: list[str]) -> set[int]:
         """Indexes of the scripts of ``sh -c '...'`` (any shell, any option cluster with 'c')."""
@@ -782,12 +1099,16 @@ class _Scan:
         quoting refuses.
         """
         text = self.call("cat", unit)
-        self._texts[unit] = text
+        decoded = _c_unescaped(text)
+        # Review r5 R5-2: the decoded reading also decides 'kza's' (stricter here only; the shared rule is
+        # unchanged, so 0e4 adoption reads what it read before).
+        self._texts[unit] = text if decoded == text else text + "\n" + decoded
         assignments = _template_assignments(text)
         own: dict[str, str] = {}
         for key, value in assignments:
             if key == "Environment":
-                for assignment in self._template_words(unit, key, value):
+                # systemd's reading is the value set (R5-2); both readings of each word are judged below.
+                for assignment in self._template_readings(unit, key, value)[-1]:
                     name, separator, item = self._specifiers(assignment).partition("=")
                     if separator:
                         own[name] = self._value_form(item, literal_percent=False)
@@ -815,6 +1136,8 @@ class _Scan:
                 if os.path.isabs(directory) and "%" not in directory and "$" not in directory:
                     base = directory
         self.check_text(unit, self._flatten(text, environment), base)
+        if decoded != text:  # review r5 R5-2: systemd decodes C escapes ('%h/rel\x65ases') in unit file words
+            self.check_text(unit, self._flatten(decoded, environment), base)
         for item in own.values():  # a program (or a shell's $$NAME) reads these without the unit text
             flat = re.sub(r"/{2,}", "/", item)
             self.check_text(unit, flat, base)
@@ -823,21 +1146,39 @@ class _Scan:
         for key, value in assignments:
             if key not in TEMPLATE_KEYS or key == "EnvironmentFile":
                 continue
-            words = self._template_words(unit, key, value)
-            scripts = self._script_words(words) if key in EXEC_PROPERTIES else set()
-            for index, word in enumerate(words):
-                flat = self._flatten(word, environment)
-                if index in scripts and _VARIABLE.search(flat):
-                    self._unjudged(unit, key, own)  # a variable in an sh -c script: unknown to the scan
-                for run in _PATH_BREAK.split(flat):
-                    if run and not self._judge(unit, run, base):
-                        self._unjudged(unit, key, own)
+            for words in self._template_readings(unit, key, value):
+                scripts = self._script_words(words) if key in EXEC_PROPERTIES else set()
+                for index, word in enumerate(words):
+                    flat = self._flatten(word, environment)
+                    if index in scripts:
+                        reading = _shell_reading(flat)
+                        if reading is not None and reading != flat:
+                            self.check_text(unit, reading, base)  # review r51 A-F3: rel''eases, $'..\x65..'
+                    if index in scripts and _VARIABLE.search(flat):
+                        self._unjudged(unit, key, own)  # a variable in an sh -c script: unknown to the scan
+                    for run in _PATH_BREAK.split(flat):
+                        if run and not self._judge(unit, run, base):
+                            self._unjudged(unit, key, own)
 
     def _template_words(self, unit: str, key: str, value: str) -> list[str]:
         try:
             return shlex.split(value)
         except ValueError:
             _refuse(UNPARSED + unit + ":" + key)  # unbalanced quoting: the template cannot be judged
+
+    def _template_readings(self, unit: str, key: str, value: str) -> list[list[str]]:
+        """The words of one template value as a POSIX shell splits them (the r4 reading) and, when they
+        differ, as systemd does (review r5 R5-2: C escapes decoded, inside quotes too); systemd's last.
+
+        Both readings are judged, stricter than either alone; unbalanced
+        quoting in either refuses unit_unparsed.
+        """
+        words = self._template_words(unit, key, value)
+        try:
+            decoded = _systemd_words(value)
+        except ValueError:
+            _refuse(UNPARSED + unit + ":" + key)
+        return [words] if decoded == words else [words, decoded]
 
     def check_manager_environment(self) -> None:
         """Review r2 N5 / r4 R4-4: a manager environment value is held to the unit Environment= rule and to the
@@ -848,39 +1189,45 @@ class _Scan:
         """
         for value in [*self.manager_environment().values(), *self.escaped_environment.values()]:
             if "/" in value or value.startswith("~"):
-                self.check_pattern("show-environment", value, self.home)
+                # check_value holds a glob piece to the fixed-part rule (review r3 R3-6, r5 R5-1).
+                self.check_value("show-environment", value, self.home)
             self.check_text("show-environment", self._flatten(value, {}, specifiers=False), self.home)
 
-    def check_pattern(self, unit: str, text: str, base: str) -> None:
-        """check_value, and for a piece holding a glob character (``*?[``) the fixed-part rule of templates:
-        the literal directory before it may not be the root, under it or above it (review r3 R3-6)."""
-        self.check_value(unit, text, base)
-        pieces = set(commands._words(text)) | {text}
-        for piece in list(pieces):
-            pieces.update(part for part in _PATH_BREAK.split(piece) if part)
-        for piece in pieces:
-            match = re.search(r"[*?\[]", piece)
-            if match is None:
-                continue
-            literal = self._home_run(piece[:match.start()])
-            if literal.startswith("/"):
-                self._fixed_part(unit, literal)
+    def _fixed_targets(self, exact: bool) -> list[tuple[str, bool]]:
+        """The roots and the home's links into them (review r4 R4-5 aliases), each with whether naming it
+        exactly refuses: a root only when ``exact``, a link to a directory below a root always."""
+        if self._aliases is None:
+            self._aliases = commands._home_aliases(self.home, sorted(self.roots))
+        targets = [(root, exact) for root in sorted(self.roots)]
+        targets += [(_normal(alias), exact if os.path.realpath(alias) in self.roots else True)
+                    for alias in self._aliases]
+        return targets
 
-    def _fixed_part(self, unit: str, literal: str) -> None:
-        """A path cut before a part only known at run time: refuse if it can land under the root.
+    def _fixed_part(self, unit: str, literal: str, rest: str, *, unknown: re.Pattern | None = _UNKNOWN,
+                    exact: bool = True) -> None:
+        """A path cut before a part only known at run time or a glob (``rest``): refuse if it can land
+        under the root.
 
         The literal directory may not be the root or under it; above the root
-        it refuses when the partial name after it can still begin the root's
-        next component (``%h/%i``, ``%h/rel%i``, but not ``%h/backup-%i``).
-        Both the literal and the resolved directory are compared.
+        it refuses when the components that follow can still name the root's
+        next components and go on below it (``%h/%i``, ``%h/rel%i``,
+        ``%h/rel*/slots``, but not ``%h/backup-%i`` or ``%h/backups/*.tgz``).
+        A glob component is matched as the shell matches it; a run-time part
+        (``unknown``) or a '[' set leaves the rest open (review r5 R5-1).
+        With ``exact``, a glob that can name the root itself refuses too.
+        Both the literal and the resolved directory are compared, against the
+        root and the home's links into it.
         """
         head, partial = (literal, "") if literal.endswith("/") else os.path.split(literal)
         head = _normal(head)
+        first, *following = rest.split("/")
+        parts = [part for part in [partial + first, *following] if part not in ("", ".")]
         for directory in {head, os.path.realpath(head)}:
-            for root in self.roots:
-                if _within(directory, root):
+            for target, named in self._fixed_targets(exact):
+                if _within(directory, target):
                     _refuse(PATH_HIT + unit)
-                if _within(root, directory) and os.path.relpath(root, directory).split("/")[0].startswith(partial):
+                if (_within(target, directory)
+                        and _may_reach(parts, os.path.relpath(target, directory).split("/"), unknown, named)):
                     _refuse(PATH_HIT + unit)
 
     # --- the unit walk (E2) ---------------------------------------------------------------------

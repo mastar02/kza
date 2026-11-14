@@ -1025,3 +1025,326 @@ def test_r4_a_double_slash_does_not_hide_a_member_in_a_regular_unit(kza_home):
     found = ours(kza_home, "kza-tool.service",
                  ExecStart=exec_value("/usr/bin/tar", "czf", "/srv/b.tgz", "/" + str(kza_home.member) + "/state"))
     assert refused(kza_home, found, manager_environment=_home_manager(kza_home)) == PATH_HIT + "kza-tool.service"
+
+
+# --- review r5: a glob reaching the slots (R5-1) and C escapes in template text (R5-2); probe_variants5.py --
+
+def _alias(kza_home) -> Path:
+    """A household link in the home to the root (review r4 R4-5 alias), the name 'rl'."""
+    link = kza_home.home / "rl"
+    link.symlink_to(kza_home.root)
+    return link
+
+
+@pytest.mark.parametrize("argv", [
+    ("/bin/sh", "-c", "tar czf /srv/b.tgz {root}/slots/*/state"),  # G3, the household backup
+    ("/bin/sh", "-c", "rm -rf {root}/slots/a*"),  # G4
+    ("/bin/sh", "-c", "cat {root}/slots/[a]/state/x"),  # G5
+    ("/bin/sh", "-c", "du {root}/sl*ts/a"),  # G6
+    ("/usr/bin/du", "{root}/slots/*"),  # G7: systemd does not glob, the program may
+    ("/bin/sh", "-c", "tar czf /srv/b.tgz {home}/rel*/slots/*/state"),  # above the root
+    ("/bin/sh", "-c", "tar czf /srv/b.tgz {home}/r?leases/slots/a/state"),
+    ("/bin/sh", "-c", "tar czf /srv/b.tgz ~/rel*/slots/a"),
+    ("/bin/sh", "-c", "tar czf /srv/b.tgz {home}/*/slots/a"),
+    ("/bin/sh", "-c", "tar czf /srv/b.tgz {home}/r[e]leases/slots/a"),  # a set leaves the rest open
+    ("/bin/sh", "-c", "tar czf /srv/b.tgz {base}/home/*/releases/slots/*/state"),  # above the home
+    ("/bin/sh", "-c", "tar czf /srv/b.tgz {home}/b*/../releases/slots/a"),  # '..' after a glob
+    ("/bin/sh", "-c", "tar czf /srv/b.tgz {home}/r?/slots/*/state"),  # through the home link 'rl'
+], ids=["G3_tar_slots_state", "G4_member_prefix", "G5_bracket", "G6_middle_component", "G7_plain_argv",
+        "above_root_star", "above_root_question", "tilde", "home_star", "home_set", "above_home",
+        "dotdot_after_glob", "home_link"])
+def test_r5_a_glob_reaching_the_slots_in_a_regular_unit_refuses(kza_home, argv):
+    """R5-1 (probe_variants5 G3-G7): a glob piece is held to the fixed-part rule; before r5 each passed."""
+    _alias(kza_home)
+    values = {"root": kza_home.root, "home": kza_home.home, "base": kza_home.base}
+    found = ours(kza_home, "backup.service", ExecStart=exec_value(*(word.format(**values) for word in argv)))
+    assert refused(kza_home, found, manager_environment=_home_manager(kza_home)) == PATH_HIT + "backup.service"
+
+
+@pytest.mark.parametrize("argv", [
+    ("/bin/sh", "-c", "tar czf /srv/b.tgz {home}/backups/*.tgz"),
+    ("/bin/sh", "-c", "rm -f {home}/*.log {home}/.cache/kb/*"),
+    ("/bin/sh", "-c", "du /srv/*/data {home}/b?ckups"),
+    ("/usr/bin/find", "/srv", "-path", "*/cache/*", "-delete"),  # a relative pattern the program reads
+    ("/usr/bin/rsync", "-a", "--include=*/", "--exclude=*", "/srv/", "/mnt/usb/"),
+    ("/bin/sh", "-c", "sed -e 's/:*$//' /srv/x"),  # unity-gtk-module's ExecStopPost has this
+    ("/bin/sh", "-c", "tar czf /srv/b.tgz {home}/rel*"),  # the root itself, as a regular unit may name it
+], ids=["backups", "home_logs_and_cache", "elsewhere", "find_path", "rsync_filters", "sed", "root_itself"])
+def test_r5_a_glob_elsewhere_in_a_regular_unit_passes(kza_home, argv):
+    """The rule is not a ban on globs: one that cannot name anything under the root passes (home above it)."""
+    _alias(kza_home)
+    found = ours(kza_home, "backup.service",
+                 ExecStart=exec_value(*(word.format(home=kza_home.home) for word in argv)))
+    assert run_scan(kza_home, found, manager_environment=_home_manager(kza_home))["unit_names"] == ["backup.service"]
+
+
+@pytest.mark.parametrize("body", [
+    "ExecStart=/bin/sh -c 'rm -rf %h/rel*/slots/%i'\n",  # G1
+    "ExecStart=/bin/sh -c 'tar czf /srv/b/%i.tgz %h/rel*/slots/*/state'\n",  # G1b
+    "ExecStart=/bin/sh -c 'tar czf /srv/b/%i.tgz %h/r?leases/slots/*/state'\n",  # G1c
+    "ExecStart=/bin/sh -c 'tar czf /srv/b/%i.tgz ${HOME}/*/slots/%i'\n",
+    "ExecStart=/bin/sh -c 'tar czf /srv/b/%i.tgz %h/r[e]leases/slots/a'\n",
+    "ExecStart=/bin/sh -c 'tar czf /srv/b/%i.tgz %h/b*/../releases/slots/a'\n",
+    "ExecStart=/bin/sh -c 'tar czf /srv/b/%i.tgz %h/r?/slots/a'\n",  # through the home link 'rl'
+    "ExecStart=/bin/sh -c 'tar czf /srv/b/%i.tgz %h/rel*'\n",  # the root itself: refused by name in a template
+    "Environment=SRC=%h/rel*/slots\nExecStart=/usr/bin/true\n",
+], ids=["G1_glob_then_instance", "G1b_glob_slots_state", "G1c_question_mark", "home_reference_star", "set",
+        "dotdot_after_glob", "home_link", "root_itself", "own_environment"])
+@pytest.mark.parametrize("name", ["kza-backup@.service", "kb@.service"])
+def test_r5_a_glob_reaching_the_slots_in_a_template_refuses(kza_home, body, name):
+    """R5-1 (probe_variants5 G1, G1b, G1c): a glob above the root passed every template rule; it now refuses
+    unit_path whatever the template's name (no 0e4 leniency for a path hit)."""
+    _alias(kza_home)
+    found = _template_text(kza_home, name, body)
+    assert refused(kza_home, found, manager_environment=_home_manager(kza_home)) == PATH_HIT + name
+
+
+@pytest.mark.parametrize("name", ["kza-backup@.service", "kb@.service"])
+def test_r5_a_template_glob_elsewhere_passes(kza_home, name):
+    _alias(kza_home)
+    body = ("ExecStart=/bin/sh -c 'tar czf %h/backups/%i.tgz /srv/data/*.db'\n"
+            "ExecStartPost=/bin/sh -c 'rm -f %h/.cache/kb/*.tmp %t/*.sock; find /srv -name \"*.log\" -delete'\n"
+            "ExecStopPost=/usr/bin/rm -f %h/backups/*.part\n")
+    found = _template_text(kza_home, name, body)
+    report = run_scan(kza_home, found, manager_environment=_home_manager(kza_home))
+    assert report["templates_scanned"] == [name]
+
+
+def test_r5_a_manager_glob_is_matched_by_component(kza_home):
+    """check_value now carries the manager environment's glob rule (review r3 R3-6): a glob above the root
+    refuses when it can reach the slots, and is matched component by component (``*.log`` cannot be
+    ``releases``; before r5 anything directly in the home followed by a glob refused)."""
+    environment = dict(_home_manager(kza_home), KZA_GLOB=f"{kza_home.home}/rel*/slots/*/state")
+    assert refused(kza_home, {}, manager_environment=environment) == PATH_HIT + "show-environment"
+    environment["KZA_GLOB"] = f"{kza_home.home}/*.log"
+    assert run_scan(kza_home, {}, manager_environment=environment)["units_scanned"] == 0
+
+
+@pytest.mark.parametrize("podman_environment", [True, False])
+def test_r5_the_five_stock_units_pass_when_the_root_is_in_the_home(kza_home, podman_environment):
+    """Production's shape (/home/kza/releases): a glob rule that judged relative patterns from the home would
+    refuse unity-gtk-module ('s/:*$//'); the five stock units and kza-voice still pass."""
+    found, conf = _managed_units(kza_home)
+    found.update(_stock_units(kza_home, podman_environment=podman_environment))
+    report = run_scan(kza_home, found, extra=(conf,), manager_environment=dict(KZA_MANAGER, HOME=str(kza_home.home)))
+    stock = {"org.freedesktop.IBus.session.generic.service", "org.freedesktop.IBus.session.GNOME.service",
+             "unity-gtk-module.service"} | (set() if podman_environment else {"podman.service",
+                                                                              "podman-restart.service"})
+    assert set(report["tolerated_unresolved"]) == stock
+    assert {"kza-voice.service", "podman.service", "unity-gtk-module.service"} <= set(report["unit_names"])
+
+
+# systemd 255 on kza-yo-lan1 (show of an instance, 2026-11-14): argv as the manager stores it.
+_SYSTEMD_WORDS = [
+    (r"""A%h/rel\x65ases/a "B%h/rel\x65ases/b" 'C%h/rel\x65ases/c'""",
+     ["A%h/releases/a", "B%h/releases/b", "C%h/releases/c"]),
+    (r"D\x25h/d E\145 F\u0065 G\d H\x00 I\sJ", ["D%h/d", "Ee", "Fe", r"G\d", r"H\x00", "I J"]),
+    (r"""K'a\'b' L\$HOME M"\$x" N\; O"x"y'z'""", ["Ka'b", r"L\$HOME", r"M\$x", r"N\;", "Oxyz"]),
+    (r"T\x24{HOME}/t U\x2", ["T${HOME}/t", r"U\x2"]),
+]
+
+
+@pytest.mark.parametrize("value, words", _SYSTEMD_WORDS)
+def test_r5_template_words_are_read_as_systemd_reads_them(value, words):
+    """R5-2: quotes removed anywhere, C escapes decoded inside quotes and out, unknown ones kept (systemd logs
+    'Ignoring unknown escape sequences'); specifiers are expanded after decoding ('D\\x25h' was the home)."""
+    assert units_module._systemd_words(value) == words
+    with pytest.raises(ValueError):
+        units_module._systemd_words(r"/bin/echo S'a\'")  # systemd: 'Unbalanced quoting, ignoring'
+
+
+@pytest.mark.parametrize("body", [
+    r"ExecStart=/bin/rm -rf %h/rel\x65ases/slots/%i" "\n",  # E1
+    r'ExecStart=/bin/rm -rf "%h/rel\x65ases/slots/%i"' "\n",  # E2
+    r"ExecStart=/bin/sh -c 'rm -rf %h/rel\x65ases/slots/%i'" "\n",
+    r"ExecStart=/bin/rm -rf %h/rel\145ases/slots/%i" "\n",
+    r"ExecStart=/bin/rm -rf %h/rel\u0065ases/slots/%i" "\n",
+    r"LoadCredential=db:%h/rel\x65ases/slots/a/state/db" "\nExecStart=/usr/bin/true\n",  # a key no word rule reads
+    r"Environment=D=%h/rel\x65" "\nExecStart=/bin/sh -c 'rm -rf ${D}ases/slots/%i'\n",  # V2, escaped
+    r"ExecStart=/bin/sh -c 'tar czf /srv/b.tgz %h/rel\x2a/slots/a'" "\n",  # an escaped glob
+], ids=["E1_unquoted", "E2_double_quoted", "single_quoted_script", "octal", "unicode", "credential_key",
+        "environment_value", "escaped_glob"])
+@pytest.mark.parametrize("name", ["kza-backup@.service", "kb@.service"])
+def test_r5_a_c_escape_in_a_template_is_decoded_before_judging(kza_home, body, name):
+    """R5-2 (probe_variants5 E1, E2): systemd decodes '\\x65' to 'e', so the program gets <root>/slots/<i>;
+    before r5 the scan read 'relx65ases' (shlex) and passed."""
+    found = _template_text(kza_home, name, body)
+    assert refused(kza_home, found, manager_environment=_home_manager(kza_home)) == PATH_HIT + name
+
+
+@pytest.mark.parametrize("body", [
+    r"ExecStart=/usr/bin/tar czf /srv/b/x.tgz \x24{SRC}" "\n",  # an escaped unset variable, systemd substitutes it
+    r"ExecStart=/bin/sh -c 'tar czf /srv/b/x.tgz /srv/\x24{SRC}'" "\n",  # the same inside single quotes
+], ids=["unquoted", "single_quoted"])
+def test_r5_an_escaped_unknown_part_is_strict_unless_the_0e4_leniency_applies(kza_home, body):
+    found = _template_text(kza_home, "kza-backup@.service", body)
+    assert refused(kza_home, found, manager_environment=_home_manager(kza_home)) == \
+        UNPARSED + "kza-backup@.service:ExecStart"
+    found = _template_text(kza_home, "kb@.service", body)
+    assert run_scan(kza_home, found, manager_environment=_home_manager(kza_home))["tolerated_unresolved"] == \
+        ["kb@.service"]
+
+
+def test_r5_an_escaped_kza_path_makes_a_template_kzas(kza_home):
+    """R5-2: the decoded text also decides the 0e4 leniency here ('%h/k\\x7aa' is '%h/kza'); the shared
+    adoption rule (mentions_markers) is unchanged."""
+    body = "ExecStart=/usr/bin/tool --data %h/k\\x7aa/models %i\n"
+    found = _template_text(kza_home, "kb@.service", body)
+    assert refused(kza_home, found, manager_environment=_home_manager(kza_home)) == UNPARSED + "kb@.service:ExecStart"
+    found = _template_text(kza_home, "kb@.service", body.replace("k\\x7aa", "k\\x7aq"))
+    assert run_scan(kza_home, found, manager_environment=_home_manager(kza_home))["tolerated_unresolved"] == \
+        ["kb@.service"]
+
+
+def test_r5_escapes_elsewhere_in_a_template_pass(kza_home):
+    body = ("ExecStart=/bin/sh -c 'printf \"%%s\\n\" done > /srv/b/%i.stamp'\n"
+            "ExecStartPost=/usr/bin/find /srv/b -name x -exec rm {} \\;\n"
+            "ExecStopPost=/bin/echo \\x2fsrv\\x2fb \\d\n")
+    found = _template_text(kza_home, "kza-backup@.service", body)
+    report = run_scan(kza_home, found, manager_environment=_home_manager(kza_home))
+    assert report["templates_scanned"] == ["kza-backup@.service"] and report["tolerated_unresolved"] == []
+
+
+def test_r5_both_readings_of_a_template_value_are_judged(kza_home):
+    """R5-2 keeps the r4 (POSIX shell) reading beside systemd's, stricter than either: unquoted 'rel\\eases'
+    is 'releases' to shlex (systemd reads ESC). Quoting systemd cannot read refuses even where shlex can."""
+    found = _template_text(kza_home, "kb@.service", "Environment=SRC=%h/rel\\eases/slots/a\nExecStart=/usr/bin/true\n")
+    assert refused(kza_home, found, manager_environment=_home_manager(kza_home)) == PATH_HIT + "kb@.service"
+    found = _template_text(kza_home, "kb@.service", "ExecStart=/bin/echo S'a\\'\n")
+    assert refused(kza_home, found, manager_environment=_home_manager(kza_home)) == UNPARSED + "kb@.service:ExecStart"
+
+
+# --- review r51 (r51-g01-independent-review.json): A-F1 relative globs, A-F2 bracket expressions,
+# A-F3 shell quoting in template scripts, A-F4 a variable before a member's tail; probe_r51*.py ----------
+
+@pytest.mark.parametrize("argv", [
+    ("/usr/bin/curl", "-fsS", "http://[::1]:8200/health"),  # OVR1
+    ("/bin/sh", "-c", "df | awk '/[[:space:]]+/ {{print $1}}'"),  # OVR2
+    ("/usr/bin/sed", "-i", "-e", "/[a-z]/d", "/srv/x.txt"),  # OVR3
+    ("/usr/bin/grep", "-E", "/[0-9]+$", "/var/log/x"),  # OVR5
+    ("/bin/sh", "-c", "ls {home}/[[:digit:]]*/slots/a {home}/[!r]eleases/slots/a {home}/[^r]eleases/slots/a"),
+    ("/bin/sh", "-c", "ls {home}/rel[ab/slots/a"),  # an unclosed '[' is a literal
+], ids=["curl_ipv6", "awk_class", "sed_address", "grep_regex", "classes_and_negation", "unclosed"])
+def test_r51_a_bracket_is_one_character_of_its_set(kza_home, argv):
+    """A-F2: '[...]' matched one character, as glob(7) does; before, any '[' opened the rest and these
+    refused with no override (they passed at 464c08f)."""
+    found = ours(kza_home, "h.service", ExecStart=exec_value(*(word.format(home=kza_home.home) for word in argv)))
+    assert run_scan(kza_home, found, manager_environment=_home_manager(kza_home))["unit_names"] == ["h.service"]
+
+
+def test_r51_brackets_elsewhere_pass_in_a_template_and_the_manager_environment(kza_home):
+    found = _template_text(kza_home, "h@.service", "ExecStart=/usr/bin/curl -fsS http://[::1]:8200/%i\n")  # OVR4
+    assert run_scan(kza_home, found, manager_environment=_home_manager(kza_home))["templates_scanned"] == \
+        ["h@.service"]
+    for value in (f"{kza_home.home}/[a-z]*.log", "http://[::1]:631/"):  # refused before r51 (r3's check_pattern)
+        environment = dict(_home_manager(kza_home), X=value)
+        assert run_scan(kza_home, {}, manager_environment=environment)["units_scanned"] == 0
+
+
+@pytest.mark.parametrize("word", ["{home}/[r]eleases/slots/*", "{home}/[!x]eleases/slots/a",
+                                  "{home}/[^x]eleases/slots/a", "{home}/[[:lower:]]eleases/slots/a",
+                                  "{home}/[]r]eleases/slots/a", "{home}/[q-s]eleases/slots/a"])
+def test_r51_a_bracket_that_can_be_the_roots_name_refuses(kza_home, word):
+    found = ours(kza_home, "b.service", ExecStart=exec_value("/bin/sh", "-c", "ls " + word.format(home=kza_home.home)))
+    assert refused(kza_home, found, manager_environment=_home_manager(kza_home)) == PATH_HIT + "b.service"
+
+
+@pytest.mark.parametrize("component, name, matches", [
+    ("[abc", "[abc", True), ("[abc", "a", False),  # unclosed: literal
+    ("[!r]eleases", "releases", False), ("[!x]eleases", "releases", True), ("[^r]x", "rx", False),
+    ("[]a]", "]", True), ("[[:alpha:]]x", "rx", True), ("[[:digit:]]x", "rx", False),
+    ("[[=r=]]eleases", "releases", True), ("[z-a]x", "zx", False), ("r[e]l*", "releases", True),
+])
+def test_r51_component_pattern_reads_bracket_expressions(component, name, matches):
+    expression, opened = units_module._component_pattern(component, None)
+    assert not opened
+    assert (units_module.re.fullmatch(expression, name) is not None) is matches
+
+
+@pytest.mark.parametrize("argv, working_directory", [
+    (("/bin/sh", "-c", "tar czf /srv/b.tgz releases/slots/*/state"), None),  # REL1, the home is the cwd
+    (("/bin/rm", "-rf", "releases/slots/*"), None),  # REL4
+    (("/usr/bin/tar", "czf", "/srv/b.tgz", "slots/*/state"), "{root}"),  # REL2
+    (("/bin/sh", "-c", "tar czf /srv/b.tgz *"), "{root}"),  # anything from the root
+    (("/bin/sh", "-c", "tar czf /srv/b.tgz ./rel*/slots/a"), None),
+], ids=["REL1_from_home", "REL4_rm", "REL2_from_root", "star_from_root", "dot_slash"])
+def test_r51_a_relative_glob_with_a_directory_is_judged_from_the_working_directory(kza_home, argv,
+                                                                                   working_directory):
+    """A-F1: the non-glob form 'releases/slots/a/state' already refused; the glob form passed."""
+    props = {"WorkingDirectory": working_directory.format(root=kza_home.root)} if working_directory else {}
+    found = ours(kza_home, "b.service", ExecStart=exec_value(*argv), **props)
+    assert refused(kza_home, found, manager_environment=_home_manager(kza_home)) == PATH_HIT + "b.service"
+
+
+@pytest.mark.parametrize("argv", [
+    ("/usr/bin/tar", "czf", "/srv/b.tgz", "backups/*.tgz", "./cache/*"),
+    ("/usr/bin/find", "/srv", "-path", "*/cache/*", "-delete"),
+    ("/usr/bin/rsync", "-a", "--include=*/", "--exclude=*", "/srv/", "/mnt/usb/"),
+], ids=["home_backups", "find_path", "rsync_filters"])
+def test_r51_a_relative_glob_elsewhere_passes(kza_home, argv):
+    found = ours(kza_home, "b.service", ExecStart=exec_value(*argv))
+    assert run_scan(kza_home, found, manager_environment=_home_manager(kza_home))["unit_names"] == ["b.service"]
+
+
+@pytest.mark.parametrize("body", [
+    "ExecStart=/bin/sh -c 'tar czf /srv/%i.tgz releases/slots/*/state'\n",  # REL3
+    "WorkingDirectory=%h/rl\nExecStart=/usr/bin/tar czf /srv/%i.tgz slots/*/state\n",
+    "WorkingDirectory=%h/rl\nExecStart=/bin/sh -c 'tar czf /srv/%i.tgz *'\n",
+], ids=["REL3_from_home", "from_root_link", "star_from_root_link"])
+@pytest.mark.parametrize("name", ["kza-backup@.service", "kb@.service"])
+def test_r51_a_relative_glob_in_a_template_is_judged_from_its_base(kza_home, body, name):
+    """A-F1 in _judge. The base is the root through the home link 'rl' (naming the root itself would refuse
+    by the substring rule, whatever the glob)."""
+    _alias(kza_home)
+    found = _template_text(kza_home, name, body)
+    assert refused(kza_home, found, manager_environment=_home_manager(kza_home)) == PATH_HIT + name
+
+
+@pytest.mark.parametrize("body", [
+    "ExecStart=/bin/sh -c \"rm -rf %h/rel''eases/slots/%i\"\n",  # OBF2
+    "ExecStart=/bin/bash -c \"rm -rf $'%h/rel\\\\x65ases'/slots/%i\"\n",  # OBF3: bash decodes $'..'
+    "ExecStart=/bin/sh -c 'rm -rf %h/rel\"e\"ases/slots/%i'\n",
+], ids=["empty_quotes", "ansi_c", "double_quotes"])
+@pytest.mark.parametrize("name", ["kza-backup@.service", "kb@.service"])
+def test_r51_shell_quoting_in_a_template_script_is_removed_before_judging(kza_home, body, name):
+    """A-F3: the shell removes the quotes and deletes <root>/slots/<i>; the cut at quotes hid the root."""
+    found = _template_text(kza_home, name, body)
+    assert refused(kza_home, found, manager_environment=_home_manager(kza_home)) == PATH_HIT + name
+
+
+def test_r51_shell_quoting_elsewhere_in_a_template_script_passes(kza_home):
+    found = _template_text(kza_home, "kza-backup@.service",
+                           "ExecStart=/bin/sh -c \"echo 'it'\\\"'\\\"'s done' > /srv/b/%i.stamp\"\n")
+    report = run_scan(kza_home, found, manager_environment=_home_manager(kza_home))
+    assert report["templates_scanned"] == ["kza-backup@.service"] and report["tolerated_unresolved"] == []
+
+
+def _tolerated(kza_home, script: str) -> dict:
+    """A regular unit nobody named and not kza's by its text, so an unset $D is tolerated (0e4 rule)."""
+    return {"v.service": unit(str(kza_home.user_dir / "v.service"), cat=f"[Service]\nExecStart=/bin/sh -c '{script}'\n",
+                              ExecStart=exec_value("/bin/sh", "-c", script))}
+
+
+@pytest.mark.parametrize("script", ["ls {home}/$D/slots/a", "ls {home}/$D*/slots", "ls {home}/r$D/slots/*",
+                                    "ls {base}/home/$D/slots/a/state"])
+def test_r51_a_variable_before_a_members_tail_refuses_in_a_tolerated_unit(kza_home, script):
+    """A-F4 (probe_r51_var): the variable may be 'releases' (or 'kza/releases'); the tail names a member or
+    <root>/slots. Templates already refused this through the fixed-part rule."""
+    found = _tolerated(kza_home, script.format(home=kza_home.home, base=kza_home.base))
+    assert refused(kza_home, found, manager_environment=_home_manager(kza_home)) == PATH_HIT + "v.service"
+
+
+@pytest.mark.parametrize("script", ["ls {home}/$D/x", "ls {home}/$D", "ls {base}/home/$D/releases",
+                                    "ls {home}/$D/../x", "ls {home}/x$D/slots/a"])
+def test_r51_a_variable_elsewhere_stays_tolerated(kza_home, script):
+    """No tail to place, a tail no member has, or the root itself (a regular unit may name it)."""
+    found = _tolerated(kza_home, script.format(home=kza_home.home, base=kza_home.base))
+    assert run_scan(kza_home, found, manager_environment=_home_manager(kza_home))["tolerated_unresolved"] == \
+        ["v.service"]
+
+
+def test_r51_an_unclosed_bracket_from_the_root_is_not_a_glob(kza_home):
+    """A-F2/A-F1: 'test' brackets are words, not globs; only a closed set makes a token path-bearing."""
+    found = ours(kza_home, "b.service", WorkingDirectory=str(kza_home.root),
+                 ExecStart=exec_value("/bin/sh", "-c", "[ -f x ] && echo ok"))
+    assert run_scan(kza_home, found, manager_environment=_home_manager(kza_home))["unit_names"] == ["b.service"]

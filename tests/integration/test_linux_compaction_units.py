@@ -30,6 +30,10 @@ and always removed afterwards:
     line, or through an EnvironmentFile value used as ${SRC}, -> unit_path;
     systemd itself joins the continuation (show of an instance carries the
     member path).
+(j) review r5 R5-1/R5-2: a glob over the slots in an ``sh -c`` script of a
+    regular unit, a glob above the root in a template, and a template naming
+    the root with one character written as a C escape (``\\xHH``, which
+    systemd decodes) -> unit_path.
 
 The scan reads every unit of this account in the user unit directories; a
 refusal in (b) that names another unit is a real finding about this
@@ -232,3 +236,36 @@ def test_a_template_naming_the_root_in_a_script_or_a_member_in_a_file_value(syst
     code = _refusal(systemd, layout)
     RESULTS.append({"case": "i_template_" + form, "code": code})
     assert code == PATH_HIT + name
+
+
+_R5_ROLES = {"regular_sh_c_glob": "r5glob", "template_glob_above_root": "r5tglob", "template_c_escape": "r5tesc"}
+
+
+@pytest.mark.parametrize("form", list(_R5_ROLES))
+def test_a_glob_or_a_c_escape_reaching_the_slots_refuses(systemd, layout, form):
+    """Review r5 R5-1/R5-2 under real systemd 255: 'sh -c "tar c <root>/slots/*/state"' in a regular unit,
+    'sh -c "rm -rf <parent>/rel*/slots/%i"' in a template, and a template naming <root> with its last
+    character written as '\\xHH' all refuse unit_path. systemd decodes the escape itself: the show of an
+    instance carries the plain root."""
+    root, _member, _members = layout
+    if form == "regular_sh_c_glob":
+        name = systemd.name(_R5_ROLES[form])
+        systemd.write_unit(name, _service("A=1", f"/bin/sh -c 'echo tar czf /dev/null {root}/slots/*/state'"))
+        shown_unit = name
+    else:
+        name = f"{systemd.prefix}-{_R5_ROLES[form]}@.service"
+        if form == "template_glob_above_root":
+            word = f"{root.parent}/rel*/slots/%i"
+        else:
+            text = str(root)
+            word = text[:-1] + "\\x%02x" % ord(text[-1]) + "/slots/%i"
+        systemd.write_unit(name, f"[Service]\nType=oneshot\nExecStart=/bin/sh -c 'echo rm -rf {word}'\n")
+        shown_unit = name.replace("@.", "@x.")
+    systemd.reload()
+    shown = systemd.raw_show(shown_unit, "ExecStart", "LoadState")
+    code = _refusal(systemd, layout)
+    RESULTS.append({"case": "j_" + form, "code": code, "load_state": shown["LoadState"],
+                    "show_names_root_slots": f"{root}/slots/" in shown["ExecStart"]})
+    assert code == PATH_HIT + name
+    if form == "template_c_escape":
+        assert f"{root}/slots/x" in shown["ExecStart"]  # decoded by systemd, %i expanded
