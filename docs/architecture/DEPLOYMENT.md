@@ -482,21 +482,43 @@ Recuperación al arrancar (L1 = A):
 - **EXTEND no alcanza solo** (U3b-0e4, F1, decisión del usuario C): con
   systemd 255, un `systemctl --user daemon-reload` en el manager de `kza`
   descarta toda extensión y vuelve a armar el plazo desde `TimeoutStartSec`.
-  Un arranque que ya lo superó se corta en el acto. El corte es seguro (sale
-  antes del CAS `running`, el head no cambia y R-b se repite en el próximo
-  arranque), pero el arranque falla. Por eso:
-  - `--timeout-start` cubre un arranque completo sin EXTEND. Por defecto
-    vale 240 s (`DEFAULT_TIMEOUT_START`): los 60 s de la sonda de rutas más
-    180 s, casi nueve veces lo medido en el server sobre un estado adoptado
-    de 161 MB (500k eventos): 12,2 s el primer arranque y 20,1 s un crash
-    con R-b hasta READY. La activación crece lineal con las filas. No bajar
-    de ese valor sin medir un arranque con R-b sobre el estado real.
-  - Regla de operación: no correr `systemctl --user daemon-reload` en el
-    manager de `kza` mientras `kza-voice.service` esté `activating`
-    (`systemctl --user show -p ActiveState kza-voice.service`). Esperar a
-    `active`, `failed` o `inactive`. `install-launcher`,
-    `uninstall-launcher` y los comandos de adopción ya rechazan con la
-    unidad activa o arrancando.
+  Un arranque que ya lo superó se corta en el acto, pero el corte es seguro:
+  - durante la recuperación o la activación, el controlador sale antes del
+    CAS `running`: el head no cambia y R-b se repite en el próximo arranque;
+  - durante el arranque del hijo (después del CAS, antes de READY), el
+    controlador reenvía SIGTERM, el hijo deja su recibo y el head queda
+    `closed` (el ensayo sin READY lo muestra).
+
+  En los dos casos el arranque falla. Por eso:
+  - `--timeout-start` vale 240 s por defecto (`DEFAULT_TIMEOUT_START`).
+    Cubre con margen el arranque del lado del controlador medido en el
+    server sobre un estado adoptado de 161 MB (500k eventos): 12,2 s el
+    primer arranque y 20,1 s un crash con R-b hasta READY, con un hijo de
+    ensayo. La activación crece lineal con las filas. La carga de modelos de
+    la aplicación real (STT, TTS, speaker en cuda:1, BGE-M3, Chroma, HA) no
+    está en esa medida: se mide en W8/W9 del runbook y, si el arranque hasta
+    READY pasa de 120 s (la mitad del plazo), se sube `--timeout-start`
+    antes de depender de él. `src/` no envía `EXTEND_TIMEOUT_USEC`: el
+    plazo cubre sonda, activación, R-b y carga de modelos.
+  - `install-launcher` acepta solo segundos enteros entre 30 y 3600 y, tras
+    instalar, relee `TimeoutStartUSec` y `TimeoutStopUSec` con
+    `systemctl show`. Si no coinciden con `managed.conf` (un valor que
+    systemd rechazó, o un drop-in posterior como el de `systemctl --user
+    edit`), sale con 78 (`runtime_admission_launcher_verification`).
+  - Regla de operación: mientras `kza-voice.service` esté `activating`
+    (`systemctl --user show -p ActiveState kza-voice.service`), no correr en
+    el manager de `kza` ni `systemctl --user daemon-reload` ni los comandos
+    que recargan implícitamente: `enable`, `disable`, `reenable`, `mask`,
+    `unmask`, `link`, `preset`, `revert` y `edit`. Esperar a `active`,
+    `failed` o `inactive`; un `start` bloqueante vuelve recién con READY o
+    con el fallo, pero un reinicio automático en curso también es
+    `activating`. `install-launcher`, `uninstall-launcher` y los comandos de
+    adopción ya rechazan con la unidad activa o arrancando.
+  - Recargas externas: una actualización del paquete systemd (por ejemplo,
+    unattended-upgrades) re-ejecuta los managers de usuario. No está
+    verificado que el re-exec descarte la extensión igual que un reload,
+    pero conviene suponerlo: no actualizar systemd durante una ventana ni
+    con kza-voice arrancando.
 - **Recuperación por arranque**: si el run quedó del boot anterior (reinicio o
   corte de luz), hay una recuperación por `boot_id` y no gasta el cupo de 24 h.
 - **Operador** (`UNKNOWN` sin adopción automática): primero

@@ -160,6 +160,11 @@ C=release_20261029T174830709997Z_63ea8d3
   - Resuelve `${VAR}` y `$VAR` de `ExecStart` con `Environment=` y cada
     `EnvironmentFile=` (leído sin seguir enlaces; el registro guarda solo los
     nombres de las claves). Una variable o un archivo sin resolver rechaza.
+    Única excepción: un `$VAR` sin resolver dentro de un argumento (un
+    script `sh -c`, que systemd deja al programa) en una unidad no nombrada
+    que no menciona `llama-server`, `--lora`, `lora_adapters` ni una ruta de
+    kza (las unidades de Ubuntu de IBus y unity). En kza-voice,
+    kza-llm-fast y cada `--unit`, y en el escaneo de Q5, rechaza igual.
   - Rechaza sin borrar nada en estos casos:
     - enlace, FIFO o socket dentro;
     - cruce de montaje;
@@ -240,11 +245,16 @@ C=release_20261029T174830709997Z_63ea8d3
     W-abort-2 es válido. Por defecto abortar y reprogramar. Seguir en modo de
     respaldo (presupuesto de 5 s) solo con una decisión registrada del usuario.
 - **W8**: habilitar y arrancar kza-voice.
-  - Desde aquí, nunca correr `systemctl --user daemon-reload` en el manager
-    de `kza` mientras kza-voice esté `activating`
-    (`systemctl --user show -p ActiveState kza-voice.service`). Un reload
-    descarta la extensión del arranque y lo corta si ya pasó
-    `TimeoutStartSec`. Esperar a `active`, `failed` o `inactive`.
+  - Desde aquí, mientras kza-voice esté `activating`
+    (`systemctl --user show -p ActiveState kza-voice.service`), no correr en
+    el manager de `kza` `systemctl --user daemon-reload` ni los comandos que
+    recargan implícitamente: `enable`, `disable`, `reenable`, `mask`,
+    `unmask`, `link`, `preset`, `revert`, `edit`. Un reload descarta la
+    extensión del arranque y lo corta si ya pasó `TimeoutStartSec`. Esperar
+    a `active`, `failed` o `inactive`. El `enable` de W8 va antes del
+    `start`; un reinicio automático en curso también cuenta como
+    `activating`. No actualizar el paquete systemd durante la ventana (re-
+    ejecuta los managers de usuario).
   - Límite de arranques: cinco en 300 s, contando los reinicios
     automáticos. Si un arranque falla con «Start request repeated too
     quickly», resolver la causa y correr
@@ -252,13 +262,42 @@ C=release_20261029T174830709997Z_63ea8d3
     arrancar. Pasa, por ejemplo, tras un crash y cuatro rechazos 69 seguidos.
   - Reiniciar solo los timers `restart unchanged`.
   - Hacer las comprobaciones de aceptación.
+  - Medir el arranque real hasta READY (la aplicación con sus modelos, que
+    los ensayos no cargan):
+    ```bash
+    systemctl --user show kza-voice.service -p ExecMainStartTimestampMonotonic,ActiveEnterTimestampMonotonic,TimeoutStartUSec
+    ```
+    La diferencia de los dos timestamps, en microsegundos, es el arranque
+    hasta READY. Anotarla en W10. Con `TimeoutStartSec=240`, si pasa de
+    120 s (la mitad del plazo), detenerse: no seguir dependiendo de ese
+    valor. Volver a correr `install-launcher` con un `--timeout-start` de al
+    menos el doble de lo medido (máximo 3600), con kza-voice detenido, y
+    repetir la medición. Si un arranque llega a cortarse por tiempo
+    (`Result=timeout`), el head queda seguro (ver DEPLOYMENT, «EXTEND no
+    alcanza solo») y se aplica lo mismo.
   - Volver a aplicar `PP_MIN_NN` de Hall.
   - Confirmar que no existe `data/audit.db` en el estado gestionado.
 - **W9**: un stop y un start limpios, con recibo y sello de cierre. Ese sello
   es el DÍA 0 de P7.
+  - Repetir la medición de W8 sobre este segundo arranque y anotarla en W10.
+  - Después de W9, cuando la aplicación tuvo tiempo de procesar sus colas
+    (repetir cada pocos minutos durante la primera hora si hace falta),
+    comprobar que el trabajo de privacidad reencolado o reubicado por la
+    adopción terminó. Es de solo lectura y no muestra contenido:
+    ```bash
+    $PY -I -B /home/kza/releases/controller/current/scripts/stage_runtime.pyc --root /home/kza/releases --offline completion-status
+    ```
+    Todo debe dar 0 y `complete: true`: `erasure_steps_not_complete` vacío,
+    `legacy_training_steps_not_complete`,
+    `policy_index_deletions_not_complete`, `index_delete_jobs`, cada valor de
+    `conversation_exempt` y de `resurrected`. Un paso pendiente exime sus
+    copias del control de resurrección, así que sin esta comprobación
+    quedaría sin ver. Si algo sigue abierto pasada la primera hora, anotar
+    los conteos en W10 y avisar al usuario antes de cerrar la ventana.
 - **W10**: evidencia. Anotar en el handoff y en DEPLOYMENT («Retiro del estado
   congelado de b0866e8») el DÍA 0 (sello de W9), la fecha de DÍA 0 + 14 × 24 h y el
-  responsable (el usuario, como operador de `kza`).
+  responsable (el usuario, como operador de `kza`). Anotar también los dos
+  arranques hasta READY de W8/W9 y la salida de `completion-status`.
 
 ## Día 14: retiro Q5 del estado de b0866e8 y sus copias del 2026-10-29
 
