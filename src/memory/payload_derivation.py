@@ -14,9 +14,9 @@ import math
 import os
 from pathlib import Path, PurePosixPath
 import sqlite3
-import tempfile
 from typing import Mapping
 
+from src.core.own_temporary import own_temporary
 from src.memory.fact_ledger import MemorySource
 from src.memory.manual_components import collector_manual_closure
 from src.memory.state_snapshot import ClosedStateSnapshot, read_blob, verify_snapshot
@@ -1172,8 +1172,7 @@ def plan_payload_cut(ordinary: ClosedStateSnapshot, latest: ClosedStateSnapshot,
 def _atomic_file(path, raw):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     _require(path.parent.resolve() == path.parent and not path.is_symlink(), "payload_destination_redirected")
-    descriptor, name = tempfile.mkstemp(prefix=".payload-", dir=path.parent)
-    try:
+    with own_temporary(path.parent, prefix=".payload-") as (descriptor, name):
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(raw)
             stream.flush()
@@ -1184,9 +1183,6 @@ def _atomic_file(path, raw):
             os.fsync(directory)
         finally:
             os.close(directory)
-    finally:
-        if os.path.exists(name):
-            os.unlink(name)
 
 
 def _decode_row(snapshot, row):

@@ -11,11 +11,12 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import sys
-import tempfile
 import threading
 from types import FunctionType, MethodType
 from typing import TYPE_CHECKING, Callable
 from uuid import uuid4
+
+from src.core.own_temporary import own_temporary
 
 if TYPE_CHECKING:
     from scripts.stage_runtime import AdmissionController
@@ -273,17 +274,13 @@ def _append(directory, record, expected):
     identity = _sha(raw)
     _write_new(directory / f"{revision:012d}-{identity}.json", raw)
     head = {"schema_version": 1, "copy_id": record["copy_id"], "revision": revision, "sha256": identity}
-    fd, temporary = tempfile.mkstemp(prefix=".head-", dir=directory)
-    try:
+    with own_temporary(directory, prefix=".head-") as (fd, temporary):
         with os.fdopen(fd, "wb") as stream:
             stream.write(_json(head) + b"\n")
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, directory / "head.json")
         _fsync(directory)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
     return head
 
 

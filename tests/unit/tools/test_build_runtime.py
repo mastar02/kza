@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -77,6 +78,38 @@ def test_build_is_reproducible_and_refuses_existing_output(committed_app, tmp_pa
     assert first.read_bytes() == second.read_bytes()
     with pytest.raises(FileExistsError):
         builder.build_runtime(committed_app, first)
+
+
+def test_archive_cleanup_keeps_a_file_substituted_at_the_own_temporary_name(committed_app, tmp_path, monkeypatch):
+    """Review F10: after the publishing link, only the own pinned inode may be unlinked."""
+    output = tmp_path / "out" / "runtime.tar.gz"
+    real_link, planted = os.link, []
+
+    def substituting(source, destination, *args, **kwargs):
+        real_link(source, destination, *args, **kwargs)
+        if os.path.basename(os.fspath(source)).startswith(".kza-release-"):
+            os.unlink(source)
+            Path(source).write_bytes(b"foreign")
+            planted.append(Path(source))
+
+    monkeypatch.setattr(builder.os, "link", substituting)
+    builder.build_runtime(committed_app, output)
+    assert len(planted) == 1 and planted[0].read_bytes() == b"foreign"
+    with tarfile.open(output) as archive:
+        assert "release.json" in archive.getnames()
+
+
+def test_a_failed_archive_build_removes_its_own_temporary(committed_app, tmp_path, monkeypatch):
+    output = tmp_path / "out" / "runtime.tar.gz"
+    output.parent.mkdir()
+
+    def refused(*args, **kwargs):
+        raise OSError("synthetic link refusal")
+
+    monkeypatch.setattr(builder.os, "link", refused)
+    with pytest.raises(OSError, match="synthetic link refusal"):
+        builder.build_runtime(committed_app, output)
+    assert list(output.parent.iterdir()) == []
 
 
 def test_runtime_symlink_is_not_followed(committed_app, tmp_path):

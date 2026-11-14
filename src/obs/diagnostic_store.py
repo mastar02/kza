@@ -15,6 +15,7 @@ import tempfile
 import threading
 from uuid import UUID, uuid4, uuid5, NAMESPACE_URL
 
+from src.core.own_temporary import remove_own_temporary
 from src.memory.fact_ledger import FactDependency, MemorySource
 
 
@@ -377,7 +378,9 @@ class DiagnosticStore:
         for partition, target in ((0, self.path), (1, self.path.with_suffix(self.path.suffix+'.1'))):
             fd, name = tempfile.mkstemp(prefix='.diag-', suffix='.tmp', dir=self.path.parent)
             stage = Path(name)
+            pin = None
             try:
+                pin = os.dup(fd)  # Held until cleanup decides: the own inode keeps its number.
                 db.execute('INSERT INTO staged VALUES (?)', (stage.name,))
                 db.commit()
                 stream = os.fdopen(fd, 'w', encoding='utf-8')
@@ -392,7 +395,12 @@ class DiagnosticStore:
             finally:
                 if fd is not None:
                     os.close(fd)
-                stage.unlink(missing_ok=True)
+                try:
+                    # Only the own inode is unlinked; a foreign file at the name stays.
+                    remove_own_temporary(stage, pin)
+                finally:
+                    if pin is not None:
+                        os.close(pin)
                 db.execute('DELETE FROM staged WHERE name=?', (stage.name,))
                 db.commit()
         self._sync_directory()

@@ -337,6 +337,48 @@ def write_private_file(path: Path, data: bytes) -> None:
         stream.write(data)
 
 
+def remove_own_temporary(name: str | Path, pin: int | None) -> bool:
+    """Unlink ``name`` only while it is the pinned own inode; anything else stays.
+
+    ``pin`` is an open descriptor of the own allocation, so its inode cannot be
+    freed and its (st_dev, st_ino) cannot name another file: the comparison is
+    sound only while the pin is open. Mirrors src/core/own_temporary.py (this
+    module is loaded by path and imports no application package).
+    """
+    try:
+        info = os.lstat(name)
+    except FileNotFoundError:
+        return True
+    if pin is None:
+        return False
+    held = os.fstat(pin)
+    if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != (held.st_dev, held.st_ino):
+        return False
+    Path(name).unlink(missing_ok=True)
+    return True
+
+
+@contextmanager
+def own_temporary(directory: Path, *, prefix: str):
+    """mkstemp in ``directory`` holding a pin; on exit unlink only the own inode.
+
+    Yields ``(descriptor, name)``; the caller owns and closes ``descriptor``.
+    """
+    descriptor, name = tempfile.mkstemp(prefix=prefix, dir=directory)
+    try:
+        pin = os.dup(descriptor)
+    except OSError:
+        os.close(descriptor)  # Unproven: the name stays rather than risk a foreign unlink.
+        raise
+    try:
+        yield descriptor, name
+    finally:
+        try:
+            remove_own_temporary(name, pin)
+        finally:
+            os.close(pin)
+
+
 def _safe_directory(path: Path, *, create: bool = False) -> Path:
     if create:
         private_directories(path)
@@ -585,9 +627,8 @@ def _durable_parents(directory: Path) -> None:
 def _atomic_record(path: Path, value: dict, *, immutable: bool = False) -> None:
     _durable_parents(path.parent)
     raw = _canonical_json(value) + b"\n"
-    descriptor, name = tempfile.mkstemp(prefix=".admission-", dir=path.parent)
-    temporary = Path(name)
-    try:
+    with own_temporary(path.parent, prefix=".admission-") as (descriptor, name):
+        temporary = Path(name)
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(raw)
             stream.flush()
@@ -607,8 +648,6 @@ def _atomic_record(path: Path, value: dict, *, immutable: bool = False) -> None:
             os.fsync(directory)
         finally:
             os.close(directory)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def read_admission_head(root: Path) -> dict | None:

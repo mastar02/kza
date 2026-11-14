@@ -2280,16 +2280,13 @@ def _sha256(path: Path) -> str | None:
 
 def _write_text_atomic(path: Path, text: str, mode: int = 0o644) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, name = tempfile.mkstemp(prefix=".launcher-", dir=path.parent)
-    try:
+    with stage.own_temporary(path.parent, prefix=".launcher-") as (descriptor, name):
         with os.fdopen(descriptor, "w") as stream:
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
-        os.chmod(name, mode)
+            os.fchmod(stream.fileno(), mode)
         os.replace(name, path)
-    finally:
-        Path(name).unlink(missing_ok=True)
 
 
 def _environment_digest(environment: str) -> str:

@@ -14,10 +14,10 @@ import json
 import logging
 import time
 import os
-import tempfile
 from pathlib import Path
 from threading import Lock
 
+from src.core.own_temporary import own_temporary
 from src.llm.types import CooldownState, ErrorKind
 
 logger = logging.getLogger(__name__)
@@ -126,19 +126,18 @@ class CooldownManager:
     def _save_to_disk(self, states: dict[str, CooldownState] | None = None, *,
                       before_save: Callable[[], None] | None = None, strict: bool = False) -> None:
         """Replace a private snapshot; administrative denial must never be swallowed."""
-        temporary = None
         try:
             self.persistence_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             payload = {"states": [state.to_dict() for state in
                                  (self._states if states is None else states).values()]}
-            descriptor, temporary = tempfile.mkstemp(prefix=".cooldown-", dir=self.persistence_path.parent)
-            with os.fdopen(descriptor, "w") as stream:
-                json.dump(payload, stream, indent=2)
-                stream.flush()
-                os.fsync(stream.fileno())
-            if before_save is not None and before_save() is False:
-                raise PermissionError("cooldown_authority_retired")
-            os.replace(temporary, self.persistence_path)
+            with own_temporary(self.persistence_path.parent, prefix=".cooldown-") as (descriptor, temporary):
+                with os.fdopen(descriptor, "w") as stream:
+                    json.dump(payload, stream, indent=2)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                if before_save is not None and before_save() is False:
+                    raise PermissionError("cooldown_authority_retired")
+                os.replace(temporary, self.persistence_path)
         except PermissionError:
             if strict or before_save is not None:
                 raise
@@ -147,6 +146,3 @@ class CooldownManager:
             if strict:
                 raise
             logger.error("[Cooldown] Persistence unavailable")
-        finally:
-            if temporary is not None and os.path.exists(temporary):
-                os.unlink(temporary)

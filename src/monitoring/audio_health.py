@@ -6,11 +6,11 @@ systemd mostró `active` y nadie tuvo cómo enterarse. Este módulo escribe un
 snapshot que un poller externo consume — externo a propósito, porque el modo
 de falla observado es "el proceso vive y no entrega audio".
 """
-import contextlib
 import json
 import logging
 import os
-import tempfile
+
+from src.core.own_temporary import own_temporary
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +46,7 @@ def write_audio_health(
         },
     }
     directory = os.path.dirname(path) or "."
-    fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
-    try:
+    with own_temporary(directory, prefix="tmp", suffix=".tmp") as (fd, tmp):
         # mkstemp crea el temporal en 0600 (solo el dueño puede leerlo), pero
         # el poller externo (tools/audio_watchdog_alert.py) está pensado para
         # correr bajo OTRO usuario que este proceso — ese es justamente el
@@ -56,14 +55,11 @@ def write_audio_health(
         # siempre (ver check_once en audio_watchdog_alert.py). os.replace
         # es un rename POSIX: preserva los permisos del inodo del
         # temporal, así que hay que fijarlos ANTES del replace.
-        os.fchmod(fd, 0o644)
+        # El temporal sólo se borra si su nombre sigue siendo el inodo propio.
         with os.fdopen(fd, "w") as fh:
+            os.fchmod(fh.fileno(), 0o644)
             json.dump(payload, fh)
         os.replace(tmp, path)
-    except Exception:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
 
 
 def evaluate_health(
