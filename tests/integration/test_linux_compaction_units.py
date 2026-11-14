@@ -200,7 +200,7 @@ def test_a_template_naming_a_member_through_a_continuation_or_an_environment_fil
     _root, member, _members = layout
     name = f"{systemd.prefix}-r3{form[:4]}@.service"
     if form == "continuation":
-        body = f"[Service]\nType=oneshot\nExecStart=/bin/true /tmp/%i \\\n    {member}/state\n"
+        body = f"[Service]\nType=oneshot\nExecStart=/bin/true %t/%i \\\n    {member}/state\n"  # not /tmp: above the root
     else:
         env_file = tmp_path / "r3.env"
         env_file.write_text(f"SRC={member}/state\n")

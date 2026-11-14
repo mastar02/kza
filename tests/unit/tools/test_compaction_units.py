@@ -539,7 +539,7 @@ def _template(layout, name: str, exec_start: str, *, where: Path | None = None) 
 
 def test_a_template_naming_a_member_is_scanned_before_any_instance_exists(layout):
     """N4b: kza-backup@.service in the user unit directory, no instance loaded (list-units does not list it)."""
-    found = _template(layout, "kza-backup@.service", f"/usr/bin/tar czf /tmp/%i.tgz {layout.member}/state")
+    found = _template(layout, "kza-backup@.service", f"/usr/bin/tar czf /srv/backup/%i.tgz {layout.member}/state")
     assert refused(layout, found) == PATH_HIT + "kza-backup@.service"
 
 
@@ -809,21 +809,22 @@ def _home_manager(layout) -> dict:
 def test_a_user_template_naming_a_member_through_any_form_refuses(layout, case):
     """R3-2 (probe_templates T1-T4 and neighbours): kb@.service, no instance loaded, the member reached by a
     continuation line, $HOME/${HOME}, an EnvironmentFile value, the template's own Environment= or a
-    relative path from its WorkingDirectory."""
+    relative path from its WorkingDirectory. The other words write under /srv, never above the test root
+    (on Linux pytest's root is under /tmp, and '/tmp/%i' alone refuses by the fixed-part rule)."""
     relative = layout.member.relative_to(layout.home.parent)  # releases/slots/m1 (the root is <base>/releases)
     env_file = layout.home / ".config" / "kb.env"
     env_file.parent.mkdir(parents=True, exist_ok=True)
     env_file.write_text(f"SRC={layout.member / 'state'}\n")
     body = {
-        "T1_continuation": f"ExecStart=/usr/bin/tar czf /tmp/%i.tgz \\\n    {layout.member / 'state'}\n",
-        "T2_braced_home": "ExecStart=/usr/bin/tar czf /tmp/%i.tgz ${HOME}/../" + str(relative) + "/state\n",
-        "T2_plain_home": "ExecStart=/usr/bin/tar czf /tmp/%i.tgz $HOME/../" + str(relative) + "/state\n",
-        "T3_home_instance": "ExecStart=/usr/bin/tar czf /tmp/x.tgz $HOME/../releases/%i\n",
-        "T4_environment_file": f"EnvironmentFile=-{env_file}\nExecStart=/usr/bin/tar czf /tmp/%i.tgz ${{SRC}}\n",
-        "own_environment": f"Environment=\"SRC={layout.member}/state\"\nExecStart=/usr/bin/cp -a $SRC /tmp/%i\n",
+        "T1_continuation": f"ExecStart=/usr/bin/tar czf /srv/backup/%i.tgz \\\n    {layout.member / 'state'}\n",
+        "T2_braced_home": "ExecStart=/usr/bin/tar czf /srv/backup/%i.tgz ${HOME}/../" + str(relative) + "/state\n",
+        "T2_plain_home": "ExecStart=/usr/bin/tar czf /srv/backup/%i.tgz $HOME/../" + str(relative) + "/state\n",
+        "T3_home_instance": "ExecStart=/usr/bin/tar czf /srv/backup/x.tgz $HOME/../releases/%i\n",
+        "T4_environment_file": f"EnvironmentFile=-{env_file}\nExecStart=/usr/bin/tar czf /srv/backup/%i.tgz ${{SRC}}\n",
+        "own_environment": f"Environment=\"SRC={layout.member}/state\"\nExecStart=/usr/bin/cp -a $SRC /srv/backup/%i\n",
         "relative_from_working_directory": f"WorkingDirectory={layout.home.parent}\n"
-                                           f"ExecStart=/usr/bin/tar czf /tmp/%i.tgz {relative}/state\n",
-        "continuation_after_comment": "ExecStart=/usr/bin/tar czf /tmp/%i.tgz \\\n# a note\n"
+                                           f"ExecStart=/usr/bin/tar czf /srv/backup/%i.tgz {relative}/state\n",
+        "continuation_after_comment": "ExecStart=/usr/bin/tar czf /srv/backup/%i.tgz \\\n# a note\n"
                                       f"    {layout.member / 'state'}\n",
     }[case]
     found = _template_text(layout, "kb@.service", body)
