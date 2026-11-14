@@ -131,7 +131,18 @@ Requisitos (el comando los verifica y rechaza con un código si falta alguno):
     `%i`/`%I` o de un `$VAR` sin valor, que es la raíz, está debajo, o está
     encima y lo que sigue puede empezar el nombre de la raíz
     (`/home/kza/releases/%I`, `%h/%i`, `%h/rel%i` rechazan; `%h/backup-%i` y
-    `%t/%i` pasan). Un trozo cuya parte desconocida viene antes de toda `/`
+    `%t/%i` pasan). Un comodín de shell (`*`, `?`, `[...]`) en un trozo
+    absoluto se juzga igual, componente por componente como lo expande el
+    shell: rechaza si puede nombrar algo debajo de la raíz o la raíz misma
+    (`%h/rel*/slots/%i`, `%h/r?leases/slots/*/state`, `%h/*/slots/a`,
+    `%h/rel*`; un `..` después del comodín, un `[...]` o una parte
+    desconocida dejan abierto el resto), también a través de un enlace del
+    home a la raíz; `%h/backups/*.tgz` y `%h/.cache/*` pasan. Los escapes C
+    (`\x65`, `\145`, `\u0065`, `\s`) se decodifican como los decodifica
+    systemd, dentro y fuera de comillas y antes de los especificadores
+    (`%h/rel\x65ases` es `/home/kza/releases`); un escape desconocido queda
+    como está, y se juzgan las dos lecturas, la de systemd y la del shell.
+    Un trozo cuya parte desconocida viene antes de toda `/`
     (`%i`, `${SRC}`, `-C${SRC}`, `backup-%i`) no se puede juzgar, ni
     cualquier variable dentro del guion de un `sh -c` (o `bash -ec`, etc.):
     rechaza (`unit_unparsed:<plantilla>:<clave>`) salvo que la plantilla
@@ -142,7 +153,14 @@ Requisitos (el comando los verifica y rechaza con un código si falta alguno):
   - en cualquier unidad, un valor se corta también en `,`, en cada `=` y en
     los caracteres del shell, así que `podman run --mount
     type=bind,src=<miembro>` (y la unidad que genera un Quadlet `Mount=`)
-    rechaza como `-v <miembro>:/data`;
+    rechaza como `-v <miembro>:/data`. Un comodín de shell en un trozo
+    absoluto (`sh -c 'tar czf /srv/b.tgz <raíz>/slots/*/state'`,
+    `<raíz>/slots/a*`, `/home/kza/rel*/slots/*/state`) se juzga por su parte
+    fija como en las plantillas, salvo que en una unidad normal nombrar la
+    raíz misma (`/home/kza/rel*`) sigue pasando, como nombrarla por su
+    ruta. Un comodín relativo (`find -path '*/cache/*'`,
+    `rsync --include='*/'`) es casi siempre un patrón que lee el programa y
+    no se juzga;
   - un valor de `systemctl --user show-environment` que nombra un miembro
     rechaza (`unit_path:show-environment`) como si fuera un `Environment=` de
     la unidad: cualquier programa del gestor lo hereda. Los valores que
@@ -530,6 +548,23 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
   movido a mano en un abort se acepta con el mismo comando y no se borra. Un
   enlace del home es marcador de kza sólo con su ruta o un prefijo de home,
   nunca su nombre suelto (`app` es una palabra común).
+- Quinta revisión (R5-1, R5-2): un comodín de shell en un trozo de ruta
+  absoluto se juzga con la regla de la parte fija en las unidades normales,
+  en las plantillas y en el entorno del gestor, comparando cada componente
+  como lo expande el shell (antes, en el entorno del gestor, todo lo que
+  seguía directamente al home rechazaba; ahora `/home/kza/*.log` pasa
+  porque no puede ser `releases`). Un `[...]`, un `..` o una parte
+  desconocida después del comodín se tratan como «cualquier cosa». Los
+  enlaces del home a la raíz cuentan como la raíz también para `%i`.
+  Los comodines relativos no se juzgan (riesgo residual aceptado: un
+  `cd <raíz> && tar c slots/*` en una unidad normal pasa, igual que
+  `cd <raíz> && rm -rf slots/a` antes de esta revisión). En las plantillas
+  los escapes C se decodifican como systemd (comprobado en systemd 255 de
+  kza-yo-lan1); el texto decodificado también decide si la plantilla es de
+  kza para la tolerancia de U3b-0e4, sin tocar la regla compartida con la
+  adopción. Quedan fuera la expansión de llaves de bash
+  (`rel{e,}ases`) y los extglob/zsh (`@(releases)`): ofuscación
+  deliberada, no una unidad doméstica.
 - Antes y después de la verificación se usa `disable` (no `mask`), como en la
   ventana R1: la unidad vive en `~/.config/systemd/user` y `mask` no puede
   reemplazarla.
