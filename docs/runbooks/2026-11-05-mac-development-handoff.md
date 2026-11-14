@@ -780,9 +780,24 @@ U3b-0e: adopción del estado de producción como primer estado gestionado.
 
 Validación por tanda 0d4a + 0e1: 11223 passed, 2 xfail y 1 skip opcional; los ensayos compilados de presupuesto corrieron solos (`u3b/full-0e1/RESULT.md`).
 
+Integrados y publicados hasta `2ad44c0` (2026-11-13):
+- `U3b-0e2` (`5dfdc77`, `622ec38`, `2c1ad06`): biblioteca de adopción. Copia por bytes sin abrir el origen, migración de solo esquema con el código de R1, baja de la tabla `events` vieja con VACUUM, reubicador y sembrado del registro de borrados. Los restos se reabren en el paso que los gobierna. Revisión independiente: aceptada con hallazgos; quedan abiertos F2 (destinos con rutas anteriores al 28-10) y F4 (pasó a 0e3).
+- `U3b-0e3`: comandos de operador. `retire-legacy-training`, `adoption-dry-run`, `adoption-prepare` y `adoption-commit` (este con intento de commit recuperable en cada punto de corte), `adoption-abort` y runbook `docs/runbooks/2026-11-13-r1-adoption-window.md`. Tres rondas de revisión independiente; R2-1..R2-4 corregidos.
+- `U3b-0e5`: `retire-legacy-state` (Q5) y chequeo del destino de vuelta. Dos rondas de revisión.
+- Arreglos de Linux, encontrados en la primera suite completa en el server como `yo`:
+  - Defecto real de producción: los publicadores de configuración y de cuentas borraban un temporal sustituido cuando ext4 reutilizaba el número de inodo. Ahora mantienen un descriptor abierto hasta limpiar.
+  - Destinos fijados en `output_registration_v2`.
+  - Modos explícitos 0700/0600 en la raíz gestionada.
+  - Fixtures portables con umask 0002.
+  - Revisión independiente: aprobada.
+  - Pendientes: F4 (SQLite comparado por inodo, con `O_PATH` en Linux); F5 (el servicio corre con `UMask=0002` y `audio_health.json` lo lee otra cuenta); F10 (limpiezas por ruta). También, un cierre de borrado de 1 s que vence con carga.
+- Suite por tanda en `2ad44c0`, en la Mac y en el server: verde salvo una prueba sensible a carga en la Mac (`u3b/full-linux-fixes/RESULT.md`). En el server, a2b tardó 1399 s; partirla antes de la próxima tanda allí.
+
+Pruebas en el server: el usuario autorizó correrlas allí como `yo` y detener servicios si hace falta (`server_test_runs`). El checkout anterior de `yo` lo había borrado la limpieza del 2026-11-09; el nuevo está en `/home/yo/projects/kza`, con venv Linux y runner `/home/yo/projects/runs/run-server.sh`.
+
 Siguiente:
-- U3b-0e2: biblioteca de adopción (copia, migración de solo esquema con VACUUM, reubicador, sembrado del registro de borrados y restos con reapertura del paso).
-- U3b-0e3: comandos.
+- U3b-0e4: ensayos compilados en Linux (T-A1..T-A18, T-A17) y T-C8/T-C10 del lanzador, en el server como `yo`.
+- Los seguimientos F4/F5/F10 y el presupuesto de cierre del coordinador de borrados.
 - U3b-0c: compactación.
 - F8.
 
