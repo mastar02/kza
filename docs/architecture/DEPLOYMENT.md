@@ -420,6 +420,21 @@ Cómo arranca:
   Lanza `src.main` del slot del head con `cwd` en su `runtime`,
   `PYTHONPATH` en ese runtime, `CONFIG_PATH=config/settings.yaml` y el ticket.
   Hereda el lease y dos pipes privados: notificaciones y control.
+- **Umask del hijo (revisión F5, 2026-11-14).** El controlador lanza el hijo
+  con `umask=0o077` (`stage_runtime.MANAGED_CHILD_UMASK`); lo mismo hace
+  `AdmissionController.run` para corridas de operador y ensayos. Sin eso el
+  hijo heredaba el `0002` de `kza` y lo que `src/` crea en
+  `slots/<slot>/state` quedaba `0664`/`0775` (bases SQLite con `-wal`/`-shm`,
+  directorios intermedios, archivos). Ahora es `0600`/`0700`. El drop-in
+  agrega `UMask=0077` como defensa adicional; también cubre al controlador y a
+  un `console.log` que systemd cree de cero (queda `0600`, medido con
+  systemd 255). Un archivo que otro lector necesite conserva su `fchmod`
+  explícito: `audio_health.json` sigue `0644`, aunque vive bajo `data/` `0700`.
+  Consumidores revisados antes del cambio: ninguna unit, timer o crontab de
+  `kza` ni de `yo` lee el estado del slot. El único acceso de otra cuenta es la
+  ACL de `yo` sobre `state/logs/console.log` (lectura, con tránsito `--x` por
+  los directorios), y ese archivo lo abre systemd, no el hijo. `adoption.py`
+  ya usaba `umask=0o077` para su hijo de esquema.
 - Unit: `Type=notify`, `NotifyAccess=main`, `KillMode=mixed`,
   `RestartPreventExitStatus=69 78`, `Restart=on-failure`,
   `StartLimitBurst=5` en 300 s. Es un desvío registrado en
