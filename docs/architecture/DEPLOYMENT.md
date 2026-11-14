@@ -871,11 +871,14 @@ Límites que siguen valiendo (decisiones P5 = C y Q4):
   ubicar, o cualquier variable en el guion de un `sh -c`, rechaza salvo la
   tolerancia de U3b-0e4. En toda unidad un valor se corta también en `,` y en
   cada `=` (`podman --mount type=bind,src=<miembro>`), y un comodín de shell
-  en una ruta absoluta (`sh -c 'tar c <raíz>/slots/*/state'`,
-  `%h/rel*/slots/%i`) se juzga por su parte fija, componente por componente
-  (R5-1); los comodines relativos no. En las plantillas los escapes C
-  (`%h/rel\x65ases`) se decodifican como en systemd 255 antes de juzgar
-  (R5-2). Una unidad es «de
+  (`sh -c 'tar c <raíz>/slots/*/state'`, `%h/rel*/slots/%i`, o relativo con
+  directorio como `releases/slots/*` desde el home) se juzga por su parte
+  fija, componente por componente, con `[...]` como un carácter (R5-1 y su
+  revisión); un patrón relativo sin directorio (`*/cache/*`) no. En las
+  plantillas los escapes C (`%h/rel\x65ases`) se decodifican como en systemd
+  255 y el guion de un `sh -c` se lee también sin comillas (R5-2). En una
+  unidad tolerada, una variable sin valor seguida de la cola de un miembro
+  rechaza. Una unidad es «de
   kza» por su nombre `kza*` o por una ruta de kza (`~/kza`, `~kza/kza`,
   `%h/…`, `$HOME/…`, `"$HOME"/…`, `${HOME:-…}/…`, la ruta absoluta aun con
   `//` o `/./`, un enlace del home como `/home/kza/app`, o un `kza` relativo

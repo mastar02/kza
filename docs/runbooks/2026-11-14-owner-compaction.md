@@ -131,13 +131,22 @@ Requisitos (el comando los verifica y rechaza con un código si falta alguno):
     `%i`/`%I` o de un `$VAR` sin valor, que es la raíz, está debajo, o está
     encima y lo que sigue puede empezar el nombre de la raíz
     (`/home/kza/releases/%I`, `%h/%i`, `%h/rel%i` rechazan; `%h/backup-%i` y
-    `%t/%i` pasan). Un comodín de shell (`*`, `?`, `[...]`) en un trozo
-    absoluto se juzga igual, componente por componente como lo expande el
-    shell: rechaza si puede nombrar algo debajo de la raíz o la raíz misma
-    (`%h/rel*/slots/%i`, `%h/r?leases/slots/*/state`, `%h/*/slots/a`,
-    `%h/rel*`; un `..` después del comodín, un `[...]` o una parte
-    desconocida dejan abierto el resto), también a través de un enlace del
-    home a la raíz; `%h/backups/*.tgz` y `%h/.cache/*` pasan. Los escapes C
+    `%t/%i` pasan). Un comodín de shell (`*`, `?`, `[...]`) se juzga igual,
+    componente por componente como lo expande el shell: rechaza si puede
+    nombrar algo debajo de la raíz o la raíz misma (`%h/rel*/slots/%i`,
+    `%h/r?leases/slots/*/state`, `%h/*/slots/a`, `%h/[r]eleases/slots/a`,
+    `%h/rel*`; un `..` después del comodín o una parte desconocida dejan
+    abierto el resto), también a través de un enlace del home a la raíz;
+    `%h/backups/*.tgz` y `%h/.cache/*` pasan. Un `[...]` es un carácter de
+    su conjunto (con `!`/`^`, `]` al principio, rangos y `[:clase:]`) y un
+    `[` sin cerrar es literal, así que `http://[::1]:8200/`, `awk
+    '/[[:space:]]+/'` o `sed '/[a-z]/d'` pasan. Un comodín relativo se juzga
+    desde el directorio de trabajo (`%h` si no hay `WorkingDirectory=`)
+    cuando su parte fija tiene una `/` (`releases/slots/*/state`) o el
+    directorio de trabajo es la raíz o está debajo; uno sin directorio
+    (`*/cache/*`) es un patrón del programa y no se juzga. En el guion de un
+    `sh -c` también se juzga la lectura del shell: sin comillas
+    (`%h/rel''eases`) y con `$'...'` de bash decodificado. Los escapes C
     (`\x65`, `\145`, `\u0065`, `\s`) se decodifican como los decodifica
     systemd, dentro y fuera de comillas y antes de los especificadores
     (`%h/rel\x65ases` es `/home/kza/releases`); un escape desconocido queda
@@ -153,14 +162,18 @@ Requisitos (el comando los verifica y rechaza con un código si falta alguno):
   - en cualquier unidad, un valor se corta también en `,`, en cada `=` y en
     los caracteres del shell, así que `podman run --mount
     type=bind,src=<miembro>` (y la unidad que genera un Quadlet `Mount=`)
-    rechaza como `-v <miembro>:/data`. Un comodín de shell en un trozo
-    absoluto (`sh -c 'tar czf /srv/b.tgz <raíz>/slots/*/state'`,
-    `<raíz>/slots/a*`, `/home/kza/rel*/slots/*/state`) se juzga por su parte
-    fija como en las plantillas, salvo que en una unidad normal nombrar la
-    raíz misma (`/home/kza/rel*`) sigue pasando, como nombrarla por su
-    ruta. Un comodín relativo (`find -path '*/cache/*'`,
-    `rsync --include='*/'`) es casi siempre un patrón que lee el programa y
-    no se juzga;
+    rechaza como `-v <miembro>:/data`. Un comodín de shell
+    (`sh -c 'tar czf /srv/b.tgz <raíz>/slots/*/state'`, `<raíz>/slots/a*`,
+    `/home/kza/rel*/slots/*/state`, y desde el home `releases/slots/*`, o
+    `tar c *` con `WorkingDirectory=<raíz>`) se juzga por su parte fija como
+    en las plantillas, salvo que en una unidad normal nombrar la raíz misma
+    (`/home/kza/rel*`) sigue pasando, como nombrarla por su ruta. Un
+    comodín relativo sin directorio (`find -path '*/cache/*'`,
+    `rsync --include='*/'`) es un patrón que lee el programa y no se juzga.
+    En una unidad con la tolerancia de U3b-0e4, una ruta con un `$VAR` sin
+    valor rechaza si lo que sigue a la variable puede completar un miembro
+    o `<raíz>/slots` (`/home/kza/$D/slots/m1`, `/home/kza/r$D/slots/*`);
+    `/home/kza/$D/x` sigue tolerada;
   - un valor de `systemctl --user show-environment` que nombra un miembro
     rechaza (`unit_path:show-environment`) como si fuera un `Environment=` de
     la unidad: cualquier programa del gestor lo hereda. Los valores que
@@ -553,12 +566,20 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
   en las plantillas y en el entorno del gestor, comparando cada componente
   como lo expande el shell (antes, en el entorno del gestor, todo lo que
   seguía directamente al home rechazaba; ahora `/home/kza/*.log` pasa
-  porque no puede ser `releases`). Un `[...]`, un `..` o una parte
-  desconocida después del comodín se tratan como «cualquier cosa». Los
-  enlaces del home a la raíz cuentan como la raíz también para `%i`.
-  Los comodines relativos no se juzgan (riesgo residual aceptado: un
-  `cd <raíz> && tar c slots/*` en una unidad normal pasa, igual que
-  `cd <raíz> && rm -rf slots/a` antes de esta revisión). En las plantillas
+  porque no puede ser `releases`). Un `..` o una parte desconocida
+  después del comodín se tratan como «cualquier cosa». Los enlaces del
+  home a la raíz cuentan como la raíz también para `%i`. Revisión de la
+  corrección (`r51-g01-independent-review.json`, A-F1 a A-F4): un `[...]`
+  es un solo carácter como en glob(7) (antes abría el resto y rechazaba
+  `curl http://[::1]:8200/health`); un comodín relativo con directorio, o
+  desde un directorio de trabajo dentro de la raíz, se juzga desde ese
+  directorio (antes `releases/slots/*/state` desde el home pasaba); el
+  guion de un `sh -c` de plantilla se juzga también sin comillas y con
+  `$'...'` decodificado; en una unidad tolerada, una variable sin valor
+  seguida de la cola de un miembro rechaza. Sigue como riesgo residual
+  aceptado un `cd` dentro del guion (`cd <raíz> && tar c slots/*` o
+  `rm -rf slots/a` en una unidad normal: el escaneo usa
+  `WorkingDirectory=`, no sigue los `cd`). En las plantillas
   los escapes C se decodifican como systemd (comprobado en systemd 255 de
   kza-yo-lan1); el texto decodificado también decide si la plantilla es de
   kza para la tolerancia de U3b-0e4, sin tocar la regla compartida con la
