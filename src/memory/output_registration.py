@@ -350,7 +350,8 @@ class DestinationRegistrationCoordinator:
         self._closing = None
         self._directory = Path(admission._ticket["admission_root"]) / "admission/output-inventory/v1/runs" / admission._ticket["run_id"]
         self._directory_identity = None
-        # Native destination pins by owner key; every one lives until aclose.
+        # Native destination pins by owner key; every one lives until the
+        # epoch closes (OutputRegistrationV2.aclose, the only coordinator built).
         self._native_pins: dict[object, NativePin] = {}
 
     def _native_pin(self, key: object) -> NativePin:
@@ -501,7 +502,6 @@ class DestinationRegistrationCoordinator:
         with self._lock:
             plan = self._check(handle, store, producer, path)
             _require(_plan(producer, path, self.admission.state_root) == plan, "destination_changed")
-            self._native_pin(producer).require(plan["existing_identity"])
             self._append(producer, "opening", plan)
 
     async def opening(
@@ -568,7 +568,6 @@ class DestinationRegistrationCoordinator:
                     if not self._failed:
                         await self._run(verify_observations)
                 finally:
-                    self._release_native_pins()  # Poisoned or not, pins end with the epoch.
                     await self._disk.aclose()
                 _require(not self._failed, "epoch_incomplete")
                 # Installed managed provenance remains sticky through process exit.

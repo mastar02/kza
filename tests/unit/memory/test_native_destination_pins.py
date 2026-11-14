@@ -147,6 +147,31 @@ async def test_a_recreated_events_destination_never_passes_on_reopen(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_the_binding_keeps_the_journaled_identity_not_a_later_lstat(tmp_path, monkeypatch):
+    """A swap right after the active record must not become the reopen identity."""
+    async with managed(tmp_path, monkeypatch) as (owner, stack, config):
+        store = EventLogger(config["analytics"]["events_db"])
+        stack.push_async_callback(store.aclose)
+        await registration.attach_output(store, "events")
+        append, journaled = owner._append, []
+
+        def swapped_after_active(producer, phase, plan):
+            native = append(producer, phase, plan)
+            if producer == "events" and phase == "active":
+                journaled.append(native)
+                _recreate(store.db_path)
+            return native
+
+        monkeypatch.setattr(owner, "_append", swapped_after_active)
+        await store.acall(store.initialize)
+        assert owner._roles["events"].native_identity == journaled[0] != base._identity(store.db_path)
+        connects = _forbid_connect(monkeypatch)
+        with pytest.raises(RuntimeError, match="destination_changed"):
+            await store.acall(store.get_stats)
+        assert connects == [] and owner._failed
+
+
+@pytest.mark.asyncio
 async def test_a_recreated_historical_target_is_rejected_before_connect(tmp_path, monkeypatch):
     from src.analytics.erasure import build_event_erasure
     from src.analytics.event_storage import event_descriptor
