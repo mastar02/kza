@@ -1538,6 +1538,14 @@ def recover_open_head(root: Path, head: dict, *, mode: str, boot_id: str, wall: 
         return sealed
     state_changed = ((exit_record or {}).get("state_changed_after_close") is True
                      or (sealed is not None and sealed.code in _DIGEST_MISMATCH))
+    # U3b-0c (owner-compaction v4 F1): R-b under a pending compaction is operator-only and only for
+    # an allow-run run; the armed verification run goes through 'compact abort --to-h' instead.
+    try:
+        refusal = stage.compaction_recovery_refusal(root, head, operator=operator is not None)
+    except (ValueError, OSError):
+        refusal = "runtime_admission_compaction_log_invalid"
+    if refusal is not None:
+        return RecoveryDecision(exit_code=ExitCode.UNRECOVERABLE, code=refusal, path="R-b")
     if operator is None:
         if mode == "off":
             return RecoveryDecision(exit_code=ExitCode.UNRECOVERABLE, code="runtime_admission_recovery_off",
@@ -1591,8 +1599,17 @@ def recover_open_head(root: Path, head: dict, *, mode: str, boot_id: str, wall: 
 
 def eligible_exit(root: Path, running: dict, *, mode: str, boot_id: str, wall: float, manager_stopping: bool,
                   state_changed: bool) -> ExitCode:
-    """68 when the next start may recover automatically, else 69 (v2 exit_codes_H1)."""
+    """68 when the next start may recover automatically, else 69 (v2 exit_codes_H1).
+
+    U3b-0c (v4 F1): 69 while a compaction is pending, so systemd does not
+    restart into a refused automatic recovery.
+    """
     if mode != "bounded" or state_changed:
+        return ExitCode.UNRECOVERABLE
+    try:
+        if stage.pending_compaction(root) is not None:
+            return ExitCode.UNRECOVERABLE
+    except (ValueError, OSError):
         return ExitCode.UNRECOVERABLE
     if manager_stopping:
         return ExitCode.RECOVERABLE
@@ -1778,7 +1795,7 @@ class Serve:
         self._event(f"reboot budget mode={budget.mode} budget={budget.budget}")
         try:
             controller = stage.AdmissionController(self.root, probe_timeout=options.probe_timeout,
-                                                   allow_open_head=True)
+                                                   allow_open_head=True, gate="serve")
             controller.__enter__()
         except ValueError as error:
             # runtime_admission_busy: a live child of a dead controller still holds
@@ -1812,6 +1829,14 @@ class Serve:
             head = decision.closed_head
         if self._stopped_before_start():
             return ExitCode.CLEAN
+        # U3b-0c (owner-compaction v3 V1-V4, v4 F1): the compaction gate decides only after
+        # receipt-proven recovery, so an armed run sealed by R-a is recorded as verified.
+        stage.record_compaction_verified(root, head, wall=self.wall())
+        gate = stage.compaction_serve_decision(root, head, wall=self.wall())
+        if not gate["allow"]:
+            raise LauncherRefusal(gate["code"])
+        if gate["kind"] is not None:
+            self._event("compaction gate " + gate["kind"])
         binding = stage.read_binding(root, head["binding_id"])
         try:
             check_slot(root, binding)
@@ -1831,6 +1856,11 @@ class Serve:
             raise LauncherRefusal(str(error)[:200]) from None
         if self._stopped_before_start():
             return ExitCode.CLEAN
+        if gate["kind"] is not None:
+            # Logged before begin_run's CAS: the run of generation head+1 is the armed one (or an
+            # allow-run run whose crash the operator may adopt).
+            stage.record_compaction_run(root, stage.pending_compaction(root), gate["kind"],
+                                        stage.read_admission_head(root), wall=self.wall())
         return self._run_child(controller, budget)
 
     def _spawn(self, controller, binding: dict, ticket: dict):
@@ -1903,6 +1933,12 @@ class Serve:
             "stop_requested": stop_requested, "ended_at": float(self.wall())}, immutable=True)
         if sealed is not None:
             self._event("sealed closed")
+            try:
+                if stage.record_compaction_verified(root, stage.read_admission_head(root),
+                                                    wall=self.wall()) is not None:
+                    self._event("compaction verified")
+            except (OSError, ValueError) as error:  # any later reader records it (idempotent)
+                self._event("compaction verified deferred " + str(error)[:80])
             return ExitCode.CLEAN if stop_requested else ExitCode.CHILD_ENDED
         if transient:
             # The receipt may still prove the close: leave the head running for R-a.
@@ -2018,7 +2054,8 @@ def adopt(root: Path, *, confirm: str, regressions: list[str], boot_id_path: str
     nothing under the state is opened for writing.
     """
     root = Path(root).resolve()
-    with stage.AdmissionController(root, allow_open_head=True):
+    # gate "serve": under a pending compaction recover_open_head decides (allow-run runs only).
+    with stage.AdmissionController(root, allow_open_head=True, gate="serve"):
         head = stage.read_admission_head(root)
         if head is None or head["status"] == "closed":
             raise LauncherRefusal("runtime_admission_adopt_head_closed")
@@ -2140,7 +2177,18 @@ def install_controller(root: Path, archive: Path, *, wall=time.time) -> dict:
     if "scripts/managed_launcher.pyc" not in files or "scripts/stage_runtime.pyc" not in files:
         raise LauncherRefusal("runtime_admission_controller_unmanaged")
     commit = manifest["git_commit"]
-    with stage.AdmissionController(root, allow_open_head=True):
+    try:
+        installed = _read_optional(_records(root, "controller.json"))
+    except (OSError, ValueError):
+        installed = None  # a damaged record: the checks under the lease decide
+    if installed is not None and type(installed.get("controller_epoch")) is int \
+            and installed["controller_epoch"] > epoch:
+        # Before the lease: the controller entry's own forward-epoch check (review F8) would
+        # refuse with the same code, but as a lease error rather than this command's refusal.
+        raise LauncherRefusal("runtime_admission_controller_downgrade")
+    # The install gate (review D4): allowed under a pending or invalid compaction log, so a
+    # corrected controller (epoch >= 3 above, never older than the installed one) can finish it.
+    with stage.AdmissionController(root, allow_open_head=True, gate="install"):
         record_path = _records(root, "controller.json")
         installed = _read_optional(record_path)
         if installed is not None and installed.get("controller_epoch", 0) > epoch:

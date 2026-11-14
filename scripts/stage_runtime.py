@@ -26,6 +26,7 @@ import sys
 import tarfile
 import tempfile
 import threading
+import time
 from uuid import UUID, uuid4
 
 
@@ -221,11 +222,15 @@ _CLOSED_STATE_KEYS = ("state_identity", "store_roots", "schemas", "sdk_versions"
 # CONTROLLER_EPOCH: monotonic controller version (admission/controller.json).
 #   2 (U3b-0e3) adds the 'adoption' manual head kind, the adoption seal and
 #   the abort record; only the controller reads them, so FORMAT_EPOCH stays.
+#   3 (U3b-0c) adds the compaction log and its gate, the prepare and staging
+#   records and the compaction tombstones (admission/compaction/v1,
+#   admission/prepared, admission/copies-retired); an epoch-2 controller
+#   ignores the gate, so it must never be installed over a 0c root.
 #   install-controller refuses an archive below this epoch.
 LAUNCHER_CONTRACT = 3
 FORMAT_EPOCH = 1
 RECEIPT_STATE_SCHEMA = 2
-CONTROLLER_EPOCH = 2
+CONTROLLER_EPOCH = 3
 MIN_FORMAT_EPOCH = 1
 _RELEASE_INTEGER_KEYS = ("launcher_contract", "format_epoch", "receipt_state", "controller_epoch")
 
@@ -635,6 +640,316 @@ def _cas_head(root: Path, expected: dict | None, binding_id: str, status: str,
         _verify_manual_head(root, head, read_binding(root, binding_id))
     _atomic_record(root / "admission" / "head.json", head)
     return head
+
+
+# --- U3b-0c: the owner-compaction log, its gate and its tombstones ---------------------------------
+# Owner-compaction design v2 (phases_and_crash_safety, gate, catalog_terminal_M5), v3
+# (retirement_set_v3), v4 (F1) and v5. The log lives in admission/compaction/v1/<id>/: an
+# immutable intent.json plus hash-chained immutable events/<seq>.json. The gate reads it in
+# AdmissionController.__enter__ and prepare_slot, so it is not a per-method list (M7).
+COMPACTION_TERMINAL = frozenset({"complete", "aborted"})
+COMPACTION_EVENT_KEYS = frozenset({"schema_version", "compaction_id", "seq", "kind", "previous_sha256", "at",
+                                   "data"})
+_COMPACTION_ID = re.compile("[0-9a-f]{32}")
+_COMPACTION_EVENT_NAME = re.compile("[0-9]{6}\\.json")
+_TOMBSTONE_KEYS = frozenset({"schema_version", "compaction_id", "member", "class", "path", "identity",
+                             "slot", "state_root", "state_identity", "binding_ids", "copy_ids", "status"})
+# AdmissionController gates (design v2 gate.modes, v4 F1). "normal" refuses while a compaction is
+# pending; "serve" lets the launcher enter so that receipt-proven R-a runs before its own gate
+# decision (compaction_serve_decision); "compaction:<id>" is used only by that compaction's steps.
+# "install" is install-controller's (review D4): the way out of a stuck compaction is a corrected
+# controller (epoch >= 3, monotonic), so it enters under a pending or an invalid log.
+GATES = ("normal", "serve", "install")
+
+
+def require_forward_epoch(root: Path) -> None:
+    """Refuse when admission/controller.json declares a newer controller epoch than this code (review F8).
+
+    Every slot runtime and every controller/<commit> ships its own
+    stage_runtime; a copy older than the installed controller must not take
+    the lease or prepare a slot. Only a readable integer epoch above ours
+    refuses here (a missing or damaged record is the launcher's refusal).
+    """
+    path = Path(root) / "admission" / "controller.json"
+    try:
+        value = _read_json(path) if path.is_file() and not path.is_symlink() else None
+    except (OSError, ValueError, UnicodeDecodeError):
+        return
+    epoch = value.get("controller_epoch") if type(value) is dict else None
+    if type(epoch) is int and epoch > CONTROLLER_EPOCH:
+        raise ValueError("runtime_admission_controller_downgrade")
+
+
+def compaction_directory(root: Path) -> Path:
+    """admission/compaction/v1: one directory per compaction id, plus retired/ (tombstones)."""
+    return Path(root) / "admission" / "compaction" / "v1"
+
+
+def compaction_log_path(root: Path, compaction_id: str) -> Path:
+    if type(compaction_id) is not str or _COMPACTION_ID.fullmatch(compaction_id) is None:
+        raise ValueError("runtime_admission_compaction_id")
+    return compaction_directory(root) / compaction_id
+
+
+def read_compaction_log(root: Path, compaction_id: str) -> dict:
+    """The validated log of one compaction: intent, events in order and the chain head.
+
+    Every event names its predecessor's sha256 (the intent's for the first) and
+    its own sequence number; a gap, a foreign file, a link or a mismatch makes
+    the whole log invalid (fail closed: an invalid log keeps the gate shut).
+    """
+    directory = compaction_log_path(root, compaction_id)
+    invalid = "runtime_admission_compaction_log_invalid"
+    try:
+        _safe_directory(directory)
+        intent_path = directory / "intent.json"
+        intent = _read_json(intent_path)
+        raw = intent_path.read_bytes()
+        if intent.get("compaction_id") != compaction_id or intent.get("schema_version") != 1:
+            raise ValueError(invalid)
+        previous = hashlib.sha256(raw).hexdigest()
+        intent_sha256 = previous
+        events = []
+        events_directory = directory / "events"
+        names = []
+        if os.path.lexists(events_directory):
+            _safe_directory(events_directory)
+            names = sorted(name for name in os.listdir(events_directory) if not name.startswith("."))
+        for index, name in enumerate(names, start=1):
+            if _COMPACTION_EVENT_NAME.fullmatch(name) is None or int(name[:6]) != index:
+                raise ValueError(invalid)
+            path = events_directory / name
+            event = _read_json(path)
+            if (set(event) != COMPACTION_EVENT_KEYS or event["schema_version"] != 1
+                    or event["compaction_id"] != compaction_id or event["seq"] != index
+                    or event["previous_sha256"] != previous or type(event["kind"]) is not str
+                    or type(event["data"]) is not dict or type(event["at"]) not in (int, float)):
+                raise ValueError(invalid)
+            previous = hashlib.sha256(path.read_bytes()).hexdigest()
+            events.append(event)
+    except (OSError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        if str(error) == invalid:
+            raise
+        raise ValueError(invalid) from None
+    for event in events[:-1]:
+        if event["kind"] in COMPACTION_TERMINAL:
+            raise ValueError(invalid)
+    return {"compaction_id": compaction_id, "intent": intent, "intent_sha256": intent_sha256,
+            "events": events, "head_sha256": previous,
+            "terminal": bool(events) and events[-1]["kind"] in COMPACTION_TERMINAL}
+
+
+def compaction_logs(root: Path) -> list[dict]:
+    """Every compaction log under the root (ids with an intent), in id order."""
+    directory = compaction_directory(root)
+    if not os.path.lexists(directory):
+        return []
+    _safe_directory(directory)
+    logs = []
+    for name in sorted(os.listdir(directory)):
+        if name in {"retired", "returns"} or name.startswith("."):
+            continue
+        if _COMPACTION_ID.fullmatch(name) is None:
+            raise ValueError("runtime_admission_compaction_log_invalid")
+        if not os.path.lexists(directory / name / "intent.json"):
+            continue  # a start interrupted before its intent: nothing was decided
+        logs.append(read_compaction_log(root, name))
+    return logs
+
+
+def pending_compaction(root: Path) -> dict | None:
+    """The one non-terminal compaction log, or None; two pending logs are invalid."""
+    pending = [log for log in compaction_logs(root) if not log["terminal"]]
+    if len(pending) > 1:
+        raise ValueError("runtime_admission_compaction_log_invalid")
+    return pending[0] if pending else None
+
+
+def append_compaction_event(root: Path, log: dict, kind: str, data: dict, *, at: float) -> dict:
+    """Append one immutable event after ``log``'s current head; returns the re-read log.
+
+    The caller holds the admission lease (or is serve inside its own lease).
+    A concurrent append is impossible under the lease; the link refuses a
+    second writer of the same sequence number anyway.
+    """
+    if log["terminal"]:
+        raise ValueError("runtime_admission_compaction_terminal")
+    if type(at) not in (int, float) or not math.isfinite(at):
+        raise ValueError("runtime_admission_compaction_clock")
+    event = {"schema_version": 1, "compaction_id": log["compaction_id"], "seq": len(log["events"]) + 1,
+             "kind": kind, "previous_sha256": log["head_sha256"], "at": float(at), "data": data}
+    path = compaction_log_path(root, log["compaction_id"]) / "events" / f"{event['seq']:06d}.json"
+    _atomic_record(path, event, immutable=True)
+    return read_compaction_log(root, log["compaction_id"])
+
+
+def compaction_events(log: dict, kind: str) -> list[dict]:
+    return [event for event in log["events"] if event["kind"] == kind]
+
+
+def tombstone_directory(root: Path) -> Path:
+    return compaction_directory(root) / "retired"
+
+
+def retired_locators(root: Path) -> dict:
+    """{"paths": set of destroyed member paths and state roots, "identities": their identities}.
+
+    Tombstones are written only after a member's last unlink (design v2 C7).
+    The retired-locator guard is path-only; identities are used solely to drop
+    destroyed states from the delegation cycle guard (H1).
+    """
+    directory = tombstone_directory(root)
+    paths, identities, slots = set(), set(), set()
+    if not os.path.lexists(directory):
+        return {"paths": paths, "identities": identities, "slots": slots}
+    _safe_directory(directory)
+    for name in sorted(os.listdir(directory)):
+        if name.startswith("."):
+            continue
+        record = _read_json(directory / name)
+        if set(record) != _TOMBSTONE_KEYS or record["schema_version"] != 1 or record["status"] != "destroyed":
+            raise ValueError("runtime_admission_compaction_tombstone_invalid")
+        paths.add(record["path"])
+        identities.add(_canonical_json(record["identity"]))
+        if record["state_root"] is not None:
+            paths.add(record["state_root"])
+            identities.add(_canonical_json(record["state_identity"]))
+        if record["slot"] is not None:
+            slots.add(record["slot"])
+    return {"paths": paths, "identities": identities, "slots": slots}
+
+
+def _armed_run(log: dict) -> tuple[dict | None, dict | None]:
+    """(the last verify_armed event, the verify_started event after it) of a log."""
+    armed = started = None
+    for event in log["events"]:
+        if event["kind"] == "verify_armed":
+            armed, started = event, None
+        elif event["kind"] == "verify_started" and armed is not None:
+            started = event
+    return armed, started
+
+
+def compaction_verified(root: Path, log: dict, head: dict | None) -> dict | None:
+    """The armed verification run's seal, as 'verified' data, when the head closed it.
+
+    The armed run is the running head of generation ``verify_started.generation``.
+    It closed when the head is closed and the head binding's closure proof
+    names that running generation (a normal seal or a receipt-proven R-a
+    seal, design v4 F1). Returns {"generation", "binding_id", "run_id"} or None.
+    """
+    recorded = compaction_events(log, "verified")
+    if recorded:
+        return recorded[-1]["data"]
+    _armed, started = _armed_run(log)
+    if started is None or head is None or head["status"] != "closed":
+        return None
+    try:
+        proof = _closure_proof(root, head["binding_id"])
+    except (OSError, ValueError):
+        return None
+    running = proof["running_head"]
+    if (running["generation"] != started["data"]["generation"]
+            or running["binding_id"] != started["data"]["binding_id"]):
+        return None
+    return {"generation": running["generation"], "binding_id": head["binding_id"], "run_id": running["run_id"]}
+
+
+def _allow_run_until(log: dict) -> float | None:
+    granted = compaction_events(log, "allow_run")
+    return granted[-1]["data"]["until"] if granted else None
+
+
+def compaction_serve_decision(root: Path, head: dict, *, wall: float) -> dict:
+    """serve's gate after receipt-proven recovery (design v3 V1-V4, v4 F1, Q7).
+
+    Returns {"allow": bool, "code", "kind", "log"}. ``kind`` is "verify" for
+    the one armed run of K, "allow_run" for a run under a valid allow-run, or
+    None without a pending compaction. Refusals are serve's exit 78.
+    """
+    log = pending_compaction(root)
+    if log is None:
+        return {"allow": True, "code": None, "kind": None, "log": None}
+    # Review r2 N1: once an abort or a retire has started, no K run (armed or allow-run) may start:
+    # a run after 'abort_started' would write or erase in K' behind the abort's Q6 check, and a run
+    # during a retire would serve while members are half destroyed. Finish them with 'compact'.
+    if compaction_events(log, "abort_started"):
+        return {"allow": False, "code": "runtime_admission_compaction_abort_pending", "kind": None, "log": log}
+    if compaction_events(log, "retire_started"):
+        return {"allow": False, "code": "runtime_admission_compaction_retire_in_progress", "kind": None, "log": log}
+    armed, started = _armed_run(log)
+    if armed is None:
+        return {"allow": False, "code": "runtime_admission_compaction_pending", "kind": None, "log": log}
+    if head is None or head["status"] != "closed":
+        return {"allow": False, "code": "runtime_admission_compaction_pending", "kind": None, "log": log}
+    if started is None or (head["generation"] < started["data"]["generation"]
+                           and head["binding_id"] == started["data"]["binding_id"]
+                           and not compaction_verified(root, log, head)):
+        # Not consumed yet: no running head of the armed generation ever existed.
+        if head["binding_id"] != armed["data"]["binding_id"]:
+            return {"allow": False, "code": "runtime_admission_compaction_head_moved", "kind": None, "log": log}
+        return {"allow": True, "code": None, "kind": "verify", "log": log}
+    verified = compaction_verified(root, log, head)
+    if verified is None:
+        return {"allow": False, "code": "runtime_admission_compaction_verify_consumed", "kind": None, "log": log}
+    until = _allow_run_until(log)
+    if until is None:
+        return {"allow": False, "code": "runtime_admission_compaction_retire_pending", "kind": None, "log": log}
+    if wall >= until:
+        return {"allow": False, "code": "runtime_admission_compaction_allow_run_expired", "kind": None, "log": log}
+    return {"allow": True, "code": None, "kind": "allow_run", "log": log}
+
+
+def record_compaction_run(root: Path, log: dict, kind: str, head: dict, *, wall: float) -> dict:
+    """serve, before begin_run: the run about to start is the armed one, or an allow-run run.
+
+    ``head`` is the closed head serve is about to CAS to running, so the run
+    is the running head of generation ``head.generation + 1`` (logged before
+    the CAS: a crash in between leaves the run unconsumed, see the decision).
+    """
+    name = {"verify": "verify_started", "allow_run": "allow_run_started"}[kind]
+    return append_compaction_event(root, log, name, {"generation": head["generation"] + 1,
+                                                     "binding_id": head["binding_id"]}, at=wall)
+
+
+def record_compaction_verified(root: Path, head: dict, *, wall: float) -> dict | None:
+    """Write 'verified' once the armed run's seal exists (serve after a seal, or any later reader)."""
+    log = pending_compaction(root)
+    if log is None or compaction_events(log, "verified"):
+        return None
+    verified = compaction_verified(root, log, head)
+    if verified is None:
+        return None
+    return append_compaction_event(root, log, "verified", verified, at=wall)
+
+
+def compaction_recovery_refusal(root: Path, head: dict, *, operator: bool) -> str | None:
+    """R-b under a pending compaction (design v4 F1): automatic never; operator only for allow-run runs.
+
+    Receipt-proven R-a is not affected: it runs before this check in every mode.
+    """
+    log = pending_compaction(root)
+    if log is None:
+        return None
+    if not operator:
+        return "runtime_admission_compaction_recovery_pending"
+    if head.get("run_id") is None:
+        return "runtime_admission_compaction_recovery_pending"
+    allowed = {event["data"]["generation"] for event in compaction_events(log, "allow_run_started")}
+    # A running head is at the run's generation; an unknown one is one CAS later (same run_id).
+    generation = head["generation"] if head["status"] == "running" else head["generation"] - 1
+    if generation not in allowed or _allow_run_until(log) is None:
+        return "runtime_admission_compaction_recovery_not_allow_run"
+    return None
+
+
+def _require_not_retired(root: Path, *paths: Path) -> None:
+    """Refuse a locator at or under a destroyed member (path-only, design v1 T-U7 / v2 H1)."""
+    retired = retired_locators(root)["paths"]
+    for path in paths:
+        text = os.path.abspath(os.fspath(path))
+        if any(text == item or text.startswith(item.rstrip("/") + "/") for item in retired):
+            raise ValueError("runtime_admission_retired_locator")
 
 
 def _validate_binding_record(binding_id: str, binding: dict) -> dict:
@@ -1258,6 +1573,23 @@ def prepare_slot(archive: Path, root: Path, name: str, state_source: Path) -> di
     Returns:
         Runtime manifest, without the private state's contents.
     """
+    return _prepare_slot(archive, root, name, state_source)
+
+
+def prepared_directory(root: Path) -> Path:
+    """admission/prepared: U3b-0c prepare and staging records (design v3 new_prepare_record, v4 F6)."""
+    return Path(root) / "admission" / "prepared"
+
+
+def _prepare_slot(archive: Path, root: Path, name: str, state_source: Path, *,
+                  compaction: str | None = None, env_link: bool = False, wall=None) -> dict:
+    """prepare_slot, plus the U3b-0c gate and records.
+
+    ``compaction`` is the pending compaction's id when that compaction creates
+    its K slot (the only prepare allowed while it is pending). ``env_link``
+    creates runtime/.env -> ../state/.env without a state/.env file: K's .env
+    arrives with materialization (design v2 P6, K29).
+    """
     name = _slot_name(name)
     root = root.resolve()
     state_source = state_source.resolve()
@@ -1266,13 +1598,30 @@ def prepare_slot(archive: Path, root: Path, name: str, state_source: Path) -> di
         raise ValueError("Staging root and state source must be separate trees")
     manifest, files = _read_archive(archive)
     with _locked_root(root):
+        if os.path.lexists(root / "admission"):
+            require_forward_epoch(root)
+            pending = pending_compaction(root)
+            if pending is not None and pending["compaction_id"] != compaction:
+                raise ValueError("runtime_admission_compaction_pending")
+            retired = retired_locators(root)
+            if name in retired["slots"]:
+                raise ValueError("runtime_admission_retired_locator")
+            _require_not_retired(root, root / "slots" / name, state_source)
         slots = root / "slots"
         private_directories(slots)
         target = slots / name
         if target.exists() or target.is_symlink():
             raise FileExistsError(target)
+        clock = time.time if wall is None else wall
         with tempfile.TemporaryDirectory(prefix=".prepare-", dir=slots) as temporary:
             staging = Path(temporary)
+            # U3b-0c (v4 F6): the staging directory's identity is recorded before anything is
+            # extracted, so a SIGKILL leftover is proven by identity, never by name or age.
+            staging_id = uuid4().hex
+            _atomic_record(prepared_directory(root) / (".staging-" + staging_id + ".json"),
+                           {"schema_version": 1, "kind": "staging", "staging_id": staging_id,
+                            "path": str(staging), "identity": _identity(staging),
+                            "compaction_id": compaction, "created_at": float(clock())}, immutable=True)
             runtime = staging / "runtime"
             runtime.mkdir()
             for filename, data in files.items():
@@ -1287,14 +1636,26 @@ def prepare_slot(archive: Path, root: Path, name: str, state_source: Path) -> di
                 (runtime / directory).symlink_to(Path("..") / "state" / directory)
             env_file = state_source / ".env"
             if env_file.exists() or env_file.is_symlink():
-                if env_file.is_symlink() or not env_file.is_file():
+                if env_file.is_symlink() or not env_file.is_file() or env_link:
                     raise ValueError("Environment file must be regular")
                 shutil.copyfile(env_file, state / ".env")
                 (state / ".env").chmod(0o600)
                 (runtime / ".env").symlink_to(Path("..") / "state" / ".env")
+            elif env_link:
+                (runtime / ".env").symlink_to(Path("..") / "state" / ".env")
             # Before any artifact observation (activation binds the tree).
             make_runtime_read_only(runtime)
+            identity = _identity(staging)
+            state_identity = _identity(state)
             os.rename(staging, target)
+            # U3b-0c (v3 new_prepare_record): proof that this controller made the slot, even if it
+            # is never bound (an abandoned release); immutable, content-free.
+            _atomic_record(prepared_directory(root) / (name + "." + staging_id + ".json"), {
+                "schema_version": 1, "kind": "prepared", "slot": name, "staging_id": staging_id,
+                "runtime_root": str(target / "runtime"), "state_root": str(target / "state"),
+                "slot_identity": identity, "state_identity": state_identity,
+                "release_sha256": hashlib.sha256((target / "runtime" / "release.json").read_bytes()).hexdigest(),
+                "compaction_id": compaction, "created_at": float(clock())}, immutable=True)
     return manifest
 
 
@@ -1576,6 +1937,7 @@ def _validate_target_record(target: dict) -> None:
 def _binding_snapshot(root: Path, name: str, *, artifacts: dict | None = None) -> dict:
     runtime, state, manifest = (_checked_slot(root, name) if artifacts is None
                                 else _checked_slot(root, name, artifacts=artifacts))
+    _require_not_retired(root, state)  # U3b-0c: a destroyed member's locator is never bound again
     _require_copy_not_invalidated(root, state)
     _require_copy_not_observed(root, state)
     _require_copy_not_observed(root, runtime)
@@ -1593,7 +1955,14 @@ def _binding_snapshot(root: Path, name: str, *, artifacts: dict | None = None) -
             "ownership_sha256": hashlib.sha256(ownership.read_bytes()).hexdigest() if ownership.exists() else None}
 
 
+# The 16 MiB read cap of every admission record (_read_json); a binding over it could never be read
+# back, so the write side refuses it (owner-compaction design v1 controller_changes, B19 guard).
+_RECORD_READ_CAP = 16 * 1024 * 1024
+
+
 def _store_binding(root: Path, binding: dict) -> str:
+    if len(_canonical_json(binding)) + 1 > _RECORD_READ_CAP:
+        raise ValueError("runtime_admission_binding_capacity")
     identity = _digest(binding)
     _atomic_record(root / "admission" / "bindings" / (identity + ".json"), binding, immutable=True)
     return identity
@@ -1794,6 +2163,9 @@ def _owner_observation(root: Path, owner_id: str, *, artifacts: dict | None = No
         return cache[owner_id]
     source = read_binding(root, owner_id)
     source_state = Path(source["state_root"])
+    if source["state_root"] in retired_locators(root)["paths"]:
+        # U3b-0c (design v1 K17/T-U8): a tombstoned owner is a coded refusal, never FileNotFoundError.
+        raise ValueError("runtime_admission_delegation_owner_retired")
     value = {"source": source, "marker": _read_json(source_state / _MARKER), "live": False}
     if value["marker"].get("binding_id") == owner_id:
         observed = (_binding_snapshot(root, source["slot"]) if artifacts is None
@@ -1846,24 +2218,35 @@ def _delegation_candidate(root: Path, record: dict, chain: dict, target: dict, s
 
 
 def _delegation_states(root: Path) -> tuple[set, set]:
-    """State paths and identities that already served as a delegation owner or hop."""
+    """State paths and identities that already served as a delegation owner or hop.
+
+    U3b-0c (design v2 inode_recycling_fix_H1): a state a compaction tombstone
+    attests as destroyed keeps its path here but not its {device, inode}. Its
+    directory no longer exists, so the identity can only belong to a new,
+    unrelated directory that recycled the inode number.
+    """
     paths, identities = set(), set()
     directory = root / "admission" / "delegations"
     if not directory.exists():
         return paths, identities
     _safe_directory(directory)
+    retired = retired_locators(root)["paths"]
+
+    def add(state_root: str, identity: dict) -> None:
+        paths.add(state_root)
+        if state_root not in retired:
+            identities.add(_canonical_json(identity))
     for path in sorted(directory.glob("*.json")):
         record = _read_json(path)
         if path.stem != _digest(record) or set(record) != _RECORD_KEYS:
             raise ValueError("runtime_admission_delegation_changed")
         owner = read_binding(root, record["source_binding"])
-        paths.add(owner["state_root"])
-        identities.add(_canonical_json(owner["state_identity"]))
+        add(owner["state_root"], owner["state_identity"])
         sidecar = _chain_path(root, path.stem)
         if sidecar.exists() or sidecar.is_symlink():
             for hops in _read_chain(root, record)["chains"].values():
-                paths.update(hop["state_root"] for hop in hops)
-                identities.update(_canonical_json(hop["state_identity"]) for hop in hops)
+                for hop in hops:
+                    add(hop["state_root"], hop["state_identity"])
     return paths, identities
 
 
@@ -2398,7 +2781,8 @@ def _read_manual_head(root: Path, head: dict) -> dict:
             or _canonical_json(record["head"]) != _canonical_json(head)
             or head["status"] != "closed" or head["run_id"] is not None
             or type(record["capture"]) is not dict
-            or record["kind"] not in {"bootstrap", "selection", "closure", "recovery", "adoption"}):
+            or record["kind"] not in {"bootstrap", "selection", "closure", "recovery", "adoption",
+                                      "compaction_return"}):
         raise ValueError("runtime_admission_manual_companion_schema")
     binding = read_binding(root, head["binding_id"])
     if (record["capture"].get("state_root") != binding["state_root"]
@@ -2433,6 +2817,14 @@ def _read_manual_head(root: Path, head: dict) -> dict:
                 raise ValueError("runtime_admission_manual_bootstrap_invalid")
             _require_manual_equivalent(prior["capture"], record["capture"])
             return record
+    if record["kind"] == "compaction_return":
+        # U3b-0c: an aborted compaction returns to H, the head it started from. The return
+        # record binds the open or closed K head it replaced; H's own authority seal applies.
+        returned = _read_compaction_return(root, head)
+        if (returned["h_head"] != prior["head"] or returned["head_before"]["generation"] + 1 != head["generation"]
+                or prior["head"]["binding_id"] != head["binding_id"] or record["authority_seal"] is None
+                or record["authority_seal"] != prior["authority_seal"]):
+            raise ValueError("runtime_admission_manual_companion_changed")
     if record["kind"] == "recovery":
         # U3b-0d: an adopted state after a run without a usable receipt. The
         # immutable recovery record binds the open head it replaced; the
@@ -2465,6 +2857,57 @@ def _read_manual_head(root: Path, head: dict) -> dict:
             raise ValueError("runtime_admission_manual_companion_changed")
     _require_manual_equivalent(seal["capture"], record["capture"])
     return record
+
+
+_RETURN_KEYS = frozenset({"schema_version", "compaction_id", "head_before", "h_head", "head"})
+
+
+def _compaction_return_path(root: Path, head: dict) -> Path:
+    return compaction_directory(root) / "returns" / (_digest(head) + ".json")
+
+
+def _read_compaction_return(root: Path, head: dict) -> dict:
+    record = _read_json(_compaction_return_path(root, head))
+    if (set(record) != _RETURN_KEYS or record["schema_version"] != 1
+            or _canonical_json(record["head"]) != _canonical_json(head)
+            or not _manual_head_shape(record["h_head"], "closed")
+            or type(record["head_before"]) is not dict or set(record["head_before"]) != _HEAD_KEYS):
+        raise ValueError("runtime_admission_manual_companion_schema")
+    return record
+
+
+def compaction_return_to_h(root: Path, expected: dict, h_head: dict, compaction_id: str) -> dict:
+    """CAS any K head (closed, running or unknown) back to H's binding (owner-compaction v2 abort paths).
+
+    The caller holds the lease (gate compaction:<id>) and decided the abort.
+    H must be bit-for-bit the binding of ``h_head`` (the head the compaction
+    started from). Writes the immutable return record and a
+    'compaction_return' manual head (previous = H's own companion, H's
+    authority seal), then the CAS and the 'current' selection. Returns the
+    closed H head.
+    """
+    with _locked_root(root):
+        if read_admission_head(root) != expected:
+            raise ValueError("runtime_admission_head_changed")
+        binding = read_binding(root, h_head["binding_id"])
+        prior = _read_manual_head(root, h_head)
+        if prior["authority_seal"] is None:
+            raise ValueError("runtime_admission_compaction_return_unsealed")
+        head = {"schema_version": 1, "generation": expected["generation"] + 1,
+                "binding_id": h_head["binding_id"], "status": "closed", "run_id": None}
+        capture = _manual_capture(root, binding)
+        if _binding_snapshot(root, binding["slot"]) != binding:
+            raise ValueError("privacy_authority_stale")
+        _atomic_record(_compaction_return_path(root, head), {
+            "schema_version": 1, "compaction_id": compaction_id, "head_before": expected,
+            "h_head": h_head, "head": head}, immutable=True)
+        _atomic_record(_manual_head_path(root, head), {
+            "schema_version": 1, "head": head, "kind": "compaction_return", "capture": capture,
+            "authority_seal": prior["authority_seal"],
+            "previous": {"head_sha256": _digest(h_head), "companion_sha256": _digest(prior)}}, immutable=True)
+        closed = _cas_head(root, expected, h_head["binding_id"], "closed")
+        _publish_selection(root, binding["slot"])
+        return closed
 
 
 def _verify_manual_head(root: Path, head: dict, binding: dict) -> dict:
@@ -3118,6 +3561,91 @@ def _validate_derived_capability(root: Path, head: dict, source: dict, candidate
         return False
 
 
+def compaction_evidence_json(text: str, evidence_map: dict) -> str:
+    """One suggestion's evidence_json after compaction relocation (owner-compaction v2 rules a-c).
+
+    (a) an entry whose target_id is a known events target of H (owned or
+    inherited) is substituted through ``evidence_map``; (b) an unknown
+    target_id (a state retired earlier) is kept as it is. When no entry
+    changes, the text is returned byte-identical; otherwise the list is
+    re-serialized canonically (sorted keys, no spaces), like derivation does.
+    Shared by the compaction worker and _compaction_authority_equivalent so
+    both compute the same bytes.
+    """
+    entries = json.loads(text)
+    if type(entries) is not list or not entries or any(type(entry) is not dict for entry in entries):
+        raise ValueError("runtime_admission_compaction_evidence")
+    changed = False
+    result = []
+    for entry in entries:
+        target = entry.get("target_id")
+        if type(target) is str and target in evidence_map and evidence_map[target] != target:
+            entry = dict(entry, target_id=evidence_map[target])
+            changed = True
+        result.append(entry)
+    if not changed:
+        return text
+    return json.dumps(result, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _compaction_authority_equivalent(root: Path, source: dict, candidate: dict, evidence_map: dict) -> bool:
+    """K's authority equals H's own projection with only the evidence substitution (design v2 R1).
+
+    Reads H's rows only: no owner image. Every other protected projection,
+    the deletion-ledger chain projection (v5 G2: count, max_seq, chain_head)
+    included, must be identical; the known additive schema groups a newer
+    controller's ledger may add are admitted empty, as for derivation.
+    """
+    if (type(evidence_map) is not dict or any(type(key) is not str or type(value) is not str
+            or not _hex64(key) or not _hex64(value) for key, value in evidence_map.items())):
+        raise ValueError("privacy_authority_stale")
+    expected = json.loads(_canonical_json(source["authority"]["projection"]))
+    for relative, (columns, rows) in _protected_suggestions(source).items():
+        hashes = []
+        for row in rows:
+            value = dict(row)
+            value["evidence_json"] = compaction_evidence_json(row["evidence_json"], evidence_map)
+            hashes.append(_digest([_typed(value[column]) for column in columns]))
+        expected["tables"][relative]["suggestions_policy_v1"] = {"columns": columns, "row_hashes": sorted(hashes)}
+    _expect_empty_schema_additions(expected, candidate["authority"]["projection"])
+    return candidate["authority"] == {"schema_version": 1, "digest": _digest(expected), "projection": expected}
+
+
+def compaction_authority_record(head: dict, source_binding_id: str, candidate: dict, compaction_id: str,
+                                evidence_map: dict) -> dict:
+    """admission/compaction/v1/<id>/authority.json (design v2 rebinding_and_admission.record)."""
+    return {"schema_version": 1, "compaction_id": compaction_id, "head": head,
+            "source_binding_id": source_binding_id, "candidate_binding_id": _digest(candidate),
+            "candidate_state_root": candidate["state_root"],
+            "candidate_state_identity": candidate["state_identity"], "evidence_map": evidence_map}
+
+
+def _validate_compaction_capability(root: Path, head: dict, source: dict, candidate: dict) -> bool:
+    """activate's compaction branch: the pending log is authorized and the equivalence still holds."""
+    try:
+        pending = pending_compaction(root)
+        if pending is None or not compaction_events(pending, "authorized"):
+            return False
+        path = compaction_log_path(root, pending["compaction_id"]) / "authority.json"
+        record = _read_json(path)
+        expected = compaction_authority_record(head, head["binding_id"], candidate, pending["compaction_id"],
+                                               record.get("evidence_map"))
+        if _canonical_json(record) != _canonical_json(expected):
+            return False
+        if pending["intent"].get("source_binding_id") != head["binding_id"] \
+                or pending["intent"].get("k_slot") != candidate["slot"]:
+            return False
+        if verify_closed_binding(root, head["binding_id"]) != source:
+            return False
+        if not _compaction_authority_equivalent(root, source, candidate, record["evidence_map"]):
+            return False
+        return (_binding_snapshot(root, source["slot"]) == source
+                and _binding_snapshot(root, candidate["slot"]) == candidate
+                and read_admission_head(root) == head)
+    except (FileNotFoundError, ValueError, KeyError, TypeError):
+        return False
+
+
 def _ticket_value(ticket: dict | str) -> dict:
     if type(ticket) is str:
         ticket = json.loads(ticket)
@@ -3443,12 +3971,19 @@ class AdmissionController:
     """
 
     def __init__(self, root: Path, *, probe_timeout: float = _PROBE_TIMEOUT_SECONDS,
-                 allow_open_head: bool = False):
+                 allow_open_head: bool = False, gate: str = "normal"):
         self.root = Path(root).resolve()
         self.probe_timeout = _probe_timeout(probe_timeout)
         # U3b-0d serve/adopt: enter over a running or unknown head so recovery
         # can run under the lease. Every other entry refuses an open head.
         self.allow_open_head = allow_open_head
+        # U3b-0c: the compaction gate (see GATES). "compaction:<id>" may enter only
+        # while that compaction is the pending one.
+        if gate not in GATES and not (gate.startswith("compaction:")
+                                      and _COMPACTION_ID.fullmatch(gate.split(":", 1)[1])):
+            raise ValueError("runtime_admission_gate")
+        self.gate = gate
+        self.compaction = None  # the pending compaction log seen at entry, if any
         self._descriptor = None
 
     def __enter__(self):
@@ -3464,6 +3999,21 @@ class AdmissionController:
             head = read_admission_head(self.root)
             if head is not None and head["status"] != "closed" and not self.allow_open_head:
                 raise ValueError("runtime_admission_not_closed")
+            require_forward_epoch(self.root)
+            # U3b-0c gate (design v2 gate.choke_points): every lease-taking path enters here.
+            if self.gate == "install":
+                try:
+                    pending = pending_compaction(self.root)
+                except ValueError:
+                    pending = None  # an invalid log: only a corrected controller can read it
+            else:
+                pending = pending_compaction(self.root)
+            if pending is not None and self.gate == "normal":
+                raise ValueError("runtime_admission_compaction_pending")
+            if (pending is None or pending["compaction_id"] != self.gate.split(":", 1)[-1]) \
+                    and self.gate.startswith("compaction:"):
+                raise ValueError("runtime_admission_compaction_not_pending")
+            self.compaction = pending
             os.ftruncate(descriptor, 0)
             os.write(descriptor, _canonical_json({"controller_pid": os.getpid(), "lease_fd": descriptor}))
             os.fsync(descriptor)
@@ -3529,9 +4079,12 @@ class AdmissionController:
                 if any(not path.is_relative_to(state) or path.resolve() != path for path in paths):
                     raise ValueError("runtime_admission_delegation_foreign_source")
                 target_ids.append(identity)
-            capabilities = _authorize_target_delegation(
-                self.root, self.root / "slots" / name / "state", head["binding_id"], target_ids)
-        return {"capabilities": capabilities, "source_binding": head["binding_id"], "targets": target_ids}
+            destination = self.root / "slots" / name / "state"
+            capabilities = _authorize_target_delegation(self.root, destination, head["binding_id"], target_ids)
+            # U3b-0c (design v2 trigger.advisory): distinct owners the new slot depends on.
+            owners = len({record["source_binding"] for record in _delegation_records(self.root, destination)})
+        return {"capabilities": capabilities, "source_binding": head["binding_id"], "targets": target_ids,
+                "owners_after_grant": owners}
 
     def authorize_derived_state(self, name: str, latest_binding_id: str, *,
                                 target_relocations: dict[str, str]) -> str:
@@ -3599,7 +4152,10 @@ class AdmissionController:
             is_managed = managed or head is not None or _has_authority(binding) or _has_authority(latest)
             if is_managed:
                 if latest["authority"]["digest"] != binding["authority"]["digest"]:
-                    if head is None or not _validate_derived_capability(self.root, head, latest, binding):
+                    if head is None or not (_validate_derived_capability(self.root, head, latest, binding)
+                                            or (self.gate.startswith("compaction:") and
+                                                _validate_compaction_capability(self.root, head, latest,
+                                                                                binding))):
                         raise ValueError("privacy_authority_stale")
                 # Before any admission record, marker, head CAS or selection.
                 _probe_candidate(self.root, name, binding, timeout=self.probe_timeout)
@@ -3808,6 +4364,23 @@ def _adoption_commands_module():
     return _adoption_commands
 
 
+_compaction = None
+
+
+def _compaction_module():
+    """The owner-compaction commands (U3b-0c) and the P14 scanner, bound to this module."""
+    global _compaction
+    if _compaction is None:
+        launcher = _launcher_module()
+        commands = _adoption_commands_module()
+        units = _load_beside("compaction_units", "_kza_compaction_units_")
+        units.bind(launcher, commands)
+        module = _load_beside("compaction", "_kza_compaction_")
+        module.bind(sys.modules[__name__], launcher, units)
+        _compaction = module
+    return _compaction
+
+
 def main() -> None:
     """Prepare or select a slot after the operator has stopped all state writers."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -3833,16 +4406,28 @@ def main() -> None:
     if any(argument in ADOPTION_COMMANDS for argument in sys.argv[1:]):
         adoption_commands = _adoption_commands_module()
         adoption_commands.add_commands(commands)
+    compaction = None
+    if "compact" in sys.argv[1:]:
+        compaction = _compaction_module()
+        compaction.add_commands(commands)
     args = parser.parse_args()
     if args.command in launcher.COMMANDS:
         raise SystemExit(launcher.run_command(args))
     if adoption_commands is not None and args.command in adoption_commands.COMMANDS:
         raise SystemExit(adoption_commands.run_command(args))
+    if compaction is not None and args.command in compaction.COMMANDS:
+        raise SystemExit(compaction.run_command(args))
     if args.command == "prepare":
         manifest = prepare_slot(args.archive, args.root, args.name, args.state_source)
         print(json.dumps({"slot": args.name, "commit": manifest["git_commit"]}))
     elif args.command == "delegate":
         result = delegate_slot(args.root, args.name)
+        # U3b-0c (design v3 advisory_Q1, v5 G3): content-free; it warns and never blocks.
+        try:
+            result["compaction_advisory"] = _compaction_module().advisory(args.root.resolve(),
+                                                                          owners=result["owners_after_grant"])
+        except Exception as error:  # noqa: BLE001 - the advisory never fails a delegation
+            result["compaction_advisory"] = {"available": False, "code": str(error)[:120]}
         print(json.dumps({"slot": args.name, **result}))
     else:
         previous = activate_slot(args.root, args.name, probe_timeout=args.probe_timeout)

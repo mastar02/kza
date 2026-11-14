@@ -470,16 +470,30 @@ def shim_main(state_dir: str, argv: list[str]) -> int:
         return 0
     if argv[:2] == ["--user", "daemon-reload"]:
         return 0
+    if argv[:2] in (["--user", "list-unit-files"], ["--user", "list-units"]):
+        # U3b-0c P14: the rehearsal's units live outside the user unit directories, so the
+        # scanner selects none; the real listing is rehearsed by test_linux_compaction_units.
+        return 0
+    if argv[:2] == ["--user", "show-environment"]:
+        # U3b-0c P14 (review F9): the manager's environment block, as a user manager prints it.
+        sys.stdout.write("HOME=" + os.path.expanduser("~") + "\nLANG=C.UTF-8\nPATH=/usr/bin:/bin\n")
+        return 0
     if argv[:2] == ["--user", "show"]:
         unit = argv[2]
         names = [argv[index + 1] for index, item in enumerate(argv) if item == "-p"]
         if unit == "kza-voice.service":
             values = show_properties(parse_dropins(unit_dropins(Path(config["unit_dir"])), config["base"]))
             values["ActiveState"] = (state / "active_state").read_text().strip()
+            values["LoadState"] = "loaded"
         else:
-            values = {"TimeoutStopUSec": "1min 30s", "ActiveState": "active"}
+            # U3b-0c P14 (review r2 N4) shows each named unit even when unlisted: only kza-voice exists here.
+            values = {"TimeoutStopUSec": "1min 30s", "ActiveState": "active", "LoadState": "not-found"}
         for name in names:
             sys.stdout.write(f"{name}={values.get(name, '')}\n")
+        return 0
+    if argv[:3] == ["--user", "cat", "kza-voice.service"]:
+        # P14 reads the unit text for the stream fallback: the fake's drop-ins (the unit file is a dict).
+        sys.stdout.write("# kza-voice.service (fake)\n[Service]\n" + "".join(unit_dropins(Path(config["unit_dir"]))))
         return 0
     sys.stderr.write("fake systemctl: unsupported " + " ".join(argv) + "\n")
     return 2

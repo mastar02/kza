@@ -10,7 +10,7 @@ tracked managed.conf template against a systemctl shim. The fake supervisor
 rehearsal-only --child-command and --boot-id-file arguments appended. The
 child is tests/mocks/launcher_child.py on the slot's compiled modules.
 
-T-C5 (compaction verification run) waits for unit 0c and is not here.
+T-C5 (the compaction verification run) is in test_compiled_owner_compaction.py (U3b-0c).
 """
 
 import json

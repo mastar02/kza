@@ -301,7 +301,7 @@ Desde R1 (con U3b-0d4a), la comprobación de resurrección mira cada almacén ma
 
 Rollback no gestionado: hasta DÍA 0 + 14 × 24 h, contado desde el primer cierre limpio gestionado, sólo a 63ea8d3 con decisión registrada y la frase 'revivir datos borrados'. Después del retiro no hay rollback no gestionado: sólo se avanza con una release gestionada, y `/home/kza/kza` no es un destino de rollback (Q3 = A).
 
-Consecuencia: si una persona pide «olvidá mi voz» u «olvidá esto», su perfil de voz o su recuerdo desaparece del estado activo, pero sigue en cada slot anterior y en cada copia hasta que esa copia se destruya. Con la compactación (U3b-0c, en diseño; requiere antes la unidad del lanzador gestionado), esas copias se destruyen al compactar. Mientras tanto pueden ser hasta 5 slots anteriores si se compacta al llegar a 6 dueños. El borrado de la compactación es sólo unlink: no sobrescribe. Las copias fuera de la raíz no las alcanza ningún mecanismo actual.
+Consecuencia: si una persona pide «olvidá mi voz» u «olvidá esto», su perfil de voz o su recuerdo desaparece del estado activo, pero sigue en cada slot anterior y en cada copia hasta que esa copia se destruya. Con la compactación (U3b-0c, desarrollada y no ejecutada; ver «Compactación de estados dueños (U3b-0c)»), esas copias se destruyen al compactar. Mientras tanto pueden ser hasta 5 slots anteriores si se compacta al llegar a 6 dueños. El borrado de la compactación es sólo unlink: no sobrescribe. Las copias fuera de la raíz no las alcanza ningún mecanismo actual.
 
 Hasta que exista una herramienta, retirar a mano una copia vieja requiere una decisión explícita del usuario. Nunca borres el estado del slot activo ni el de un dueño que el head todavía necesita (ver «Todo estado dueño debe quedar intacto»).
 
@@ -805,6 +805,120 @@ controlador anterior a la época 2. Un rollback gestionado puede volver a slots
 anteriores, pero no el controlador por debajo de la época 2.
 
 Evidencia: `data/autonomous-roadmap-20261102/t040-t041/u3b-0e5-evidence.json`
+(local, fuera de Git).
+
+### Compactación de estados dueños (U3b-0c) — desarrollada, no ejecutada
+
+Estado: `stage_runtime compact` está en la rama de desarrollo (U3b-0c), probado
+en raíces de prueba, con ensayos compilados y con el systemd de usuario real
+de `yo` para el escaneo de unidades. Nunca corrió sobre `/home/kza/releases`.
+Pasos, fallos y códigos: [runbook](../runbooks/2026-11-14-owner-compaction.md).
+
+Qué cambia en el hueco de privacidad de arriba: el operador puede compactar la
+raíz gestionada a un estado nuevo K (copia idéntica del head con las rutas
+reubicadas en K) y, después de una corrida gestionada limpia de K, destruir
+todas las demás copias que el controlador prueba haber creado: slots
+gestionados anteriores (dueños o no), slots preparados y nunca activados,
+copias del catálogo dentro de la raíz (también las que estén bajo `backups/`,
+decisión D3 = A) y restos de `prepare` y `activate`. Un slot es miembro sólo
+si contiene exactamente `runtime/` y `state/` con el `state/` del plan, y su
+`runtime/` sólo los archivos de su `release.json` y los enlaces `config`,
+`data`, `.env`; una copia del catálogo, sólo si cada entrada de primer nivel
+está en sus extents o en el inventario de su preparación. Si no, queda entera
+en la lista intacta (`unexpected_entries`, con los nombres). Un slot probado
+sólo por un registro de staging se destruye únicamente con
+`--retire-prepare-leftovers`. Los enlaces de los restos de `prepare` y
+`activate` se borran como enlaces, sin seguirlos. Los miembros se destruyen
+enteros. Con
+eso, una conversación, un recuerdo o un perfil de voz borrados en el head
+dejan de existir también en esas copias. La recomendación aparece en la salida
+de `delegate` y de `compact plan` (al llegar a 6 dueños, o cuando el registro
+de borrados del head muestra borrados pedidos que siguen vivos en un estado
+retenido).
+
+Límites que siguen valiendo (decisiones P5 = C y Q4):
+
+- Sólo `unlink`: no se sobrescribe ni se corre `fstrim`. Los bloques liberados
+  quedan en el disco hasta que se reutilicen; es un borrado lógico.
+- VACUUM sólo sobre K. Las páginas libres de `chroma.sqlite3` de K pueden
+  conservar residuos (opaco al SDK).
+- No toca nada fuera de `/home/kza/releases` (`/home/kza/kza`, respaldos
+  externos, snapshots del disco) ni nada dentro de la raíz sin prueba
+  positiva: `backups/` (salvo los snapshots que el controlador catalogó; los
+  respaldos del 2026-10-29 y el resto quedan intactos), `logs/`,
+  `deployments/`, `dashboard-proxy/`, `controller/`, archivos de release, el
+  contenedor de enlaces de 63ea8d3, el slot de b0866e8 (lo retira Q5), slots
+  con entradas hechas a mano y restos `.prepare-*` sin registro. Una copia
+  del catálogo fuera de la raíz impide compactar mientras exista; borrarla o
+  no es decisión del usuario.
+- El retiro recalcula el plan (una entrada nueva en la raíz rechaza, y un
+  miembro movido o borrado después del plan rechaza
+  `compaction_member_missing`; aceptarlo con `--accept-missing` lo deja fuera
+  sin lápida ni registro de copia retirada: nada dice que se destruyó) y mide
+  la cobertura contra H: lo que la corrida de K borró se cuenta aparte y no
+  bloquea; datos nuevos sólo en miembros exigen reconocer el digest de la
+  cobertura del retiro.
+- El escaneo de unidades (P14) cubre las unidades nombradas donde estén, las
+  enlazadas con `systemctl --user link`, las plantillas de los directorios del
+  usuario (con líneas de continuación unidas, `$VAR` sustituidas desde el
+  entorno del gestor, su `Environment=` y su `EnvironmentFile=`, que gana como
+  en systemd) y los valores de `show-environment`, también los que systemd
+  imprime como `$'...'`. En plantillas y entorno del gestor la regla es de
+  subcadena: la raíz o un miembro en cualquier lugar del texto o de un valor
+  rechaza, y cada trozo de ruta (cortado en espacios, caracteres del shell,
+  `=`, `,` y `:`, así que vale dentro de `sh -c` y de listas) se juzga por la
+  parte fija antes de `%i` o de un `$VAR` sin valor; un trozo que no se puede
+  ubicar, o cualquier variable en el guion de un `sh -c`, rechaza salvo la
+  tolerancia de U3b-0e4. En toda unidad un valor se corta también en `,` y en
+  cada `=` (`podman --mount type=bind,src=<miembro>`). Una unidad es «de
+  kza» por su nombre `kza*` o por una ruta de kza (`~/kza`, `~kza/kza`,
+  `%h/…`, `$HOME/…`, `"$HOME"/…`, `${HOME:-…}/…`, la ruta absoluta aun con
+  `//` o `/./`, un enlace del home como `/home/kza/app`, o un `kza` relativo
+  desde el home); un `kza` dentro de otra ruta no cuenta. Igual en U3b-0e4.
+- Una copia del catálogo en preparación con su proceso vivo (mismo pid y
+  arrancado antes de la reserva) impide compactar
+  (`compaction_copy_in_progress`); una abandonada aparece en el plan y nunca
+  bloquea.
+- Un abort también acepta un miembro propio que falta, o K movido a mano
+  después de construirlo (`--member n --accept-missing`, sin lápida; K
+  aceptado sigue donde quedó y es una copia completa de H). Sólo `walked`
+  (registrado con la cuarentena vacía) prueba un borrado: `retiring` o
+  `renamed` sin `walked` y el miembro fuera de su lugar rechaza
+  `member_missing`. Un miembro aceptado que vuelve a su ruta rechaza
+  `compaction_accepted_member_back` con número y ruta; no se borra solo. Si una re-comprobación tras una corrida de K detrás del abort
+  rechaza `abort_revives`, el servicio queda detenido con H y K' intactos y la
+  salida es un controlador corregido que siga desde K' (D4); el runbook lo
+  detalla.
+- Rollback: después de `complete` los slots anteriores ya no existen; sólo se
+  avanza con una release gestionada. Antes de la verificación, `compact abort`
+  vuelve a H. Después, `compact abort --to-h` vuelve a H sólo si durante la
+  corrida de K no hubo borrados (Q6).
+
+Compatibilidad: la época del controlador sube a 3. Mientras haya una
+compactación pendiente, cualquier entrada al controlador que no sea `compact`
+(prepare, activate, run, delegate, adopción) rechaza con
+`runtime_admission_compaction_pending`, y serve sólo deja pasar la corrida de
+verificación armada o las corridas de un `allow-run` vigente; desde que
+empieza un abort o un retiro, ninguna (`compaction_abort_pending`,
+`compaction_retire_in_progress`). Si el head cambió igual después de
+`abort_started`, el abort exige repetir Q6 con `--to-h` antes de seguir
+(`compaction_abort_recheck_required`), y un abort o retiro reanudado termina
+cada miembro por su identidad registrada, sin registrar el final mientras
+quede algo en la cuarentena.
+`install-controller` (época 3 o posterior, nunca menor que la instalada) sí
+entra, también con un log inválido: es la salida de una compactación trabada
+(D4 = A). La recuperación automática R-b queda apagada mientras tanto. No
+reinicies el servidor durante una compactación.
+
+Épocas (D1 = A): R1 se construye desde un árbol que ya contiene U3b-0c, así
+que ningún controlador de época 2 vive en la raíz gestionada; la adopción
+exige `controller_epoch == 3`. Una copia vieja de `stage_runtime` (en un slot o
+en `controller/<commit>`) puede correrse directamente y no conoce la
+compuerta: sólo se usa `controller/current`. Desde la época 3, la entrada al
+controlador y `prepare` rechazan cuando la época instalada es mayor que la
+propia.
+
+Evidencia: `data/autonomous-roadmap-20261102/t040-t041/u3b-0c-evidence.json`
 (local, fuera de Git).
 
 ## Limpieza del checkout anterior — pendiente

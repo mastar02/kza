@@ -808,10 +808,38 @@ Pruebas en el server: el usuario autorizó correrlas allí como `yo` y detener s
 - Revisión independiente: aceptada con arreglos (F1–F7, F11 corregidos).
 - Suite completa en `440617e`, en la Mac y en el server: verde sin fallas (`u3b/full-0e4/RESULT.md`). En el server, la parte de integración ahora va en tres tandas.
 
+`U3b-0c` (rama `u3b-0c`, sobre `b3cbcd0`, sin publicar): compactación de estados dueños, la última unidad antes de R1. Runbook: [2026-11-14-owner-compaction](2026-11-14-owner-compaction.md); sección nueva en DEPLOYMENT.
+- `stage_runtime compact plan|start|verify|retire|resume|abort|allow-run|status`. El estado nuevo K es una copia idéntica del head con las rutas reubicadas; tras una corrida gestionada limpia de K se destruyen con `unlink` sólo las copias con prueba positiva. Lo demás queda intacto y se reconoce por digest.
+- Época del controlador 3; compuerta en la entrada del controlador y en `prepare`; serve deja pasar sólo la corrida armada o un `allow-run`; R-b automático apagado mientras haya compactación pendiente; head manual nuevo `compaction_return`.
+- La fase de datos corre en un proceso aparte con su capacidad G1 (`KZA_COMPACTION_WORKER=1`).
+- P14 en el server con el systemd de usuario real de `yo` encontró un hueco: una unidad deshabilitada e inactiva no aparecía en el listado del diseño (E2). Ahora se listan todos los estados.
+- Mutantes: los 31 del diseño (v2, v4, v5), todos muertos, cada uno en su copia.
+- Huecos registrados en `t040-t041/u3b-0c-evidence.json`: sin corpus de reloj envejecido completo; canarios no en cada familia de datos; G2 medido con 20 000 filas, no 1 000 000; `compact verify --wait` no implementado.
+- Revisión independiente (`t040-t041/u3b-0c-independent-review.json`): «arreglar antes de producción». Decisiones `u3b_0c_review` D1–D4 = A. Corregido en la misma rama:
+  - F1/F2: un corte entre el CAS de retorno y `returned`, o entre el `rename` de K y su registro de `prepare`, ya no traba la raíz (registro de retorno y registro de staging como prueba; `current` se vuelve a publicar hacia H). Inyección de cortes en cada borde de `abort` y de C2a.
+  - F3/D4: `install-controller` (época ≥ 3) entra con una compactación pendiente o un log inválido; `compact status` informa un log ilegible con su código; sección «Compactación trabada» en el runbook.
+  - F4: una corrida armada que falló antes del CAS de `begin_run` se puede abortar; `allow-run` rechaza `not_verified`.
+  - F5/D2: el retiro mide la cobertura contra H; lo que borró la corrida de K cuenta como `removed_by_k_run` y no bloquea; datos nuevos exigen `retire --accept-owner-only-loss <coverage_sha256>`.
+  - F6/F7: un slot es miembro sólo con exactamente `runtime/` y `state/`, y con el `state/` del plan; el retiro recalcula el plan y rechaza `plan_changed`.
+  - F8/D1: comprobación de época hacia adelante en la entrada del controlador y en `prepare`; R1 se construye con U3b-0c (época 3).
+  - F9: P14 resuelve `$VAR` con `show-environment`. Una referencia sin resolver sigue la regla de U3b-0e4 (`mentions_markers`, compartida): se tolera sólo en unidades no nombradas que no mencionan kza, un miembro ni la raíz (pasan IBus, podman y unity de la cuenta `kza`); `compact plan/start --unit` nombra más unidades. F10/D3 y F11 documentados. F12: rechazos con código en vez de tracebacks.
+  - Huecos de la revisión cerrados: T-U10 (un borrado pendiente en H sobre un target heredado lo ejecuta la corrida de K sobre la copia reubicada) y mantenimiento K' vs H (el barrido TTL encuentra el clip reubicado).
+- Segunda revisión independiente (`t040-t041/u3b-0c-independent-review-r2.json`, sobre `467cf02`): «arreglar antes de producción», N1–N10. Corregido en la misma rama, cada uno con prueba y mutante (sus sondas son ahora `test_stage_runtime_compaction_review_r2.py` y pruebas de P14):
+  - N1: serve rechaza desde `abort_started` (`abort_pending`) y `retire_started` (`retire_in_progress`); si el head cambió después de `abort_started`, `abort --to-h` vuelve a aplicar Q6 y el descarte (`abort_rechecked`), y `resume` rechaza `abort_recheck_required`.
+  - N2/N9: números estables por evento (K con número fijo) y placeholder reservado antes del `mkdir`; un abort reanudado termina lo que quedó en la cuarentena y no registra `aborted`/`complete` con residuos.
+  - N3: los enlaces de restos `.activate-*`/`.prepare-*` se borran como enlaces. N8: un miembro movido tras el plan rechaza `member_missing` (`--accept-missing`: sin lápida). N7: contenido probado de copias del catálogo y de `runtime/`; slot con sólo prueba de staging requiere `--retire-prepare-leftovers`. N10: copia en preparación con dueño vivo rechaza; abandonada se lista.
+  - N4/N5/N6 (P14): unidades nombradas siempre, enlazadas y plantillas de los directorios del usuario; valores de `show-environment`; marcas de home con prefijo (también en 0e4). systemd 255 real en el server: una unidad enlazada informa el symlink de `~/.config/systemd/user` como FragmentPath; `show` de una plantilla falla, y una instancia sin cargar no aparece en `list-units`.
+- Tercera revisión (`t040-t041/u3b-0c-independent-review-r3.json`, sobre `f9f101f`): «arreglar primero», N1–N10 confirmados cerrados. Corregido, con prueba y mutante por hallazgo (sondas en `test_stage_runtime_compaction_review_r3.py`, `test_compaction_units.py`, `test_adoption_commands.py`):
+  - R3-1: `compact abort <id> --member n --accept-missing` (sin lápida). R3-4: evento `renamed` después del `rename`; `retiring` solo no prueba un borrado.
+  - R3-2: plantillas con continuaciones, `$HOME`/`${HOME}`, `Environment=`/`EnvironmentFile=` y palabras no juzgables (rechazo salvo tolerancia 0e4). R3-6: valores `$'...'` decodificados. R3-5: `kza*`, `~kza/`, `"$HOME"/`, relativo desde el home (también 0e4). R3-3: dueño de copia por pid y hora de arranque. R3-7: runbook, salida de `abort_revives`.
+- Cuarta revisión (`t040-t041/u3b-0c-independent-review-r4.json`, sobre `aed3b6b`): «arreglar primero» (R4-1 y R4-2 requeridos; con ellos, lista para R1). Corregido, con prueba y mutante por hallazgo (sondas en `test_stage_runtime_compaction_review_r4.py`, `test_compaction_units.py`, `test_adoption_commands.py`, caso (i) de `test_linux_compaction_units.py`):
+  - R4-1/R4-3/R4-4: regla de subcadena en plantillas y entorno del gestor (raíz o miembro en cualquier lugar; trozos cortados en caracteres del shell, `=`, `,`, `:` y juzgados por su parte fija); `EnvironmentFile=` gana sobre `Environment=` y sus valores se comprueban; variable en un `sh -c` de una plantilla de kza rechaza; `check_value` corta en `,` y en cada `=`.
+  - R4-2: K movido a mano tras construirlo rechaza `member_missing` y se acepta con `--member n --accept-missing`. R4-6: evento `walked` (con la cuarentena vacía) es la única prueba de borrado; un aceptado que vuelve rechaza `accepted_member_back`. R4-5: enlace del home (`/home/kza/app`), `//`, `/./`, `${HOME:-…}`, `WorkingDirectory="%h"`. R4-7: `ps` en UTC en el Mac. Runbook: contradicción sobre `$'...'` corregida.
+
 Siguiente:
 - Los seguimientos F4/F5/F10 y el presupuesto de cierre del coordinador de borrados.
-- U3b-0c: compactación.
-- F8.
+- La suite batch (incluidos los archivos de presupuesto de tiempo) sobre la rama corregida.
+- Medir el tiempo de compactación una vez sobre una copia del estado de producción antes de la primera corrida real (recomendado por la revisión).
 
 `U3b-0e5` (rama `u3b-0e5`, sobre la cabeza de 0e3): preparación de P7.
 - `retire-legacy-state` (Q5) borra el estado congelado de b0866e8 y sus diez copias SQLite del 2026-10-29 (`backups/<63ea8d3>/databases`, Q2 = A), y saca 63ea8d3 y b0866e8 de L4 con un registro inmutable. Se escribe una intención antes del primer borrado, para que un corte se complete repitiendo el comando. Rechaza si L4 se usó desde la adopción.
