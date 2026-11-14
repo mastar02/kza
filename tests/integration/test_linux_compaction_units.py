@@ -18,6 +18,14 @@ and always removed afterwards:
 (e) no user bus (XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS removed from
     the environment ServiceManager builds from os.environ) ->
     scan_unavailable, never an empty listing.
+(f) review r2 N4: a unit linked into the runtime unit directory from a file
+    outside every unit directory (what ``systemctl --user link --runtime``
+    makes), naming the member -> unit_path; its real FragmentPath and unit
+    file state are recorded;
+(g) review r2 N4: a template ``<prefix>-tpl@.service`` with no instance
+    loaded, whose ExecStart is ``<root>/slots/%i/state`` -> unit_path on the
+    template; the same template writing under /tmp passes and is reported in
+    ``templates_scanned``.
 
 The scan reads every unit of this account in the user unit directories; a
 refusal in (b) that names another unit is a real finding about this
@@ -146,3 +154,38 @@ def test_without_a_user_bus_the_scan_is_unavailable(systemd, layout):
     RESULTS.append({"case": "e_no_bus", "code": code, "first_exit": calls[0]["exit"] if calls else None})
     assert code == UNAVAILABLE
     assert calls and calls[0]["exit"] != 0
+
+
+def test_a_linked_unit_from_outside_the_unit_directories_is_scanned(systemd, layout, tmp_path):
+    _root, member, _members = layout
+    name = systemd.name("linked")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / name
+    target.write_text(_service("A=1", "/bin/true", f"WorkingDirectory={member}\n"))
+    (systemd.unit_dir / name).symlink_to(target)
+    systemd.reload()
+    shown = systemd.raw_show(name, "FragmentPath", "UnitFileState", "LoadState")
+    code = _refusal(systemd, layout)
+    RESULTS.append({"case": "f_linked_unit", "code": code, "load_state": shown["LoadState"],
+                    "unit_file_state": shown["UnitFileState"],
+                    "fragment_is_link": shown["FragmentPath"] == str(systemd.unit_dir / name),
+                    "fragment_is_target": shown["FragmentPath"] == str(target)})
+    assert code == PATH_HIT + name
+
+
+def test_a_template_without_instances_is_scanned_by_its_fixed_part(systemd, layout):
+    root, _member, _members = layout
+    name = f"{systemd.prefix}-tpl@.service"
+    systemd.write_unit(name, _service("A=1", f"/bin/true {root}/slots/%i/state"))
+    systemd.reload()
+    listed = name in " ".join(systemd.list_unit_files())
+    code = _refusal(systemd, layout)
+    RESULTS.append({"case": "g_template_under_root", "code": code, "listed_by_list_unit_files": listed})
+    assert code == PATH_HIT + name
+    systemd.write_unit(name, _service("A=1", "/bin/true /tmp/%i.out"))
+    systemd.reload()
+    report = _scan(systemd, layout)
+    RESULTS.append({"case": "g_template_elsewhere", "templates": [unit for unit in report["templates_scanned"]
+                                                                   if unit.startswith(systemd.prefix)]})
+    assert name in report["templates_scanned"]

@@ -169,7 +169,7 @@ def test_the_rendered_managed_conf_passes(layout):
     report = run_scan(layout, found, extra=(conf,))
     assert report == {"units_scanned": 3, "unit_names": ["kza-console-rotate.service", "kza-console-rotate.timer",
                                                          "kza-voice.service"], "logrotate_files": 1,
-                      "tolerated_unresolved": []}
+                      "tolerated_unresolved": [], "templates_scanned": []}
 
 
 def test_a_variable_from_environment_naming_a_member_is_a_path_hit(layout):
@@ -196,15 +196,16 @@ def test_substitution_is_applied_not_refused(layout):
 @pytest.mark.parametrize("argv", [("/bin/tool", "${Y}/x"), ("/bin/tool", "--root", "$Y"),
                                   ("/bin/tool", "--config=$Y"), ("/bin/tool", "/var/log/%Y.log")])
 def test_an_unresolved_reference_in_a_path_token_is_unparsed(layout, argv):
+    # Named: a unit's own name is not a kza path (review r2 N6), so only naming it keeps it strict.
     found = ours(layout, "kza-tool.service", ExecStart=exec_value(*argv))
-    assert refused(layout, found) == UNPARSED + "kza-tool.service:ExecStart"
+    assert refused(layout, found, named=("kza-tool.service",)) == UNPARSED + "kza-tool.service:ExecStart"
 
 
 @pytest.mark.parametrize("token", ["$Y", "${Z}"])
 def test_an_unresolved_bare_reference_is_unparsed(layout, token):
     """Review F9: '/usr/bin/rsync -a $SRC /elsewhere' could reach a member through the variable."""
     found = ours(layout, "kza-tool.service", ExecStartPre=exec_value("/usr/bin/rsync", "-a", token, "/srv/x"))
-    assert refused(layout, found) == UNPARSED + "kza-tool.service:ExecStartPre"
+    assert refused(layout, found, named=("kza-tool.service",)) == UNPARSED + "kza-tool.service:ExecStartPre"
 
 
 def test_a_plain_specifier_and_systemd_provided_variables_pass(layout):
@@ -214,23 +215,38 @@ def test_a_plain_specifier_and_systemd_provided_variables_pass(layout):
 
 
 def test_a_manager_environment_variable_naming_a_member_is_a_path_hit(layout):
-    """Review F9: set-environment / the session import reach $VAR substitution too."""
+    """Review F9 / r2 N5: set-environment / the session import name a member: refused as the block."""
     found = ours(layout, "kza-tool.service", ExecStart=exec_value("/usr/bin/cp", "-r", "${KZA_MEMBER}", "/srv/x"))
     hit = {"HOME": str(layout.home), "KZA_MEMBER": str(layout.member)}
-    assert refused(layout, found, manager_environment=hit) == PATH_HIT + "kza-tool.service"
+    assert refused(layout, found, manager_environment=hit) == PATH_HIT + "show-environment"
     elsewhere = {"HOME": str(layout.home), "KZA_MEMBER": str(layout.home / "elsewhere")}
     assert run_scan(layout, found, manager_environment=elsewhere)["units_scanned"] == 1
 
 
-def test_the_unit_environment_overrides_the_manager_environment(layout):
-    found = ours(layout, "kza-tool.service", Environment=f"X={layout.home}",
-                 ExecStart=exec_value("/bin/tool", "$X"))
-    assert run_scan(layout, found, manager_environment={"X": str(layout.member)})["units_scanned"] == 1
+def test_a_resolved_manager_reference_is_checked_where_the_unit_uses_it(layout):
+    """A manager value outside every member, made a member path by the unit's own suffix."""
+    found = ours(layout, "kza-tool.service", ExecStart=exec_value("/usr/bin/cp", "-r", "${BASE}/slots/m1", "/srv/x"))
+    assert refused(layout, found, manager_environment={"BASE": str(layout.root)}) == PATH_HIT + "kza-tool.service"
+
+
+@pytest.mark.parametrize("how", ["dollar_dollar", "program_reads_it", "unit_overrides_it"])
+def test_a_manager_environment_value_naming_a_member_refuses_whoever_reads_it(layout, how):
+    """Review r2 N5 (probe_p14): '$${KZA_STATE}' (a shell reads it) or a program reading the variable
+    itself never shows the value in unit text; the value is held to the unit Environment= rule."""
+    argv = {"dollar_dollar": ("/bin/sh", "-c", "cp", "-a", "$${KZA_STATE}", "/tmp/export"),
+            "program_reads_it": ("/usr/bin/python3", "/opt/tool/export.py"),
+            "unit_overrides_it": ("/bin/tool", "$KZA_STATE")}[how]
+    props = {"Environment": f"KZA_STATE={layout.home}"} if how == "unit_overrides_it" else {}
+    found = ours(layout, "kza-export.service", ExecStart=exec_value(*argv), **props)
+    environment = {"HOME": str(layout.home), "PATH": "/usr/bin", "KZA_STATE": str(layout.member / "state")}
+    assert refused(layout, found, manager_environment=environment) == PATH_HIT + "show-environment"
+    environment["KZA_STATE"] = str(layout.home / "export")
+    assert run_scan(layout, found, manager_environment=environment)["unit_names"] == ["kza-export.service"]
 
 
 def test_an_escaped_manager_value_stays_unresolved(layout):
     found = ours(layout, "kza-tool.service", ExecStart=exec_value("/bin/tool", "$Q"))
-    assert refused(layout, found, manager_environment={"Q": "$'a\\nb'"}) == \
+    assert refused(layout, found, manager_environment={"Q": "$'a\\nb'"}, named=("kza-tool.service",)) == \
         UNPARSED + "kza-tool.service:ExecStart"
 
 
@@ -336,7 +352,13 @@ def test_the_five_stock_units_pass_under_the_0e4_rule(layout, podman_environment
 def test_a_named_unit_with_an_unresolved_reference_still_refuses(layout, name):
     found = {name: unit(str(layout.user_dir / name), loaded=True, cat="[Service]\nExecStart=/bin/tool $Y\n",
                         ExecStart=exec_value("/bin/tool", "$Y"))}
-    assert refused(layout, found, named=("listed-by-operator.service",)) == UNPARSED + name + ":ExecStart"
+    named = ("listed-by-operator.service",) if name == "listed-by-operator.service" else ()
+    assert refused(layout, found, named=named) == UNPARSED + name + ":ExecStart"
+
+
+def test_a_unit_the_operator_names_must_exist(layout):
+    """Review r2 N4: '--unit' with a name the manager does not know (a typo) is not a pass."""
+    assert refused(layout, {}, named=("kza-typo.service",)) == UNPARSED + "kza-typo.service:LoadState"
 
 
 @pytest.mark.parametrize("where", ["text_member", "text_root", "environment_root", "text_kza_home"])
@@ -470,12 +492,11 @@ def test_generated_and_static_units_are_scanned_and_vendor_units_are_not(layout)
     assert refused(layout, static) == PATH_HIT + "kza-helper.service"
     vendor = {"vendor.service": unit("/usr/lib/systemd/user/vendor.service", state="static",
                                      WorkingDirectory=str(layout.member)),
-              "worker@.service": unit(str(layout.user_dir / "worker@.service"),
-                                      WorkingDirectory=str(layout.member))}
+              "worker@.service": unit("/usr/lib/systemd/user/worker@.service", WorkingDirectory=str(layout.member))}
     manager = FakeUserManager(vendor)
     report = units_module.scan_units(units_module.strict_systemctl(manager), root=layout.root,
                                      members=layout.members, home=layout.home, uid=UID, environ={})
-    assert report["unit_names"] == []
+    assert report["unit_names"] == [] and report["templates_scanned"] == []
     assert not [call for call in manager.calls if "worker@.service" in call]
 
 
@@ -484,6 +505,101 @@ def test_a_disabled_inactive_unit_naming_a_member_is_scanned(layout):
     disabled = ours(layout, "kza-voice.service", state="disabled", loaded=False,
                     ReadOnlyPaths=str(layout.member / "state" / "logs"))
     assert refused(layout, disabled) == PATH_HIT + "kza-voice.service"
+
+
+# --- review r2 N4: linked units and templates (probe_p14) --------------------------------------------
+
+def test_a_linked_named_unit_is_scanned_wherever_its_file_is(layout):
+    """N4a: kza-voice linked from the legacy checkout; a manager that reports the link target as
+    FragmentPath (systemd 255 reports the symlink: both are covered) still has it scanned."""
+    legacy = layout.home / "kza" / "systemd"
+    found = {"kza-voice.service": unit(str(legacy / "kza-voice.service"), state="linked", loaded=True,
+                                       WorkingDirectory=str(layout.member / "runtime"))}
+    assert refused(layout, found) == PATH_HIT + "kza-voice.service"
+    # Named but not linked (installed elsewhere by hand): still scanned, since it is named.
+    found["kza-voice.service"]["state"] = "disabled"
+    assert refused(layout, found) == PATH_HIT + "kza-voice.service"
+
+
+def test_a_linked_or_symlinked_unit_nobody_named_is_scanned(layout):
+    linked = {"helper.service": unit("/opt/helper/helper.service", state="linked",
+                                     WorkingDirectory=str(layout.member))}
+    assert refused(layout, linked) == PATH_HIT + "helper.service"
+    (layout.user_dir / "other.service").symlink_to("/opt/other/other.service")
+    found = {"other.service": unit("/opt/other/other.service", state="enabled",
+                                   WorkingDirectory=str(layout.member))}
+    assert refused(layout, found) == PATH_HIT + "other.service"
+
+
+def _template(layout, name: str, exec_start: str, *, where: Path | None = None) -> dict:
+    path = (where or layout.user_dir) / name
+    path.write_text(f"[Service]\nType=oneshot\nExecStart={exec_start}\n")
+    return {name: unit(str(path), state="static", cat=f"# {path}\n{path.read_text()}")}
+
+
+def test_a_template_naming_a_member_is_scanned_before_any_instance_exists(layout):
+    """N4b: kza-backup@.service in the user unit directory, no instance loaded (list-units does not list it)."""
+    found = _template(layout, "kza-backup@.service", f"/usr/bin/tar czf /tmp/%i.tgz {layout.member}/state")
+    assert refused(layout, found) == PATH_HIT + "kza-backup@.service"
+
+
+@pytest.mark.parametrize("argument", ["{root}/slots/%i", "%h/../releases/%i", "{root}/%i", "{base}/%i",
+                                      "--state={root}/slots/%i/state", "'{root}/slots/%i'"])
+def test_a_template_whose_instance_can_land_under_the_root_refuses(layout, argument):
+    argument = argument.format(root=layout.root, base=layout.base)
+    found = _template(layout, "kza-copy@.service", "/usr/bin/cp -a " + argument + " /srv/x")
+    assert refused(layout, found) == PATH_HIT + "kza-copy@.service"
+
+
+def test_a_template_elsewhere_passes_and_is_reported(layout):
+    found = _template(layout, "kza-backup@.service", "/usr/bin/tar czf %t/%i.tgz /srv/data/%i 100%%")
+    report = run_scan(layout, found)
+    assert report["templates_scanned"] == ["kza-backup@.service"] and report["unit_names"] == []
+
+
+def test_a_vendor_template_with_a_user_drop_in_is_scanned(layout):
+    dropin = layout.user_dir / "worker@.service.d"
+    dropin.mkdir()
+    (dropin / "x.conf").write_text(f"[Service]\nWorkingDirectory={layout.member}\n")
+    found = {"worker@.service": unit("/usr/lib/systemd/user/worker@.service", cat=(
+        f"# /usr/lib/systemd/user/worker@.service\n[Service]\nExecStart=/bin/true\n"
+        f"# {dropin / 'x.conf'}\n[Service]\nWorkingDirectory={layout.member}\n"))}
+    assert refused(layout, found) == PATH_HIT + "worker@.service"
+
+
+def test_a_loaded_instance_of_a_linked_template_is_scanned(layout):
+    found = {"kza-run@.service": unit("/opt/kza-run@.service", state="linked"),
+             "kza-run@x.service": unit("/opt/kza-run@.service", state=None, loaded=True,
+                                       WorkingDirectory=str(layout.member))}
+    assert refused(layout, found) == PATH_HIT + "kza-run@x.service"
+
+
+# --- review r2 N6: a home whose path contains 'kza' --------------------------------------------------
+
+def test_a_stock_unit_with_a_drop_in_under_a_kza_home_stays_lenient(tmp_path, monkeypatch):
+    """With HOME=/home/kza a bare 'kza' marker matched every drop-in under that home (probe_p14 N6)."""
+    base = tmp_path.resolve()
+    home = base / "home" / "kza"
+    monkeypatch.setenv("HOME", str(home))
+    root = home / "releases"
+    member = root / "slots" / "a"
+    (member / "state").mkdir(parents=True)
+    user_dir = home / ".config" / "systemd" / "user"
+    user_dir.mkdir(parents=True)
+    info = member.stat()
+    layout = SimpleNamespace(base=base, root=root, member=member, home=home, user_dir=user_dir,
+                             members=[{"path": str(member), "identity": {"device": info.st_dev,
+                                                                         "inode": info.st_ino}}])
+    found = _stock_units(layout)
+    report = run_scan(layout, found, manager_environment=dict(KZA_MANAGER, HOME=str(home)))
+    assert "org.freedesktop.IBus.session.generic.service" in report["tolerated_unresolved"]
+    # The same unit naming the account's checkout or root through '~' or '%h' is still kza's.
+    for mention in ("~/kza/systemd", "%h/releases/logs", "$HOME/kza", str(home / "kza")):
+        name = "org.freedesktop.IBus.session.generic.service"
+        found[name]["cat"] += f"# {mention}\n"
+        assert refused(layout, found, manager_environment=dict(KZA_MANAGER, HOME=str(home))) == \
+            UNPARSED + name + ":ExecStart"
+        found = _stock_units(layout)
 
 
 def test_a_vendor_unit_with_a_user_drop_in_is_scanned(layout):

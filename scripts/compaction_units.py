@@ -160,6 +160,30 @@ def _template(unit: str) -> bool:
     return re.search(r"@\.[a-z]+$", unit) is not None
 
 
+def _template_of(unit: str) -> str | None:
+    """``name@instance.type`` -> ``name@.type`` (None for a unit that is not an instance)."""
+    match = re.fullmatch(r"(.+@)[^@]+(\.[a-z]+)", unit)
+    return match.group(1) + match.group(2) if match and not _template(unit) else None
+
+
+def _listed_states(output: str) -> dict[str, str]:
+    """list-unit-files output as name -> unit file state (linked, static, enabled, ...)."""
+    states = {}
+    for line in output.splitlines():
+        words = [word for word in line.split() if word not in ("●", "*")]
+        if len(words) >= 2:
+            states[words[0]] = words[1]
+    return states
+
+
+# Review r2 N4: a template unit in a user unit directory is read as text (systemctl show refuses a
+# template name; an instance is listed only once loaded). These keys' values are path-bearing.
+TEMPLATE_KEYS = frozenset(EXEC_PROPERTIES) | frozenset(LIST_PROPERTIES) | frozenset(BIND_PROPERTIES) | {
+    "WorkingDirectory", "RootDirectory", "Environment", "EnvironmentFile", "StandardOutput", "StandardError",
+    "StateDirectory", "LogsDirectory"}
+LINKED_STATES = frozenset({"linked", "linked-runtime"})
+
+
 def _exec_argv(unit: str, directive: str, value: str) -> list[list[str]]:
     """The argv readings of one ``show`` Exec* value, plus its ``path=``.
 
@@ -224,17 +248,21 @@ class _Scan:
                 _refuse(MEMBERS_INVALID)
             self.members += sorted({os.path.normpath(path), os.path.realpath(path)})
             self.identities.add((device, inode))
+        self.uid = uid
         self.unit_directories = self._unit_directories(uid)
         self._manager_environment: dict | None = None
         # U3b-0e4 rule (review F9 follow-up): an unresolved reference is tolerated only in a unit nobody
         # named whose text and own environment mention no kza path, no member and no root.
         self.named = frozenset({launcher.UNIT, commands.LLM_FAST_UNIT, commands.CODE_INDEX_UNIT, *named})
+        self.operator_named = frozenset(named)
+        self.states: dict[str, str] = {}
         self.markers = commands.kza_markers([os.fspath(root), os.path.join(self.home, "kza"), *self.members])
         self._texts: dict[str, str] = {}
         self.tolerated: set[str] = set()
         self.logrotate_configs: list[tuple[str, str]] = []
         self.logrotate_seen: set[str] = set()
         self.glob_entries = 0
+        self.templates: list[str] = []
 
     # --- matching (rule 5) ----------------------------------------------------------------------
 
@@ -337,11 +365,31 @@ class _Scan:
             _refuse(SCAN_UNAVAILABLE)  # an answer without the unit's load state is not an answer
         return values
 
-    def _ours(self, shown: dict[str, list[str]]) -> bool:
-        origins = [value for name in ("FragmentPath", "SourcePath") for value in shown[name] if value]
-        origins += [word for value in shown["DropInPaths"] for word in value.split()]
+    def _in_unit_directories(self, origins: list[str]) -> bool:
         return any(_within(os.path.normpath(path), directory) or _within(os.path.realpath(path), directory)
                    for path in origins if os.path.isabs(path) for directory in self.unit_directories)
+
+    def _installed_here(self, unit: str) -> bool:
+        """A unit (or an instance's template) whose name is in a user unit directory or is linked there.
+
+        Review r2 N4: ``systemctl --user link`` puts a symlink in the user
+        unit directory; whatever FragmentPath a manager then reports (systemd
+        255 reports the symlink, others the target), the unit is the account's.
+        """
+        names = {unit} | ({_template_of(unit)} - {None})
+        return any(self.states.get(name) in LINKED_STATES for name in names) or any(
+            os.path.lexists(os.path.join(directory, name)) for directory in self.unit_directories for name in names)
+
+    def _template_ours(self, unit: str) -> bool:
+        """A (vendor) template with a drop-in directory in a user unit directory: its text includes it."""
+        return any(os.path.lexists(os.path.join(directory, unit + ".d")) for directory in self.unit_directories)
+
+    def _ours(self, unit: str, shown: dict[str, list[str]]) -> bool:
+        if unit in self.named or self._installed_here(unit):
+            return True  # review r2 N4: a named unit is scanned wherever its file lives
+        origins = [value for name in ("FragmentPath", "SourcePath") for value in shown[name] if value]
+        origins += [word for value in shown["DropInPaths"] for word in value.split()]
+        return self._in_unit_directories(origins)
 
     def _origin_check(self, unit: str, shown: dict[str, list[str]]) -> None:
         """A unit file or drop-in that lives in a member (a linked unit) is a reference to it."""
@@ -531,18 +579,88 @@ class _Scan:
                     self._exec(unit, directive, value, environment, base, rooted, own)
         self._streams(unit, shown)
 
+    def _specifiers(self, word: str) -> str:
+        """The account-fixed systemd specifiers of a user unit; the others (%i, %n, ...) stay unexpanded."""
+        config = self.environ.get("XDG_CONFIG_HOME") or os.path.join(self.home, ".config")
+        state = self.environ.get("XDG_STATE_HOME") or os.path.join(self.home, ".local", "state")
+        cache = self.environ.get("XDG_CACHE_HOME") or os.path.join(self.home, ".cache")
+        runtime = self.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{self.uid}"
+        fixed = {"h": self.home, "t": runtime, "E": config, "S": state, "C": cache, "L": os.path.join(state, "log"),
+                 "T": "/tmp", "V": "/var/tmp", "U": str(self.uid), "%": "\0"}
+        return re.sub(r"%(.)", lambda match: fixed.get(match.group(1), match.group(0)), word)
+
+    def scan_template(self, unit: str) -> None:
+        """Review r2 N4: a template's path-bearing values, from its text, up to the first unexpanded part.
+
+        An instance can be started at any time with any instance name, so the
+        literal part of each word is what the template fixes: it refuses when
+        it reaches a member, or when the part after it (``%i``, ``$VAR``) could
+        land under the admission root (the literal directory is the root, under
+        it, or above it).
+        """
+        text = self.call("cat", unit)
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line[0] in "#;[":
+                continue
+            key, separator, value = line.partition("=")
+            key = key.strip()
+            if not separator or key not in TEMPLATE_KEYS:
+                continue
+            for word in value.split():
+                word = word.strip("\"'")
+                if re.match(r"-*[A-Za-z_][\w.-]*=", word):
+                    word = word.split("=", 1)[1]  # NAME=value, --option=value
+                word = word.lstrip("-@:+!")  # Exec* prefixes, ignore-missing '-'
+                for prefix in FILE_OUTPUTS:
+                    if word.startswith(prefix):
+                        word = word[len(prefix):]
+                expanded = self._specifiers(word).replace("$$", "\0")
+                literal = re.split(r"[%$]", expanded, maxsplit=1)[0].replace("\0", "%")
+                if literal == "~" or literal.startswith("~/"):
+                    literal = self.home + literal[1:]
+                if not literal.startswith("/"):
+                    continue
+                self.check_value(unit, literal, self.home)
+                if literal != expanded.replace("\0", "%"):
+                    directory = os.path.normpath(literal if literal.endswith("/") else os.path.dirname(literal))
+                    if any(_within(directory, root) or _within(root, directory) for root in self.roots):
+                        _refuse(PATH_HIT + unit)
+
+    def check_manager_environment(self) -> None:
+        """Review r2 N5: a manager environment value is held to the unit Environment= rule.
+
+        Every process of the manager inherits it, so a program (or a shell
+        reading ``$$NAME``) can use a value no unit text shows.
+        """
+        for value in self.manager_environment().values():
+            if "/" in value or value.startswith("~"):
+                self.check_value("show-environment", value, self.home)
+
     # --- the unit walk (E2) ---------------------------------------------------------------------
 
     def units(self) -> list[str]:
-        listed = _listed_names(self.call(*LIST_UNIT_FILES)) | _listed_names(self.call(*LIST_UNITS))
+        self.check_manager_environment()
+        files = self.call(*LIST_UNIT_FILES)
+        self.states = _listed_states(files)
+        listed = _listed_names(files) | _listed_names(self.call(*LIST_UNITS))
         shown: dict[str, dict[str, list[str]]] = {}
         queue = []
-        for unit in sorted(listed):
+        for unit in sorted(listed | self.named):
             if _template(unit):
-                continue  # an instance is listed (list-units --all) once it is loaded
+                # An instance is listed (list-units --all) once it is loaded; before that, the
+                # template in a user unit directory is read as text (review r2 N4).
+                if self._installed_here(unit) or self._template_ours(unit):
+                    self.scan_template(unit)
+                    self.templates.append(unit)
+                continue
             shown[unit] = self.show(unit)
+            if unit not in listed and shown[unit]["LoadState"][-1] in SKIPPED_LOAD_STATES:
+                if unit in self.operator_named:
+                    _refuse(UNPARSED + unit + ":LoadState")  # a unit the operator named must exist
+                continue
             self._origin_check(unit, shown[unit])
-            if self._ours(shown[unit]):
+            if self._ours(unit, shown[unit]):
                 queue.append(unit)
         scanned: list[str] = []
         done: set[str] = set()
@@ -765,7 +883,8 @@ def scan_units(systemctl: Callable[..., str], *, root: Path, members: list[dict]
             leniency (U3b-0e4 rule).
 
     Returns:
-        ``{"units_scanned", "unit_names", "logrotate_files", "tolerated_unresolved"}`` (content-free).
+        ``{"units_scanned", "unit_names", "logrotate_files", "tolerated_unresolved", "templates_scanned"}``
+        (content-free).
 
     Raises:
         UnitScanRefusal: scan_unavailable, unit_unparsed or unit_path.
@@ -779,7 +898,7 @@ def scan_units(systemctl: Callable[..., str], *, root: Path, members: list[dict]
     for path in extra_logrotate:
         scan.parse_logrotate(os.path.normpath(os.fspath(path)), {"olddir": None})
     report = {"units_scanned": len(names), "unit_names": names, "logrotate_files": len(scan.logrotate_seen),
-              "tolerated_unresolved": sorted(scan.tolerated)}
+              "tolerated_unresolved": sorted(scan.tolerated), "templates_scanned": sorted(scan.templates)}
     logger.info("[CompactionUnits] scanned %d units, %d logrotate files", report["units_scanned"],
                 report["logrotate_files"])
     return report

@@ -484,10 +484,16 @@ def shim_main(state_dir: str, argv: list[str]) -> int:
         if unit == "kza-voice.service":
             values = show_properties(parse_dropins(unit_dropins(Path(config["unit_dir"])), config["base"]))
             values["ActiveState"] = (state / "active_state").read_text().strip()
+            values["LoadState"] = "loaded"
         else:
-            values = {"TimeoutStopUSec": "1min 30s", "ActiveState": "active"}
+            # U3b-0c P14 (review r2 N4) shows each named unit even when unlisted: only kza-voice exists here.
+            values = {"TimeoutStopUSec": "1min 30s", "ActiveState": "active", "LoadState": "not-found"}
         for name in names:
             sys.stdout.write(f"{name}={values.get(name, '')}\n")
+        return 0
+    if argv[:3] == ["--user", "cat", "kza-voice.service"]:
+        # P14 reads the unit text for the stream fallback: the fake's drop-ins (the unit file is a dict).
+        sys.stdout.write("# kza-voice.service (fake)\n[Service]\n" + "".join(unit_dropins(Path(config["unit_dir"]))))
         return 0
     sys.stderr.write("fake systemctl: unsupported " + " ".join(argv) + "\n")
     return 2

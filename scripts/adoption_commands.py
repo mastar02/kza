@@ -657,17 +657,30 @@ def _exec_start_words(text: str | None) -> list[list[str]] | None:
         return None
 
 
+HOME_PREFIXES = ("~/", "%h/", "$HOME/", "${HOME}/")
+
+
 def kza_markers(paths) -> tuple[str, ...]:
     """What makes a unit kza's for the embedded-name leniency (review U3b-0e4 F1): the LoRA needles and
     each kza path, as given, resolved and relative to the home directory (``$HOME/kza/models`` shows
-    only ``kza/models`` in the unit text)."""
+    only ``kza/models`` in the unit text).
+
+    A home-relative form of one component (``kza``, ``releases``) is a
+    marker only behind a home prefix (``~/``, ``%h/``, ``$HOME/``,
+    ``${HOME}/``), never bare (0c review r2 N6): on an account whose home is
+    ``/home/kza`` a bare ``kza`` is in every path under that home, so a stock
+    unit with a drop-in there would count as kza's.
+    """
     home = os.path.expanduser("~").rstrip("/") + "/"
     found = list(_UNIT_NEEDLES)
     for path in paths:
         for form in {os.fspath(path), os.path.realpath(path)}:
             found.append(form)
             if form.startswith(home) and len(form) > len(home):
-                found.append(form[len(home):])
+                relative = form[len(home):].strip("/")
+                if "/" in relative:
+                    found.append(relative)
+                found += [prefix + relative for prefix in HOME_PREFIXES]
     return tuple(sorted(set(found)))
 
 

@@ -1877,6 +1877,24 @@ def test_kza_markers_include_home_relative_forms(tmp_path, monkeypatch):
     assert {"llama-server", "--lora", "lora_adapters"} <= set(markers)
 
 
+def test_kza_markers_on_a_home_named_kza_are_not_bare_components(tmp_path, monkeypatch):
+    """0c review r2 N6: with HOME=<...>/kza, a bare 'kza' or 'releases' marker is in every path under the
+    home, so a stock unit with a drop-in there counted as kza's. One-component forms need a home prefix."""
+    home = tmp_path / "home" / "kza"
+    monkeypatch.setenv("HOME", os.fspath(home))
+    markers = commands.kza_markers([home / "releases", home / "kza", home / "releases" / "slots" / "a"])
+    assert not {"kza", "releases"} & set(markers)
+    assert {"~/kza", "%h/kza", "$HOME/kza", "${HOME}/kza", "~/releases", "releases/slots/a",
+            os.fspath(home / "kza"), os.fspath(home / "releases")} <= set(markers)
+    stock = ("# /usr/lib/systemd/user/podman.service\n[Service]\nExecStart=/usr/bin/podman $LOGGING system service\n"
+             f"# {home}/.config/systemd/user/podman.service.d/override.conf\n[Service]\nNice=5\n")
+    assert not commands.mentions_markers(stock, {}, markers)
+    for mention in ("ExecStartPre=/bin/ls %h/kza\n", "Environment=X=$HOME/releases/logs\n",
+                    f"ExecStartPre=/bin/ls {home}/kza\n", "ExecStartPre=/bin/ls releases/slots/a\n"):
+        assert commands.mentions_markers(stock + mention, {}, markers), mention
+    assert commands.mentions_markers(stock, {"X": "~/kza/models"}, markers)
+
+
 def test_the_unit_listing_reads_real_list_unit_files_output(tmp_path):
     """R2-3: list-unit-files and list-units output with templates, as systemd prints them (--no-legend --plain)."""
     shim = tmp_path / "systemctl"

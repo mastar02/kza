@@ -870,6 +870,13 @@ def compaction_serve_decision(root: Path, head: dict, *, wall: float) -> dict:
     log = pending_compaction(root)
     if log is None:
         return {"allow": True, "code": None, "kind": None, "log": None}
+    # Review r2 N1: once an abort or a retire has started, no K run (armed or allow-run) may start:
+    # a run after 'abort_started' would write or erase in K' behind the abort's Q6 check, and a run
+    # during a retire would serve while members are half destroyed. Finish them with 'compact'.
+    if compaction_events(log, "abort_started"):
+        return {"allow": False, "code": "runtime_admission_compaction_abort_pending", "kind": None, "log": log}
+    if compaction_events(log, "retire_started"):
+        return {"allow": False, "code": "runtime_admission_compaction_retire_in_progress", "kind": None, "log": log}
     armed, started = _armed_run(log)
     if armed is None:
         return {"allow": False, "code": "runtime_admission_compaction_pending", "kind": None, "log": log}
