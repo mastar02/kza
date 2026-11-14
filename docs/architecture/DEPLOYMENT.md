@@ -301,7 +301,7 @@ Desde R1 (con U3b-0d4a), la comprobación de resurrección mira cada almacén ma
 
 Rollback no gestionado: hasta DÍA 0 + 14 × 24 h, contado desde el primer cierre limpio gestionado, sólo a 63ea8d3 con decisión registrada y la frase 'revivir datos borrados'. Después del retiro no hay rollback no gestionado: sólo se avanza con una release gestionada, y `/home/kza/kza` no es un destino de rollback (Q3 = A).
 
-Consecuencia: si una persona pide «olvidá mi voz» u «olvidá esto», su perfil de voz o su recuerdo desaparece del estado activo, pero sigue en cada slot anterior y en cada copia hasta que esa copia se destruya. Con la compactación (U3b-0c, en diseño; requiere antes la unidad del lanzador gestionado), esas copias se destruyen al compactar. Mientras tanto pueden ser hasta 5 slots anteriores si se compacta al llegar a 6 dueños. El borrado de la compactación es sólo unlink: no sobrescribe. Las copias fuera de la raíz no las alcanza ningún mecanismo actual.
+Consecuencia: si una persona pide «olvidá mi voz» u «olvidá esto», su perfil de voz o su recuerdo desaparece del estado activo, pero sigue en cada slot anterior y en cada copia hasta que esa copia se destruya. Con la compactación (U3b-0c, desarrollada y no ejecutada; ver «Compactación de estados dueños (U3b-0c)»), esas copias se destruyen al compactar. Mientras tanto pueden ser hasta 5 slots anteriores si se compacta al llegar a 6 dueños. El borrado de la compactación es sólo unlink: no sobrescribe. Las copias fuera de la raíz no las alcanza ningún mecanismo actual.
 
 Hasta que exista una herramienta, retirar a mano una copia vieja requiere una decisión explícita del usuario. Nunca borres el estado del slot activo ni el de un dueño que el head todavía necesita (ver «Todo estado dueño debe quedar intacto»).
 
@@ -805,6 +805,52 @@ controlador anterior a la época 2. Un rollback gestionado puede volver a slots
 anteriores, pero no el controlador por debajo de la época 2.
 
 Evidencia: `data/autonomous-roadmap-20261102/t040-t041/u3b-0e5-evidence.json`
+(local, fuera de Git).
+
+### Compactación de estados dueños (U3b-0c) — desarrollada, no ejecutada
+
+Estado: `stage_runtime compact` está en la rama de desarrollo (U3b-0c), probado
+en raíces de prueba, con ensayos compilados y con el systemd de usuario real
+de `yo` para el escaneo de unidades. Nunca corrió sobre `/home/kza/releases`.
+Pasos, fallos y códigos: [runbook](../runbooks/2026-11-14-owner-compaction.md).
+
+Qué cambia en el hueco de privacidad de arriba: el operador puede compactar la
+raíz gestionada a un estado nuevo K (copia idéntica del head con las rutas
+reubicadas en K) y, después de una corrida gestionada limpia de K, destruir
+todas las demás copias que el controlador prueba haber creado: slots
+gestionados anteriores (dueños o no), slots preparados y nunca activados,
+copias del catálogo dentro de la raíz y restos de `prepare` y `activate`. Con
+eso, una conversación, un recuerdo o un perfil de voz borrados en el head
+dejan de existir también en esas copias. La recomendación aparece en la salida
+de `delegate` y de `compact plan` (al llegar a 6 dueños, o cuando el registro
+de borrados del head muestra borrados pedidos que siguen vivos en un estado
+retenido).
+
+Límites que siguen valiendo (decisiones P5 = C y Q4):
+
+- Sólo `unlink`: no se sobrescribe ni se corre `fstrim`. Los bloques liberados
+  quedan en el disco hasta que se reutilicen; es un borrado lógico.
+- VACUUM sólo sobre K. Las páginas libres de `chroma.sqlite3` de K pueden
+  conservar residuos (opaco al SDK).
+- No toca nada fuera de `/home/kza/releases` (`/home/kza/kza`, respaldos
+  externos, snapshots del disco) ni nada dentro de la raíz sin prueba
+  positiva: `backups/`, `logs/`, `deployments/`, `dashboard-proxy/`,
+  `controller/`, archivos de release, el contenedor de enlaces de 63ea8d3, el
+  slot de b0866e8 (lo retira Q5) y restos `.prepare-*` sin registro.
+- Rollback: después de `complete` los slots anteriores ya no existen; sólo se
+  avanza con una release gestionada. Antes de la verificación, `compact abort`
+  vuelve a H. Después, `compact abort --to-h` vuelve a H sólo si durante la
+  corrida de K no hubo borrados (Q6).
+
+Compatibilidad: la época del controlador sube a 3. Mientras haya una
+compactación pendiente, cualquier entrada al controlador que no sea `compact`
+(prepare, activate, run, delegate, adopción) rechaza con
+`runtime_admission_compaction_pending`, y serve sólo deja pasar la corrida de
+verificación armada o las corridas de un `allow-run` vigente. La
+recuperación automática R-b queda apagada mientras tanto. No reinicies el
+servidor durante una compactación.
+
+Evidencia: `data/autonomous-roadmap-20261102/t040-t041/u3b-0c-evidence.json`
 (local, fuera de Git).
 
 ## Limpieza del checkout anterior — pendiente
