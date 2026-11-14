@@ -447,7 +447,7 @@ def stage_ddl(name):
 
 # --- T-U17 and crash injection C2a-C5: abort before the run restores H from every phase ---
 
-@pytest.mark.parametrize("phase", ["k_runtime", "worker", "authorize", "activate"])
+@pytest.mark.parametrize("phase", ["k_runtime", "worker", "authorize", "before_cas", "activate"])
 def test_crash_then_resume_or_abort_from_each_start_phase(x_archive, tmp_path, monkeypatch, phase):
     world = cw.world(x_archive, tmp_path, hops=("b",))
     root = world["root"]
@@ -477,6 +477,8 @@ def test_crash_then_resume_or_abort_from_each_start_phase(x_archive, tmp_path, m
         original = stage._cas_head
 
         def cas(root_, expected, binding_id, status, run_id=None):
+            if phase == "before_cas":
+                raise crash  # C5 before the CAS: the head never moved
             original(root_, expected, binding_id, status, run_id)
             raise crash  # after the CAS, before 'activated' (C5)
         monkeypatch.setattr(stage, "_cas_head", cas)
@@ -486,7 +488,7 @@ def test_crash_then_resume_or_abort_from_each_start_phase(x_archive, tmp_path, m
     monkeypatch.setattr(compaction, "controller_location", lambda root, members: None)
     [log] = stage.compaction_logs(root)
     compaction_id = log["compaction_id"]
-    if phase in {"worker", "authorize"}:
+    if phase in {"worker", "authorize", "before_cas"}:
         resumed = compaction.compact_resume(root, compaction_id)
         assert resumed["phase"] == "activated"
         assert compaction.compact_resume(root, compaction_id)["noop"] is True
@@ -550,18 +552,53 @@ def test_d5_refuses_a_k_that_differs_from_h(x_archive, tmp_path):
     assert sorted(os.listdir(root / "slots")) == ["a", "b"]
 
 
-def test_ra_on_the_armed_run_records_verified_then_the_gate_refuses(x_archive, tmp_path):
-    """F1: receipt-proven R-a runs before the gate; it seals the armed run, which counts as verified."""
+def test_materialization_cut_mid_phase_is_never_redone(x_archive, tmp_path):
+    """C3: a crash between D5 and VACUUM -> resume refuses (abort required); abort, then a new K name."""
+    from src.memory import owner_compaction
+    world = cw.world(x_archive, tmp_path, hops=("b",))
+    root = world["root"]
+
+    def hook():
+        raise RuntimeError("synthetic-crash")
+
+    def worker(root_, compaction_id):
+        owner_compaction.run_materialization(root_, compaction_id, wall=lambda: 1_900_000_000.0, before_vacuum=hook)
+    with pytest.raises(RuntimeError, match="synthetic-crash"):
+        cw.start(root, world["archive"], worker=worker)
+    [log] = stage.compaction_logs(root)
+    compaction_id = log["compaction_id"]
+    assert _events(root, compaction_id)[-1] == "materializing"
+    _refusal("runtime_admission_compaction_resume_abort_required",
+             lambda: compaction.compact_resume(root, compaction_id))
+    assert compaction.compact_abort(root, compaction_id)["phase"] == "aborted"
+    assert sorted(os.listdir(root / "slots")) == ["a", "b"]
+    _refusal("runtime_admission_retired_locator", lambda: cw.plan(root, world["archive"], k="k"))
+    assert cw.start(root, world["archive"], k="k2")["phase"] == "activated"
+
+
+def test_ra_on_the_armed_run_records_verified_then_the_gate_refuses(x_archive, tmp_path, monkeypatch):
+    """F1: receipt-proven R-a runs before the gate; it seals the armed run, which counts as verified.
+
+    The armed run closes with its receipt, but the controller fails before the CAS to closed
+    (a crash at the seal), leaving the head open with a receipt on disk.
+    """
     world = cw.world(x_archive, tmp_path, hops=("b",))
     root = world["root"]
     started = cw.start(root, world["archive"])
     compaction_id = started["compaction_id"]
     compaction.compact_verify(root, compaction_id)
-    phase_file = tmp_path / "phases-hang"
-    result = cw.rehearsal.run_serve(root, cw.rehearsal.child_command(phase_file, "receipt_then_hang"),
-                                    phase_file=phase_file, stop_grace=2.0,
-                                    stop_when=lambda phases: any(key == "receipt" for key, _ in phases))
-    assert result.code == 68 and stage.read_admission_head(root)["status"] == "unknown"
+    original = stage._cas_head
+
+    def cas(root_, expected, binding_id, status, run_id=None):
+        if status == "closed" and (expected or {}).get("status") == "running":
+            raise OSError("synthetic-seal-failure")  # only the seal of the running head
+        return original(root_, expected, binding_id, status, run_id)
+    monkeypatch.setattr(stage, "_cas_head", cas)
+    result = cw.serve(root, tmp_path, "seal-fails")
+    monkeypatch.setattr(stage, "_cas_head", original)
+    head = stage.read_admission_head(root)
+    assert result.code != 0 and head["status"] != "closed", result.code
+    assert (root / "admission" / "receipts" / (head["run_id"] + ".json")).exists()
     assert "verified" not in _events(root, compaction_id)
     assert cw.serve(root, tmp_path, "after-crash").code == 78
     assert "verified" in _events(root, compaction_id)

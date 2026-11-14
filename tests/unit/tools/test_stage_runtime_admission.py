@@ -475,7 +475,10 @@ def test_authority_digest_disagreement_is_refused(admission_archive, tmp_path, m
         _refused(root, (root / "slots/candidate/state",),
                  lambda: controller.activate("candidate", managed=True),
                  "runtime_admission_candidate_rejected: binding_mismatch")
-    assert stage.read_admission_head(root) is None and not (root / "admission").exists()
+    # U3b-0c: prepare_slot's own staging/prepare records are the only admission content.
+    assert stage.read_admission_head(root) is None
+    assert sorted(path.relative_to(root).parts[:2] for path in (root / "admission").rglob("*")
+                  if path.is_file()) == [("admission", "prepared")] * 2
 
 
 def test_probe_timeout_is_refused_and_reaped(admission_archive, tmp_path, monkeypatch):
