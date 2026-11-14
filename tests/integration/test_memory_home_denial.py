@@ -93,9 +93,13 @@ async def every_route(client, ids):
 async def test_household_and_evaluator_sessions_cannot_read_or_review_memory(memory_graph, role, personal):
     graph = memory_graph
     ids = await seed(graph)
+    # Settle the index work the seed queued, so the background maintenance loop cannot change the
+    # baseline mid-test (it once drained pending_index 1 -> 0 between the two snapshots).
+    await graph.memory.areconcile()
     before = await ledger_state(graph, ids)
     # Index work (index_jobs, policy_index_deletions), tombstones and state counts, not only fact rows (N7).
     status_before = await graph.memory.acall(graph.memory.ledger.status)
+    assert status_before['pending_index'] == status_before['pending_index_cleanup'] == 0
     # A person bound to a household credential (personal scope) grants nothing extra.
     extra = {'user_id': PERSON} if personal else {}
     async with login(graph, role, **extra) as client:
