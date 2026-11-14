@@ -659,6 +659,8 @@ def test_the_window_in_runbook_order_under_real_systemd(tmp_path, tree, built, s
     code, status, refused = w.launcher_cli("completion-status")
     assert code == 0 and status["head_status"] == "closed", refused
     assert status["index_delete_jobs"] == 1 and status["complete"] is False
+    assert status["erasure_steps_not_complete"] == {} and status["legacy_training_steps_not_complete"] == 0
+    assert status["honest_blocker_steps"] == {"diagnostics": 1, "streams": 1, "voices": 1}  # 0d4a, by design
     assert set(status["conversation_exempt"].values()) <= {0} and not any(status["resurrected"].values())
     evidence["completion_status_after_w9"] = status
 

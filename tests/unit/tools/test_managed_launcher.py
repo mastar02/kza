@@ -622,26 +622,31 @@ def test_completion_status_counts_open_privacy_work_without_content(tmp_path, mo
         db.execute("INSERT INTO erasure_targets VALUES ('t-train','collectors',1,?)",
                    (json.dumps({"kind": "legacy_training", "path": "/secret/lora"}),))
         db.execute("INSERT INTO erasure_targets VALUES ('t-events','events',1,'{}')")
+        db.execute("INSERT INTO erasure_targets VALUES ('t-literal','diagnostics',1,?)",
+                   (json.dumps({"kind": "unresolved_diagnostic_inventory"}),))
         db.execute("INSERT INTO conversation_erasures VALUES ('o1','c-secret',0,'synthetic')")
         db.executemany("INSERT INTO erasure_steps(operation_id, participant, target_id, version, state)"
                        " VALUES (?,?,?,1,?)", [("o1", "collectors", "t-train", "pending"),
-                                               ("o1", "events", "t-events", "complete")])
+                                               ("o1", "events", "t-events", "complete"),
+                                               ("o1", "diagnostics", "t-literal", "pending")])
         db.execute("CREATE TABLE policy_index_deletions (target_id TEXT, fact_id TEXT, state TEXT)")
         db.execute("INSERT INTO policy_index_deletions VALUES ('t-events','f-secret','pending')")
         db.execute("CREATE TABLE index_jobs (fact_id TEXT, operation TEXT)")
         db.executemany("INSERT INTO index_jobs VALUES (?,?)", [("f-secret", "delete"), ("f-new", "upsert")])
     status = launcher.completion_status(root)
     assert status["erasure_steps_not_complete"] == {"collectors": 1}
+    assert status["honest_blocker_steps"] == {"diagnostics": 1}  # never completes by design (0d4a)
     assert status["legacy_training_steps_not_complete"] == 1
     assert status["policy_index_deletions_not_complete"] == 1 and status["index_delete_jobs"] == 1
     assert status["complete"] is False and status["head_status"] == "closed"
     assert "secret" not in json.dumps(status)
     with closing(sqlite3.connect(state / "data" / "privacy.db")) as db, db:
-        db.execute("UPDATE erasure_steps SET state='complete'")
+        db.execute("UPDATE erasure_steps SET state='complete' WHERE target_id != 't-literal'")
         db.execute("UPDATE policy_index_deletions SET state='complete'")
         db.execute("DELETE FROM index_jobs WHERE operation='delete'")
     status = launcher.completion_status(root)
     assert status["complete"] is True and status["erasure_steps_not_complete"] == {}
+    assert status["honest_blocker_steps"] == {"diagnostics": 1}
     assert set(status["conversation_exempt"].values()) <= {0}
 
 

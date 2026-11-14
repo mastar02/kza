@@ -290,7 +290,10 @@ C=release_20261029T174830709997Z_63ea8d3
     Todo debe dar 0 y `complete: true`: `erasure_steps_not_complete` vacío,
     `legacy_training_steps_not_complete`,
     `policy_index_deletions_not_complete`, `index_delete_jobs`, cada valor de
-    `conversation_exempt` y de `resurrected`. Un paso pendiente exime sus
+    `conversation_exempt` y de `resurrected`. `honest_blocker_steps` queda
+    aparte: son los pasos de los destinos literales sin limpiador
+    (`unresolved_*_inventory`, U3b-0d4a), que nunca terminan por diseño y no
+    cuentan; anotar sus conteos en W10. Un paso pendiente exime sus
     copias del control de resurrección, así que sin esta comprobación
     quedaría sin ver. Si algo sigue abierto pasada la primera hora, anotar
     los conteos en W10 y avisar al usuario antes de cerrar la ventana.

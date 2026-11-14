@@ -2050,7 +2050,10 @@ def completion_status(root: Path) -> dict:
     them. A pending step exempts its occurrences from the resurrection check,
     so they would otherwise stay unnoticed. Read only: every database is read
     through a private image (``mode=ro`` then backup), so it can run with the
-    service up. ``complete`` is True only when every count is 0.
+    service up. ``complete`` is True only when every count is 0. Steps on the
+    cleaner-less literal targets (``unresolved_*_inventory``, U3b-0d4a) never
+    complete by design: they are counted apart, as ``honest_blocker_steps``,
+    and do not count against ``complete``.
     """
     root = Path(root).resolve()
     head = stage.read_admission_head(root)
@@ -2058,6 +2061,7 @@ def completion_status(root: Path) -> dict:
         raise LauncherRefusal("runtime_admission_launcher_no_managed_head")
     state = Path(stage.read_binding(root, head["binding_id"])["state_root"])
     steps: dict[str, int] = {}
+    blockers: dict[str, int] = {}
     training = index_deletions = index_jobs = 0
     for path in _sqlite_files(state):
         with stage._database_image(path) as db:
@@ -2066,11 +2070,13 @@ def completion_status(root: Path) -> dict:
                 for participant, descriptor in db.execute(
                         "SELECT s.participant, t.descriptor FROM erasure_steps s LEFT JOIN erasure_targets t"
                         " ON t.id = s.target_id WHERE s.state != 'complete'"):
-                    steps[participant] = steps.get(participant, 0) + 1
                     try:
                         kind = json.loads(descriptor or "{}").get("kind")
                     except (ValueError, AttributeError):
                         kind = None
+                    honest = type(kind) is str and re.fullmatch(r"unresolved_[a-z]+_inventory", kind) is not None
+                    counted = blockers if honest else steps
+                    counted[participant] = counted.get(participant, 0) + 1
                     training += kind == "legacy_training"
             if "policy_index_deletions" in names:
                 index_deletions += db.execute(
@@ -2083,6 +2089,7 @@ def completion_status(root: Path) -> dict:
     complete = (not steps and training == 0 and index_deletions == 0 and index_jobs == 0 and exempt == 0
                 and not any(resurrected.values()))
     return {"head_status": head["status"], "erasure_steps_not_complete": dict(sorted(steps.items())),
+            "honest_blocker_steps": dict(sorted(blockers.items())),
             "legacy_training_steps_not_complete": training,
             "policy_index_deletions_not_complete": index_deletions, "index_delete_jobs": index_jobs,
             "conversation_exempt": detail["conversation_exempt"], "resurrected": resurrected,
