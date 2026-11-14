@@ -1874,8 +1874,10 @@ class Serve:
         command = (list(self.options.child_command) if self.options.child_command is not None
                    else [self.options.python, "-B", "-P", "-m", "src.main"])
         try:
+            # Private state whatever the unit's or controller's umask (review F5).
             process = subprocess.Popen(command, cwd=runtime, env=environment, stdin=subprocess.DEVNULL,
-                                       pass_fds=(controller.lease_descriptor, notify_write, control_read))
+                                       pass_fds=(controller.lease_descriptor, notify_write, control_read),
+                                       umask=stage.MANAGED_CHILD_UMASK)
         finally:
             os.close(notify_write)
             os.close(control_read)
