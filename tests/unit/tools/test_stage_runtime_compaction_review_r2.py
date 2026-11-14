@@ -530,7 +530,10 @@ def test_a_member_moved_after_the_plan_is_found_and_never_tombstoned(tmp_path, m
     _refusal("runtime_admission_compaction_member", lambda: compaction._accept_missing(root, log, 99, lambda: 8.0))
 
 
-def test_accept_missing_refuses_a_member_this_compaction_renamed(tmp_path, monkeypatch):
+@pytest.mark.parametrize("logged, accepted", [(("retiring", "renamed"), False), (("retiring",), True)])
+def test_accept_missing_refuses_a_member_this_compaction_renamed(tmp_path, monkeypatch, logged, accepted):
+    """A member gone from its path after 'renamed' was moved by this compaction: never 'accepted missing'.
+    'retiring' alone is logged before the rename (review r3 R3-4), so it proves nothing: accepted."""
     monkeypatch.setattr(compaction, "stage", _Stage())
     root = tmp_path.resolve() / "root"
     (root / "admission").mkdir(parents=True)
@@ -543,9 +546,15 @@ def test_accept_missing_refuses_a_member_this_compaction_renamed(tmp_path, monke
     intent = {"schema_version": 1, "compaction_id": CID, "kind": "compaction_intent", "k_slot": "k",
               "members": members, "untouched": untouched, "retire_prepare_leftovers": False, "owners": [],
               "head": HEAD, "source_binding_id": H, "k_state_root": str(root / "slots" / "k" / "state")}
-    log = _log_with(root, intent, [("retiring", {"member": members[0]["n"], "identity": members[0]["identity"]})])
-    _refusal("runtime_admission_compaction_member",
-             lambda: compaction._accept_missing(root, log, members[0]["n"], lambda: 6.0))
+    data = {"member": members[0]["n"], "identity": members[0]["identity"]}
+    log = _log_with(root, intent, [(kind, data) for kind in logged])
+    snap.rename(root / "elsewhere")  # gone from its path, and not in the quarantine
+    if accepted:
+        log = compaction._accept_missing(root, log, members[0]["n"], lambda: 6.0)
+        assert stage.compaction_events(log, "missing_accepted")
+    else:
+        _refusal("runtime_admission_compaction_member",
+                 lambda: compaction._accept_missing(root, log, members[0]["n"], lambda: 6.0))
 
 
 # --- N9: a placeholder cut before its 'own_work' is still this compaction's ------------------------

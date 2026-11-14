@@ -25,7 +25,11 @@ and always removed afterwards:
 (g) review r2 N4: a template ``<prefix>-tpl@.service`` with no instance
     loaded, whose ExecStart is ``<root>/slots/%i/state`` -> unit_path on the
     template; the same template writing under /tmp passes and is reported in
-    ``templates_scanned``.
+    ``templates_scanned``;
+(h) review r3 R3-2: the same template naming the member on a continuation
+    line, or through an EnvironmentFile value used as ${SRC}, -> unit_path;
+    systemd itself joins the continuation (show of an instance carries the
+    member path).
 
 The scan reads every unit of this account in the user unit directories; a
 refusal in (b) that names another unit is a real finding about this
@@ -189,3 +193,23 @@ def test_a_template_without_instances_is_scanned_by_its_fixed_part(systemd, layo
     RESULTS.append({"case": "g_template_elsewhere", "templates": [unit for unit in report["templates_scanned"]
                                                                    if unit.startswith(systemd.prefix)]})
     assert name in report["templates_scanned"]
+
+
+@pytest.mark.parametrize("form", ["continuation", "environment_file"])
+def test_a_template_naming_a_member_through_a_continuation_or_an_environment_file(systemd, layout, tmp_path, form):
+    _root, member, _members = layout
+    name = f"{systemd.prefix}-r3{form[:4]}@.service"
+    if form == "continuation":
+        body = f"[Service]\nType=oneshot\nExecStart=/bin/true /tmp/%i \\\n    {member}/state\n"
+    else:
+        env_file = tmp_path / "r3.env"
+        env_file.write_text(f"SRC={member}/state\n")
+        body = f"[Service]\nType=oneshot\nEnvironmentFile={env_file}\nExecStart=/bin/true ${{SRC}}\n"
+    systemd.write_unit(name, body)
+    systemd.reload()
+    instance = name.replace("@.", "@x.")
+    shown = systemd.raw_show(instance, "ExecStart")
+    code = _refusal(systemd, layout)
+    RESULTS.append({"case": "h_template_" + form, "code": code,
+                    "instance_show_names_member": str(member) in shown["ExecStart"]})
+    assert code == PATH_HIT + name

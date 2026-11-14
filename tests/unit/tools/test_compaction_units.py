@@ -788,3 +788,111 @@ def test_a_clean_scan_passes_and_opens_nothing_under_a_member(layout, monkeypatc
     assert str(layout.home / "secrets" / ".env") in opened and str(directory) in opened
     assert str(layout.root) in opened  # the root's own listing for '<root>/*/console.log'
     assert not [path for path in opened if _under(path, layout.member)]
+
+
+# --- review r3: templates (R3-2), markers (R3-5), escaped manager values (R3-6); probe_templates.py,
+# probe_manager_env.py ------------------------------------------------------------------------------
+
+def _template_text(layout, name: str, body: str) -> dict:
+    path = layout.user_dir / name
+    path.write_text("[Service]\nType=oneshot\n" + body)
+    return {name: unit(str(path), state="disabled", cat=f"# {path}\n{path.read_text()}")}
+
+
+def _home_manager(layout) -> dict:
+    return {"HOME": str(layout.home), "PATH": "/usr/bin:/bin"}
+
+
+@pytest.mark.parametrize("case", ["T1_continuation", "T2_braced_home", "T2_plain_home", "T3_home_instance",
+                                  "T4_environment_file", "own_environment", "relative_from_working_directory",
+                                  "continuation_after_comment"])
+def test_a_user_template_naming_a_member_through_any_form_refuses(layout, case):
+    """R3-2 (probe_templates T1-T4 and neighbours): kb@.service, no instance loaded, the member reached by a
+    continuation line, $HOME/${HOME}, an EnvironmentFile value, the template's own Environment= or a
+    relative path from its WorkingDirectory."""
+    relative = layout.member.relative_to(layout.home.parent)  # releases/slots/m1 (the root is <base>/releases)
+    env_file = layout.home / ".config" / "kb.env"
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    env_file.write_text(f"SRC={layout.member / 'state'}\n")
+    body = {
+        "T1_continuation": f"ExecStart=/usr/bin/tar czf /tmp/%i.tgz \\\n    {layout.member / 'state'}\n",
+        "T2_braced_home": "ExecStart=/usr/bin/tar czf /tmp/%i.tgz ${HOME}/../" + str(relative) + "/state\n",
+        "T2_plain_home": "ExecStart=/usr/bin/tar czf /tmp/%i.tgz $HOME/../" + str(relative) + "/state\n",
+        "T3_home_instance": "ExecStart=/usr/bin/tar czf /tmp/x.tgz $HOME/../releases/%i\n",
+        "T4_environment_file": f"EnvironmentFile=-{env_file}\nExecStart=/usr/bin/tar czf /tmp/%i.tgz ${{SRC}}\n",
+        "own_environment": f"Environment=\"SRC={layout.member}/state\"\nExecStart=/usr/bin/cp -a $SRC /tmp/%i\n",
+        "relative_from_working_directory": f"WorkingDirectory={layout.home.parent}\n"
+                                           f"ExecStart=/usr/bin/tar czf /tmp/%i.tgz {relative}/state\n",
+        "continuation_after_comment": "ExecStart=/usr/bin/tar czf /tmp/%i.tgz \\\n# a note\n"
+                                      f"    {layout.member / 'state'}\n",
+    }[case]
+    found = _template_text(layout, "kb@.service", body)
+    assert refused(layout, found, manager_environment=_home_manager(layout)) == PATH_HIT + "kb@.service"
+
+
+def test_an_environment_file_inside_a_member_is_refused_before_it_is_read(layout, monkeypatch):
+    inside = layout.member / "state" / "x.conf"
+    opened = []
+    original = os.open
+    monkeypatch.setattr(os, "open", lambda path, *a, **k: (opened.append(str(path)), original(path, *a, **k))[1])
+    found = _template_text(layout, "kb@.service", f"EnvironmentFile={inside}\nExecStart=/bin/true\n")
+    assert refused(layout, found, manager_environment=_home_manager(layout)) == PATH_HIT + "kb@.service"
+    assert str(inside) not in opened
+
+
+@pytest.mark.parametrize("name, tolerated", [("kb@.service", True), ("kza-backup@.service", False)])
+@pytest.mark.parametrize("word", ["%i", "${UNSET}/x", "$UNSET"])
+def test_a_template_word_that_cannot_be_judged_is_strict_unless_the_0e4_leniency_applies(layout, name, tolerated,
+                                                                                         word):
+    """R3-2: a word that starts with %i or an unset variable has no fixed part to judge."""
+    found = _template_text(layout, name, f"ExecStart=/usr/bin/tool {word}\n")
+    if tolerated:
+        report = run_scan(layout, found, manager_environment=_home_manager(layout))
+        assert report["tolerated_unresolved"] == [name] and report["templates_scanned"] == [name]
+    else:
+        key = "ExecStart"
+        assert refused(layout, found, manager_environment=_home_manager(layout)) == UNPARSED + name + ":" + key
+
+
+def test_a_template_with_unbalanced_quoting_or_an_unreadable_environment_file_refuses(layout):
+    found = _template_text(layout, "kb@.service", "ExecStart=/bin/sh -c 'echo\n")
+    assert refused(layout, found, manager_environment=_home_manager(layout)) == UNPARSED + "kb@.service:ExecStart"
+    found = _template_text(layout, "kb@.service", f"EnvironmentFile={layout.home}/missing.env\nExecStart=/bin/true\n")
+    assert refused(layout, found, manager_environment=_home_manager(layout)) == \
+        UNPARSED + "kb@.service:EnvironmentFile"
+
+
+def test_a_template_reaching_elsewhere_through_every_form_passes(layout):
+    env_file = layout.home / "kb.env"
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    env_file.write_text("SRC=/srv/data\n")
+    found = _template_text(layout, "kb@.service", f"EnvironmentFile={env_file}\n"
+                                                  "ExecStart=/usr/bin/tar czf %t/%i.tgz \\\n  ${SRC}/%i $HOME/.cache/%i\n")
+    report = run_scan(layout, found, manager_environment=_home_manager(layout))
+    assert report["templates_scanned"] == ["kb@.service"] and report["tolerated_unresolved"] == []
+
+
+@pytest.mark.parametrize("value", ["$'{root}/slots/*/state'", "$'{member}/state;'", "$'{member}\\x2fstate'",
+                                   "$'{root}/slots/m?/state'"])
+def test_an_escaped_manager_value_is_decoded_for_the_member_check(layout, value):
+    """R3-6 (probe_manager_env): systemd prints a value holding '*', ';' and the like as $'...'."""
+    environment = dict(_home_manager(layout), KZA_SRC=value.format(root=layout.root, member=layout.member))
+    assert refused(layout, {}, manager_environment=environment) == PATH_HIT + "show-environment"
+    environment["KZA_SRC"] = "$'/srv/*/data;'"
+    assert run_scan(layout, {}, manager_environment=environment)["units_scanned"] == 0
+
+
+def test_a_malformed_escaped_manager_value_refuses(layout):
+    environment = dict(_home_manager(layout), BAD="$'unterminated\\")
+    assert refused(layout, {}, manager_environment=environment) == UNPARSED + "show-environment:BAD"
+
+
+def test_a_kza_named_unit_gets_no_leniency(layout):
+    """R3-5: strict is the safe side; a unit named kza* is kza's even when its text names no kza path."""
+    found = {"kza-sync.service": unit("/usr/lib/systemd/user/kza-sync.service", loaded=True,
+                                      cat="[Service]\nExecStart=/usr/bin/rsync -a $SRC /mnt/usb\n",
+                                      DropInPaths=str(layout.user_dir / "kza-sync.service.d" / "x.conf"),
+                                      ExecStart=exec_value("/usr/bin/rsync", "-a", "$SRC", "/mnt/usb"))}
+    assert refused(layout, found) == UNPARSED + "kza-sync.service:ExecStart"
+    found["sync.service"] = found.pop("kza-sync.service")
+    assert run_scan(layout, found)["tolerated_unresolved"] == ["sync.service"]

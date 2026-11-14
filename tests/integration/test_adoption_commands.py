@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tarfile
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -1893,6 +1894,54 @@ def test_kza_markers_on_a_home_named_kza_are_not_bare_components(tmp_path, monke
                     f"ExecStartPre=/bin/ls {home}/kza\n", "ExecStartPre=/bin/ls releases/slots/a\n"):
         assert commands.mentions_markers(stock + mention, {}, markers), mention
     assert commands.mentions_markers(stock, {"X": "~/kza/models"}, markers)
+
+
+_R3_FORMS = {
+    "absolute /home/kza/kza/tools": "ExecStart=/bin/sh -c 'cd {home}/kza/tools && ./x $ARGS'",
+    "%h/kza": "WorkingDirectory=%h/kza",
+    "~/kza": "ExecStart=/bin/sh -c 'cd ~/kza && ./x $ARGS'",
+    "Environment=KZA={home}/kza": "Environment=KZA={home}/kza",
+    "~kza/kza (tilde-user)": "ExecStart=/bin/sh -c 'cd ~kza/kza && ./x $ARGS'",
+    '"$HOME"/kza (quoted)': "ExecStart=/bin/sh -c 'cd \"$HOME\"/kza && ./x $ARGS'",
+    "relative kza from WorkingDirectory=%h": "WorkingDirectory=%h\nExecStart=/bin/sh -c 'cd kza && ./x $ARGS'",
+    "relative kza, no WorkingDirectory": "ExecStart=/bin/sh -c 'cd kza && ./x $ARGS'",
+    "relative releases/slots from %h": "WorkingDirectory=%h\nExecStart=/bin/sh -c 'tar czf /tmp/b.tgz releases/slots $X'",
+}
+
+
+@pytest.mark.parametrize("label", sorted(_R3_FORMS))
+def test_every_kza_reference_form_makes_a_unit_kzas(tmp_path, monkeypatch, label):
+    """0c review r3 R3-5 (probe_templates N6 section): with HOME=<...>/kza each form is kza's again."""
+    home = tmp_path / "home" / "kza"
+    monkeypatch.setenv("HOME", os.fspath(home))
+    markers = commands.kza_markers([home / "releases", home / "kza", home / "releases" / "slots" / "a"])
+    text = f"# {home}/.config/systemd/user/backup.service\n[Service]\n" + _R3_FORMS[label].format(home=home) + "\n"
+    assert commands.mentions_markers(text, {}, markers, "backup.service"), label
+
+
+def test_a_kza_named_unit_is_kzas_and_stock_units_under_a_kza_home_are_not(tmp_path, monkeypatch):
+    home = tmp_path / "home" / "kza"
+    monkeypatch.setenv("HOME", os.fspath(home))
+    markers = commands.kza_markers([home / "releases", home / "kza"])
+    plain = "[Service]\nExecStart=/usr/bin/rsync -a $SRC /mnt/usb\n"
+    assert commands.mentions_markers(plain, {}, markers, "kza-backup.service")
+    assert not commands.mentions_markers(plain, {}, markers, "backup.service")
+    stock = ("# /usr/lib/systemd/user/podman.service\n[Service]\nExecStart=/usr/bin/podman $LOGGING system service\n"
+             f"# {home}/.config/systemd/user/podman.service.d/override.conf\n[Service]\nNice=5\n")
+    assert not commands.mentions_markers(stock, {}, markers, "podman.service")
+    # A relative 'kza' counts only from the home: elsewhere it is some other directory's 'kza'.
+    elsewhere = "WorkingDirectory=/srv/tools\nExecStart=/bin/sh -c 'cd kza && ./x $ARGS'\n"
+    assert not commands.mentions_markers(elsewhere, {}, markers, "tools.service")
+
+
+def test_the_0e4_embedded_name_leniency_refuses_a_kza_named_unit(tmp_path, monkeypatch):
+    """R3-5 in 0e4 adoption: _embedded_only gets the unit name, so a kza* unit keeps the strict refusal."""
+    monkeypatch.setenv("HOME", os.fspath(tmp_path))
+    markers = commands.kza_markers([tmp_path / "kza"])
+    text = "[Service]\nExecStart=/bin/sh -c 'exec /usr/bin/tool --x=a$NAME'\n"
+    manager = SimpleNamespace(user_cat=lambda unit: text)
+    assert commands._embedded_only(manager, "tool.service", markers)("NAME") is True
+    assert commands._embedded_only(manager, "kza-tool.service", markers)("NAME") is False
 
 
 def test_the_unit_listing_reads_real_list_unit_files_output(tmp_path):

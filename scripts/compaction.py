@@ -237,6 +237,8 @@ def catalog_records(root: Path) -> list[dict]:
                 event = json.loads(raw)
                 if selected is None:
                     selected = dict(event["record"], catalog_head_sha256=head["sha256"])
+                if revision == 1:  # the reservation's own file: its mtime dates the reservation (R3-3)
+                    selected["reserved_at"] = os.lstat(path).st_mtime
                 digest, revision = event["previous_sha256"], revision - 1
         except (OSError, ValueError, KeyError, TypeError):
             _refuse("runtime_admission_compaction_catalog_unreadable")
@@ -1029,7 +1031,7 @@ def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftov
             # Review r2 N10: a copy still being written by a live owner refuses; one whose owner
             # process is gone (the catalog never repairs records) is abandoned, listed by id, and
             # treated as 'unknown' (a member only when its root identity still matches).
-            if _owner_alive(record.get("preparation_owner")):
+            if _owner_alive(record.get("preparation_owner"), record.get("reserved_at")):
                 _refuse("runtime_admission_compaction_copy_in_progress")
             abandoned.append(record["copy_id"])
         elif record.get("preparation") not in {"prepared", "failed", "unknown"}:
@@ -1061,18 +1063,49 @@ def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftov
     return value
 
 
-def _owner_alive(owner) -> bool:
-    """A catalog record's preparation owner process still exists (signal 0; another user's counts too)."""
+START_TIME_SLACK = 1.0  # seconds: ps lstart has one-second resolution
+
+
+def _owner_alive(owner, reserved_at: float | None) -> bool:
+    """A catalog record's preparation owner is still the process that reserved it (review r3 R3-3).
+
+    The pid alone is reused: the owner counts as alive only if a process with
+    that pid exists and started no later than the reservation (the record's
+    first revision file), within START_TIME_SLACK. A later start time, an
+    unknown reservation time or no such process is a dead owner: the copy is
+    abandoned, so a stale record never blocks the plan.
+    """
     pid = owner.get("process_id") if type(owner) is dict else None
-    if type(pid) is not int or pid <= 0:
+    if type(pid) is not int or pid <= 0 or reserved_at is None:
         return False
+    started = process_started_at(pid)
+    return started is not None and started <= reserved_at + START_TIME_SLACK
+
+
+def process_started_at(pid: int) -> float | None:
+    """A live pid's start as wall-clock seconds (/proc on Linux, ps lstart elsewhere), or None."""
+    if os.path.isdir("/proc/self"):
+        try:
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[-1].split()
+            boot = next(float(line.split()[1]) for line in Path("/proc/stat").read_text().splitlines()
+                        if line.startswith("btime "))
+        except (OSError, StopIteration, ValueError, IndexError):
+            return None
+        if len(fields) <= 19 or fields[0] == "Z":
+            return None
+        return boot + int(fields[19]) / os.sysconf("SC_CLK_TCK")
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+        completed = subprocess.run(["ps", "-o", "stat=,lstart=", "-p", str(pid)], capture_output=True, text=True,
+                                   timeout=2, check=False, env={"LC_ALL": "C", "PATH": "/bin:/usr/bin"})
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    output = completed.stdout.strip()
+    if completed.returncode != 0 or not output or output.startswith("Z"):
+        return None
+    try:
+        return time.mktime(time.strptime(output.split(None, 1)[-1].strip(), "%a %b %d %H:%M:%S %Y"))
+    except ValueError:
+        return None
 
 
 def plan_digest(value: dict) -> str:
@@ -1568,11 +1601,14 @@ def _retire_member(root: Path, log: dict, member: dict, k_inodes: set, wall, unl
             _fsync_directory(path.parent)
             _fsync_directory(quarantine.parent)
             at_quarantine = True
-        retiring_logged = any(event["data"]["member"] == member["n"]
-                              for event in stage.compaction_events(log, "retiring"))
-        if not at_path and not at_quarantine and not retiring_logged:
-            # Review r2 N8: never renamed by this compaction, so it was moved or deleted by hand: a
-            # tombstone would claim a destruction that may not have happened.
+        if at_quarantine and not _renamed(log, member["n"]):
+            # Review r3 R3-4: logged after the rename, so 'absent everywhere' later proves the walk ran.
+            log = stage.append_compaction_event(root, log, "renamed", {
+                "member": member["n"], "identity": identity}, at=_now(wall))
+        if not at_path and not at_quarantine and not _renamed(log, member["n"]):
+            # Review r2 N8 / r3 R3-4: never renamed by this compaction ('retiring' alone is logged before
+            # the rename), so it was moved or deleted by hand: a tombstone would claim a destruction that
+            # may not have happened. 'retire|abort --member n --accept-missing' leaves it out, logged.
             _refuse("runtime_admission_compaction_member_missing", {"member": member["n"]})
         if at_quarantine:
             # Review r2 N3: a prepare leftover's runtime links and a selection leftover's 'current' link
@@ -1590,6 +1626,10 @@ def _retire_member(root: Path, log: dict, member: dict, k_inodes: set, wall, unl
     for copy_id in sorted(member.get("copy_ids", [])):
         _copies_retired(root, copy_id, compaction_id, _sha256_bytes(raw))
     return log
+
+
+def _renamed(log: dict, number: int) -> bool:
+    return any(event["data"]["member"] == number for event in stage.compaction_events(log, "renamed"))
 
 
 def _copies_retired(root: Path, copy_id: str, compaction_id: str, tombstone_sha256: str) -> None:
@@ -1877,16 +1917,18 @@ def _finish_retire(root: Path, log: dict, wall, unlink_hook=None) -> dict:
     return {"compaction_id": log["compaction_id"], "phase": "complete", **totals}
 
 
-def _accept_missing(root: Path, log: dict, number: int | None, wall) -> dict:
-    """``--member n --accept-missing`` (review r2 N8): a planned member gone from its path, never renamed by
-    this compaction, is left out, logged. No tombstone and no copies-retired: nothing claims it destroyed."""
-    members = {item["n"]: item for item in _numbered(log)}
+def _accept_missing(root: Path, log: dict, number: int | None, wall, *, members: list | None = None) -> dict:
+    """``--member n --accept-missing`` (review r2 N8, r3 R3-1/R3-4): a member gone from its path and never
+    renamed by this compaction is left out, logged. No tombstone and no copies-retired: nothing claims it
+    destroyed. On retire the members are the plan's; on abort, its own work and K. A member whose
+    'retiring' is logged but not its 'renamed' was moved by hand after the cut and may be accepted."""
+    members = {item["n"]: item for item in (_numbered(log) if members is None else members)}
     if number not in members:
         _refuse("runtime_admission_compaction_member")
     member = members[number]
     if _lexists(Path(member["path"])) or _lexists(_quarantine(root, log["compaction_id"], member)) \
-            or _retiring_identity(log, number) is not None or any(
-                event["data"]["member"] == number for event in stage.compaction_events(log, "retiring")):
+            or _renamed(log, number) or any(event["data"]["member"] == number
+                                            for event in stage.compaction_events(log, "destroyed")):
         _refuse("runtime_admission_compaction_member")
     return stage.append_compaction_event(root, log, "missing_accepted", {
         "member": number, "path": member["path"], "identity": member["identity"]}, at=_now(wall))
@@ -2011,8 +2053,15 @@ def _new_rows(h_state: Path, k_state: Path) -> dict:
 
 
 def compact_abort(root, compaction_id: str, *, to_h: bool = False, discard_k_writes: bool = False,
-                  confirm_h: str | None = None, wall=time.time) -> dict:
-    """Abort before the verification run, or return to H after it under the Q6 predicate."""
+                  confirm_h: str | None = None, member: int | None = None, accept_missing: bool = False,
+                  wall=time.time) -> dict:
+    """Abort before the verification run, or return to H after it under the Q6 predicate.
+
+    ``member`` with ``accept_missing`` (review r3 R3-1) leaves out one of the
+    abort's own items (a snapshot, the placeholder, K) that is gone from its
+    path and was never renamed by this compaction, like ``retire
+    --accept-missing``: logged, no tombstone, no copies-retired.
+    """
     root = checked_root(root)
     with stage.AdmissionController(root, gate="compaction:" + compaction_id, allow_open_head=True):
         log = _log(root, compaction_id)
@@ -2037,6 +2086,8 @@ def compact_abort(root, compaction_id: str, *, to_h: bool = False, discard_k_wri
                 _refuse("runtime_admission_compaction_abort_recheck_required")
             head = _q6_checks(root, log, discard_k_writes=discard_k_writes, confirm_h=confirm_h, verified=False)
             log = stage.append_compaction_event(root, log, "abort_rechecked", {"head": head}, at=_now(wall))
+        if accept_missing:
+            log = _accept_missing(root, log, member, wall, members=_abort_members(root, log))
         return _finish_abort(root, log, wall)
 
 
@@ -2125,17 +2176,24 @@ def _finish_abort(root: Path, log: dict, wall) -> dict:
     _destroy_own_staging(root, log, wall)
     # Review r2 N2: every item keeps the number its recording event gave it, and K has a fixed one, so a
     # resumed abort finds a half-walked member in its quarantine instead of renumbering past it.
+    work = _abort_members(root, log)
+    for member in work:
+        log = _retire_member(root, log, member, set(), wall)
+    _drop_scratch(root, log)
+    destroyed = len({event["data"]["member"] for event in stage.compaction_events(log, "destroyed")})
+    log = stage.append_compaction_event(root, log, "aborted", {"destroyed": destroyed,
+                                                               "to_h": bool(_last(log, "abort_started")["data"]
+                                                                            ["to_h"])}, at=_now(wall))
+    return {"compaction_id": log["compaction_id"], "phase": "aborted", "head": head, "destroyed": destroyed}
+
+
+def _abort_members(root: Path, log: dict) -> list[dict]:
+    """An abort's members: this compaction's own work (stable numbers) and K (fixed number), if made."""
     work = own_work(root, log)
     k_member = _k_abort_member(root, log)
     if k_member is not None:
         work.append(k_member)
-    for member in work:
-        log = _retire_member(root, log, member, set(), wall)
-    _drop_scratch(root, log)
-    log = stage.append_compaction_event(root, log, "aborted", {"destroyed": len(work),
-                                                               "to_h": bool(_last(log, "abort_started")["data"]
-                                                                            ["to_h"])}, at=_now(wall))
-    return {"compaction_id": log["compaction_id"], "phase": "aborted", "head": head, "destroyed": len(work)}
+    return work
 
 
 def _k_abort_member(root: Path, log: dict) -> dict | None:
@@ -2265,6 +2323,8 @@ def add_commands(commands) -> None:
             parser.add_argument("--to-h", action="store_true")
             parser.add_argument("--discard-k-writes", action="store_true")
             parser.add_argument("--confirm-h")
+            parser.add_argument("--member", type=int)
+            parser.add_argument("--accept-missing", action="store_true")
         if name == "allow-run":
             parser.add_argument("--reason", required=True)
             parser.add_argument("--hours", type=int, required=True)
@@ -2296,7 +2356,9 @@ def run_command(args, *, scan=None, worker=None) -> int:
             result = compact_resume(args.root, args.compaction_id, archive=args.archive, worker=worker, scan=scan)
         elif command == "abort":
             result = compact_abort(args.root, args.compaction_id, to_h=args.to_h,
-                                   discard_k_writes=args.discard_k_writes, confirm_h=args.confirm_h)
+                                   discard_k_writes=args.discard_k_writes, confirm_h=args.confirm_h,
+                                   member=getattr(args, "member", None),
+                                   accept_missing=getattr(args, "accept_missing", False))
         elif command == "allow-run":
             result = compact_allow_run(args.root, args.compaction_id, reason=args.reason, hours=args.hours)
         else:
