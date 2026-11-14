@@ -937,6 +937,43 @@ propia.
 Evidencia: `data/autonomous-roadmap-20261102/t040-t041/u3b-0c-evidence.json`
 (local, fuera de Git).
 
+### Identidad de destinos SQLite y temporales propios (F4/F10, 2026-11-14)
+
+Modelo de amenaza: otro proceso con el mismo uid borra y recrea un archivo en
+una ruta que KZA ya comprobó. En ext4 el número de inodo liberado pasa enseguida
+a la siguiente asignación, así que `(st_dev, st_ino)` identifica un archivo sólo
+mientras su inodo sigue asignado.
+
+- Destinos SQLite nativos (privacidad, sesiones, rutinas, eventos, sugerencias,
+  objetivos históricos, listas y recordatorios): en Linux, el coordinador de
+  salidas abre cada destino con `O_PATH | O_NOFOLLOW` antes de que el plan lo
+  observe, y el plan debe nombrar ese inodo. Un destino que crea su primera
+  apertura se fija al registrar `active`. Las reaperturas y los objetivos
+  históricos comparan contra ese inodo retenido. Todos los descriptores se
+  cierran al cerrar la época, envenenada o no.
+- Por qué `O_PATH`: cerrar un descriptor `O_PATH` no suelta los locks POSIX de
+  SQLite del proceso (el kernel omite `locks_remove_posix` para
+  `FMODE_PATH`). Un descriptor `O_RDONLY` extra sí los suelta, en Linux y en
+  macOS, por eso los publicadores JSON/YAML usan `O_RDONLY` y SQLite no.
+- macOS no tiene `O_PATH` y APFS no reutiliza identificadores de archivo, así
+  que allí no se fija nada.
+- Efecto visible: hasta el cierre de la época, un destino borrado por otro
+  conserva sus bloques en disco, y cualquier proceso del mismo uid puede leerlo
+  por `/proc/<pid>/fd`. Ningún dueño nativo borra sus propios destinos.
+- Temporales propios (`mkstemp`): `stage_runtime`, `managed_launcher`,
+  `build_runtime`, catálogo y observaciones de copias, derivación de payload,
+  cooldown, contextos, `audio_health` y diagnósticos retienen un `dup` del
+  descriptor hasta limpiar. Sólo borran el nombre si sigue siendo ese inodo, y
+  si hay otro archivo en ese nombre lo dejan. Ayudante común en
+  `src/core/own_temporary.py`; `stage_runtime` y `build_runtime` tienen copias
+  propias porque se cargan por ruta.
+- Fuera de alcance: la recuperación de `diagnostic_store` después de un corte
+  (`_cleanup_staged`) borra todavía por nombre, porque el descriptor no
+  sobrevive al proceso.
+
+Evidencia: `data/autonomous-roadmap-20261102/t040-t041/f4-f10-evidence.json`
+(local, fuera de Git).
+
 ## Limpieza del checkout anterior — pendiente
 
 La inspección del 2026-10-25 encontró:
