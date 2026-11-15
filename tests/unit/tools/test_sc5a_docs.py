@@ -60,11 +60,34 @@ def test_every_managed_rollback_mention_is_marked_unavailable():
 
 
 def test_install_controller_minimum_is_epoch_4_everywhere():
-    """SC-2 review R2: DEPLOYMENT and the compaction runbook agree on the D4 exit path."""
-    for relative in (DOCS[0], DOCS[2]):
+    """SC-2 review R2 and C1: DEPLOYMENT, the R1 runbook and the compaction runbook agree on epoch 4."""
+    for relative in (DOCS[0], DOCS[1], DOCS[2]):
         text = " ".join((REPO / relative).read_text().split())
         assert "época 3 o posterior" not in text, relative
+        assert "Exige época de controlador 2" not in text, relative
     assert "`install-controller` (época 4 o posterior desde SC-2" in " ".join((REPO / DOCS[0]).read_text().split())
+    w3 = [line for line in (REPO / DOCS[1]).read_text().splitlines() if line.startswith("- **W3**:")]
+    assert w3 == ["- **W3**: `$ST install-controller r1.tar.gz`. El archivo debe declarar `controller_epoch` 4,"
+                  " exactamente la época que comprueba `adoption-commit`."]
+
+
+def test_run_is_not_offered_for_older_slots_under_a_managed_head():
+    """SC-2 review C2: run() goes through activate, so older lineages run only in legacy test roots."""
+    text = " ".join((REPO / DOCS[0]).read_text().split())
+    assert "`run()` sigue aceptando slots anteriores" not in text
+    assert ("Desde SC-2, bajo un head gestionado `run()` sólo corre el slot del propio head; correr linajes"
+            " viejos queda para raíces de prueba con `LEGACY_MANAGED_TRANSITIONS`.") in text
+
+
+def test_deployment_names_the_other_head_moves_and_that_they_grant_nothing():
+    """SC-2 review AUTHZ-2: adoption-commit after an aborted head and plain compaction's K remain."""
+    text = " ".join((REPO / DOCS[0]).read_text().split())
+    assert "la única transición gestionada entre slots sea el modo release" in text
+    assert "la única transición gestionada sea el modo release" not in text
+    bullet = text.split("- Siguen moviendo el head, por diseño:", 1)[1].split(" - ", 1)[0]
+    assert "`adoption-commit` cuando el head es un head de adopción abortado" in bullet
+    assert "el K de una compactación simple" in bullet and "A1 rechaza un K delegado" in bullet
+    assert "Ninguno concede dueños ni autoridad derivada." in bullet
 
 
 def test_deployment_states_the_epoch_lockout_residual():
@@ -76,17 +99,22 @@ def test_deployment_states_the_epoch_lockout_residual():
 
 
 def test_deployment_states_the_schema_contract_and_its_exclusions():
-    """SC-2 review SC2-R1: the extended vocabularies, their status and the excluded literal sets."""
+    """SC-2 review SC2-R1 and AUTHZ-1: the vocabularies, the rule, their status and the excluded sets."""
     text = " ".join((REPO / DOCS[0]).read_text().split())
     assert "#### Contrato de esquema (época 1)" in (REPO / DOCS[0]).read_text()
     assert "enmienda propuesta del diseño (sin confirmar)" in text and "antes de SC-6a" in text
+    assert "la regla es la relevancia para la privacidad, no el conjunto protegido" in text
+    for pinned in ("`ErasureState`", "`ErasureError`", "`IndexCleanupError`", "`MemoryOrigin`"):
+        assert pinned in text, pinned
     exclusions = [block for block in _paragraphs((REPO / DOCS[0]).read_text())
                   if block.startswith("Quedan fuera los conjuntos cerrados que `src` escribe como literales sin"
                                       " nombre importable")]
     assert len(exclusions) == 1
     for excluded in ("capture_runtime_control.mode", "capture_browser_recorders.kind", "routine_runs.source",
-                     "legacy_quarantine_records_v1.state", "reminders.recurrence"):
+                     "legacy_quarantine_records_v1.state", "reminders.recurrence",
+                     "policy_index_deletions.state", "facts.category", "voice_groups.state"):
         assert excluded in exclusions[0], excluded
+    assert "subir la época a mano" in exclusions[0]
 
 
 def test_r1_day14_says_no_rollback_remains_and_checks_sc_d5():

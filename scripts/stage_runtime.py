@@ -252,6 +252,24 @@ _REMINDER_ACTION_STATUSES = frozenset({"sending", "confirmed", "failed", "uncert
 _ROUTINE_RUN_STATUSES = frozenset({"running", "succeeded", "failed", "uncertain", "skipped", "interrupted"})
 _ROUTINE_ACTION_STATUSES = frozenset({"pending", "sending", "confirmed", "failed", "uncertain", "not_executed"})
 _LIST_OWNER_TYPES = frozenset({"user", "shared"})
+# SC-2 review AUTHZ-1 (Option A, same proposed amendment, pre-R1): the rule is
+# privacy relevance, not the protected set. Besides the protected tables, the
+# privacy.db tables that govern erasure progress and attribution
+# (erasure_targets, erasure_steps, policy_index_deletions, facts,
+# fact_sources; not protected) have every named src enum they store pinned
+# (a test lists them): ErasureParticipant and FactState (SCv2-P5), ErasureState and
+# ErasureError (erasure_steps.state/last_error), IndexCleanupError
+# (policy_index_deletions.last_error and the semantic-index recheck in
+# erasure_steps.last_error) and MemoryOrigin (fact_sources.origin). R1's
+# ErasureJournal.due() and claim only match pending/running, so an unknown
+# state after a rollback would stall an erasure silently. Their inline literal
+# sets (policy_index_deletions.state, voice_groups.state/reason) are listed as
+# excluded in DEPLOYMENT.md.
+_ERASURE_STATES = frozenset({"pending", "running", "complete", "blocked"})
+_ERASURE_ERRORS = frozenset({"participant_unregistered", "participant_unavailable", "cleanup_failed",
+                             "invalid_cleanup_result", "cleanup_pending", "interrupted_by_restart"})
+_INDEX_CLEANUP_ERRORS = frozenset({"index_cleanup_failed", "unsupported_index_target", "index_startup_recheck"})
+_MEMORY_ORIGINS = frozenset({"ambient", "voice", "interaction"})
 _LEDGER_GENESIS = "0" * 64
 # Receipt schema 2 (design v2 U3b-0d3, v3 N2): the closed state the child observed,
 # in a record beside the unchanged schema-1 receipt (read_receipt_state).
@@ -1353,7 +1371,7 @@ def _schema_contract(db: sqlite3.Connection, names: set[str], relative: str | No
 
 
 def _contract_vocabularies() -> dict[str, frozenset]:
-    """Every value vocabulary of the schema contract, by document key (SCv2-P5, SC2-R1)."""
+    """Every value vocabulary of the schema contract, by document key (SCv2-P5, SC2-R1, AUTHZ-1)."""
     return {
         "deletion_kinds": _LEDGER_KINDS,
         "erasure_participants": _ERASURE_PARTICIPANTS,
@@ -1375,6 +1393,10 @@ def _contract_vocabularies() -> dict[str, frozenset]:
         "routine_run_statuses": _ROUTINE_RUN_STATUSES,
         "routine_action_statuses": _ROUTINE_ACTION_STATUSES,
         "list_owner_types": _LIST_OWNER_TYPES,
+        "erasure_states": _ERASURE_STATES,
+        "erasure_errors": _ERASURE_ERRORS,
+        "index_cleanup_errors": _INDEX_CLEANUP_ERRORS,
+        "memory_origins": _MEMORY_ORIGINS,
     }
 
 

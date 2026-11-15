@@ -209,7 +209,7 @@ C=release_20261029T174830709997Z_63ea8d3
     systemctl --user start kza-voice.service
     ```
     y arrancar los timers de la ventana.
-- **W3**: `$ST install-controller r1.tar.gz`. Exige época de controlador 2.
+- **W3**: `$ST install-controller r1.tar.gz`. El archivo debe declarar `controller_epoch` 4, exactamente la época que comprueba `adoption-commit`.
 - **W4**: `$PY -I -B /home/kza/releases/controller/current/scripts/stage_runtime.pyc --root /home/kza/releases --offline adoption-commit --confirm <plan_sha256>`.
   - Verifica todo el plan de nuevo y rechaza con
     `runtime_admission_adoption_plan_mismatch:<ítem>` antes de cualquier

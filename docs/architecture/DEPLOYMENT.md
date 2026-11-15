@@ -234,7 +234,11 @@ autocontenidas y la delegación a estados dueños se apaga. Desde SC-2
   compactación, el K de ese log. Una raíz sin head (no gestionada) no cambia.
   Sin delegación, un `prepare` + `activate` de una copia sin rutas podía
   convertirse en head y dejar atrás a H; esta regla hace que, desde R1, la
-  única transición gestionada sea el modo release.
+  única transición gestionada entre slots sea el modo release.
+- Siguen moviendo el head, por diseño: `adoption-commit` cuando el head es un
+  head de adopción abortado (re-adopción desde el legado) y el K de una
+  compactación simple (el mismo archivo que H por P6; A1 rechaza un K
+  delegado). Ninguno concede dueños ni autoridad derivada.
 - Una copia de `stage_runtime` de época 3 (de un slot o de
   `controller/<commit>`) no puede tomar el lease ni preparar en una raíz cuyo
   `admission/controller.json` declare época 4
@@ -269,18 +273,37 @@ verificación, tipos de evento y motivos de suspensión de atribución, roles
 del dashboard, acción, resultado y motivo de `credential_attempts`, estados de
 grabadores del navegador, estado, alcance y estado de acción de
 recordatorios, estados de corridas y acciones de rutinas, y tipo de dueño de
-listas. Cada uno es igual a su enum en un test. Esa ampliación es una
-enmienda propuesta del diseño (sin confirmar): se aplicó antes de R1 porque
-después ampliar el contrato exige la época 2, una transición de esquema fuera
-del modo release. Debe confirmarse o revertirse antes de SC-6a.
+listas. Desde la revisión AUTHZ-1 la regla es la relevancia para la
+privacidad, no el conjunto protegido: además de las tablas protegidas, las
+tablas de `privacy.db` que gobiernan el avance del borrado y la atribución
+(`erasure_targets`, `erasure_steps`, `policy_index_deletions`, `facts`,
+`fact_sources`, no protegidas) fijan cada enum con nombre que guardan:
+participantes y estados de hechos (ya en SCv2-P5), `ErasureState` y
+`ErasureError` (`erasure_steps.state` y `last_error`), `IndexCleanupError`
+(`policy_index_deletions.last_error` y la recomprobación del índice en
+`erasure_steps.last_error`) y `MemoryOrigin` (`fact_sources.origin`). Sin
+eso, un estado nuevo de un paso de borrado sobreviviría a un rollback a R1,
+cuyo `due()` y cuyo claim sólo buscan `pending`/`running`: el borrado de la
+conversación quedaría detenido sin aviso. Cada vocabulario es igual a su enum
+en un test, y otro test clasifica cada columna de esas cinco tablas. Las dos
+ampliaciones (SC2-R1 y AUTHZ-1) son una enmienda propuesta del diseño (sin
+confirmar): se aplicaron antes de R1 porque después ampliar el contrato exige
+la época 2, una transición de esquema fuera del modo release. Deben
+confirmarse o revertirse antes de SC-6a.
 
 Quedan fuera los conjuntos cerrados que `src` escribe como literales sin
 nombre importable: `capture_runtime_control.mode` (`running`, `muted`,
 `resuming`, en un CHECK), `capture_browser_recorders.kind` (tupla en
 `capture_recorders.py`), `routine_runs.source`,
-`legacy_quarantine_records_v1.state` (CHECK `quarantined`) y la gramática de
-`reminders.recurrence`. Agregar un valor ahí no cambia el pin; quien lo haga
-debe tratarlo como un cambio de contrato y subir la época a mano.
+`legacy_quarantine_records_v1.state` (CHECK `quarantined`), la gramática de
+`reminders.recurrence` y, en las tablas de avance del borrado y atribución,
+`policy_index_deletions.state` (`pending`, `running`, `complete` en
+`index_deletions.py`), `facts.category` (`personal`, `preference`,
+`pattern`, `fact` en `FactLedger.store`) y `voice_groups.state`/`reason`
+(literales en `src/users/voice_groups.py`). Agregar un valor ahí no cambia el
+pin; quien lo haga debe tratarlo como un cambio de contrato y subir la época a
+mano. Los enums de las demás tablas no protegidas (por ejemplo
+`suggestions_policy_v1.status`) no forman parte del contrato.
 
 Desaparecen con esto el límite de 8 dueños y el hallazgo F8 (un borrado del
 head en filas protegidas de un dueño dejaba el head en UNKNOWN): sin dueños
@@ -760,8 +783,9 @@ lo rechaza con 78 (`runtime_admission_launcher_contract_missing` o
 enteros y rechaza antes de mover el head o `current`, así un activate del
 operador no deja un arranque que sale con 78. La API acepta
 `launcher_checks=False` sólo para ensayar ese rechazo de `serve`; la CLI no
-lo expone. `run()` sigue aceptando slots anteriores para los ensayos de
-linajes viejos.
+lo expone. Desde SC-2, bajo un head gestionado `run()` sólo corre el slot
+del propio head; correr linajes viejos queda para raíces de prueba con
+`LEGACY_MANAGED_TRANSITIONS`.
 
 Evidencia: `data/autonomous-roadmap-20261102/t040-t041/u3b-0d-evidence.json`
 y, para las correcciones de la revisión independiente,

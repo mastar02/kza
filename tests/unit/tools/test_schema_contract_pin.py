@@ -29,11 +29,13 @@ REPO = Path(__file__).resolve().parents[3]
 
 # Bumping SCHEMA_CONTRACT_EPOCH is a schema transition (outside release mode, SC-D4): add the
 # new epoch's digest here in the same change; never edit an existing entry once a release declares
-# it. Epoch 1 was re-pinned once before any archive declared it (SC-2 review SC2-R1/SC2-R2: every
+# it. Epoch 1 was re-pinned twice before any archive declared it: SC-2 review SC2-R1/SC2-R2 (every
 # src enum stored verbatim in a protected table and the reader's own database rules joined the
-# document; the first pin was b5d785d1...). From SC-6a (R1 built) this entry is frozen.
+# document; the first pin was b5d785d1...), then AUTHZ-1 (the erasure-progress and attribution
+# vocabularies of privacy.db; the second pin was f411ffec...). From SC-6a (R1 built) this entry
+# is frozen.
 PINNED_CONTRACTS = {
-    1: "f411ffec926f933274b588377858a79cc1327cd8bfa7f65af9fa9f9c2c063906",
+    1: "691c2272c3e4f5b4e3119b008396f340de6ee8ef4006abba659103c694f1e8d8",
 }
 
 
@@ -108,6 +110,10 @@ CHANGES = {
     "_ROUTINE_RUN_STATUSES": _frozen_plus,
     "_ROUTINE_ACTION_STATUSES": _frozen_plus,
     "_LIST_OWNER_TYPES": _frozen_plus,
+    "_ERASURE_STATES": _frozen_plus,
+    "_ERASURE_ERRORS": _frozen_plus,
+    "_INDEX_CLEANUP_ERRORS": _frozen_plus,
+    "_MEMORY_ORIGINS": _frozen_plus,
 }
 
 
@@ -126,8 +132,10 @@ def test_a_changed_column_type_changes_the_document(monkeypatch):
 
 # Document key -> (stage literal, src module, src name, the table.column that stores it verbatim).
 # SCv2-P5 named the first five; SC2-R1 added every other src enum (or named closed set) a
-# protected table stores, so R1 declares all of them. Inline literal sets in src have no
-# importable name and are listed as excluded in DEPLOYMENT.md («Contrato de esquema»).
+# protected table stores; AUTHZ-1 (Option A: privacy relevance, not the protected set) added
+# every named src enum the erasure-progress and attribution tables of privacy.db store
+# (PRIVACY_PROGRESS_TABLES, not protected). Inline literal sets in src have no importable name
+# and are listed as excluded in DEPLOYMENT.md («Contrato de esquema»).
 SRC_VOCABULARIES = {
     "deletion_kinds": ("_LEDGER_KINDS", "src.memory.deletion_ledger", "DeletionKind", "deletion_ledger_v1.kind"),
     "erasure_participants": ("_ERASURE_PARTICIPANTS", "src.memory.erasure_journal", "ErasureParticipant",
@@ -161,6 +169,34 @@ SRC_VOCABULARIES = {
     "routine_action_statuses": ("_ROUTINE_ACTION_STATUSES", "src.routines.models", "ActionStatus",
                                 "routine_run_actions.status"),
     "list_owner_types": ("_LIST_OWNER_TYPES", "src.lists.list_store", "OwnerType", "lists.owner_type"),
+    "erasure_states": ("_ERASURE_STATES", "src.memory.erasure_journal", "ErasureState", "erasure_steps.state"),
+    "erasure_errors": ("_ERASURE_ERRORS", "src.memory.erasure_journal", "ErasureError",
+                       "erasure_steps.last_error"),
+    "index_cleanup_errors": ("_INDEX_CLEANUP_ERRORS", "src.memory.index_deletions", "IndexCleanupError",
+                             "policy_index_deletions.last_error"),
+    "memory_origins": ("_MEMORY_ORIGINS", "src.memory.fact_ledger", "MemoryOrigin", "fact_sources.origin"),
+}
+
+# AUTHZ-1: the privacy.db tables outside the protected set whose vocabularies are pinned because
+# they govern erasure progress and attribution. Every column of each is classified below, so a new
+# column forces the choice (pinned vocabulary, excluded inline literal set, or not a closed set).
+PRIVACY_PROGRESS_TABLES = {
+    "erasure_targets": {"participant": ("erasure_participants",)},
+    "erasure_steps": {"participant": ("erasure_participants",), "state": ("erasure_states",),
+                      # ErasureError, plus IndexCleanupError.RECHECK from IndexDeletionQueue.recover
+                      "last_error": ("erasure_errors", "index_cleanup_errors")},
+    "policy_index_deletions": {"state": "excluded", "last_error": ("index_cleanup_errors",)},
+    "facts": {"state": ("fact_states",), "category": "excluded"},
+    "fact_sources": {"origin": ("memory_origins",)},
+}
+_NOT_A_CLOSED_SET = {
+    "erasure_targets": {"id", "version", "descriptor"},
+    "erasure_steps": {"operation_id", "target_id", "version", "attempts", "next_attempt_at", "claim_token",
+                      "cursor", "pending_count"},
+    "policy_index_deletions": {"target_id", "fact_id", "revision", "attempts", "next_attempt_at", "claim_token"},
+    "facts": {"id", "content", "confidence", "extracted_at", "expires_at", "revision", "confirmed_at",
+              "confirmed_by"},
+    "fact_sources": {"fact_id", "capture_id", "conversation_id", "captured_at", "expires_at", "dependencies"},
 }
 
 
@@ -177,8 +213,34 @@ def test_the_controller_literals_equal_the_src_vocabularies(key):
     table, field = column.split(".")
     assert table in stage._TABLE_COLUMNS
     assert field in dict(item.split(":") for item in stage._TABLE_COLUMNS[table].split())
-    if key not in ("erasure_participants", "fact_states"):  # facts / erasure_targets are not protected
-        assert table in stage._PROTECTED_TABLES
+    assert table in stage._PROTECTED_TABLES or table in PRIVACY_PROGRESS_TABLES
+
+
+def test_every_column_of_the_privacy_progress_tables_is_classified():
+    """AUTHZ-1: each closed set an erasure-progress/attribution table stores is pinned or excluded."""
+    for table, classified in PRIVACY_PROGRESS_TABLES.items():
+        assert table not in stage._PROTECTED_TABLES, table
+        columns = {item.split(":")[0] for item in stage._TABLE_COLUMNS[table].split()}
+        assert columns == set(classified) | _NOT_A_CLOSED_SET[table], table
+        assert not set(classified) & _NOT_A_CLOSED_SET[table], table
+        for column, keys in classified.items():
+            if keys == "excluded":
+                continue
+            for key in keys:
+                assert key in stage._contract_vocabularies(), (table, column, key)
+            assert any(SRC_VOCABULARIES[key][3] == f"{table}.{column}" for key in keys) \
+                or table == "erasure_steps" and column == "participant", (table, column)
+
+
+def test_every_value_src_writes_to_erasure_steps_last_error_is_pinned():
+    """AUTHZ-1: erasure_steps.last_error carries ErasureError plus the index recheck reason."""
+    from src.core import adoption_schema
+    from src.memory.erasure_journal import ErasureError
+    from src.memory.index_deletions import IndexCleanupError
+
+    assert adoption_schema.RESIDUE_REASON in stage._ERASURE_ERRORS
+    assert {error.value for error in ErasureError} <= stage._ERASURE_ERRORS
+    assert IndexCleanupError.RECHECK.value in stage._INDEX_CLEANUP_ERRORS
 
 
 def test_every_contract_vocabulary_has_a_src_source():
