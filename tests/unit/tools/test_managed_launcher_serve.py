@@ -16,6 +16,7 @@ import shutil
 from pathlib import Path
 import signal
 import sqlite3
+import stat
 from contextlib import closing
 import sys
 import time
@@ -1134,3 +1135,80 @@ def test_a_damaged_store_after_a_crash_refuses_automatic_r_b(root, tmp_path, dam
     with pytest.raises(launcher.LauncherRefusal, match="runtime_admission_recovery_check_failed"):
         launcher.adopt(root, confirm=launcher.adopt(root, confirm="", regressions=[], dry_run=True)["head_sha256"],
                        regressions=[])
+
+
+# --- the managed child's umask (review F5) -------------------------------------------------------
+
+# Run inside the child: what src/ creates at run time under the state, as it creates it (mkdir with
+# parents, a plain open('w'), a WAL database and its -wal/-shm), recorded while the database is open.
+UMASK_PROBE = """
+import json, os, sqlite3, stat
+mask = os.umask(0o077)
+os.umask(mask)
+data = state / 'data'
+(data / 'f5-probe' / 'deep').mkdir(parents=True)
+with open(data / 'f5-probe' / 'deep' / 'plain.json', 'w') as stream:
+    stream.write('{}')
+db = sqlite3.connect(data / 'f5-probe.db', isolation_level=None)
+db.execute('PRAGMA journal_mode=WAL')
+db.execute('CREATE TABLE memories (x TEXT)')
+db.execute(\"INSERT INTO memories VALUES ('synthetic')\")
+names = ('f5-probe', 'f5-probe/deep', 'f5-probe/deep/plain.json', 'f5-probe.db', 'f5-probe.db-wal', 'f5-probe.db-shm')
+modes = {name: oct(stat.S_IMODE(os.lstat(data / name).st_mode)) for name in names}
+db.close()
+with open(OUT, 'w') as stream:
+    json.dump({'umask': oct(mask), 'modes': modes}, stream)
+"""
+
+PRIVATE_PROBE_MODES = {"f5-probe": "0o700", "f5-probe/deep": "0o700", "f5-probe/deep/plain.json": "0o600",
+                       "f5-probe.db": "0o600", "f5-probe.db-wal": "0o600", "f5-probe.db-shm": "0o600"}
+
+
+@pytest.fixture
+def server_umask():
+    """The controller's own umask on the server (kza and its user manager: 0002)."""
+    previous = os.umask(0o002)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
+def test_the_served_child_creates_private_state_under_the_server_umask(root, tmp_path, server_umask):
+    """Review F5: serve spawns the child with umask 0077, whatever the controller's 0002."""
+    out = tmp_path / "probe.json"
+    result = _serve(root, tmp_path, "clean", execute="OUT = %r\n" % str(out) + UMASK_PROBE)
+    assert result.code == 0, result.serve.events
+    observed = json.loads(out.read_text())
+    assert observed == {"umask": "0o77", "modes": PRIVATE_PROBE_MODES}
+    data = root / "slots" / "s" / "state" / "data"
+    assert {name: oct(stat.S_IMODE(os.lstat(data / name).st_mode))
+            for name in ("f5-probe", "f5-probe/deep", "f5-probe/deep/plain.json", "f5-probe.db")} == {
+        name: PRIVATE_PROBE_MODES[name] for name in ("f5-probe", "f5-probe/deep", "f5-probe/deep/plain.json",
+                                                     "f5-probe.db")}
+    assert os.umask(0o002) == 0o002  # the controller's own umask is left as it was
+
+
+def test_an_admission_run_child_creates_private_state_under_the_server_umask(root, tmp_path, server_umask):
+    """Review F5: AdmissionController.run (operator runs, rehearsals) spawns with the same umask."""
+    out = tmp_path / "probe.json"
+    child = tmp_path / "run_child.py"
+    child.write_text("\n".join([
+        "import importlib.util, os, sys",
+        "from pathlib import Path",
+        "sys.path[:0] = [str(Path.cwd())]",
+        "state = Path(sys.argv[1])",
+        "OUT = sys.argv[2]",
+        UMASK_PROBE,
+        "spec = importlib.util.spec_from_file_location('_run_child_stage', Path.cwd() / 'scripts/stage_runtime.pyc')",
+        "module = importlib.util.module_from_spec(spec)",
+        "spec.loader.exec_module(module)",
+        "module.write_admission_receipt(os.environ['KZA_RUNTIME_ADMISSION'], dict.fromkeys(",
+        "    ['graph_closed', 'privacy_closed', 'sdk_closed', 'native_closed'], True))",
+    ]))
+    state = root / "slots" / "s" / "state"
+    with stage.AdmissionController(root) as controller:
+        completed = controller.run("s", [sys.executable, "-I", "-B", str(child), str(state), str(out)], timeout=60)
+    assert completed.returncode == 0
+    assert _head(root)["status"] == "closed"
+    assert json.loads(out.read_text()) == {"umask": "0o77", "modes": PRIVATE_PROBE_MODES}

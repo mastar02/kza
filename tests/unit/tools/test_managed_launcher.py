@@ -236,6 +236,7 @@ def test_managed_conf_renders_the_notify_service():
     assert directives["Restart"] == "on-failure" and directives["StartLimitBurst"] == "5"
     assert directives["TimeoutAbortSec"] == directives["TimeoutStopSec"] == "200"
     assert directives["WatchdogSec"] == "0" and directives["WatchdogSignal"] == "SIGTERM"
+    assert directives["UMask"] == "0077"  # review F5: private run-time state, defence in depth
     assert directives["ExecStart"] == [
         "/home/kza/kza/.venv/bin/python -I -B /home/kza/releases/controller/current/scripts/stage_runtime.pyc"
         " --root /home/kza/releases --offline serve --stop-grace 120 --recover bounded --unit-timeout-stop 200"]

@@ -23,6 +23,9 @@ WatchdogSignal=SIGTERM
 Restart=on-failure
 RestartSec=10s
 RestartPreventExitStatus=69 78
+# Review F5: the controller and its child create private entries (the controller also
+# spawns the child with umask 0077 itself, so this is defence in depth).
+UMask=0077
 Environment=PYTHONUNBUFFERED=1
 WorkingDirectory={root}
 StandardOutput=append:{console_log}

@@ -286,6 +286,12 @@ def _identity(path: Path) -> dict:
 
 PRIVATE_DIRECTORY_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
+# The managed child (serve's src.main, a rehearsal child, AdmissionController.run) is
+# spawned with this umask, whatever the controller's own (0002 for kza on the server):
+# what the application creates under slots/<slot>/state at run time (SQLite databases
+# and their -wal/-shm, intermediate directories, plain files) is 0600/0700 (review F5).
+# A file another reader needs keeps its own explicit fchmod (audio_health.json 0644).
+MANAGED_CHILD_UMASK = 0o077
 
 
 def private_directories(path: Path) -> None:
@@ -4261,7 +4267,8 @@ class AdmissionController:
         process = None
         try:
             process = subprocess.Popen(command, cwd=binding["runtime_root"], env=child_env,
-                                       pass_fds=(self._descriptor,), stdout=stdout, stderr=stderr)
+                                       pass_fds=(self._descriptor,), stdout=stdout, stderr=stderr,
+                                       umask=MANAGED_CHILD_UMASK)
             output, error = process.communicate(timeout=timeout)
             returncode = process.wait()
             if returncode != 0:
