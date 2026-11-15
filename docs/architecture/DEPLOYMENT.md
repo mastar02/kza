@@ -288,6 +288,12 @@ autocontenidas y la delegación a estados dueños se apaga. Desde SC-2
 
 #### SC-6a: ensayo ampliado y copias viejas retiradas (2026-11-15)
 
+- R1: construido bajo `yo` en el server desde 81ed568 (`controller_epoch` 4,
+  `schema_contract` 1), dos veces, idéntico byte a byte; la construcción en la
+  Mac (CPython 3.13.18 contra 3.13.12 del server) da los mismos bytes. sha256
+  `3f57bd197f2f1633f32683616abefd3db038466d7a966d9925b24c84fc342a0e`, en `/home/yo/projects/releases-r1/r1-81ed568.tar.gz`. El runbook de
+  R1 fija ese sha256 y su commit, y antes de W1 exige que `sha256sum
+  "$R1_ARCHIVE"` coincida o se detiene.
 - Ensayo: `tests/integration/test_sc6a_r1_rehearsal.py` (en proceso, Mac y
   server) y la ventana real de `tests/integration/test_linux_adoption_window.py`
   agregan los casos (i)–(iv) del diseño. Después de W9, `delegate`,
@@ -358,6 +364,8 @@ ampliaciones (SC2-R1 y AUTHZ-1) son una enmienda del diseño aceptada el
 2026-11-15 como decisión técnica (más estricta que SCv2-P5; revocable hasta
 que SC-6a construya R1): se aplicaron antes de R1 porque después ampliar el
 contrato exige la época 2, una transición de esquema fuera del modo release.
+SC-6a construyó R1 el 2026-11-15 desde 81ed568, así que la época 1 quedó
+congelada tal como está: cualquier cambio es época 2.
 
 Quedan fuera los conjuntos cerrados que `src` escribe como literales sin
 nombre importable: `capture_runtime_control.mode` (`running`, `muted`,

@@ -263,3 +263,19 @@ def test_the_first_copy_with_the_epoch_check_is_locked_out_of_the_epoch4_root(wo
             arguments, result.stderr[-2000:])
     assert _witness(root, *_states(world)) == before
     assert not (root / "slots" / "p").exists()
+
+
+# --- the runbook's pin is the archive build_runtime makes from the pinned commit -----------------------------
+
+def test_the_runbook_pin_is_the_archive_of_its_commit(tmp_path):
+    """Rebuilt here from the pinned commit, the archive has exactly the pinned sha256 and passes the
+    runbook's own block (build_runtime is byte-reproducible across the Mac and the server)."""
+    pin = r1_runbook.pinned()
+    archive, manifest = _build(tmp_path, pin["R1_COMMIT"], "pinned")
+    assert manifest["git_commit"] == pin["R1_COMMIT"]
+    assert manifest["controller_epoch"] == 4 and manifest["schema_contract"] == 1
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() == pin["R1_SHA256"]
+    result = r1_runbook.run_check(archive)
+    assert result.returncode == 0 and result.stdout.strip() == r1_runbook.OK, result
+    _manifest, _files, summary = commands.read_r1_archive(archive)
+    assert summary["sha256"] == pin["R1_SHA256"]

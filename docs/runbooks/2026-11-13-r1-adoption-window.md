@@ -39,15 +39,18 @@ de SC-2 (época 3) no sirve: sus propios comandos lo aceptarían e instalarían
 un controlador que todavía concede delegaciones (PS-13). Además, toda copia de
 `stage_runtime` de 69a79e6 a b0c322d~1 (toda la época 2 y la época 3 anterior
 a b0c322d) no comprueba la época y puede conceder y activar otro slot en una
-raíz de época 4 (AUTHZ3-1). Pendiente de SC-6a: reconstruir R1 desde el commit
-con SC-2; listar y borrar o renombrar (`*.superseded-epoch3`) todo R1
+raíz de época 4 (AUTHZ3-1). SC-6a (2026-11-15) reconstruyó R1 desde 81ed568
+(época 4, contrato de esquema 1), dos veces bajo `yo` en el server con
+resultado idéntico byte a byte (una tercera construcción en la Mac también
+coincide), y fijó su sha256 y su commit abajo, en «Archivo R1 fijado», con el
+paso obligatorio `sha256sum "$R1_ARCHIVE"` antes de W1. Listó y borró todo R1
 anterior y todo archivo, árbol extraído y checkout construido desde ese rango,
-bajo `yo` y en cada ubicación de transferencia; agregar al ensayo de adopción
-el `delegate` y el `activate` de una copia de ese rango sobre una raíz de
-época 4 (debe quedar sin copia que correr); fijar aquí su sha256 y su commit, y
-agregar antes de W1 el paso obligatorio `sha256sum "$R1_ARCHIVE"` igual al
-valor fijado o se detiene el procedimiento. Hasta entonces esta ventana no se
-ejecuta.
+bajo `yo` y en cada ubicación de transferencia (cada ubicación está en el
+handoff; del lado de `kza` no había ninguno, y no hizo falta renombrar nada a
+`*.superseded-epoch3`). El ensayo de adopción corre ahora el `delegate` y el
+`activate` de una copia de ese rango sobre una raíz de época 4: todavía
+concede y activa, y el test lo fija tal como es. La barrera es correr sólo
+`controller/current` y que no quede ninguna copia de ese rango que correr.
 
 Después de R1 no hay transiciones gestionadas (ningún arreglo de código) hasta
 que exista el modo release; el único rollback es L4 durante sus 14 días. Ver
@@ -74,18 +77,22 @@ archivo verificado aquí.
 
 ### Archivo R1 fijado (paso obligatorio antes de W1)
 
-SC-6a construye R1 bajo `yo` con `scripts/build_runtime.py`, dos veces y con
-resultado idéntico byte a byte, y fija aquí su sha256 y su commit. El valor
-vive en un commit de documentación posterior al commit construido: un archivo
-no puede contener su propio hash, y el archivo no incluye `docs/`.
+SC-6a construyó R1 bajo `yo` con `scripts/build_runtime.py` desde 81ed568, dos
+veces y con resultado idéntico byte a byte, y fija aquí su sha256 y su commit.
+El valor vive en un commit de documentación posterior al commit construido: un
+archivo no puede contener su propio hash, y el archivo no incluye `docs/`.
+El archivo queda bajo `yo` en el server, en
+`/home/yo/projects/releases-r1/r1-81ed568.tar.gz` (modo 0600, directorio
+0700, con su `SHA256SUMS`). Llevarlo a `kza` es parte de la release y lo hace
+el operador; esa copia transferida es la que se verifica aquí.
 
 Antes de extraer `$R1`, antes de la corrida de prueba y otra vez justo antes
 de W1, correr exactamente:
 
 ```bash
 R1_ARCHIVE=<ruta del r1.tar.gz transferido>
-R1_SHA256=pendiente-SC-6a
-R1_COMMIT=pendiente-SC-6a
+R1_SHA256=3f57bd197f2f1633f32683616abefd3db038466d7a966d9925b24c84fc342a0e
+R1_COMMIT=81ed5680fa46d0b5b48e8e6eb9e4a36da5f15ed0
 if [ "$(sha256sum "$R1_ARCHIVE" | cut -d' ' -f1)" = "$R1_SHA256" ]; then echo "R1 fijado: OK"; else echo "R1 distinto del fijado: DETENER"; false; fi
 ```
 
