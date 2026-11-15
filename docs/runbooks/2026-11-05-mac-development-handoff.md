@@ -1072,12 +1072,23 @@ integrar ni subir. Evidencia:
   dueños vivos. Detalle en DEPLOYMENT (R5V-1).
 - Tests: el test que reproduce el problema
   (`test_capture_orphan_owner_stop.py`) falla en 81ed568 y pasa con el
-  arreglo. Se reescribieron como cambio de contrato los tests de reinicio de
-  navegador y de los cinco tipos nativos, y el caso `unknown` de
-  `test_runtime_closure`. Ya no exigen que drain espere a la fila desconocida
-  al arrancar, pero siguen exigiendo que nunca se dé por retirada sin su
-  `retire`. Ese cambio requiere revisión independiente. Mutantes: 16 de 16
-  muertos.
+  arreglo. Tras la revisión 1, los tests de reinicio de navegador, de los
+  cinco tipos nativos y el caso `unknown` de `test_runtime_closure` vuelven a
+  su contrato de 81ed568: el titular presenta su token, así que el cierre
+  espera su `retire`. Tests nuevos cubren el dueño arrastrado silencioso, el
+  que reaparece durante una drain o después de la drain del cierre, dos
+  reinicios seguidos y los términos de `pending_live`.
+- Revisión 1 (R1B1-1 a R1B1-7), aplicada en la misma rama: reclamo por token
+  (`poll`/`activate`), premisa de los monitores documentada, advertencia con
+  el conteo al cerrar y clave `capture_permissions_carried`, conteos
+  `live_capture_owners`/`carried_capture_owners` en el estado y el panel,
+  preflight de dueños vivos en los runbooks de R1 y compactación, reintento
+  de `retire` en la página, y redacción corregida sobre subidas y filas sin
+  tope. Mutantes: 33 de 33 muertos (30 en la primera corrida; M5, N2 y N8
+  después, con tests nuevos). Corridas dirigidas en la evidencia (`review_round_1`).
+- **Bloqueante antes de integrar**: el visto bueno explícito del usuario a
+  que la parada y el cierre ya no esperen a un dueño `unknown` al arrancar que
+  nunca vuelve a contactar (relaja la regla del 2026-11-04).
 - Pendiente del usuario, no bloqueante: si las filas arrastradas se pueden
   retirar más adelante (automático al arrancar o con «Olvidar grabaciones
   perdidas» desde Privacidad) o si se conservan sin confirmar. Mientras no
