@@ -941,6 +941,12 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   época 3 (listar aquí cada ubicación); fijar el sha256 y el commit en el
   runbook con el paso obligatorio `sha256sum` antes de W1; repetir el ensayo de
   adopción (compilado, ventana real en Linux y T-A17) con los rechazos nuevos.
+- Pruebas sobre `cc14903`: suite batch en la Mac verde (12.167 pasan, 47 se
+  omiten, 2 xfail; las 8 rehearsals de tiempo a solas pasan; node sin fallas).
+  En el server (`yo`, clon temporal desde bundle, ya borrado): los cuatro
+  módulos Linux de a uno (7 + 1 + 14 + 13 pasan, con systemd real y unidades
+  `kza-rehearsal-*`) y el conjunto SC-2 (625 pasan, 1 omitida, 1 xfail).
+  Mutantes: 18 de 18 muertos en la Mac.
 - Revisión independiente de SC-2/SC-5a: pendiente.
 
 ## Prompt para la sesión nueva
