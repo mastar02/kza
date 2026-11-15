@@ -241,6 +241,46 @@ autocontenidas y la delegación a estados dueños se apaga. Desde SC-2
   (`runtime_admission_controller_downgrade`), e `install-controller` la
   rechaza (`runtime_admission_controller_epoch_too_old`). Así un controlador
   viejo no puede volver a conceder.
+- Ese bloqueo necesita un `admission/controller.json` legible: si falta, es un
+  symlink, no se puede leer o no es JSON válido, `require_forward_epoch` no
+  rechaza nada y una copia de época 3 podría volver a conceder y activar otro
+  slot (residuo aceptado en el diseño, `delegation_off.old_controller_copies`).
+  Con el registro dañado, repararlo sólo con `controller/current` o
+  `install-controller`, y no correr el `stage_runtime` de ningún slot hasta
+  que vuelva a declarar la época 4.
+
+#### Contrato de esquema (época 1)
+
+SC-2 declara `SCHEMA_CONTRACT_EPOCH = 1` y `release.json` lo copia como
+`schema_contract`. `schema_contract_document()` serializa todo lo que el
+controlador exige a un estado: columnas por tabla (compartidas y por base),
+marcadores de versión, el conjunto protegido, las reglas de base que aplica el
+lector (tablas ignoradas, `memories` sola sin binding, la excepción del SDK,
+vistas y triggers rechazados, `application_id`/`user_version` de métricas y
+del resto, versiones de `auth_meta`), todas leídas de las mismas constantes
+que usa el lector, y los vocabularios de valores. Un test fija su sha256 al
+lado de la época: cambiar el contrato sin subir la época falla la suite.
+
+Vocabularios: los cinco de SCv2-P5 (tipos del registro de borrados,
+participantes del borrado, estados de hechos, cambios y métodos de dueño) y,
+desde la revisión SC2-R1, cada enum de `src` cuyo valor guarda tal cual una
+tabla protegida: estados de consentimiento de voz, resultados de
+verificación, tipos de evento y motivos de suspensión de atribución, roles
+del dashboard, acción, resultado y motivo de `credential_attempts`, estados de
+grabadores del navegador, estado, alcance y estado de acción de
+recordatorios, estados de corridas y acciones de rutinas, y tipo de dueño de
+listas. Cada uno es igual a su enum en un test. Esa ampliación es una
+enmienda propuesta del diseño (sin confirmar): se aplicó antes de R1 porque
+después ampliar el contrato exige la época 2, una transición de esquema fuera
+del modo release. Debe confirmarse o revertirse antes de SC-6a.
+
+Quedan fuera los conjuntos cerrados que `src` escribe como literales sin
+nombre importable: `capture_runtime_control.mode` (`running`, `muted`,
+`resuming`, en un CHECK), `capture_browser_recorders.kind` (tupla en
+`capture_recorders.py`), `routine_runs.source`,
+`legacy_quarantine_records_v1.state` (CHECK `quarantined`) y la gramática de
+`reminders.recurrence`. Agregar un valor ahí no cambia el pin; quien lo haga
+debe tratarlo como un cambio de contrato y subir la época a mano.
 
 Desaparecen con esto el límite de 8 dueños y el hallazgo F8 (un borrado del
 head en filas protegidas de un dueño dejaba el head en UNKNOWN): sin dueños
@@ -707,7 +747,12 @@ stage_runtime --root /home/kza/releases --offline uninstall-launcher \
   conversaciones y perfiles de voz borrados desde entonces. Decide el usuario,
   no el operador.
 
-Rollback gestionado: un slot destino necesita `launcher_contract >= 3` y
+Rollback gestionado (**no disponible desde SC-2 hasta el modo release**: bajo
+un head gestionado, `activate` de otro slot rechaza con
+`runtime_admission_transition_requires_release_mode`; ver «Sin transiciones
+gestionadas después de R1 hasta el modo release». Lo que sigue describe los
+chequeos que el modo release reutilizará y los que ya aplica `serve`): un slot
+destino necesita `launcher_contract >= 3` y
 `format_epoch` igual o mayor que el mínimo del controlador. Si no, `serve`
 lo rechaza con 78 (`runtime_admission_launcher_contract_missing` o
 `runtime_admission_rollback_format_closed`). Con un controlador instalado
@@ -834,7 +879,11 @@ Después del retiro **no hay rollback no gestionado** (decisión Q3 = A):
   herramienta lo usa como destino y no se va a construir una: su unidad
   original corría desde `/home/kza/app`;
 - la recuperación sólo avanza: una release gestionada nueva, o un rollback
-  gestionado dentro del linaje gestionado.
+  gestionado dentro del linaje gestionado. **Desde SC-2 ninguna de las dos
+  existe hasta el modo release** (ver «Sin transiciones gestionadas después de
+  R1 hasta el modo release»): después de este retiro no queda ningún rollback.
+  Antes de ejecutarlo, revisar la respuesta a SC-D5 en esa sección (la opción
+  B posterga este paso).
 
 `/home/kza/kza` está congelado y sin retención desde el 2026-10-28, así que
 guarda más datos vencidos que la imagen que se retira. Queda como copia, no
@@ -843,8 +892,10 @@ vale para el respaldo `backups/release_20261028T144002Z_2c5adb4/`, que es de
 `/home/kza/kza`.
 
 Época del controlador (revisión 0e3 F14): desde R1 no se puede instalar un
-controlador anterior a la época 2. Un rollback gestionado puede volver a slots
-anteriores, pero no el controlador por debajo de la época 2.
+controlador anterior a la época 2. Un rollback gestionado (no disponible desde
+SC-2 hasta el modo release, ver «Sin transiciones gestionadas después de R1
+hasta el modo release») podrá volver a slots anteriores, pero no el
+controlador por debajo de la época 2.
 
 Evidencia: `data/autonomous-roadmap-20261102/t040-t041/u3b-0e5-evidence.json`
 (local, fuera de Git).
@@ -956,7 +1007,7 @@ empieza un abort o un retiro, ninguna (`compaction_abort_pending`,
 (`compaction_abort_recheck_required`), y un abort o retiro reanudado termina
 cada miembro por su identidad registrada, sin registrar el final mientras
 quede algo en la cuarentena.
-`install-controller` (época 3 o posterior, nunca menor que la instalada) sí
+`install-controller` (época 4 o posterior desde SC-2, nunca menor que la instalada) sí
 entra, también con un log inválido: es la salida de una compactación trabada
 (D4 = A). La recuperación automática R-b queda apagada mientras tanto. No
 reinicies el servidor durante una compactación.

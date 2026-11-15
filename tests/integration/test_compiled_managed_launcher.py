@@ -378,9 +378,11 @@ def test_tc4_pre_launcher_artifact_is_refused_78(artifacts, tmp_path, deployment
     assert "pre" in artifacts["archives"], "the pre-0d artifact must be built"
     deployment = _deploy(artifacts, tmp_path, deployments)
     stage.prepare_slot(artifacts["archives"]["pre"], deployment.root, "pre", deployment.state)
-    if deployment.head() is not None:  # SC-2 refuses the cross-slot activation first
-        with pytest.raises(ValueError, match="^runtime_admission_transition_requires_release_mode$"):
-            stage.activate_slot(deployment.root, "pre")
+    # The deployment is managed (rehearsal.managed_root activates a bootstrap head), so SC-2
+    # refuses the cross-slot activation first; asserted unconditionally (SC-2 review SC2-R4/R4).
+    assert deployment.head() is not None
+    with pytest.raises(ValueError, match="^runtime_admission_transition_requires_release_mode$"):
+        stage.activate_slot(deployment.root, "pre")
     # The P10 check and serve's own refusal, rehearsed in a legacy activation (SC-2 fixture helper);
     # serve itself then runs with the production flag.
     with legacy_managed_transitions():

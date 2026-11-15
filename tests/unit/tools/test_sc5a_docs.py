@@ -43,6 +43,57 @@ def test_deployment_states_the_retirement_and_the_gap():
         assert claim not in text
 
 
+_GAP = "Sin transiciones gestionadas después de R1 hasta el modo release"
+
+
+def _paragraphs(text: str) -> list[str]:
+    return [" ".join(block.split()) for block in re.split(r"\n\s*\n", text)]
+
+
+def test_every_managed_rollback_mention_is_marked_unavailable():
+    """SC-2 review R1: no paragraph offers a managed rollback without pointing to the gap section."""
+    text = (REPO / DOCS[0]).read_text()
+    mentions = [block for block in _paragraphs(text) if re.search(r"[Rr]ollback gestionado", block)]
+    assert len(mentions) >= 3
+    for block in mentions:
+        assert _GAP in block or block.startswith("### " + _GAP), block[:160]
+
+
+def test_install_controller_minimum_is_epoch_4_everywhere():
+    """SC-2 review R2: DEPLOYMENT and the compaction runbook agree on the D4 exit path."""
+    for relative in (DOCS[0], DOCS[2]):
+        text = " ".join((REPO / relative).read_text().split())
+        assert "época 3 o posterior" not in text, relative
+    assert "`install-controller` (época 4 o posterior desde SC-2" in " ".join((REPO / DOCS[0]).read_text().split())
+
+
+def test_deployment_states_the_epoch_lockout_residual():
+    """SC-2 review SC2-R3: the lockout needs a readable controller.json."""
+    text = " ".join((REPO / DOCS[0]).read_text().split())
+    assert "Ese bloqueo necesita un `admission/controller.json` legible" in text
+    assert "repararlo sólo con `controller/current` o `install-controller`" in text
+    assert "no correr el `stage_runtime` de ningún slot" in text
+
+
+def test_deployment_states_the_schema_contract_and_its_exclusions():
+    """SC-2 review SC2-R1: the extended vocabularies, their status and the excluded literal sets."""
+    text = " ".join((REPO / DOCS[0]).read_text().split())
+    assert "#### Contrato de esquema (época 1)" in (REPO / DOCS[0]).read_text()
+    assert "enmienda propuesta del diseño (sin confirmar)" in text and "antes de SC-6a" in text
+    for excluded in ("capture_runtime_control.mode", "capture_browser_recorders.kind", "routine_runs.source",
+                     "legacy_quarantine_records_v1.state", "reminders.recurrence"):
+        assert excluded in text, excluded
+
+
+def test_r1_day14_says_no_rollback_remains_and_checks_sc_d5():
+    """SC-2 review R3: the day-14 section itself warns, so an operator reading only it sees SC-D5."""
+    text = (REPO / DOCS[1]).read_text()
+    section = text.split("## Día 14: retiro Q5", 1)[1].split("\n0. ", 1)[0]
+    flat = " ".join(section.split())
+    assert "tampoco hay rollback gestionado" in flat and "no queda ningún rollback" in flat
+    assert "SC-D5" in flat and "opción B" in flat
+
+
 def test_runbooks_name_epoch_4():
     r1 = (REPO / DOCS[1]).read_text()
     assert "`controller_epoch` 4" in r1 and "época 4)" in r1 and "SC-6a" in r1

@@ -328,6 +328,12 @@ comando lo rechaza (`runtime_admission_legacy_retire_too_early`, con
 `backups/$C/databases/` (Q2 = A). Después no hay rollback no gestionado y
 `/home/kza/kza` no es un destino (Q3 = A).
 
+Desde SC-2 tampoco hay rollback gestionado hasta que exista el modo release:
+después de Q5 no queda ningún rollback. Antes de empezar, revisar la
+respuesta a SC-D5 en `docs/architecture/DEPLOYMENT.md` («Sin transiciones
+gestionadas después de R1 hasta el modo release»); con la opción B este paso
+se posterga y no se ejecuta.
+
 0. Si L4 se usó desde la adopción (existe algún
    `/home/kza/releases/admission/launcher/uninstall-*.json`), parar aquí: el
    retiro rechaza `runtime_admission_legacy_retire_l4_used`, y los datos que
