@@ -362,3 +362,27 @@ def test_every_store_initializer_creates_only_contract_tables(tmp_path, monkeypa
     assert {"utterances", "capture_conversations"} <= _assert_contract(data / "ambient.db", "data/ambient.db")
     assert {"auth_meta", "credentials", "sessions"} <= _assert_contract(data / "auth.db", "data/auth.db")
     assert "events_policy_v1" in _assert_contract(data / "events.db", "data/events.db")
+
+
+def test_the_reminder_routine_and_list_stores_create_only_contract_tables(tmp_path):
+    """SC-2 review R7: three more protected-table owners whose vocabularies joined the contract."""
+    from src.lists.list_store import ListStore
+    from src.reminders.reminder_store import ReminderStore
+    from src.routines.routine_store import RoutineStore
+
+    data = tmp_path / "data"
+    data.mkdir()
+
+    async def stores():
+        for store in (ReminderStore(str(data / "reminders.db")), RoutineStore(str(data / "routines.db")),
+                      ListStore(str(data / "lists.db"))):
+            try:
+                await store.initialize()
+            finally:
+                await store.close()
+
+    asyncio.run(stores())
+    assert {"reminders", "reminder_home_actions"} <= _assert_contract(data / "reminders.db", "data/reminders.db")
+    assert {"routines", "routine_runs", "routine_run_actions"} <= _assert_contract(data / "routines.db",
+                                                                                    "data/routines.db")
+    assert {"lists", "list_items"} <= _assert_contract(data / "lists.db", "data/lists.db")
