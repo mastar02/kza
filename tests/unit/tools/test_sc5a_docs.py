@@ -80,9 +80,13 @@ def test_deployment_states_the_schema_contract_and_its_exclusions():
     text = " ".join((REPO / DOCS[0]).read_text().split())
     assert "#### Contrato de esquema (época 1)" in (REPO / DOCS[0]).read_text()
     assert "enmienda propuesta del diseño (sin confirmar)" in text and "antes de SC-6a" in text
+    exclusions = [block for block in _paragraphs((REPO / DOCS[0]).read_text())
+                  if block.startswith("Quedan fuera los conjuntos cerrados que `src` escribe como literales sin"
+                                      " nombre importable")]
+    assert len(exclusions) == 1
     for excluded in ("capture_runtime_control.mode", "capture_browser_recorders.kind", "routine_runs.source",
                      "legacy_quarantine_records_v1.state", "reminders.recurrence"):
-        assert excluded in text, excluded
+        assert excluded in exclusions[0], excluded
 
 
 def test_r1_day14_says_no_rollback_remains_and_checks_sc_d5():
