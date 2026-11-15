@@ -34,6 +34,18 @@ records the measurements. Each module first sweeps kza-rehearsal-* units a
 killed earlier run left behind (real_systemd.sweep_stale); run it under
 nohup so a dropped ssh does not kill it mid-test.
 
+SC-6a (sc-release-design v3 epochs.r1_rebuild) adds to the window: (i) after
+W9 the installed controller refuses ``delegate`` and a cross-slot
+``activate`` and ``authorize_derived_state`` refuses; (ii) an R1 archive built
+before SC-2 (epoch 3, the pinned 26de262) is refused by R1's prepare at W2,
+by ``install-controller`` at W3 and after W9; (iii) the compiled dry run
+refuses an epoch-5 and that epoch-3 archive (``read_r1_archive``); (iv) the
+runbook's pinned-sha block, run as written (tests/mocks/r1_runbook.py), stops
+on the stale epoch-3 archive and on a rebuilt-but-different R1; and, last,
+the AUTHZ3-1 residual: a stage_runtime copy built from b0c322d~1 still
+prepares, grants and activates another slot on the adopted epoch-4 root
+(pinned as found; the operating rule and SC-6a's cleanup are the barrier).
+
 Run test_linux_managed_launcher.py and test_linux_adoption_window.py one
 pytest at a time, never side by side: they share this account's user manager, and any
 ``daemon-reload`` re-arms every activating unit's start timer from
@@ -64,7 +76,9 @@ from scripts import stage_runtime as stage
 from scripts.build_runtime import build_runtime
 from tests.mocks import adoption_legacy as fixture
 from tests.mocks import launcher_rehearsal as rehearsal
+from tests.mocks import r1_runbook
 from tests.mocks import real_systemd
+from tests.unit.tools.test_stage_runtime_admission import _witness
 
 pytestmark = pytest.mark.skipif(real_systemd.unavailable() is not None,
                                 reason=real_systemd.unavailable() or "available")
@@ -79,6 +93,10 @@ P7 = "u3b-0e5-P7-B-rehearsal-0e4"
 L4 = "l4-decision-rehearsal-0e4"
 DAY = 86400
 ERASED = "11111111-1111-4111-8111-111111111111"
+EPOCH3_R1 = "26de262"  # SC-6a: the last epoch-3 commit (an R1 built before SC-2)
+EARLY_COPY = "b0c322d~1"  # SC-6a/AUTHZ3-1: the last stage_runtime without require_forward_epoch
+RETIRED = "runtime_admission_delegation_retired"
+RELEASE_MODE = "runtime_admission_transition_requires_release_mode"
 STATUS = ("ActiveState", "SubState", "Result", "ExecMainStatus", "StatusText", "InvocationID", "UnitFileState")
 CLEANUPS: list[dict] = []
 
@@ -105,10 +123,41 @@ def built(tmp_path_factory):
     extracted = base / "r1"
     with tarfile.open(archive) as bundle:
         bundle.extractall(extracted, filter="data")
+    # SC-6a: the stale epoch-3 R1, an epoch-5 rewrite of R1 and the AUTHZ3-1 early copy (extracted).
+    epoch3 = base / "epoch3-r1.tar.gz"
+    epoch3_manifest = build_runtime(clone, epoch3, EPOCH3_R1)
+    assert epoch3_manifest["controller_epoch"] == 3 and "schema_contract" not in epoch3_manifest
+    epoch5 = base / "epoch5.tar.gz"
+    _rewrite_release(archive, epoch5, controller_epoch=stage.CONTROLLER_EPOCH + 1)
+    early = base / "early-copy.tar.gz"
+    early_manifest = build_runtime(clone, early, EARLY_COPY)
+    early_tree = base / "early-copy"
+    with tarfile.open(early) as bundle:
+        bundle.extractall(early_tree, filter="data")
+    early_code = (early_tree / "scripts" / "stage_runtime.pyc").read_bytes()
+    assert b"delegate_slot" in early_code and b"require_forward_epoch" not in early_code
     real_systemd.record("window-build", {"r1_build_seconds": round(r1_seconds, 1), "r1_commit": manifest["git_commit"],
-                                         "legacy_commit": legacy_manifest["git_commit"]})
+                                         "legacy_commit": legacy_manifest["git_commit"],
+                                         "epoch3_commit": epoch3_manifest["git_commit"],
+                                         "early_copy_commit": early_manifest["git_commit"]})
     return {"archive": archive, "commit": manifest["git_commit"], "legacy": legacy,
-            "r1_stage": extracted / "scripts" / "stage_runtime.pyc"}
+            "r1_stage": extracted / "scripts" / "stage_runtime.pyc", "epoch3": epoch3, "epoch5": epoch5,
+            "early": early, "early_stage": early_tree / "scripts" / "stage_runtime.pyc"}
+
+
+def _rewrite_release(source: Path, destination: Path, **changes) -> None:
+    """``source`` with release.json changed (every other member byte-identical)."""
+    import gzip
+    import io
+    buffer = io.BytesIO()
+    with tarfile.open(source, "r:gz") as bundle, tarfile.open(fileobj=buffer, mode="w") as output:
+        for member in bundle:
+            data = bundle.extractfile(member).read()
+            if member.name == "release.json":
+                data = json.dumps(dict(json.loads(data), **changes), indent=2).encode()
+                member.size = len(data)
+            output.addfile(member, io.BytesIO(data))
+    destination.write_bytes(gzip.compress(buffer.getvalue()))
 
 
 @pytest.fixture(scope="module")
@@ -366,6 +415,12 @@ class Window:
             self.timings[step] = round(time.monotonic() - started, 2)
         return completed.returncode, _last_json(completed.stdout), _last_json(completed.stderr)
 
+    def compiled(self, pyc: Path, *arguments: str) -> subprocess.CompletedProcess:
+        """Any compiled stage_runtime as the runbook runs it (no wrapper): python -I -B <pyc> --root ..."""
+        return subprocess.run([sys.executable, "-I", "-B", str(pyc), "--root", str(self.root), "--offline",
+                               *arguments], capture_output=True, text=True, timeout=600,
+                              cwd=pyc.parents[1], env=self.systemd.environment())
+
     def launcher_cli(self, *arguments: str) -> tuple[int, dict | None, dict | None]:
         """A launcher command with the installed controller's own compiled CLI (no wrapper)."""
         completed = subprocess.run([sys.executable, "-I", "-B", str(self.controller), "--root", str(self.root),
@@ -489,6 +544,28 @@ def test_the_window_in_runbook_order_under_real_systemd(tmp_path, tree, built, s
     common = ("--container-slot", CONTAINER, "--archive", str(built["archive"]), "--slot", "r1",
               "--window-timer", w.watchdog_timer, "--window-timer", w.backup_timer)
 
+    # SC-6a (iv): the runbook's pinned-archive block, run as written, before anything is extracted or run.
+    # Its own pin stops the stale epoch-3 R1; pinned to this rehearsal's R1, a rebuilt-but-different
+    # archive of the same commit stops too and only the R1 bytes pass.
+    r1_sha = hashlib.sha256(built["archive"].read_bytes()).hexdigest()
+    rebuilt = r1_runbook.regzipped(built["archive"], tmp_path / "rebuilt-r1.tar.gz")
+    checks = {"stale_own_pin": r1_runbook.run_check(built["epoch3"]),
+              "stale": r1_runbook.run_check(built["epoch3"], sha256=r1_sha, commit=built["commit"]),
+              "rebuilt": r1_runbook.run_check(rebuilt, sha256=r1_sha, commit=built["commit"]),
+              "r1": r1_runbook.run_check(built["archive"], sha256=r1_sha, commit=built["commit"])}
+    for name in ("stale_own_pin", "stale", "rebuilt"):
+        assert checks[name].returncode != 0 and checks[name].stdout.strip() == r1_runbook.STOP, (name, checks[name])
+    assert checks["r1"].returncode == 0 and checks["r1"].stdout.strip() == r1_runbook.OK, checks["r1"]
+    evidence["sc6a_pinned_check"] = {name: result.returncode for name, result in checks.items()}
+
+    # SC-6a (iii): the compiled dry run refuses an epoch-5 and the epoch-3 archive (read_r1_archive, M-6a.1).
+    root_before = tree_manifest(w.root)
+    for archive in (built["epoch5"], built["epoch3"]):
+        stale = ("--container-slot", CONTAINER, "--archive", str(archive), *common[4:])
+        code, _report, refused = w.stage("adoption-dry-run", *stale)
+        assert code == 78 and refused["refused"] == "runtime_admission_adoption_archive_epoch", (archive, refused)
+    assert tree_manifest(w.root) == root_before
+
     # W0, advisory dry-run with the service's view as production has it: the scratch is the real tmpfs
     # /run/user/<uid> (CLI default). Two expected refusals first: an .env path value into the legacy
     # state and a unit pulling kza-voice in.
@@ -554,7 +631,13 @@ def test_the_window_in_runbook_order_under_real_systemd(tmp_path, tree, built, s
     evidence["retire"] = {"units_discovered": record["units"]["discovered"], "record": retired["record"]}
     evidence["boots"].append(w.fake_boot("W1b"))
 
-    # W2: prepare (tmpfs default scratch, both window timers).
+    # W2: prepare (tmpfs default scratch, both window timers). SC-6a (ii): R1's prepare refuses the
+    # epoch-3 archive first, nothing written.
+    root_before = tree_manifest(w.root)
+    stale = ("--container-slot", CONTAINER, "--archive", str(built["epoch3"]), *common[4:])
+    code, _out, refused = w.stage("adoption-prepare", *stale, "--decision", WINDOW)
+    assert code == 78 and refused["refused"] == "runtime_admission_adoption_archive_epoch", refused
+    assert tree_manifest(w.root) == root_before
     code, prepared, refused = w.stage("adoption-prepare", *common, "--decision", WINDOW, step="prepare")
     assert code == 0, refused
     plan_sha256 = prepared["plan_sha256"]
@@ -562,7 +645,10 @@ def test_the_window_in_runbook_order_under_real_systemd(tmp_path, tree, built, s
     assert os.readlink(w.root / "current") == f"slots/{CONTAINER}/runtime" and w.head() is None
     evidence["boots"].append(w.fake_boot("W2"))
 
-    # W3: install-controller from the extracted R1 (controller epoch 2).
+    # W3: install-controller from the extracted R1 (controller epoch 4). SC-6a (ii): the epoch-3 R1 first.
+    code, _out, refused = w.stage("install-controller", str(built["epoch3"]))
+    assert code == 78 and refused["refused"] == "runtime_admission_controller_epoch_too_old", refused
+    assert not (w.root / "controller").exists() and not (w.root / "admission" / "controller.json").exists()
     code, _out, refused = w.stage("install-controller", str(built["archive"]), step="install_controller")
     assert code == 0, refused
     evidence["boots"].append(w.fake_boot("W3"))
@@ -663,6 +749,28 @@ def test_the_window_in_runbook_order_under_real_systemd(tmp_path, tree, built, s
     assert status["honest_blocker_steps"] == {"diagnostics": 1, "streams": 1, "voices": 1}  # 0d4a, by design
     assert set(status["conversation_exempt"].values()) <= {0} and not any(status["resurrected"].values())
     evidence["completion_status_after_w9"] = status
+
+    # SC-6a (i) and (ii) after W9: the installed controller refuses every grant and a cross-slot activate
+    # (the legacy container is the slot an operator would reach for), authorize_derived_state refuses,
+    # and install-controller refuses the epoch-3 R1. Nothing under the root changes.
+    head, states = w.head(), (state, w.layout.legacy_state)
+    before = _witness(w.root, *states)
+    controller_record = (w.root / "admission" / "controller.json").read_bytes()
+    delegated = w.compiled(w.controller, "delegate", CONTAINER)
+    assert delegated.returncode == 78 and json.loads(delegated.stdout) == {"refused": RETIRED}, delegated
+    activated = w.compiled(w.controller, "activate", CONTAINER)
+    assert activated.returncode != 0 and RELEASE_MODE in activated.stderr, activated.stderr[-2000:]
+    with stage.AdmissionController(w.root) as controller:
+        with pytest.raises(ValueError, match="^" + RETIRED + "$"):
+            controller.authorize_derived_state(CONTAINER, head["binding_id"], target_relocations={})
+    code, _out, refused = w.launcher_cli("install-controller", str(built["epoch3"]))
+    assert code == 78 and refused["refused"] == "runtime_admission_controller_epoch_too_old", refused
+    assert _witness(w.root, *states) == before and w.head() == head
+    assert (w.root / "admission" / "controller.json").read_bytes() == controller_record
+    assert not (w.root / "admission" / "delegations").exists()
+    assert os.readlink(w.root / "current") == "slots/r1/runtime"
+    evidence["sc6a_after_w9"] = {"delegate_exit": delegated.returncode, "activate_exit": activated.returncode,
+                                 "install_epoch3": refused["refused"]}
 
     # Day 14 (T-A17, Q5). First the link check alone: with the b0866e8 state gone and no Q5 record,
     # L4 refuses with legacy_state and changes nothing.
@@ -776,6 +884,28 @@ def test_the_window_in_runbook_order_under_real_systemd(tmp_path, tree, built, s
     assert launcher._recoveries(w.root)[-1]["mode"] == "automatic"
     assert w.stop_managed()[0].returncode == 0 and w.head()["status"] == "closed"
     evidence["restore_after_crash"] = variants
+
+    # SC-6a / AUTHZ3-1, last (it moves the head): a stage_runtime copy from 69a79e6..b0c322d~1 does not read
+    # the epoch. On this adopted epoch-4 root it still prepares, grants and activates another slot, which
+    # becomes the head. Pinned as found: the barrier is the operating rule (only controller/current) and
+    # SC-6a's removal of every such copy; SC-1 owns the structural guard (DEPLOYMENT).
+    head = w.head()
+    assert head["status"] == "closed"
+    prepared_p = w.compiled(built["early_stage"], "prepare", str(built["early"]), "p", "--state-source", str(state))
+    assert prepared_p.returncode == 0, prepared_p.stderr[-3000:]
+    granted = w.compiled(built["early_stage"], "delegate", "p")
+    assert granted.returncode == 0, granted.stderr[-3000:]
+    grant = json.loads(granted.stdout.splitlines()[-1])
+    assert grant["slot"] == "p" and grant["source_binding"] == head["binding_id"]
+    assert list((w.root / "admission" / "delegations").iterdir())
+    moved = w.compiled(built["early_stage"], "activate", "p")
+    assert moved.returncode == 0, moved.stderr[-3000:]
+    assert stage.read_binding(w.root, w.head()["binding_id"])["slot"] == "p"
+    assert os.readlink(w.root / "current") == "slots/p/runtime"
+    assert json.loads((w.root / "admission" / "controller.json").read_text())["controller_epoch"] == 4
+    evidence["sc6a_authz3_1_residual"] = {"copy": EARLY_COPY, "prepare_exit": prepared_p.returncode,
+                                          "delegate_exit": granted.returncode, "activate_exit": moved.returncode,
+                                          "head_slot_after": "p"}
     evidence["timings"] = w.timings
     real_systemd.record("window", evidence)
 

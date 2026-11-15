@@ -63,11 +63,39 @@ y `{"refused": <código>}` en estos casos:
 - una segunda ejecución.
 
 ```bash
-R1=<tmp privado>/r1            # R1 extraído (build_runtime.py, bajo yo; árbol con U3b-0c y SC-2, época 4)
+R1=<tmp privado>/r1            # R1 extraído de $R1_ARCHIVE ya verificado (árbol con U3b-0c y SC-2, época 4)
 PY=/home/kza/kza/.venv/bin/python
 ST="$PY -I -B $R1/scripts/stage_runtime.pyc --root /home/kza/releases --offline"
 C=release_20261029T174830709997Z_63ea8d3
 ```
+
+`r1.tar.gz` en los comandos de abajo es siempre `$R1_ARCHIVE`, el mismo
+archivo verificado aquí.
+
+### Archivo R1 fijado (paso obligatorio antes de W1)
+
+SC-6a construye R1 bajo `yo` con `scripts/build_runtime.py`, dos veces y con
+resultado idéntico byte a byte, y fija aquí su sha256 y su commit. El valor
+vive en un commit de documentación posterior al commit construido: un archivo
+no puede contener su propio hash, y el archivo no incluye `docs/`.
+
+Antes de extraer `$R1`, antes de la corrida de prueba y otra vez justo antes
+de W1, correr exactamente:
+
+```bash
+R1_ARCHIVE=<ruta del r1.tar.gz transferido>
+R1_SHA256=pendiente-SC-6a
+R1_COMMIT=pendiente-SC-6a
+if [ "$(sha256sum "$R1_ARCHIVE" | cut -d' ' -f1)" = "$R1_SHA256" ]; then echo "R1 fijado: OK"; else echo "R1 distinto del fijado: DETENER"; false; fi
+```
+
+Si no imprime `R1 fijado: OK` (sale con 1), **el procedimiento se detiene**:
+no extraer, no correr ningún `$ST` ni W1. Comparar el commit de
+`release.json` no alcanza: un R1 de época 3 construido antes de SC-2 se acepta
+a sí mismo (sus propios comandos lo instalarían) y una reconstrucción distinta
+del mismo commit tiene otro sha256. Sólo cuenta el sha256 del archivo
+(`R1_COMMIT` queda como referencia). El ensayo corre este bloque tal como
+está escrito (`tests/mocks/r1_runbook.py`).
 
 ## Antes de la ventana
 
@@ -158,6 +186,8 @@ C=release_20261029T174830709997Z_63ea8d3
     un volumen de contenedor sin resolver o que cubra los modelos.
 
   Timers de la ventana: todos los `kza-*.timer` habilitados de W0, por nombre.
+- **W1-pre** (obligatorio): repetir la verificación de «Archivo R1 fijado» con
+  el mismo `$R1_ARCHIVE`. Sin `R1 fijado: OK`, detener: no hay W1.
 - **W1**. Ejecutar:
   ```bash
   systemctl --user stop kza-voice.service      # salida 0 obligatoria

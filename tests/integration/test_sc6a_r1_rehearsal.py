@@ -1,0 +1,265 @@
+"""SC-6a: the pre-R1 rehearsal additions on a production-shaped adopted root (in process, any OS).
+
+sc-release-design v3 epochs.r1_rebuild step 4 and implementation_units SC-6a,
+run on the U3b-0e3 world (the b0866e8-written legacy root adopted into R1, the
+R1 archive built from this working tree):
+
+- (i) after the adoption, ``delegate``, ``authorize_derived_state`` and a
+  cross-slot ``activate`` are refused, by the library and by the installed
+  compiled controller (``controller/current``), and nothing under the root
+  changes;
+- (ii) ``install-controller`` with an R1 archive built before SC-2 (epoch 3,
+  here the pinned 26de262) is refused on the fresh root (W3) and on the
+  adopted epoch-4 root, and R1's own prepare refuses it;
+- (iii) ``read_r1_archive`` refuses an epoch-5 and an epoch-3 archive (M-6a.1:
+  ``>=`` instead of ``==``);
+- (iv) the runbook's pinned-sha step, run as written, stops on a stale
+  epoch-3 archive and on a rebuilt-but-different archive of the same commit
+  (M-6a.2: comparing the commit instead of the archive sha256).
+
+AUTHZ3-1 (SC-2 review round 3): a ``stage_runtime`` copy from
+69a79e6..b0c322d~1 (built here from b0c322d~1) does not check the epoch. On
+the adopted epoch-4 root it still grants and activates another slot, which
+becomes the head. That residual is pinned as found, not weakened: DEPLOYMENT
+keeps the operating rule (run only ``controller/current``), SC-6a removes those
+copies and SC-1 owns the structural guard. The first copy with
+``require_forward_epoch`` (b0c322d) is refused, which pins the range's end.
+
+The same additions run compiled under real systemd in
+test_linux_adoption_window.py.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tarfile
+
+import pytest
+
+from scripts import adoption_commands as commands
+from scripts import managed_launcher as launcher
+from scripts import stage_runtime as stage
+from scripts.build_runtime import build_runtime
+from tests.integration import test_adoption_commands as adoption_tests
+from tests.mocks import compaction_world as cw
+from tests.mocks import r1_runbook
+from tests.unit.tools.test_stage_runtime_admission import _witness
+
+REPO = Path(__file__).resolve().parents[2]
+CONTAINER = adoption_tests.CONTAINER
+EPOCH3_R1 = "26de262"  # the last epoch-3 commit: an R1 built before SC-2
+EARLY_COPY = "b0c322d~1"  # the last stage_runtime without require_forward_epoch (AUTHZ3-1 range end)
+FIRST_LOCKED = "b0c322d"  # the first one with it
+RETIRED = "runtime_admission_delegation_retired"
+RELEASE_MODE = "runtime_admission_transition_requires_release_mode"
+
+artifacts = adoption_tests.artifacts  # the R1 archive of this working tree (module scope)
+tree = adoption_tests.tree  # the b0866e8 tree (module scope)
+world = adoption_tests.world
+
+
+def _build(base: Path, revision: str, name: str) -> tuple[Path, dict]:
+    if subprocess.run(["git", "cat-file", "-e", revision + "^{commit}"], cwd=REPO).returncode != 0:
+        pytest.fail(revision + " is not available in this clone")
+    clone = base / "clone"
+    if not clone.exists():
+        subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(REPO), str(clone)],
+                       check=True, timeout=120)
+    archive = base / (name + ".tar.gz")
+    return archive, build_runtime(clone, archive, revision)
+
+
+@pytest.fixture(scope="module")
+def old_builds(tmp_path_factory):
+    """The epoch-3 R1 (26de262), the early copy (b0c322d~1) and the first locked copy (b0c322d), extracted."""
+    base = tmp_path_factory.mktemp("sc6a-old")
+    found = {}
+    for key, revision in (("epoch3", EPOCH3_R1), ("early", EARLY_COPY), ("locked", FIRST_LOCKED)):
+        archive, manifest = _build(base, revision, key)
+        assert manifest["controller_epoch"] == 3 and "schema_contract" not in manifest, (revision, manifest)
+        extracted = base / (key + "-tree")
+        with tarfile.open(archive) as bundle:
+            bundle.extractall(extracted, filter="data")
+        code = (extracted / "scripts" / "stage_runtime.pyc").read_bytes()
+        assert b"delegate_slot" in code
+        assert (b"require_forward_epoch" in code) is (key != "early"), key
+        found[key] = {"archive": archive, "manifest": manifest, "tree": extracted}
+    return found
+
+
+def _adopted(world) -> dict:
+    """W2..W4 in process: prepare, install the epoch-4 controller, commit. The head is closed on r1."""
+    adopted = world.adopt()
+    head = world.head()
+    assert head["status"] == "closed" and stage.read_binding(world.root, head["binding_id"])["slot"] == "r1"
+    assert json.loads((world.root / "admission" / "controller.json").read_text())["controller_epoch"] == 4
+    return adopted
+
+
+def _after_w9(world) -> str:
+    """W2..W4, then one managed run of r1 that closes cleanly (W8/W9 in process: a receipt and a
+    closure proof, the head closed again on r1). Returns the closed binding."""
+    _adopted(world)
+    cw.install_record(world.root)
+    binding = cw.run(world.root, "r1")
+    assert world.head()["generation"] > 1
+    assert stage.read_binding(world.root, binding)["slot"] == "r1"
+    assert list((world.root / "admission" / "closures").iterdir())
+    return binding
+
+
+def _cli(pyc: Path, root: Path, *arguments: str) -> subprocess.CompletedProcess:
+    """A compiled stage_runtime as the runbook runs it: python -I -B <pyc> --root R --offline ..."""
+    return subprocess.run([sys.executable, "-I", "-B", str(pyc), "--root", str(root), "--offline", *arguments],
+                          cwd=pyc.parents[1], capture_output=True, text=True, timeout=600)
+
+
+def _controller(world) -> Path:
+    return world.root / "controller" / "current" / "scripts" / "stage_runtime.pyc"
+
+
+def _states(world) -> tuple[Path, ...]:
+    return (world.root / "slots" / "r1" / "state", world.layout.legacy_state)
+
+
+# --- (i) after W9 every grant and a cross-slot activate refuse ---------------------------------
+
+def test_after_w9_every_grant_and_a_cross_slot_activate_refuse(world):
+    _after_w9(world)
+    root, head = world.root, world.head()
+    before = _witness(root, *_states(world))
+    with pytest.raises(ValueError, match="^" + RETIRED + "$"):
+        stage.delegate_slot(root, CONTAINER)
+    with stage.AdmissionController(root) as controller:
+        with pytest.raises(ValueError, match="^" + RETIRED + "$"):
+            controller.authorize_derived_state(CONTAINER, head["binding_id"], target_relocations={})
+        with pytest.raises(ValueError, match="^" + RELEASE_MODE + "$"):
+            controller.activate(CONTAINER, managed=True)
+    with pytest.raises(ValueError, match="^" + RELEASE_MODE + "$"):
+        stage.activate_slot(root, CONTAINER)
+    assert _witness(root, *_states(world)) == before
+    # The installed compiled controller, as an operator would run it.
+    delegated = _cli(_controller(world), root, "delegate", CONTAINER)
+    assert delegated.returncode == 78 and json.loads(delegated.stdout) == {"refused": RETIRED}, delegated
+    activated = _cli(_controller(world), root, "activate", CONTAINER)
+    assert activated.returncode != 0 and RELEASE_MODE in activated.stderr, activated.stderr[-2000:]
+    assert _witness(root, *_states(world)) == before
+    assert world.head() == head and os.readlink(root / "current") == "slots/r1/runtime"
+    assert not (root / "admission" / "delegations").exists()
+    assert not (root / "admission" / "derived-authority").exists()
+
+
+# --- (ii) an epoch-3 R1 archive is refused by install-controller and by R1's prepare -----------------------
+
+def test_an_epoch3_r1_archive_is_refused_before_and_after_w3(world, old_builds):
+    epoch3 = old_builds["epoch3"]["archive"]
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_adoption_archive_epoch$"):
+        world.prepare(archive=epoch3)
+    assert not (world.root / "admission").exists() and not (world.root / "slots" / "r1").exists()
+    with pytest.raises(launcher.LauncherRefusal, match="^runtime_admission_controller_epoch_too_old$"):
+        launcher.install_controller(world.root, epoch3)  # W3 on the fresh root
+    assert not (world.root / "controller").exists() and not (world.root / "admission").exists()
+    _adopted(world)
+    record = (world.root / "admission" / "controller.json").read_bytes()
+    controllers = sorted(os.listdir(world.root / "controller"))
+    with pytest.raises(launcher.LauncherRefusal, match="^runtime_admission_controller_epoch_too_old$"):
+        launcher.install_controller(world.root, epoch3)
+    installed = _cli(_controller(world), world.root, "install-controller", str(epoch3))
+    assert installed.returncode == 78, installed
+    assert json.loads(installed.stderr.splitlines()[-1])["refused"] == "runtime_admission_controller_epoch_too_old"
+    assert (world.root / "admission" / "controller.json").read_bytes() == record
+    assert sorted(os.listdir(world.root / "controller")) == controllers
+
+
+# --- (iii) read_r1_archive refuses an epoch-5 and an epoch-3 archive (M-6a.1) -----------------------------
+
+def test_read_r1_archive_accepts_only_the_running_epoch(world, artifacts, old_builds, tmp_path):
+    epoch5 = tmp_path / "epoch5.tar.gz"
+    adoption_tests._rewrite_release(artifacts["archive"], epoch5, controller_epoch=stage.CONTROLLER_EPOCH + 1)
+    for archive in (epoch5, old_builds["epoch3"]["archive"]):
+        with pytest.raises(commands.CommandRefusal, match="^runtime_admission_adoption_archive_epoch$"):
+            commands.read_r1_archive(archive)
+    _manifest, _files, summary = commands.read_r1_archive(artifacts["archive"])
+    assert summary["controller_epoch"] == stage.CONTROLLER_EPOCH == 4
+    # The operator's commands refuse both before writing anything: the dry run and prepare.
+    for archive in (epoch5, old_builds["epoch3"]["archive"]):
+        with pytest.raises(commands.CommandRefusal, match="^runtime_admission_adoption_archive_epoch$"):
+            world.dry_run(archive=archive)
+        with pytest.raises(commands.CommandRefusal, match="^runtime_admission_adoption_archive_epoch$"):
+            world.prepare(archive=archive)
+    assert not (world.root / "admission").exists() and not (world.root / "slots" / "r1").exists()
+    assert os.listdir(world.scratch) == []
+
+
+# --- (iv) the runbook's pinned-sha step stops on a stale or rebuilt archive (M-6a.2) ----------------------
+
+def test_the_runbook_check_stops_on_a_stale_epoch3_archive_and_on_a_rebuilt_one(artifacts, old_builds, tmp_path):
+    r1 = artifacts["archive"]
+    r1_sha = hashlib.sha256(r1.read_bytes()).hexdigest()
+    r1_commit = artifacts["commit"]
+    stale = old_builds["epoch3"]["archive"]
+    # The runbook's own pin, against the stale epoch-3 archive: stop.
+    result = r1_runbook.run_check(stale)
+    assert result.returncode != 0 and result.stdout.strip() == r1_runbook.STOP, result
+    # Pinned to this rehearsal's R1 (the runbook pins the real one): the R1 passes, the stale one stops.
+    passed = r1_runbook.run_check(r1, sha256=r1_sha, commit=r1_commit)
+    assert passed.returncode == 0 and passed.stdout.strip() == r1_runbook.OK, passed
+    result = r1_runbook.run_check(stale, sha256=r1_sha, commit=r1_commit)
+    assert result.returncode != 0 and result.stdout.strip() == r1_runbook.STOP, result
+    # A rebuilt-but-different archive of the same commit (same release.json, same files): stop.
+    rebuilt = r1_runbook.regzipped(r1, tmp_path / "rebuilt.tar.gz")
+    with tarfile.open(rebuilt) as bundle:
+        assert json.load(bundle.extractfile("release.json"))["git_commit"] == r1_commit
+    result = r1_runbook.run_check(rebuilt, sha256=r1_sha, commit=r1_commit)
+    assert result.returncode != 0 and result.stdout.strip() == r1_runbook.STOP, result
+    missing = r1_runbook.run_check(tmp_path / "absent.tar.gz", sha256=r1_sha, commit=r1_commit)
+    assert missing.returncode != 0 and r1_runbook.STOP in missing.stdout, missing
+
+
+# --- AUTHZ3-1: an early stage_runtime copy on the adopted epoch-4 root (residual pinned as found) ----------
+
+def test_a_copy_without_the_epoch_check_still_grants_and_activates_on_the_epoch4_root(world, old_builds):
+    """The documented residual: the old code does not read the epoch, so it grants and moves the head.
+
+    Only the operating rule (run only controller/current) and SC-6a's removal
+    of every copy from 69a79e6..b0c322d~1 stand between it and R1; SC-1 owns
+    the structural guard. If this ever refuses, the residual changed: update
+    DEPLOYMENT and this pin together."""
+    _after_w9(world)
+    root, early = world.root, old_builds["early"]
+    old_pyc = early["tree"] / "scripts" / "stage_runtime.pyc"
+    r1_state = root / "slots" / "r1" / "state"
+    head = world.head()
+    prepared = _cli(old_pyc, root, "prepare", str(early["archive"]), "p", "--state-source", str(r1_state))
+    assert prepared.returncode == 0, prepared.stderr[-3000:]
+    delegated = _cli(old_pyc, root, "delegate", "p")
+    assert delegated.returncode == 0, delegated.stderr[-3000:]
+    grant = json.loads(delegated.stdout.splitlines()[-1])
+    assert grant["slot"] == "p" and grant["source_binding"] == head["binding_id"]
+    assert list((root / "admission" / "delegations").iterdir())  # a capability the epoch-4 code never writes
+    activated = _cli(old_pyc, root, "activate", "p")
+    assert activated.returncode == 0, activated.stderr[-3000:]
+    moved = world.head()
+    assert moved["generation"] > head["generation"]
+    assert stage.read_binding(root, moved["binding_id"])["slot"] == "p"
+    assert os.readlink(root / "current") == "slots/p/runtime"
+    assert json.loads((root / "admission" / "controller.json").read_text())["controller_epoch"] == 4
+
+
+def test_the_first_copy_with_the_epoch_check_is_locked_out_of_the_epoch4_root(world, old_builds):
+    """The range's end: b0c322d refuses on the same root before the lease (runtime_admission_controller_downgrade)."""
+    _after_w9(world)
+    root, locked = world.root, old_builds["locked"]
+    old_pyc = locked["tree"] / "scripts" / "stage_runtime.pyc"
+    before = _witness(root, *_states(world))
+    for arguments in (("prepare", str(locked["archive"]), "p", "--state-source", str(root / "slots" / "r1" / "state")),
+                      ("delegate", "r1"), ("activate", CONTAINER)):
+        result = _cli(old_pyc, root, *arguments)
+        assert result.returncode != 0 and "runtime_admission_controller_downgrade" in result.stderr, (
+            arguments, result.stderr[-2000:])
+    assert _witness(root, *_states(world)) == before
+    assert not (root / "slots" / "p").exists()

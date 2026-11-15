@@ -286,6 +286,41 @@ autocontenidas y la delegación a estados dueños se apaga. Desde SC-2
   `install-controller`, y no correr el `stage_runtime` de ningún slot hasta
   que vuelva a declarar la época 4.
 
+#### SC-6a: ensayo ampliado y copias viejas retiradas (2026-11-15)
+
+- Ensayo: `tests/integration/test_sc6a_r1_rehearsal.py` (en proceso, Mac y
+  server) y la ventana real de `tests/integration/test_linux_adoption_window.py`
+  agregan los casos (i)–(iv) del diseño. Después de W9, `delegate`,
+  `authorize_derived_state` y un `activate` de otro slot rechazan. El R1 de
+  época 3 (26de262) lo rechazan el prepare de R1 y `install-controller`, antes
+  y después de W3. `read_r1_archive` rechaza un archivo de época 5 y uno de
+  época 3. El bloque del sha256 fijado del runbook de R1, corrido tal como está
+  escrito, detiene el procedimiento con el R1 de época 3 y con una
+  reconstrucción distinta del mismo commit.
+- AUTHZ3-1 ensayado: una copia construida desde b0c322d~1, sobre la raíz
+  adoptada de época 4 después de W9, prepara un slot, concede
+  (`admission/delegations/`) y lo activa: ese slot pasa a ser el head. La
+  primera copia con `require_forward_epoch` (b0c322d) se rechaza con
+  `runtime_admission_controller_downgrade`. El test fija ese residuo tal como
+  es. La barrera sigue siendo la regla de operación (sólo
+  `controller/current`), la limpieza de abajo y, más adelante, la guarda de
+  SC-1.
+- Inventario y retiro bajo `yo` (Mac y server; cada ubicación está en el
+  handoff y en `t040-t041/sc6a-evidence.json`): se borraron los árboles
+  temporales de pytest, las corridas del roadmap y los restos de
+  `build_runtime` con copias de 69a79e6..b0c322d~1 o de época 3. El checkout
+  del server avanzó de 26de262 a la rama integrada. No apareció nada de origen
+  dudoso, así que no hubo renombres `*.superseded-epoch3`. Del lado de `kza`
+  (sólo listado, sin cambios): ningún archivo, árbol ni checkout de ese rango.
+  Sus slots e `incoming/` son las releases legadas 2c5adb4, b0866e8, 63ea8d3 y
+  e9669ec, sin `delegate`.
+- Lo que queda: el historial de Git conserva esas versiones, y la propia suite
+  construye copias de ese rango en el tmp privado de pytest de `yo` (238b463
+  en el multi-hop compilado, 40aa05b en el ensayo del lanzador, b0c322d~1 en
+  este ensayo; pytest guarda las tres últimas corridas). No son ubicaciones de
+  transferencia: R1 se toma sólo del archivo cuyo sha256 fija el runbook de R1
+  (paso obligatorio antes de W1).
+
 #### Contrato de esquema (época 1)
 
 SC-2 declara `SCHEMA_CONTRACT_EPOCH = 1` y `release.json` lo copia como
