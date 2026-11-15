@@ -68,7 +68,7 @@ def test_install_controller_minimum_is_epoch_4_everywhere():
         assert "Exige época de controlador 2" not in text, relative
     assert "`install-controller` (época 4 o posterior desde SC-2" in " ".join((REPO / DOCS[0]).read_text().split())
     w3 = [line for line in (REPO / DOCS[1]).read_text().splitlines() if line.startswith("- **W3**:")]
-    assert w3 == ["- **W3**: `$ST install-controller r1.tar.gz`. El archivo debe declarar `controller_epoch` 4,"
+    assert w3 == ["- **W3**: `$ST install-controller \"$R1_ARCHIVE\"`. El archivo debe declarar `controller_epoch` 4,"
                   " exactamente la época que comprueba `adoption-commit`."]
 
 

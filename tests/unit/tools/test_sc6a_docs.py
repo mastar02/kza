@@ -38,6 +38,32 @@ def test_the_runbook_has_the_pinned_archive_step_before_any_command_and_w1():
     assert "Sin `R1 fijado: OK`, detener: no hay W1." in " ".join(window.split())
 
 
+def test_r1_and_st_come_from_a_new_extraction_of_the_verified_archive():
+    """SC6A-R2: right after the check the runbook extracts "$R1_ARCHIVE" into a new mktemp -d and
+    defines $ST only there; every command passes "$R1_ARCHIVE", never a relative r1.tar.gz."""
+    text = r1_runbook.runbook_text()
+    check = text.index(r1_runbook.HEADING)
+    extract = text.index(r1_runbook.EXTRACT_HEADING)
+    assert check < extract < text.index("## Antes de la ventana") < text.index("$ST adoption-dry-run")
+    lines = r1_runbook.extract_block(text).splitlines()
+    assert lines[0] == "unset R1 ST"
+    assert lines[1].startswith("R1=$(mktemp -d)")
+    assert lines[2] == 'tar -xzf "$R1_ARCHIVE" -C "$R1"'
+    assert lines[3].startswith('if [ "$("$PY" -I -c ') and '"$R1/release.json")" = "$R1_COMMIT" ]; then ST=' in lines[3]
+    # $R1 and $ST are assigned nowhere else, and no placeholder $R1 is left.
+    assigned = [line for line in text.splitlines() if re.match(r"\s*(R1|ST)=", line)]
+    assert assigned == [lines[1]], assigned
+    assert text.count('ST="$PY -I -B $R1/scripts/stage_runtime.pyc') == 1 and "R1=<" not in text
+    # Every command takes the verified archive by its variable.
+    flat = " ".join(text.split())
+    for command in ('$ST adoption-dry-run --container-slot $C --archive "$R1_ARCHIVE" --slot',
+                    '- **W2**: `$ST adoption-prepare --container-slot $C --archive "$R1_ARCHIVE" --slot',
+                    '- **W3**: `$ST install-controller "$R1_ARCHIVE"`.'):
+        assert command in flat, command
+    assert flat.count("r1.tar.gz") == 1 and "R1_ARCHIVE=<ruta del r1.tar.gz transferido>" in flat
+    assert "Sin `R1 extraído: OK`, detener: `$ST` queda sin definir." in flat
+
+
 def _git(*arguments: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *arguments], cwd=REPO, capture_output=True, text=True, timeout=60)
 

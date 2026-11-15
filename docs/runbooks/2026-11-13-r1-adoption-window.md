@@ -76,14 +76,14 @@ y `{"refused": <código>}` en estos casos:
 - una segunda ejecución.
 
 ```bash
-R1=<tmp privado>/r1            # R1 extraído de $R1_ARCHIVE ya verificado (árbol con U3b-0c y SC-2, época 4)
 PY=/home/kza/kza/.venv/bin/python
-ST="$PY -I -B $R1/scripts/stage_runtime.pyc --root /home/kza/releases --offline"
 C=release_20261029T174830709997Z_63ea8d3
 ```
 
-`r1.tar.gz` en los comandos de abajo es siempre `$R1_ARCHIVE`, el mismo
-archivo verificado aquí.
+`$R1` (el árbol extraído, con U3b-0c y SC-2, época 4) y `$ST` se definen
+recién en «Extraer R1 verificado», en un directorio nuevo, justo después de
+`R1 fijado: OK`. Los comandos de abajo pasan siempre `"$R1_ARCHIVE"`, el mismo
+archivo verificado, nunca una ruta relativa ni otra copia.
 
 ### Archivo R1 fijado (paso obligatorio antes de W1)
 
@@ -111,8 +111,29 @@ no extraer, no correr ningún `$ST` ni W1. Comparar el commit de
 `release.json` no alcanza: un R1 de época 3 construido antes de SC-2 se acepta
 a sí mismo (sus propios comandos lo instalarían) y una reconstrucción distinta
 del mismo commit tiene otro sha256. Sólo cuenta el sha256 del archivo
-(`R1_COMMIT` queda como referencia). El ensayo corre este bloque tal como
-está escrito (`tests/mocks/r1_runbook.py`).
+(`R1_COMMIT` sólo sirve después, para comprobar que el árbol extraído viene de
+este archivo). El ensayo corre este bloque tal como está escrito
+(`tests/mocks/r1_runbook.py`).
+
+### Extraer R1 verificado (justo después de `R1 fijado: OK`)
+
+En la misma sesión de shell, inmediatamente después de `R1 fijado: OK`,
+extraer ese mismo `$R1_ARCHIVE` en un directorio nuevo y vacío, y definir
+`$ST` sólo desde ahí:
+
+```bash
+unset R1 ST
+R1=$(mktemp -d)   # directorio nuevo, vacío y privado (0700): nunca una extracción anterior
+tar -xzf "$R1_ARCHIVE" -C "$R1"
+if [ "$("$PY" -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["git_commit"])' "$R1/release.json")" = "$R1_COMMIT" ]; then ST="$PY -I -B $R1/scripts/stage_runtime.pyc --root /home/kza/releases --offline"; echo "R1 extraído: OK"; else echo "R1 extraído distinto del fijado: DETENER"; false; fi
+```
+
+Sin `R1 extraído: OK`, detener: `$ST` queda sin definir. Antes de W3 no
+existe `controller/current`, así que el sha256 fijado es la única garantía del
+código que corre `$ST`: por eso `$R1` sale siempre de un `mktemp -d` nuevo,
+extraído del archivo recién verificado, y nunca de un directorio que ya
+existía. Si la sesión se pierde, repetir «Archivo R1 fijado» y este bloque
+(otro `mktemp -d`). El ensayo corre los dos bloques tal como están escritos.
 
 ## Antes de la ventana
 
@@ -120,7 +141,7 @@ está escrito (`tests/mocks/r1_runbook.py`).
   no toma lock ni escribe en la raíz. Usa un scratch en tmpfs
   `/run/user/<uid>` que se borra al terminar, ante un rechazo y ante SIGTERM.
   ```bash
-  $ST adoption-dry-run --container-slot $C --archive r1.tar.gz --slot <slot R1> \
+  $ST adoption-dry-run --container-slot $C --archive "$R1_ARCHIVE" --slot <slot R1> \
       --window-timer <timer> ... [--code-index-unit <unidad>]
   ```
   Entrega el censo completo aunque haya rechazos blandos (review F2):
@@ -204,7 +225,9 @@ está escrito (`tests/mocks/r1_runbook.py`).
 
   Timers de la ventana: todos los `kza-*.timer` habilitados de W0, por nombre.
 - **W1-pre** (obligatorio): repetir la verificación de «Archivo R1 fijado» con
-  el mismo `$R1_ARCHIVE`. Sin `R1 fijado: OK`, detener: no hay W1.
+  el mismo `$R1_ARCHIVE`. Sin `R1 fijado: OK`, detener: no hay W1. `$ST` sigue
+  siendo el de «Extraer R1 verificado» en esta misma sesión; si no, repetir
+  ese bloque (otro `mktemp -d`).
 - **W1**. Ejecutar:
   ```bash
   systemctl --user stop kza-voice.service      # salida 0 obligatoria
@@ -248,7 +271,7 @@ está escrito (`tests/mocks/r1_runbook.py`).
     completa; prepare rechaza mientras tanto.
   - Es irreversible por decisión (P1=D). Deja
     `admission/adoption/retire-legacy-training-<ts>.json`.
-- **W2**: `$ST adoption-prepare --container-slot $C --archive r1.tar.gz --slot <slot R1> --decision <id ventana> --window-timer <timer>...`.
+- **W2**: `$ST adoption-prepare --container-slot $C --archive "$R1_ARCHIVE" --slot <slot R1> --decision <id ventana> --window-timer <timer>...`.
   - Requiere kza-voice inactivo y deshabilitado, timers inactivos y scratch en
     tmpfs.
   - Construye `slots/<slot R1>` con la marca de copia de adopción. No hace CAS
@@ -262,7 +285,7 @@ está escrito (`tests/mocks/r1_runbook.py`).
     systemctl --user start kza-voice.service
     ```
     y arrancar los timers de la ventana.
-- **W3**: `$ST install-controller r1.tar.gz`. El archivo debe declarar `controller_epoch` 4, exactamente la época que comprueba `adoption-commit`.
+- **W3**: `$ST install-controller "$R1_ARCHIVE"`. El archivo debe declarar `controller_epoch` 4, exactamente la época que comprueba `adoption-commit`.
 - **W4**: `$PY -I -B /home/kza/releases/controller/current/scripts/stage_runtime.pyc --root /home/kza/releases --offline adoption-commit --confirm <plan_sha256>`.
   - Verifica todo el plan de nuevo y rechaza con
     `runtime_admission_adoption_plan_mismatch:<ítem>` antes de cualquier
