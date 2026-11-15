@@ -1016,8 +1016,12 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   falla. AUTHZ3-3 (informativo): con el flag de producción, `activate` ya no
   consulta registros de autoridad derivada para K; sólo la capacidad de su
   compactación lo autoriza. RV3-4: el test de rollback compilado usa
-  `usefixtures` y no oculta el ayudante importado. Detalle, tests y mutantes
-  en la evidencia (`review_round_3`).
+  `usefixtures` y no oculta el ayudante importado. Mutantes: 14 de 14
+  muertos. Mac: módulos afectados verdes (164, 6 de integración con autoridad
+  derivada y 224 de admisión, serve y multi-hop, con 1 xfail); server (`yo`,
+  clon temporal desde bundle, ya borrado): 158 pasan. La suite batch completa
+  se repite sobre el commit integrado antes de SC-6a (C4). Detalle en la
+  evidencia (`review_round_3`).
 
 ## Prompt para la sesión nueva
 
