@@ -409,8 +409,6 @@ async def test_household_and_evaluator_roles_cannot_forget(tmp_path, leaves, das
             await login(client, grant.token)
             response = await client.post(FORGET, json={'expected_carried': 2, 'no_capture_running': True})
             assert response.status_code == 403
-            assert (await client.post(FORGET, json={'expected_carried': 2, 'no_capture_running': True},
-                headers={'Origin': 'http://foreign.invalid'})).status_code == 403
         async with AsyncClient(transport=ASGITransport(app=graph.dashboard.app), base_url='http://testserver') as client:
             assert (await client.post(FORGET, json={'expected_carried': 2, 'no_capture_running': True})).status_code == 401
         assert graph.capture_control.recorders.carried() == 2
@@ -445,3 +443,33 @@ async def test_session_lapsing_inside_the_forget_transaction_is_a_403(tmp_path, 
             assert not [r for r in caplog.records if 'forgot' in r.getMessage()]
             assert (await client.get(URL)).json() == before
         assert recorders.carried() == recorders.pending() == 2 and not recorders._fault
+
+
+async def test_operator_session_from_a_foreign_origin_or_form_body_cannot_forget(tmp_path, leaves, dashboard_auth, caplog):
+    """R1B2-4: a valid operator cookie is not enough for a cross-site forget.
+
+    The session holds admin:manage, so only the Origin check (403) and the JSON
+    content-type requirement (415) refuse these requests.
+    """
+    async with carried_application(tmp_path, leaves) as graph:
+        async with AsyncClient(transport=ASGITransport(app=graph.dashboard.app), base_url='http://testserver') as client:
+            await login(client, dashboard_auth['Authorization'].split(' ', 1)[1])
+            before = (await client.get(URL)).json()
+            assert before['carried_capture_owners'] == 2
+            with caplog.at_level('WARNING'):
+                for origin in ('http://foreign.invalid', 'null', 'http://testserver:8080', 'https://testserver'):
+                    response = await client.post(FORGET, headers={'Origin': origin},
+                        json={'expected_carried': 2, 'no_capture_running': True})
+                    assert response.status_code == 403, origin
+                for content_type in ('text/plain', 'application/x-www-form-urlencoded', 'multipart/form-data; boundary=x'):
+                    response = await client.post(FORGET, headers={'Content-Type': content_type},
+                        content='{"expected_carried":2,"no_capture_running":true}')
+                    assert response.status_code == 415, content_type
+                    assert response.json() == {'detail': 'capture_control_json_required'}
+            assert not [r for r in caplog.records if 'forgot' in r.getMessage()]
+            assert (await client.get(URL)).json() == before
+            # The same session, same-origin and JSON, is admitted.
+            response = await client.post(FORGET, headers={'Origin': 'http://testserver'},
+                json={'expected_carried': 2, 'no_capture_running': True})
+            assert response.status_code == 200 and response.json()['forgotten_capture_owners'] == 2
+        assert graph.capture_control.recorders.carried() == 0
