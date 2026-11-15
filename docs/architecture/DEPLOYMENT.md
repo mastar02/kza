@@ -344,7 +344,11 @@ el proceso. Requiere el visto bueno explícito del usuario antes de integrarse.
 - Las filas que ya estaban `unknown` al arrancar este proceso quedan como
   *arrastradas* (`carried`). `drain()`, el `pre_close` del testigo y
   `verify_closed` esperan sólo `pending_live()`, que no las incluye. El
-  servidor no les concede captura ni reactivación.
+  servidor no les concede activación ni permiso de captura (`poll` da
+  `capture_allowed: false`). Las subidas no dependen del token del grabador:
+  `capture_ingress` y `CaptureControl.admit_upload` las admiten por la sesión
+  de administrador y la política global, así que una pestaña que sobrevivió
+  sólo deja de subir por su propio sellado (`sealed`) del lado del cliente.
 - Premisa: el servidor no distingue un token perdido de un titular que
   sobrevivió al reinicio (una pestaña abierta o un cliente nativo como
   `scripts/train_wakeword.py` o zone_setup). No esperar a ese titular depende
@@ -388,6 +392,13 @@ el proceso. Requiere el visto bueno explícito del usuario antes de integrarse.
     justo antes de la parada gestionada;
   - la página reintenta cada 2 s un `retire` fallido mientras siga abierta
     (antes sólo lo reintentaba en `pagehide`).
+- Filas arrastradas sin tope: la capacidad sólo cuenta dueños vivos, así que
+  cada caída con N dueños activos suma N filas permanentes. `_read_cache` y
+  `_register` las recorren en cada mutación (costo lineal), y nada las acota
+  ni alerta salvo la advertencia de arranque. Con una sola, la pausa total no
+  vuelve a confirmarse nunca. Antes quedaba en `muting`; ahora llega a
+  `muted`, pero el «no confirmada» es permanente. Se resuelve con la decisión
+  pendiente (a o b); también se puede sumar un tope o un umbral de alerta.
 - Pendiente del usuario, no bloqueante: si las filas arrastradas se pueden
   retirar más adelante y con eso volver a «confirmada», ya sea al arrancar
   (opción a) o con una acción de administrador (opción b). Hasta esa decisión
