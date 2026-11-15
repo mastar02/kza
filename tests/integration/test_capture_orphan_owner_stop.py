@@ -219,3 +219,90 @@ async def test_owner_orphaned_by_restart_does_not_lock_global_mute_and_unmute(tm
 async def _phase(control, phase):
     await until(lambda: control.snapshot()["phase"] == phase)
     return control.snapshot()
+
+
+async def test_forgetting_lost_recordings_lets_the_mute_be_confirmed(tmp_path, monkeypatch):
+    """R1-B2: after an administrator forgets the carried owner (user decision
+    2026-11-15), total mute is confirmed by the normal rules and the closure
+    proof no longer reports a carried owner."""
+    root = tmp_path / "graph"
+    await _orphaned_browser_owner(root, monkeypatch)
+    async with application_graph(root, monkeypatch, Clock(time.time())) as bundle:
+        control = bundle.graph.capture_control
+        actor = _actor(bundle)
+        control.request(True, control.snapshot()["revision"], actor)
+        snapshot = await _phase(control, "muted")
+        assert snapshot["total_mute_confirmed"] is False
+        assert snapshot["carried_capture_owners"] == 1
+        with pytest.raises(ValueError, match="^capture_carried_count_conflict$"):
+            await control.forget_carried(2, actor)
+        assert control.snapshot() == snapshot
+        forgotten = await control.forget_carried(1, actor)
+        assert forgotten.pop("forgotten_capture_owners") == 1
+        assert forgotten == control.snapshot()
+        assert forgotten["carried_capture_owners"] == forgotten["pending_browser_recorders"] == 0
+        assert forgotten["phase"] == "muted" and forgotten["total_mute_confirmed"] is True
+        assert (await control.forget_carried(1, actor))["forgotten_capture_owners"] == 0
+        control.request(False, forgotten["revision"], actor)
+        await _phase(control, "running")
+    # A later boot carries nothing; its managed stop proves full retirement.
+    receipts = []
+    monkeypatch.setattr(runtime_admission, "_stage", lambda: SimpleNamespace(
+        write_admission_receipt=lambda ticket, resources: receipts.append(resources)))
+    monkeypatch.setattr(runtime_admission, "_open_state_writers", lambda state: ("checked", []))
+    observer = AsyncExitStack()
+    async with application_graph(root, monkeypatch, Clock(time.time())) as bundle:
+        graph = bundle.graph
+        assert graph.capture_control.recorders.pending() == 0
+        admission = runtime_admission.RuntimeAdmission({"run_id": uuid4().hex},
+            {"state_root": str(tmp_path / "state")}, graph.privacy.ledger.path,
+            runtime_admission._config_digest(graph.config))
+        monkeypatch.setattr(admission, "revalidate", lambda: None)
+        admission.install_on(observer)
+        admission.attach_graph(graph)
+        await asyncio.wait_for(graph._stop_services(None, None), 30)
+    await observer.__aexit__(None, None, None)
+    proof = admission._closure_witness.verify_closed()
+    assert proof["capture_permissions_retired"] is True
+    assert proof["capture_permissions_carried"] == 0 and len(receipts) == 1
+
+
+async def test_forgetting_never_touches_a_live_owner(tmp_path, monkeypatch):
+    """R1-B2: a live owner keeps its explicit-ACK barrier after a forget."""
+    root = tmp_path / "graph"
+    await _orphaned_browser_owner(root, monkeypatch)
+    async with application_graph(root, monkeypatch, Clock(time.time())) as bundle:
+        control = bundle.graph.capture_control
+        recorders = control.recorders
+        actor = _actor(bundle)
+        issued = await recorders.register(actor)
+        await recorders.activate(issued["token"], actor)
+        try:
+            snapshot = control.snapshot()
+            assert snapshot["carried_capture_owners"] == snapshot["live_capture_owners"] == 1
+            assert (await control.forget_carried(1, actor))["forgotten_capture_owners"] == 1
+            assert recorders.live_owners() == recorders.pending() == 1
+            control.request(True, control.snapshot()["revision"], actor)
+            await _phase(control, "muting")
+            with pytest.raises(TimeoutError):
+                async with asyncio.timeout(.1):
+                    await _phase(control, "muted")
+            assert control.snapshot()["total_mute_confirmed"] is False
+            await recorders.retire(issued["token"])
+            assert (await _phase(control, "muted"))["total_mute_confirmed"] is True
+        finally:
+            await recorders.retire(issued["token"])
+
+
+async def test_a_lapsed_administrator_cannot_forget(tmp_path, monkeypatch):
+    root = tmp_path / "graph"
+    await _orphaned_browser_owner(root, monkeypatch)
+    async with application_graph(root, monkeypatch, Clock(time.time())) as bundle:
+        control = bundle.graph.capture_control
+        lease = root_lease(bundle)
+        lapsed = CaptureController.from_dashboard(lease.principal, lambda: False)
+        with pytest.raises(PermissionError):
+            await control.forget_carried(1, lapsed)
+        with pytest.raises(PermissionError):
+            await control.forget_carried(1, SimpleNamespace(require_current=lambda: None))
+        assert control.recorders.carried() == 1

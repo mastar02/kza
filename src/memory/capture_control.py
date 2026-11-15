@@ -280,6 +280,34 @@ class CaptureControl:
         self._operation = self._spawn(self._transition(muted, expected_revision, actor))
         return self.snapshot()
 
+    async def forget_carried(self, expected_carried: int, actor: CaptureController) -> dict:
+        """Forget lost recordings (carried owners) after an administrator's affirmation.
+
+        R1-B2, user decision 2026-11-15 (``r1b1_lost_recordings``): only an
+        ``admin:manage`` actor, only owners carried from an earlier process,
+        and only when ``expected_carried`` equals the current carried count.
+        Live owners are never touched. The content-free record is a log line
+        with the count. Afterwards ``total_mute_confirmed`` follows the normal
+        rules.
+
+        Args:
+            expected_carried: Carried count the administrator's page showed.
+            actor: Current administrative capture authority.
+
+        Returns:
+            The snapshot after forgetting, plus ``forgotten_capture_owners``.
+        """
+        if type(actor) is not CaptureController:
+            raise PermissionError('capture_control_denied')
+        actor.require_current()
+        if self._closed or not self._ready:
+            raise RuntimeError('capture_control_unavailable')
+        if type(expected_carried) is not int or expected_carried < 0:
+            raise ValueError('capture_carried_count_conflict')
+        forgotten = await self.recorders.forget_carried(expected_carried,
+                                                        authorize=actor.require_current)
+        return {**self.snapshot(), 'forgotten_capture_owners': forgotten}
+
     async def _transition(self, muted, revision, actor):
         try:
             mode = 'muted' if muted else 'resuming'

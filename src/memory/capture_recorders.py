@@ -49,6 +49,12 @@ class CaptureRecorders:
     seeing ``retirement_required``. Owners issued by this process keep the full
     explicit-ACK barrier.
 
+    A carried owner leaves ``pending()`` only through its ``retire`` or
+    ``forget_carried`` (R1-B2, user decision 2026-11-15): an administrator
+    affirms that no tab or tool is still recording and confirms the carried
+    count the page showed. Forgetting deletes only rows still carried; a
+    holder that presents its token before the commit aborts it.
+
     Args:
         privacy: Actual private SQLite service and its retained I/O owner.
         capture_allowed: Current global admission, independent of actor roles.
@@ -70,6 +76,10 @@ class CaptureRecorders:
         # Set once per process in ``_initialize``; never grows afterwards and
         # shrinks only when a holder presents its token (``_reclaim``).
         self._carried: set[str] = set()
+        # Rows a forget_carried transaction is deleting, and whether one of
+        # their holders presented its token meanwhile (which aborts it).
+        self._forgetting: frozenset[str] = frozenset()
+        self._forget_contested = False
         self._operations: set[asyncio.Task] = set()
         self._initializing: asyncio.Task | None = None
         self._ready = False
@@ -173,6 +183,8 @@ class CaptureRecorders:
             if self._closed or key not in self._carried:
                 return
             self._carried.discard(key)
+            if key in self._forgetting:
+                self._forget_contested = True
         logger.info("[CaptureRecorders] a carried owner contacted this process; "
                     "its explicit retire is awaited again")
 
@@ -340,6 +352,66 @@ class CaptureRecorders:
             return (sum(key not in self._carried for key in self._records)
                     + len(self._operations) + self._work.status()['operations']
                     + int(self._fault))
+
+    def _forget_carried(self, expected: int, authorize: Callable[[], None]) -> int:
+        def guard() -> None:
+            authorize()
+            with self._lock:
+                if self._forget_contested:
+                    raise ValueError("capture_carried_count_conflict")
+
+        try:
+            with self._privacy.ledger._transaction(guard) as db:
+                rows = db.execute("SELECT token_hash FROM capture_browser_recorders "
+                                  "WHERE state='unknown'").fetchall()
+                with self._lock:
+                    keys = frozenset(str(row[0]) for row in rows) & self._carried
+                    if keys and len(keys) != expected:
+                        raise ValueError("capture_carried_count_conflict")
+                    self._forgetting, self._forget_contested = keys, False
+                db.executemany("DELETE FROM capture_browser_recorders "
+                               "WHERE token_hash=? AND state='unknown'", [(key,) for key in keys])
+            with self._lock:
+                self._carried -= keys
+            self._read_cache()
+            return len(keys)
+        except (ValueError, PermissionError):
+            raise
+        except BaseException:
+            self._fault = True
+            raise
+        finally:
+            with self._lock:
+                self._forgetting, self._forget_contested = frozenset(), False
+
+    async def forget_carried(self, expected: int, *,
+                             authorize: Callable[[], None]) -> int:
+        """Delete the carried owners an administrator confirmed by their count.
+
+        Args:
+            expected: Carried count the administrator saw; any other current
+                count is a conflict, so a stale page forgets nothing it did
+                not show. With nothing carried this is a no-op returning 0.
+            authorize: Raises ``PermissionError`` once the administrator's
+                authority lapses; checked inside the transaction.
+
+        Returns:
+            How many carried owners were forgotten (0 when none remained).
+
+        Raises:
+            ValueError: ``capture_carried_count_conflict`` when the count
+                differs or a holder presented its token before the commit.
+            RuntimeError: The recorders are closed, faulted or not ready.
+        """
+        if type(expected) is not int or expected < 0:
+            raise ValueError("capture_carried_count_conflict")
+        if self._closed or self._fault or not self._ready:
+            raise RuntimeError("capture_recorders_unavailable")
+        forgotten = await self._call(self._forget_carried, expected, authorize)
+        if forgotten:
+            logger.warning("[CaptureRecorders] an administrator forgot %d carried owner(s), "
+                           "affirming none is still recording", forgotten)
+        return forgotten
 
     def _retire_reserved(self) -> None:
         try:

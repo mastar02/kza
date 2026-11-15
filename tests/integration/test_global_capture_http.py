@@ -321,3 +321,96 @@ async def test_factory_restart_restores_durable_mute_before_any_run(tmp_path, le
             await until(lambda: graph.capture_control.snapshot()['phase'] == 'running')
         source = graph.privacy.source_for_capture(str(uuid4()), time.time(), 'synthetic-restart')
         assert graph.privacy.sources_available((source,))
+
+
+FORGET = URL + '/forget-carried'
+
+
+@asynccontextmanager
+async def carried_application(tmp_path, leaves, count=2):
+    """R1-B2: a first boot issues ``count`` browser owners; the second carries them."""
+    from tests.integration.test_global_capture_control import actor
+    async with application(tmp_path, leaves) as graph:
+        recorders, principal = graph.capture_control.recorders, actor()
+        for _ in range(count):
+            token = (await recorders.register(principal))['token']
+            await recorders.activate(token, principal)
+    async with application(tmp_path, leaves) as graph:
+        assert graph.capture_control.recorders.carried() == count
+        yield graph
+
+
+async def test_operator_forgets_lost_recordings_with_the_count_shown(tmp_path, leaves, dashboard_auth, caplog):
+    async with carried_application(tmp_path, leaves) as graph:
+        async with AsyncClient(transport=ASGITransport(app=graph.dashboard.app), base_url='http://testserver') as client:
+            await login(client, dashboard_auth['Authorization'].split(' ', 1)[1])
+            before = (await client.get(URL)).json()
+            assert before['carried_capture_owners'] == 2 and before['live_capture_owners'] == 0
+            assert (await client.post(URL, json={'muted': True, 'expected_revision': before['revision']})).status_code == 202
+            muted = await settled(client, 'muted')
+            assert muted['total_mute_confirmed'] is False
+            # A stale page that showed another count forgets nothing.
+            for stale in (0, 1, 3):
+                response = await client.post(FORGET, json={'expected_carried': stale, 'no_capture_running': True})
+                assert response.status_code == 409
+                assert response.json() == {'detail': 'capture_carried_count_conflict'}
+                assert response.headers['cache-control'] == 'no-store'
+            assert (await client.get(URL)).json() == muted
+            with caplog.at_level('WARNING'):
+                response = await client.post(FORGET, json={'expected_carried': 2, 'no_capture_running': True})
+            assert response.status_code == 200 and response.headers['cache-control'] == 'no-store'
+            forgotten = response.json()
+            assert set(forgotten) == FIELDS | {'forgotten_capture_owners'}
+            assert forgotten['forgotten_capture_owners'] == 2
+            assert forgotten['carried_capture_owners'] == forgotten['pending_browser_recorders'] == 0
+            assert forgotten['total_mute_confirmed'] is True and forgotten['revision'] == muted['revision']
+            assert [r.getMessage() for r in caplog.records if 'forgot' in r.getMessage()] == [
+                '[CaptureRecorders] an administrator forgot 2 carried owner(s), affirming none is still recording']
+            # Idempotent: the repeated request forgets nothing more.
+            again = await client.post(FORGET, json={'expected_carried': 2, 'no_capture_running': True})
+            assert again.status_code == 200 and again.json()['forgotten_capture_owners'] == 0
+
+
+@pytest.mark.parametrize('payload', [
+    {}, {'expected_carried': 2}, {'no_capture_running': True},
+    {'expected_carried': 2, 'no_capture_running': False},
+    {'expected_carried': 2, 'no_capture_running': 1},
+    {'expected_carried': 2, 'no_capture_running': 'true'},
+    {'expected_carried': 2, 'no_capture_running': None},
+    {'expected_carried': True, 'no_capture_running': True},
+    {'expected_carried': -1, 'no_capture_running': True},
+    {'expected_carried': 2.0, 'no_capture_running': True},
+    {'expected_carried': '2', 'no_capture_running': True},
+    {'expected_carried': 2, 'no_capture_running': True, 'user_id': 'synthetic-account'},
+    {'expected_carried': 2, 'no_capture_running': True, 'live': True},
+])
+async def test_forget_body_requires_the_explicit_affirmation_and_count(tmp_path, leaves, dashboard_auth, payload):
+    async with carried_application(tmp_path, leaves) as graph:
+        async with AsyncClient(transport=ASGITransport(app=graph.dashboard.app), base_url='http://testserver') as client:
+            assert (await client.post(FORGET, headers=dashboard_auth, json=payload)).status_code == 422
+            assert (await client.post(FORGET, headers={**dashboard_auth, 'Content-Type': 'application/json'},
+                content='{"expected_carried":2,"expected_carried":2,"no_capture_running":true}')).status_code == 422
+            assert (await client.post(FORGET, headers=dashboard_auth,
+                content='expected_carried=2&no_capture_running=true')).status_code == 415
+        assert graph.capture_control.recorders.carried() == 2
+
+
+@pytest.mark.parametrize('role', [DashboardRole.HOME, DashboardRole.EVALUATOR])
+async def test_household_and_evaluator_roles_cannot_forget(tmp_path, leaves, dashboard_auth, role):
+    async with carried_application(tmp_path, leaves) as graph:
+        now = time.time()
+        samples = (EvaluationSample('vf_' + 'a' * 64, frozenset({'b' * 64}),
+            frozenset({EvaluationModality.AUDIO_PREVIEW}), now + 60),) if role is DashboardRole.EVALUATOR else ()
+        grant = await graph.dashboard_authority.issue_credential(
+            graph.dashboard_authority.resolve(dashboard_auth['Authorization']),
+            subject='synthetic-forget-member', role=role, expires_at=now + 120, samples=samples,
+        )
+        async with AsyncClient(transport=ASGITransport(app=graph.dashboard.app), base_url='http://testserver') as client:
+            await login(client, grant.token)
+            response = await client.post(FORGET, json={'expected_carried': 2, 'no_capture_running': True})
+            assert response.status_code == 403
+            assert (await client.post(FORGET, json={'expected_carried': 2, 'no_capture_running': True},
+                headers={'Origin': 'http://foreign.invalid'})).status_code == 403
+        async with AsyncClient(transport=ASGITransport(app=graph.dashboard.app), base_url='http://testserver') as client:
+            assert (await client.post(FORGET, json={'expected_carried': 2, 'no_capture_running': True})).status_code == 401
+        assert graph.capture_control.recorders.carried() == 2
