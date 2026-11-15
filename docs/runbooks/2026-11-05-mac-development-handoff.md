@@ -868,6 +868,7 @@ Pruebas en el server: el usuario autorizó correrlas allí como `yo` y detener s
     - R6: `EMFILE`/`ENFILE` al abrir un pin da `native_pin_unavailable`.
     - R7: si falla el `dup`, el temporal vacío se borra a través del descriptor de `mkstemp`, en los tres ayudantes y en `diagnostic_store`.
     - R3/R5: huecos conocidos listados en DEPLOYMENT. R9 se resuelve al integrar.
+    - Verificado en `d0c22aa`: pruebas nuevas y relacionadas verdes en la Mac y en el server; mutantes 31/31 muertos en el server (N9 incluido) y 23/31 en la Mac, donde los 8 restantes protegen comportamiento sólo de Linux.
 
 Siguiente:
 - Integradas el 2026-11-14 `u3b-0c-r51` (R5-1, R5-2 y la revisión A-F1..A-F4) y `g01-writer-active` (con B-F1 y la regla de releases anteriores a 431e44e en DEPLOYMENT). Suite batch verde en ambas máquinas sobre R5-1/R5-2 + G01 (`u3b/full-r51-g01/RESULT.md`; las rehearsals de tiempo 8/8 en las dos, incluido `test_compiled_slot_rollback`); los arreglos posteriores de la revisión tocan sólo `scripts/compaction_units.py` y sus pruebas, validados por módulo en la Mac y en el server, con 38/38 mutantes muertos (`u3b-0c-evidence.json`, `r5_review_fixes`). Revisión: `t040-t041/r51-g01-independent-review.json`.
