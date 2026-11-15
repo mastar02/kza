@@ -177,6 +177,33 @@ def test_the_head_slot_still_activates_and_runs(pair):
     assert head["status"] == "closed" and stage.read_binding(root, head["binding_id"])["slot"] == "old"
 
 
+def test_the_rule_follows_the_head_binding_not_the_current_symlink(pair, monkeypatch):
+    """SC-2 review C3: after a cut between the head CAS and the selection, 'current' names another slot.
+
+    The slot 'current' names must still refuse before it is read; the head binding's slot activates
+    and republishes 'current'. A rule keyed on _current_slot would invert both.
+    """
+    root, candidate = pair["root"], pair["candidate"]
+    head_slot = stage.read_binding(root, pair["head"]["binding_id"])["slot"]
+    assert head_slot == "old"
+    published = os.readlink(root / "current")
+    cut = root / "current.sc2-cut"
+    os.symlink(published.replace("slots/old/", "slots/candidate/"), cut)
+    os.replace(cut, root / "current")
+    assert stage._current_slot(root) == "candidate"
+    with stage.AdmissionController(root) as controller:
+        with monkeypatch.context() as patch:
+            patch.setattr(stage, "_binding_snapshot", _boom)
+            patch.setattr(stage, "_probe_candidate", _boom)
+            _refused(root, (pair["state"], candidate), lambda: controller.activate("candidate", managed=True),
+                     RELEASE_MODE)
+        assert stage.read_admission_head(root) == pair["head"] and stage._current_slot(root) == "candidate"
+        controller.activate(head_slot, managed=True)
+    assert os.readlink(root / "current") == published and stage._current_slot(root) == "old"
+    head = stage.read_admission_head(root)
+    assert head["status"] == "closed" and stage.read_binding(root, head["binding_id"])["slot"] == "old"
+
+
 def test_an_unmanaged_root_still_activates_any_slot(admission_archive, tmp_path):
     source = tmp_path / "offline"
     (source / "config").mkdir(parents=True)
