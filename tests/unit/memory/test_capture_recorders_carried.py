@@ -166,3 +166,44 @@ async def test_pending_live_counts_work_and_fault_exactly_like_pending(tmp_path,
         with pytest.raises(RuntimeError, match="^capture_recorder_state_unconfirmed$"):
             await asyncio.wait_for(recorders.aclose(), 2)
         await privacy.aclose()
+
+
+async def test_token_use_without_poll_reclaims_or_retires_a_carried_owner(tmp_path):
+    """R1B1-1/R1B1-4: activate also proves a live holder; a bare retire (the
+    page's retry after a lost retire, with no poll first) ends a carried owner.
+    """
+    path = str(tmp_path / "token-use.sqlite")
+    privacy, recorders = await _boot(path)
+    try:
+        refused = await _issue(recorders)
+        retired = await _issue(recorders)
+    finally:
+        await _close(privacy, recorders)
+    privacy, recorders = await _boot(path)
+    try:
+        assert recorders.carried() == recorders.pending() == 2 and recorders.live_owners() == 0
+        with pytest.raises(ValueError, match="^capture_recorder_actor_retired$"):
+            await recorders.activate(refused, actor())
+        assert recorders.carried() == 1 and recorders.pending_live() == recorders.live_owners() == 1
+        assert await recorders.retire(retired) == {"retired": True}
+        assert recorders.carried() == 0 and recorders.pending() == 1
+        await recorders.retire(refused)
+        assert recorders.pending() == recorders.carried() == 0
+    finally:
+        await _close(privacy, recorders)
+
+
+async def test_live_owners_counts_issued_owners_not_reservations(tmp_path):
+    """R1B1-4: a reservation is retired by the drain itself, so it is not a
+    live owner a stop would wait for; an activated owner is."""
+    privacy, recorders = await _boot(str(tmp_path / "live.sqlite"))
+    try:
+        principal = actor()
+        token = (await recorders.register(principal))["token"]
+        assert recorders.pending_live() == 1 and recorders.live_owners() == 0
+        await recorders.activate(token, principal)
+        assert recorders.live_owners() == 1
+        await recorders.retire(token)
+        assert recorders.live_owners() == recorders.pending() == 0
+    finally:
+        await _close(privacy, recorders)
