@@ -31,7 +31,8 @@ INDEX = {"type": "index", "name": "idx_erasure_target_participant_id", "tbl_name
 OWNER_TABLES = ("fact_owners", "fact_owner_revisions", "fact_owner_schema")
 
 
-def test_pre_u3b_state_derives_with_one_lookup_index_and_the_empty_owner_schema(tmp_path):
+def test_pre_u3b_state_derives_with_one_lookup_index_and_the_empty_owner_schema(tmp_path, legacy_managed_transitions):
+    # SC-2: derived-state authorization and its activation are a legacy world (fixture).
     repo = Path(__file__).resolve().parents[2]
     revision = os.environ.get("KZA_RECONCILIATION_REVISION") or subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()

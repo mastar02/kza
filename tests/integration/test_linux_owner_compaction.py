@@ -34,6 +34,7 @@ import pytest
 from scripts import stage_runtime as stage
 from tests.integration import test_linux_managed_launcher as real
 from tests.mocks import real_systemd
+from tests.mocks.legacy_transitions import legacy_managed_transitions
 
 pytestmark = pytest.mark.skipif(real_systemd.unavailable() is not None,
                                 reason=real_systemd.unavailable() or "available")
@@ -104,8 +105,11 @@ def test_compaction_gate_verification_run_and_p14_under_real_systemd(archive, tm
     root = deployment.root
     _clean_run(deployment, execute=REGISTER)
     stage.prepare_slot(archive, root, "b", deployment.state)
-    assert stage.delegate_slot(root, "b")["targets"]
-    stage.activate_slot(root, "b")
+    # SC-2: the owner hop is a legacy world built in process under legacy_managed_transitions;
+    # the compiled controller then serves and compacts it under real systemd unchanged.
+    with legacy_managed_transitions():
+        assert stage.delegate_slot(root, "b")["targets"]
+        stage.activate_slot(root, "b")
     _clean_run(deployment, execute=REGISTER)
     # P14: a drop-in on this account's unit naming a member refuses the plan.
     systemd.write_dropin(deployment.unit, "zz-member.conf",

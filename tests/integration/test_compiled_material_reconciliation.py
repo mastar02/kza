@@ -580,7 +580,9 @@ def _recover_compiled_output_registration(task, evidence):
         evidence, "output-registration-recovery", evidence)
 
 
-def test_compiled_material_rollback_and_forward_preserve_latest_authority(tmp_path):
+def test_compiled_material_rollback_and_forward_preserve_latest_authority(tmp_path, legacy_managed_transitions):
+    # SC-2: the material reconciliation world (derived-state grants and runs of derived slots under
+    # the managed head) is a legacy world; it runs under the legacy_managed_transitions fixture.
     repo = Path(__file__).resolve().parents[2]
     revision = os.environ.get("KZA_RECONCILIATION_REVISION") or subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()

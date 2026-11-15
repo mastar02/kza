@@ -286,3 +286,54 @@ def test_an_existing_two_owner_chain_validates_serves_and_compacts(x_archive, tm
     assert cw.serve(root, tmp_path, "after").code == 0
     with pytest.raises(ValueError, match=RETIRED):
         stage.delegate_slot(root, "next")
+
+
+def test_an_epoch3_root_with_owners_compacts_under_the_epoch4_controller(x_archive, epoch3_archive, tmp_path,
+                                                                         checkout_controller):
+    """The design's legacy rehearsal: owners granted by the pinned epoch-3 compiled CLI (never the flag),
+    then the epoch-4 controller is installed, every grant is refused and the owners are compacted."""
+    from tests.mocks import launcher_rehearsal as rehearsal
+
+    source = rehearsal.offline_source(tmp_path)
+    staging = tmp_path / "root"
+    stage.prepare_slot(epoch3_archive, staging, "a", source)
+    root = staging.resolve()
+    with stage.AdmissionController(root) as controller:
+        assert controller.activate("a", managed=True) is None  # no head yet: unmanaged rule unchanged
+    stage.prepare_slot(epoch3_archive, root, "p", source)  # the pinned CLI's home (never activated)
+    installed = _pinned_cli(root, "install-controller", str(epoch3_archive))  # this code refuses epoch 3
+    assert installed.returncode == 0, installed.stderr
+    assert json.loads((root / "admission" / "controller.json").read_text())["controller_epoch"] == 3
+    cw.install_record(root)
+    a_binding = cw.run(root, "a", cw.LEDGER)
+    stage.prepare_slot(epoch3_archive, root, "b", root / "slots" / "a" / "state")
+    for arguments in (("delegate", "b"), ("activate", "b")):
+        result = _pinned_cli(root, *arguments)
+        assert result.returncode == 0, result.stderr
+    b_binding = cw.run(root, "b", cw.LEDGER)  # the head's own slot: allowed with the production flag
+    b_state = root / "slots" / "b" / "state"
+    assert {record["source_binding"] for record in stage._delegation_records(root, b_state)} == {a_binding}
+    assert stage.read_admission_head(root)["binding_id"] == b_binding
+
+    assert launcher.install_controller(root, x_archive)["controller_epoch"] == 4
+    states = (root / "slots" / "a" / "state", b_state, root / "slots" / "p" / "state")
+    before = _witness(root, *states)
+    refused = _pinned_cli(root, "delegate", "p")
+    assert refused.returncode != 0 and "runtime_admission_controller_downgrade" in refused.stderr
+    with pytest.raises(ValueError, match=RETIRED):
+        stage.delegate_slot(root, "p")
+    with pytest.raises(ValueError, match=RELEASE_MODE):
+        stage.activate_slot(root, "p")
+    assert _witness(root, *states) == before
+    assert cw.serve(root, tmp_path, "owners").code == 0  # the existing chain validates and serves
+
+    # Plain compaction: K's runtime is H's own (epoch-3 slot) archive (P6); the epoch-1 slot format
+    # runs unchanged under the epoch-4 controller.
+    started = cw.start(root, epoch3_archive)
+    compaction.compact_verify(root, started["compaction_id"])
+    assert cw.serve(root, tmp_path, "verify").code == 0
+    assert compaction.compact_retire(root, started["compaction_id"], scan=cw.no_units)["phase"] == "complete"
+    head = stage.read_admission_head(root)
+    k_state = Path(stage.read_binding(root, head["binding_id"])["state_root"])
+    assert list(stage._delegation_records(root, k_state)) == []
+    assert not (root / "slots" / "a").exists() and not (root / "slots" / "b").exists()

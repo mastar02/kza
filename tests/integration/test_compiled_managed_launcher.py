@@ -27,6 +27,7 @@ from scripts import stage_runtime as stage
 from tests.mocks.runtime_tree import writable_runtime
 from tests.mocks import fake_systemd
 from tests.mocks import launcher_rehearsal as rehearsal
+from tests.mocks.legacy_transitions import legacy_managed_transitions
 
 REPO = Path(__file__).resolve().parents[2]
 TEMPLATE = REPO / "systemd" / "kza-voice.service.d" / "managed.conf.template"
@@ -195,10 +196,17 @@ def test_tc1_clean_lifecycle_restart_and_delegation(artifacts, tmp_path, deploym
     second = deployment.head()
     assert second["status"] == "closed" and second["generation"] > head["generation"]
     assert len(rehearsal.receipts(deployment.root)) == 2
-    # Delegate to a new slot (Y) and serve it.
+    # Delegate to a new slot (Y) and serve it. SC-2: both steps are refused with the production
+    # flag; the legacy world is built under legacy_managed_transitions and then served without it.
     stage.prepare_slot(artifacts["archives"]["y"], deployment.root, "b", deployment.state)
-    assert stage.delegate_slot(deployment.root, "b")["targets"]
-    assert stage.activate_slot(deployment.root, "b") == "slots/s/runtime"
+    with pytest.raises(ValueError, match="^runtime_admission_delegation_retired$"):
+        stage.delegate_slot(deployment.root, "b")
+    with pytest.raises(ValueError, match="^runtime_admission_transition_requires_release_mode$"):
+        stage.activate_slot(deployment.root, "b")
+    assert deployment.head() == second
+    with legacy_managed_transitions():
+        assert stage.delegate_slot(deployment.root, "b")["targets"]
+        assert stage.activate_slot(deployment.root, "b") == "slots/s/runtime"
     deployment.phase_file.unlink()
     unit = deployment.supervise("clean")
     unit.start()
@@ -351,7 +359,12 @@ def test_tc4_managed_rollback_to_an_older_launcher_slot_runs(artifacts, tmp_path
     assert unit.wait_for(_ready, 60)
     assert unit.stop() == 0
     stage.prepare_slot(artifacts["archives"]["x"], deployment.root, "older", deployment.state)
-    assert stage.activate_slot(deployment.root, "older") == "slots/s/runtime"
+    # SC-2: a managed rollback is release mode's (not shipped); the legacy activation is built
+    # under legacy_managed_transitions and the older slot then serves with the production flag.
+    with pytest.raises(ValueError, match="^runtime_admission_transition_requires_release_mode$"):
+        stage.activate_slot(deployment.root, "older")
+    with legacy_managed_transitions():
+        assert stage.activate_slot(deployment.root, "older") == "slots/s/runtime"
     deployment.phase_file.unlink()
     unit = deployment.supervise("clean")
     unit.start()
@@ -365,10 +378,16 @@ def test_tc4_pre_launcher_artifact_is_refused_78(artifacts, tmp_path, deployment
     assert "pre" in artifacts["archives"], "the pre-0d artifact must be built"
     deployment = _deploy(artifacts, tmp_path, deployments)
     stage.prepare_slot(artifacts["archives"]["pre"], deployment.root, "pre", deployment.state)
-    with pytest.raises(ValueError, match="runtime_admission_launcher_contract_missing"):  # review P10
-        stage.activate_slot(deployment.root, "pre")
-    # serve's own refusal, rehearsed past the operator check
-    assert stage.activate_slot(deployment.root, "pre", launcher_checks=False) == "slots/s/runtime"
+    if deployment.head() is not None:  # SC-2 refuses the cross-slot activation first
+        with pytest.raises(ValueError, match="^runtime_admission_transition_requires_release_mode$"):
+            stage.activate_slot(deployment.root, "pre")
+    # The P10 check and serve's own refusal, rehearsed in a legacy activation (SC-2 fixture helper);
+    # serve itself then runs with the production flag.
+    with legacy_managed_transitions():
+        with pytest.raises(ValueError, match="runtime_admission_launcher_contract_missing"):  # review P10
+            stage.activate_slot(deployment.root, "pre")
+        # serve's own refusal, rehearsed past the operator check
+        assert stage.activate_slot(deployment.root, "pre", launcher_checks=False) == "slots/s/runtime"
     unit = deployment.supervise("clean")
     unit.start()
     unit.wait_inactive(60)

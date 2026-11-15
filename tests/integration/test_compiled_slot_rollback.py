@@ -8,13 +8,15 @@ import pytest
 
 from scripts import stage_runtime as stage
 from scripts.build_runtime import build_runtime
+from tests.mocks.legacy_transitions import legacy_managed_transitions
 from tests.mocks.slot_rollback import exercise_slot_rollback
 
 
 UNMANAGED_REVISION = "9b3170294eb69a53dd27b63949c09a63a2efed54"
 
 
-def test_compiled_slot_rollback_preserves_latest_privacy_authority(tmp_path):
+def test_compiled_slot_rollback_preserves_latest_privacy_authority(tmp_path, legacy_managed_transitions):
+    # SC-2: a delegated copy activated under the managed head is a legacy world (fixture).
     exercise_slot_rollback(tmp_path)
 
 
@@ -68,6 +70,14 @@ def test_former_unmanaged_rehearsal_slot_is_refused_with_nothing_changed(tmp_pat
                         lambda *args, **kwargs: launched.append(args) or original(*args, **kwargs))
     before = _tree(root, state, legacy)
     with stage.AdmissionController(root) as controller:
+        # SC-2: under the managed head, another slot is refused before its manifest is read.
+        with pytest.raises(ValueError, match="^runtime_admission_transition_requires_release_mode$"):
+            controller.activate("legacy")
+        with pytest.raises(ValueError, match="^runtime_admission_transition_requires_release_mode$"):
+            controller.run("legacy", [sys.executable, "-c", "raise SystemExit(0)"], timeout=5)
+    assert _tree(root, state, legacy) == before
+    # The pre-SC-2 refusal stays in place behind it (legacy activation, test-only flag).
+    with legacy_managed_transitions(), stage.AdmissionController(root) as controller:
         with pytest.raises(ValueError, match="^runtime_admission_candidate_unmanaged$"):
             controller.activate("legacy")
         with pytest.raises(ValueError, match="^runtime_admission_candidate_unmanaged$"):

@@ -28,6 +28,7 @@ import pytest
 from scripts import stage_runtime as stage
 from tests.integration import test_compiled_managed_launcher as compiled
 from tests.mocks import launcher_rehearsal as rehearsal
+from tests.mocks.legacy_transitions import legacy_managed_transitions
 
 REGISTER = compiled.REGISTER_TARGET.replace("'clips'", "('clips-' + state.parent.name)").replace(
     "INSERT INTO voice_group_schema", "INSERT OR IGNORE INTO voice_group_schema")
@@ -100,8 +101,11 @@ def _world(artifacts, tmp_path, deployments, **options):
     deployments.append(deployment)
     _clean_run(deployment, execute=REGISTER)
     stage.prepare_slot(artifacts["archives"]["x"], deployment.root, "b", deployment.state)
-    assert stage.delegate_slot(deployment.root, "b")["targets"]
-    stage.activate_slot(deployment.root, "b")
+    # SC-2: the owner hop is a legacy world, built by the in-process (checkout) controller under
+    # legacy_managed_transitions; the compiled controller then serves and compacts it unchanged.
+    with legacy_managed_transitions():
+        assert stage.delegate_slot(deployment.root, "b")["targets"]
+        stage.activate_slot(deployment.root, "b")
     _clean_run(deployment, execute=REGISTER)
     return deployment
 

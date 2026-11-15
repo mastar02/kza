@@ -369,7 +369,10 @@ def _exercise(task: Path, evidence: Path, repo: Path, revision: str) -> dict:
             raise
 
 
-def test_compiled_v1_v2_histories_share_original_closed_controller(tmp_path: Path) -> None:
+def test_compiled_v1_v2_histories_share_original_closed_controller(tmp_path: Path,
+                                                                     legacy_managed_transitions) -> None:
+    # SC-2: a delegated copy activated under the managed head is a legacy world (fixture);
+    # the reader phases run the compiled controllers in fresh processes as before.
     repo = Path(__file__).resolve().parents[2]
     revision = _git(repo, "rev-parse", "HEAD")
     assert re.fullmatch("[0-9a-f]{40}", revision)
