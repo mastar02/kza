@@ -511,7 +511,9 @@ class _CaptureClosure:
         tasks = tuple(lease.task for lease in self.uploads if lease.task is not None)
         if tasks:
             await asyncio.gather(*(asyncio.shield(task) for task in tasks))
-        _require(self.recorders.pending() == 0 and not self.control._uploads,
+        # Owners carried from an earlier process are not awaited (R5V-1); the
+        # proof reports them instead of claiming their retirement.
+        _require(self.recorders.pending_live() == 0 and not self.control._uploads,
                  "capture_permissions_pending")
 
     def verify_closed(self):
@@ -520,7 +522,7 @@ class _CaptureClosure:
         _require(control._closed and control._sealed and control._phase == "closed"
                  and _finished(control._closing) and not control._uploads
                  and self.recorders._closed and self.recorders._sealed
-                 and self.recorders.pending() == 0
+                 and self.recorders.pending_live() == 0
                  and self.recorder_work.status()["closed"]
                  and self.recorder_work.status()["operations"] == 0
                  and _finished(self.recorder_work._closing)
@@ -532,10 +534,12 @@ class _CaptureClosure:
         if self.enrollment is not None:
             _require(self.enrollment.status()["closed"] and not self.enrollment.status()["operations"],
                      "enrollment_not_closed")
+        carried = self.recorders.carried()
         _require(self.driver._closed and _finished(self.driver._closing)
                  and all(owner._closed and _finished(owner._closing)
                          and not owner.snapshot_operations() for owner in self.archivers),
                  "archive_not_closed")
+        return carried
 
 
 class RuntimeClosureWitness:
@@ -669,7 +673,7 @@ class RuntimeClosureWitness:
                          and self._memory._client is self._memory_client, "memory_not_closed")
             ha_opened = self._ha.verify_closed()
             authority_opened = self._authority.verify_closed()
-            self._capture.verify_closed()
+            carried = self._capture.verify_closed()
             return {"schema_version": 1, "bindings_unchanged": True,
                     "model_owners_closed": True, "graph_closed": True,
                     "privacy_closed": True, "sdk_closed": True, "native_closed": True,
@@ -678,7 +682,9 @@ class RuntimeClosureWitness:
                     "chroma_opened": chroma_opened, "chroma_never_opened": not chroma_opened,
                     "ha_session_acquired": ha_opened, "ha_never_acquired": not ha_opened,
                     "authority_lease_acquired": authority_opened,
-                    "capture_permissions_retired": True,
+                    # Never True while an owner carried without an ACK exists.
+                    "capture_permissions_retired": carried == 0,
+                    "capture_owners_carried": carried,
                     "input_owner_count": len({self._graph.pipeline.audio_loop,
                                               self._graph.fallback_audio_loop})}
         except BaseException:

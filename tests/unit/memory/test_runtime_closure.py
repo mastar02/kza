@@ -48,6 +48,7 @@ async def test_real_graph_and_public_sdk_close_produce_content_free_proof(tmp_pa
     assert ha_session.closed and witness._ha.close_returned
     assert proof["authority_lease_acquired"] is True
     assert proof["capture_permissions_retired"] is True
+    assert proof["capture_owners_carried"] == 0
     assert {key: proof[key] for key in ("bindings_unchanged", "model_owners_closed",
         "graph_closed", "privacy_closed", "sdk_closed", "native_closed")} == dict.fromkeys(
             ("bindings_unchanged", "model_owners_closed", "graph_closed",
@@ -244,6 +245,14 @@ async def test_capture_permission_waits_for_real_owner_return_and_public_retirem
 
 @pytest.mark.parametrize("state", ["active", "unknown"])
 async def test_pending_remote_capture_cannot_become_a_universal_close_ack(tmp_path, monkeypatch, state):
+    """No remote capture permission is ever acknowledged by silence.
+
+    ``active``: issued by this process, so ``pre_close`` waits for its ACK.
+    ``unknown``: unknown when this owner set initialized, so it is carried
+    (R5V-1). Before R5V-1 ``pre_close`` waited for it too, which could hang
+    every stop; now the closure completes, but its proof reports the carried
+    owner and never claims ``capture_permissions_retired``.
+    """
     from src.core.owned_work import OwnedBlockingWork
     from src.memory.capture_control import CaptureController
     from src.memory.capture_recorders import CaptureRecorders
@@ -269,6 +278,7 @@ async def test_pending_remote_capture_cannot_become_a_universal_close_ack(tmp_pa
             await recovered.initialize()
             control.recorders = recovered
             assert (await recovered.poll(issued["token"], actor, kind="calibration"))["state"] == "unknown"
+            assert recovered.carried() == 1
         owner = asyncio.create_task(work.run(native))
         preparation = None
         try:
@@ -276,27 +286,43 @@ async def test_pending_remote_capture_cannot_become_a_universal_close_ack(tmp_pa
             witness = RuntimeClosureWitness.capture(bundle.graph)
             preparation = asyncio.create_task(witness.pre_close())
             await until(lambda: control.recorders._sealed)
-            with pytest.raises(TimeoutError):
-                async with asyncio.timeout(.03):
-                    await asyncio.shield(preparation)
-            assert control.recorders.pending(kind="calibration") == 1
-            assert not preparation.done()
-            preparation.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await preparation
-            with pytest.raises(RuntimeClosureError, match="^runtime_closure_pre_close_required$"):
-                witness.verify_closed()
+            if state == "unknown":
+                await asyncio.wait_for(asyncio.shield(preparation), 2)
+                # Prepared without any ACK: still pending, never retired.
+                assert control.recorders.pending(kind="calibration") == 1
+                assert control.recorders.carried() == 1
+                assert (await control.recorders.poll(issued["token"], actor, kind="calibration")
+                        )["capture_allowed"] is False
+            else:
+                with pytest.raises(TimeoutError):
+                    async with asyncio.timeout(.03):
+                        await asyncio.shield(preparation)
+                assert control.recorders.pending(kind="calibration") == 1
+                assert not preparation.done()
+                preparation.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await preparation
+                with pytest.raises(RuntimeClosureError, match="^runtime_closure_pre_close_required$"):
+                    witness.verify_closed()
         finally:
             # Retirement is genuine cleanup after the actual callable returns;
             # it cannot repair this cancelled witness into a completion ACK.
+            # The carried owner is left unretired: nobody can send its ACK.
             release.set()
             await asyncio.gather(owner, return_exceptions=True)
             await work.aclose()
-            await control.recorders.retire(issued["token"], kind="calibration")
+            if state == "active":
+                await control.recorders.retire(issued["token"], kind="calibration")
             if preparation is not None:
                 await asyncio.gather(preparation, return_exceptions=True)
-    with pytest.raises(RuntimeClosureError, match="^runtime_closure_pre_close_required$"):
-        witness.verify_closed()
+    if state == "unknown":
+        proof = witness.verify_closed()
+        assert proof["capture_permissions_retired"] is False
+        assert proof["capture_owners_carried"] == 1
+        assert control.recorders.pending() == 1
+    else:
+        with pytest.raises(RuntimeClosureError, match="^runtime_closure_pre_close_required$"):
+            witness.verify_closed()
 
 
 async def test_real_ha_session_closed_flag_does_not_replace_public_close_return(monkeypatch):

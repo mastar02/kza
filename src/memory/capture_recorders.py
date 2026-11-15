@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import re
 import secrets
 import threading
@@ -16,6 +17,10 @@ if TYPE_CHECKING:
     from src.memory.capture_control import CaptureController
     from src.memory.privacy_services import PrivacyServices
 
+logger = logging.getLogger(__name__)
+# Owners issued by this process that may wait for an explicit ACK at once.
+LIVE_OWNER_CAPACITY = 256
+
 
 class RecorderState(str, Enum):
     """Permission already issued is never inferred retired from silence."""
@@ -27,6 +32,13 @@ class RecorderState(str, Enum):
 
 class CaptureRecorders:
     """Retain durable browser owners until an explicit stop acknowledgement.
+
+    Owners already ``unknown`` when this process initialized are *carried*
+    (R5V-1): their token lived only in a page of an earlier process, the
+    server grants them nothing, and nobody may be left able to send their ACK.
+    Drains do not wait for them, but they are never counted as retired:
+    ``pending()`` keeps them until an explicit ``retire``. Owners issued by
+    this process keep the full explicit-ACK barrier.
 
     Args:
         privacy: Actual private SQLite service and its retained I/O owner.
@@ -46,6 +58,8 @@ class CaptureRecorders:
         self._kinds: dict[str, str] = {}
         self._actors: dict[str, CaptureController] = {}
         self._epochs: dict[str, int] = {}
+        # Frozen once per process in ``_initialize``; never grows afterwards.
+        self._carried: frozenset[str] = frozenset()
         self._operations: set[asyncio.Task] = set()
         self._initializing: asyncio.Task | None = None
         self._ready = False
@@ -94,7 +108,14 @@ class CaptureRecorders:
                     db.execute("ALTER TABLE capture_browser_recorders "
                                "ADD COLUMN kind TEXT NOT NULL DEFAULT 'browser'")
                 db.execute("UPDATE capture_browser_recorders SET state='unknown' WHERE state='active'")
+                carried = frozenset(str(row[0]) for row in db.execute(
+                    "SELECT token_hash FROM capture_browser_recorders WHERE state='unknown'"))
+            with self._lock:
+                self._carried = carried
             self._read_cache()
+            if carried:
+                logger.warning("[CaptureRecorders] %d unacknowledged owner(s) carried from an "
+                               "earlier process; never counted as retired", len(carried))
             self._ready = True
         except BaseException:
             self._fault = True
@@ -156,7 +177,8 @@ class CaptureRecorders:
             epoch = self._generation
         try:
             with self._privacy.ledger._transaction(lambda: self._admission(actor)) as db:
-                if db.execute("SELECT COUNT(*) FROM capture_browser_recorders").fetchone()[0] >= 256:
+                rows = db.execute("SELECT token_hash FROM capture_browser_recorders").fetchall()
+                if sum(str(row[0]) not in self._carried for row in rows) >= LIVE_OWNER_CAPACITY:
                     raise ValueError("capture_recorders_full")
                 db.execute("INSERT INTO capture_browser_recorders(token_hash,state,kind) VALUES (?,?,?)",
                            (key, RecorderState.RESERVED.value, kind))
@@ -266,7 +288,10 @@ class CaptureRecorders:
             self._generation += 1
 
     def pending(self, *, kind: str | None = None) -> int:
-        """Count a kind's records, or all real records/work for the ACK barrier."""
+        """Count a kind's records, or all records/work; carried owners included.
+
+        This is the confirmation count: a carried owner never sent its ACK.
+        """
         if kind is not None:
             self._validate_kind(kind)
         with self._lock:
@@ -274,6 +299,18 @@ class CaptureRecorders:
                 return sum(value == kind for value in self._kinds.values())
             return (len(self._records) + len(self._operations)
                     + self._work.status()['operations'] + int(self._fault))
+
+    def carried(self) -> int:
+        """Count owners carried from an earlier process and still unretired."""
+        with self._lock:
+            return sum(key in self._carried for key in self._records)
+
+    def pending_live(self) -> int:
+        """Count what a drain waits for: everything except carried owners."""
+        with self._lock:
+            return (sum(key not in self._carried for key in self._records)
+                    + len(self._operations) + self._work.status()['operations']
+                    + int(self._fault))
 
     def _retire_reserved(self) -> None:
         try:
@@ -300,14 +337,18 @@ class CaptureRecorders:
         return results
 
     async def drain(self) -> None:
-        """Wait for issued owners' explicit ACKs; reserve-only owners may retire."""
+        """Wait for this process's issued owners' explicit ACKs.
+
+        Reserve-only owners may retire. Carried owners are not awaited and
+        stay pending: no drain turns their silence into an ACK.
+        """
         self.seal()
         await self._drain_operations()
         await self._work.drain_admitted()
         if self._fault:
             raise RuntimeError("capture_recorder_state_unconfirmed")
         await self._call(self._retire_reserved)
-        while self.pending():
+        while self.pending_live():
             if self._fault:
                 raise RuntimeError("capture_recorder_state_unconfirmed")
             await asyncio.sleep(0.025)
