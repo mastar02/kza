@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 
 import pytest
 
 from src.memory import capture_recorders
 from src.memory.capture_recorders import CaptureRecorders
 from src.memory.privacy_services import PrivacyServices
+from tests.integration.test_capture_producer_privacy import until
 from tests.integration.test_global_capture_control import actor
 
 
@@ -115,3 +117,52 @@ async def test_owner_stays_carried_after_a_second_restart(tmp_path):
             assert recorders.pending() == recorders.carried() == 1
         finally:
             await _close(privacy, recorders)
+
+
+async def test_pending_live_counts_work_and_fault_exactly_like_pending(tmp_path, monkeypatch):
+    """R1B1-5: pending_live is pending minus carried owners, term by term.
+
+    An in-flight operation counts through both the operation set and the
+    retained worker; a fault counts once. Only carried rows differ.
+    """
+    path = str(tmp_path / "terms.sqlite")
+    privacy, recorders = await _boot(path)
+    try:
+        await _issue(recorders)
+    finally:
+        await _close(privacy, recorders)
+    privacy, recorders = await _boot(path)
+    try:
+        assert recorders.carried() == recorders.pending() == 1 and recorders.pending_live() == 0
+        entered, release = threading.Event(), threading.Event()
+
+        def blocked():
+            entered.set()
+            assert release.wait(5)
+
+        operation = asyncio.create_task(recorders._call(blocked))
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            assert len(recorders._operations) == recorders._work.status()["operations"] == 1
+            assert recorders.pending_live() == recorders.pending() - recorders.carried() == 2
+        finally:
+            release.set()
+            await operation
+        await until(lambda: not recorders._operations)
+        assert recorders.pending_live() == 0
+        live = await _issue(recorders)
+
+        def failing(*args, **kwargs):
+            raise OSError("synthetic ledger failure")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(privacy.ledger, "_transaction", failing)
+            with pytest.raises(OSError):
+                await recorders.retire(live)
+        assert recorders.pending_live() == recorders.pending() - recorders.carried() == 2
+        with pytest.raises(RuntimeError, match="^capture_recorder_state_unconfirmed$"):
+            await asyncio.wait_for(recorders.drain(), 2)
+    finally:
+        with pytest.raises(RuntimeError, match="^capture_recorder_state_unconfirmed$"):
+            await asyncio.wait_for(recorders.aclose(), 2)
+        await privacy.aclose()
