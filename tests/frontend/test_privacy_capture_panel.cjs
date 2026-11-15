@@ -25,7 +25,7 @@ const CONFIRMED = snapshot({ pending_operations: 0, pending_browser_recorders: 0
 
 // A minimal hooks renderer for the one function component under test.
 function mount(respond) {
-  const hooks = [], effects = [], timers = [], requests = [], listeners = {};
+  const hooks = [], effects = [], timers = [], requests = [], listeners = {}, history = [];
   let cursor = 0, dirty = false, tree = null, scheduled = false;
   function schedule() {
     if (scheduled) return;
@@ -77,6 +77,7 @@ function mount(respond) {
       assert.ok(round < 50, 'render loop');
       dirty = false; cursor = 0;
       tree = context.CaptureControlCard();
+      history.push(tree);
       for (const effect of effects.splice(0)) effect();
       if (!dirty) return;
     }
@@ -84,6 +85,7 @@ function mount(respond) {
   render();
   return {
     requests,
+    history,
     get tree() { return tree; },
     poll: () => { for (const fn of timers) fn(); },
   };
@@ -221,6 +223,32 @@ test('a new count closes an open confirmation; the new one sends the new count',
   const posts = panel.requests.filter(request => request.method === 'POST');
   assert.equal(posts.length, 1);
   assert.deepEqual(posts[0].body, { expected_carried: 1, no_capture_running: true });
+});
+
+test('a confirm click from the tree rendered before the count closed it sends the count shown', async () => {
+  // R1B2-6: a refresh with a new count renders once with the old confirmation
+  // still open before the effect closes it; a click on that tree must send
+  // the count it showed, not the new one.
+  const panel = mount(server([200, snapshot()], [200, snapshot({ carried_capture_owners: 1, pending_browser_recorders: 1 })],
+    [409, { detail: 'capture_carried_count_conflict' }], [200, snapshot({ carried_capture_owners: 1, pending_browser_recorders: 1 })]));
+  await settle();
+  button(panel, /^Olvidar grabaciones perdidas$/).props.onClick();
+  await settle();
+  checkbox(panel).props.onChange({ target: { checked: true } });
+  await settle();
+  const rendered = panel.history.length;
+  panel.poll();
+  await settle();
+  const stale = panel.history.slice(rendered).filter(tree => /Grabaciones perdidas: 1\./.test(text(tree))
+    && nodes(tree).some(node => node.type === 'button' && /^Olvidar 2 grabaciones perdidas$/.test(text(node))));
+  assert.equal(stale.length, 1, 'one render with the new count and the old confirmation');
+  assert.deepEqual(buttons(panel, /^Olvidar 2/), []);
+  nodes(stale[0]).find(node => node.type === 'button' && /^Olvidar 2 grabaciones perdidas$/.test(text(node))).props.onClick();
+  await settle();
+  const posts = panel.requests.filter(request => request.method === 'POST');
+  assert.equal(posts.length, 1);
+  assert.deepEqual(posts[0].body, { expected_carried: 2, no_capture_running: true });
+  assert.match(text(panel.tree), /La cantidad de grabaciones perdidas cambió\. No se olvidó ninguna/);
 });
 
 test('a count conflict forgets nothing, says so and refreshes', async () => {
