@@ -220,6 +220,18 @@ H_ARCHIVE=/home/kza/releases/<archivo de la release de H>.tar.gz   # el mismo ar
 K=<nombre nuevo de slot, nunca usado antes>
 ```
 
+**Justo antes del paso 1**: dueños de captura vivos en 0 (R5V-1). En el
+panel, Privacidad → Captura global, o en `GET /api/capture/control` con la
+sesión de administrador,
+`live_capture_owners` debe ser 0. Si no, cerrar las pestañas del panel que
+graban y las herramientas nativas (entrenamiento o diagnóstico de wake word,
+calibración, zonas, comando manual), esperar a que baje a 0 y volver a
+mirar. Un dueño vivo que no retira deja la parada colgada hasta el SIGKILL
+de `TimeoutStopSec`, sin recibo de cierre (head `UNKNOWN`).
+`carried_capture_owners` > 0 no frena la parada. Una release anterior a
+R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
+`pending_native_clients` deben ser 0.
+
 ## Pasos
 
 1. Detener y deshabilitar el servicio (salida 0 obligatoria en cada uno):

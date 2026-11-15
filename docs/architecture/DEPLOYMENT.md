@@ -374,9 +374,20 @@ el proceso. Requiere el visto bueno explícito del usuario antes de integrarse.
 - Los dueños emitidos por el proceso actual mantienen la barrera completa de ACK
   explícito. La capacidad de 256 cuenta sólo esos dueños vivos. Al arrancar se
   registra únicamente el conteo de filas arrastradas, sin tokens ni hashes.
-- Residuo fuera de alcance: un dueño emitido en el proceso actual cuya pestaña
-  muere sin `retire` sigue bloqueando la parada de ese proceso. Es la
-  semántica original. En el arranque siguiente esa fila pasa a arrastrada.
+- Residuo: un dueño vivo (emitido por el proceso actual o reclamado) cuya
+  pestaña o cliente muere sin `retire` sigue bloqueando la parada de ese
+  proceso hasta el SIGKILL de `TimeoutStopSec`: sin recibo, head `UNKNOWN` y
+  recuperación para la compactación o R1. Es el síntoma de R5V-1, ahora una
+  vez por dueño perdido y no en cada parada. En el arranque siguiente esa
+  fila pasa a arrastrada. Mitigaciones:
+  - el estado de captura (`GET /api/capture/control`) informa
+    `live_capture_owners` (los que una parada esperará) y
+    `carried_capture_owners` (los que no); el panel de Privacidad muestra
+    ambos;
+  - los runbooks de R1 y de compactación exigen `live_capture_owners` = 0
+    justo antes de la parada gestionada;
+  - la página reintenta cada 2 s un `retire` fallido mientras siga abierta
+    (antes sólo lo reintentaba en `pagehide`).
 - Pendiente del usuario, no bloqueante: si las filas arrastradas se pueden
   retirar más adelante y con eso volver a «confirmada», ya sea al arrancar
   (opción a) o con una acción de administrador (opción b). Hasta esa decisión

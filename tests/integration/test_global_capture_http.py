@@ -29,6 +29,7 @@ FIELDS = {
     'revision', 'target_muted', 'persisted_muted', 'phase', 'ingress_sealed',
     'supported', 'pending_operations', 'total_mute_confirmed',
     'pending_browser_recorders', 'pending_native_clients', 'error_code',
+    'live_capture_owners', 'carried_capture_owners',
 }
 
 

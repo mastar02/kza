@@ -13,7 +13,7 @@ function CaptureControlCard() {
       if (!data || !Number.isSafeInteger(data.revision) || data.revision<0
           || !phases.includes(data.phase)
           || !['target_muted','persisted_muted','ingress_sealed','supported','total_mute_confirmed'].every(key => typeof data[key]==='boolean')
-          || !['pending_operations','pending_browser_recorders','pending_native_clients'].every(key => Number.isSafeInteger(data[key]) && data[key]>=0)
+          || !['pending_operations','pending_browser_recorders','pending_native_clients','live_capture_owners','carried_capture_owners'].every(key => Number.isSafeInteger(data[key]) && data[key]>=0)
           || !(data.error_code===null || typeof data.error_code==='string' && /^[a-z][a-z0-9_]{0,79}$/.test(data.error_code))) return false;
       if (data.total_mute_confirmed && (data.phase!=='muted' || !data.supported || !data.target_muted
           || !data.persisted_muted || !data.ingress_sealed || data.pending_operations!==0 || data.pending_browser_recorders!==0 || data.pending_native_clients!==0)) return false;
@@ -97,6 +97,8 @@ function CaptureControlCard() {
     {status?.pending_operations>0 && <p className="mute">Hay procesamiento iniciado que todavía debe terminar.</p>}
     {status?.pending_browser_recorders>0 && <p className="mute">Hay grabaciones del navegador pendientes de retiro.</p>}
     {status?.pending_native_clients>0 && <p className="mute">Hay capturas de herramientas pendientes de retiro.</p>}
+    {status?.live_capture_owners>0 && <p className="mute">Grabaciones o capturas en curso que una parada del servicio va a esperar: {status.live_capture_owners}.</p>}
+    {status?.carried_capture_owners>0 && <p className="mute">Grabaciones o capturas de un arranque anterior que nadie retiró: {status.carried_capture_owners}. No frenan la parada, pero la pausa no se confirma mientras existan.</p>}
     {status?.ingress_sealed && !confirmed && <p className="mute">La entrada está sellada; el retiro completo sigue sin confirmar.</p>}
     {status?.phase==='failed' && <p>Actualizá el estado antes de volver a solicitar un cambio. No se mostrará una pausa completa sin confirmación.</p>}
     <p>La pausa global incluye la captura de comandos y la captura ambiental. La reactivación se solicita desde este panel autenticado.</p>

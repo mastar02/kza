@@ -413,6 +413,10 @@ class CaptureControl:
                 'ingress_sealed': self._sealed, 'supported': bool(self._supported),
                 'pending_operations': pending + recorders_pending,
                 'pending_browser_recorders': browsers, 'pending_native_clients': native_clients,
+                # R5V-1: of those, the issued owners a managed stop waits for,
+                # and the carried ones it does not (still unconfirmed).
+                'live_capture_owners': self.recorders.live_owners(),
+                'carried_capture_owners': self.recorders.carried(),
                 'error_code': self._error_code,
                 'total_mute_confirmed': (self._phase == 'muted' and self._persisted
                                          and self._sealed and self._supported and not pending

@@ -163,6 +163,17 @@ está escrito (`tests/mocks/r1_runbook.py`).
   - la autorización de la ventana (id para `--decision` de prepare);
   - el id P1=D;
   - el id L4 para `uninstall-launcher`, preparado aunque no se use.
+- **Justo antes de W1** (y de cualquier otra parada gestionada): dueños de
+  captura vivos en 0 (R5V-1). En el panel, Privacidad → Captura global, o en
+  `GET /api/capture/control` con la sesión de administrador,
+  `live_capture_owners` debe ser 0. Si no, cerrar las pestañas del panel que
+  graban y las herramientas nativas (entrenamiento o diagnóstico de wake word,
+  calibración, zonas, comando manual), esperar a que baje a 0 y volver a
+  mirar. Un dueño vivo que no retira deja la parada colgada hasta el SIGKILL
+  de `TimeoutStopSec`, sin recibo de cierre (head `UNKNOWN`).
+  `carried_capture_owners` > 0 no frena la parada. Una release anterior a
+  R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
+  `pending_native_clients` deben ser 0.
 
 ## Ventana
 

@@ -182,6 +182,8 @@ async def test_owner_orphaned_by_restart_does_not_lock_global_mute_and_unmute(tm
             assert snapshot["persisted_muted"] is True and snapshot["ingress_sealed"] is True
             assert snapshot["total_mute_confirmed"] is False
             assert snapshot["pending_browser_recorders"] == 1
+            # R1B1-4: the operator sees it will not hold a stop.
+            assert snapshot["carried_capture_owners"] == 1 and snapshot["live_capture_owners"] == 0
             # The authenticated control can always reactivate a total mute.
             control.request(False, snapshot["revision"], actor)
             snapshot = await _phase(control, "running")
@@ -196,6 +198,10 @@ async def test_owner_orphaned_by_restart_does_not_lock_global_mute_and_unmute(tm
             # Reactivation never revives the carried owner. Its holder shows
             # up, so it is reclaimed: the next mute waits for its retire.
             await _refused(recorders, token, actor)
+            snapshot = control.snapshot()
+            # Reclaimed: now a live owner a stop would wait for.
+            assert snapshot["carried_capture_owners"] == 0 and snapshot["live_capture_owners"] == 1
+            assert snapshot["pending_browser_recorders"] == 1
             control.request(True, snapshot["revision"], actor)
             await _phase(control, "muting")
             with pytest.raises(TimeoutError):

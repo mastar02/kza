@@ -328,6 +328,12 @@ class CaptureRecorders:
         with self._lock:
             return sum(key in self._carried for key in self._records)
 
+    def live_owners(self) -> int:
+        """Count issued owners a drain will wait for: not reserved, not carried."""
+        with self._lock:
+            return sum(state is not RecorderState.RESERVED and key not in self._carried
+                       for key, state in self._records.items())
+
     def pending_live(self) -> int:
         """Count what a drain waits for: everything except carried owners."""
         with self._lock:
