@@ -5,11 +5,11 @@ import logging
 import os
 import re
 import time
-import tempfile
 import threading
 from contextlib import nullcontext
 from pathlib import Path
 
+from src.core.own_temporary import own_temporary
 from src.orchestrator.context_manager import UserContext
 from src.memory.fact_ledger import MemorySource, sources_authorized
 from src.orchestrator.context_storage import register_snapshots, snapshot_lock, snapshot_sources
@@ -175,16 +175,12 @@ class ContextPersister:
         guard = self.source_policy.admit_source_write(sources) if self.source_policy is not None and sources else nullcontext()
         with self._lock, guard:
             self.base_path.mkdir(parents=True, exist_ok=True, mode=0o700)
-            descriptor, filename = tempfile.mkstemp(prefix=".snapshot-", dir=self.base_path)
-            tmp = Path(filename)
-            try:
+            with own_temporary(self.base_path, prefix=".snapshot-") as (descriptor, filename):
                 with os.fdopen(descriptor, "w") as output:
                     output.write(json.dumps(payload, ensure_ascii=False, indent=2))
                 if not self._available(payload):
                     raise PermissionError("context_snapshot_sources_unavailable")
-                os.replace(tmp, self._path(user_id))
-            finally:
-                tmp.unlink(missing_ok=True)
+                os.replace(filename, self._path(user_id))
         if self.retention_notify is not None:
             self.retention_notify(str(self.base_path))
 

@@ -858,9 +858,21 @@ Pruebas en el server: el usuario autorizó correrlas allí como `yo` y detener s
   - En el server: la copia retenida falla sin el arreglo y pasa con él, y el ensayo normal pasa. Sin la copia, la falla natural es rara: 3/3 corridas sin arreglo pasaron con el Mac bajo carga de CPU.
   - Pasar el ensayo a una revisión con la compuerta no sirve hoy: 431e44e, cdd3c84 y 740ca42 fallan por otras causas con este arnés, y HEAD falla en la copia.
 
+- F4 y F10 de la revisión de los arreglos de Linux, en la rama `f4-f10-identity` (sobre `e9f46ab`, sin integrar ni subir):
+  - F4: en Linux, los destinos SQLite nativos se fijan con un descriptor `O_PATH` desde el plan hasta el cierre de la época. Cerrarlo no suelta los locks de SQLite. En macOS no hay pin porque APFS no reutiliza identificadores.
+  - F10: los diez temporales propios se borran sólo si el nombre sigue siendo su inodo retenido (`src/core/own_temporary.py`).
+  - Pruebas: `tests/unit/memory/test_native_destination_pins.py`, `tests/unit/core/test_own_temporary.py` y tres casos de `test_build_runtime.py`. Evidencia: `t040-t041/f4-f10-evidence.json`. Sección nueva en DEPLOYMENT.
+  - Revisión independiente (`t040-t041/f4f5-independent-review.json`, junto con F5 en `batch-f4f5`): «aceptar con cambios». Corregido en `f4-f10-identity`:
+    - R1: tras liberar los pins (también después de un cierre con `epoch_incomplete`) no se entrega ningún pin nuevo (`native_pins_closed`, envenena). N9 sigue y es alcanzable: lo prueba un pin histórico liberado.
+    - R2: los pins se liberan después de drenar el ejecutor de disco.
+    - R6: `EMFILE`/`ENFILE` al abrir un pin da `native_pin_unavailable`.
+    - R7: si falla el `dup`, el temporal vacío se borra a través del descriptor de `mkstemp`, en los tres ayudantes y en `diagnostic_store`.
+    - R3/R5: huecos conocidos listados en DEPLOYMENT. R9 se resuelve al integrar.
+    - Verificado en `d0c22aa`: pruebas nuevas y relacionadas verdes en la Mac y en el server; mutantes 31/31 muertos en el server (N9 incluido) y 23/31 en la Mac, donde los 8 restantes protegen comportamiento sólo de Linux.
+
 Siguiente:
 - Integradas el 2026-11-14 `u3b-0c-r51` (R5-1, R5-2 y la revisión A-F1..A-F4) y `g01-writer-active` (con B-F1 y la regla de releases anteriores a 431e44e en DEPLOYMENT). Suite batch verde en ambas máquinas sobre R5-1/R5-2 + G01 (`u3b/full-r51-g01/RESULT.md`; las rehearsals de tiempo 8/8 en las dos, incluido `test_compiled_slot_rollback`); los arreglos posteriores de la revisión tocan sólo `scripts/compaction_units.py` y sus pruebas, validados por módulo en la Mac y en el server, con 38/38 mutantes muertos (`u3b-0c-evidence.json`, `r5_review_fixes`). Revisión: `t040-t041/r51-g01-independent-review.json`.
-- Los seguimientos F4/F5/F10 y el presupuesto de cierre del coordinador de borrados.
+- El seguimiento F5 (F4 y F10 están en `f4-f10-identity`, pendientes de revisión e integración) y el presupuesto de cierre del coordinador de borrados.
 - Medir el tiempo de compactación una vez sobre una copia del estado de producción antes de la primera corrida real (recomendado por la revisión), y en la ventana de R1 leer `units.templates_scanned` y `units.tolerated_unresolved` del `compact plan` real.
 
 `U3b-0e5` (rama `u3b-0e5`, sobre la cabeza de 0e3): preparación de P7.

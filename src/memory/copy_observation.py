@@ -10,10 +10,10 @@ import hashlib
 import os
 from pathlib import Path
 import re
-import tempfile
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+from src.core.own_temporary import own_temporary
 from src.memory import copy_catalog as catalog
 
 if TYPE_CHECKING:
@@ -135,17 +135,13 @@ def _publish(directory, intent, inventory, expected):
     digest = catalog._sha(raw)
     catalog._write_new(directory / f"{revision:012d}-{digest}.json", raw)
     head = {"schema_version": 1, "observation_id": intent["observation_id"], "revision": revision, "sha256": digest}
-    descriptor, temporary = tempfile.mkstemp(prefix=".head-", dir=directory)
-    try:
+    with own_temporary(directory, prefix=".head-") as (descriptor, temporary):
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(catalog._json(head) + b"\n")
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, directory / "head.json")
         catalog._fsync(directory)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
     return head
 
 

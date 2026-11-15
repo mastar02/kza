@@ -11,6 +11,7 @@ import os
 from pathlib import Path, PurePosixPath
 import py_compile
 import re
+import stat
 import subprocess
 import sys
 import tarfile
@@ -303,6 +304,21 @@ def _compile_modules(staging: Path, modules: list[dict]) -> dict[str, bytes]:
     return accepted
 
 
+def _remove_own_temporary(name: Path, pin: int) -> None:
+    """Unlink ``name`` only while it is the pinned own inode; a substitute stays.
+
+    The builder imports no other module of the repository, so it keeps this
+    copy of src/core/own_temporary.py. ``pin`` must still be open.
+    """
+    try:
+        info = os.lstat(name)
+    except FileNotFoundError:
+        return
+    held = os.fstat(pin)
+    if stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == (held.st_dev, held.st_ino):
+        name.unlink(missing_ok=True)
+
+
 def release_integers(source: bytes) -> dict:
     """The launcher integers a stage_runtime.py source declares (absent ones omitted)."""
     values = {}
@@ -395,6 +411,14 @@ def build_runtime(repo: Path, output: Path, revision: str = "HEAD") -> dict:
     descriptor, temporary_name = tempfile.mkstemp(prefix=".kza-release-", dir=output.parent)
     temporary_output = Path(temporary_name)
     try:
+        pin = os.dup(descriptor)  # Held until cleanup: the own inode keeps its number.
+    except OSError:
+        try:
+            _remove_own_temporary(temporary_output, descriptor)  # The open descriptor is the pin.
+        finally:
+            os.close(descriptor)
+        raise
+    try:
         with os.fdopen(descriptor, "wb") as raw:
             with gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=timestamp) as zipped:
                 with tarfile.open(fileobj=zipped, mode="w") as archive:
@@ -407,7 +431,10 @@ def build_runtime(repo: Path, output: Path, revision: str = "HEAD") -> dict:
         # Atomic publication that refuses a concurrent overwrite.
         os.link(temporary_output, output)
     finally:
-        temporary_output.unlink(missing_ok=True)
+        try:
+            _remove_own_temporary(temporary_output, pin)
+        finally:
+            os.close(pin)
     return manifest
 
 
