@@ -978,7 +978,13 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   tras un head abortado y el K de la compactación simple, que no conceden nada
   (AUTHZ-2); un test nuevo separa `current` del slot del binding del head
   (C3). Mutantes: 14 de 14 muertos más un control que reproduce el hallazgo
-  C3. **Decisiones para el usuario antes de SC-6a**: confirmar o revertir la
+  C3. Suite batch sobre `cf445bf` verde: 12.232 pasan, 47 se omiten, 2 xfail,
+  node sin fallas y las 8 rehearsals de tiempo a solas pasan. La primera
+  corrida de a2a se cortó en el límite de 1500 s con carga alta y la Mac en
+  suspensión, con una falla de tc2 (`sigkill_while_running`); repetida
+  partida en dos (a2a1/a2a2, mismo límite) pasó entera. En el server, los
+  tres módulos de la revisión pasan (110). Antes de SC-6a hay que repetir la
+  suite sobre el commit integrado (C4). **Decisiones para el usuario antes de SC-6a**: confirmar o revertir la
   enmienda de vocabularios (SC2-R1 + AUTHZ-1; C5 advierte que los 15 de
   SC2-R1 que no son de privacidad vuelven transición de esquema cualquier
   cambio de esos enums) y si `release.json` debe declarar también el sha256
