@@ -321,6 +321,41 @@ autocontenidas y la delegación a estados dueños se apaga. Desde SC-2
   transferencia: R1 se toma sólo del archivo cuyo sha256 fija el runbook de R1
   (paso obligatorio antes de W1).
 
+#### R5V-1: dueños de captura arrastrados de un arranque anterior (2026-11-15)
+
+Hallazgo R5V-1 de la revisión del diseño v4 (`t040-t041/sc-release-design-v4.json`).
+El token de un grabador (navegador o cliente nativo) vive sólo en la memoria
+de la página o del proceso. `_initialize` pasa cada fila `active` a `unknown`
+en cada arranque. Si la pestaña se cerró sin `retire` durante un reinicio,
+nadie puede volver a retirar esa fila. Hasta 81ed568, `drain()` esperaba su ACK:
+toda parada gestionada quedaba colgada hasta el SIGKILL de `TimeoutStopSec`,
+sin recibo de cierre (head `UNKNOWN` en cada parada, y la compactación y R1
+necesitaban recuperación cada vez). Además, un mute total quedaba en
+`muting` y el unmute se rechazaba con `capture_control_busy`.
+
+Arreglo técnico (opción e, rama `r1b1-orphan-recorder`, sin release). No cambia
+ninguna garantía de privacidad decidida por el usuario:
+
+- Las filas que ya estaban `unknown` al arrancar este proceso se congelan como
+  *arrastradas* (`carried`). `drain()`, el `pre_close` del testigo y
+  `verify_closed` esperan sólo `pending_live()`, que no las incluye. El
+  servidor no les concede nada: ni captura, ni reactivación, ni subida.
+- El silencio nunca cuenta como ACK. `pending()` sigue contándolas: mientras
+  exista una, `total_mute_confirmed` es falso (el panel no muestra «Captura
+  global pausada y confirmada») y la prueba de cierre da
+  `capture_permissions_retired: false` con `capture_owners_carried: N`. El
+  recibo de admisión no exige esa clave, así que se escribe igual.
+- Los dueños emitidos por el proceso actual mantienen la barrera completa de ACK
+  explícito. La capacidad de 256 cuenta sólo esos dueños vivos. Al arrancar se
+  registra únicamente el conteo de filas arrastradas, sin tokens ni hashes.
+- Residuo fuera de alcance: un dueño emitido en el proceso actual cuya pestaña
+  muere sin `retire` sigue bloqueando la parada de ese proceso. Es la
+  semántica original. En el arranque siguiente esa fila pasa a arrastrada.
+- Pendiente del usuario, no bloqueante: si las filas arrastradas se pueden
+  retirar más adelante y con eso volver a «confirmada», ya sea al arrancar
+  (opción a) o con una acción de administrador (opción b). Hasta esa decisión
+  se conservan como no confirmadas.
+
 #### Contrato de esquema (época 1)
 
 SC-2 declara `SCHEMA_CONTRACT_EPOCH = 1` y `release.json` lo copia como

@@ -1044,6 +1044,37 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   las preguntas SC-D al usuario cuando converja; SC-D5 importa para la
   ventana de R1).
 
+## R5V-1 — dueños de captura huérfanos ya no bloquean parada ni mute (2026-11-15)
+
+Rama `r1b1-orphan-recorder` desde `81ed568`, en un clon del roadmap. Sin
+integrar ni subir. Evidencia:
+`data/autonomous-roadmap-20261102/t040-t041/r1b1-evidence.json`.
+
+- Problema confirmado por la ruta real de parada. Si una pestaña o un cliente
+  nativo pierde su token en un reinicio, queda una fila `unknown` que nadie
+  puede retirar. Con eso, toda parada gestionada se colgaba sin recibo y
+  dejaba el head en `UNKNOWN`. Un mute total además quedaba en `muting` sin
+  unmute posible, contra la garantía H0 de reactivar con un control
+  autenticado.
+- Arreglo técnico (opción e): las filas `unknown` al arrancar quedan como
+  *arrastradas*. Drain, `pre_close` y `verify_closed` ya no las esperan;
+  `pending()` y `total_mute_confirmed` sí las cuentan. La prueba de cierre da
+  `capture_permissions_retired: false` y `capture_owners_carried`. Los dueños
+  del proceso actual mantienen la barrera de ACK. La capacidad cuenta sólo
+  dueños vivos. Detalle en DEPLOYMENT (R5V-1).
+- Tests: el test que reproduce el problema
+  (`test_capture_orphan_owner_stop.py`) falla en 81ed568 y pasa con el
+  arreglo. Se reescribieron como cambio de contrato los tests de reinicio de
+  navegador y de los cinco tipos nativos, y el caso `unknown` de
+  `test_runtime_closure`. Ya no exigen que drain espere a la fila desconocida
+  al arrancar, pero siguen exigiendo que nunca se dé por retirada sin su
+  `retire`. Ese cambio requiere revisión independiente. Mutantes: 16 de 16
+  muertos.
+- Pendiente del usuario, no bloqueante: si las filas arrastradas se pueden
+  retirar más adelante (automático al arrancar o con «Olvidar grabaciones
+  perdidas» desde Privacidad) o si se conservan sin confirmar. Mientras no
+  decida, se conservan.
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.
