@@ -143,7 +143,8 @@ def test_the_old_copy_lockout_is_scoped_to_copies_with_the_check():
     assert ("Toda copia de `stage_runtime` de 69a79e6 (U3b-0a, donde entra `delegate`) a b0c322d~1 no comprueba"
             " la época") in deployment
     assert "en cada ubicación de transferencia, no sólo los R1 de época 3" in deployment
-    assert "Propuesta para el dueño del diseño (sin confirmar)" in deployment
+    assert "Barrera estructural diferida a SC-1 (decisión técnica del 2026-11-15)" in deployment
+    assert "sin confirmar" not in deployment
     for relative in (DOCS[1], DOCS[2], DOCS[3]):
         text = " ".join((REPO / relative).read_text().split())
         assert "69a79e6" in text and "b0c322d~1" in text and "AUTHZ3-1" in text, relative
@@ -165,7 +166,8 @@ def test_deployment_states_the_schema_contract_and_its_exclusions():
     """SC-2 review SC2-R1 and AUTHZ-1: the vocabularies, the rule, their status and the excluded sets."""
     text = " ".join((REPO / DOCS[0]).read_text().split())
     assert "#### Contrato de esquema (época 1)" in (REPO / DOCS[0]).read_text()
-    assert "enmienda propuesta del diseño (sin confirmar)" in text and "antes de SC-6a" in text
+    assert "enmienda del diseño aceptada el 2026-11-15 como decisión técnica" in text
+    assert "revocable hasta que SC-6a construya R1" in text
     assert "la regla es la relevancia para la privacidad, no el conjunto protegido" in text
     for pinned in ("`ErasureState`", "`ErasureError`", "`IndexCleanupError`", "`MemoryOrigin`"):
         assert pinned in text, pinned

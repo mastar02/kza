@@ -920,8 +920,9 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
     que una tabla protegida guarda tal cual, y desde AUTHZ-1 los enums de las
     tablas de avance del borrado y atribución de `privacy.db`); `release.json`
     declara `schema_contract`. Esas ampliaciones de vocabularios son una
-    enmienda propuesta del diseño: confirmarlas o revertirlas antes de SC-6a
-    (ver «Contrato de esquema (época 1)» en DEPLOYMENT).
+    enmienda del diseño aceptada el 2026-11-15 como decisión técnica,
+    revocable hasta que SC-6a construya R1 (ver «Contrato de esquema
+    (época 1)» en DEPLOYMENT).
   - `LEGACY_MANAGED_TRANSITIONS = False`. Sólo los tests lo ponen en `True`
     (fixture `legacy_managed_transitions` y `tests/mocks/legacy_transitions.py`);
     un controlador compilado no puede.
@@ -971,7 +972,7 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   (`review_round_1`).
 - Segunda revisión independiente (2026-11-15): 1 hallazgo medio (AUTHZ-1),
   3 bajos (C1-C3) y 5 informativos. AUTHZ-1 se resolvió con la opción A, que
-  queda como parte de la misma enmienda propuesta: la regla del contrato pasa
+  queda como parte de la misma enmienda (aceptada el 2026-11-15): la regla del contrato pasa
   a ser la relevancia para la privacidad; `ErasureState`, `ErasureError`,
   `IndexCleanupError` y `MemoryOrigin` entran en la época 1, un test
   clasifica cada columna de `erasure_targets`, `erasure_steps`,
@@ -1004,9 +1005,11 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   slot en una raíz de época 4. DEPLOYMENT, el runbook de compactación, el de
   R1 y este handoff ya no afirman lo contrario; SC-6a (PS-13) borra o
   renombra todo archivo, árbol extraído y checkout de ese rango y el ensayo
-  de adopción suma el caso. Queda propuesta, sin confirmar, una barrera de
-  época 4 que no dependa del código viejo (congelar las capacidades de
-  delegación existentes). AUTHZ3-2: un test clasifica cada columna de texto de
+  de adopción suma el caso. La barrera de época 4 que no depende del código
+  viejo (congelar las capacidades de delegación existentes y que `serve`
+  acepte sólo heads registrados por un controlador de época 4) se difirió a
+  SC-1 por decisión técnica del 2026-11-15; hasta entonces rigen la regla de
+  operación y la limpieza de SC-6a. AUTHZ3-2: un test clasifica cada columna de texto de
   cada tabla protegida y DEPLOYMENT nombra las columnas de diagnóstico
   (`reason`, `last_error`) y `auth_meta.key`; el pin no cambia. RV3-1 y RV3-2:
   DEPLOYMENT nombra el regreso a H de `compact abort --to-h` y anota que

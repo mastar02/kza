@@ -263,14 +263,19 @@ autocontenidas y la delegación a estados dueños se apaga. Desde SC-2
   en cada ubicación de transferencia, no sólo los R1 de época 3. El historial
   de Git conserva esas versiones: para ellas la única barrera es esa regla de
   operación.
-- Propuesta para el dueño del diseño (sin confirmar): una barrera de época 4
+- Barrera estructural diferida a SC-1 (decisión técnica del 2026-11-15): una barrera de época 4
   que no dependa del código viejo. `install-controller` o `adoption-commit`
   congela el conjunto de capacidades de delegación existentes, y la
   validación, `serve` y la compactación rechazan cualquier registro de
   `admission/delegations/` fuera de ese conjunto. No cubre un `prepare` +
   `activate` sin concesión desde una copia vieja; para eso `serve` tendría que
   aceptar sólo heads cuyo binding registró un controlador de época 4. Exige
-  una enmienda del diseño, con su test y su mutante.
+  una enmienda del diseño, con su test y su mutante; entra con SC-1, que
+  rediseña los bindings y sus heads aceptados. Hasta entonces R1 queda
+  cubierta por la regla de operación (sólo `controller/current`) y la
+  limpieza de SC-6a: las releases legadas no tienen `delegate` y, bajo un
+  head gestionado, `run()` sólo corre el slot del head, así que mover
+  `current` no cambia lo que corre.
 - Ese bloqueo necesita un `admission/controller.json` legible: si falta, es un
   symlink, no se puede leer o no es JSON válido, `require_forward_epoch` no
   rechaza nada e incluso una copia que lo contiene podría volver a conceder y
@@ -314,10 +319,10 @@ eso, un estado nuevo de un paso de borrado sobreviviría a un rollback a R1,
 cuyo `due()` y cuyo claim sólo buscan `pending`/`running`: el borrado de la
 conversación quedaría detenido sin aviso. Cada vocabulario es igual a su enum
 en un test, y otro test clasifica cada columna de esas cinco tablas. Las dos
-ampliaciones (SC2-R1 y AUTHZ-1) son una enmienda propuesta del diseño (sin
-confirmar): se aplicaron antes de R1 porque después ampliar el contrato exige
-la época 2, una transición de esquema fuera del modo release. Deben
-confirmarse o revertirse antes de SC-6a.
+ampliaciones (SC2-R1 y AUTHZ-1) son una enmienda del diseño aceptada el
+2026-11-15 como decisión técnica (más estricta que SCv2-P5; revocable hasta
+que SC-6a construya R1): se aplicaron antes de R1 porque después ampliar el
+contrato exige la época 2, una transición de esquema fuera del modo release.
 
 Quedan fuera los conjuntos cerrados que `src` escribe como literales sin
 nombre importable: `capture_runtime_control.mode` (`running`, `muted`,
