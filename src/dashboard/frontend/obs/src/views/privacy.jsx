@@ -13,7 +13,7 @@ function CaptureControlCard() {
   const [affirmed,setAffirmed] = React.useState(false);
   const action = React.useRef(null);
   React.useEffect(() => {
-    let active = true, pending = false, denied = false, sequence = 0;
+    let active = true, pending = false, pendingChange = false, denied = false, sequence = 0, queued;
     const requests = new Set();
     const phases = ['initializing','running','muting','muted','resuming','failed','closed'];
     function valid(data) {
@@ -32,11 +32,18 @@ function CaptureControlCard() {
     // request: undefined reads; {muted,revision} changes the policy; {forget}
     // forgets the lost recordings whose count the administrator confirmed.
     async function readOrChange(request) {
-      if (!active || pending || denied) return;
+      if (!active || denied) return;
       const forget = request!==undefined && Number.isSafeInteger(request.forget) ? request.forget : null;
       const change = forget!==null || typeof request?.muted==='boolean';
       if (request!==undefined && !change) return;
-      pending = true; setBusy(true);
+      if (pending) {
+        // A change clicked while a background read is in flight runs right
+        // after it; a second change while another is pending is refused.
+        if (change && (pendingChange || queued!==undefined)) setNotice('Ya hay un cambio en curso. Esperá su resultado antes de elegir otro.');
+        else if (change) queued = request;
+        return;
+      }
+      pending = true; pendingChange = change; setBusy(true);
       if (change) {
         setStatus(null); setNotice('');
         setMessage(forget===null ? 'Enviando solicitud de captura…' : 'Olvidando las grabaciones perdidas…');
@@ -83,9 +90,11 @@ function CaptureControlCard() {
           setMessage(error.name==='AbortError' ? 'Consulta cancelada.' : 'No se pudo verificar la captura global.');
         }
       } finally {
-        requests.delete(controller); pending = false;
+        requests.delete(controller); pending = false; pendingChange = false;
         if (active && sequence===attempt) setBusy(false);
-        if (refresh && active && !denied) queueMicrotask(() => readOrChange());
+        const next = queued; queued = undefined;
+        if (next!==undefined) { if (active && !denied) queueMicrotask(() => readOrChange(next)); }
+        else if (refresh && active && !denied) queueMicrotask(() => readOrChange());
       }
     }
     function retire() {

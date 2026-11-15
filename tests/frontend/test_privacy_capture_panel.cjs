@@ -251,6 +251,53 @@ test('a confirm click from the tree rendered before the count closed it sends th
   assert.match(text(panel.tree), /La cantidad de grabaciones perdidas cambió\. No se olvidó ninguna/);
 });
 
+test('a forget clicked while a background read is in flight is sent after it, not dropped', async () => {
+  // R1B2-7: the 1 s poll can start between the render and the click.
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  const panel = mount(server([200, snapshot()], () => held, [200, { ...CONFIRMED, forgotten_capture_owners: 2 }]));
+  await settle();
+  button(panel, /^Olvidar grabaciones perdidas$/).props.onClick();
+  await settle();
+  checkbox(panel).props.onChange({ target: { checked: true } });
+  await settle();
+  const confirm = button(panel, /^Olvidar 2 grabaciones perdidas$/);
+  assert.equal(confirm.props.disabled, false);
+  panel.poll();
+  confirm.props.onClick();
+  await settle();
+  assert.deepEqual(panel.requests.map(request => request.method), ['GET', 'GET']);
+  release([200, snapshot()]);
+  await settle();
+  assert.deepEqual(panel.requests.map(request => request.method), ['GET', 'GET', 'POST']);
+  assert.deepEqual(panel.requests[2].body, { expected_carried: 2, no_capture_running: true });
+  assert.match(text(panel.tree), /Se olvidaron 2 grabaciones perdidas/);
+  assert.match(text(panel.tree), /Captura global pausada y confirmada/);
+});
+
+test('a second change while one is pending is refused with a notice', async () => {
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  const panel = mount(server([200, snapshot()], () => held, [200, { ...CONFIRMED, forgotten_capture_owners: 2 }]));
+  await settle();
+  button(panel, /^Olvidar grabaciones perdidas$/).props.onClick();
+  await settle();
+  checkbox(panel).props.onChange({ target: { checked: true } });
+  await settle();
+  const confirm = button(panel, /^Olvidar 2 grabaciones perdidas$/);
+  const mute = button(panel, /^Pausar captura global$/);
+  panel.poll();
+  confirm.props.onClick();
+  mute.props.onClick();
+  await settle();
+  assert.match(text(panel.tree), /Ya hay un cambio en curso/);
+  release([200, snapshot()]);
+  await settle();
+  const posts = panel.requests.filter(request => request.method === 'POST');
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, '/api/capture/control/forget-carried');
+});
+
 test('a count conflict forgets nothing, says so and refreshes', async () => {
   const panel = mount(server([200, snapshot()], [409, { detail: 'capture_carried_count_conflict' }],
     [200, snapshot({ carried_capture_owners: 3, pending_browser_recorders: 3 })]));
