@@ -940,9 +940,14 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   época 4 y contrato de esquema, sección «Sin transiciones gestionadas después
   de R1 hasta el modo release»), runbook de la ventana de R1 (época 4 y el
   pendiente de SC-6a) y runbook de compactación (época 4).
-- **Decisión del usuario pendiente: SC-D5** (cómo acotar el hueco sin arreglos
-  de código después de R1 hasta el modo release; opciones A, B y C en
-  DEPLOYMENT). SC-D1..SC-D4 también siguen sin respuesta.
+- **SC-D5 respondida el 2026-11-15: A** (cómo acotar el hueco sin arreglos de
+  código después de R1 hasta el modo release: se acepta el hueco, el modo
+  release se empieza enseguida y, ante un problema grave de privacidad, se
+  apaga el servicio; el retiro Q5 del día 14 no se posterga). En la misma
+  tanda: SC-D2, SC-D4, SC-D6, SC-D7 y SC-D8 = A; SC-D1 y SC-D3 sin objeto en
+  el diseño v4. Registro: `u3b_sc_release_mode_questions` en
+  `t040-t041/user-decisions-20261110.json`; DEPLOYMENT lo anota en «Sin
+  transiciones gestionadas después de R1 hasta el modo release».
 - Pendiente antes de la ventana de R1 (SC-6a; hecho el 2026-11-15, ver «SC-6a» más abajo): reconstruir R1 dos veces desde
   el commit integrado y comparar byte a byte; borrar o renombrar todo R1 de
   época 3 y, por AUTHZ3-1, todo archivo, árbol extraído y checkout construido
@@ -1049,12 +1054,12 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
     directorio 0700). El runbook de R1 lo fija y exige `sha256sum
     "$R1_ARCHIVE"` antes de W1 («Archivo R1 fijado» y W1-pre). Con R1
     construido, la época 1 del contrato de esquema quedó congelada.
-  - Ensayo: `test_sc6a_r1_rehearsal.py` (en proceso: Mac 6 pasan, server 6
-    pasan) y la ventana real de `test_linux_adoption_window.py` (server, `yo`,
+  - Ensayo: `test_sc6a_r1_rehearsal.py` (en proceso: 7 tests, pasan en la Mac
+    y en el server; 8 desde la corrección de la revisión) y la ventana real de `test_linux_adoption_window.py` (server, `yo`,
     systemd real: 7 pasan en 261 s, con T-A17 compilado). Agregan (i)–(iv) del
     diseño y AUTHZ3-1: una copia de b0c322d~1 sobre la raíz adoptada de época
     4, después de W9, prepara, concede y activa otro slot (residuo fijado tal
-    como es); b0c322d se rechaza. Mutantes en la Mac: 14 de 14 muertos (más 3
+    como es); b0c322d se rechaza. Mutantes en la Mac: 16 de 16 muertos (más 3
     equivalentes por las guardas en capas; detalle en la evidencia).
   - Inventario bajo `yo` (borrado salvo lo indicado):
     - Mac, `~/.claude/jobs/3a8b26c3/tmp/runs/` (e1–e5, m2, stress: archivos
@@ -1078,6 +1083,26 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
       (legadas del 2026-10-29), `/home/yo/projects/runs` (sólo logs) y los
       esqueletos vacíos `/private/tmp/u3b0b` y `u3b1a`. Nada de origen dudoso:
       ningún renombre `*.superseded-epoch3`.
+    - Corrección de la revisión (SC6A-R1): el primer inventario buscaba sólo
+      por nombre y no vio cuatro copias sueltas renombradas en la Mac, todas
+      con `delegate` y sin `require_forward_epoch`: `/private/tmp/sr_head.py`
+      y `~/.claude/jobs/3a8b26c3/tmp/sr_head.py` (idénticas, blob de
+      389a18c..4bb38e3~1), `jobs/3a8b26c3/tmp/stage_runtime.r.backup.py`
+      (69a79e6) y `jobs/3a8b26c3/tmp/stage_runtime.backup.py` (copia de
+      trabajo sin commit del 2026-11-10). Restos del roadmap: borrados. El
+      inventario se repitió por contenido (todo archivo con `def
+      delegate_slot(`, todo `.pyc` que lo nombra y todo miembro de un archivo
+      comprimido, clasificados por `require_forward_epoch` y
+      `delegation_retired`) sobre el checkout de la Mac, `bench-ambient`,
+      `kza-design-reference`, `_otros`, `~/.claude/jobs`, `/private/tmp` y
+      `$TMPDIR`; en el server bajo `yo` sobre `/home/yo`, `/tmp`, `/var/tmp`,
+      `/run/user/1011` y `/dev/shm`; y del lado de `kza`, sólo leyendo,
+      sobre `/home/kza`, `/tmp`, `/var/tmp`, `/run/user/<uid>` y `/dev/shm`.
+      Ninguna copia de ese rango ni de época 3 (`jobs/3a8b26c3/tmp/u3b0b.diff`
+      es un diff parcial de 515 líneas, no una copia que se pueda correr).
+    - Los árboles `/tmp/pytest-of-yo/pytest-6`, `42`, `52` y `103` del server,
+      listados arriba como conservados, los borró la limpieza del revisor
+      (SC6A-R6); no tenían ninguna copia del rango.
     - `kza` (sólo listado, sin cambios): `/home/kza/releases/slots/*`,
       `incoming/` y `/home/kza/kza` son las releases legadas 2c5adb4,
       b0866e8, 63ea8d3 y e9669ec, sin `delegate`. Nada del rango; para el
@@ -1085,10 +1110,11 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   - Lo que queda: el historial de Git, y la suite vuelve a construir copias
     del rango en el tmp privado de pytest de `yo` en cada corrida (238b463,
     40aa05b, b0c322d~1). No son ubicaciones de transferencia.
-- Siguiente: el diseño del modo release (v4 en revisión; las preguntas SC-D
-  al usuario cuando converja; SC-D5 importa para la ventana de R1). La ventana
-  de R1 sigue sin programarse: faltan la revisión independiente de U3b-0e5 y
-  las decisiones del usuario.
+- Siguiente: el diseño del modo release (v4 en revisión; las respuestas SC-D
+  ya están registradas, ver arriba). La ventana de R1 sigue sin programarse:
+  la compuerta es la de «Compuerta de programación» del runbook de R1 (la
+  revisión independiente de U3b-0e5); las decisiones del usuario ya no la
+  bloquean.
 
 ## Prompt para la sesión nueva
 

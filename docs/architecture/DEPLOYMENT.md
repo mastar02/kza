@@ -315,11 +315,21 @@ autocontenidas y la delegación a estados dueños se apaga. Desde SC-2
   handoff y en `t040-t041/sc6a-evidence.json`): se borraron los árboles
   temporales de pytest, las corridas del roadmap y los restos de
   `build_runtime` con copias de 69a79e6..b0c322d~1 o de época 3. El checkout
-  del server avanzó de 26de262 a la rama integrada. No apareció nada de origen
-  dudoso, así que no hubo renombres `*.superseded-epoch3`. Del lado de `kza`
-  (sólo listado, sin cambios): ningún archivo, árbol ni checkout de ese rango.
-  Sus slots e `incoming/` son las releases legadas 2c5adb4, b0866e8, 63ea8d3 y
-  e9669ec, sin `delegate`.
+  del server avanzó de 26de262 a la rama integrada. El primer inventario
+  buscaba sólo por nombre y no vio cuatro copias sueltas renombradas en la Mac
+  (`/private/tmp/sr_head.py` y su gemela en el tmp del roadmap, del blob de
+  389a18c..4bb38e3~1; `stage_runtime.r.backup.py`, de 69a79e6; y
+  `stage_runtime.backup.py`, una copia de trabajo sin commit del 2026-11-10),
+  todas con `delegate` y sin `require_forward_epoch`. La revisión (SC6A-R1) las
+  encontró; eran restos del roadmap y se borraron. El inventario se repitió
+  por contenido: cada archivo con `def delegate_slot(` o cada `.pyc` que lo
+  nombra, y cada miembro de cada archivo comprimido, clasificados por
+  `require_forward_epoch` y `delegation_retired`, en la Mac, en el server bajo
+  `yo` y, sólo leyendo, del lado de `kza`. No queda ninguna copia de ese rango
+  ni de época 3. No apareció nada de origen dudoso, así que no hubo renombres
+  `*.superseded-epoch3`. Del lado de `kza` (sólo listado, sin cambios):
+  ningún archivo, árbol ni checkout de ese rango. Sus slots e `incoming/` son
+  las releases legadas 2c5adb4, b0866e8, 63ea8d3 y e9669ec, sin `delegate`.
 - Lo que queda: el historial de Git conserva esas versiones, y la propia suite
   construye copias de ese rango en el tmp privado de pytest de `yo` (238b463
   en el multi-hop compilado, 40aa05b en el ensayo del lanzador, b0c322d~1 en
@@ -490,13 +500,23 @@ de eso está disponible hoy. Mientras tanto, el único rollback es L4 a 63ea8d3
 durante sus 14 días (con la frase 'revivir datos borrados'); a partir del día
 14 (retiro Q5) tampoco queda ese rollback.
 
-Cómo se acota ese hueco es la decisión abierta SC-D5 (sin respuesta del
-usuario al 2026-11-15). Opciones: A (recomendada) aceptarlo, empezar el modo
-release enseguida y, si aparece un error grave de privacidad en el hueco,
-detener el servicio hasta tenerlo; B postergar el retiro Q5 hasta tener el
-modo release revisado y ensayado, conservando L4 a cambio de guardar más
-tiempo la copia heredada; C postergar R1 hasta que el modo release esté casi
-listo. Esta sección registra la respuesta cuando exista.
+Cómo se acota ese hueco lo decidió el usuario el 2026-11-15: **SC-D5 = A**
+(registro `u3b_sc_release_mode_questions` en
+`t040-t041/user-decisions-20261110.json`, estado aceptado). Se acepta el
+hueco: R1 sale apenas esté listo, el modo release se empieza enseguida y, ante
+un problema grave de privacidad en el hueco, se apaga el servicio hasta
+tenerlo. El retiro Q5 del día 14 no se posterga. Las opciones descartadas eran
+B (postergar el retiro Q5 hasta tener el modo release revisado y ensayado,
+conservando L4 a cambio de guardar más tiempo la copia heredada) y C
+(postergar R1 hasta que el modo release esté casi listo). En la misma tanda
+el usuario respondió A a SC-D2 (hasta 10 minutos sin servicio por cambio),
+SC-D4 (las primeras versiones después de R1 no cambian la estructura), SC-D6
+(corrida corta aislada antes de aceptar), SC-D7 (arreglo hacia adelante con el
+servicio apagado, o L4 mientras exista; R1 nunca es destino del modo release)
+y SC-D8 (si la prueba aislada registra un borrado o quita un permiso, servicio
+apagado hasta revisar). SC-D1 y SC-D3 quedaron sin objeto en el diseño v4 del
+modo release (propuesto, en revisión), que es donde esas respuestas se
+aplican.
 
 Hallazgo aparte, de 0a: un estado con unas 250 000 filas protegidas o más
 produce un binding de más de 16 MB, y el controlador no puede leerlo
@@ -992,8 +1012,8 @@ Después del retiro **no hay rollback no gestionado** (decisión Q3 = A):
   gestionado dentro del linaje gestionado. **Desde SC-2 ninguna de las dos
   existe hasta el modo release** (ver «Sin transiciones gestionadas después de
   R1 hasta el modo release»): después de este retiro no queda ningún rollback.
-  Antes de ejecutarlo, revisar la respuesta a SC-D5 en esa sección (la opción
-  B posterga este paso).
+  La respuesta a SC-D5 registrada en esa sección es A: este paso no se
+  posterga (sólo la opción B lo postergaría).
 
 `/home/kza/kza` está congelado y sin retención desde el 2026-10-28, así que
 guarda más datos vencidos que la imagen que se retira. Queda como copia, no

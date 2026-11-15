@@ -43,11 +43,18 @@ raíz de época 4 (AUTHZ3-1). SC-6a (2026-11-15) reconstruyó R1 desde 81ed568
 (época 4, contrato de esquema 1), dos veces bajo `yo` en el server con
 resultado idéntico byte a byte (una tercera construcción en la Mac también
 coincide), y fijó su sha256 y su commit abajo, en «Archivo R1 fijado», con el
-paso obligatorio `sha256sum "$R1_ARCHIVE"` antes de W1. Listó y borró todo R1
-anterior y todo archivo, árbol extraído y checkout construido desde ese rango,
-bajo `yo` y en cada ubicación de transferencia (cada ubicación está en el
-handoff; del lado de `kza` no había ninguno, y no hizo falta renombrar nada a
-`*.superseded-epoch3`). El ensayo de adopción corre ahora el `delegate` y el
+paso obligatorio `sha256sum "$R1_ARCHIVE"` antes de W1. Borró todo R1
+anterior y todo archivo, árbol extraído, checkout y copia suelta de
+`stage_runtime` construidos desde ese rango, bajo `yo` y en cada ubicación de
+transferencia (cada ubicación está en el handoff; del lado de `kza` no había
+ninguno, y no hizo falta renombrar nada a `*.superseded-epoch3`). El primer
+inventario buscaba sólo por nombre (`stage_runtime.py(c)`, `*.tar.gz`, `.git`)
+y no vio cuatro copias sueltas renombradas en la Mac (`sr_head.py` en
+`/private/tmp` y en el tmp del roadmap, y dos `stage_runtime*.backup.py`); la
+revisión las encontró, se borraron y el inventario se repitió por contenido
+(cada archivo, cada miembro de cada archivo comprimido) en la Mac, en el
+server bajo `yo` y, sólo leyendo, del lado de `kza`: ninguna copia de ese
+rango ni de época 3. El ensayo de adopción corre ahora el `delegate` y el
 `activate` de una copia de ese rango sobre una raíz de época 4: todavía
 concede y activa, y el test lo fija tal como es. La barrera es correr sólo
 `controller/current` y que no quede ninguna copia de ese rango que correr.
@@ -55,7 +62,10 @@ concede y activa, y el test lo fija tal como es. La barrera es correr sólo
 Después de R1 no hay transiciones gestionadas (ningún arreglo de código) hasta
 que exista el modo release; el único rollback es L4 durante sus 14 días. Ver
 «Sin transiciones gestionadas después de R1 hasta el modo release» en
-`docs/architecture/DEPLOYMENT.md` (decisión abierta SC-D5).
+`docs/architecture/DEPLOYMENT.md`. El usuario respondió SC-D5 = A el
+2026-11-15: se acepta ese hueco, R1 sale apenas esté listo, el modo release se
+empieza enseguida y, ante un problema grave de privacidad en el hueco, se
+apaga el servicio hasta tenerlo. El retiro Q5 del día 14 no se posterga.
 
 Todo corre como `kza` y nunca como root. Cada comando rechaza con salida 78
 y `{"refused": <código>}` en estos casos:
@@ -374,8 +384,9 @@ comando lo rechaza (`runtime_admission_legacy_retire_too_early`, con
 Desde SC-2 tampoco hay rollback gestionado hasta que exista el modo release:
 después de Q5 no queda ningún rollback. Antes de empezar, revisar la
 respuesta a SC-D5 en `docs/architecture/DEPLOYMENT.md` («Sin transiciones
-gestionadas después de R1 hasta el modo release»); con la opción B este paso
-se posterga y no se ejecuta.
+gestionadas después de R1 hasta el modo release»). La respuesta registrada es
+A (2026-11-15): este paso corre el día 14. Sólo con la opción B se
+postergaría; si esa respuesta cambiara, no ejecutarlo.
 
 0. Si L4 se usó desde la adopción (existe algún
    `/home/kza/releases/admission/launcher/uninstall-*.json`), parar aquí: el
