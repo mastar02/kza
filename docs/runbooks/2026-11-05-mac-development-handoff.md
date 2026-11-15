@@ -914,9 +914,13 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
     compactación pendiente bajo su compuerta. Sin head, nada cambia.
   - `CONTROLLER_EPOCH` 3 → 4. `SCHEMA_CONTRACT_EPOCH = 1` y
     `schema_contract_document()` (tablas, columnas, markers, conjunto
-    protegido, reglas de pragma y `auth_meta`, vocabularios de borrados,
-    participantes, estados de hechos y cambios y métodos de dueño, SCv2-P5);
-    `release.json` declara `schema_contract`.
+    protegido, todas las reglas de base del lector como constantes con nombre,
+    vocabularios de borrados, participantes, estados de hechos y cambios y
+    métodos de dueño, SCv2-P5, y desde la revisión SC2-R1 cada enum de `src`
+    que una tabla protegida guarda tal cual); `release.json` declara
+    `schema_contract`. Esa ampliación de vocabularios es una enmienda
+    propuesta del diseño: confirmarla o revertirla antes de SC-6a (ver
+    «Contrato de esquema (época 1)» en DEPLOYMENT).
   - `LEGACY_MANAGED_TRANSITIONS = False`. Sólo los tests lo ponen en `True`
     (fixture `legacy_managed_transitions` y `tests/mocks/legacy_transitions.py`);
     un controlador compilado no puede.
@@ -947,7 +951,17 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   módulos Linux de a uno (7 + 1 + 14 + 13 pasan, con systemd real y unidades
   `kza-rehearsal-*`) y el conjunto SC-2 (625 pasan, 1 omitida, 1 xfail).
   Mutantes: 18 de 18 muertos en la Mac.
-- Revisión independiente de SC-2/SC-5a: pendiente.
+- Revisión independiente de SC-2/SC-5a (2026-11-15): 11 hallazgos, 2 medios
+  (SC2-R1 vocabularios del contrato, R1 rollback gestionado ofrecido en
+  DEPLOYMENT), 5 bajos y 4 informativos. Corregidos con test y mutante muerto:
+  contrato ampliado y re-fijado una vez antes de R1 (época 1), reglas del
+  lector como constantes (SC2-R2/R5), cada mención de rollback gestionado
+  marcada no disponible (R1), `install-controller` época 4 (R2), aviso del día
+  14 con SC-D5 (R3), residuo del `controller.json` ilegible (SC2-R3), rechazo
+  incondicional en tc4 (SC2-R4/R4) y tres inicializadores más (R7). R6 queda
+  para SC-5b. Mutantes de la revisión: 20 de 20 muertos más un control que
+  sobrevive al test anterior a propósito. Detalle en la evidencia
+  (`review_round_1`).
 
 ## Prompt para la sesión nueva
 
