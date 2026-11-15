@@ -991,7 +991,7 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   suspensión, con una falla de tc2 (`sigkill_while_running`); repetida
   partida en dos (a2a1/a2a2, mismo límite) pasó entera. En el server, los
   tres módulos de la revisión pasan (110). Antes de SC-6a hay que repetir la
-  suite sobre el commit integrado (C4). **Decisiones para el usuario antes de SC-6a**: confirmar o revertir la
+  suite sobre el commit integrado (C4; hecho, ver «Integración de SC-2»). **Decisiones antes de SC-6a** (resueltas el 2026-11-15 como decisión técnica, ver más abajo): confirmar o revertir la
   enmienda de vocabularios (SC2-R1 + AUTHZ-1; C5 advierte que los 15 de
   SC2-R1 que no son de privacidad vuelven transición de esquema cualquier
   cambio de esos enums) y si `release.json` debe declarar también el sha256
@@ -1025,6 +1025,24 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   clon temporal desde bundle, ya borrado): 158 pasan. La suite batch completa
   se repite sobre el commit integrado antes de SC-6a (C4). Detalle en la
   evidencia (`review_round_3`).
+- **Integración de SC-2 (2026-11-15)**: merge `dd2d7f8` en
+  `recovery/production-2026-10-25` (mismo árbol que `b80ed7f`). Decisiones
+  técnicas registradas en la evidencia (`technical_decisions_20261115`): la
+  enmienda de vocabularios queda aceptada (revocable hasta que SC-6a construya
+  R1) y la barrera estructural de AUTHZ3-1 pasa a SC-1; AUTHZ-3 (sha256 del
+  contrato en `release.json`) sigue para la revisión de SC-1. Suite batch
+  sobre `b80ed7f` verde (C4): Mac a1 6520 pasan, a2a 1079 (repetida: la
+  primera corrida falló por disco lleno y después por una opción del runner,
+  `tmp_path_retention_policy=failed`, que reusa nombres de tmp y choca con la
+  caché de Chroma; se revirtió la opción, no el código), a2b 1274, a2c 2050,
+  b1 1082, b2 235, node sin fallas, 8 rehearsals de tiempo a solas; server
+  (`yo`, rama temporal desde bundle, ya borrada y checkout restaurado) siete
+  tandas 12.289 casos sin fallas, node y 8 rehearsals. Evidencia en
+  `data/autonomous-roadmap-20261102/u3b/full-sc2/RESULT.md`.
+- Siguiente: SC-6a (reconstruir R1 en época 4 y limpiar las copias del rango
+  de AUTHZ3-1) y, en paralelo, el diseño del modo release (v4 en revisión;
+  las preguntas SC-D al usuario cuando converja; SC-D5 importa para la
+  ventana de R1).
 
 ## Prompt para la sesión nueva
 
