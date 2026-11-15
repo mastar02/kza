@@ -1062,9 +1062,12 @@ integrar ni subir. Evidencia:
   presenta su token a `poll` o `activate` deja de estar arrastrado y vuelve a
   ser esperado. Para los que nunca contactan, la barrera depende de los
   monitores de cierre seguro de los clientes (nativo 0,25 s/1 s, navegador
-  0,5 s/5 s). Esto relaja la regla del 2026-11-04 («active/unknown owners
-  require explicit stop receipt») para parada y cierre: requiere el visto
-  bueno explícito del usuario antes de integrar. La prueba de cierre en
+  0,5 s/5 s). Es una decisión técnica, no un reconocimiento del usuario: la
+  regla del 2026-11-04 («active/unknown owners require explicit stop
+  receipt») es un registro técnico; el arreglo conserva «unknown participants
+  cannot receive confirmation» y restituye la garantía H0 del usuario (el mute
+  siempre se puede reactivar). Sólo la parada y el cierre dejan de esperar a
+  esos dueños. La prueba de cierre en
   memoria da `capture_permissions_retired: false` y
   `capture_permissions_carried` (clave del diseño v4); el recibo no los guarda,
   y el cierre sólo deja una advertencia con el conteo en el log. Los dueños
@@ -1086,13 +1089,44 @@ integrar ni subir. Evidencia:
   de `retire` en la página, y redacción corregida sobre subidas y filas sin
   tope. Mutantes: 33 de 33 muertos (30 en la primera corrida; M5, N2 y N8
   después, con tests nuevos). Corridas dirigidas en la evidencia (`review_round_1`).
-- **Bloqueante antes de integrar**: el visto bueno explícito del usuario a
-  que la parada y el cierre ya no esperen a un dueño `unknown` al arrancar que
-  nunca vuelve a contactar (relaja la regla del 2026-11-04).
-- Pendiente del usuario, no bloqueante: si las filas arrastradas se pueden
-  retirar más adelante (automático al arrancar o con «Olvidar grabaciones
-  perdidas» desde Privacidad) o si se conservan sin confirmar. Mientras no
-  decida, se conservan.
+- Corrección de 5b40447: R1B1-1 no necesita un visto bueno del usuario ni
+  bloquea la integración por eso. Es una decisión técnica sobre un registro
+  técnico (ver arriba y DEPLOYMENT R5V-1).
+- Las filas arrastradas se resuelven con R1-B2 (abajo), según la decisión del
+  usuario del 2026-11-15.
+
+## R1-B2 — «Olvidar grabaciones perdidas» desde Privacidad (2026-11-15)
+
+Misma rama `r1b1-orphan-recorder`, sin integrar ni subir. Decisión del
+usuario `r1b1_lost_recordings` (aceptada el 2026-11-15): un administrador
+olvida las grabaciones perdidas desde Privacidad, afirmando que no queda
+ninguna pestaña grabando; queda un registro sin contenido; hasta entonces el
+panel muestra cuántas hay y nunca dice «confirmada». Rechazadas: retiro
+automático al arrancar y conservarlas para siempre. Evidencia:
+`data/autonomous-roadmap-20261102/t040-t041/r1b1-evidence.json`, clave `r1b2`.
+
+- `POST /api/capture/control/forget-carried` con
+  `{"expected_carried": N, "no_capture_running": true}` (estricto). Permiso
+  `admin:manage`, el del control de captura global; ningún rol de hogar.
+- Olvida sólo dueños arrastrados (desconocidos al arrancar y no reclamados
+  por su token), nunca vivos ni reservas. Conteo distinto: 409 sin cambios.
+  Un titular que se presenta durante la transacción la revierte. Sin dueños
+  arrastrados es un no-op (200, `forgotten_capture_owners: 0`).
+- Registro sin contenido sólo en el log (WARNING con el conteo): el contrato
+  de esquema de la época 1 está congelado y la auditoría está apagada en R1.
+  Sin tablas, columnas ni valores nuevos; el pin del contrato pasa.
+- Después, si no queda otro dueño, `total_mute_confirmed` vuelve a ser
+  verdadero por las reglas normales y la prueba de cierre da
+  `capture_permissions_retired: true`.
+- Panel: «Grabaciones perdidas: N», botón «Olvidar grabaciones perdidas»,
+  confirmación con casilla y botón «Olvidar N grabaciones perdidas»; un
+  conteo nuevo cierra la confirmación. Detalle en DEPLOYMENT (R1-B2).
+- Tests: unitarios de `CaptureRecorders.forget_carried`, integración con la
+  aplicación real (mute confirmado tras olvidar, dueño vivo intacto, parada
+  gestionada con prueba limpia), HTTP (cuerpo estricto, 409, roles 403/401),
+  permisos de ruta y node del panel. Resultados y mutantes en la evidencia.
+- Pendiente: revisión independiente; el visto bueno visual del panel sigue
+  con el usuario como en las demás pantallas.
 
 ## Prompt para la sesión nueva
 

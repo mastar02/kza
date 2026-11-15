@@ -333,13 +333,18 @@ sin recibo de cierre (head `UNKNOWN` en cada parada, y la compactación y R1
 necesitaban recuperación cada vez). Además, un mute total quedaba en
 `muting` y el unmute se rechazaba con `capture_control_busy`.
 
-Arreglo técnico (opción e, rama `r1b1-orphan-recorder`, sin release). **Relaja
-una regla aceptada**: el registro del 2026-11-04
-(`docs/research/2026-11-04-global-capture-control.json`) exige un recibo de
-parada explícito de todo dueño `active`/`unknown`. Eso sigue valiendo para
-`total_mute_confirmed`, pero ya no para la parada, el cierre ni la fase
-`muted` cuando el dueño quedó `unknown` al arrancar y no volvió a hablar con
-el proceso. Requiere el visto bueno explícito del usuario antes de integrarse.
+Arreglo técnico (opción e, rama `r1b1-orphan-recorder`, sin release). Es una
+**decisión técnica**, no un reconocimiento pendiente del usuario. La regla del
+2026-11-04 (`docs/research/2026-11-04-global-capture-control.json`) es un
+registro técnico: exige un recibo de parada explícito de todo dueño
+`active`/`unknown`. El arreglo conserva su parte de confirmación («Unknown/foreign
+participants cannot receive confirmation»: `total_mute_confirmed` sigue falso
+mientras exista uno). Sólo deja de exigir ese recibo a la parada, al cierre y a
+la fase `muted` cuando el dueño quedó `unknown` al arrancar y no volvió a
+hablar con el proceso. Con eso restituye la garantía H0 del usuario: el mute
+siempre se puede reactivar desde el control autenticado. La versión
+anterior de este texto (5b40447) lo presentaba como un visto bueno
+bloqueante del usuario; no lo es.
 
 - Las filas que ya estaban `unknown` al arrancar este proceso quedan como
   *arrastradas* (`carried`). `drain()`, el `pre_close` del testigo y
@@ -396,13 +401,70 @@ el proceso. Requiere el visto bueno explícito del usuario antes de integrarse.
   cada caída con N dueños activos suma N filas permanentes. `_read_cache` y
   `_register` las recorren en cada mutación (costo lineal), y nada las acota
   ni alerta salvo la advertencia de arranque. Con una sola, la pausa total no
-  vuelve a confirmarse nunca. Antes quedaba en `muting`; ahora llega a
-  `muted`, pero el «no confirmada» es permanente. Se resuelve con la decisión
-  pendiente (a o b); también se puede sumar un tope o un umbral de alerta.
-- Pendiente del usuario, no bloqueante: si las filas arrastradas se pueden
-  retirar más adelante y con eso volver a «confirmada», ya sea al arrancar
-  (opción a) o con una acción de administrador (opción b). Hasta esa decisión
-  se conservan como no confirmadas.
+  se confirma hasta que un administrador las olvida (R1-B2, abajo). Antes
+  quedaba en `muting`; ahora llega a `muted` sin «confirmada». Un tope o un
+  umbral de alerta siguen sin existir.
+
+#### R1-B2: «Olvidar grabaciones perdidas» (2026-11-15)
+
+Decisión del usuario del 2026-11-15 (`r1b1_lost_recordings` en
+`t040-t041/user-decisions-20261110.json`, aceptada): las grabaciones perdidas
+(dueños arrastrados) las resuelve un administrador desde Privacidad con
+«Olvidar grabaciones perdidas», afirmando que no queda ninguna pestaña
+grabando. Queda un registro sin contenido. Hasta entonces el panel muestra
+cuántas hay y nunca dice «confirmada». Rechazadas: el retiro automático al
+arrancar y conservarlas para siempre.
+
+- Ruta: `POST /api/capture/control/forget-carried` (rama
+  `r1b1-orphan-recorder`, sin release). Cuerpo estricto
+  `{"expected_carried": N, "no_capture_running": true}`: `N` es el conteo
+  `carried_capture_owners` que la página mostró y la afirmación tiene que ser
+  literalmente `true`. Campos extra, claves duplicadas, tipos laxos (`1`,
+  `"true"`, `2.0`, `true` como conteo) o un cuerpo que no es JSON dan 422/415
+  sin tocar nada.
+- Permiso: `admin:manage`, el mismo del control de captura global, en la capa
+  de sesión (`_route_permissions` para `/api/capture/*`) y otra vez al crear el
+  `CaptureController`. Ningún rol de hogar ni de evaluación lo tiene; la voz o
+  la persona reconocida no eligen permisos. La autoridad del administrador se
+  vuelve a comprobar dentro de la transacción: si vence antes del commit, se
+  revierte (403).
+- Sólo olvida dueños **arrastrados**: filas `unknown` al arrancar este proceso
+  que ningún titular reclamó presentando su token. Nunca toca dueños vivos
+  (emitidos por este proceso o reclamados), ni reservas. Si el conteo actual
+  difiere de `N`, responde 409 `capture_carried_count_conflict` y no olvida
+  nada, así que una página vieja no puede olvidar dueños que no mostró. Si un
+  titular presenta su token mientras la transacción está abierta, el olvido
+  se revierte entero (409) y ese dueño pasa a vivo.
+- Idempotente: sin dueños arrastrados devuelve 200 con
+  `forgotten_capture_owners: 0`, cualquiera sea `N`, y no registra nada.
+- Respuesta: el estado de captura más `forgotten_capture_owners`. Si no queda
+  otro dueño ni trabajo, `total_mute_confirmed` pasa a verdadero por las
+  reglas normales (fase `muted`, persistida, sellada, soportada, sin
+  pendientes). La prueba de cierre en memoria da entonces
+  `capture_permissions_retired: true` y `capture_permissions_carried: 0`, y el
+  cierre ya no registra la advertencia de dueños arrastrados.
+- Registro sin contenido: **sólo log**. `CaptureRecorders` registra
+  `[CaptureRecorders] an administrator forgot N carried owner(s), affirming
+  none is still recording` (nivel WARNING): el conteo, sin tokens, hashes ni
+  el sujeto del administrador. No se usa ninguna tabla: el contrato de
+  esquema de la época 1 está congelado (sin tablas, columnas ni valores de
+  enumeración nuevos), el ledger de borrados tiene un vocabulario cerrado y
+  la auditoría SQLite está apagada en R1. El registro dura lo que dure el
+  journal del servicio.
+- Las filas se borran de `capture_browser_recorders` con `state='unknown'`;
+  no hay cambio de esquema. Un titular olvidado que vuelve a consultar recibe
+  `state: retired` y `retirement_required: true`, y su `retire` es un no-op.
+- Panel de Privacidad (Captura global): con dueños arrastrados muestra
+  «Grabaciones perdidas: N» y, en fase `muted`, «Entrada sellada; la pausa no
+  se confirma mientras haya grabaciones perdidas». El botón «Olvidar
+  grabaciones perdidas» abre una confirmación con la casilla «Confirmo que
+  ninguna pestaña ni herramienta sigue grabando» y el botón «Olvidar N
+  grabaciones perdidas», que envía el conteo mostrado. Si el conteo cambia
+  mientras la confirmación está abierta, se cierra. El panel rechaza un estado
+  que diga confirmada con dueños vivos o arrastrados.
+- Límite: el olvido no detiene ninguna captura. Se apoya en la afirmación del
+  administrador y en los monitores de cierre seguro de los clientes (el
+  servidor ya no concedía nada a esos dueños).
 
 #### Contrato de esquema (época 1)
 
