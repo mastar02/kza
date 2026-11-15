@@ -684,7 +684,7 @@ class RuntimeClosureWitness:
                     "authority_lease_acquired": authority_opened,
                     # Never True while an owner carried without an ACK exists.
                     "capture_permissions_retired": carried == 0,
-                    "capture_owners_carried": carried,
+                    "capture_permissions_carried": carried,
                     "input_owner_count": len({self._graph.pipeline.audio_loop,
                                               self._graph.fallback_audio_loop})}
         except BaseException:

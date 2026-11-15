@@ -360,9 +360,17 @@ el proceso. Requiere el visto bueno explícito del usuario antes de integrarse.
   cualquier dueño vivo.
 - El silencio nunca cuenta como ACK. `pending()` sigue contándolas: mientras
   exista una, `total_mute_confirmed` es falso (el panel no muestra «Captura
-  global pausada y confirmada») y la prueba de cierre da
-  `capture_permissions_retired: false` con `capture_owners_carried: N`. El
-  recibo de admisión no exige esa clave, así que se escribe igual.
+  global pausada y confirmada»). La prueba de cierre del testigo
+  (`verify_closed`) da `capture_permissions_retired: false` con
+  `capture_permissions_carried: N`, pero sólo en memoria: el recibo de
+  admisión guarda únicamente `graph_closed`, `privacy_closed`, `sdk_closed` y
+  `native_closed`, así que se escribe igual y no se distingue de uno limpio.
+  Lo único observable es una advertencia sin contenido que el cierre registra
+  antes de cerrar el logging (`[Admission] closing with N carried capture
+  permission(s) never acknowledged; the receipt does not record them`) y las
+  filas de `capture_browser_recorders` en el estado. Guardar el conteo en el
+  recibo es un cambio de esquema que queda para SC: el diseño v4 lo prevé en
+  modo verificación con la misma clave, `capture_permissions_carried`.
 - Los dueños emitidos por el proceso actual mantienen la barrera completa de ACK
   explícito. La capacidad de 256 cuenta sólo esos dueños vivos. Al arrancar se
   registra únicamente el conteo de filas arrastradas, sin tokens ni hashes.

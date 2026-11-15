@@ -48,7 +48,7 @@ async def test_real_graph_and_public_sdk_close_produce_content_free_proof(tmp_pa
     assert ha_session.closed and witness._ha.close_returned
     assert proof["authority_lease_acquired"] is True
     assert proof["capture_permissions_retired"] is True
-    assert proof["capture_owners_carried"] == 0
+    assert proof["capture_permissions_carried"] == 0
     assert {key: proof[key] for key in ("bindings_unchanged", "model_owners_closed",
         "graph_closed", "privacy_closed", "sdk_closed", "native_closed")} == dict.fromkeys(
             ("bindings_unchanged", "model_owners_closed", "graph_closed",
@@ -333,10 +333,10 @@ async def test_silent_carried_owner_is_reported_not_awaited_by_close(tmp_path, m
         assert recovered.pending(kind="calibration") == recovered.carried() == 1
     proof = witness.verify_closed()
     assert proof["capture_permissions_retired"] is False
-    assert proof["capture_owners_carried"] == 1
+    assert proof["capture_permissions_carried"] == 1
     # Closed: a late token cannot reclaim the owner and change the proof.
     assert (await recovered.poll(issued["token"], actor, kind="calibration"))["state"] == "unknown"
-    assert recovered.carried() == 1 and witness.verify_closed()["capture_owners_carried"] == 1
+    assert recovered.carried() == 1 and witness.verify_closed()["capture_permissions_carried"] == 1
 
 
 async def test_real_ha_session_closed_flag_does_not_replace_public_close_return(monkeypatch):

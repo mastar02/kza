@@ -13,6 +13,7 @@ stop test uses it only after the owner set closed.
 """
 import asyncio
 from contextlib import AsyncExitStack
+import logging
 import time
 from types import SimpleNamespace
 from uuid import uuid4
@@ -70,9 +71,18 @@ async def _managed_stop(tmp_path, monkeypatch, root, token, before_stop=None):
     The lost tab never contacts this process. Nothing retires the carried
     owner; the stop completes on its own.
     """
-    receipts, revalidated = [], []
+    receipts, revalidated, order = [], [], []
     monkeypatch.setattr(runtime_admission, "_stage", lambda: SimpleNamespace(
         write_admission_receipt=lambda ticket, resources: receipts.append((ticket, resources))))
+    warned = []
+
+    class Seen(logging.Handler):
+        def emit(self, record):
+            warned.append(record.getMessage())
+            order.append("carried-warning")
+
+    seen = Seen(logging.WARNING)
+    logging.getLogger(runtime_admission.__name__).addHandler(seen)
     monkeypatch.setattr(runtime_admission, "_open_state_writers", lambda state: ("checked", []))
     run_id = uuid4().hex
     observer = AsyncExitStack()
@@ -86,6 +96,8 @@ async def _managed_stop(tmp_path, monkeypatch, root, token, before_stop=None):
             {"state_root": str(tmp_path / "state")}, graph.privacy.ledger.path,
             runtime_admission._config_digest(graph.config))
         monkeypatch.setattr(admission, "revalidate", lambda: revalidated.append(True))
+        # D1: close logging runs right before the receipt; the count precedes it.
+        admission.set_receipt_preparation(lambda: order.append("logging-closed"))
         admission.install_on(observer)
         admission.attach_graph(graph)
         stopping = asyncio.create_task(graph._stop_services(None, None))
@@ -101,13 +113,21 @@ async def _managed_stop(tmp_path, monkeypatch, root, token, before_stop=None):
         _carried(recorders)
         late_actor = _actor(bundle)
     # The owned stack closed; the receipt path runs with the carried owner.
-    await observer.__aexit__(None, None, None)
+    try:
+        await observer.__aexit__(None, None, None)
+    finally:
+        logging.getLogger(runtime_admission.__name__).removeHandler(seen)
     assert admission.receipt_written and revalidated == [True]
+    # R1B1-3: the receipt has no carried count, so the close logs it, content-free.
+    assert warned == ["[Admission] closing with 1 carried capture permission(s) never "
+                      "acknowledged; the receipt does not record them"]
+    assert order == ["carried-warning", "logging-closed"]
+    assert token not in " ".join(warned)
     assert receipts == [({"run_id": run_id}, dict.fromkeys(
         ("graph_closed", "privacy_closed", "sdk_closed", "native_closed"), True))]
     proof = admission._closure_witness.verify_closed()
     assert proof["capture_permissions_retired"] is False
-    assert proof["capture_owners_carried"] == 1
+    assert proof["capture_permissions_carried"] == 1
     return admission, recorders, late_actor, proof
 
 

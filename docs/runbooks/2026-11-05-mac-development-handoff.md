@@ -1064,8 +1064,10 @@ integrar ni subir. Evidencia:
   monitores de cierre seguro de los clientes (nativo 0,25 s/1 s, navegador
   0,5 s/5 s). Esto relaja la regla del 2026-11-04 («active/unknown owners
   require explicit stop receipt») para parada y cierre: requiere el visto
-  bueno explícito del usuario antes de integrar. La prueba de cierre da
-  `capture_permissions_retired: false` y `capture_owners_carried`. Los dueños
+  bueno explícito del usuario antes de integrar. La prueba de cierre en
+  memoria da `capture_permissions_retired: false` y
+  `capture_permissions_carried` (clave del diseño v4); el recibo no los guarda,
+  y el cierre sólo deja una advertencia con el conteo en el log. Los dueños
   del proceso actual mantienen la barrera de ACK. La capacidad cuenta sólo
   dueños vivos. Detalle en DEPLOYMENT (R5V-1).
 - Tests: el test que reproduce el problema
