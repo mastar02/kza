@@ -360,29 +360,34 @@ class CaptureRecorders:
                 if self._forget_contested:
                     raise ValueError("capture_carried_count_conflict")
 
-        try:
-            with self._privacy.ledger._transaction(guard) as db:
-                rows = db.execute("SELECT token_hash FROM capture_browser_recorders "
-                                  "WHERE state='unknown'").fetchall()
+        # R1B2-2: the ledger lock (reentrant) spans the whole forget, its
+        # cleanup included. A second forget on the other privacy worker only
+        # starts once this one reset ``_forgetting``, so it can never clear
+        # the set another forget installed and miss a returning holder.
+        with self._privacy.ledger._lock:
+            try:
+                with self._privacy.ledger._transaction(guard) as db:
+                    rows = db.execute("SELECT token_hash FROM capture_browser_recorders "
+                                      "WHERE state='unknown'").fetchall()
+                    with self._lock:
+                        keys = frozenset(str(row[0]) for row in rows) & self._carried
+                        if keys and len(keys) != expected:
+                            raise ValueError("capture_carried_count_conflict")
+                        self._forgetting, self._forget_contested = keys, False
+                    db.executemany("DELETE FROM capture_browser_recorders "
+                                   "WHERE token_hash=? AND state='unknown'", [(key,) for key in keys])
                 with self._lock:
-                    keys = frozenset(str(row[0]) for row in rows) & self._carried
-                    if keys and len(keys) != expected:
-                        raise ValueError("capture_carried_count_conflict")
-                    self._forgetting, self._forget_contested = keys, False
-                db.executemany("DELETE FROM capture_browser_recorders "
-                               "WHERE token_hash=? AND state='unknown'", [(key,) for key in keys])
-            with self._lock:
-                self._carried -= keys
-            self._read_cache()
-            return len(keys)
-        except (ValueError, PermissionError):
-            raise
-        except BaseException:
-            self._fault = True
-            raise
-        finally:
-            with self._lock:
-                self._forgetting, self._forget_contested = frozenset(), False
+                    self._carried -= keys
+                self._read_cache()
+                return len(keys)
+            except (ValueError, PermissionError):
+                raise
+            except BaseException:
+                self._fault = True
+                raise
+            finally:
+                with self._lock:
+                    self._forgetting, self._forget_contested = frozenset(), False
 
     async def forget_carried(self, expected: int, *,
                              authorize: Callable[[], None]) -> int:

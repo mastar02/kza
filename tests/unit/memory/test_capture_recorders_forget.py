@@ -9,6 +9,7 @@ record is a content-free log line with the count.
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 import logging
 import threading
 
@@ -188,6 +189,68 @@ async def test_a_holder_presenting_its_token_before_commit_aborts_the_forget(tmp
         (result,) = await _held_forget(recorders, 2, contact)
         assert isinstance(result, ValueError) and str(result) == "capture_carried_count_conflict"
         # Rolled back: both rows remain; the holder is live and awaited.
+        assert _rows(privacy) == before and not recorders._fault
+        assert recorders.carried() == 1 and recorders.live_owners() == 1
+        assert recorders._forgetting == frozenset() and recorders._forget_contested is False
+        assert await recorders.forget_carried(1, authorize=_allowed) == 1
+        assert set(_rows(privacy)) == {recorders._key(holder)}
+        await recorders.retire(holder)
+    finally:
+        await _close(privacy, recorders)
+
+
+async def test_overlapping_forgets_never_lose_a_returning_holder(tmp_path):
+    """R1B2-2: a failing forget never clears the set another forget installed.
+
+    Two administrator tabs (one stale) forget at once on the two privacy
+    workers. The stale one fails inside its transaction; its cleanup is held
+    just after the transaction, which is when an unserialized second forget
+    installs its rows. A holder that then presents its token must still abort
+    the second forget.
+    """
+    _, privacy, recorders, (holder, lost) = await _carried_boot(tmp_path, "overlap.sqlite")
+    try:
+        before = _rows(privacy)
+        original = privacy.ledger._transaction
+        stale_inside, installed, release = threading.Event(), threading.Event(), threading.Event()
+
+        @contextmanager
+        def held_failure(guard=None):
+            try:
+                with original(guard) as db:
+                    yield db
+            except ValueError:
+                # The transaction ended; give the other forget the chance to
+                # install its rows before this forget's cleanup runs.
+                installed.wait(.5)
+                raise
+
+        def stale_authorize() -> None:
+            stale_inside.set()
+
+        def current_authorize() -> None:
+            if recorders._forgetting and not installed.is_set():
+                installed.set()
+                assert release.wait(5)
+
+        privacy.ledger._transaction = held_failure
+        try:
+            stale = asyncio.create_task(recorders.forget_carried(5, authorize=stale_authorize))
+            assert await asyncio.to_thread(stale_inside.wait, 5)
+            current = asyncio.create_task(recorders.forget_carried(2, authorize=current_authorize))
+            try:
+                with pytest.raises(ValueError, match="^capture_carried_count_conflict$"):
+                    await stale
+                assert await asyncio.to_thread(installed.wait, 5)
+                status = await recorders.poll(holder, actor())
+                assert status["retirement_required"] is True
+            finally:
+                release.set()
+            with pytest.raises(ValueError, match="^capture_carried_count_conflict$"):
+                await current
+        finally:
+            del privacy.ledger._transaction
+        # The returning holder aborted the current forget: nothing deleted.
         assert _rows(privacy) == before and not recorders._fault
         assert recorders.carried() == 1 and recorders.live_owners() == 1
         assert recorders._forgetting == frozenset() and recorders._forget_contested is False
