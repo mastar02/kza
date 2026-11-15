@@ -53,7 +53,9 @@ class CaptureRecorders:
     ``forget_carried`` (R1-B2, user decision 2026-11-15): an administrator
     affirms that no tab or tool is still recording and confirms the carried
     count the page showed. Forgetting deletes only rows still carried; a
-    holder that presents its token before the commit aborts it.
+    holder that presents its token while the transaction is checked aborts
+    it, and one that does so between the last check and the commit has its
+    row restored as a live owner (the rest stay forgotten).
 
     Args:
         privacy: Actual private SQLite service and its retained I/O owner.
@@ -361,25 +363,41 @@ class CaptureRecorders:
                     raise ValueError("capture_carried_count_conflict")
 
         # R1B2-2: the ledger lock (reentrant) spans the whole forget, its
-        # cleanup included. A second forget on the other privacy worker only
-        # starts once this one reset ``_forgetting``, so it can never clear
-        # the set another forget installed and miss a returning holder.
+        # cleanup and any reinstatement included. A second forget on the other
+        # privacy worker only starts once this one reset ``_forgetting``, so it
+        # can never clear the set another forget installed and miss a
+        # returning holder; no retire or cache refresh interleaves either.
         with self._privacy.ledger._lock:
             try:
                 with self._privacy.ledger._transaction(guard) as db:
-                    rows = db.execute("SELECT token_hash FROM capture_browser_recorders "
+                    rows = db.execute("SELECT token_hash, kind FROM capture_browser_recorders "
                                       "WHERE state='unknown'").fetchall()
                     with self._lock:
-                        keys = frozenset(str(row[0]) for row in rows) & self._carried
+                        kinds = {str(row[0]): str(row[1]) for row in rows
+                                 if str(row[0]) in self._carried}
+                        keys = frozenset(kinds)
                         if keys and len(keys) != expected:
                             raise ValueError("capture_carried_count_conflict")
                         self._forgetting, self._forget_contested = keys, False
                     db.executemany("DELETE FROM capture_browser_recorders "
                                    "WHERE token_hash=? AND state='unknown'", [(key,) for key in keys])
                 with self._lock:
+                    # R1B2-3: ``_reclaim`` does not take the ledger lock, so a
+                    # holder may present its token after the last guard and
+                    # before the commit. It left the carried set: it is live.
+                    returned = keys - self._carried
                     self._carried -= keys
+                if returned:
+                    # Restore its row before any cache refresh or retire can
+                    # observe the deletion; drains await its retire again.
+                    with self._privacy.ledger._transaction() as db:
+                        db.executemany("INSERT INTO capture_browser_recorders(token_hash,state,kind) "
+                                       "VALUES (?,?,?)", [(key, RecorderState.UNKNOWN.value, kinds[key])
+                                                          for key in returned])
+                    logger.warning("[CaptureRecorders] %d carried owner(s) contacted this process "
+                                   "as a forget committed; kept as live owners", len(returned))
                 self._read_cache()
-                return len(keys)
+                return len(keys) - len(returned)
             except (ValueError, PermissionError):
                 raise
             except BaseException:
@@ -401,11 +419,14 @@ class CaptureRecorders:
                 authority lapses; checked inside the transaction.
 
         Returns:
-            How many carried owners were forgotten (0 when none remained).
+            How many carried owners were forgotten (0 when none remained);
+            a holder that presented its token as the commit landed is kept
+            as a live owner and not counted.
 
         Raises:
             ValueError: ``capture_carried_count_conflict`` when the count
-                differs or a holder presented its token before the commit.
+                differs or a holder presented its token before the last
+                check inside the transaction.
             RuntimeError: The recorders are closed, faulted or not ready.
         """
         if type(expected) is not int or expected < 0:

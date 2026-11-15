@@ -426,15 +426,31 @@ arrancar y conservarlas para siempre.
   de sesión (`_route_permissions` para `/api/capture/*`) y otra vez al crear el
   `CaptureController`. Ningún rol de hogar ni de evaluación lo tiene; la voz o
   la persona reconocida no eligen permisos. La autoridad del administrador se
-  vuelve a comprobar dentro de la transacción: si vence antes del commit, se
-  revierte (403).
+  vuelve a comprobar dentro de la transacción, también en la última
+  comprobación previa al commit: si vence antes de esa comprobación, se
+  revierte (403). Lo prueban tests de integración a través de
+  `CaptureControl.forget_carried` y de HTTP con una sesión que vence recién
+  cuando la transacción ya eligió las filas (R1B2-1).
 - Sólo olvida dueños **arrastrados**: filas `unknown` al arrancar este proceso
   que ningún titular reclamó presentando su token. Nunca toca dueños vivos
   (emitidos por este proceso o reclamados), ni reservas. Si el conteo actual
   difiere de `N`, responde 409 `capture_carried_count_conflict` y no olvida
   nada, así que una página vieja no puede olvidar dueños que no mostró. Si un
-  titular presenta su token mientras la transacción está abierta, el olvido
-  se revierte entero (409) y ese dueño pasa a vivo.
+  titular presenta su token mientras la transacción hace sus comprobaciones,
+  el olvido se revierte entero (409) y ese dueño pasa a vivo. El reclamo no
+  toma el lock del ledger, así que puede caer entre la última comprobación y
+  el commit (R1B2-3): en ese caso el olvido se confirma para los demás y la
+  fila de ese titular se restituye como `unknown` en una transacción
+  inmediata, antes de que ninguna lectura de caché ni `retire` vea el borrado.
+  Queda como dueño vivo: las drains y `total_mute_confirmed` esperan su
+  `retire`, la respuesta no lo cuenta en `forgotten_capture_owners` y el log
+  agrega `[CaptureRecorders] N carried owner(s) contacted this process as a
+  forget committed; kept as live owners`. Un titular que se presenta después
+  de esa restitución ya fue olvidado y recibe `retirement_required`.
+- Dos olvidos simultáneos (dos pestañas de administrador, una vieja) se
+  serializan: el lock del ledger cubre todo el olvido, su limpieza y la
+  restitución, así que uno que falla no puede borrar el conjunto que el otro
+  está olvidando y perder a un titular que volvió (R1B2-2).
 - Idempotente: sin dueños arrastrados devuelve 200 con
   `forgotten_capture_owners: 0`, cualquiera sea `N`, y no registra nada.
 - Respuesta: el estado de captura más `forgotten_capture_owners`. Si no queda

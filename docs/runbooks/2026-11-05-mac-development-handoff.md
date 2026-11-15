@@ -1110,8 +1110,12 @@ automático al arrancar y conservarlas para siempre. Evidencia:
   `admin:manage`, el del control de captura global; ningún rol de hogar.
 - Olvida sólo dueños arrastrados (desconocidos al arrancar y no reclamados
   por su token), nunca vivos ni reservas. Conteo distinto: 409 sin cambios.
-  Un titular que se presenta durante la transacción la revierte. Sin dueños
-  arrastrados es un no-op (200, `forgotten_capture_owners: 0`).
+  Un titular que se presenta mientras la transacción hace sus comprobaciones
+  la revierte (409). Si lo hace entre la última comprobación y el commit, el
+  olvido vale para los demás y su fila se restituye en seguida como dueño
+  vivo (R1B2-3). Dos olvidos simultáneos se serializan bajo el lock del
+  ledger (R1B2-2). Sin dueños arrastrados es un no-op (200,
+  `forgotten_capture_owners: 0`).
 - Registro sin contenido sólo en el log (WARNING con el conteo): el contrato
   de esquema de la época 1 está congelado y la auditoría está apagada en R1.
   Sin tablas, columnas ni valores nuevos; el pin del contrato pasa.

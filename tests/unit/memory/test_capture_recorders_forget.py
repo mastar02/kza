@@ -261,6 +261,62 @@ async def test_overlapping_forgets_never_lose_a_returning_holder(tmp_path):
         await _close(privacy, recorders)
 
 
+async def test_a_holder_returning_between_the_last_check_and_the_commit_stays_live(tmp_path, caplog):
+    """R1B2-3: a token presented after the last guard, before the commit.
+
+    ``_reclaim`` does not take the ledger lock, so it can land after the
+    transaction's last guard. The committed forget restores that row as a live
+    owner before any cache refresh, and drains wait for its retire again.
+    """
+    _, privacy, recorders, (holder, lost) = await _carried_boot(tmp_path, "commit.sqlite")
+    try:
+        entered, release = threading.Event(), threading.Event()
+        connection = privacy.ledger._db
+
+        class HeldCommit:
+            """Hold the forget's commit, after every guard already passed."""
+
+            def commit(self):
+                if recorders._forgetting and not entered.is_set():
+                    entered.set()
+                    assert release.wait(5)
+                return connection.commit()
+
+            def __getattr__(self, name):
+                return getattr(connection, name)
+
+        privacy.ledger._db = HeldCommit()
+        try:
+            with caplog.at_level(logging.WARNING, logger=capture_recorders.__name__):
+                forgetting = asyncio.create_task(recorders.forget_carried(2, authorize=_allowed))
+                try:
+                    assert await asyncio.to_thread(entered.wait, 5)
+                    status = await recorders.poll(holder, actor())
+                    assert status["retirement_required"] is True
+                finally:
+                    release.set()
+                assert await forgetting == 1
+        finally:
+            privacy.ledger._db = connection
+        assert _rows(privacy) == {recorders._key(holder): "unknown"}
+        assert recorders.carried() == 0 and not recorders._fault
+        assert recorders.live_owners() == recorders.pending_live() == recorders.pending() == 1
+        assert _forget_lines(caplog) == ["[CaptureRecorders] an administrator forgot 1 carried "
+                                         "owner(s), affirming none is still recording"]
+        assert ("[CaptureRecorders] 1 carried owner(s) contacted this process as a forget "
+                "committed; kept as live owners") in caplog.messages
+        for token in (holder, lost):
+            assert token not in caplog.text and recorders._key(token) not in caplog.text
+        draining = asyncio.create_task(recorders.drain())
+        await asyncio.sleep(.1)
+        assert not draining.done()
+        await recorders.retire(holder)
+        await asyncio.wait_for(draining, 2)
+        assert recorders.pending() == 0
+    finally:
+        await _close(privacy, recorders)
+
+
 async def test_a_contact_by_an_owner_not_being_forgotten_does_not_abort(tmp_path):
     path = str(tmp_path / "other.sqlite")
     privacy, recorders = await _boot(path)
