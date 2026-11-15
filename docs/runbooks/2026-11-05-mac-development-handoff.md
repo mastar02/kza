@@ -916,11 +916,12 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
     `schema_contract_document()` (tablas, columnas, markers, conjunto
     protegido, todas las reglas de base del lector como constantes con nombre,
     vocabularios de borrados, participantes, estados de hechos y cambios y
-    métodos de dueño, SCv2-P5, y desde la revisión SC2-R1 cada enum de `src`
-    que una tabla protegida guarda tal cual); `release.json` declara
-    `schema_contract`. Esa ampliación de vocabularios es una enmienda
-    propuesta del diseño: confirmarla o revertirla antes de SC-6a (ver
-    «Contrato de esquema (época 1)» en DEPLOYMENT).
+    métodos de dueño, SCv2-P5, desde la revisión SC2-R1 cada enum de `src`
+    que una tabla protegida guarda tal cual, y desde AUTHZ-1 los enums de las
+    tablas de avance del borrado y atribución de `privacy.db`); `release.json`
+    declara `schema_contract`. Esas ampliaciones de vocabularios son una
+    enmienda propuesta del diseño: confirmarlas o revertirlas antes de SC-6a
+    (ver «Contrato de esquema (época 1)» en DEPLOYMENT).
   - `LEGACY_MANAGED_TRANSITIONS = False`. Sólo los tests lo ponen en `True`
     (fixture `legacy_managed_transitions` y `tests/mocks/legacy_transitions.py`);
     un controlador compilado no puede.
@@ -962,6 +963,27 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   para SC-5b. Mutantes de la revisión: 20 de 20 muertos más un control que
   sobrevive al test anterior a propósito. Detalle en la evidencia
   (`review_round_1`).
+- Segunda revisión independiente (2026-11-15): 1 hallazgo medio (AUTHZ-1),
+  3 bajos (C1-C3) y 5 informativos. AUTHZ-1 se resolvió con la opción A, que
+  queda como parte de la misma enmienda propuesta: la regla del contrato pasa
+  a ser la relevancia para la privacidad; `ErasureState`, `ErasureError`,
+  `IndexCleanupError` y `MemoryOrigin` entran en la época 1, un test
+  clasifica cada columna de `erasure_targets`, `erasure_steps`,
+  `policy_index_deletions`, `facts` y `fact_sources`, y la época 1 se re-fijó
+  por segunda vez antes de R1 (`691c2272…`). DEPLOYMENT agrega a las
+  exclusiones `policy_index_deletions.state`, `facts.category` y
+  `voice_groups.state`/`reason`. También: W3 del runbook de R1 exige
+  `controller_epoch` 4 (C1); DEPLOYMENT ya no dice que `run()` acepta slots
+  anteriores (C2) y nombra los otros movimientos del head, `adoption-commit`
+  tras un head abortado y el K de la compactación simple, que no conceden nada
+  (AUTHZ-2); un test nuevo separa `current` del slot del binding del head
+  (C3). Mutantes: 14 de 14 muertos más un control que reproduce el hallazgo
+  C3. **Decisiones para el usuario antes de SC-6a**: confirmar o revertir la
+  enmienda de vocabularios (SC2-R1 + AUTHZ-1; C5 advierte que los 15 de
+  SC2-R1 que no son de privacidad vuelven transición de esquema cualquier
+  cambio de esos enums) y si `release.json` debe declarar también el sha256
+  del contrato (AUTHZ-3, para la revisión de SC-1). Detalle en la evidencia
+  (`review_round_2`).
 
 ## Prompt para la sesión nueva
 
