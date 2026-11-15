@@ -8,7 +8,8 @@ nothing, and no stop or mute waits for an ACK that can no longer arrive. It is
 never counted as an ACK either: ``total_mute_confirmed`` and the closure's
 ``capture_permissions_retired`` stay False while it exists. These tests hold
 the token only to show that; using it is exactly what the lost tab can no
-longer do.
+longer do. Presenting it proves a live holder, which is awaited again, so the
+stop test uses it only after the owner set closed.
 """
 import asyncio
 from contextlib import AsyncExitStack
@@ -47,12 +48,14 @@ async def _orphaned_browser_owner(root, monkeypatch) -> str:
 async def _refused(recorders, token, actor) -> None:
     # Boot turned the issued permission into an unknown owner. The server
     # grants it nothing: no capture, no reactivation (its actor died with the
-    # first process).
+    # first process). Presenting the token reclaims it: the holder is alive.
     assert recorders.pending(kind="browser") == recorders.pending() == 1
     status = await recorders.poll(token, actor)
     assert status["state"] == "unknown" and status["capture_allowed"] is False
+    assert status["retirement_required"] is True
     with pytest.raises(ValueError, match="^capture_recorder_actor_retired$"):
         await recorders.activate(token, actor)
+    assert recorders.carried() == 0 and recorders.pending_live() == 1
 
 
 def _carried(recorders) -> None:
@@ -73,7 +76,8 @@ async def test_owner_orphaned_by_restart_does_not_block_the_managed_stop(tmp_pat
     async with application_graph(root, monkeypatch, Clock(time.time())) as bundle:
         graph = bundle.graph
         recorders = graph.capture_control.recorders
-        await _refused(recorders, token, _actor(bundle))
+        # The lost tab never contacts this process.
+        _carried(recorders)
         admission = runtime_admission.RuntimeAdmission({"run_id": run_id},
             {"state_root": str(tmp_path / "state")}, graph.privacy.ledger.path,
             runtime_admission._config_digest(graph.config))
@@ -93,7 +97,7 @@ async def test_owner_orphaned_by_restart_does_not_block_the_managed_stop(tmp_pat
         assert admission._closure_prepared and not admission._closure_failed
         # The row is kept durable and unacknowledged, never invented retired.
         _carried(recorders)
-        assert (await recorders.poll(token, _actor(bundle)))["state"] == "unknown"
+        late_actor = _actor(bundle)
     # The owned stack closed; the receipt path runs with the carried owner.
     await observer.__aexit__(None, None, None)
     assert admission.receipt_written and revalidated == [True]
@@ -102,6 +106,10 @@ async def test_owner_orphaned_by_restart_does_not_block_the_managed_stop(tmp_pat
     proof = admission._closure_witness.verify_closed()
     assert proof["capture_permissions_retired"] is False
     assert proof["capture_owners_carried"] == 1
+    # Closed: a late token is refused and no longer reclaims the owner.
+    assert (await recorders.poll(token, late_actor))["state"] == "unknown"
+    _carried(recorders)
+    assert admission._closure_witness.verify_closed() == proof
 
 
 async def test_owner_orphaned_by_restart_does_not_lock_global_mute_and_unmute(tmp_path, monkeypatch):
@@ -112,7 +120,7 @@ async def test_owner_orphaned_by_restart_does_not_lock_global_mute_and_unmute(tm
         recorders = control.recorders
         actor = _actor(bundle)
         assert control.snapshot()["phase"] == "running"
-        await _refused(recorders, token, actor)
+        _carried(recorders)
         try:
             control.request(True, control.snapshot()["revision"], actor)
             snapshot = await _phase(control, "muted")
@@ -126,18 +134,25 @@ async def test_owner_orphaned_by_restart_does_not_lock_global_mute_and_unmute(tm
             snapshot = await _phase(control, "running")
             assert snapshot["persisted_muted"] is False
             assert snapshot["pending_browser_recorders"] == 1
-            # Reactivation never revives the carried owner.
-            status = await recorders.poll(token, actor)
-            assert status["state"] == "unknown" and status["capture_allowed"] is False
-            with pytest.raises(ValueError, match="^capture_recorder_actor_retired$"):
-                await recorders.activate(token, actor)
             # A second mute is equally free and equally unconfirmed.
             control.request(True, snapshot["revision"], actor)
-            assert (await _phase(control, "muted"))["total_mute_confirmed"] is False
+            snapshot = await _phase(control, "muted")
+            assert snapshot["total_mute_confirmed"] is False
+            control.request(False, snapshot["revision"], actor)
+            snapshot = await _phase(control, "running")
+            # Reactivation never revives the carried owner. Its holder shows
+            # up, so it is reclaimed: the next mute waits for its retire.
+            await _refused(recorders, token, actor)
+            control.request(True, snapshot["revision"], actor)
+            await _phase(control, "muting")
+            with pytest.raises(TimeoutError):
+                async with asyncio.timeout(.1):
+                    await _phase(control, "muted")
             # Only an explicit retire is an ACK; then the mute is confirmed.
             assert await recorders.retire(token) == {"retired": True}
+            snapshot = await _phase(control, "muted")
             assert recorders.carried() == recorders.pending() == 0
-            assert control.snapshot()["total_mute_confirmed"] is True
+            assert snapshot["total_mute_confirmed"] is True
         finally:
             await recorders.retire(token)
 

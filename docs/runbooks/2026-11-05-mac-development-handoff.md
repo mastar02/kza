@@ -1058,7 +1058,13 @@ integrar ni subir. Evidencia:
   autenticado.
 - Arreglo técnico (opción e): las filas `unknown` al arrancar quedan como
   *arrastradas*. Drain, `pre_close` y `verify_closed` ya no las esperan;
-  `pending()` y `total_mute_confirmed` sí las cuentan. La prueba de cierre da
+  `pending()` y `total_mute_confirmed` sí las cuentan. Un titular que
+  presenta su token a `poll` o `activate` deja de estar arrastrado y vuelve a
+  ser esperado. Para los que nunca contactan, la barrera depende de los
+  monitores de cierre seguro de los clientes (nativo 0,25 s/1 s, navegador
+  0,5 s/5 s). Esto relaja la regla del 2026-11-04 («active/unknown owners
+  require explicit stop receipt») para parada y cierre: requiere el visto
+  bueno explícito del usuario antes de integrar. La prueba de cierre da
   `capture_permissions_retired: false` y `capture_owners_carried`. Los dueños
   del proceso actual mantienen la barrera de ACK. La capacidad cuenta sólo
   dueños vivos. Detalle en DEPLOYMENT (R5V-1).

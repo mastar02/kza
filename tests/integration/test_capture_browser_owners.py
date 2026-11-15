@@ -87,13 +87,10 @@ async def test_active_browser_retirement_after_logout_cannot_unmute(tmp_path, mo
 
 
 async def test_restart_unknown_owner_is_not_a_stop_ack_or_shutdown_block(tmp_path):
-    """R5V-1 contract: an owner unknown at boot is carried, never acknowledged.
+    """A holder that presents its token after a restart is awaited again.
 
-    Before R5V-1, ``drain`` waited for this owner's retire. Its token lived
-    only in a page of the first process, so that wait could hang every later
-    stop and mute. Now drain does not wait for it, and it stays pending (not
-    retired) until an explicit retire. An owner issued by the recovering
-    process keeps the full explicit-ACK barrier.
+    The owner is carried at boot (R5V-1), but its poll proves a live holder,
+    so drain waits for its explicit retire exactly as before R5V-1.
     """
     path = str(tmp_path / "browser-private.sqlite")
     first = PrivacyServices(path)
@@ -112,39 +109,80 @@ async def test_restart_unknown_owner_is_not_a_stop_ack_or_shutdown_block(tmp_pat
     second = PrivacyServices(path)
     await second.acall(second.initialize)
     recovered = CaptureRecorders(second, capture_allowed=lambda: True)
-    live = None
     try:
         await asyncio.wait_for(recovered.initialize(), 2)
+        assert recovered.carried() == 1
         status = await recovered.poll(issued["token"], actor())
         assert status["state"] == "unknown" and status["capture_allowed"] is False
-        assert recovered.pending() == 2 and recovered.carried() == 1
-        # The recovering process's own owner keeps the full ACK barrier.
+        assert status["retirement_required"] is True
+        assert recovered.pending() == 2
+        assert recovered.carried() == 0 and recovered.pending_live() == 2
+        draining = asyncio.create_task(recovered.drain())
+        try:
+            await until(lambda: recovered.pending() == 1)
+            assert not draining.done()
+            assert (await recovered.poll(reserved["token"], actor()))["state"] == "retired"
+            await recovered.retire(issued["token"])
+            await asyncio.wait_for(asyncio.shield(draining), 2)
+            assert recovered.pending() == 0
+        finally:
+            await recovered.retire(issued["token"])
+            await asyncio.gather(draining, return_exceptions=True)
+    finally:
+        await recovered.aclose()
+        await second.aclose()
+
+
+async def test_carried_owner_that_polls_during_a_drain_is_awaited(tmp_path):
+    """A carried owner is skipped only while it stays silent (R5V-1 narrowing).
+
+    The first drain completes without it. Its poll during a later drain (a
+    tab that outlived the restart) makes that drain wait for its retire, even
+    after the drain's other live owner retired.
+    """
+    path = str(tmp_path / "browser-carried.sqlite")
+    first = PrivacyServices(path)
+    await first.acall(first.initialize)
+    registry = CaptureRecorders(first, capture_allowed=lambda: True)
+    await registry.initialize()
+    principal = actor()
+    issued = await registry.register(principal)
+    await registry.activate(issued["token"], principal)
+    try:
+        await asyncio.wait_for(registry.aclose(), 2)
+    finally:
+        await first.aclose()
+    second = PrivacyServices(path)
+    await second.acall(second.initialize)
+    recovered = CaptureRecorders(second, capture_allowed=lambda: True)
+    draining = live = None
+    try:
+        await asyncio.wait_for(recovered.initialize(), 2)
+        assert recovered.carried() == recovered.pending() == 1
+        await asyncio.wait_for(recovered.drain(), 2)
+        recovered.resume()
         principal = actor()
         live = await recovered.register(principal)
         await recovered.activate(live["token"], principal)
         draining = asyncio.create_task(recovered.drain())
-        try:
-            await until(lambda: recovered.pending() == 2 and recovered.pending_live() == 1)
-            assert (await recovered.poll(reserved["token"], actor()))["state"] == "retired"
-            with pytest.raises(TimeoutError):
-                async with asyncio.timeout(.1):
-                    await asyncio.shield(draining)
-            await recovered.retire(live["token"])
-            # The carried owner's silence is not awaited and not an ACK.
-            await asyncio.wait_for(asyncio.shield(draining), 2)
-            assert recovered.pending() == recovered.carried() == 1
-            assert recovered.pending_live() == 0
-            status = await recovered.poll(issued["token"], actor())
-            assert status["state"] == "unknown" and status["capture_allowed"] is False
-            # A later explicit retire is still a genuine ACK.
-            assert await recovered.retire(issued["token"]) == {"retired": True}
-            assert recovered.pending() == recovered.carried() == 0
-        finally:
-            await recovered.retire(issued["token"])
-            if live is not None:
-                await recovered.retire(live["token"])
-            await asyncio.gather(draining, return_exceptions=True)
+        await until(lambda: recovered._sealed and recovered.pending_live() == 1)
+        assert not draining.done()
+        status = await recovered.poll(issued["token"], actor())
+        assert status["retirement_required"] is True and status["capture_allowed"] is False
+        assert recovered.carried() == 0 and recovered.pending_live() == 2
+        await recovered.retire(live["token"])
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(.1):
+                await asyncio.shield(draining)
+        assert await recovered.retire(issued["token"]) == {"retired": True}
+        await asyncio.wait_for(asyncio.shield(draining), 2)
+        assert recovered.pending() == 0
     finally:
+        await recovered.retire(issued["token"])
+        if live is not None:
+            await recovered.retire(live["token"])
+        if draining is not None:
+            await asyncio.gather(draining, return_exceptions=True)
         await recovered.aclose()
         await second.aclose()
 

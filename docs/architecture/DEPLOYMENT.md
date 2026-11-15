@@ -333,13 +333,31 @@ sin recibo de cierre (head `UNKNOWN` en cada parada, y la compactación y R1
 necesitaban recuperación cada vez). Además, un mute total quedaba en
 `muting` y el unmute se rechazaba con `capture_control_busy`.
 
-Arreglo técnico (opción e, rama `r1b1-orphan-recorder`, sin release). No cambia
-ninguna garantía de privacidad decidida por el usuario:
+Arreglo técnico (opción e, rama `r1b1-orphan-recorder`, sin release). **Relaja
+una regla aceptada**: el registro del 2026-11-04
+(`docs/research/2026-11-04-global-capture-control.json`) exige un recibo de
+parada explícito de todo dueño `active`/`unknown`. Eso sigue valiendo para
+`total_mute_confirmed`, pero ya no para la parada, el cierre ni la fase
+`muted` cuando el dueño quedó `unknown` al arrancar y no volvió a hablar con
+el proceso. Requiere el visto bueno explícito del usuario antes de integrarse.
 
-- Las filas que ya estaban `unknown` al arrancar este proceso se congelan como
+- Las filas que ya estaban `unknown` al arrancar este proceso quedan como
   *arrastradas* (`carried`). `drain()`, el `pre_close` del testigo y
   `verify_closed` esperan sólo `pending_live()`, que no las incluye. El
-  servidor no les concede nada: ni captura, ni reactivación, ni subida.
+  servidor no les concede captura ni reactivación.
+- Premisa: el servidor no distingue un token perdido de un titular que
+  sobrevivió al reinicio (una pestaña abierta o un cliente nativo como
+  `scripts/train_wakeword.py` o zone_setup). No esperar a ese titular depende
+  de los monitores de cierre seguro de cada cliente: el nativo consulta cada
+  0,25 s con 1 s de timeout y el navegador cada 0,5 s con 5 s de timeout; ante
+  un fallo o `retirement_required` cada uno sella su captura.
+- Un titular que presenta su token a `poll` o `activate` (con su tipo, antes
+  de `aclose`) demuestra que está vivo: deja de estar arrastrado y las drains
+  vuelven a esperar su `retire`, que el cliente envía al ver
+  `retirement_required`. Sólo quedan sin esperar los titulares que nunca
+  contactan al proceso nuevo. Si uno contacta después de que la drain del
+  cierre terminó y no retira, el cierre se rechaza (sin recibo), como con
+  cualquier dueño vivo.
 - El silencio nunca cuenta como ACK. `pending()` sigue contándolas: mientras
   exista una, `total_mute_confirmed` es falso (el panel no muestra «Captura
   global pausada y confirmada») y la prueba de cierre da

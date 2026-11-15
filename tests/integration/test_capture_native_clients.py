@@ -141,18 +141,20 @@ async def test_native_active_restart_is_unknown_until_capability_retirement(tmp_
     draining = None
     try:
         await recovered.initialize()
+        # Every issued owner is carried until it presents its token; the reservation is not.
+        assert recovered.carried() == recovered.pending() - 1
         state = await recovered.poll(active["token"], actor(), kind="calibration")
         assert state["state"] == "unknown" and not state["capture_allowed"]
         assert recovered.pending(kind="browser") == 0
-        # R5V-1: owners unknown at boot are carried. Drain does not await
-        # them, and each stays pending (never retired) until its own retire.
+        # R5V-1: every holder presented its token after the restart, so none
+        # stays carried and drain awaits each one's own retire.
+        assert recovered.carried() == 0 and recovered.pending_live() == recovered.pending()
         draining = asyncio.create_task(recovered.drain())
-        await asyncio.wait_for(asyncio.shield(draining), 2)
-        assert recovered.pending() == recovered.carried() == 1
-        assert recovered.pending_live() == 0
+        await until(lambda: recovered.pending() == 1)
+        assert not draining.done()
         assert (await recovered.poll(reserved["token"], actor(), kind="calibration"))["state"] == "retired"
         await recovered.retire(active["token"], kind="calibration")
-        assert recovered.carried() == 0
+        await asyncio.wait_for(asyncio.shield(draining), 2)
         assert recovered.pending() == 0
     finally:
         await recovered.retire(active["token"], kind="calibration")
@@ -307,23 +309,25 @@ async def test_restart_keeps_training_unknown_until_its_own_retirement(tmp_path)
     draining = None
     try:
         await recovered.initialize()
+        # Every issued owner is carried until it presents its token; the reservation is not.
+        assert recovered.carried() == recovered.pending() - 1
         for entry, kind in ((calibration, "calibration"), (training, "wakeword_training")):
             state = await recovered.poll(entry["token"], actor(), kind=kind)
             assert state["state"] == "unknown" and not state["capture_allowed"]
-        # R5V-1: owners unknown at boot are carried. Drain does not await
-        # them, and each stays pending (never retired) until its own retire.
+        # R5V-1: every holder presented its token after the restart, so none
+        # stays carried and drain awaits each one's own retire.
+        assert recovered.carried() == 0 and recovered.pending_live() == recovered.pending()
         draining = asyncio.create_task(recovered.drain())
-        await asyncio.wait_for(asyncio.shield(draining), 2)
-        assert recovered.pending() == recovered.carried() == 2
-        assert recovered.pending_live() == 0
+        await until(lambda: recovered.pending() == 2)
+        assert not draining.done()
         assert (await recovered.poll(reserved["token"], actor(), kind="wakeword_training"))["state"] == "retired"
         await recovered.retire(calibration["token"], kind="calibration")
-        assert recovered.pending(kind="wakeword_training") == recovered.carried() == 1
+        assert recovered.pending(kind="wakeword_training") == 1 and not draining.done()
         with pytest.raises(ValueError, match="capture_recorder_kind_denied"):
             await recovered.retire(training["token"], kind="calibration")
         assert recovered.pending() == 1
         await recovered.retire(training["token"], kind="wakeword_training")
-        assert recovered.carried() == 0
+        await asyncio.wait_for(asyncio.shield(draining), 2)
         assert recovered.pending() == 0
     finally:
         await recovered.retire(calibration["token"], kind="calibration")
@@ -447,16 +451,18 @@ async def test_restart_preserves_three_native_unknown_kinds_until_separate_recei
     draining = None
     try:
         await recovered.initialize()
+        # Every issued owner is carried until it presents its token; the reservation is not.
+        assert recovered.carried() == recovered.pending() - 1
         for token, kind in issued:
             state = await recovered.poll(token, actor(), kind=kind)
             assert state["state"] == "unknown" and state["capture_allowed"] is False
         assert recovered.pending(kind="browser") == 0
-        # R5V-1: owners unknown at boot are carried. Drain does not await
-        # them, and each stays pending (never retired) until its own retire.
+        # R5V-1: every holder presented its token after the restart, so none
+        # stays carried and drain awaits each one's own retire.
+        assert recovered.carried() == 0 and recovered.pending_live() == recovered.pending()
         draining = asyncio.create_task(recovered.drain())
-        await asyncio.wait_for(asyncio.shield(draining), 2)
-        assert recovered.pending() == recovered.carried() == 3
-        assert recovered.pending_live() == 0
+        await until(lambda: recovered.pending() == 3)
+        assert not draining.done()
         assert (await recovered.poll(reserved["token"], actor(), kind="wakeword_diagnostics"))["state"] == "retired"
         for expected, (token, kind) in zip((2, 1, 0), issued):
             wrong_kind = "calibration" if kind != "calibration" else "wakeword_diagnostics"
@@ -465,7 +471,9 @@ async def test_restart_preserves_three_native_unknown_kinds_until_separate_recei
             assert recovered.pending() == expected + 1
             await recovered.retire(token, kind=kind)
             assert recovered.pending() == expected
-            assert recovered.carried() == expected
+            if expected:
+                assert not draining.done()
+        await asyncio.wait_for(asyncio.shield(draining), 2)
         assert recovered.pending() == 0
     finally:
         for token, kind in issued:
@@ -593,16 +601,18 @@ async def test_restart_keeps_four_native_kinds_unknown_and_zone_reservation_reti
     draining = None
     try:
         await recovered.initialize()
+        # Every issued owner is carried until it presents its token; the reservation is not.
+        assert recovered.carried() == recovered.pending() - 1
         for token, kind in issued:
             state = await recovered.poll(token, actor(), kind=kind)
             assert state["state"] == "unknown" and state["capture_allowed"] is False
         assert recovered.pending(kind="browser") == 0
-        # R5V-1: owners unknown at boot are carried. Drain does not await
-        # them, and each stays pending (never retired) until its own retire.
+        # R5V-1: every holder presented its token after the restart, so none
+        # stays carried and drain awaits each one's own retire.
+        assert recovered.carried() == 0 and recovered.pending_live() == recovered.pending()
         draining = asyncio.create_task(recovered.drain())
-        await asyncio.wait_for(asyncio.shield(draining), 2)
-        assert recovered.pending() == recovered.carried() == 4
-        assert recovered.pending_live() == 0
+        await until(lambda: recovered.pending() == 4)
+        assert not draining.done()
         assert (await recovered.poll(reserved["token"], actor(), kind="zone_setup"))["state"] == "retired"
         for expected, (token, kind) in zip((3, 2, 1, 0), issued):
             wrong_kind = "zone_setup" if kind != "zone_setup" else "wakeword_diagnostics"
@@ -611,7 +621,9 @@ async def test_restart_keeps_four_native_kinds_unknown_and_zone_reservation_reti
             assert recovered.pending() == expected + 1
             await recovered.retire(token, kind=kind)
             assert recovered.pending() == expected
-            assert recovered.carried() == expected
+            if expected:
+                assert not draining.done()
+        await asyncio.wait_for(asyncio.shield(draining), 2)
     finally:
         for token, kind in issued:
             await recovered.retire(token, kind=kind)
@@ -757,16 +769,18 @@ async def test_restart_keeps_five_native_kinds_unknown_and_manual_reservation_re
     draining = None
     try:
         await recovered.initialize()
+        # Every issued owner is carried until it presents its token; the reservation is not.
+        assert recovered.carried() == recovered.pending() - 1
         for token, kind in issued:
             state = await recovered.poll(token, actor(), kind=kind)
             assert state["state"] == "unknown" and state["capture_allowed"] is False
         assert recovered.pending(kind="browser") == 0
-        # R5V-1: owners unknown at boot are carried. Drain does not await
-        # them, and each stays pending (never retired) until its own retire.
+        # R5V-1: every holder presented its token after the restart, so none
+        # stays carried and drain awaits each one's own retire.
+        assert recovered.carried() == 0 and recovered.pending_live() == recovered.pending()
         draining = asyncio.create_task(recovered.drain())
-        await asyncio.wait_for(asyncio.shield(draining), 2)
-        assert recovered.pending() == recovered.carried() == 5
-        assert recovered.pending_live() == 0
+        await until(lambda: recovered.pending() == 5)
+        assert not draining.done()
         assert (await recovered.poll(reserved["token"], actor(), kind="manual_voice_command"))["state"] == "retired"
         for expected, (token, kind) in zip((4, 3, 2, 1, 0), issued):
             wrong_kind = "manual_voice_command" if kind != "manual_voice_command" else "zone_setup"
@@ -775,7 +789,9 @@ async def test_restart_keeps_five_native_kinds_unknown_and_manual_reservation_re
             assert recovered.pending() == expected + 1
             await recovered.retire(token, kind=kind)
             assert recovered.pending() == expected
-            assert recovered.carried() == expected
+            if expected:
+                assert not draining.done()
+        await asyncio.wait_for(asyncio.shield(draining), 2)
     finally:
         for token, kind in issued:
             await recovered.retire(token, kind=kind)
