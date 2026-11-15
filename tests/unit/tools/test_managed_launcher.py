@@ -330,7 +330,8 @@ def test_release_integers_come_from_the_built_revision_text():
     assert release_integers(source) == {"launcher_contract": stage.LAUNCHER_CONTRACT,
                                         "format_epoch": stage.FORMAT_EPOCH,
                                         "receipt_state": stage.RECEIPT_STATE_SCHEMA,
-                                        "controller_epoch": stage.CONTROLLER_EPOCH}
+                                        "controller_epoch": stage.CONTROLLER_EPOCH,
+                                        "schema_contract": stage.SCHEMA_CONTRACT_EPOCH}  # SC-2
     assert release_integers(b"import os\n") == {}
     assert release_integers(b"    LAUNCHER_CONTRACT = 3\n") == {}  # column 0 only
     with pytest.raises(ValueError, match="Ambiguous"):

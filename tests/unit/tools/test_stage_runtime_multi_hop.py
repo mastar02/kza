@@ -3,6 +3,12 @@
 Every slot here runs the committed HEAD artifact (pre-0b code) for its probe
 and its admitted child, while the controller is the working tree. That is the
 compatibility the flattened records promise: older managed code accepts them.
+
+SC-2 retired every grant and the cross-slot activation; this module's subject
+is the legacy chain machinery that stays for existing owner roots (grant code
+kept for test roots, validation kept for all), so every test runs under the
+legacy_managed_transitions fixture. The refusals themselves are in
+test_sc2_delegation_retired.py.
 """
 
 from contextlib import closing
@@ -20,7 +26,7 @@ from tests.unit.tools.test_stage_runtime_admission import (
     _closed_head,
     _command,
     _copy_candidate,
-    _delegate_cli,
+    _delegate_legacy,
     _refused,
     _registered_targets,
     _registration,
@@ -28,6 +34,7 @@ from tests.unit.tools.test_stage_runtime_admission import (
 )
 
 admission_archive = admission.admission_archive  # The module-scoped built HEAD artifact fixture.
+pytestmark = pytest.mark.usefixtures("legacy_managed_transitions")
 
 _INSERT = "INSERT INTO erasure_targets VALUES(?,?,?,?)"
 
@@ -47,9 +54,9 @@ def _run(root, name, rows=()):
 
 
 def _hop(archive, root, source_state, name, *, register=True):
-    """Copy the closed head's state, delegate with the CLI, then run the copy closed."""
+    """Copy the closed head's state, delegate (legacy, in process), then run the copy closed."""
     state = _copy_candidate(archive, root, source_state, name)
-    result = _delegate_cli(root, name)
+    result = _delegate_legacy(root, name)
     assert result.returncode == 0, result.stderr
     rows = [_local(state, name)] if register else []
     return {"state": state, "output": json.loads(result.stdout), "binding": _run(root, name, rows),
@@ -125,7 +132,7 @@ def test_three_hop_chains_every_inherited_target_to_its_owner(three_states, admi
     assert stage.read_admission_head(root)["binding_id"] == d["binding"]
 
 
-def test_cli_redelegates_an_inherited_pathless_target(origin, admission_archive):
+def test_delegate_redelegates_an_inherited_pathless_target(origin, admission_archive):
     root, a = origin
     b_state = _copy_candidate(admission_archive, root, a["state"], "b")
     with stage.AdmissionController(root) as controller:
@@ -208,7 +215,7 @@ def test_forged_or_truncated_chain_is_refused(three_states, admission_archive, m
     with stage.AdmissionController(root) as controller:
         _refused(root, (a["state"], b["state"], c["state"], d_state),
                  lambda: controller.delegate("d"), match)
-    result = _delegate_cli(root, "d")
+    result = _delegate_legacy(root, "d")
     assert result.returncode != 0 and "ValueError: runtime_admission_" in result.stderr
 
 
@@ -234,7 +241,7 @@ def test_out_of_state_path_at_any_hop_is_refused(origin, admission_archive, tmp_
     match = "foreign_target" if hop == 1 else "active_inventory_mismatch"
     with stage.AdmissionController(root) as controller:
         _refused(root, (*states, nxt), lambda: controller.delegate("next"), "^runtime_admission_" + match + "$")
-    result = _delegate_cli(root, "next")
+    result = _delegate_legacy(root, "next")
     assert result.returncode != 0 and "ValueError: runtime_admission_" + match in result.stderr
 
 
@@ -271,7 +278,7 @@ def test_owner_closure_change_revokes_but_an_intermediate_one_does_not(origin, a
 def test_owner_slot_artifact_change_is_refused_before_the_head_moves(three_states, admission_archive):
     root, a, b, c = three_states
     d_state = _copy_candidate(admission_archive, root, c["state"], "d")
-    assert _delegate_cli(root, "d").returncode == 0
+    assert _delegate_legacy(root, "d").returncode == 0
     runtime = root / "slots" / "old" / "runtime"
     manifest = json.loads((runtime / "release.json").read_text())
     payload = runtime / next(name for name in sorted(manifest["files"]) if name.endswith(".pyc"))
@@ -300,8 +307,8 @@ def test_same_record_with_a_different_chain_is_a_conflict(origin, admission_arch
     b = _hop(admission_archive, root, a["state"], "b")
     d_state = _copy_candidate(admission_archive, root, b["state"], "d")
     c_state = _copy_candidate(admission_archive, root, b["state"], "c")
-    assert _delegate_cli(root, "d").returncode == 0  # A's target reaches D as [A, B].
-    assert _delegate_cli(root, "c").returncode == 0
+    assert _delegate_legacy(root, "d").returncode == 0  # A's target reaches D as [A, B].
+    assert _delegate_legacy(root, "c").returncode == 0
     c_binding = _run(root, "c")
     with stage.AdmissionController(root) as controller:
         # The same owner record for D, now proven as [A, B, C]: refused before any write.
@@ -335,7 +342,7 @@ def test_failure_on_the_second_record_write_leaves_inert_residue_and_retry_succe
     assert added == {path.relative_to(root).as_posix() for path in written}
     assert after["states"] == before["states"]  # No policy, no marker change.
     assert stage.read_admission_head(root) == head
-    result = _delegate_cli(root, "d")
+    result = _delegate_legacy(root, "d")
     assert result.returncode == 0, result.stderr
     assert stage.activate_slot(root, "d") == "slots/c/runtime"
 
@@ -344,7 +351,7 @@ def test_probe_refuses_a_candidate_whose_own_ownership_validation_fails(three_st
                                                                        monkeypatch):
     root, a, b, c = three_states
     d_state = _copy_candidate(admission_archive, root, c["state"], "d")
-    assert _delegate_cli(root, "d").returncode == 0
+    assert _delegate_legacy(root, "d").returncode == 0
     marker = "    validate(Path(root), binding)"
     assert stage._PROBE_SOURCE.count(marker) == 1
     monkeypatch.setattr(stage, "_PROBE_SOURCE", stage._PROBE_SOURCE.replace(
@@ -418,7 +425,7 @@ def test_a_former_grantor_is_never_a_destination_even_outside_the_granted_chains
     root, a = origin
     b = _hop(admission_archive, root, a["state"], "b", register=False)
     c_state = _copy_candidate(admission_archive, root, b["state"], "c")
-    assert _delegate_cli(root, "c").returncode == 0  # B is now a grantor (a hop of C's chain).
+    assert _delegate_legacy(root, "c").returncode == 0  # B is now a grantor (a hop of C's chain).
     assert stage.activate_slot(root, "old") == "slots/b/runtime"
     head = stage.read_admission_head(root)
     assert head["binding_id"] == a["binding"]
@@ -493,10 +500,10 @@ def two_owner_five_targets(origin, admission_archive):
     """C holds 5 delegated path targets: 1 owned by A, 4 owned by B (review probe P2)."""
     root, a = origin
     b_state = _copy_candidate(admission_archive, root, a["state"], "b")
-    assert _delegate_cli(root, "b").returncode == 0
+    assert _delegate_legacy(root, "b").returncode == 0
     _run(root, "b", [_local(b_state, "b%d" % index) for index in range(4)])
     c_state = _copy_candidate(admission_archive, root, b_state, "c")
-    assert _delegate_cli(root, "c").returncode == 0
+    assert _delegate_legacy(root, "c").returncode == 0
     assert len(_policy(c_state)["delegated_targets"]) == 5
     return root, c_state
 
@@ -724,7 +731,7 @@ def event_owner(admission_archive, tmp_path):
     a = {"state": state, "binding": stage.read_admission_head(root)["binding_id"], "events": statements.target}
     b = _hop(admission_archive, root, state, "b", register=False)
     c_state = _copy_candidate(admission_archive, root, b["state"], "c")
-    assert _delegate_cli(root, "c").returncode == 0
+    assert _delegate_legacy(root, "c").returncode == 0
     return root, a, b, c_state
 
 
@@ -740,7 +747,7 @@ def test_ordinary_erasure_into_an_owner_keeps_the_chain(event_owner, admission_a
     _erase_in_run(root, "c", a["state"] / "data" / "events.db", 2)
     assert stage.read_admission_head(root)["status"] == "closed"
     d = _copy_candidate(admission_archive, root, c_state, "d")
-    assert _delegate_cli(root, "d").returncode == 0
+    assert _delegate_legacy(root, "d").returncode == 0
     assert a["events"] in _policy(d)["delegated_targets"]
 
 
@@ -776,7 +783,7 @@ def test_failure_after_the_policy_write_is_completed_by_rerunning_delegate(three
     monkeypatch.setattr(stage, "_prepare_manual_head", original)
     assert (d_state / ".kza-target-ownership.json").exists()
     assert stage.read_admission_head(root) == head
-    result = _delegate_cli(root, "d")
+    result = _delegate_legacy(root, "d")
     assert result.returncode == 0, result.stderr
     assert stage.read_admission_head(root)["generation"] == head["generation"] + 1
     assert stage.activate_slot(root, "d") == "slots/c/runtime"
@@ -805,6 +812,6 @@ def test_residue_then_a_grantor_rerun_needs_a_fresh_slot(three_states, admission
         _refused(root, (a["state"], b["state"], c["state"], d_state), lambda: controller.delegate("d"),
                  "^runtime_admission_delegation_conflict$")
     _copy_candidate(admission_archive, root, c["state"], "e")
-    result = _delegate_cli(root, "e")
+    result = _delegate_legacy(root, "e")
     assert result.returncode == 0, result.stderr
     assert stage.activate_slot(root, "e") == "slots/c/runtime"

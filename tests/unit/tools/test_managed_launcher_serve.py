@@ -226,7 +226,8 @@ def test_crash_gives_unknown_68_then_bounded_adoption_then_a_clean_close(root, t
     assert _head(root)["status"] == "closed"
 
 
-def test_a_recovered_head_cannot_delegate_until_a_clean_close(root, tmp_path, artifacts):
+def test_a_recovered_head_cannot_delegate_until_a_clean_close(root, tmp_path, artifacts, legacy_managed_transitions):
+    # SC-2: delegation is retired; the closure-proof requirement stays for legacy grants (test roots).
     assert _serve(root, tmp_path, "crash", stop_when=None, seconds=0.1, name="a.txt").code == 68
     with stage.AdmissionController(root, allow_open_head=True):
         head = _head(root)
@@ -1055,8 +1056,13 @@ def test_recovery_extends_the_start_timeout_before_and_between_r_b_steps(root, t
     assert events.index("extend adopt") < events.index("recovery R-b closed")
 
 
-def test_operator_activate_applies_serves_slot_checks_once_a_controller_is_installed(artifacts, root, monkeypatch):
-    """Review P10: activate cannot select a slot the next serve start refuses with 78."""
+def test_operator_activate_applies_serves_slot_checks_once_a_controller_is_installed(artifacts, root, monkeypatch,
+                                                                                     legacy_managed_transitions):
+    """Review P10: activate cannot select a slot the next serve start refuses with 78.
+
+    SC-2 refuses this cross-slot activation first (test_sc2_delegation_retired); the P10
+    checks stay for the legacy path and for compaction's K activation.
+    """
     state = root / "slots" / "s" / "state"
     stage.prepare_slot(artifacts["archives"]["y"], root, "next", state)
     head, current = _head(root), os.readlink(root / "current")

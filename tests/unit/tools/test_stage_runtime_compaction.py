@@ -24,6 +24,7 @@ from scripts import compaction
 from scripts import stage_runtime as stage
 from src.core import entry_guard
 from tests.mocks import compaction_world as cw
+from tests.mocks.legacy_transitions import legacy_managed_transitions
 
 
 @pytest.fixture(scope="module")
@@ -211,9 +212,12 @@ def test_full_compaction_on_a_production_like_root(x_archive, tmp_path, monkeypa
     assert _raw_hits(root, b"CANARY-BACKUP") == {"backups/old.db"}
     # Serving resumes normally; K' is a self-contained head.
     assert cw.serve(root, tmp_path, "after").code == 0
-    # T-U4: the next delegate from K' has exactly one owner.
+    # T-U4: the next delegate from K' has exactly one owner. SC-2: delegation is retired (refused
+    # here, test_sc2_delegation_retired); the legacy grant still sees exactly one owner.
     stage.prepare_slot(x_archive, root, "next", k_state)
-    assert cw.delegate(root, "next")["owners_after_grant"] == 1
+    _refusal(stage.DELEGATION_RETIRED, lambda: stage.delegate_slot(root, "next"))
+    with legacy_managed_transitions():
+        assert cw.delegate(root, "next")["owners_after_grant"] == 1
     # T-U7: retired locators are never reused, by name or by path.
     _refusal("runtime_admission_retired_locator", lambda: stage.prepare_slot(x_archive, root, "b", k_state))
     # F5: a directory recreated under a retired name, without a valid marker, is untouched.

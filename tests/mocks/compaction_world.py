@@ -4,7 +4,12 @@ A world is a real managed root built from X (HEAD plus this working tree,
 compiled in a temporary shared clone): a managed bootstrap slot, real closed
 runs whose child initializes the production FactLedger (erasure journal,
 owner schema, deletion ledger) and registers one collector target per slot,
-then delegate hops A -> B -> C through the working tree's CLI. The launcher
+then delegate hops A -> B -> C in process. Since SC-2 the delegate CLI and
+every grant refuse (runtime_admission_delegation_retired), so a world with
+hops builds them inside tests.mocks.legacy_transitions (the grant and each
+hop's first run, a cross-slot activation); everything after world() runs
+with the production flag, so compaction of existing owners is exercised as
+an epoch-4 controller runs it. The launcher
 install record is written as install-launcher would (systemd is not touched
 here; the P14 scan is injected and tested in its own modules).
 """
@@ -21,6 +26,7 @@ from scripts import compaction
 from scripts import stage_runtime as stage
 from scripts.build_runtime import build_runtime
 from tests.mocks import launcher_rehearsal as rehearsal
+from tests.mocks.legacy_transitions import legacy_managed_transitions
 
 REPO = rehearsal.REPO
 NOW = 1_800_000_000.0
@@ -121,11 +127,21 @@ def run(root: Path, slot: str, *codes: str, timeout: float = 60) -> str:
 
 
 def delegate(root: Path, slot: str) -> dict:
-    """The working tree's delegate CLI (U3b-0b)."""
-    result = subprocess.run([sys.executable, "-B", str(REPO / "scripts" / "stage_runtime.py"), "--root", str(root),
-                             "--offline", "delegate", slot], cwd=REPO, capture_output=True, text=True, timeout=60)
-    assert result.returncode == 0, result.stderr
-    return json.loads(result.stdout)
+    """The working tree's delegation in process, with the advisory the pre-SC-2 CLI printed.
+
+    SC-2 retired the grant and the CLI (exit 78); a caller builds legacy
+    owners inside tests.mocks.legacy_transitions or under the fixture.
+    """
+    assert stage.LEGACY_MANAGED_TRANSITIONS, "owner hops need legacy managed transitions (SC-2)"
+    result = stage.delegate_slot(root, slot)
+    result["compaction_advisory"] = compaction.advisory(Path(root).resolve(), owners=result["owners_after_grant"])
+    return {"slot": slot, **result}
+
+
+def delegate_cli(root: Path, slot: str) -> subprocess.CompletedProcess:
+    """The working tree's delegate CLI: refused since SC-2 (exit 78, {"refused": code})."""
+    return subprocess.run([sys.executable, "-B", str(REPO / "scripts" / "stage_runtime.py"), "--root", str(root),
+                           "--offline", "delegate", slot], cwd=REPO, capture_output=True, text=True, timeout=60)
 
 
 def install_record(root: Path, contract: int = 3, stamp: str = "20261114T000000Z000000") -> Path:
@@ -137,10 +153,15 @@ def install_record(root: Path, contract: int = 3, stamp: str = "20261114T000000Z
 
 
 def hop(archive: Path, root: Path, source_state: Path, slot: str, *codes: str) -> dict:
-    """Copy the closed head's state into ``slot``, delegate, run it closed with LEDGER plus ``codes``."""
+    """Copy the closed head's state into ``slot``, delegate, run it closed with LEDGER plus ``codes``.
+
+    The grant and the first run (a cross-slot activation) are legacy
+    transitions since SC-2; they run inside legacy_managed_transitions().
+    """
     stage.prepare_slot(archive, root, slot, source_state)
-    output = delegate(root, slot)
-    binding = run(root, slot, LEDGER, *codes)
+    with legacy_managed_transitions():
+        output = delegate(root, slot)
+        binding = run(root, slot, LEDGER, *codes)
     return {"slot": slot, "state": root / "slots" / slot / "state", "binding": binding, "delegate": output}
 
 

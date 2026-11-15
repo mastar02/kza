@@ -427,7 +427,7 @@ def _refused(root, states, action, match):
 
 
 def test_candidate_whose_own_code_rejects_state_is_refused_before_head_moves(
-        admission_archive, tmp_path, monkeypatch):
+        admission_archive, tmp_path, monkeypatch, legacy_managed_transitions):
     # W3: the controller knows a table the candidate's own companion rejects. The
     # closing release knows it too: since U3b-0d3 its receipt-state record is a
     # closed-state capture by the child's own code, which must accept the state.
@@ -444,7 +444,7 @@ def test_candidate_whose_own_code_rejects_state_is_refused_before_head_moves(
     assert os.readlink(root / "current") == "slots/old/runtime"
 
 
-def test_equal_authority_but_different_binding_is_refused(admission_archive, tmp_path, monkeypatch):
+def test_equal_authority_but_different_binding_is_refused(admission_archive, tmp_path, monkeypatch, legacy_managed_transitions):
     # 0a-F2: the child compares the whole binding, so the probe must too.
     root, state = _closed_head(admission_archive, tmp_path)
     candidate = _copy_candidate(admission_archive, root, state)
@@ -481,7 +481,7 @@ def test_authority_digest_disagreement_is_refused(admission_archive, tmp_path, m
                   if path.is_file()) == [("admission", "prepared")] * 2
 
 
-def test_probe_timeout_is_refused_and_reaped(admission_archive, tmp_path, monkeypatch):
+def test_probe_timeout_is_refused_and_reaped(admission_archive, tmp_path, monkeypatch, legacy_managed_transitions):
     root, state = _closed_head(admission_archive, tmp_path)
     candidate = _copy_candidate(admission_archive, root, state)
     processes = _observe_real_processes(monkeypatch)
@@ -512,7 +512,7 @@ def test_probe_timeout_is_refused_and_reaped(admission_archive, tmp_path, monkey
                                  "{'probe': 'binding', 'binding': binding, 'extra': 1}"),
      "candidate_rejected: probe_output exit=0$"),
 ])
-def test_malformed_probe_output_is_refused(admission_archive, tmp_path, monkeypatch, source, match):
+def test_malformed_probe_output_is_refused(admission_archive, tmp_path, monkeypatch, source, match, legacy_managed_transitions):
     root, state = _closed_head(admission_archive, tmp_path)
     candidate = _copy_candidate(admission_archive, root, state)
     monkeypatch.setattr(stage, "_PROBE_SOURCE", source)
@@ -539,7 +539,7 @@ def legacy_archive(tmp_path_factory):
 
 
 def test_legacy_candidate_without_admission_companion_is_unmanaged(
-        admission_archive, legacy_archive, tmp_path, monkeypatch):
+        admission_archive, legacy_archive, tmp_path, monkeypatch, legacy_managed_transitions):
     root, state = _closed_head(admission_archive, tmp_path)
     legacy = _copy_candidate(legacy_archive, root, state, "legacy")
     processes = _observe_real_processes(monkeypatch)
@@ -549,7 +549,7 @@ def test_legacy_candidate_without_admission_companion_is_unmanaged(
     assert processes == []  # Decided from the verified manifest before spawning anything.
 
 
-def test_python_magic_mismatch_is_refused_before_the_probe(admission_archive, tmp_path, monkeypatch):
+def test_python_magic_mismatch_is_refused_before_the_probe(admission_archive, tmp_path, monkeypatch, legacy_managed_transitions):
     # 0a-F5: _validate_manifest refuses first; no separate python check exists.
     root, state = _closed_head(admission_archive, tmp_path)
     candidate = _copy_candidate(admission_archive, root, state)
@@ -564,7 +564,7 @@ def test_python_magic_mismatch_is_refused_before_the_probe(admission_archive, tm
     assert processes == []
 
 
-def test_same_version_candidate_activates_after_one_probe(admission_archive, tmp_path, monkeypatch):
+def test_same_version_candidate_activates_after_one_probe(admission_archive, tmp_path, monkeypatch, legacy_managed_transitions):
     root, state = _closed_head(admission_archive, tmp_path)
     candidate = _copy_candidate(admission_archive, root, state)
     head = stage.read_admission_head(root)
@@ -590,13 +590,27 @@ def test_same_version_candidate_activates_after_one_probe(admission_archive, tmp
     assert marker["binding_id"] == closed["binding_id"]
 
 
-# --- U3b-0a/0b: 'delegate' CLI ------------------------------------------------------
+# --- U3b-0a/0b: delegation (retired by SC-2; legacy test worlds only) ------------------
+# The probe tests above activate a copy under the closed head 'old', a cross-slot
+# managed activation that SC-2 refuses (runtime_admission_transition_requires_release_mode);
+# they keep testing the candidate probe under the legacy_managed_transitions fixture.
 
-def _delegate_cli(root, name):
-    repo = Path(__file__).resolve().parents[3]
-    return subprocess.run([sys.executable, "-B", str(repo / "scripts" / "stage_runtime.py"),
-                           "--root", str(root), "--offline", "delegate", name],
-                          cwd=repo, capture_output=True, text=True, timeout=60)
+def _delegate_legacy(root, name):
+    """The pre-SC-2 'delegate' CLI's grant, in process, shaped like the CLI's result.
+
+    SC-2 retired the CLI (exit 78, tests/unit/tools/test_sc2_delegation_retired.py),
+    so legacy worlds grant with delegate_slot under LEGACY_MANAGED_TRANSITIONS;
+    the CLI only wrapped delegate_slot and printed its result (plus the
+    advisory, tested with compaction). A refusal carries the code as the
+    CLI's traceback did.
+    """
+    assert stage.LEGACY_MANAGED_TRANSITIONS, "legacy delegation needs the legacy_managed_transitions fixture"
+    command = ["delegate_slot", str(root), name]
+    try:
+        result = stage.delegate_slot(root, name)
+    except ValueError as error:
+        return subprocess.CompletedProcess(command, 1, "", "ValueError: " + str(error))
+    return subprocess.CompletedProcess(command, 0, json.dumps({"slot": name, **result}), "")
 
 
 def _registered_targets(state):
@@ -609,7 +623,7 @@ def _registered_targets(state):
 
 
 @pytest.fixture
-def delegated_pair(admission_archive, tmp_path):
+def delegated_pair(admission_archive, tmp_path, legacy_managed_transitions):
     registered = []
 
     def statements(state):
@@ -630,10 +644,10 @@ def test_activate_without_delegate_is_foreign_and_changes_nothing(delegated_pair
                  "runtime_admission_foreign_target")
 
 
-def test_delegate_cli_grants_only_local_path_targets_then_activate(delegated_pair):
+def test_delegate_grants_only_local_path_targets_then_activate(delegated_pair):
     root, candidate = delegated_pair["root"], delegated_pair["candidate"]
     head = stage.read_admission_head(root)
-    result = _delegate_cli(root, "candidate")
+    result = _delegate_legacy(root, "candidate")
     assert result.returncode == 0, result.stderr
     output = json.loads(result.stdout)
     assert output["slot"] == "candidate" and output["source_binding"] == head["binding_id"]
@@ -651,14 +665,14 @@ def test_delegate_cli_grants_only_local_path_targets_then_activate(delegated_pai
     assert os.readlink(root / "current") == "slots/candidate/runtime"
 
 
-def test_delegate_cli_grants_a_second_hop(delegated_pair, admission_archive):
+def test_delegate_grants_a_second_hop(delegated_pair, admission_archive):
     """U3b-0b inverts the 0a one-hop refusal: the CLI re-delegates what the head holds."""
     root, candidate = delegated_pair["root"], delegated_pair["candidate"]
-    assert _delegate_cli(root, "candidate").returncode == 0
+    assert _delegate_legacy(root, "candidate").returncode == 0
     stage.run_slot(root, "candidate", _command(_CLOSING_CHILD, "[]"), timeout=30)
     assert stage.read_admission_head(root)["status"] == "closed"
     _copy_candidate(admission_archive, root, candidate, "third")
-    result = _delegate_cli(root, "third")
+    result = _delegate_legacy(root, "third")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["targets"] == [delegated_pair["local"]]
     assert stage.activate_slot(root, "third") == "slots/candidate/runtime"
@@ -676,7 +690,7 @@ def test_delegate_never_grants_a_target_recorded_outside_the_source(delegated_pa
         _refused(root, (state, candidate), lambda: controller.delegate("candidate"),
                  "^runtime_admission_foreign_target$")
     before = _witness(root, state, candidate)
-    result = _delegate_cli(root, "candidate")
+    result = _delegate_legacy(root, "candidate")
     assert result.returncode != 0 and "ValueError: runtime_admission_foreign_target" in result.stderr
     assert _witness(root, state, candidate) == before
 
@@ -684,7 +698,7 @@ def test_delegate_never_grants_a_target_recorded_outside_the_source(delegated_pa
 _SENTINEL = "u3b0a-sentinel-secret-7f3c"
 
 
-def test_probe_environment_is_an_allow_list_without_secrets(admission_archive, tmp_path, monkeypatch):
+def test_probe_environment_is_an_allow_list_without_secrets(admission_archive, tmp_path, monkeypatch, legacy_managed_transitions):
     """R1: the candidate's code never sees controller secrets, even when it is refused."""
     root, state = _closed_head(admission_archive, tmp_path)
     candidate = _copy_candidate(admission_archive, root, state)

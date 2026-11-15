@@ -62,6 +62,23 @@ for _module_name in ("torch", "soundfile"):
 del _module_name
 
 
+# ==================== SC-2 legacy managed transitions ====================
+
+@pytest.fixture
+def legacy_managed_transitions(monkeypatch):
+    """Re-enable the retired delegation grants and cross-slot managed activation in process.
+
+    SC-2 (sc-release-design v3 delegation_off.test_fixture): only for tests
+    that build a legacy world (an owner chain, or a prepare + activate
+    rollback) whose validation, serving or compaction they then exercise.
+    A compiled controller never sees it; compiled rehearsals build owners
+    with a pinned epoch-3 archive instead.
+    """
+    from scripts import stage_runtime
+    monkeypatch.setattr(stage_runtime, "LEGACY_MANAGED_TRANSITIONS", True)
+    return stage_runtime
+
+
 # ==================== Pytest Configuration ====================
 
 @pytest.fixture(autouse=True)
