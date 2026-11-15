@@ -1129,8 +1129,22 @@ automático al arrancar y conservarlas para siempre. Evidencia:
   aplicación real (mute confirmado tras olvidar, dueño vivo intacto, parada
   gestionada con prueba limpia), HTTP (cuerpo estricto, 409, roles 403/401),
   permisos de ruta y node del panel. Resultados y mutantes en la evidencia.
-- Pendiente: revisión independiente; el visto bueno visual del panel sigue
-  con el usuario como en las demás pantallas.
+- Revisión 1 (R1B2-1 a R1B2-7, veredicto `changes_needed`), aplicada en la
+  misma rama, un commit por hallazgo: tests de integración y HTTP de la
+  recomprobación de autoridad dentro de la transacción (mata el mutante X1
+  del revisor); olvidos serializados bajo el lock del ledger; restitución del
+  titular que vuelve entre la última comprobación y el commit; test de
+  `Origin` ajeno y cuerpo de formulario con sesión de operador; test del
+  conteo mostrado en el panel (mata X7); el panel encola un cambio pulsado
+  durante la consulta periódica en vez de descartarlo. La evidencia ya no
+  marca `needs_user_decision` en el nivel superior: la pregunta vieja quedó
+  como histórica y reemplazada por `r1b2.wording_correction`. Corridas
+  dirigidas en Mac: 225 y 99 pasados (dos procesos), node del panel 13/13 y
+  `test_obs_panel.cjs` 23/23. Mutantes: 44 de 44 muertos (los 32 originales,
+  B2/B3/B10/B11 re-anclados al código nuevo, más X1, X7 y uno por regla
+  nueva). Detalle en `r1b2.review_round_1`.
+- Pendiente: revisión independiente de la ronda 1; el visto bueno visual del
+  panel sigue con el usuario como en las demás pantallas.
 
 ## Prompt para la sesión nueva
 

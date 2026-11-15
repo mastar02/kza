@@ -476,8 +476,19 @@ arrancar y conservarlas para siempre.
   grabaciones perdidas» abre una confirmación con la casilla «Confirmo que
   ninguna pestaña ni herramienta sigue grabando» y el botón «Olvidar N
   grabaciones perdidas», que envía el conteo mostrado. Si el conteo cambia
-  mientras la confirmación está abierta, se cierra. El panel rechaza un estado
-  que diga confirmada con dueños vivos o arrastrados.
+  mientras la confirmación está abierta, se cierra; un clic sobre la
+  confirmación vieja todavía en pantalla envía el conteo que mostraba, y el
+  servidor responde 409 si ya no coincide. Un cambio (olvidar, pausar o
+  reactivar) pulsado mientras corre la consulta periódica de 1 s se envía en
+  cuanto termina; un segundo cambio mientras otro está pendiente se rechaza
+  con «Ya hay un cambio en curso. Esperá su resultado antes de elegir otro.»
+  (R1B2-7). El panel rechaza un estado que diga confirmada con dueños vivos o
+  arrastrados.
+- Defensas CSRF de la ruta: cookie `SameSite=strict`, chequeo de `Origin` en
+  `require_dashboard_session` y exigencia de `Content-Type: application/json`.
+  Un test con sesión de operador (que sí tiene `admin:manage`) prueba que un
+  `Origin` ajeno da 403 y un cuerpo de formulario o `text/plain` da 415 sin
+  tocar nada (R1B2-4).
 - Límite: el olvido no detiene ninguna captura. Se apoya en la afirmación del
   administrador y en los monitores de cierre seguro de los clientes (el
   servidor ya no concedía nada a esos dueños).
