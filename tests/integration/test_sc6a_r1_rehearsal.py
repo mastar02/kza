@@ -15,7 +15,11 @@ R1 archive built from this working tree):
   ``>=`` instead of ``==``);
 - (iv) the runbook's pinned-sha step, run as written, stops on a stale
   epoch-3 archive and on a rebuilt-but-different archive of the same commit
-  (M-6a.2: comparing the commit instead of the archive sha256).
+  (M-6a.2: comparing the commit instead of the archive sha256); right after
+  it, the extraction step, run as written, extracts that same archive into a
+  new ``mktemp -d`` directory (never a ``$R1`` the shell already had) and
+  defines ``$ST`` only when the extracted ``release.json`` names the pinned
+  commit (review SC6A-R2).
 
 AUTHZ3-1 (SC-2 review round 3): a ``stage_runtime`` copy from
 69a79e6..b0c322d~1 (built here from b0c322d~1) does not check the epoch. On
@@ -34,9 +38,11 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 
 import pytest
 
@@ -220,6 +226,53 @@ def test_the_runbook_check_stops_on_a_stale_epoch3_archive_and_on_a_rebuilt_one(
     assert missing.returncode != 0 and r1_runbook.STOP in missing.stdout, missing
 
 
+def test_the_extraction_step_uses_a_new_directory_and_only_the_verified_archive(artifacts, tmp_path):
+    """SC6A-R2: $R1 and $ST come from the archive the check just passed, in a new directory."""
+    r1 = artifacts["archive"]
+    r1_sha = hashlib.sha256(r1.read_bytes()).hexdigest()
+    stale = tmp_path / "stale-r1"
+    (stale / "scripts").mkdir(parents=True)
+    (stale / "scripts" / "stage_runtime.pyc").write_bytes(b"stale")
+    shell = {"R1": str(stale), "ST": "stale-st"}  # a previous extraction left in the operator's shell
+    for name, commit in (("pinned", artifacts["commit"]), ("other", "0" * 40)):
+        temporary = tmp_path / name
+        temporary.mkdir()
+        # GNU mktemp (the server) honours TMPDIR; macOS mktemp -d uses the user's temporary directory.
+        parents = {temporary.resolve(), Path(tempfile.gettempdir()).resolve()}
+        existing = {parent: set(os.listdir(parent)) for parent in parents}
+        result, final = r1_runbook.run_check_and_extract(r1, python=sys.executable, tmpdir=temporary,
+                                                         sha256=r1_sha, commit=commit, environment=shell)
+        extracted = Path(final["R1"]) if final.get("R1") else None
+        try:
+            assert extracted is not None and extracted != stale, (result, final)
+            parent = extracted.resolve().parent
+            assert parent in parents and extracted.name not in existing[parent]  # created now, never reused
+            assert (extracted.stat().st_mode & 0o777) == 0o700
+            if name == "pinned":
+                assert result.returncode == 0, result
+                assert result.stdout.splitlines()[:2] == [r1_runbook.OK, r1_runbook.EXTRACTED], result.stdout
+                _assert_extraction_of(r1, extracted, final["ST"])
+            else:  # the archive passes the check but names another commit: stop, and $ST stays unset
+                assert result.returncode == 1, result
+                assert result.stdout.splitlines()[:2] == [r1_runbook.OK, r1_runbook.EXTRACT_STOP], result.stdout
+                assert final["ST"] == ""
+        finally:
+            if extracted is not None and extracted.is_dir() and not extracted.resolve().is_relative_to(
+                    tmp_path.resolve()):
+                shutil.rmtree(extracted)  # macOS: outside pytest's tmp
+
+
+def _assert_extraction_of(r1: Path, extracted: Path, st: str) -> None:
+    """The new directory holds exactly the archive's files, and $ST runs its stage_runtime."""
+    with tarfile.open(r1) as bundle:
+        members = sorted(member.name for member in bundle.getmembers() if member.isfile())
+        for name in ("release.json", "scripts/stage_runtime.pyc"):
+            assert (extracted / name).read_bytes() == bundle.extractfile(name).read(), name
+    assert sorted(str(path.relative_to(extracted)) for path in extracted.rglob("*") if path.is_file()) == members
+    assert st == (sys.executable + " -I -B " + str(extracted / "scripts" / "stage_runtime.pyc")
+                  + " --root /home/kza/releases --offline")
+
+
 # --- AUTHZ3-1: an early stage_runtime copy on the adopted epoch-4 root (residual pinned as found) ----------
 
 def test_a_copy_without_the_epoch_check_still_grants_and_activates_on_the_epoch4_root(world, old_builds):
@@ -263,3 +316,19 @@ def test_the_first_copy_with_the_epoch_check_is_locked_out_of_the_epoch4_root(wo
             arguments, result.stderr[-2000:])
     assert _witness(root, *_states(world)) == before
     assert not (root / "slots" / "p").exists()
+
+
+# --- the runbook's pin is the archive build_runtime makes from the pinned commit -----------------------------
+
+def test_the_runbook_pin_is_the_archive_of_its_commit(tmp_path):
+    """Rebuilt here from the pinned commit, the archive has exactly the pinned sha256 and passes the
+    runbook's own block (build_runtime is byte-reproducible across the Mac and the server)."""
+    pin = r1_runbook.pinned()
+    archive, manifest = _build(tmp_path, pin["R1_COMMIT"], "pinned")
+    assert manifest["git_commit"] == pin["R1_COMMIT"]
+    assert manifest["controller_epoch"] == 4 and manifest["schema_contract"] == 1
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() == pin["R1_SHA256"]
+    result = r1_runbook.run_check(archive)
+    assert result.returncode == 0 and result.stdout.strip() == r1_runbook.OK, result
+    _manifest, _files, summary = commands.read_r1_archive(archive)
+    assert summary["sha256"] == pin["R1_SHA256"]

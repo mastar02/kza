@@ -39,20 +39,33 @@ de SC-2 (época 3) no sirve: sus propios comandos lo aceptarían e instalarían
 un controlador que todavía concede delegaciones (PS-13). Además, toda copia de
 `stage_runtime` de 69a79e6 a b0c322d~1 (toda la época 2 y la época 3 anterior
 a b0c322d) no comprueba la época y puede conceder y activar otro slot en una
-raíz de época 4 (AUTHZ3-1). Pendiente de SC-6a: reconstruir R1 desde el commit
-con SC-2; listar y borrar o renombrar (`*.superseded-epoch3`) todo R1
-anterior y todo archivo, árbol extraído y checkout construido desde ese rango,
-bajo `yo` y en cada ubicación de transferencia; agregar al ensayo de adopción
-el `delegate` y el `activate` de una copia de ese rango sobre una raíz de
-época 4 (debe quedar sin copia que correr); fijar aquí su sha256 y su commit, y
-agregar antes de W1 el paso obligatorio `sha256sum "$R1_ARCHIVE"` igual al
-valor fijado o se detiene el procedimiento. Hasta entonces esta ventana no se
-ejecuta.
+raíz de época 4 (AUTHZ3-1). SC-6a (2026-11-15) reconstruyó R1 desde 81ed568
+(época 4, contrato de esquema 1), dos veces bajo `yo` en el server con
+resultado idéntico byte a byte (una tercera construcción en la Mac también
+coincide), y fijó su sha256 y su commit abajo, en «Archivo R1 fijado», con el
+paso obligatorio `sha256sum "$R1_ARCHIVE"` antes de W1. Borró todo R1
+anterior y todo archivo, árbol extraído, checkout y copia suelta de
+`stage_runtime` construidos desde ese rango, bajo `yo` y en cada ubicación de
+transferencia (cada ubicación está en el handoff; del lado de `kza` no había
+ninguno, y no hizo falta renombrar nada a `*.superseded-epoch3`). El primer
+inventario buscaba sólo por nombre (`stage_runtime.py(c)`, `*.tar.gz`, `.git`)
+y no vio cuatro copias sueltas renombradas en la Mac (`sr_head.py` en
+`/private/tmp` y en el tmp del roadmap, y dos `stage_runtime*.backup.py`); la
+revisión las encontró, se borraron y el inventario se repitió por contenido
+(cada archivo, cada miembro de cada archivo comprimido) en la Mac, en el
+server bajo `yo` y, sólo leyendo, del lado de `kza`: ninguna copia de ese
+rango ni de época 3. El ensayo de adopción corre ahora el `delegate` y el
+`activate` de una copia de ese rango sobre una raíz de época 4: todavía
+concede y activa, y el test lo fija tal como es. La barrera es correr sólo
+`controller/current` y que no quede ninguna copia de ese rango que correr.
 
 Después de R1 no hay transiciones gestionadas (ningún arreglo de código) hasta
 que exista el modo release; el único rollback es L4 durante sus 14 días. Ver
 «Sin transiciones gestionadas después de R1 hasta el modo release» en
-`docs/architecture/DEPLOYMENT.md` (decisión abierta SC-D5).
+`docs/architecture/DEPLOYMENT.md`. El usuario respondió SC-D5 = A el
+2026-11-15: se acepta ese hueco, R1 sale apenas esté listo, el modo release se
+empieza enseguida y, ante un problema grave de privacidad en el hueco, se
+apaga el servicio hasta tenerlo. El retiro Q5 del día 14 no se posterga.
 
 Todo corre como `kza` y nunca como root. Cada comando rechaza con salida 78
 y `{"refused": <código>}` en estos casos:
@@ -63,29 +76,33 @@ y `{"refused": <código>}` en estos casos:
 - una segunda ejecución.
 
 ```bash
-R1=<tmp privado>/r1            # R1 extraído de $R1_ARCHIVE ya verificado (árbol con U3b-0c y SC-2, época 4)
 PY=/home/kza/kza/.venv/bin/python
-ST="$PY -I -B $R1/scripts/stage_runtime.pyc --root /home/kza/releases --offline"
 C=release_20261029T174830709997Z_63ea8d3
 ```
 
-`r1.tar.gz` en los comandos de abajo es siempre `$R1_ARCHIVE`, el mismo
-archivo verificado aquí.
+`$R1` (el árbol extraído, con U3b-0c y SC-2, época 4) y `$ST` se definen
+recién en «Extraer R1 verificado», en un directorio nuevo, justo después de
+`R1 fijado: OK`. Los comandos de abajo pasan siempre `"$R1_ARCHIVE"`, el mismo
+archivo verificado, nunca una ruta relativa ni otra copia.
 
 ### Archivo R1 fijado (paso obligatorio antes de W1)
 
-SC-6a construye R1 bajo `yo` con `scripts/build_runtime.py`, dos veces y con
-resultado idéntico byte a byte, y fija aquí su sha256 y su commit. El valor
-vive en un commit de documentación posterior al commit construido: un archivo
-no puede contener su propio hash, y el archivo no incluye `docs/`.
+SC-6a construyó R1 bajo `yo` con `scripts/build_runtime.py` desde 81ed568, dos
+veces y con resultado idéntico byte a byte, y fija aquí su sha256 y su commit.
+El valor vive en un commit de documentación posterior al commit construido: un
+archivo no puede contener su propio hash, y el archivo no incluye `docs/`.
+El archivo queda bajo `yo` en el server, en
+`/home/yo/projects/releases-r1/r1-81ed568.tar.gz` (modo 0600, directorio
+0700, con su `SHA256SUMS`). Llevarlo a `kza` es parte de la release y lo hace
+el operador; esa copia transferida es la que se verifica aquí.
 
 Antes de extraer `$R1`, antes de la corrida de prueba y otra vez justo antes
 de W1, correr exactamente:
 
 ```bash
 R1_ARCHIVE=<ruta del r1.tar.gz transferido>
-R1_SHA256=pendiente-SC-6a
-R1_COMMIT=pendiente-SC-6a
+R1_SHA256=3f57bd197f2f1633f32683616abefd3db038466d7a966d9925b24c84fc342a0e
+R1_COMMIT=81ed5680fa46d0b5b48e8e6eb9e4a36da5f15ed0
 if [ "$(sha256sum "$R1_ARCHIVE" | cut -d' ' -f1)" = "$R1_SHA256" ]; then echo "R1 fijado: OK"; else echo "R1 distinto del fijado: DETENER"; false; fi
 ```
 
@@ -94,8 +111,29 @@ no extraer, no correr ningún `$ST` ni W1. Comparar el commit de
 `release.json` no alcanza: un R1 de época 3 construido antes de SC-2 se acepta
 a sí mismo (sus propios comandos lo instalarían) y una reconstrucción distinta
 del mismo commit tiene otro sha256. Sólo cuenta el sha256 del archivo
-(`R1_COMMIT` queda como referencia). El ensayo corre este bloque tal como
-está escrito (`tests/mocks/r1_runbook.py`).
+(`R1_COMMIT` sólo sirve después, para comprobar que el árbol extraído viene de
+este archivo). El ensayo corre este bloque tal como está escrito
+(`tests/mocks/r1_runbook.py`).
+
+### Extraer R1 verificado (justo después de `R1 fijado: OK`)
+
+En la misma sesión de shell, inmediatamente después de `R1 fijado: OK`,
+extraer ese mismo `$R1_ARCHIVE` en un directorio nuevo y vacío, y definir
+`$ST` sólo desde ahí:
+
+```bash
+unset R1 ST
+R1=$(mktemp -d)   # directorio nuevo, vacío y privado (0700): nunca una extracción anterior
+tar -xzf "$R1_ARCHIVE" -C "$R1"
+if [ "$("$PY" -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["git_commit"])' "$R1/release.json")" = "$R1_COMMIT" ]; then ST="$PY -I -B $R1/scripts/stage_runtime.pyc --root /home/kza/releases --offline"; echo "R1 extraído: OK"; else echo "R1 extraído distinto del fijado: DETENER"; false; fi
+```
+
+Sin `R1 extraído: OK`, detener: `$ST` queda sin definir. Antes de W3 no
+existe `controller/current`, así que el sha256 fijado es la única garantía del
+código que corre `$ST`: por eso `$R1` sale siempre de un `mktemp -d` nuevo,
+extraído del archivo recién verificado, y nunca de un directorio que ya
+existía. Si la sesión se pierde, repetir «Archivo R1 fijado» y este bloque
+(otro `mktemp -d`). El ensayo corre los dos bloques tal como están escritos.
 
 ## Antes de la ventana
 
@@ -103,7 +141,7 @@ está escrito (`tests/mocks/r1_runbook.py`).
   no toma lock ni escribe en la raíz. Usa un scratch en tmpfs
   `/run/user/<uid>` que se borra al terminar, ante un rechazo y ante SIGTERM.
   ```bash
-  $ST adoption-dry-run --container-slot $C --archive r1.tar.gz --slot <slot R1> \
+  $ST adoption-dry-run --container-slot $C --archive "$R1_ARCHIVE" --slot <slot R1> \
       --window-timer <timer> ... [--code-index-unit <unidad>]
   ```
   Entrega el censo completo aunque haya rechazos blandos (review F2):
@@ -198,7 +236,9 @@ está escrito (`tests/mocks/r1_runbook.py`).
 
   Timers de la ventana: todos los `kza-*.timer` habilitados de W0, por nombre.
 - **W1-pre** (obligatorio): repetir la verificación de «Archivo R1 fijado» con
-  el mismo `$R1_ARCHIVE`. Sin `R1 fijado: OK`, detener: no hay W1.
+  el mismo `$R1_ARCHIVE`. Sin `R1 fijado: OK`, detener: no hay W1. `$ST` sigue
+  siendo el de «Extraer R1 verificado» en esta misma sesión; si no, repetir
+  ese bloque (otro `mktemp -d`).
 - **W1**. Ejecutar:
   ```bash
   systemctl --user stop kza-voice.service      # salida 0 obligatoria
@@ -242,7 +282,7 @@ está escrito (`tests/mocks/r1_runbook.py`).
     completa; prepare rechaza mientras tanto.
   - Es irreversible por decisión (P1=D). Deja
     `admission/adoption/retire-legacy-training-<ts>.json`.
-- **W2**: `$ST adoption-prepare --container-slot $C --archive r1.tar.gz --slot <slot R1> --decision <id ventana> --window-timer <timer>...`.
+- **W2**: `$ST adoption-prepare --container-slot $C --archive "$R1_ARCHIVE" --slot <slot R1> --decision <id ventana> --window-timer <timer>...`.
   - Requiere kza-voice inactivo y deshabilitado, timers inactivos y scratch en
     tmpfs.
   - Construye `slots/<slot R1>` con la marca de copia de adopción. No hace CAS
@@ -256,7 +296,7 @@ está escrito (`tests/mocks/r1_runbook.py`).
     systemctl --user start kza-voice.service
     ```
     y arrancar los timers de la ventana.
-- **W3**: `$ST install-controller r1.tar.gz`. El archivo debe declarar `controller_epoch` 4, exactamente la época que comprueba `adoption-commit`.
+- **W3**: `$ST install-controller "$R1_ARCHIVE"`. El archivo debe declarar `controller_epoch` 4, exactamente la época que comprueba `adoption-commit`.
 - **W4**: `$PY -I -B /home/kza/releases/controller/current/scripts/stage_runtime.pyc --root /home/kza/releases --offline adoption-commit --confirm <plan_sha256>`.
   - Verifica todo el plan de nuevo y rechaza con
     `runtime_admission_adoption_plan_mismatch:<ítem>` antes de cualquier
@@ -378,8 +418,9 @@ comando lo rechaza (`runtime_admission_legacy_retire_too_early`, con
 Desde SC-2 tampoco hay rollback gestionado hasta que exista el modo release:
 después de Q5 no queda ningún rollback. Antes de empezar, revisar la
 respuesta a SC-D5 en `docs/architecture/DEPLOYMENT.md` («Sin transiciones
-gestionadas después de R1 hasta el modo release»); con la opción B este paso
-se posterga y no se ejecuta.
+gestionadas después de R1 hasta el modo release»). La respuesta registrada es
+A (2026-11-15): este paso corre el día 14. Sólo con la opción B se
+postergaría; si esa respuesta cambiara, no ejecutarlo.
 
 0. Si L4 se usó desde la adopción (existe algún
    `/home/kza/releases/admission/launcher/uninstall-*.json`), parar aquí: el
