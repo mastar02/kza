@@ -926,7 +926,8 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
     (fixture `legacy_managed_transitions` y `tests/mocks/legacy_transitions.py`);
     un controlador compilado no puede.
 - Tests: `test_sc2_delegation_retired.py` (cada rechazo, compuerta de
-  compactación, copia de época 3 bloqueada, cadena existente que valida, sirve
+  compactación, copia de época 3 con `require_forward_epoch` (26de262)
+  bloqueada, cadena existente que valida, sirve
   y se compacta, y raíz de época 3 con dueños concedidos por el CLI compilado
   fijado 26de262 compactada bajo el controlador de época 4) y
   `test_schema_contract_pin.py` (pin del digest, sensibilidad de cada
@@ -943,9 +944,14 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   DEPLOYMENT). SC-D1..SC-D4 también siguen sin respuesta.
 - Pendiente antes de la ventana de R1 (SC-6a): reconstruir R1 dos veces desde
   el commit integrado y comparar byte a byte; borrar o renombrar todo R1 de
-  época 3 (listar aquí cada ubicación); fijar el sha256 y el commit en el
-  runbook con el paso obligatorio `sha256sum` antes de W1; repetir el ensayo de
-  adopción (compilado, ventana real en Linux y T-A17) con los rechazos nuevos.
+  época 3 y, por AUTHZ3-1, todo archivo, árbol extraído y checkout construido
+  desde 69a79e6..b0c322d~1 (sus `stage_runtime` no comprueban la época y
+  conceden y activan otro slot en una raíz de época 4), bajo `yo` y en cada
+  ubicación de transferencia (listar aquí cada ubicación); fijar el sha256 y el
+  commit en el runbook con el paso obligatorio `sha256sum` antes de W1;
+  repetir el ensayo de adopción (compilado, ventana real en Linux y T-A17) con
+  los rechazos nuevos y el `delegate` + `activate` de una copia de ese rango
+  sobre una raíz de época 4.
 - Pruebas sobre `cc14903`: suite batch en la Mac verde (12.167 pasan, 47 se
   omiten, 2 xfail; las 8 rehearsals de tiempo a solas pasan; node sin fallas).
   En el server (`yo`, clon temporal desde bundle, ya borrado): los cuatro
@@ -990,6 +996,28 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   cambio de esos enums) y si `release.json` debe declarar también el sha256
   del contrato (AUTHZ-3, para la revisión de SC-1). Detalle en la evidencia
   (`review_round_2`).
+- Tercera revisión independiente (2026-11-15): 1 hallazgo medio (AUTHZ3-1),
+  4 bajos (AUTHZ3-2, RV3-1..RV3-3) y 6 informativos. AUTHZ3-1: el bloqueo
+  por época sólo cubre las copias de `stage_runtime` que ya tienen
+  `require_forward_epoch` (desde b0c322d); toda copia de 69a79e6 a b0c322d~1
+  (toda la época 2 y la época 3 anterior a b0c322d) concede y activa otro
+  slot en una raíz de época 4. DEPLOYMENT, el runbook de compactación, el de
+  R1 y este handoff ya no afirman lo contrario; SC-6a (PS-13) borra o
+  renombra todo archivo, árbol extraído y checkout de ese rango y el ensayo
+  de adopción suma el caso. Queda propuesta, sin confirmar, una barrera de
+  época 4 que no dependa del código viejo (congelar las capacidades de
+  delegación existentes). AUTHZ3-2: un test clasifica cada columna de texto de
+  cada tabla protegida y DEPLOYMENT nombra las columnas de diagnóstico
+  (`reason`, `last_error`) y `auth_meta.key`; el pin no cambia. RV3-1 y RV3-2:
+  DEPLOYMENT nombra el regreso a H de `compact abort --to-h` y anota que
+  `delegate` rechaza siempre con `runtime_admission_delegation_retired`.
+  RV3-3: un test corre en proceso la rama del CLI `delegate` posterior a la
+  guarda (sólo raíces de prueba heredadas) con el aviso de compactación y su
+  falla. AUTHZ3-3 (informativo): con el flag de producción, `activate` ya no
+  consulta registros de autoridad derivada para K; sólo la capacidad de su
+  compactación lo autoriza. RV3-4: el test de rollback compilado usa
+  `usefixtures` y no oculta el ayudante importado. Detalle, tests y mutantes
+  en la evidencia (`review_round_3`).
 
 ## Prompt para la sesión nueva
 

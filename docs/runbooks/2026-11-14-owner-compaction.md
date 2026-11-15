@@ -517,9 +517,13 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
   correrse directamente y no conoce la compuerta: por eso R1 se construye ya
   con U3b-0c (D1 = A) y el runbook prohíbe correr `stage_runtime` desde otro
   lugar que `controller/current`. Desde la época 3 hay comprobación hacia
-  adelante. SC-2 sube la época a 4: una copia de época 3 ya no toma el lease
-  en una raíz con controlador de época 4, así que no puede volver a conceder
-  delegaciones.
+  adelante. SC-2 sube la época a 4: una copia que contiene
+  `require_forward_epoch` (desde b0c322d) ya no toma el lease en una raíz con
+  controlador de época 4. Una copia de 69a79e6 a b0c322d~1 (toda la época 2 y
+  la época 3 anterior a b0c322d) no comprueba la época y todavía puede
+  conceder y activar otro slot en esa raíz (AUTHZ3-1): sigue valiendo correr
+  sólo `controller/current`, y SC-6a borra o renombra esas copias (ver
+  «Delegación retirada desde SC-2» en DEPLOYMENT).
 - Retiro, cobertura contra H: las filas de arrendamiento efímero
   (`live_connections`, `live_resets`) **no** tienen una clase propia; cuando la
   corrida de K las borra cuentan como `removed_by_k_run`, y si existen sólo en

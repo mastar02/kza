@@ -215,7 +215,8 @@ que medirlo con una copia de tamaño real bajo `yo` en el servidor
 Decisión del usuario del 2026-11-15 (`u3b_f8_self_contained_releases`,
 diseño `sc-release-design-v3`): las releases gestionadas pasan a ser
 autocontenidas y la delegación a estados dueños se apaga. Desde SC-2
-(época del controlador 4) ninguna concesión es posible:
+(época del controlador 4) el controlador no concede nada; las copias viejas de
+`stage_runtime` son otra cosa (ver más abajo):
 
 - `stage_runtime --root R --offline delegate <slot>` imprime
   `{"refused": "runtime_admission_delegation_retired"}` y sale con 78, sin
@@ -236,19 +237,46 @@ autocontenidas y la delegación a estados dueños se apaga. Desde SC-2
   convertirse en head y dejar atrás a H; esta regla hace que, desde R1, la
   única transición gestionada entre slots sea el modo release.
 - Siguen moviendo el head, por diseño: `adoption-commit` cuando el head es un
-  head de adopción abortado (re-adopción desde el legado) y el K de una
+  head de adopción abortado (re-adopción desde el legado), el K de una
   compactación simple (el mismo archivo que H por P6; A1 rechaza un K
-  delegado). Ninguno concede dueños ni autoridad derivada.
-- Una copia de `stage_runtime` de época 3 (de un slot o de
-  `controller/<commit>`) no puede tomar el lease ni preparar en una raíz cuyo
-  `admission/controller.json` declare época 4
-  (`runtime_admission_controller_downgrade`), e `install-controller` la
-  rechaza (`runtime_admission_controller_epoch_too_old`). Así un controlador
-  viejo no puede volver a conceder.
+  delegado) y el regreso a H de `compact abort --to-h`
+  (`compaction_return_to_h`, bajo la compuerta de su compactación). Ninguno
+  concede dueños ni autoridad derivada.
+- Una copia de `stage_runtime` que ya contiene `require_forward_epoch`
+  (desde b0c322d, la corrección F8 de U3b-0c, todavía época 3; el 26de262
+  fijado incluido), sea de un slot o de `controller/<commit>`, no puede tomar
+  el lease ni preparar en una raíz cuyo `admission/controller.json` declare
+  época 4 (`runtime_admission_controller_downgrade`). `install-controller`
+  rechaza cualquier archivo de época menor que 4
+  (`runtime_admission_controller_epoch_too_old`).
+- El bloqueo vive en el código viejo, así que sólo cubre esas copias. Toda
+  copia de `stage_runtime` de 69a79e6 (U3b-0a, donde entra `delegate`) a
+  b0c322d~1 no comprueba la época: toda la época 2 (a76fa97..f4c72ed~1) y la
+  época 3 de f4c72ed hasta antes de b0c322d. En una raíz de época 4 esa copia
+  todavía concede (`delegate` escribe `admission/delegations/` y mueve el
+  head) y activa otro slot, que pasa a ser el head que corre `serve` (revisión
+  AUTHZ3-1, con las copias de b0c322d~1 y a76fa97). Las releases legadas de
+  producción (b0866e8, 63ea8d3) no tienen `delegate`, pero tampoco comprueban
+  la época. Por eso no se corre ningún `stage_runtime` que no sea
+  `controller/current`, y SC-6a (PS-13) lista y borra o renombra todo
+  archivo, árbol extraído y checkout construido desde ese rango, bajo `yo` y
+  en cada ubicación de transferencia, no sólo los R1 de época 3. El historial
+  de Git conserva esas versiones: para ellas la única barrera es esa regla de
+  operación.
+- Propuesta para el dueño del diseño (sin confirmar): una barrera de época 4
+  que no dependa del código viejo. `install-controller` o `adoption-commit`
+  congela el conjunto de capacidades de delegación existentes, y la
+  validación, `serve` y la compactación rechazan cualquier registro de
+  `admission/delegations/` fuera de ese conjunto. No cubre un `prepare` +
+  `activate` sin concesión desde una copia vieja; para eso `serve` tendría que
+  aceptar sólo heads cuyo binding registró un controlador de época 4. Exige
+  una enmienda del diseño, con su test y su mutante.
 - Ese bloqueo necesita un `admission/controller.json` legible: si falta, es un
   symlink, no se puede leer o no es JSON válido, `require_forward_epoch` no
-  rechaza nada y una copia de época 3 podría volver a conceder y activar otro
-  slot (residuo aceptado en el diseño, `delegation_off.old_controller_copies`).
+  rechaza nada e incluso una copia que lo contiene podría volver a conceder y
+  activar otro slot (residuo aceptado en el diseño,
+  `delegation_off.old_controller_copies`, que no menciona las copias sin la
+  comprobación).
   Con el registro dañado, repararlo sólo con `controller/current` o
   `install-controller`, y no correr el `stage_runtime` de ningún slot hasta
   que vuelva a declarar la época 4.
@@ -295,14 +323,24 @@ Quedan fuera los conjuntos cerrados que `src` escribe como literales sin
 nombre importable: `capture_runtime_control.mode` (`running`, `muted`,
 `resuming`, en un CHECK), `capture_browser_recorders.kind` (tupla en
 `capture_recorders.py`), `routine_runs.source`,
-`legacy_quarantine_records_v1.state` (CHECK `quarantined`), la gramática de
-`reminders.recurrence` y, en las tablas de avance del borrado y atribución,
+`legacy_quarantine_records_v1.state` (CHECK `quarantined`), las claves de
+`auth_meta.key` (`schema_version`, `clock_floor`, `legacy_epoch`,
+`legacy_digest`; el valor de `schema_version` sí está en el contrato), la
+gramática de `reminders.recurrence` y, en las tablas de avance del borrado y atribución,
 `policy_index_deletions.state` (`pending`, `running`, `complete` en
 `index_deletions.py`), `facts.category` (`personal`, `preference`,
 `pattern`, `fact` en `FactLedger.store`) y `voice_groups.state`/`reason`
 (literales en `src/users/voice_groups.py`). Agregar un valor ahí no cambia el
 pin; quien lo haga debe tratarlo como un cambio de contrato y subir la época a
-mano. Los enums de las demás tablas no protegidas (por ejemplo
+mano. Tampoco son contrato las columnas de diagnóstico de tablas protegidas,
+texto que ningún código usa para elegir filas (los reintentos de borrado
+eligen por `attempts`): `reminder_home_actions.reason` (por ejemplo
+`interrupted_send`), `routine_runs.reason`, `routine_run_actions.reason`
+(`action_exception`, `interrupted`) y `pending_audio_deletions.last_error`
+(`live_or_unknown_reference`). Si un cambio vuelve a una de ellas selectora de
+un borrado o de autoridad, pasa a ser contrato y sube la época. Un test
+clasifica cada columna de texto de cada tabla protegida: vocabulario fijado,
+excluida (esta lista), diagnóstico o sin conjunto cerrado. Los enums de las demás tablas no protegidas (por ejemplo
 `suggestions_policy_v1.status`) no forman parte del contrato.
 
 Desaparecen con esto el límite de 8 dueños y el hallazgo F8 (un borrado del
@@ -1023,7 +1061,8 @@ Límites que siguen valiendo (decisiones P5 = C y Q4):
 Compatibilidad: la época del controlador sube a 3. Mientras haya una
 compactación pendiente, cualquier entrada al controlador que no sea `compact`
 (prepare, activate, run, delegate, adopción) rechaza con
-`runtime_admission_compaction_pending`, y serve sólo deja pasar la corrida de
+`runtime_admission_compaction_pending` (desde SC-2, `delegate` rechaza
+siempre con `runtime_admission_delegation_retired`), y serve sólo deja pasar la corrida de
 verificación armada o las corridas de un `allow-run` vigente; desde que
 empieza un abort o un retiro, ninguna (`compaction_abort_pending`,
 `compaction_retire_in_progress`). Si el head cambió igual después de

@@ -36,9 +36,15 @@ R1 se construye desde un árbol que ya contiene U3b-0c (decisión
 `controller_epoch` 4, que es lo que `adoption-commit` exige, y así ningún
 controlador de época 2 o 3 queda en la raíz gestionada. Un R1 construido antes
 de SC-2 (época 3) no sirve: sus propios comandos lo aceptarían e instalarían
-un controlador que todavía concede delegaciones (PS-13). Pendiente de SC-6a:
-reconstruir R1 desde el commit con SC-2, borrar o renombrar
-(`*.superseded-epoch3`) todo R1 anterior, fijar aquí su sha256 y su commit, y
+un controlador que todavía concede delegaciones (PS-13). Además, toda copia de
+`stage_runtime` de 69a79e6 a b0c322d~1 (toda la época 2 y la época 3 anterior
+a b0c322d) no comprueba la época y puede conceder y activar otro slot en una
+raíz de época 4 (AUTHZ3-1). Pendiente de SC-6a: reconstruir R1 desde el commit
+con SC-2; listar y borrar o renombrar (`*.superseded-epoch3`) todo R1
+anterior y todo archivo, árbol extraído y checkout construido desde ese rango,
+bajo `yo` y en cada ubicación de transferencia; agregar al ensayo de adopción
+el `delegate` y el `activate` de una copia de ese rango sobre una raíz de
+época 4 (debe quedar sin copia que correr); fijar aquí su sha256 y su commit, y
 agregar antes de W1 el paso obligatorio `sha256sum "$R1_ARCHIVE"` igual al
 valor fijado o se detiene el procedimiento. Hasta entonces esta ventana no se
 ejecuta.
