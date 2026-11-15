@@ -107,13 +107,21 @@ _SCHEMA_MARKERS = frozenset({"voice_group_schema", "voice_person_schema", "voice
                              "fact_owner_schema", "voice_attribution_schema"})
 _SCHEMA_MARKER_ROWS = ((1,),)
 # Database-level rules of _schema_contract (part of schema_contract_document()):
-# SQLite bookkeeping tables are ignored; the metrics store declares its own
-# application_id and user versions, every other database 0/0; auth_meta's
-# schema_version row must be one of these.
+# SQLite bookkeeping tables are ignored; a database holding only the unbound
+# tables is not bound; one holding every SDK-internal table and no contract
+# table is the SDK's own (bound to its version elsewhere); views and triggers
+# are refused; the metrics store declares its own application_id and user
+# versions, every other database the defaults; auth_meta's schema_version row
+# must be one of these.
 _SQLITE_INTERNAL_TABLES = frozenset({"sqlite_sequence", "sqlite_stat1", "sqlite_stat4"})
+_UNBOUND_ALONE_TABLES = frozenset({"memories"})
 _SDK_INTERNAL_TABLES = frozenset({"collections", "segments", "migrations"})
+_SDK_INTERNALS_EXEMPT_WHEN = "every_sdk_internal_table_and_no_contract_table"
+_REFUSED_SQLITE_OBJECTS = frozenset({"view", "trigger"})
 _METRICS_APPLICATION_ID = 1264206897
 _METRICS_USER_VERSIONS = frozenset({1, 2})
+_DEFAULT_APPLICATION_ID = 0
+_DEFAULT_USER_VERSION = 0
 _AUTH_META_SCHEMA_VERSIONS = frozenset({"1", "2", "3"})
 
 # Source-owned v1 column contracts. Unknown additions need an explicit decision
@@ -218,6 +226,32 @@ _FACT_STATES = frozenset({"automatic", "proposed", "confirmed", "deleted", "quar
 _FACT_OWNER_CHANGES = frozenset({"assigned", "reassigned", "owner_returned", "operator_unassigned",
                                  "voice_proposed", "owner_confirmed", "operator_confirmed"})
 _FACT_OWNER_METHODS = frozenset({"operator_assignment", "person_session", "voice_proposal"})
+# SC2-R1 review (proposed amendment of SCv2-P5, pre-R1): every other src enum
+# whose values a protected table stores verbatim, so a value added later
+# without an epoch bump fails the pin (VoiceConsentState,
+# VoiceVerificationOutcome, VoiceAttributionEventKind, VoiceSuspensionReason,
+# DashboardRole, CredentialAction, CredentialOutcome, credential_journal
+# REASONS, RecorderState, ReminderState, ReminderScope, ReminderActionStatus,
+# RunStatus, ActionStatus, lists OwnerType). Inline literal sets in src (no
+# importable name) are listed as excluded in DEPLOYMENT.md.
+_VOICE_CONSENT_STATES = frozenset({"pending_verification", "active", "revoked", "invalidated",
+                                   "verification_locked"})
+_VOICE_VERIFICATION_OUTCOMES = frozenset({"window_opened", "passed", "failed", "failed_foreign", "unavailable"})
+_VOICE_ATTRIBUTION_EVENT_KINDS = frozenset({"not_mine"})
+_VOICE_SUSPENSION_REASONS = frozenset({"not_mine_threshold"})
+_DASHBOARD_ROLES = frozenset({"operator", "home", "evaluator"})
+_CREDENTIAL_ACTIONS = frozenset({"issue", "revise", "revoke"})
+_CREDENTIAL_OUTCOMES = frozenset({"committed", "no_effect"})
+_CREDENTIAL_REASONS = frozenset({"applied", "actor_retired", "scope_unavailable", "grant_invalid",
+                                 "account_unavailable", "writer_busy", "target_missing", "revision_conflict",
+                                 "capacity"})
+_RECORDER_STATES = frozenset({"reserved", "active", "unknown"})
+_REMINDER_STATES = frozenset({"active", "fired", "cancelled"})
+_REMINDER_SCOPES = frozenset({"private", "shared"})
+_REMINDER_ACTION_STATUSES = frozenset({"sending", "confirmed", "failed", "uncertain"})
+_ROUTINE_RUN_STATUSES = frozenset({"running", "succeeded", "failed", "uncertain", "skipped", "interrupted"})
+_ROUTINE_ACTION_STATUSES = frozenset({"pending", "sending", "confirmed", "failed", "uncertain", "not_executed"})
+_LIST_OWNER_TYPES = frozenset({"user", "shared"})
 _LEDGER_GENESIS = "0" * 64
 # Receipt schema 2 (design v2 U3b-0d3, v3 N2): the closed state the child observed,
 # in a record beside the unchanged schema-1 receipt (read_receipt_state).
@@ -1283,14 +1317,16 @@ def _schema_contract(db: sqlite3.Connection, names: set[str], relative: str | No
     database's own scoped tables (_DATABASE_TABLE_COLUMNS) and no other's.
     """
     names = names - _SQLITE_INTERNAL_TABLES
-    if not names or names == {"memories"}:
+    if not names or names <= _UNBOUND_ALONE_TABLES:
         return None
     if not names.intersection(_TABLE_COLUMNS) and _SDK_INTERNAL_TABLES <= names:
         return None  # SDK internals are separately bound to their actual version.
     known = dict(_TABLE_COLUMNS)
     known.update(_DATABASE_TABLE_COLUMNS.get(relative, {}))
+    refused = sorted(_REFUSED_SQLITE_OBJECTS)
     if names - known.keys() or db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type IN ('view','trigger') LIMIT 1").fetchone():
+            "SELECT 1 FROM sqlite_master WHERE type IN (" + ",".join("?" * len(refused)) + ") LIMIT 1",
+            refused).fetchone():
         raise ValueError("runtime_admission_unknown_schema")
     columns = {}
     for name in sorted(names):
@@ -1307,7 +1343,7 @@ def _schema_contract(db: sqlite3.Connection, names: set[str], relative: str | No
     if "metrics" in names:
         if application != _METRICS_APPLICATION_ID or version not in _METRICS_USER_VERSIONS:
             raise ValueError("runtime_admission_unknown_schema")
-    elif application != 0 or version != 0:
+    elif application != _DEFAULT_APPLICATION_ID or version != _DEFAULT_USER_VERSION:
         raise ValueError("runtime_admission_unknown_schema")
     if "auth_meta" in names:
         row = db.execute("SELECT value FROM auth_meta WHERE key='schema_version'").fetchone()
@@ -1316,16 +1352,45 @@ def _schema_contract(db: sqlite3.Connection, names: set[str], relative: str | No
     return {"columns": columns, "application_id": application, "user_version": version}
 
 
+def _contract_vocabularies() -> dict[str, frozenset]:
+    """Every value vocabulary of the schema contract, by document key (SCv2-P5, SC2-R1)."""
+    return {
+        "deletion_kinds": _LEDGER_KINDS,
+        "erasure_participants": _ERASURE_PARTICIPANTS,
+        "fact_states": _FACT_STATES,
+        "fact_owner_changes": _FACT_OWNER_CHANGES,
+        "fact_owner_methods": _FACT_OWNER_METHODS,
+        "voice_consent_states": _VOICE_CONSENT_STATES,
+        "voice_verification_outcomes": _VOICE_VERIFICATION_OUTCOMES,
+        "voice_attribution_event_kinds": _VOICE_ATTRIBUTION_EVENT_KINDS,
+        "voice_suspension_reasons": _VOICE_SUSPENSION_REASONS,
+        "dashboard_roles": _DASHBOARD_ROLES,
+        "credential_actions": _CREDENTIAL_ACTIONS,
+        "credential_outcomes": _CREDENTIAL_OUTCOMES,
+        "credential_reasons": _CREDENTIAL_REASONS,
+        "recorder_states": _RECORDER_STATES,
+        "reminder_states": _REMINDER_STATES,
+        "reminder_scopes": _REMINDER_SCOPES,
+        "reminder_action_statuses": _REMINDER_ACTION_STATUSES,
+        "routine_run_statuses": _ROUTINE_RUN_STATUSES,
+        "routine_action_statuses": _ROUTINE_ACTION_STATUSES,
+        "list_owner_types": _LIST_OWNER_TYPES,
+    }
+
+
 def schema_contract_document() -> bytes:
     """The canonical JSON of the schema contract SCHEMA_CONTRACT_EPOCH names (SC-2).
 
     Everything a state must satisfy to be read by this controller: the column
     contracts (shared and database-scoped), the version markers, the protected
-    set, the pragma and auth_meta rules of _schema_contract, the SDK-internal
-    exemptions and the value vocabularies of the protected tables (SCv2-P5).
-    A test pins its sha256 beside the epoch, so a change here without an
-    epoch bump fails the suite; release mode (later) only moves between
-    archives that declare the same epoch.
+    set, every database rule of _schema_contract (ignored, unbound-alone and
+    SDK-internal tables, refused SQLite objects, pragma and auth_meta rules),
+    all read from the same named constants the reader uses, and the value
+    vocabularies (SCv2-P5, SC2-R1). The SDK exemption's condition is code: the
+    document names it (_SDK_INTERNALS_EXEMPT_WHEN) and a reader-behaviour test
+    pins what it admits. A test pins the sha256 beside the epoch, so a change
+    here without an epoch bump fails the suite; release mode (later) only
+    moves between archives that declare the same epoch.
     """
     return _canonical_json({
         "schema_version": 1,
@@ -1335,21 +1400,15 @@ def schema_contract_document() -> bytes:
         "protected": sorted(_PROTECTED_TABLES),
         "database_rules": {
             "ignored_tables": sorted(_SQLITE_INTERNAL_TABLES),
-            "unbound_alone": ["memories"],
-            "sdk_internals": sorted(_SDK_INTERNAL_TABLES),
-            "views_and_triggers": "refused",
+            "unbound_alone": sorted(_UNBOUND_ALONE_TABLES),
+            "sdk_internals": {"tables": sorted(_SDK_INTERNAL_TABLES), "exempt_when": _SDK_INTERNALS_EXEMPT_WHEN},
+            "refused_objects": sorted(_REFUSED_SQLITE_OBJECTS),
             "metrics": {"application_id": _METRICS_APPLICATION_ID,
                         "user_version": sorted(_METRICS_USER_VERSIONS)},
-            "other": {"application_id": 0, "user_version": 0},
+            "other": {"application_id": _DEFAULT_APPLICATION_ID, "user_version": _DEFAULT_USER_VERSION},
             "auth_meta_schema_version": sorted(_AUTH_META_SCHEMA_VERSIONS),
         },
-        "vocabularies": {
-            "deletion_kinds": sorted(_LEDGER_KINDS),
-            "erasure_participants": sorted(_ERASURE_PARTICIPANTS),
-            "fact_states": sorted(_FACT_STATES),
-            "fact_owner_changes": sorted(_FACT_OWNER_CHANGES),
-            "fact_owner_methods": sorted(_FACT_OWNER_METHODS),
-        },
+        "vocabularies": {name: sorted(values) for name, values in _contract_vocabularies().items()},
     })
 
 

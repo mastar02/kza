@@ -28,9 +28,12 @@ from scripts import stage_runtime as stage
 REPO = Path(__file__).resolve().parents[3]
 
 # Bumping SCHEMA_CONTRACT_EPOCH is a schema transition (outside release mode, SC-D4): add the
-# new epoch's digest here in the same change; never edit an existing entry.
+# new epoch's digest here in the same change; never edit an existing entry once a release declares
+# it. Epoch 1 was re-pinned once before any archive declared it (SC-2 review SC2-R1/SC2-R2: every
+# src enum stored verbatim in a protected table and the reader's own database rules joined the
+# document; the first pin was b5d785d1...). From SC-6a (R1 built) this entry is frozen.
 PINNED_CONTRACTS = {
-    1: "b5d785d185d1de676e79bed6b19712b5db90207516de3b79aca30bcf051ec923",
+    1: "f411ffec926f933274b588377858a79cc1327cd8bfa7f65af9fa9f9c2c063906",
 }
 
 
@@ -53,8 +56,15 @@ def test_the_document_is_canonical_json_of_every_contract_part():
     assert document["protected"] == sorted(stage._PROTECTED_TABLES)
     assert document["database_rules"]["metrics"] == {"application_id": 1264206897, "user_version": [1, 2]}
     assert document["database_rules"]["auth_meta_schema_version"] == ["1", "2", "3"]
-    assert set(document["vocabularies"]) == {"deletion_kinds", "erasure_participants", "fact_states",
-                                             "fact_owner_changes", "fact_owner_methods"}
+    assert document["database_rules"]["unbound_alone"] == ["memories"]
+    assert document["database_rules"]["sdk_internals"] == {
+        "tables": ["collections", "migrations", "segments"],
+        "exempt_when": "every_sdk_internal_table_and_no_contract_table"}
+    assert document["database_rules"]["refused_objects"] == ["trigger", "view"]
+    assert document["database_rules"]["other"] == {"application_id": 0, "user_version": 0}
+    assert document["vocabularies"] == {name: sorted(values)
+                                        for name, values in stage._contract_vocabularies().items()}
+    assert set(document["vocabularies"]) == set(SRC_VOCABULARIES)
 
 
 def _frozen_plus(value):
@@ -69,15 +79,35 @@ CHANGES = {
     "_SCHEMA_MARKER_ROWS": lambda value: ((2,),),
     "_PROTECTED_TABLES": _frozen_plus,
     "_SQLITE_INTERNAL_TABLES": _frozen_plus,
+    "_UNBOUND_ALONE_TABLES": _frozen_plus,
     "_SDK_INTERNAL_TABLES": _frozen_plus,
+    "_SDK_INTERNALS_EXEMPT_WHEN": lambda value: value + "_or_any_sdk_table",
+    "_REFUSED_SQLITE_OBJECTS": lambda value: frozenset(value) - {"trigger"},
     "_METRICS_APPLICATION_ID": lambda value: value + 1,
     "_METRICS_USER_VERSIONS": lambda value: frozenset(value) | {3},
+    "_DEFAULT_APPLICATION_ID": lambda value: value + 1,
+    "_DEFAULT_USER_VERSION": lambda value: value + 1,
     "_AUTH_META_SCHEMA_VERSIONS": lambda value: frozenset(value) | {"4"},
     "_LEDGER_KINDS": _frozen_plus,
     "_ERASURE_PARTICIPANTS": _frozen_plus,
     "_FACT_STATES": _frozen_plus,
     "_FACT_OWNER_CHANGES": _frozen_plus,
     "_FACT_OWNER_METHODS": _frozen_plus,
+    "_VOICE_CONSENT_STATES": _frozen_plus,
+    "_VOICE_VERIFICATION_OUTCOMES": _frozen_plus,
+    "_VOICE_ATTRIBUTION_EVENT_KINDS": _frozen_plus,
+    "_VOICE_SUSPENSION_REASONS": _frozen_plus,
+    "_DASHBOARD_ROLES": _frozen_plus,
+    "_CREDENTIAL_ACTIONS": _frozen_plus,
+    "_CREDENTIAL_OUTCOMES": _frozen_plus,
+    "_CREDENTIAL_REASONS": _frozen_plus,
+    "_RECORDER_STATES": _frozen_plus,
+    "_REMINDER_STATES": _frozen_plus,
+    "_REMINDER_SCOPES": _frozen_plus,
+    "_REMINDER_ACTION_STATUSES": _frozen_plus,
+    "_ROUTINE_RUN_STATUSES": _frozen_plus,
+    "_ROUTINE_ACTION_STATUSES": _frozen_plus,
+    "_LIST_OWNER_TYPES": _frozen_plus,
 }
 
 
@@ -94,17 +124,65 @@ def test_a_changed_column_type_changes_the_document(monkeypatch):
     assert _digest() != pinned
 
 
-def test_the_controller_literals_equal_the_src_vocabularies():
-    """SCv2-P5: a new enum value without the literal (and the epoch bump) fails here."""
-    from src.memory.deletion_ledger import DeletionKind
-    from src.memory.erasure_journal import ErasureParticipant
-    from src.memory.fact_ledger import FactOwnerChange, FactOwnerMethod, FactState
+# Document key -> (stage literal, src module, src name, the table.column that stores it verbatim).
+# SCv2-P5 named the first five; SC2-R1 added every other src enum (or named closed set) a
+# protected table stores, so R1 declares all of them. Inline literal sets in src have no
+# importable name and are listed as excluded in DEPLOYMENT.md («Contrato de esquema»).
+SRC_VOCABULARIES = {
+    "deletion_kinds": ("_LEDGER_KINDS", "src.memory.deletion_ledger", "DeletionKind", "deletion_ledger_v1.kind"),
+    "erasure_participants": ("_ERASURE_PARTICIPANTS", "src.memory.erasure_journal", "ErasureParticipant",
+                             "erasure_targets.participant"),
+    "fact_states": ("_FACT_STATES", "src.memory.fact_ledger", "FactState", "facts.state"),
+    "fact_owner_changes": ("_FACT_OWNER_CHANGES", "src.memory.fact_ledger", "FactOwnerChange",
+                           "fact_owner_revisions.last_change"),
+    "fact_owner_methods": ("_FACT_OWNER_METHODS", "src.memory.fact_ledger", "FactOwnerMethod", "fact_owners.method"),
+    "voice_consent_states": ("_VOICE_CONSENT_STATES", "src.memory.voice_attribution", "VoiceConsentState",
+                             "voice_attribution_consents.state"),
+    "voice_verification_outcomes": ("_VOICE_VERIFICATION_OUTCOMES", "src.memory.voice_attribution",
+                                    "VoiceVerificationOutcome", "voice_verification_attempts.outcome"),
+    "voice_attribution_event_kinds": ("_VOICE_ATTRIBUTION_EVENT_KINDS", "src.memory.voice_attribution",
+                                      "VoiceAttributionEventKind", "voice_attribution_events.kind"),
+    "voice_suspension_reasons": ("_VOICE_SUSPENSION_REASONS", "src.memory.voice_attribution",
+                                 "VoiceSuspensionReason", "voice_attribution_suspensions.reason"),
+    "dashboard_roles": ("_DASHBOARD_ROLES", "src.dashboard.authority", "DashboardRole", "credentials.role"),
+    "credential_actions": ("_CREDENTIAL_ACTIONS", "src.dashboard.credential_journal", "CredentialAction",
+                           "credential_attempts.kind"),
+    "credential_outcomes": ("_CREDENTIAL_OUTCOMES", "src.dashboard.credential_journal", "CredentialOutcome",
+                            "credential_attempts.outcome"),
+    "credential_reasons": ("_CREDENTIAL_REASONS", "src.dashboard.credential_journal", "REASONS",
+                           "credential_attempts.reason"),
+    "recorder_states": ("_RECORDER_STATES", "src.memory.capture_recorders", "RecorderState",
+                        "capture_browser_recorders.state"),
+    "reminder_states": ("_REMINDER_STATES", "src.reminders.reminder_store", "ReminderState", "reminders.state"),
+    "reminder_scopes": ("_REMINDER_SCOPES", "src.reminders.reminder_store", "ReminderScope", "reminders.scope"),
+    "reminder_action_statuses": ("_REMINDER_ACTION_STATUSES", "src.reminders.reminder_store",
+                                 "ReminderActionStatus", "reminder_home_actions.status"),
+    "routine_run_statuses": ("_ROUTINE_RUN_STATUSES", "src.routines.models", "RunStatus", "routine_runs.status"),
+    "routine_action_statuses": ("_ROUTINE_ACTION_STATUSES", "src.routines.models", "ActionStatus",
+                                "routine_run_actions.status"),
+    "list_owner_types": ("_LIST_OWNER_TYPES", "src.lists.list_store", "OwnerType", "lists.owner_type"),
+}
 
-    assert stage._LEDGER_KINDS == {item.value for item in DeletionKind}
-    assert stage._ERASURE_PARTICIPANTS == {item.value for item in ErasureParticipant}
-    assert stage._FACT_STATES == {item.value for item in FactState}
-    assert stage._FACT_OWNER_CHANGES == {item.value for item in FactOwnerChange}
-    assert stage._FACT_OWNER_METHODS == {item.value for item in FactOwnerMethod}
+
+@pytest.mark.parametrize("key", sorted(SRC_VOCABULARIES))
+def test_the_controller_literals_equal_the_src_vocabularies(key):
+    """SCv2-P5 / SC2-R1: a new src value without the literal (and the epoch bump) fails here."""
+    import importlib
+
+    literal, module, name, column = SRC_VOCABULARIES[key]
+    source = getattr(importlib.import_module(module), name)
+    values = {item.value for item in source} if isinstance(source, type) else set(source)
+    assert getattr(stage, literal) == values
+    assert stage._contract_vocabularies()[key] is getattr(stage, literal)
+    table, field = column.split(".")
+    assert table in stage._TABLE_COLUMNS
+    assert field in dict(item.split(":") for item in stage._TABLE_COLUMNS[table].split())
+    if key not in ("erasure_participants", "fact_states"):  # facts / erasure_targets are not protected
+        assert table in stage._PROTECTED_TABLES
+
+
+def test_every_contract_vocabulary_has_a_src_source():
+    assert set(stage._contract_vocabularies()) == set(SRC_VOCABULARIES)
 
 
 def test_the_contract_rules_are_the_ones_the_reader_enforces(tmp_path, monkeypatch):
@@ -126,6 +204,72 @@ def test_the_contract_rules_are_the_ones_the_reader_enforces(tmp_path, monkeypat
             stage._schema_contract(db, {"fact_owner_schema"})
         monkeypatch.setattr(stage, "_SCHEMA_MARKER_ROWS", ((2,),))
         assert stage._schema_contract(db, {"fact_owner_schema"}) is not None
+
+
+# --- the reader's database rules are the constants the document serializes (SC2-R2) --------------
+
+def _db(path: Path, *statements: str, application: int = 0, version: int = 0) -> sqlite3.Connection:
+    with closing(sqlite3.connect(path)) as db, db:
+        for statement in statements:
+            db.execute(statement)
+        db.execute(f"PRAGMA application_id={application}")
+        db.execute(f"PRAGMA user_version={version}")
+    return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+
+
+def _names(db: sqlite3.Connection) -> set[str]:
+    return {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+
+def test_the_unbound_alone_rule_is_the_constant(tmp_path, monkeypatch):
+    with closing(_db(tmp_path / "m.db", "CREATE TABLE memories (id TEXT)")) as db:
+        assert stage._schema_contract(db, _names(db)) is None
+    with closing(_db(tmp_path / "o.db", "CREATE TABLE other_alone (id TEXT)")) as db:
+        with pytest.raises(ValueError, match="runtime_admission_unknown_schema"):
+            stage._schema_contract(db, _names(db))
+        monkeypatch.setattr(stage, "_UNBOUND_ALONE_TABLES", frozenset({"other_alone"}))
+        assert stage._schema_contract(db, _names(db)) is None
+    with closing(_db(tmp_path / "mm.db", "CREATE TABLE memories (id TEXT)", "CREATE TABLE staged (name TEXT)")) as db:
+        monkeypatch.setattr(stage, "_UNBOUND_ALONE_TABLES", frozenset({"memories"}))
+        with pytest.raises(ValueError, match="runtime_admission_unknown_schema"):
+            stage._schema_contract(db, _names(db))  # not alone: memories is not a contract table
+
+
+def test_the_sdk_exemption_admits_exactly_what_its_descriptor_names(tmp_path):
+    """every_sdk_internal_table_and_no_contract_table: all SDK tables, any extra non-contract table."""
+    sdk = [f"CREATE TABLE {name} (id TEXT)" for name in sorted(stage._SDK_INTERNAL_TABLES)]
+    with closing(_db(tmp_path / "a.db", *sdk, "CREATE TABLE embeddings (id TEXT)")) as db:
+        assert stage._schema_contract(db, _names(db)) is None
+    with closing(_db(tmp_path / "b.db", *sdk[:-1], "CREATE TABLE embeddings (id TEXT)")) as db:
+        with pytest.raises(ValueError, match="runtime_admission_unknown_schema"):
+            stage._schema_contract(db, _names(db))  # one SDK table missing
+    with closing(_db(tmp_path / "c.db", *sdk, "CREATE TABLE staged (name TEXT)")) as db:
+        with pytest.raises(ValueError, match="runtime_admission_unknown_schema"):
+            stage._schema_contract(db, _names(db))  # a contract table beside them is read as a contract db
+
+
+@pytest.mark.parametrize("kind", ["view", "trigger"])
+def test_the_refused_objects_are_the_constant(tmp_path, monkeypatch, kind):
+    statement = {"view": "CREATE VIEW v AS SELECT name FROM staged",
+                 "trigger": "CREATE TRIGGER t AFTER INSERT ON staged BEGIN SELECT 1; END"}[kind]
+    with closing(_db(tmp_path / "v.db", "CREATE TABLE staged (name TEXT)", statement)) as db:
+        with pytest.raises(ValueError, match="runtime_admission_unknown_schema"):
+            stage._schema_contract(db, _names(db))
+        monkeypatch.setattr(stage, "_REFUSED_SQLITE_OBJECTS", stage._REFUSED_SQLITE_OBJECTS - {kind})
+        assert stage._schema_contract(db, _names(db)) is not None
+
+
+@pytest.mark.parametrize("pragma", ["application", "version"])
+def test_the_default_pragmas_are_the_constants(tmp_path, monkeypatch, pragma):
+    values = {"application": 7, "version": 0} if pragma == "application" else {"application": 0, "version": 7}
+    with closing(_db(tmp_path / "p.db", "CREATE TABLE staged (name TEXT)", **values)) as db:
+        with pytest.raises(ValueError, match="runtime_admission_unknown_schema"):
+            stage._schema_contract(db, _names(db))
+        name = "_DEFAULT_APPLICATION_ID" if pragma == "application" else "_DEFAULT_USER_VERSION"
+        monkeypatch.setattr(stage, name, 7)
+        assert stage._schema_contract(db, _names(db)) == {
+            "columns": {"staged": {"name": "TEXT"}}, "application_id": values["application"],
+            "user_version": values["version"]}
 
 
 # --- release.json declares the contract (M-2.10) --------------------------------------------------
