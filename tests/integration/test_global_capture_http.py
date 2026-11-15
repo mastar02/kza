@@ -12,7 +12,7 @@ from httpx import ASGITransport, AsyncClient
 import pytest
 
 from src.dashboard.auth import COOKIE_NAME
-from src.dashboard.authority import DashboardRole, EvaluationModality, EvaluationSample
+from src.dashboard.authority import DashboardLease, DashboardRole, EvaluationModality, EvaluationSample
 from src.main import build_application
 from src.memory.capture_control import CaptureControl, CaptureController
 from src.memory.producer_context import producer_context
@@ -414,3 +414,34 @@ async def test_household_and_evaluator_roles_cannot_forget(tmp_path, leaves, das
         async with AsyncClient(transport=ASGITransport(app=graph.dashboard.app), base_url='http://testserver') as client:
             assert (await client.post(FORGET, json={'expected_carried': 2, 'no_capture_running': True})).status_code == 401
         assert graph.capture_control.recorders.carried() == 2
+
+
+async def test_session_lapsing_inside_the_forget_transaction_is_a_403(tmp_path, leaves, dashboard_auth, monkeypatch, caplog):
+    """R1B2-1: the HTTP wiring rechecks the session inside the transaction.
+
+    The operator's lease answers True for the route, the controller and the
+    entry checks; it lapses only once the transaction selected the carried
+    rows, so only the in-transaction recheck can refuse the forget.
+    """
+    async with carried_application(tmp_path, leaves) as graph:
+        recorders = graph.capture_control.recorders
+        async with AsyncClient(transport=ASGITransport(app=graph.dashboard.app), base_url='http://testserver') as client:
+            await login(client, dashboard_auth['Authorization'].split(' ', 1)[1])
+            before = (await client.get(URL)).json()
+            original = DashboardLease.current
+            checks = []
+
+            def lapsing(self, permissions=frozenset()):
+                checks.append(bool(recorders._forgetting))
+                return not recorders._forgetting and original(self, permissions)
+
+            with monkeypatch.context() as patch, caplog.at_level('WARNING'):
+                patch.setattr(DashboardLease, 'current', lapsing)
+                response = await client.post(FORGET, json={'expected_carried': 2, 'no_capture_running': True})
+            assert response.status_code == 403 and response.json() == {'detail': 'capture_control_denied'}
+            assert response.headers['cache-control'] == 'no-store'
+            # Refused by a check made while the rows were selected, not at entry.
+            assert checks[0] is False and True in checks
+            assert not [r for r in caplog.records if 'forgot' in r.getMessage()]
+            assert (await client.get(URL)).json() == before
+        assert recorders.carried() == recorders.pending() == 2 and not recorders._fault

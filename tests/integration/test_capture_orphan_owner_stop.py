@@ -306,3 +306,35 @@ async def test_a_lapsed_administrator_cannot_forget(tmp_path, monkeypatch):
         with pytest.raises(PermissionError):
             await control.forget_carried(1, SimpleNamespace(require_current=lambda: None))
         assert control.recorders.carried() == 1
+
+
+async def test_authority_lapsing_inside_the_forget_transaction_rolls_it_back(tmp_path, monkeypatch, caplog):
+    """R1B2-1: the real wiring rechecks the administrator inside the transaction.
+
+    The lease is current for every entry check and lapses only once the
+    transaction has selected the carried rows (``_forgetting`` is installed),
+    so only the in-transaction recheck through ``actor.require_current`` can
+    refuse it.
+    """
+    root = tmp_path / "graph"
+    await _orphaned_browser_owner(root, monkeypatch)
+    async with application_graph(root, monkeypatch, Clock(time.time())) as bundle:
+        control = bundle.graph.capture_control
+        recorders = control.recorders
+        lease = root_lease(bundle)
+        lapsing = CaptureController.from_dashboard(
+            lease.principal, lambda: not recorders._forgetting and lease.current())
+        actor = _actor(bundle)
+        control.request(True, control.snapshot()["revision"], actor)
+        snapshot = await _phase(control, "muted")
+        assert snapshot["carried_capture_owners"] == 1
+        lapsing.require_current()
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(PermissionError, match="^capture_control_denied$"):
+                await control.forget_carried(1, lapsing)
+        assert not [r for r in caplog.records if "forgot" in r.getMessage()]
+        assert control.snapshot() == snapshot and snapshot["total_mute_confirmed"] is False
+        assert recorders.carried() == recorders.pending() == 1 and not recorders._fault
+        assert recorders._forgetting == frozenset()
+        # The same administrator, still current, forgets it afterwards.
+        assert (await control.forget_carried(1, actor))["forgotten_capture_owners"] == 1
