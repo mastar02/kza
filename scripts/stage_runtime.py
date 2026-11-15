@@ -4386,7 +4386,10 @@ class AdmissionController:
             is_managed = managed or head is not None or _has_authority(binding) or _has_authority(latest)
             if is_managed:
                 if latest["authority"]["digest"] != binding["authority"]["digest"]:
-                    if head is None or not (_validate_derived_capability(self.root, head, latest, binding)
+                    # SC-2 review AUTHZ3-3: derived authority is a retired grant; with the
+                    # production flag only the pending compaction's capability authorizes K.
+                    if head is None or not ((LEGACY_MANAGED_TRANSITIONS and
+                                             _validate_derived_capability(self.root, head, latest, binding))
                                             or (self.gate.startswith("compaction:") and
                                                 _validate_compaction_capability(self.root, head, latest,
                                                                                 binding))):

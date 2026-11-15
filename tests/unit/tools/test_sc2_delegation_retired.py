@@ -5,8 +5,10 @@ runtime_admission_delegation_retired before any read, lock, lease or write;
 the CLI exits 78 with the code; activating another slot under a managed head
 refuses with runtime_admission_transition_requires_release_mode before the
 candidate is read, while the head's own slot and compaction's K (under its own
-gate) stay allowed; an epoch-3 controller copy cannot take the lease on an
-epoch-4 root; an existing owner chain still validates, serves and compacts.
+gate) stay allowed; an epoch-3 controller copy that has require_forward_epoch
+(b0c322d and later, here the pinned 26de262) cannot take the lease on an epoch-4
+root (older copies do not check the epoch: AUTHZ3-1, DEPLOYMENT); an existing
+owner chain still validates, serves and compacts.
 No test here uses the legacy_managed_transitions fixture except to build the
 owner chain whose later handling runs with the production flag.
 """
@@ -246,7 +248,53 @@ def test_compaction_activates_k_but_no_other_slot_under_its_gate(x_archive, tmp_
     assert stage.read_admission_head(root) == head
 
 
-# --- epochs: an epoch-3 controller copy is locked out of an epoch-4 root ------------------------------
+def test_a_matching_derived_record_does_not_authorize_k(x_archive, tmp_path, checkout_controller, monkeypatch):
+    """SC-2 review AUTHZ3-3: with the production flag, K's authority comes only from its compaction.
+
+    A pre-SC-2 derived-authority record matching K's binding is planted as a
+    validator that accepts it; the compaction's own capability is withheld, so
+    A2's activation of K must refuse before the probe and leave the head on H.
+    The compaction tests never reach this branch (K's authority digest equals
+    H's in every world they build), so K's snapshot digest is made distinct
+    inside activate only, after the compaction authorized K.
+    """
+    world = cw.world(x_archive, tmp_path, hops=())
+    root = world["root"]
+    head = stage.read_admission_head(root)
+    activating = []
+    original_activate, original_snapshot = stage.AdmissionController.activate, stage._binding_snapshot
+
+    def activate(self, name, **options):
+        activating.append(name)
+        try:
+            return original_activate(self, name, **options)
+        finally:
+            activating.pop()
+
+    def snapshot(root_path, name):
+        binding = original_snapshot(root_path, name)
+        if activating and name == "k":
+            binding = {**binding, "authority": {**binding["authority"], "digest": "f" * 64}}
+        return binding
+
+    calls = []
+
+    def planted(*_args):
+        calls.append("derived")
+        return True
+
+    monkeypatch.setattr(stage.AdmissionController, "activate", activate)
+    monkeypatch.setattr(stage, "_binding_snapshot", snapshot)
+    monkeypatch.setattr(stage, "_validate_derived_capability", planted)
+    monkeypatch.setattr(stage, "_validate_compaction_capability", lambda *_args: calls.append("compaction"))
+    monkeypatch.setattr(stage, "_probe_candidate", _boom)
+    with pytest.raises(ValueError, match="^privacy_authority_stale$"):
+        cw.start(root, x_archive)
+    assert calls == ["compaction"]  # the digest branch was reached; the derived record was never consulted
+    assert stage.read_admission_head(root) == head
+
+
+# --- epochs: an epoch-3 copy with require_forward_epoch is locked out of an epoch-4 root ---------------
 
 @pytest.fixture(scope="module")
 def epoch3_archive(tmp_path_factory):

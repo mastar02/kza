@@ -15,8 +15,10 @@ from tests.mocks.slot_rollback import exercise_slot_rollback
 UNMANAGED_REVISION = "9b3170294eb69a53dd27b63949c09a63a2efed54"
 
 
-def test_compiled_slot_rollback_preserves_latest_privacy_authority(tmp_path, legacy_managed_transitions):
-    # SC-2: a delegated copy activated under the managed head is a legacy world (fixture).
+@pytest.mark.usefixtures("legacy_managed_transitions")
+def test_compiled_slot_rollback_preserves_latest_privacy_authority(tmp_path):
+    # SC-2: a delegated copy activated under the managed head is a legacy world (fixture; not a
+    # parameter, which would shadow the imported context manager of the same name: review RV3-4).
     exercise_slot_rollback(tmp_path)
 
 

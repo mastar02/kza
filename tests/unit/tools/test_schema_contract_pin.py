@@ -17,6 +17,7 @@ from contextlib import closing
 import hashlib
 import json
 from pathlib import Path
+import re
 import sqlite3
 import types
 
@@ -230,6 +231,149 @@ def test_every_column_of_the_privacy_progress_tables_is_classified():
                 assert key in stage._contract_vocabularies(), (table, column, key)
             assert any(SRC_VOCABULARIES[key][3] == f"{table}.{column}" for key in keys) \
                 or table == "erasure_steps" and column == "participant", (table, column)
+
+
+# AUTHZ3-2: every TEXT column of every protected table is classified, so a new closed set (or a
+# diagnostic column turned selector) forces the choice. A tuple names pinned vocabularies; "excluded"
+# is an inline literal set and "diagnostic" free text no code selects on, both named in DEPLOYMENT's
+# exclusions paragraph; "rule" is governed by a database rule of the document. _PROTECTED_OPEN_TEXT
+# holds identifiers, digests, timestamps, payload and JSON: not a closed set.
+PROTECTED_CLOSED_TEXT = {
+    "ambient_runtime_control": {},
+    "audio_write_intents": {},
+    "auth_meta": {"key": "excluded", "value": "rule"},
+    "capture_browser_recorders": {"state": ("recorder_states",), "kind": "excluded"},
+    "capture_runtime_control": {"mode": "excluded"},
+    "conversation_erasures": {},
+    "conversation_tombstones": {},
+    "credential_attempts": {"kind": ("credential_actions",), "outcome": ("credential_outcomes",),
+                            "reason": ("credential_reasons",)},
+    "credentials": {"role": ("dashboard_roles",)},
+    "deletion_ledger_salt_v1": {},
+    "deletion_ledger_v1": {"kind": ("deletion_kinds",)},
+    "fact_owner_revisions": {"last_change": ("fact_owner_changes",)},
+    "fact_owners": {"method": ("fact_owner_methods",)},
+    "legacy_quarantine_batches_v1": {},
+    "legacy_quarantine_records_v1": {"state": "excluded"},
+    "list_items": {},
+    "lists": {"owner_type": ("list_owner_types",)},
+    "live_deliveries": {},
+    "live_delivery_lineage": {},
+    "live_delivery_sources": {},
+    "pending_audio_deletions": {"last_error": "diagnostic"},
+    "quarantines": {},
+    "reminder_home_actions": {"status": ("reminder_action_statuses",), "reason": "diagnostic"},
+    "reminders": {"state": ("reminder_states",), "scope": ("reminder_scopes",), "recurrence": "excluded"},
+    "retired_users": {},
+    "routine_run_actions": {"status": ("routine_action_statuses",), "reason": "diagnostic"},
+    "routine_runs": {"status": ("routine_run_statuses",), "source": "excluded", "reason": "diagnostic"},
+    "routines": {},
+    "sessions": {},
+    "staged": {},
+    "voice_attribution_consents": {"state": ("voice_consent_states",)},
+    "voice_attribution_control": {},
+    "voice_attribution_events": {"kind": ("voice_attribution_event_kinds",)},
+    "voice_attribution_suspensions": {"reason": ("voice_suspension_reasons",)},
+    "voice_group_request_lineage": {},
+    "voice_group_requests": {},
+    "voice_profile_people": {},
+    "voice_profile_sources": {},
+    "voice_profiles": {},
+    "voice_review_requests": {},
+    "voice_verification_attempts": {"outcome": ("voice_verification_outcomes",)},
+}
+_PROTECTED_OPEN_TEXT = {
+    "ambient_runtime_control": set(),
+    "audio_write_intents": {"path", "conversation_id"},
+    "auth_meta": set(),
+    "capture_browser_recorders": {"token_hash"},
+    "capture_runtime_control": set(),
+    "conversation_erasures": {"id", "conversation_id", "requested_by"},
+    "conversation_tombstones": {"conversation_id", "deleted_by"},
+    "credential_attempts": {"request_id", "actor_key", "command_digest", "credential_id"},
+    "credentials": {"id", "digest", "subject", "user_id", "samples"},
+    "deletion_ledger_salt_v1": {"salt"},
+    "deletion_ledger_v1": {"subject_sha256", "prev_sha256", "row_sha256"},
+    "fact_owner_revisions": {"fact_id"},
+    "fact_owners": {"fact_id", "person_id", "assigned_by", "evidence"},
+    "legacy_quarantine_batches_v1": {"id", "snapshot_sha256", "selection_sha256", "collection_id", "imported_at"},
+    # encoding is copied verbatim from the vector SDK's embeddings_queue, not a src vocabulary.
+    "legacy_quarantine_records_v1": {"batch_id", "record_id", "document", "metadata_json", "encoding", "digest"},
+    "list_items": {"id", "list_id", "text", "added_by"},
+    "lists": {"id", "name", "owner_id"},
+    "live_deliveries": {"ticket", "client_id", "connection_id", "event_id", "nonce", "owner_namespace"},
+    "live_delivery_lineage": {"ticket", "source_digest"},
+    "live_delivery_sources": {"ticket", "conversation_id"},
+    "pending_audio_deletions": {"path", "conversation_id"},
+    "quarantines": {"source", "destination"},
+    "reminder_home_actions": {"request_id", "body"},
+    "reminders": {"id", "user_id", "text", "ha_actions"},
+    "retired_users": {"user_id"},
+    "routine_run_actions": {"run_id", "entity_id"},
+    "routine_runs": {"run_id", "routine_id", "occurrence_key", "actor", "snapshot_json", "scheduled_for"},
+    "routines": {"routine_id", "created_by", "created_at", "definition_json"},
+    "sessions": {"digest", "credential", "legacy_digest"},
+    "staged": {"name"},
+    "voice_attribution_consents": {"person_id", "verified_profile_id", "changed_by"},
+    "voice_attribution_control": {"changed_by"},
+    "voice_attribution_events": {"id", "profile_id"},
+    "voice_attribution_suspensions": {"profile_id"},
+    "voice_group_request_lineage": {"actor", "request_id", "source_digest"},
+    "voice_group_requests": {"actor", "request_id", "digest", "sources_json"},
+    "voice_profile_people": {"profile_id", "user_id", "updated_by"},
+    "voice_profile_sources": {"profile_id", "conversation_id"},
+    "voice_profiles": {"id", "name", "model_key", "sources_json", "confirmed_by"},
+    "voice_review_requests": {"actor", "request_id", "digest", "profile_id"},
+    "voice_verification_attempts": {"person_id"},
+}
+
+
+def _text_columns(table: str) -> set[str]:
+    return {name for name, kind in (item.split(":") for item in stage._TABLE_COLUMNS[table].split())
+            if kind == "TEXT"}
+
+
+def test_every_text_column_of_the_protected_tables_is_classified():
+    """AUTHZ3-2: each TEXT column of a protected table is pinned, excluded, diagnostic, a rule or open."""
+    assert set(PROTECTED_CLOSED_TEXT) == set(_PROTECTED_OPEN_TEXT) == set(stage._PROTECTED_TABLES)
+    vocabularies = stage._contract_vocabularies()
+    for table, classified in PROTECTED_CLOSED_TEXT.items():
+        assert _text_columns(table) == set(classified) | _PROTECTED_OPEN_TEXT[table], table
+        assert not set(classified) & _PROTECTED_OPEN_TEXT[table], table
+        for column, keys in classified.items():
+            if isinstance(keys, tuple):
+                for key in keys:
+                    assert key in vocabularies and SRC_VOCABULARIES[key][3] == f"{table}.{column}", (table, key)
+            else:
+                assert keys in {"excluded", "diagnostic", "rule"}, (table, column)
+    assert PROTECTED_CLOSED_TEXT["auth_meta"]["value"] == "rule"
+    document = json.loads(stage.schema_contract_document())
+    assert document["database_rules"]["auth_meta_schema_version"] == sorted(stage._AUTH_META_SCHEMA_VERSIONS)
+    # Every pinned vocabulary of a protected table is the classification of its column.
+    for key, (_, _, _, column) in SRC_VOCABULARIES.items():
+        table, field = column.split(".")
+        if table in stage._PROTECTED_TABLES:
+            assert key in PROTECTED_CLOSED_TEXT[table].get(field, ()), key
+
+
+def _exclusions_paragraph() -> str:
+    text = (REPO / "docs" / "architecture" / "DEPLOYMENT.md").read_text()
+    blocks = [" ".join(block.split()) for block in re.split(r"\n\s*\n", text)]
+    found = [block for block in blocks if block.startswith("Quedan fuera los conjuntos cerrados que `src` escribe")]
+    assert len(found) == 1
+    return found[0]
+
+
+def test_every_excluded_or_diagnostic_column_is_named_in_deployment():
+    """AUTHZ3-2 / AUTHZ-1: DEPLOYMENT's exclusions paragraph names each column the contract leaves out."""
+    paragraph = _exclusions_paragraph()
+    left_out = [(table, column) for tables in (PROTECTED_CLOSED_TEXT, PRIVACY_PROGRESS_TABLES)
+                for table, classified in tables.items()
+                for column, keys in classified.items() if keys in ("excluded", "diagnostic")]
+    assert len(left_out) == 12
+    for table, column in left_out:
+        assert f"{table}.{column}" in paragraph, (table, column)
+    assert "Tampoco son contrato las columnas de diagnóstico de tablas protegidas" in paragraph
 
 
 def test_every_value_src_writes_to_erasure_steps_last_error_is_pinned():
