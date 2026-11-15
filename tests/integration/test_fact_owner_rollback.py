@@ -31,6 +31,13 @@ from scripts import stage_runtime as stage
 from scripts.build_runtime import build_runtime
 from tests.mocks.slot_rollback import is_managed_capable
 
+# SC-2 (sc-release-design v3 delegation_off.test_fixture): this module rehearses legacy
+# rollback worlds (prepare + delegate + activate of a copy under a managed head), which
+# SC-2 retired; they keep testing chain validation, the candidate probe and data
+# survival under the legacy_managed_transitions fixture. The refusals are in
+# tests/unit/tools/test_sc2_delegation_retired.py.
+pytestmark = pytest.mark.usefixtures("legacy_managed_transitions")
+
 REPO = Path(__file__).resolve().parents[2]
 PRIVACY = "data/privacy.db"
 TIMEOUT = 60

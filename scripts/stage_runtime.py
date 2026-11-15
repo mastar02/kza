@@ -105,6 +105,24 @@ _PROTECTED_TABLES = frozenset({
 # Single-row version markers; each must hold exactly [(1,)].
 _SCHEMA_MARKERS = frozenset({"voice_group_schema", "voice_person_schema", "voice_capture_review_schema",
                              "fact_owner_schema", "voice_attribution_schema"})
+_SCHEMA_MARKER_ROWS = ((1,),)
+# Database-level rules of _schema_contract (part of schema_contract_document()):
+# SQLite bookkeeping tables are ignored; a database holding only the unbound
+# tables is not bound; one holding every SDK-internal table and no contract
+# table is the SDK's own (bound to its version elsewhere); views and triggers
+# are refused; the metrics store declares its own application_id and user
+# versions, every other database the defaults; auth_meta's schema_version row
+# must be one of these.
+_SQLITE_INTERNAL_TABLES = frozenset({"sqlite_sequence", "sqlite_stat1", "sqlite_stat4"})
+_UNBOUND_ALONE_TABLES = frozenset({"memories"})
+_SDK_INTERNAL_TABLES = frozenset({"collections", "segments", "migrations"})
+_SDK_INTERNALS_EXEMPT_WHEN = "every_sdk_internal_table_and_no_contract_table"
+_REFUSED_SQLITE_OBJECTS = frozenset({"view", "trigger"})
+_METRICS_APPLICATION_ID = 1264206897
+_METRICS_USER_VERSIONS = frozenset({1, 2})
+_DEFAULT_APPLICATION_ID = 0
+_DEFAULT_USER_VERSION = 0
+_AUTH_META_SCHEMA_VERSIONS = frozenset({"1", "2", "3"})
 
 # Source-owned v1 column contracts. Unknown additions need an explicit decision
 # about authority versus payload before a managed generation may serve them.
@@ -198,6 +216,60 @@ _LEDGER_TABLE = "deletion_ledger_v1"
 _LEDGER_KINDS = frozenset({"conversation_erased", "fact_deleted", "fact_pruned_retired_owner",
                            "voice_profile_deleted", "user_retired", "credential_revoked",
                            "voice_consent_withdrawn"})
+# SC-2 (sc-release-design v3 SCv2-P5): the value vocabularies of the protected
+# tables, as literals because the controller never imports src. Each equals its
+# src enum (ErasureParticipant, FactState, FactOwnerChange, FactOwnerMethod; a
+# test pins it), and all of them are part of schema_contract_document().
+_ERASURE_PARTICIPANTS = frozenset({"producers", "captures", "contexts", "semantic_index", "events",
+                                   "diagnostics", "collectors", "streams", "suggestions", "voices"})
+_FACT_STATES = frozenset({"automatic", "proposed", "confirmed", "deleted", "quarantined"})
+_FACT_OWNER_CHANGES = frozenset({"assigned", "reassigned", "owner_returned", "operator_unassigned",
+                                 "voice_proposed", "owner_confirmed", "operator_confirmed"})
+_FACT_OWNER_METHODS = frozenset({"operator_assignment", "person_session", "voice_proposal"})
+# SC2-R1 review (proposed amendment of SCv2-P5, pre-R1): every other src enum
+# whose values a protected table stores verbatim, so a value added later
+# without an epoch bump fails the pin (VoiceConsentState,
+# VoiceVerificationOutcome, VoiceAttributionEventKind, VoiceSuspensionReason,
+# DashboardRole, CredentialAction, CredentialOutcome, credential_journal
+# REASONS, RecorderState, ReminderState, ReminderScope, ReminderActionStatus,
+# RunStatus, ActionStatus, lists OwnerType). Inline literal sets in src (no
+# importable name) are listed as excluded in DEPLOYMENT.md.
+_VOICE_CONSENT_STATES = frozenset({"pending_verification", "active", "revoked", "invalidated",
+                                   "verification_locked"})
+_VOICE_VERIFICATION_OUTCOMES = frozenset({"window_opened", "passed", "failed", "failed_foreign", "unavailable"})
+_VOICE_ATTRIBUTION_EVENT_KINDS = frozenset({"not_mine"})
+_VOICE_SUSPENSION_REASONS = frozenset({"not_mine_threshold"})
+_DASHBOARD_ROLES = frozenset({"operator", "home", "evaluator"})
+_CREDENTIAL_ACTIONS = frozenset({"issue", "revise", "revoke"})
+_CREDENTIAL_OUTCOMES = frozenset({"committed", "no_effect"})
+_CREDENTIAL_REASONS = frozenset({"applied", "actor_retired", "scope_unavailable", "grant_invalid",
+                                 "account_unavailable", "writer_busy", "target_missing", "revision_conflict",
+                                 "capacity"})
+_RECORDER_STATES = frozenset({"reserved", "active", "unknown"})
+_REMINDER_STATES = frozenset({"active", "fired", "cancelled"})
+_REMINDER_SCOPES = frozenset({"private", "shared"})
+_REMINDER_ACTION_STATUSES = frozenset({"sending", "confirmed", "failed", "uncertain"})
+_ROUTINE_RUN_STATUSES = frozenset({"running", "succeeded", "failed", "uncertain", "skipped", "interrupted"})
+_ROUTINE_ACTION_STATUSES = frozenset({"pending", "sending", "confirmed", "failed", "uncertain", "not_executed"})
+_LIST_OWNER_TYPES = frozenset({"user", "shared"})
+# SC-2 review AUTHZ-1 (Option A, same proposed amendment, pre-R1): the rule is
+# privacy relevance, not the protected set. Besides the protected tables, the
+# privacy.db tables that govern erasure progress and attribution
+# (erasure_targets, erasure_steps, policy_index_deletions, facts,
+# fact_sources; not protected) have every named src enum they store pinned
+# (a test lists them): ErasureParticipant and FactState (SCv2-P5), ErasureState and
+# ErasureError (erasure_steps.state/last_error), IndexCleanupError
+# (policy_index_deletions.last_error and the semantic-index recheck in
+# erasure_steps.last_error) and MemoryOrigin (fact_sources.origin). R1's
+# ErasureJournal.due() and claim only match pending/running, so an unknown
+# state after a rollback would stall an erasure silently. Their inline literal
+# sets (policy_index_deletions.state, voice_groups.state/reason) are listed as
+# excluded in DEPLOYMENT.md.
+_ERASURE_STATES = frozenset({"pending", "running", "complete", "blocked"})
+_ERASURE_ERRORS = frozenset({"participant_unregistered", "participant_unavailable", "cleanup_failed",
+                             "invalid_cleanup_result", "cleanup_pending", "interrupted_by_restart"})
+_INDEX_CLEANUP_ERRORS = frozenset({"index_cleanup_failed", "unsupported_index_target", "index_startup_recheck"})
+_MEMORY_ORIGINS = frozenset({"ambient", "voice", "interaction"})
 _LEDGER_GENESIS = "0" * 64
 # Receipt schema 2 (design v2 U3b-0d3, v3 N2): the closed state the child observed,
 # in a record beside the unchanged schema-1 receipt (read_receipt_state).
@@ -226,13 +298,35 @@ _CLOSED_STATE_KEYS = ("state_identity", "store_roots", "schemas", "sdk_versions"
 #   records and the compaction tombstones (admission/compaction/v1,
 #   admission/prepared, admission/copies-retired); an epoch-2 controller
 #   ignores the gate, so it must never be installed over a 0c root.
+#   4 (SC-2) retires delegation grants and cross-slot managed activation; an
+#   epoch-3 controller would still grant, so it must never take the lease on
+#   an epoch-4 root (require_forward_epoch) and install-controller refuses it
+#   (managed_launcher.py install_controller).
 #   install-controller refuses an archive below this epoch.
+# SCHEMA_CONTRACT_EPOCH (SC-2, design mechanism.schema_rule): the version of
+#   schema_contract_document() (tables, columns, markers, protected set,
+#   pragma and auth_meta rules, value vocabularies). Independent of
+#   CONTROLLER_EPOCH; a test pins the document's digest to this value, so any
+#   contract change must bump it. build_runtime copies it into release.json
+#   as "schema_contract" (an archive built before SC-2 reads as 0).
 LAUNCHER_CONTRACT = 3
 FORMAT_EPOCH = 1
 RECEIPT_STATE_SCHEMA = 2
-CONTROLLER_EPOCH = 3
+CONTROLLER_EPOCH = 4
+SCHEMA_CONTRACT_EPOCH = 1
 MIN_FORMAT_EPOCH = 1
-_RELEASE_INTEGER_KEYS = ("launcher_contract", "format_epoch", "receipt_state", "controller_epoch")
+_RELEASE_INTEGER_KEYS = ("launcher_contract", "format_epoch", "receipt_state", "controller_epoch",
+                         "schema_contract")
+# SC-2 (sc-release-design v3 delegation_off): delegation grants (delegate,
+# authorize_target_delegation, authorize_derived_state) and the activation of
+# another slot under a managed head are retired; only release mode (not yet
+# shipped) moves a managed head. Validation of existing delegation chains and
+# compaction of existing owners stay. True only in tests that build legacy
+# worlds in process (tests/conftest.py legacy_managed_transitions); a
+# compiled controller has no way to set it.
+LEGACY_MANAGED_TRANSITIONS = False
+DELEGATION_RETIRED = "runtime_admission_delegation_retired"
+TRANSITION_REQUIRES_RELEASE_MODE = "runtime_admission_transition_requires_release_mode"
 
 _ADMISSION_VALIDATION_LOCK = threading.RLock()
 
@@ -1240,15 +1334,17 @@ def _schema_contract(db: sqlite3.Connection, names: set[str], relative: str | No
     ``relative`` is the database's state-relative path: it admits that
     database's own scoped tables (_DATABASE_TABLE_COLUMNS) and no other's.
     """
-    names = names - {"sqlite_sequence", "sqlite_stat1", "sqlite_stat4"}
-    if not names or names == {"memories"}:
+    names = names - _SQLITE_INTERNAL_TABLES
+    if not names or names <= _UNBOUND_ALONE_TABLES:
         return None
-    if not names.intersection(_TABLE_COLUMNS) and {"collections", "segments", "migrations"} <= names:
+    if not names.intersection(_TABLE_COLUMNS) and _SDK_INTERNAL_TABLES <= names:
         return None  # SDK internals are separately bound to their actual version.
     known = dict(_TABLE_COLUMNS)
     known.update(_DATABASE_TABLE_COLUMNS.get(relative, {}))
+    refused = sorted(_REFUSED_SQLITE_OBJECTS)
     if names - known.keys() or db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type IN ('view','trigger') LIMIT 1").fetchone():
+            "SELECT 1 FROM sqlite_master WHERE type IN (" + ",".join("?" * len(refused)) + ") LIMIT 1",
+            refused).fetchone():
         raise ValueError("runtime_admission_unknown_schema")
     columns = {}
     for name in sorted(names):
@@ -1257,20 +1353,85 @@ def _schema_contract(db: sqlite3.Connection, names: set[str], relative: str | No
             raise ValueError("runtime_admission_unknown_schema")
         columns[name] = actual
         if name in _SCHEMA_MARKERS:
-            if [tuple(row) for row in db.execute("SELECT version FROM " + _quote(name))] != [(1,)]:
+            if tuple(tuple(row) for row in db.execute("SELECT version FROM " + _quote(name))) \
+                    != _SCHEMA_MARKER_ROWS:
                 raise ValueError("runtime_admission_unknown_schema")
     application = db.execute("PRAGMA application_id").fetchone()[0]
     version = db.execute("PRAGMA user_version").fetchone()[0]
     if "metrics" in names:
-        if application != 1264206897 or version not in (1, 2):
+        if application != _METRICS_APPLICATION_ID or version not in _METRICS_USER_VERSIONS:
             raise ValueError("runtime_admission_unknown_schema")
-    elif application != 0 or version != 0:
+    elif application != _DEFAULT_APPLICATION_ID or version != _DEFAULT_USER_VERSION:
         raise ValueError("runtime_admission_unknown_schema")
     if "auth_meta" in names:
         row = db.execute("SELECT value FROM auth_meta WHERE key='schema_version'").fetchone()
-        if row is None or row[0] not in {"1", "2", "3"}:
+        if row is None or row[0] not in _AUTH_META_SCHEMA_VERSIONS:
             raise ValueError("runtime_admission_unknown_schema")
     return {"columns": columns, "application_id": application, "user_version": version}
+
+
+def _contract_vocabularies() -> dict[str, frozenset]:
+    """Every value vocabulary of the schema contract, by document key (SCv2-P5, SC2-R1, AUTHZ-1)."""
+    return {
+        "deletion_kinds": _LEDGER_KINDS,
+        "erasure_participants": _ERASURE_PARTICIPANTS,
+        "fact_states": _FACT_STATES,
+        "fact_owner_changes": _FACT_OWNER_CHANGES,
+        "fact_owner_methods": _FACT_OWNER_METHODS,
+        "voice_consent_states": _VOICE_CONSENT_STATES,
+        "voice_verification_outcomes": _VOICE_VERIFICATION_OUTCOMES,
+        "voice_attribution_event_kinds": _VOICE_ATTRIBUTION_EVENT_KINDS,
+        "voice_suspension_reasons": _VOICE_SUSPENSION_REASONS,
+        "dashboard_roles": _DASHBOARD_ROLES,
+        "credential_actions": _CREDENTIAL_ACTIONS,
+        "credential_outcomes": _CREDENTIAL_OUTCOMES,
+        "credential_reasons": _CREDENTIAL_REASONS,
+        "recorder_states": _RECORDER_STATES,
+        "reminder_states": _REMINDER_STATES,
+        "reminder_scopes": _REMINDER_SCOPES,
+        "reminder_action_statuses": _REMINDER_ACTION_STATUSES,
+        "routine_run_statuses": _ROUTINE_RUN_STATUSES,
+        "routine_action_statuses": _ROUTINE_ACTION_STATUSES,
+        "list_owner_types": _LIST_OWNER_TYPES,
+        "erasure_states": _ERASURE_STATES,
+        "erasure_errors": _ERASURE_ERRORS,
+        "index_cleanup_errors": _INDEX_CLEANUP_ERRORS,
+        "memory_origins": _MEMORY_ORIGINS,
+    }
+
+
+def schema_contract_document() -> bytes:
+    """The canonical JSON of the schema contract SCHEMA_CONTRACT_EPOCH names (SC-2).
+
+    Everything a state must satisfy to be read by this controller: the column
+    contracts (shared and database-scoped), the version markers, the protected
+    set, every database rule of _schema_contract (ignored, unbound-alone and
+    SDK-internal tables, refused SQLite objects, pragma and auth_meta rules),
+    all read from the same named constants the reader uses, and the value
+    vocabularies (SCv2-P5, SC2-R1). The SDK exemption's condition is code: the
+    document names it (_SDK_INTERNALS_EXEMPT_WHEN) and a reader-behaviour test
+    pins what it admits. A test pins the sha256 beside the epoch, so a change
+    here without an epoch bump fails the suite; release mode (later) only
+    moves between archives that declare the same epoch.
+    """
+    return _canonical_json({
+        "schema_version": 1,
+        "tables": dict(_TABLE_COLUMNS),
+        "database_tables": {path: dict(tables) for path, tables in _DATABASE_TABLE_COLUMNS.items()},
+        "markers": {"tables": sorted(_SCHEMA_MARKERS), "rows": [list(row) for row in _SCHEMA_MARKER_ROWS]},
+        "protected": sorted(_PROTECTED_TABLES),
+        "database_rules": {
+            "ignored_tables": sorted(_SQLITE_INTERNAL_TABLES),
+            "unbound_alone": sorted(_UNBOUND_ALONE_TABLES),
+            "sdk_internals": {"tables": sorted(_SDK_INTERNAL_TABLES), "exempt_when": _SDK_INTERNALS_EXEMPT_WHEN},
+            "refused_objects": sorted(_REFUSED_SQLITE_OBJECTS),
+            "metrics": {"application_id": _METRICS_APPLICATION_ID,
+                        "user_version": sorted(_METRICS_USER_VERSIONS)},
+            "other": {"application_id": _DEFAULT_APPLICATION_ID, "user_version": _DEFAULT_USER_VERSION},
+            "auth_meta_schema_version": sorted(_AUTH_META_SCHEMA_VERSIONS),
+        },
+        "vocabularies": {name: sorted(values) for name, values in _contract_vocabularies().items()},
+    })
 
 
 def _source_deadline(encoded: str) -> float:
@@ -3242,7 +3403,11 @@ def _authorize_target_delegation(root: Path, destination_state: Path, source_bin
     Every check (source, destination, targets, cycles, owner limit, collisions
     and the full chain validation of the computed records) runs before the
     first write. Returns the sorted capabilities, one record per owner.
+    Retired since SC-2: refused before any read, lock or write unless
+    LEGACY_MANAGED_TRANSITIONS (tests only).
     """
+    if not LEGACY_MANAGED_TRANSITIONS:
+        raise ValueError(DELEGATION_RETIRED)
     head = read_admission_head(root)
     if head is None or head["status"] != "closed" or head["binding_id"] != source_binding:
         raise ValueError("runtime_admission_delegation_source_not_current")
@@ -4094,6 +4259,8 @@ class AdmissionController:
                                     target_ids: list[str]) -> list[str]:
         """Grant exact held targets to one physical copied state; one capability per owner."""
         self._require_lease()
+        if not LEGACY_MANAGED_TRANSITIONS:  # SC-2: retired, before the root lock
+            raise ValueError(DELEGATION_RETIRED)
         with _locked_root(self.root):
             return _authorize_target_delegation(self.root, destination_state, source_binding, target_ids)
 
@@ -4106,8 +4273,11 @@ class AdmissionController:
         head's state. Owned path-less targets stay owned by the destination.
         _authorize_target_delegation re-derives inherited chains from the
         verified head and records one owner-flattened record per owner.
+        Retired since SC-2 (refused before the root lock).
         """
         self._require_lease()
+        if not LEGACY_MANAGED_TRANSITIONS:
+            raise ValueError(DELEGATION_RETIRED)
         name = _slot_name(name)
         with _locked_root(self.root):
             head = read_admission_head(self.root)
@@ -4140,8 +4310,12 @@ class AdmissionController:
 
         Returns the candidate binding identity. The external capability changes
         no binding/projection format, pointer, actor, expiry or current head.
+        Retired since SC-2 (PS-10): refused before the root lock, so no
+        derived-authority record or binding can be written.
         """
         self._require_lease()
+        if not LEGACY_MANAGED_TRANSITIONS:
+            raise ValueError(DELEGATION_RETIRED)
         with _locked_root(self.root):
             head = read_admission_head(self.root)
             if head is None or head["status"] != "closed" or head["binding_id"] != latest_binding_id:
@@ -4173,6 +4347,12 @@ class AdmissionController:
         integers, so an operator activate cannot select a slot the next
         start refuses with 78 (review P10). ``launcher_checks=False`` is for
         rehearsals of that refusal only.
+
+        SC-2: under a managed head only the head's own slot is activated
+        (serve, run), or, under its compaction gate, the pending log's K slot;
+        any other slot is runtime_admission_transition_requires_release_mode
+        before anything is read from the candidate or written. Unmanaged
+        roots (no head) are unchanged.
         """
         self._require_lease()
         name = _slot_name(name)
@@ -4184,6 +4364,12 @@ class AdmissionController:
                 raise ValueError("runtime_admission_not_closed")
             if head_aborted(self.root, head):  # only a re-adoption follows an aborted head
                 raise ValueError("runtime_admission_adoption_aborted_head")
+            if head is not None and not LEGACY_MANAGED_TRANSITIONS \
+                    and name != read_binding(self.root, head["binding_id"])["slot"]:
+                pending = pending_compaction(self.root) if self.gate.startswith("compaction:") else None
+                if pending is None or pending["compaction_id"] != self.gate.split(":", 1)[1] \
+                        or pending["intent"].get("k_slot") != name:
+                    raise ValueError(TRANSITION_REQUIRES_RELEASE_MODE)
             binding = _binding_snapshot(self.root, name)
             if launcher_checks and (self.root / "admission" / "controller.json").exists():
                 _require_launcher_slot(binding)
@@ -4200,7 +4386,10 @@ class AdmissionController:
             is_managed = managed or head is not None or _has_authority(binding) or _has_authority(latest)
             if is_managed:
                 if latest["authority"]["digest"] != binding["authority"]["digest"]:
-                    if head is None or not (_validate_derived_capability(self.root, head, latest, binding)
+                    # SC-2 review AUTHZ3-3: derived authority is a retired grant; with the
+                    # production flag only the pending compaction's capability authorizes K.
+                    if head is None or not ((LEGACY_MANAGED_TRANSITIONS and
+                                             _validate_derived_capability(self.root, head, latest, binding))
                                             or (self.gate.startswith("compaction:") and
                                                 _validate_compaction_capability(self.root, head, latest,
                                                                                 binding))):
@@ -4315,13 +4504,17 @@ def prepare_binding(root: Path, name: str, *, expected_head: dict | None = None)
 
 def authorize_target_delegation(root: Path, destination_state: Path, source_binding: str,
                                  target_ids: list[str]) -> list[str]:
-    """Issue an exact delegation while exclusively owning the current closed head."""
+    """Issue an exact delegation while exclusively owning the current closed head (retired, SC-2)."""
+    if not LEGACY_MANAGED_TRANSITIONS:  # before the lease
+        raise ValueError(DELEGATION_RETIRED)
     with AdmissionController(root) as controller:
         return controller.authorize_target_delegation(destination_state, source_binding, target_ids)
 
 
 def delegate_slot(root: Path, name: str) -> dict:
-    """Delegate what the current closed head holds to one copied slot (multi-hop, U3b-0b)."""
+    """Delegate what the current closed head holds to one copied slot (multi-hop, U3b-0b; retired, SC-2)."""
+    if not LEGACY_MANAGED_TRANSITIONS:  # before the lease
+        raise ValueError(DELEGATION_RETIRED)
     with AdmissionController(root) as controller:
         return controller.delegate(name)
 
@@ -4446,8 +4639,7 @@ def main() -> None:
     activate.add_argument("--probe-timeout", type=_probe_timeout_argument, default=_PROBE_TIMEOUT_SECONDS,
                           help="Seconds (1-3600) allowed for the candidate's own read-only validation")
     delegate = commands.add_parser(
-        "delegate", help="Delegate the erasure targets the closed head holds (local and inherited) "
-                         "to a copied slot")
+        "delegate", help="Retired since SC-2: refuses with runtime_admission_delegation_retired (exit 78)")
     delegate.add_argument("name")
     launcher = _launcher_module()
     launcher.add_commands(commands)
@@ -4470,6 +4662,10 @@ def main() -> None:
         manifest = prepare_slot(args.archive, args.root, args.name, args.state_source)
         print(json.dumps({"slot": args.name, "commit": manifest["git_commit"]}))
     elif args.command == "delegate":
+        if not LEGACY_MANAGED_TRANSITIONS:
+            # SC-2: kept as a parser entry so the operator gets the code, not an argparse error.
+            print(json.dumps({"refused": DELEGATION_RETIRED}, sort_keys=True))
+            raise SystemExit(78)
         result = delegate_slot(args.root, args.name)
         # U3b-0c (design v3 advisory_Q1, v5 G3): content-free; it warns and never blocks.
         try:

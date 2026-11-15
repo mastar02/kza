@@ -7,7 +7,9 @@ from uuid import uuid4
 from tests.mocks.copy_observation_scenario import exercise_copy_observation
 
 
-def test_compiled_existing_copy_observations_preserve_current_authority_without_grants(tmp_path):
+def test_compiled_existing_copy_observations_preserve_current_authority_without_grants(tmp_path, legacy_managed_transitions):
+    # SC-2: the material reconciliation world (derived-state grants and runs of derived slots under
+    # the managed head) is a legacy world; it runs under the legacy_managed_transitions fixture.
     repo = Path(__file__).resolve().parents[2]
     revision = os.environ.get("KZA_RECONCILIATION_REVISION") or subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()

@@ -24,6 +24,7 @@ from scripts import compaction
 from scripts import stage_runtime as stage
 from src.core import entry_guard
 from tests.mocks import compaction_world as cw
+from tests.mocks.legacy_transitions import legacy_managed_transitions
 
 
 @pytest.fixture(scope="module")
@@ -211,9 +212,12 @@ def test_full_compaction_on_a_production_like_root(x_archive, tmp_path, monkeypa
     assert _raw_hits(root, b"CANARY-BACKUP") == {"backups/old.db"}
     # Serving resumes normally; K' is a self-contained head.
     assert cw.serve(root, tmp_path, "after").code == 0
-    # T-U4: the next delegate from K' has exactly one owner.
+    # T-U4: the next delegate from K' has exactly one owner. SC-2: delegation is retired (refused
+    # here, test_sc2_delegation_retired); the legacy grant still sees exactly one owner.
     stage.prepare_slot(x_archive, root, "next", k_state)
-    assert cw.delegate(root, "next")["owners_after_grant"] == 1
+    _refusal(stage.DELEGATION_RETIRED, lambda: stage.delegate_slot(root, "next"))
+    with legacy_managed_transitions():
+        assert cw.delegate(root, "next")["owners_after_grant"] == 1
     # T-U7: retired locators are never reused, by name or by path.
     _refusal("runtime_admission_retired_locator", lambda: stage.prepare_slot(x_archive, root, "b", k_state))
     # F5: a directory recreated under a retired name, without a valid marker, is untouched.
@@ -1034,3 +1038,35 @@ def test_delegate_output_carries_the_advisory(x_archive, tmp_path):
     world = cw.world(x_archive, tmp_path, hops=("b",))
     advice = world["states"]["b"]["delegate"]["compaction_advisory"]
     assert advice["available"] is True and advice["owners"] == 1 and advice["compaction_recommended"] is False
+
+
+class _FailingAdvisory:
+    @staticmethod
+    def advisory(*_args, **_kwargs):
+        raise RuntimeError("advisory_unavailable " + "x" * 200)
+
+
+@pytest.mark.usefixtures("legacy_managed_transitions")
+@pytest.mark.parametrize("advisory", ["computed", "fails"])
+def test_legacy_cli_delegate_prints_the_grant_with_its_advisory(x_archive, tmp_path, monkeypatch, capsys, advisory):
+    """SC-2 review RV3-3: the CLI branch after the SC-2 guard, in process (legacy test roots only).
+
+    A subprocess cannot set LEGACY_MANAGED_TRANSITIONS, so stage_runtime.main()
+    runs here with a patched argv; the advisory is wired in and its failure
+    never fails the delegation. SC-5b removes the branch with the 8-owner limit.
+    """
+    world = cw.world(x_archive, tmp_path, hops=())
+    root = world["root"]
+    stage.prepare_slot(x_archive, root, "b", world["states"]["a"]["state"])
+    if advisory == "fails":
+        monkeypatch.setattr(stage, "_compaction_module", lambda: _FailingAdvisory)
+    monkeypatch.setattr(sys, "argv", ["stage_runtime.py", "--root", str(root), "--offline", "delegate", "b"])
+    stage.main()
+    printed = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert printed["slot"] == "b" and printed["owners_after_grant"] == 1
+    assert len(list((root / "admission" / "delegations").glob("*.json"))) == 1
+    advice = printed["compaction_advisory"]
+    if advisory == "computed":
+        assert advice["available"] is True and advice["owners"] == 1 and advice["compaction_recommended"] is False
+    else:
+        assert advice == {"available": False, "code": ("advisory_unavailable " + "x" * 200)[:120]}

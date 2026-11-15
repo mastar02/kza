@@ -5,7 +5,13 @@ Y is HEAD plus, when present, this working tree's uncommitted scripts/ and src/
 changes, committed only in a temporary shared clone (0b code inside the slot). Slots A(X) -> B(Y) ->
 C(X, rollback) -> D(Y, roll-forward) each run a real admitted child that
 validates its ownership with its own compiled code, after the candidate's own
-compiled probe. Delegation uses Y's compiled stage_runtime CLI.
+compiled probe.
+
+SC-2: Y's compiled delegate CLI now refuses (exit 78, runtime_admission_delegation_retired),
+so the hops are granted by the compiled CLI of the last epoch-3 commit (26de262, the
+pinned archive the design keeps for legacy owner worlds) and each cross-slot activation
+runs under tests.mocks.legacy_transitions; the chains are then validated, run and
+checked by the working tree's code with the production flag.
 """
 
 import json
@@ -17,6 +23,7 @@ import time
 
 from scripts import stage_runtime as stage
 from scripts.build_runtime import build_runtime
+from tests.mocks.legacy_transitions import legacy_managed_transitions
 from tests.unit.tools.test_stage_runtime_admission import (
     _CLOSING_CHILD,
     _TARGETS_DDL,
@@ -28,6 +35,8 @@ from tests.unit.tools.test_stage_runtime_admission import (
 _INSERT = "INSERT INTO erasure_targets VALUES(?,?,?,?)"
 # Last commit whose controller predates multi-hop delegation (U3b-3, pushed).
 _PRE_0B = "238b463"
+# The last epoch-3 controller (before SC-2 retired delegation): grants the legacy hops.
+_PINNED_EPOCH3 = "26de262"
 
 
 def _git(clone, *arguments, **kwargs):
@@ -51,10 +60,14 @@ def _working_tree_commit(repo: Path, clone: Path) -> str:
     return _git(clone, "commit-tree", tree, "-p", "HEAD", "-m", "u3b-0b rehearsal", env=environment)
 
 
+def _delegate_cli(root: Path, controller_pyc: Path, name: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, "-B", str(controller_pyc), "--root", str(root), "--offline",
+                           "delegate", name], cwd=controller_pyc.parents[1], capture_output=True,
+                          text=True, timeout=120)
+
+
 def _delegate(root: Path, controller_pyc: Path, name: str) -> dict:
-    result = subprocess.run([sys.executable, "-B", str(controller_pyc), "--root", str(root), "--offline",
-                             "delegate", name], cwd=controller_pyc.parents[1], capture_output=True,
-                            text=True, timeout=120)
+    result = _delegate_cli(root, controller_pyc, name)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 
@@ -82,9 +95,11 @@ def test_release_rollback_and_roll_forward_across_compiled_artifacts(tmp_path):
     x = _git(clone, "rev-parse", _PRE_0B + "^{commit}")
     y = _working_tree_commit(repo, clone)
     assert _git(clone, "diff", "--name-only", x, y, "--", "scripts/stage_runtime.py") == "scripts/stage_runtime.py"
-    archives = {"X": tmp_path / "x.tar.gz", "Y": tmp_path / "y.tar.gz"}
+    pinned = _git(clone, "rev-parse", _PINNED_EPOCH3 + "^{commit}")
+    archives = {"X": tmp_path / "x.tar.gz", "Y": tmp_path / "y.tar.gz", "P": tmp_path / "p.tar.gz"}
     assert build_runtime(clone, archives["X"], revision=x)["git_commit"] == x
     assert build_runtime(clone, archives["Y"], revision=y)["git_commit"] == y
+    assert build_runtime(clone, archives["P"], revision=pinned)["controller_epoch"] == 3
     built = time.perf_counter()
 
     source = tmp_path / "offline"
@@ -94,6 +109,9 @@ def test_release_rollback_and_roll_forward_across_compiled_artifacts(tmp_path):
     root = tmp_path / "staging"
     stage.prepare_slot(archives["X"], root, "a", source)
     root = root.resolve()
+    granting = tmp_path / "epoch3-controller"
+    stage.prepare_slot(archives["P"], granting, "p", source)
+    epoch3_cli = granting.resolve() / "slots/p/runtime/scripts/stage_runtime.pyc"
     states = {"a": root / "slots/a/state"}
     pathless = _registration("producers", 1, {"kind": "runtime_producers", "protocol": 1})
     owned = {"a": _local(states["a"], "a")}
@@ -102,9 +120,16 @@ def test_release_rollback_and_roll_forward_across_compiled_artifacts(tmp_path):
     for name, release in (("b", "Y"), ("c", "X"), ("d", "Y")):
         stage.prepare_slot(archives[release], root, name, states[previous])
         states[name] = root / "slots" / name / "state"
-        outputs[name] = _delegate(root, root / "slots/b/runtime/scripts/stage_runtime.pyc", name)
+        if name != "b":  # Y's own compiled controller refuses the grant (SC-2), with nothing written.
+            before = _witness(root, *states.values())
+            refused = _delegate_cli(root, root / "slots/b/runtime/scripts/stage_runtime.pyc", name)
+            assert refused.returncode == 78, refused.stderr
+            assert json.loads(refused.stdout) == {"refused": "runtime_admission_delegation_retired"}
+            assert _witness(root, *states.values()) == before
+        outputs[name] = _delegate(root, epoch3_cli, name)
         owned[name] = _local(states[name], name)
-        assert stage.activate_slot(root, name) == "slots/" + previous + "/runtime"
+        with legacy_managed_transitions():
+            assert stage.activate_slot(root, name) == "slots/" + previous + "/runtime"
         bindings[name] = _run(root, name, [(_INSERT, owned[name])])
         previous = name
 
@@ -125,7 +150,7 @@ def test_release_rollback_and_roll_forward_across_compiled_artifacts(tmp_path):
     # refused with nothing changed.
     head = stage.read_admission_head(root)
     before = _witness(root, *states.values())
-    with stage.AdmissionController(root) as controller:
+    with legacy_managed_transitions(), stage.AdmissionController(root) as controller:
         try:
             controller.authorize_target_delegation(states["c"], head["binding_id"],
                                                    sorted(chains))

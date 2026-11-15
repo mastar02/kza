@@ -140,6 +140,14 @@ def _working_tree_archives(work: Path) -> dict:
 
 
 def multi_hop(work: Path, scale: int, repeat: int) -> dict:
+    """The U3b-0b F2 measurement in a legacy world (SC-2 retired its delegations and activations)."""
+    from tests.mocks.legacy_transitions import legacy_managed_transitions
+
+    with legacy_managed_transitions():
+        return _multi_hop(work, scale, repeat)
+
+
+def _multi_hop(work: Path, scale: int, repeat: int) -> dict:
     """U3b-0b F2: probe and validation cost for C holding 5 targets from 2 owners.
 
     A (production-size synthetic state) registers 1 path target and runs closed;

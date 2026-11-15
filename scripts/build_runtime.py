@@ -27,8 +27,11 @@ ASSET_SUFFIXES = {".html", ".css", ".js", ".jsx", ".json", ".csv", ".svg", ".txt
 # scripts/stage_runtime.py text (``NAME = <int>`` at column 0), never from this
 # builder and never by importing it, so an older revision built today gets no
 # key (read as 0) and cannot claim a contract it does not implement.
+# SC-2 adds "schema_contract" (SCHEMA_CONTRACT_EPOCH, design mechanism.schema_rule):
+# an archive built from a revision before SC-2 has no key and reads as 0.
 RELEASE_INTEGERS = {"launcher_contract": "LAUNCHER_CONTRACT", "format_epoch": "FORMAT_EPOCH",
-                    "receipt_state": "RECEIPT_STATE_SCHEMA", "controller_epoch": "CONTROLLER_EPOCH"}
+                    "receipt_state": "RECEIPT_STATE_SCHEMA", "controller_epoch": "CONTROLLER_EPOCH",
+                    "schema_contract": "SCHEMA_CONTRACT_EPOCH"}
 
 _WARNING_TYPES = {"SyntaxWarning": SyntaxWarning, "DeprecationWarning": DeprecationWarning}
 _SYNTAX_FIELDS = ("msg", "filename", "lineno", "offset", "text", "end_lineno",

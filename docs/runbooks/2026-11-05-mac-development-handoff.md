@@ -892,6 +892,140 @@ Siguiente:
 
 Decisiones del usuario en `t040-t041/user-decisions-20261110.json` (`u3b_*`).
 
+## SC-2 y SC-5a — delegación retirada antes de R1 (2026-11-15)
+
+Decisión del usuario aceptada el 2026-11-15 (`u3b_f8_self_contained_releases`):
+releases gestionadas autocontenidas, sin delegación a estados dueños; R1 sale
+apenas la delegación esté apagada. Diseño: `t040-t041/sc-release-design-v3.json`
+(propuesto; sólo SC-2 y SC-5a, las unidades previas a R1, se implementaron; el
+modo release, SC-1, SC-3* y SC-4*, sigue en revisión). Rama `sc2-delegation-off`
+sobre `26de262`, sin integrar ni subir. Evidencia:
+`t040-t041/sc2-evidence.json`.
+
+- Código (`scripts/stage_runtime.py`, `scripts/build_runtime.py`):
+  - Toda concesión (`_authorize_target_delegation`, `delegate`,
+    `authorize_target_delegation`, `authorize_derived_state`, y
+    `delegate_slot` / `authorize_target_delegation` del módulo) rechaza con
+    `runtime_admission_delegation_retired` antes de leer, tomar lock o lease,
+    o escribir. El CLI `delegate` imprime `{"refused": ...}` y sale con 78.
+  - `activate` de otro slot bajo un head gestionado rechaza con
+    `runtime_admission_transition_requires_release_mode` antes de leer el
+    candidato; pasan el slot del propio head (`serve`, `run`) y el K de la
+    compactación pendiente bajo su compuerta. Sin head, nada cambia.
+  - `CONTROLLER_EPOCH` 3 → 4. `SCHEMA_CONTRACT_EPOCH = 1` y
+    `schema_contract_document()` (tablas, columnas, markers, conjunto
+    protegido, todas las reglas de base del lector como constantes con nombre,
+    vocabularios de borrados, participantes, estados de hechos y cambios y
+    métodos de dueño, SCv2-P5, desde la revisión SC2-R1 cada enum de `src`
+    que una tabla protegida guarda tal cual, y desde AUTHZ-1 los enums de las
+    tablas de avance del borrado y atribución de `privacy.db`); `release.json`
+    declara `schema_contract`. Esas ampliaciones de vocabularios son una
+    enmienda del diseño aceptada el 2026-11-15 como decisión técnica,
+    revocable hasta que SC-6a construya R1 (ver «Contrato de esquema
+    (época 1)» en DEPLOYMENT).
+  - `LEGACY_MANAGED_TRANSITIONS = False`. Sólo los tests lo ponen en `True`
+    (fixture `legacy_managed_transitions` y `tests/mocks/legacy_transitions.py`);
+    un controlador compilado no puede.
+- Tests: `test_sc2_delegation_retired.py` (cada rechazo, compuerta de
+  compactación, copia de época 3 con `require_forward_epoch` (26de262)
+  bloqueada, cadena existente que valida, sirve
+  y se compacta, y raíz de época 3 con dueños concedidos por el CLI compilado
+  fijado 26de262 compactada bajo el controlador de época 4) y
+  `test_schema_contract_pin.py` (pin del digest, sensibilidad de cada
+  constante, vocabularios contra los enums de `src`, inicializadores reales).
+  Los mundos heredados (rollback, derivación, cadenas de dueños) se construyen
+  bajo el flag y luego se ejercitan sin él; la lista de tests cambiados y su
+  motivo está en la evidencia (`changed_tests`).
+- Docs (SC-5a): DEPLOYMENT (delegación retirada, sin límite de 8 dueños ni F8,
+  época 4 y contrato de esquema, sección «Sin transiciones gestionadas después
+  de R1 hasta el modo release»), runbook de la ventana de R1 (época 4 y el
+  pendiente de SC-6a) y runbook de compactación (época 4).
+- **Decisión del usuario pendiente: SC-D5** (cómo acotar el hueco sin arreglos
+  de código después de R1 hasta el modo release; opciones A, B y C en
+  DEPLOYMENT). SC-D1..SC-D4 también siguen sin respuesta.
+- Pendiente antes de la ventana de R1 (SC-6a): reconstruir R1 dos veces desde
+  el commit integrado y comparar byte a byte; borrar o renombrar todo R1 de
+  época 3 y, por AUTHZ3-1, todo archivo, árbol extraído y checkout construido
+  desde 69a79e6..b0c322d~1 (sus `stage_runtime` no comprueban la época y
+  conceden y activan otro slot en una raíz de época 4), bajo `yo` y en cada
+  ubicación de transferencia (listar aquí cada ubicación); fijar el sha256 y el
+  commit en el runbook con el paso obligatorio `sha256sum` antes de W1;
+  repetir el ensayo de adopción (compilado, ventana real en Linux y T-A17) con
+  los rechazos nuevos y el `delegate` + `activate` de una copia de ese rango
+  sobre una raíz de época 4.
+- Pruebas sobre `cc14903`: suite batch en la Mac verde (12.167 pasan, 47 se
+  omiten, 2 xfail; las 8 rehearsals de tiempo a solas pasan; node sin fallas).
+  En el server (`yo`, clon temporal desde bundle, ya borrado): los cuatro
+  módulos Linux de a uno (7 + 1 + 14 + 13 pasan, con systemd real y unidades
+  `kza-rehearsal-*`) y el conjunto SC-2 (625 pasan, 1 omitida, 1 xfail).
+  Mutantes: 18 de 18 muertos en la Mac.
+- Revisión independiente de SC-2/SC-5a (2026-11-15): 11 hallazgos, 2 medios
+  (SC2-R1 vocabularios del contrato, R1 rollback gestionado ofrecido en
+  DEPLOYMENT), 5 bajos y 4 informativos. Corregidos con test y mutante muerto:
+  contrato ampliado y re-fijado una vez antes de R1 (época 1), reglas del
+  lector como constantes (SC2-R2/R5), cada mención de rollback gestionado
+  marcada no disponible (R1), `install-controller` época 4 (R2), aviso del día
+  14 con SC-D5 (R3), residuo del `controller.json` ilegible (SC2-R3), rechazo
+  incondicional en tc4 (SC2-R4/R4) y tres inicializadores más (R7). R6 queda
+  para SC-5b. Mutantes de la revisión: 20 de 20 muertos más un control que
+  sobrevive al test anterior a propósito. Detalle en la evidencia
+  (`review_round_1`).
+- Segunda revisión independiente (2026-11-15): 1 hallazgo medio (AUTHZ-1),
+  3 bajos (C1-C3) y 5 informativos. AUTHZ-1 se resolvió con la opción A, que
+  queda como parte de la misma enmienda (aceptada el 2026-11-15): la regla del contrato pasa
+  a ser la relevancia para la privacidad; `ErasureState`, `ErasureError`,
+  `IndexCleanupError` y `MemoryOrigin` entran en la época 1, un test
+  clasifica cada columna de `erasure_targets`, `erasure_steps`,
+  `policy_index_deletions`, `facts` y `fact_sources`, y la época 1 se re-fijó
+  por segunda vez antes de R1 (`691c2272…`). DEPLOYMENT agrega a las
+  exclusiones `policy_index_deletions.state`, `facts.category` y
+  `voice_groups.state`/`reason`. También: W3 del runbook de R1 exige
+  `controller_epoch` 4 (C1); DEPLOYMENT ya no dice que `run()` acepta slots
+  anteriores (C2) y nombra los otros movimientos del head, `adoption-commit`
+  tras un head abortado y el K de la compactación simple, que no conceden nada
+  (AUTHZ-2); un test nuevo separa `current` del slot del binding del head
+  (C3). Mutantes: 14 de 14 muertos más un control que reproduce el hallazgo
+  C3. Suite batch sobre `cf445bf` verde: 12.232 pasan, 47 se omiten, 2 xfail,
+  node sin fallas y las 8 rehearsals de tiempo a solas pasan. La primera
+  corrida de a2a se cortó en el límite de 1500 s con carga alta y la Mac en
+  suspensión, con una falla de tc2 (`sigkill_while_running`); repetida
+  partida en dos (a2a1/a2a2, mismo límite) pasó entera. En el server, los
+  tres módulos de la revisión pasan (110). Antes de SC-6a hay que repetir la
+  suite sobre el commit integrado (C4). **Decisiones para el usuario antes de SC-6a**: confirmar o revertir la
+  enmienda de vocabularios (SC2-R1 + AUTHZ-1; C5 advierte que los 15 de
+  SC2-R1 que no son de privacidad vuelven transición de esquema cualquier
+  cambio de esos enums) y si `release.json` debe declarar también el sha256
+  del contrato (AUTHZ-3, para la revisión de SC-1). Detalle en la evidencia
+  (`review_round_2`).
+- Tercera revisión independiente (2026-11-15): 1 hallazgo medio (AUTHZ3-1),
+  4 bajos (AUTHZ3-2, RV3-1..RV3-3) y 6 informativos. AUTHZ3-1: el bloqueo
+  por época sólo cubre las copias de `stage_runtime` que ya tienen
+  `require_forward_epoch` (desde b0c322d); toda copia de 69a79e6 a b0c322d~1
+  (toda la época 2 y la época 3 anterior a b0c322d) concede y activa otro
+  slot en una raíz de época 4. DEPLOYMENT, el runbook de compactación, el de
+  R1 y este handoff ya no afirman lo contrario; SC-6a (PS-13) borra o
+  renombra todo archivo, árbol extraído y checkout de ese rango y el ensayo
+  de adopción suma el caso. La barrera de época 4 que no depende del código
+  viejo (congelar las capacidades de delegación existentes y que `serve`
+  acepte sólo heads registrados por un controlador de época 4) se difirió a
+  SC-1 por decisión técnica del 2026-11-15; hasta entonces rigen la regla de
+  operación y la limpieza de SC-6a. AUTHZ3-2: un test clasifica cada columna de texto de
+  cada tabla protegida y DEPLOYMENT nombra las columnas de diagnóstico
+  (`reason`, `last_error`) y `auth_meta.key`; el pin no cambia. RV3-1 y RV3-2:
+  DEPLOYMENT nombra el regreso a H de `compact abort --to-h` y anota que
+  `delegate` rechaza siempre con `runtime_admission_delegation_retired`.
+  RV3-3: un test corre en proceso la rama del CLI `delegate` posterior a la
+  guarda (sólo raíces de prueba heredadas) con el aviso de compactación y su
+  falla. AUTHZ3-3 (informativo): con el flag de producción, `activate` ya no
+  consulta registros de autoridad derivada para K; sólo la capacidad de su
+  compactación lo autoriza. RV3-4: el test de rollback compilado usa
+  `usefixtures` y no oculta el ayudante importado. Mutantes: 14 de 14
+  muertos. Mac: módulos afectados verdes (164, 6 de integración con autoridad
+  derivada y 224 de admisión, serve y multi-hop, con 1 xfail); server (`yo`,
+  clon temporal desde bundle, ya borrado): 158 pasan. La suite batch completa
+  se repite sobre el commit integrado antes de SC-6a (C4). Detalle en la
+  evidencia (`review_round_3`).
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.

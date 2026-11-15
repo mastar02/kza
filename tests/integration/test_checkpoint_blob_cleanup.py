@@ -215,7 +215,9 @@ async def _retire(controller, observation, layout, operation_id, monkeypatch, or
         await owner.aclose()
 
 
-def test_compiled_checkpoint_cleanup_unlinks_only_withdrawn_blob_and_preserves_historical_pins(tmp_path, monkeypatch):
+def test_compiled_checkpoint_cleanup_unlinks_only_withdrawn_blob_and_preserves_historical_pins(tmp_path, monkeypatch, legacy_managed_transitions):
+    # SC-2: the material reconciliation world (derived-state grants and runs of derived slots under
+    # the managed head) is a legacy world; it runs under the legacy_managed_transitions fixture.
     repo = Path(__file__).resolve().parents[2]
     revision = os.environ.get("KZA_RECONCILIATION_REVISION") or subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()

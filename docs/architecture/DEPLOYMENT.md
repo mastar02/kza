@@ -210,33 +210,169 @@ de bases sintéticas y 10,4 s con 1,95 GB, unos 5,3 s/GB. Antes de la release ha
 que medirlo con una copia de tamaño real bajo `yo` en el servidor
 (`tests/mocks/probe_cost_harness.py`).
 
-`stage_runtime --root R --offline delegate <slot>` delega al slot copiado todo
-lo que el head cerrado tiene. Incluye sus destinos de borrado propios con rutas
-y los que heredó, aunque no tengan rutas. Desde U3b-0b (en desarrollo, sin
-release) admite varios saltos. Así funcionan la segunda release gestionada, un
-rollback y el roll-forward posterior.
+### Delegación retirada desde SC-2 (en desarrollo, sin release)
+
+Decisión del usuario del 2026-11-15 (`u3b_f8_self_contained_releases`,
+diseño `sc-release-design-v3`): las releases gestionadas pasan a ser
+autocontenidas y la delegación a estados dueños se apaga. Desde SC-2
+(época del controlador 4) el controlador no concede nada; las copias viejas de
+`stage_runtime` son otra cosa (ver más abajo):
+
+- `stage_runtime --root R --offline delegate <slot>` imprime
+  `{"refused": "runtime_admission_delegation_retired"}` y sale con 78, sin
+  tomar el lease ni escribir nada. La entrada del parser se conserva para que
+  el operador vea el código y no un error de argparse.
+- `delegate_slot`, `authorize_target_delegation` y `authorize_derived_state`
+  (también los métodos de `AdmissionController`) rechazan con
+  `runtime_admission_delegation_retired` antes de cualquier lectura, lock o
+  escritura. No se escriben `admission/delegations/`,
+  `admission/delegation-chains/`, `admission/derived-authority/` ni la
+  política del destino.
+- `activate` de otro slot bajo un head gestionado rechaza con
+  `runtime_admission_transition_requires_release_mode` antes de leer el
+  candidato: no guarda binding, marker, CAS ni selección. Sólo se activa el
+  slot del propio head (lo hacen `serve` y `run`) o, bajo la compuerta de su
+  compactación, el K de ese log. Una raíz sin head (no gestionada) no cambia.
+  Sin delegación, un `prepare` + `activate` de una copia sin rutas podía
+  convertirse en head y dejar atrás a H; esta regla hace que, desde R1, la
+  única transición gestionada entre slots sea el modo release.
+- Siguen moviendo el head, por diseño: `adoption-commit` cuando el head es un
+  head de adopción abortado (re-adopción desde el legado), el K de una
+  compactación simple (el mismo archivo que H por P6; A1 rechaza un K
+  delegado) y el regreso a H de `compact abort --to-h`
+  (`compaction_return_to_h`, bajo la compuerta de su compactación). Ninguno
+  concede dueños ni autoridad derivada.
+- Una copia de `stage_runtime` que ya contiene `require_forward_epoch`
+  (desde b0c322d, la corrección F8 de U3b-0c, todavía época 3; el 26de262
+  fijado incluido), sea de un slot o de `controller/<commit>`, no puede tomar
+  el lease ni preparar en una raíz cuyo `admission/controller.json` declare
+  época 4 (`runtime_admission_controller_downgrade`). `install-controller`
+  rechaza cualquier archivo de época menor que 4
+  (`runtime_admission_controller_epoch_too_old`).
+- El bloqueo vive en el código viejo, así que sólo cubre esas copias. Toda
+  copia de `stage_runtime` de 69a79e6 (U3b-0a, donde entra `delegate`) a
+  b0c322d~1 no comprueba la época: toda la época 2 (a76fa97..f4c72ed~1) y la
+  época 3 de f4c72ed hasta antes de b0c322d. En una raíz de época 4 esa copia
+  todavía concede (`delegate` escribe `admission/delegations/` y mueve el
+  head) y activa otro slot, que pasa a ser el head que corre `serve` (revisión
+  AUTHZ3-1, con las copias de b0c322d~1 y a76fa97). Las releases legadas de
+  producción (b0866e8, 63ea8d3) no tienen `delegate`, pero tampoco comprueban
+  la época. Por eso no se corre ningún `stage_runtime` que no sea
+  `controller/current`, y SC-6a (PS-13) lista y borra o renombra todo
+  archivo, árbol extraído y checkout construido desde ese rango, bajo `yo` y
+  en cada ubicación de transferencia, no sólo los R1 de época 3. El historial
+  de Git conserva esas versiones: para ellas la única barrera es esa regla de
+  operación.
+- Barrera estructural diferida a SC-1 (decisión técnica del 2026-11-15): una barrera de época 4
+  que no dependa del código viejo. `install-controller` o `adoption-commit`
+  congela el conjunto de capacidades de delegación existentes, y la
+  validación, `serve` y la compactación rechazan cualquier registro de
+  `admission/delegations/` fuera de ese conjunto. No cubre un `prepare` +
+  `activate` sin concesión desde una copia vieja; para eso `serve` tendría que
+  aceptar sólo heads cuyo binding registró un controlador de época 4. Exige
+  una enmienda del diseño, con su test y su mutante; entra con SC-1, que
+  rediseña los bindings y sus heads aceptados. Hasta entonces R1 queda
+  cubierta por la regla de operación (sólo `controller/current`) y la
+  limpieza de SC-6a: las releases legadas no tienen `delegate` y, bajo un
+  head gestionado, `run()` sólo corre el slot del head, así que mover
+  `current` no cambia lo que corre.
+- Ese bloqueo necesita un `admission/controller.json` legible: si falta, es un
+  symlink, no se puede leer o no es JSON válido, `require_forward_epoch` no
+  rechaza nada e incluso una copia que lo contiene podría volver a conceder y
+  activar otro slot (residuo aceptado en el diseño,
+  `delegation_off.old_controller_copies`, que no menciona las copias sin la
+  comprobación).
+  Con el registro dañado, repararlo sólo con `controller/current` o
+  `install-controller`, y no correr el `stage_runtime` de ningún slot hasta
+  que vuelva a declarar la época 4.
+
+#### Contrato de esquema (época 1)
+
+SC-2 declara `SCHEMA_CONTRACT_EPOCH = 1` y `release.json` lo copia como
+`schema_contract`. `schema_contract_document()` serializa todo lo que el
+controlador exige a un estado: columnas por tabla (compartidas y por base),
+marcadores de versión, el conjunto protegido, las reglas de base que aplica el
+lector (tablas ignoradas, `memories` sola sin binding, la excepción del SDK,
+vistas y triggers rechazados, `application_id`/`user_version` de métricas y
+del resto, versiones de `auth_meta`), todas leídas de las mismas constantes
+que usa el lector, y los vocabularios de valores. Un test fija su sha256 al
+lado de la época: cambiar el contrato sin subir la época falla la suite.
+
+Vocabularios: los cinco de SCv2-P5 (tipos del registro de borrados,
+participantes del borrado, estados de hechos, cambios y métodos de dueño) y,
+desde la revisión SC2-R1, cada enum de `src` cuyo valor guarda tal cual una
+tabla protegida: estados de consentimiento de voz, resultados de
+verificación, tipos de evento y motivos de suspensión de atribución, roles
+del dashboard, acción, resultado y motivo de `credential_attempts`, estados de
+grabadores del navegador, estado, alcance y estado de acción de
+recordatorios, estados de corridas y acciones de rutinas, y tipo de dueño de
+listas. Desde la revisión AUTHZ-1 la regla es la relevancia para la
+privacidad, no el conjunto protegido: además de las tablas protegidas, las
+tablas de `privacy.db` que gobiernan el avance del borrado y la atribución
+(`erasure_targets`, `erasure_steps`, `policy_index_deletions`, `facts`,
+`fact_sources`, no protegidas) fijan cada enum con nombre que guardan:
+participantes y estados de hechos (ya en SCv2-P5), `ErasureState` y
+`ErasureError` (`erasure_steps.state` y `last_error`), `IndexCleanupError`
+(`policy_index_deletions.last_error` y la recomprobación del índice en
+`erasure_steps.last_error`) y `MemoryOrigin` (`fact_sources.origin`). Sin
+eso, un estado nuevo de un paso de borrado sobreviviría a un rollback a R1,
+cuyo `due()` y cuyo claim sólo buscan `pending`/`running`: el borrado de la
+conversación quedaría detenido sin aviso. Cada vocabulario es igual a su enum
+en un test, y otro test clasifica cada columna de esas cinco tablas. Las dos
+ampliaciones (SC2-R1 y AUTHZ-1) son una enmienda del diseño aceptada el
+2026-11-15 como decisión técnica (más estricta que SCv2-P5; revocable hasta
+que SC-6a construya R1): se aplicaron antes de R1 porque después ampliar el
+contrato exige la época 2, una transición de esquema fuera del modo release.
+
+Quedan fuera los conjuntos cerrados que `src` escribe como literales sin
+nombre importable: `capture_runtime_control.mode` (`running`, `muted`,
+`resuming`, en un CHECK), `capture_browser_recorders.kind` (tupla en
+`capture_recorders.py`), `routine_runs.source`,
+`legacy_quarantine_records_v1.state` (CHECK `quarantined`), las claves de
+`auth_meta.key` (`schema_version`, `clock_floor`, `legacy_epoch`,
+`legacy_digest`; el valor de `schema_version` sí está en el contrato), la
+gramática de `reminders.recurrence` y, en las tablas de avance del borrado y atribución,
+`policy_index_deletions.state` (`pending`, `running`, `complete` en
+`index_deletions.py`), `facts.category` (`personal`, `preference`,
+`pattern`, `fact` en `FactLedger.store`) y `voice_groups.state`/`reason`
+(literales en `src/users/voice_groups.py`). Agregar un valor ahí no cambia el
+pin; quien lo haga debe tratarlo como un cambio de contrato y subir la época a
+mano. Tampoco son contrato las columnas de diagnóstico de tablas protegidas,
+texto que ningún código usa para elegir filas (los reintentos de borrado
+eligen por `attempts`): `reminder_home_actions.reason` (por ejemplo
+`interrupted_send`), `routine_runs.reason`, `routine_run_actions.reason`
+(`action_exception`, `interrupted`) y `pending_audio_deletions.last_error`
+(`live_or_unknown_reference`). Si un cambio vuelve a una de ellas selectora de
+un borrado o de autoridad, pasa a ser contrato y sube la época. Un test
+clasifica cada columna de texto de cada tabla protegida: vocabulario fijado,
+excluida (esta lista), diagnóstico o sin conjunto cerrado. Los enums de las demás tablas no protegidas (por ejemplo
+`suggestions_policy_v1.status`) no forman parte del contrato.
+
+Desaparecen con esto el límite de 8 dueños y el hallazgo F8 (un borrado del
+head en filas protegidas de un dueño dejaba el head en UNKNOWN): sin dueños
+no hay ni uno ni otro. R1 no tiene dueños. La constante del límite sigue en el
+código, inalcanzable, hasta que SC-5b la retire.
+
+Lo que sigue vale sólo para raíces que ya tienen dueños (raíces de prueba y
+desarrollo creadas antes de SC-2): la validación de cadenas existentes, la
+caché de dueños y la compactación de esos dueños no cambian. Los tests crean
+esos mundos con `LEGACY_MANAGED_TRANSITIONS` (fixture
+`legacy_managed_transitions` y `tests/mocks/legacy_transitions.py`); un
+controlador compilado no tiene forma de activarlo, y los ensayos compilados
+construyen dueños con un archivo fijado de época 3 (26de262).
 
 Cada registro de `admission/delegations/` conserva el esquema v1 y nombra al
-dueño físico de las rutas. El código 0a de slots anteriores los acepta. Al lado,
-`admission/delegation-chains/<capability>.json` guarda la cadena: dueño primero,
-emisor al final. Cada salto incluye su binding, la prueba de cierre embebida y
-el registro que le dio el destino. El controlador sólo honra registros con esa
-cadena y deriva cada cadena del head verificado, nunca del llamador.
+dueño físico de las rutas. Al lado, `admission/delegation-chains/<capability>.json`
+guarda la cadena: dueño primero, emisor al final. El controlador sólo honra
+registros con esa cadena; una cadena faltante, alterada o truncada se rechaza
+(`runtime_admission_delegation_chain` o
+`runtime_admission_delegation_chain_missing`).
 
-Antes de escribir nada, rechaza estos casos:
+La sonda de `activate` también corre el `validate_target_ownership` del
+candidato, así que un candidato que recalcularía distinto a un dueño se
+rechaza antes de mover el head.
 
-- volver a un estado que ya fue dueño o salto: `runtime_admission_delegation_cycle`;
-- cadenas faltantes, alteradas o truncadas: `runtime_admission_delegation_chain`
-  o `runtime_admission_delegation_chain_missing`;
-- una concesión que omite un destino heredado: `runtime_admission_delegation_incomplete`;
-- una colisión con otra cadena: `runtime_admission_delegation_conflict`;
-- más de 8 estados dueños distintos (con 8 todavía se concede): `runtime_admission_delegation_owner_limit`.
-
-La API devuelve una capability por dueño. La sonda de `activate` ahora también
-corre el `validate_target_ownership` del candidato, así que un candidato que
-recalcularía distinto a un dueño se rechaza antes de mover el head.
-
-Límites:
+Límites de una raíz con dueños existentes:
 
 - Todo estado dueño debe quedar intacto mientras un descendiente lo use. Si
   cambia su marker o su cierre, si se altera o retira su slot, si se actualiza
@@ -253,29 +389,12 @@ Límites:
   - pasada del controlador: 2,4 s;
   - `activate` completo: 17,5 s.
 
-  El límite de la sonda (60 s por defecto) no cambia. Con 8 dueños de ese
-  tamaño, la sonda 0b ronda 10 s. Con estados de unos 2 GB, una sonda 0b con 8
+  El límite de la sonda (60 s por defecto) no cambia. Con 8 dueños (el máximo
+  que se concedía antes de SC-2) de ese tamaño, la sonda 0b ronda 10 s. Con estados de unos 2 GB, una sonda 0b con 8
   dueños ronda 40 s. Una anterior a 0b, con varios destinos por dueño, pasa
   de 60 s: hay que medir con una copia real
   (`tests/mocks/probe_cost_harness.py --multi-hop`) antes de la release y
   ajustar `--probe-timeout` sólo con esa medición.
-- No hay compactación. Una cadena admite hasta 8 dueños distintos. Cada
-  transición gestionada (release, rollback o roll-forward) suma el dueño
-  anterior, así que el estado número 10 de una cadena, que necesitaría 9
-  dueños, se rechaza con `runtime_admission_delegation_owner_limit`. Eso pasa
-  en la novena transición desde el primer estado gestionado. Decidir antes
-  qué hacer es del usuario.
-- Volver a ejecutar un salto intermedio no revoca nada. Su prueba de cierre
-  embebida debe venir de una ejecución de su propio slot y estado, y se
-  comprueba contra el recibo inmutable.
-- Borrar en un dueño puede dejar el head en UNKNOWN (hallazgo F8, heredado de
-  0a y sin corrección local). Si el hijo del head borra, mediante un destino
-  heredado, una fila que forma parte de la proyección protegida del dueño, el
-  dueño deja de coincidir con su binding. Un ejemplo es un evento con su plazo
-  de texto acortado. El cierre del hijo falla con
-  `runtime_admission_delegation_missing` y el head queda UNKNOWN. Borrar
-  contenido ordinario no tiene ese efecto. Corregirlo requiere volver a
-  vincular el dueño bajo la autoridad del head, un diseño pendiente.
 - Sin secreto, quien escribe `admission/` con el mismo uid queda fuera del
   modelo.
 - Dentro de un slot 0a, el hijo sólo comprueba el registro del dueño, no la
@@ -309,33 +428,32 @@ Desde R1 (con U3b-0d4a), la comprobación de resurrección mira cada almacén ma
 
 Rollback no gestionado: hasta DÍA 0 + 14 × 24 h, contado desde el primer cierre limpio gestionado, sólo a 63ea8d3 con decisión registrada y la frase 'revivir datos borrados'. Después del retiro no hay rollback no gestionado: sólo se avanza con una release gestionada, y `/home/kza/kza` no es un destino de rollback (Q3 = A).
 
-Consecuencia: si una persona pide «olvidá mi voz» u «olvidá esto», su perfil de voz o su recuerdo desaparece del estado activo, pero sigue en cada slot anterior y en cada copia hasta que esa copia se destruya. Con la compactación (U3b-0c, desarrollada y no ejecutada; ver «Compactación de estados dueños (U3b-0c)»), esas copias se destruyen al compactar. Mientras tanto pueden ser hasta 5 slots anteriores si se compacta al llegar a 6 dueños. El borrado de la compactación es sólo unlink: no sobrescribe. Las copias fuera de la raíz no las alcanza ningún mecanismo actual.
+Consecuencia: si una persona pide «olvidá mi voz» u «olvidá esto», su perfil de voz o su recuerdo desaparece del estado activo, pero sigue en cada slot anterior y en cada copia hasta que esa copia se destruya. Con la compactación (U3b-0c, desarrollada y no ejecutada; ver «Compactación de estados dueños (U3b-0c)»), esas copias se destruyen al compactar. Mientras tanto pueden ser hasta 5 slots anteriores si se compacta al llegar a 6 dueños. Desde SC-2 no se crean dueños nuevos; el modo release (pendiente) retirará el estado anterior en cada transición. El borrado de la compactación es sólo unlink: no sobrescribe. Las copias fuera de la raíz no las alcanza ningún mecanismo actual.
 
 Hasta que exista una herramienta, retirar a mano una copia vieja requiere una decisión explícita del usuario. Nunca borres el estado del slot activo ni el de un dueño que el head todavía necesita (ver «Todo estado dueño debe quedar intacto»).
 
-Versiones del controlador: en cuanto exista un registro escrito por 0b,
-`delegate`, `activate` y `run` deben ejecutarse con un `stage_runtime` 0b o
-posterior. Tras un rollback, no uses como controlador el `stage_runtime` del
-slot restaurado si es anterior. Un controlador anterior a 0b rechaza el
-multi-salto con `runtime_admission_delegation_one_hop_only`. Si concede un
-primer salto, escribe un registro sin cadena. Un controlador 0b lo rechaza
-(`runtime_admission_delegation_chain_missing`), y ese head ya no se puede
-delegar hacia adelante.
+Versiones del controlador: una raíz con dueños sólo se valida y se compacta;
+no se le agregan dueños. Usá siempre `controller/current` (época 4 o
+posterior), nunca el `stage_runtime` de un slot.
 
-Fallos a mitad de una concesión (orden de escritura: cadenas, registros,
-política, manual head, CAS del head):
+### Sin transiciones gestionadas después de R1 hasta el modo release
 
-- Falla al escribir cadenas o registros: quedan archivos inmutables inertes que
-  ninguna política lista. La política, el marker y el head no cambian. Para
-  recuperar, repetí `delegate <slot>`: reescribe archivos idénticos y termina.
-- Falla después de escribir la política (por ejemplo, en el manual head): la
-  concesión ya vale y `activate` la acepta, pero faltan el registro de manual
-  head y el aumento de generación del head. Para recuperar, repetí
-  `delegate <slot>`: valida, reescribe lo idéntico y completa el CAS.
-- Quedaron restos y después el emisor volvió a ejecutarse (su prueba de cierre
-  cambió): ese destino queda en conflicto permanente
-  (`runtime_admission_delegation_conflict`). Para recuperar, prepará un slot
-  nuevo desde el estado del head y delegá a ése.
+Después de R1 no se puede activar ningún arreglo de código (release, rollback
+o roll-forward gestionados) hasta que el modo release (SC-0, SC-1, SC-3a,
+SC-3c, SC-4a/b/c, SC-R, SC-6b y SC-5b) esté desarrollado, revisado de forma
+independiente y ensayado. Una release gestionada copiará entero el head,
+verificará la copia con una corrida corta y retirará el estado anterior; nada
+de eso está disponible hoy. Mientras tanto, el único rollback es L4 a 63ea8d3
+durante sus 14 días (con la frase 'revivir datos borrados'); a partir del día
+14 (retiro Q5) tampoco queda ese rollback.
+
+Cómo se acota ese hueco es la decisión abierta SC-D5 (sin respuesta del
+usuario al 2026-11-15). Opciones: A (recomendada) aceptarlo, empezar el modo
+release enseguida y, si aparece un error grave de privacidad en el hueco,
+detener el servicio hasta tenerlo; B postergar el retiro Q5 hasta tener el
+modo release revisado y ensayado, conservando L4 a cambio de guardar más
+tiempo la copia heredada; C postergar R1 hasta que el modo release esté casi
+listo. Esta sección registra la respuesta cuando exista.
 
 Hallazgo aparte, de 0a: un estado con unas 250 000 filas protegidas o más
 produce un binding de más de 16 MB, y el controlador no puede leerlo
@@ -558,7 +676,8 @@ Recuperación al arrancar (L1 = A):
   `-wal`, sin `-shm`), así que no puede romper un R-a pendiente. Después
   `adopt --confirm <sha> --confirm-regressions <familias>`, con las familias
   exactamente como las informó el dry-run.
-- Un head recuperado no puede delegar hasta un cierre limpio posterior.
+- Un head recuperado no puede delegar hasta un cierre limpio posterior (desde SC-2
+  ningún head puede delegar).
 
 Instalación en la ventana de R1 (bajo `kza`, sin sudo; el servicio detenido):
 
@@ -694,7 +813,12 @@ stage_runtime --root /home/kza/releases --offline uninstall-launcher \
   conversaciones y perfiles de voz borrados desde entonces. Decide el usuario,
   no el operador.
 
-Rollback gestionado: un slot destino necesita `launcher_contract >= 3` y
+Rollback gestionado (**no disponible desde SC-2 hasta el modo release**: bajo
+un head gestionado, `activate` de otro slot rechaza con
+`runtime_admission_transition_requires_release_mode`; ver «Sin transiciones
+gestionadas después de R1 hasta el modo release». Lo que sigue describe los
+chequeos que el modo release reutilizará y los que ya aplica `serve`): un slot
+destino necesita `launcher_contract >= 3` y
 `format_epoch` igual o mayor que el mínimo del controlador. Si no, `serve`
 lo rechaza con 78 (`runtime_admission_launcher_contract_missing` o
 `runtime_admission_rollback_format_closed`). Con un controlador instalado
@@ -702,8 +826,9 @@ lo rechaza con 78 (`runtime_admission_launcher_contract_missing` o
 enteros y rechaza antes de mover el head o `current`, así un activate del
 operador no deja un arranque que sale con 78. La API acepta
 `launcher_checks=False` sólo para ensayar ese rechazo de `serve`; la CLI no
-lo expone. `run()` sigue aceptando slots anteriores para los ensayos de
-linajes viejos.
+lo expone. Desde SC-2, bajo un head gestionado `run()` sólo corre el slot
+del propio head; correr linajes viejos queda para raíces de prueba con
+`LEGACY_MANAGED_TRANSITIONS`.
 
 Evidencia: `data/autonomous-roadmap-20261102/t040-t041/u3b-0d-evidence.json`
 y, para las correcciones de la revisión independiente,
@@ -821,7 +946,11 @@ Después del retiro **no hay rollback no gestionado** (decisión Q3 = A):
   herramienta lo usa como destino y no se va a construir una: su unidad
   original corría desde `/home/kza/app`;
 - la recuperación sólo avanza: una release gestionada nueva, o un rollback
-  gestionado dentro del linaje gestionado.
+  gestionado dentro del linaje gestionado. **Desde SC-2 ninguna de las dos
+  existe hasta el modo release** (ver «Sin transiciones gestionadas después de
+  R1 hasta el modo release»): después de este retiro no queda ningún rollback.
+  Antes de ejecutarlo, revisar la respuesta a SC-D5 en esa sección (la opción
+  B posterga este paso).
 
 `/home/kza/kza` está congelado y sin retención desde el 2026-10-28, así que
 guarda más datos vencidos que la imagen que se retira. Queda como copia, no
@@ -830,8 +959,10 @@ vale para el respaldo `backups/release_20261028T144002Z_2c5adb4/`, que es de
 `/home/kza/kza`.
 
 Época del controlador (revisión 0e3 F14): desde R1 no se puede instalar un
-controlador anterior a la época 2. Un rollback gestionado puede volver a slots
-anteriores, pero no el controlador por debajo de la época 2.
+controlador anterior a la época 2. Un rollback gestionado (no disponible desde
+SC-2 hasta el modo release, ver «Sin transiciones gestionadas después de R1
+hasta el modo release») podrá volver a slots anteriores, pero no el
+controlador por debajo de la época 2.
 
 Evidencia: `data/autonomous-roadmap-20261102/t040-t041/u3b-0e5-evidence.json`
 (local, fuera de Git).
@@ -861,7 +992,7 @@ sólo por un registro de staging se destruye únicamente con
 enteros. Con
 eso, una conversación, un recuerdo o un perfil de voz borrados en el head
 dejan de existir también en esas copias. La recomendación aparece en la salida
-de `delegate` y de `compact plan` (al llegar a 6 dueños, o cuando el registro
+de `compact plan` (antes de SC-2 también en la de `delegate`) (al llegar a 6 dueños, o cuando el registro
 de borrados del head muestra borrados pedidos que siguen vivos en un estado
 retenido).
 
@@ -927,14 +1058,16 @@ Límites que siguen valiendo (decisiones P5 = C y Q4):
   salida es un controlador corregido que siga desde K' (D4); el runbook lo
   detalla.
 - Rollback: después de `complete` los slots anteriores ya no existen; sólo se
-  avanza con una release gestionada. Antes de la verificación, `compact abort`
+  avanza con una release gestionada, que desde SC-2 exige el modo release (ver
+  «Sin transiciones gestionadas después de R1 hasta el modo release»). Antes de la verificación, `compact abort`
   vuelve a H. Después, `compact abort --to-h` vuelve a H sólo si durante la
   corrida de K no hubo borrados (Q6).
 
 Compatibilidad: la época del controlador sube a 3. Mientras haya una
 compactación pendiente, cualquier entrada al controlador que no sea `compact`
 (prepare, activate, run, delegate, adopción) rechaza con
-`runtime_admission_compaction_pending`, y serve sólo deja pasar la corrida de
+`runtime_admission_compaction_pending` (desde SC-2, `delegate` rechaza
+siempre con `runtime_admission_delegation_retired`), y serve sólo deja pasar la corrida de
 verificación armada o las corridas de un `allow-run` vigente; desde que
 empieza un abort o un retiro, ninguna (`compaction_abort_pending`,
 `compaction_retire_in_progress`). Si el head cambió igual después de
@@ -942,14 +1075,20 @@ empieza un abort o un retiro, ninguna (`compaction_abort_pending`,
 (`compaction_abort_recheck_required`), y un abort o retiro reanudado termina
 cada miembro por su identidad registrada, sin registrar el final mientras
 quede algo en la cuarentena.
-`install-controller` (época 3 o posterior, nunca menor que la instalada) sí
+`install-controller` (época 4 o posterior desde SC-2, nunca menor que la instalada) sí
 entra, también con un log inválido: es la salida de una compactación trabada
 (D4 = A). La recuperación automática R-b queda apagada mientras tanto. No
 reinicies el servidor durante una compactación.
 
-Épocas (D1 = A): R1 se construye desde un árbol que ya contiene U3b-0c, así
-que ningún controlador de época 2 vive en la raíz gestionada; la adopción
-exige `controller_epoch == 3`. Una copia vieja de `stage_runtime` (en un slot o
+Épocas (D1 = A): R1 se construye desde un árbol que ya contiene U3b-0c y,
+desde SC-2, la delegación retirada, así que ningún controlador de época 2 o 3
+vive en la raíz gestionada; la adopción exige `controller_epoch == 4` (igual a
+la época del código que la ejecuta). SC-2 subió la época a 4 sin cambiar el
+formato de slot (`FORMAT_EPOCH` 1, `LAUNCHER_CONTRACT` 3): los slots anteriores
+siguen corriendo bajo un controlador de época 4. Desde SC-2, `release.json`
+declara también `schema_contract` (`SCHEMA_CONTRACT_EPOCH`, hoy 1; un archivo
+anterior se lee como 0): el contrato de esquema y vocabularios queda fijado
+por un test, y el modo release sólo moverá entre archivos con el mismo. Una copia vieja de `stage_runtime` (en un slot o
 en `controller/<commit>`) puede correrse directamente y no conoce la
 compuerta: sólo se usa `controller/current`. Desde la época 3, la entrada al
 controlador y `prepare` rechazan cuando la época instalada es mayor que la

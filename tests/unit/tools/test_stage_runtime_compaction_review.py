@@ -357,7 +357,7 @@ def test_a_newer_installed_epoch_refuses_this_controller(x_archive, tmp_path):
     root = world["root"]
     path = root / "admission" / "controller.json"
     record = json.loads(path.read_text())
-    assert record["controller_epoch"] == stage.CONTROLLER_EPOCH == 3
+    assert record["controller_epoch"] == stage.CONTROLLER_EPOCH == 4  # SC-2
     stage._atomic_record(path, dict(record, controller_epoch=stage.CONTROLLER_EPOCH + 1))
     _refusal("runtime_admission_controller_downgrade", lambda: stage.AdmissionController(root).__enter__())
     _refusal("runtime_admission_controller_downgrade",
@@ -376,7 +376,7 @@ def test_install_controller_enters_a_pending_or_invalid_compaction(x_archive, tm
     members = {key: cw.tree(world["states"][key]["state"]) for key in ("a", "b")}
     compaction_id = cw.start(root, world["archive"])["compaction_id"]
     _refusal("runtime_admission_compaction_pending", lambda: stage.AdmissionController(root).__enter__())
-    assert launcher.install_controller(root, world["archive"])["controller_epoch"] == 3  # D4
+    assert launcher.install_controller(root, world["archive"])["controller_epoch"] == 4  # D4 (SC-2: epoch 4)
     events = stage.compaction_log_path(root, compaction_id) / "events"
     bad = events / "000099.json"
     bad.write_text("{}")  # a gap: the whole log is invalid (fail closed)
@@ -385,7 +385,7 @@ def test_install_controller_enters_a_pending_or_invalid_compaction(x_archive, tm
                       "code": "runtime_admission_compaction_log_invalid"}
     _refusal("runtime_admission_compaction_log_invalid", lambda: stage.AdmissionController(root).__enter__())
     assert cw.serve(root, tmp_path, "invalid").code == 78
-    assert launcher.install_controller(root, world["archive"])["controller_epoch"] == 3
+    assert launcher.install_controller(root, world["archive"])["controller_epoch"] == 4
     bad.unlink()  # the runbook's recovery: only after status names the log
     assert compaction.compact_abort(root, compaction_id)["phase"] == "aborted"
     _h_restored(world, tmp_path, h_head, members)
