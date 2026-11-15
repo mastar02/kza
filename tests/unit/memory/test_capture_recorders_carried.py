@@ -95,3 +95,23 @@ async def test_capacity_counts_live_owners_only(tmp_path, monkeypatch):
         assert recorders.pending_live() == 2 and recorders.carried() == 2
     finally:
         await _close(privacy, recorders)
+
+
+async def test_owner_stays_carried_after_a_second_restart(tmp_path):
+    """R1B1-2: the carried set is every row unknown at boot, not only rows
+    this boot turned from active. A second restart carries it again."""
+    path = str(tmp_path / "twice.sqlite")
+    privacy, recorders = await _boot(path)
+    try:
+        await _issue(recorders)
+    finally:
+        await _close(privacy, recorders)
+    for _ in range(2):
+        privacy, recorders = await _boot(path)
+        try:
+            assert recorders.pending() == recorders.carried() == 1
+            assert recorders.pending_live() == 0
+            await asyncio.wait_for(recorders.drain(), 2)
+            assert recorders.pending() == recorders.carried() == 1
+        finally:
+            await _close(privacy, recorders)

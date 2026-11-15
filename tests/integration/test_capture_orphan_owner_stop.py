@@ -64,9 +64,12 @@ def _carried(recorders) -> None:
     assert recorders.carried() == 1 and recorders.pending_live() == 0
 
 
-async def test_owner_orphaned_by_restart_does_not_block_the_managed_stop(tmp_path, monkeypatch):
-    root = tmp_path / "graph"
-    token = await _orphaned_browser_owner(root, monkeypatch)
+async def _managed_stop(tmp_path, monkeypatch, root, token, before_stop=None):
+    """Boot, run Application.run's observed managed stop, return its receipt path.
+
+    The lost tab never contacts this process. Nothing retires the carried
+    owner; the stop completes on its own.
+    """
     receipts, revalidated = [], []
     monkeypatch.setattr(runtime_admission, "_stage", lambda: SimpleNamespace(
         write_admission_receipt=lambda ticket, resources: receipts.append((ticket, resources))))
@@ -76,16 +79,15 @@ async def test_owner_orphaned_by_restart_does_not_block_the_managed_stop(tmp_pat
     async with application_graph(root, monkeypatch, Clock(time.time())) as bundle:
         graph = bundle.graph
         recorders = graph.capture_control.recorders
-        # The lost tab never contacts this process.
         _carried(recorders)
+        if before_stop is not None:
+            await before_stop(bundle)
         admission = runtime_admission.RuntimeAdmission({"run_id": run_id},
             {"state_root": str(tmp_path / "state")}, graph.privacy.ledger.path,
             runtime_admission._config_digest(graph.config))
         monkeypatch.setattr(admission, "revalidate", lambda: revalidated.append(True))
         admission.install_on(observer)
         admission.attach_graph(graph)
-        # Application.run's finally calls exactly this observed stop. Nothing
-        # retires the carried owner; the stop completes on its own.
         stopping = asyncio.create_task(graph._stop_services(None, None))
         try:
             await asyncio.wait_for(asyncio.shield(stopping), 30)
@@ -106,10 +108,41 @@ async def test_owner_orphaned_by_restart_does_not_block_the_managed_stop(tmp_pat
     proof = admission._closure_witness.verify_closed()
     assert proof["capture_permissions_retired"] is False
     assert proof["capture_owners_carried"] == 1
+    return admission, recorders, late_actor, proof
+
+
+async def test_owner_orphaned_by_restart_does_not_block_the_managed_stop(tmp_path, monkeypatch):
+    root = tmp_path / "graph"
+    token = await _orphaned_browser_owner(root, monkeypatch)
+    admission, recorders, late_actor, proof = await _managed_stop(tmp_path, monkeypatch, root, token)
     # Closed: a late token is refused and no longer reclaims the owner.
     assert (await recorders.poll(token, late_actor))["state"] == "unknown"
     _carried(recorders)
     assert admission._closure_witness.verify_closed() == proof
+
+
+async def _mute_and_unmute(bundle) -> None:
+    control = bundle.graph.capture_control
+    actor = _actor(bundle)
+    control.request(True, control.snapshot()["revision"], actor)
+    snapshot = await _phase(control, "muted")
+    assert snapshot["total_mute_confirmed"] is False
+    control.request(False, snapshot["revision"], actor)
+    assert (await _phase(control, "running"))["pending_browser_recorders"] == 1
+    _carried(control.recorders)
+
+
+async def test_owner_stays_carried_and_unblocking_after_a_second_restart(tmp_path, monkeypatch):
+    """R1B1-2: an owner carried by one boot is carried again by the next.
+
+    The second boot found the row already ``unknown`` (no ``active`` row left
+    to turn). It must still be carried there, or every stop from the second
+    restart on would hang again (R5V-1).
+    """
+    root = tmp_path / "graph"
+    token = await _orphaned_browser_owner(root, monkeypatch)
+    await _managed_stop(tmp_path, monkeypatch, root, token)
+    await _managed_stop(tmp_path, monkeypatch, root, token, before_stop=_mute_and_unmute)
 
 
 async def test_owner_orphaned_by_restart_does_not_lock_global_mute_and_unmute(tmp_path, monkeypatch):
