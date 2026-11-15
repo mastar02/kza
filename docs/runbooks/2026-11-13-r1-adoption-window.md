@@ -31,9 +31,22 @@ autoriza la ventana.
   no es un destino (Q3 = A).
 
 R1 se construye desde un árbol que ya contiene U3b-0c (decisión
-`u3b_0c_review` D1 = A): su `release.json` declara `controller_epoch` 3, que
-es lo que `adoption-commit` exige, y así ningún controlador de época 2 queda en
-la raíz gestionada.
+`u3b_0c_review` D1 = A) y SC-2 (delegación retirada, decisión
+`u3b_f8_self_contained_releases`): su `release.json` declara
+`controller_epoch` 4, que es lo que `adoption-commit` exige, y así ningún
+controlador de época 2 o 3 queda en la raíz gestionada. Un R1 construido antes
+de SC-2 (época 3) no sirve: sus propios comandos lo aceptarían e instalarían
+un controlador que todavía concede delegaciones (PS-13). Pendiente de SC-6a:
+reconstruir R1 desde el commit con SC-2, borrar o renombrar
+(`*.superseded-epoch3`) todo R1 anterior, fijar aquí su sha256 y su commit, y
+agregar antes de W1 el paso obligatorio `sha256sum "$R1_ARCHIVE"` igual al
+valor fijado o se detiene el procedimiento. Hasta entonces esta ventana no se
+ejecuta.
+
+Después de R1 no hay transiciones gestionadas (ningún arreglo de código) hasta
+que exista el modo release; el único rollback es L4 durante sus 14 días. Ver
+«Sin transiciones gestionadas después de R1 hasta el modo release» en
+`docs/architecture/DEPLOYMENT.md` (decisión abierta SC-D5).
 
 Todo corre como `kza` y nunca como root. Cada comando rechaza con salida 78
 y `{"refused": <código>}` en estos casos:
@@ -44,7 +57,7 @@ y `{"refused": <código>}` en estos casos:
 - una segunda ejecución.
 
 ```bash
-R1=<tmp privado>/r1            # R1 extraído (build_runtime.py, bajo yo; árbol con U3b-0c, época 3)
+R1=<tmp privado>/r1            # R1 extraído (build_runtime.py, bajo yo; árbol con U3b-0c y SC-2, época 4)
 PY=/home/kza/kza/.venv/bin/python
 ST="$PY -I -B $R1/scripts/stage_runtime.pyc --root /home/kza/releases --offline"
 C=release_20261029T174830709997Z_63ea8d3

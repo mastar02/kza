@@ -892,6 +892,57 @@ Siguiente:
 
 Decisiones del usuario en `t040-t041/user-decisions-20261110.json` (`u3b_*`).
 
+## SC-2 y SC-5a — delegación retirada antes de R1 (2026-11-15)
+
+Decisión del usuario aceptada el 2026-11-15 (`u3b_f8_self_contained_releases`):
+releases gestionadas autocontenidas, sin delegación a estados dueños; R1 sale
+apenas la delegación esté apagada. Diseño: `t040-t041/sc-release-design-v3.json`
+(propuesto; sólo SC-2 y SC-5a, las unidades previas a R1, se implementaron; el
+modo release, SC-1, SC-3* y SC-4*, sigue en revisión). Rama `sc2-delegation-off`
+sobre `26de262`, sin integrar ni subir. Evidencia:
+`t040-t041/sc2-evidence.json`.
+
+- Código (`scripts/stage_runtime.py`, `scripts/build_runtime.py`):
+  - Toda concesión (`_authorize_target_delegation`, `delegate`,
+    `authorize_target_delegation`, `authorize_derived_state`, y
+    `delegate_slot` / `authorize_target_delegation` del módulo) rechaza con
+    `runtime_admission_delegation_retired` antes de leer, tomar lock o lease,
+    o escribir. El CLI `delegate` imprime `{"refused": ...}` y sale con 78.
+  - `activate` de otro slot bajo un head gestionado rechaza con
+    `runtime_admission_transition_requires_release_mode` antes de leer el
+    candidato; pasan el slot del propio head (`serve`, `run`) y el K de la
+    compactación pendiente bajo su compuerta. Sin head, nada cambia.
+  - `CONTROLLER_EPOCH` 3 → 4. `SCHEMA_CONTRACT_EPOCH = 1` y
+    `schema_contract_document()` (tablas, columnas, markers, conjunto
+    protegido, reglas de pragma y `auth_meta`, vocabularios de borrados,
+    participantes, estados de hechos y cambios y métodos de dueño, SCv2-P5);
+    `release.json` declara `schema_contract`.
+  - `LEGACY_MANAGED_TRANSITIONS = False`. Sólo los tests lo ponen en `True`
+    (fixture `legacy_managed_transitions` y `tests/mocks/legacy_transitions.py`);
+    un controlador compilado no puede.
+- Tests: `test_sc2_delegation_retired.py` (cada rechazo, compuerta de
+  compactación, copia de época 3 bloqueada, cadena existente que valida, sirve
+  y se compacta, y raíz de época 3 con dueños concedidos por el CLI compilado
+  fijado 26de262 compactada bajo el controlador de época 4) y
+  `test_schema_contract_pin.py` (pin del digest, sensibilidad de cada
+  constante, vocabularios contra los enums de `src`, inicializadores reales).
+  Los mundos heredados (rollback, derivación, cadenas de dueños) se construyen
+  bajo el flag y luego se ejercitan sin él; la lista de tests cambiados y su
+  motivo está en la evidencia (`changed_tests`).
+- Docs (SC-5a): DEPLOYMENT (delegación retirada, sin límite de 8 dueños ni F8,
+  época 4 y contrato de esquema, sección «Sin transiciones gestionadas después
+  de R1 hasta el modo release»), runbook de la ventana de R1 (época 4 y el
+  pendiente de SC-6a) y runbook de compactación (época 4).
+- **Decisión del usuario pendiente: SC-D5** (cómo acotar el hueco sin arreglos
+  de código después de R1 hasta el modo release; opciones A, B y C en
+  DEPLOYMENT). SC-D1..SC-D4 también siguen sin respuesta.
+- Pendiente antes de la ventana de R1 (SC-6a): reconstruir R1 dos veces desde
+  el commit integrado y comparar byte a byte; borrar o renombrar todo R1 de
+  época 3 (listar aquí cada ubicación); fijar el sha256 y el commit en el
+  runbook con el paso obligatorio `sha256sum` antes de W1; repetir el ensayo de
+  adopción (compilado, ventana real en Linux y T-A17) con los rechazos nuevos.
+- Revisión independiente de SC-2/SC-5a: pendiente.
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.

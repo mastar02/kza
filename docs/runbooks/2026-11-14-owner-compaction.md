@@ -76,10 +76,11 @@ deja de existir también en los slots anteriores (P2).
 
 Requisitos (el comando los verifica y rechaza con un código si falta alguno):
 
-- R1 construido desde un árbol que ya contiene U3b-0c (decisión D1 = A): así
-  ningún controlador de época 2 existe en la raíz gestionada. La adopción exige
-  `controller_epoch == 3`;
-- controlador época 3 o posterior instalado en `controller/current`
+- R1 construido desde un árbol que ya contiene U3b-0c (decisión D1 = A) y
+  SC-2: así ningún controlador de época 2 o 3 existe en la raíz gestionada. La
+  adopción exige `controller_epoch == 4`. Desde SC-2 no se crean dueños nuevos;
+  este runbook sólo aplica a raíces que ya los tienen (R1 no tiene);
+- controlador época 4 o posterior instalado en `controller/current`
   (`install-controller`), y el lanzador instalado con contrato 3 o posterior
   (`install-launcher`; P13). La release de H (y por lo tanto de K) declara
   `launcher_contract >= 3`;
@@ -445,7 +446,9 @@ K=<nombre nuevo de slot, nunca usado antes>
 Mientras haya una compactación pendiente, sólo pasan los comandos `compact`,
 la corrida de verificación armada, las corridas de un `allow-run` vigente e
 `install-controller`. `install-launcher`, `prepare`, `activate`, `run`,
-`delegate` y la adopción rechazan con `runtime_admission_compaction_pending`.
+`delegate` y la adopción rechazan con `runtime_admission_compaction_pending`
+(desde SC-2, `delegate` rechaza siempre con
+`runtime_admission_delegation_retired`).
 
 1. Ver el estado: `$ST compact status`. Cada compactación muestra su fase; un
    log ilegible aparece como `{"compaction_id": ..., "invalid": true, "code":
@@ -459,7 +462,7 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
    La salida es un controlador corregido (decisión D4 = A):
    `$ST install-controller <archivo nuevo>` funciona aunque haya una
    compactación pendiente o un log inválido, siempre que el archivo sea de
-   época 3 o posterior y no menor que la instalada. Después, repetir el paso 2
+   época 4 o posterior (desde SC-2) y no menor que la instalada. Después, repetir el paso 2
    con el `$ST` del controlador nuevo.
 4. Log inválido (por ejemplo un evento truncado por un corte de luz en un
    sistema de archivos sin orden de escritura): todos los comandos que toman
@@ -514,7 +517,9 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
   correrse directamente y no conoce la compuerta: por eso R1 se construye ya
   con U3b-0c (D1 = A) y el runbook prohíbe correr `stage_runtime` desde otro
   lugar que `controller/current`. Desde la época 3 hay comprobación hacia
-  adelante.
+  adelante. SC-2 sube la época a 4: una copia de época 3 ya no toma el lease
+  en una raíz con controlador de época 4, así que no puede volver a conceder
+  delegaciones.
 - Retiro, cobertura contra H: las filas de arrendamiento efímero
   (`live_connections`, `live_resets`) **no** tienen una clase propia; cuando la
   corrida de K las borra cuentan como `removed_by_k_run`, y si existen sólo en
