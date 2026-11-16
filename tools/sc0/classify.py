@@ -189,8 +189,8 @@ RULES: list[tuple[str, str, str, str]] = [
     ("src/training/stt_correction_collector.py", "STTCorrectionCollector.cleanup_old", "user",
      "no caller in src at 0bd9f98"),
     ("src/training/stt_correction_collector.py", "", "ingress", "STT correction collection (voice)"),
-    ("src/users/voice_groups.py", "VoiceGroups.initialize", "upgrade",
-     "first open of a ledger without voice_group_schema: backfill unknown groups + marker"),
+    ("src/users/voice_groups.py", "VoiceGroups.initialize", "boot_init",
+     "first open of a ledger without voice_group_schema (first boot, or upgrade: backfill of unknown, unprojected groups) + marker"),
     ("src/users/voice_groups.py", "VoiceGroups._seal", "ingress", "voice clustering"),
     ("src/users/voice_groups.py", "VoiceGroups._create", "ingress", "voice clustering (and the upgrade backfill)"),
     ("src/users/voice_groups.py", "VoiceGroups.add", "ingress", "voice clustering"),
@@ -243,6 +243,7 @@ def rule_for(row: dict) -> tuple[str, str]:
 
 
 def observations(logs: Path) -> dict:
+    """(file, line, table) of the innermost src frame of every traced projected write."""
     seen: dict = {}
     for result in sorted(logs.glob("*/result.json")):
         data = json.loads(result.read_text())
@@ -255,7 +256,8 @@ def observations(logs: Path) -> dict:
             if site is None:
                 continue
             file, line, function = site.split(":", 2)
-            entry = seen.setdefault((file, int(line)), {"function": function, "states": set(), "phases": set()})
+            entry = seen.setdefault((file, int(line), write["table"]),
+                                    {"function": function, "states": set(), "phases": set()})
             entry["states"].add(data["state"])
             entry["phases"].add(write["phase"])
     return seen
@@ -264,21 +266,35 @@ def observations(logs: Path) -> dict:
 def classify(logs: Path) -> list[dict]:
     seen = observations(logs)
     rows = []
-    for row in scan(REPO):
+    static = scan(REPO)
+    # A DDL constant runs from the line of its executescript call, not its own
+    # line: join an observation to the constant row of the same file and table.
+    constants = {(row["file"], row["table"]): (row["file"], row["line"])
+                 for row in static if row["call"] == "ddl_constant"}
+    joined: dict = {}
+    for (file, line, table), value in seen.items():
+        if not any(row["file"] == file and row["line"] == line for row in static) \
+                and (file, table) in constants:
+            joined.setdefault(constants[(file, table)], []).append({**value, "via": f"{file}:{line}"})
+        else:
+            joined.setdefault((file, line), []).append(value)
+    for row in static:
         kind, how = rule_for(row)
-        hits = [value for (file, line), value in seen.items()
-                if file == row["file"] and line == row["line"]]
-        rows.append({**row, "class": kind, "reached_by": how,
+        hits = joined.get((row["file"], row["line"]), [])
+        vias = sorted({hit["via"] for hit in hits if "via" in hit})
+        rows.append({**row, "class": kind,
+                     "reached_by": how + (f" (observed executing from {', '.join(vias)})" if vias else ""),
                      "observed_phases": sorted({p for hit in hits for p in hit["phases"]}),
                      "observed_states": sorted({s for hit in hits for s in hit["states"]})})
     known = {(row["file"], row["line"]) for row in rows}
-    for (file, line), value in sorted(seen.items()):
+    for (file, line), values in sorted(joined.items()):
         if (file, line) not in known:
             # A runtime writer the static scan missed: listed, never dropped.
-            rows.append({"file": file, "line": line, "function": value["function"], "call": "?",
+            rows.append({"file": file, "line": line, "function": values[0]["function"], "call": "?",
                          "verb": "?", "table": "?", "projection": "?", "dynamic": True,
                          "class": "unclassified", "reached_by": "observed at runtime, not in the static scan",
-                         "observed_phases": sorted(value["phases"]), "observed_states": sorted(value["states"])})
+                         "observed_phases": sorted({p for v in values for p in v["phases"]}),
+                         "observed_states": sorted({s for v in values for s in v["states"]})})
     for row in UNSCANNED:
         rows.append({**row, "observed_phases": [], "observed_states": []})
     return rows
