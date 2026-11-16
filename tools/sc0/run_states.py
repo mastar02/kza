@@ -9,7 +9,9 @@ AdmissionController with no traffic; send SIGTERM ``--settle`` seconds after
 the child reports steady; after the run, check whether a receipt was sealed
 and take the projection again. The per-table diff is joined with the child's
 SQL write trace (statement, phase, src frames). Skip list: none (normal
-mode; SC-4a's verify mode does not exist yet).
+mode; SC-4a's verify mode does not exist yet). A residue injector may
+return ``config`` (dotted settings overrides for NEW) and ``settle`` (a
+longer settle, for loops whose first write comes after 15 s).
 
 Usage:
     python tools/sc0/run_states.py --work DIR --out results.json [--states a,b] [--settle 15]
@@ -96,7 +98,8 @@ def build_archive(work: Path) -> Path:
 class Run:
     """One slot at the fixed staging path; one managed run of the child."""
 
-    def __init__(self, archive: Path, work: Path, data_source: Path | None, label: str):
+    def __init__(self, archive: Path, work: Path, data_source: Path | None, label: str,
+                 overrides: dict | None = None):
         self.work, self.label = work, label
         self.port = _free_port()
         self.staging = work / "staging"
@@ -121,6 +124,14 @@ class Run:
             return config
 
         raw = canonical_template(self.root, configuration)
+        for dotted, value in (overrides or {}).items():
+            # A residue state may run NEW with a different setting than the
+            # one its rows were written under (R4: shorter retention).
+            *parents, leaf = dotted.split(".")
+            owner = raw
+            for key in parents:
+                owner = owner.setdefault(key, {})
+            owner[leaf] = value
         (source / "config/settings.yaml").write_text(yaml.safe_dump(raw, sort_keys=False))
         stage.prepare_slot(archive, self.staging, "s", source)
         assert stage.activate_slot(self.staging, "s") is None
@@ -262,10 +273,12 @@ def measure(archive: Path, work: Path, label: str, data_source: Path | None, *, 
         if flags:
             CHILD_FLAGS[:] = flags
             settle = max(settle, 45.0)
+        settle = max(settle, result["residue"].get("settle", 0.0))
         data_source = injected
     else:
         CHILD_FLAGS[:] = []
-    run = Run(archive, work, data_source, label)
+    overrides = (result.get("residue") or {}).get("config", {})
+    run = Run(archive, work, data_source, label, overrides)
     before = stage.capture_state_authority(run.state)
     result["outcome"] = run.run(settle, timeout)
     try:

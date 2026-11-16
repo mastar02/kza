@@ -8,9 +8,11 @@ operations) and with SQL where the residue is exactly a row an interrupted
 or older process leaves. All content is synthetic. Each returns a small
 content-free description of what it planted.
 
-The design's list (sc-release-design-v4 SC-0 scope) plus three states the
-inventory added (routine run interrupted, owned fact past its expiry,
-deferred retired-owner prune).
+The design's list (sc-release-design-v4 SC-0 scope) plus states the
+inventory and the review added: routine run interrupted, owned fact past its
+expiry, deferred retired-owner prune, expired voice-group request, fenced
+wake clips (R2), deleted fact without an index row (R3), shortened retention
+settings (R4, with config overrides) and two 75 s settles (R6).
 """
 from __future__ import annotations
 
@@ -271,6 +273,107 @@ def expired_voice_group_request(data, final):
     return {"planted": ["voice_group_requests row past expiry"]}
 
 
+def _wake_target(db) -> str:
+    return db.execute("SELECT id FROM erasure_targets WHERE participant='collectors' "
+                      "AND descriptor LIKE '%\"wake_clips\"%'").fetchone()[0]
+
+
+def _clip(db, target: str, *, published: int, expires_at: float, sources) -> None:
+    now = time.time()
+    db.execute("INSERT INTO wake_clips_v1 (id,target_id,bucket,room_id,score,sources_json,captured_at,"
+               "expires_at,published) VALUES (?,?,?,?,?,?,?,?,?)",
+               (str(uuid4()), target, "positive", "living", .9,
+                json.dumps([source.to_dict() for source in sources], separators=(",", ":")),
+                now - 120, expires_at, published))
+
+
+def wake_clip_fenced(data, final):
+    """R2: a published clip past its own TTL with a live source and an unpublished live clip.
+
+    Both are wake_deadline_fences rows (expires_at below the source deadline);
+    production leaves them routinely (expiring clips, a crash before publish).
+    """
+    source = _source(expires_in=DAY)
+    with _connect(_graph(data) / "privacy.db") as db:
+        target = _wake_target(db)
+        _clip(db, target, published=1, expires_at=time.time() - 60, sources=(source,))
+        _clip(db, target, published=0, expires_at=time.time() + 3600, sources=(source,))
+    return {"planted": ["wake_clips_v1 published, own TTL passed, source live (fence)",
+                        "wake_clips_v1 unpublished, live (fence)"]}
+
+
+def wake_clip_expiring_late(data, final):
+    """R6: a published fenced clip whose TTL passes ~50 s after planting (after READY).
+
+    The construction sweep leaves it; the store's next cycle (deadline = the
+    earliest clip expiry, at most now+60 s) deletes it. Settle 75 s so that a
+    loop first firing between 15 s and the planned N (<= 60 s) is observed.
+    """
+    source = _source(expires_in=DAY)
+    with _connect(_graph(data) / "privacy.db") as db:
+        _clip(db, _wake_target(db), published=1, expires_at=time.time() + 50, sources=(source,))
+    return {"planted": ["wake_clips_v1 published, TTL ~50 s after planting, source live (fence)"],
+            "settle": 75.0}
+
+
+def clean_long_settle(data, final):
+    """R6: the clean state held 75 s after READY (largest planned N plus one 60 s cycle)."""
+    return {"planted": [], "settle": 75.0}
+
+
+def deleted_fact_no_index_row(data, final):
+    """R3: a deleted fact without a policy_index_deletions row.
+
+    Left by a fact deleted while no semantic_index target was registered (an
+    older state); register_target's INSERT..SELECT backfills it at construction.
+    """
+    ledger = _ledger(data)
+    try:
+        fact = ledger.store("Synthetic fact deleted early", "fact", .9, (_source(),))
+    finally:
+        ledger.close()
+    with _connect(_graph(data) / "privacy.db") as db:
+        db.execute("UPDATE facts SET content=NULL, state='deleted', expires_at=NULL, revision=revision+1 "
+                   "WHERE id=?", (fact.id,))
+        db.execute("DELETE FROM fact_sources WHERE fact_id=?", (fact.id,))
+        db.execute("DELETE FROM policy_index_deletions WHERE fact_id=?", (fact.id,))
+    return {"planted": ["facts state=deleted, no policy_index_deletions row"]}
+
+
+def retention_shortened(data, final):
+    """R4: rows written under 30/90-day retention, NEW configured with 1/7 days.
+
+    An accepted suggestion (projected with every column, and a deadline
+    fence) whose expires_at is observed_at + 40 h, inside its 47 h source,
+    and an event whose expires_at is timestamp + 80 days. NEW runs with
+    memory.automatic_retention_days=1 and analytics.retention_days=7, so the
+    boot clamps
+    (suggestion_storage.py:158 via suggestion_store.py:106, event_logger.py:211)
+    have rows to rewrite.
+    """
+    from src.analytics.event_evidence import EventDependency
+    now = time.time()
+    observed = now - 3600
+    source = _source(expires_in=47 * 3600)
+    evidence = EventDependency(secrets.token_hex(32), 1, secrets.token_hex(32), now + 25 * DAY)
+    graph = _graph(data)
+    with _connect(graph / "suggestions.json.policy-v1.sqlite3") as db:
+        db.execute("INSERT INTO suggestions_policy_v1 (id,pattern_key,created_at,observed_at,expires_at,status,"
+                   "snooze_until,pattern_json,evidence_json,sources_json,message) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                   ("sug_" + uuid4().hex, "synthetic-pattern", observed, observed, observed + 40 * 3600,
+                    "accepted", None, "{}", json.dumps([evidence.to_dict()]),
+                    json.dumps([source.to_dict()]), "Sugerencia sintética"))
+    with _connect(graph / "events.db") as db:
+        db.execute("INSERT INTO events_policy_v1 (timestamp,event_type,entity_id,action,context_json,hour,minute,"
+                   "weekday,is_weekend,time_of_day,sources_json,metrics_json,expires_at,text_expires_at) "
+                   "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (now - 3600, "device_action", "light.living", "turn_on", "{}", 12, 0, 1, 0, "afternoon",
+                    "[]", "{}", now + 80 * DAY, None))
+    return {"planted": ["suggestions_policy_v1 accepted, expires_at observed+40 h (fence)",
+                        "events_policy_v1 expires_at timestamp+80 d"],
+            "config": {"memory.automatic_retention_days": 1, "analytics.retention_days": 7}}
+
+
 STATES = {
     "clean": clean,
     "retired_owner_facts": retired_owner_facts,
@@ -291,4 +394,9 @@ STATES = {
     "routine_run_interrupted": routine_run_interrupted,
     "owned_fact_expired": owned_fact_expired,
     "expired_voice_group_request": expired_voice_group_request,
+    "wake_clip_fenced": wake_clip_fenced,
+    "deleted_fact_no_index_row": deleted_fact_no_index_row,
+    "retention_shortened": retention_shortened,
+    "wake_clip_expiring_late": wake_clip_expiring_late,
+    "clean_long_settle": clean_long_settle,
 }
