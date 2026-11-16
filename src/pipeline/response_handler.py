@@ -16,7 +16,8 @@ from dataclasses import dataclass, field
 from src.core.owned_work import OwnedBlockingWork
 from src.llm.generation_stream import GenerationStream, GuardedGeneration
 from src.core.voice_delivery import (
-    DeliveryState, GenerationState, ResponseBudgets, ResponseResult, ResponseStage, ResponseTimedOut,
+    SIGNALS_OUTPUT_FREE, DeliveryState, GenerationState, ResponseBudgets, ResponseResult, ResponseStage,
+    ResponseTimedOut,
 )
 from src.tts.piper_tts import AudioPlaybackError, StreamingAudioPlayer
 from src.tts.response_cache import CachedAudio, ResponseCache
@@ -55,6 +56,8 @@ class _Session:
     filler: str | None = None
     broadcast: bool = False
     delivery_started_at: float | None = None
+    # False for a background notice (SIGNALS_OUTPUT_FREE): its end never signals a free output.
+    signals_free: bool = True
 
     def signal(self, event: asyncio.Event) -> None:
         if self.loop is not None:
@@ -135,6 +138,7 @@ class ResponseHandler:
         self._earcon_audio, self._earcon_sr = None, 24000
         self._generation = GenerationStream(llm)
         self._generation_sources: set[GenerationStream | GuardedGeneration] = {self._generation}
+        self._output_free_listeners: list[Callable[[], None]] = []
         if owns_response_cache and response_cache is not None:
             self.register_owned_response_cache(response_cache)
 
@@ -153,6 +157,31 @@ class ResponseHandler:
         """Whether a response owns generation, synthesis or playback resources."""
         with self._ownership:
             return self._owner is not None
+
+    def add_output_free_listener(self, callback: Callable[[], None]) -> None:
+        """Call ``callback`` each time other activity stops owning the output.
+
+        Fired when a session that is not a background notice releases the
+        output owner and no other session is waiting for it. It may run on the
+        event loop or on a synthesis thread, while the handler is releasing its
+        owner: the callback must be thread-safe, non-blocking and must not
+        call back into this handler. Its errors are logged and ignored.
+
+        Args:
+            callback: Function without arguments (e.g. ReminderScheduler.notify_output_available).
+        """
+        self._output_free_listeners.append(callback)
+
+    def _output_freed_locked(self, session: _Session) -> bool:
+        """Whether releasing ``session`` frees the output for other producers (lock held)."""
+        return session.signals_free and self._owner is None and not self._pending and not self._closed
+
+    def _notify_output_free(self) -> None:
+        for callback in tuple(self._output_free_listeners):
+            try:
+                callback()
+            except Exception as error:
+                logger.warning("[Response] Output-free listener failed: %s", type(error).__name__)
 
     def set_active_zone(self, zone_id: str) -> None:
         """Set the default only for subsequent sessions."""
@@ -190,7 +219,8 @@ class ResponseHandler:
             room = getattr(room_context, "room_id", None)
             zone_id = f"zone_{room}" if room else None
         session = _Session(zone_id if zone_id is not None else self._active_zone_id,
-                           asyncio.get_running_loop() if asynchronous else None)
+                           asyncio.get_running_loop() if asynchronous else None,
+                           signals_free=SIGNALS_OUTPUT_FREE.get())
         with self._ownership:
             if self._closed:
                 raise RuntimeError("voice_delivery_closed")
@@ -283,6 +313,7 @@ class ResponseHandler:
             )
 
     def _controller_finished(self, session: _Session) -> None:
+        freed = False
         with self._ownership:
             self._controllers.pop(id(session), None)
             if session in self._pending:
@@ -291,7 +322,10 @@ class ResponseHandler:
                 self._workers.pop(id(session), None)
                 if self._owner is session:
                     self._owner = None
+                    freed = self._output_freed_locked(session)
             self._ownership.notify_all()
+        if freed:
+            self._notify_output_free()
 
     def _start_native(self, session: _Session, function, *args) -> asyncio.Task:
         exited = threading.Event()
@@ -345,6 +379,7 @@ class ResponseHandler:
         def finished(completed):
             if not completed.cancelled():
                 completed.exception()
+            freed = False
             with self._ownership:
                 if not exited.is_set():
                     # A failed submission may still leave executable native
@@ -357,8 +392,11 @@ class ResponseHandler:
                 self._workers.pop(id(session), None)
                 if self._owner is session:
                     self._owner = None
+                    freed = self._output_freed_locked(session)
                 self._ownership.notify_all()
             session.signal(session.space)
+            if freed:
+                self._notify_output_free()
 
         task.add_done_callback(finished, context=Context())
         return task
@@ -705,12 +743,16 @@ class ResponseHandler:
             self._worker_finished(session)
 
     def _worker_finished(self, session: _Session) -> None:
+        freed = False
         with self._ownership:
             if not session.native_pending and self._owner is session:
                 self._owner = None
+                freed = self._output_freed_locked(session)
             self._workers.pop(id(session), None)
             self._ownership.notify_all()
         session.signal(session.space)
+        if freed:
+            self._notify_output_free()
 
     async def asynthesize(self, text: str) -> object:
         """Own startup/cache synthesis without playing or publishing late PCM.
