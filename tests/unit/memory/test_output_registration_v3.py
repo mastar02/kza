@@ -12,7 +12,8 @@ from src.memory import output_registration as base
 from src.memory import output_registration_v2 as registration
 from src.memory import output_registration_v3 as registration_v3
 # The shared synthetic controller fixture is used by name in each test.
-from tests.unit.memory.test_delegated_output_inventory import _assert_unknown, _write, decoder  # noqa: F401
+from tests.unit.memory.test_delegated_output_inventory import (  # noqa: F401
+    _assert_unknown, _write, decoder, delegated_decoder_world)  # noqa: F401
 
 SELECTED = ("privacy_authority", "authority_sessions", "routines", "events", "suggestions")
 
@@ -58,7 +59,11 @@ def _events(plan, *, committed=1, failed=0):
             dict(event, phase="opening"), dict(event, phase="drained", aggregate=aggregate)]
 
 
-def test_current_reader_joins_v2_and_v3_and_reports_accounts_as_partial(decoder):  # noqa: F811
+@pytest.mark.parametrize("world", ["decoder", "delegated_decoder_world"], ids=["epoch4", "shipped_epoch"])
+def test_current_reader_joins_v2_and_v3_and_reports_accounts_as_partial(world, request):
+    """SC-1a: the v2 run of the shared world joins a delegation record; the epoch-4 build observes it
+    (the original proof), the shipped epoch reports it unknown (AUTHZ3-1) and the V3 proof is unchanged."""
+    decoder = request.getfixturevalue(world)  # noqa: F811
     plan = _plan(decoder)
     assert set(plan) == {"kind", "producer", "role", "representation", "path", "configured_path",
         "legacy_import_path", "ancestor", "parent_identity", "missing_parents", "initial_identity",
@@ -74,7 +79,11 @@ def test_current_reader_joins_v2_and_v3_and_reports_accounts_as_partial(decoder)
     # No closed list/reminder family exists in this synthetic run: all 32 stay uncovered.
     assert v3["uncovered_producers"] == list(base.PRODUCERS)
     assert v3["instrumented_producers"] == ["accounts"]
-    assert by_version["v2"]["partial_producers"] == sorted(SELECTED)
+    if world == "decoder":
+        assert by_version["v2"]["partial_producers"] == sorted(SELECTED)
+    else:
+        assert stage.CONTROLLER_EPOCH >= stage.RELEASE_MODE_EPOCH
+        _assert_unknown(by_version["v2"])
     assert all(record["capability"] is False and record["global_inventory_complete"] is False
                for record in records)
     header, _, states, _ = base._chain(decoder["root"] / "admission/output-inventory/v3/runs" / ("4" * 32))

@@ -22,6 +22,7 @@ import threading
 import pytest
 
 from scripts import stage_runtime as stage
+from tests.mocks.epoch4 import epoch4_in_process
 
 
 def _write(path, value):
@@ -114,9 +115,13 @@ def test_snapshot_uses_complete_inventory_once_then_live_never_scans(local_metad
     assert json.loads(snapshot.ownership_json)["policy"] is None
 
 
-@pytest.fixture
-def delegated_metadata(tmp_path, monkeypatch):
-    """Real metadata files; controller/closure provenance is a deliberate stub."""
+def _delegated_world(tmp_path, monkeypatch):
+    """Real metadata files; controller/closure provenance is a deliberate stub.
+
+    The world has a delegation record and an owner. SC-1a (AUTHZ3-1): the
+    shipped controller epoch refuses it (test_shipped_epoch_refuses_the_delegated_world);
+    its live-metadata proofs run on the epoch-4 build (tests/mocks/epoch4.py).
+    """
     root = tmp_path / "root"
     state = root / "slots/current/state"
     source_state, runtime = root / "slots/source/state", root / "slots/source/runtime"
@@ -207,12 +212,36 @@ def delegated_metadata(tmp_path, monkeypatch):
                         lambda root, slot, artifacts: checked_slot(root, slot))
     monkeypatch.setattr(stage, "_artifact_read", artifact_read)
     monkeypatch.setattr(stage, "_closure_proof", close_observation)
-    snapshot = stage.admission_validation_snapshot(state, ticket)
-    assert scan_calls == ["synthetic full-validation observation"]
     return {"root": root, "state": state, "source_state": source_state, "runtime": runtime,
-            "ticket": ticket, "snapshot": snapshot, "policy_path": policy_path,
+            "ticket": ticket, "scan_calls": scan_calls, "policy_path": policy_path,
             "record_path": record_path, "archive_path": archive_path, "proof": proof,
             "chain_path": stage._chain_path(root, stage._digest(record))}
+
+
+@pytest.fixture
+def delegated_metadata(tmp_path, monkeypatch, epoch4_controller):
+    """The delegated world with its full snapshot, taken by the epoch-4 build (SC-1a N11)."""
+    value = _delegated_world(tmp_path, monkeypatch)
+    value["snapshot"] = stage.admission_validation_snapshot(value["state"], value["ticket"])
+    assert value["scan_calls"] == ["synthetic full-validation observation"]
+    return value
+
+
+def test_shipped_epoch_refuses_the_delegated_world(tmp_path, monkeypatch):
+    """SC-1a AUTHZ3-1: from epoch 5 neither the full capture nor the live path reads a delegation record.
+
+    The epoch-4 twin is test_live_metadata_rejects_changed_pinned_observation.
+    """
+    assert stage.CONTROLLER_EPOCH >= stage.RELEASE_MODE_EPOCH
+    value = _delegated_world(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="^" + stage.DELEGATION_FROZEN + "$"):
+        stage.admission_validation_snapshot(value["state"], value["ticket"])
+    # A snapshot pinned by the epoch-4 build does not carry the record past the live guard.
+    with epoch4_in_process():
+        snapshot = stage.admission_validation_snapshot(value["state"], value["ticket"])
+    assert stage.CONTROLLER_EPOCH >= stage.RELEASE_MODE_EPOCH
+    with pytest.raises(ValueError, match="^" + stage.DELEGATION_FROZEN + "$"):
+        stage.validate_admission_live(value["state"], value["ticket"], snapshot)
 
 
 @pytest.mark.parametrize("mutation,error", [

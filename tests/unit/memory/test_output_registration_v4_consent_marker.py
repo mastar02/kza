@@ -12,7 +12,7 @@ import pytest
 
 from src.memory import output_registration as base
 from src.memory import output_registration_v2 as registration
-from tests.unit.memory.test_delegated_output_inventory import decoder  # noqa: F401
+from tests.unit.memory.test_delegated_output_inventory import decoder, delegated_decoder_world  # noqa: F401
 from tests.unit.memory.test_output_registration_v4 import (
     _aggregate, _composition, _configuration_events, _configuration_plan, _record, _v4_run,
 )

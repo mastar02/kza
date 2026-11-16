@@ -17,7 +17,8 @@ from src.memory import output_registration as base
 from src.memory import output_registration_v2 as registration
 from src.memory import output_registration_v3 as registration_v3
 # The shared synthetic controller fixture is used by name in each test.
-from tests.unit.memory.test_delegated_output_inventory import _assert_unknown, _write, decoder  # noqa: F401
+from tests.unit.memory.test_delegated_output_inventory import (  # noqa: F401
+    _assert_unknown, _write, decoder, delegated_decoder_world)  # noqa: F401
 from tests.unit.memory.test_output_registration_families import managed
 from tests.unit.memory.test_output_registration_v3 import (
     _format_writer, _mutate_observation, _rewrite, _v3_run, _write_valid,
@@ -425,7 +426,11 @@ def test_v4_composition_requires_the_declared_producer_list(decoder):  # noqa: F
 # T04: reader joins, typed unknown grammar and writer refusal.
 # ----------------------------------------------------------------------
 
-def test_reader_joins_v1_to_v4_and_reports_configuration_as_partial(decoder):  # noqa: F811
+@pytest.mark.parametrize("world", ["decoder", "delegated_decoder_world"], ids=["epoch4", "shipped_epoch"])
+def test_reader_joins_v1_to_v4_and_reports_configuration_as_partial(world, request):
+    """SC-1a: the v2 run of the shared world joins a delegation record; the epoch-4 build observes it
+    (the original proof), the shipped epoch reports it unknown (AUTHZ3-1) and the V4 proof is unchanged."""
+    decoder = request.getfixturevalue(world)  # noqa: F811
     plan = _configuration_plan(decoder)
     _v4_run(decoder, "4" * 32, _configuration_events(plan))
     records = registration.read_inventory(decoder["controller"])
@@ -441,7 +446,11 @@ def test_reader_joins_v1_to_v4_and_reports_configuration_as_partial(decoder):  #
     assert value["uncovered_producers"] == list(base.PRODUCERS)
     # The two-key configuration projection is unchanged for every version.
     assert value["configuration"] == {"raw_sha256": BINDING_SHA, "effective_digest": "observed_only"}
-    assert by_version["v2"]["configuration"] == value["configuration"]
+    if world == "decoder":
+        assert by_version["v2"]["configuration"] == value["configuration"]
+    else:
+        assert stage.CONTROLLER_EPOCH >= stage.RELEASE_MODE_EPOCH
+        _assert_unknown(by_version["v2"])
     assert all(record["capability"] is False and record["global_inventory_complete"] is False
                for record in records)
 
