@@ -1268,3 +1268,13 @@ async def test_exhausted_round_is_not_terminal_and_a_new_round_continues_the_att
     # Late by now: the confirmed notice runs no action.
     mock_deps["ha_client"].call_service_once.assert_not_called()
     assert (await store.get_by_id(r.id)).state is ReminderState.FIRED
+
+
+@pytest.mark.asyncio
+async def test_dismiss_with_a_retired_session_writes_nothing(scheduler, store, clock):
+    r = await store.create("u1", "regar", clock() - 1, scope=ReminderScope.SHARED)
+    with pytest.raises(PermissionError):
+        await scheduler.dismiss_notice(r.id, r.trigger_at, guard=lambda: False)
+    assert await ledger(store) == []
+    assert (await store.get_by_id(r.id)).state is ReminderState.ACTIVE
+    assert r.id not in scheduler._in_flight

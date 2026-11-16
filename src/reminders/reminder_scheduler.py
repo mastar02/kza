@@ -733,11 +733,14 @@ class ReminderScheduler:
                     created = False
                 if not created:
                     return NoticeDismissal.BUSY
+                # The guarded claim is the authorized act; finishing and advancing it cannot be
+                # left half done by a session that expires in between (a stuck 'sending' would
+                # keep the occurrence silent until restart).
                 await self._store.finish_home_action(request_id, ReminderActionStatus.CONFIRMED.value,
-                                                     NOTICE_DISMISSED, guard=guard)
+                                                     NOTICE_DISMISSED)
                 self._holds.pop(reminder_id, None)
                 logger.info("Reminder %s notice dismissed from the web", reminder_id)
-                await self._advance(current, guard=guard)
+                await self._advance(current)
                 return NoticeDismissal.DISMISSED
             purged = await self._store.purge_notice_rows(math.inf, reminder_id=reminder_id, trigger_at=trigger_at,
                                                          guard=guard)
