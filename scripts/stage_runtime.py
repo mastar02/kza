@@ -1519,19 +1519,75 @@ def _mixed_projections(db: sqlite3.Connection, names: set[str], selected: dict) 
 
 # SC-0b O1: a content-addressed memo of capture_state_authority, active only
 # inside an explicit authority_memo() scope (the owner-compaction controller
-# commands and worker). The key hashes every byte the capture can read; a
-# symlink or special file gives no key and the full capture runs (and refuses
-# exactly as before). A result is stored only when the key is unchanged after
-# the capture, and a hit returns a deep copy.
+# commands and worker). The key hashes the content of every file the capture
+# reads (its SQLite databases with their side files, account records,
+# configuration and .env) and the sorted (relative path, kind) of every entry
+# under the state: that is everything the capture's result depends on, so other
+# bytes (audio, SDK-opaque index files) cost one lstat, not a hash (SC-0b review
+# F2). A symlink or special file gives no key and the full capture runs (and
+# refuses exactly as before). A result is stored only when the key is unchanged
+# after the capture, and a hit returns a deep copy.
 _AUTHORITY_MEMO: dict = {}
 _AUTHORITY_MEMO_LOCK = threading.Lock()
 _AUTHORITY_MEMO_DEPTH = 0
 _AUTHORITY_MEMO_LIMIT = 8
-_AUTHORITY_MEMO_CODE = ("_database_image", "_schema_contract", "_row_projection", "_deletion_ledger_projection",
-                        "_mixed_projections", "_deadline_projection", "_source_deadline", "_digest", "_typed",
-                        "_read_json", "_safe_directory", "_PROTECTED_TABLES", "_LEDGER_TABLE", "_TABLE_COLUMNS",
-                        "_DATABASE_TABLE_COLUMNS", "_SQLITE_INTERNAL_TABLES", "_UNBOUND_ALONE_TABLES",
-                        "_SDK_INTERNAL_TABLES", "_REFUSED_SQLITE_OBJECTS")
+_AUTHORITY_DATABASE_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3"})
+_AUTHORITY_SQLITE_SIDE_SUFFIXES = ("-wal", "-shm", "-journal")
+_AUTHORITY_CONFIGURATION_SUFFIXES = frozenset({".json", ".yaml", ".yml", ".toml"})
+_AUTHORITY_MEMO_CODE = ("_capture_state_authority", "_authority_database", "_authority_record",
+                        "_authority_configuration", "_authority_input", "_database_image", "_schema_contract",
+                        "_row_projection", "_deletion_ledger_projection", "_mixed_projections",
+                        "_deadline_projection", "_source_deadline", "_digest", "_canonical_json", "_typed",
+                        "_read_json", "_safe_directory", "_PROTECTED_TABLES", "_LEDGER_TABLE", "_SCHEMA_MARKERS",
+                        "_TABLE_COLUMNS", "_DATABASE_TABLE_COLUMNS", "_SQLITE_INTERNAL_TABLES",
+                        "_UNBOUND_ALONE_TABLES", "_SDK_INTERNAL_TABLES", "_REFUSED_SQLITE_OBJECTS",
+                        "_AUTHORITY_DATABASE_SUFFIXES", "_AUTHORITY_SQLITE_SIDE_SUFFIXES",
+                        "_AUTHORITY_CONFIGURATION_SUFFIXES")
+
+
+def _authority_database(path: Path) -> bool:
+    """A file the capture opens as a SQLite database."""
+    return path.suffix in _AUTHORITY_DATABASE_SUFFIXES
+
+
+def _authority_record(path: Path) -> bool:
+    """An account record the capture parses (checked after the database branch)."""
+    return path.name.endswith("_accounts_v1.json")
+
+
+def _authority_configuration(state: Path, path: Path) -> bool:
+    """A consent/policy input the capture hashes whole (checked after the database and record branches)."""
+    return path == state / ".env" or (path.is_relative_to(state / "config")
+                                      and path.suffix in _AUTHORITY_CONFIGURATION_SUFFIXES)
+
+
+def _authority_input(state: Path, path: Path) -> bool:
+    """True for every regular file whose bytes the capture, or SQLite under it, can read.
+
+    The capture's three branches, plus each database's side files: SQLite
+    reads a database's -wal and -shm (and a hot -journal) when it opens it.
+    Over-inclusion only costs hashing; omission would make the memo unsound.
+    """
+    name = path.name
+    for suffix in _AUTHORITY_SQLITE_SIDE_SUFFIXES:
+        if name.endswith(suffix) and _authority_database(path.with_name(name[:-len(suffix)])):
+            return True
+    return _authority_database(path) or _authority_record(path) or _authority_configuration(state, path)
+
+
+def sqlite_temp_directory(environ=None) -> Path | None:
+    """Where SQLite's unix VFS creates temporary files (VACUUM's temporary database).
+
+    SQLite's own search order: SQLITE_TMPDIR, TMPDIR, /var/tmp, /usr/tmp, /tmp,
+    then '.' (the process's working directory); the first that is a directory
+    with write and search permission. None when none is (SQLite then refuses
+    to create the file). Shared by P9's controller and worker checks.
+    """
+    environ = os.environ if environ is None else environ
+    for value in (environ.get("SQLITE_TMPDIR"), environ.get("TMPDIR"), "/var/tmp", "/usr/tmp", "/tmp", "."):
+        if value and os.path.isdir(value) and os.access(value, os.W_OK | os.X_OK):
+            return Path(value).absolute()
+    return None
 
 
 @contextmanager
@@ -1550,15 +1606,17 @@ def authority_memo():
 
 
 def _authority_tree_key(state: Path) -> str | None:
-    """SHA-256 over the sorted tree (relative path, kind, file content sha256), or None.
+    """SHA-256 over the sorted tree (relative path, kind; content sha256 of each input), or None.
 
-    Files are read through O_NOFOLLOW and checked regular on the open
-    descriptor; anything that is not a plain directory or regular file yields
-    None (no memo). The identities of the capture's code and constants are part
-    of the key, so a different contract never reuses a result.
+    Every entry contributes its relative path and kind; a file the capture
+    reads (_authority_input) also contributes the SHA-256 of its content, read
+    through O_NOFOLLOW|O_NONBLOCK and checked regular on the descriptor.
+    Anything that is not a plain directory or regular file yields None (no
+    memo). The identities of the capture's code and constants are part of the
+    key, so a different contract never reuses a result.
     """
     module = sys.modules[__name__]
-    digest = hashlib.sha256(b"kza-state-authority-memo-v1\0" + str(state).encode() + b"\0")
+    digest = hashlib.sha256(b"kza-state-authority-memo-v2\0" + str(state).encode() + b"\0")
     digest.update(repr([(name, id(getattr(module, name))) for name in _AUTHORITY_MEMO_CODE]).encode())
     for path in sorted(state.rglob("*")):
         relative = path.relative_to(state).as_posix().encode()
@@ -1568,8 +1626,11 @@ def _authority_tree_key(state: Path) -> str | None:
             continue
         if not stat.S_ISREG(info.st_mode):
             return None
+        if not _authority_input(state, path):
+            digest.update(b"o\0" + relative + b"\0")
+            continue
         try:
-            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         except OSError:
             return None
         with os.fdopen(descriptor, "rb") as stream:
@@ -1617,7 +1678,7 @@ def _capture_state_authority(state: Path) -> dict:
         if not path.is_file():
             continue
         relative = path.relative_to(state).as_posix()
-        if path.suffix in {".db", ".sqlite", ".sqlite3"}:
+        if _authority_database(path):
             with _database_image(path) as db:
                 names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 contract = _schema_contract(db, names, relative)
@@ -1657,14 +1718,13 @@ def _capture_state_authority(state: Path) -> dict:
                 _mixed_projections(db, names, selected)
                 if selected:
                     projection["tables"][relative] = selected
-        elif path.name.endswith("_accounts_v1.json"):
+        elif _authority_record(path):
             value = _read_json(path)
             if value.get("schema") != "kza-users-accounts-v1" or type(value.get("users")) is not list:
                 raise ValueError("runtime_admission_account_schema")
             projection["accounts"][relative] = sorted(_digest({key: item for key, item in user.items()
                 if key != "last_seen"}) for user in value["users"])
-        elif path == state / ".env" or (path.is_relative_to(state / "config")
-                and path.suffix in {".json", ".yaml", ".yml", ".toml"}):
+        elif _authority_configuration(state, path):
             projection["configuration"][relative] = hashlib.sha256(path.read_bytes()).hexdigest()
     return {"schema_version": 1, "digest": _digest(projection), "projection": projection}
 

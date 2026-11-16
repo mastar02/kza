@@ -679,12 +679,8 @@ def _device(path: Path) -> int:
 
 
 def sqlite_temp_directory(environ=None) -> Path | None:
-    """Where SQLite's unix VFS puts VACUUM's temporary database: its own search order."""
-    environ = os.environ if environ is None else environ
-    for value in (environ.get("SQLITE_TMPDIR"), environ.get("TMPDIR"), "/var/tmp", "/usr/tmp", "/tmp"):
-        if value and os.path.isdir(value) and os.access(value, os.W_OK | os.X_OK):
-            return Path(value)
-    return None
+    """Where SQLite's unix VFS puts VACUUM's temporary database (stage_runtime's shared helper)."""
+    return stage.sqlite_temp_directory(environ)
 
 
 def free_space_need(state_bytes: int, manifest_bytes: int, largest_sqlite: int, runtime_bytes: int, *,
