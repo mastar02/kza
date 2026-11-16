@@ -509,6 +509,160 @@ async def test_loop_backs_off_after_failed_delivery_instead_of_hot_looping(store
     ha.call_service_once.assert_not_called()
     assert (await store.get_by_id(r.id)).state is ReminderState.ACTIVE
 
+@pytest.mark.parametrize("failing_step", ["home_action", "advance"])
+@pytest.mark.asyncio
+async def test_confirmed_speech_then_a_failing_step_is_never_spoken_again(scheduler, store, mock_deps, clock, failing_step):
+    """Review F2 (1): once the announcement was confirmed, no later failure re-speaks it in this process."""
+    r = await store.create("u1", "regar", clock() - 1, ha_actions=[ACTION], scope=ReminderScope.SHARED)
+    if failing_step == "home_action":
+        store.claim_home_action = AsyncMock(side_effect=RuntimeError("database is locked"))
+    else:
+        store.mark_fired = AsyncMock(side_effect=RuntimeError("database is locked"))
+    with pytest.raises(RuntimeError, match="database is locked"):
+        await scheduler._fire_reminder(r)
+    assert scheduler._holds[r.id].retry_at is None
+    for _ in range(4):
+        clock.advance(10)  # retries would still be on time (grace 120 s)
+        assert await scheduler._fire_reminder(r) is False
+        assert await scheduler.missed_reminder_on_arrival("u1", "cocina") == 0
+        await scheduler._deliver_due(clock())
+        assert await scheduler._next_timeout() is None
+    mock_deps["tts"].aspeak.assert_awaited_once_with("Oye, recuerda regar", zone_id="living")
+    assert (await store.get_by_id(r.id)).state is ReminderState.ACTIVE
+
+@pytest.mark.asyncio
+async def test_failed_arrival_delivery_is_retried_by_the_loop_without_an_external_wake(store, mock_deps):
+    """Review F2 (2): the loop skipped the occurrence while an arrival task delivered it."""
+    release, texts = asyncio.Event(), []
+
+    async def speak(text, **kwargs):
+        texts.append(text)
+        if len(texts) == 1:
+            await release.wait()
+            return failed()
+        return None
+
+    mock_deps["tts"].aspeak.side_effect = speak
+    presence, ha = mock_deps["presence_detector"], mock_deps["ha_client"]
+    scheduler = ReminderScheduler(store, mock_deps["tts"], presence, ha,
+                                  {"output_zone": "living", "retry_interval_seconds": .2},
+                                  home_actions=selected_actions(ha, ("light.patio",)))
+    arrived = presence.on_user_arrived.call_args.args[0]
+    reads = AsyncMock(wraps=store.get_due)
+    store.get_due = reads
+    task = asyncio.create_task(scheduler.start())
+    try:
+        await asyncio.sleep(.05)  # nothing pending: the loop waits for a wake
+        r = await store.create("u1", "regar", time.time() - 1, ha_actions=[ACTION], scope=ReminderScope.SHARED)
+        arrived("u1", MagicMock(current_zone="cocina"))
+        async with asyncio.timeout(2):
+            while not texts:
+                await asyncio.sleep(.01)
+        scheduler.notify_new_reminder()
+        async with asyncio.timeout(2):
+            while not reads.await_count:
+                await asyncio.sleep(.01)
+        await asyncio.sleep(.05)
+        assert len(texts) == 1  # the loop skipped the in-flight occurrence
+        release.set()
+        async with asyncio.timeout(3):
+            while (await store.get_by_id(r.id)).state is not ReminderState.FIRED:
+                await asyncio.sleep(.01)
+    finally:
+        release.set()
+        await scheduler.stop()
+        await asyncio.gather(task, return_exceptions=True)
+    assert texts == ["Oye, recuerda regar"] * 2
+    ha.call_service_once.assert_awaited_once()
+
+@pytest.mark.parametrize("failing, outcomes, expected", [
+    ("get_next_pending", [RuntimeError("db")] * 9, [1, 2, 4, 8, 16, 32, 60, 60, 60]),
+    ("get_due", [RuntimeError("db")] * 9, [1, 2, 4, 8, 16, 32, 60, 60, 60]),
+    ("get_next_pending", [RuntimeError("db")] * 3 + ["future"] + [RuntimeError("db")] * 2, [1, 2, 4, 1, 2]),
+])
+@pytest.mark.asyncio
+async def test_loop_errors_back_off_exponentially_up_to_sixty_seconds(store, mock_deps, monkeypatch, failing,
+                                                                      outcomes, expected):
+    """Review F2 (3): a failing store never makes a 1 s hot loop; a good pass resets the delay."""
+    scheduler = ReminderScheduler(store, mock_deps["tts"], None, mock_deps["ha_client"], {"output_zone": "living"},
+                                  home_actions=selected_actions(mock_deps["ha_client"], ("light.patio",)))
+    if failing == "get_due":
+        await store.create("u1", "regar", time.time() - 1, scope=ReminderScope.SHARED)
+    future = MagicMock(trigger_at=0)
+
+    async def answer(*args, **kwargs):
+        outcome = outcomes[min(len(calls), len(outcomes) - 1)]
+        calls.append(outcome)
+        if isinstance(outcome, Exception):
+            raise outcome
+        future.trigger_at = time.time() + .01
+        return future
+
+    calls, delays, real_sleep = [], [], asyncio.sleep
+
+    async def recorded_sleep(delay, result=None):
+        delays.append(delay)
+        if len(delays) == len(expected):
+            scheduler._running = False
+        await real_sleep(0)
+
+    setattr(store, failing, AsyncMock(side_effect=answer))
+    monkeypatch.setattr(asyncio, "sleep", recorded_sleep)
+    await asyncio.wait_for(scheduler.start(), 2)
+    assert delays == expected
+    mock_deps["tts"].aspeak.assert_not_awaited()
+
+@pytest.mark.parametrize("race", ["cancel", "edit"])
+@pytest.mark.asyncio
+async def test_catch_up_that_loses_its_trigger_update_is_not_spoken(scheduler, store, mock_deps, clock, race):
+    """Review F2 (4): a web cancel or edit that lands before the collapse wins; nothing is announced."""
+    start = clock() - 4 * DAY
+    latest = start
+    for _ in range(3):
+        latest = next_trigger(latest, "daily")
+    clock.now = latest + 30
+    r = await store.create("u1", "persianas", start, recurrence="daily", ha_actions=[ACTION], scope=ReminderScope.SHARED)
+    original = store.update_trigger
+    edited = clock() + DAY
+
+    async def concurrent(identity, new_trigger, **kwargs):
+        if race == "cancel":
+            assert await store.cancel(identity, shared_only=True)
+        else:
+            assert await original(identity, edited, shared_only=True)
+        return await original(identity, new_trigger, **kwargs)
+
+    store.update_trigger = concurrent
+    assert await scheduler._fire_reminder(r) is False
+    mock_deps["tts"].aspeak.assert_not_awaited()
+    mock_deps["ha_client"].call_service_once.assert_not_called()
+    assert await receipts(store) == []
+    current = await store.get_by_id(r.id)
+    if race == "cancel":
+        assert current.state is ReminderState.CANCELLED and current.trigger_at == start
+    else:
+        assert current.state is ReminderState.ACTIVE and current.trigger_at == edited
+
+@pytest.mark.asyncio
+async def test_one_failing_reminder_does_not_stop_the_rest_of_the_due_batch(scheduler, store, mock_deps, clock):
+    """Review F2 (5): per-reminder isolation inside one loop pass."""
+    broken = await store.create("u1", "primero", clock() - 20, scope=ReminderScope.SHARED)
+    healthy = await store.create("u1", "segundo", clock() - 10, scope=ReminderScope.SHARED)
+    original = store.get_by_id
+
+    async def flaky(identity, **kwargs):
+        if identity == broken.id:
+            raise RuntimeError("row unreadable")
+        return await original(identity, **kwargs)
+
+    store.get_by_id = flaky
+    await scheduler._deliver_due(clock())
+    mock_deps["tts"].aspeak.assert_awaited_once_with("Oye, recuerda segundo", zone_id="living")
+    store.get_by_id = original
+    assert (await store.get_by_id(healthy.id)).state is ReminderState.FIRED
+    assert (await store.get_by_id(broken.id)).state is ReminderState.ACTIVE
+    assert scheduler._holds[broken.id].failures == 1 and scheduler._holds[broken.id].retry_at == clock() + 1
+
 @pytest.mark.parametrize("key, value", [
     ("late_action_grace_s", -1), ("late_action_grace_s", math.nan), ("late_action_grace_s", "120"),
     ("late_action_grace_s", True), ("late_action_grace_s", None), ("retry_interval_seconds", 0),
