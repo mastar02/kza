@@ -124,6 +124,47 @@ async def test_a_failing_listener_never_breaks_delivery_or_the_other_listeners(h
     await until(lambda: calls == [1, 1])
 
 
+async def test_a_blocking_speak_signals_the_free_output_once(handler):
+    """The synchronous speak() path (request_router's confirmation question) releases through
+    _worker_finished and signals exactly once."""
+    calls = []
+    handler.add_output_free_listener(lambda: calls.append(1))
+    assert (await asyncio.to_thread(handler.speak, "hola", "zone_cocina")).success
+    await until(lambda: calls)
+    await asyncio.sleep(.05)
+    assert calls == [1]
+
+
+async def test_an_owner_released_without_native_work_signals_the_free_output(handler, monkeypatch):
+    """The controller's own release (no native worker ever started) also signals once."""
+    calls = []
+    handler.add_output_free_listener(lambda: calls.append(1))
+
+    def refuse(session, function, *args):
+        raise RuntimeError("native_work_closed")
+
+    monkeypatch.setattr(handler, "_start_native", refuse)
+    with pytest.raises(RuntimeError, match="native_work_closed"):
+        await handler.aspeak("hola", zone_id="zone_cocina")
+    await asyncio.sleep(.05)
+    assert calls == [1]
+    assert not handler.is_responding
+
+
+async def test_no_free_output_signal_once_the_handler_is_closing(handler, output):
+    calls = []
+    handler.add_output_free_listener(lambda: calls.append(1))
+    output.release.clear()
+    busy = asyncio.create_task(handler.aspeak("larga", zone_id="zone_cocina", timeout_s=10))
+    await until(output.busy.is_set)
+    handler.begin_close()
+    output.release.set()
+    await asyncio.gather(busy, return_exceptions=True)
+    await asyncio.wait_for(handler.wait_closed(), 5)
+    await asyncio.sleep(.05)
+    assert calls == []
+
+
 @pytest_asyncio.fixture
 async def store(tmp_path):
     s = ReminderStore(str(tmp_path / "free.db"))

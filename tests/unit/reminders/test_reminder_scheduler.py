@@ -1693,3 +1693,70 @@ async def test_an_output_free_signal_during_another_notice_reaches_a_held_occurr
     assert (await store.get_by_id(first.id)).state is ReminderState.FIRED
 
 
+@pytest.mark.asyncio
+async def test_an_output_free_round_restarts_the_bounded_completion_retries(scheduler, store, mock_deps, clock):
+    """RV-TEST-1: a signal round also gives a terminal notice whose advance keeps failing a fresh
+    completion budget (1 s, 2 s, then wait); it never speaks it again."""
+    r = await store.create("u1", "regar", clock() - 1, scope=ReminderScope.SHARED)
+    store.mark_fired = AsyncMock(side_effect=RuntimeError("database is locked"))
+    with pytest.raises(RuntimeError, match="database is locked"):
+        await scheduler._fire_reminder(r)
+    for gap in (1, 2):
+        clock.advance(gap)
+        assert await scheduler._fire_reminder(r) is False
+    hold = scheduler._holds[r.id]
+    assert (hold.completion_errors, hold.retry_at) == (3, None)
+    scheduler.notify_output_available()
+    assert (hold.completion_errors, hold.retry_at) == (0, clock())
+    await scheduler._deliver_due(clock())  # fails again: the first error of the new budget backs off 1 s
+    assert (hold.completion_errors, hold.retry_at) == (1, clock() + 1)
+    mock_deps["tts"].aspeak.assert_awaited_once()
+    assert await notices(store) == [("confirmed", None, 1)]
+
+
+@pytest.mark.asyncio
+async def test_a_successor_round_never_resets_an_occurrence_in_flight(build, store, mock_deps, clock):
+    """RV-TEST-1: while another pass owns the occurrence its hold is not reopened; afterwards it is."""
+    scheduler = build(notice_fallback_max_rounds=0)
+    mock_deps["tts"].aspeak.return_value = failed()
+    r = await store.create("u1", "regar", clock() - 1, recurrence="daily", scope=ReminderScope.SHARED)
+    await fail_one_round(scheduler, clock)
+    hold = scheduler._holds[r.id]
+    assert (hold.failures, hold.retry_at, hold.successor_round) == (3, None, None)
+    clock.now = next_trigger(r.trigger_at, "daily") + 5
+    scheduler._in_flight.add(r.id)  # e.g. a web dismiss of this occurrence is running
+    try:
+        await scheduler._deliver_due(clock())
+        assert (hold.failures, hold.retry_at, hold.successor_round) == (3, None, None)
+        assert mock_deps["tts"].aspeak.await_count == 3
+    finally:
+        scheduler._in_flight.discard(r.id)
+    mock_deps["tts"].aspeak.return_value = delivered()
+    await scheduler._deliver_due(clock())
+    assert mock_deps["tts"].aspeak.await_count == 4
+    assert (await store.get_by_id(r.id)).trigger_at == next_trigger(next_trigger(r.trigger_at, "daily"), "daily")
+
+
+@pytest.mark.asyncio
+async def test_several_missed_days_open_one_successor_round_when_it_cannot_claim(scheduler, store, mock_deps, clock):
+    """RV-TEST-1: the successor marker is the latest due occurrence, so a held reminder three days
+    behind whose round cannot claim opens one round, not one per missed day."""
+    r = await store.create("u1", "regar", clock() - 1, recurrence="daily", scope=ReminderScope.SHARED)
+    assert await store.claim_home_action(notice_request_id(r.id, r.trigger_at, 1), {
+        "kind": "voice_notice", "reminder_id": r.id, "trigger_at": r.trigger_at, "attempt": 1,
+        "claimed_at": clock(), "room": "living"})
+    await scheduler._deliver_due(clock())
+    assert scheduler._holds[r.id].retry_at is None
+    days = [r.trigger_at]
+    for _ in range(4):
+        days.append(next_trigger(days[-1], "daily"))
+    clock.now = days[3] + 5
+    assert await scheduler._next_timeout() == 0
+    await scheduler._deliver_due(clock())
+    assert scheduler._holds[r.id].successor_round == days[3]
+    assert await scheduler._next_timeout() == days[4] - clock()
+    for _ in range(3):
+        await scheduler._deliver_due(clock())
+        assert scheduler._holds[r.id].retry_at is None
+    mock_deps["tts"].aspeak.assert_not_awaited()
+    assert await notices(store) == [("sending", None, 1)]
