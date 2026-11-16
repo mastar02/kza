@@ -84,12 +84,7 @@ class VoicePipeline:
         self._running = False
 
     async def prepare(self) -> None:
-        """Load models, the vector index and memory: the start-up that has no house effect.
-
-        Split from ``run`` (SC-4a): a release-mode verification run awaits only
-        this, then announces READY without starting the router, orchestrator,
-        features or audio capture.
-        """
+        """Load models, index and memory only (SC-4a: a verification run's whole start-up)."""
         logger.info("Initializing pipeline...")
         self.lifecycle.stop.checkpoint("models")
         # Keep HA's pending snapshot and WS handshakes live during model warmup.
