@@ -888,7 +888,7 @@ Siguiente:
 - `_verify_legacy_slot` resuelve cada enlace del destino de rollback. La usan `uninstall-launcher` y los dos `adoption-abort`.
 - DEPLOYMENT: hueco de privacidad acotado a los almacenes mapeados (0d4a F1), sección del retiro Q5 y la época 2 del controlador (0e3 F14).
 - **Plazo P7, con responsable**: DÍA 0 es el sello de cierre de W9. L4 vale hasta DÍA 0 + 14 × 24 h, y desde ese momento corre el retiro (Q1 = A: «día 14» son 14 × 24 h). Responsable: el usuario, como operador de `kza`, con la autorización ya registrada (P7 = B y `u3b_0e5_retirement`). Fecha exacta: se anota aquí en W10 (todavía no hay ventana). Después no hay rollback no gestionado, y `/home/kza/kza` no es un destino de rollback (Q3 = A).
-- Revisión independiente: aprobado con cambios; F3–F7 y F9 corregidos, F10 registrado (`t040-t041/u3b-0e5-evidence.json`). Falta el T-A17 compilado en Linux (U3b-0e4). La ventana de R1 no se programa hasta tenerlo. (Hecho: ronda 2 de la revisión aprobada el 2026-11-13 y T-A17 compilado verde en el server en SC-6a y en la suite de R1-B; ver «SC-6a» y su «Siguiente».)
+- Revisión independiente: la ronda 1 dio «aprobado con cambios»; F3–F7 y F9 se corrigieron y F10 quedó registrado (`t040-t041/u3b-0e5-evidence.json`, `review_round`). La ronda 2 aprobó el 2026-11-13 (`t040-t041/u3b-0e5-independent-review.json`, `round_2`). Faltaba el T-A17 compilado en Linux (U3b-0e4); ya pasó en el server en SC-6a (`/home/yo/projects/runs/sc6a`, `sc6a-review-fix`) y en la suite batch de R1-B (`/home/yo/projects/runs/full-r1b`). Con eso la «Compuerta de programación» está cumplida; lo que sigue faltando antes de la ventana está en el «Siguiente» de SC-6a.
 
 Decisiones del usuario en `t040-t041/user-decisions-20261110.json` (`u3b_*`).
 
@@ -1052,8 +1052,9 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
     `controller_epoch` 4, `schema_contract` 1, `launcher_contract` 3. sha256
     `3f57bd197f2f1633f32683616abefd3db038466d7a966d9925b24c84fc342a0e`, en `/home/yo/projects/releases-r1/r1-81ed568.tar.gz` (0600,
     directorio 0700; renombrado `*.superseded-r1b` al re-fijar R1 desde
-    c6462e5, ver «R1 re-fijado desde c6462e5 tras R1-B»). El runbook de R1 lo fija y exige `sha256sum
-    "$R1_ARCHIVE"` antes de W1 («Archivo R1 fijado» y W1-pre). Con R1
+    c6462e5, ver «R1 re-fijado desde c6462e5 tras R1-B»). El runbook de R1 lo fijó hasta
+    ese re-fijado; exige `sha256sum "$R1_ARCHIVE"` antes de W1 («Archivo R1
+    fijado» y W1-pre). Con R1
     construido, la época 1 del contrato de esquema quedó congelada.
   - Ensayo: `test_sc6a_r1_rehearsal.py` (en proceso: 7 tests, pasan en la Mac
     y en el server; 8 desde la corrección de la revisión) y la ventana real de `test_linux_adoption_window.py` (server, `yo`,
@@ -1119,11 +1120,17 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   `t040-t041/u3b-0e5-independent-review.json`; arreglos en
   `u3b-0e5-evidence.json`, `review_round`) y el T-A17 compilado en Linux
   pasó en el server en SC-6a (`runs/sc6a`, `runs/sc6a-review-fix`) y en la
-  suite batch de R1-B sobre el árbol de c6462e5 (`runs/full-r1b`). Lo que
-  queda son pasos del operador: registrar la autorización de la ventana y
-  los ids P1=D y L4, transferir a `kza` el R1 fijado
-  (`r1-c6462e5.tar.gz`) y verificarlo, el drop-in sudo de W7 y el arranque
-  real hasta READY de W8. La ventana la programa el usuario, como operador.
+  suite batch de R1-B sobre el árbol de c6462e5 (`runs/full-r1b`). La
+  compuerta no es lo único pendiente antes de la ventana. Siguen abiertas,
+  del lado de desarrollo, la re-revisión de la ronda de arreglos de SC-6a
+  (cbb509c, 9ec7d95) y la revisión independiente de la ronda 1 de arreglos
+  de R1-B1/R1-B2 (ver «R5V-1» y su «Pendiente»), cuyo código va en el R1
+  fijado; si cambian código, R1 se vuelve a construir y a fijar. El visto
+  bueno visual del panel de R1-B2 sigue con el usuario. Después quedan los
+  pasos del operador: registrar la autorización de la ventana y los ids
+  P1=D y L4, transferir a `kza` el R1 fijado (`r1-c6462e5.tar.gz`) y
+  verificarlo, el drop-in sudo de W7 y el arranque real hasta READY de W8.
+  La ventana la programa el usuario, como operador.
 
 ## R5V-1 — dueños de captura huérfanos ya no bloquean parada ni mute (2026-11-15)
 
@@ -1224,7 +1231,7 @@ automático al arrancar y conservarlas para siempre. Evidencia:
   `test_obs_panel.cjs` 23/23. Mutantes: 44 de 44 muertos (los 32 originales,
   B2/B3/B10/B11 re-anclados al código nuevo, más X1, X7 y uno por regla
   nueva). Detalle en `r1b2.review_round_1`.
-- Pendiente: revisión independiente de la ronda 1; el visto bueno visual del
+- Pendiente, antes de la ventana de R1: revisión independiente de la ronda 1; el visto bueno visual del
   panel sigue con el usuario como en las demás pantallas.
 
 ## R1 re-fijado desde c6462e5 tras R1-B (2026-11-15)

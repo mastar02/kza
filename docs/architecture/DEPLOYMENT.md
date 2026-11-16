@@ -1089,10 +1089,14 @@ programa hasta que los dos estén revisados y ensayados (T-A17; ver el
 2026-11-15 esa compuerta está cumplida: revisión independiente aprobada en su
 ronda 2 (2026-11-13, `t040-t041/u3b-0e5-independent-review.json`) y T-A17
 compilado en Linux, que pasó en el server en SC-6a y en la suite batch de R1-B
-sobre el árbol de c6462e5. Lo que queda son pasos del operador (transferir y
-verificar el R1 fijado, el drop-in sudo de W7, el arranque real hasta READY de
-W8); la ventana la programa el usuario, como operador, y sigue sin
-programarse.
+sobre el árbol de c6462e5. La compuerta no es lo único pendiente antes de la
+ventana: siguen abiertas la re-revisión de la ronda de arreglos de SC-6a
+(cbb509c, 9ec7d95) y la revisión independiente de la ronda 1 de arreglos de
+R1-B1/R1-B2, cuyo código va en el R1 fijado; el visto bueno visual del panel
+de R1-B2 sigue con el usuario. Después quedan los pasos del operador
+(transferir y verificar el R1 fijado, el drop-in sudo de W7, el arranque real
+hasta READY de W8); la ventana la programa el usuario, como operador, y sigue
+sin programarse.
 
 Plazo (decisiones del usuario P7 = B y `u3b_0e5_retirement` Q1 = A, ya
 registradas):

@@ -32,12 +32,19 @@ autoriza la ventana.
     0a25ca0 y 9ec7d95; `/home/yo/projects/runs/sc6a` y `sc6a-review-fix`) y
     en la suite batch de R1-B sobre a8daf68, el mismo árbol que c6462e5
     (7 de 7; `/home/yo/projects/runs/full-r1b`).
-- Lo que queda entre hoy y la ventana son pasos del operador, no de
-  desarrollo. Este runbook no autoriza ni programa la ventana: la programa el
-  usuario, como operador de `kza`. Antes, el usuario registra la autorización
-  de la ventana y los ids P1=D y L4 («Antes de la ventana»); el operador
-  transfiere a `kza` el archivo fijado (`r1-c6462e5.tar.gz`) y lo verifica
-  con «Archivo R1 fijado». En la ventana, en W7 el usuario aplica el drop-in
+- Esta compuerta no es lo único pendiente antes de la ventana. Siguen
+  abiertas dos revisiones del lado de desarrollo: la re-revisión de la ronda
+  de arreglos de SC-6a (cbb509c y 9ec7d95; `t040-t041/sc6a-evidence.json`,
+  `review_round_1`) y la revisión independiente de la ronda 1 de arreglos de
+  R1-B1/R1-B2 (`t040-t041/r1b1-evidence.json`, `review_round_1` y
+  `r1b2.review_round_1`), cuyo código ya va en el R1 fijado. El visto bueno
+  visual del panel de R1-B2 sigue con el usuario. Si alguna de esas
+  revisiones cambia código, R1 se vuelve a construir y a fijar.
+- Después quedan los pasos del operador. Este runbook no autoriza ni programa
+  la ventana: la programa el usuario, como operador de `kza`. Antes, el
+  usuario registra la autorización de la ventana y los ids P1=D y L4 («Antes
+  de la ventana»); el operador transfiere a `kza` el archivo fijado
+  (`r1-c6462e5.tar.gz`) y lo verifica con «Archivo R1 fijado». En la ventana, en W7 el usuario aplica el drop-in
   sudo y lo verifica en lectura, y en W8 se mide el arranque real hasta READY
   (la aplicación con sus modelos, que los ensayos no cargan).
 - **Paso del día 14**: el borrado Q5 corre desde DÍA 0 + 14 × 24 h (DÍA 0 = el

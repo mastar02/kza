@@ -100,11 +100,16 @@ def test_the_superseded_81ed568_archive_is_recorded_not_pinned():
                      "docs/runbooks/2026-11-05-mac-development-handoff.md"):
         flat = " ".join((REPO / relative).read_text().split())
         assert "r1-81ed568.tar.gz.superseded-r1b" in flat, relative
+    handoff = " ".join((REPO / "docs/runbooks/2026-11-05-mac-development-handoff.md").read_text().split())
+    assert "El runbook de R1 lo fija y exige" not in handoff
+    assert "El runbook de R1 lo fijó hasta ese re-fijado" in handoff
 
 
 def test_the_scheduling_gate_states_what_is_done_and_leaves_scheduling_to_the_user():
     """The U3b-0e5 gate (independent review, compiled T-A17 on Linux) is stated as met with its
-    references; what remains is operator steps only, and no document declares the window scheduled."""
+    references; it is not the only thing left: the SC-6a fix-round re-review and the R1-B1/R1-B2
+    round-1 independent review stay open before the window, then operator steps; no document
+    declares the window scheduled."""
     text = r1_runbook.runbook_text()
     gate = " ".join(text.split("## Compuerta de programación (P7, Q5)", 1)[1].split("**Paso del día 14**", 1)[0].split())
     assert "Faltan su revisión independiente" not in gate
@@ -116,9 +121,26 @@ def test_the_scheduling_gate_states_what_is_done_and_leaves_scheduling_to_the_us
     assert "Este runbook no autoriza ni programa la ventana: la programa el usuario, como operador de `kza`." in gate
     for step in ("W7", "drop-in sudo", "arranque real hasta READY", "`r1-c6462e5.tar.gz`"):
         assert step in gate, step
+    open_reviews = ("re-revisión de la ronda de arreglos de SC-6a", "cbb509c", "9ec7d95",
+                    "revisión independiente de la ronda 1 de arreglos de R1-B1/R1-B2",
+                    "visto bueno visual del panel de R1-B2 sigue con el usuario")
     handoff = " ".join((REPO / "docs/runbooks/2026-11-05-mac-development-handoff.md").read_text().split())
     deployment = " ".join((REPO / "docs/architecture/DEPLOYMENT.md").read_text().split())
+    assert "Esta compuerta no es lo único pendiente antes de la ventana." in gate
+    assert "`t040-t041/r1b1-evidence.json`" in gate and "`r1b2.review_round_1`" in gate
+    assert "Si alguna de esas revisiones cambia código, R1 se vuelve a construir y a fijar." in gate
     assert "La ventana de R1 sigue sin programarse. Su «Compuerta de programación» (runbook de R1) está cumplida" in handoff
+    assert "La compuerta no es lo único pendiente antes de la ventana. Siguen abiertas" in handoff
     assert "la ventana la programa el usuario, como operador, y sigue sin programarse." in deployment
+    assert "La compuerta no es lo único pendiente antes de la ventana: siguen abiertas" in deployment
+    for name, flat in (("runbook", gate), ("handoff", handoff), ("DEPLOYMENT", deployment)):
+        for phrase in open_reviews:
+            assert phrase in flat, (name, phrase)
+        for stale in ("pasos del operador, no de desarrollo", "Lo que queda son pasos del operador",
+                      "queda son pasos del operador"):
+            assert stale not in flat, (name, stale)
+    assert "Falta el T-A17 compilado en Linux" not in handoff
+    assert "Faltaba el T-A17 compilado en Linux (U3b-0e4); ya pasó en el server" in handoff
+    assert "Pendiente, antes de la ventana de R1: revisión independiente de la ronda 1" in handoff
     for claim in ("ventana programada", "ventana autorizada", "la ventana está programada"):
         assert claim not in gate.lower(), claim
