@@ -438,6 +438,7 @@ NO_SRC_ENTRIES = {
     "tools/sc0/evidence.py": "assembles sc0-evidence.json from measurement logs; opens no KZA store",
     "tools/sc0/run_states.py": "drives sc0_child on a scratch staging root; that child imports src and runs G1",
     "tools/sc4a_mutants.py": "rewrites files of a mutation clone and runs pytest as a subprocess; imports no src",
+    "tools/sc4b_mutants.py": "rewrites files of a mutation clone and runs pytest as a subprocess; imports no src",
     "tools/sc0/compaction_timing.py": "times stage_runtime (listed above) on a synthetic scratch root through the test rehearsal harness",
 }
 

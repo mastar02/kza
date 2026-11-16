@@ -191,23 +191,35 @@ def test_a_tombstone_written_during_v_stops_safely_until_the_discard(x4, x5, tmp
 
 # --- loss-only changes: retire refuses, abort returns to H (V4R2-P1, V4R2-P2, CR2-2) ----------------
 
-_H_ROWS = cw.sql(
+_H_TOMBSTONE = cw.sql(
     ("INSERT INTO conversation_tombstones VALUES ('conv-h', 1.0, 'owner')", ()),
     ("INSERT INTO conversation_erasures VALUES ('op-h', 'conv-h', 1.0, 'owner')", ()),  # its operation
-    ("INSERT INTO facts VALUES ('fact-h', 'x', 'c', 0.5, 'confirmed', 1.0, NULL, 1, 1.0, 'owner')", ()),
-    ("INSERT INTO fact_owner_revisions VALUES ('fact-h', 1, 'assigned', 0, 1.0)", ()),
 )
+LOSS_CASES = {
+    # NEW removes a tombstone at boot (V4R2-P1).
+    "tombstone": ((_H_TOMBSTONE,), cw.sql(("DELETE FROM conversation_tombstones", ())),
+                  ("tables", "conversation_tombstones", {"added": 0, "removed": 1})),
+    # NEW truncates the deletion ledger to a strict prefix and changes nothing else.
+    "ledger_prefix": ((cw.ledger_append("fact_deleted", "fact-a"), cw.ledger_append("fact_deleted", "fact-b")),
+                      cw.sql(("DELETE FROM deletion_ledger_v1 WHERE seq=(SELECT MAX(seq) FROM deletion_ledger_v1)",
+                              ())),
+                      ("ledgers", None, "strict_prefix")),
+}
 
 
-@pytest.mark.parametrize("table", ["conversation_tombstones", "fact_owner_revisions"])
-def test_a_loss_only_change_is_never_retired_and_abort_returns_to_h(x4, x5, tmp_path, table):
-    """NEW removes a tombstone or a fact_owner_revisions row at boot: W1 'loss_only'. Retire refuses
-    (exact equality); abort --to-h proceeds, H keeps the row and serves."""
-    world = _world(x4, x5, tmp_path, _H_ROWS)
-    assert _v(world, tmp_path, "v", execute=cw.sql((f"DELETE FROM {table}", ()))).code == 0
+@pytest.mark.parametrize("case", sorted(LOSS_CASES))
+def test_a_loss_only_change_is_never_retired_and_abort_returns_to_h(x4, x5, tmp_path, case):
+    """W1 'loss_only': retire refuses (exact equality); abort --to-h proceeds, H keeps what K' lost
+    and serves (V4R2-P1, CR2-2). fact_owner_revisions, suspensions and the other listed tables in
+    both directions are in test_sc4b_w (the 16 parametrized cases)."""
+    first, change, (part, key, expected) = LOSS_CASES[case]
+    world = _world(x4, x5, tmp_path, *first)
+    assert _v(world, tmp_path, "v", execute=change).code == 0 and _kinds(world)[-1] == "verified"
     retired = _refused_writes_nothing(world, compaction.RETIRE_PROTECTED_CHANGED, lambda: _retire(world))
-    assert retired.report["w"]["class"] == compaction.W_LOSS_ONLY
-    assert retired.report["w"]["tables"]["data/privacy.db"][table] == {"added": 0, "removed": 1}
+    report = retired.report["w"]
+    assert report["class"] == compaction.W_LOSS_ONLY
+    found = report[part]["data/privacy.db"]
+    assert (found[key] if key else found) == expected
     assert _abort(world)["phase"] == "aborted"
     [started] = [event for event in _log(world)["events"] if event["kind"] == "abort_started"]
     assert started["data"]["w"]["class"] == compaction.W_LOSS_ONLY and "discarded" not in started["data"]
@@ -380,8 +392,8 @@ def test_a_resurrected_fact_is_refused_at_retire_and_abort_returns_to_h(x4, x5, 
 # --- V1 + SS + AB: the recheck after the head moved (R5-OPS-1) -------------------------------------
 
 def test_a_discard_interrupted_after_abort_started_finishes_through_the_w_recheck(x4, x5, tmp_path, monkeypatch):
-    """Rows V1, SS, AB (R5-OPS-1): V writes a tombstone and its seal fails after the receipt (head
-    left open with a receipt, as a power loss would). abort --to-h refuses (SS); the discard is cut
+    """Rows V1, SS, AB (R5-OPS-1): V writes a tombstone and its seal fails with an I/O error after the
+    receipt (serve leaves the head running with the receipt, as a power loss would). abort --to-h refuses (SS); the discard is cut
     after 'abort_started' before the return's CAS; the unit is started, so serve's R-a seals K' and
     the head moves; resume and plain abort refuse recheck_required; abort --to-h refuses with the
     recheck's own report, and --discard-k-changes with that digest completes, logged in
@@ -391,13 +403,13 @@ def test_a_discard_interrupted_after_abort_started_finishes_through_the_w_rechec
     seal = stage.seal_admission_run
 
     def failing_seal(*args, **kwargs):
-        raise ValueError("runtime_admission_synthetic_seal_failure")
+        raise OSError(5, "Input/output error")  # transient: serve leaves the head running for R-a
 
     monkeypatch.setattr(stage, "seal_admission_run", failing_seal)
     assert _v(world, tmp_path, "v", execute=_tombstone("conv-" + CANARY)).code != 0
     monkeypatch.setattr(stage, "seal_admission_run", seal)
     open_head = stage.read_admission_head(root)
-    assert open_head["status"] != "closed"
+    assert open_head["status"] == "running"
     first = _refused_writes_nothing(world, compaction.ABORT_PROTECTED_CHANGED, lambda: _abort(world))
     digest = first.report["w_sha256"]
     original = stage.compaction_return_to_h
@@ -444,4 +456,18 @@ def test_a_protected_table_created_only_in_k_prime_is_never_retired(x4, x5, tmp_
     assert error.report["w"]["class"] == compaction.W_EQUAL and error.report["authority_equal"] is False
     assert _abort(world)["phase"] == "aborted"
     _back_on_h(world, tmp_path, "h")
+
+
+def test_a_discard_on_a_plain_log_is_refused(x4_archive, tmp_path):
+    """--discard-k-changes answers a W report: a plain-mode log (epoch 4, no 'mode') refuses it and
+    writes nothing; its own exits are unchanged (the plain abort before the run)."""
+    world = cw.world(x4_archive, tmp_path, hops=())
+    root = world["root"]
+    compaction_id = cw.start(root, world["archive"])["compaction_id"]
+    world["id"] = compaction_id
+    witness = cw.witness(root)
+    _refusal(compaction.RELEASE_MODE_ONLY, lambda: compaction.compact_abort(
+        root, compaction_id, to_h=True, confirm_h=world["h"]["binding"][:12], discard_k_changes="0" * 12))
+    assert cw.witness(root) == witness
+    assert compaction.compact_abort(root, compaction_id)["phase"] == "aborted"
 
