@@ -50,7 +50,11 @@ Run test_linux_managed_launcher.py and test_linux_adoption_window.py one
 pytest at a time, never side by side: they share this account's user manager, and any
 ``daemon-reload`` re-arms every activating unit's start timer from
 TimeoutStartSec, dropping its EXTEND_TIMEOUT_USEC extension (the no-READY
-rehearsal's ~90 s start relies on that extension).
+rehearsal's ~90 s start relies on that extension). Since BB-2 (2026-11-16)
+real_systemd enforces it: each rehearsal holds the manager lock from its
+first unit to its cleanup and the stale sweep runs under it, so a second
+copy (another clone, a suite shard) waits instead of sweeping this one's
+units or leaving its scratch in the shared /run/user/<uid>.
 """
 from __future__ import annotations
 
