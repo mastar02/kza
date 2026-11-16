@@ -31,20 +31,33 @@ autoriza la ventana.
     real. Pasó en el server bajo `yo` en SC-6a (7 de 7, 261 s, sobre 81ed568,
     0a25ca0 y 9ec7d95; `/home/yo/projects/runs/sc6a` y `sc6a-review-fix`) y
     en la suite batch de R1-B sobre a8daf68, el mismo árbol que c6462e5
-    (7 de 7; `/home/yo/projects/runs/full-r1b`).
-- Esta compuerta no es lo único pendiente antes de la ventana. Siguen
-  abiertas dos revisiones del lado de desarrollo: la re-revisión de la ronda
-  de arreglos de SC-6a (cbb509c y 9ec7d95; `t040-t041/sc6a-evidence.json`,
-  `review_round_1`) y la revisión independiente de la ronda 1 de arreglos de
-  R1-B1/R1-B2 (`t040-t041/r1b1-evidence.json`, `review_round_1` y
-  `r1b2.review_round_1`), cuyo código ya va en el R1 fijado. El visto bueno
-  visual del panel de R1-B2 sigue con el usuario. Si alguna de esas
-  revisiones cambia código, R1 se vuelve a construir y a fijar.
+    (7 de 7; `/home/yo/projects/runs/full-r1b`). Desde la re-revisión
+    (357dcb5) corre el día 14 con el controlador instalado, como el runbook:
+    7 de 7, 262 s (`/home/yo/projects/runs/rr-fixes`).
+- Esta compuerta no es lo único pendiente antes de la ventana. Las dos
+  revisiones del lado de desarrollo que seguían abiertas se hicieron el
+  2026-11-15:
+  - la re-revisión de la ronda de arreglos de SC-6a (cbb509c y 9ec7d95;
+    `t040-t041/sc6a-evidence.json`, `rereview`) pidió cambios: RR-1 (el día
+    14 usaba un `$ST` que sólo existe en la sesión de la ventana), RR-2 (la
+    recuperación tras perder la sesión no definía `$PY`), RR-3 (una
+    referencia del handoff) y RR-4 (el ensayo con otro `TMPDIR` en la Mac);
+  - la revisión independiente de la ronda 1 de arreglos de R1-B1/R1-B2
+    (`t040-t041/r1b1-evidence.json`, `rereview`) aprobó, con un hallazgo
+    bajo (RR2-1: un olvido que se cruza con el cierre) y uno informativo
+    (RR2-2, redacción de la evidencia).
+
+  Los arreglos están en 19dd44e, b02116c y 357dcb5. RR2-1 cambia
+  `src/memory/capture_recorders.py`, así que R1 se reconstruyó y se volvió a
+  fijar desde 357dcb5 («Archivo R1 fijado»). Siguen abiertas la re-revisión
+  independiente de esa ronda de arreglos y la suite batch completa sobre
+  357dcb5. El visto bueno visual del panel de R1-B2 sigue con el usuario. Si
+  la re-revisión cambia código, R1 se vuelve a construir y a fijar.
 - Después quedan los pasos del operador. Este runbook no autoriza ni programa
   la ventana: la programa el usuario, como operador de `kza`. Antes, el
   usuario registra la autorización de la ventana y los ids P1=D y L4 («Antes
   de la ventana»); el operador transfiere a `kza` el archivo fijado
-  (`r1-c6462e5.tar.gz`) y lo verifica con «Archivo R1 fijado». En la ventana, en W7 el usuario aplica el drop-in
+  (`r1-357dcb5.tar.gz`) y lo verifica con «Archivo R1 fijado». En la ventana, en W7 el usuario aplica el drop-in
   sudo y lo verifica en lectura, y en W8 se mide el arranque real hasta READY
   (la aplicación con sus modelos, que los ensayos no cargan).
 - **Paso del día 14**: el borrado Q5 corre desde DÍA 0 + 14 × 24 h (DÍA 0 = el
@@ -88,7 +101,11 @@ R1-B1/R1-B2 (integradas en c6462e5) cambiaron `src/` y el frontend después:
 R1 se reconstruyó de la misma forma desde c6462e5 (época 4, contrato de
 esquema 1; dos veces en el server, idéntico byte a byte, y una en la Mac,
 igual) y el pin pasó a ese archivo. El de 81ed568 quedó al lado, renombrado
-`r1-81ed568.tar.gz.superseded-r1b`: no se transfiere ni se usa.
+`r1-81ed568.tar.gz.superseded-r1b`: no se transfiere ni se usa. El arreglo
+RR2-1 de la re-revisión cambió `src/memory/capture_recorders.py`: R1 se
+reconstruyó otra vez igual desde 357dcb5 y el pin pasó a ese archivo. El de
+c6462e5 quedó al lado, renombrado `r1-c6462e5.tar.gz.superseded-rr2-1`: no se
+transfiere ni se usa.
 
 Después de R1 no hay transiciones gestionadas (ningún arreglo de código) hasta
 que exista el modo release; el único rollback es L4 durante sus 14 días. Ver
@@ -118,14 +135,14 @@ archivo verificado, nunca una ruta relativa ni otra copia.
 
 ### Archivo R1 fijado (paso obligatorio antes de W1)
 
-R1 se construyó bajo `yo` con `scripts/build_runtime.py` desde c6462e5, dos
+R1 se construyó bajo `yo` con `scripts/build_runtime.py` desde 357dcb5, dos
 veces y con resultado idéntico byte a byte, y aquí se fija su sha256 y su
-commit (SC-6a lo había fijado desde 81ed568; se re-fijó después de
-R1-B1/R1-B2).
+commit (SC-6a lo había fijado desde 81ed568; se re-fijó desde c6462e5 después
+de R1-B1/R1-B2 y desde 357dcb5 después del arreglo RR2-1 de la re-revisión).
 El valor vive en un commit de documentación posterior al commit construido: un
 archivo no puede contener su propio hash, y el archivo no incluye `docs/`.
 El archivo queda bajo `yo` en el server, en
-`/home/yo/projects/releases-r1/r1-c6462e5.tar.gz` (modo 0600, directorio
+`/home/yo/projects/releases-r1/r1-357dcb5.tar.gz` (modo 0600, directorio
 0700, con su `SHA256SUMS`). Llevarlo a `kza` es parte de la release y lo hace
 el operador; esa copia transferida es la que se verifica aquí.
 
@@ -134,8 +151,8 @@ de W1, correr exactamente:
 
 ```bash
 R1_ARCHIVE=<ruta del r1.tar.gz transferido>
-R1_SHA256=733b6fc35dc929accc00b78b231092531a7ca131663ccc8b663f9d9e48851b86
-R1_COMMIT=c6462e5f2794e21e797f6f8b397f1f3bf911dd29
+R1_SHA256=c5305d588a228aca445489b90c00a2b11165d24f8fa1078ad19a68fbe9630a24
+R1_COMMIT=357dcb57816834a9f4bfffb9bb5357ebd13d926e
 if [ "$(sha256sum "$R1_ARCHIVE" | cut -d' ' -f1)" = "$R1_SHA256" ]; then echo "R1 fijado: OK"; else echo "R1 distinto del fijado: DETENER"; false; fi
 ```
 

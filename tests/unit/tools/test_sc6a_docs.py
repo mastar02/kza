@@ -123,16 +123,19 @@ def test_the_pin_names_an_epoch4_commit_of_this_history_and_the_docs_agree():
     assert f"/home/yo/projects/releases-r1/r1-{short}.tar.gz" in " ".join(r1_runbook.runbook_text().split())
 
 
-def test_the_superseded_81ed568_archive_is_recorded_not_pinned():
-    """R1-B re-pin: SC-6a's archive (81ed568) was kept beside the new one under a superseded name;
-    the runbook, DEPLOYMENT and the handoff record that name, and the pin is no longer it."""
+def test_the_superseded_archives_are_recorded_not_pinned():
+    """R1-B re-pin: SC-6a's archive (81ed568) was kept beside the new one under a superseded name; the
+    re-review re-pin (RR2-1) did the same with the c6462e5 archive. The runbook, DEPLOYMENT and the
+    handoff record both names, and the pin is neither."""
     pin = r1_runbook.pinned()
-    assert pin["R1_COMMIT"] != "81ed5680fa46d0b5b48e8e6eb9e4a36da5f15ed0"
-    assert pin["R1_SHA256"] != "3f57bd197f2f1633f32683616abefd3db038466d7a966d9925b24c84fc342a0e"
+    superseded = {"81ed5680fa46d0b5b48e8e6eb9e4a36da5f15ed0": "3f57bd197f2f1633f32683616abefd3db038466d7a966d9925b24c84fc342a0e",
+                  "c6462e5f2794e21e797f6f8b397f1f3bf911dd29": "733b6fc35dc929accc00b78b231092531a7ca131663ccc8b663f9d9e48851b86"}
+    assert pin["R1_COMMIT"] not in superseded and pin["R1_SHA256"] not in superseded.values()
     for relative in ("docs/runbooks/2026-11-13-r1-adoption-window.md", "docs/architecture/DEPLOYMENT.md",
                      "docs/runbooks/2026-11-05-mac-development-handoff.md"):
         flat = " ".join((REPO / relative).read_text().split())
         assert "r1-81ed568.tar.gz.superseded-r1b" in flat, relative
+        assert "r1-c6462e5.tar.gz.superseded-rr2-1" in flat, relative
     handoff = " ".join((REPO / "docs/runbooks/2026-11-05-mac-development-handoff.md").read_text().split())
     assert "El runbook de R1 lo fija y exige" not in handoff
     assert "El runbook de R1 lo fijó hasta ese re-fijado" in handoff
@@ -140,9 +143,10 @@ def test_the_superseded_81ed568_archive_is_recorded_not_pinned():
 
 def test_the_scheduling_gate_states_what_is_done_and_leaves_scheduling_to_the_user():
     """The U3b-0e5 gate (independent review, compiled T-A17 on Linux) is stated as met with its
-    references; it is not the only thing left: the SC-6a fix-round re-review and the R1-B1/R1-B2
-    round-1 independent review stay open before the window, then operator steps; no document
-    declares the window scheduled."""
+    references; it is not the only thing left. The SC-6a fix-round re-review and the R1-B1/R1-B2
+    round-1 independent review were done (re-review round, RR-*/RR2-*); their fixes changed code, so
+    R1 was re-pinned, and the re-review of those fixes and the batch suite on the new commit stay open
+    before the window, then operator steps; no document declares the window scheduled."""
     text = r1_runbook.runbook_text()
     gate = " ".join(text.split("## Compuerta de programación (P7, Q5)", 1)[1].split("**Paso del día 14**", 1)[0].split())
     assert "Faltan su revisión independiente" not in gate
@@ -152,20 +156,29 @@ def test_the_scheduling_gate_states_what_is_done_and_leaves_scheduling_to_the_us
                       "/home/yo/projects/runs/sc6a"):
         assert reference in gate, reference
     assert "Este runbook no autoriza ni programa la ventana: la programa el usuario, como operador de `kza`." in gate
-    for step in ("W7", "drop-in sudo", "arranque real hasta READY", "`r1-c6462e5.tar.gz`"):
+    for step in ("W7", "drop-in sudo", "arranque real hasta READY", "`r1-357dcb5.tar.gz`"):
         assert step in gate, step
     open_reviews = ("re-revisión de la ronda de arreglos de SC-6a", "cbb509c", "9ec7d95",
                     "revisión independiente de la ronda 1 de arreglos de R1-B1/R1-B2",
+                    "19dd44e", "357dcb5", "re-revisión independiente de", "suite batch completa sobre 357dcb5",
                     "visto bueno visual del panel de R1-B2 sigue con el usuario")
     handoff = " ".join((REPO / "docs/runbooks/2026-11-05-mac-development-handoff.md").read_text().split())
     deployment = " ".join((REPO / "docs/architecture/DEPLOYMENT.md").read_text().split())
     assert "Esta compuerta no es lo único pendiente antes de la ventana." in gate
-    assert "`t040-t041/r1b1-evidence.json`" in gate and "`r1b2.review_round_1`" in gate
-    assert "Si alguna de esas revisiones cambia código, R1 se vuelve a construir y a fijar." in gate
+    assert "`t040-t041/r1b1-evidence.json`, `rereview`" in gate and "`t040-t041/sc6a-evidence.json`, `rereview`" in gate
+    for finding in ("RR-1", "RR-2", "RR-3", "RR-4", "RR2-1", "RR2-2"):
+        assert finding in gate, finding
+    assert ("Siguen abiertas la re-revisión independiente de esa ronda de arreglos y la suite batch completa"
+            " sobre 357dcb5.") in gate
+    assert "Si la re-revisión cambia código, R1 se vuelve a construir y a fijar." in gate
     assert "La ventana de R1 sigue sin programarse. Su «Compuerta de programación» (runbook de R1) está cumplida" in handoff
-    assert "La compuerta no es lo único pendiente antes de la ventana. Siguen abiertas" in handoff
+    assert "La compuerta no es lo único pendiente antes de la ventana. La re-revisión de" in handoff
     assert "la ventana la programa el usuario, como operador, y sigue sin programarse." in deployment
-    assert "La compuerta no es lo único pendiente antes de la ventana: siguen abiertas" in deployment
+    assert "La compuerta no es lo único pendiente antes de la ventana. La re-revisión de" in deployment
+    for name, flat in (("runbook", gate), ("handoff", handoff), ("DEPLOYMENT", deployment)):
+        for stale in ("Siguen abiertas dos revisiones", "siguen abiertas la re-revisión de la ronda de arreglos",
+                      "Siguen abiertas, del lado de desarrollo, la re-revisión"):
+            assert stale not in flat, (name, stale)
     for name, flat in (("runbook", gate), ("handoff", handoff), ("DEPLOYMENT", deployment)):
         for phrase in open_reviews:
             assert phrase in flat, (name, phrase)
@@ -174,6 +187,11 @@ def test_the_scheduling_gate_states_what_is_done_and_leaves_scheduling_to_the_us
             assert stale not in flat, (name, stale)
     assert "Falta el T-A17 compilado en Linux" not in handoff
     assert "Faltaba el T-A17 compilado en Linux (U3b-0e4); ya pasó en el server" in handoff
-    assert "Pendiente, antes de la ventana de R1: revisión independiente de la ronda 1" in handoff
+    # Re-review RR-3: the R5V-1 entry itself states what is still pending before the window.
+    raw = (REPO / "docs/runbooks/2026-11-05-mac-development-handoff.md").read_text()
+    r5v1 = " ".join(raw.split("## R5V-1", 1)[1].split("\n## ", 1)[0].split())
+    assert "Pendiente, antes de la ventana de R1: la revisión independiente de la ronda 1 (R1B1-1 a R1B1-7" in r5v1
+    assert "Falta la re-revisión independiente de esa ronda de arreglos" in r5v1
+    assert "Sin integrar ni subir" not in r5v1 and "integrada en `recovery/production-2026-10-25` con el merge `c6462e5`" in r5v1
     for claim in ("ventana programada", "ventana autorizada", "la ventana está programada"):
         assert claim not in gate.lower(), claim

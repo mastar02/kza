@@ -1121,21 +1121,25 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   `u3b-0e5-evidence.json`, `review_round`) y el T-A17 compilado en Linux
   pasó en el server en SC-6a (`runs/sc6a`, `runs/sc6a-review-fix`) y en la
   suite batch de R1-B sobre el árbol de c6462e5 (`runs/full-r1b`). La
-  compuerta no es lo único pendiente antes de la ventana. Siguen abiertas,
-  del lado de desarrollo, la re-revisión de la ronda de arreglos de SC-6a
-  (cbb509c, 9ec7d95) y la revisión independiente de la ronda 1 de arreglos
-  de R1-B1/R1-B2 (ver «R5V-1» y su «Pendiente»), cuyo código va en el R1
-  fijado; si cambian código, R1 se vuelve a construir y a fijar. El visto
-  bueno visual del panel de R1-B2 sigue con el usuario. Después quedan los
+  compuerta no es lo único pendiente antes de la ventana. La re-revisión de
+  la ronda de arreglos de SC-6a (cbb509c, 9ec7d95) y la revisión
+  independiente de la ronda 1 de arreglos de R1-B1/R1-B2 se hicieron el
+  2026-11-15; sus arreglos cambiaron código y R1 se re-fijó desde 357dcb5
+  (ver «Re-revisiones de SC-6a y R1-B, y R1 re-fijado desde 357dcb5»). Siguen
+  abiertas la re-revisión independiente de esos arreglos y la suite batch
+  completa sobre 357dcb5; si la re-revisión cambia código, R1 se vuelve a
+  construir y a fijar. El visto bueno visual del panel de R1-B2 sigue con el
+  usuario. Después quedan los
   pasos del operador: registrar la autorización de la ventana y los ids
-  P1=D y L4, transferir a `kza` el R1 fijado (`r1-c6462e5.tar.gz`) y
+  P1=D y L4, transferir a `kza` el R1 fijado (`r1-357dcb5.tar.gz`) y
   verificarlo, el drop-in sudo de W7 y el arranque real hasta READY de W8.
   La ventana la programa el usuario, como operador.
 
 ## R5V-1 — dueños de captura huérfanos ya no bloquean parada ni mute (2026-11-15)
 
-Rama `r1b1-orphan-recorder` desde `81ed568`, en un clon del roadmap. Sin
-integrar ni subir. Evidencia:
+Rama `r1b1-orphan-recorder` desde `81ed568`, en un clon del roadmap;
+integrada en `recovery/production-2026-10-25` con el merge `c6462e5` y
+subida. Evidencia:
 `data/autonomous-roadmap-20261102/t040-t041/r1b1-evidence.json`.
 
 - Problema confirmado por la ruta real de parada. Si una pestaña o un cliente
@@ -1182,10 +1186,15 @@ integrar ni subir. Evidencia:
   técnico (ver arriba y DEPLOYMENT R5V-1).
 - Las filas arrastradas se resuelven con R1-B2 (abajo), según la decisión del
   usuario del 2026-11-15.
+- Pendiente, antes de la ventana de R1: la revisión independiente de la
+  ronda 1 (R1B1-1 a R1B1-7, junto con la de R1-B2) se hizo el 2026-11-15 y
+  aprobó (`r1b1-evidence.json`, `rereview`); su hallazgo RR2-1 se arregló en
+  19dd44e. Falta la re-revisión independiente de esa ronda de arreglos (ver
+  «Re-revisiones de SC-6a y R1-B, y R1 re-fijado desde 357dcb5»).
 
 ## R1-B2 — «Olvidar grabaciones perdidas» desde Privacidad (2026-11-15)
 
-Misma rama `r1b1-orphan-recorder`, sin integrar ni subir. Decisión del
+Misma rama `r1b1-orphan-recorder`, integrada en `c6462e5`. Decisión del
 usuario `r1b1_lost_recordings` (aceptada el 2026-11-15): un administrador
 olvida las grabaciones perdidas desde Privacidad, afirmando que no queda
 ninguna pestaña grabando; queda un registro sin contenido; hasta entonces el
@@ -1231,8 +1240,10 @@ automático al arrancar y conservarlas para siempre. Evidencia:
   `test_obs_panel.cjs` 23/23. Mutantes: 44 de 44 muertos (los 32 originales,
   B2/B3/B10/B11 re-anclados al código nuevo, más X1, X7 y uno por regla
   nueva). Detalle en `r1b2.review_round_1`.
-- Pendiente, antes de la ventana de R1: revisión independiente de la ronda 1; el visto bueno visual del
-  panel sigue con el usuario como en las demás pantallas.
+- Pendiente, antes de la ventana de R1: la revisión independiente de la
+  ronda 1 se hizo (aprobada, con RR2-1 bajo y RR2-2 informativo; ver abajo)
+  y falta la re-revisión independiente de su ronda de arreglos; el visto
+  bueno visual del panel sigue con el usuario como en las demás pantallas.
 
 ## R1 re-fijado desde c6462e5 tras R1-B (2026-11-15)
 
@@ -1257,10 +1268,71 @@ código a instalar. Evidencia: `t040-t041/sc6a-evidence.json`, clave
   `r1-81ed568.tar.gz.superseded-r1b` (sha256 `3f57bd19…`); `SHA256SUMS`
   lista los dos con sus nombres nuevos. La copia de la Mac y la segunda del
   server se borraron; `build-c6462e5-a/b/build.json` quedan como registro.
-- El runbook de R1 fija ahora `R1_SHA256` y `R1_COMMIT` de c6462e5 (commit de
-  documentación posterior, por fuerza). `test_the_runbook_pin_is_the_archive_of_its_commit`
+- El runbook de R1 fijó `R1_SHA256` y `R1_COMMIT` de c6462e5 (commit de
+  documentación posterior, por fuerza) hasta el re-fijado desde 357dcb5
+  (abajo); ese archivo quedó renombrado
+  `r1-c6462e5.tar.gz.superseded-rr2-1`. `test_the_runbook_pin_is_the_archive_of_its_commit`
   reconstruye desde el commit fijado y da el sha256 fijado.
 - Nada cambió del lado de `kza`; sin release ni instalación.
+
+## Re-revisiones de SC-6a y R1-B, y R1 re-fijado desde 357dcb5 (2026-11-15)
+
+Las dos rondas de arreglos que habían salido sin re-revisión (SC-6a:
+cbb509c, 9ec7d95; R1-B1/R1-B2 ronda 1: 7e1dffa..5b40447 y 7864310..b7f9558,
+en `c6462e5`) se revisaron de forma independiente. Evidencia:
+`t040-t041/sc6a-evidence.json` y `t040-t041/r1b1-evidence.json`, clave
+`rereview` en los dos.
+
+- SC-6a, veredicto `changes_needed`:
+  - RR-1 (media): el día 14 corría `$ST`, que sólo existe en la sesión de
+    la ventana. El runbook y DEPLOYMENT definen ahora `PY`, `C` y `ST` desde
+    `controller/current` al empezar el día 14; T-A17 corre los dos comandos
+    del día 14 con el controlador instalado (357dcb5).
+  - RR-2 (baja): la recuperación tras perder la sesión no definía `$PY` y
+    daba un DETENER falso. El bloque de extracción define `PY` y las dos
+    notas de recuperación nombran el bloque `PY=`/`C=`; el ensayo ya no le
+    agrega `PY` a los bloques (357dcb5).
+  - RR-3 (baja): esta entrada de R5V-1 no tenía «Pendiente» y
+    `r1b1-evidence.json` decía `integrated: false`. Corregido (este commit de
+    documentación).
+  - RR-4 (info): el ensayo de extracción fallaba en la Mac con otro
+    `TMPDIR`; ahora toma el directorio de un `mktemp -d` de prueba, y la
+    frase de W1-pre sobre `$ST` queda fijada por un test (357dcb5).
+  - RR-0: lo demás se verificó sin defectos.
+- R1-B1/R1-B2, veredicto `approve`:
+  - RR2-1 (baja): un olvido que ya estaba en su transacción cuando empezaba
+    el `aclose` podía olvidar a un titular que presentó su token en ese
+    momento, y la prueba de cierre daba retirado. Arreglo (19dd44e): el
+    olvido se rechaza (503) desde que empezó el cierre; si el cierre empieza
+    entre la última comprobación y el commit, restituye todas las filas. Un
+    rechazo ya no hace fallar el `aclose`. b02116c corrige una frase de
+    DEPLOYMENT que rompía `test_sc5a_docs`. Mutantes: 4 de 4 muertos.
+  - RR2-2 (info): la evidencia de R1B2-2 describía el mutante sin lock como
+    antes de R1B2-3. Corregida la evidencia y DEPLOYMENT: con la
+    restitución, el lock es una segunda defensa.
+- R1 re-fijado: RR2-1 cambia `src/memory/capture_recorders.py`. R1 se
+  construyó bajo `yo` en el server (`/home/yo/projects/kza`, avanzado por
+  fast-forward a `357dcb5`) con `scripts/build_runtime.py --revision
+  357dcb57816834a9f4bfffb9bb5357ebd13d926e`, dos veces, con `cmp` idéntico, y
+  una tercera vez en la Mac, con los mismos bytes. `release.json`:
+  `controller_epoch` 4, `schema_contract` 1, `launcher_contract` 3; 416
+  módulos compilados y 476 archivos. Frente al de c6462e5 cambian sólo
+  `release.json` y `src/memory/capture_recorders.pyc`. sha256
+  `c5305d588a228aca445489b90c00a2b11165d24f8fa1078ad19a68fbe9630a24`, en
+  `/home/yo/projects/releases-r1/r1-357dcb5.tar.gz` (0600, directorio 0700).
+  El de c6462e5 quedó al lado, sin borrar, como
+  `r1-c6462e5.tar.gz.superseded-rr2-1`; `SHA256SUMS` lista los tres archivos
+  y `sha256sum -c` da OK. La copia de la Mac y la segunda del server se
+  borraron; `build-357dcb5-a/b/build.json` quedan como registro.
+- Corridas: Mac, dirigidas de captura 278 pasados y SC-6a (docs y ensayo) 30
+  pasados, más el ensayo de extracción con un `TMPDIR` privado. Server
+  (`yo`, sobre 357dcb5, de a una): `test_linux_adoption_window` 7 de 7 en
+  262 s y 153 dirigidas en proceso (`/home/yo/projects/runs/rr-fixes`).
+- Pendiente antes de la ventana: la suite batch completa sobre 357dcb5 (la
+  corre la sesión principal), la re-revisión independiente de esta ronda de
+  arreglos y el visto bueno visual del panel de R1-B2. Nada cambió del lado
+  de `kza`; sin release ni instalación. La ventana sigue sin autorizar ni
+  programar.
 
 ## Prompt para la sesión nueva
 

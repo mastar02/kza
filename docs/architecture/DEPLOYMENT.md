@@ -301,7 +301,17 @@ autocontenidas y la delegación a estados dueños se apaga. Desde SC-2
   `733b6fc35dc929accc00b78b231092531a7ca131663ccc8b663f9d9e48851b86`, en
   `/home/yo/projects/releases-r1/r1-c6462e5.tar.gz` (0600, directorio 0700,
   con `SHA256SUMS`). Frente al de 81ed568 cambian sólo `release.json` y los
-  siete archivos de R1-B en `src/`. El runbook de R1 fija ese sha256 y su
+  siete archivos de R1-B en `src/`. Ese archivo quedó reemplazado (abajo) y
+  renombrado `r1-c6462e5.tar.gz.superseded-rr2-1`.
+- R1 re-fijado tras la re-revisión (2026-11-15): el arreglo RR2-1 cambia
+  `src/memory/capture_recorders.py`, así que R1 se reconstruyó igual desde
+  357dcb5 (`controller_epoch` 4, `schema_contract` 1, 416 módulos
+  compilados, 476 archivos): dos veces en el server, idéntico byte a byte, y
+  una en la Mac, igual. sha256
+  `c5305d588a228aca445489b90c00a2b11165d24f8fa1078ad19a68fbe9630a24`, en
+  `/home/yo/projects/releases-r1/r1-357dcb5.tar.gz` (0600, directorio 0700,
+  con `SHA256SUMS`). Frente al de c6462e5 cambian sólo `release.json` y
+  `src/memory/capture_recorders.pyc`. El runbook de R1 fija ese sha256 y su
   commit, y antes de W1 exige que `sha256sum "$R1_ARCHIVE"` coincida o se
   detiene.
 - Ensayo: `tests/integration/test_sc6a_r1_rehearsal.py` (en proceso, Mac y
@@ -1103,10 +1113,13 @@ programa hasta que los dos estén revisados y ensayados (T-A17; ver el
 ronda 2 (2026-11-13, `t040-t041/u3b-0e5-independent-review.json`) y T-A17
 compilado en Linux, que pasó en el server en SC-6a y en la suite batch de R1-B
 sobre el árbol de c6462e5. La compuerta no es lo único pendiente antes de la
-ventana: siguen abiertas la re-revisión de la ronda de arreglos de SC-6a
-(cbb509c, 9ec7d95) y la revisión independiente de la ronda 1 de arreglos de
-R1-B1/R1-B2, cuyo código va en el R1 fijado; el visto bueno visual del panel
-de R1-B2 sigue con el usuario. Después quedan los pasos del operador
+ventana. La re-revisión de la ronda de arreglos de SC-6a (cbb509c, 9ec7d95)
+y la revisión independiente de la ronda 1 de arreglos de R1-B1/R1-B2 se
+hicieron el 2026-11-15 (RR-1 a RR-4, RR2-1 y RR2-2); sus arreglos (19dd44e,
+b02116c, 357dcb5) cambiaron código, y R1 se re-fijó desde 357dcb5. Siguen
+abiertas la re-revisión independiente de esos arreglos y la suite batch
+completa sobre 357dcb5; el visto bueno visual del panel de R1-B2 sigue con el
+usuario. Después quedan los pasos del operador
 (transferir y verificar el R1 fijado, el drop-in sudo de W7, el arranque real
 hasta READY de W8); la ventana la programa el usuario, como operador, y sigue
 sin programarse.
