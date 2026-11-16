@@ -845,9 +845,11 @@ corriendo desde `controller/current`; `--archive` es el archivo NUEVO.
 - (a) el `release.json` del NUEVO declara `launcher_contract` >= 3
   (`runtime_admission_launcher_contract_missing`) y `format_epoch` >= 1
   (`runtime_admission_rollback_format_closed`);
-- (b) la época del controlador del NUEVO está entre 5 y la instalada
-  (`runtime_admission_compaction_release_epoch`): R1, de época 4, nunca es
-  destino (SC-D7 A);
+- (b) la época del controlador del NUEVO está entre 5 y la instalada: menor
+  que 5, `runtime_admission_compaction_release_epoch` (R1, de época 4, nunca
+  es destino, SC-D7 A); mayor que la instalada (o `controller/current` aún
+  en R1), `runtime_admission_compaction_t0_required` con los dos triples: hace
+  falta el T0 del NUEVO;
 - (c) el NUEVO está en served(root) o su triple es el instalado. served(root)
   es el archivo de cada log del modo release terminado (`complete`) con
   `verified`, más la release del head actual; se deriva de los logs
@@ -872,12 +874,23 @@ Además, en el modo release `--retire-prepare-leftovers` queda forzado, y
 cualquier entrada intacta bajo `slots/` rechaza
 (`runtime_admission_compaction_release_unproven_copy`, con las rutas y sin
 contenido), salvo los dos slots heredados que nombra el registro de adopción
-confirmado (el contenedor de 63ea8d3 y el slot de b0866e8). Un plan rechazado
-no escribe nada (fila P): arreglar la causa y repetir, o habilitar y arrancar
-la unidad, que sirve H.
+confirmado (el contenedor de 63ea8d3 y el slot de b0866e8; con dos registros
+confirmados, o uno cuyo nombre no es el digest de su head, no se exime
+nada). Un plan rechazado no escribe nada (fila P): arreglar la causa y
+repetir, o habilitar y arrancar la unidad, que sirve H. Qué hacer con cada
+ruta rechazada: un `slots/.prepare-*` vacío (un `start` cortado entre crear
+el directorio de staging y escribir su registro) se quita con `rmdir` y se
+repite el plan; cualquier otra entrada no se borra: el servicio queda en H,
+se averigua qué es y se registra la decisión de 48 horas (runbook de
+compactación, tabla de códigos).
 
 `compact start`: K se prepara desde el archivo NUEVO y `_k_runtime` exige
-que su `release.json` sea el del intent (P6'(f)); A1 exige además que los
+que su `release.json` sea el del intent (P6'(f)). `compact resume` no repite
+la admisión: antes de extraer nada compara el `release.json` del archivo dado
+con el del intent y rechaza `runtime_admission_compaction_artifact`
+(`"archive": "not_the_intent_archive"`) sin escribir, así que un `resume` con
+el archivo de H después de un `start` cortado no deja un K equivocado y el
+`resume` con el NUEVO sigue funcionando; A1 exige además que los
 `schemas` del binding de K sean los de H
 (`runtime_admission_compaction_schema_changed`); A2 sigue probando K con su
 propio código antes del CAS. Hasta SC-4a, `compact verify` de un log del modo
@@ -885,7 +898,13 @@ release rechaza `runtime_admission_compaction_release_verify_unavailable`, y
 `allow-run`, `--discard-k-writes` y la vuelta a H por Q6 rechazan
 `runtime_admission_compaction_plain_mode_only`. La única salida de un log del
 modo release es `compact abort <id>` antes de la corrida (fila A0, sin
-pérdida); después, habilitar y arrancar la unidad.
+pérdida); después, habilitar y arrancar la unidad. `start` y `resume` lo
+dicen en su salida (`next: compact abort <id>`); un log simple sigue
+diciendo `next: compact verify <id>`. Un `intent.mode` distinto de
+`"release"` no es un log simple: `verify`, `allow-run`, `--discard-k-writes`,
+la vuelta a H por Q6, `plan` (served(root)) e `install-controller` lo
+rechazan como `runtime_admission_compaction_log_invalid`, `compact status` lo
+lista como inválido, y el abort simple antes de la corrida sigue disponible.
 
 Reubicación de las colas de audio (toda compactación, también la simple):
 `pending_audio_deletions.path` y `audio_write_intents.path` bajo H (o un

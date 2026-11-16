@@ -227,8 +227,14 @@ Variables de este runbook (cuenta `kza`):
 PY=/home/kza/kza/.venv/bin/python
 ST="$PY -I -B /home/kza/releases/controller/current/scripts/stage_runtime.pyc --root /home/kza/releases --offline"
 H_ARCHIVE=/home/kza/releases/<archivo de la release de H>.tar.gz   # el mismo artefacto que corre H
+NEW_ARCHIVE=/home/kza/releases/<archivo de la release NUEVA>.tar.gz # época 5: el destino de la transición
 K=<nombre nuevo de slot, nunca usado antes>
 ```
+
+Con el controlador instalado en época 5 (modo release, SC-1b) `--archive` es
+siempre `"$NEW_ARCHIVE"`, en `plan`, en `start` y en `resume`: donde los
+pasos dicen `"$H_ARCHIVE"`, usar `"$NEW_ARCHIVE"`. `"$H_ARCHIVE"` sólo vale
+con un controlador de época 4 (compactación simple).
 
 **Justo antes del paso 1**: dueños de captura vivos en 0 (R5V-1). En el
 panel, Privacidad → Captura global, o en `GET /api/capture/control` con la
@@ -257,6 +263,9 @@ R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
    $ST compact plan "$K" --archive "$H_ARCHIVE" [--retire-prepare-leftovers] [--unit <unidad de kza> ...]
    ```
 
+   Época 5: `--archive "$NEW_ARCHIVE"` (el archivo NUEVO), y
+   `--retire-prepare-leftovers` queda forzado.
+
    Revisar, sin datos personales en la salida:
    - `members`: cada miembro con su clase, prueba y conteos (archivos, bytes);
    - `untouched`: lo que queda intacto. Si algo que debería borrarse aparece
@@ -280,7 +289,10 @@ R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
    ```
 
    Las mismas `--unit` que en el plan (forman parte de su digest); el retiro
-   vuelve a escanear con esa lista.
+   vuelve a escanear con esa lista. Época 5: `--archive "$NEW_ARCHIVE"`, el
+   mismo archivo del plan. Hasta SC-4a la salida dice `next: compact abort
+   <id>`: un log del modo release no se verifica todavía, y su única salida es
+   ese abort (sin pérdida) y después habilitar y arrancar la unidad (sirve H).
 
    Si el plan cambió desde el paso 2 (otro slot, otra entrada en la raíz),
    rechaza con `runtime_admission_compaction_plan_changed`: repetir el plan.
@@ -358,7 +370,8 @@ R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
 ## Si algo falla
 
 - **Se cortó `start`** (corte de luz, SIGKILL, error): `compact resume <id>
-  --archive "$H_ARCHIVE"` sigue desde el último evento registrado, o
+  --archive "$H_ARCHIVE"` (época 5: `"$NEW_ARCHIVE"`, el archivo del intent)
+  sigue desde el último evento registrado, o
   `compact abort <id>` vuelve a H y borra sólo lo que creó esta compactación
   (K, el snapshot, el placeholder, un resto `.prepare-*` con su registro de
   staging). Un corte justo después de renombrar K y antes de su registro de
@@ -366,6 +379,10 @@ R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
   Una materialización a medias no se rehace: `resume` rechaza con
   `compaction_resume_abort_required`; abortar y empezar de nuevo con **otro**
   nombre de K (el nombre usado queda retirado).
+  Si `resume` recibe otro archivo que el del intent (por ejemplo
+  `"$H_ARCHIVE"` en época 5), rechaza `compaction_artifact` con
+  `"archive": "not_the_intent_archive"` antes de escribir nada: repetir con
+  el archivo del plan.
 - **La corrida de verificación falló antes de arrancar** (por ejemplo disco
   lleno al escribir el ticket; el head sigue cerrado en K): la corrida no se
   consumió. Otro `systemctl --user start kza-voice.service` la reintenta, o
@@ -518,7 +535,13 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
 | `runtime_admission_compaction_unit_path:<unidad>` | Una unidad systemd o logrotate nombra un miembro. |
 | `runtime_admission_compaction_absolute_locator` | `config/` o `.env` de H nombran una ruta absoluta de H, de un dueño o de un miembro (con `:<base>:<tabla>.<columna>`, una fila de datos la nombra fuera de una columna reubicada). |
 | `runtime_admission_compaction_t0_required` / `_controller_behind` | Época 5 (modo release, SC-1b): el triple del controlador del archivo NUEVO es mayor que el instalado (hace falta su T0) o menor y el NUEVO no está servido (rehacer el arreglo sobre la línea instalada). Ver DEPLOYMENT, «Plan y start del modo release (SC-1b)». |
-| `runtime_admission_compaction_release_epoch` / `_schema_contract` / `_release_unproven_copy` | Época 5: NUEVO de época menor que 5 o mayor que la instalada; contratos de esquema distintos; una entrada no probada bajo `slots/`. |
+| `runtime_admission_compaction_t0_required` (época del NUEVO mayor que la instalada) | `plan`, época 5: también cuando la época del controlador del NUEVO es mayor que la instalada (o `controller/current` sigue en R1, época 4). Hace falta el T0 del NUEVO (ver «Compactación trabada», paso 3, y DEPLOYMENT, T0); después repetir el plan. Nombra los dos triples. |
+| `runtime_admission_compaction_controller_revision_conflict` | `plan`, época 5: el NUEVO tiene la misma (época, revisión) que el controlador instalado pero otra clausura. No es un destino: construir el arreglo con una revisión mayor (y su T0) o sobre el controlador instalado. Nombra los dos triples. El plan no escribió nada; habilitar y arrancar la unidad sirve H. |
+| `runtime_admission_compaction_release_epoch` / `_schema_contract` | `plan`, época 5: NUEVO de época menor que 5 (R1 nunca es destino); contratos de esquema distintos (un cambio de contrato necesita su propio diseño). El plan no escribió nada; H sigue sirviendo. |
+| `runtime_admission_compaction_release_unproven_copy` | `plan`, época 5: una entrada intacta bajo `slots/` sin prueba (la salida trae `paths`, sin contenido). Un directorio `slots/.prepare-*` **vacío** (resto de un `prepare` cortado antes de su registro de staging): quitarlo con `rmdir slots/.prepare-<...>` (nunca `rm -r`; si `rmdir` falla porque no está vacío, tratarlo como el caso siguiente) y repetir el plan. Cualquier otra ruta: no borrar nada, dejar el servicio en H (habilitar y arrancar la unidad), averiguar qué es y registrar la decisión de 48 horas. |
+| `runtime_admission_compaction_artifact` | `start` o `resume`: el archivo dado no es el del intent (`"archive": "not_the_intent_archive"`, nada escrito: repetir con el archivo del plan, en época 5 `"$NEW_ARCHIVE"`), o el `release.json` de K no es el del intent (el archivo cambió entre lectura y extracción): `$ST compact abort <id>`, después habilitar y arrancar la unidad. |
+| `runtime_admission_compaction_schema_changed` | `start`, época 5 (A1): los `schemas` del binding de K no son los de H. El head sigue en H: `$ST compact abort <id>`, después `systemctl --user enable kza-voice.service` y `systemctl --user start kza-voice.service`. Repetir con el mismo NUEVO rechaza igual. |
+| `runtime_admission_compaction_locator_collision:<tabla>.path` | `start` (trabajador): dos filas de una cola de audio caerían en la misma ruta de K. Se rechaza antes de escribir K; el head sigue en H: `$ST compact abort <id>`, después habilitar y arrancar la unidad. Cada reintento rechaza igual; no hay salida por `resume`. |
 | `runtime_admission_compaction_release_verify_unavailable` / `_plain_mode_only` | Época 5, hasta SC-4a/SC-4b: un log del modo release no se verifica ni vuelve a H por Q6; la salida es `compact abort <id>` antes de la corrida. |
 | `runtime_admission_compaction_capacity` | El binding o el archivo histórico de K pasaría de 12 MiB, o no hay espacio (P9). Si lo dice el trabajador (durante el snapshot, antes de escribir su manifiesto, o después del snapshot), el tamaño real no entra: liberá espacio y seguí con `compact resume <id>` (un snapshot completo se conserva; uno a medias se destruye y se vuelve a hacer). |
 | `runtime_admission_compaction_owner_only_data` | Hay datos sólo en miembros; en `start` requiere `--accept-owner-only-loss`, en `retire` (datos nuevos desde el plan) `--accept-owner-only-loss <coverage_sha256>`. |
