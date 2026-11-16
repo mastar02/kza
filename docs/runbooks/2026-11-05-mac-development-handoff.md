@@ -1714,6 +1714,52 @@ las dos; `user-decisions-20261110.json`, clave `sc4b_questions_20261116`):
   ventana; si no da 0, implementar antes la línea base salada de K y el
   reencolado.
 
+## SC-4c — lista cerrada de colecciones de Chroma en la compactación (2026-11-16)
+
+Quinta unidad del modo release (diseño `t040-t041/sc-release-design-v4.json`,
+unidad SC-4c: `mechanism.start.chroma_allowlist`, PRIV-3, PA-8, V4R2-C1).
+Rama `sc4c` desde `batch-c` (e6d3239), sin push; la suite batch, la
+revisión independiente (SC-R) y el merge los hace la sesión coordinadora.
+Sin release. Evidencia: `t040-t041/sc4c-evidence.json` (`follow_up`,
+pruebas, mutantes, pregunta abierta). Prioridad del usuario: sólo lo que
+necesita la primera actualización posterior a R1.
+
+- Hallazgo de partida: la copia idéntica de 0c rechazaba el snapshot de
+  cualquier H con `data/chroma_db` (`state_snapshot_unregistered_sdk_root`):
+  sólo `data/memory_db` era almacén SDK registrado. Producción tiene los dos.
+- `src/memory/state_snapshot.py`: `snapshot_closed_state(...,
+  chroma_collections=...)` trata todo almacén de Chroma de H como raíz SDK,
+  lista sus colecciones en una copia aislada, clasifica cada nombre antes
+  de exportar nada y no lee la colección dada de baja (sólo su nombre).
+  Sin el argumento, el comportamiento anterior no cambia
+  (`collection_records` compartido con `_export_indexes`).
+- `src/memory/owner_compaction.py`: `collection_kind` (lista cerrada),
+  `policy_allowlist` (lo que `get()` devolvería en t_clone, dueño no
+  retirado, registro de borrados como segunda compuerta, revisión exacta),
+  `chroma_plan` en el plan del clon (`plan_sha256` incluye resúmenes sin
+  contenido), `_clone_state` (sin los bytes de Chroma de H),
+  `rebuild_chroma` (una sesión SDK por almacén bajo el catálogo de copias,
+  comprobación dentro de la sesión, pin sha256 de los archivos) y D5 con
+  esos pins antes y después del VACUUM y en `resume` (evidencia
+  `chroma.pins`).
+- `scripts/compaction.py`: `chroma_collections` en `plan`/`start` (nombres
+  de colección desde imágenes privadas de cada `chroma.sqlite3`, destinos
+  `semantic_index` de H); `unlisted_collection` con almacén y colección en
+  el informe; `chroma` en la vista del plan. La lista está duplicada a
+  propósito (el controlador no importa `src`): una prueba fija que las dos
+  coinciden.
+- Tests: `tests/unit/tools/test_sc4c_chroma_closed_list.py` (paridad de la
+  lista, canarios de la lista permitida, rechazos del plan del clon, la
+  primera transición posterior a R1 con almacenes reales hasta el retiro,
+  `user_memories` en el plan y en el trabajador, D5 de un almacén
+  reconstruido, crash después de la evidencia y `resume`); estados en
+  `tests/mocks/sc4c_chroma.py`. Mutantes: `tools/sc4c_mutants.py` (7).
+  Resultados del server en la evidencia.
+- Pregunta abierta SC4C-Q1 (diseño: «si SC-0 encuentra un lector, SC-R
+  decide»): SC-0 encontró que «listar mis rutinas» lee
+  `home_assistant_routines`. Esta unidad implementa la baja; ver la
+  evidencia para la recomendación.
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.

@@ -704,8 +704,9 @@ Estado al 2026-11-16: implementado en la rama `sc1a-controller-epoch5`
 (diseño `sc-release-design-v4`, unidad SC-1a, aceptado). No hay release:
 producción y R1 siguen en época 4. Es la primera pieza del modo release
 posterior a R1; plan/start en modo release (SC-1b) está en la sección
-siguiente, la corrida de verificación (SC-4a) y las salidas (SC-4b) en las
-suyas; faltan SC-4c, SC-R, SC-6b y SC-5b, así que esta sección no habilita
+siguiente, la corrida de verificación (SC-4a), las salidas (SC-4b) y la
+lista cerrada de Chroma (SC-4c) en las suyas; faltan SC-R, SC-6b y SC-5b,
+así que esta sección no habilita
 ninguna transición gestionada (ver «Sin
 transiciones gestionadas después de R1 hasta el modo release»). Evidencia:
 `data/autonomous-roadmap-20261102/t040-t041/sc1a-evidence.json` (local,
@@ -1161,6 +1162,70 @@ fórmula D de SC-D2 ni se midió: queda en la lista de medición de SC-6b
 
 Tests: `tests/unit/tools/test_sc4b_w.py`,
 `tests/unit/tools/test_sc4b_release_exits.py`.
+
+### Lista cerrada de colecciones de Chroma en la compactación (SC-4c) — desarrollada, sin release
+
+SC-4c implementa `mechanism.start.chroma_allowlist` del diseño v4 (PRIV-3,
+PA-8, V4R2-C1). Vale para toda compactación (modo release y modo simple),
+porque corre en el trabajador del controlador. Antes, la copia era idéntica
+también para Chroma, y un `data/chroma_db` (el índice de comandos y las
+rutinas, que no es destino `semantic_index` registrado) hacía rechazar el
+snapshot con `state_snapshot_unregistered_sdk_root`: en producción ninguna
+compactación podía pasar del snapshot.
+
+- **Qué recibe K.** Cada almacén de Chroma de H (cada directorio con un
+  `chroma.sqlite3`) se reconstruye en K con el SDK público desde la
+  exportación del snapshot; nunca se copian sus bytes, así que lo que queda
+  afuera no sobrevive en páginas libres ni en los archivos del índice HNSW.
+  (1) La colección de memoria de política (la que H registró como destino
+  `semantic_index`, `<colección>_policy_v1`) recibe sólo los registros de
+  hechos que `get()` devolvería en t_clone (estado `automatic` o
+  `confirmed`, sin vencer, sin conversación fuente con tombstone) cuyo dueño
+  no está en `retired_users`, con el registro de borrados como segunda
+  compuerta, y sólo si el registro indexa esa revisión exacta (documento
+  igual al contenido, metadata `{fact_policy: 1, revision}`). Quedan afuera,
+  por ejemplo, un hecho vencido que el barrido todavía no limpió, un hecho de
+  un dueño retirado cuya poda no corrió y un id huérfano. Las filas de
+  `facts` siguen idénticas (lo que vence lo vence K en su corrida). (2) Las
+  colecciones del índice de comandos (`home_assistant_commands`, su
+  `__pointer` y las versionadas `home_assistant_commands__*`) se copian
+  enteras: registros, metadata (el puntero conserva `active`) y
+  configuración. (3) `home_assistant_routines` **no se copia** (texto de
+  rutinas dictadas, sin camino de borrado): es una baja con nombre en el
+  código, fijada por un test; el arranque de K la recrea vacía
+  (`ChromaSync._construct`). (4) Cualquier otra colección, incluida la
+  heredada `user_memories`, rechaza
+  `runtime_admission_compaction_unlisted_collection`: en el `plan` (lee los
+  nombres de colección de una imagen privada de cada `chroma.sqlite3`, nunca
+  un registro; el informe nombra almacén y colección) y otra vez en el
+  trabajador (en el snapshot, antes de exportar nada, y en el plan del
+  clon). Un rechazo del trabajador es la fila S: `compact abort <id>` (sin
+  pérdida, antes de V) y la unidad vuelve a servir H.
+- **D5 para almacenes reconstruidos.** Dentro de la sesión del SDK que
+  reconstruye cada almacén se comprueba que liste exactamente las
+  colecciones planeadas, cada una con su metadata, configuración y registros
+  exactos; después se fija el sha256 de cada archivo del almacén y cada D5
+  posterior (antes y después del VACUUM, y en `resume`) compara ese pin
+  exacto (`payload_changed:chroma`). Un almacén cuyas colecciones se dan
+  todas de baja se crea igual, vacío, para que los `schemas` de K sigan
+  iguales a los de H (A1).
+- **Registros sin contenido.** `plan` muestra `chroma` con conteos por
+  almacén (`rebuilt`, `copied`, `dropped`); el evento `materialized` y la
+  evidencia de preparación de K guardan conteos (almacenes, colecciones por
+  clase, registros, excluidos) y los pins (rutas y sha256). El snapshot
+  conserva la exportación de las colecciones copiadas y de la de política
+  (con los registros excluidos) hasta que se retira junto con H; de
+  `home_assistant_routines` sólo guarda el nombre.
+- **Residual.** El texto de `home_assistant_routines` que ya está en H queda
+  en H (y en los bytes opacos del snapshot) hasta que el retiro destruye H;
+  la transición es lo que lo quita. SC-0 encontró un lector en producción
+  (`routine_manager._handle_list` → `list_routines`, el intent de voz
+  «listar mis rutinas»): después de la transición esa lista sale vacía hasta
+  que se dicte una rutina nueva. El diseño deja a SC-R decidir entre la baja
+  y una reconstrucción desde la tabla protegida `routines`; esta unidad
+  implementa la baja (pregunta abierta SC4C-Q1).
+
+Tests: `tests/unit/tools/test_sc4c_chroma_closed_list.py`.
 
 ### Sin transiciones gestionadas después de R1 hasta el modo release
 
@@ -1765,8 +1830,10 @@ Límites que siguen valiendo (decisiones P5 = C y Q4):
 
 - Sólo `unlink`: no se sobrescribe ni se corre `fstrim`. Los bloques liberados
   quedan en el disco hasta que se reutilicen; es un borrado lógico.
-- VACUUM sólo sobre K. Las páginas libres de `chroma.sqlite3` de K pueden
-  conservar residuos (opaco al SDK).
+- VACUUM sólo sobre K. Desde SC-4c los almacenes de Chroma de K se
+  reconstruyen con el SDK desde la lista cerrada (no se copian sus bytes),
+  así que no traen páginas libres de H; lo que K' escriba después en Chroma
+  sigue siendo opaco al SDK.
 - No toca nada fuera de `/home/kza/releases` (`/home/kza/kza`, respaldos
   externos, snapshots del disco) ni nada dentro de la raíz sin prueba
   positiva: `backups/` (salvo los snapshots que el controlador catalogó; los

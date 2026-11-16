@@ -11,7 +11,8 @@ retires every other proven copy under the root:
 * ``compact plan <K> --archive <H archive>``: read-only. Preconditions
   P1-P14, the positive-proof retirement set (v3), the untouched list and its
   digest, content-free coverage counts (members against H), capacity, the
-  advisory, and the plan digest.
+  advisory, H's Chroma collections against the closed list (SC-4c), and the
+  plan digest.
 * ``compact start <K> ...``: the intent, then C2a (K's runtime from H's
   archive), C2b/C3 in the compaction worker (snapshot, identity clone, D4
   VACUUM on K only, D5 exact check), A1 authorize and A2 activate.
@@ -37,7 +38,7 @@ import json
 import logging
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import sqlite3
@@ -161,6 +162,12 @@ K_TRANSIENT_SQLITE = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED, sqli
                                 sqlite3.SQLITE_INTERRUPT})
 # Review RB-3: K' head's closure proof unreadable after V (storage damage, a manual edit): an HD-like stop.
 K_CLOSURE_UNREADABLE = "runtime_admission_compaction_k_closure_unreadable"
+# SC-4c closed collection list (sc-release-design v4 start.chroma_allowlist, PA-8, V4R2-C1). The worker
+# (src/memory/owner_compaction.py) holds the same list; tests/unit/tools/test_sc4c_chroma_closed_list.py pins both.
+CHROMA_STORE = "chroma.sqlite3"
+CHROMA_COMMAND_INDEX = "home_assistant_commands"  # with "__pointer" and the "__<version>" staging collections
+CHROMA_DROPPED = frozenset({"home_assistant_routines"})  # not copied into K (named drop); K's boot recreates it
+UNLISTED_COLLECTION = "runtime_admission_compaction_unlisted_collection"
 # Review RA4B-1: what a value the selection cannot classify raises (W1 never raises an uncoded error).
 _W1_VALUE_ERRORS = (ValueError, TypeError, AttributeError, KeyError, IndexError)
 
@@ -599,6 +606,57 @@ def _privacy_relative(state: Path) -> str:
     if len(found) != 1:
         _refuse("runtime_admission_compaction_journal_ambiguous")
     return found[0]
+
+
+def collection_kind(name: str, *, policy: bool) -> str | None:
+    """SC-4c: 'rebuilt' (H's own policy memory collection), 'copied' (command index), 'dropped' (routines), else None."""
+    if policy:
+        return "rebuilt"
+    if name == CHROMA_COMMAND_INDEX or name.startswith(CHROMA_COMMAND_INDEX + "__"):
+        return "copied"
+    if name in CHROMA_DROPPED:
+        return "dropped"
+    return None
+
+
+def chroma_collections(state: Path, privacy_relative: str) -> dict:
+    """SC-4c at plan: every collection of every Chroma store of H against the closed list.
+
+    Reads private images of H's chroma.sqlite3 (collection names only, never
+    a record) and H's semantic_index targets; an unlisted collection (the
+    legacy 'user_memories' among them) or a store with no collection table
+    refuses with compaction_unlisted_collection. Returns content-free counts.
+    """
+    policy = set()
+    with stage._database_image(state / privacy_relative) as db:
+        for (encoded,) in db.execute("SELECT descriptor FROM erasure_targets WHERE participant='semantic_index'"):
+            descriptor = json.loads(encoded)
+            path = descriptor.get("path") if type(descriptor) is dict else None
+            if type(path) is str and Path(path).is_relative_to(state):
+                policy.add((Path(path).relative_to(state).as_posix(), descriptor.get("collection")))
+    stores, unlisted = {}, []
+    for relative, path in _databases(state).items():
+        if PurePosixPath(relative).name != CHROMA_STORE:
+            continue
+        store = PurePosixPath(relative).parent.as_posix()
+        with stage._database_image(path) as db:
+            tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            names = sorted(row[0] for row in db.execute("SELECT name FROM collections")) \
+                if "collections" in tables else None
+        if names is None:
+            unlisted.append([store, None])
+            continue
+        counts = {"rebuilt": 0, "copied": 0, "dropped": 0}
+        for name in names:
+            kind = collection_kind(name, policy=(store, name) in policy)
+            if kind is None:
+                unlisted.append([store, name])
+            else:
+                counts[kind] += 1
+        stores[store] = counts
+    if unlisted:
+        _refuse(UNLISTED_COLLECTION, {"collections": unlisted})
+    return {"stores": stores}
 
 
 def owner_selection(root: Path, head_binding: dict) -> list[dict]:
@@ -1317,6 +1375,7 @@ def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftov
         elif record.get("preparation") not in {"prepared", "failed", "unknown"}:
             _refuse("runtime_admission_compaction_copy_in_progress")
     privacy = _privacy_relative(state)
+    chroma = chroma_collections(state, privacy)  # SC-4c: the closed collection list
     room = capacity(root, source, privacy)  # P9
     now = _now(wall)
     covered = coverage(members, state, now=now)  # P10
@@ -1339,7 +1398,7 @@ def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftov
                                             "temp_need_bytes")},
              "units": scanned, "advisory": advice, "has_env": _lexists(state / ".env"),
              "retire_prepare_leftovers": retire_prepare_leftovers, "named_units": sorted(set(named_units)),
-             "abandoned_copies": sorted(abandoned),
+             "abandoned_copies": sorted(abandoned), "chroma": chroma,
              "decisions": list(DECISIONS)}
     if release:
         value["mode"] = RELEASE_MODE  # P6'(e): the digest and the intent bind it with the archive fields
@@ -1435,7 +1494,8 @@ def _plan_view(value: dict) -> dict:
             "untouched": value["untouched"], "untouched_sha256": value["untouched_sha256"],
             "abandoned_copies": value.get("abandoned_copies", []),
             "coverage": value["coverage"], "coverage_members": value["coverage_members"],
-            "capacity": value["capacity"], "units": value["units"], "advisory": value["advisory"]}
+            "capacity": value["capacity"], "units": value["units"], "advisory": value["advisory"],
+            "chroma": value["chroma"]}
 
 
 # --- start: intent, K's runtime, worker, authorize, activate -----------------------------------------

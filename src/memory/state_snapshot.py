@@ -240,6 +240,36 @@ def _close_export_sdk(entry, client) -> None:
         client.close()
 
 
+def collection_records(collection) -> list[dict]:
+    """Every record of one open Chroma collection, validated and sorted by id (public SDK only)."""
+    payload = collection.get(include=["documents", "metadatas", "embeddings"])
+    ids = payload["ids"]
+    embeddings = payload["embeddings"]
+    if hasattr(embeddings, "tolist"):
+        embeddings = embeddings.tolist()
+    if (type(ids) is not list or len(set(ids)) != len(ids)
+            or any(type(identity) is not str for identity in ids)
+            or collection.count() != len(ids)):
+        raise ValueError("state_snapshot_incomplete_sdk_export")
+    arrays = [payload["documents"], payload["metadatas"], embeddings]
+    if any(value is None or len(value) != len(ids) for value in arrays):
+        if ids:
+            raise ValueError("state_snapshot_incomplete_sdk_export")
+        arrays = [[], [], []]
+    records = [{"id": identity, "document": _sdk_json(arrays[0][index]),
+                "metadata": _sdk_json(arrays[1][index]),
+                "embedding": _sdk_json(arrays[2][index])}
+               for index, identity in enumerate(ids)]
+    for record in records:
+        if (record["document"] is not None and type(record["document"]) is not str
+                or record["metadata"] is not None and type(record["metadata"]) is not dict
+                or type(record["embedding"]) is not list or not record["embedding"]
+                or any(type(value) not in (int, float) for value in record["embedding"])):
+            raise ValueError("state_snapshot_invalid_sdk_record")
+    records.sort(key=lambda item: item["id"])
+    return records
+
+
 def _export_indexes(raw: Path, descriptors: list[dict], binding: dict, work: Path, *,
                     copy_operation=None) -> list[dict]:
     """Only this function imports SDK code, after all source/path preflight."""
@@ -274,33 +304,87 @@ def _export_indexes(raw: Path, descriptors: list[dict], binding: dict, work: Pat
                       chromadb.PersistentClient(path=str(private), settings=Settings(anonymized_telemetry=False)))
             for entry in entries:
                 collection = client.get_collection(name=entry["collection"], embedding_function=None)
-                payload = collection.get(include=["documents", "metadatas", "embeddings"])
-                ids = payload["ids"]
-                embeddings = payload["embeddings"]
-                if hasattr(embeddings, "tolist"):
-                    embeddings = embeddings.tolist()
-                if (type(ids) is not list or len(set(ids)) != len(ids)
-                        or any(type(identity) is not str for identity in ids)
-                        or collection.count() != len(ids)):
-                    raise ValueError("state_snapshot_incomplete_sdk_export")
-                arrays = [payload["documents"], payload["metadatas"], embeddings]
-                if any(value is None or len(value) != len(ids) for value in arrays):
-                    if ids:
-                        raise ValueError("state_snapshot_incomplete_sdk_export")
-                    arrays = [[], [], []]
-                records = [{"id": identity, "document": _sdk_json(arrays[0][index]),
-                            "metadata": _sdk_json(arrays[1][index]),
-                            "embedding": _sdk_json(arrays[2][index])}
-                           for index, identity in enumerate(ids)]
-                for record in records:
-                    if (record["document"] is not None and type(record["document"]) is not str
-                            or record["metadata"] is not None and type(record["metadata"]) is not dict
-                            or type(record["embedding"]) is not list or not record["embedding"]
-                            or any(type(value) not in (int, float) for value in record["embedding"])):
-                        raise ValueError("state_snapshot_invalid_sdk_record")
-                records.sort(key=lambda item: item["id"])
                 exports.append({**entry, "metadata": _sdk_json(collection.metadata), "sdk_version": expected,
-                    "fields": ["ids", "documents", "metadatas", "embeddings"], "records": records})
+                    "fields": ["ids", "documents", "metadatas", "embeddings"],
+                    "records": collection_records(collection)})
+        except BaseException as original:
+            try:
+                _close_export_sdk(sdk_entry, client)
+            except BaseException as cleanup:
+                raise BaseExceptionGroup("state snapshot SDK export retirement unconfirmed",
+                                         [original, cleanup]) from None
+            raise
+        else:
+            _close_export_sdk(sdk_entry, client)
+        shutil.rmtree(private)
+    return exports
+
+
+CHROMA_STORE = "chroma.sqlite3"
+
+
+def _chroma_stores(source: Path, binding: dict) -> list[str]:
+    """SC-4c: every directory of H holding a Chroma store (its chroma.sqlite3), registered or not."""
+    stores = sorted({PurePosixPath(relative).parent.as_posix() for relative in binding["schemas"]
+                     if PurePosixPath(relative).name == CHROMA_STORE})
+    for relative in stores:
+        path = source / _relative(relative)
+        if (path.resolve() != path or not path.is_dir()
+                or binding["store_roots"].get(relative) != _identity(path)):
+            raise ValueError("state_snapshot_index_identity")
+    return stores
+
+
+def _export_stores(raw: Path, stores: list[str], registered: set, binding: dict, work: Path, classify, *,
+                   copy_operation=None) -> list[dict]:
+    """SC-4c closed collection list: list every collection of every store, classify, export.
+
+    ``classify(relative_store, collection, registered)`` returns 'export' or
+    'omit' and raises to refuse (owner compaction's closed list: an unlisted
+    collection refuses before anything is exported). An omitted collection
+    is named with no records, metadata or configuration (nothing of it is
+    read). Like _export_indexes, only an isolated copy is opened.
+    """
+    expected = binding["sdk_versions"].get("chromadb")
+    if not stores:
+        return []
+    if expected is None or importlib.metadata.version("chromadb") != expected:
+        raise ValueError("state_snapshot_sdk_version")
+    import chromadb
+    from chromadb.config import Settings
+    source = Path(binding["state_root"])
+    exports = []
+    for relative in stores:
+        private = work / hashlib.sha256(relative.encode()).hexdigest()
+        extent = None
+        if copy_operation is not None:
+            extent = copy_operation.extent(".work/sdk/" + private.name,
+                family="semantic_index", representation="sdk_work")
+        shutil.copytree(raw / _relative(relative), private, symlinks=False)
+        sdk_entry = (copy_operation.sdk_enter(extent, sdk_version=expected)
+                     if copy_operation is not None else None)
+        client = None
+        try:
+            client = (sdk_entry.construct(chromadb.PersistentClient, path=str(private),
+                        settings=Settings(anonymized_telemetry=False)) if sdk_entry is not None else
+                      chromadb.PersistentClient(path=str(private), settings=Settings(anonymized_telemetry=False)))
+            names = sorted(item.name for item in client.list_collections())
+            classes = {name: classify(relative, name, (relative, name) in registered) for name in names}
+            for name in names:
+                entry = {"source_path": str(source / relative), "relative_path": relative,
+                         "source_identity": binding["store_roots"][relative], "collection": name, "present": True,
+                         "registered": (relative, name) in registered, "sdk_version": expected}
+                if classes[name] == "omit":
+                    exports.append({**entry, "omitted": True, "metadata": None, "configuration": None,
+                                    "fields": [], "records": []})
+                    continue
+                if classes[name] != "export":
+                    raise ValueError("state_snapshot_collection_class")
+                collection = client.get_collection(name=name, embedding_function=None)
+                exports.append({**entry, "omitted": False, "metadata": _sdk_json(collection.metadata),
+                                "configuration": _sdk_json(collection.configuration_json),
+                                "fields": ["ids", "documents", "metadatas", "embeddings"],
+                                "records": collection_records(collection)})
         except BaseException as original:
             try:
                 _close_export_sdk(sdk_entry, client)
@@ -508,7 +592,7 @@ def _record_snapshot_failure(operation, destination: Path, root_identity: dict |
 
 
 def snapshot_closed_state(controller: "AdmissionController", binding_id: str,
-                          destination: Path, *, before_manifest=None) -> ClosedStateSnapshot:
+                          destination: Path, *, before_manifest=None, chroma_collections=None) -> ClosedStateSnapshot:
     """Capture a source-qualified image while the caller retains admission.
 
     A failed copy remains private and incomplete. No success manifest is
@@ -518,6 +602,11 @@ def snapshot_closed_state(controller: "AdmissionController", binding_id: str,
     manifest is serialized and before it is written (owner compaction's exact
     P9 check, SC-0b review F4); an exception there fails the snapshot as any
     other step does. It receives sizes and the file records only.
+    ``chroma_collections`` (SC-4c, owner compaction): every Chroma store of
+    H becomes an SDK root, each of its collections is classified by this
+    callable (see _export_stores) and the manifest records the store list
+    under 'sdk_collections'. Without it, only registered indexes are
+    exported and an unregistered store refuses, as before.
     """
     from src.memory.copy_catalog import reserve_copy
 
@@ -559,6 +648,10 @@ def snapshot_closed_state(controller: "AdmissionController", binding_id: str,
         history_archives, history_files = _copy_history(root, raw, binding, destination)
         descriptors = _index_descriptors(raw, binding)
         sdk_roots = {PurePosixPath(item["relative_path"]) for item in descriptors if item["present"]}
+        stores = None
+        if chroma_collections is not None:
+            stores = _chroma_stores(source, binding)
+            sdk_roots |= {PurePosixPath(relative) for relative in stores}
         for left in sdk_roots:
             if any(left != right and left.is_relative_to(right) for right in sdk_roots):
                 raise ValueError("state_snapshot_overlapping_sdk_roots")
@@ -586,7 +679,12 @@ def snapshot_closed_state(controller: "AdmissionController", binding_id: str,
                                          "size": copied.stat().st_size, "kind": kind}
         for relative in binding["store_roots"]:
             (destination / "state" / relative).mkdir(parents=True, exist_ok=True, mode=0o700)
-        exports = _export_indexes(raw, descriptors, binding, work / "sdk", copy_operation=operation)
+        if stores is None:
+            exports = _export_indexes(raw, descriptors, binding, work / "sdk", copy_operation=operation)
+        else:
+            registered = {(item["relative_path"], item["collection"]) for item in descriptors if item["present"]}
+            exports = _export_stores(raw, stores, registered, binding, work / "sdk", chroma_collections,
+                                     copy_operation=operation)
         if stage.verify_closed_binding(root, binding_id) != binding or _inventory(source) != inventory:
             raise ValueError("state_snapshot_source_changed")
         proof = _read_json(root / "admission" / "closures" / (binding_id + ".json"))
@@ -601,6 +699,8 @@ def snapshot_closed_state(controller: "AdmissionController", binding_id: str,
             "source_roots": binding["store_roots"], "source_schemas": binding["schemas"],
             "source_inventory": inventory, "files": files, "databases": images, "index_exports": exports,
             "history_archives": history_archives}
+        if stores is not None:
+            manifest["sdk_collections"] = {"schema_version": 1, "stores": stores}
         shutil.rmtree(work)  # SDK close already returned; no unknown owner is erased.
         _verify_files(destination, files, manifest_present=False)
         payload = _json(manifest) + b"\n"
