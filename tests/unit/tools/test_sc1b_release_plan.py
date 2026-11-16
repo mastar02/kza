@@ -173,6 +173,15 @@ def test_release_mode_is_keyed_on_the_controller_epoch():
         assert compaction.release_mode() is False
     assert compaction.release_log({"intent": {"mode": "release"}})
     assert not compaction.release_log({"intent": {}})
+    assert launcher.release_mode_log({"intent": {"mode": "release"}})
+    assert not launcher.release_mode_log({"intent": {}})
+    # Review RA-2: plain mode is only a log without 'mode'; any other value refuses everywhere.
+    for mode in ("verify", "Release", "plain", None, 1):
+        log = {"intent": {"mode": mode}}
+        _refusal("runtime_admission_compaction_log_invalid", lambda: compaction.release_log(log))
+        _refusal("runtime_admission_compaction_log_invalid", lambda: compaction._require_plain_mode(log))
+        _refusal("runtime_admission_compaction_log_invalid", lambda: launcher.release_mode_log(log))
+    compaction._require_plain_mode({"intent": {}})
 
 
 # --- the first post-R1 transition: R1 -> R2 plan admission, intent, start --------------------------
@@ -337,6 +346,11 @@ def test_controller_behind_and_the_rollback_admitted_through_served(x5, x5r2, tm
     assert log["intent"]["archive"]["controller_triple"] == list(x5["triple"])
     assert stage.read_binding(root, stage.read_admission_head(root)["binding_id"])["release_sha256"] \
         == x5["release_sha256"]
+    # Review RA-2: a finished log with an unknown mode is neither plain nor served: it refuses.
+    odd = _complete_log(root, x5r2["release_sha256"], mode="verify")
+    _refusal("runtime_admission_compaction_log_invalid", lambda: compaction.served_releases(root, head))
+    [listed] = [entry for entry in compaction.compact_status(root)["compactions"] if entry["compaction_id"] == odd]
+    assert listed == {"compaction_id": odd, "invalid": True, "code": "runtime_admission_compaction_log_invalid"}
 
 
 # --- P6'(a), (b) upper bound, (d), (g) ------------------------------------------------------------------

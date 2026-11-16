@@ -627,8 +627,15 @@ def release_mode() -> bool:
 
 
 def release_log(log: dict) -> bool:
-    """A log planned in release mode (intent.mode == 'release'); install-controller reads the same key."""
-    return launcher.release_mode_log(log)
+    """A log planned in release mode (intent.mode == 'release'); install-controller reads the same key.
+
+    A log without 'mode' is a plain-mode log; any other 'mode' value refuses
+    (runtime_admission_compaction_log_invalid, review RA-2), so no path treats it as plain.
+    """
+    try:
+        return launcher.release_mode_log(log)
+    except ValueError as error:
+        _refuse(str(error))
 
 
 def _require_plain_mode(log: dict) -> None:
@@ -2566,6 +2573,7 @@ def compact_status(root, compaction_id: str | None = None) -> dict:
             if not _lexists(directory / name / "intent.json"):
                 continue
             log = stage.read_compaction_log(root, name)
+            mode = RELEASE_MODE if release_log(log) else "plain"
         except (OSError, ValueError) as error:
             found.append({"compaction_id": name[:64], "invalid": True,
                           "code": str(error)[:200] if str(error).startswith("runtime_admission_")
@@ -2575,7 +2583,7 @@ def compact_status(root, compaction_id: str | None = None) -> dict:
                       "phase": log["events"][-1]["kind"] if log["events"] else "intent",
                       "phases": [event["kind"] for event in log["events"]],
                       "members": len(log["intent"]["members"]),
-                      "mode": RELEASE_MODE if release_log(log) else "plain"})
+                      "mode": mode})
     return {"compactions": found}
 
 
