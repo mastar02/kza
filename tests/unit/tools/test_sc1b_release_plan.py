@@ -208,7 +208,6 @@ def test_first_post_r1_plan_admits_new_and_start_runs_k_from_new(x4, x5, tmp_pat
     started = cw.start(root, x5["archive"], planned=planned)
     # Review B4: until SC-4a the only exit of a release-mode log is the plain abort, and start says so.
     assert started["next"] == "compact abort " + started["compaction_id"]
-    assert compaction.compact_resume(root, started["compaction_id"])["next"] == started["next"]
     log = stage.read_compaction_log(root, started["compaction_id"])
     intent = log["intent"]
     assert intent["mode"] == "release" and compaction.release_log(log)

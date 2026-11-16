@@ -2552,8 +2552,7 @@ def compact_resume(root, compaction_id: str, *, archive=None, worker=None, scan=
         with stage.AdmissionController(root, gate="compaction:" + compaction_id):
             return _finish_retire(root, _log(root, compaction_id), wall)
     if _has(log, "activated"):
-        return {"compaction_id": compaction_id, "phase": "activated", "noop": True,
-                "next": _next_after_activation(log)}
+        return {"compaction_id": compaction_id, "phase": "activated", "noop": True}
     return _continue(root, compaction_id, archive=Path(archive) if archive else None, worker=worker, wall=wall)
 
 
