@@ -146,10 +146,13 @@ class DeliveryHold:
         failures: Failed attempts of this occurrence in this round.
         retry_at: Earliest next attempt, or None when no further attempt is made in this round.
         reason: Last failure reason, for logs.
+        completion_errors: Failed tries to complete (advance) an occurrence whose notice is
+            already terminal; such a retry never speaks.
     """
 
     trigger_at: float
     failures: int = 0
+    completion_errors: int = 0
     retry_at: float | None = None
     reason: str = ""
 
@@ -460,8 +463,8 @@ class ReminderScheduler:
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
-                    # Never re-spoken in this process; a later round finds the terminal receipt.
-                    self._park(claim.occurrence, type(error).__name__)
+                    # Never re-spoken: a later pass finds the terminal receipt and only retries the advance.
+                    self._retry_completion(claim.occurrence, type(error).__name__)
                     if raise_errors:
                         raise
                     logger.exception("Reminder %s completion failed", claim.occurrence.id)
@@ -475,9 +478,13 @@ class ReminderScheduler:
     async def _prepare(self, reminder: Reminder) -> NoticeClaim | None:
         """Resolve, collapse, bar late actions and claim the next notice attempt of one occurrence."""
         current = await self._shared_occurrence(reminder)
-        if current is None or self._held_for_occurrence(current, self._clock()):
+        if current is None or self._backing_off(current, self._clock()):
             return None
+        # Completing a terminal notice comes before the round's park: an occurrence that is
+        # done for this round but whose notice already ended still advances on the next wake.
         if not await self._open_for_claim(current):
+            return None
+        if self._held_for_occurrence(current, self._clock()):
             return None
         collapsed = await self._collapse_missed(current)
         if collapsed is None:
@@ -518,8 +525,17 @@ class ReminderScheduler:
         """False when the occurrence already ended (advance it now) or another attempt is in flight."""
         attempts = await self._attempts(occurrence)
         if any(row.status in _TERMINAL for row in attempts):
-            # A crash left a terminal notice without its advance: complete it silently.
-            await self._advance(occurrence)
+            # A crash or a failed completion left a terminal notice without its advance:
+            # complete it silently; on error only the advance is retried, never the speech.
+            try:
+                await self._advance(occurrence)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                self._retry_completion(occurrence, type(error).__name__)
+                logger.exception("Reminder %s completion retry failed", occurrence.id)
+                return False
+            self._holds.pop(occurrence.id, None)
             return False
         if attempts and attempts[-1].status is ReminderActionStatus.SENDING:
             # Claimed by a live announcement elsewhere; restart recovery makes it uncertain.
@@ -566,6 +582,12 @@ class ReminderScheduler:
             return False
         return hold.retry_at is None or hold.retry_at > now
 
+    def _backing_off(self, reminder: Reminder, now: float) -> bool:
+        """True while this exact occurrence waits for a timed retry (not when parked for the round)."""
+        hold = self._holds.get(reminder.id)
+        return (hold is not None and hold.trigger_at == reminder.trigger_at
+                and hold.retry_at is not None and hold.retry_at > now)
+
     def _hold(self, reminder: Reminder) -> DeliveryHold:
         hold = self._holds.get(reminder.id)
         if hold is None or hold.trigger_at != reminder.trigger_at:
@@ -585,6 +607,24 @@ class ReminderScheduler:
             hold.retry_at = failed_at + self._retry_gap * 2 ** (hold.failures - 1)
             logger.info("Reminder %s not delivered (%s); attempt %d/%d in %.0f s", reminder.id, reason,
                         hold.failures + 1, self._max_attempts, hold.retry_at - self._clock())
+
+    def _retry_completion(self, reminder: Reminder, reason: str) -> None:
+        """Schedule a silent retry of the advance of a terminal notice (30 s, 60 s, ...), bounded per round.
+
+        The retry passes through _open_for_claim, which only advances an
+        occurrence with a terminal attempt and parks one still 'sending'.
+        """
+        hold = self._hold(reminder)
+        hold.completion_errors += 1
+        hold.reason = reason
+        if hold.completion_errors >= self._max_attempts:
+            hold.retry_at = None
+            logger.warning("Reminder %s completion failed (%s) %d times; retried on the next wake", reminder.id,
+                           reason, hold.completion_errors)
+        else:
+            hold.retry_at = self._clock() + self._retry_gap * 2 ** (hold.completion_errors - 1)
+            logger.info("Reminder %s completion failed (%s); silent retry in %.0f s", reminder.id, reason,
+                        hold.retry_at - self._clock())
 
     def _park(self, reminder: Reminder, reason: str) -> None:
         """No further attempt for this occurrence in this round."""

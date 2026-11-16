@@ -609,8 +609,13 @@ async def test_an_edited_occurrence_starts_its_own_backoff(scheduler, store, moc
 @pytest.mark.parametrize("failing_step", ["home_action", "advance"])
 @pytest.mark.asyncio
 async def test_confirmed_speech_then_a_failing_step_is_never_spoken_again(scheduler, store, mock_deps, clock, failing_step):
-    """Review F2 (1): once the announcement was confirmed, no later failure re-speaks it in this process."""
+    """Review F2 (1): once the announcement was confirmed, no later failure re-speaks it in this process.
+
+    Review round 1 R2: the terminal receipt only gets its silent advance retried (backoff 1 s, 2 s,
+    then on any later wake), without a restart and without resending the home action.
+    """
     r = await store.create("u1", "regar", clock() - 1, ha_actions=[ACTION], scope=ReminderScope.SHARED)
+    mark_fired = store.mark_fired
     if failing_step == "home_action":
         claim = store.claim_home_action
 
@@ -624,16 +629,36 @@ async def test_confirmed_speech_then_a_failing_step_is_never_spoken_again(schedu
         store.mark_fired = AsyncMock(side_effect=RuntimeError("database is locked"))
     with pytest.raises(RuntimeError, match="database is locked"):
         await scheduler._fire_reminder(r)
-    assert scheduler._holds[r.id].retry_at is None
-    for _ in range(4):
-        clock.advance(10)  # retries would still be on time (grace 120 s)
+    assert scheduler._holds[r.id].retry_at == clock() + 1
+    assert await scheduler._next_timeout() == 1  # the silent retry wakes the loop
+    assert await scheduler._fire_reminder(r) is False  # inside the gap: nothing at all
+    assert (await store.get_by_id(r.id)).state is ReminderState.ACTIVE
+    if failing_step == "advance":
+        for gap in (1, 2):
+            clock.advance(gap)
+            assert await scheduler._fire_reminder(r) is False  # the retried advance fails again
+            assert await scheduler.missed_reminder_on_arrival("u1", "cocina") == 0
+        assert scheduler._holds[r.id].retry_at is None  # bounded: no timed retry any more, never spins
+        assert await scheduler._next_timeout() is None
+        assert (await store.get_by_id(r.id)).state is ReminderState.ACTIVE
+        store.mark_fired = mark_fired
+        clock.advance(10)
+        await scheduler._deliver_due(clock())  # any later wake completes it
+    else:
+        clock.advance(1)
+        await scheduler._deliver_due(clock())
+    assert (await store.get_by_id(r.id)).state is ReminderState.FIRED
+    assert r.id not in scheduler._holds
+    for _ in range(3):
+        clock.advance(10)
         assert await scheduler._fire_reminder(r) is False
-        assert await scheduler.missed_reminder_on_arrival("u1", "cocina") == 0
         await scheduler._deliver_due(clock())
         assert await scheduler._next_timeout() is None
     mock_deps["tts"].aspeak.assert_awaited_once_with("Oye, recuerda regar", zone_id="living")
-    assert (await store.get_by_id(r.id)).state is ReminderState.ACTIVE
     assert await notices(store) == [("confirmed", None, 1)]
+    # The action ran once before the advance failed, or never when its claim failed; never resent.
+    assert mock_deps["ha_client"].call_service_once.await_count == int(failing_step == "advance")
+    assert await receipts(store) == ([("confirmed", None)] if failing_step == "advance" else [])
 
 @pytest.mark.asyncio
 async def test_arrival_only_wakes_the_loop_which_retries_a_notice_that_never_started(store, mock_deps):
