@@ -118,6 +118,46 @@ def test_unreadable_configuration_is_reported_without_touching_devices(tmp_path,
     assert 'first' not in output and 'rooms' not in output
 
 
+def test_malformed_configuration_reports_only_the_error_type(tmp_path, capsys):
+    """A YAML error is a config_error (exit 2) named by type; no snippet of the file leaks."""
+    text = "rooms:\n  cocina: {mic_usb_port: '7-5.3', token: secreto_abc123\n"
+    with pytest.raises(yaml.YAMLError) as raised:
+        yaml.safe_load(text)
+    config = tmp_path / 'settings.yaml'
+    config.write_text(text, encoding='utf-8')
+    code = tool.main(['--config', str(config), '--sys-root', str(tmp_path), '--proc-root', str(tmp_path),
+                      '--interval', '0'], run=_no_journal)
+    stdout = capsys.readouterr().out
+    output = json.loads(stdout)
+    assert code == 2
+    assert output['config_error'] == f'no disponible ({type(raised.value).__name__})'
+    assert 'first' not in output and 'rooms' not in output
+    assert 'secreto_abc123' not in stdout and 'mic_usb_port' not in stdout
+
+
+def test_empty_configuration_has_no_rooms_and_is_not_an_error(tmp_path):
+    config = tmp_path / 'settings.yaml'
+    config.write_text('', encoding='utf-8')
+    assert tool.configured_rooms(config) == ({}, {})
+    result = _collect(FakeHost(tmp_path), config)
+    assert 'config_error' not in result
+    assert result['rooms'] == {} and result['first'] == {} and result['second'] == {}
+
+
+def test_default_configuration_is_the_slots_own_not_the_working_directorys(tmp_path, monkeypatch, capsys):
+    """The runbook runs it from the compiled slot; the default must not depend on cwd."""
+    assert tool.DEFAULT_CONFIG == REPOSITORY / 'config' / 'settings.yaml'
+    monkeypatch.chdir(tmp_path)
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    code = tool.main(['--sys-root', str(empty), '--proc-root', str(empty),
+                      '--console-log', str(tmp_path / 'missing.log'), '--interval', '0'], run=_no_journal)
+    output = json.loads(capsys.readouterr().out)
+    assert code == 0 and 'config_error' not in output
+    assert output['config_path'] == str(REPOSITORY / 'config' / 'settings.yaml')
+    assert 'cocina' in output['rooms']
+
+
 def test_rooms_without_a_mapping_section_yield_no_rooms(tmp_path):
     assert tool.configured_rooms(_config(tmp_path, {'rooms': ['living']})) == ({}, {})
     assert tool.configured_rooms(_config(tmp_path, {'audio': {}})) == ({}, {})
@@ -270,7 +310,33 @@ def test_kernel_lines_are_only_configured_ports_and_host_controller_errors():
     assert result['exit_code'] == 0
     assert result['messages'] == [KERNEL[0], KERNEL[1], KERNEL[5], KERNEL[6], KERNEL[7], KERNEL[9]]
     [(command, kwargs)] = seen
-    assert command[:2] == ['journalctl', '-k'] and kwargs['timeout'] == 15
+    assert command == ['journalctl', '-k', '--since=-2 hours', '-n', '10000', '--no-pager',
+                       '--output=short-iso']
+    assert kwargs['timeout'] == 15
+
+
+def test_kernel_line_of_another_controllers_devpath_is_not_attributed():
+    """A HID phys string names the devpath after a PCI address (``usb-0000:0a:00.3-5.3``).
+
+    Its ``3-5.3`` is not the bus-port 3-5.3: the bus is unknown, so it is not attributed.
+    """
+    line = ('2026-11-16T10:00:00-0300 kza kernel: hid-generic 0003:20B1:4F00.0007: input,hidraw6: '
+            'USB HID v1.11 Device [XMOS XVF3800] on usb-0000:0a:00.3-5.3/input3')
+    assert tool.kernel_messages(['3-5.3'], _journal(line))['messages'] == []
+    own = '2026-11-16T10:00:01-0300 kza kernel: usb 3-5.3: USB disconnect, device number 4'
+    assert tool.kernel_messages(['3-5.3'], _journal(line + '\n' + own))['messages'] == [own]
+
+
+def test_kernel_lines_and_stderr_are_cut_to_500_characters():
+    long_line = 'kernel: usb 7-5.3: ' + 'x' * 600
+
+    def run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 1, stdout=long_line + '\n', stderr='e' * 900)
+
+    result = tool.kernel_messages(['7-5.3'], run)
+    assert result['messages'] == [long_line[:500]]
+    assert result['stderr'] == 'e' * 500
+    assert result['exit_code'] == 1
 
 
 def test_kernel_lines_skip_an_invalid_port_and_unconfigured_rooms():
@@ -349,6 +415,45 @@ def test_room_prefix_needs_the_exact_room_id(tmp_path):
     result = tool.watchdog_messages(['cocina'], [log])
     assert result['rooms'] == {'cocina': []}
     assert result['other'] == ['[audio-watchdog] cocina2: device absent']
+
+
+def test_a_room_mentioned_inside_another_rooms_line_does_not_take_it(tmp_path):
+    log = _console(tmp_path / 'console.log', ['[audio-watchdog] living: device 1-2.3 absent (cocina: ok)'])
+    result = tool.watchdog_messages(['cocina', 'living'], [log])
+    assert result['rooms'] == {'cocina': [], 'living': ['[audio-watchdog] living: device 1-2.3 absent (cocina: ok)']}
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason='root reads a mode-000 file')
+def test_an_unreadable_newer_console_log_is_skipped(tmp_path):
+    old = _console(tmp_path / 'old.log', ['[audio-watchdog] living: readable console'])
+    new = _console(tmp_path / 'new.log', ['[audio-watchdog] living: unreadable console'])
+    os.utime(old, (1_000, 1_000))
+    os.utime(new, (2_000, 2_000))
+    new.chmod(0)
+    try:
+        result = tool.watchdog_messages(['living'], [new, old])
+    finally:
+        new.chmod(0o600)
+    assert result['path'] == str(old)
+    assert result['rooms']['living'] == ['[audio-watchdog] living: readable console']
+
+
+def test_default_consoles_are_the_managed_one_then_the_slots(tmp_path, monkeypatch):
+    """The runbook reads the managed launcher console first (DEPLOYMENT.md:1101), then the slot's."""
+    assert tool.MANAGED_CONSOLE_LOG == Path('/home/kza/releases/logs/console.log')
+    slot = tmp_path / 'releases' / 'release_x'
+    (slot / 'runtime').mkdir(parents=True)
+    current = tmp_path / 'releases' / 'current'
+    current.symlink_to(slot / 'runtime')
+    managed = _console(tmp_path / 'managed.log', ['[audio-watchdog] cocina: recovered (device=5)'])
+    monkeypatch.setattr(tool, 'CURRENT_RELEASE', current)
+    monkeypatch.setattr(tool, 'MANAGED_CONSOLE_LOG', managed)
+    assert tool.default_console_logs() == [managed, slot / 'state/logs/console.log']
+    monkeypatch.setattr(tool, 'CURRENT_RELEASE', tmp_path / 'missing')
+    assert tool.default_console_logs() == [managed]
+    result = _collect(FakeHost(tmp_path), _config(tmp_path), console_logs=None)
+    assert result['voice_watchdog_log_tail']['path'] == str(managed)
+    assert result['voice_watchdog_log_tail']['rooms']['cocina'] == ['[audio-watchdog] cocina: recovered (device=5)']
 
 
 def test_newest_readable_console_log_is_used(tmp_path):
