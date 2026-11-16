@@ -508,12 +508,16 @@ def _record_snapshot_failure(operation, destination: Path, root_identity: dict |
 
 
 def snapshot_closed_state(controller: "AdmissionController", binding_id: str,
-                          destination: Path) -> ClosedStateSnapshot:
+                          destination: Path, *, before_manifest=None) -> ClosedStateSnapshot:
     """Capture a source-qualified image while the caller retains admission.
 
     A failed copy remains private and incomplete. No success manifest is
     published before public SDK close and a second closed-source verification.
     Cross-store crash atomicity and payload reconciliation are separate work.
+    ``before_manifest(manifest_bytes, files)``, when given, runs once the
+    manifest is serialized and before it is written (owner compaction's exact
+    P9 check, SC-0b review F4); an exception there fails the snapshot as any
+    other step does. It receives sizes and the file records only.
     """
     from src.memory.copy_catalog import reserve_copy
 
@@ -599,7 +603,10 @@ def snapshot_closed_state(controller: "AdmissionController", binding_id: str,
             "history_archives": history_archives}
         shutil.rmtree(work)  # SDK close already returned; no unknown owner is erased.
         _verify_files(destination, files, manifest_present=False)
-        _write(destination / "manifest.json", _json(manifest) + b"\n")
+        payload = _json(manifest) + b"\n"
+        if before_manifest is not None:
+            before_manifest(len(payload), files)
+        _write(destination / "manifest.json", payload)
         snapshot = ClosedStateSnapshot(destination, binding_id, binding, manifest)
         verify_snapshot(snapshot)
         if stage.verify_closed_binding(root, binding_id) != binding or _inventory(source) != inventory:

@@ -550,35 +550,45 @@ def _load_snapshot(path: Path, binding_id: str, manifest_sha256: str | None = No
     return snapshot
 
 
-def free_space_need(snapshot: ClosedStateSnapshot, *, temp_on_root: bool) -> dict:
+def free_space_need(snapshot: ClosedStateSnapshot, *, temp_on_root: bool, pending_bytes: int = 0) -> dict:
     """P9, worker side: what K still needs once the snapshot (and its real manifest) is on disk.
 
     K's state is the snapshot's state files (S); VACUUM of K's largest database (L) needs its
     rollback journal beside it and its temporary database in SQLite's temp directory. K's runtime
-    already exists ('k_runtime' precedes the snapshot).
+    already exists ('k_runtime' precedes the snapshot). ``pending_bytes`` is what the snapshot
+    has still to write (its manifest, when checked just before it is written).
     """
-    files = [record for key, record in snapshot.manifest["files"].items() if key.startswith("state/")]
-    state = sum(record["size"] for record in files)
-    largest = max((record["size"] for record in files if record["kind"] == "sqlite_backup"), default=0)
-    root = state + largest + FREE_MARGIN
+    return _files_need(snapshot.manifest["files"], temp_on_root=temp_on_root, pending_bytes=pending_bytes)
+
+
+def _files_need(files: Mapping, *, temp_on_root: bool, pending_bytes: int = 0) -> dict:
+    state_files = [record for key, record in files.items() if key.startswith("state/")]
+    state = sum(record["size"] for record in state_files)
+    largest = max((record["size"] for record in state_files if record["kind"] == "sqlite_backup"), default=0)
+    root = pending_bytes + state + largest + FREE_MARGIN
     if temp_on_root:
         return {"root": root + largest, "temp": 0}
     return {"root": root, "temp": largest + FREE_MARGIN}
 
 
+def _device(path: Path) -> int:
+    return os.stat(path).st_dev
+
+
 def _sqlite_temp_directory():
-    for value in (os.environ.get("SQLITE_TMPDIR"), os.environ.get("TMPDIR"), "/var/tmp", "/usr/tmp", "/tmp"):
-        if value and os.path.isdir(value) and os.access(value, os.W_OK | os.X_OK):
-            return Path(value)
-    return None
+    return _stage().sqlite_temp_directory()  # one search order for the controller and the worker
 
 
 def _check_free_space(snapshot: ClosedStateSnapshot, destination: Path) -> None:
     """P9 again with the manifest's real size: refuses before K is written (resumable after freeing space)."""
+    _check_free_files(snapshot.manifest["files"], destination)
+
+
+def _check_free_files(files: Mapping, destination: Path, pending_bytes: int = 0) -> None:
     anchor = destination.parent
     temp = _sqlite_temp_directory()
-    temp_on_root = temp is None or os.stat(temp).st_dev == os.stat(anchor).st_dev
-    need = free_space_need(snapshot, temp_on_root=temp_on_root)
+    temp_on_root = temp is None or _device(temp) == _device(anchor)
+    need = _files_need(files, temp_on_root=temp_on_root, pending_bytes=pending_bytes)
     _require(shutil.disk_usage(anchor).free >= need["root"]
              and (temp_on_root or shutil.disk_usage(temp).free >= need["temp"]), "capacity")
 
@@ -602,7 +612,7 @@ def run_materialization(root: Path, compaction_id: str, *, wall, before_vacuum=N
     stage = _stage()
     root = Path(root).resolve(strict=True)
     # SC-0b O1: H does not change under the lease, so its repeated authority
-    # captures reuse one content-addressed result (every byte is still hashed).
+    # captures reuse one content-addressed result (every input byte is still hashed).
     with stage.authority_memo(), stage.AdmissionController(root, gate="compaction:" + compaction_id) as controller:
         log = controller.compaction
         intent = log["intent"]
@@ -625,7 +635,12 @@ def run_materialization(root: Path, compaction_id: str, *, wall, before_vacuum=N
             stage.private_directories(path.parent)
             log = stage.append_compaction_event(root, log, "snapshot_reserved", {"n": n, "path": str(path)},
                                                 at=wall())
-            snapshot = snapshot_closed_state(controller, intent["source_binding_id"], path)
+            # P9 with the exact manifest size before it is written (SC-0b review F4): the snapshot's
+            # backups are on disk, and the manifest plus K's state and VACUUM must still fit.
+            k_state = Path(intent["k_state_root"])
+            snapshot = snapshot_closed_state(
+                controller, intent["source_binding_id"], path,
+                before_manifest=lambda size, files: _check_free_files(files, k_state, size))
             log = stage.append_compaction_event(root, log, "snapshot", {
                 "n": n, "path": str(path), "identity": stage._identity(path),
                 "manifest_sha256": snapshot.manifest_sha256}, at=wall())
