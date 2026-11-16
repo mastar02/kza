@@ -124,15 +124,33 @@ class FreeSampler(Sampler):
             self._stop.wait(self.interval)
 
 
-def _compact(deployment, *arguments):
+# SC-0b review F6: a wrapper reports the largest resident set of the controller and every
+# descendant it waited for (the worker included), in bytes; the time includes its start-up.
+_MAXRSS = "\n".join([
+    "import json, resource, subprocess, sys",
+    "code = subprocess.run(sys.argv[2:]).returncode",
+    "rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss",
+    "open(sys.argv[1], 'w').write(json.dumps(rss if sys.platform == 'darwin' else rss * 1024))",
+    "sys.exit(code)",
+])
+
+
+def _compact(deployment, *arguments, maxrss: dict | None = None):
     began = time.monotonic()
-    result = subprocess.run([sys.executable, "-I", "-B", str(deployment.controller), "--root", str(deployment.root),
-                             "--offline", "compact", *arguments], capture_output=True, text=True, timeout=3600,
-                            env=deployment.env)
+    command = [sys.executable, "-I", "-B", str(deployment.controller), "--root", str(deployment.root),
+               "--offline", "compact", *arguments]
+    report = None
+    if maxrss is not None:
+        report = Path(deployment.root).parent / ("maxrss-" + arguments[0] + ".json")
+        command = [sys.executable, "-I", "-c", _MAXRSS, str(report), *command]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=3600, env=deployment.env)
     seconds = time.monotonic() - began
     if result.returncode != 0:
         raise RuntimeError(f"compact {arguments[0]} exit {result.returncode}: "
                            f"{result.stdout[-2000:]} {result.stderr[-3000:]}")
+    if report is not None:
+        maxrss[arguments[0]] = json.loads(report.read_text())
+        report.unlink()
     return json.loads(result.stdout.strip().splitlines()[-1]), round(seconds, 2)
 
 
@@ -215,10 +233,11 @@ def main() -> None:
         deployment.env = {**deployment.env, "TMPDIR": str(temp), "SQLITE_TMPDIR": str(temp)}
         result["fs_free_before"] = shutil.disk_usage(deployment.root).free
         with Sampler(deployment.root, args.sample) as sampler, FreeSampler(deployment.root, args.free_sample) as fast:
-            planned, result["plan_seconds"] = _compact(deployment, "plan", "k", "--archive", archive)
+            result["max_rss_bytes"] = rss = {}
+            planned, result["plan_seconds"] = _compact(deployment, "plan", "k", "--archive", archive, maxrss=rss)
             started, result["start_seconds"] = _compact(
                 deployment, "start", "k", "--archive", archive, "--plan-sha256", planned["plan_sha256"],
-                "--acknowledge-untouched", planned["untouched_sha256"], "--destroy-rollback-states")
+                "--acknowledge-untouched", planned["untouched_sha256"], "--destroy-rollback-states", maxrss=rss)
         result["copy_seconds"] = round(result["plan_seconds"] + result["start_seconds"], 2)
         result["plan_view"] = {key: planned.get(key) for key in ("owners", "members", "capacity", "coverage")}
         result["start"] = {key: started.get(key) for key in ("phase", "materialized")}
