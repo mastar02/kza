@@ -365,7 +365,7 @@ async def test_arrival_racing_the_loop_speaks_once(store, mock_deps):
         await asyncio.wait_for(entered.wait(), 2)
         for _ in range(3):
             arrived("u1", MagicMock(current_zone="cocina"))
-        assert await scheduler.missed_reminder_on_arrival("u1", "cocina") == 0
+        assert await asyncio.wait_for(scheduler.missed_reminder_on_arrival("u1", "cocina"), 2) == 0
         await asyncio.sleep(.05)
         release.set()
         async with asyncio.timeout(2):
