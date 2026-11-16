@@ -161,3 +161,26 @@ async def test_status_reports_durable_notice_counts(notices_graph, dashboard_aut
     status = (await graph.client.get('/api/reminders/status', headers=dashboard_auth)).json()
     assert status['notices'] == {'pending': 1, 'pending_not_delivered': 0, 'confirmed': 1, 'uncertain': 1}
     assert 'delivery_failures' not in status and status['output_zone_configured'] is True
+
+
+@pytest.mark.parametrize('result, status, reason, label', [
+    (ResponseResult('x', GenerationState.COMPLETE, DeliveryState.COMPLETE), 'confirmed', None, 'entregado'),
+    (cut(), 'uncertain', 'delivery_cancelled', 'cortado'),
+    (ResponseResult('x', GenerationState.COMPLETE, DeliveryState.FAILED, spoken_segments=1), 'uncertain',
+     'delivery_partial', 'incompleto'),
+    (ResponseResult('x', GenerationState.COMPLETE, DeliveryState.TIMED_OUT, 'response_delivery_timeout',
+                    timeout_stage=None), 'uncertain', 'delivery_partial', 'incompleto'),
+    (RuntimeError('device lost'), 'uncertain', 'delivery_unverified', 'incierto'),
+])
+async def test_finished_notices_are_labelled_by_reason_for_display_only(notices_graph, result, status, reason, label):
+    """Q3: a possibly heard notice is shown on the web (cortado, incompleto, incierto), never repeated by voice."""
+    graph = notices_graph
+    if isinstance(result, Exception):
+        graph.tts.aspeak.side_effect = result
+    else:
+        graph.tts.aspeak.return_value = result
+    reminder = await graph.store.create('u1', 'Regar', time.time() - 5, scope=ReminderScope.SHARED)
+    await graph.scheduler._fire_reminder(reminder)
+    [entry] = (await graph.client.get('/api/reminders/notices')).json()['notices']
+    assert (entry['status'], entry['reason'], entry['label'], entry['pending']) == (status, reason, label, False)
+    assert entry['text'] == 'Regar' and entry['attempts'] == 1
