@@ -250,6 +250,20 @@ R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
 
 ## Pasos
 
+0. Época 5, modo release (revisión RB-5), con el servicio todavía en H y
+   antes de cualquier otro paso: residuo de resurrección en H, sólo lectura.
+
+   ```bash
+   $ST completion-status
+   ```
+
+   Todos los valores de `resurrected` tienen que ser 0. El retiro de SC-4b
+   exige K' sin ningún id resucitado (escaneo absoluto, SC4B-N5), y K' es
+   una copia de H: con un valor distinto de 0 cada transición pararía en el
+   retiro, después de toda la bajada, y volvería a H sin pérdida. En ese caso
+   no seguir: el servicio queda en H y se pasa a desarrollo (pregunta abierta
+   SC4B-Q2 del handoff).
+
 1. Detener y deshabilitar el servicio (salida 0 obligatoria en cada uno):
 
    ```bash
@@ -265,6 +279,12 @@ R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
 
    Época 5: `--archive "$NEW_ARCHIVE"` (el archivo NUEVO), y
    `--retire-prepare-leftovers` queda forzado.
+
+   Anotar `source_binding_id` de la salida (el binding de H) junto al
+   `compaction_id` del paso 3: toda vuelta a H pide `--confirm-h <primeros
+   12+ caracteres>` de ese valor, quizá días después (SS y la decisión de 48
+   horas), y ni `compact status` ni un plan nuevo lo muestran mientras el log
+   siga pendiente (revisión RB-6).
 
    Revisar, sin datos personales en la salida:
    - `members`: cada miembro con su clase, prueba y conteos (archivos, bytes);
@@ -432,15 +452,17 @@ R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
   consumió. Otro `systemctl --user start kza-voice.service` la reintenta, o
   `compact abort <id>` (sin `--to-h`) vuelve a H. `allow-run` rechaza
   `compaction_not_verified`.
-- **La corrida de verificación falló** (serve sale con 69, head `unknown`): no
-  se destruyó nada. Con 69 la unidad **no** se reinicia sola (69 está en
+- **La corrida de verificación falló** (modo simple: serve sale con 69, head
+  `unknown`; un log del modo release sigue «Salidas del modo release después
+  de V», sin otro arranque y con el abort con W): no se destruyó nada. Con 69 la unidad **no** se reinicia sola (69 está en
   `RestartPreventExitStatus`). Si hubo recibo, R-a lo cierra en el próximo
   arranque manual (`systemctl --user start kza-voice.service`): el resultado
   esperado es salida 78 con `verified` registrado en `compact status`; después
   seguir con el retiro. Si no hubo recibo, `compact abort <id> --to-h
   --confirm-h <primeros 12+ caracteres del binding de H>`. La recuperación
   automática R-b está apagada mientras haya una compactación pendiente.
-- **Volver a H después de verificar** (Q6): `compact abort <id> --to-h
+- **Volver a H después de verificar** (Q6, modo simple; el modo release
+  vuelve con W, ver «Salidas del modo release después de V»): `compact abort <id> --to-h
   --confirm-h <prefijo>`. Se rechaza (`compaction_abort_revives`) si durante la
   corrida de K se borró una conversación, un recuerdo o un perfil de voz, o
   si cambió cualquier otra tabla protegida (`compaction_abort_protected_changed`;
@@ -549,22 +571,34 @@ que sigue vale para cada resultado de la corrida V:
   `runtime_admission_sdk_version_unavailable`,
   `runtime_admission_compaction_sdk_changed` (cambió el chromadb del venv
   compartido: reinstalar la versión ligada que nombra el rechazo, sin tocar
-  nada bajo la raíz) o `runtime_admission_compaction_h_transient` (un errno o
-  un código SQLite pasajero, nombrado en la salida). No se escribió nada:
-  corregir la causa y repetir el mismo comando. Si sigue igual con la causa
-  corregida (por ejemplo EIO repetido: daño del disco), tratarlo como HD.
+  nada bajo la raíz), `runtime_admission_compaction_h_transient` (un errno o
+  un código SQLite pasajero en H, nombrado en la salida) o
+  `runtime_admission_compaction_k_transient` (en K': otro proceso tiene una
+  base abierta con un lock SQLite, por ejemplo una sesión `sqlite3` de quien
+  revisa K', o un errno de recursos; la salida nombra la base y el código).
+  No se escribió nada: corregir la causa (cerrar esa sesión) y repetir el
+  mismo comando. Si sigue igual con la causa corregida (por ejemplo EIO
+  repetido en H: daño del disco), tratarlo como HD. EIO en K' no es
+  transitorio: la base aparece `unreadable` en el informe de SS.
 - **Parada segura SS (`runtime_admission_compaction_abort_protected_changed`).**
   K' tiene una diferencia protegida que no es sólo pérdida (por ejemplo una
   lápida, una revocación, una base de memoria/privacidad borrada o
-  ilegible). El rechazo imprime el informe W sin contenido (por tabla, filas
-  agregadas y quitadas; estado del ledger; por base `ok`, `missing` o
-  `unreadable`; `verify_branch_reached`) y su digest `w_sha256`. Nada se
+  ilegible, un valor sin clasificar, o una entrada de lock de K' que no se
+  puede abrir: `k_writers: unverifiable` con su errno, por ejemplo un enlace
+  simbólico o un archivo sin permiso). El rechazo imprime el informe W sin
+  contenido (por tabla, filas agregadas y quitadas; estado del ledger; por
+  base `ok`, `missing` o `unreadable`; `k_writers`; `verify_branch_reached`)
+  y su digest `w_sha256`. Nada se
   destruye ni se revive: quedan H, el snapshot y K' (tres copias), la unidad
   detenida y deshabilitada y los borrados por plazo en pausa. Repetir el
   abort da el mismo digest. Decisión SC-D8 A:
   1. Una persona revisa el informe. `verify_branch_reached: yes` sólo prueba
      que el NUEVO llegó a su rama de verificación; ni `yes` ni `no` prueban
-     que nadie usó el sistema.
+     que nadie usó el sistema. Con `k_writers: unverifiable`, además,
+     comprueba que ningún proceso tiene K' abierto (`fuser -v` o `lsof +D`
+     sobre `slots/<K>/state`). Una base `unreadable` con un código
+     `sqlite:SQLITE_BUSY` o `LOCKED` no aparece en SS (es
+     `compaction_k_transient`): no descartar por un lock pasajero.
   2. Si confirma **por conocimiento directo** que nadie usó el sistema
      durante V, anota la confirmación junto al digest y corre `compact abort
      <id> --to-h --confirm-h <prefijo> --discard-k-changes <12+ hex del
@@ -572,7 +606,10 @@ que sigue vale para cada resultado de la corrida V:
      registra el digest y las cuentas en `abort_started`, destruye K' y
      vuelve a H. Después habilitar y arrancar la unidad. Un digest que no
      coincide rechaza `runtime_admission_compaction_discard_k_changes_mismatch`
-     sin escribir nada: tomar el digest del último rechazo.
+     sin escribir nada: tomar el digest del último rechazo. Si el borrado de
+     K que sigue a la vuelta rechaza `compaction_symlink` (el enlace de lock
+     de arriba), quitar ese enlace a mano (`rm slots/<K>/state/<ruta>`, el
+     enlace, nunca su destino) y correr `compact resume <id>`.
   3. Si no puede confirmarlo, el servicio queda apagado hasta que desarrollo
      lo resuelva, con la decisión escrita de 48 horas (abajo).
   No hay otra salida de SS: ni el abort simple (`abort_after_run`), ni el
@@ -590,9 +627,26 @@ que sigue vale para cada resultado de la corrida V:
   ejemplo, se arrancó la unidad y R-a selló K' con su recibo): `compact
   resume` y el abort simple rechazan `abort_recheck_required`. Correr
   `compact abort <id> --to-h --confirm-h <prefijo>`: rehace W0 y W1. Con
-  `equal` o `loss_only` termina; con el informe de SS, si el abort original
-  había usado el descarte, repetir con `--discard-k-changes` y el digest de
-  **ese** rechazo (queda en `abort_rechecked`).
+  `equal` o `loss_only` termina. Con el informe de SS (revisión RA4B-6) es
+  una parada segura nueva, aunque el abort original no la haya tenido:
+  seguir otra vez los pasos 1 a 3 de SS **sobre el informe de la
+  re-comprobación**, que puede no ser el que se confirmó. Si su digest no es
+  el de `abort_started.discarded` (o el abort original no descartó nada), la
+  persona vuelve a confirmar por conocimiento directo con ese informe. Sólo
+  después repetir con `--discard-k-changes` y el digest de **ese** rechazo
+  (queda en `abort_rechecked`).
+- **Paradas como HD del modo release**: `runtime_admission_compaction_head_moved`
+  (el head cerrado no es el sello de V: una corrida de K detrás de la
+  compuerta, por ejemplo desde un controlador viejo) y
+  `runtime_admission_compaction_k_closure_unreadable` (la prueba de cierre de
+  K' bajo `admission/closures/` falta o no se lee, con su código: daño o
+  edición a mano), en el abort con W y en el retiro. Un `retire` que después
+  de V rechaza `runtime_admission_compaction_io_error` (por ejemplo una
+  entrada de K' que no se puede abrir al recalcular su binding) se sale con
+  el abort con W de arriba. Para `head_moved` y `k_closure_unreadable` no
+  hay salida por herramienta: como HD, unidad deshabilitada, nada cambiado
+  bajo la raíz, guardar la salida y `compact status`, buscar la copia vieja
+  o la edición, y pasarlo a desarrollo con la decisión escrita de 48 horas.
 - **Decisión escrita cada 48 horas.** Para todo período con la unidad
   deshabilitada (SS, HD, una transición que no terminó): si el servicio no
   vuelve dentro de las 48 horas desde que se detuvo (el plazo más corto, el
@@ -669,7 +723,8 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
 | `runtime_admission_compaction_abort_protected_changed` | Época 5, modo release: parada segura SS, con el informe W y su `w_sha256`. Ver «Salidas del modo release después de V». |
 | `runtime_admission_compaction_discard_k_changes_mismatch` | El digest de `--discard-k-changes` no es el del informe W recalculado (o no hay nada que descartar, o falta `--to-h`). Nada se escribió: tomar el digest del último rechazo. |
 | `runtime_admission_compaction_h_changed` | Época 5, modo release: cambió H (parada terminal HD). Ninguna herramienta termina el log; ver «Salidas del modo release después de V». |
-| `runtime_admission_compaction_sdk_changed` / `_h_transient` | Época 5, modo release: transitorios (fila AT). Reinstalar la versión de chromadb ligada que nombra el rechazo, o esperar a que pase el errno/código SQLite nombrado, y repetir. |
+| `runtime_admission_compaction_sdk_changed` / `_h_transient` / `_k_transient` | Época 5, modo release: transitorios (fila AT). Reinstalar la versión de chromadb ligada que nombra el rechazo, o esperar a que pase el errno/código SQLite nombrado (en K': cerrar el proceso que tiene la base abierta), y repetir. |
+| `runtime_admission_compaction_k_closure_unreadable` / `_head_moved` (modo release, después de V) | Parada como HD: la prueba de cierre de K' no se lee, o el head cerrado no es el sello de V. Sin salida por herramienta; ver «Salidas del modo release después de V». |
 | `runtime_admission_compaction_retire_protected_changed` / `_retire_resurrected` / `_k_binding_changed` | Época 5, `retire` de un log del modo release: W no es exactamente `equal`, la autoridad de K' cambió, K' tiene un id resucitado o el binding de K' cambió. Nada se escribió: `compact abort <id> --to-h --confirm-h <prefijo>`. |
 | `runtime_admission_compaction_capacity` | El binding o el archivo histórico de K pasaría de 12 MiB, o no hay espacio (P9). Si lo dice el trabajador (durante el snapshot, antes de escribir su manifiesto, o después del snapshot), el tamaño real no entra: liberá espacio y seguí con `compact resume <id>` (un snapshot completo se conserva; uno a medias se destruye y se vuelve a hacer). |
 | `runtime_admission_compaction_owner_only_data` | Hay datos sólo en miembros; en `start` requiere `--accept-owner-only-loss`, en `retire` (datos nuevos desde el plan) `--accept-owner-only-loss <coverage_sha256>`. |
