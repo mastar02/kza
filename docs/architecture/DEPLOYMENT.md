@@ -893,14 +893,12 @@ el archivo de H después de un `start` cortado no deja un K equivocado y el
 `resume` con el NUEVO sigue funcionando; A1 exige además que los
 `schemas` del binding de K sean los de H
 (`runtime_admission_compaction_schema_changed`); A2 sigue probando K con su
-propio código antes del CAS. Hasta SC-4a, `compact verify` de un log del modo
-release rechaza `runtime_admission_compaction_release_verify_unavailable`, y
-`allow-run`, `--discard-k-writes` y la vuelta a H por Q6 rechazan
-`runtime_admission_compaction_plain_mode_only`. La única salida de un log del
-modo release es `compact abort <id>` antes de la corrida (fila A0, sin
-pérdida); después, habilitar y arrancar la unidad. `start` y `resume` lo
-dicen en su salida (`next: compact abort <id>`); un log simple sigue
-diciendo `next: compact verify <id>`. Un `intent.mode` distinto de
+propio código antes del CAS. `allow-run`, `--discard-k-writes` y la vuelta a
+H por Q6 rechazan `runtime_admission_compaction_plain_mode_only`. Desde SC-4a
+`compact verify` arma la corrida de verificación aislada (sección siguiente)
+y `start`/`resume` dicen `next: compact verify <id>` en los dos modos; antes
+de que la corrida se consuma, `compact abort <id>` sigue siendo la salida sin
+pérdida (fila A0). Un `intent.mode` distinto de
 `"release"` no es un log simple: `verify`, `allow-run`, `--discard-k-writes`,
 la vuelta a H por Q6, `plan` (served(root)) e `install-controller` lo
 rechazan como `runtime_admission_compaction_log_invalid`, `compact status` lo
@@ -930,6 +928,81 @@ toma el lease de una raíz de época 5), pero la regla del operador sigue
 siendo usar sólo `controller/current`.
 
 Tests: `tests/unit/tools/test_sc1b_release_plan.py`.
+
+### Corrida de verificación aislada del modo release (SC-4a) — desarrollada, sin release
+
+SC-4a implementa V del diseño v4 (`mechanism.v_verification_run`, enmiendas
+A1/A2; decisiones del usuario SC-D5 = A, corrida aislada sin tráfico, y SC-D8
+= A). Nada de esto está instalado: el servidor sigue en R1 (época 4) y
+ninguna transición gestionada existe hasta cerrar el resto del modo release
+(sección siguiente).
+
+- **Bandera.** `compact verify <id> --smoke-seconds N` (10..3600) arma la
+  única corrida del log, también en el modo release. Para esa corrida, y sólo
+  para ella, `serve` agrega `KZA_RUNTIME_RELEASE_VERIFY=1` al entorno del
+  hijo después del filtro que quita todo `KZA_RUNTIME_*` de la unidad: la
+  unidad no puede inyectarla, y ni H ni las corridas de un log abortado o
+  completo la llevan. El hijo la lee una vez (`take_release_verify_flag`), la
+  quita del entorno y la exige junto al ticket.
+- **NUEVO en modo verificación.** `main.build_application` inyecta
+  `verify_only` por constructor en el grafo, la autoridad del tablero, los
+  servicios de privacidad, el ledger y los constructores con mantenimiento.
+  El grafo construye, abre, valida y carga, pero no arranca ningún bucle, no
+  corre ninguna reparación de una vez y la autoridad termina toda transacción
+  con ROLLBACK (también la rotación final del cierre). La lista es la medida
+  por SC-0 (`skip_list`): poda de dueños retirados al arrancar (salteada, no
+  diferida), bucle de privacidad, `erasures.recover` e
+  `index_deletions.recover`, `register_target` sin INSERT (cubre los tres
+  sitios), poda de `fact_owners` al abrir, `active -> unknown` de las
+  grabadoras, `sending -> uncertain` de recordatorios, reparación y bucle de
+  diagnósticos, retención de captura, registro de voces (poda y bucle), clips
+  de wake (bucle; el borrador de colectores sólo corre desde el coordinador,
+  que no arranca), recortes de retención de eventos y sugerencias al abrir,
+  sus barridos, y los bucles de índice, coordinador de borrado, bus en vivo,
+  memoria y contextos. `Application.run` toma la rama de verificación: no
+  corre `_start_services` (sincronía de HA, rutinas y su
+  `recover_interrupted`, presencia, recordatorios, entrenador nocturno), ni el
+  tablero, ni el camino ambiental, ni el audio; espera
+  `VoicePipeline.prepare()` (modelos, índice y memoria), envía la línea
+  privada `VERIFY=<run_id>` y después `READY=1`.
+- **Cierre de captura.** En V ningún navegador puede llegar, así que el
+  `drain` de las grabadoras no borra las reservadas ni espera confirmaciones,
+  y el cierre exige las filas `(token_hash, state, kind)` iguales a las
+  leídas al construir; la prueba de cierre cuenta las filas llevadas
+  (`capture_permissions_carried`, un número).
+- **Registros de `serve`.** `admission/runs/<run_id>.ready.json` se escribe
+  sólo si `VERIFY` con el `run_id` del ticket llegó antes que `READY=1`; desde
+  ahí `serve` mide N segundos con el reloj monotónico, escribe
+  `<run_id>.smoke-stop.json` (segundos medidos y motivo) y detiene él mismo al
+  hijo, que sella con su recibo (salida 0, sin reinicio). `READY` sin
+  `VERIFY` (un NUEVO que ignora la bandera), con otro `run_id` o después de
+  `READY` detiene al hijo enseguida, no escribe `ready.json` y deja
+  `verify_unacknowledged` (fila V3). Una parada externa antes de N deja el
+  intervalo corto (fila V3).
+- **Verificada.** En el modo release `verified` exige además los dos registros
+  y `measured_seconds >= N` monotónicos; un salto del reloj de pared no cuenta.
+  Una corrida sellada sin ellos no se verifica y `serve` la rechaza con
+  `runtime_admission_compaction_verify_consumed`.
+- **Estado.** `compact status` muestra `verify_branch_reached`: `yes` sólo
+  prueba que el código NUEVO llegó a su rama de verificación, no que V
+  estuvo aislada ni que nadie usó el sistema; `no` quiere decir que ni eso
+  quedó probado; `not run`, que la corrida armada no empezó.
+
+Lectura más estricta (SC4A-N1): el retiro del modo release exige igualdad
+exacta con W, que es de SC-4b. Hasta entonces `compact retire` de un log del
+modo release verificado rechaza
+`runtime_admission_compaction_release_retire_unavailable`, y después de la
+corrida no queda salida (Q6 y el abort simple rechazan): no armar un log del
+modo release en producción antes de SC-4b. Queda en la lista `follow_up`:
+el recibo no registra todavía `capture_permissions_carried` (cambiaría el
+esquema del recibo que el controlador compara exacto), y el encabezado del
+informe W y la salida «abort con W» son de SC-4b.
+
+Tests: `tests/unit/tools/test_sc4a_verify_run.py`,
+`tests/integration/test_sc4a_verify_boot.py`,
+`tests/unit/memory/test_sc4a_verify_stores.py`,
+`tests/unit/core/test_sc4a_application_verify.py`; arnés de SC-0 con la lista
+activa: `python tools/sc0/run_states.py --verify --revision <commit>`.
 
 ### Sin transiciones gestionadas después de R1 hasta el modo release
 

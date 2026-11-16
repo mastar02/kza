@@ -173,12 +173,12 @@ class Run:
 
         def execute():
             try:
-                with stdout.open("w") as out, stderr.open("w") as err:
-                    environment = compiled._environment()
+                environment = compiled._environment()
                 if VERIFY[0]:
                     environment["KZA_RUNTIME_RELEASE_VERIFY"] = "1"
-                completed = stage.run_slot(self.staging, "s", command, timeout=timeout,
-                                           env=environment, stdout=out, stderr=err)
+                with stdout.open("w") as out, stderr.open("w") as err:
+                    completed = stage.run_slot(self.staging, "s", command, timeout=timeout,
+                                               env=environment, stdout=out, stderr=err)
                 outcome["returncode"] = completed.returncode
             except BaseException as error:  # recorded, not raised: a missing receipt is a result
                 outcome["error"] = f"{type(error).__name__}: {error}"[:500]
