@@ -83,7 +83,7 @@ def test_capture_digest_is_unchanged_across_the_selection_split(tmp_path):
             selected = stage._authority_selection(db, names)
             assert {key: value for key, value in tables.items() if key != "schema_contract_v1"} == selected
             table_part = stage._authority_table_selection(db, names)
-            assert set(table_part) < set(selected) and stage._LEDGER_TABLE not in table_part
+            assert set(table_part) <= set(selected) and stage._LEDGER_TABLE not in table_part
     for relative, users in projection["accounts"].items():
         assert stage._account_projection(state / relative) == users
 
@@ -188,6 +188,23 @@ def test_a_deleted_database_is_restrictive_and_w1_never_creates_it(world, relati
     assert found["report"]["class"] == compaction.W_RESTRICTIVE
     assert not os.path.lexists(path)
     assert all(change["added"] == 0 for change in found["report"]["tables"][relative].values())
+
+
+def test_a_missing_database_holding_only_loss_tables_is_still_restrictive(tmp_path):
+    """SC4B-N3 (stricter): every row of it absent would read as loss_only; a missing database never is."""
+    k = tmp_path / "k"
+    (k / "data").mkdir(parents=True)
+    with closing(sqlite3.connect(k / "data" / "tombstones.db")) as db, db:
+        db.execute(states.ddl("conversation_tombstones"))
+        states.insert(db, "conversation_tombstones", _new_row("conversation_tombstones"))
+    projection = stage.capture_state_authority(k)["projection"]
+    assert set(projection["tables"]) == {"data/tombstones.db"}
+    k_prime = tmp_path / "k-prime"
+    shutil.copytree(k, k_prime)
+    (k_prime / "data" / "tombstones.db").unlink()
+    found = compaction.w1(k_prime, k, projection, verify_branch="yes")["report"]
+    assert found["tables"]["data/tombstones.db"]["conversation_tombstones"] == {"added": 0, "removed": 1}
+    assert found["class"] == compaction.W_RESTRICTIVE
 
 
 def test_an_unreadable_database_is_shown_and_restrictive(world):

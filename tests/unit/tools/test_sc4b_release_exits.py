@@ -193,6 +193,7 @@ def test_a_tombstone_written_during_v_stops_safely_until_the_discard(x4, x5, tmp
 
 _H_ROWS = cw.sql(
     ("INSERT INTO conversation_tombstones VALUES ('conv-h', 1.0, 'owner')", ()),
+    ("INSERT INTO conversation_erasures VALUES ('op-h', 'conv-h', 1.0, 'owner')", ()),  # its operation
     ("INSERT INTO facts VALUES ('fact-h', 'x', 'c', 0.5, 'confirmed', 1.0, NULL, 1, 1.0, 'owner')", ()),
     ("INSERT INTO fact_owner_revisions VALUES ('fact-h', 1, 'assigned', 0, 1.0)", ()),
 )
@@ -341,12 +342,14 @@ def test_transient_refusals_write_nothing_and_clear_with_their_cause(x4, x5, tmp
     error = _refused_writes_nothing(world, compaction.H_TRANSIENT, lambda: _abort(world))
     assert error.report == {"w0": "transient", "errno": "EIO"}
     monkeypatch.setattr(stage, "_closure_proof", proof)
-    stray = world["h"]["state"] / "data" / "stray.lock"
-    stray.write_bytes(b"")
-    with open(stray, "rb") as held:
-        fcntl.flock(held.fileno(), fcntl.LOCK_EX)
-        _refused_writes_nothing(world, "runtime_admission_writer_active", lambda: _retire(world))
-    stray.unlink()
+    for state, where in ((root / "slots" / "k" / "state", "k_prime"), (world["h"]["state"], None)):
+        stray = state / "data" / "stray.lock"
+        stray.write_bytes(b"")
+        with open(stray, "rb") as held:
+            fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+            error = _refused_writes_nothing(world, "runtime_admission_writer_active", lambda: _abort(world))
+            assert error.report == ({"w0": "transient", "state": "k_prime"} if where else {"w0": "transient"})
+        stray.unlink()
 
     def cut(path):
         raise RuntimeError("cut")
@@ -421,3 +424,24 @@ def test_a_discard_interrupted_after_abort_started_finishes_through_the_w_rechec
     assert rechecked["data"]["discarded"]["w_sha256"] == recheck and rechecked["data"]["head"] == moved
     _no_canary(world)
     _back_on_h(world, tmp_path, "h")
+
+
+# --- N12: a protected table only in K' --------------------------------------------------------------
+
+_DEFAULT_CONTROL_ROW = cw.sql(
+    ("CREATE TABLE IF NOT EXISTS ambient_runtime_control (id INTEGER PRIMARY KEY CHECK(id=1), paused INTEGER "
+     "NOT NULL CHECK(paused IN (0,1)), revision INTEGER NOT NULL CHECK(revision>=0))", ()),
+    ("INSERT OR IGNORE INTO ambient_runtime_control VALUES (1,0,0)", ()))
+
+
+def test_a_protected_table_created_only_in_k_prime_is_never_retired(x4, x5, tmp_path):
+    """SC4A-N12 with an H that never booted ambient (no ambient_runtime_control): NEW creates the table
+    and its default row in V. W1 ignores objects only in K' ('equal'), but retire also needs K's whole
+    authority unchanged (SC4B-N4) and refuses; abort returns to H, which never had the row."""
+    world = _world(x4, x5, tmp_path)
+    assert _v(world, tmp_path, "v", execute=_DEFAULT_CONTROL_ROW).code == 0 and _kinds(world)[-1] == "verified"
+    error = _refused_writes_nothing(world, compaction.RETIRE_PROTECTED_CHANGED, lambda: _retire(world))
+    assert error.report["w"]["class"] == compaction.W_EQUAL and error.report["authority_equal"] is False
+    assert _abort(world)["phase"] == "aborted"
+    _back_on_h(world, tmp_path, "h")
+
