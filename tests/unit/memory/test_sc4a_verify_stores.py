@@ -84,6 +84,8 @@ async def test_register_target_inserts_nothing_in_verify_mode(tmp_path):
     with sqlite3.connect(path) as db:
         db.execute("UPDATE facts SET state='deleted', content=NULL, revision=revision+1 WHERE id=?", (fact.id,))
         db.execute("DELETE FROM policy_index_deletions")
+        db.execute("INSERT INTO erasure_targets(id, participant, version, descriptor) "
+                   "VALUES ('synthetic-target', 'semantic_index', 1, '{}')")
     for verify_only, expected in ((True, 0), (False, 1)):
         ledger = FactLedger(path, verify_only=verify_only)
         ledger.initialize()
