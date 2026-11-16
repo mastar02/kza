@@ -1413,6 +1413,38 @@ los hace la sesión coordinadora. Sin release: producción y R1 siguen en
   completo de CR2-3 (V2, controlador corregido y `abort --to-h`) necesita
   SC-4a/SC-4b.
 
+### SC-1a — revisión 1 aplicada (2026-11-16)
+
+Dos revisiones independientes pidieron cambios; aplicados en la misma rama
+(sin push). Diseño sin cambios y sin decisiones nuevas del usuario; las
+lecturas más estrictas quedan como notas de diseño en `sc1a-evidence.json`
+(`review_round_1`, notas SC1A-N5..N17).
+
+- La instalación compara el triple con `controller/current/release.json`
+  siempre que exista `controller/current`, aunque `controller.json` falte o
+  esté dañado; un manifiesto ilegible rechaza (`controller_tampered`) y sólo
+  se repara a mano.
+- Instalaciones siguientes: leen el log por su cuenta (ilegible rechaza);
+  con head cerrado un log simple pendiente rechaza
+  (`compaction_pending`); un head abierto tiene que ser el H o el K
+  autorizado del log del modo release.
+- Identidad del instalador: toda la clausura del árbol que corre la
+  instalación tiene que ser la del archivo (los `.pyc` compilados, o los
+  `.py` contra `controller_sources` desde un checkout).
+- `_read_delegated_observation` corre la guarda AUTHZ3-1 antes de leer.
+- Brecha documentada (sin salida): un T0 con el `$ST` de época 4 sobre una
+  compactación de dueños pendiente deja el servicio caído sin salida por
+  herramienta. Precondición nueva del T0: ninguna compactación de dueños
+  pendiente (se retira o se aborta en la época 4; un controlador corregido
+  para terminarla es de época 4). DEPLOYMENT y el runbook de compactación
+  (paso 3) corregidos.
+- Tests nuevos: guarda en instalaciones siguientes, CS2-9 con manifiesto
+  ilegible, `managed_launcher.pyc` ajeno, instalador desde fuentes, SR-1
+  paso 4 (`check_slot`), proyección cambiada, T0S de una instalación
+  siguiente, la parada terminal anterior y R1 real (357dcb5): su propio
+  código calcula el mismo binding, el T0 pasa SR-1 y su slot sirve en
+  época 5.
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.

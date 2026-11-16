@@ -736,14 +736,24 @@ cuyo formato lee con su propio parser. Hoy son unas 300 fuentes, casi todo
 escribir nada en los rechazos:
 
 - se corre desde el archivo NUEVO extraído, nunca desde el `$ST` instalado:
-  el controlador compilado que corre la instalación debe ser el del archivo
-  (`runtime_admission_controller_installer_mismatch`);
-- monotonía en (época, revisión): menor rechaza
-  (`runtime_admission_controller_downgrade`); el mismo par con otro digest
-  rechaza (`runtime_admission_controller_revision_conflict`); el mismo
-  triple repite la instalación sin efecto;
+  cada módulo de la clausura del árbol que corre la instalación debe ser el
+  del archivo (`runtime_admission_controller_installer_mismatch`); compilado
+  se comparan los `.pyc` con los del archivo, y desde un checkout de fuentes
+  los `.py` con `controller_sources`, así que un T0 desde otro checkout
+  también rechaza;
+- monotonía en (época, revisión) contra el triple de
+  `controller/current/release.json`, que se lee siempre que exista
+  `controller/current`, aunque `controller.json` falte o esté dañado: menor
+  rechaza (`runtime_admission_controller_downgrade`); el mismo par con otro
+  digest rechaza (`runtime_admission_controller_revision_conflict`); el mismo
+  triple vuelve a correr todas las comprobaciones y no cambia el
+  controlador, pero un archivo de otro commit con la misma clausura sí mueve
+  `current` a ese commit y reescribe `controller.json` y el historial. Si
+  `controller/current/release.json` no se puede leer, toda instalación
+  rechaza (`runtime_admission_controller_tampered`): sólo se repara a mano
+  (trabajo de desarrollo, servicio caído, decisión escrita cada 48 horas);
 - primera instalación de época 5 (el `controller.json` instalado declara
-  época menor que 5): rechaza un log de compactación pendiente
+  época menor que 5, falta o no se puede leer): rechaza un log de compactación pendiente
   (`runtime_admission_compaction_pending`) o ilegible
   (`runtime_admission_compaction_log_invalid`), un head abierto
   (`runtime_admission_not_closed`), cualquier entrada en
@@ -756,15 +766,25 @@ escribir nada en los rechazos:
   ligada>`: reinstalar esa versión), la sonda del propio slot, el mismo
   contrato de esquema que el slot (`runtime_admission_controller_schema_contract`)
   y las comprobaciones de slot de `serve`;
-- instalaciones siguientes: head cerrado, SR-1; head abierto sólo bajo un log
-  pendiente del modo release, y entonces el binding de H recalculado debe ser
-  igual al del log; un head desconocido sin ese log rechaza
+- instalaciones siguientes: leen el log pendiente por su cuenta; uno
+  ilegible rechaza (`runtime_admission_compaction_log_invalid`). Con el head
+  cerrado (o sin head) sólo se admite sin log o con un log del modo release,
+  y un log simple pendiente rechaza (`runtime_admission_compaction_pending`):
+  primero se termina con los comandos simples; después, SR-1. Un head abierto
+  sólo entra bajo un log pendiente del modo release y sólo si es el H o el K
+  autorizado de ese log; entonces el binding de H recalculado debe ser igual
+  al del log. Cualquier otro head abierto es desconocido y rechaza
   `runtime_admission_not_closed`: cerrarlo antes con R-b o `adopt`.
 
-Corte entre el cambio de `current` y `controller.json` (fila T0S): todo lo
-que no sea `install-controller` rechaza con
+Corte entre el cambio de `current` y `controller.json` (fila T0S, en la
+primera instalación o en una siguiente): todo lo que no sea
+`install-controller` rechaza con
 `runtime_admission_controller_install_incomplete` (`serve` incluido) hasta
-repetir la instalación, que vuelve a correr las mismas comprobaciones. Un
+repetir la instalación del mismo archivo, que vuelve a correr las mismas
+comprobaciones (un archivo menor que el que quedó en `current` rechaza por
+monotonía). Un corte después de `controller.json` y antes del registro
+inmutable del historial, repetido, pierde la entrada del historial que
+nombraba el controlador anterior. Un
 corte antes del cambio (fila T0) deja el controlador anterior: H sigue
 sirviendo con él.
 
@@ -781,10 +801,22 @@ bloqueado por la guarda. Es detección, no prevención: una copia vieja todavía
 puede mover el head.
 
 Instalador equivocado: si el primer T0 se corre con el `$ST` de época 4, no
-corre ninguna de esas comprobaciones; un log simple pendiente queda arrastrado
-y lo terminan los comandos simples de la época 5, y las guardas de `plan` y
-`serve` siguen vigentes. Repetir después la instalación con el instalador
-correcto es el mismo triple: no cambia nada y deja admitido el plan.
+corre ninguna de esas comprobaciones, y las guardas de `plan` y `serve` siguen
+vigentes. Un log simple pendiente **sin dueños** queda arrastrado y lo
+terminan los comandos simples de la época 5; después, repetir la instalación
+con el instalador correcto es el mismo triple y deja admitido el plan
+(mientras el log siga pendiente, esa repetición rechaza
+`runtime_admission_compaction_pending`). Un log de compactación de estados
+dueños pendiente **no tiene salida**: `compact verify` sólo arma, `serve`
+sale con 78 (`runtime_admission_delegation_frozen`), `compact abort` registra
+`abort_started` y rechaza con la misma guarda, `compact abort --to-h` rechaza
+(`runtime_admission_compaction_abort_to_h_before_run`, después
+`runtime_admission_delegation_frozen`), L4 rechaza por el log pendiente y un
+controlador corregido de época 5 rechaza por los registros. Es una parada
+terminal (trabajo de desarrollo, servicio caído, decisión escrita cada 48
+horas). Precondición del T0: ninguna compactación de dueños pendiente; si
+la hay, se retira (o se aborta) en la época 4 antes del T0, y un controlador
+corregido para terminarla debe ser una construcción de época 4.
 
 Tests: los mundos con dueños (compactación simple de estados dueños,
 cadenas de delegación) corren con una construcción de época 4 de este mismo
@@ -1508,8 +1540,10 @@ quede algo en la cuarentena.
 `install-controller` (época 4 o posterior desde SC-2, nunca menor que la instalada) sí
 entra, también con un log inválido: es la salida de una compactación trabada
 (D4 = A). Desde SC-1a (época 5, sin release) la primera instalación de época 5
-rechaza cualquier log pendiente o ilegible, y las siguientes sólo entran con
-un log pendiente del modo release (ver «Controlador de época 5 (SC-1a)»). La recuperación automática R-b queda apagada mientras tanto. No
+rechaza cualquier log pendiente o ilegible; las siguientes rechazan un log
+ilegible o un log simple, y con un log del modo release entran sobre el head
+cerrado (SR-1) o sobre el H o el K abiertos de ese log (ver «Controlador de
+época 5 (SC-1a)»). La recuperación automática R-b queda apagada mientras tanto. No
 reinicies el servidor durante una compactación.
 
 Épocas (D1 = A): R1 se construye desde un árbol que ya contiene U3b-0c y,
