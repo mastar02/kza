@@ -516,7 +516,10 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
 | `runtime_admission_compaction_plan_changed` | El plan o la lista intacta cambió desde `plan`. |
 | `runtime_admission_compaction_launcher_missing` / `_launcher_contract` | Falta el controlador o el lanzador, o su contrato es menor que 3. |
 | `runtime_admission_compaction_unit_path:<unidad>` | Una unidad systemd o logrotate nombra un miembro. |
-| `runtime_admission_compaction_absolute_locator` | `config/` o `.env` de H nombran una ruta absoluta de H, de un dueño o de un miembro. |
+| `runtime_admission_compaction_absolute_locator` | `config/` o `.env` de H nombran una ruta absoluta de H, de un dueño o de un miembro (con `:<base>:<tabla>.<columna>`, una fila de datos la nombra fuera de una columna reubicada). |
+| `runtime_admission_compaction_t0_required` / `_controller_behind` | Época 5 (modo release, SC-1b): el triple del controlador del archivo NUEVO es mayor que el instalado (hace falta su T0) o menor y el NUEVO no está servido (rehacer el arreglo sobre la línea instalada). Ver DEPLOYMENT, «Plan y start del modo release (SC-1b)». |
+| `runtime_admission_compaction_release_epoch` / `_schema_contract` / `_release_unproven_copy` | Época 5: NUEVO de época menor que 5 o mayor que la instalada; contratos de esquema distintos; una entrada no probada bajo `slots/`. |
+| `runtime_admission_compaction_release_verify_unavailable` / `_plain_mode_only` | Época 5, hasta SC-4a/SC-4b: un log del modo release no se verifica ni vuelve a H por Q6; la salida es `compact abort <id>` antes de la corrida. |
 | `runtime_admission_compaction_capacity` | El binding o el archivo histórico de K pasaría de 12 MiB, o no hay espacio (P9). Si lo dice el trabajador (durante el snapshot, antes de escribir su manifiesto, o después del snapshot), el tamaño real no entra: liberá espacio y seguí con `compact resume <id>` (un snapshot completo se conserva; uno a medias se destruye y se vuelve a hacer). |
 | `runtime_admission_compaction_owner_only_data` | Hay datos sólo en miembros; en `start` requiere `--accept-owner-only-loss`, en `retire` (datos nuevos desde el plan) `--accept-owner-only-loss <coverage_sha256>`. |
 | `runtime_admission_compaction_identity` | Un miembro o su `state/` ya no es el del plan, o un slot miembro tiene entradas nuevas. |
@@ -540,8 +543,11 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
   capacidad `KZA_COMPACTION_WORKER=1` y el bootstrap exacto de
   `src.core.entry_guard`, porque el controlador no importa `src` bajo una raíz
   gestionada (G1).
-- `utterances.audio_path` se reubica; cualquier otra ruta absoluta de H o de un
-  dueño dentro de los datos rechaza.
+- `utterances.audio_path` se reubica; desde SC-1b también
+  `pending_audio_deletions.path` y `audio_write_intents.path` (antes una cola
+  no vacía bloqueaba la compactación). Cualquier otra ruta absoluta de H o de
+  un dueño dentro de los datos rechaza, y dos filas de una cola que caerían en
+  la misma ruta de K rechazan `compaction_locator_collision`.
 - D5 compara también byte a byte los archivos opacos al SDK.
 - Volver a H usa un head manual nuevo, `compaction_return`.
 - La época del controlador sube a 3. Un controlador de época 2 no puede

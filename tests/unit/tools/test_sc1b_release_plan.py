@@ -39,7 +39,7 @@ from tests.mocks.epoch4 import edited_commit, epoch4_commit, epoch4_in_process
 
 REVISION_1 = b"\nCONTROLLER_REVISION = 1\n"
 FUTURE = b"from __future__ import annotations\n"
-OUTSIDE_CLOSURE = "src/alerts/alert_manager.py"
+OUTSIDE_CLOSURE = "src/health/health_check.py"
 
 
 @pytest.fixture(scope="module")
@@ -80,7 +80,7 @@ def x4(clone):
 def x5s(clone):
     """The equal triple of another release: one comment outside the controller closure."""
     revision = edited_commit(clone["path"], clone["x5"], {OUTSIDE_CLOSURE: [
-        (b"Alert Manager Module", b"Alert Manager Module (sc-1b: outside the controller closure)")]},
+        (b"Health Check Module\n", b"Health Check Module (sc-1b: outside the controller closure)\n")]},
         message="sc-1b X5 same triple")
     return _build(clone, "x5s", revision)
 

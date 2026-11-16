@@ -703,9 +703,10 @@ posterior), nunca el `stage_runtime` de un slot.
 Estado al 2026-11-16: implementado en la rama `sc1a-controller-epoch5`
 (diseño `sc-release-design-v4`, unidad SC-1a, aceptado). No hay release:
 producción y R1 siguen en época 4. Es la primera pieza del modo release
-posterior a R1; plan/start en modo release (SC-1b), la corrida de
-verificación (SC-4a) y las salidas (SC-4b) siguen sin implementar, así que
-esta sección no habilita ninguna transición gestionada (ver «Sin
+posterior a R1; plan/start en modo release (SC-1b) está en la sección
+siguiente, y la corrida de verificación (SC-4a) y las salidas (SC-4b) siguen
+sin implementar, así que esta sección no habilita ninguna transición
+gestionada (ver «Sin
 transiciones gestionadas después de R1 hasta el modo release»). Evidencia:
 `data/autonomous-roadmap-20261102/t040-t041/sc1a-evidence.json` (local,
 fuera de Git).
@@ -822,6 +823,87 @@ Tests: los mundos con dueños (compactación simple de estados dueños,
 cadenas de delegación) corren con una construcción de época 4 de este mismo
 árbol (`tests/mocks/epoch4.py`); los rechazos de época 5 y las filas T0, T0S,
 T0F, DL y DO están en `tests/unit/tools/test_sc1a_controller_install.py`.
+
+### Plan y start del modo release (SC-1b) — desarrollado, sin release
+
+Estado al 2026-11-16: implementado en la rama `sc1b-release-plan-start`
+(diseño `sc-release-design-v4`, unidad SC-1b, aceptado). No hay release. Con
+SC-1b una transición del modo release se planifica y se empieza (K activado
+con el código NUEVO), pero no se puede verificar ni aceptar hasta SC-4a y
+SC-4b (ver «Sin transiciones gestionadas después de R1 hasta el modo
+release»). Evidencia: `data/autonomous-roadmap-20261102/t040-t041/sc1b-evidence.json`
+(local, fuera de Git).
+
+Modo: con el controlador en época 5 todo log nuevo es del modo release
+(`intent.mode = "release"`, la clave que ya lee `install-controller`). Un log
+sin `mode` (simple, arrastrado de la época 4) sólo lo terminan los comandos
+simples. Una raíz con dueños rechaza en `plan` (SC-1a). Los comandos siguen
+corriendo desde `controller/current`; `--archive` es el archivo NUEVO.
+
+`compact plan <K> --archive NUEVO` (P6'), de sólo lectura:
+
+- (a) el `release.json` del NUEVO declara `launcher_contract` >= 3
+  (`runtime_admission_launcher_contract_missing`) y `format_epoch` >= 1
+  (`runtime_admission_rollback_format_closed`);
+- (b) la época del controlador del NUEVO está entre 5 y la instalada
+  (`runtime_admission_compaction_release_epoch`): R1, de época 4, nunca es
+  destino (SC-D7 A);
+- (c) el NUEVO está en served(root) o su triple es el instalado. served(root)
+  es el archivo de cada log del modo release terminado (`complete`) con
+  `verified`, más la release del head actual; se deriva de los logs
+  inmutables, sin registro de historial. Un log simple, uno terminado sin
+  `verified`, uno abortado o uno pendiente no sirve nada. Si no: triple mayor
+  que el instalado, `runtime_admission_compaction_t0_required` (hace falta el
+  T0 del NUEVO); menor y no servido,
+  `runtime_admission_compaction_controller_behind` (un arreglo hecho desde una
+  línea de releases vieja: rehacerlo sobre la línea del controlador
+  instalado); misma (época, revisión) con otra clausura,
+  `runtime_admission_compaction_controller_revision_conflict`. Los tres nombran
+  `installed=<época>.<revisión>.<digest>,archive=<época>.<revisión>.<digest>`.
+  Una vuelta atrás a una release ya aceptada no necesita T0;
+- (d) H pasa las comprobaciones de slot de `serve`;
+- (g) SR-2: el contrato de esquema del NUEVO, el del controlador instalado y
+  el del slot de H son iguales y >= 1
+  (`runtime_admission_compaction_schema_contract`; SC-D4 A);
+- (e) el digest del plan, y después el intent, ligan `mode`, `release_sha256`,
+  `git_commit`, `schema_contract` y el triple del NUEVO.
+
+Además, en el modo release `--retire-prepare-leftovers` queda forzado, y
+cualquier entrada intacta bajo `slots/` rechaza
+(`runtime_admission_compaction_release_unproven_copy`, con las rutas y sin
+contenido), salvo los dos slots heredados que nombra el registro de adopción
+confirmado (el contenedor de 63ea8d3 y el slot de b0866e8). Un plan rechazado
+no escribe nada (fila P): arreglar la causa y repetir, o habilitar y arrancar
+la unidad, que sirve H.
+
+`compact start`: K se prepara desde el archivo NUEVO y `_k_runtime` exige
+que su `release.json` sea el del intent (P6'(f)); A1 exige además que los
+`schemas` del binding de K sean los de H
+(`runtime_admission_compaction_schema_changed`); A2 sigue probando K con su
+propio código antes del CAS. Hasta SC-4a, `compact verify` de un log del modo
+release rechaza `runtime_admission_compaction_release_verify_unavailable`, y
+`allow-run`, `--discard-k-writes` y la vuelta a H por Q6 rechazan
+`runtime_admission_compaction_plain_mode_only`. La única salida de un log del
+modo release es `compact abort <id>` antes de la corrida (fila A0, sin
+pérdida); después, habilitar y arrancar la unidad.
+
+Reubicación de las colas de audio (toda compactación, también la simple):
+`pending_audio_deletions.path` y `audio_write_intents.path` bajo H (o un
+dueño) se reubican en K como `utterances.audio_path`, y A1 compara la
+proyección protegida de K con la de H con esas rutas reubicadas. Antes, una
+cola no vacía bloqueaba toda compactación
+(`runtime_admission_compaction_absolute_locator:...:pending_audio_deletions.path`)
+sin dejar nada viejo. Un valor que nombra H sin estar debajo sigue rechazando,
+y dos filas que caerían en la misma ruta de K rechazan
+(`runtime_admission_compaction_locator_collision:<tabla>.path`) antes de
+escribir.
+
+Queda pendiente (lista `follow_up` de la evidencia): `--accept-regressed-source`
+(R5-1) depende del testigo de cierre por registro de recuperación de SC-4b;
+hasta entonces un head cerrado por un registro de recuperación no es fuente de
+ninguna transición (`plan` rechaza como antes).
+
+Tests: `tests/unit/tools/test_sc1b_release_plan.py`.
 
 ### Sin transiciones gestionadas después de R1 hasta el modo release
 
@@ -1390,6 +1472,11 @@ Estado: `stage_runtime compact` está en la rama de desarrollo (U3b-0c), probado
 en raíces de prueba, con ensayos compilados y con el systemd de usuario real
 de `yo` para el escaneo de unidades. Nunca corrió sobre `/home/kza/releases`.
 Pasos, fallos y códigos: [runbook](../runbooks/2026-11-14-owner-compaction.md).
+
+Desde SC-1b, con el controlador en época 5 cada compactación nueva es una
+transición del modo release (ver «Plan y start del modo release (SC-1b)»);
+lo que sigue describe el procedimiento común y la compactación simple de la
+época 4.
 
 Qué cambia en el hueco de privacidad de arriba: el operador puede compactar la
 raíz gestionada a un estado nuevo K (copia idéntica del head con las rutas
