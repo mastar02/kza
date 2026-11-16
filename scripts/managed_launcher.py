@@ -2183,20 +2183,46 @@ SDK_CHANGED = "runtime_admission_compaction_sdk_changed"
 SCHEMA_CONTRACT_CHANGED = "runtime_admission_controller_schema_contract"
 
 
+def _installer_tree() -> Path:
+    """The tree this installer runs from: the parent of the running stage_runtime's scripts/.
+
+    A seam for in-process tests only: they install builds of other revisions
+    from the source checkout and point this at those revisions' sources.
+    """
+    return Path(stage.__file__).resolve().parents[1]
+
+
 def _require_staged_installer(manifest: dict) -> None:
     """SR-1 runs the staged controller's own code (t0_controller_install.command).
 
-    A compiled install must run from the extracted NEW archive, never from
-    the installed $ST: the stage_runtime and managed_launcher this process
-    executes must be the archive's. A source tree (development, in-process
-    tests) has no compiled identity to compare and is not a release path.
+    The tree this process runs from must hold the archive's controller: every
+    module of its import closure (controller_sources) must be the archive's.
+    A compiled installer compares each closure .pyc with the archive's file
+    hashes, so a T0 run from the installed $ST (or any other revision's tree)
+    refuses; a source installer (``python scripts/stage_runtime.py`` from a
+    checkout) compares each closure .py with the recorded source sha256 (review
+    F6). Below epoch 5 an archive carries no closure; only an epoch-4 build of
+    this tree (test worlds with owners) reaches here with one, and a compiled
+    installer then still compares stage_runtime and managed_launcher.
     """
-    for module, name in ((stage, "scripts/stage_runtime.pyc"),
-                         (sys.modules[__name__], "scripts/managed_launcher.pyc")):
-        own = Path(module.__file__)
-        if own.suffix != ".pyc":
+    tree = _installer_tree()
+    compiled = Path(stage.__file__).suffix == ".pyc"
+    if manifest.get("controller_epoch", 0) < stage.RELEASE_MODE_EPOCH:
+        if not compiled:
             return
-        if hashlib.sha256(own.read_bytes()).hexdigest() != manifest["files"].get(name):
+        sources = [["scripts/stage_runtime.py", None], ["scripts/managed_launcher.py", None]]
+    else:
+        sources = manifest["controller_sources"]  # validated by controller_triple before this call
+    for path, source_digest in sources:
+        own = tree / (path + "c" if compiled else path)
+        expected = manifest["files"].get(path + "c") if compiled else source_digest
+        try:
+            if own.is_symlink() or not own.is_file():
+                raise LauncherRefusal(CONTROLLER_INSTALLER_MISMATCH)
+            digest = hashlib.sha256(own.read_bytes()).hexdigest()
+        except OSError:
+            raise LauncherRefusal(CONTROLLER_INSTALLER_MISMATCH) from None
+        if expected is None or digest != expected:
             raise LauncherRefusal(CONTROLLER_INSTALLER_MISMATCH)
 
 
@@ -2288,28 +2314,60 @@ def release_mode_log(log: dict) -> bool:
 def _later_install_checks(root: Path, manifest: dict, *, probe_timeout: float) -> None:
     """Installed epoch >= 5 (t0_controller_install.later_installs), before current moves.
 
-    A closed head passes SR-1. An open head is admitted only under a pending
-    release-mode log (D4, CR2-3), and then H's binding, recomputed by this
-    code, must equal the log's source binding (R3-OPS-2); K's authorized
-    binding rests on the projection invariant. An open head with no pending
-    release-mode log is an unknown head: close it with R-b or adopt first
-    (runtime_admission_not_closed, R4-OPS-2).
+    The pending log is read here, not through the install gate (which turns
+    an unreadable log into 'no log'): an unreadable log refuses with
+    runtime_admission_compaction_log_invalid. With a closed head (or none) a
+    pending log must be a release-mode one (D4, row CI); a carried plain-mode
+    log refuses with runtime_admission_compaction_pending until the plain-mode
+    commands finish it (review r1 F2, stricter reading, so no log is pending at
+    T0F). A closed head then passes SR-1. An open head is admitted only under a
+    pending release-mode log and only when it belongs to that log: its binding
+    is the log's source binding (H) or the K binding the log authorized
+    (review F4); then H's binding, recomputed by this code, must equal the
+    log's source binding (R3-OPS-2); K's authorized binding rests on the
+    projection invariant. Any other open head is an unknown head: close it with
+    R-b or adopt first (runtime_admission_not_closed, R4-OPS-2).
     """
     head = stage.read_admission_head(root)
     closed = head is not None and head["status"] == "closed"
     _guard_checks(root, stage.read_binding(root, head["binding_id"]) if closed else None)
-    if head is None:
-        return
-    if closed:
-        _sr1(root, head, manifest, probe_timeout=probe_timeout)
-        return
     try:
         pending = stage.pending_compaction(root)
     except ValueError:
         raise LauncherRefusal("runtime_admission_compaction_log_invalid") from None
-    if pending is None or not release_mode_log(pending):
+    release = pending is not None and release_mode_log(pending)
+    if head is None or closed:
+        if pending is not None and not release:
+            raise LauncherRefusal("runtime_admission_compaction_pending")
+        if closed:
+            _sr1(root, head, manifest, probe_timeout=probe_timeout)
+        return
+    if not release:
         raise LauncherRefusal("runtime_admission_not_closed")
-    _binding_equality(root, stage.read_binding(root, pending["intent"]["source_binding_id"]))
+    intent = pending["intent"]
+    owned = {intent["source_binding_id"]}
+    owned.update(event["data"].get("candidate_binding_id")
+                 for event in stage.compaction_events(pending, "authorized"))
+    if head["binding_id"] not in owned:
+        raise LauncherRefusal("runtime_admission_not_closed")
+    _binding_equality(root, stage.read_binding(root, intent["source_binding_id"]))
+
+
+def _installed_triple(root: Path, installed_epoch: int) -> tuple[int, int, str | None] | None:
+    """The installed controller triple for an epoch-5 install, read from controller/current (R4-OPS-4).
+
+    Read whenever controller/current exists, whatever controller.json says
+    (review F3): a missing or damaged controller.json must not skip the
+    monotone and CR2-9 checks against an installed epoch-5 controller. An
+    unreadable current manifest refuses (runtime_admission_controller_tampered);
+    only a root with no current and a record below epoch 5 has no triple.
+    """
+    if not os.path.lexists(root / "controller" / "current") and installed_epoch < stage.RELEASE_MODE_EPOCH:
+        return None
+    try:
+        return stage.installed_controller_triple(root)
+    except ValueError as error:
+        raise LauncherRefusal(str(error)) from None
 
 
 def install_controller(root: Path, archive: Path, *, wall=time.time,
@@ -2367,21 +2425,21 @@ def install_controller(root: Path, archive: Path, *, wall=time.time,
             raise LauncherRefusal("runtime_admission_controller_downgrade")
         if epoch < stage.RELEASE_MODE_EPOCH:
             pass  # an epoch-4 build of this code (test worlds with owners): today's install
-        elif installed_epoch >= stage.RELEASE_MODE_EPOCH:
-            # R4-OPS-4: the installed triple is the copied manifest under controller/current.
-            try:
-                current = stage.installed_controller_triple(root)
-            except ValueError as error:
-                raise LauncherRefusal(str(error)) from None
-            if triple[:2] < current[:2]:
-                raise LauncherRefusal("runtime_admission_controller_downgrade")
-            if triple[:2] == current[:2] and triple[2] != current[2]:
-                raise LauncherRefusal(CONTROLLER_REVISION_CONFLICT)  # CR2-9
-            _later_install_checks(root, manifest, probe_timeout=probe_timeout)
         else:
-            # first_install (CR2-1): keyed on the installed controller.json epoch < 5, never on a
-            # file this install writes, so a repeat after a cut install runs the same checks.
-            _first_install_checks(root, manifest, probe_timeout=probe_timeout)
+            # R4-OPS-4: the installed triple is the copied manifest under controller/current; it is
+            # compared whenever current exists, even with controller.json missing or damaged (F3).
+            current = _installed_triple(root, installed_epoch)
+            if current is not None and triple[:2] < current[:2]:
+                raise LauncherRefusal("runtime_admission_controller_downgrade")
+            if current is not None and triple[:2] == current[:2] and triple[2] != current[2]:
+                raise LauncherRefusal(CONTROLLER_REVISION_CONFLICT)  # CR2-9
+            if installed_epoch >= stage.RELEASE_MODE_EPOCH:
+                _later_install_checks(root, manifest, probe_timeout=probe_timeout)
+            else:
+                # first_install (CR2-1): keyed on the installed controller.json epoch < 5 (or a
+                # missing or damaged record), never on a file this install writes, so a repeat
+                # after a cut install runs the same checks.
+                _first_install_checks(root, manifest, probe_timeout=probe_timeout)
         if step_hook is not None:
             step_hook("checked")
         controllers = root / "controller"

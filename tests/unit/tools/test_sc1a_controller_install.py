@@ -33,6 +33,8 @@ from tests.unit.tools.test_managed_launcher_serve import TEMPLATE, _settings, _s
 REVISION_1 = b"\nCONTROLLER_REVISION = 1\n"
 # The last commit before SC-1a: an epoch-4 controller without the first_install checks (R1's behaviour).
 PRE_SC1A = "b15ce86a1ea7e1926e11c7fdb6c67f6831a9d3c1"
+# R1, the pinned production release (epoch 4, docs/architecture/DEPLOYMENT.md).
+R1_COMMIT = "357dcb5"
 OWNER_COMPACTION = "src/memory/owner_compaction.py"
 FUTURE = b"from __future__ import annotations\n"
 
@@ -55,13 +57,26 @@ def builds(tmp_path_factory):
         "pre": PRE_SC1A,
         "x5c": edited_commit(clone, x5, {OWNER_COMPACTION: [(FUTURE, FUTURE + b"# sc-1a: a controller-only change\n")]},
                              message="sc-1a X5 closure change"),
+        # revision 2 with another managed_launcher (review F5: the installer identity covers it too)
+        "x5m": edited_commit(clone, x5, {"scripts/stage_runtime.py": [(REVISION_1, b"\nCONTROLLER_REVISION = 2\n")],
+                                         "scripts/managed_launcher.py": [(FUTURE, FUTURE + b"# sc-1a: launcher\n")]},
+                             message="sc-1a X5 revision 2, launcher changed"),
+        "r1": R1_COMMIT,
     }
-    archives, manifests = {}, {}
+    archives, manifests, sources = {}, {}, {}
     for name, revision in revisions.items():
         archives[name] = base / (name + ".tar.gz")
         manifests[name] = build_runtime(clone, archives[name], revision)
+        if name.startswith("x5") and name != "x5":
+            # The source tree of that revision, for an in-process install of its build (_install).
+            sources[name] = base / (name + "-src")
+            sources[name].mkdir()
+            tar = subprocess.run(["git", "archive", "--format=tar", revision, "src", "scripts"], cwd=clone,
+                                 check=True, capture_output=True, timeout=120).stdout
+            subprocess.run(["tar", "-x", "-C", str(sources[name])], input=tar, check=True, timeout=120)
     assert manifests["pre"]["controller_epoch"] == 4 and "controller_revision" not in manifests["pre"]
-    return {"archives": archives, "manifests": manifests, "base": base}
+    assert manifests["r1"]["controller_epoch"] == 4
+    return {"archives": archives, "manifests": manifests, "sources": sources, "base": base}
 
 
 def _extract(archive: Path, destination: Path) -> Path:
@@ -94,7 +109,17 @@ def _refused(code, action):
 
 
 def _install(root, builds, name="x5", **options):
-    return launcher.install_controller(root, builds["archives"][name], **options)
+    """This code installs build ``name`` in process, as that build's own T0 command would.
+
+    X5 is this working tree, so the installer runs from the checkout. For the
+    other revisions the installer-identity check (review F6) is pointed at
+    that revision's sources (launcher._installer_tree), as if their checkout ran.
+    """
+    if name not in builds["sources"]:
+        return launcher.install_controller(root, builds["archives"][name], **options)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(launcher, "_installer_tree", lambda: builds["sources"][name])
+        return launcher.install_controller(root, builds["archives"][name], **options)
 
 
 def _record(root):
@@ -681,3 +706,86 @@ def test_owners_are_read_from_the_pinned_policy(tmp_path):
         stage.delegated_target_ids(dict(binding, ownership_sha256="0" * 64))
     assert stage.delegated_target_ids({"state_root": str(state), "ownership_sha256": None}) == []
     stage.require_no_owners({"state_root": str(state), "ownership_sha256": None})
+
+
+# --- review round 1 ---------------------------------------------------------------------------------------
+
+
+def test_a_missing_or_damaged_controller_json_keeps_the_triple_checks(builds, t0_root, tmp_path):
+    """Review F3: the installed triple is read from controller/current whatever controller.json says."""
+    root = t0_root["root"]
+    record = root / "admission" / "controller.json"
+    record.unlink()
+    record.write_text("not json")
+    witness = cw.witness(root)
+    _unchanged_t0(root, witness, lambda: _install(root, builds, "x5c"), launcher.CONTROLLER_REVISION_CONFLICT)
+    record.unlink()  # the record is repaired by repeating the installed triple (first_install checks run)
+    _install(root, builds, "x5")
+    assert _record(root)["controller_epoch"] == 5 and _current(root) == builds["manifests"]["x5"]["git_commit"]
+    _install(root, builds, "x5r3")
+    record.unlink()
+    witness = cw.witness(root)
+    _unchanged_t0(root, witness, lambda: _install(root, builds, "x5"), "runtime_admission_controller_downgrade")
+    record.write_text("not json")
+    witness = cw.witness(root)
+    _unchanged_t0(root, witness, lambda: _install(root, builds, "x5r2"), "runtime_admission_controller_downgrade")
+    link = root / "controller" / "current"
+    link.unlink()
+    link.symlink_to("missing")  # an unreadable current manifest is a damaged install, not 'no controller'
+    witness = cw.witness(root)
+    _unchanged_t0(root, witness, lambda: _install(root, builds, "x5r3"), "runtime_admission_controller_tampered")
+
+
+def test_later_install_refuses_an_open_head_the_pending_log_does_not_own(builds, t0_root, tmp_path, monkeypatch):
+    """Review F4: the open head must be the log's H or its authorized K."""
+    root = t0_root["root"]
+    started = _open_k_under_a_pending_log(builds, root, tmp_path)
+    monkeypatch.setattr(launcher, "release_mode_log", lambda log: True)  # SC-1b writes intent.mode
+    gate = "compaction:" + started["compaction_id"]
+    head = stage.read_admission_head(root)
+    with stage.AdmissionController(root, allow_open_head=True, gate=gate):
+        stage._cas_head(root, head, "e" * 64, "unknown", "2" * 32)
+    witness = cw.witness(root)
+    _unchanged_t0(root, witness, lambda: _install(root, builds, "x5r2"), "runtime_admission_not_closed")
+    head = stage.read_admission_head(root)
+    source = stage.pending_compaction(root)["intent"]["source_binding_id"]
+    with stage.AdmissionController(root, allow_open_head=True, gate=gate):
+        stage._cas_head(root, head, source, "unknown", "3" * 32)  # H's binding, open: the log's own head
+    _install(root, builds, "x5r2")
+    assert _current(root) == builds["manifests"]["x5r2"]["git_commit"]
+
+
+def test_later_install_over_a_closed_head_refuses_a_plain_or_unreadable_log(builds, t0_root, tmp_path,
+                                                                            monkeypatch):
+    """Review r2 F2 (stricter reading): over a closed head only a release-mode log is carried."""
+    root = t0_root["root"]
+    started = cw.start(root, builds["archives"]["x4"])  # a plain-mode log; K's head is closed
+    assert stage.read_admission_head(root)["status"] == "closed"
+    witness = cw.witness(root)
+    _unchanged_t0(root, witness, lambda: _install(root, builds, "x5r2"), "runtime_admission_compaction_pending")
+    with monkeypatch.context() as patch:
+        patch.setattr(launcher, "release_mode_log", lambda log: True)
+        _install(root, builds, "x5r2")  # D4 / row CI: a release-mode log, closed head, SR-1
+    assert _current(root) == builds["manifests"]["x5r2"]["git_commit"]
+    events = stage.compaction_log_path(root, started["compaction_id"]) / "events"
+    (events / "000099.json").write_text("{}")
+    witness = cw.witness(root)
+    _unchanged_t0(root, witness, lambda: _install(root, builds, "x5r3"), "runtime_admission_compaction_log_invalid")
+
+
+
+
+def test_a_source_installer_must_run_the_archives_own_sources(builds, t0_root, tmp_path):
+    """Review F6: a T0 from a checkout compares its closure sources with controller_sources."""
+    root = t0_root["root"]
+    witness = cw.witness(root)
+    # This checkout is X5: X5R2 differs in stage_runtime.py, X5C only in owner_compaction.py.
+    _unchanged_t0(root, witness, lambda: launcher.install_controller(root, builds["archives"]["x5r2"]),
+                  launcher.CONTROLLER_INSTALLER_MISMATCH)
+    _unchanged_t0(root, witness, lambda: launcher.install_controller(root, builds["archives"]["x5c"]),
+                  launcher.CONTROLLER_INSTALLER_MISMATCH)
+    command = subprocess.run([sys.executable, "-B", str(cw.REPO / "scripts" / "stage_runtime.py"), "--root",
+                              str(root), "--offline", "install-controller", str(builds["archives"]["x5r2"])],
+                             cwd=cw.REPO, capture_output=True, text=True, timeout=300)
+    assert command.returncode == 78 and launcher.CONTROLLER_INSTALLER_MISMATCH in command.stderr, command.stderr
+    assert cw.witness(root) == witness
