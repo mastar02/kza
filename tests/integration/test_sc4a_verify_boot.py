@@ -374,7 +374,7 @@ async def test_a_protected_write_after_ready_in_a_construction_spawned_task_chan
         stack.push_async_callback(asyncio.gather, task, return_exceptions=True)
 
     await _verify_run(root, plant=plant)
-    assert ("privacy.db", "capture_runtime_control") in _diff(before, stage.capture_state_authority(state))
+    assert ("data/graph/privacy.db", "capture_runtime_control") in _diff(before, stage.capture_state_authority(state))
 
 
 async def test_a_protected_write_in_an_exit_stack_callback_changes_k_prime(template):
@@ -387,7 +387,7 @@ async def test_a_protected_write_in_an_exit_stack_callback_changes_k_prime(templ
         stack.push_async_callback(at_close)
 
     await _verify_run(root, plant=plant)
-    assert ("privacy.db", "capture_runtime_control") in _diff(before, stage.capture_state_authority(state))
+    assert ("data/graph/privacy.db", "capture_runtime_control") in _diff(before, stage.capture_state_authority(state))
 
 
 async def test_an_exempt_statement_that_changes_a_row_is_caught(template):
@@ -399,7 +399,7 @@ async def test_an_exempt_statement_that_changes_a_row_is_caught(template):
     before = stage.capture_state_authority(state)
     trace = Trace()
     await _verify_run(root, trace=trace)
-    assert ("privacy.db", "ambient_runtime_control") in _diff(before, stage.capture_state_authority(state))
+    assert ("data/graph/privacy.db", "ambient_runtime_control") in _diff(before, stage.capture_state_authority(state))
     assert ("privacy.db", "INSERT OR IGNORE INTO", "ambient_runtime_control") in {
         write[:3] for write in trace.writes}
 
