@@ -58,6 +58,11 @@ rango ni de época 3. El ensayo de adopción corre ahora el `delegate` y el
 `activate` de una copia de ese rango sobre una raíz de época 4: todavía
 concede y activa, y el test lo fija tal como es. La barrera es correr sólo
 `controller/current` y que no quede ninguna copia de ese rango que correr.
+R1-B1/R1-B2 (integradas en c6462e5) cambiaron `src/` y el frontend después:
+R1 se reconstruyó de la misma forma desde c6462e5 (época 4, contrato de
+esquema 1; dos veces en el server, idéntico byte a byte, y una en la Mac,
+igual) y el pin pasó a ese archivo. El de 81ed568 quedó al lado, renombrado
+`r1-81ed568.tar.gz.superseded-r1b`: no se transfiere ni se usa.
 
 Después de R1 no hay transiciones gestionadas (ningún arreglo de código) hasta
 que exista el modo release; el único rollback es L4 durante sus 14 días. Ver
@@ -87,12 +92,14 @@ archivo verificado, nunca una ruta relativa ni otra copia.
 
 ### Archivo R1 fijado (paso obligatorio antes de W1)
 
-SC-6a construyó R1 bajo `yo` con `scripts/build_runtime.py` desde 81ed568, dos
-veces y con resultado idéntico byte a byte, y fija aquí su sha256 y su commit.
+R1 se construyó bajo `yo` con `scripts/build_runtime.py` desde c6462e5, dos
+veces y con resultado idéntico byte a byte, y aquí se fija su sha256 y su
+commit (SC-6a lo había fijado desde 81ed568; se re-fijó después de
+R1-B1/R1-B2).
 El valor vive en un commit de documentación posterior al commit construido: un
 archivo no puede contener su propio hash, y el archivo no incluye `docs/`.
 El archivo queda bajo `yo` en el server, en
-`/home/yo/projects/releases-r1/r1-81ed568.tar.gz` (modo 0600, directorio
+`/home/yo/projects/releases-r1/r1-c6462e5.tar.gz` (modo 0600, directorio
 0700, con su `SHA256SUMS`). Llevarlo a `kza` es parte de la release y lo hace
 el operador; esa copia transferida es la que se verifica aquí.
 
@@ -101,8 +108,8 @@ de W1, correr exactamente:
 
 ```bash
 R1_ARCHIVE=<ruta del r1.tar.gz transferido>
-R1_SHA256=3f57bd197f2f1633f32683616abefd3db038466d7a966d9925b24c84fc342a0e
-R1_COMMIT=81ed5680fa46d0b5b48e8e6eb9e4a36da5f15ed0
+R1_SHA256=733b6fc35dc929accc00b78b231092531a7ca131663ccc8b663f9d9e48851b86
+R1_COMMIT=c6462e5f2794e21e797f6f8b397f1f3bf911dd29
 if [ "$(sha256sum "$R1_ARCHIVE" | cut -d' ' -f1)" = "$R1_SHA256" ]; then echo "R1 fijado: OK"; else echo "R1 distinto del fijado: DETENER"; false; fi
 ```
 

@@ -291,9 +291,19 @@ autocontenidas y la delegación a estados dueños se apaga. Desde SC-2
 - R1: construido bajo `yo` en el server desde 81ed568 (`controller_epoch` 4,
   `schema_contract` 1), dos veces, idéntico byte a byte; la construcción en la
   Mac (CPython 3.13.18 contra 3.13.12 del server) da los mismos bytes. sha256
-  `3f57bd197f2f1633f32683616abefd3db038466d7a966d9925b24c84fc342a0e`, en `/home/yo/projects/releases-r1/r1-81ed568.tar.gz`. El runbook de
-  R1 fija ese sha256 y su commit, y antes de W1 exige que `sha256sum
-  "$R1_ARCHIVE"` coincida o se detiene.
+  `3f57bd197f2f1633f32683616abefd3db038466d7a966d9925b24c84fc342a0e`; ese
+  archivo quedó reemplazado (abajo) y renombrado
+  `/home/yo/projects/releases-r1/r1-81ed568.tar.gz.superseded-r1b`.
+- R1 re-fijado tras R1-B1/R1-B2 (2026-11-15): las dos cambian `src/` y el
+  frontend, así que R1 se reconstruyó igual desde c6462e5 (`controller_epoch`
+  4, `schema_contract` 1, 416 módulos compilados, 476 archivos): dos veces en
+  el server, idéntico byte a byte, y una en la Mac, igual. sha256
+  `733b6fc35dc929accc00b78b231092531a7ca131663ccc8b663f9d9e48851b86`, en
+  `/home/yo/projects/releases-r1/r1-c6462e5.tar.gz` (0600, directorio 0700,
+  con `SHA256SUMS`). Frente al de 81ed568 cambian sólo `release.json` y los
+  siete archivos de R1-B en `src/`. El runbook de R1 fija ese sha256 y su
+  commit, y antes de W1 exige que `sha256sum "$R1_ARCHIVE"` coincida o se
+  detiene.
 - Ensayo: `tests/integration/test_sc6a_r1_rehearsal.py` (en proceso, Mac y
   server) y la ventana real de `tests/integration/test_linux_adoption_window.py`
   agregan los casos (i)–(iv) del diseño. Después de W9, `delegate`,

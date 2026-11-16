@@ -88,3 +88,15 @@ def test_the_pin_names_an_epoch4_commit_of_this_history_and_the_docs_agree():
         flat = " ".join((REPO / relative).read_text().split())
         assert pin["R1_SHA256"] in flat and short in flat, relative
     assert f"/home/yo/projects/releases-r1/r1-{short}.tar.gz" in " ".join(r1_runbook.runbook_text().split())
+
+
+def test_the_superseded_81ed568_archive_is_recorded_not_pinned():
+    """R1-B re-pin: SC-6a's archive (81ed568) was kept beside the new one under a superseded name;
+    the runbook, DEPLOYMENT and the handoff record that name, and the pin is no longer it."""
+    pin = r1_runbook.pinned()
+    assert pin["R1_COMMIT"] != "81ed5680fa46d0b5b48e8e6eb9e4a36da5f15ed0"
+    assert pin["R1_SHA256"] != "3f57bd197f2f1633f32683616abefd3db038466d7a966d9925b24c84fc342a0e"
+    for relative in ("docs/runbooks/2026-11-13-r1-adoption-window.md", "docs/architecture/DEPLOYMENT.md",
+                     "docs/runbooks/2026-11-05-mac-development-handoff.md"):
+        flat = " ".join((REPO / relative).read_text().split())
+        assert "r1-81ed568.tar.gz.superseded-r1b" in flat, relative

@@ -1051,7 +1051,8 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
     byte a byte; la construcción en la Mac también coincide. `release.json`:
     `controller_epoch` 4, `schema_contract` 1, `launcher_contract` 3. sha256
     `3f57bd197f2f1633f32683616abefd3db038466d7a966d9925b24c84fc342a0e`, en `/home/yo/projects/releases-r1/r1-81ed568.tar.gz` (0600,
-    directorio 0700). El runbook de R1 lo fija y exige `sha256sum
+    directorio 0700; renombrado `*.superseded-r1b` al re-fijar R1 desde
+    c6462e5, ver «R1 re-fijado desde c6462e5 tras R1-B»). El runbook de R1 lo fija y exige `sha256sum
     "$R1_ARCHIVE"` antes de W1 («Archivo R1 fijado» y W1-pre). Con R1
     construido, la época 1 del contrato de esquema quedó congelada.
   - Ensayo: `test_sc6a_r1_rehearsal.py` (en proceso: 7 tests, pasan en la Mac
@@ -1217,6 +1218,34 @@ automático al arrancar y conservarlas para siempre. Evidencia:
   nueva). Detalle en `r1b2.review_round_1`.
 - Pendiente: revisión independiente de la ronda 1; el visto bueno visual del
   panel sigue con el usuario como en las demás pantallas.
+
+## R1 re-fijado desde c6462e5 tras R1-B (2026-11-15)
+
+R1-B1/R1-B2 se integraron en `recovery/production-2026-10-25` con el merge
+`c6462e5` (mismo árbol que `a8daf68`, el de la suite batch de R1-B). Cambian
+`src/` y el frontend, así que el R1 fijado por SC-6a (81ed568) ya no era el
+código a instalar. Evidencia: `t040-t041/sc6a-evidence.json`, clave
+`r1b_repin`.
+
+- R1 construido bajo `yo` en el server (`/home/yo/projects/kza`, avanzado por
+  fast-forward a `c6462e5`) con `scripts/build_runtime.py --revision
+  c6462e5f2794e21e797f6f8b397f1f3bf911dd29`, dos veces: `cmp` idéntico byte a
+  byte; una tercera construcción en la Mac (CPython 3.13.18 contra 3.13.12)
+  también da los mismos bytes. `release.json`: `controller_epoch` 4,
+  `schema_contract` 1, `launcher_contract` 3; 416 módulos compilados, 476
+  archivos; `stage_runtime.pyc` con `delegation_retired` y
+  `require_forward_epoch`. Frente al de 81ed568 cambian sólo `release.json` y
+  los siete archivos de R1-B.
+- sha256 `733b6fc35dc929accc00b78b231092531a7ca131663ccc8b663f9d9e48851b86`,
+  en `/home/yo/projects/releases-r1/r1-c6462e5.tar.gz` (0600, directorio
+  0700). El anterior quedó al lado, sin borrar, como
+  `r1-81ed568.tar.gz.superseded-r1b` (sha256 `3f57bd19…`); `SHA256SUMS`
+  lista los dos con sus nombres nuevos. La copia de la Mac y la segunda del
+  server se borraron; `build-c6462e5-a/b/build.json` quedan como registro.
+- El runbook de R1 fija ahora `R1_SHA256` y `R1_COMMIT` de c6462e5 (commit de
+  documentación posterior, por fuerza). `test_the_runbook_pin_is_the_archive_of_its_commit`
+  reconstruye desde el commit fijado y da el sha256 fijado.
+- Nada cambió del lado de `kza`; sin release ni instalación.
 
 ## Prompt para la sesión nueva
 
