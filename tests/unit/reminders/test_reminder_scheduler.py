@@ -15,6 +15,7 @@ from src.core.voice_delivery import DeliveryState, GenerationState, ResponseResu
 from src.reminders.recurrence import next_trigger
 from src.reminders.reminder_scheduler import DEFAULT_LATE_ACTION_GRACE_S, ReminderScheduler
 from src.reminders.reminder_store import ReminderScope, ReminderState, ReminderStore
+from src.home_assistant.home_actions import HomeActionService
 from tests.mocks.home_control import selected_actions
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -342,8 +343,105 @@ async def test_uncertain_receipt_is_never_resent_or_overwritten(tmp_path, mock_d
         assert await receipts(restarted) == [("uncertain", "interrupted_send")]
         assert (await restarted.get_home_action_receipt(request_id_for(r))).status == "uncertain"
         assert (await restarted.get_by_id(r.id)).state is ReminderState.FIRED
+        mock_deps["tts"].aspeak.assert_awaited_once_with(
+            "Oye, recuerda regar. Este aviso llega con atraso y no puedo confirmar si sus acciones "
+            "programadas se ejecutaron." if late else "Oye, recuerda regar", zone_id="living")
     finally:
         await restarted.close()
+
+LATE_PLAIN = "Oye, recuerda regar. Este aviso llega con atraso."
+LATE_NOT_RUN = "Oye, recuerda regar. Este aviso llega con atraso y no ejecuté sus acciones programadas."
+LATE_UNKNOWN = ("Oye, recuerda regar. Este aviso llega con atraso y no puedo confirmar si sus acciones "
+                "programadas se ejecutaron.")
+
+@pytest.mark.parametrize("existing, text, final", [
+    ([("confirmed", None)], LATE_PLAIN, [("confirmed", None)]),
+    ([("uncertain", "response_lost")], LATE_UNKNOWN, [("uncertain", "response_lost")]),
+    ([("failed", "late_not_executed")], LATE_NOT_RUN, [("failed", "late_not_executed")]),
+    ([("failed", "action_not_selected")], LATE_PLAIN, [("failed", "action_not_selected")]),
+    ([("confirmed", None), None], LATE_PLAIN, [("confirmed", None), ("failed", "late_not_executed")]),
+    ([("uncertain", "response_lost"), None], LATE_UNKNOWN,
+     [("uncertain", "response_lost"), ("failed", "late_not_executed")]),
+    ([("failed", "late_not_executed"), None], LATE_NOT_RUN, [("failed", "late_not_executed")] * 2),
+    ([None, None], LATE_NOT_RUN, [("failed", "late_not_executed")] * 2),
+])
+@pytest.mark.asyncio
+async def test_late_notice_states_only_what_the_receipts_prove(scheduler, store, mock_deps, clock, existing, text, final):
+    """Review F1: the notice is built from the barrier's outcome, never from ha_actions alone."""
+    actions = [ACTION, ACTION | {"service": "turn_off"}][:len(existing)]
+    r = await store.create("u1", "regar", clock() - 600, ha_actions=actions, scope=ReminderScope.SHARED)
+    for index, receipt in enumerate(existing):
+        if receipt is not None:
+            assert await store.claim_home_action(request_id_for(r, index), actions[index])
+            await store.finish_home_action(request_id_for(r, index), *receipt)
+    assert await scheduler._fire_reminder(r) is True
+    mock_deps["tts"].aspeak.assert_awaited_once_with(text, zone_id="living")
+    mock_deps["ha_client"].call_service_once.assert_not_called()
+    assert await receipts(store) == final
+    assert (await store.get_by_id(r.id)).state is ReminderState.FIRED
+
+@pytest.mark.asyncio
+async def test_confirmed_action_then_crash_then_late_restart_does_not_say_not_executed(tmp_path, mock_deps):
+    """Review F1 reproduction: spoken on time, action confirmed, crash before advance, restart 10 min later."""
+    path = str(tmp_path / "crash.db")
+    clock = FakeClock(time.time())
+    ha = mock_deps["ha_client"]
+    store = ReminderStore(path)
+    await store.initialize()
+    try:
+        r = await store.create("u1", "regar", clock() - 1, ha_actions=[ACTION], scope=ReminderScope.SHARED)
+        scheduler = ReminderScheduler(store, mock_deps["tts"], None, ha, {"output_zone": "living"},
+                                      home_actions=selected_actions(ha, ("light.patio",)), clock=clock)
+        store.mark_fired = AsyncMock(side_effect=RuntimeError("crash before advance"))
+        with pytest.raises(RuntimeError, match="crash before advance"):
+            await scheduler._fire_reminder(r)
+    finally:
+        await store.close()
+    clock.advance(600)
+    restarted = ReminderStore(path)
+    await restarted.initialize()
+    try:
+        scheduler = ReminderScheduler(restarted, mock_deps["tts"], None, ha, {"output_zone": "living"},
+                                      home_actions=HomeActionService(ha, policy=scheduler.home_actions.policy),
+                                      clock=clock)
+        assert await scheduler._fire_reminder(await restarted.get_by_id(r.id)) is True
+        assert [call.args[0] for call in mock_deps["tts"].aspeak.await_args_list] == ["Oye, recuerda regar", LATE_PLAIN]
+        ha.call_service_once.assert_awaited_once()
+        assert await receipts(restarted) == [("confirmed", None)]
+        assert (await restarted.get_by_id(r.id)).state is ReminderState.FIRED
+    finally:
+        await restarted.close()
+
+@pytest.mark.asyncio
+async def test_late_retry_after_failed_announcement_still_says_actions_were_not_executed(scheduler, store, mock_deps, clock):
+    """The receipts written by an earlier barrier of the same occurrence prove non-execution."""
+    mock_deps["tts"].aspeak.side_effect = [failed(), None]
+    r = await store.create("u1", "regar", clock() - DAY, ha_actions=[ACTION], scope=ReminderScope.SHARED)
+    assert await scheduler._fire_reminder(r) is False
+    clock.advance(scheduler._holds[r.id].retry_at - clock())
+    assert await scheduler._fire_reminder(r) is True
+    assert [call.args[0] for call in mock_deps["tts"].aspeak.await_args_list] == [LATE_NOT_RUN, LATE_NOT_RUN]
+    assert await receipts(store) == [("failed", "late_not_executed")]
+
+@pytest.mark.asyncio
+async def test_late_occurrence_cancelled_before_the_barrier_is_not_spoken(scheduler, store, mock_deps, clock):
+    r = await store.create("u1", "regar", clock() - DAY, ha_actions=[ACTION], scope=ReminderScope.SHARED)
+    reads = 0
+    original = store.get_by_id
+
+    async def racing_cancel(identity, **kwargs):
+        nonlocal reads
+        reads += 1
+        if reads == 2:  # the barrier's re-read: a web cancel lands just before it
+            assert await store.cancel(identity, shared_only=True)
+        return await original(identity, **kwargs)
+
+    store.get_by_id = racing_cancel
+    assert await scheduler._fire_reminder(r) is False
+    mock_deps["tts"].aspeak.assert_not_awaited()
+    assert await receipts(store) == []
+    store.get_by_id = original
+    assert (await store.get_by_id(r.id)).state is ReminderState.CANCELLED
 
 @pytest.mark.asyncio
 async def test_arrival_racing_the_loop_speaks_once(store, mock_deps):

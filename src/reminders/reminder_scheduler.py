@@ -8,11 +8,14 @@ import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from enum import Enum
 from typing import Any
 
 from src.core.voice_delivery import ResponseResult, VoiceDeliveryError, invoke_voice_callback
 from src.reminders.recurrence import next_trigger
-from src.reminders.reminder_store import Reminder, ReminderState, ReminderStore
+from src.reminders.reminder_store import (
+    Reminder, ReminderActionStatus, ReminderHomeActionReceipt, ReminderState, ReminderStore,
+)
 from src.home_assistant.control_policy import ActionOrigin, HomeActor
 from src.home_assistant.home_actions import HomeActionService
 
@@ -24,6 +27,36 @@ LATE_NOT_EXECUTED = "late_not_executed"
 # (about eleven years of a daily reminder); beyond it the row is held, not replayed.
 MAX_CATCH_UP_STEPS = 4096
 MAX_LOOP_ERROR_DELAY_S = 60.0
+
+
+class LateActionOutcome(Enum):
+    """What the late barrier found or did for one home action of an occurrence.
+
+    The late notice is built from these outcomes, never from the reminder's
+    configured actions alone, so it cannot contradict the durable receipts.
+    """
+
+    NOT_EXECUTED = "not_executed"  # receipt failed/late_not_executed (written now or by an earlier barrier)
+    CONFIRMED = "confirmed"        # an earlier on-time delivery already ran it
+    FAILED = "failed"              # an earlier attempt failed for another reason
+    UNCERTAIN = "uncertain"        # an earlier send may or may not have reached the house
+
+
+def _receipt_outcome(receipt: ReminderHomeActionReceipt | None) -> LateActionOutcome:
+    """Classify an existing receipt without changing it."""
+    if receipt is None:
+        return LateActionOutcome.UNCERTAIN
+    if receipt.status is ReminderActionStatus.CONFIRMED:
+        return LateActionOutcome.CONFIRMED
+    if receipt.status is ReminderActionStatus.FAILED:
+        return LateActionOutcome.NOT_EXECUTED if receipt.reason == LATE_NOT_EXECUTED else LateActionOutcome.FAILED
+    return LateActionOutcome.UNCERTAIN
+
+
+def _action_request_id(reminder: Reminder, index: int) -> str:
+    """Stable receipt key of one action of one occurrence."""
+    identity = json.dumps([reminder.id, reminder.trigger_at, index], separators=(",", ":"), allow_nan=False)
+    return "reminder:" + hashlib.sha256(identity.encode()).hexdigest()
 
 
 @dataclass
@@ -60,7 +93,9 @@ class ReminderScheduler:
         executed or marked fired.
       * An occurrence later than ``late_action_grace_s`` never runs its home
         actions: each action gets a terminal ``failed``/``late_not_executed``
-        receipt before anything is spoken, so it can never be sent later.
+        receipt before anything is spoken, so it can never be sent later. The
+        notice says the actions were not executed only when every receipt
+        proves it; an earlier confirmed or uncertain receipt changes the wording.
       * A recurring reminder that missed several occurrences is announced once
         and advanced to its next future occurrence.
       * One delivery per reminder at a time across the loop and arrival tasks.
@@ -254,13 +289,17 @@ class ReminderScheduler:
                 return False
             current = collapsed
             late = self._is_late(current)
+            outcomes: list[LateActionOutcome] = []
             if late:
                 # Durable barrier first: a crash or a failed announcement cannot
                 # leave the late actions executable by a later attempt.
-                await self._execute_home_actions(current)
+                barred = await self._bar_late_actions(current)
+                if barred is None:
+                    return False
+                outcomes = barred
             if self._output_zone is None:
                 raise SpeechNotDelivered("reminder_output_zone_required", heard=False)
-            await self._speak(self._message(current, late), self._output_zone)
+            await self._speak(self._message(current, late, outcomes), self._output_zone)
             spoken = True
             logger.info("TTS fired for reminder %s in zone %s (late=%s)", current.id, self._output_zone, late)
             self._holds.pop(current.id, None)
@@ -320,13 +359,22 @@ class ReminderScheduler:
         logger.info("Recurring reminder %s collapsed missed occurrences into one notice", reminder.id)
         return replace(reminder, trigger_at=latest)
 
-    def _message(self, reminder: Reminder, late: bool) -> str:
+    def _message(self, reminder: Reminder, late: bool, outcomes: list[LateActionOutcome]) -> str:
+        """Build the announcement; a late notice states only what the receipts prove.
+
+        Args:
+            reminder: The occurrence being announced.
+            late: Whether the occurrence is past the action grace.
+            outcomes: What the late barrier found for each action (empty when on time).
+        """
         message = f"{self._tts_prefix} {reminder.text}"
         if not late:
             return message
         notice = "Este aviso llega con atraso"
-        if reminder.ha_actions:
+        if outcomes and all(outcome is LateActionOutcome.NOT_EXECUTED for outcome in outcomes):
             notice += " y no ejecuté sus acciones programadas"
+        elif LateActionOutcome.UNCERTAIN in outcomes:
+            notice += " y no puedo confirmar si sus acciones programadas se ejecutaron"
         return f"{message.rstrip(' .')}. {notice}."
 
     async def _speak(self, message: str, zone: str) -> None:
@@ -429,23 +477,41 @@ class ReminderScheduler:
                 delivered += 1
         return delivered
 
-    async def _execute_home_actions(self, reminder: Reminder) -> None:
-        """Claim durable effects and apply current policy on every delivery path.
+    async def _bar_late_action(self, request_id: str, action: Any) -> LateActionOutcome:
+        """Record a terminal late receipt, or report the existing one unchanged."""
+        if await self._store.claim_home_action(request_id, action):
+            await self._store.finish_home_action(request_id, "failed", LATE_NOT_EXECUTED)
+            logger.warning("Late reminder home action not executed")
+            return LateActionOutcome.NOT_EXECUTED
+        outcome = _receipt_outcome(await self._store.get_home_action_receipt(request_id))
+        logger.warning("Late reminder home action already has a receipt (%s); left unchanged", outcome.value)
+        return outcome
 
-        A late occurrence only records terminal ``failed``/``late_not_executed``
-        receipts; an existing receipt (confirmed, failed or uncertain) is never
-        overwritten or resent.
+    async def _bar_late_actions(self, reminder: Reminder) -> list[LateActionOutcome] | None:
+        """Bar every action of a late occurrence; None when the occurrence is no longer current.
+
+        An existing receipt (confirmed, failed or uncertain) is never
+        overwritten or resent; it is reported so the notice cannot contradict it.
+        """
+        current = await self._shared_occurrence(reminder)
+        if current is None:
+            return None
+        return [await self._bar_late_action(_action_request_id(current, index), action)
+                for index, action in enumerate(current.ha_actions or [])]
+
+    async def _execute_home_actions(self, reminder: Reminder) -> None:
+        """Claim durable effects and apply current policy for an on-time occurrence.
+
+        Lateness is re-checked before every action: once the occurrence is past
+        the grace, the remaining actions only get late receipts.
         """
         reminder = await self._shared_occurrence(reminder)
         if reminder is None:
             return
         for index, action in enumerate(reminder.ha_actions or []):
-            identity = json.dumps([reminder.id, reminder.trigger_at, index], separators=(",", ":"), allow_nan=False)
-            request_id = "reminder:" + hashlib.sha256(identity.encode()).hexdigest()
+            request_id = _action_request_id(reminder, index)
             if self._is_late(reminder):
-                if await self._store.claim_home_action(request_id, action):
-                    await self._store.finish_home_action(request_id, "failed", LATE_NOT_EXECUTED)
-                logger.warning("Late reminder home action not executed")
+                await self._bar_late_action(request_id, action)
                 continue
             if not await self._store.claim_home_action(request_id, action):
                 logger.warning("Reminder home action already claimed; no automatic resend")
