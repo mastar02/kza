@@ -400,10 +400,18 @@ def test_whole_run_reports_every_configured_room_including_cocina(tmp_path):
 def test_host_without_sysfs_reports_no_disponible_without_crashing(tmp_path, capsys):
     empty = tmp_path / 'empty'
     empty.mkdir()
+    calls = []
+
+    def no_journal(command, **kwargs):
+        calls.append(command[:2])
+        raise FileNotFoundError('journalctl')
+
     code = tool.main(['--config', str(_config(tmp_path)), '--sys-root', str(empty), '--proc-root', str(empty),
-                      '--console-log', str(tmp_path / 'missing.log'), '--interval', '0'])
+                      '--console-log', str(tmp_path / 'missing.log'), '--interval', '0'], run=no_journal)
     output = json.loads(capsys.readouterr().out)
     assert code == 0
+    assert calls == [['journalctl', '-k']]  # hermetic: the host's real kernel journal is never read
+    assert output['kernel_last_2h'] == {'error': 'no disponible (FileNotFoundError)'}
     assert output['usb_sysfs'] == 'no disponible'
     assert all(info == {'usb_port': info['usb_port'], 'present': False} for info in output['second'].values())
     assert output['voice_watchdog_log_tail'] == {'error': 'no disponible (FileNotFoundError)'}

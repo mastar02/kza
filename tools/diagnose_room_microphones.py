@@ -244,7 +244,8 @@ def collect(config_path=DEFAULT_CONFIG, *, sys_root=SYS_ROOT, proc_root=PROC_ROO
     return result
 
 
-def main(argv=None):
+def main(argv=None, *, run=subprocess.run):
+    """Print the diagnosis as JSON; ``run`` executes journalctl (injectable for tests)."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--config', type=Path, default=DEFAULT_CONFIG)
     parser.add_argument('--console-log', type=Path, action='append', dest='console_logs',
@@ -254,7 +255,7 @@ def main(argv=None):
     parser.add_argument('--interval', type=float, default=SAMPLE_INTERVAL_S)
     args = parser.parse_args(argv)
     result = collect(args.config, sys_root=args.sys_root, proc_root=args.proc_root,
-                     console_logs=args.console_logs, interval=args.interval)
+                     console_logs=args.console_logs, run=run, interval=args.interval)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 2 if 'config_error' in result else 0
 
