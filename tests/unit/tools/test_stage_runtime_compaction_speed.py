@@ -338,9 +338,14 @@ def test_verify_snapshot_refuses_every_departure_from_the_pinned_canonical_text(
 
 # --- P9 -----------------------------------------------------------------------------------------------
 
-S, M, L, R = 154_116_457, 377_000_000, 93_335_552, 17_000_000  # SC-0b: the measured synthetic state
-PEAK_GROWTH = 861_000_000  # SC-0b: filesystem growth at the peak (VACUUM of K's events.db), temp on the root
-SERVER_PEAKS = (942_010_368, 823_345_152)  # SC-0b after the change: free-space drop every 10 ms (shared disk)
+S, M, L, R = 154_116_493, 376_677_854, 93_335_552, 15_628_126  # SC-0b: the measured synthetic state
+PEAK_GROWTH = 861_000_000  # SC-0b profile: filesystem growth at the peak (VACUUM of K's events.db), temp on the root
+# SC-0b review F5: free-space drop every 10 ms on a dedicated, otherwise idle filesystem (a Mac APFS disk image
+# holding only the run, SQLite's temp directory on it): the model's terms must hold these peaks without the margin.
+QUIET_PEAKS = (880_533_504, 880_271_360)
+# The server's shared root filesystem, same sampler: other writers add noise (one sample ~55 MB above the terms,
+# one ~64 MB below). Compared with the need including the 256 MiB margin, which exists to absorb such noise.
+SERVER_PEAKS = (942_010_368, 823_345_152)
 
 
 def test_free_space_need_is_exactly_the_terms_of_the_measured_peak():
@@ -356,11 +361,14 @@ def test_free_space_need_is_exactly_the_terms_of_the_measured_peak():
 def test_free_space_need_covers_the_measured_peak_with_the_real_manifest_and_with_the_estimate():
     margin = compaction.FREE_MARGIN
     real = compaction.free_space_need(S, M, L, R, temp_on_root=True)["root"]
-    assert real - margin >= PEAK_GROWTH
+    terms = real - margin
+    assert terms == 2 * S + M + 2 * L + R
+    assert terms >= PEAK_GROWTH
+    assert all(terms >= peak for peak in QUIET_PEAKS)  # the terms alone hold the quiet peak
     estimated = compaction.free_space_need(S, compaction.MANIFEST_ESTIMATE_FACTOR * S, L, R, temp_on_root=True)
     assert estimated["root"] >= real
     assert 2 * S + (256 << 20) < PEAK_GROWTH  # the old rule fell short of the measured peak
-    assert all(real >= peak for peak in SERVER_PEAKS)
+    assert all(real >= peak for peak in SERVER_PEAKS)  # shared disk: noise absorbed by the margin
 
 
 def test_worker_need_is_k_plus_the_vacuum_of_its_largest_database():
