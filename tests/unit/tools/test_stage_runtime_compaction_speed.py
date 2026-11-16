@@ -646,6 +646,18 @@ def test_sqlite_temp_directory_skips_a_directory_it_cannot_write(tmp_path):
     assert oc._sqlite_temp_directory() == stage.sqlite_temp_directory()
 
 
+def test_the_worker_uses_the_controllers_temp_directory_search(tmp_path, monkeypatch):
+    """F8 (b): one search order for the controller and the worker (no drift)."""
+    first, second = tmp_path / "a", tmp_path / "b"
+    first.mkdir()
+    second.mkdir()
+    monkeypatch.setenv("SQLITE_TMPDIR", str(first))
+    monkeypatch.setenv("TMPDIR", str(second))
+    assert oc._sqlite_temp_directory() == first == compaction.sqlite_temp_directory()
+    monkeypatch.delenv("SQLITE_TMPDIR")
+    assert oc._sqlite_temp_directory() == second == compaction.sqlite_temp_directory()
+
+
 def test_sqlite_temp_directory_falls_back_to_the_working_directory_as_sqlite_does(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     real_isdir = os.path.isdir
