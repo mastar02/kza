@@ -12,7 +12,7 @@ import yaml
 from unittest.mock import AsyncMock, MagicMock
 
 from src.core.voice_delivery import (
-    DeliveryState, GenerationState, ResponseResult, ResponseStage, VoiceDeliveryError,
+    SIGNALS_OUTPUT_FREE, DeliveryState, GenerationState, ResponseResult, ResponseStage, VoiceDeliveryError,
 )
 from src.reminders.recurrence import next_trigger
 from src.reminders.reminder_scheduler import (
@@ -1477,6 +1477,32 @@ async def test_a_held_occurrence_gets_one_round_per_newly_due_occurrence_and_nev
     mock_deps["tts"].aspeak.assert_not_awaited()
     assert (await store.get_by_id(r.id)).trigger_at == r.trigger_at
     assert await notices(store) == [("sending", None, 1)]
+
+
+@pytest.mark.parametrize("blocking", [False, True])
+@pytest.mark.asyncio
+async def test_a_notice_speaks_outside_the_output_free_signal(build, store, clock, blocking):
+    """Q31: the scheduler's own notice runs with SIGNALS_OUTPUT_FREE False, so the end of its output
+    (even a release that lands after the batch) never opens another round; the context is restored."""
+    seen = []
+
+    class Output:
+        if blocking:
+            def aspeak(self, text, **kwargs):  # run in a worker thread with a copied context
+                seen.append(SIGNALS_OUTPUT_FREE.get())
+                return failed()
+        else:
+            async def aspeak(self, text, **kwargs):
+                seen.append(SIGNALS_OUTPUT_FREE.get())
+                return failed()
+
+    scheduler = ReminderScheduler(store, Output(), None, AsyncMock(), {"output_zone": "living"}, clock=clock,
+                                  home_actions=MagicMock())
+    r = await store.create("u1", "regar", clock() - 1, scope=ReminderScope.SHARED)
+    assert await scheduler._fire_reminder(r) is False
+    assert seen == [False]
+    assert SIGNALS_OUTPUT_FREE.get() is True
+    assert await notices(store) == [("failed", "delivery_not_started:failed", 1)]
 
 
 @pytest.mark.parametrize("restart_after_latest", [HOUR, 30])
