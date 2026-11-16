@@ -304,17 +304,18 @@ def test_release_run_verified_needs_both_records_and_the_monotonic_interval(tmp_
     run_id = "ef" * 16
     (tmp_path / "admission" / "runs").mkdir(parents=True)
 
-    def records(ready=True, measured=12.0, unacknowledged=False, smoke=SMOKE, extra=None):
+    def records(ready=True, measured=12.0, unacknowledged=False, smoke=SMOKE, extra=None, ready_run=run_id,
+                smoke_run=run_id):
         for path in (stage.verify_ready_path(tmp_path, run_id), stage.verify_smoke_stop_path(tmp_path, run_id)):
             if path.exists():
                 path.unlink()
         if ready:
             path = stage.verify_ready_path(tmp_path, run_id)
-            path.write_text(json.dumps({"schema_version": 1, "run_id": run_id, "verify_acknowledged": True,
+            path.write_text(json.dumps({"schema_version": 1, "run_id": ready_run, "verify_acknowledged": True,
                                         "ready_at": 1.0, **(extra or {})}))
         if measured is not None:
             stage.verify_smoke_stop_path(tmp_path, run_id).write_text(json.dumps({
-                "schema_version": 1, "run_id": run_id, "smoke_seconds": smoke, "measured_seconds": measured,
+                "schema_version": 1, "run_id": smoke_run, "smoke_seconds": smoke, "measured_seconds": measured,
                 "reason": "smoke_elapsed", "verify_unacknowledged": unacknowledged, "stopped_at": 0.0}))
         return stage.release_run_verified(tmp_path, run_id, SMOKE)
 
@@ -327,6 +328,11 @@ def test_release_run_verified_needs_both_records_and_the_monotonic_interval(tmp_
     assert records(unacknowledged=True) is False
     assert records(smoke=SMOKE + 1) is False  # another N than the armed one
     assert records(extra={"note": "x"}) is False  # a malformed record is not a verified run
+    # Review RA-2: a record naming another run is not this run's record, under this run's filename.
+    for misnamed in ({"ready_run": "cd" * 16}, {"smoke_run": "cd" * 16}):
+        assert records(**misnamed) is False
+        with pytest.raises(ValueError, match="runtime_admission_verify_record_invalid"):
+            stage.verify_run_records(tmp_path, run_id)
 
 
 # --- the child side of the flag and the acknowledgement --------------------------------------------

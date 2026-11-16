@@ -20,7 +20,7 @@ import pytest
 
 from src.analytics.event_logger import EventLogger
 from src.analytics.services import build_event_logger
-from src.memory.capture_recorders import CaptureRecorders
+from src.memory.capture_recorders import CaptureRecorders, RecorderState
 from src.memory.fact_ledger import FactLedger, MemoryAssigner, MemoryOrigin, MemorySource
 from src.memory.privacy_services import PrivacyServices
 from src.reminders.reminder_store import ReminderStore
@@ -176,6 +176,29 @@ async def test_verify_capture_close_refuses_a_changed_recorder_row(tmp_path):
         assert recorders.unchanged_confirmed() is False
     finally:
         await privacy.aclose()
+
+
+@pytest.mark.parametrize("cache", ["state", "kind"])
+async def test_verify_capture_close_refuses_a_changed_in_memory_row(tmp_path, cache):
+    """Review RA-2: the close compares this process's cache with the construction rows too, so a
+    cache entry changed after construction (the database untouched) is not carried as unchanged."""
+    path = str(tmp_path / "privacy.db")
+    _initialized(path)
+    rows = _plant_recorders(path, ["active", "reserved"])
+    privacy, recorders = await _boot(path, True)
+    try:
+        await asyncio.wait_for(recorders.drain(), 2)
+        key = sorted(recorders._records)[0]
+        if cache == "state":
+            recorders._records[key] = RecorderState.UNKNOWN
+        else:
+            recorders._kinds[key] = "other"
+        assert await recorders.confirm_unchanged() is True  # the database rows are unchanged
+        await recorders.aclose()
+        assert recorders.unchanged_confirmed() is False
+    finally:
+        await privacy.aclose()
+    assert _rows(path) == rows
 
 
 async def test_normal_drain_still_turns_active_unknown_deletes_reserved_and_waits(tmp_path):
