@@ -2248,6 +2248,55 @@ async def test_an_output_free_signal_during_a_flight_waits_for_the_conversation(
     assert (await store.get_by_id(r.id)).state is ReminderState.FIRED
 
 
+@pytest.mark.parametrize("max_attempts, bound, fallback_rounds", [(3, 2, 0), (2, 900, 0)])
+@pytest.mark.asyncio
+async def test_a_signal_during_a_flight_bounds_the_round_by_the_fresh_backoff_when_a_window_opens_later(
+    store, clock, conversation, max_attempts, bound, fallback_rounds,
+):
+    """Review round 3 (Q33-3): the output became free while the attempt was in flight and no
+    conversation was active, so the new round opens at once; a follow-up window that opens before it
+    is claimed holds it, bounded by this failure's backoff (or fallback time, without using a
+    fallback round), never by the stale retry time of the attempt that just failed."""
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class Output:
+        def __init__(self):
+            self.texts = []
+
+        async def aspeak(self, text, **kwargs):
+            self.texts.append(text)
+            if len(self.texts) == 2:
+                entered.set()
+                await release.wait()
+            return delivered(text) if len(self.texts) > 2 else output_busy()
+
+    output = Output()
+    scheduler = scheduler_on(store, output, AsyncMock(), clock, notice_max_attempts=max_attempts)
+    scheduler.watch_conversation(conversation)
+    r = await store.create("u1", "regar", clock() - 1, scope=ReminderScope.SHARED)
+    await scheduler._deliver_due(clock())
+    clock.advance(1)
+    claimed_at = clock()
+    task = asyncio.create_task(scheduler._deliver_due(clock()))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        scheduler.notify_output_available()  # no conversation yet: the new round opens at once
+    finally:
+        release.set()
+    await asyncio.wait_for(task, 2)
+    hold = scheduler._holds[r.id]
+    assert (hold.output_round, hold.failures, hold.retry_at) == (True, 0, clock())
+    assert (hold.timed_retry_at, hold.fallback_rounds) == (claimed_at + bound, fallback_rounds)
+    conversation.start_conversation()  # the follow-up window opens before the claim
+    assert await scheduler._next_timeout() == bound
+    await scheduler._deliver_due(clock())
+    assert len(output.texts) == 2
+    conversation.end_conversation("timeout")
+    await scheduler._deliver_due(clock())
+    assert len(output.texts) == 3
+    assert (await store.get_by_id(r.id)).state is ReminderState.FIRED
+
+
 @pytest.mark.asyncio
 async def test_an_on_time_notice_is_not_held_by_a_conversation(scheduler, store, mock_deps, clock, conversation):
     """Q33 applies only to rounds the output-free signal opens; a due reminder speaks as before."""

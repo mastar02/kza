@@ -938,7 +938,9 @@ class ReminderScheduler:
         other activity, a new round opens now instead (RV-Q31-2), without
         using a fallback round; during a follow-up conversation that round
         waits for the conversation to end and the timed retry set here still
-        applies (Q33).
+        applies (Q33). Its bound is always this failure's backoff or fallback
+        time, also when the round opens at once and a conversation starts
+        before it is claimed (review round 3, Q33-3).
 
         Args:
             reminder: The occurrence.
@@ -957,6 +959,9 @@ class ReminderScheduler:
         if signalled:
             self._signal_pending.discard(reminder.id)
             if not self._conversation_active():
+                # The bound a conversation that opens before the claim would use: this failure's
+                # backoff or fallback time, computed now (Q33-3); no fallback round is used (RV-Q31-2).
+                hold.retry_at = self._timed_retry(hold, failed_at)
                 self._reopen_for_output(hold, self._clock())
                 logger.info("Reminder %s not delivered (%s) while the output became free; new round now",
                             reminder.id, reason)
@@ -972,10 +977,11 @@ class ReminderScheduler:
     def _schedule_after_failure(self, hold: DeliveryHold, reminder: Reminder, reason: str,
                                 failed_at: float) -> None:
         """Set the next timed retry of a failed attempt: in-round backoff or a bounded fallback round."""
+        retry_at = self._timed_retry(hold, failed_at)
         if hold.failures >= self._max_attempts:
-            if hold.fallback_rounds < self._fallback_max_rounds:
+            if retry_at is not None:
                 hold.fallback_rounds += 1
-                hold.retry_at = failed_at + self._fallback_round_s
+                hold.retry_at = retry_at
                 logger.warning("Reminder %s not delivered (%s) after %d attempts in this round; fallback round "
                                "%d/%d in %.0f s", reminder.id, reason, hold.failures, hold.fallback_rounds,
                                self._fallback_max_rounds, hold.retry_at - self._clock())
@@ -984,9 +990,23 @@ class ReminderScheduler:
                 logger.warning("Reminder %s not delivered (%s) after %d attempts in this round; kept pending "
                                "until the output is free again", reminder.id, reason, hold.failures)
         else:
-            hold.retry_at = failed_at + self._retry_gap * 2 ** (hold.failures - 1)
+            hold.retry_at = retry_at
             logger.info("Reminder %s not delivered (%s); attempt %d/%d in %.0f s", reminder.id, reason,
                         hold.failures + 1, self._max_attempts, hold.retry_at - self._clock())
+
+    def _timed_retry(self, hold: DeliveryHold, failed_at: float) -> float | None:
+        """Time of the next timed retry after a failure, without using a fallback round.
+
+        In-round backoff (30 s, 60 s, ...) or, once the round is exhausted, the
+        fallback round notice_fallback_round_s later while any is left; None
+        when only an output-free signal, a later occurrence, a restart or a
+        dismiss can retry it.
+        """
+        if hold.failures < self._max_attempts:
+            return failed_at + self._retry_gap * 2 ** (hold.failures - 1)
+        if hold.fallback_rounds < self._fallback_max_rounds:
+            return failed_at + self._fallback_round_s
+        return None
 
     def _retry_completion(self, reminder: Reminder, reason: str) -> None:
         """Schedule a silent retry of the advance of a terminal notice (30 s, 60 s, ...), bounded per round.
