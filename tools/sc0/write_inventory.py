@@ -68,9 +68,12 @@ def projected_tables(repo: Path) -> dict[str, str]:
         sys.path.insert(0, str(repo))
     from scripts import stage_runtime  # noqa: PLC0415
     # The capture's body moved into _capture_state_authority in SC-0b (capture_state_authority is
-    # its memo wrapper); both are read so either layout yields the same table set.
+    # its memo wrapper), and its selection into _authority_selection / _authority_table_selection in
+    # SC-4b (shared with W1); all are read so every layout yields the same table set.
     source = "".join(inspect.getsource(function) for function in (
         stage_runtime.capture_state_authority, getattr(stage_runtime, "_capture_state_authority", None),
+        getattr(stage_runtime, "_authority_selection", None),
+        getattr(stage_runtime, "_authority_table_selection", None),
         stage_runtime._mixed_projections) if function is not None)
     partial: set[str] = set()
     for pattern in _SOURCE_PATTERNS:
