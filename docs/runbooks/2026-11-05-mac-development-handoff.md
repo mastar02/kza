@@ -1493,6 +1493,33 @@ los hace la sesión coordinadora. Sin release. Evidencia:
   copias) no se corrieron: no tocan lo que cambió. Mutantes 34/34.
 - Queda para después (`follow_up`): `--accept-regressed-source` (R5-1, con el
   testigo de recuperación de SC-4b).
+- Revisión 1 (dos revisores, `changes_needed`), aplicada en commits propios:
+  - RA-1/B1: `compact resume` no repite P6'. `_k_runtime` compara ahora el
+    `release.json` del archivo dado con el del intent **antes** de escribir
+    nada; un `resume` con el archivo de H (o un NUEVO no admitido) después de
+    un `start` cortado rechaza `compaction_artifact` con `"archive":
+    "not_the_intent_archive"` y el `resume` con el NUEVO sigue llegando a la
+    activación. P6'(f) queda probado con dos cambios entre la comprobación y
+    la extracción (otro archivo; `release.json` de K reescrito).
+  - RA-2: modo simple es sólo un log **sin** `mode`; cualquier otro valor es
+    `compaction_log_invalid` (lanzador, verify, allow-run, descarte, Q6,
+    served(root)); `status` lo lista como inválido; el abort simple antes de
+    la corrida sigue.
+  - B3: un NUEVO de época mayor que la instalada rechaza `t0_required` con los
+    dos triples (antes `release_epoch`); menor que 5 sigue `release_epoch`.
+  - B4: `start`/`resume` de un log del modo release dicen `next: compact
+    abort <id>` hasta SC-4a; un log simple sigue con `compact verify`.
+  - B2/B5: runbook de compactación con `NEW_ARCHIVE` (época 5: `--archive` es
+    siempre el NUEVO, también en `resume`) y filas con salida para
+    `t0_required` por época, `controller_revision_conflict`,
+    `release_unproven_copy` (un `slots/.prepare-*` vacío se quita con `rmdir`;
+    otra ruta: servicio en H, investigar, decisión de 48 horas),
+    `compaction_artifact`, `schema_changed` y `locator_collision`.
+  - RA-3/RA-4/RA-5: tests de la exención heredada (slot de estado heredado,
+    dos registros confirmados, nombre de registro distinto del digest), de
+    las tres patas de SR-2 y de las colisiones de cola en las dos tablas.
+  - RA-6, RA-7 y B6 van a `follow_up` (no bloquean la primera actualización
+    posterior a R1).
 
 ## Prompt para la sesión nueva
 

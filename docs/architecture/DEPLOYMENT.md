@@ -920,7 +920,14 @@ escribir.
 Queda pendiente (lista `follow_up` de la evidencia): `--accept-regressed-source`
 (R5-1) depende del testigo de cierre por registro de recuperación de SC-4b;
 hasta entonces un head cerrado por un registro de recuperación no es fuente de
-ninguna transición (`plan` rechaza como antes).
+ninguna transición (`plan` rechaza como antes). Tampoco se exige todavía que
+el código corra desde `controller/current` (revisión RA-6): P7 acepta
+cualquier `controller/<commit>` de la misma época, así que después de un T0
+que sube la revisión un `controller/<commit>` anterior podría planificar y
+empezar con su propio trabajador. No afecta a la primera actualización
+posterior a R1 (el único otro directorio es el de R1, de época 4, que no
+toma el lease de una raíz de época 5), pero la regla del operador sigue
+siendo usar sólo `controller/current`.
 
 Tests: `tests/unit/tools/test_sc1b_release_plan.py`.
 
