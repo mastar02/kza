@@ -233,7 +233,9 @@ class ReminderScheduler:
         receipt before anything is spoken. On time, actions run only after a
         confirmed successful notice of the same pass.
       * A recurring reminder that missed several occurrences is announced once
-        and advanced to its first future occurrence.
+        and advanced to its first future occurrence; after a terminal notice
+        whose advance was lost (crash), missed later occurrences still get that
+        one notice (user answer Q32).
       * The loop is the only announcer; arrivals only wake it. Several due
         occurrences are claimed together and announced in one summary.
     """
@@ -618,7 +620,7 @@ class ReminderScheduler:
             # A crash or a failed completion left a terminal notice without its advance:
             # complete it silently; on error only the advance is retried, never the speech.
             try:
-                await self._advance(occurrence)
+                await self._complete_terminal(occurrence)
             except asyncio.CancelledError:
                 raise
             except Exception as error:
@@ -632,6 +634,25 @@ class ReminderScheduler:
             self._park(occurrence, "notice_in_flight")
             return False
         return True
+
+    async def _complete_terminal(self, occurrence: Reminder) -> None:
+        """Silently complete an occurrence whose notice was already terminal (crash, lost advance).
+
+        User answer Q32: a recurring reminder whose later occurrences were missed
+        meanwhile (e.g. a crash while announcing, then a multi-day outage) moves to
+        the latest due one, which the next pass announces once like the catch-up
+        collapse (late: barrier first, no home actions). Otherwise it advances as
+        usual. The terminal notice itself is never spoken again.
+        """
+        if occurrence.recurrence:
+            latest = self._latest_due(occurrence, occurrence.trigger_at, self._clock())
+            if latest != occurrence.trigger_at:
+                if await self._store.update_trigger(occurrence.id, latest, shared_only=True,
+                                                    expected_trigger_at=occurrence.trigger_at):
+                    logger.info("Recurring reminder %s: missed occurrences after a terminal notice "
+                                "grouped into one notice", occurrence.id)
+                return
+        await self._advance(occurrence)
 
     async def _announce(self, message: str) -> tuple[ReminderActionStatus, str | None]:
         """Speak once through the output's aspeak and map its ResponseResult.

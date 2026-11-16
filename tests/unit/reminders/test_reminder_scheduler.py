@@ -1355,7 +1355,7 @@ async def test_dismiss_with_a_retired_session_writes_nothing(scheduler, store, c
 
 
 # ---------------------------------------------------------------------------
-# T034-U2 follow-up: user answer Q31 (new notice rounds)
+# T034-U2 follow-up: user answers Q31 (new rounds) and Q32 (missed occurrences after a crash)
 # ---------------------------------------------------------------------------
 
 async def fail_one_round(scheduler, clock) -> None:
@@ -1477,3 +1477,62 @@ async def test_a_held_occurrence_gets_one_round_per_newly_due_occurrence_and_nev
     mock_deps["tts"].aspeak.assert_not_awaited()
     assert (await store.get_by_id(r.id)).trigger_at == r.trigger_at
     assert await notices(store) == [("sending", None, 1)]
+
+
+@pytest.mark.parametrize("restart_after_latest", [HOUR, 30])
+@pytest.mark.asyncio
+async def test_a_crash_while_announcing_then_a_multi_day_outage_groups_the_missed_occurrences(
+    tmp_path, mock_deps, clock, restart_after_latest,
+):
+    """Q32: the missed occurrences get one notice, as without the crash; the cut notice is never repeated.
+
+    One hour after the latest missed occurrence the notice is late: barrier first, no home actions.
+    Thirty seconds after it the latest occurrence is still on time, exactly like the catch-up collapse.
+    """
+    path = str(tmp_path / "outage.db")
+    first, ha = await reopen(path), mock_deps["ha_client"]
+    entered = asyncio.Event()
+
+    async def speak(text, **kwargs):
+        entered.set()
+        await asyncio.Event().wait()  # the process dies while the notice plays
+
+    tts = AsyncMock()
+    tts.aspeak.side_effect = speak
+    try:
+        r = await first.create("u1", "regar", clock() - 1, ha_actions=[ACTION], recurrence="daily",
+                               scope=ReminderScope.SHARED)
+        task = asyncio.create_task(scheduler_on(first, tts, ha, clock)._fire_reminder(r))
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    finally:
+        await first.close()
+    latest = r.trigger_at
+    for _ in range(3):
+        latest = next_trigger(latest, "daily")
+    clock.now = latest + restart_after_latest
+    restarted = await reopen(path)
+    try:
+        after = voice_output()
+        scheduler = scheduler_on(restarted, after, ha, clock)
+        await scheduler._deliver_due(clock())  # completes the cut notice silently and groups the missed days
+        after.aspeak.assert_not_awaited()
+        assert (await restarted.get_by_id(r.id)).trigger_at == latest
+        assert await scheduler._next_timeout() == 0
+        for _ in range(3):
+            await scheduler._deliver_due(clock())
+        late = restart_after_latest > DEFAULT_LATE_ACTION_GRACE_S
+        after.aspeak.assert_awaited_once_with(LATE_NOT_RUN if late else "Oye, recuerda regar", zone_id="living")
+        assert await notices(restarted) == [("uncertain", "interrupted_send", 1), ("confirmed", None, 1)]
+        if late:
+            ha.call_service_once.assert_not_called()
+            assert await receipts(restarted) == [("failed", "late_not_executed")]
+        else:
+            ha.call_service_once.assert_awaited_once()
+            assert await receipts(restarted) == [("confirmed", None)]
+        current = await restarted.get_by_id(r.id)
+        assert current.state is ReminderState.ACTIVE and current.trigger_at == next_trigger(latest, "daily")
+    finally:
+        await restarted.close()
+    tts.aspeak.assert_awaited_once()
