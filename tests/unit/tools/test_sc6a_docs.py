@@ -100,3 +100,25 @@ def test_the_superseded_81ed568_archive_is_recorded_not_pinned():
                      "docs/runbooks/2026-11-05-mac-development-handoff.md"):
         flat = " ".join((REPO / relative).read_text().split())
         assert "r1-81ed568.tar.gz.superseded-r1b" in flat, relative
+
+
+def test_the_scheduling_gate_states_what_is_done_and_leaves_scheduling_to_the_user():
+    """The U3b-0e5 gate (independent review, compiled T-A17 on Linux) is stated as met with its
+    references; what remains is operator steps only, and no document declares the window scheduled."""
+    text = r1_runbook.runbook_text()
+    gate = " ".join(text.split("## Compuerta de programación (P7, Q5)", 1)[1].split("**Paso del día 14**", 1)[0].split())
+    assert "Faltan su revisión independiente" not in gate
+    assert "Estado (2026-11-15): esta compuerta está cumplida." in gate
+    for reference in ("u3b-0e5-independent-review.json", "`round_2`", "`review_round`", "268c852",
+                      "tests/integration/test_linux_adoption_window.py", "/home/yo/projects/runs/full-r1b",
+                      "/home/yo/projects/runs/sc6a"):
+        assert reference in gate, reference
+    assert "Este runbook no autoriza ni programa la ventana: la programa el usuario, como operador de `kza`." in gate
+    for step in ("W7", "drop-in sudo", "arranque real hasta READY", "`r1-c6462e5.tar.gz`"):
+        assert step in gate, step
+    handoff = " ".join((REPO / "docs/runbooks/2026-11-05-mac-development-handoff.md").read_text().split())
+    deployment = " ".join((REPO / "docs/architecture/DEPLOYMENT.md").read_text().split())
+    assert "La ventana de R1 sigue sin programarse. Su «Compuerta de programación» (runbook de R1) está cumplida" in handoff
+    assert "la ventana la programa el usuario, como operador, y sigue sin programarse." in deployment
+    for claim in ("ventana programada", "ventana autorizada", "la ventana está programada"):
+        assert claim not in gate.lower(), claim

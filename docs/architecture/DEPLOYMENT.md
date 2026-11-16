@@ -1085,7 +1085,14 @@ Estado: `retire-legacy-state` y la comprobación de enlaces están en la rama de
 desarrollo (U3b-0e5). No se ejecutaron en producción: el estado de b0866e8
 sigue siendo el estado servido hasta la ventana de R1. La ventana de R1 no se
 programa hasta que los dos estén revisados y ensayados (T-A17; ver el
-[runbook de la ventana](../runbooks/2026-11-13-r1-adoption-window.md)).
+[runbook de la ventana](../runbooks/2026-11-13-r1-adoption-window.md)). Al
+2026-11-15 esa compuerta está cumplida: revisión independiente aprobada en su
+ronda 2 (2026-11-13, `t040-t041/u3b-0e5-independent-review.json`) y T-A17
+compilado en Linux, que pasó en el server en SC-6a y en la suite batch de R1-B
+sobre el árbol de c6462e5. Lo que queda son pasos del operador (transferir y
+verificar el R1 fijado, el drop-in sudo de W7, el arranque real hasta READY de
+W8); la ventana la programa el usuario, como operador, y sigue sin
+programarse.
 
 Plazo (decisiones del usuario P7 = B y `u3b_0e5_retirement` Q1 = A, ya
 registradas):

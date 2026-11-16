@@ -888,7 +888,7 @@ Siguiente:
 - `_verify_legacy_slot` resuelve cada enlace del destino de rollback. La usan `uninstall-launcher` y los dos `adoption-abort`.
 - DEPLOYMENT: hueco de privacidad acotado a los almacenes mapeados (0d4a F1), sección del retiro Q5 y la época 2 del controlador (0e3 F14).
 - **Plazo P7, con responsable**: DÍA 0 es el sello de cierre de W9. L4 vale hasta DÍA 0 + 14 × 24 h, y desde ese momento corre el retiro (Q1 = A: «día 14» son 14 × 24 h). Responsable: el usuario, como operador de `kza`, con la autorización ya registrada (P7 = B y `u3b_0e5_retirement`). Fecha exacta: se anota aquí en W10 (todavía no hay ventana). Después no hay rollback no gestionado, y `/home/kza/kza` no es un destino de rollback (Q3 = A).
-- Revisión independiente: aprobado con cambios; F3–F7 y F9 corregidos, F10 registrado (`t040-t041/u3b-0e5-evidence.json`). Falta el T-A17 compilado en Linux (U3b-0e4). La ventana de R1 no se programa hasta tenerlo.
+- Revisión independiente: aprobado con cambios; F3–F7 y F9 corregidos, F10 registrado (`t040-t041/u3b-0e5-evidence.json`). Falta el T-A17 compilado en Linux (U3b-0e4). La ventana de R1 no se programa hasta tenerlo. (Hecho: ronda 2 de la revisión aprobada el 2026-11-13 y T-A17 compilado verde en el server en SC-6a y en la suite de R1-B; ver «SC-6a» y su «Siguiente».)
 
 Decisiones del usuario en `t040-t041/user-decisions-20261110.json` (`u3b_*`).
 
@@ -1112,10 +1112,18 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
     del rango en el tmp privado de pytest de `yo` en cada corrida (238b463,
     40aa05b, b0c322d~1). No son ubicaciones de transferencia.
 - Siguiente: el diseño del modo release (v4 en revisión; las respuestas SC-D
-  ya están registradas, ver arriba). La ventana de R1 sigue sin programarse:
-  la compuerta es la de «Compuerta de programación» del runbook de R1 (la
-  revisión independiente de U3b-0e5); las decisiones del usuario ya no la
-  bloquean.
+  ya están registradas, ver arriba). La ventana de R1 sigue sin programarse.
+  Su «Compuerta de programación» (runbook de R1) está cumplida desde la
+  verificación del 2026-11-15: U3b-0e5 tiene su revisión independiente
+  (ronda 1 «aprobado con cambios» y ronda 2 aprobada, 2026-11-13,
+  `t040-t041/u3b-0e5-independent-review.json`; arreglos en
+  `u3b-0e5-evidence.json`, `review_round`) y el T-A17 compilado en Linux
+  pasó en el server en SC-6a (`runs/sc6a`, `runs/sc6a-review-fix`) y en la
+  suite batch de R1-B sobre el árbol de c6462e5 (`runs/full-r1b`). Lo que
+  queda son pasos del operador: registrar la autorización de la ventana y
+  los ids P1=D y L4, transferir a `kza` el R1 fijado
+  (`r1-c6462e5.tar.gz`) y verificarlo, el drop-in sudo de W7 y el arranque
+  real hasta READY de W8. La ventana la programa el usuario, como operador.
 
 ## R5V-1 — dueños de captura huérfanos ya no bloquean parada ni mute (2026-11-15)
 
