@@ -129,6 +129,7 @@ def test_a_wall_clock_step_backwards_during_v_keeps_a_good_run_verified(x4, x5, 
     ready, smoke = stage.verify_run_records(world["root"], _run_id(world["root"], log))
     assert smoke["stopped_at"] < ready["ready_at"]  # the wall clock went backwards in between
     assert smoke["measured_seconds"] >= SMOKE and log["events"][-1]["kind"] == "verified"
+    assert smoke["measured_seconds"] < 3 * SMOKE  # the monotonic interval, not a wall-clock difference
 
 
 # --- rows V3: a short run; READY without the acknowledgement (R5-PRIV-2) ---------------------------

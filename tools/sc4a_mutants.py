@@ -189,7 +189,8 @@ MUTANTS = [
      [RUN + "test_a_short_run_is_not_verified_and_serve_refuses_it_afterwards"]),
     ("smoke interval on the wall clock", "scripts/managed_launcher.py",
      "        measured = self.clock() - smoke[\"started\"]\n        if measured >= self.release_verify[\"smoke_seconds\"]:",
-     "        measured = self.wall() - smoke[\"started\"]\n        if measured >= self.release_verify[\"smoke_seconds\"]:",
+     "        measured = self.wall() - smoke.setdefault(\"wall_started\", self.wall())\n"
+     "        if measured >= self.release_verify[\"smoke_seconds\"]:",
      [RUN + "test_a_wall_clock_step_backwards_during_v_keeps_a_good_run_verified"]),
     ("verify branch reached ignores ready.json", "scripts/compaction.py",
      "    return \"yes\" if ready is not None and ready[\"verify_acknowledged\"] is True else \"no\"",
