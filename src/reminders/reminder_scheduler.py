@@ -46,6 +46,12 @@ NOTICE_CANCELLED = "delivery_cancelled"
 NOTICE_UNVERIFIED = "delivery_unverified"
 NOTICE_NOT_STARTED = "delivery_not_started:"
 NOTICE_DISMISSED = "dismissed"
+# Q32b durable mark of a grouped occurrence (one per grouping, in the action ledger, never purged
+# like the action receipts): a restart or a further catch-up collapse still knows the notice
+# covers occurrences missed after a terminal notice, so it stays late and never runs actions.
+GROUPED_ID_PREFIX = "grouped:"
+GROUPED_KIND = "grouped_notice"
+GROUPED_NOTICE = "grouped_late_notice"
 _NOT_STARTED_STATES = frozenset({DeliveryState.BLOCKED, DeliveryState.FAILED, DeliveryState.EMPTY})
 _TERMINAL = frozenset({ReminderActionStatus.CONFIRMED, ReminderActionStatus.UNCERTAIN})
 
@@ -87,6 +93,12 @@ def _action_request_id(reminder: Reminder, index: int) -> str:
     """Stable receipt key of one action of one occurrence."""
     identity = json.dumps([reminder.id, reminder.trigger_at, index], separators=(",", ":"), allow_nan=False)
     return "reminder:" + hashlib.sha256(identity.encode()).hexdigest()
+
+
+def grouped_request_id(reminder_id: str, trigger_at: float) -> str:
+    """Stable ledger key of the Q32b mark of one grouped occurrence."""
+    identity = json.dumps([reminder_id, trigger_at], separators=(",", ":"), allow_nan=False)
+    return GROUPED_ID_PREFIX + hashlib.sha256(identity.encode()).hexdigest()
 
 
 def notice_request_id(reminder_id: str, trigger_at: float, attempt: int) -> str:
@@ -274,7 +286,9 @@ class ReminderScheduler:
         and advanced to its first future occurrence; after a terminal notice
         whose advance was lost (crash), missed later occurrences still get that
         one notice (user answer Q32), which is always a late notice that never
-        runs home actions, even inside the grace (user answer Q32b).
+        runs home actions, even inside the grace (user answer Q32b; a durable
+        grouped mark in the action ledger keeps that across a restart and a
+        further catch-up collapse).
       * The loop is the only announcer; arrivals only wake it. Several due
         occurrences are claimed together and announced in one summary.
     """
@@ -302,8 +316,6 @@ class ReminderScheduler:
         self._in_flight: set[str] = set()
         # Output-free signals that found the occurrence in flight; applied when its flight ends (RV-Q31-2).
         self._signal_pending: set[str] = set()
-        # Q32b: reminder id -> occurrence that groups occurrences missed after a terminal notice.
-        self._grouped: dict[str, float] = {}
         # Q33: the follow-up conversation (FollowUpMode) whose activity holds output-free rounds.
         self._conversation = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -418,8 +430,6 @@ class ReminderScheduler:
         current = {reminder.id: reminder.trigger_at for reminder in due}
         self._holds = {identity: hold for identity, hold in self._holds.items()
                        if current.get(identity) == hold.trigger_at}
-        self._grouped = {identity: trigger_at for identity, trigger_at in self._grouped.items()
-                         if current.get(identity) == trigger_at}
         for reminder in due:
             self._open_successor_round(reminder, now)
         await self._deliver_batch(due, raise_errors=False)
@@ -720,18 +730,19 @@ class ReminderScheduler:
             return None
         if self._held_for_occurrence(current, self._clock()):
             return None
-        collapsed = await self._collapse_missed(current)
+        # Q32b: the durable mark, not process memory, says whether this occurrence groups
+        # occurrences missed after a terminal notice (it survives a restart).
+        grouped = await self._is_grouped(current)
+        collapsed = await self._collapse_missed(current, grouped=grouped)
         if collapsed is None:
             return None
         if collapsed.trigger_at != current.trigger_at:
-            if self._grouped.get(current.id) == current.trigger_at:
-                self._grouped[current.id] = collapsed.trigger_at  # still the grouped notice (Q32b)
             if not await self._open_for_claim(collapsed):
                 return None
         current = collapsed
         # Q32b: a grouped notice after a terminal one is late even inside the grace; its actions
-        # were already barred durably by _complete_terminal, so a restart cannot run them either.
-        late = self._is_late(current) or self._grouped.get(current.id) == current.trigger_at
+        # were already barred durably before the reminder moved to it, so nothing can run them.
+        late = self._is_late(current) or grouped
         outcomes: list[LateActionOutcome] = []
         if late:
             # Durable barrier first: a crash or a failed announcement cannot
@@ -790,24 +801,43 @@ class ReminderScheduler:
         the latest due one, which the next pass announces once as a late notice.
         User answer Q32b: that grouped notice never runs home actions, even when
         the latest occurrence is still inside the grace: every action of the
-        grouped occurrence gets its durable late_not_executed barrier BEFORE the
-        reminder moves to it, so neither this process nor a restart can run them.
-        Otherwise it advances as usual. The terminal notice itself is never
+        grouped occurrence gets its durable late_not_executed barrier, and the
+        occurrence its durable grouped mark, BEFORE the reminder moves to it, so
+        neither this process nor a restart can run them; a further catch-up
+        collapse passes both on (_collapse_missed). Otherwise it advances as usual. The terminal notice itself is never
         spoken again.
         """
         if occurrence.recurrence:
             latest = self._latest_due(occurrence, occurrence.trigger_at, self._clock())
             if latest != occurrence.trigger_at:
-                grouped = replace(occurrence, trigger_at=latest)
-                for index, action in enumerate(occurrence.ha_actions or []):
-                    await self._bar_late_action(_action_request_id(grouped, index), action)
+                await self._mark_grouped(replace(occurrence, trigger_at=latest))
                 if await self._store.update_trigger(occurrence.id, latest, shared_only=True,
                                                     expected_trigger_at=occurrence.trigger_at):
-                    self._grouped[occurrence.id] = latest
                     logger.info("Recurring reminder %s: missed occurrences after a terminal notice "
                                 "grouped into one late notice without home actions", occurrence.id)
                 return
         await self._advance(occurrence)
+
+    async def _mark_grouped(self, occurrence: Reminder) -> None:
+        """Durably make ``occurrence`` a grouped notice (Q32b) BEFORE the reminder moves to it.
+
+        Every action gets its late_not_executed barrier and the occurrence gets
+        its grouped mark; both are idempotent, so a crash or an error before
+        the move leaves the reminder where it was and the next pass repeats this.
+        """
+        for index, action in enumerate(occurrence.ha_actions or []):
+            await self._bar_late_action(_action_request_id(occurrence, index), action)
+        request_id = grouped_request_id(occurrence.id, occurrence.trigger_at)
+        body = {"kind": GROUPED_KIND, "reminder_id": occurrence.id, "trigger_at": occurrence.trigger_at}
+        if await self._store.claim_home_action(request_id, body):
+            await self._store.finish_home_action(request_id, ReminderActionStatus.CONFIRMED.value, GROUPED_NOTICE)
+
+    async def _is_grouped(self, occurrence: Reminder) -> bool:
+        """Whether this occurrence of a recurring reminder carries the durable grouped mark (Q32b)."""
+        if not occurrence.recurrence:
+            return False
+        request_id = grouped_request_id(occurrence.id, occurrence.trigger_at)
+        return await self._store.get_home_action_receipt(request_id) is not None
 
     async def _announce(self, message: str) -> tuple[ReminderActionStatus, str | None, bool]:
         """Speak once through the output's aspeak and map its ResponseResult.
@@ -854,7 +884,6 @@ class ReminderScheduler:
             self._hold_after_failure(occurrence, reason or status.value, claim.claimed_at, refused=not contended)
             return False
         self._holds.pop(occurrence.id, None)
-        self._grouped.pop(occurrence.id, None)
         if status is ReminderActionStatus.CONFIRMED and not claim.late:
             await self._execute_home_actions(occurrence)
         await self._advance(occurrence)
@@ -970,13 +999,21 @@ class ReminderScheduler:
         hold.output_refused = False
         hold.output_round = False
 
-    async def _collapse_missed(self, reminder: Reminder) -> Reminder | None:
-        """Move a recurring reminder to its latest due occurrence so a long outage yields one notice."""
+    async def _collapse_missed(self, reminder: Reminder, *, grouped: bool = False) -> Reminder | None:
+        """Move a recurring reminder to its latest due occurrence so a long outage yields one notice.
+
+        A grouped occurrence (Q32b) passes its durable mark and late barriers to
+        the occurrence it collapses into BEFORE the reminder moves, so the one
+        notice that also covers the grouped missed occurrences never runs actions,
+        also after a restart or a crash between the barrier and the move.
+        """
         if not reminder.recurrence:
             return reminder
         latest = self._latest_due(reminder, reminder.trigger_at, self._clock())
         if latest == reminder.trigger_at:
             return reminder
+        if grouped:
+            await self._mark_grouped(replace(reminder, trigger_at=latest))
         if not await self._store.update_trigger(reminder.id, latest, shared_only=True,
                                                 expected_trigger_at=reminder.trigger_at):
             return None

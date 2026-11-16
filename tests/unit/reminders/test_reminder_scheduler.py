@@ -18,7 +18,7 @@ from src.core.voice_delivery import (
 from src.reminders.recurrence import next_trigger
 from src.reminders.reminder_scheduler import (
     DEFAULT_LATE_ACTION_GRACE_S, DEFAULT_NOTICE_FALLBACK_MAX_ROUNDS, DEFAULT_NOTICE_FALLBACK_ROUND_S,
-    NoticeDismissal, ReminderScheduler, notice_contended, notice_request_id,
+    NoticeDismissal, ReminderScheduler, grouped_request_id, notice_contended, notice_request_id,
 )
 from src.reminders.reminder_store import ReminderScope, ReminderState, ReminderStore
 from src.home_assistant.home_actions import HomeActionService
@@ -1874,8 +1874,9 @@ def days_after(trigger_at: float, days: int) -> float:
 async def test_a_grouped_notice_keeps_its_barrier_across_a_restart_before_it_is_announced(
     tmp_path, mock_deps, clock,
 ):
-    """Q32b: the barrier is durable. A second crash right after the grouping (the in-process mark is
-    lost) still never runs the actions of the grouped occurrence, although it is inside the grace."""
+    """Q32b: the barrier and the grouped mark are durable. A second crash right after the grouping
+    still never runs the actions of the grouped occurrence, although it is inside the grace, and the
+    notice keeps the late wording (review round 3, Q32b-1)."""
     path, ha = str(tmp_path / "grouped.db"), mock_deps["ha_client"]
     r = await crash_while_announcing(path, clock, ha, ha_actions=[ACTION])
     latest = days_after(r.trigger_at, 3)
@@ -1894,7 +1895,7 @@ async def test_a_grouped_notice_keeps_its_barrier_across_a_restart_before_it_is_
         scheduler = scheduler_on(third, after, ha, clock)
         for _ in range(3):
             await scheduler._deliver_due(clock())
-        after.aspeak.assert_awaited_once()
+        after.aspeak.assert_awaited_once_with(LATE_NOT_RUN, zone_id="living")
         ha.call_service_once.assert_not_called()
         assert await receipts(third) == [("failed", "late_not_executed")]
         assert (await third.get_by_id(r.id)).trigger_at == next_trigger(latest, "daily")
@@ -1980,6 +1981,129 @@ async def test_a_grouped_notice_that_waits_past_another_occurrence_stays_late(tm
         assert (await restarted.get_by_id(r.id)).trigger_at == next_trigger(further, "daily")
     finally:
         await restarted.close()
+
+
+async def grouped_marks(store: ReminderStore) -> list[tuple]:
+    """Q32b grouped marks as (status, reason, reminder_id, trigger_at), in write order."""
+    rows = await store._work.read(lambda db: [tuple(row) for row in db.execute(
+        "SELECT request_id, status, reason, body FROM reminder_home_actions WHERE request_id LIKE 'grouped:%' "
+        "ORDER BY rowid").fetchall()])
+    marks = []
+    for request_id, status, reason, body in rows:
+        body = json.loads(body)
+        assert body["kind"] == "grouped_notice"
+        assert request_id == grouped_request_id(body["reminder_id"], body["trigger_at"])
+        marks.append((status, reason, body["reminder_id"], body["trigger_at"]))
+    return marks
+
+
+@pytest.mark.asyncio
+async def test_a_grouped_notice_that_waits_past_another_occurrence_after_a_restart_stays_late(
+    tmp_path, mock_deps, clock,
+):
+    """Review round 3 (Q32b-1): group, restart before the announcement, let the next occurrence become
+    due and announce it inside the grace: the one notice also covers the grouped missed occurrences,
+    so no home action runs (the grouped mark is durable and moves with the catch-up collapse)."""
+    path, ha = str(tmp_path / "restart-collapse.db"), mock_deps["ha_client"]
+    r = await crash_while_announcing(path, clock, ha, ha_actions=[ACTION])
+    latest = days_after(r.trigger_at, 2)
+    clock.now = latest + 30
+    second = await reopen(path)
+    try:
+        silent = voice_output()
+        await scheduler_on(second, silent, ha, clock)._deliver_due(clock())  # groups, then the process dies
+        silent.aspeak.assert_not_awaited()
+        assert (await second.get_by_id(r.id)).trigger_at == latest
+        assert await grouped_marks(second) == [("confirmed", "grouped_late_notice", r.id, latest)]
+    finally:
+        await second.close()
+    further = next_trigger(latest, "daily")
+    clock.now = further + 30
+    third = await reopen(path)
+    try:
+        after = voice_output()
+        scheduler = scheduler_on(third, after, ha, clock)
+        for _ in range(3):
+            await scheduler._deliver_due(clock())
+        after.aspeak.assert_awaited_once_with(LATE_NOT_RUN, zone_id="living")
+        ha.call_service_once.assert_not_called()
+        assert await receipts(third) == [("failed", "late_not_executed")] * 2
+        barrier = await third.get_home_action_receipt(request_id_for(replace(r, trigger_at=further)))
+        assert (barrier.status, barrier.reason) == ("failed", "late_not_executed")
+        assert await grouped_marks(third) == [("confirmed", "grouped_late_notice", r.id, latest),
+                                              ("confirmed", "grouped_late_notice", r.id, further)]
+        assert (await third.get_by_id(r.id)).trigger_at == next_trigger(further, "daily")
+    finally:
+        await third.close()
+
+
+@pytest.mark.parametrize("failing", ["barrier", "mark"])
+@pytest.mark.asyncio
+async def test_a_collapse_of_a_grouped_notice_bars_and_marks_before_the_reminder_moves(
+    tmp_path, mock_deps, clock, failing,
+):
+    """Review round 3 (Q32b-1): when the barrier or the mark of the occurrence a grouped notice collapses
+    into cannot be written, the reminder does not move; once the store recovers, the notice is late and
+    runs no action (a crash in that gap restarts at the same point)."""
+    path, ha = str(tmp_path / f"collapse-{failing}.db"), mock_deps["ha_client"]
+    r = await crash_while_announcing(path, clock, ha, ha_actions=[ACTION])
+    latest = days_after(r.trigger_at, 2)
+    clock.now = latest + 30
+    restarted = await reopen(path)
+    try:
+        after = voice_output()
+        scheduler = scheduler_on(restarted, after, ha, clock)
+        await scheduler._deliver_due(clock())  # groups into `latest`
+        assert (await restarted.get_by_id(r.id)).trigger_at == latest
+        further = next_trigger(latest, "daily")
+        clock.now = further + 30
+        claim, prefix = restarted.claim_home_action, {"barrier": "reminder:", "mark": "grouped:"}[failing]
+
+        async def locked(request_id, body, **kwargs):
+            if request_id.startswith(prefix):
+                raise RuntimeError("database is locked")
+            return await claim(request_id, body, **kwargs)
+
+        restarted.claim_home_action = locked
+        await scheduler._deliver_due(clock())
+        after.aspeak.assert_not_awaited()
+        assert (await restarted.get_by_id(r.id)).trigger_at == latest
+        assert await notices(restarted) == [("uncertain", "interrupted_send", 1)]
+        restarted.claim_home_action = claim
+        clock.advance(1)
+        for _ in range(3):
+            await scheduler._deliver_due(clock())
+        after.aspeak.assert_awaited_once_with(LATE_NOT_RUN, zone_id="living")
+        ha.call_service_once.assert_not_called()
+        assert await receipts(restarted) == [("failed", "late_not_executed")] * 2
+        assert [mark[3] for mark in await grouped_marks(restarted)] == [latest, further]
+        assert (await restarted.get_by_id(r.id)).trigger_at == next_trigger(further, "daily")
+    finally:
+        await restarted.close()
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_late_occurrence_held_until_the_next_one_is_not_a_grouped_notice(build, store,
+                                                                                         mock_deps, clock):
+    """Q32b changes only grouping after a terminal notice: a late occurrence whose own notice never got
+    out (late barrier, no terminal notice) is collapsed into the next occurrence as before; inside the
+    grace that occurrence runs its actions after a confirmed notice, and no grouped mark is written."""
+    scheduler = build(notice_max_attempts=1, notice_fallback_max_rounds=0)
+    mock_deps["tts"].aspeak.return_value = failed()
+    r = await store.create("u1", "regar", clock() - HOUR, ha_actions=[ACTION], recurrence="daily",
+                           scope=ReminderScope.SHARED)
+    await scheduler._deliver_due(clock())
+    assert await receipts(store) == [("failed", "late_not_executed")]
+    assert scheduler._holds[r.id].retry_at is None
+    following = next_trigger(r.trigger_at, "daily")
+    clock.now = following + 30
+    mock_deps["tts"].aspeak.return_value = delivered()
+    await scheduler._deliver_due(clock())
+    mock_deps["tts"].aspeak.assert_awaited_with("Oye, recuerda regar", zone_id="living")
+    mock_deps["ha_client"].call_service_once.assert_awaited_once()
+    assert await receipts(store) == [("failed", "late_not_executed"), ("confirmed", None)]
+    assert await grouped_marks(store) == []
+    assert (await store.get_by_id(r.id)).trigger_at == next_trigger(following, "daily")
 
 
 @pytest_asyncio.fixture
