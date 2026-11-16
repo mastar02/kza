@@ -665,11 +665,24 @@ lists:
 reminders:
   db_path: "./data/reminders.db"
   max_retries: 3
-  retry_interval_seconds: 300
+  # Primer reintento tras un anuncio fallido; luego se duplica (30, 60, 120 s) hasta
+  # max_retries. Debe quedar por debajo de late_action_grace_s: con 300 s cualquier
+  # reintento ya llegaba tarde y el recordatorio perdía sus acciones de la casa.
+  retry_interval_seconds: 30
   missed_reminder_on_arrival: true
   default_time: "09:00"
   tts_prefix: "Oye, recuerda"
-  output_zone: null # Si no hay presencia, usa esta zona o tts.streaming.default_output_zone
+  # Zona de los avisos compartidos (nunca la presencia BLE de una persona); si es null
+  # usa tts.streaming.default_output_zone. Decisión del usuario 2026-11-16: hasta que
+  # SCHEMA-V2 agregue la zona de origen (delivery_room), los recordatorios compartidos
+  # se anuncian en el living ("Living (Recomendado)"). "zone_living" es el id con que el
+  # pipeline de voz responde en el living (request_router: f"zone_{room_id}"); ZoneManager
+  # lo resuelve a rooms.living (ma1260_zone 1) y un barge-in del living lo cancela.
+  output_zone: "zone_living"
+  # Un recordatorio más atrasado que esto (reinicio, corte, reintentos) solo se anuncia:
+  # sus acciones de la casa no se ejecutan y quedan registradas como failed/late_not_executed.
+  # 120 s (2 minutos) confirmado por el usuario el 2026-11-16 (Q09/Q2 del plan P3-P4).
+  late_action_grace_s: 120
 
 # Rutinas web persistentes, independientes de las automatizaciones de HA.
 routines:

@@ -44,7 +44,7 @@ async def reminder_system(tmp_path):
     manager = ReminderManager(store=store, config={"tts_prefix": "Oye, recuerda"}, home_actions=actions)
     scheduler = ReminderScheduler(
         store=store, tts=tts, presence_detector=presence, home_actions=actions,
-        ha_client=ha_client, config={"max_retries": 2, "retry_interval_seconds": 1, "tts_prefix": "Oye, recuerda"},
+        ha_client=ha_client, config={"max_retries": 2, "retry_interval_seconds": 1, "tts_prefix": "Oye, recuerda", "output_zone": "living"},
         wake_event=wake,
     )
     yield {

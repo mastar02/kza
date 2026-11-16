@@ -3,6 +3,7 @@
 import asyncio
 from dataclasses import replace
 import json
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 from fastapi.testclient import TestClient
@@ -214,11 +215,11 @@ async def test_reminder_preserves_extended_parameters_and_durable_receipt(typed_
     store = ReminderStore(str(tmp_path / "reminders.db"))
     await store.initialize()
     try:
-        reminder = await store.create("profile", "typed", 1.0, scope=ReminderScope.SHARED,
+        reminder = await store.create("profile", "typed", time.time() - 1, scope=ReminderScope.SHARED,
                                       ha_actions=[{"entity_id": "climate.test_ac", "domain": "climate", "service": "set_temperature", "data": {"temperature": 23.5}}])
         presence = MagicMock()
         presence.get_user_zone.return_value = "test-zone"
-        await ReminderScheduler(store, AsyncMock(), presence, ha, home_actions=actions)._fire_reminder(reminder)
+        await ReminderScheduler(store, AsyncMock(), presence, ha, config={"output_zone": "test-zone"}, home_actions=actions)._fire_reminder(reminder)
         assert ha.sends[0][3] == {"temperature": 23.5}
         async with store._db.execute("SELECT status FROM reminder_home_actions") as cursor:
             assert [row[0] for row in await cursor.fetchall()] == ["confirmed"]

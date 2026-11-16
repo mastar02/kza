@@ -966,10 +966,12 @@ class DashboardAPI:
             """Describe only the shared jobs eligible for household announcements."""
             result = {
                 "pending_count": 0, "next_trigger_at": None,
-                "scheduler_running": False, "delivery_failures": 0,
+                "scheduler_running": False, "delivery_failures": 0, "output_zone_configured": False,
             }
             if self.reminder_scheduler is not None:
                 result["scheduler_running"] = getattr(self.reminder_scheduler, "_running", False)
+                # Without a zone no shared reminder is ever announced (T034-U1, CORE-06).
+                result["output_zone_configured"] = getattr(self.reminder_scheduler, "output_zone", None) is not None
                 result["delivery_failures"] = sum(getattr(self.reminder_scheduler, "_retry_counts", {}).values())
             if self.reminder_manager is not None:
                 store = getattr(self.reminder_manager, "_store", None)

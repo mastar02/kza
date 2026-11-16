@@ -371,7 +371,7 @@ async def test_shared_list_concurrent_add_and_remove():
 
 @pytest.mark.asyncio
 async def test_missed_reminder_on_arrival():
-    """When a user arrives home, overdue reminders are delivered via TTS."""
+    """Arrival delivers an overdue shared reminder once, in the configured zone, never the person's room."""
     from src.reminders.reminder_store import ReminderScope, ReminderStore
     from src.reminders.reminder_scheduler import ReminderScheduler
 
@@ -405,6 +405,7 @@ async def test_missed_reminder_on_arrival():
             tts=tts_mock,
             presence_detector=presence_mock,
             ha_client=ha_mock,
+            config={"output_zone": "living"},
         )
 
         # Directly call missed_reminder_on_arrival
@@ -416,7 +417,9 @@ async def test_missed_reminder_on_arrival():
         tts_mock.aspeak.assert_awaited_once()
         call_args = tts_mock.aspeak.call_args
         assert "tomar la medicina" in call_args[0][0]
-        assert call_args[1]["zone_id"] == "cocina"
+        assert "atraso" in call_args[0][0]  # one hour late: announced as a late notice
+        assert call_args[1]["zone_id"] == "living"
+        presence_mock.get_user_zone.assert_not_called()
 
         await store.close()
 
@@ -517,6 +520,7 @@ async def test_missed_reminder_marks_fired_after_delivery():
             tts=tts_mock,
             presence_detector=presence_mock,
             ha_client=ha_mock,
+            config={"output_zone": "living"},
         )
 
         delivered = await scheduler.missed_reminder_on_arrival(
