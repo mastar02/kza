@@ -206,6 +206,28 @@ def test_the_unit_cannot_inject_the_flag_and_h_runs_never_carry_it(x4, x5, tmp_p
     assert not list((root / "admission" / "runs").glob("*" + stage.VERIFY_SMOKE_STOP_SUFFIX))
 
 
+def test_a_plain_log_s_verify_and_allow_run_runs_never_carry_the_flag(x4_archive, tmp_path):
+    """Flag only for release: a plain log's armed verify run and its allow-run run are NEW's ordinary
+    boots (U3b-0c), so serve arms nothing, the child reads no flag and its acknowledgement is not sent."""
+    world = cw.world(x4_archive, tmp_path, hops=("b",))
+    root = world["root"]
+    started = cw.start(root, world["archive"])
+    compaction_id = started["compaction_id"]
+    assert compaction.compact_verify(root, compaction_id)["armed"] is True
+    clock = [1_900_000_000.0]
+    runs = [cw.serve(root, tmp_path, "plain-verify", scenario="verify")]
+    assert "verified" in {event["kind"] for event in stage.read_compaction_log(root, compaction_id)["events"]}
+    compaction.compact_allow_run(root, compaction_id, reason="synthetic", hours=1, wall=lambda: clock[0])
+    runs.append(cw.serve(root, tmp_path, "plain-allowed", scenario="verify", wall=lambda: clock[0] + 10))
+    for result in runs:
+        assert result.code == 0, result.phases
+        assert _phase(result, "release_verify") == "False" and _phase(result, "verify_sent") is None
+        assert "KZA_RUNTIME_RELEASE_VERIFY" not in _phase(result, "env")
+        assert result.serve.release_verify is None
+    assert not list((root / "admission" / "runs").glob("*" + stage.VERIFY_READY_SUFFIX))
+    assert not list((root / "admission" / "runs").glob("*" + stage.VERIFY_SMOKE_STOP_SUFFIX))
+
+
 def test_child_environment_adds_the_flag_after_the_filter_only_when_asked():
     environ = {"KZA_RUNTIME_RELEASE_VERIFY": "1", "KZA_RUNTIME_OTHER": "x", "HOME": "/h"}
     plain = launcher.child_environment(environ, Path("/r"), {"run_id": "a" * 32}, 5, 6, None)

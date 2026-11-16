@@ -168,7 +168,7 @@ MUTANTS = [
      [RUN + "test_child_environment_adds_the_flag_after_the_filter_only_when_asked"]),
     ("flag for any verify run (plain logs too)", "scripts/managed_launcher.py",
      "        if gate[\"kind\"] == \"verify\" and stage.release_mode_intent(gate[\"log\"]):",
-     "        if gate[\"kind\"] is not None:", [RUN + "test_the_unit_cannot_inject_the_flag_and_h_runs_never_carry_it"]),
+     "        if gate[\"kind\"] is not None:", [RUN + "test_a_plain_log_s_verify_and_allow_run_runs_never_carry_the_flag"]),
     ("child keeps the flag in its environment", "src/core/runtime_admission.py",
      "    raw = environ.pop(RELEASE_VERIFY_ENV, None)", "    raw = environ.get(RELEASE_VERIFY_ENV)",
      [RUN + "test_take_release_verify_flag_reads_once_and_needs_a_ticket"]),
