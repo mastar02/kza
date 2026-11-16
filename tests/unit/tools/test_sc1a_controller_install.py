@@ -789,3 +789,17 @@ def test_a_source_installer_must_run_the_archives_own_sources(builds, t0_root, t
                              cwd=cw.REPO, capture_output=True, text=True, timeout=300)
     assert command.returncode == 78 and launcher.CONTROLLER_INSTALLER_MISMATCH in command.stderr, command.stderr
     assert cw.witness(root) == witness
+
+
+
+
+
+
+def test_the_delegated_observation_reader_runs_the_guard_first(tmp_path):
+    """Review F7 (defense in depth): output registration never reads a delegation record at epoch 5."""
+    from src.memory import output_registration_v2 as registration
+    record = tmp_path / "admission" / "delegations" / ("a" * 64 + ".json")
+    record.parent.mkdir(parents=True)
+    record.write_text("{}")
+    with pytest.raises(ValueError, match="^" + stage.DELEGATION_FROZEN + "$"):
+        registration._read_delegated_observation(stage, tmp_path, {"state_root": str(tmp_path)}, {"scope": {}}, b"{}")
