@@ -32,14 +32,36 @@ import time
 import pytest
 
 from scripts import stage_runtime as stage
+from scripts.build_runtime import build_runtime
 from tests.integration import test_linux_managed_launcher as real
+from tests.mocks import launcher_rehearsal as rehearsal
 from tests.mocks import real_systemd
+from tests.mocks.epoch4 import epoch4_commit
 from tests.mocks.legacy_transitions import legacy_managed_transitions
 
 pytestmark = pytest.mark.skipif(real_systemd.unavailable() is not None,
                                 reason=real_systemd.unavailable() or "available")
 
-archive = real.archive
+
+
+@pytest.fixture(scope="module")
+def archive(tmp_path_factory):
+    """X at controller epoch 4 (SC-1a): an owner world is never served from epoch 5."""
+    base = tmp_path_factory.mktemp("linux-compaction-epoch4")
+    clone = base / "clone"
+    subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(real.REPO), str(clone)],
+                   check=True, timeout=120)
+    revision = epoch4_commit(clone, rehearsal.overlay_commit(real.REPO, clone))
+    path = base / "x4.tar.gz"
+    manifest = build_runtime(clone, path, revision)
+    assert manifest["git_commit"] == revision and manifest["controller_epoch"] == 4
+    return path
+
+
+@pytest.fixture(autouse=True)
+def _epoch4(epoch4_controller):
+    """The in-process controller as the same epoch-4 build."""
+
 systemd = real.systemd
 REGISTER = "\n".join([
     "import os, types",

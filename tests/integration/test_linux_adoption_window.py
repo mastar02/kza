@@ -78,6 +78,7 @@ from tests.mocks import adoption_legacy as fixture
 from tests.mocks import launcher_rehearsal as rehearsal
 from tests.mocks import r1_runbook
 from tests.mocks import real_systemd
+from tests.mocks.epoch4 import apply_epoch4, epoch4_commit
 from tests.unit.tools.test_stage_runtime_admission import _witness
 
 pytestmark = pytest.mark.skipif(real_systemd.unavailable() is not None,
@@ -112,10 +113,12 @@ def built(tmp_path_factory):
     clone = base / "clone"
     subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(REPO), str(clone)],
                    check=True, timeout=120)
-    revision = rehearsal.overlay_commit(REPO, clone)
+    # SC-1a: R1 stays epoch 4 (this tree is epoch 5), so R1's stand-in is this tree's epoch-4 build.
+    revision = epoch4_commit(clone, rehearsal.overlay_commit(REPO, clone))
     started = time.monotonic()
     archive = base / "r1.tar.gz"
     manifest = build_runtime(clone, archive, revision)
+    assert manifest["controller_epoch"] == 4
     r1_seconds = time.monotonic() - started
     legacy = base / "63ea8d3.tar.gz"
     legacy_manifest = build_runtime(clone, legacy, "63ea8d3")
@@ -128,7 +131,7 @@ def built(tmp_path_factory):
     epoch3_manifest = build_runtime(clone, epoch3, EPOCH3_R1)
     assert epoch3_manifest["controller_epoch"] == 3 and "schema_contract" not in epoch3_manifest
     epoch5 = base / "epoch5.tar.gz"
-    _rewrite_release(archive, epoch5, controller_epoch=stage.CONTROLLER_EPOCH + 1)
+    _rewrite_release(archive, epoch5, controller_epoch=manifest["controller_epoch"] + 1)
     early = base / "early-copy.tar.gz"
     early_manifest = build_runtime(clone, early, EARLY_COPY)
     early_tree = base / "early-copy"
@@ -163,6 +166,12 @@ def _rewrite_release(source: Path, destination: Path, **changes) -> None:
 @pytest.fixture(scope="module")
 def tree(tmp_path_factory):
     return fixture.b0866e8_tree(tmp_path_factory.mktemp("b0866e8") / "tree")
+
+
+@pytest.fixture(autouse=True)
+def r1_epoch(monkeypatch):
+    """SC-1a: the in-process controller runs as R1's epoch-4 build, like the compiled one."""
+    apply_epoch4(monkeypatch)
 
 
 @pytest.fixture(scope="module", autouse=True)
