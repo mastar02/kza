@@ -113,9 +113,14 @@ class Trace:
         patch.setattr(sqlite3, "connect", connect)
 
     def unexpected(self) -> list[tuple]:
-        allowed = {(table, verb) for _file, _function, verb, table in NO_OP_EXEMPTIONS}
+        """Writes outside the authority's database that are not a pinned exempt site (review RA-3).
+
+        An exemption matches on (table, verb, file:function): the same statement on an exempt
+        table from any other function is unexpected.
+        """
+        allowed = {(table, verb, f"{file}:{function}") for file, function, verb, table in NO_OP_EXEMPTIONS}
         return [write for write in self.writes
-                if write[0] != AUTHORITY_DB and (write[2], write[1]) not in allowed]
+                if write[0] != AUTHORITY_DB and (write[2], write[1], write[3]) not in allowed]
 
 
 @asynccontextmanager
@@ -402,6 +407,18 @@ async def test_an_exempt_statement_that_changes_a_row_is_caught(template):
     assert ("data/graph/privacy.db", "ambient_runtime_control") in _diff(before, stage.capture_state_authority(state))
     assert ("privacy.db", "INSERT OR IGNORE INTO", "ambient_runtime_control") in {
         write[:3] for write in trace.writes}
+
+
+def test_trace_exempts_a_statement_only_at_its_pinned_site():
+    """Review RA-3: an exempt (table, verb) written from another function, or another verb at the
+    pinned function, is unexpected; the pinned site itself and the authority's database are not."""
+    trace = Trace()
+    trace.writes = [("ambient.db", "INSERT OR IGNORE INTO", "ambient_runtime_control", "src/ambient/control.py:_load"),
+                    ("ambient.db", "INSERT OR IGNORE INTO", "ambient_runtime_control", "src/ambient/control.py:other"),
+                    ("privacy.db", "INSERT INTO", "capture_runtime_control", "src/memory/elsewhere.py:_load_policy"),
+                    ("ambient.db", "UPDATE", "ambient_runtime_control", "src/ambient/control.py:_load"),
+                    (AUTHORITY_DB, "UPDATE", "auth_meta", "src/dashboard/authority.py:_commit")]
+    assert trace.unexpected() == trace.writes[1:4]
 
 
 def test_no_op_exemptions_are_the_pinned_sites():
