@@ -1452,6 +1452,40 @@ lecturas más estrictas quedan como notas de diseño en `sc1a-evidence.json`
   desde bundle, checkout restaurado en b15ce86) SC-1a, los cuatro módulos
   Linux y SC-6a, sin fallas. Mutantes de la revisión 16/16 (total 47/47).
 
+## SC-1b — plan y start del modo release (2026-11-16)
+
+Segunda unidad del modo release posterior a R1 (diseño
+`t040-t041/sc-release-design-v4.json`, unidad SC-1b, aceptado). Rama
+`sc1b-release-plan-start` desde 748df3f, sin push; la suite batch y el merge
+los hace la sesión coordinadora. Sin release. Evidencia:
+`t040-t041/sc1b-evidence.json` (notas de diseño SC1B-N1.., lista
+`follow_up`).
+
+- En época 5 todo log nuevo es del modo release: `intent.mode = "release"`
+  (lo lee la instalación de SC-1a), `--retire-prepare-leftovers` forzado, una
+  entrada no probada bajo `slots/` rechaza salvo los dos slots heredados del
+  registro de adopción confirmado.
+- P6' en `compact plan`: contrato y formato del NUEVO, época del NUEVO entre
+  5 y la instalada (R1 nunca es destino), served(root) o el mismo triple;
+  si no, `t0_required`, `controller_behind` o `controller_revision_conflict`
+  con los dos triples; H pasa las comprobaciones de slot; SR-2 (mismo
+  contrato de esquema en NUEVO, controlador instalado y H). El digest liga
+  modo y archivo NUEVO.
+- `compact start`: K desde el archivo NUEVO (`_k_runtime` contra el
+  intent), A1 con `schemas` de K iguales a los de H.
+- Hasta SC-4a/SC-4b: `compact verify` de un log del modo release rechaza
+  (`release_verify_unavailable`); `allow-run`, `--discard-k-writes` y Q6
+  rechazan (`plain_mode_only`). La salida es la abort simple antes de la
+  corrida (fila A0).
+- Reubicación de `pending_audio_deletions.path` y `audio_write_intents.path`
+  en toda compactación (antes una cola no vacía bloqueaba), con la misma
+  reubicación en la proyección esperada de A1 y colisiones rechazadas.
+- Tests: `tests/unit/tools/test_sc1b_release_plan.py`; el test de SC-1a que
+  planificaba con el archivo de época 4 después del T0 ahora planifica con
+  X5 y comprueba que el de época 4 rechaza.
+- Queda para después (`follow_up`): `--accept-regressed-source` (R5-1, con el
+  testigo de recuperación de SC-4b).
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.

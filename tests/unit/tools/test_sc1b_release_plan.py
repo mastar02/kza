@@ -243,6 +243,8 @@ def test_equal_triple_roll_forward_needs_no_t0_and_a_greater_triple_does(x5, x5s
     _row_p(root, tmp_path, "h-conflict", "runtime_admission_compaction_controller_revision_conflict"
            + _triples(x5["triple"], x5c["triple"]), lambda: cw.plan(root, x5c["archive"]))
     _install(root, x5r2)  # the T0 the refusal asked for
+    # The head's own release stays in served(root): planning it again needs no T0 (lower triple).
+    assert cw.plan(root, x5["archive"])["plan_sha256"]
     started = cw.start(root, x5r2["archive"])
     intent = stage.read_compaction_log(root, started["compaction_id"])["intent"]
     assert intent["archive"]["release_sha256"] == x5r2["release_sha256"]
@@ -476,6 +478,9 @@ def test_the_controller_remaps_queue_paths_as_the_worker_does():
                   "relative/q.flac", "/r/slots/h/state"):
         assert stage._queue_path_in_k(value, roots, destination) == \
             oc._relocated_value(value, roots, Path(destination))
+    nested = ("/r/s", "/r/s/nested")  # the longest matching root wins, on both sides
+    assert stage._queue_path_in_k("/r/s/nested/x.flac", nested, destination) == destination + "/x.flac" \
+        == oc._relocated_value("/r/s/nested/x.flac", nested, Path(destination))
     assert stage._queue_path_in_k(None, roots, destination) is None
     assert stage.compaction_source_roots({"owners": [{"state_root": "/r/slots/a/state"}]},
                                          {"state_root": "/r/slots/h/state"}) == roots
