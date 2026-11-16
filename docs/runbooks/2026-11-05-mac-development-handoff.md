@@ -1125,11 +1125,15 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   la ronda de arreglos de SC-6a (cbb509c, 9ec7d95) y la revisión
   independiente de la ronda 1 de arreglos de R1-B1/R1-B2 se hicieron el
   2026-11-15; sus arreglos cambiaron código y R1 se re-fijó desde 357dcb5
-  (ver «Re-revisiones de SC-6a y R1-B, y R1 re-fijado desde 357dcb5»). Siguen
-  abiertas la re-revisión independiente de esos arreglos y la suite batch
-  completa sobre 357dcb5; si la re-revisión cambia código, R1 se vuelve a
-  construir y a fijar. El visto bueno visual del panel de R1-B2 sigue con el
-  usuario. Después quedan los
+  (ver «Re-revisiones de SC-6a y R1-B, y R1 re-fijado desde 357dcb5»). La
+  re-revisión independiente de esos arreglos (ronda 2, 2026-11-16) aprobó;
+  sus dos hallazgos bajos se corrigieron sin tocar código de ejecución y R1
+  sigue fijado desde 357dcb5 (ver «Re-revisión ronda 2»). Las revisiones del
+  lado de desarrollo previas a la ventana están hechas. Queda la suite batch
+  completa sobre 51fbc43 (verde en la Mac; el resultado del server lo
+  registra la sesión principal); si algo de eso cambia código, R1 se vuelve
+  a construir y a fijar. El visto bueno visual del panel de R1-B2 sigue con
+  el usuario. Después quedan los
   pasos del operador: registrar la autorización de la ventana y los ids
   P1=D y L4, transferir a `kza` el R1 fijado (`r1-357dcb5.tar.gz`) y
   verificarlo, el drop-in sudo de W7 y el arranque real hasta READY de W8.
@@ -1189,8 +1193,9 @@ subida. Evidencia:
 - Pendiente, antes de la ventana de R1: la revisión independiente de la
   ronda 1 (R1B1-1 a R1B1-7, junto con la de R1-B2) se hizo el 2026-11-15 y
   aprobó (`r1b1-evidence.json`, `rereview`); su hallazgo RR2-1 se arregló en
-  19dd44e. Falta la re-revisión independiente de esa ronda de arreglos (ver
-  «Re-revisiones de SC-6a y R1-B, y R1 re-fijado desde 357dcb5»).
+  19dd44e. La re-revisión independiente de esa ronda de arreglos aprobó el
+  2026-11-16 (ver «Re-revisión ronda 2»); queda la suite batch completa
+  sobre 51fbc43 (resultado del server pendiente de registro).
 
 ## R1-B2 — «Olvidar grabaciones perdidas» desde Privacidad (2026-11-15)
 
@@ -1242,8 +1247,9 @@ automático al arrancar y conservarlas para siempre. Evidencia:
   nueva). Detalle en `r1b2.review_round_1`.
 - Pendiente, antes de la ventana de R1: la revisión independiente de la
   ronda 1 se hizo (aprobada, con RR2-1 bajo y RR2-2 informativo; ver abajo)
-  y falta la re-revisión independiente de su ronda de arreglos; el visto
-  bueno visual del panel sigue con el usuario como en las demás pantallas.
+  y la re-revisión independiente de su ronda de arreglos aprobó el
+  2026-11-16 (ver «Re-revisión ronda 2»); el visto bueno visual del panel
+  sigue con el usuario como en las demás pantallas.
 
 ## R1 re-fijado desde c6462e5 tras R1-B (2026-11-15)
 
@@ -1328,11 +1334,48 @@ en `c6462e5`) se revisaron de forma independiente. Evidencia:
   pasados, más el ensayo de extracción con un `TMPDIR` privado. Server
   (`yo`, sobre 357dcb5, de a una): `test_linux_adoption_window` 7 de 7 en
   262 s y 153 dirigidas en proceso (`/home/yo/projects/runs/rr-fixes`).
-- Pendiente antes de la ventana: la suite batch completa sobre 357dcb5 (la
-  corre la sesión principal), la re-revisión independiente de esta ronda de
-  arreglos y el visto bueno visual del panel de R1-B2. Nada cambió del lado
-  de `kza`; sin release ni instalación. La ventana sigue sin autorizar ni
-  programar.
+- Pendiente antes de la ventana (actualizado el 2026-11-16, ver «Re-revisión
+  ronda 2»): la re-revisión independiente de esta ronda de arreglos aprobó.
+  Queda la suite batch completa sobre 51fbc43 (verde en la Mac; el resultado
+  del server lo registra la sesión principal) y el visto bueno visual del
+  panel de R1-B2. Nada cambió del lado de `kza`; sin release ni instalación.
+  La ventana sigue sin autorizar ni programar.
+
+## Re-revisión ronda 2 (2026-11-16)
+
+Re-revisión independiente de la ronda de arreglos 2139fa3..51fbc43 (RR-1 a
+RR-4, RR2-1 y RR2-2). Evidencia: clave `rereview2` en
+`t040-t041/r1b1-evidence.json` y `t040-t041/sc6a-evidence.json`. Veredicto:
+`approve`, con dos hallazgos bajos y uno informativo.
+
+- RR3-1 (baja, corregido): el mutante M5 (`_forget_carried` captura sólo
+  `PermissionError`, no `ValueError`) sobrevivía a todos los tests de
+  captura; la nota M3 de la evidencia decía que cubría `ValueError`. Test
+  nuevo `test_a_count_conflict_drained_by_close_does_not_fail_it`: el
+  SELECT de los arrastrados queda retenido, empieza el `aclose`, y un
+  conteo equivocado (1 frente a 2) da `capture_carried_count_conflict` sin
+  hacer fallar el cierre. M5 muere (`aclose` da
+  `capture_recorder_state_unconfirmed`). Nota M3 corregida.
+- RR3-2 (baja, corregido): el día 14 decía «Desde W3 sólo se corre
+  `controller/current`», pero W7 y W-abort-2 todavía corren el `$ST`
+  extraído. La frase dice ahora que ese `$ST` no sobrevive a la sesión de la
+  ventana y que el día 14, como W4 y `completion-status`, corre desde
+  `controller/current`; `test_sc6a_docs` la fija. Los comandos de W7 y
+  W-abort-2 no cambiaron.
+- RR3-3 (info, diferido al backlog posterior a R1): endurecimiento opcional
+  en `src` (excepciones después del commit en `_forget_transaction` como
+  falla más `RuntimeError`, o `_read_cache` con `RuntimeError` ante un
+  estado desconocido). No bloquea la ventana.
+- RR3-0: lo demás se verificó sin defectos.
+
+Sin cambios en `src/` ni `scripts/`: R1 sigue fijado desde 357dcb5 (sha256
+`c5305d588a228aca445489b90c00a2b11165d24f8fa1078ad19a68fbe9630a24`). Las
+revisiones del lado de desarrollo previas a la ventana están hechas. Queda la
+suite batch completa sobre 51fbc43 (verde en la Mac, `u3b/full-51fbc43`; el
+resultado del server lo registra la sesión principal), el visto bueno visual
+del panel de R1-B2 en Privacidad, que sigue con el usuario, y después los
+pasos del operador. La ventana la programa el usuario; sigue sin autorizar ni
+programar.
 
 ## Prompt para la sesión nueva
 

@@ -523,3 +523,51 @@ async def test_a_refused_forget_drained_by_close_does_not_fail_it(tmp_path):
         assert _rows(privacy) == before and recorders.carried() == 2 and not recorders._fault
     finally:
         await privacy.aclose()
+
+
+async def test_a_count_conflict_drained_by_close_does_not_fail_it(tmp_path):
+    """RR3-1: a count conflict found while aclose drains the forget is a refusal, not a failure.
+
+    The forget's carried SELECT runs after its last closed check; aclose
+    begins while it is held. The wrong count (1 shown, 2 carried) refuses
+    the forget with ``ValueError`` before any delete, so nothing is
+    unconfirmed: aclose completes, every row stays and nothing faults.
+    """
+    _, privacy, recorders, _tokens = await _carried_boot(tmp_path, "conflict-close.sqlite")
+    before = _rows(privacy)
+    entered, release = threading.Event(), threading.Event()
+    connection = privacy.ledger._db
+
+    class HeldSelect:
+        """Hold the forget's carried SELECT, after every closed check before it passed."""
+
+        def execute(self, sql, *args):
+            if sql.startswith("SELECT token_hash, kind FROM capture_browser_recorders") \
+                    and "state='unknown'" in sql and not entered.is_set():
+                entered.set()
+                assert release.wait(5)
+            return connection.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(connection, name)
+
+    privacy.ledger._db = HeldSelect()
+    closing = None
+    try:
+        forgetting = asyncio.create_task(recorders.forget_carried(1, authorize=_allowed))
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            closing = asyncio.create_task(recorders.aclose())
+            await asyncio.sleep(0)
+            assert recorders._closed
+        finally:
+            release.set()
+        with pytest.raises(ValueError, match="^capture_carried_count_conflict$"):
+            await forgetting
+        await asyncio.wait_for(closing, 2)  # a refused forget is no unconfirmed state
+    finally:
+        privacy.ledger._db = connection
+    try:
+        assert _rows(privacy) == before and recorders.carried() == 2 and not recorders._fault
+    finally:
+        await privacy.aclose()

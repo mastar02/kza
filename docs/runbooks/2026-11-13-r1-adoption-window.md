@@ -47,12 +47,18 @@ autoriza la ventana.
     bajo (RR2-1: un olvido que se cruza con el cierre) y uno informativo
     (RR2-2, redacción de la evidencia).
 
-  Los arreglos están en 19dd44e, b02116c y 357dcb5. RR2-1 cambia
-  `src/memory/capture_recorders.py`, así que R1 se reconstruyó y se volvió a
-  fijar desde 357dcb5 («Archivo R1 fijado»). Siguen abiertas la re-revisión
-  independiente de esa ronda de arreglos y la suite batch completa sobre
-  357dcb5. El visto bueno visual del panel de R1-B2 sigue con el usuario. Si
-  la re-revisión cambia código, R1 se vuelve a construir y a fijar.
+  Los arreglos están en 19dd44e..51fbc43 (el código, en 19dd44e, b02116c y
+  357dcb5). RR2-1 cambia `src/memory/capture_recorders.py`, así que R1 se
+  reconstruyó y se volvió a fijar desde 357dcb5 («Archivo R1 fijado»). La
+  re-revisión independiente de esa ronda de arreglos (ronda 2, 2026-11-16)
+  aprobó (clave `rereview2` en las dos evidencias), con dos hallazgos bajos
+  que se corrigieron sin tocar código de ejecución (RR3-1, un test; RR3-2,
+  una frase del día 14), así que R1 sigue fijado desde 357dcb5. Las
+  revisiones del lado de desarrollo previas a la ventana están hechas. Queda
+  la suite batch completa sobre 51fbc43 (verde en la Mac; el resultado del
+  server lo registra la sesión principal), y el visto bueno visual del panel
+  de R1-B2 sigue con el usuario. Si algo de lo que queda cambia código, R1
+  se vuelve a construir y a fijar.
 - Después quedan los pasos del operador. Este runbook no autoriza ni programa
   la ventana: la programa el usuario, como operador de `kza`. Antes, el
   usuario registra la autorización de la ventana y los ids P1=D y L4 («Antes
@@ -472,9 +478,10 @@ comando lo rechaza (`runtime_admission_legacy_retire_too_early`, con
 `/home/kza/kza` no es un destino (Q3 = A).
 
 El día 14 se corre en una sesión nueva de `kza`, no en la de la ventana: el
-`$ST` de «Extraer R1 verificado» ya no existe y su `mktemp -d` no se
-conserva. Desde W3 sólo se corre `controller/current`, así que, como en W4 y
-en `completion-status`, los comandos de este paso se definen desde el
+`$ST` extraído en «Extraer R1 verificado» no sobrevive a la sesión de la
+ventana (W7 y W-abort-2 todavía lo usan dentro de ella) y su `mktemp -d` no
+se conserva. Como W4 y `completion-status`, el día 14 corre desde
+`controller/current`: los comandos de este paso se definen desde el
 controlador instalado, al empezar:
 
 ```bash

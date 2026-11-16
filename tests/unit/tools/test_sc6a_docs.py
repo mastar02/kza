@@ -86,7 +86,14 @@ def test_day14_defines_its_commands_from_the_installed_controller():
     assert section.index(CONTROLLER_ST) < section.index("\n0. ") < section.index("$ST retire-legacy-state")
     flat = " ".join(section.split())
     assert "El día 14 se corre en una sesión nueva de `kza`, no en la de la ventana" in flat
-    assert "Desde W3 sólo se corre `controller/current`" in flat
+    # RR3-2: W7 and W-abort-2 still run the extracted $ST after W3; only day 14 needs controller/current.
+    assert "Desde W3 sólo se corre" not in flat
+    assert ("el `$ST` extraído en «Extraer R1 verificado» no sobrevive a la sesión de la ventana "
+            "(W7 y W-abort-2 todavía lo usan dentro de ella)") in flat
+    assert "Como W4 y `completion-status`, el día 14 corre desde `controller/current`" in flat
+    window = " ".join(text.replace(section, "").split())  # the window's sections and Abortar
+    for command in ("$ST stop-timeout-dropin", "$ST adoption-abort --unit-dir"):
+        assert command in window, command
     for command in ("$ST retire-legacy-state --decision <id P7> --container-slot $C --dry-run",
                     "$ST retire-legacy-state --decision <id P7> --container-slot $C --confirm <plan_sha256>"):
         assert command in flat, command
@@ -145,8 +152,9 @@ def test_the_scheduling_gate_states_what_is_done_and_leaves_scheduling_to_the_us
     """The U3b-0e5 gate (independent review, compiled T-A17 on Linux) is stated as met with its
     references; it is not the only thing left. The SC-6a fix-round re-review and the R1-B1/R1-B2
     round-1 independent review were done (re-review round, RR-*/RR2-*); their fixes changed code, so
-    R1 was re-pinned, and the re-review of those fixes and the batch suite on the new commit stay open
-    before the window, then operator steps; no document declares the window scheduled."""
+    R1 was re-pinned. The re-review of those fixes (round 2, RR3-*) approved without runtime changes, so
+    the development re-reviews are done; the batch suite on 51fbc43 and the panel sign-off remain before
+    the window, then operator steps; no document declares the window scheduled."""
     text = r1_runbook.runbook_text()
     gate = " ".join(text.split("## Compuerta de programación (P7, Q5)", 1)[1].split("**Paso del día 14**", 1)[0].split())
     assert "Faltan su revisión independiente" not in gate
@@ -160,7 +168,9 @@ def test_the_scheduling_gate_states_what_is_done_and_leaves_scheduling_to_the_us
         assert step in gate, step
     open_reviews = ("re-revisión de la ronda de arreglos de SC-6a", "cbb509c", "9ec7d95",
                     "revisión independiente de la ronda 1 de arreglos de R1-B1/R1-B2",
-                    "19dd44e", "357dcb5", "re-revisión independiente de", "suite batch completa sobre 357dcb5",
+                    "19dd44e", "357dcb5", "re-revisión independiente de", "suite batch completa sobre 51fbc43",
+                    "(ronda 2, 2026-11-16)", "Las revisiones del lado de desarrollo previas a la ventana están hechas.",
+                    "verde en la Mac; el resultado del server lo registra la sesión principal",
                     "visto bueno visual del panel de R1-B2 sigue con el usuario")
     handoff = " ".join((REPO / "docs/runbooks/2026-11-05-mac-development-handoff.md").read_text().split())
     deployment = " ".join((REPO / "docs/architecture/DEPLOYMENT.md").read_text().split())
@@ -168,16 +178,21 @@ def test_the_scheduling_gate_states_what_is_done_and_leaves_scheduling_to_the_us
     assert "`t040-t041/r1b1-evidence.json`, `rereview`" in gate and "`t040-t041/sc6a-evidence.json`, `rereview`" in gate
     for finding in ("RR-1", "RR-2", "RR-3", "RR-4", "RR2-1", "RR2-2"):
         assert finding in gate, finding
-    assert ("Siguen abiertas la re-revisión independiente de esa ronda de arreglos y la suite batch completa"
-            " sobre 357dcb5.") in gate
-    assert "Si la re-revisión cambia código, R1 se vuelve a construir y a fijar." in gate
+    for finding in ("RR3-1", "RR3-2", "`rereview2`"):
+        assert finding in gate, finding
+    assert "así que R1 sigue fijado desde 357dcb5." in gate
+    assert "Si algo de lo que queda cambia código, R1 se vuelve a construir y a fijar." in gate
     assert "La ventana de R1 sigue sin programarse. Su «Compuerta de programación» (runbook de R1) está cumplida" in handoff
     assert "La compuerta no es lo único pendiente antes de la ventana. La re-revisión de" in handoff
     assert "la ventana la programa el usuario, como operador, y sigue sin programarse." in deployment
     assert "La compuerta no es lo único pendiente antes de la ventana. La re-revisión de" in deployment
     for name, flat in (("runbook", gate), ("handoff", handoff), ("DEPLOYMENT", deployment)):
         for stale in ("Siguen abiertas dos revisiones", "siguen abiertas la re-revisión de la ronda de arreglos",
-                      "Siguen abiertas, del lado de desarrollo, la re-revisión"):
+                      "Siguen abiertas, del lado de desarrollo, la re-revisión",
+                      # Round 2 (2026-11-16) approved the fix round: no doc keeps it open.
+                      "Siguen abiertas la re-revisión independiente", "falta la re-revisión independiente",
+                      "Falta la re-revisión independiente", "Si la re-revisión cambia código",
+                      "suite batch completa sobre 357dcb5"):
             assert stale not in flat, (name, stale)
     for name, flat in (("runbook", gate), ("handoff", handoff), ("DEPLOYMENT", deployment)):
         for phrase in open_reviews:
@@ -191,7 +206,7 @@ def test_the_scheduling_gate_states_what_is_done_and_leaves_scheduling_to_the_us
     raw = (REPO / "docs/runbooks/2026-11-05-mac-development-handoff.md").read_text()
     r5v1 = " ".join(raw.split("## R5V-1", 1)[1].split("\n## ", 1)[0].split())
     assert "Pendiente, antes de la ventana de R1: la revisión independiente de la ronda 1 (R1B1-1 a R1B1-7" in r5v1
-    assert "Falta la re-revisión independiente de esa ronda de arreglos" in r5v1
+    assert "La re-revisión independiente de esa ronda de arreglos aprobó el 2026-11-16" in r5v1
     assert "Sin integrar ni subir" not in r5v1 and "integrada en `recovery/production-2026-10-25` con el merge `c6462e5`" in r5v1
     for claim in ("ventana programada", "ventana autorizada", "la ventana está programada"):
         assert claim not in gate.lower(), claim
