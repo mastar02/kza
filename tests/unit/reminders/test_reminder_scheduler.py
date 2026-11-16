@@ -1128,6 +1128,10 @@ async def test_a_possibly_heard_notice_is_never_repeated_by_voice_after_restart(
     try:
         after = voice_output()
         scheduler = scheduler_on(restarted, after, ha, clock)
+        # Review round 1 R5: before any pass completes a lost advance, the web lists the
+        # occurrence once, as its terminal history entry, and never also as pending.
+        [entry] = await scheduler.notice_entries()
+        assert (entry.status, entry.reason, entry.pending) == ("uncertain", reason, False)
         await scheduler._deliver_due(clock())
         assert await scheduler._fire_reminder(r) is False
         after.aspeak.assert_not_awaited()
@@ -1251,6 +1255,19 @@ async def test_retention_keeps_every_attempt_of_an_occurrence_until_its_newest_c
     await scheduler._cleanup_notices()
     assert await notices(store) == []
     assert await scheduler.notice_entries() == []
+
+
+@pytest.mark.asyncio
+async def test_history_shows_the_text_only_while_the_reminder_is_shared(scheduler, store, mock_deps, clock):
+    """Review round 1 R8 (X05): the history entry reads the text in shared scope only."""
+    r = await store.create("u1", "regar", clock() - 1, scope=ReminderScope.SHARED)
+    assert await scheduler._fire_reminder(r) is True
+    [entry] = await scheduler.notice_entries()
+    assert entry.text == "regar"
+    # Scope is fixed at creation today; force a private row to pin the projection.
+    await store._work.write(lambda db: db.execute("UPDATE reminders SET scope = 'private' WHERE id = ?", (r.id,)))
+    [entry] = await scheduler.notice_entries()
+    assert (entry.reminder_id, entry.status, entry.text) == (r.id, "confirmed", None)
 
 
 @pytest.mark.asyncio
