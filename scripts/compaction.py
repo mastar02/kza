@@ -1611,6 +1611,17 @@ def _destroy_partial_snapshots(root: Path, log: dict, wall) -> dict:
     return log
 
 
+def _next_after_activation(log: dict) -> str:
+    """The operator's next command once K is active (review B4).
+
+    A release-mode log cannot be armed before SC-4a (SC1B-N3): its only
+    exit is the lossless plain abort, so the tool names that, not verify.
+    """
+    if release_log(log):
+        return "compact abort " + log["compaction_id"]
+    return "compact verify " + log["compaction_id"]
+
+
 def _continue(root: Path, compaction_id: str, *, archive: Path | None, worker=None, wall=time.time) -> dict:
     """Resume C2a-C5 from the last logged event (every step idempotent or refused)."""
     gate = "compaction:" + compaction_id
@@ -1633,7 +1644,7 @@ def _continue(root: Path, compaction_id: str, *, archive: Path | None, worker=No
             log = _authorize(root, log, wall)
         if not _has(log, "activated"):
             log = _activate(root, controller, log, wall)
-    return {"compaction_id": compaction_id, "phase": "activated", "next": "compact verify " + compaction_id,
+    return {"compaction_id": compaction_id, "phase": "activated", "next": _next_after_activation(log),
             "materialized": _last(log, "materialized")["data"]["counts"]}
 
 
@@ -2527,7 +2538,8 @@ def compact_resume(root, compaction_id: str, *, archive=None, worker=None, scan=
         with stage.AdmissionController(root, gate="compaction:" + compaction_id):
             return _finish_retire(root, _log(root, compaction_id), wall)
     if _has(log, "activated"):
-        return {"compaction_id": compaction_id, "phase": "activated", "noop": True}
+        return {"compaction_id": compaction_id, "phase": "activated", "noop": True,
+                "next": _next_after_activation(log)}
     return _continue(root, compaction_id, archive=Path(archive) if archive else None, worker=worker, wall=wall)
 
 

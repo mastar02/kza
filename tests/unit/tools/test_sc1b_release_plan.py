@@ -194,6 +194,9 @@ def test_first_post_r1_plan_admits_new_and_start_runs_k_from_new(x4, x5, tmp_pat
     planned = cw.plan(root, x5["archive"])  # retire_prepare_leftovers not given: forced on
     assert cw.witness(root) == witness  # read-only
     started = cw.start(root, x5["archive"], planned=planned)
+    # Review B4: until SC-4a the only exit of a release-mode log is the plain abort, and start says so.
+    assert started["next"] == "compact abort " + started["compaction_id"]
+    assert compaction.compact_resume(root, started["compaction_id"])["next"] == started["next"]
     log = stage.read_compaction_log(root, started["compaction_id"])
     intent = log["intent"]
     assert intent["mode"] == "release" and compaction.release_log(log)
@@ -431,6 +434,7 @@ def test_queued_audio_paths_are_relocated_into_k_and_k_removes_its_own_file(x4_a
     assert _queue_rows(h_state) == {"deletions": [str(h_file)],
                                     "intents": [str(source / "data" / "ambient_audio" / "intent.flac")]}
     started = cw.start(root, x4_archive)
+    assert started["next"] == "compact verify " + started["compaction_id"]  # plain mode (review B4)
     k_state = root / "slots" / "k" / "state"
     k_file = k_state / "data" / "ambient_audio" / "queued.flac"
     assert _queue_rows(k_state) == {"deletions": [str(k_file)],
