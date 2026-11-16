@@ -688,6 +688,33 @@ def test_invalid_delivery_policy_configuration_is_rejected(key, value):
     with pytest.raises(ValueError, match=key):
         ReminderScheduler(MagicMock(), AsyncMock(), None, AsyncMock(), {key: value}, home_actions=MagicMock())
 
+NO_ZONE_WARNING = "No reminder output zone configured"
+def scheduler_warnings(caplog, config: dict) -> list[str]:
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="src.reminders.reminder_scheduler"):
+        ReminderScheduler(MagicMock(), AsyncMock(), None, AsyncMock(), config, home_actions=MagicMock())
+    return [record.getMessage() for record in caplog.records if record.levelname == "WARNING"]
+
+@pytest.mark.parametrize("config, expected", [
+    ({"output_zone": None}, [NO_ZONE_WARNING]),
+    ({}, [NO_ZONE_WARNING]),
+    ({"output_zone": "living"}, []),
+])
+def test_construction_warns_when_no_shared_reminder_can_be_announced(caplog, config, expected):
+    """Review F4: a missing zone is logged at startup, not discovered later."""
+    messages = scheduler_warnings(caplog, config)
+    assert len(messages) == len(expected)
+    for message, fragment in zip(messages, expected):
+        assert fragment in message
+
+def test_committed_settings_warn_that_no_shared_reminder_is_announced(caplog):
+    """The committed settings have no output zone (pending user input)."""
+    config = yaml.safe_load((ROOT / "config/settings.yaml").read_text(encoding="utf-8"))
+    reminders = dict(config["reminders"])
+    if reminders.get("output_zone") is None:  # the same fallback as voice_services
+        reminders["output_zone"] = config["tts"]["streaming"].get("default_output_zone")
+    assert any(NO_ZONE_WARNING in m for m in scheduler_warnings(caplog, reminders))
+
 def test_settings_declare_the_recommended_late_action_grace():
     config = yaml.safe_load((ROOT / "config/settings.yaml").read_text(encoding="utf-8"))
     assert config["reminders"]["late_action_grace_s"] == DEFAULT_LATE_ACTION_GRACE_S == 120

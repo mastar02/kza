@@ -313,6 +313,13 @@ class TestRemindersStatusEndpoint:
         assert data["next_trigger_at"] is not None
         assert data["scheduler_running"] is True
         assert data["delivery_failures"] == 3  # 1 + 2 from mock retry_counts
+        assert data["output_zone_configured"] is True
+
+    @pytest.mark.asyncio
+    async def test_status_reports_a_missing_output_zone(self, client, mock_reminder_scheduler):
+        mock_reminder_scheduler.output_zone = None
+        data = (await client.get("/api/reminders/status")).json()
+        assert data["output_zone_configured"] is False
 
     @pytest.mark.asyncio
     async def test_status_without_dependencies(self, tmp_path, dashboard_auth):
@@ -325,3 +332,4 @@ class TestRemindersStatusEndpoint:
         assert data["next_trigger_at"] is None
         assert data["scheduler_running"] is False
         assert data["delivery_failures"] == 0
+        assert data["output_zone_configured"] is False

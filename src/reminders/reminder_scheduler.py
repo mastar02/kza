@@ -167,10 +167,18 @@ class ReminderScheduler:
                 raise ValueError(f"reminders.{name} must be a finite non-negative number")
         if self._retry_interval <= 0:
             raise ValueError("reminders.retry_interval_seconds must be positive")
+        if self._output_zone is None:
+            logger.warning("No reminder output zone configured: shared reminders are not announced, executed or "
+                           "marked fired until reminders.output_zone or tts.streaming.default_output_zone is set")
 
         # Arrival only re-checks due shared reminders; it never selects their room.
         if self._presence_detector is not None:
             self._presence_detector.on_user_arrived(self._on_user_arrived)
+
+    @property
+    def output_zone(self) -> str | None:
+        """Zone of shared announcements, or None when nothing can be announced."""
+        return self._output_zone
 
     @property
     def _retry_counts(self) -> dict[str, int]:
