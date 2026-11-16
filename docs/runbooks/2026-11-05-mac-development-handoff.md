@@ -1700,8 +1700,8 @@ mutantes).
   bajar el servicio). RB-4: DEPLOYMENT ya no da por resuelto lo que piden
   SC4B-Q1 y SC4B-Q2.
 
-Preguntas abiertas para el usuario (sin cambio en la revisión; bloquean la
-primera transición gestionada hasta que se respondan):
+Preguntas respondidas por el usuario el 2026-11-16 (recomendación aceptada en
+las dos; `user-decisions-20261110.json`, clave `sc4b_questions_20261116`):
 
 - **SC4B-Q1.** ¿Se puede hacer la primera transición posterior a R1 antes de
   tener el testigo de cierre por registro de recuperación y

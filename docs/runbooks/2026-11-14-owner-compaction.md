@@ -261,8 +261,9 @@ R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
    exige K' sin ningún id resucitado (escaneo absoluto, SC4B-N5), y K' es
    una copia de H: con un valor distinto de 0 cada transición pararía en el
    retiro, después de toda la bajada, y volvería a H sin pérdida. En ese caso
-   no seguir: el servicio queda en H y se pasa a desarrollo (pregunta abierta
-   SC4B-Q2 del handoff).
+   no seguir: el servicio queda en H y se pasa a desarrollo, que implementa
+   antes la línea base salada de K y el reencolado (respuesta del usuario a
+   SC4B-Q2 del 2026-11-16).
 
 1. Detener y deshabilitar el servicio (salida 0 obligatoria en cada uno):
 

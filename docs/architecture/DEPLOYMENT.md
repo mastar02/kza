@@ -1139,9 +1139,14 @@ siguiente sigue abierto hasta SC-4c, SC-R, SC-6b y SC-5b.
 Pendiente, no resuelto: el diseño marca toda la unidad SC-4b como previa a
 la primera transición gestionada (`before_first_managed_transition`). Las
 partes que esta implementación dejó en `follow_up` siguen siendo previas a
-esa transición **salvo que el usuario responda otra cosa** a las preguntas
-abiertas SC4B-Q1 y SC4B-Q2 (en `t040-t041/sc4b-evidence.json` y en el
-handoff, con su recomendación): `closed_witness` con registros de
+esa transición salvo lo que el usuario respondió el 2026-11-16 a SC4B-Q1 y
+SC4B-Q2 (`t040-t041/user-decisions-20261110.json`, clave
+`sc4b_questions_20261116`): la primera transición puede hacerse sin
+`closed_witness` con registros de recuperación ni `--accept-regressed-source`
+si cae dentro de los 14 días de L4 (si cae después, se implementan antes), y
+el retiro con escaneo de resurrección absoluto se acepta si el conteo de solo
+lectura del paso 0 del runbook da 0 (si no, se implementan antes la línea
+base salada de K y el reencolado). Lo que queda en `follow_up`: `closed_witness` con registros de
 recuperación y `--accept-regressed-source` (fila PA: hasta entonces un head
 cerrado por recuperación no es fuente de una transición, y la salida de PA es
 L4 mientras exista; SC4B-Q1), la línea base salada de resurrección de K y el
@@ -1162,9 +1167,11 @@ Tests: `tests/unit/tools/test_sc4b_w.py`,
 Después de R1 no se puede activar ningún arreglo de código (release, rollback
 o roll-forward gestionados) hasta que el modo release (SC-0, SC-1, SC-3a,
 SC-3c, SC-4a/b/c, SC-R, SC-6b y SC-5b) esté desarrollado, revisado de forma
-independiente y ensayado. SC-4b no está completa para esa compuerta mientras
-el usuario no responda SC4B-Q1 y SC4B-Q2 (ver «Salidas de V del modo
-release»): bloquean la primera transición. Una release gestionada copiará entero el head,
+independiente y ensayado. Para SC-4b, el usuario respondió SC4B-Q1 y SC4B-Q2
+el 2026-11-16 (ver «Salidas de V del modo release»): la primera transición
+tiene que caer dentro de los 14 días de L4 y el paso 0 del runbook tiene que
+dar `resurrected` en 0; si no se cumple alguna, esa parte se implementa
+antes. Una release gestionada copiará entero el head,
 verificará la copia con una corrida corta y retirará el estado anterior; nada
 de eso está disponible hoy. Mientras tanto, el único rollback es L4 a 63ea8d3
 durante sus 14 días (con la frase 'revivir datos borrados'); a partir del día
