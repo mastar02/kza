@@ -367,3 +367,28 @@ def test_w0_transient_lists_are_the_design_lists():
                                               sqlite3.SQLITE_NOMEM, sqlite3.SQLITE_INTERRUPT}
     assert compaction.W0_TRANSIENT_CODES == {"runtime_admission_writer_active", "runtime_admission_busy",
                                              "runtime_admission_sdk_version_unavailable"}
+
+
+def test_the_cli_passes_discard_k_changes_and_prints_the_w_report(monkeypatch, capsys):
+    """`compact abort <id> --to-h --confirm-h <prefix> --discard-k-changes <digest prefix>` reaches
+    compact_abort; a safe-stop refusal prints its code, the content-free report and its digest (78)."""
+    import argparse
+    parser = argparse.ArgumentParser()
+    commands = parser.add_subparsers(dest="command")
+    compaction.add_commands(commands)
+    args = parser.parse_args(["compact", "abort", "0" * 32, "--to-h", "--confirm-h", "a" * 12,
+                              "--discard-k-changes", "b" * 12])
+    args.root = Path("/nonexistent")
+    seen = {}
+
+    def abort(root, compaction_id, **options):
+        seen.update(options)
+        raise compaction.CompactionRefusal(compaction.ABORT_PROTECTED_CHANGED,
+                                           {"w": {"class": compaction.W_RESTRICTIVE}, "w_sha256": "c" * 64})
+
+    monkeypatch.setattr(compaction, "compact_abort", abort)
+    assert compaction.run_command(args) == 78
+    assert seen["discard_k_changes"] == "b" * 12 and seen["to_h"] is True and seen["confirm_h"] == "a" * 12
+    printed = json.loads(capsys.readouterr().out)
+    assert printed == {"refused": compaction.ABORT_PROTECTED_CHANGED,
+                       "report": {"w": {"class": compaction.W_RESTRICTIVE}, "w_sha256": "c" * 64}}
