@@ -251,7 +251,8 @@ def test_d5_digests_accept_the_same_multiset_in_any_order_with_blobs(tmp_path):
     assert _compare(tmp_path, k_rows, snapshot, plan)
 
 
-@pytest.mark.parametrize("mutation", ["value", "int_for_real", "multiplicity", "missing_row", "extra_column",
+@pytest.mark.parametrize("mutation", ["value", "int_for_real", "multiplicity", "duplicate_in_k_only",
+                                      "missing_row", "extra_column",
                                       "missing_column", "swapped_columns", "blob_bytes"])
 def test_d5_digests_refuse_any_difference(tmp_path, mutation):
     plan, refs = _blob_plan(tmp_path, [b"\x00\x01", b"\x00\x02"])
@@ -266,6 +267,8 @@ def test_d5_digests_refuse_any_difference(tmp_path, mutation):
     elif mutation == "multiplicity":
         snapshot.append(dict(snapshot[1]))
         k_rows.append(k_rows[0])
+    elif mutation == "duplicate_in_k_only":
+        k_rows.append(k_rows[1])
     elif mutation == "missing_row":
         snapshot.pop()
     elif mutation == "extra_column":
