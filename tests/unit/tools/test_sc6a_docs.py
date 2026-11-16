@@ -36,6 +36,9 @@ def test_the_runbook_has_the_pinned_archive_step_before_any_command_and_w1():
     pre = window.index("- **W1-pre** (obligatorio): repetir la verificación de «Archivo R1 fijado»")
     assert pre < window.index("- **W1**. Ejecutar:")
     assert "Sin `R1 fijado: OK`, detener: no hay W1." in " ".join(window.split())
+    # Re-review RR-4: the W1-pre sentence that keeps $ST from the extraction (or repeats it) is pinned.
+    assert ("`$ST` sigue siendo el de «Extraer R1 verificado» en esta misma sesión; si no, repetir el bloque "
+            "`PY=`/`C=`, «Archivo R1 fijado» y ese bloque (otro `mktemp -d`).") in " ".join(window.split())
 
 
 def test_r1_and_st_come_from_a_new_extraction_of_the_verified_archive():
@@ -46,13 +49,15 @@ def test_r1_and_st_come_from_a_new_extraction_of_the_verified_archive():
     extract = text.index(r1_runbook.EXTRACT_HEADING)
     assert check < extract < text.index("## Antes de la ventana") < text.index("$ST adoption-dry-run")
     lines = r1_runbook.extract_block(text).splitlines()
-    assert lines[0] == "unset R1 ST"
-    assert lines[1].startswith("R1=$(mktemp -d)")
-    assert lines[2] == 'tar -xzf "$R1_ARCHIVE" -C "$R1"'
-    assert lines[3].startswith('if [ "$("$PY" -I -c ') and '"$R1/release.json")" = "$R1_COMMIT" ]; then ST=' in lines[3]
-    # $R1 and $ST are assigned nowhere else, and no placeholder $R1 is left.
+    # Re-review RR-2: the block defines $PY itself, so a new session that repeats only the two blocks works.
+    assert lines[0] == r1_runbook.RUNBOOK_PY
+    assert lines[1] == "unset R1 ST"
+    assert lines[2].startswith("R1=$(mktemp -d)")
+    assert lines[3] == 'tar -xzf "$R1_ARCHIVE" -C "$R1"'
+    assert lines[4].startswith('if [ "$("$PY" -I -c ') and '"$R1/release.json")" = "$R1_COMMIT" ]; then ST=' in lines[4]
+    # $R1 is assigned nowhere else, and $ST only here and in the day-14 block (from controller/current).
     assigned = [line for line in text.splitlines() if re.match(r"\s*(R1|ST)=", line)]
-    assert assigned == [lines[1]], assigned
+    assert assigned == [lines[2], r1_runbook.day14_block(text).splitlines()[2]], assigned
     assert text.count('ST="$PY -I -B $R1/scripts/stage_runtime.pyc') == 1 and "R1=<" not in text
     # Every command takes the verified archive by its variable.
     flat = " ".join(text.split())
@@ -62,6 +67,34 @@ def test_r1_and_st_come_from_a_new_extraction_of_the_verified_archive():
         assert command in flat, command
     assert flat.count("r1.tar.gz") == 1 and "R1_ARCHIVE=<ruta del r1.tar.gz transferido>" in flat
     assert "Sin `R1 extraído: OK`, detener: `$ST` queda sin definir." in flat
+    assert ("Si la sesión se pierde, repetir el bloque `PY=`/`C=` de arriba (los comandos de la ventana usan "
+            "`$C`), «Archivo R1 fijado» y este bloque (otro `mktemp -d`).") in flat
+
+
+CONTROLLER_ST = ('ST="$PY -I -B /home/kza/releases/controller/current/scripts/stage_runtime.pyc '
+                 '--root /home/kza/releases --offline"')
+
+
+def test_day14_defines_its_commands_from_the_installed_controller():
+    """Re-review RR-1: day 14 runs 14 days after W9, in a new session where the window's extracted $ST is
+    gone. The section defines PY, C and ST from controller/current before any step that runs $ST, as W4 and
+    completion-status do; DEPLOYMENT's «Cómo se corre» does the same."""
+    text = r1_runbook.runbook_text()
+    assert r1_runbook.day14_block(text).splitlines() == [
+        r1_runbook.RUNBOOK_PY, "C=release_20261029T174830709997Z_63ea8d3", CONTROLLER_ST]
+    section = text.split(r1_runbook.DAY14_HEADING, 1)[1].split("\n## ", 1)[0]
+    assert section.index(CONTROLLER_ST) < section.index("\n0. ") < section.index("$ST retire-legacy-state")
+    flat = " ".join(section.split())
+    assert "El día 14 se corre en una sesión nueva de `kza`, no en la de la ventana" in flat
+    assert "Desde W3 sólo se corre `controller/current`" in flat
+    for command in ("$ST retire-legacy-state --decision <id P7> --container-slot $C --dry-run",
+                    "$ST retire-legacy-state --decision <id P7> --container-slot $C --confirm <plan_sha256>"):
+        assert command in flat, command
+    deployment = (REPO / "docs/architecture/DEPLOYMENT.md").read_text()
+    how = deployment.split("Cómo se corre (bajo `kza`, nunca como root)", 1)[1].split("\n- ", 1)[0]
+    block = re.findall(r"```bash\n(.*?)```", how, flags=re.S)[0].splitlines()
+    assert block[:2] == [r1_runbook.RUNBOOK_PY, CONTROLLER_ST], block
+    assert all(line.startswith(("$ST retire-legacy-state", "systemctl --user")) for line in block[2:]), block
 
 
 def _git(*arguments: str) -> subprocess.CompletedProcess:

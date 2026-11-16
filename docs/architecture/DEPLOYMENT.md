@@ -1158,9 +1158,13 @@ dentro de alguno (también a través de un enlace), rechaza
 `legacy_checkout`, `backups_kept`, `r1_slot`, `head_slot`, `controller`,
 `current` o `head_state`.
 
-Cómo se corre (bajo `kza`, nunca como root):
+Cómo se corre (bajo `kza`, nunca como root), en una sesión nueva y con el
+controlador instalado, como W4 (el `$ST` extraído de la ventana ya no existe;
+re-revisión RR-1):
 
 ```bash
+PY=/home/kza/kza/.venv/bin/python
+ST="$PY -I -B /home/kza/releases/controller/current/scripts/stage_runtime.pyc --root /home/kza/releases --offline"
 $ST retire-legacy-state --decision <id P7> --container-slot release_20261029T174830709997Z_63ea8d3 --dry-run
 systemctl --user stop kza-voice.service
 $ST retire-legacy-state --decision <id P7> --container-slot release_20261029T174830709997Z_63ea8d3 --confirm <plan_sha256>

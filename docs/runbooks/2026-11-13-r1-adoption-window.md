@@ -155,6 +155,7 @@ extraer ese mismo `$R1_ARCHIVE` en un directorio nuevo y vacío, y definir
 `$ST` sólo desde ahí:
 
 ```bash
+PY=/home/kza/kza/.venv/bin/python
 unset R1 ST
 R1=$(mktemp -d)   # directorio nuevo, vacío y privado (0700): nunca una extracción anterior
 tar -xzf "$R1_ARCHIVE" -C "$R1"
@@ -165,8 +166,13 @@ Sin `R1 extraído: OK`, detener: `$ST` queda sin definir. Antes de W3 no
 existe `controller/current`, así que el sha256 fijado es la única garantía del
 código que corre `$ST`: por eso `$R1` sale siempre de un `mktemp -d` nuevo,
 extraído del archivo recién verificado, y nunca de un directorio que ya
-existía. Si la sesión se pierde, repetir «Archivo R1 fijado» y este bloque
-(otro `mktemp -d`). El ensayo corre los dos bloques tal como están escritos.
+existía. El bloque define `$PY` él mismo: sin eso, en una sesión nueva
+`$PY` queda vacío y el bloque se detiene con «R1 extraído distinto del
+fijado» aunque el archivo sea el correcto. Si la sesión se pierde, repetir el
+bloque `PY=`/`C=` de arriba (los comandos de la ventana usan `$C`), «Archivo R1
+fijado» y este bloque (otro `mktemp -d`). El ensayo corre los dos bloques tal
+como están escritos, sin agregarles nada (sólo cambia el valor de `PY=` por el
+intérprete del ensayo).
 
 ## Antes de la ventana
 
@@ -271,7 +277,7 @@ existía. Si la sesión se pierde, repetir «Archivo R1 fijado» y este bloque
 - **W1-pre** (obligatorio): repetir la verificación de «Archivo R1 fijado» con
   el mismo `$R1_ARCHIVE`. Sin `R1 fijado: OK`, detener: no hay W1. `$ST` sigue
   siendo el de «Extraer R1 verificado» en esta misma sesión; si no, repetir
-  ese bloque (otro `mktemp -d`).
+  el bloque `PY=`/`C=`, «Archivo R1 fijado» y ese bloque (otro `mktemp -d`).
 - **W1**. Ejecutar:
   ```bash
   systemctl --user stop kza-voice.service      # salida 0 obligatoria
@@ -447,6 +453,18 @@ comando lo rechaza (`runtime_admission_legacy_retire_too_early`, con
 `eligible_from`). Borra el estado del slot de b0866e8 y las diez bases de
 `backups/$C/databases/` (Q2 = A). Después no hay rollback no gestionado y
 `/home/kza/kza` no es un destino (Q3 = A).
+
+El día 14 se corre en una sesión nueva de `kza`, no en la de la ventana: el
+`$ST` de «Extraer R1 verificado» ya no existe y su `mktemp -d` no se
+conserva. Desde W3 sólo se corre `controller/current`, así que, como en W4 y
+en `completion-status`, los comandos de este paso se definen desde el
+controlador instalado, al empezar:
+
+```bash
+PY=/home/kza/kza/.venv/bin/python
+C=release_20261029T174830709997Z_63ea8d3
+ST="$PY -I -B /home/kza/releases/controller/current/scripts/stage_runtime.pyc --root /home/kza/releases --offline"
+```
 
 Desde SC-2 tampoco hay rollback gestionado hasta que exista el modo release:
 después de Q5 no queda ningún rollback. Antes de empezar, revisar la

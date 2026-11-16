@@ -789,12 +789,14 @@ def test_the_window_in_runbook_order_under_real_systemd(tmp_path, tree, built, s
     assert code == 78 and refused["refused"] == "runtime_admission_uninstall_legacy_state", refused
     assert {path.name: path.read_bytes() for path in systemd.dropin_dir(w.voice).iterdir()} == unit_files
     due = 14 * DAY + 3600
+    # Day 14 runs in a new session from the installed controller, as the runbook defines $ST (RR-1).
     code, dry, refused = w.stage("retire-legacy-state", "--decision", P7, "--container-slot", CONTAINER,
-                                 "--dry-run", wall_offset=due, step="q5_dry_run")
+                                 "--dry-run", pyc=w.controller, wall_offset=due, step="q5_dry_run")
     assert code == 0 and dry["eligible"] is True, (dry, refused)
     assert len(dry["backups"]["databases"]) == 10
     code, q5, refused = w.stage("retire-legacy-state", "--decision", P7, "--container-slot", CONTAINER,
-                                "--confirm", dry["plan_sha256"], wall_offset=due, step="q5_confirm")
+                                "--confirm", dry["plan_sha256"], pyc=w.controller, wall_offset=due,
+                                step="q5_confirm")
     assert code == 0, refused
     assert not os.path.lexists(w.layout.legacy_state)
     for slot in (CONTAINER, LEGACY):

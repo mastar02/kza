@@ -42,7 +42,6 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import tempfile
 
 import pytest
 
@@ -237,8 +236,13 @@ def test_the_extraction_step_uses_a_new_directory_and_only_the_verified_archive(
     for name, commit in (("pinned", artifacts["commit"]), ("other", "0" * 40)):
         temporary = tmp_path / name
         temporary.mkdir()
-        # GNU mktemp (the server) honours TMPDIR; macOS mktemp -d uses the user's temporary directory.
-        parents = {temporary.resolve(), Path(tempfile.gettempdir()).resolve()}
+        # GNU mktemp (the server) honours TMPDIR; macOS mktemp -d uses the user's temporary directory
+        # (DARWIN_USER_TEMP_DIR) even when TMPDIR names another one (re-review RR-4). A probe mktemp -d,
+        # in the environment the helper gives the runbook's blocks, names the directory it will use.
+        probe = Path(subprocess.run(["bash", "-c", "mktemp -d"], capture_output=True, text=True, check=True,
+                                    timeout=30, env=dict(os.environ, TMPDIR=str(temporary))).stdout.strip())
+        probe.rmdir()
+        parents = {probe.resolve().parent}
         existing = {parent: set(os.listdir(parent)) for parent in parents}
         result, final = r1_runbook.run_check_and_extract(r1, python=sys.executable, tmpdir=temporary,
                                                          sha256=r1_sha, commit=commit, environment=shell)
