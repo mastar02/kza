@@ -432,6 +432,12 @@ NO_SRC_ENTRIES = {
     "tools/roadmap_status.py": "read-only roadmap checks",
     "tools/diagnose_voice_loading.py": "HTTPS timing probe; opens no KZA store",
     "tools/bench_llm.py": "LLM HTTP benchmark; opens no KZA store",
+    # SC-0 measurement harness (2026-11-16): never run against production; it builds scratch roots.
+    "tools/sc0/write_inventory.py": "static scan of source files; opens no KZA store",
+    "tools/sc0/classify.py": "joins the static inventory with measurement logs; opens no KZA store",
+    "tools/sc0/evidence.py": "assembles sc0-evidence.json from measurement logs; opens no KZA store",
+    "tools/sc0/run_states.py": "drives sc0_child on a scratch staging root; that child imports src and runs G1",
+    "tools/sc0/compaction_timing.py": "times stage_runtime (listed above) on a synthetic scratch root through the test rehearsal harness",
 }
 
 
