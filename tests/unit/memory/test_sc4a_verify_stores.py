@@ -4,7 +4,7 @@ Each verify-mode pin is tested against the same store in a normal boot, so a
 test that passes in verify mode would fail if the repair still ran:
 d-fact-owner-schema-prune, c-index-target-registration, b-erasure-recover,
 a-privacy-maintenance, d-recorders-initialize, capture-close (R5V-1) and
-d-reminder-sending. Outside verify mode nothing changes: drain still deletes
+d-reminder-sending and the event logger's own maintenance (a-other-loops). Outside verify mode nothing changes: drain still deletes
 reserved rows and waits for this process's acknowledgements.
 """
 from __future__ import annotations
@@ -17,6 +17,10 @@ from uuid import uuid4
 
 import pytest
 
+from contextlib import AsyncExitStack
+
+from src.analytics.event_logger import EventLogger
+from src.analytics.services import build_event_logger
 from src.memory.capture_recorders import CaptureRecorders
 from src.memory.fact_ledger import FactLedger, MemoryAssigner, MemoryOrigin, MemorySource
 from src.memory.privacy_services import PrivacyServices
@@ -218,3 +222,16 @@ async def test_reminder_sending_action_is_left_as_is_only_in_verify_mode(tmp_pat
         await store.initialize()
         await store.close()
         assert statuses() == expected
+
+
+# --- a-other-loops: the event logger's own maintenance -------------------------------------------------
+
+async def test_event_logger_maintenance_is_not_started_in_verify_mode(tmp_path, monkeypatch):
+    started = []
+    monkeypatch.setattr(EventLogger, "start", lambda self: started.append(self.verify_only))
+    for verify_only in (True, False):
+        config = {"analytics": {"events_db": str(tmp_path / f"events-{verify_only}.db")}}
+        async with AsyncExitStack() as shutdown:
+            events = await build_event_logger(config, shutdown=shutdown, verify_only=verify_only)
+            assert events.verify_only is verify_only
+    assert started == [False]
