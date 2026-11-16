@@ -11,7 +11,9 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
-from src.core.voice_delivery import ResponseResult, VoiceDeliveryError, invoke_voice_callback
+from src.core.voice_delivery import (
+    DeliveryState, ResponseResult, ResponseStage, VoiceDeliveryError, invoke_voice_callback,
+)
 from src.reminders.recurrence import next_trigger
 from src.reminders.reminder_store import (
     Reminder, ReminderActionStatus, ReminderHomeActionReceipt, ReminderState, ReminderStore,
@@ -59,6 +61,28 @@ def _action_request_id(reminder: Reminder, index: int) -> str:
     return "reminder:" + hashlib.sha256(identity.encode()).hexdigest()
 
 
+def _possibly_heard(results: list[Any], error: Exception) -> bool:
+    """Whether any part of a failed announcement may already have been played.
+
+    Only outcomes known to precede playback count as unheard: a result with no
+    spoken segment that was not cut off during or after output (failed,
+    blocked, cancelled or empty delivery, or a queue-stage timeout), a legacy
+    ``False``, or the voice contract's own refusal raised before any output.
+    A delivery timeout carries no segment count, so it counts as heard.
+    """
+    for result in results:
+        if not isinstance(result, ResponseResult):
+            continue
+        if result.spoken_segments > 0:
+            return True
+        if result.delivery is DeliveryState.TIMED_OUT and result.timeout_stage is not ResponseStage.QUEUE:
+            return True
+    if not results:
+        # The callback raised: an unknown failure may have happened mid-playback.
+        return not isinstance(error, VoiceDeliveryError)
+    return False
+
+
 @dataclass
 class DeliveryHold:
     """In-process delivery state of one occurrence after a failed attempt.
@@ -99,8 +123,10 @@ class ReminderScheduler:
       * A recurring reminder that missed several occurrences is announced once
         and advanced to its next future occurrence.
       * One delivery per reminder at a time across the loop and arrival tasks.
-      * Failed voice delivery is retried with bounded exponential backoff; a
-        partially heard announcement is never repeated in this process.
+      * Failed voice delivery is retried with bounded exponential backoff; an
+        announcement that may have been partly heard (spoken segments, a
+        timeout after the queue stage, an unexpected error from the voice
+        output) is never repeated in this process.
     """
 
     def __init__(
@@ -395,8 +421,8 @@ class ReminderScheduler:
         try:
             await invoke_voice_callback(observed if callback is not None else None, message, zone_id=zone)
         except Exception as error:
-            heard = any(isinstance(result, ResponseResult) and result.spoken_segments > 0 for result in results)
-            raise SpeechNotDelivered(str(error) or type(error).__name__, heard=heard) from error
+            raise SpeechNotDelivered(str(error) or type(error).__name__,
+                                     heard=_possibly_heard(results, error)) from error
 
     async def _advance(self, reminder: Reminder) -> None:
         """Mark a one-shot fired or move a recurring reminder past the delivered occurrence."""

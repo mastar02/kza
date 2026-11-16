@@ -11,7 +11,9 @@ import pytest_asyncio
 import yaml
 from unittest.mock import AsyncMock, MagicMock
 
-from src.core.voice_delivery import DeliveryState, GenerationState, ResponseResult
+from src.core.voice_delivery import (
+    DeliveryState, GenerationState, ResponseResult, ResponseStage, VoiceDeliveryError,
+)
 from src.reminders.recurrence import next_trigger
 from src.reminders.reminder_scheduler import DEFAULT_LATE_ACTION_GRACE_S, ReminderScheduler
 from src.reminders.reminder_store import ReminderScope, ReminderState, ReminderStore
@@ -36,8 +38,10 @@ class FakeClock:
         self.now += seconds
 
 
-def failed(spoken_segments: int = 0, delivery: DeliveryState = DeliveryState.FAILED) -> ResponseResult:
-    return ResponseResult("x", GenerationState.COMPLETE, delivery, spoken_segments=spoken_segments)
+def failed(spoken_segments: int = 0, delivery: DeliveryState = DeliveryState.FAILED,
+           stage: ResponseStage | None = None) -> ResponseResult:
+    return ResponseResult("x", GenerationState.COMPLETE, delivery, spoken_segments=spoken_segments,
+                          timeout_stage=stage)
 
 
 def request_id_for(reminder, index: int = 0) -> str:
@@ -289,13 +293,23 @@ async def test_recurring_catch_up_respects_recurrence_end(scheduler, store, mock
 @pytest.mark.parametrize("result, attempts", [
     (failed(), 4),
     (failed(delivery=DeliveryState.BLOCKED), 4),
-    (failed(delivery=DeliveryState.TIMED_OUT), 4),
+    (failed(delivery=DeliveryState.TIMED_OUT, stage=ResponseStage.QUEUE), 4),
+    (failed(delivery=DeliveryState.CANCELLED), 4),
+    (VoiceDeliveryError("voice_output_zone_required"), 4),
     (failed(spoken_segments=1), 1),
     (failed(spoken_segments=2, delivery=DeliveryState.CANCELLED), 1),
+    # Review F3: a delivery timeout reports no segments although audio may have played.
+    (failed(delivery=DeliveryState.TIMED_OUT, stage=ResponseStage.DELIVERY), 1),
+    (failed(delivery=DeliveryState.TIMED_OUT, stage=ResponseStage.FEEDBACK), 1),
+    (failed(delivery=DeliveryState.TIMED_OUT), 1),
+    (RuntimeError("playback device lost"), 1),
 ])
 @pytest.mark.asyncio
 async def test_failed_delivery_is_bounded_and_partial_delivery_is_never_repeated(scheduler, store, mock_deps, clock, result, attempts):
-    mock_deps["tts"].aspeak.return_value = result
+    if isinstance(result, Exception):
+        mock_deps["tts"].aspeak.side_effect = result
+    else:
+        mock_deps["tts"].aspeak.return_value = result
     r = await store.create("u1", "regar", clock() - 1, ha_actions=[ACTION], scope=ReminderScope.SHARED)
     for _ in range(10):
         assert await scheduler._fire_reminder(r) is False
