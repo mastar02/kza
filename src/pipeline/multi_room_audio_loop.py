@@ -49,6 +49,7 @@ from src.audio.microphone_status import (
     CaptureObservation, MicrophoneRoom, MicrophonesSnapshot, UsbInventory,
     build_microphone_snapshot,
 )
+from src.conversation.command_turns import CommandTurns
 from src.conversation.follow_up_mode import FollowUpMode
 from src.nlu.command_grammar import PartialCommand, parse_partial_command
 from src.rooms.room_context import resolve_mic_usb_port
@@ -300,6 +301,9 @@ class MultiRoomAudioLoop:
         self._capture_tasks = set()
         self._capture_batches = set()
         self._dispatch_tasks = set()
+        # Q33 (review 3): a command being captured in some room or dispatched, which a held reminder
+        # notice must not talk over even after the follow-up window timer ended the conversation.
+        self.command_turns = CommandTurns(self._command_turn_busy)
         self._early_tasks = set()
         self._capture_native = OwnedBlockingWork(capacity=8)
         self._scopes = ProducerScopes(self.snapshot_operations, capacity=min(256, max(64, len(room_streams)*4+24)))
@@ -577,10 +581,17 @@ class MultiRoomAudioLoop:
                 return
             sources = (source,) if source is not None else ()
             with self._scopes.operation(sources), producer_context(event.room_id, sources):
-                self._track_capture(asyncio.create_task(run_private(
+                dispatch = self._track_capture(asyncio.create_task(run_private(
                     self._dispatch_command(event), self._dispatch_live)), self._dispatch_tasks)
+            dispatch.add_done_callback(self._settle_turn)
         finally:
             event = None
+
+    def _command_turn_busy(self) -> bool:
+        return bool(self._dispatch_tasks) or any(rs.listening for rs in tuple(self.room_streams.values()))
+
+    def _settle_turn(self, _done=None) -> None:
+        self.command_turns.settle()
 
     async def _consume_room(self, rs: RoomStream) -> None:
         room = self._capture_rooms[rs.room_id]
@@ -625,6 +636,7 @@ class MultiRoomAudioLoop:
                             self._early_parse_worker(rs), lambda source=source: self._source_live(source))), self._early_tasks)
             finally:
                 event = step = None
+                self.command_turns.settle()
 
     def snapshot_operations(self) -> tuple[asyncio.Task, ...]:
         """Expose finite capture and auxiliary owners without idle loops."""
@@ -908,6 +920,7 @@ class MultiRoomAudioLoop:
                     elif self._wake_clip_writer is not None:
                         errors.append(RuntimeError('unsupported_capture_pause_writer'))
                     self.follow_up.end_conversation(reason='capture_paused')
+                    self.command_turns.settle()
                 except BaseException as error:
                     errors.append(error)
                 results = await asyncio.gather(

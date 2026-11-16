@@ -15,6 +15,7 @@ from src.audio import EchoSuppressor
 from src.audio.owned_input import OwnedInputStream
 from src.ambient.audio_event_detector import AudioEventDetector
 from src.conversation import FollowUpMode
+from src.conversation.command_turns import CommandTurns
 from src.core.owned_work import WorkCloseTimeout
 from src.memory.fact_ledger import MemoryOrigin, MemorySource
 from src.memory.producer_context import producer_context
@@ -77,6 +78,9 @@ class AudioLoop:
         self._dispatches: set[asyncio.Task] = set()
         self._analyses: set[asyncio.Task] = set()
         self._batches: set[asyncio.Task] = set()
+        # Q33 (review 3): a command being captured or dispatched, which a held reminder notice
+        # must not talk over even after the follow-up window timer ended the conversation.
+        self.command_turns = CommandTurns(lambda: self._state.listening or bool(self._dispatches))
         self._scopes = ProducerScopes(self.snapshot_operations, capacity=32)
         self._on_command_callback: Callable[[CommandEvent], Awaitable[dict]] | None = None
         self._on_post_command_callback: Callable[[dict, np.ndarray], Awaitable[None]] | None = None
@@ -347,7 +351,8 @@ class AudioLoop:
                         sources = (MemorySource(event.capture_id, event.conversation_id,
                             event.captured_at, event.source_expires_at, MemoryOrigin.VOICE),)
                     with self._scopes.operation(sources), producer_context('', sources):
-                        self._track(asyncio.create_task(self._dispatch(event, sources)), self._dispatches)
+                        dispatch = self._track(asyncio.create_task(self._dispatch(event, sources)), self._dispatches)
+                    dispatch.add_done_callback(self._settle_turn)
                 elif event is not None:
                     self._dispatch_drops += 1
                 event = step = None
@@ -364,6 +369,10 @@ class AudioLoop:
                     batches = batch = None
             finally:
                 event = step = batches = batch = None
+                self.command_turns.settle()
+
+    def _settle_turn(self, _done=None) -> None:
+        self.command_turns.settle()
 
     async def run(self) -> None:
         """Capture independently of response latency, retaining native resources."""
@@ -469,6 +478,7 @@ class AudioLoop:
                     elif self.ambient_detector is not None:
                         raise RuntimeError('unsupported_single_capture_pause_detector')
                     self.follow_up.end_conversation(reason='capture_paused')
+                    self.command_turns.settle()
                 finally:
                     tasks = None
             self._pausing = asyncio.create_task(finish(), context=Context())

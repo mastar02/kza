@@ -91,6 +91,10 @@ async def test_real_factory_shares_household_output_privacy_and_managers(leaves,
                 follow_up = pipeline.audio_loop.follow_up
                 assert reminders._conversation is follow_up
                 assert follow_up._end_listeners == [reminders.notify_conversation_ended]
+                # Q33-1 (review round 3): and for a follow-up command still being captured or dispatched.
+                turns = pipeline.audio_loop.command_turns
+                assert reminders._turns is turns
+                assert turns._listeners == [reminders.notify_conversation_ended]
         assert graph.ha_client._session.closed
         assert graph.dashboard_authority._lease_fd is None
         assert not graph.privacy.resource_status()["writer_lease"]

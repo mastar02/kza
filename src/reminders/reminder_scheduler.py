@@ -316,8 +316,10 @@ class ReminderScheduler:
         self._in_flight: set[str] = set()
         # Output-free signals that found the occurrence in flight; applied when its flight ends (RV-Q31-2).
         self._signal_pending: set[str] = set()
-        # Q33: the follow-up conversation (FollowUpMode) whose activity holds output-free rounds.
+        # Q33: the follow-up conversation (FollowUpMode) and the audio loop's command turns
+        # (CommandTurns) whose activity holds output-free rounds.
         self._conversation = None
+        self._turns = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._runner_task: asyncio.Task | None = None
 
@@ -530,38 +532,53 @@ class ReminderScheduler:
             return  # no scheduler loop and not on an event loop: nothing to wake
         self._start_output_round()
 
-    def watch_conversation(self, conversation) -> None:
+    def watch_conversation(self, conversation, turns=None) -> None:
         """Hold output-free rounds while this follow-up conversation is active (user answer Q33).
 
         A held notice reopened by the output-free signal waits until the
         follow-up window ends and, if the person keeps talking, until the
-        conversation ends, so it never interrupts it. The conversation's own
-        end (add_end_listener) wakes the loop; nothing is timed here.
+        conversation ends, so it never interrupts it. The window's timer can end
+        the FollowUpMode conversation while the person is still saying a
+        follow-up command, or while it is being answered (review round 3,
+        Q33-1), so the audio loop's command turns hold the round too. Their own
+        ends (add_end_listener) wake the loop; nothing is timed here.
 
         Args:
             conversation: The active audio loop's FollowUpMode (``is_active`` and
                 ``add_end_listener``).
+            turns: The same loop's CommandTurns (``active`` while a command is
+                being captured or dispatched, and ``add_end_listener``), or None.
         """
         self._conversation = conversation
         conversation.add_end_listener(self.notify_conversation_ended)
+        if turns is not None:
+            self._turns = turns
+            turns.add_end_listener(self.notify_conversation_ended)
 
     def _conversation_active(self) -> bool:
-        """Whether the watched follow-up conversation is active; False when none is watched."""
-        conversation = self._conversation
-        if conversation is None:
+        """Whether the person may still be talking with KZA: the watched follow-up conversation is
+        active or a command is being captured or dispatched; False when nothing is watched."""
+        return (self._watched_state(self._conversation, "is_active")
+                or self._watched_state(self._turns, "active"))
+
+    @staticmethod
+    def _watched_state(source, attribute: str) -> bool:
+        if source is None:
             return False
         try:
-            return bool(conversation.is_active)
+            return bool(getattr(source, attribute))
         except Exception as error:
-            logger.warning("Follow-up conversation state unavailable (%s); not holding notices",
-                           type(error).__name__)
+            logger.warning("%s.%s unavailable (%s); not holding notices for it", type(source).__name__,
+                           attribute, type(error).__name__)
             return False
 
     def notify_conversation_ended(self) -> None:
         """Wake the loop for output-free rounds held by the conversation; thread-safe, never blocks.
 
         Wired to FollowUpMode.add_end_listener, which may call it from the
-        event loop, the audio thread or the follow-up timer thread.
+        event loop, the audio thread or the follow-up timer thread, and to
+        CommandTurns.add_end_listener (the audio loop's event loop). The loop
+        re-reads both states, so an end while the other still holds is harmless.
         """
         loop = self._loop
         if loop is not None:
