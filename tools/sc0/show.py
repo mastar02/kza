@@ -17,7 +17,7 @@ for r in json.load(open(sys.argv[1])):
         print("  DIFF", json.dumps(d)[:300])
     if "diff_error" in r:
         print("  DIFF_ERROR", r["diff_error"])
-    for w in r["protected_writes"]:
+    for w in r.get("projected_writes", r.get("protected_writes", [])):
         print("  W", w["phase"], w["db"].split("/")[-1], w["verb"], w["table"], w["count"], "|",
               " < ".join(w["stack"][:3]))
         for c in (w.get("caller") or []):

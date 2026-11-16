@@ -15,27 +15,43 @@ import json
 import os
 from pathlib import Path
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tools.sc0.write_inventory import source_tables  # noqa: E402
+
 ROOT_SLOT = "data/graph/"
+
+
+def _site(write: dict) -> str:
+    if write["stack"]:
+        return write["stack"][0]
+    callers = [c for c in (write.get("caller") or []) if c.get("frames")]
+    return callers[-1]["frames"][0] if callers else "?"
 
 
 def _state_summary(result: dict) -> dict:
     outcome = result["outcome"]
+    writes = result.get("projected_writes", result.get("protected_writes", []))
     changes = []
     for item in result.get("diff", []):
         name = item.get("table") or item.get("file")
+        db = (item.get("db") or item.get("kind", "")).replace(ROOT_SLOT, "")
+        sources = source_tables(name)
+        # Writers that ran a statement on a source table of this entry in the same database.
+        by = sorted({f"{_site(w)} [{w['phase']}]" for w in writes
+                     if w["table"] in sources and w["db"].replace(ROOT_SLOT, "") == db})
         if "removed" in item:
-            changes.append({"db": item["db"].replace(ROOT_SLOT, ""), "table": name,
-                            "rows_removed": item["removed"], "rows_added": item["added"]})
+            changes.append({"db": db, "table": name, "rows_removed": item["removed"],
+                            "rows_added": item["added"], "written_by": by})
         else:
-            changes.append({"db": (item.get("db") or item.get("kind", "")).replace(ROOT_SLOT, ""),
-                            "table": name, "changed": "projection value (ledger chain or new table)"})
+            changes.append({"db": db, "table": name,
+                            "changed": "projection value (ledger chain, schema contract or new table)",
+                            "written_by": by})
     writers = collections.OrderedDict()
-    for write in result.get("projected_writes", result.get("protected_writes", [])):
-        site = write["stack"][0] if write["stack"] else None
-        if site is None:
-            callers = [c for c in (write.get("caller") or []) if c.get("frames")]
-            site = callers[-1]["frames"][0] if callers else "?"
-        key = (site, write["table"], write["phase"], write.get("projection", "full"))
+    for write in writes:
+        key = (_site(write), write["table"], write["phase"], write.get("projection", "full"))
         writers.setdefault(key, 0)
         writers[key] += write["count"]
     return {

@@ -81,6 +81,33 @@ def projected_tables(repo: Path) -> dict[str, str]:
     return kinds
 
 
+# capture_state_authority's derived projection names -> the source tables they read.
+PROJECTION_SOURCES = {
+    "deleted_fact_revisions": ("policy_index_deletions",),
+    "wake_deadline_fences": ("wake_clips_v1",),
+    "manual_clip_closure": ("wake_clips_v1", "stt_corrections_v1", "conversation_turns_v1"),
+    "conversation_feedback": ("conversation_turns_v1",),
+    "distillation_receipts": ("utterances",),
+    "ambient_deadline_fences": ("utterances",),
+    "voice_deadline_fences": ("voice_fingerprints",),
+    "manual_group_fingerprints": ("voice_fingerprints", "voice_groups", "voice_group_members"),
+    "suggestion_deadline_fences": ("suggestions_policy_v1",),
+    "event_text_deadline_fences": ("events_policy_v1",),
+    "fact_deadline_fences": ("facts", "fact_sources"),
+    "facts": ("facts", "fact_owners", "fact_owner_revisions"),
+    "fact_sources": ("fact_sources", "facts", "fact_owners", "fact_owner_revisions"),
+    "fact_dependencies": ("fact_dependencies", "facts", "fact_owners", "fact_owner_revisions"),
+    "delivery_sequence_reservation": ("sqlite_sequence", "live_deliveries"),
+    "schema_contract_v1": ("voice_group_schema", "voice_person_schema", "voice_capture_review_schema",
+                           "fact_owner_schema", "voice_attribution_schema", "auth_meta"),
+}
+
+
+def source_tables(projection_name: str) -> tuple[str, ...]:
+    """Tables whose writes can change one projection entry."""
+    return PROJECTION_SOURCES.get(projection_name, (projection_name,))
+
+
 def _constants(tree: ast.Module) -> dict:
     found = {}
     for node in tree.body:
