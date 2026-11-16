@@ -120,7 +120,9 @@ CONTROLLER_BEHIND = "runtime_admission_compaction_controller_behind"
 PLAIN_MODE_ONLY = "runtime_admission_compaction_plain_mode_only"
 # Until SC-4a ships the isolated verification run, a release-mode log cannot be armed (design note
 # SC1B-N3): its only way forward is the lossless plain abort of row A0.
-RELEASE_VERIFY_UNAVAILABLE = "runtime_admission_compaction_release_verify_unavailable"
+# SC-4a (stricter reading, SC4A-N1): retire keeps K' only under SC-4b's strict W equality; until
+# SC-4b ships, a verified release-mode log is not retired by the plain retire.
+RELEASE_RETIRE_UNAVAILABLE = "runtime_admission_compaction_release_retire_unavailable"
 
 
 # --- small helpers -----------------------------------------------------------------------------------
@@ -1626,13 +1628,11 @@ def _destroy_partial_snapshots(root: Path, log: dict, wall) -> dict:
 
 
 def _next_after_activation(log: dict) -> str:
-    """The operator's next command once K is active (review B4).
+    """The operator's next command once K is active (review B4): arm the one verification run.
 
-    A release-mode log cannot be armed before SC-4a (SC1B-N3): its only
-    exit is the lossless plain abort, so the tool names that, not verify.
+    SC-4a: a release-mode log is armed like a plain one; serve then runs it
+    as the isolated verification boot (KZA_RUNTIME_RELEASE_VERIFY).
     """
-    if release_log(log):
-        return "compact abort " + log["compaction_id"]
     return "compact verify " + log["compaction_id"]
 
 
@@ -1665,7 +1665,13 @@ def _continue(root: Path, compaction_id: str, *, archive: Path | None, worker=No
 # --- verify, allow-run ------------------------------------------------------------------------------
 
 def compact_verify(root, compaction_id: str, *, smoke_seconds: int = 120, wall=time.time) -> dict:
-    """Arm the one verification run (design v3 V1). The operator then starts and stops kza-voice."""
+    """Arm the one verification run (design v3 V1). The operator then starts kza-voice.
+
+    Plain mode: the operator stops kza-voice after the smoke run. Release
+    mode (SC-4a): serve runs the armed run as the isolated verification boot,
+    measures ``smoke_seconds`` from the acknowledged READY and stops it
+    itself; the unit stays disabled.
+    """
     root = checked_root(root)
     if type(smoke_seconds) is not int or not 10 <= smoke_seconds <= 3600:
         _refuse("runtime_admission_compaction_smoke_seconds")
@@ -1673,8 +1679,6 @@ def compact_verify(root, compaction_id: str, *, smoke_seconds: int = 120, wall=t
         log = _log(root, compaction_id)
         if not _has(log, "activated") or _has(log, "abort_started"):
             _refuse("runtime_admission_compaction_phase")
-        if release_log(log):
-            _refuse(RELEASE_VERIFY_UNAVAILABLE)  # SC1B-N3: the isolated run V is SC-4a's
         head = stage.read_admission_head(root)
         armed, started = stage._armed_run(log)
         if armed is not None:
@@ -2011,6 +2015,8 @@ def compact_retire(root, compaction_id: str, *, member: int | None = None, accep
         log = _log(root, compaction_id)
         if not _has(log, "verified"):
             _refuse("runtime_admission_compaction_not_verified")  # P3: destroy only after K' closed
+        if release_log(log):
+            _refuse(RELEASE_RETIRE_UNAVAILABLE)  # SC4A-N1: retire with strict W equality is SC-4b's
         if accept_identity_change:
             log = _accept_identity(root, log, member, wall)
         if accept_missing:
@@ -2556,6 +2562,41 @@ def compact_resume(root, compaction_id: str, *, archive=None, worker=None, scan=
     return _continue(root, compaction_id, archive=Path(archive) if archive else None, worker=worker, wall=wall)
 
 
+def _started_run_id(root: Path, started: dict) -> str | None:
+    """The run_id of the run serve began for ``verify_started`` (its immutable run record), or None."""
+    runs = root / "admission" / "runs"
+    if not _lexists(runs):
+        return None
+    other = (".exit.json", stage.VERIFY_READY_SUFFIX, stage.VERIFY_SMOKE_STOP_SUFFIX)
+    for name in sorted(os.listdir(runs)):
+        if not name.endswith(".json") or name.endswith(other):
+            continue
+        record = launcher.read_run_record(root, name[:-len(".json")])
+        if (record is not None and record.get("generation") == started["data"]["generation"]
+                and record.get("binding_id") == started["data"]["binding_id"]):
+            return record["run_id"]
+    return None
+
+
+def verify_branch_reached(root: Path, log: dict) -> str | None:
+    """R5V-5 'verify branch reached' of a release-mode log's armed run, from its records only.
+
+    'yes': serve wrote ready.json, i.e. NEW's code sent VERIFY=<run_id> from its
+    verify_only branch before READY. That proves only that the branch was
+    reached, not that V was isolated or unused (the SC-D8 A confirmation
+    rests on a person's direct knowledge). 'no': the run started without it.
+    None: no armed run has started. No clock is read.
+    """
+    _armed, started = stage._armed_run(log)
+    if started is None:
+        return None
+    run_id = _started_run_id(root, started)
+    if run_id is None:
+        return None
+    ready, _smoke = stage.verify_run_records(root, run_id)
+    return "yes" if ready is not None and ready["verify_acknowledged"] is True else "no"
+
+
 def compact_status(root, compaction_id: str | None = None) -> dict:
     """Read-only, content-free: each log's phase, without a lease.
 
@@ -2576,6 +2617,7 @@ def compact_status(root, compaction_id: str | None = None) -> dict:
                 continue
             log = stage.read_compaction_log(root, name)
             mode = RELEASE_MODE if release_log(log) else "plain"
+            reached = verify_branch_reached(root, log) if mode == RELEASE_MODE else None
         except (OSError, ValueError) as error:
             found.append({"compaction_id": name[:64], "invalid": True,
                           "code": str(error)[:200] if str(error).startswith("runtime_admission_")
@@ -2585,7 +2627,8 @@ def compact_status(root, compaction_id: str | None = None) -> dict:
                       "phase": log["events"][-1]["kind"] if log["events"] else "intent",
                       "phases": [event["kind"] for event in log["events"]],
                       "members": len(log["intent"]["members"]),
-                      "mode": mode})
+                      "mode": mode, **({"verify_branch_reached": reached or "not run"}
+                                       if mode == RELEASE_MODE else {})})
     return {"compactions": found}
 
 
