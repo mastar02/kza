@@ -481,9 +481,8 @@ arrancar y conservarlas para siempre.
   y el commit, todas sus filas se restituyen como `unknown` y el log agrega
   `[CaptureRecorders] shutdown began as a forget committed; its N carried
   owner(s) were restored`. En los dos casos no se olvida nada, la prueba de
-  cierre sigue informando esos dueños arrastrados y el rechazo no cuenta como
-  estado sin confirmar del cierre (antes, un olvido rechazado durante el
-  `aclose` lo hacía fallar).
+  cierre sigue informando esos dueños arrastrados y el rechazo no hace fallar
+  el cierre (antes, un olvido rechazado durante el `aclose` lo hacía fallar).
 - Dos olvidos simultáneos (dos pestañas de administrador, una vieja) se
   serializan: el lock del ledger cubre todo el olvido, su limpieza y la
   restitución. Así, uno que falla no puede borrar el conjunto que el otro
