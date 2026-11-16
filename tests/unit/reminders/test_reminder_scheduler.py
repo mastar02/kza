@@ -436,6 +436,7 @@ async def test_late_retry_after_failed_announcement_still_says_actions_were_not_
     assert await scheduler._fire_reminder(r) is True
     assert [call.args[0] for call in mock_deps["tts"].aspeak.await_args_list] == [LATE_NOT_RUN, LATE_NOT_RUN]
     assert await receipts(store) == [("failed", "late_not_executed")]
+    assert scheduler._retry_counts == {}  # a confirmed retry clears the reported failure
 
 @pytest.mark.asyncio
 async def test_late_occurrence_cancelled_before_the_barrier_is_not_spoken(scheduler, store, mock_deps, clock):
@@ -522,6 +523,22 @@ async def test_loop_backs_off_after_failed_delivery_instead_of_hot_looping(store
     assert mock_deps["tts"].aspeak.await_count == 1
     ha.call_service_once.assert_not_called()
     assert (await store.get_by_id(r.id)).state is ReminderState.ACTIVE
+
+@pytest.mark.asyncio
+async def test_an_edited_occurrence_starts_its_own_backoff(scheduler, store, mock_deps, clock):
+    """A parked occurrence's hold never counts or blocks a new occurrence of the same reminder."""
+    mock_deps["tts"].aspeak.return_value = failed(spoken_segments=1)
+    r = await store.create("u1", "regar", clock() - 5, scope=ReminderScope.SHARED)
+    assert await scheduler._fire_reminder(r) is False
+    assert scheduler._holds[r.id].retry_at is None
+    assert await store.update_trigger(r.id, clock() - 1, shared_only=True)  # edited from the web
+    edited = await store.get_by_id(r.id)
+    mock_deps["tts"].aspeak.return_value = failed()
+    assert await scheduler._fire_reminder(edited) is False
+    hold = scheduler._holds[r.id]
+    assert (hold.trigger_at, hold.failures, hold.retry_at) == (edited.trigger_at, 1, clock() + 1)
+    assert await scheduler._fire_reminder(edited) is False  # still backing off
+    assert mock_deps["tts"].aspeak.await_count == 2
 
 @pytest.mark.parametrize("failing_step", ["home_action", "advance"])
 @pytest.mark.asyncio
