@@ -39,16 +39,17 @@ def _state_summary(result: dict) -> dict:
         name = item.get("table") or item.get("file")
         db = (item.get("db") or item.get("kind", "")).replace(ROOT_SLOT, "")
         sources = source_tables(name)
-        # Writers that ran a statement on a source table of this entry in the same database.
+        # Candidates: every traced statement on a source table of this entry in the same
+        # database (a statement that ran is not proof that it changed the entry).
         by = sorted({f"{_site(w)} [{w['phase']}]" for w in writes
                      if w["table"] in sources and w["db"].replace(ROOT_SLOT, "") == db})
         if "removed" in item:
             changes.append({"db": db, "table": name, "rows_removed": item["removed"],
-                            "rows_added": item["added"], "written_by": by})
+                            "rows_added": item["added"], "candidate_writers": by})
         else:
             changes.append({"db": db, "table": name,
                             "changed": "projection value (ledger chain, schema contract or new table)",
-                            "written_by": by})
+                            "candidate_writers": by})
     writers = collections.OrderedDict()
     for write in writes:
         key = (_site(write), write["table"], write["phase"], write.get("projection", "full"))

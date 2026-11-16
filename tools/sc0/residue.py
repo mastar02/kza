@@ -345,7 +345,8 @@ def retention_shortened(data, final):
 
     An accepted suggestion (projected with every column, and a deadline
     fence) whose expires_at is observed_at + 40 h, inside its 47 h source,
-    and an event whose expires_at is timestamp + 80 days. NEW runs with
+    and an event whose expires_at is timestamp + 80 days and whose
+    text_expires_at is a text fence (1 h before its source). NEW runs with
     memory.automatic_retention_days=1 and analytics.retention_days=7, so the
     boot clamps
     (suggestion_storage.py:158 via suggestion_store.py:106, event_logger.py:211)
@@ -368,9 +369,9 @@ def retention_shortened(data, final):
                    "weekday,is_weekend,time_of_day,sources_json,metrics_json,expires_at,text_expires_at) "
                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                    (now - 3600, "device_action", "light.living", "turn_on", "{}", 12, 0, 1, 0, "afternoon",
-                    "[]", "{}", now + 80 * DAY, None))
+                    json.dumps([source.to_dict()]), "{}", now + 80 * DAY, source.expires_at - 3600))
     return {"planted": ["suggestions_policy_v1 accepted, expires_at observed+40 h (fence)",
-                        "events_policy_v1 expires_at timestamp+80 d"],
+                        "events_policy_v1 expires_at timestamp+80 d, text_expires_at 1 h before its source (text fence)"],
             "config": {"memory.automatic_retention_days": 1, "analytics.retention_days": 7}}
 
 
