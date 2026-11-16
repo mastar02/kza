@@ -1129,10 +1129,7 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   re-revisión independiente de esos arreglos (ronda 2, 2026-11-16) aprobó;
   sus dos hallazgos bajos se corrigieron sin tocar código de ejecución y R1
   sigue fijado desde 357dcb5 (ver «Re-revisión ronda 2»). Las revisiones del
-  lado de desarrollo previas a la ventana están hechas. Queda la suite batch
-  completa sobre 51fbc43 (verde en la Mac; el resultado del server lo
-  registra la sesión principal); si algo de eso cambia código, R1 se vuelve
-  a construir y a fijar. El visto bueno visual del panel de R1-B2 sigue con
+  lado de desarrollo previas a la ventana están hechas. La suite batch completa sobre 51fbc43 pasó en la Mac y en el server (`u3b/full-51fbc43/RESULT.md`); si algo posterior cambia código, R1 se vuelve a construir y a fijar. El visto bueno visual del panel de R1-B2 sigue con
   el usuario. Después quedan los
   pasos del operador: registrar la autorización de la ventana y los ids
   P1=D y L4, transferir a `kza` el R1 fijado (`r1-357dcb5.tar.gz`) y
@@ -1194,8 +1191,7 @@ subida. Evidencia:
   ronda 1 (R1B1-1 a R1B1-7, junto con la de R1-B2) se hizo el 2026-11-15 y
   aprobó (`r1b1-evidence.json`, `rereview`); su hallazgo RR2-1 se arregló en
   19dd44e. La re-revisión independiente de esa ronda de arreglos aprobó el
-  2026-11-16 (ver «Re-revisión ronda 2»); queda la suite batch completa
-  sobre 51fbc43 (resultado del server pendiente de registro).
+  2026-11-16 (ver «Re-revisión ronda 2»); la suite batch completa sobre 51fbc43 pasó en la Mac y en el server (`u3b/full-51fbc43/RESULT.md`).
 
 ## R1-B2 — «Olvidar grabaciones perdidas» desde Privacidad (2026-11-15)
 
@@ -1336,8 +1332,7 @@ en `c6462e5`) se revisaron de forma independiente. Evidencia:
   262 s y 153 dirigidas en proceso (`/home/yo/projects/runs/rr-fixes`).
 - Pendiente antes de la ventana (actualizado el 2026-11-16, ver «Re-revisión
   ronda 2»): la re-revisión independiente de esta ronda de arreglos aprobó.
-  Queda la suite batch completa sobre 51fbc43 (verde en la Mac; el resultado
-  del server lo registra la sesión principal) y el visto bueno visual del
+  La suite batch completa sobre 51fbc43 pasó en la Mac y en el server (`u3b/full-51fbc43/RESULT.md`); queda el visto bueno visual del
   panel de R1-B2. Nada cambió del lado de `kza`; sin release ni instalación.
   La ventana sigue sin autorizar ni programar.
 
@@ -1370,9 +1365,7 @@ RR-4, RR2-1 y RR2-2). Evidencia: clave `rereview2` en
 
 Sin cambios en `src/` ni `scripts/`: R1 sigue fijado desde 357dcb5 (sha256
 `c5305d588a228aca445489b90c00a2b11165d24f8fa1078ad19a68fbe9630a24`). Las
-revisiones del lado de desarrollo previas a la ventana están hechas. Queda la
-suite batch completa sobre 51fbc43 (verde en la Mac, `u3b/full-51fbc43`; el
-resultado del server lo registra la sesión principal), el visto bueno visual
+revisiones del lado de desarrollo previas a la ventana están hechas. La suite batch completa sobre 51fbc43 pasó en la Mac y en el server (`u3b/full-51fbc43/RESULT.md`). Queda el visto bueno visual
 del panel de R1-B2 en Privacidad, que sigue con el usuario, y después los
 pasos del operador. La ventana la programa el usuario; sigue sin autorizar ni
 programar.

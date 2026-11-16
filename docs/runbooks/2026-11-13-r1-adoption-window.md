@@ -54,9 +54,7 @@ autoriza la ventana.
   aprobó (clave `rereview2` en las dos evidencias), con dos hallazgos bajos
   que se corrigieron sin tocar código de ejecución (RR3-1, un test; RR3-2,
   una frase del día 14), así que R1 sigue fijado desde 357dcb5. Las
-  revisiones del lado de desarrollo previas a la ventana están hechas. Queda
-  la suite batch completa sobre 51fbc43 (verde en la Mac; el resultado del
-  server lo registra la sesión principal), y el visto bueno visual del panel
+  revisiones del lado de desarrollo previas a la ventana están hechas. La suite batch completa sobre 51fbc43 pasó en la Mac y en el server (`u3b/full-51fbc43/RESULT.md`), y el visto bueno visual del panel
   de R1-B2 sigue con el usuario. Si algo de lo que queda cambia código, R1
   se vuelve a construir y a fijar.
 - Después quedan los pasos del operador. Este runbook no autoriza ni programa

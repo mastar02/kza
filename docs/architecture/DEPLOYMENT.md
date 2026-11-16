@@ -1120,9 +1120,7 @@ b02116c, 357dcb5) cambiaron código, y R1 se re-fijó desde 357dcb5. La
 re-revisión independiente de esos arreglos (ronda 2, 2026-11-16) aprobó; sus
 hallazgos bajos RR3-1 y RR3-2 se corrigieron sin tocar código de ejecución,
 así que R1 sigue fijado desde 357dcb5. Las revisiones del lado de desarrollo
-previas a la ventana están hechas. Queda la suite batch completa sobre
-51fbc43 (verde en la Mac; el resultado del server lo registra la sesión
-principal), y el visto bueno visual del panel de R1-B2 sigue con el usuario.
+previas a la ventana están hechas. La suite batch completa sobre 51fbc43 pasó en la Mac y en el server (`u3b/full-51fbc43/RESULT.md`), y el visto bueno visual del panel de R1-B2 sigue con el usuario.
 Después quedan los pasos del operador
 (transferir y verificar el R1 fijado, el drop-in sudo de W7, el arranque real
 hasta READY de W8); la ventana la programa el usuario, como operador, y sigue

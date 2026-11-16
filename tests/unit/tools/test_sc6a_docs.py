@@ -153,8 +153,8 @@ def test_the_scheduling_gate_states_what_is_done_and_leaves_scheduling_to_the_us
     references; it is not the only thing left. The SC-6a fix-round re-review and the R1-B1/R1-B2
     round-1 independent review were done (re-review round, RR-*/RR2-*); their fixes changed code, so
     R1 was re-pinned. The re-review of those fixes (round 2, RR3-*) approved without runtime changes, so
-    the development re-reviews are done; the batch suite on 51fbc43 and the panel sign-off remain before
-    the window, then operator steps; no document declares the window scheduled."""
+    the development re-reviews are done and the batch suite on 51fbc43 passed on both machines; the panel
+    sign-off remains before the window, then operator steps; no document declares the window scheduled."""
     text = r1_runbook.runbook_text()
     gate = " ".join(text.split("## Compuerta de programación (P7, Q5)", 1)[1].split("**Paso del día 14**", 1)[0].split())
     assert "Faltan su revisión independiente" not in gate
@@ -170,7 +170,7 @@ def test_the_scheduling_gate_states_what_is_done_and_leaves_scheduling_to_the_us
                     "revisión independiente de la ronda 1 de arreglos de R1-B1/R1-B2",
                     "19dd44e", "357dcb5", "re-revisión independiente de", "suite batch completa sobre 51fbc43",
                     "(ronda 2, 2026-11-16)", "Las revisiones del lado de desarrollo previas a la ventana están hechas.",
-                    "verde en la Mac; el resultado del server lo registra la sesión principal",
+                    "pasó en la Mac y en el server (`u3b/full-51fbc43/RESULT.md`)",
                     "visto bueno visual del panel de R1-B2 sigue con el usuario")
     handoff = " ".join((REPO / "docs/runbooks/2026-11-05-mac-development-handoff.md").read_text().split())
     deployment = " ".join((REPO / "docs/architecture/DEPLOYMENT.md").read_text().split())
