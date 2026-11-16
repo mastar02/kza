@@ -227,3 +227,64 @@ async def test_actual_factory_private_jobs_stay_silent_and_shared_jobs_deliver_o
                 assert row.scope is ReminderScope.PRIVATE and row.state is ReminderState.ACTIVE
                 assert row.trigger_at == trigger and row.fire_count == 0 and row.last_fired_at is None
             assert await store._work.read(lambda db: db.execute('SELECT COUNT(*) FROM reminder_home_actions').fetchone()[0]) == 1
+
+
+async def test_actual_factory_restart_after_three_days_gives_one_late_notice_and_no_home_actions(tmp_path, monkeypatch):
+    """T034-U1: a restart after an outage announces each overdue shared reminder once, never its actions."""
+    import src.tts.piper_tts as output_module
+    import src.vectordb.chroma_sync as index_module
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(index_module, 'SentenceTransformer', lambda *a, **kw: OfflineEncoder())
+    backend = AudioBackend()
+    monkeypatch.setattr(output_module, 'sd', backend)
+    stt, tts, amp = OfflineSTT(), OfflineTTS(), MagicMock()
+    amp.audio_output_device = 7
+    factories = ApplicationFactories(stt=lambda _: stt, tts=lambda _: tts, preflight=lambda: None,
+        wake_detector=OfflineWake, amplifier=lambda **kw: amp)
+    transport = TaskTransport()
+    action = {'domain': 'light', 'service': 'turn_on', 'entity_id': 'light.living'}
+    async with transport.serve() as url:
+        config, _ = configuration(tmp_path, url)
+        config['rooms'].update(enabled=True, living={'name': 'Living', 'mic_device_index': 0,
+            'capture_channel': 1, 'ma1260_zone': 1})
+        config['presence'] = {'enabled': False}
+        config['tts']['streaming']['default_output_zone'] = 'living'
+        now = time.time()
+        before_outage = ReminderStore(config['reminders']['db_path'])
+        await before_outage.initialize()
+        one_shot = await before_outage.create('household', 'Sacar la basura.', now - 3 * 86400,
+            ha_actions=[action], scope=ReminderScope.SHARED)
+        daily = await before_outage.create('household', 'Cerrar las persianas.', now - 3 * 86400 - 600,
+            recurrence='daily', ha_actions=[action], scope=ReminderScope.SHARED)
+        await before_outage.close()
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=factories)
+            store = graph.reminder_manager._store
+            before = list(tts.texts)
+            graph.voice_services.start_reminders()
+            try:
+                async with asyncio.timeout(5):
+                    while ((await store.get_by_id(one_shot.id)).state is not ReminderState.FIRED
+                           or (await store.get_by_id(daily.id)).trigger_at < time.time()):
+                        await asyncio.sleep(.01)
+                await asyncio.sleep(.1)
+                spoken = ' '.join(tts.texts[len(before):])
+                on_time = await graph.reminder_manager.create('household', 'Regar ahora.', time.time() - 1,
+                    ha_actions=[action], scope=ReminderScope.SHARED)
+                async with asyncio.timeout(3):
+                    while (await store.get_by_id(on_time.id)).state is not ReminderState.FIRED:
+                        await asyncio.sleep(.01)
+                await asyncio.sleep(.1)
+            finally:
+                await graph.voice_services.stop_reminders()
+            for text in ('Sacar la basura', 'Cerrar las persianas'):
+                assert spoken.count(text) == 1
+            assert spoken.count('Este aviso llega con atraso y no ejecuté sus acciones programadas') == 2
+            assert ' '.join(tts.texts).count('Regar ahora') == 1
+            assert len(transport.sends) == 1  # only the on-time reminder's action
+            advanced = await store.get_by_id(daily.id)
+            assert advanced.state is ReminderState.ACTIVE and advanced.trigger_at > time.time()
+            statuses = await store._work.read(lambda db: sorted(tuple(row) for row in db.execute(
+                'SELECT status, reason FROM reminder_home_actions').fetchall()))
+            assert statuses == [('confirmed', None), ('failed', 'late_not_executed'), ('failed', 'late_not_executed')]

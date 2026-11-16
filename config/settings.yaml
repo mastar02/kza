@@ -669,7 +669,11 @@ reminders:
   missed_reminder_on_arrival: true
   default_time: "09:00"
   tts_prefix: "Oye, recuerda"
-  output_zone: null # Si no hay presencia, usa esta zona o tts.streaming.default_output_zone
+  output_zone: null # Zona de los avisos compartidos; si es null usa tts.streaming.default_output_zone (nunca la presencia BLE de una persona)
+  # Un recordatorio más atrasado que esto (reinicio, corte, reintentos) solo se anuncia:
+  # sus acciones de la casa no se ejecutan y quedan registradas como failed/late_not_executed.
+  # 120 s es la opción recomendada, pendiente de confirmación del usuario (T034-U1).
+  late_action_grace_s: 120
 
 # Rutinas web persistentes, independientes de las automatizaciones de HA.
 routines:

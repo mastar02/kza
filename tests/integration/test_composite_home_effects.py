@@ -4,6 +4,7 @@ import asyncio
 from copy import deepcopy
 from dataclasses import replace
 import json
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 from fastapi.testclient import TestClient
@@ -365,7 +366,7 @@ async def test_reminder_durable_claim_prevents_replay_of_partial_scene_after_res
     store = ReminderStore(path)
     await store.initialize()
     manager = ReminderManager(store, home_actions=actions)
-    reminder = await manager.create("profile", "test", 1.0, scope=ReminderScope.SHARED,
+    reminder = await manager.create("profile", "test", time.time() - 1, scope=ReminderScope.SHARED,
                                     ha_actions=[{"entity_id": SCENE, "domain": "scene", "service": "turn_on"}])
     original = ha.call_service_once
 
@@ -377,7 +378,7 @@ async def test_reminder_durable_claim_prevents_replay_of_partial_scene_after_res
     ha.call_service_once = partial
     presence = MagicMock()
     presence.get_user_zone.return_value = "test-zone"
-    scheduler = ReminderScheduler(store, AsyncMock(), presence, ha, home_actions=actions)
+    scheduler = ReminderScheduler(store, AsyncMock(), presence, ha, config={"output_zone": "test-zone"}, home_actions=actions)
     if delivery == "due":
         await scheduler._fire_reminder(reminder)
     else:
@@ -388,7 +389,7 @@ async def test_reminder_durable_claim_prevents_replay_of_partial_scene_after_res
     await restarted.initialize()
     try:
         new_actions = HomeActionService(ha, policy=actions.policy)
-        scheduler = ReminderScheduler(restarted, AsyncMock(), presence, ha, home_actions=new_actions)
+        scheduler = ReminderScheduler(restarted, AsyncMock(), presence, ha, config={"output_zone": "test-zone"}, home_actions=new_actions)
         await scheduler._fire_reminder(await restarted.get_by_id(reminder.id))
         assert len(ha.sends) == 2
         async with restarted._db.execute("SELECT status FROM reminder_home_actions") as cursor:
