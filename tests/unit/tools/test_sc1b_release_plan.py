@@ -288,16 +288,30 @@ def test_a_cut_start_resumes_only_with_the_intent_archive(x4, x5, x5r2, tmp_path
     assert compaction.compact_abort(root, compaction_id)["phase"] == "aborted"
     assert stage.read_admission_head(root)["binding_id"] == h_head["binding_id"]
     h_head = stage.read_admission_head(root)  # the return to H may publish a new generation
-    # P6'(f): the archive passes the pre-check, then another one is extracted (swapped in between).
-    compaction_id = _cut_start(root, x5["archive"], "k2")
+    # P6'(f): the archive passes the pre-check, then another one is extracted (swapped in between), or
+    # K's release.json no longer matches its own prepare record: K's file is compared with the intent.
     prepare = stage._prepare_slot
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(stage, "_prepare_slot", lambda archive, *args, **kwargs: prepare(x5r2["archive"], *args,
-                                                                                         **kwargs))
-        _resume_refused(root, compaction_id, h_head,
-                        lambda: compaction.compact_resume(root, compaction_id, archive=x5["archive"]), None)
-    assert compaction.compact_abort(root, compaction_id)["phase"] == "aborted"  # lossless, serves H
-    assert stage.read_admission_head(root) == h_head
+
+    def other_archive(archive, *args, **kwargs):
+        return prepare(x5r2["archive"], *args, **kwargs)
+
+    def release_rewritten(archive, root_path, k_slot, *args, **kwargs):
+        result = prepare(archive, root_path, k_slot, *args, **kwargs)
+        release = root_path / "slots" / k_slot / "runtime" / "release.json"
+        mode = release.stat().st_mode
+        release.chmod(0o600)
+        release.write_bytes(compaction._release_json_bytes(x5r2["manifest"]))
+        release.chmod(mode)
+        return result
+
+    for k_slot, swap in (("k2", other_archive), ("k3", release_rewritten)):
+        compaction_id = _cut_start(root, x5["archive"], k_slot)
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(stage, "_prepare_slot", swap)
+            _resume_refused(root, compaction_id, h_head,
+                            lambda: compaction.compact_resume(root, compaction_id, archive=x5["archive"]), None)
+        assert compaction.compact_abort(root, compaction_id)["phase"] == "aborted"  # lossless, serves H
+        assert stage.read_admission_head(root) == h_head
     assert cw.tree(world["h"]["state"]) == h_state
     assert cw.serve(root, tmp_path, "h-after-cut").code == 0
 
