@@ -111,8 +111,12 @@ class CaptureEraser:
 
 
 async def build_capture_erasure(config: dict, *, privacy: PrivacyServices,
-                                owner: ErasureCoordinator) -> CaptureEraser:
-    """Register capture locations even if ambient capture/archiving is disabled."""
+                                owner: ErasureCoordinator, verify_only: bool = False) -> CaptureEraser:
+    """Register capture locations even if ambient capture/archiving is disabled.
+
+    The retention loop is not started in a release-mode verification run
+    (SC-4a skip list a-capture-retention).
+    """
     settings = config.get('ambient', {}) or {}
     path = os.fspath(settings.get('db_path', './data/ambient.db'))
     if not path or path == ':memory:' or path.startswith('file:'):
@@ -124,5 +128,6 @@ async def build_capture_erasure(config: dict, *, privacy: PrivacyServices,
     owner.register(ErasureParticipant.CAPTURES, driver.clean, versions=frozenset({1}), begin_close=driver.begin_close)
     await privacy.acall(privacy.ledger.erasures.register_target, ErasureParticipant.CAPTURES, 1, descriptor)
     await driver.retention.refresh()
-    driver.retention.start()
+    if not verify_only:
+        driver.retention.start()
     return driver

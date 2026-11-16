@@ -35,8 +35,13 @@ class PrivacyServices:
     """Own the sole privacy writer until its native users actually finish."""
 
     def __init__(self, path: str, *, clock=None, automatic_days: float = 30,
-                 close_timeout_s: float = 1, voice_settings: VoiceProposalSettings | None = None):
-        self.ledger = FactLedger(path, clock=clock, automatic_days=automatic_days, voice_settings=voice_settings)
+                 close_timeout_s: float = 1, voice_settings: VoiceProposalSettings | None = None,
+                 verify_only: bool = False):
+        # SC-4a: a release-mode verification run loads and validates the authority but runs
+        # no one-shot repair (erasures.recover, index_deletions.recover) and no maintenance.
+        self.verify_only = verify_only is True
+        self.ledger = FactLedger(path, clock=clock, automatic_days=automatic_days, voice_settings=voice_settings,
+                                 verify_only=self.verify_only)
         self.scopes = CaptureScopes(self.ledger, admission_started_at=self.ledger.clock())
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="kza-privacy")
         self._work = OwnedBlockingWork(worker=self._offload, close_timeout_s=close_timeout_s)
@@ -74,8 +79,9 @@ class PrivacyServices:
                 self._lease = descriptor
             self.ledger.initialize()
             if not self._ready:
-                self.ledger.erasures.recover()
-                self.ledger.index_deletions.recover()
+                if not self.verify_only:  # skip list b-erasure-recover
+                    self.ledger.erasures.recover()
+                    self.ledger.index_deletions.recover()
                 if not output_registration.native_ready(self):
                     self._ready = True
 
@@ -177,8 +183,13 @@ class PrivacyServices:
         self.ledger.retired_owner_prune_pending = False
 
     def start(self) -> None:
-        """Maintain fact deadlines independently of optional index reconciliation."""
-        if self.maintenance is not None:
+        """Maintain fact deadlines independently of optional index reconciliation.
+
+        Not started in a release-mode verification run (skip list
+        a-privacy-maintenance: retired-owner prune retry, expire,
+        prune_voice_attribution); the real boot after retire runs it.
+        """
+        if self.maintenance is not None or self.verify_only:
             return
         async def maintain():
             while not self._closed:
@@ -282,7 +293,8 @@ def voice_proposal_settings(config: dict) -> VoiceProposalSettings:
         return VoiceProposalSettings()
 
 
-async def build_privacy_services(config: dict, *, shutdown: AsyncExitStack, clock=None) -> PrivacyServices:
+async def build_privacy_services(config: dict, *, shutdown: AsyncExitStack, clock=None,
+                                 verify_only: bool = False) -> PrivacyServices:
     """Register ownership before unconditional initialization; never load Chroma."""
     settings = config.get("memory", {})
     path = os.fspath(settings.get("privacy_db_path", "./data/memory_privacy.db"))
@@ -290,7 +302,7 @@ async def build_privacy_services(config: dict, *, shutdown: AsyncExitStack, cloc
         raise ValueError("privacy_requires_persistent_file")
     services = PrivacyServices(path,
         clock=clock, automatic_days=settings.get("automatic_retention_days", 30),
-        voice_settings=voice_proposal_settings(config))
+        voice_settings=voice_proposal_settings(config), verify_only=verify_only)
     shutdown.push_async_callback(services.aclose)
     await output_registration.attach_output(services, "privacy_authority")
     await services.acall(services.initialize)

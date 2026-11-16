@@ -79,7 +79,14 @@ class IndexDeletionQueue:
         self._notify()
 
     def register_target(self, db, target_id: str) -> None:
-        """Backfill existing tombstones without resetting completed live claims."""
+        """Backfill existing tombstones without resetting completed live claims.
+
+        SC-4a skip list c-index-target-registration: in a release-mode
+        verification run nothing is inserted (this one pin covers recover and
+        both register_policy_index_target sites); the real boot backfills.
+        """
+        if getattr(self.ledger, "verify_only", False) is True:
+            return
         db.execute("""INSERT INTO policy_index_deletions(target_id,fact_id,revision,state)
             SELECT ?, id, revision, 'pending' FROM facts WHERE state IN ('deleted','quarantined')
             ON CONFLICT(target_id,fact_id) DO UPDATE SET revision=excluded.revision,state='pending',

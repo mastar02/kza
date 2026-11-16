@@ -456,6 +456,9 @@ class _CaptureClosure:
                  and type(control.recorders) is CaptureRecorders
                  and control.recorders._privacy is graph.privacy, "unsupported_capture_owner")
         self.recorders, self.policy = control.recorders, control._policy_work
+        # SC-4a capture_close: the graph's verify_only and the recorders' must agree.
+        self.verify_only = graph.verify_only is True
+        _require(self.recorders.verify_only is self.verify_only, "capture_verify_mode_mismatch")
         self.recorder_work = self.recorders._work
         self.enrollment = control._enrollment_work
         _require(type(self.recorder_work) is OwnedBlockingWork
@@ -511,6 +514,11 @@ class _CaptureClosure:
         tasks = tuple(lease.task for lease in self.uploads if lease.task is not None)
         if tasks:
             await asyncio.gather(*(asyncio.shield(task) for task in tasks))
+        if self.verify_only:
+            # SC-4a capture_close: a verification run carries every row unchanged to K'.
+            _require(await self.recorders.confirm_unchanged() and not self.control._uploads,
+                     "capture_permissions_changed")
+            return
         # Owners carried from an earlier process are not awaited (R5V-1); the
         # proof reports them instead of claiming their retirement.
         _require(self.recorders.pending_live() == 0 and not self.control._uploads,
@@ -522,7 +530,8 @@ class _CaptureClosure:
         _require(control._closed and control._sealed and control._phase == "closed"
                  and _finished(control._closing) and not control._uploads
                  and self.recorders._closed and self.recorders._sealed
-                 and self.recorders.pending_live() == 0
+                 and (self.recorders.unchanged_confirmed() if self.verify_only
+                      else self.recorders.pending_live() == 0)
                  and self.recorder_work.status()["closed"]
                  and self.recorder_work.status()["operations"] == 0
                  and _finished(self.recorder_work._closing)
@@ -534,7 +543,7 @@ class _CaptureClosure:
         if self.enrollment is not None:
             _require(self.enrollment.status()["closed"] and not self.enrollment.status()["operations"],
                      "enrollment_not_closed")
-        carried = self.recorders.carried()
+        carried = self.recorders.carried_rows() if self.verify_only else self.recorders.carried()
         _require(self.driver._closed and _finished(self.driver._closing)
                  and all(owner._closed and _finished(owner._closing)
                          and not owner.snapshot_operations() for owner in self.archivers),
