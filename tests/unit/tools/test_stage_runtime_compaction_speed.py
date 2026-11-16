@@ -340,6 +340,7 @@ def test_verify_snapshot_refuses_every_departure_from_the_pinned_canonical_text(
 
 S, M, L, R = 154_116_457, 377_000_000, 93_335_552, 17_000_000  # SC-0b: the measured synthetic state
 PEAK_GROWTH = 861_000_000  # SC-0b: filesystem growth at the peak (VACUUM of K's events.db), temp on the root
+SERVER_PEAKS = (942_010_368, 823_345_152)  # SC-0b after the change: free-space drop every 10 ms (shared disk)
 
 
 def test_free_space_need_is_exactly_the_terms_of_the_measured_peak():
@@ -359,6 +360,7 @@ def test_free_space_need_covers_the_measured_peak_with_the_real_manifest_and_wit
     estimated = compaction.free_space_need(S, compaction.MANIFEST_ESTIMATE_FACTOR * S, L, R, temp_on_root=True)
     assert estimated["root"] >= real
     assert 2 * S + (256 << 20) < PEAK_GROWTH  # the old rule fell short of the measured peak
+    assert all(real >= peak for peak in SERVER_PEAKS)
 
 
 def test_worker_need_is_k_plus_the_vacuum_of_its_largest_database():
