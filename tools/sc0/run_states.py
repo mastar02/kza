@@ -9,12 +9,22 @@ AdmissionController with no traffic; send SIGTERM ``--settle`` seconds after
 the child reports steady; after the run, check whether a receipt was sealed
 and take the projection again. The per-table diff is joined with the child's
 SQL write trace (statement, phase, src frames). Skip list: none (normal
-mode; SC-4a's verify mode does not exist yet). A residue injector may
+mode) by default; ``--verify`` (SC-4a, CR-7) runs the child with serve's
+flag KZA_RUNTIME_RELEASE_VERIFY=1, so NEW takes its verify_only branch with
+the skip list on: 'steady' is READY (no audio loop runs), the settle stands
+for the smoke interval N, and the run records whether VERIFY=<run_id> (the
+receipt's run) preceded READY=1. ``--revision`` builds the archive from
+another commit (SC-4a: the branch head). ``--template-revision`` (SC-4a
+review RA-4) builds H's template from another commit's first boot (the
+first post-R1 update: R1's H, then NEW's V); default ``--revision``. The
+template's resolved commit is kept beside it (template-data.revision) and
+every result names both commits. A residue injector may
 return ``config`` (dotted settings overrides for NEW) and ``settle`` (a
 longer settle, for loops whose first write comes after 15 s).
 
 Usage:
     python tools/sc0/run_states.py --work DIR --out results.json [--states a,b] [--settle 15]
+        [--verify] [--revision COMMIT] [--template-revision COMMIT]
 """
 from __future__ import annotations
 
@@ -49,6 +59,8 @@ CHILD = REPO / "tools/sc0/sc0_child.py"
 BASE_REVISION = "0bd9f98"
 AMBIENT = ["real"]
 CHILD_FLAGS: list[str] = []
+VERIFY = [False]  # SC-4a --verify: the child gets serve's release-verify flag
+REVISION = [BASE_REVISION]
 
 
 def bootstrap_populated_state_patch() -> None:
@@ -80,8 +92,14 @@ def _free_port() -> int:
         return probe.getsockname()[1]
 
 
+def resolve(revision: str) -> str:
+    """The full commit a revision names in this checkout."""
+    return subprocess.run(["git", "-C", str(REPO), "rev-parse", "--verify", revision + "^{commit}"],
+                          check=True, capture_output=True, text=True, timeout=30).stdout.strip()
+
+
 def build_archive(work: Path) -> Path:
-    archive = work / "runtime-0bd9f98.tar.gz"
+    archive = work / f"runtime-{REVISION[0]}.tar.gz"
     if archive.exists():
         return archive
     clone = work / "archive-clone"
@@ -89,8 +107,8 @@ def build_archive(work: Path) -> Path:
         shutil.rmtree(clone)
     subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(REPO), str(clone)],
                    check=True, timeout=120)
-    manifest = build_runtime(clone, archive, revision=BASE_REVISION)
-    (work / "runtime-manifest.json").write_text(json.dumps(
+    manifest = build_runtime(clone, archive, revision=REVISION[0])
+    (work / f"runtime-manifest-{REVISION[0]}.json").write_text(json.dumps(
         {"git_commit": manifest["git_commit"], "files": len(manifest["files"])}))
     return archive
 
@@ -165,9 +183,12 @@ class Run:
 
         def execute():
             try:
+                environment = compiled._environment()
+                if VERIFY[0]:
+                    environment["KZA_RUNTIME_RELEASE_VERIFY"] = "1"
                 with stdout.open("w") as out, stderr.open("w") as err:
                     completed = stage.run_slot(self.staging, "s", command, timeout=timeout,
-                                               env=compiled._environment(), stdout=out, stderr=err)
+                                               env=environment, stdout=out, stderr=err)
                 outcome["returncode"] = completed.returncode
             except BaseException as error:  # recorded, not raised: a missing receipt is a result
                 outcome["error"] = f"{type(error).__name__}: {error}"[:500]
@@ -186,7 +207,7 @@ class Run:
                 *lines, buffer = buffer.split(b"\n")
                 self.notify.extend(line.decode() for line in lines)
                 phases = self.phases()
-                if steady_at is None and "steady" in phases and "READY=1" in self.notify:
+                if steady_at is None and ("steady" in phases or VERIFY[0]) and "READY=1" in self.notify:
                     steady_at = time.monotonic()
                 if signalled is None and steady_at is not None and time.monotonic() - steady_at >= settle:
                     signalled = time.monotonic()
@@ -209,6 +230,16 @@ class Run:
         receipts = self.staging / "admission/receipts"
         outcome["receipts"] = sorted(p.name for p in receipts.glob("*.json")) if receipts.exists() else []
         outcome["receipt_sealed"] = outcome["head_status"] == "closed" and len(outcome["receipts"]) == 1
+        if VERIFY[0]:
+            # SC-4a: the acknowledgement names the sealed run and precedes READY=1 (serve's
+            # ready.json condition); held for the settle after READY (serve's smoke interval).
+            run_id = outcome["receipts"][0][:-len(".json")] if len(outcome["receipts"]) == 1 else None
+            lines = self.notify
+            acknowledged = (run_id is not None and "VERIFY=" + run_id in lines and "READY=1" in lines
+                            and lines.index("VERIFY=" + run_id) < lines.index("READY=1"))
+            held = signalled is not None and steady_at is not None and signalled - steady_at >= settle
+            outcome["verify_acknowledged"] = acknowledged
+            outcome["verified_run"] = bool(outcome["receipt_sealed"] and acknowledged and held)
         log = stdout.read_text() + stderr.read_text()
         outcome["log_tail"] = [line for line in log.splitlines()
                                if any(k in line for k in ("[Stop]", "Error", "error", "Traceback",
@@ -306,26 +337,46 @@ def main() -> None:
     parser.add_argument("--settle", type=float, default=15.0)
     parser.add_argument("--timeout", type=float, default=150.0)
     parser.add_argument("--ambient", choices=("idle", "real"), default="real")
+    parser.add_argument("--verify", action="store_true")
+    parser.add_argument("--revision", default=BASE_REVISION)
+    parser.add_argument("--template-revision", default=None)
     args = parser.parse_args()
     AMBIENT[0] = args.ambient
+    VERIFY[0] = args.verify
+    REVISION[0] = args.revision
     work = Path(args.work).resolve()
     work.mkdir(parents=True, exist_ok=True)
-    archive = build_archive(work)
+    revisions = {"revision": resolve(args.revision),
+                 "template_revision": resolve(args.template_revision or args.revision)}
     template = work / "template-data"
+    marker = work / "template-data.revision"
     bootstrap_populated_state_patch()
     results = []
     if not template.exists():
-        first = measure(archive, work, "first_boot_empty", None, settle=args.settle, timeout=args.timeout)
-        results.append(first)
+        REVISION[0] = args.template_revision or args.revision
+        VERIFY[0] = False  # the template is H's own first boot (normal mode)
+        first = measure(build_archive(work), work, "first_boot_empty", None, settle=args.settle,
+                        timeout=args.timeout)
+        VERIFY[0] = args.verify
+        results.append({**first, "revision": revisions["template_revision"], "verify": False})
         if not first["outcome"].get("receipt_sealed"):
             raise SystemExit("first boot did not seal; no template")
         shutil.copytree(work / "staging/slots/s/state/data", template, symlinks=True)
+        marker.write_text(revisions["template_revision"] + "\n")
+    recorded = marker.read_text().strip() if marker.exists() else None
+    if recorded != revisions["template_revision"]:
+        # Review RA-4: never measure V over a template of an unknown or another revision.
+        raise SystemExit(f"template-data was built by {recorded or 'an unrecorded revision'}, "
+                         f"not {revisions['template_revision']}")
+    REVISION[0] = args.revision
+    archive = build_archive(work)
     wanted = [name for name in args.states.split(",") if name] or list(residue.STATES)
     for name in wanted:
         print(f"[sc0] state {name}", flush=True)
         try:
-            results.append(measure(archive, work, name, template, settle=args.settle,
-                                   timeout=args.timeout, inject=residue.STATES[name]))
+            results.append({**measure(archive, work, name, template, settle=args.settle,
+                                      timeout=args.timeout, inject=residue.STATES[name]),
+                            **revisions, "verify": args.verify})
         except Exception:
             results.append({"state": name, "harness_error": traceback.format_exc()[-3000:]})
         out = Path(args.out)

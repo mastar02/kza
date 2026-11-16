@@ -203,7 +203,7 @@ class ServeResult:
 def run_serve(root: Path, command: list[str], *, phase_file: Path, stop_when=None, stop_grace: float = 20.0,
               manager: FakeManager | None = None, recover: str = "bounded", unit_timeout_stop: float = 60.0,
               boot_id_file: Path | None = None, timeout: float = 90.0, environ: dict | None = None,
-              wall=time.time) -> ServeResult:
+              wall=time.time, clock=time.monotonic) -> ServeResult:
     """Run Serve in this process; ``stop_when(phases)`` decides when to SIGTERM this process.
 
     After ``timeout`` seconds a still-running Serve is stopped anyway, so a
@@ -219,7 +219,7 @@ def run_serve(root: Path, command: list[str], *, phase_file: Path, stop_when=Non
     if environ is None:
         environ = {key: value for key, value in os.environ.items() if key != "NOTIFY_SOCKET"}
     serve = launcher.Serve(options, manager=manager or FakeManager(), notifier=notifier, environ=environ,
-                           wall=wall, straggler_procs=None)
+                           wall=wall, clock=clock, straggler_procs=None)
     done = threading.Event()
 
     def stopper():

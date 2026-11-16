@@ -204,7 +204,7 @@ class SuggestionEraser:
 
 
 async def build_suggestion_erasure(
-    config: dict, *, privacy: PrivacyServices, owner: ErasureCoordinator
+    config: dict, *, privacy: PrivacyServices, owner: ErasureCoordinator, verify_only: bool = False
 ) -> SuggestionEraser:
     """Register physical/runtime destinations before optional producer admission."""
     descriptor = await privacy.acall(
@@ -232,5 +232,6 @@ async def build_suggestion_erasure(
     await output_registration.attach_output(driver, "suggestions", role="eraser")
     await output_registration.attach_output(driver.retention, "suggestions", role="retention")
     await driver.retention.refresh()
-    driver.retention.start()
+    if not verify_only:  # SC-4a skip list a-other-loops (suggestion retention)
+        driver.retention.start()
     return driver

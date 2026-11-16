@@ -33,7 +33,9 @@ from src.core.egress import CloudConsentGate, ConsentWithdrawalSource
 from src.core.owned_work import OwnedBlockingWork
 from src.core.paths import TRAINING_OUTPUT_NIGHTLY, models_path, speaker_savedir, tts_settings
 from src.core.process_lifecycle import ProcessLifecycle, StopPhase, arm_process_entry
-from src.core.runtime_admission import TICKET_ENV, seal_runtime_configuration, verify_runtime_admission
+from src.core.runtime_admission import (
+    TICKET_ENV, seal_runtime_configuration, take_release_verify_flag, verify_runtime_admission,
+)
 from src.core.state_configuration import ConfigurationChanges
 from src.core.settings_schema import (
     DEFAULT_LOCAL_LLM_GATEWAY,
@@ -584,6 +586,7 @@ async def build_application(
     config: dict, *, shutdown: AsyncExitStack,
     factories: ApplicationFactories | None = None,
     lifecycle: ProcessLifecycle | None = None,
+    verify_only: bool | None = None,
 ) -> ApplicationGraph:
     """Construct the actual application graph without starting house producers.
 
@@ -597,12 +600,24 @@ async def build_application(
         lifecycle: Optional process stop/readiness contract. The graph and the
             pipeline observe its stop signal; READY follows 'System ready'; a
             managed admission closes logging before its receipt.
+        verify_only: SC-4a release-mode verification run. None (production)
+            reads serve's flag once from the environment, where it needs an
+            admission ticket; tests pass it explicitly. In verify mode the
+            graph constructs, opens, validates and loads, but starts no
+            recurring loop, runs no one-shot repair and commits no dashboard
+            authority transaction (mechanism.v_verification_run.skip_list).
 
     Returns:
         The same graph run by main, with operational startup and warmup deferred.
     """
+    from_environment = verify_only is None
+    verify_only = take_release_verify_flag() if from_environment else bool(verify_only)
     config = seal_runtime_configuration(config)
     admission = await asyncio.to_thread(verify_runtime_admission, config)
+    if verify_only and from_environment and admission is None:
+        raise RuntimeError("runtime_admission_release_verify_invalid")
+    if verify_only:
+        logger.info("[Verify] release-mode verification run: isolated boot, nothing started")
     destination_registration = None
     if admission is not None:
         admission.install_on(shutdown)
@@ -639,6 +654,7 @@ async def build_application(
             auth_config.get("db_path", "./data/dashboard_auth.db"),
             session_ttl_s=auth_config.get("session_ttl_s", 30 * 86400),
             account_provider=lambda: None if user_manager is None else user_manager.active_accounts(),
+            verify_only=verify_only,
         )
         shutdown.push_async_callback(dashboard_authority.aclose)
         await output_registration.attach_output(dashboard_authority, "authority_sessions")
@@ -894,7 +910,7 @@ async def build_application(
             llm_router = None
 
     # Privacy authority always exists; semantic recall remains optional.
-    privacy_services = await build_privacy_services(config, shutdown=shutdown)
+    privacy_services = await build_privacy_services(config, shutdown=shutdown, verify_only=verify_only)
     privacy_services.add_borrower(chroma.begin_close)
     privacy_services.add_borrower(http_reasoners.begin_close)
     privacy_services.add_borrower(hermes_reasoners.begin_close)
@@ -904,11 +920,13 @@ async def build_application(
     privacy_services.add_borrower(tts_models.begin_close)
     if fast_router is not None:
         privacy_services.add_borrower(fast_router.begin_close)
-    memory_services = await build_memory_services(config, shutdown=shutdown, privacy=privacy_services)
+    memory_services = await build_memory_services(config, shutdown=shutdown, privacy=privacy_services,
+                                                  verify_only=verify_only)
     memory_manager = memory_services.manager if memory_services is not None else None
     erasure_services = await build_erasure_services(config, privacy=privacy_services, shutdown=shutdown,
-        memory=memory_manager.long_term if memory_manager is not None else None)
-    voice_registry = await build_voice_registry(privacy=privacy_services,owner=erasure_services,shutdown=shutdown)
+        memory=memory_manager.long_term if memory_manager is not None else None, verify_only=verify_only)
+    voice_registry = await build_voice_registry(privacy=privacy_services,owner=erasure_services,shutdown=shutdown,
+                                                verify_only=verify_only)
     speaker_models = SpeakerModelOwner()
     shutdown.push_async_callback(speaker_models.aclose)
     speaker_models.add_borrower(voice_registry.begin_close)
@@ -916,13 +934,19 @@ async def build_application(
     wake_models = WakeModelOwner()
     shutdown.push_async_callback(wake_models.aclose)
     privacy_services.add_borrower(wake_models.begin_close)
-    diagnostic_services = await build_diagnostic_services(config, privacy=privacy_services, owner=erasure_services)
+    diagnostic_services = await build_diagnostic_services(config, privacy=privacy_services, owner=erasure_services,
+                                                          verify_only=verify_only)
     metrics_emitter = diagnostic_services.emitter
-    capture_erasure = await build_capture_erasure(config, privacy=privacy_services, owner=erasure_services)
-    event_erasure = await build_event_erasure(config, privacy=privacy_services, owner=erasure_services)
-    suggestion_erasure = await build_suggestion_erasure(config, privacy=privacy_services, owner=erasure_services)
-    context_erasure = await build_context_erasure(config, privacy=privacy_services, owner=erasure_services, memory=memory_manager)
-    wake_clip_store = await build_wake_clip_store(config, privacy=privacy_services, shutdown=shutdown, owner=erasure_services)
+    capture_erasure = await build_capture_erasure(config, privacy=privacy_services, owner=erasure_services,
+                                                  verify_only=verify_only)
+    event_erasure = await build_event_erasure(config, privacy=privacy_services, owner=erasure_services,
+                                              verify_only=verify_only)
+    suggestion_erasure = await build_suggestion_erasure(config, privacy=privacy_services, owner=erasure_services,
+                                                        verify_only=verify_only)
+    context_erasure = await build_context_erasure(config, privacy=privacy_services, owner=erasure_services,
+                                                  memory=memory_manager, verify_only=verify_only)
+    wake_clip_store = await build_wake_clip_store(config, privacy=privacy_services, shutdown=shutdown,
+                                                  owner=erasure_services, verify_only=verify_only)
     stt_correction_collector = await build_stt_correction_collector(config, store=wake_clip_store)
     conversation_collector = await build_conversation_collector(config, store=wake_clip_store)
 
@@ -1051,7 +1075,7 @@ async def build_application(
 
     if analytics_config.get("enabled", True):
         event_logger = await build_event_logger(config, shutdown=shutdown,
-            privacy=privacy_services, retention=event_erasure.retention)
+            privacy=privacy_services, retention=event_erasure.retention, verify_only=verify_only)
 
         pattern_analyzer = PatternAnalyzer(event_logger)
 
@@ -1059,6 +1083,7 @@ async def build_application(
             event_logger=event_logger,
             pattern_analyzer=pattern_analyzer,
             suggestions_path=analytics_config.get("suggestions_path", "./data/suggestions.json"),
+            verify_only=verify_only,
         )
         suggestion_erasure.attach_engine(suggestion_engine)
         logger.info("Smart automations habilitado")
@@ -1075,7 +1100,7 @@ async def build_application(
 
     reminder_wake_event = asyncio.Event()
     reminder_store = ReminderStore(reminders_config.get("db_path", "./data/reminders.db"),
-                                   on_created=reminder_wake_event.set)
+                                   on_created=reminder_wake_event.set, verify_only=verify_only)
     shutdown.push_async_callback(reminder_store.close)
     if destination_registration is not None:
         await destination_registration.register_store(reminder_store, "reminders")
@@ -1980,10 +2005,11 @@ async def build_application(
 
     if dashboard_authority is not None:
         await dashboard_authority.initialize()
-        await _prune_retired_memory_owners(privacy_services, dashboard_authority)
+        if not verify_only:  # skip list b-retired-owner-prune: skipped, not deferred (SC-4a)
+            await _prune_retired_memory_owners(privacy_services, dashboard_authority)
 
     live_event_bus = await build_live_services(config,privacy=privacy_services,
-        owner=erasure_services,shutdown=shutdown)
+        owner=erasure_services,shutdown=shutdown,verify_only=verify_only)
 
     ambient_control = None
     if ambient_path is not None:
@@ -2007,7 +2033,7 @@ async def build_application(
         voices=voice_registry,
         collectors=(stt_correction_collector, conversation_collector),
         native_drains=capture_drains, native_supported=capture_native_supported,
-        shutdown=shutdown,
+        shutdown=shutdown, verify_only=verify_only,
     )
 
     if dashboard_config.get("enabled", True):
@@ -2161,6 +2187,8 @@ async def build_application(
         erasure_services=erasure_services,
         lifecycle=lifecycle,
         loop_lag=loop_lag,
+        verify_only=verify_only,
+        verify_run_id=admission.run_id if verify_only and admission is not None else None,
     )
     from src.memory.producer_erasure import ProducerCoverage, build_producer_erasure
 

@@ -145,14 +145,20 @@ async def register_policy_index_target(config: dict, privacy: PrivacyServices) -
 
 
 async def build_erasure_services(config: dict, *, privacy: PrivacyServices, shutdown: AsyncExitStack,
-                                 memory=None, client_factory=None) -> ErasureCoordinator:
-    """Register durable index targets without enabling recall or broad erase UI."""
+                                 memory=None, client_factory=None, verify_only: bool = False) -> ErasureCoordinator:
+    """Register durable index targets without enabling recall or broad erase UI.
+
+    A release-mode verification run starts neither the index maintenance nor
+    the coordinator's step loop (SC-4a skip list a-other-loops), so no
+    participant's clean (incl. the collector eraser) runs in that run.
+    """
     owner = ErasureCoordinator(privacy)
     shutdown.push_async_callback(owner.aclose)
     descriptor = await register_policy_index_target(config, privacy)
     driver = PolicyIndexEraser(privacy, descriptor, memory=memory, client_factory=client_factory)
     owner.register(ErasureParticipant.SEMANTIC_INDEX, driver.clean,
                    versions=frozenset({1}), begin_close=driver.begin_close)
-    driver.maintenance.start()
-    owner.start()
+    if not verify_only:
+        driver.maintenance.start()
+        owner.start()
     return owner

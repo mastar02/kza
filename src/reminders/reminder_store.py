@@ -103,8 +103,11 @@ class ReminderStore:
     """Async SQLite store for reminder CRUD operations."""
 
     def __init__(self, db_path: str, *, on_created: Callable[[], None] | None = None,
-                 registration: "DestinationRegistration | None" = None) -> None:
+                 registration: "DestinationRegistration | None" = None,
+                 verify_only: bool = False) -> None:
         self._db_path = db_path
+        # SC-4a skip list d-reminder-sending: a verification run leaves 'sending' as it is.
+        self._verify_only = verify_only is True
         self._destination_registration = registration
         self._db: aiosqlite.Connection | None = None
         self._on_created = on_created
@@ -134,8 +137,9 @@ class ReminderStore:
 
             def schema(db):
                 reminder_schema(db)
-                db.execute("UPDATE reminder_home_actions SET status = 'uncertain', "
-                           "reason = 'interrupted_send' WHERE status = 'sending'")
+                if not self._verify_only:
+                    db.execute("UPDATE reminder_home_actions SET status = 'uncertain', "
+                               "reason = 'interrupted_send' WHERE status = 'sending'")
             await self._work.write(schema)
             await store_open_returned(self)
             self._initialized = True

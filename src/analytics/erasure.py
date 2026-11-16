@@ -107,7 +107,7 @@ class EventEraser:
 
 
 async def build_event_erasure(
-    config: dict, *, privacy: PrivacyServices, owner: ErasureCoordinator
+    config: dict, *, privacy: PrivacyServices, owner: ErasureCoordinator, verify_only: bool = False
 ) -> EventEraser:
     """Connect historical event cleanup even when analytics is disabled."""
     descriptor = await privacy.acall(
@@ -135,5 +135,6 @@ async def build_event_erasure(
         raise
     await output_registration.attach_output(driver, "events", role="eraser")
     await output_registration.attach_output(driver.retention, "events", role="retention")
-    driver.retention.start()
+    if not verify_only:  # SC-4a skip list d-boot-retention-clamps (event retention sweep)
+        driver.retention.start()
     return driver

@@ -83,8 +83,8 @@ class VoicePipeline:
         self.lifecycle = ProcessLifecycle()  # process stop + READY; inert unless main binds its own
         self._running = False
 
-    async def run(self) -> None:
-        """Main listening loop — initialize services and delegate to audio_loop."""
+    async def prepare(self) -> None:
+        """Load models, index and memory only (SC-4a: a verification run's whole start-up)."""
         logger.info("Initializing pipeline...")
         self.lifecycle.stop.checkpoint("models")
         # Keep HA's pending snapshot and WS handshakes live during model warmup.
@@ -108,6 +108,9 @@ class VoicePipeline:
             else:
                 await asyncio.to_thread(self.memory.initialize)
 
+    async def run(self) -> None:
+        """Main listening loop — initialize services and delegate to audio_loop."""
+        await self.prepare()
         if isinstance(self.request_router, RequestRouter):  # start orchestrator
             self.request_router.start()
         if self._orchestrator:

@@ -107,8 +107,12 @@ class MemoryServices:
 
 
 async def build_memory_services(config: dict, *, shutdown: AsyncExitStack, chroma_client=None,
-                                clock=None, privacy=None) -> MemoryServices | None:
-    """Register ownership before construction; preserve caller-owned clients."""
+                                clock=None, privacy=None, verify_only: bool = False) -> MemoryServices | None:
+    """Register ownership before construction; preserve caller-owned clients.
+
+    A release-mode verification run does not start the long-term maintenance
+    (SC-4a skip list a-other-loops).
+    """
     settings = config.get('memory', {})
     if not settings.get('enabled', True):
         return None
@@ -177,5 +181,6 @@ async def build_memory_services(config: dict, *, shutdown: AsyncExitStack, chrom
     if services._closed:
         await asyncio.shield(services.begin_close())
         raise RuntimeError('memory_services_closed')
-    services.start()
+    if not verify_only:
+        services.start()
     return services

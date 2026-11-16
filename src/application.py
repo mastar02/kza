@@ -269,6 +269,10 @@ class ApplicationGraph:
     consent_gate: CloudConsentGate | None = field(default=None, repr=False)
     lifecycle: ProcessLifecycle | None = field(default=None, repr=False)
     loop_lag: LoopLagProbe | None = field(default=None, repr=False)
+    # SC-4a: a release-mode verification run (serve's flag, read once by main).
+    # The run_id is the admission ticket's; VERIFY=<run_id> names it.
+    verify_only: bool = field(default=False, repr=False)
+    verify_run_id: str | None = field(default=None, repr=False)
     _run_entered: bool = field(default=False, init=False, repr=False)
 
     @property
@@ -345,6 +349,9 @@ class ApplicationGraph:
         ambient_task = None
         stop = self.stop_signal
         try:
+            if self.verify_only:
+                await self._run_verify(stop)
+                return
             if _stop_requested(stop, "services"):
                 return
             if stop is not None:
@@ -393,6 +400,30 @@ class ApplicationGraph:
             closing.result()
             if cancelled:
                 raise asyncio.CancelledError
+
+    async def _run_verify(self, stop: StopSignal | None) -> None:
+        """SC-4a verify_only branch: an isolated boot with no ingress and no house effect.
+
+        Skips ``_start_services`` (HA state sync, routines and their
+        ``recover_interrupted``, presence, reminders, nightly trainer), the
+        dashboard, the ambient path, the loop-lag probe and ``pipeline.run``.
+        Awaits ``pipeline.prepare()``, sends the private VERIFY=<run_id>
+        acknowledgement, then READY, and waits for serve's stop.
+
+        Raises:
+            RuntimeError: ``verify_requires_lifecycle`` without a stop signal.
+        """
+        if stop is None or self.lifecycle is None:
+            raise RuntimeError("verify_requires_lifecycle")
+        if _stop_requested(stop, "verify"):
+            return
+        stop.enter(StopPhase.PIPELINE)
+        await self.pipeline.prepare()
+        logger.info("[Verify] verification boot ready: no ingress, no house effects")
+        if self.verify_run_id is not None:
+            self.lifecycle.acknowledge_verify(self.verify_run_id)
+        self.lifecycle.ready()
+        await stop.wait()
 
     async def _stop_services(self, dashboard_task: asyncio.Task | None,
                              ambient_task: asyncio.Task | None) -> None:

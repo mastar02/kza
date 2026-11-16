@@ -317,7 +317,8 @@ class DashboardAuthority:
                  clock: Callable[[], float] = time.time,
                  expected_token: Callable[[], str | None] = _expected_token,
                  work: OwnedBlockingWork | None = None,
-                 account_provider: Callable[[], ActiveAccounts | None] | None = None):
+                 account_provider: Callable[[], ActiveAccounts | None] | None = None,
+                 verify_only: bool = False):
         _timestamp(session_ttl_s)
         if not 1 <= session_ttl_s <= DEFAULT_SESSION_TTL_S:
             raise ValueError("invalid_dashboard_session_ttl")
@@ -327,6 +328,10 @@ class DashboardAuthority:
         self._clock = clock
         self._expected = expected_token
         self._account_provider = account_provider
+        # SC-4a skip list c-authority: in a release-mode verification run every
+        # transaction (initialize, and the close-path final rotate) ends with
+        # ROLLBACK. The authority loads and validates but commits nothing.
+        self._verify_only = verify_only is True
         self._work = work or OwnedBlockingWork(capacity=1)
         self._serial = asyncio.Lock()
         self._state_lock = threading.RLock()
@@ -815,7 +820,10 @@ class DashboardAuthority:
                 raise PermissionError("dashboard_authority_revoked")
             if self._active_commit_witness is not None:
                 self._active_commit_witness.set()
-            db.commit()
+            if self._verify_only:
+                db.rollback()
+            else:
+                db.commit()
         return result,credentials,sessions,floor,digest,epoch,frozenset(retired_users),attempts
 
     @staticmethod

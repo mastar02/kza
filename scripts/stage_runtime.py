@@ -1016,6 +1016,70 @@ def _armed_run(log: dict) -> tuple[dict | None, dict | None]:
     return armed, started
 
 
+# --- SC-4a: release-mode verification run records (sc-release-design v4 v_verification_run) ---------
+
+VERIFY_READY_SUFFIX = ".ready.json"
+VERIFY_SMOKE_STOP_SUFFIX = ".smoke-stop.json"
+_VERIFY_READY_KEYS = frozenset({"schema_version", "run_id", "verify_acknowledged", "ready_at"})
+_VERIFY_SMOKE_KEYS = frozenset({"schema_version", "run_id", "smoke_seconds", "measured_seconds", "reason",
+                                "verify_unacknowledged", "stopped_at"})
+VERIFY_STOP_REASONS = ("smoke_elapsed", "verify_unacknowledged", "stop_request", "child_exit")
+
+
+def release_mode_intent(log: dict) -> bool:
+    """intent.mode == 'release' (SC-1b); absent is plain mode; any other value is an invalid log."""
+    intent = log["intent"]
+    if "mode" not in intent:
+        return False
+    if intent["mode"] != "release":
+        raise ValueError("runtime_admission_compaction_log_invalid")
+    return True
+
+
+def verify_ready_path(root: Path, run_id: str) -> Path:
+    """admission/runs/<run_id>.ready.json: serve relayed READY after the run's VERIFY acknowledgement."""
+    return Path(root) / "admission" / "runs" / (run_id + VERIFY_READY_SUFFIX)
+
+
+def verify_smoke_stop_path(root: Path, run_id: str) -> Path:
+    """admission/runs/<run_id>.smoke-stop.json: serve's monotonic smoke interval and why it stopped."""
+    return Path(root) / "admission" / "runs" / (run_id + VERIFY_SMOKE_STOP_SUFFIX)
+
+
+def _verify_record(path: Path, keys: frozenset, run_id: str) -> dict | None:
+    if not os.path.lexists(path):
+        return None
+    record = _read_json(path)
+    if set(record) != keys or record["schema_version"] != 1 or record["run_id"] != run_id:
+        raise ValueError("runtime_admission_verify_record_invalid")
+    return record
+
+
+def verify_run_records(root: Path, run_id: str) -> tuple[dict | None, dict | None]:
+    """(ready.json, smoke-stop.json) of one run; a malformed record raises ValueError."""
+    return (_verify_record(verify_ready_path(root, run_id), _VERIFY_READY_KEYS, run_id),
+            _verify_record(verify_smoke_stop_path(root, run_id), _VERIFY_SMOKE_KEYS, run_id))
+
+
+def release_run_verified(root: Path, run_id: str, smoke_seconds: int) -> bool:
+    """SC-4a verified predicate (row V4): the acknowledged READY and a monotonic interval >= N.
+
+    ready.json exists only after the child's VERIFY=<run_id> preceded READY=1
+    (verify_ack); smoke-stop.json carries serve's time.monotonic() interval.
+    Wall-clock fields are informational and never read here (CR2-8).
+    """
+    try:
+        ready, smoke = verify_run_records(root, run_id)
+    except (OSError, ValueError):
+        return False
+    if ready is None or smoke is None or ready["verify_acknowledged"] is not True:
+        return False
+    measured = smoke["measured_seconds"]
+    return (smoke["verify_unacknowledged"] is False and type(measured) in (int, float)
+            and math.isfinite(measured) and type(smoke_seconds) is int and measured >= smoke_seconds
+            and smoke["smoke_seconds"] == smoke_seconds)
+
+
 def compaction_verified(root: Path, log: dict, head: dict | None) -> dict | None:
     """The armed verification run's seal, as 'verified' data, when the head closed it.
 
@@ -1023,6 +1087,8 @@ def compaction_verified(root: Path, log: dict, head: dict | None) -> dict | None
     It closed when the head is closed and the head binding's closure proof
     names that running generation (a normal seal or a receipt-proven R-a
     seal, design v4 F1). Returns {"generation", "binding_id", "run_id"} or None.
+    In release mode (SC-4a) the run also needs its ready.json and a
+    smoke-stop.json whose monotonic interval reaches the armed N.
     """
     recorded = compaction_events(log, "verified")
     if recorded:
@@ -1037,6 +1103,9 @@ def compaction_verified(root: Path, log: dict, head: dict | None) -> dict | None
     running = proof["running_head"]
     if (running["generation"] != started["data"]["generation"]
             or running["binding_id"] != started["data"]["binding_id"]):
+        return None
+    if release_mode_intent(log) and not release_run_verified(root, running["run_id"],
+                                                             _armed["data"].get("smoke_seconds")):
         return None
     return {"generation": running["generation"], "binding_id": head["binding_id"], "run_id": running["run_id"]}
 

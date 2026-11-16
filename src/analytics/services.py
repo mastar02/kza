@@ -10,7 +10,8 @@ from src.memory.privacy_services import PrivacyServices
 
 async def build_event_logger(config: dict, *, shutdown: AsyncExitStack,
                              source_policy: FactLedger | None = None, clock=None,
-                             io_worker=None, privacy: PrivacyServices | None = None, retention=None) -> EventLogger | None:
+                             io_worker=None, privacy: PrivacyServices | None = None, retention=None,
+                             verify_only: bool = False) -> EventLogger | None:
     """Register cleanup before creating private tables off-loop."""
     settings = config.get("analytics", {})
     if not settings.get("enabled", True):
@@ -24,12 +25,12 @@ async def build_event_logger(config: dict, *, shutdown: AsyncExitStack,
         retention_days=settings.get("retention_days", 90), source_policy=source_policy,
         clock=clock, io_worker=io_worker,
         retention_notify=retention.notify if retention is not None else None,
-        observation_timeout_s=settings.get("operation_timeout_s", .1))
+        observation_timeout_s=settings.get("operation_timeout_s", .1), verify_only=verify_only)
     shutdown.push_async_callback(events.aclose)
     if privacy is not None:
         privacy.add_borrower(events.begin_close)
     await output_registration.attach_output(events, "events")
     await events.acall(events.initialize)
-    if retention is None:
+    if retention is None and not verify_only:  # SC-4a skip list a-other-loops (event maintenance)
         events.start()
     return events
