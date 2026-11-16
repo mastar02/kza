@@ -14,13 +14,17 @@ flag KZA_RUNTIME_RELEASE_VERIFY=1, so NEW takes its verify_only branch with
 the skip list on: 'steady' is READY (no audio loop runs), the settle stands
 for the smoke interval N, and the run records whether VERIFY=<run_id> (the
 receipt's run) preceded READY=1. ``--revision`` builds the archive from
-another commit (SC-4a: the branch head). A residue injector may
+another commit (SC-4a: the branch head). ``--template-revision`` (SC-4a
+review RA-4) builds H's template from another commit's first boot (the
+first post-R1 update: R1's H, then NEW's V); default ``--revision``. The
+template's resolved commit is kept beside it (template-data.revision) and
+every result names both commits. A residue injector may
 return ``config`` (dotted settings overrides for NEW) and ``settle`` (a
 longer settle, for loops whose first write comes after 15 s).
 
 Usage:
     python tools/sc0/run_states.py --work DIR --out results.json [--states a,b] [--settle 15]
-        [--verify] [--revision COMMIT]
+        [--verify] [--revision COMMIT] [--template-revision COMMIT]
 """
 from __future__ import annotations
 
@@ -88,6 +92,12 @@ def _free_port() -> int:
         return probe.getsockname()[1]
 
 
+def resolve(revision: str) -> str:
+    """The full commit a revision names in this checkout."""
+    return subprocess.run(["git", "-C", str(REPO), "rev-parse", "--verify", revision + "^{commit}"],
+                          check=True, capture_output=True, text=True, timeout=30).stdout.strip()
+
+
 def build_archive(work: Path) -> Path:
     archive = work / f"runtime-{REVISION[0]}.tar.gz"
     if archive.exists():
@@ -98,7 +108,7 @@ def build_archive(work: Path) -> Path:
     subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(REPO), str(clone)],
                    check=True, timeout=120)
     manifest = build_runtime(clone, archive, revision=REVISION[0])
-    (work / "runtime-manifest.json").write_text(json.dumps(
+    (work / f"runtime-manifest-{REVISION[0]}.json").write_text(json.dumps(
         {"git_commit": manifest["git_commit"], "files": len(manifest["files"])}))
     return archive
 
@@ -329,30 +339,44 @@ def main() -> None:
     parser.add_argument("--ambient", choices=("idle", "real"), default="real")
     parser.add_argument("--verify", action="store_true")
     parser.add_argument("--revision", default=BASE_REVISION)
+    parser.add_argument("--template-revision", default=None)
     args = parser.parse_args()
     AMBIENT[0] = args.ambient
     VERIFY[0] = args.verify
     REVISION[0] = args.revision
     work = Path(args.work).resolve()
     work.mkdir(parents=True, exist_ok=True)
-    archive = build_archive(work)
+    revisions = {"revision": resolve(args.revision),
+                 "template_revision": resolve(args.template_revision or args.revision)}
     template = work / "template-data"
+    marker = work / "template-data.revision"
     bootstrap_populated_state_patch()
     results = []
     if not template.exists():
+        REVISION[0] = args.template_revision or args.revision
         VERIFY[0] = False  # the template is H's own first boot (normal mode)
-        first = measure(archive, work, "first_boot_empty", None, settle=args.settle, timeout=args.timeout)
+        first = measure(build_archive(work), work, "first_boot_empty", None, settle=args.settle,
+                        timeout=args.timeout)
         VERIFY[0] = args.verify
-        results.append(first)
+        results.append({**first, "revision": revisions["template_revision"], "verify": False})
         if not first["outcome"].get("receipt_sealed"):
             raise SystemExit("first boot did not seal; no template")
         shutil.copytree(work / "staging/slots/s/state/data", template, symlinks=True)
+        marker.write_text(revisions["template_revision"] + "\n")
+    recorded = marker.read_text().strip() if marker.exists() else None
+    if recorded != revisions["template_revision"]:
+        # Review RA-4: never measure V over a template of an unknown or another revision.
+        raise SystemExit(f"template-data was built by {recorded or 'an unrecorded revision'}, "
+                         f"not {revisions['template_revision']}")
+    REVISION[0] = args.revision
+    archive = build_archive(work)
     wanted = [name for name in args.states.split(",") if name] or list(residue.STATES)
     for name in wanted:
         print(f"[sc0] state {name}", flush=True)
         try:
-            results.append(measure(archive, work, name, template, settle=args.settle,
-                                   timeout=args.timeout, inject=residue.STATES[name]))
+            results.append({**measure(archive, work, name, template, settle=args.settle,
+                                      timeout=args.timeout, inject=residue.STATES[name]),
+                            **revisions, "verify": args.verify})
         except Exception:
             results.append({"state": name, "harness_error": traceback.format_exc()[-3000:]})
         out = Path(args.out)
