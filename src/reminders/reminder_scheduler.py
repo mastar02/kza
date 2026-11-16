@@ -133,6 +133,28 @@ def notice_outcome(result: Any) -> tuple[ReminderActionStatus, str | None]:
     return ReminderActionStatus.UNCERTAIN, NOTICE_UNVERIFIED
 
 
+def notice_contended(result: Any) -> bool:
+    """Whether a notice that started no output lost the output to other activity.
+
+    It waited past the queue budget behind another response, or was cancelled
+    before any audio. Only then can a free output help it; a notice the output
+    refused by itself (failed, blocked, empty) is retried by its backoff and the
+    fallback rounds, never by every finished response (review RV-Q31-1). Decided
+    from the typed result, never from the diagnostic reason text.
+
+    Args:
+        result: What the voice output returned.
+
+    Returns:
+        True for a queue timeout or a cancellation before any output.
+    """
+    if not isinstance(result, ResponseResult) or result.spoken_segments > 0 or result.output_started:
+        return False
+    if result.delivery is DeliveryState.CANCELLED:
+        return True
+    return result.delivery is DeliveryState.TIMED_OUT and result.timeout_stage is ResponseStage.QUEUE
+
+
 def _notice_body_of(row: ReminderLedgerRow) -> dict | None:
     try:
         body = json.loads(row.body)
@@ -156,6 +178,9 @@ class DeliveryHold:
             process (bounded by notice_fallback_max_rounds; an output-free round keeps the count).
         successor_round: Latest later occurrence of a recurring reminder for which a round was
             already opened while this occurrence was held (one round per newly due occurrence).
+        output_refused: The last failed attempt started no output although no other activity
+            held the output (failed, blocked, empty); an output-free signal does not reopen it,
+            so a fast-failing output cannot add one attempt per finished response (RV-Q31-1).
     """
 
     trigger_at: float
@@ -165,6 +190,7 @@ class DeliveryHold:
     reason: str = ""
     fallback_rounds: int = 0
     successor_round: float | None = None
+    output_refused: bool = False
 
 
 @dataclass(frozen=True)
@@ -227,7 +253,9 @@ class ReminderScheduler:
         wired to ResponseHandler), every ``notice_fallback_round_s`` after an
         exhausted round (at most ``notice_fallback_max_rounds``), and when a later
         occurrence of a held recurring reminder becomes due, which the catch-up
-        collapse then announces instead.
+        collapse then announces instead. The output-free round skips an
+        occurrence whose last attempt the output itself refused (no other
+        activity held it).
       * An occurrence later than ``late_action_grace_s`` never runs its home
         actions: each action gets a terminal ``failed``/``late_not_executed``
         receipt before anything is spoken. On time, actions run only after a
@@ -476,17 +504,24 @@ class ReminderScheduler:
 
         Attempt numbers continue in the ledger; the fallback round count is kept,
         so the bound on timed fallback rounds holds across output-free rounds.
-        The loop is woken only when some occurrence was held.
+        An occurrence the output itself refused is not reopened (RV-Q31-1). The
+        loop is woken only when some occurrence was reopened.
         """
         now, opened = self._clock(), False
         for identity, hold in self._holds.items():
-            if identity in self._in_flight:
-                continue
-            hold.failures, hold.completion_errors, hold.retry_at = 0, 0, now
-            opened = True
+            if identity not in self._in_flight:
+                opened = self._reopen_for_output(hold, now) or opened
         if opened:
             logger.info("Reminder output is free again; new notice round")
             self._wake_event.set()
+
+    @staticmethod
+    def _reopen_for_output(hold: DeliveryHold, now: float) -> bool:
+        """Open a fresh round now for one held occurrence, unless the output itself refused it."""
+        if hold.output_refused:
+            return False
+        hold.failures, hold.completion_errors, hold.retry_at = 0, 0, now
+        return True
 
     async def _shared_occurrence(self, reminder: Reminder, *, guard: AuthorityGuard | None = None) -> Reminder | None:
         """Resolve the same active, due shared occurrence without adopting its successor."""
@@ -547,10 +582,10 @@ class ReminderScheduler:
                     claims.append(claim)
             if not claims:
                 return confirmed
-            status, reason = await self._announce(self._summary(claims))
+            status, reason, contended = await self._announce(self._summary(claims))
             for claim in claims:
                 try:
-                    if await self._finish(claim, status, reason):
+                    if await self._finish(claim, status, reason, contended):
                         confirmed.add(claim.occurrence.id)
                 except asyncio.CancelledError:
                     raise
@@ -654,11 +689,14 @@ class ReminderScheduler:
                 return
         await self._advance(occurrence)
 
-    async def _announce(self, message: str) -> tuple[ReminderActionStatus, str | None]:
+    async def _announce(self, message: str) -> tuple[ReminderActionStatus, str | None, bool]:
         """Speak once through the output's aspeak and map its ResponseResult.
 
         The notice's own output never counts as the output becoming free
         (SIGNALS_OUTPUT_FREE), so its end cannot start another round.
+
+        Returns:
+            (status, diagnostic reason, whether it lost the output to other activity).
         """
         callback = getattr(self._tts, "aspeak", None)
         token = SIGNALS_OUTPUT_FREE.set(False)
@@ -673,19 +711,27 @@ class ReminderScheduler:
             raise
         except Exception as error:
             logger.warning("Reminder voice output raised %s; notice is uncertain", type(error).__name__)
-            return ReminderActionStatus.UNCERTAIN, NOTICE_UNVERIFIED
+            return ReminderActionStatus.UNCERTAIN, NOTICE_UNVERIFIED, False
         finally:
             SIGNALS_OUTPUT_FREE.reset(token)
-        return notice_outcome(result)
+        return (*notice_outcome(result), notice_contended(result))
 
-    async def _finish(self, claim: NoticeClaim, status: ReminderActionStatus, reason: str | None) -> bool:
-        """Record the attempt's evidence, then act and advance only as that evidence allows."""
+    async def _finish(self, claim: NoticeClaim, status: ReminderActionStatus, reason: str | None,
+                      contended: bool = False) -> bool:
+        """Record the attempt's evidence, then act and advance only as that evidence allows.
+
+        Args:
+            claim: The claimed attempt.
+            status: Terminal or failed status mapped from the voice result.
+            reason: Diagnostic reason (display only).
+            contended: The attempt lost the output to other activity (notice_contended).
+        """
         occurrence = claim.occurrence
         await self._store.finish_home_action(claim.request_id, status.value, reason)
         logger.info("Reminder %s notice attempt %d in zone %s: %s (%s, late=%s)", occurrence.id, claim.attempt,
                     self._output_zone, status.value, reason, claim.late)
         if status is ReminderActionStatus.FAILED:
-            self._hold_after_failure(occurrence, reason or status.value, claim.claimed_at)
+            self._hold_after_failure(occurrence, reason or status.value, claim.claimed_at, refused=not contended)
             return False
         self._holds.pop(occurrence.id, None)
         if status is ReminderActionStatus.CONFIRMED and not claim.late:
@@ -712,19 +758,27 @@ class ReminderScheduler:
             hold = self._holds[reminder.id] = DeliveryHold(reminder.trigger_at)
         return hold
 
-    def _hold_after_failure(self, reminder: Reminder, reason: str, failed_at: float) -> None:
+    def _hold_after_failure(self, reminder: Reminder, reason: str, failed_at: float, *,
+                            refused: bool = False) -> None:
         """Back off 30 s, 60 s, ...; after notice_max_attempts the round ends.
 
         An exhausted round schedules a fallback round notice_fallback_round_s
         later, at most notice_fallback_max_rounds times per occurrence (Q31);
         after that the occurrence waits for the output to become free, a later
         occurrence, a restart or a web dismiss.
+
+        Args:
+            reminder: The occurrence.
+            reason: Diagnostic reason (display only).
+            failed_at: Claim time of the failed attempt, or the failure time.
+            refused: The output itself refused the attempt (see DeliveryHold.output_refused).
         """
         hold = self._hold(reminder)
         if hold.failures >= self._max_attempts:
             hold.failures = 0  # the first failure of a new (fallback) round
         hold.failures += 1
         hold.reason = reason
+        hold.output_refused = refused
         if hold.failures >= self._max_attempts:
             if hold.fallback_rounds < self._fallback_max_rounds:
                 hold.fallback_rounds += 1
@@ -750,6 +804,7 @@ class ReminderScheduler:
         hold = self._hold(reminder)
         hold.completion_errors += 1
         hold.reason = reason
+        hold.output_refused = False
         if hold.completion_errors >= self._max_attempts:
             hold.retry_at = None
             logger.warning("Reminder %s completion failed (%s) %d times; retried on the next wake", reminder.id,
@@ -764,6 +819,7 @@ class ReminderScheduler:
         hold = self._hold(reminder)
         hold.retry_at = None
         hold.reason = reason
+        hold.output_refused = False
 
     async def _collapse_missed(self, reminder: Reminder) -> Reminder | None:
         """Move a recurring reminder to its latest due occurrence so a long outage yields one notice."""

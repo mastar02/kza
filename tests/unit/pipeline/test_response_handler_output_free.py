@@ -180,28 +180,60 @@ async def test_a_notice_that_found_the_output_busy_is_announced_when_the_respons
 
 
 async def test_the_end_of_a_notice_never_opens_another_round(handler, output, store):
-    """No ping-pong: one notice's end is not other activity, so held notices stay held until a real response."""
+    """No ping-pong: a notice's own end is not other activity. A notice held behind a busy output stays
+    held while another notice plays; the next real response opens its round."""
     scheduler = reminder_scheduler(handler, store)
-    output.living_plays = False
+    output.release.clear()
+    token = SIGNALS_OUTPUT_FREE.set(False)
+    try:  # a background producer: the task copies the context, so its end opens no round either
+        background = asyncio.create_task(handler.aspeak("otro aviso", zone_id="zone_cocina", timeout_s=10))
+    finally:
+        SIGNALS_OUTPUT_FREE.reset(token)
+    await until(output.busy.is_set)
     first = await store.create("u1", "regar", time.time() - 1, scope=ReminderScope.SHARED)
     loop = asyncio.create_task(scheduler.start())
     try:
-        await until(lambda: first.id in scheduler._holds)
+        await until(lambda: first.id in scheduler._holds)  # attempt 1 timed out behind the busy output
+        output.release.set()
+        assert (await background).success
         second = await store.create("u1", "ventilar", time.time() - 1, scope=ReminderScope.SHARED)
         scheduler.notify_new_reminder()
-        await until(lambda: second.id in scheduler._holds)
+        async with asyncio.timeout(3):
+            while (await store.get_by_id(second.id)).state is not ReminderState.FIRED:
+                await asyncio.sleep(.01)
         await asyncio.sleep(.3)
         assert [(item, attempt) for *_, item, attempt in await notices(store)] == [(first.id, 1), (second.id, 1)]
         assert (await handler.aspeak("hola", zone_id="zone_cocina")).success
         async with asyncio.timeout(3):
-            while len(await notices(store)) < 4:
+            while (await store.get_by_id(first.id)).state is not ReminderState.FIRED:
                 await asyncio.sleep(.01)
+    finally:
+        output.release.set()
+        await scheduler.stop()
+        await asyncio.gather(loop, background, return_exceptions=True)
+    assert await notices(store) == [("failed", "delivery_not_started:timed_out", first.id, 1),
+                                    ("confirmed", None, second.id, 1), ("confirmed", None, first.id, 2)]
+    assert output.zones == ["zone_cocina", "zone_living", "zone_cocina", "zone_living"]
+
+
+async def test_a_living_output_that_refuses_notices_gets_no_attempt_per_finished_response(handler, output, store):
+    """Review RV-Q31-1: a free output proves nothing for a notice the living output refused by itself, so
+    finished responses elsewhere add no ledger rows (its backoff and fallback rounds still apply)."""
+    scheduler = reminder_scheduler(handler, store)
+    output.living_plays = False
+    r = await store.create("u1", "regar", time.time() - 1, scope=ReminderScope.SHARED)
+    loop = asyncio.create_task(scheduler.start())
+    try:
+        await until(lambda: r.id in scheduler._holds)
+        assert scheduler._holds[r.id].output_refused
+        for _ in range(20):
+            assert (await handler.aspeak("hola", zone_id="zone_cocina")).success
         await asyncio.sleep(.3)
     finally:
         await scheduler.stop()
         await asyncio.gather(loop, return_exceptions=True)
     rows = await notices(store)
-    assert all(status == "failed" for status, *_ in rows)
-    assert sorted((item, attempt) for *_, item, attempt in rows) == sorted(
-        [(first.id, 1), (first.id, 2), (second.id, 1), (second.id, 2)])
-    assert output.zones.count("zone_living") == 3  # first, second, then one summary for both
+    assert [(status, item, attempt) for status, _, item, attempt in rows] == [("failed", r.id, 1)]
+    assert rows[0][1] not in ("delivery_not_started:timed_out", "delivery_not_started:cancelled")
+    assert output.zones.count("zone_living") == 1 and output.zones.count("zone_cocina") == 20
+    assert (await store.get_by_id(r.id)).state is ReminderState.ACTIVE

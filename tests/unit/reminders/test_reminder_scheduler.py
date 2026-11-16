@@ -48,6 +48,11 @@ def failed(spoken_segments: int = 0, delivery: DeliveryState = DeliveryState.FAI
                           timeout_stage=stage, output_started=started)
 
 
+def output_busy() -> ResponseResult:
+    """Not started because the output stayed owned by other activity past the queue budget."""
+    return failed(delivery=DeliveryState.TIMED_OUT, stage=ResponseStage.QUEUE)
+
+
 def request_id_for(reminder, index: int = 0) -> str:
     identity = json.dumps([reminder.id, reminder.trigger_at, index], separators=(",", ":"), allow_nan=False)
     return "reminder:" + hashlib.sha256(identity.encode()).hexdigest()
@@ -1317,7 +1322,7 @@ async def test_exhausted_round_is_not_terminal_and_a_new_round_continues_the_att
     scheduler, store, mock_deps, clock,
 ):
     """attempts_and_backoff: 3 attempts, gaps 1 s then 2 s, no spin; a free output starts a new round (Q31)."""
-    mock_deps["tts"].aspeak.return_value = failed()
+    mock_deps["tts"].aspeak.return_value = output_busy()
     r = await store.create("u1", "regar", clock() - 1, ha_actions=[ACTION], scope=ReminderScope.SHARED)
     await scheduler._deliver_due(clock())
     assert await scheduler._next_timeout() == 1
@@ -1372,7 +1377,7 @@ async def test_an_exhausted_round_gets_at_most_four_fallback_rounds_fifteen_minu
     scheduler, store, mock_deps, clock,
 ):
     """Q31: without an output-free signal, a fallback round 900 s after each exhausted round, at most 4."""
-    mock_deps["tts"].aspeak.return_value = failed()
+    mock_deps["tts"].aspeak.return_value = output_busy()
     r = await store.create("u1", "regar", clock() - 1, ha_actions=[ACTION], scope=ReminderScope.SHARED)
     for round_number in range(1 + DEFAULT_NOTICE_FALLBACK_MAX_ROUNDS):
         await fail_one_round(scheduler, clock)
@@ -1392,7 +1397,7 @@ async def test_an_exhausted_round_gets_at_most_four_fallback_rounds_fifteen_minu
     clock.advance(10 * HOUR)
     await scheduler._deliver_due(clock())
     assert mock_deps["tts"].aspeak.await_count == 15
-    assert await notices(store) == [("failed", "delivery_not_started:failed", k) for k in range(1, 16)]
+    assert await notices(store) == [("failed", "delivery_not_started:timed_out", k) for k in range(1, 16)]
     # Every fallback round is late: its actions were barred before it spoke, never executed.
     texts = [call.args[0] for call in mock_deps["tts"].aspeak.await_args_list]
     assert texts[:3] == ["Oye, recuerda regar"] * 3 and texts[3:] == [LATE_NOT_RUN] * 12
@@ -1413,7 +1418,7 @@ async def test_an_output_free_round_neither_resets_the_fallback_bound_nor_wakes_
     scheduler = build(notice_fallback_max_rounds=1)
     scheduler.notify_output_available()
     assert not scheduler._wake_event.is_set()  # nothing held: every finished response stays cheap
-    mock_deps["tts"].aspeak.return_value = failed()
+    mock_deps["tts"].aspeak.return_value = output_busy()
     r = await store.create("u1", "regar", clock() - 1, scope=ReminderScope.SHARED)
     await fail_one_round(scheduler, clock)
     assert (scheduler._holds[r.id].fallback_rounds, scheduler._holds[r.id].retry_at) == (1, clock() + 900)
@@ -1562,3 +1567,38 @@ async def test_a_crash_while_announcing_then_a_multi_day_outage_groups_the_misse
     finally:
         await restarted.close()
     tts.aspeak.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# T034-U2 review round 2: RV-Q31-1 (no attempt per response for a refusing output),
+# RV-Q31-2 (a signal during a flight is applied at its end), RV-TEST-1 (uncovered paths)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("result, reopened", [
+    (output_busy(), True),
+    (failed(delivery=DeliveryState.CANCELLED), True),
+    (failed(), False),
+    (failed(delivery=DeliveryState.BLOCKED), False),
+    (failed(delivery=DeliveryState.EMPTY), False),
+])
+@pytest.mark.asyncio
+async def test_an_output_free_round_reopens_only_a_notice_that_lost_the_output_to_other_activity(
+    scheduler, store, mock_deps, clock, result, reopened,
+):
+    """RV-Q31-1: a notice the output refused by itself gets no attempt per finished response elsewhere;
+    its own backoff (and fallback rounds) still retry it."""
+    mock_deps["tts"].aspeak.return_value = result
+    r = await store.create("u1", "regar", clock() - 1, scope=ReminderScope.SHARED)
+    await scheduler._deliver_due(clock())
+    hold = scheduler._holds[r.id]
+    assert (hold.failures, hold.retry_at, hold.output_refused) == (1, clock() + 1, not reopened)
+    for _ in range(5):
+        scheduler._wake_event.clear()
+        scheduler.notify_output_available()
+        assert scheduler._wake_event.is_set() is reopened
+        await scheduler._deliver_due(clock())
+    assert mock_deps["tts"].aspeak.await_count == (6 if reopened else 1)
+    clock.advance(1)
+    await scheduler._deliver_due(clock())  # the occurrence's own backoff retries it either way
+    assert mock_deps["tts"].aspeak.await_count == (7 if reopened else 2)
+    assert (await store.get_by_id(r.id)).state is ReminderState.ACTIVE
