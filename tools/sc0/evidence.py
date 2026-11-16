@@ -24,6 +24,14 @@ from tools.sc0.write_inventory import source_tables  # noqa: E402
 ROOT_SLOT = "data/graph/"
 
 
+def _db(name: str) -> str:
+    """Slot-relative database name; URI-opened connections were traced as '///<abs path>'."""
+    marker = "/slots/s/state/"
+    if marker in name:
+        name = name.split(marker, 1)[1]
+    return name.replace(ROOT_SLOT, "")
+
+
 def _site(write: dict) -> str:
     if write["stack"]:
         return write["stack"][0]
@@ -42,7 +50,7 @@ def _state_summary(result: dict) -> dict:
         # Candidates: every traced statement on a source table of this entry in the same
         # database (a statement that ran is not proof that it changed the entry).
         by = sorted({f"{_site(w)} [{w['phase']}]" for w in writes
-                     if w["table"] in sources and w["db"].replace(ROOT_SLOT, "") == db})
+                     if w["table"] in sources and _db(w["db"]) == db})
         if "removed" in item:
             changes.append({"db": db, "table": name, "rows_removed": item["removed"],
                             "rows_added": item["added"], "candidate_writers": by})

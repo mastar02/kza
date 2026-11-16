@@ -118,6 +118,8 @@ def _database_name(args, kwargs) -> str:
     text = os.fsdecode(target) if isinstance(target, (str, bytes, os.PathLike)) else str(target)
     if text.startswith("file:"):
         text = text[5:].split("?", 1)[0]
+        if text.startswith("///"):
+            text = text[2:]
     root = str(Path(ARGS.graph_root).resolve().parents[1])  # the slot's state/
     return text[len(root) + 1:] if text.startswith(root + os.sep) else text
 
