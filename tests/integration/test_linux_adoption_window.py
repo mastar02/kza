@@ -883,13 +883,12 @@ def test_the_window_in_runbook_order_under_real_systemd(tmp_path, tree, built, s
     assert limits == {"StartLimitBurst": "5", "StartLimitIntervalUSec": "5min"}, limits
     before, runs = w.voice_state()["InvocationID"], w.managed_console().count("reboot budget")
     sixth = w.ctl("start", "kza-voice.service")  # refused by systemd before anything runs (review F11)
-    journal = subprocess.run(["journalctl", "--user", "-u", w.voice, "-n", "5", "-o", "cat", "--no-pager"],
-                             capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL).stdout
+    journal, reads = _journal_until(w.voice, "Start request repeated too quickly", 60)
     assert sixth.returncode != 0 and "Start request repeated too quickly" in journal, (sixth.stderr, journal)
     assert w.voice_state()["InvocationID"] == before and w.managed_console().count("reboot budget") == runs
     assert w.ctl("reset-failed", "kza-voice.service").returncode == 0
     evidence["start_limit"] = dict(limits, sixth_start_exit=sixth.returncode,
-                                   journal="Start request repeated too quickly.")
+                                   journal="Start request repeated too quickly.", journal_reads=reads)
     shown, seconds = w.start_managed()  # the adopted bytes back: automatic R-b closes it once
     assert shown["ActiveState"] == "active", (shown, w.managed_console()[-3000:])
     assert launcher._recoveries(w.root)[-1]["mode"] == "automatic"
@@ -919,6 +918,25 @@ def test_the_window_in_runbook_order_under_real_systemd(tmp_path, tree, built, s
                                           "head_slot_after": "p"}
     evidence["timings"] = w.timings
     real_systemd.record("window", evidence)
+
+
+def _journal_until(unit: str, line: str, budget: float) -> tuple[str, int]:
+    """The unit's last five journal lines once they hold ``line``, or the last read when ``budget`` runs out:
+    (text, reads).
+
+    systemctl can return before journald has written the line (BB-2: one entry was processed 23 ms after
+    its source timestamp under load), so one read right after it races journald. The reads share the
+    ``budget`` the single read had as its timeout; none gets longer than what is left of it.
+    """
+    deadline, reads = time.monotonic() + budget, 0
+    while True:
+        journal = subprocess.run(["journalctl", "--user", "-u", unit, "-n", "5", "-o", "cat", "--no-pager"],
+                                 capture_output=True, text=True, timeout=max(deadline - time.monotonic(), 0.1),
+                                 stdin=subprocess.DEVNULL).stdout
+        reads += 1
+        if line in journal or time.monotonic() >= deadline:
+            return journal, reads
+        time.sleep(0.1)
 
 
 def _no_marker_byte(state: Path) -> None:
