@@ -200,6 +200,15 @@ MUTANTS = [
 ]
 
 
+def _wait_for_a_slot() -> None:
+    """Shared server: start a pytest only while fewer than four of this user's run."""
+    while True:
+        count = subprocess.run(["pgrep", "-u", "yo", "-fc", "python.*-m pytest"], capture_output=True, text=True)
+        if int(count.stdout.strip() or 0) < 4:
+            return
+        time.sleep(20)
+
+
 def main() -> None:
     out = Path(sys.argv[1])
     wanted = set(sys.argv[2:])
@@ -211,10 +220,11 @@ def main() -> None:
         path = ROOT / rel
         original = path.read_text(encoding="utf-8")
         assert original.count(old) == 1, (name, original.count(old))
+        _wait_for_a_slot()
         started = time.monotonic()
         try:
             path.write_text(original.replace(old, new), encoding="utf-8")
-            run = subprocess.run([PY, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", "--timeout=600", *tests],
+            run = subprocess.run(["nice", "-n", "10", PY, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", "--timeout=600", *tests],
                                  cwd=ROOT, capture_output=True, text=True, timeout=2400)
         finally:
             path.write_text(original, encoding="utf-8")
