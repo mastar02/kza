@@ -117,11 +117,14 @@ def _serve(root, tmp_path, name):
 
 # --- epochs and the controller triple (epochs.controller_epoch_5, controller_revision) -------------
 
-def test_controller_epoch_5_and_revision_are_declared(builds):
+def test_controller_epoch_5_is_declared():
     assert stage.CONTROLLER_EPOCH == 5 and stage.CONTROLLER_REVISION == 1
     assert stage.RELEASE_MODE_EPOCH == 5
     assert (stage.SCHEMA_CONTRACT_EPOCH, stage.FORMAT_EPOCH, stage.LAUNCHER_CONTRACT,
             stage.RECEIPT_STATE_SCHEMA) == (1, 1, 3, 2)  # epochs.unchanged
+
+
+def test_controller_epoch_5_and_revision_are_declared(builds):
     manifest = builds["manifests"]["x5"]
     assert manifest["controller_epoch"] == 5 and manifest["controller_revision"] == 1
     assert stage.controller_triple(manifest) == (5, 1, manifest["controller_sources_sha256"])

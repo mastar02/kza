@@ -1401,6 +1401,12 @@ los hace la sesión coordinadora. Sin release: producción y R1 siguen en
   `x4_archive`); el ensayo in-process de R1 (SC-6a) también, porque R1 es
   época 4. Los rechazos de época 5 están en
   `tests/unit/tools/test_sc1a_controller_install.py`.
+- Pruebas dirigidas: Mac, módulos unitarios de admisión, compactación,
+  lanzador, contrato de esquema y docs de SC-5a/SC-6a, más los ensayos de
+  integración con dueños (compilados, rollbacks, reconciliación, checkpoints
+  a solas), sin fallas tras las correcciones; server (`yo`, rama temporal
+  desde bundle, checkout restaurado en b15ce86) los cuatro módulos Linux de
+  systemd, SC-1a y el ensayo de SC-6a, sin fallas. Mutantes 31/31.
 - Queda para SC-1b: escribir `intent.mode = "release"` (la instalación ya lo
   lee), P6'(c) con el triple (plan sin T0 rechazado), `t0_required` y
   `controller_behind`, y el resto de plan/start del modo release. El test
