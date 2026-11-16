@@ -1049,7 +1049,12 @@ siguiente sigue abierto hasta SC-4c, SC-R, SC-6b y SC-5b.
   INTERRUPT, por código y no por clase). Cualquier otra falla al leer H
   (ENOENT, otro código SQLite, binding distinto, marcador, prueba de cierre)
   es `runtime_admission_compaction_h_changed` con el código de abajo: la
-  parada terminal HD.
+  parada terminal HD. Revisión 1 (RB-1): una entrada de lock de K' que no se
+  puede abrir (un enlace simbólico, sin permiso) no es un error sin código:
+  W0 la informa como `k_writers: unverifiable` con su errno y W1 da
+  `restrictive_or_unclear` (SS y su salida); un errno de recursos ahí
+  (EMFILE, ENFILE, EAGAIN, EINTR, ENOMEM, EBUSY) es el transitorio
+  `runtime_admission_compaction_k_transient`.
 - **W1 (K' contra K).** Abre cada base que nombra la proyección autorizada de
   K con `mode=rw` (recupera en el lugar un journal caliente o un WAL, nunca
   crea el archivo) y compara las mismas proyecciones que
@@ -1061,7 +1066,19 @@ siguiente sigue abierto hasta SC-4c, SC-R, SC-6b y SC-5b.
   tabla, filas agregadas y quitadas; por ledger, `equal`, `strict_prefix` u
   `other`; por base, `ok`, `missing` o `unreadable` (con el código); cuentas y
   configuración; y el encabezado `verify_branch_reached`. No lee el reloj: el
-  mismo K' y el mismo H dan el mismo digest.
+  mismo K' y el mismo H dan el mismo digest. Revisión 1: W1 nunca lanza un
+  error sin código (RA4B-1: un valor de otro tipo, por ejemplo un
+  `sources_json` nulo o un `expires_at` de texto, cuenta como fila sin
+  clasificar; cualquier otra falla al leer una base de K' es `unreadable`
+  con un código sin contenido); abre una base, un registro de cuentas o un
+  archivo de configuración de K' sólo si es un archivo regular en su propia
+  ruta resuelta, antes de la apertura `mode=rw` (RA4B-4: un directorio de K'
+  enlazado a H nunca se escribe); y un lock SQLite de otro proceso sobre una
+  base de K' (SQLITE_BUSY, LOCKED, NOMEM, INTERRUPT) o un errno de recursos
+  rechaza el transitorio `runtime_admission_compaction_k_transient`, que no
+  escribe nada (RA4B-5/RB-7). EIO, SQLITE_IOERR y el daño siguen como
+  `unreadable`: una falla que persiste no puede cerrar la única salida de SS
+  (SC4B-N19).
 - **Clases.** `equal`; `loss_only` (filas quitadas de `W_LOSS` =
   conversation_tombstones, conversation_erasures, retired_users,
   fact_owner_revisions, voice_attribution_suspensions,
@@ -1089,7 +1106,14 @@ siguiente sigue abierto hasta SC-4c, SC-R, SC-6b y SC-5b.
   digest para el descarte, guardado en `abort_rechecked`). El abort simple
   después de V sigue rechazando `abort_after_run`; `--discard-k-writes` es
   sólo del modo simple, y `--discard-k-changes` sólo del modo release
-  (`runtime_admission_compaction_release_mode_only`).
+  (`runtime_admission_compaction_release_mode_only`). Un head cerrado cuya
+  prueba de cierre se lee pero nombra otra corrida rechaza
+  `runtime_admission_compaction_head_moved`; una prueba de cierre de K' que
+  no se puede leer rechaza `runtime_admission_compaction_k_closure_unreadable`
+  (revisión RB-3), también en el retiro. Las dos son paradas como HD: sólo
+  aparecen con daño o una edición bajo `admission/`, o con una corrida de K
+  detrás de la compuerta (un controlador viejo), y no tienen salida por
+  herramienta.
 - **Retiro.** `compact retire <id>` de un log del modo release exige, antes
   de escribir nada más que el `verified` de siempre: binding de K' igual (si
   difiere sólo en `sdk_versions`, `sdk_changed` transitorio; si difiere en
@@ -1112,14 +1136,23 @@ siguiente sigue abierto hasta SC-4c, SC-R, SC-6b y SC-5b.
   armed`, `not consumed` o `consumed`), `verified` y `verify_branch_reached`,
   sin escribir.
 
-Quedan en `follow_up` (después de la aceptación, no necesarios para la
-primera transición después de R1): `closed_witness` con registros de
+Pendiente, no resuelto: el diseño marca toda la unidad SC-4b como previa a
+la primera transición gestionada (`before_first_managed_transition`). Las
+partes que esta implementación dejó en `follow_up` siguen siendo previas a
+esa transición **salvo que el usuario responda otra cosa** a las preguntas
+abiertas SC4B-Q1 y SC4B-Q2 (en `t040-t041/sc4b-evidence.json` y en el
+handoff, con su recomendación): `closed_witness` con registros de
 recuperación y `--accept-regressed-source` (fila PA: hasta entonces un head
 cerrado por recuperación no es fuente de una transición, y la salida de PA es
-L4 mientras exista), la línea base salada de resurrección de K y el reencolado
-del residuo no protegido (hasta entonces el escaneo del retiro es absoluto: un
-H con residuo hace rechazar el retiro, y el abort vuelve a H sin pérdida), y la
-sombra de `adopt --dry-run` bajo `admission/dry-run/`.
+L4 mientras exista; SC4B-Q1), la línea base salada de resurrección de K y el
+reencolado del residuo no protegido (hasta entonces el escaneo del retiro es
+absoluto: un H con residuo hace rechazar el retiro, y el abort vuelve a H sin
+pérdida; SC4B-Q2). La sombra de `adopt --dry-run` bajo `admission/dry-run/`
+es posterior a la aceptación (hoy `adopt` rechaza antes de copiar). El tiempo
+del retiro y del abort con W (T_retire, T_abort: binding de K', W0 y W1 con
+imágenes en memoria, escaneo de resurrección, destrucción) no está en la
+fórmula D de SC-D2 ni se midió: queda en la lista de medición de SC-6b
+(revisión RB-5).
 
 Tests: `tests/unit/tools/test_sc4b_w.py`,
 `tests/unit/tools/test_sc4b_release_exits.py`.
@@ -1129,7 +1162,9 @@ Tests: `tests/unit/tools/test_sc4b_w.py`,
 Después de R1 no se puede activar ningún arreglo de código (release, rollback
 o roll-forward gestionados) hasta que el modo release (SC-0, SC-1, SC-3a,
 SC-3c, SC-4a/b/c, SC-R, SC-6b y SC-5b) esté desarrollado, revisado de forma
-independiente y ensayado. Una release gestionada copiará entero el head,
+independiente y ensayado. SC-4b no está completa para esa compuerta mientras
+el usuario no responda SC4B-Q1 y SC4B-Q2 (ver «Salidas de V del modo
+release»): bloquean la primera transición. Una release gestionada copiará entero el head,
 verificará la copia con una corrida corta y retirará el estado anterior; nada
 de eso está disponible hoy. Mientras tanto, el único rollback es L4 a 63ea8d3
 durante sus 14 días (con la frase 'revivir datos borrados'); a partir del día
