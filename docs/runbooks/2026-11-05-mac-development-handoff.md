@@ -1444,6 +1444,13 @@ lecturas más estrictas quedan como notas de diseño en `sc1a-evidence.json`
   siguiente, la parada terminal anterior y R1 real (357dcb5): su propio
   código calcula el mismo binding, el T0 pasa SR-1 y su slot sirve en
   época 5.
+- Pruebas dirigidas tras la revisión: Mac, módulos unitarios (SC-1a, lanzador,
+  admisión, compactación y sus revisiones, contrato de esquema, docs de
+  SC-5a/SC-6a) e integración (adopción, retiro de estado, ensayo de SC-6a,
+  lanzador compilado, compactación de dueños, cadenas, compatibilidad de
+  registro de salida, rollbacks), sin fallas; server (`yo`, rama temporal
+  desde bundle, checkout restaurado en b15ce86) SC-1a, los cuatro módulos
+  Linux y SC-6a, sin fallas. Mutantes de la revisión 16/16 (total 47/47).
 
 ## Prompt para la sesión nueva
 
