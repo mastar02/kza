@@ -10,14 +10,13 @@ reserved rows and waits for this process's acknowledgements.
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 import json
 import sqlite3
 import time
 from uuid import uuid4
 
 import pytest
-
-from contextlib import AsyncExitStack
 
 from src.analytics.event_logger import EventLogger
 from src.analytics.services import build_event_logger
