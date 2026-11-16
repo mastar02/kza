@@ -237,6 +237,16 @@ def test_a_hub_port_never_claims_the_card_of_a_downstream_device(tmp_path):
     assert child['capture_state'] == 'running'
 
 
+def test_only_numbered_card_entries_are_cards(tmp_path):
+    """Same check as usb_port_to_alsa_card: ``cardN`` with N all digits."""
+    host = FakeHost(tmp_path)
+    host.device('7-5.3')
+    host.card(2, '7-5.3', RUNNING.format(ptr=1000))
+    (host.real['7-5.3'] / '7-5.3:1.0/sound/card2x').mkdir()
+    info = tool.inspect_room('7-5.3', host.sys, host.proc)
+    assert [card['card'] for card in info['alsa_cards']] == ['2']
+
+
 @pytest.mark.parametrize('port', ['../../../etc', '7-5.3/..', '', '7-5.3 ', 'usb7'])
 def test_invalid_configured_port_never_reaches_the_filesystem(tmp_path, port):
     host = FakeHost(tmp_path)
