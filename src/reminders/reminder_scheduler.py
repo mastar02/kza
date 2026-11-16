@@ -255,7 +255,8 @@ class ReminderScheduler:
         occurrence of a held recurring reminder becomes due, which the catch-up
         collapse then announces instead. The output-free round skips an
         occurrence whose last attempt the output itself refused (no other
-        activity held it).
+        activity held it), and a signal that finds an occurrence in flight is
+        applied when that flight ends.
       * An occurrence later than ``late_action_grace_s`` never runs its home
         actions: each action gets a terminal ``failed``/``late_not_executed``
         receipt before anything is spoken. On time, actions run only after a
@@ -289,6 +290,8 @@ class ReminderScheduler:
         self._wake_event = wake_event if wake_event is not None else asyncio.Event()
         self._holds: dict[str, DeliveryHold] = {}
         self._in_flight: set[str] = set()
+        # Output-free signals that found the occurrence in flight; applied when its flight ends (RV-Q31-2).
+        self._signal_pending: set[str] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._runner_task: asyncio.Task | None = None
 
@@ -504,9 +507,12 @@ class ReminderScheduler:
 
         Attempt numbers continue in the ledger; the fallback round count is kept,
         so the bound on timed fallback rounds holds across output-free rounds.
-        An occurrence the output itself refused is not reopened (RV-Q31-1). The
-        loop is woken only when some occurrence was reopened.
+        An occurrence the output itself refused is not reopened (RV-Q31-1). An
+        occurrence in flight is left untouched; the signal is kept and applied
+        when its flight ends (RV-Q31-2). The loop is woken only when some
+        occurrence was reopened.
         """
+        self._signal_pending.update(self._in_flight)
         now, opened = self._clock(), False
         for identity, hold in self._holds.items():
             if identity not in self._in_flight:
@@ -522,6 +528,20 @@ class ReminderScheduler:
             return False
         hold.failures, hold.completion_errors, hold.retry_at = 0, 0, now
         return True
+
+    def _end_flight(self, identities: list[str]) -> None:
+        """Release single flight; an output-free signal received meanwhile opens its round now."""
+        now, opened = self._clock(), False
+        for identity in identities:
+            self._in_flight.discard(identity)
+            if identity in self._signal_pending:
+                self._signal_pending.discard(identity)
+                hold = self._holds.get(identity)
+                if hold is not None:
+                    opened = self._reopen_for_output(hold, now) or opened
+        if opened:
+            logger.info("Reminder output became free during a delivery; new notice round")
+            self._wake_event.set()
 
     async def _shared_occurrence(self, reminder: Reminder, *, guard: AuthorityGuard | None = None) -> Reminder | None:
         """Resolve the same active, due shared occurrence without adopting its successor."""
@@ -597,8 +617,7 @@ class ReminderScheduler:
                     logger.exception("Reminder %s completion failed", claim.occurrence.id)
             return confirmed
         finally:
-            for reminder in owned:
-                self._in_flight.discard(reminder.id)
+            self._end_flight([reminder.id for reminder in owned])
             if owned and asyncio.current_task() is not self._runner_task:
                 self._wake_event.set()
 
@@ -765,7 +784,10 @@ class ReminderScheduler:
         An exhausted round schedules a fallback round notice_fallback_round_s
         later, at most notice_fallback_max_rounds times per occurrence (Q31);
         after that the occurrence waits for the output to become free, a later
-        occurrence, a restart or a web dismiss.
+        occurrence, a restart or a web dismiss. When the output became free
+        while this attempt was in flight and the attempt lost the output to
+        other activity, a new round opens now instead (RV-Q31-2), without
+        using a fallback round.
 
         Args:
             reminder: The occurrence.
@@ -779,6 +801,13 @@ class ReminderScheduler:
         hold.failures += 1
         hold.reason = reason
         hold.output_refused = refused
+        if reminder.id in self._signal_pending and not refused:
+            self._signal_pending.discard(reminder.id)
+            self._reopen_for_output(hold, self._clock())
+            logger.info("Reminder %s not delivered (%s) while the output became free; new round now",
+                        reminder.id, reason)
+            self._wake_event.set()
+            return
         if hold.failures >= self._max_attempts:
             if hold.fallback_rounds < self._fallback_max_rounds:
                 hold.fallback_rounds += 1
@@ -988,7 +1017,7 @@ class ReminderScheduler:
                                                          guard=guard)
             return NoticeDismissal.PURGED if purged else NoticeDismissal.NOT_FOUND
         finally:
-            self._in_flight.discard(reminder_id)
+            self._end_flight([reminder_id])
             self._wake_event.set()
 
     async def notice_entries(self, *, guard: AuthorityGuard | None = None) -> list[NoticeEntry]:

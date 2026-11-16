@@ -1602,3 +1602,94 @@ async def test_an_output_free_round_reopens_only_a_notice_that_lost_the_output_t
     await scheduler._deliver_due(clock())  # the occurrence's own backoff retries it either way
     assert mock_deps["tts"].aspeak.await_count == (7 if reopened else 2)
     assert (await store.get_by_id(r.id)).state is ReminderState.ACTIVE
+
+
+@pytest.mark.parametrize("ending", ["busy", "refused", "confirmed"])
+@pytest.mark.asyncio
+async def test_an_output_free_signal_during_a_flight_is_applied_when_the_flight_ends(store, clock, ending):
+    """RV-Q31-2 and RV-TEST-1: a signal never touches an occurrence in flight. A last attempt that gave
+    up in the queue just before the other response ended gets its new round at once instead of a
+    fallback round 15 min later; a refused or confirmed attempt drops the signal."""
+    entered, release = asyncio.Event(), asyncio.Event()
+    first_attempts = [output_busy(), output_busy()]
+
+    class Output:
+        async def aspeak(self, text, **kwargs):
+            if first_attempts:
+                return first_attempts.pop(0)
+            entered.set()
+            await release.wait()
+            return {"busy": output_busy(), "refused": failed(), "confirmed": delivered(text)}[ending]
+
+    scheduler = scheduler_on(store, Output(), AsyncMock(), clock)
+    r = await store.create("u1", "regar", clock() - 1, scope=ReminderScope.SHARED)
+    await scheduler._deliver_due(clock())
+    clock.advance(1)
+    await scheduler._deliver_due(clock())
+    clock.advance(2)
+    hold = scheduler._holds[r.id]
+    before = (hold.failures, hold.completion_errors, hold.retry_at, hold.fallback_rounds)
+    assert before == (2, 0, clock(), 0)
+    hold.completion_errors = 1  # a signal round would reset it; in flight it must stay
+    task = asyncio.create_task(scheduler._deliver_due(clock()))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        scheduler.notify_output_available()
+        assert (hold.failures, hold.completion_errors, hold.retry_at, hold.fallback_rounds) == (2, 1, clock(), 0)
+    finally:
+        release.set()
+    await asyncio.wait_for(task, 2)
+    assert not scheduler._signal_pending and not scheduler._in_flight
+    if ending == "confirmed":
+        assert r.id not in scheduler._holds and (await store.get_by_id(r.id)).state is ReminderState.FIRED
+    elif ending == "busy":
+        assert scheduler._holds[r.id] is hold
+        assert (hold.failures, hold.completion_errors, hold.retry_at, hold.fallback_rounds) == (0, 0, clock(), 0)
+        assert await scheduler._next_timeout() == 0
+    else:
+        assert (hold.failures, hold.retry_at, hold.fallback_rounds) == (3, clock() + 900, 1)
+    assert [attempt for *_, attempt in await notices(store)] == [1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_an_output_free_signal_during_another_notice_reaches_a_held_occurrence(store, clock):
+    """A held occurrence that is only a member of another notice's batch gets the signal when the batch
+    ends (it is not lost because the batch had it in flight)."""
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class Output:
+        def __init__(self):
+            self.texts = []
+
+        async def aspeak(self, text, **kwargs):
+            self.texts.append(text)
+            if len(self.texts) == 1:
+                return output_busy()
+            entered.set()
+            await release.wait()
+            return delivered(text)
+
+    output = Output()
+    scheduler = scheduler_on(store, output, AsyncMock(), clock, notice_max_attempts=1,
+                             notice_fallback_max_rounds=0)
+    first = await store.create("u1", "regar", clock() - 2, scope=ReminderScope.SHARED)
+    await scheduler._deliver_due(clock())
+    hold = scheduler._holds[first.id]
+    assert hold.retry_at is None
+    second = await store.create("u1", "ventilar", clock() - 1, scope=ReminderScope.SHARED)
+    task = asyncio.create_task(scheduler._deliver_due(clock()))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert first.id in scheduler._in_flight
+        scheduler.notify_output_available()
+        assert hold.retry_at is None
+    finally:
+        release.set()
+    await asyncio.wait_for(task, 2)
+    assert (hold.failures, hold.retry_at) == (0, clock())
+    await scheduler._deliver_due(clock())
+    assert output.texts == ["Oye, recuerda regar", "Oye, recuerda ventilar", "Oye, recuerda regar"]
+    assert (await store.get_by_id(second.id)).state is ReminderState.FIRED
+    assert (await store.get_by_id(first.id)).state is ReminderState.FIRED
+
+
