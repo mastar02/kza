@@ -118,11 +118,19 @@ T0_REQUIRED = "runtime_admission_compaction_t0_required"
 CONTROLLER_BEHIND = "runtime_admission_compaction_controller_behind"
 # The plain-mode paths (Q6, allow-run, --discard-k-writes) finish only a log without 'mode'.
 PLAIN_MODE_ONLY = "runtime_admission_compaction_plain_mode_only"
-# Until SC-4a ships the isolated verification run, a release-mode log cannot be armed (design note
-# SC1B-N3): its only way forward is the lossless plain abort of row A0.
 # SC-4a (stricter reading, SC4A-N1): retire keeps K' only under SC-4b's strict W equality; until
 # SC-4b ships, a verified release-mode log is not retired by the plain retire.
 RELEASE_RETIRE_UNAVAILABLE = "runtime_admission_compaction_release_retire_unavailable"
+# SC-4a review RA-1/RB-1 (design note SC4A-N13): SC-4a ships the isolated verification run V, but
+# every exit after V (W, abort with W, retire with strict W equality) is SC-4b's. Until SC-4b sets
+# this to True, a release-mode log is never armed (release gate): its only way forward stays the
+# lossless plain abort of row A0, and start/resume name that abort.
+RELEASE_EXITS_AVAILABLE = False
+RELEASE_EXIT_UNAVAILABLE = "runtime_admission_compaction_release_exit_unavailable"
+# SC-4a review RB-2 (SC4A-N14): a release-mode V needs an explicit N within the design's cap
+# (downtime_and_disk.formula_check: N = min(60, 600 - T_copy - boots x B - stops), never below 10).
+RELEASE_SMOKE_SECONDS_MAX = 60
+RELEASE_SMOKE_SECONDS = "runtime_admission_compaction_release_smoke_seconds"
 
 
 # --- small helpers -----------------------------------------------------------------------------------
@@ -1631,8 +1639,12 @@ def _next_after_activation(log: dict) -> str:
     """The operator's next command once K is active (review B4): arm the one verification run.
 
     SC-4a: a release-mode log is armed like a plain one; serve then runs it
-    as the isolated verification boot (KZA_RUNTIME_RELEASE_VERIFY).
+    as the isolated verification boot (KZA_RUNTIME_RELEASE_VERIFY). Until
+    SC-4b ships V's exits (RELEASE_EXITS_AVAILABLE, SC4A-N13) a release-mode
+    log cannot be armed and its only exit is the lossless plain abort.
     """
+    if release_log(log) and not RELEASE_EXITS_AVAILABLE:
+        return "compact abort " + log["compaction_id"]
     return "compact verify " + log["compaction_id"]
 
 
@@ -1664,16 +1676,18 @@ def _continue(root: Path, compaction_id: str, *, archive: Path | None, worker=No
 
 # --- verify, allow-run ------------------------------------------------------------------------------
 
-def compact_verify(root, compaction_id: str, *, smoke_seconds: int = 120, wall=time.time) -> dict:
+def compact_verify(root, compaction_id: str, *, smoke_seconds: int | None = None, wall=time.time) -> dict:
     """Arm the one verification run (design v3 V1). The operator then starts kza-voice.
 
-    Plain mode: the operator stops kza-voice after the smoke run. Release
-    mode (SC-4a): serve runs the armed run as the isolated verification boot,
-    measures ``smoke_seconds`` from the acknowledged READY and stops it
-    itself; the unit stays disabled.
+    Plain mode: the operator stops kza-voice after the smoke run; N defaults
+    to 120 s. Release mode (SC-4a): serve runs the armed run as the isolated
+    verification boot, measures ``smoke_seconds`` from the acknowledged READY
+    and stops it itself; the unit stays disabled. A release-mode log needs an
+    explicit N of at most RELEASE_SMOKE_SECONDS_MAX (SC4A-N14), and is not
+    armed at all until SC-4b ships V's exits (RELEASE_EXITS_AVAILABLE, SC4A-N13).
     """
     root = checked_root(root)
-    if type(smoke_seconds) is not int or not 10 <= smoke_seconds <= 3600:
+    if smoke_seconds is not None and (type(smoke_seconds) is not int or not 10 <= smoke_seconds <= 3600):
         _refuse("runtime_admission_compaction_smoke_seconds")
     with stage.AdmissionController(root, gate="compaction:" + compaction_id):
         log = _log(root, compaction_id)
@@ -1686,6 +1700,13 @@ def compact_verify(root, compaction_id: str, *, smoke_seconds: int = 120, wall=t
             log = _log(root, compaction_id)
             return {"compaction_id": compaction_id, "armed": True, "started": started is not None,
                     "verified": _has(log, "verified")}
+        if release_log(log):
+            if not RELEASE_EXITS_AVAILABLE:
+                _refuse(RELEASE_EXIT_UNAVAILABLE)  # SC4A-N13: V has no exit before SC-4b
+            if smoke_seconds is None or smoke_seconds > RELEASE_SMOKE_SECONDS_MAX:
+                _refuse(RELEASE_SMOKE_SECONDS)  # SC4A-N14: N within SC-D2 A's budget, chosen explicitly
+        elif smoke_seconds is None:
+            smoke_seconds = 120
         candidate = _last(log, "authorized")["data"]["candidate_binding_id"]
         if head is None or head["status"] != "closed" or head["binding_id"] != candidate:
             _refuse("runtime_admission_head_changed")
@@ -2657,7 +2678,8 @@ def add_commands(commands) -> None:
         parser = sub.add_parser(name)
         parser.add_argument("compaction_id", nargs="?" if name == "status" else None)
         if name == "verify":
-            parser.add_argument("--smoke-seconds", type=int, default=120)
+            parser.add_argument("--smoke-seconds", type=int, default=None,
+                                help="Plain mode: default 120. Release mode: required, 10..60 (SC4A-N14)")
         if name == "retire":
             parser.add_argument("--member", type=int)
             parser.add_argument("--accept-identity-change", action="store_true")

@@ -38,8 +38,14 @@ SMOKE = 10  # the smallest N compact verify accepts
 
 @pytest.fixture(autouse=True)
 def checkout_controller(monkeypatch):
-    """P7's installed-controller location cannot hold for an in-process controller."""
+    """P7's installed-controller location cannot hold for an in-process controller.
+
+    SC4A-N13: a release-mode log is armed only once SC-4b ships V's exits; these tests cover V
+    itself, so they run as if that gate were lifted (its refusal is pinned in
+    test_the_release_gate_refuses_to_arm_until_sc4b and in test_sc1b_release_plan).
+    """
     monkeypatch.setattr(compaction, "controller_location", lambda root, members: None)
+    monkeypatch.setattr(compaction, "RELEASE_EXITS_AVAILABLE", True)
 
 
 def _scaled(factor: float):
@@ -175,6 +181,25 @@ def test_ready_without_the_acknowledgement_is_stopped_at_once_and_never_verified
     _refusal("runtime_admission_compaction_not_verified", lambda: compaction.compact_retire(root, compaction_id))
 
 
+# --- N of a release-mode run (review RB-2, SC4A-N14) ----------------------------------------------
+
+def test_a_release_log_needs_an_explicit_n_within_the_design_cap(x4, x5, tmp_path):
+    """SC-D2 A: N is a term of the downtime budget (formula_check: N = min(60, ...), never below 10),
+    so a release-mode log has no default N and an N above the cap is refused; nothing is armed."""
+    world = _post_r1_world(x4, x5, tmp_path)
+    root = world["root"]
+    compaction_id = cw.start(root, x5["archive"], planned=cw.plan(root, x5["archive"]))["compaction_id"]
+    for smoke in (None, compaction.RELEASE_SMOKE_SECONDS_MAX + 1, 120):
+        _refusal(compaction.RELEASE_SMOKE_SECONDS,
+                 lambda: compaction.compact_verify(root, compaction_id, smoke_seconds=smoke))
+    _refusal("runtime_admission_compaction_smoke_seconds",
+             lambda: compaction.compact_verify(root, compaction_id, smoke_seconds=9))
+    assert not any(event["kind"] == "verify_armed"
+                   for event in stage.read_compaction_log(root, compaction_id)["events"])
+    armed = compaction.compact_verify(root, compaction_id, smoke_seconds=compaction.RELEASE_SMOKE_SECONDS_MAX)
+    assert armed == {"compaction_id": compaction_id, "armed": True, "started": False, "smoke_seconds": 60}
+
+
 # --- the flag: only serve, only the armed verify run of a release-mode log (CR2-8) -------------------
 
 def test_the_unit_cannot_inject_the_flag_and_h_runs_never_carry_it(x4, x5, tmp_path):
@@ -214,7 +239,8 @@ def test_a_plain_log_s_verify_and_allow_run_runs_never_carry_the_flag(x4_archive
     root = world["root"]
     started = cw.start(root, world["archive"])
     compaction_id = started["compaction_id"]
-    assert compaction.compact_verify(root, compaction_id)["armed"] is True
+    assert compaction.compact_verify(root, compaction_id) == {  # plain mode keeps the 120 s default
+        "compaction_id": compaction_id, "armed": True, "started": False, "smoke_seconds": 120}
     clock = [1_900_000_000.0]
     runs = [cw.serve(root, tmp_path, "plain-verify", scenario="verify")]
     assert "verified" in {event["kind"] for event in stage.read_compaction_log(root, compaction_id)["events"]}

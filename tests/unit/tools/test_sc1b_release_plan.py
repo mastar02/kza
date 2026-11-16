@@ -14,8 +14,9 @@ X5, this working tree at epoch 5, in process. Variants of X5 differ only in
 CONTROLLER_REVISION, in one comment of a controller-closure file (X5C) or in
 one comment outside the closure (X5S, the equal triple of another release).
 Complete release-mode logs (served(root)) are written as immutable logs by
-hand, since a release-mode log cannot reach 'complete' before SC-4b (SC-4a arms
-and verifies it; its retire waits for SC-4b's strict W equality, SC4A-N1).
+hand, since a release-mode log cannot reach 'complete' before SC-4b (SC-4a's
+verification run is armed only once SC-4b ships its exits, SC4A-N13, and its
+retire waits for SC-4b's strict W equality, SC4A-N1).
 """
 
 from __future__ import annotations
@@ -207,8 +208,8 @@ def test_first_post_r1_plan_admits_new_and_start_runs_k_from_new(x4, x5, tmp_pat
     planned = cw.plan(root, x5["archive"])  # retire_prepare_leftovers not given: forced on
     assert cw.witness(root) == witness  # read-only
     started = cw.start(root, x5["archive"], planned=planned)
-    # SC-4a removed SC1B-N3's gate: start names the arming of the isolated verification run.
-    assert started["next"] == "compact verify " + started["compaction_id"]
+    # SC4A-N13 (release gate until SC-4b): V has no exit yet, so start names the lossless abort.
+    assert started["next"] == "compact abort " + started["compaction_id"]
     log = stage.read_compaction_log(root, started["compaction_id"])
     intent = log["intent"]
     assert intent["mode"] == "release" and compaction.release_log(log)
@@ -225,7 +226,11 @@ def test_first_post_r1_plan_admits_new_and_start_runs_k_from_new(x4, x5, tmp_pat
     [status] = compaction.compact_status(root, started["compaction_id"])["compactions"]
     assert status["mode"] == "release" and status["phase"] == "activated"
     compaction_id = started["compaction_id"]
-    # The plain-mode paths refuse a log with 'mode' (the run is not armed here: row A0 below).
+    # SC4A-N13: the release-mode log is not armed (with or without an explicit N) while V has no exit;
+    # the plain-mode paths refuse a log with 'mode'.
+    for smoke in (None, 10):
+        _refusal(compaction.RELEASE_EXIT_UNAVAILABLE,
+                 lambda: compaction.compact_verify(root, compaction_id, smoke_seconds=smoke))
     _refusal(compaction.PLAIN_MODE_ONLY, lambda: compaction.compact_allow_run(root, compaction_id, reason="x",
                                                                               hours=1))
     _refusal(compaction.PLAIN_MODE_ONLY, lambda: compaction.compact_abort(root, compaction_id,
@@ -281,7 +286,7 @@ def test_a_cut_start_resumes_only_with_the_intent_archive(x4, x5, x5r2, tmp_path
                         {"archive": "not_the_intent_archive"})
         assert cw.witness(root) == witness and not (root / "slots" / "k").exists()
     resumed = compaction.compact_resume(root, compaction_id, archive=x5["archive"])
-    assert resumed["phase"] == "activated" and resumed["next"] == "compact verify " + compaction_id
+    assert resumed["phase"] == "activated" and resumed["next"] == "compact abort " + compaction_id  # SC4A-N13
     k = stage.read_binding(root, stage.read_admission_head(root)["binding_id"])
     assert k["slot"] == "k" and k["release_sha256"] == x5["release_sha256"]
     assert compaction.compact_abort(root, compaction_id)["phase"] == "aborted"
