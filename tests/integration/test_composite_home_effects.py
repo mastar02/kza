@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 import numpy as np
 import pytest
 
-from tests.mocks.responses import response_handler_mock
+from tests.mocks.responses import response_handler_mock, voice_output
 from src.dashboard.api import DashboardAPI
 from src.dashboard.home_catalog import HomeCatalogService
 from src.home_assistant.control_policy import ActionOrigin, EntityGrant, HomeActor, HomeControlPolicy
@@ -378,21 +378,24 @@ async def test_reminder_durable_claim_prevents_replay_of_partial_scene_after_res
     ha.call_service_once = partial
     presence = MagicMock()
     presence.get_user_zone.return_value = "test-zone"
-    scheduler = ReminderScheduler(store, AsyncMock(), presence, ha, config={"output_zone": "test-zone"}, home_actions=actions)
+    scheduler = ReminderScheduler(store, voice_output(), presence, ha, config={"output_zone": "test-zone"}, home_actions=actions)
     if delivery == "due":
         await scheduler._fire_reminder(reminder)
     else:
-        await scheduler.missed_reminder_on_arrival(reminder.user_id, "test-zone")
+        # T034-U2 single flight: the arrival only wakes the loop, whose pass delivers.
+        assert await scheduler.missed_reminder_on_arrival(reminder.user_id, "test-zone") == 0
+        assert ha.sends == []
+        await scheduler._deliver_due(time.time())
     assert len(ha.sends) == 2
     await store.close()
     restarted = ReminderStore(path)
     await restarted.initialize()
     try:
         new_actions = HomeActionService(ha, policy=actions.policy)
-        scheduler = ReminderScheduler(restarted, AsyncMock(), presence, ha, config={"output_zone": "test-zone"}, home_actions=new_actions)
+        scheduler = ReminderScheduler(restarted, voice_output(), presence, ha, config={"output_zone": "test-zone"}, home_actions=new_actions)
         await scheduler._fire_reminder(await restarted.get_by_id(reminder.id))
         assert len(ha.sends) == 2
-        async with restarted._db.execute("SELECT status FROM reminder_home_actions") as cursor:
+        async with restarted._db.execute("SELECT status FROM reminder_home_actions WHERE request_id LIKE 'reminder:%'") as cursor:
             assert [row[0] for row in await cursor.fetchall()] == ["uncertain"]
     finally:
         await restarted.close()

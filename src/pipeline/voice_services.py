@@ -83,5 +83,7 @@ def build_voice_services(config: dict, *, tts, shutdown: AsyncExitStack, zone_ma
             reminder_store, features.voice_delivery, presence_detector, ha_client,
             reminder_config, home_actions=home_actions, wake_event=reminder_wake_event,
         )
+        # Q31: a held reminder notice gets a new round when other activity frees the output.
+        response.add_output_free_listener(services.reminders.notify_output_available)
         shutdown.push_async_callback(services.stop_reminders)
     return services

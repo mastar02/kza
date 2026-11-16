@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import replace
 import json
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
 import pytest
@@ -20,6 +20,7 @@ from src.reminders.reminder_store import ReminderScope, ReminderStore
 from src.routines.factory import build_routine_scheduler
 from src.routines.models import parse_routine_spec, spec_to_dict
 from tests.integration.test_home_control_policy import ObservedHA
+from tests.mocks.responses import voice_output
 
 
 MODES = ["off", "cool", "dry", "fan_only", "auto", "heat"]
@@ -219,9 +220,9 @@ async def test_reminder_preserves_extended_parameters_and_durable_receipt(typed_
                                       ha_actions=[{"entity_id": "climate.test_ac", "domain": "climate", "service": "set_temperature", "data": {"temperature": 23.5}}])
         presence = MagicMock()
         presence.get_user_zone.return_value = "test-zone"
-        await ReminderScheduler(store, AsyncMock(), presence, ha, config={"output_zone": "test-zone"}, home_actions=actions)._fire_reminder(reminder)
+        await ReminderScheduler(store, voice_output(), presence, ha, config={"output_zone": "test-zone"}, home_actions=actions)._fire_reminder(reminder)
         assert ha.sends[0][3] == {"temperature": 23.5}
-        async with store._db.execute("SELECT status FROM reminder_home_actions") as cursor:
+        async with store._db.execute("SELECT status FROM reminder_home_actions WHERE request_id LIKE 'reminder:%'") as cursor:
             assert [row[0] for row in await cursor.fetchall()] == ["confirmed"]
     finally:
         await store.close()

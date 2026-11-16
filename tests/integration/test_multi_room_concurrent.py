@@ -371,7 +371,7 @@ async def test_shared_list_concurrent_add_and_remove():
 
 @pytest.mark.asyncio
 async def test_missed_reminder_on_arrival():
-    """Arrival delivers an overdue shared reminder once, in the configured zone, never the person's room."""
+    """An arrival only wakes the loop; the loop delivers once, in the configured zone, never the person's room."""
     from src.reminders.reminder_store import ReminderScope, ReminderStore
     from src.reminders.reminder_scheduler import ReminderScheduler
 
@@ -389,8 +389,9 @@ async def test_missed_reminder_on_arrival():
             scope=ReminderScope.SHARED,
         )
 
-        # Mock TTS
-        tts_mock = AsyncMock()
+        # Voice output reporting a complete delivery (notices need the ResponseResult)
+        from tests.mocks.responses import voice_output
+        tts_mock = voice_output()
 
         # Mock presence detector (no active wiring in this test)
         presence_mock = MagicMock()
@@ -408,12 +409,15 @@ async def test_missed_reminder_on_arrival():
             config={"output_zone": "living"},
         )
 
-        # Directly call missed_reminder_on_arrival
+        # T034-U2 single flight: the arrival announces nothing by itself and wakes the loop
         delivered = await scheduler.missed_reminder_on_arrival(
             user_id="user_a", zone_id="cocina"
         )
 
-        assert delivered == 1, f"Expected 1 delivered, got {delivered}"
+        assert delivered == 0
+        tts_mock.aspeak.assert_not_awaited()
+        assert scheduler._wake_event.is_set()
+        await scheduler._deliver_due(time.time())  # the woken loop's pass
         tts_mock.aspeak.assert_awaited_once()
         call_args = tts_mock.aspeak.call_args
         assert "tomar la medicina" in call_args[0][0]
@@ -492,7 +496,7 @@ async def test_presence_detector_wiring_calls_on_user_arrived():
 
 @pytest.mark.asyncio
 async def test_missed_reminder_marks_fired_after_delivery():
-    """Delivered missed reminders are marked as fired so they don't repeat."""
+    """Delivered missed reminders are marked as fired so they don't repeat (the loop delivers, arrivals wake it)."""
     from src.reminders.reminder_store import ReminderScope, ReminderStore, ReminderState
     from src.reminders.reminder_scheduler import ReminderScheduler
 
@@ -509,7 +513,8 @@ async def test_missed_reminder_marks_fired_after_delivery():
             scope=ReminderScope.SHARED,
         )
 
-        tts_mock = AsyncMock()
+        from tests.mocks.responses import voice_output
+        tts_mock = voice_output()
         presence_mock = MagicMock()
         presence_mock.on_user_arrived = MagicMock()
         presence_mock.get_user_zone = MagicMock(return_value="living")
@@ -523,10 +528,9 @@ async def test_missed_reminder_marks_fired_after_delivery():
             config={"output_zone": "living"},
         )
 
-        delivered = await scheduler.missed_reminder_on_arrival(
-            user_id="user_a", zone_id="living"
-        )
-        assert delivered == 1
+        assert await scheduler.missed_reminder_on_arrival(user_id="user_a", zone_id="living") == 0
+        await scheduler._deliver_due(time.time())  # the woken loop's pass
+        tts_mock.aspeak.assert_awaited_once()
 
         # Verify the reminder was marked as fired
         updated = await store.get_by_id(reminder.id)
@@ -537,5 +541,7 @@ async def test_missed_reminder_marks_fired_after_delivery():
             user_id="user_a", zone_id="living"
         )
         assert delivered2 == 0
+        await scheduler._deliver_due(time.time())
+        tts_mock.aspeak.assert_awaited_once()
 
         await store.close()

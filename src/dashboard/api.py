@@ -29,6 +29,7 @@ from src.dashboard.auth import COOKIE_NAME, DashboardPrincipal, require_admin, r
 from src.dashboard.authority import DashboardAuthority
 from src.dashboard.native_work import ensure_admin_work
 from src.memory import output_registration_v2 as output_registration
+from src.reminders.reminder_scheduler import NoticeDismissal
 from src.reminders.reminder_store import ReminderScope
 from src.dashboard.home_api import (
     LegacyHomeActionBody, execute_home_action, register_home_disabled_root, register_home_frontend,
@@ -151,6 +152,43 @@ class ListCreateModel(BaseModel):
 class ListItemCreateModel(BaseModel):
     text: str
     user_id: str | None = None
+
+
+class ReminderNoticeDismissModel(BaseModel):
+    """One shared occurrence, identified by reminder id and scheduled time."""
+
+    model_config = ConfigDict(extra="forbid")
+    reminder_id: str = Field(min_length=1, max_length=64)
+    trigger_at: float
+
+
+# Display labels by reason (T034-U2 web projection). They never select rows.
+_NOTICE_LABELS = {
+    ("confirmed", None): "entregado", ("confirmed", "dismissed"): "descartado",
+    ("uncertain", "delivery_cancelled"): "cortado", ("uncertain", "delivery_partial"): "incompleto",
+}
+
+
+def _notice_label(entry) -> str:
+    if entry.status == "sending":
+        return "anunciando"
+    if entry.status == "pending":
+        return "no entregado" if entry.failed_attempts else "pendiente"
+    return _NOTICE_LABELS.get((entry.status, entry.reason), "incierto")
+
+
+def _notice_to_dict(entry) -> dict:
+    return {"reminder_id": entry.reminder_id, "trigger_at": entry.trigger_at, "text": entry.text,
+            "status": entry.status, "reason": entry.reason, "label": _notice_label(entry),
+            "pending": entry.pending, "attempts": entry.attempts, "failed_attempts": entry.failed_attempts,
+            "claimed_at": entry.claimed_at}
+
+
+def _notice_counts(entries) -> dict:
+    return {"pending": sum(entry.pending for entry in entries),
+            "pending_not_delivered": sum(entry.pending and entry.failed_attempts > 0 for entry in entries),
+            "confirmed": sum(entry.status == "confirmed" for entry in entries),
+            "uncertain": sum(entry.status == "uncertain" for entry in entries)}
 
 
 class ReminderCreateModel(BaseModel):
@@ -851,6 +889,43 @@ class DashboardAPI:
                 persistence=PersistenceState.COMMITTED, effect=EffectState.OBSERVED,
                 observation_scope="software_state").to_dict()}
 
+        @self.app.get("/api/reminders/notices")
+        async def get_reminder_notices(request: Request):
+            """Shared reminder notices for the household: pending occurrences and 48 h of history."""
+            if self.reminder_scheduler is None:
+                raise HTTPException(status_code=503, detail="reminder_notices_unavailable",
+                                    headers={"Cache-Control": "no-store"})
+            try:
+                entries = await self.reminder_scheduler.notice_entries(
+                    guard=session_guard(request, frozenset({'tasks:read'})))
+            except PermissionError as error:
+                raise HTTPException(status_code=403, detail="reminder_read_denied") from error
+            now = datetime.now(UTC)
+            observation = Observation.from_read(ObservationSource.REMINDER_STORE, available=True,
+                                                observed_at=now, attempted_at=now, ttl_s=6)
+            return JSONResponse(
+                content={"source": ObservationSource.REMINDER_STORE.value, "observed_at": now.isoformat(),
+                         "counts": _notice_counts(entries), "notices": [_notice_to_dict(e) for e in entries]},
+                headers=observation_headers(observation, now=now))
+
+        @self.app.post("/api/reminders/notices/dismiss")
+        async def dismiss_reminder_notice(data: ReminderNoticeDismissModel, request: Request):
+            """Household dismiss: a pending notice counts as acknowledged and advances without actions."""
+            if self.reminder_scheduler is None:
+                raise HTTPException(status_code=503, detail="reminder_notices_unavailable")
+            try:
+                result = await self.reminder_scheduler.dismiss_notice(
+                    data.reminder_id, data.trigger_at, guard=session_guard(request, frozenset({'tasks:write'})))
+            except PermissionError as error:
+                raise HTTPException(status_code=403, detail="reminder_write_denied") from error
+            if result is NoticeDismissal.BUSY:
+                raise HTTPException(status_code=409, detail="reminder_notice_busy")
+            if result is NoticeDismissal.NOT_FOUND:
+                raise HTTPException(status_code=404, detail="reminder_notice_not_found")
+            return JSONResponse(content={"status": result.value, "outcome": TaskOutcome(
+                TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED, effect=EffectState.OBSERVED,
+                observation_scope="software_state").to_dict()}, headers={"Cache-Control": "no-store"})
+
         # ==================== WebSocket para tiempo real ====================
 
         @self.app.websocket("/ws")
@@ -966,13 +1041,19 @@ class DashboardAPI:
             """Describe only the shared jobs eligible for household announcements."""
             result = {
                 "pending_count": 0, "next_trigger_at": None,
-                "scheduler_running": False, "delivery_failures": 0, "output_zone_configured": False,
+                "scheduler_running": False, "output_zone_configured": False,
+                "notices": {"pending": 0, "pending_not_delivered": 0, "confirmed": 0, "uncertain": 0},
             }
             if self.reminder_scheduler is not None:
                 result["scheduler_running"] = getattr(self.reminder_scheduler, "_running", False)
                 # Without a zone no shared reminder is ever announced (T034-U1, CORE-06).
                 result["output_zone_configured"] = getattr(self.reminder_scheduler, "output_zone", None) is not None
-                result["delivery_failures"] = sum(getattr(self.reminder_scheduler, "_retry_counts", {}).values())
+                # T034-U2: durable notice receipts, not in-process retry counters.
+                try:
+                    result["notices"] = _notice_counts(await self.reminder_scheduler.notice_entries(
+                        guard=session_guard(request, frozenset({'diagnostics:read'}))))
+                except PermissionError as error:
+                    raise HTTPException(status_code=403, detail="reminder_read_denied") from error
             if self.reminder_manager is not None:
                 store = getattr(self.reminder_manager, "_store", None)
                 if store is not None:

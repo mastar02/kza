@@ -21,6 +21,7 @@ class ObservationSource(StrEnum):
     USER_REGISTRY = "user-registry"
     ALERT_MANAGER = "alert-manager"
     EVENT_STORE = "event-store"
+    REMINDER_STORE = "reminder-store"
     GPU_PROBE = "nvidia-smi"
     SERVICE_PROBE = "service-probes"
     DEMO = "demo"

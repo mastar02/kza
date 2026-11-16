@@ -27,3 +27,16 @@ def response_handler_mock():
     handler.arespond = AsyncMock(side_effect=respond)
     handler.cancel = AsyncMock(return_value=False)
     return handler
+
+
+def delivered(text: str = 'x') -> ResponseResult:
+    """A complete voice delivery as ResponseHandler.aspeak reports it (T034-U2 notices need the receipt)."""
+    return ResponseResult(text, GenerationState.COMPLETE, DeliveryState.COMPLETE, spoken_segments=1,
+                          output_started=True)
+
+
+def voice_output() -> AsyncMock:
+    """A voice output whose aspeak returns a complete ResponseResult (override return_value per test)."""
+    output = AsyncMock()
+    output.aspeak.return_value = delivered()
+    return output

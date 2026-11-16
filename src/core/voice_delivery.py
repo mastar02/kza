@@ -3,9 +3,16 @@
 import asyncio
 import inspect
 import math
+from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Callable
+
+
+# False while a background notice speaks (the reminder scheduler's own attempts): the
+# end of that output is not other activity freeing the output, so it must not start a
+# new notice round (ResponseHandler.add_output_free_listener).
+SIGNALS_OUTPUT_FREE: ContextVar[bool] = ContextVar("voice_signals_output_free", default=True)
 
 
 class GenerationState(StrEnum):
@@ -74,6 +81,9 @@ class ResponseResult:
     speech_handled: bool = True
     spoken_segments: int = 0
     timeout_stage: ResponseStage | None = None
+    # True once the first PCM chunk was handed to a player. spoken_segments counts
+    # only segments that finished uncancelled, so a cut first sentence reports 0.
+    output_started: bool = False
 
     @property
     def success(self) -> bool:

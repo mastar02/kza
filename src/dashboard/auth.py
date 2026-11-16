@@ -194,6 +194,9 @@ def _route_permissions(request: HTTPConnection) -> frozenset[str]:
         return frozenset({DashboardPermission.AMBIENT_CONTROL})
     if path == "/ws/voices":
         return frozenset({DashboardPermission.VOICES_READ, DashboardPermission.VOICES_REVIEW})
+    # T034-U2: shared reminder notices are household tasks (home role); private reminders never appear.
+    if path == "/api/reminders/notices" or path.startswith("/api/reminders/notices/"):
+        return frozenset({DashboardPermission.TASKS_READ if read else DashboardPermission.TASKS_WRITE})
     if path == "/api/conversations" or path == "/ws/live":
         return frozenset({DashboardPermission.CONVERSATIONS_READ})
     if path == "/ws":

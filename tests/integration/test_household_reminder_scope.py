@@ -20,6 +20,7 @@ from src.reminders.reminder_store import ReminderScope, ReminderState, ReminderS
 from tests.integration.test_capability_application import configuration
 from tests.mocks.application_graph import OfflineEncoder, OfflineSTT, OfflineTTS, OfflineWake
 from tests.mocks.audio_output import AudioBackend
+from tests.mocks.responses import delivered
 from tests.mocks.task_transport import TaskTransport
 
 
@@ -118,7 +119,7 @@ async def test_private_id_cannot_be_announced_or_executed_by_a_forged_shared_dto
         presence.get_user_zone.assert_not_called()
         row = await store.get_by_id(private.id)
         assert row.state is ReminderState.ACTIVE and row.trigger_at == 1. and row.fire_count == 0
-        assert scheduler._retry_counts == {}
+        assert scheduler._holds == {}
         assert await store._work.read(lambda db: db.execute('SELECT COUNT(*) FROM reminder_home_actions').fetchone()[0]) == 0
 
 
@@ -129,7 +130,7 @@ async def test_completed_shared_occurrence_cannot_be_replayed_or_advanced_again(
         await store.initialize()
         reminder = await store.create('household', 'Shared one-shot', time.time() - 1,
             scope=ReminderScope.SHARED)
-        tts = SimpleNamespace(aspeak=AsyncMock())
+        tts = SimpleNamespace(aspeak=AsyncMock(return_value=delivered()))
         scheduler = ReminderScheduler(store, tts, None, None, config={'output_zone': 'living'})
         await scheduler._fire_reminder(reminder)
         assert (await store.get_by_id(reminder.id)).fire_count == 1
@@ -226,7 +227,12 @@ async def test_actual_factory_private_jobs_stay_silent_and_shared_jobs_deliver_o
                 row = await store.get_by_id(identity)
                 assert row.scope is ReminderScope.PRIVATE and row.state is ReminderState.ACTIVE
                 assert row.trigger_at == trigger and row.fire_count == 0 and row.last_fired_at is None
-            assert await store._work.read(lambda db: db.execute('SELECT COUNT(*) FROM reminder_home_actions').fetchone()[0]) == 1
+            assert await store._work.read(lambda db: db.execute(
+                "SELECT COUNT(*) FROM reminder_home_actions WHERE request_id LIKE 'reminder:%'").fetchone()[0]) == 1
+            # The shared notice has one confirmed receipt; private jobs were never claimed.
+            assert await store._work.read(lambda db: [tuple(row) for row in db.execute(
+                "SELECT status, reason FROM reminder_home_actions WHERE request_id LIKE 'notice:%'")]) == [
+                ('confirmed', None)]
 
 
 async def test_actual_factory_restart_after_three_days_gives_one_late_notice_and_no_home_actions(tmp_path, monkeypatch):
@@ -286,5 +292,259 @@ async def test_actual_factory_restart_after_three_days_gives_one_late_notice_and
             advanced = await store.get_by_id(daily.id)
             assert advanced.state is ReminderState.ACTIVE and advanced.trigger_at > time.time()
             statuses = await store._work.read(lambda db: sorted(tuple(row) for row in db.execute(
-                'SELECT status, reason FROM reminder_home_actions').fetchall()))
+                "SELECT status, reason FROM reminder_home_actions WHERE request_id LIKE 'reminder:%'").fetchall()))
             assert statuses == [('confirmed', None), ('failed', 'late_not_executed'), ('failed', 'late_not_executed')]
+            notices = await store._work.read(lambda db: [tuple(row) for row in db.execute(
+                "SELECT status, reason FROM reminder_home_actions WHERE request_id LIKE 'notice:%'").fetchall()])
+            assert notices == [('confirmed', None)] * 3
+
+
+# ---------------------------------------------------------------------------
+# T034-U2: a living barge-in during a shared reminder announcement (real ResponseHandler)
+# ---------------------------------------------------------------------------
+
+from contextlib import asynccontextmanager  # noqa: E402
+import json  # noqa: E402
+
+from src.core.voice_delivery import LocalVoiceDelivery  # noqa: E402
+from src.pipeline.response_handler import ResponseHandler  # noqa: E402
+from src.reminders.reminder_scheduler import DEFAULT_LATE_ACTION_GRACE_S  # noqa: E402
+from tests.mocks.audio_output import GatedZones  # noqa: E402
+from tests.mocks.home_control import selected_actions  # noqa: E402
+
+LIVING = 'zone_living'
+ACTION = {'domain': 'light', 'service': 'turn_on', 'entity_id': 'light.living'}
+
+
+@asynccontextmanager
+async def living_reminders(path, zones, monkeypatch, *, clock=time.time):
+    """Shared reminders announced on reminders.output_zone 'zone_living' through the real voice owner."""
+    import src.tts.piper_tts as output_module
+
+    monkeypatch.setattr(output_module, 'sd', AudioBackend())
+    engine = MagicMock()
+    engine.synthesize.return_value = (np.ones(1600, dtype=np.float32), 0.1)
+    engine.sample_rate = 16000
+    del engine.synthesize_stream
+    handler = ResponseHandler(tts=engine, zone_manager=zones, streaming_enabled=False)
+    ha = AsyncMock()
+    async with AsyncExitStack() as stack:
+        stack.push_async_callback(handler.aclose)
+        store = ReminderStore(str(path))
+        stack.push_async_callback(store.close)
+        await store.initialize()
+        scheduler = ReminderScheduler(store, LocalVoiceDelivery(handler), None, ha,
+            {'output_zone': LIVING, 'notice_retry_min_gap_s': .2},
+            home_actions=selected_actions(ha, ('light.living',)), clock=clock)
+        stack.push_async_callback(scheduler.stop)
+        yield SimpleNamespace(handler=handler, store=store, scheduler=scheduler, ha=ha, engine=engine)
+
+
+async def ledger_rows(store, prefix):
+    rows = await store._work.read(lambda db: [tuple(row) for row in db.execute(
+        'SELECT status, reason, body FROM reminder_home_actions WHERE request_id LIKE ? ORDER BY rowid',
+        (prefix + '%',)).fetchall()])
+    return [(status, reason, json.loads(body).get('attempt')) for status, reason, body in rows]
+
+
+@pytest.mark.parametrize('restart_after', [1, DEFAULT_LATE_ACTION_GRACE_S + 5])
+async def test_living_barge_in_after_output_started_ends_the_notice_uncertain_and_it_is_never_repeated(
+    tmp_path, monkeypatch, restart_after,
+):
+    """C02-NTC-0010: barge-in within the first sentence (spoken_segments 0, output_started) -> cortado, never re-spoken."""
+    path, now = tmp_path / 'reminders.db', [time.time()]
+    zones = GatedZones(block='after_first_chunk', gated={LIVING})
+    async with living_reminders(path, zones, monkeypatch, clock=lambda: now[0]) as graph:
+        reminder = await graph.store.create('household', 'Regar las plantas.', now[0] - 1,
+            ha_actions=[ACTION], scope=ReminderScope.SHARED)
+        task = asyncio.create_task(graph.scheduler._fire_reminder(reminder))
+        assert await asyncio.to_thread(zones.waiting.wait, 2)
+        # multi_room_audio_loop._trigger_barge_in for the living room
+        assert await graph.handler.cancel(zone_id=LIVING)
+        assert await asyncio.wait_for(task, 2) is False
+        assert await ledger_rows(graph.store, 'notice:') == [('uncertain', 'delivery_cancelled', 1)]
+        now[0] += 1
+        for _ in range(3):  # nothing more in-process, also after the retry gap
+            await graph.scheduler._deliver_due(now[0])
+            assert await graph.scheduler._fire_reminder(reminder) is False
+            now[0] += 1
+        assert zones.plays == [LIVING]
+        assert (await graph.store.get_by_id(reminder.id)).state is ReminderState.FIRED
+    now[0] += restart_after
+    zones.release.set()
+    async with living_reminders(path, zones, monkeypatch, clock=lambda: now[0]) as graph:
+        task = asyncio.create_task(graph.scheduler.start())
+        await asyncio.sleep(.2)
+        await graph.scheduler.stop()
+        await asyncio.gather(task, return_exceptions=True)
+        assert zones.plays == [LIVING]  # zero further TTS deliveries after the restart
+        graph.ha.call_service_once.assert_not_called()
+        assert await ledger_rows(graph.store, 'reminder:') == []  # actions never claimed
+        [entry] = await graph.scheduler.notice_entries()
+        assert (entry.status, entry.reason, entry.pending) == ('uncertain', 'delivery_cancelled', False)
+
+
+async def test_living_barge_in_while_the_notice_waits_for_the_output_retries_it(tmp_path, monkeypatch):
+    """C02-NTC-0011: cancelled before any PCM -> failed/not started, still pending, retried after the gap."""
+    zones, now = GatedZones(block='after_first_chunk', gated={'zone_hall'}), [time.time()]
+    async with living_reminders(tmp_path / 'reminders.db', zones, monkeypatch, clock=lambda: now[0]) as graph:
+        busy = asyncio.create_task(graph.handler.aspeak('Respuesta en el hall.', zone_id='zone_hall'))
+        assert await asyncio.to_thread(zones.waiting.wait, 2)
+        reminder = await graph.store.create('household', 'Regar las plantas.', now[0] - 1,
+            ha_actions=[ACTION], scope=ReminderScope.SHARED)
+        task = asyncio.create_task(graph.scheduler.start())
+        async with asyncio.timeout(2):
+            while graph.handler.get_delivery_status()['pending'] == 0:
+                await asyncio.sleep(.005)
+        assert await graph.handler.cancel(zone_id=LIVING)
+        async with asyncio.timeout(2):
+            while not await ledger_rows(graph.store, 'notice:') or (
+                    await ledger_rows(graph.store, 'notice:'))[0][0] == 'sending':
+                await asyncio.sleep(.005)
+        assert await ledger_rows(graph.store, 'notice:') == [('failed', 'delivery_not_started:cancelled', 1)]
+        [entry] = await graph.scheduler.notice_entries()
+        assert (entry.status, entry.pending, entry.failed_attempts) == ('pending', True, 1)  # not shown as delivered
+        assert (await graph.store.get_by_id(reminder.id)).state is ReminderState.ACTIVE
+        zones.release.set()
+        assert (await asyncio.wait_for(busy, 2)).success
+        now[0] += 1  # the retry gap (0.2 s on the scheduler's clock) has passed
+        graph.scheduler.notify_new_reminder()
+        try:
+            async with asyncio.timeout(3):
+                while (await graph.store.get_by_id(reminder.id)).state is not ReminderState.FIRED:
+                    await asyncio.sleep(.01)
+        finally:
+            await graph.scheduler.stop()
+            await asyncio.gather(task, return_exceptions=True)
+        assert zones.plays == ['zone_hall', LIVING]
+        assert await ledger_rows(graph.store, 'notice:') == [
+            ('failed', 'delivery_not_started:cancelled', 1), ('confirmed', None, 2)]
+        graph.ha.call_service_once.assert_awaited_once()  # on time (within late_action_grace_s)
+        assert await ledger_rows(graph.store, 'reminder:') == [('confirmed', None, None)]
+
+
+# ---------------------------------------------------------------------------
+# T034-U2: C02-NTC seeds assigned to this unit (p3/design.json seed_entries), scheduler layer
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass, field  # noqa: E402
+
+from src.core.voice_delivery import DeliveryState, GenerationState, ResponseResult, ResponseStage  # noqa: E402
+
+C02_COUNTERS = ('ha_service_calls', 'vector_searches', 'music_calls', 'list_mutations', 'reminder_rows_delta',
+                'reminder_transitions', 'timer_delta', 'timer_transitions', 'queue_cancels', 'routine_runs',
+                'routine_changes', 'llm_8101_calls', 'cloud_calls', 'ledger_claims', 'spoken_utterances')
+
+
+@dataclass(frozen=True)
+class C02NoticeSeed:
+    """One C02-NTC entry (P3-F0/c02-matrix/v1 fields used by the scheduler layer)."""
+
+    id: str
+    lifecycle: str
+    task_status: str
+    notice: tuple[str, str | None]
+    effects: dict = field(default_factory=dict)
+
+    def expected(self) -> dict:
+        return {name: self.effects.get(name, 0) for name in C02_COUNTERS}
+
+
+C02_NTC_SEEDS = (
+    C02NoticeSeed('C02-NTC-0003', 'crash_during_send', 'uncertain', ('uncertain', 'interrupted_send'),
+                  {'reminder_transitions': 1}),
+    C02NoticeSeed('C02-NTC-0007', 'partial', 'uncertain', ('uncertain', 'delivery_partial'),
+                  {'reminder_transitions': 1, 'ledger_claims': 1, 'spoken_utterances': 1}),
+    C02NoticeSeed('C02-NTC-0009', 'delivery_timeout', 'uncertain', ('uncertain', 'delivery_partial'),
+                  {'reminder_transitions': 1, 'ledger_claims': 1, 'spoken_utterances': 1}),
+    C02NoticeSeed('C02-NTC-0010', 'barge_in_during_notice', 'uncertain', ('uncertain', 'delivery_cancelled'),
+                  {'reminder_transitions': 1, 'ledger_claims': 1, 'spoken_utterances': 1}),
+    C02NoticeSeed('C02-NTC-0011', 'barge_in_while_queued', 'completed', ('confirmed', None),
+                  {'ha_service_calls': 1, 'reminder_transitions': 1, 'ledger_claims': 3, 'spoken_utterances': 1}),
+)
+
+
+async def ledger_count(store):
+    return await store._work.read(lambda db: db.execute('SELECT COUNT(*) FROM reminder_home_actions').fetchone()[0])
+
+
+async def reminder_rows(store):
+    return await store._work.read(lambda db: [tuple(row) for row in db.execute(
+        'SELECT id, state, trigger_at FROM reminders ORDER BY id').fetchall()])
+
+
+def started_deliveries(zones):
+    return sum(zone == LIVING for zone in zones.plays)
+
+
+@pytest.mark.parametrize('seed', C02_NTC_SEEDS, ids=[seed.id for seed in C02_NTC_SEEDS])
+async def test_c02_notice_seed(tmp_path, monkeypatch, seed):
+    """Each seed's counters after its lifecycle point; the other C02 counters have no producer in this graph."""
+    path, now = tmp_path / 'reminders.db', [time.time()]
+    clock = lambda: now[0]  # noqa: E731
+    gated = {LIVING} if seed.lifecycle in {'crash_during_send', 'barge_in_during_notice'} else {'zone_hall'}
+    zones = GatedZones(block='after_first_chunk', gated=gated)
+    effects = dict.fromkeys(C02_COUNTERS, 0)
+    async with living_reminders(path, zones, monkeypatch, clock=clock) as graph:
+        reminder = await graph.store.create('household', 'Regar las plantas.', now[0] - 1,
+            ha_actions=[ACTION], scope=ReminderScope.SHARED)
+        rows, claims, plays = await reminder_rows(graph.store), await ledger_count(graph.store), 0
+        if seed.lifecycle in {'partial', 'delivery_timeout'}:
+            result = (ResponseResult('x', GenerationState.COMPLETE, DeliveryState.FAILED, spoken_segments=1,
+                                     output_started=True) if seed.lifecycle == 'partial' else
+                      ResponseResult('x', GenerationState.COMPLETE, DeliveryState.TIMED_OUT,
+                                     'response_delivery_timeout', timeout_stage=ResponseStage.DELIVERY))
+            graph.scheduler._tts = SimpleNamespace(aspeak=AsyncMock(return_value=result))
+            await graph.scheduler._deliver_due(now[0])
+            plays = graph.scheduler._tts.aspeak.await_count
+        elif seed.lifecycle in {'crash_during_send', 'barge_in_during_notice'}:
+            task = asyncio.create_task(graph.scheduler._fire_reminder(reminder))
+            assert await asyncio.to_thread(zones.waiting.wait, 2)
+            if seed.lifecycle == 'crash_during_send':
+                task.cancel()  # the process dies while the notice plays: counters start after the restart
+                await asyncio.gather(task, return_exceptions=True)
+            else:
+                assert await graph.handler.cancel(zone_id=LIVING)
+                assert await asyncio.wait_for(task, 2) is False
+        else:  # barge_in_while_queued
+            busy = asyncio.create_task(graph.handler.aspeak('Respuesta en el hall.', zone_id='zone_hall'))
+            assert await asyncio.to_thread(zones.waiting.wait, 2)
+            task = asyncio.create_task(graph.scheduler._fire_reminder(reminder))
+            async with asyncio.timeout(2):
+                while graph.handler.get_delivery_status()['pending'] == 0:
+                    await asyncio.sleep(.005)
+            assert await graph.handler.cancel(zone_id=LIVING)
+            assert await asyncio.wait_for(task, 2) is False
+            zones.release.set()
+            await asyncio.wait_for(busy, 2)
+            now[0] += 1  # notice_retry_min_gap_s (0.2 s) later, still within late_action_grace_s
+            assert await graph.scheduler._fire_reminder(reminder) is True
+        if seed.lifecycle != 'crash_during_send':
+            effects['ledger_claims'] = await ledger_count(graph.store) - claims
+            effects['spoken_utterances'] = plays or started_deliveries(zones)
+            effects['ha_service_calls'] = graph.ha.call_service_once.await_count
+            effects['reminder_transitions'] = int(await reminder_rows(graph.store) != rows)
+            effects['reminder_rows_delta'] = len(await reminder_rows(graph.store)) - len(rows)
+        zones.release.set()
+    # Restart (all lifecycles): nothing more is spoken, claimed or executed for the occurrence.
+    now[0] += 5
+    after = GatedZones()
+    async with living_reminders(path, after, monkeypatch, clock=clock) as graph:
+        rows, claims = await reminder_rows(graph.store), await ledger_count(graph.store)
+        await graph.scheduler._deliver_due(now[0])
+        restart_effects = {'ledger_claims': await ledger_count(graph.store) - claims,
+                           'spoken_utterances': started_deliveries(after),
+                           'ha_service_calls': graph.ha.call_service_once.await_count,
+                           'reminder_transitions': int(await reminder_rows(graph.store) != rows)}
+        notices = await ledger_rows(graph.store, 'notice:')
+        state = (await graph.store.get_by_id(reminder.id)).state
+    if seed.lifecycle == 'crash_during_send':
+        effects.update(restart_effects)
+        assert notices == [('uncertain', 'interrupted_send', 1)]
+    else:
+        assert restart_effects == {'ledger_claims': 0, 'spoken_utterances': 0, 'ha_service_calls': 0,
+                                   'reminder_transitions': 0}
+        assert notices[-1][:2] == seed.notice
+    assert effects == seed.expected()
+    task_status = 'completed' if notices[-1][0] == 'confirmed' else notices[-1][0]
+    assert (task_status, state) == (seed.task_status, ReminderState.FIRED)  # persistence: committed
