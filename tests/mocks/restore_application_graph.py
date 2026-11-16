@@ -318,15 +318,19 @@ async def application_graph(root, monkeypatch, clock, *, gates=(),
             original_voices = main_module.build_voice_registry
             observed = []
 
+            # verify_only is forwarded only when set, as the builder call below: this island also
+            # drives compiled slots of a pre-SC-4a revision (O/R of the reconciliation and rollback
+            # rehearsals), whose builders have no verify_only and whose main never passes it.
             async def privacy_factory(config, *, shutdown, verify_only=False):
-                return await original_privacy(config, shutdown=shutdown, clock=clock, verify_only=verify_only)
+                return await original_privacy(config, shutdown=shutdown, clock=clock,
+                                              **({"verify_only": True} if verify_only else {}))
 
             async def voice_factory(*, privacy, owner, shutdown, verify_only=False):
                 observed.append(privacy)
                 if before_voices is not None:
                     await before_voices(privacy)
                 return await original_voices(privacy=privacy, owner=owner, shutdown=shutdown,
-                                             verify_only=verify_only)
+                                             **({"verify_only": True} if verify_only else {}))
 
             patch.setattr(main_module, "build_privacy_services", privacy_factory)
             patch.setattr(main_module, "build_voice_registry", voice_factory)
