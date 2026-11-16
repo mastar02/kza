@@ -61,7 +61,7 @@ def request(method: str, path: str) -> Request:
     return Request({'type': 'http', 'method': method, 'path': path, 'query_string': b'', 'headers': []})
 
 
-def test_notice_routes_need_household_task_permissions():
+async def test_notice_routes_need_household_task_permissions():
     """The home role holds tasks:read/tasks:write; an evaluator holds neither."""
     assert _route_permissions(request('GET', '/api/reminders/notices')) == {'tasks:read'}
     assert _route_permissions(request('POST', '/api/reminders/notices/dismiss')) == {'tasks:write'}
