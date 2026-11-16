@@ -730,14 +730,16 @@ def test_construction_warns_about_unannounceable_or_always_late_policy(caplog, c
     for message, fragment in zip(messages, expected):
         assert fragment in message
 
-def test_committed_settings_warn_that_no_shared_reminder_is_announced_and_retries_are_late(caplog):
-    """The committed settings have no output zone and a 300 s retry against a 120 s grace (pending user input)."""
+def test_committed_settings_announce_shared_reminders_in_the_living_zone(caplog):
+    """User decision 2026-11-16: until SCHEMA-V2 adds delivery_room, shared reminders are announced in the living.
+
+    The committed retry interval (300 s) is still above the 120 s grace, so that warning remains.
+    """
     config = yaml.safe_load((ROOT / "config/settings.yaml").read_text(encoding="utf-8"))
     reminders = dict(config["reminders"])
-    if reminders.get("output_zone") is None:  # the same fallback as voice_services
-        reminders["output_zone"] = config["tts"]["streaming"].get("default_output_zone")
+    assert reminders["output_zone"] == "zone_living"
     messages = scheduler_warnings(caplog, reminders)
-    assert [any(fragment in m for m in messages) for fragment in (NO_ZONE_WARNING, ALWAYS_LATE_WARNING)] == [True, True]
+    assert [any(fragment in m for m in messages) for fragment in (NO_ZONE_WARNING, ALWAYS_LATE_WARNING)] == [False, True]
 
 def test_settings_declare_the_recommended_late_action_grace():
     config = yaml.safe_load((ROOT / "config/settings.yaml").read_text(encoding="utf-8"))

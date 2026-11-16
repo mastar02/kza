@@ -3,12 +3,15 @@
 import asyncio
 from contextlib import AsyncExitStack
 from dataclasses import replace
+from pathlib import Path
 import threading
+import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
+import yaml
 
 from src.application import ApplicationFactories
 from src.home_assistant.control_policy import ActionOrigin, HomeActor
@@ -16,6 +19,7 @@ from src.home_assistant.home_actions import HomeActionRequest
 from src.main import build_application
 from src.memory.fact_ledger import MemoryReviewer
 from src.pipeline.command_event import CommandEvent
+from src.reminders.reminder_store import ReminderScope
 from tests.mocks.application_graph import (
     OfflineEncoder, OfflineSTT, OfflineTTS, OfflineWake, offline_config, offline_home,
 )
@@ -403,6 +407,50 @@ async def test_empty_selection_rejects_action_through_constructed_graph(leaves, 
             )
             assert (receipt.status, receipt.reason) == ("failed", "action_not_selected")
             assert observations == {"reads": reads, "service_calls": 0}
+
+
+async def test_committed_settings_announce_a_due_shared_reminder_in_the_living(leaves, monkeypatch, tmp_path, caplog):
+    """User decision 2026-11-16: shared reminders are spoken in the living until SCHEMA-V2 adds delivery_room.
+
+    The committed reminders/tts blocks and the committed living/hall MA1260 zones go through the
+    actual main factory; the reminder must reach the living's amplifier zone, not the hall's.
+    """
+    import src.tts.piper_tts as output_module
+
+    committed = yaml.safe_load((Path(__file__).resolve().parents[2] / "config/settings.yaml").read_text(encoding="utf-8"))
+    backend = AudioBackend()
+    monkeypatch.setattr(output_module, "sd", backend)
+    amplifier = MagicMock()
+    amplifier.audio_output_device = 7
+    factories = replace(leaves, wake_detector=OfflineWake, amplifier=lambda **_: amplifier)
+    async with offline_home() as (url, observations):
+        config = offline_config(tmp_path, url, rooms=True)
+        config["reminders"] = {**committed["reminders"], "db_path": str(tmp_path / "reminders.db")}
+        config["tts"]["streaming"]["default_output_zone"] = committed["tts"]["streaming"]["default_output_zone"]
+        for index, room_id in enumerate(("living", "hall")):
+            config["rooms"][room_id] = {"name": committed["rooms"][room_id]["name"], "mic_device_index": index,
+                                         "ma1260_zone": committed["rooms"][room_id]["ma1260_zone"]}
+        living_zone = committed["rooms"]["living"]["ma1260_zone"]
+        assert living_zone != committed["rooms"]["hall"]["ma1260_zone"]
+        async with AsyncExitStack() as stack:
+            caplog.clear()
+            with caplog.at_level("WARNING", logger="src.reminders.reminder_scheduler"):
+                graph = await build_application(config, shutdown=stack, factories=factories)
+            assert not any("No reminder output zone configured" in record.getMessage() for record in caplog.records)
+            reminders = graph.voice_services.reminders
+            # The living room's own voice responses use this id (request_router: f"zone_{room_id}").
+            assert reminders.output_zone == "zone_living"
+            zones = graph.voice_services.responses.zone_manager
+            assert zones.get_zone(reminders.output_zone) is zones.get_zone("living")
+            store = graph.reminder_manager._store
+            reminder = await store.create(user_id="synthetic", text="Regar las plantas", trigger_at=time.time() - 1,
+                                          scope=ReminderScope.SHARED)
+            assert await reminders._fire_reminder(reminder)
+            assert (await store.get_by_id(reminder.id)).state == "fired"
+            assert graph.models.tts.texts == ["Oye, recuerda Regar las plantas"]
+            assert len(backend.heard()) > 0
+            assert [call.args for call in amplifier.select_zone.call_args_list] == [(living_zone,)]
+            assert observations["service_calls"] == 0
 
 
 def patch_main(monkeypatch, config, leaves):
