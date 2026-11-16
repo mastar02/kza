@@ -21,6 +21,7 @@
     --warn: #f59e0b;
     --err: #ef4444;
     --info: #38bdf8;
+    --focus: #a78bfa;
     --sans: 'Inter', system-ui, sans-serif;
     --mono: 'JetBrains Mono', ui-monospace, monospace;
     --pad: 16px;
@@ -31,6 +32,15 @@
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
   a { color: inherit; text-decoration: none; }
   button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+
+  /* Keyboard focus (WEB-03): a visible ring on every operable control. The
+     view region receives focus only programmatically after navigation. */
+  .nav-item:focus-visible, .btn:focus-visible, button:focus-visible, a:focus-visible,
+  input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--focus); outline-offset: 2px;
+  }
+  .main:focus { outline: none; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
   /* Layout shell */
   .app { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
@@ -205,6 +215,7 @@
 <script src="vendor/babel-standalone-7.29.0.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
 
 <script src="src/obs-data.js"></script>
+<script src="src/obs-nav.js"></script>
 <script type="text/babel" src="src/primitives.jsx"></script>
 <script type="text/babel" src="src/views/live.jsx"></script>
 <script type="text/babel" src="src/views/conversations.jsx"></script>

@@ -2,7 +2,7 @@
 // App shell — KZA technical panel (direct URL /obs/)
 // =============================================================
 
-const { useState, useEffect } = React;
+const { useState, useEffect, useRef } = React;
 
 const NAV = [
   { id: 'live',          label: 'Live',           group: 'Operación' },
@@ -15,6 +15,8 @@ const NAV = [
   { id: 'system',        label: 'Sistema',        group: 'Infraestructura' },
   { id: 'admin',         label: 'Admin',          group: 'Infraestructura' },
 ];
+const NAV_IDS = NAV.map(n => n.id);
+const DEFAULT_VIEW = 'live';
 
 function navBadge(obs, id) {
   if (id !== 'alerts' || !obs.available('ALERTS')) return null;
@@ -106,10 +108,41 @@ function SourceBanner() {
 }
 
 function App() {
-  const [active, setActive] = useState(() => {
-    const requested = window.location.hash.slice(1);
-    return NAV.some(item => item.id === requested) ? requested : 'live';
-  });
+  const nav = window.KzaObsNav;
+  const [active, setActive] = useState(() => nav.viewFromHash(window.location.hash, NAV_IDS, DEFAULT_VIEW));
+  const [announcement, setAnnouncement] = useState('');
+  const activeRef = useRef(active);
+  const mainRef = useRef(null);
+  const focusView = useRef(false);
+
+  // A view change by navigation (not the first render) clears the operation
+  // notice, announces the view and moves focus to the view region.
+  function showView(id) {
+    activeRef.current = id;
+    focusView.current = true;
+    window.__kzaObs.setNotice(null);
+    setAnnouncement(nav.announcement(NAV.find(n => n.id === id).label));
+    setActive(id);
+  }
+  function onNav(id) {
+    window.__kzaObs.setNotice(null);
+    const step = nav.planNavigation(activeRef.current, id, window.location.hash, NAV_IDS);
+    if (step.show) showView(id);
+    if (step.write) window.location.hash = step.write;
+  }
+  useEffect(() => {
+    function onHashChange() {
+      const step = nav.planHashChange(activeRef.current, window.location.hash, NAV_IDS, DEFAULT_VIEW);
+      if (step.changed) showView(step.view);
+    }
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+  useEffect(() => {
+    if (!focusView.current) return;
+    focusView.current = false;
+    mainRef.current?.focus();
+  }, [active]);
   const [refreshing, setRefreshing] = useState(false);
   async function refresh() {
     setRefreshing(true);
@@ -137,8 +170,8 @@ function App() {
 
   return (
     <div className="app" data-screen-label={`${NAV.findIndex(n=>n.id===active)+1} ${NAV.find(n=>n.id===active).label}`}>
-      <Sidebar active={active} onNav={id => { window.__kzaObs.setNotice(null); setActive(id); }} />
-      <main className="main">
+      <Sidebar active={active} onNav={onNav} />
+      <main className="main" ref={mainRef} tabIndex={-1} aria-label={NAV.find(n => n.id === active).label}>
         <Topbar activeNav={active} onRefresh={refresh} refreshing={refreshing} />
         <SourceBanner />
         <OperationNotice />
@@ -146,6 +179,7 @@ function App() {
           {ViewComp && <ViewComp />}
         </div>
       </main>
+      <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
     </div>
   );
 }

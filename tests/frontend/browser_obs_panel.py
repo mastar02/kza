@@ -4,7 +4,10 @@ Verifies that every view renders without runtime errors and without example
 data, that unavailable sources are shown as unavailable, that controls without
 a backing operation are disabled with a reason, and that alert acknowledgement
 runs the existing authenticated endpoint and reports only the server result.
-Synthetic fixtures only.
+Keyboard navigation (WEB-03, WEB-05 /obs/) is driven with real key events: Tab
+order over the nine entries, Enter and Space, a visible focus ring, the hash
+written per view, Back/Forward and reload restoring it, focus moved to the view
+region and the active view announced. Synthetic fixtures only.
 """
 
 import asyncio
@@ -26,12 +29,84 @@ from websockets.asyncio.client import connect
 from src.dashboard.api import DashboardAPI
 from src.dashboard.authority import DashboardAuthority
 from tests.frontend.browser_nexo_home import screenshot
-from tests.frontend.browser_support import Page, browser_binary, browser_profile_root, evidence_directory
+from tests.frontend.browser_support import (Page, _press_tab, browser_binary, browser_profile_root, evidence_directory,
+                                            press_enter)
 
 EVIDENCE = evidence_directory('KZA_OBS_PANEL_EVIDENCE', 'data/autonomous-roadmap-20261102/t040-t041/obs-browser-runs')
 TOKEN = 'synthetic-obs-panel-root'
 FORBIDDEN = ('Marco', 'Lucía', 'vllm-7b', 'ik-30b', '192.168.1.2', '21d 08h', 'kza@a3f9c2e', 'turn_8821',
              'Khruangbin', 'datos de ejemplo', 'wireframe')
+# Navigation entries in document order: (hash id, visible label, readiness condition).
+NAV = (('live', 'Live', "!!document.querySelector('#view-live')"),
+       ('conversations', 'Conversaciones', "!!document.querySelector('#view-conversations h1')"),
+       ('privacy', 'Privacidad', "!!document.querySelector('#view-privacy')"),
+       ('alerts', 'Alertas', "!!document.querySelector('#view-alerts')"),
+       ('ha', 'Home Assistant', "!!document.querySelector('#view-ha')"),
+       ('llm', 'LLM Router', "!!document.querySelector('#view-llm')"),
+       ('users', 'Voces', "!!document.querySelector('#view-users h1')"),
+       ('system', 'Sistema', "!!document.querySelector('#view-system')"),
+       ('admin', 'Admin', "document.body.innerText.includes('Acciones de servicio')"))
+# The focused element, its focus ring and the ring's contrast against the
+# background it is drawn on (WCAG 1.4.11 asks for at least 3:1).
+FOCUS_PROBE = r"""(()=>{
+  const el=document.activeElement, items=[...document.querySelectorAll('.nav-item')];
+  const rgb=value=>(value.match(/[\d.]+/g)||[]).slice(0,3).map(Number);
+  const lum=([r,g,b])=>{const f=c=>{c/=255;return c<=0.03928?c/12.92:((c+0.055)/1.055)**2.4};return 0.2126*f(r)+0.7152*f(g)+0.0722*f(b)};
+  const behind=node=>{for(let n=node.parentElement;n;n=n.parentElement){const c=getComputedStyle(n).backgroundColor,m=c.match(/[\d.]+/g);
+    if(m&&(m.length<4||+m[3]>0))return c}return getComputedStyle(document.body).backgroundColor};
+  const style=getComputedStyle(el), a=lum(rgb(style.outlineColor)), b=lum(rgb(behind(el)));
+  const rest=items.find(item=>item!==el), restStyle=rest&&getComputedStyle(rest);
+  return {nav:items.indexOf(el), tag:el.tagName.toLowerCase(), text:(el.textContent||'').trim().slice(0,40),
+          focusVisible:el.matches(':focus-visible'), outlineStyle:style.outlineStyle, outlineWidth:parseFloat(style.outlineWidth)||0,
+          outlineColor:style.outlineColor, contrast:Math.round((Math.max(a,b)+0.05)/(Math.min(a,b)+0.05)*100)/100,
+          unfocusedOutline:restStyle?restStyle.outlineStyle:null};
+})()"""
+NAV_STATE = ("(()=>{const main=document.querySelector('main.main');return {hash:location.hash,"
+             "current:[...document.querySelectorAll('.nav-item[aria-current=page]')].map(n=>n.children[1].textContent),"
+             "crumbs:document.querySelector('.crumbs b')?.textContent,focusMain:document.activeElement===main,"
+             "mainLabel:main.getAttribute('aria-label'),announced:document.querySelector('.sr-only[role=status]')?.textContent}})()")
+
+
+async def _press(page, key: str, code: str, keycode: int, *, text: str | None = None, modifiers: int = 0) -> None:
+    """Dispatch one real key press (down and up) to the focused element."""
+    down = {'type': 'keyDown' if text else 'rawKeyDown', 'key': key, 'code': code, 'modifiers': modifiers,
+            'windowsVirtualKeyCode': keycode, 'nativeVirtualKeyCode': keycode}
+    if text:
+        down['text'] = text
+    await page.command('Input.dispatchKeyEvent', down)
+    await page.command('Input.dispatchKeyEvent', {'type': 'keyUp', 'key': key, 'code': code, 'modifiers': modifiers,
+                                                  'windowsVirtualKeyCode': keycode, 'nativeVirtualKeyCode': keycode})
+
+
+async def press_space(page) -> None:
+    """Activate the focused control with a real Space key."""
+    await _press(page, ' ', 'Space', 32, text=' ')
+
+
+async def press_shift_tab(page) -> None:
+    """Move focus backwards with a real Shift+Tab."""
+    await _press(page, 'Tab', 'Tab', 9, modifiers=8)
+
+
+def assert_ring(probe: dict) -> None:
+    """The focused control matches :focus-visible and draws a visible, contrasting ring."""
+    assert probe['focusVisible'], probe
+    assert probe['outlineStyle'] not in ('none', 'hidden') and probe['outlineWidth'] >= 2, probe
+    assert probe['contrast'] >= 3, probe
+
+
+def expected_state(index: int) -> dict:
+    """Navigation state once the entry at ``index`` has been opened by navigation."""
+    view, label, _ = NAV[index]
+    return {'hash': f'#{view}', 'current': [label], 'crumbs': label, 'focusMain': True, 'mainLabel': label,
+            'announced': f'Vista activa: {label}'}
+
+
+async def history_step(page, delta: int) -> None:
+    """Traverse session history like the browser's Back (-1) and Forward (+1) buttons."""
+    history = await page.command('Page.getNavigationHistory')
+    entry = history['entries'][history['currentIndex'] + delta]
+    await page.command('Page.navigateToHistoryEntry', {'entryId': entry['id']})
 
 
 class Priority(Enum):
@@ -200,6 +275,9 @@ async def main() -> None:
                     await screenshot(page, EVIDENCE / 'obs-admin-restart-uncertain.png')
                     checks.append('restart with a server timeout (504, effect uncertain) is shown as Resultado incierto, never applied')
 
+                    keyboard = await keyboard_navigation(page, port, checks)
+
+
                     await page.command('Emulation.setDeviceMetricsOverride',
                                        {'width': 390, 'height': 844, 'deviceScaleFactor': 1, 'mobile': True})
                     await visit('Live', 'view-live')
@@ -212,10 +290,130 @@ async def main() -> None:
             server.should_exit = True
             await serving
             await authority.aclose()
-    result = {'passed': True, 'synthetic_fixture': True, 'checks': checks,
+    result = {'passed': True, 'synthetic_fixture': True, 'checks': checks, 'keyboard': keyboard,
               'requests': [item for item in requests if item['method'] != 'GET' or item['path'].startswith('/api/alerts')]}
     (EVIDENCE / 'browser-result.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result))
+
+
+async def keyboard_navigation(page: Page, port: int, checks: list) -> dict:
+    """Drive the side navigation with real keys from the Admin view left by the restart check."""
+    record = {'tab_order': [], 'enter': [], 'space': [], 'history': [], 'controls': []}
+    ready = dict((view, condition) for view, _, condition in NAV)
+
+    async def opened(index: int) -> dict:
+        await page.wait_for(NAV[index][2])
+        await page.wait_for("document.activeElement===document.querySelector('main.main')")
+        state = await page.evaluate(NAV_STATE)
+        assert state == expected_state(index), (NAV[index], state)
+        return state
+
+    # A view change by keyboard clears the operation notice, as a click did before.
+    assert await page.evaluate("document.body.innerText.includes('Resultado incierto')")
+    uncertain = await page.evaluate("window.__kzaObs.notice()")
+    assert uncertain['state'] == 'uncertain', uncertain
+    await page.evaluate("document.querySelectorAll('.nav-item')[8].focus()")
+    await press_shift_tab(page)
+    probe = await page.evaluate(FOCUS_PROBE)
+    assert probe['nav'] == 7, probe
+    await press_enter(page)
+    await opened(7)
+    assert not await page.evaluate("document.body.innerText.includes('Resultado incierto')")
+    checks.append('opening a view with the keyboard clears the previous operation notice')
+    # Back/Forward goes through hashchange, not the nav handler: it must clear the notice too.
+    await page.evaluate(f"window.__kzaObs.setNotice({json.dumps(uncertain)})")
+    await page.wait_for("document.body.innerText.includes('Resultado incierto')")
+    await history_step(page, -1)
+    await opened(8)
+    assert not await page.evaluate("document.body.innerText.includes('Resultado incierto')")
+    checks.append('Back/Forward to another view clears the previous operation notice')
+
+    # Reload keeps the view named by the hash; nothing is focused on load.
+    await page.command('Page.reload')
+    await page.wait_for(ready['admin'])
+    assert await page.evaluate("location.hash==='#admin'&&document.activeElement===document.body")
+    assert await page.evaluate("[...document.querySelectorAll('.nav-item[aria-current=page]')].map(n=>n.children[1].textContent).join()") == 'Admin'
+    assert await page.evaluate("document.querySelector('.sr-only[role=status]').textContent") == ''
+    checks.append('reload with #admin reopens Admin without moving focus or announcing')
+
+    # Real Tab from the start of the document: the nine entries in order, each with a visible ring.
+    for index in range(len(NAV) + 1):
+        await _press_tab(page)
+        probe = await page.evaluate(FOCUS_PROBE)
+        record['tab_order'].append(probe)
+        if index < len(NAV):
+            assert probe['nav'] == index and probe['text'].startswith(NAV[index][1]), (index, probe)
+            assert probe['unfocusedOutline'] == 'none', probe
+            assert_ring(probe)
+            if NAV[index][0] == 'alerts':
+                await screenshot(page, EVIDENCE / 'obs-focus-nav-alerts.png', full=False)
+        else:
+            assert probe['nav'] == -1 and probe['tag'] == 'button' and probe['text'] == 'Actualizar datos', probe
+            assert_ring(probe)
+    checks.append('Tab reaches the nine entries in document order with a 2 px :focus-visible ring of contrast >= 3:1, then the topbar button')
+
+    # Enter and Space each open every view; the neighbour is focused and the target reached with a real (Shift+)Tab.
+    for key, press in (('enter', press_enter), ('space', press_space)):
+        for index in range(len(NAV)):
+            if index:
+                await page.evaluate(f"document.querySelectorAll('.nav-item')[{index - 1}].focus()")
+                await _press_tab(page)
+            else:
+                await page.evaluate("document.querySelectorAll('.nav-item')[1].focus()")
+                await press_shift_tab(page)
+            probe = await page.evaluate(FOCUS_PROBE)
+            assert probe['nav'] == index, (key, index, probe)
+            assert_ring(probe)
+            await press(page)
+            record[key].append(await opened(index))
+            if key == 'enter' and NAV[index][0] == 'alerts':
+                await screenshot(page, EVIDENCE / 'obs-keyboard-alerts.png', full=False)
+        checks.append(f'{key.capitalize()} opens each of the nine views: aria-current, hash, focus on the named view region, announcement')
+
+    # Back and Forward restore the view from the hash, move focus and announce it.
+    for delta, index in ((-1, 7), (-1, 6), (+1, 7), (+1, 8)):
+        await history_step(page, delta)
+        record['history'].append({'delta': delta, **await opened(index)})
+    history = await page.command('Page.getNavigationHistory')
+    start = max(i for i, entry in enumerate(history['entries']) if entry['url'] == f'http://127.0.0.1:{port}/obs/')
+    await page.command('Page.navigateToHistoryEntry', {'entryId': history['entries'][start]['id']})
+    await page.wait_for(ready['live'])
+    await page.wait_for("document.activeElement===document.querySelector('main.main')")
+    state = await page.evaluate(NAV_STATE)
+    assert state == {**expected_state(0), 'hash': ''}, state
+    record['history'].append({'to': 'entry without hash', **state})
+    await history_step(page, +1)
+    await page.wait_for("location.hash!==''")
+    state = await page.evaluate(NAV_STATE)
+    index = next(i for i, (view, _, _) in enumerate(NAV) if f'#{view}' == state['hash'])
+    record['history'].append({'delta': 1, **await opened(index)})
+    checks.append('Back and Forward restore the view named by the hash (Back to the entry without hash opens Live), with focus and announcement')
+
+    # Inputs, selects and buttons inside a view show the same ring when reached with the keyboard.
+    await page.evaluate("document.querySelectorAll('.nav-item')[7].focus()")
+    await _press_tab(page)
+    await press_enter(page)
+    await opened(8)
+    await page.wait_for("!!document.querySelector('.content form input')")
+    await page.evaluate("document.querySelector('.content form input').focus()")
+    for expected in ('select', 'button'):
+        await _press_tab(page)
+        probe = await page.evaluate(FOCUS_PROBE)
+        assert probe['tag'] == expected, probe
+        assert_ring(probe)
+        record['controls'].append(probe)
+    await press_shift_tab(page)
+    await press_shift_tab(page)
+    probe = await page.evaluate(FOCUS_PROBE)
+    assert probe['tag'] == 'input', probe
+    assert_ring(probe)
+    record['controls'].append(probe)
+    await screenshot(page, EVIDENCE / 'obs-focus-admin-input.png', full=False)
+    checks.append('input, select and button in Admin show the focus ring with the keyboard')
+    (EVIDENCE / 'keyboard-navigation.json').write_text(json.dumps(record, indent=2) + '\n')
+    return {'tab_order': [probe['text'] for probe in record['tab_order']],
+            'contrast_min': min(probe['contrast'] for probe in record['tab_order'] + record['controls']),
+            'enter_views': len(record['enter']), 'space_views': len(record['space']), 'history_steps': len(record['history'])}
 
 
 if __name__ == '__main__':

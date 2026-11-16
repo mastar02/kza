@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
 const data = require('../../src/dashboard/frontend/obs/src/obs-data.js');
+const nav = require('../../src/dashboard/frontend/obs/src/obs-nav.js');
 const Babel = require('../../src/dashboard/frontend/obs/vendor/babel-standalone-7.29.0.min.js');
 
 const OBS = path.resolve(__dirname, '../../src/dashboard/frontend/obs');
@@ -374,6 +375,8 @@ test('the panel loads the observation module before the views and no example scr
   const scripts = [...html.matchAll(/<script[^>]*src="([^"]+)"/g)].map(match => match[1]);
   assert.ok(scripts.includes('src/obs-data.js'));
   assert.ok(scripts.indexOf('src/obs-data.js') < scripts.indexOf('src/primitives.jsx'));
+  assert.ok(scripts.includes('src/obs-nav.js'));
+  assert.ok(scripts.indexOf('src/obs-nav.js') < scripts.indexOf('src/app.jsx'));
   for (const file of scripts.filter(name => !name.startsWith('vendor/'))) assert.ok(fs.existsSync(path.join(OBS, file)), file);
   assert.match(html, /<title>KZA — Panel técnico<\/title>/);
 });
@@ -396,4 +399,81 @@ test('panel views use only existing authenticated endpoints for writes', () => {
   assert.match(admin, /@router\.delete\("\/alerts\/\{alert_id\}", dependencies=\[Depends\(require_admin\)\]\)/);
   assert.match(admin, /@router\.post\("\/services\/\{name\}\/restart", dependencies=\[Depends\(require_admin\)\]\)/);
   assert.match(observability, /@router\.post\("\/api\/llm\/endpoints\/\{endpoint_id\}\/clear-cooldown"\)/);
+});
+
+// ---- Navigation: hash <-> view (WEB-03, WEB-05 /obs/) ----
+const APP = fs.readFileSync(path.join(OBS, 'src/app.jsx'), 'utf8');
+const NAV_IDS = [...APP.slice(APP.indexOf('const NAV = ['), APP.indexOf('];', APP.indexOf('const NAV = [')))
+  .matchAll(/\{ id: '([a-z]+)'/g)].map(match => match[1]);
+
+test('the panel navigation has nine views and each id round-trips through the hash', () => {
+  assert.deepEqual(NAV_IDS, ['live', 'conversations', 'privacy', 'alerts', 'ha', 'llm', 'users', 'system', 'admin']);
+  const views = APP.slice(APP.indexOf('const Views = {'), APP.indexOf('};', APP.indexOf('const Views = {')));
+  for (const id of NAV_IDS) {
+    assert.equal(nav.hashForView(id), `#${id}`);
+    assert.equal(nav.viewFromHash(nav.hashForView(id), NAV_IDS, 'live'), id);
+    assert.match(views, new RegExp(`\\b${id}:`), id);
+  }
+});
+
+test('an empty, unknown or inherited hash opens the fallback view', () => {
+  for (const hash of ['', '#', null, undefined, '#nope', '#Live', '#live ', '#__proto__', '#constructor', '#toString', '##alerts'])
+    assert.equal(nav.viewFromHash(hash, NAV_IDS, 'live'), 'live', String(hash));
+  assert.equal(nav.viewFromHash('alerts', NAV_IDS, 'live'), 'alerts');
+});
+
+test('choosing another view opens it now and pushes its hash; the open view or an unknown id does nothing', () => {
+  assert.deepEqual(nav.planNavigation('live', 'alerts', '', NAV_IDS), { show: true, write: '#alerts' });
+  assert.deepEqual(nav.planNavigation('alerts', 'system', '#alerts', NAV_IDS), { show: true, write: '#system' });
+  assert.deepEqual(nav.planNavigation('live', 'live', '', NAV_IDS), { show: false, write: null });
+  assert.deepEqual(nav.planNavigation('alerts', 'alerts', '#alerts', NAV_IDS), { show: false, write: null });
+  assert.deepEqual(nav.planNavigation('live', 'nope', '', NAV_IDS), { show: false, write: null });
+  // The hash already names the target (no history entry would be added): open it without writing.
+  assert.deepEqual(nav.planNavigation('live', 'alerts', '#alerts', NAV_IDS), { show: true, write: null });
+});
+
+test('Back and Forward restore the view named by the hash; the echo of our own write changes nothing', () => {
+  assert.deepEqual(nav.planHashChange('system', '#alerts', NAV_IDS, 'live'), { view: 'alerts', changed: true });
+  assert.deepEqual(nav.planHashChange('alerts', '', NAV_IDS, 'live'), { view: 'live', changed: true });
+  assert.deepEqual(nav.planHashChange('alerts', '#alerts', NAV_IDS, 'live'), { view: 'alerts', changed: false });
+  assert.deepEqual(nav.planHashChange('live', '#nope', NAV_IDS, 'live'), { view: 'live', changed: false });
+  assert.deepEqual(nav.planHashChange('admin', '#nope', NAV_IDS, 'live'), { view: 'live', changed: true });
+});
+
+test('a sequence of choices and Back steps keeps view and hash in step', () => {
+  const history = [''];
+  let index = 0, active = nav.viewFromHash(history[index], NAV_IDS, 'live');
+  const choose = id => {
+    const step = nav.planNavigation(active, id, history[index], NAV_IDS);
+    if (step.show) active = id;
+    if (step.write) { history.splice(index + 1, Infinity, step.write); index += 1; }
+    const echo = nav.planHashChange(active, history[index], NAV_IDS, 'live');
+    assert.equal(echo.changed, false);
+  };
+  const travel = delta => {
+    index += delta;
+    const step = nav.planHashChange(active, history[index], NAV_IDS, 'live');
+    if (step.changed) active = step.view;
+  };
+  choose('alerts'); choose('alerts'); choose('system'); choose('admin');
+  assert.deepEqual(history, ['', '#alerts', '#system', '#admin']);
+  travel(-1); assert.equal(active, 'system');
+  travel(-1); assert.equal(active, 'alerts');
+  travel(-1); assert.equal(active, 'live');
+  travel(+2); assert.equal(active, 'system');
+  choose('ha');
+  assert.deepEqual(history, ['', '#alerts', '#system', '#ha']);
+  travel(-1); assert.equal(active, 'system');
+});
+
+test('the active view is announced in Spanish and focus moves to a stable view region', () => {
+  assert.equal(nav.announcement('Home Assistant'), 'Vista activa: Home Assistant');
+  assert.match(APP, /<main className="main" ref=\{mainRef\} tabIndex=\{-1\}/);
+  assert.match(APP, /<p className="sr-only" role="status" aria-live="polite">\{announcement\}<\/p>/);
+  assert.match(APP, /window\.addEventListener\('hashchange', onHashChange\)/);
+  assert.match(APP, /window\.removeEventListener\('hashchange', onHashChange\)/);
+  const html = fs.readFileSync(path.join(OBS, 'index.html'), 'utf8');
+  for (const selector of ['.nav-item:focus-visible', '.btn:focus-visible', 'button:focus-visible', 'input:focus-visible', 'select:focus-visible'])
+    assert.ok(html.includes(selector), selector);
+  assert.match(html, /outline: 2px solid var\(--focus\)/);
 });
