@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import replace
 import json
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
 import pytest
