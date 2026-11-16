@@ -18,6 +18,9 @@ BOOT = "tests/integration/test_sc4a_verify_boot.py::"
 STORES = "tests/unit/memory/test_sc4a_verify_stores.py::"
 APP = "tests/unit/core/test_sc4a_application_verify.py::"
 STRUCT = BOOT + "test_verify_mode_starts_no_listed_loop_and_a_normal_boot_starts_each"
+SC1B = "tests/unit/tools/test_sc1b_release_plan.py::"
+GATE = [SC1B + "test_first_post_r1_plan_admits_new_and_start_runs_k_from_new",
+        SC1B + "test_a_cut_start_resumes_only_with_the_intent_archive"]
 BRANCH = BOOT + "test_verify_branch_reaches_no_ingress_or_house_effect_start"
 
 
@@ -198,6 +201,41 @@ MUTANTS = [
     ("SC4A-N1: plain retire of a verified release log", "scripts/compaction.py",
      "        if release_log(log):\n            _refuse(RELEASE_RETIRE_UNAVAILABLE)", "        if False:\n            _refuse(RELEASE_RETIRE_UNAVAILABLE)",
      [RUN + "test_release_verify_run_is_the_acknowledged_isolated_boot_and_serve_stops_it"]),
+    # --- review round 1 (SC4A-RA-1/RB-1, RA-2, RA-3, RB-2, RB-3) ---
+    ("release gate lifted before SC-4b", "scripts/compaction.py",
+     "RELEASE_EXITS_AVAILABLE = False", "RELEASE_EXITS_AVAILABLE = True", GATE),
+    ("release gate: verify arms a release log", "scripts/compaction.py",
+     "            if not RELEASE_EXITS_AVAILABLE:\n                _refuse(RELEASE_EXIT_UNAVAILABLE)",
+     "            if False:\n                _refuse(RELEASE_EXIT_UNAVAILABLE)", GATE[:1]),
+    ("release gate: start/resume name verify", "scripts/compaction.py",
+     "    if release_log(log) and not RELEASE_EXITS_AVAILABLE:\n        return \"compact abort \"",
+     "    if False:\n        return \"compact abort \"", GATE),
+    ("release N: no explicit N needed", "scripts/compaction.py",
+     "            if smoke_seconds is None or smoke_seconds > RELEASE_SMOKE_SECONDS_MAX:",
+     "            if smoke_seconds is not None and smoke_seconds > RELEASE_SMOKE_SECONDS_MAX:",
+     [RUN + "test_a_release_log_needs_an_explicit_n_within_the_design_cap"]),
+    ("release N: no cap", "scripts/compaction.py",
+     "            if smoke_seconds is None or smoke_seconds > RELEASE_SMOKE_SECONDS_MAX:",
+     "            if smoke_seconds is None:", [RUN + "test_a_release_log_needs_an_explicit_n_within_the_design_cap"]),
+    ("status: an unreadable verify record hides the phase", "scripts/compaction.py",
+     "    try:\n        ready, _smoke = stage.verify_run_records(root, run_id)\n    except (OSError, ValueError):",
+     "    try:\n        ready, _smoke = stage.verify_run_records(root, run_id)\n    except OSError:",
+     [RUN + "test_a_short_run_is_not_verified_and_serve_refuses_it_afterwards"]),
+    ("status: an unreadable run record hides the phase", "scripts/compaction.py",
+     "    try:\n        run_id = _started_run_id(root, started)\n    except (OSError, ValueError):",
+     "    try:\n        run_id = _started_run_id(root, started)\n    except OSError:",
+     [RUN + "test_a_short_run_is_not_verified_and_serve_refuses_it_afterwards"]),
+    ("verify record of another run accepted", "scripts/stage_runtime.py",
+     "record[\"schema_version\"] != 1 or record[\"run_id\"] != run_id:", "record[\"schema_version\"] != 1:",
+     [RUN + "test_release_run_verified_needs_both_records_and_the_monotonic_interval"]),
+    ("capture-close: a changed in-memory row accepted", "src/memory/capture_recorders.py",
+     "                    and self._rows_confirmed and cache == self._construction_rows)",
+     "                    and self._rows_confirmed)",
+     [STORES + "test_verify_capture_close_refuses_a_changed_in_memory_row"]),
+    ("trace exempts by (table, verb) only", "tests/integration/test_sc4a_verify_boot.py",
+     "if write[0] != AUTHORITY_DB and (write[2], write[1], write[3]) not in allowed]",
+     "if write[0] != AUTHORITY_DB and (write[2], write[1]) not in {(t, v) for t, v, _s in allowed}]",
+     [BOOT + "test_trace_exempts_a_statement_only_at_its_pinned_site"]),
 ]
 
 
@@ -230,7 +268,8 @@ def main() -> None:
         finally:
             path.write_text(original, encoding="utf-8")
         tail = run.stdout.strip().splitlines()[-1:] if run.stdout.strip() else []
-        results.append({"mutant": name, "file": rel, "tests": tests, "killed": run.returncode not in (0, 5),
+        # Review RB-5: killed only by a failing test (exit 1), never by a collection, import or usage error.
+        results.append({"mutant": name, "file": rel, "tests": tests, "killed": run.returncode == 1,
                         "exit": run.returncode, "seconds": round(time.monotonic() - started, 1), "tail": tail})
         print(name, "KILLED" if results[-1]["killed"] else "SURVIVED", tail, flush=True)
         temporary = out.with_suffix(".tmp")
