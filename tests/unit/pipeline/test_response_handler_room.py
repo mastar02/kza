@@ -196,6 +196,51 @@ async def test_cancel_before_the_first_chunk_reports_no_output(monkeypatch):
     assert (result.spoken_segments, result.output_started, zones.pulled) == (0, False, 0)
 
 
+@pytest.mark.parametrize("stream", [True, False])
+@pytest.mark.asyncio
+async def test_cancel_while_the_first_chunk_is_still_being_synthesized_reports_no_output(monkeypatch, stream):
+    """Review round 1 R3: output starts when a PCM chunk reaches the player, not when synthesis starts.
+
+    The zone pulls at once, so the player waits inside the first synthesis step
+    (synthesize_stream) or the handler waits inside synthesize; a barge-in there played nothing,
+    and the scheduler keeps the notice retryable.
+    """
+    import threading
+
+    entered, release = threading.Event(), threading.Event()
+
+    def blocked_synthesis():
+        entered.set()
+        release.wait(5)
+        return np.ones(1600, dtype=np.float32)
+
+    def synthesize_stream(text):
+        yield blocked_synthesis()
+
+    zones = GatedZones()
+    handler = gated_handler(monkeypatch, zones)
+    if stream:
+        handler.tts.synthesize_stream = synthesize_stream
+    else:
+        handler.tts.synthesize.side_effect = lambda text: (blocked_synthesis(), 0.1)
+    try:
+        task = asyncio.create_task(handler.aspeak("Oye, recuerda regar", zone_id="zone_living", stream=stream))
+        assert await asyncio.to_thread(entered.wait, 2)
+        assert await handler.cancel(zone_id="zone_living")
+        release.set()
+        result = await asyncio.wait_for(task, 2)
+    finally:
+        release.set()
+        await handler.aclose()
+    assert result.delivery is DeliveryState.CANCELLED
+    assert (result.spoken_segments, result.output_started, zones.pulled) == (0, False, 0)
+    if stream:
+        assert zones.plays == ["zone_living"]  # the player itself waited inside the first synthesis step
+    from src.reminders.reminder_scheduler import notice_outcome
+    from src.reminders.reminder_store import ReminderActionStatus
+    assert notice_outcome(result) == (ReminderActionStatus.FAILED, "delivery_not_started:cancelled")
+
+
 @pytest.mark.asyncio
 async def test_queue_stage_cancel_result_has_output_started_false(monkeypatch):
     """C02-NTC-0011 input: a notice still waiting for the output is cancelled by the living barge-in."""
