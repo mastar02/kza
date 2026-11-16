@@ -310,6 +310,8 @@ async def keyboard_navigation(page: Page, port: int, checks: list) -> dict:
 
     # A view change by keyboard clears the operation notice, as a click did before.
     assert await page.evaluate("document.body.innerText.includes('Resultado incierto')")
+    uncertain = await page.evaluate("window.__kzaObs.notice()")
+    assert uncertain['state'] == 'uncertain', uncertain
     await page.evaluate("document.querySelectorAll('.nav-item')[8].focus()")
     await press_shift_tab(page)
     probe = await page.evaluate(FOCUS_PROBE)
@@ -318,8 +320,13 @@ async def keyboard_navigation(page: Page, port: int, checks: list) -> dict:
     await opened(7)
     assert not await page.evaluate("document.body.innerText.includes('Resultado incierto')")
     checks.append('opening a view with the keyboard clears the previous operation notice')
+    # Back/Forward goes through hashchange, not the nav handler: it must clear the notice too.
+    await page.evaluate(f"window.__kzaObs.setNotice({json.dumps(uncertain)})")
+    await page.wait_for("document.body.innerText.includes('Resultado incierto')")
     await history_step(page, -1)
     await opened(8)
+    assert not await page.evaluate("document.body.innerText.includes('Resultado incierto')")
+    checks.append('Back/Forward to another view clears the previous operation notice')
 
     # Reload keeps the view named by the hash; nothing is focused on load.
     await page.command('Page.reload')
