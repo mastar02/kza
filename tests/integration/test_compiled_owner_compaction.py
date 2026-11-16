@@ -1,7 +1,8 @@
 """U3b-0c compiled rehearsals: the installed controller compacts under the fake supervisor (C1, C2, C3, C6, T-C5).
 
 Artifacts as in test_compiled_managed_launcher (X = HEAD plus this working
-tree). Every compact command runs as the installed, compiled controller
+tree), built at controller epoch 4 since SC-1a: an owner world is never served
+from epoch 5. Every compact command runs as the installed, compiled controller
 (controller/current/scripts/stage_runtime.pyc) in its own process, so P7
 (controller location), the compiled compaction module and the compaction
 worker (spawned from controller/current with its G1 capability) are the
@@ -36,7 +37,13 @@ REGISTER = compiled.REGISTER_TARGET.replace("'clips'", "('clips-' + state.parent
 
 @pytest.fixture(scope="module")
 def artifacts(tmp_path_factory):
-    return rehearsal.build_artifacts(tmp_path_factory.mktemp("compiled-compaction"))
+    # SC-1a: owner worlds exist only at epoch <= 4; X is this tree's epoch-4 build.
+    return rehearsal.build_artifacts(tmp_path_factory.mktemp("compiled-compaction"), epoch4=True)
+
+
+@pytest.fixture(autouse=True)
+def _epoch4(epoch4_controller):
+    """The in-process controller (worlds, plans, witnesses) as the same epoch-4 build."""
 
 
 @pytest.fixture

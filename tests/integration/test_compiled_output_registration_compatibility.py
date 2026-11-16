@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from tests.mocks import compiled_restore as compiled
 from tests.mocks import slot_rollback as slots
+from tests.mocks.epoch4 import apply_epoch4, epoch4_checkout
 
 
 OLD_REVISION = "ef8bc6db29f9eb3685edcf32b3a1aacfa8896d54"
@@ -369,15 +370,20 @@ def _exercise(task: Path, evidence: Path, repo: Path, revision: str) -> dict:
             raise
 
 
-def test_compiled_v1_v2_histories_share_original_closed_controller(tmp_path: Path,
+def test_compiled_v1_v2_histories_share_original_closed_controller(tmp_path: Path, tmp_path_factory, monkeypatch,
                                                                      legacy_managed_transitions) -> None:
     # SC-2: a delegated copy activated under the managed head is a legacy world (fixture);
     # the reader phases run the compiled controllers in fresh processes as before.
+    # SC-1a: from epoch 5 no delegation record is honoured, so the current release and the
+    # in-process controller are HEAD's epoch-4 build (tests/mocks/epoch4.py), run from a
+    # shared checkout of that build outside the task tree.
     repo = Path(__file__).resolve().parents[2]
-    revision = _git(repo, "rev-parse", "HEAD")
-    assert re.fullmatch("[0-9a-f]{40}", revision)
+    head = _git(repo, "rev-parse", "HEAD")
+    assert re.fullmatch("[0-9a-f]{40}", head)
     requested = os.environ.get("KZA_RECONCILIATION_REVISION")
-    assert requested is None or requested == revision
+    assert requested is None or requested == head
+    apply_epoch4(monkeypatch)
+    repo, revision = epoch4_checkout(tmp_path_factory.mktemp("output-registration-epoch4"), repo, head)
     selected = os.environ.get("KZA_OUTPUT_COMPATIBILITY_EVIDENCE_ROOT")
     evidence = (tmp_path / "evidence" if selected is None else Path(selected).absolute() / ("attempt-" + uuid4().hex))
     evidence.mkdir(mode=0o700, parents=True)

@@ -55,6 +55,19 @@ def epoch4_commit(clone: Path, revision: str) -> str:
                          message="sc-1a epoch-4 build")
 
 
+def epoch4_checkout(base: Path, repo: Path, revision: str) -> tuple[Path, str]:
+    """A shared clone of ``repo`` at ``base``/checkout, checked out at the epoch-4 build of ``revision``.
+
+    For rehearsals that read files from a checkout as well as build from its commits.
+    """
+    clone = base / "checkout"
+    subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(repo), str(clone)],
+                   check=True, timeout=120)
+    built = epoch4_commit(clone, revision)
+    subprocess.run(["git", "checkout", "--quiet", "--detach", built], cwd=clone, check=True, timeout=300)
+    return clone.resolve(), built
+
+
 def installed_worker_command(original):
     """worker_command running the installed controller tree (the epoch-4 build), not this checkout."""
     def worker_command(root, compaction_id):

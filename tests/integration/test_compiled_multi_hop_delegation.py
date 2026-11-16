@@ -12,6 +12,10 @@ so the hops are granted by the compiled CLI of the last epoch-3 commit (26de262,
 pinned archive the design keeps for legacy owner worlds) and each cross-slot activation
 runs under tests.mocks.legacy_transitions; the chains are then validated, run and
 checked by the working tree's code with the production flag.
+
+SC-1a: from controller epoch 5 no delegation record is honoured, so Y is this working
+tree built at epoch 4 (tests/mocks/epoch4.py) and the in-process controller runs as
+that build; the epoch-5 refusals are in test_sc1a_controller_install.
 """
 
 import json
@@ -23,6 +27,7 @@ import time
 
 from scripts import stage_runtime as stage
 from scripts.build_runtime import build_runtime
+from tests.mocks.epoch4 import apply_epoch4, epoch4_commit
 from tests.mocks.legacy_transitions import legacy_managed_transitions
 from tests.unit.tools.test_stage_runtime_admission import (
     _CLOSING_CHILD,
@@ -86,14 +91,15 @@ def _local(state: Path, name: str) -> list:
     return _registration("collectors", 1, {"kind": "wake_clips", "root": str(directory)})
 
 
-def test_release_rollback_and_roll_forward_across_compiled_artifacts(tmp_path):
+def test_release_rollback_and_roll_forward_across_compiled_artifacts(tmp_path, monkeypatch):
+    apply_epoch4(monkeypatch)
     started = time.perf_counter()
     repo = Path(__file__).resolve().parents[2]
     clone = tmp_path / "clone"
     subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(repo), str(clone)],
                    check=True, timeout=120)
     x = _git(clone, "rev-parse", _PRE_0B + "^{commit}")
-    y = _working_tree_commit(repo, clone)
+    y = epoch4_commit(clone, _working_tree_commit(repo, clone))
     assert _git(clone, "diff", "--name-only", x, y, "--", "scripts/stage_runtime.py") == "scripts/stage_runtime.py"
     pinned = _git(clone, "rev-parse", _PINNED_EPOCH3 + "^{commit}")
     archives = {"X": tmp_path / "x.tar.gz", "Y": tmp_path / "y.tar.gz", "P": tmp_path / "p.tar.gz"}

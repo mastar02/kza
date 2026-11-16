@@ -420,6 +420,15 @@ def test_cs2_9_unit(tmp_path):
         pass
     with pytest.raises(ValueError, match=stage.CONTROLLER_INSTALL_INCOMPLETE):
         stage.AdmissionController(root, gate="serve").__enter__()
+    # serve's own installed-controller check (also run by install-launcher and the adoption commands)
+    import hashlib
+    (root / "controller" / "c1" / "scripts").mkdir()
+    (root / "controller" / "c1" / "scripts" / "x.pyc").write_bytes(b"x")
+    (root / "controller" / "c1" / "release.json").write_text(json.dumps(
+        {"git_commit": "a" * 40, "files": {"scripts/x.pyc": hashlib.sha256(b"x").hexdigest()}}))
+    _refused(stage.CONTROLLER_INSTALL_INCOMPLETE, lambda: launcher.check_controller_epoch(root))
+    stage._atomic_record(root / "admission" / "controller.json", {"controller_epoch": 5, "commit": "a" * 40})
+    launcher.check_controller_epoch(root)
 
 
 # --- later installs (t0_controller_install.later_installs) ---------------------------------------------
@@ -577,6 +586,20 @@ def _l4(root, builds, tmp_path):
     return lambda: launcher.uninstall_launcher(root, unit_dir=unit_dir, manager=manager, decision_id="d-sc1a",
                                                phrase=launcher.UNINSTALL_PHRASE, legacy_slot="legacy",
                                                legacy_commits=(legacy[:7],))
+
+
+def test_a_record_is_refused_before_serve_recovers_an_open_head(builds, t0_root, tmp_path):
+    """Guard (1) in serve runs before R-b or the compaction gate write anything."""
+    root = t0_root["root"]
+    crashed = cw.serve(root, tmp_path, "crash", scenario="crash", seconds=0.1)
+    assert crashed.code == 68 and stage.read_admission_head(root)["status"] == "unknown"
+    record = root / "admission" / "delegations" / ("b" * 64 + ".json")
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text("{}")
+    witness = cw.witness(root)
+    served = _serve(root, tmp_path, "open")
+    assert served.code == 78 and ("refused " + stage.DELEGATION_FROZEN) in served.serve.events
+    assert cw.witness(root) == witness  # no recovery record, the head still unknown
 
 
 def test_dl_a_record_after_t0_refuses_plan_and_serve_until_removed_and_l4_stays(builds, t0_root, tmp_path):

@@ -466,11 +466,14 @@ def _exercise_managed(prepared, proof, repo, evidence, deadline, controller):
     proof["privacy_contract_passed"] = True
 
 
-def exercise_slot_rollback(tmp_path: Path) -> dict:
-    """Exercise copied state through fresh compiled owners and native closes."""
+def exercise_slot_rollback(tmp_path: Path, repo: Path | None = None) -> dict:
+    """Exercise copied state through fresh compiled owners and native closes.
+
+    ``repo`` defaults to this checkout; SC-1a passes a checkout of HEAD's epoch-4 build.
+    """
     started = time.monotonic()
     deadline = started + PARENT_SECONDS
-    repo = Path(__file__).resolve().parents[2]
+    repo = Path(__file__).resolve().parents[2] if repo is None else Path(repo).resolve()
     task = Path(tmp_path).resolve()
     if task.is_relative_to(repo) or repo.is_relative_to(task):
         raise ValueError("slot_task_must_be_outside_checkout")

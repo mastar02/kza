@@ -8,6 +8,7 @@ import pytest
 
 from scripts import stage_runtime as stage
 from scripts.build_runtime import build_runtime
+from tests.mocks.epoch4 import epoch4_checkout
 from tests.mocks.legacy_transitions import legacy_managed_transitions
 from tests.mocks.slot_rollback import exercise_slot_rollback
 
@@ -15,11 +16,16 @@ from tests.mocks.slot_rollback import exercise_slot_rollback
 UNMANAGED_REVISION = "9b3170294eb69a53dd27b63949c09a63a2efed54"
 
 
-@pytest.mark.usefixtures("legacy_managed_transitions")
-def test_compiled_slot_rollback_preserves_latest_privacy_authority(tmp_path):
+@pytest.mark.usefixtures("legacy_managed_transitions", "epoch4_controller")
+def test_compiled_slot_rollback_preserves_latest_privacy_authority(tmp_path, tmp_path_factory):
     # SC-2: a delegated copy activated under the managed head is a legacy world (fixture; not a
     # parameter, which would shadow the imported context manager of the same name: review RV3-4).
-    exercise_slot_rollback(tmp_path)
+    # SC-1a: no epoch-5 controller honours the delegation, so the bridge is HEAD's epoch-4 build,
+    # from a shared checkout outside the task tree, and the in-process controller runs as it.
+    repo = Path(__file__).resolve().parents[2]
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    checkout, _ = epoch4_checkout(tmp_path_factory.mktemp("slot-rollback-epoch4"), repo, head)
+    exercise_slot_rollback(tmp_path, checkout)
 
 
 def _tree(root, *states):

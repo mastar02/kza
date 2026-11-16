@@ -1370,6 +1370,43 @@ del panel de R1-B2 en Privacidad, que sigue con el usuario, y después los
 pasos del operador. La ventana la programa el usuario; sigue sin autorizar ni
 programar.
 
+## SC-1a — controlador de época 5 e instalación T0 (2026-11-16)
+
+Primera unidad del modo release posterior a R1 (diseño
+`t040-t041/sc-release-design-v4.json`, unidad SC-1a, aceptado). Rama
+`sc1a-controller-epoch5` desde b15ce86, sin push; la suite batch y el merge
+los hace la sesión coordinadora. Sin release: producción y R1 siguen en
+época 4. Evidencia: `t040-t041/sc1a-evidence.json`.
+
+- `CONTROLLER_EPOCH` 5 y `CONTROLLER_REVISION` 1; `build_runtime` registra en
+  `release.json` la clausura de imports del controlador
+  (`controller_sources`, unas 300 fuentes) y su digest
+  (`controller_sources_sha256`). El triple instalado se lee de
+  `controller/current/release.json`.
+- `install-controller`: monotonía en (época, revisión), mismo par con otro
+  digest rechazado; primera instalación de época 5 con log pendiente o
+  ilegible, head abierto, registros de delegación o dueños rechazados, y SR-1
+  (binding recalculado en proceso, sonda del slot, contrato de esquema,
+  comprobaciones de slot de `serve`); siguientes: SR-1 con head cerrado, head
+  abierto sólo bajo un log del modo release con el binding de H igual,
+  head desconocido rechazado. Un T0 compilado debe correr desde el archivo
+  nuevo extraído.
+- CS2-9: `runtime_admission_controller_install_incomplete` fuera de la
+  compuerta `install` (fila T0S).
+- Guarda AUTHZ3-1 sin estado (`runtime_admission_delegation_frozen`,
+  `runtime_admission_owners_present`,
+  `runtime_admission_compaction_owners_present`); L4 no queda bloqueado.
+- Tests: los mundos con dueños corren con una construcción de época 4 del
+  mismo árbol (`tests/mocks/epoch4.py`, fixtures `epoch4_controller` y
+  `x4_archive`); el ensayo in-process de R1 (SC-6a) también, porque R1 es
+  época 4. Los rechazos de época 5 están en
+  `tests/unit/tools/test_sc1a_controller_install.py`.
+- Queda para SC-1b: escribir `intent.mode = "release"` (la instalación ya lo
+  lee), P6'(c) con el triple (plan sin T0 rechazado), `t0_required` y
+  `controller_behind`, y el resto de plan/start del modo release. El test
+  completo de CR2-3 (V2, controlador corregido y `abort --to-h`) necesita
+  SC-4a/SC-4b.
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.

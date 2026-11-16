@@ -52,15 +52,18 @@ def overlay_commit(repo: Path, clone: Path, *, message: str = "u3b-0d rehearsal"
     return _git(clone, "commit-tree", tree, "-p", "HEAD", "-m", message, env=environment)
 
 
-def build_artifacts(base: Path) -> dict:
+def build_artifacts(base: Path, *, epoch4: bool = False) -> dict:
     """X = HEAD + working tree; Y = a trivial descendant of X; P = HEAD's parent chain base (pre-0d).
+
+    ``epoch4`` (SC-1a): X is the epoch-4 build of HEAD + working tree (tests/mocks/epoch4.py),
+    for rehearsals of worlds with owners, which no epoch-5 controller serves.
 
     KZA_LAUNCHER_ARTIFACTS_CACHE (mutant runs only) names a directory with
     prebuilt x/y/pre archives and commits.json, reused instead of rebuilding
     when the mutated code is controller-side only.
     """
     cache = os.environ.get("KZA_LAUNCHER_ARTIFACTS_CACHE")
-    if cache:
+    if cache and not epoch4:
         directory = Path(cache)
         commits = json.loads((directory / "commits.json").read_text())
         archives = {name: directory / (name + ".tar.gz") for name in ("x", "y", "pre")
@@ -70,6 +73,9 @@ def build_artifacts(base: Path) -> dict:
     subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(REPO), str(clone)],
                    check=True, timeout=120)
     x = overlay_commit(REPO, clone)
+    if epoch4:
+        from tests.mocks.epoch4 import epoch4_commit
+        x = epoch4_commit(clone, x)
     environment = dict(os.environ, GIT_AUTHOR_NAME="rehearsal", GIT_AUTHOR_EMAIL="rehearsal@invalid",
                        GIT_COMMITTER_NAME="rehearsal", GIT_COMMITTER_EMAIL="rehearsal@invalid",
                        GIT_AUTHOR_DATE="2026-11-12T00:00:01Z", GIT_COMMITTER_DATE="2026-11-12T00:00:01Z")
