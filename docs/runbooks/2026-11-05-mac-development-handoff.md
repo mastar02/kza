@@ -1573,6 +1573,41 @@ mutantes, CR-7).
   `tests/unit/core/test_sc4a_application_verify.py`; mutantes con
   `tools/sc4a_mutants.py`. Resultados en la evidencia.
 
+### SC-4a — revisión ronda 1 (2026-11-16)
+
+Dos revisiones independientes (A y B) pidieron cambios. Registro completo en
+`t040-t041/sc4a-evidence.json` (`review_round_1`).
+
+- RA-1/RB-1 (media): con SC1B-N3 quitada, armar un log del modo release era
+  un estado alcanzable por código sin salida antes de SC-4b. Ahora es una
+  compuerta en el código (SC4A-N13): `RELEASE_EXITS_AVAILABLE = False` en
+  `scripts/compaction.py`; `compact verify` rechaza
+  `release_exit_unavailable` y `start`/`resume` dicen `next: compact abort
+  <id>`. SC-4b la levanta. DEPLOYMENT y el runbook la registran como
+  compuerta de release.
+- RB-2: N del modo release obligatorio y de 10 a 60 (SC4A-N14,
+  `release_smoke_seconds`); el runbook da la fórmula y los valores de hoy.
+- RB-3: `compact status` muestra `verify_branch_reached: unreadable` y la
+  fase cuando un registro no se puede leer, en vez de `invalid`.
+- RA-2: tests nuevos para un registro con el `run_id` de otra corrida y para
+  una fila de grabadora cambiada sólo en memoria. RA-3: la traza exime por
+  sitio fijado `(tabla, verbo, archivo:función)`. RB-5: un mutante cuenta como
+  matado sólo con salida 1.
+- RA-4: CR-7 con H de R1 (plantilla construida desde 357dcb5) y V de SC-4a
+  (17722da): los 24 estados de SC-0 sellan, VERIFY antes de READY, intervalo
+  sostenido y diferencia de proyección vacía; la única escritura proyectada
+  fuera de la autoridad es la exenta `ambient/control.py:98`;
+  `no_default_control_row` difiere sólo en `ambient_runtime_control`
+  (SC4A-N12). Resultados en `t040-t041/sc4a-cr7-r1h-results.json`.
+- RA-5: DEPLOYMENT y el runbook dicen que «aislada» es sin entrada ni efectos
+  en la casa, no sin red (mismas pruebas de conexión a HA y al gateway LLM).
+- RA-6, RB-4, RB-6: sin cambio de código; pasan a `follow_up` para SC-4b y
+  SC-R.
+- Server (yo, `runs/sc4a2`, con nice y la compuerta pgrep): módulos dirigidos
+  más sc1b 72 passed; `tests/unit/core` más sc0/sc1a/sc5a/sc6a docs 577
+  passed; módulos de compactación más sc1b y SC-4a 561 passed, 5 skipped.
+  Mutantes 57/57 matados, todos con salida 1 (`runs/sc4a-mut`).
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.
