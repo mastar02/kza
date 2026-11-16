@@ -30,6 +30,7 @@ with their own capability (src.core.compaction_worker).
 from __future__ import annotations
 
 import calendar
+from contextlib import closing
 import errno
 import hashlib
 import json
@@ -118,19 +119,39 @@ T0_REQUIRED = "runtime_admission_compaction_t0_required"
 CONTROLLER_BEHIND = "runtime_admission_compaction_controller_behind"
 # The plain-mode paths (Q6, allow-run, --discard-k-writes) finish only a log without 'mode'.
 PLAIN_MODE_ONLY = "runtime_admission_compaction_plain_mode_only"
-# SC-4a (stricter reading, SC4A-N1): retire keeps K' only under SC-4b's strict W equality; until
-# SC-4b ships, a verified release-mode log is not retired by the plain retire.
-RELEASE_RETIRE_UNAVAILABLE = "runtime_admission_compaction_release_retire_unavailable"
 # SC-4a review RA-1/RB-1 (design note SC4A-N13): SC-4a ships the isolated verification run V, but
-# every exit after V (W, abort with W, retire with strict W equality) is SC-4b's. Until SC-4b sets
-# this to True, a release-mode log is never armed (release gate): its only way forward stays the
-# lossless plain abort of row A0, and start/resume name that abort.
-RELEASE_EXITS_AVAILABLE = False
+# every exit after V (W, abort with W, retire with strict W equality) is SC-4b's. SC-4b ships them
+# and sets this to True; with False a release-mode log is never armed (release gate) and its only
+# way forward is the lossless plain abort of row A0, which start/resume then name.
+RELEASE_EXITS_AVAILABLE = True
 RELEASE_EXIT_UNAVAILABLE = "runtime_admission_compaction_release_exit_unavailable"
 # SC-4a review RB-2 (SC4A-N14): a release-mode V needs an explicit N within the design's cap
 # (downtime_and_disk.formula_check: N = min(60, 600 - T_copy - boots x B - stops), never below 10).
 RELEASE_SMOKE_SECONDS_MAX = 60
 RELEASE_SMOKE_SECONDS = "runtime_admission_compaction_release_smoke_seconds"
+# SC-4b (sc-release-design v4 mechanism.w_abort_predicate, retire): W replaces Q6 in release mode.
+# W1's two closed lists (SC-R reviewed): a difference outside them is always restrictive_or_unclear.
+W_LOSS = frozenset({"conversation_tombstones", "conversation_erasures", "retired_users", "fact_owner_revisions",
+                    "voice_attribution_suspensions", "pending_audio_deletions"})
+W_GRANT = frozenset({"credentials", "sessions"})
+W_EQUAL, W_LOSS_ONLY, W_RESTRICTIVE = "equal", "loss_only", "restrictive_or_unclear"
+W_REPORT_SCHEMA = 1
+# W0: reading H failed for a reason that clears (row AT); every other failure is the drift HD.
+W0_TRANSIENT_CODES = frozenset({"runtime_admission_writer_active", "runtime_admission_busy",
+                                "runtime_admission_sdk_version_unavailable"})
+W0_TRANSIENT_ERRNOS = frozenset({errno.EMFILE, errno.ENFILE, errno.EIO, errno.EAGAIN, errno.EINTR, errno.ENOMEM,
+                                 errno.EBUSY})
+W0_TRANSIENT_SQLITE = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_IOERR,
+                                 sqlite3.SQLITE_NOMEM, sqlite3.SQLITE_INTERRUPT})
+SDK_CHANGED = "runtime_admission_compaction_sdk_changed"
+H_CHANGED = "runtime_admission_compaction_h_changed"
+H_TRANSIENT = "runtime_admission_compaction_h_transient"
+ABORT_PROTECTED_CHANGED = "runtime_admission_compaction_abort_protected_changed"
+DISCARD_MISMATCH = "runtime_admission_compaction_discard_k_changes_mismatch"
+RELEASE_MODE_ONLY = "runtime_admission_compaction_release_mode_only"
+RETIRE_PROTECTED_CHANGED = "runtime_admission_compaction_retire_protected_changed"
+RETIRE_RESURRECTED = "runtime_admission_compaction_retire_resurrected"
+K_BINDING_CHANGED = "runtime_admission_compaction_k_binding_changed"
 
 
 # --- small helpers -----------------------------------------------------------------------------------
@@ -2025,9 +2046,14 @@ def _numbered(log: dict) -> list[dict]:
 def compact_retire(root, compaction_id: str, *, member: int | None = None, accept_identity_change: bool = False,
                    accept_owner_only_loss: str | None = None, accept_missing: bool = False, scan=None,
                    wall=time.time, unlink_hook=None) -> dict:
-    """C7/C8: destroy every member after the verified run; tombstones; 'complete'."""
+    """C7/C8: destroy every member after the verified run; tombstones; 'complete'.
+
+    A release-mode log is retired only through the SC-4b gates (_release_retire_gates):
+    K' binding (sdk_versions-only rule), closed witness, W0 and W1 exactly 'equal',
+    K's whole authority unchanged and no resurrected id.
+    """
     root = checked_root(root)
-    with stage.AdmissionController(root, gate="compaction:" + compaction_id):
+    with stage.authority_memo(), stage.AdmissionController(root, gate="compaction:" + compaction_id):
         log = _log(root, compaction_id)
         if _has(log, "abort_started"):
             _refuse("runtime_admission_compaction_phase")
@@ -2036,8 +2062,9 @@ def compact_retire(root, compaction_id: str, *, member: int | None = None, accep
         log = _log(root, compaction_id)
         if not _has(log, "verified"):
             _refuse("runtime_admission_compaction_not_verified")  # P3: destroy only after K' closed
-        if release_log(log):
-            _refuse(RELEASE_RETIRE_UNAVAILABLE)  # SC4A-N1: retire with strict W equality is SC-4b's
+        w_record = None
+        if release_log(log) and not _has(log, "retire_started"):
+            w_record = _release_retire_gates(root, log, head)  # before any other write (R4-OPS-10b)
         if accept_identity_change:
             log = _accept_identity(root, log, member, wall)
         if accept_missing:
@@ -2046,8 +2073,44 @@ def compact_retire(root, compaction_id: str, *, member: int | None = None, accep
             named = tuple(log["intent"].get("named_units", ()))
             report = _pre_retire(root, log, head, scan or _default_scan(named=named), now=_now(wall),
                                  accept_owner_only_loss=accept_owner_only_loss)
+            if w_record is not None:
+                report["w"] = w_record
             log = stage.append_compaction_event(root, log, "retire_started", report, at=_now(wall))
         return _finish_retire(root, log, wall, unlink_hook=unlink_hook)
+
+
+def _release_retire_gates(root: Path, log: dict, head: dict) -> dict:
+    """SC-4b retire gates of a release-mode log (mechanism.retire.gates); write nothing.
+
+    (1) K' binding: a difference only in sdk_versions refuses transiently
+    (sdk_changed, R5-2); any other difference refuses k_binding_changed (route:
+    abort --to-h, row RX); then verify_closed_binding (closure witness). (3)
+    W0, and W1 'equal' with no allowance; stricter (SC4B-N4): K's whole
+    authority digest equals the authorized one, so protected objects only in
+    K' (or another schema contract) also refuse. (4) the resurrection scan of
+    K' finds nothing (absolute: K's baseline is follow-up, SC4B-N5).
+    """
+    intent = log["intent"]
+    binding = stage.read_binding(root, head["binding_id"])
+    if binding["slot"] != intent["k_slot"]:
+        _refuse("runtime_admission_head_changed")
+    snapshot = stage._binding_snapshot(root, binding["slot"])
+    if snapshot != binding:
+        changed = sorted(key for key in set(binding) | set(snapshot) if binding.get(key) != snapshot.get(key))
+        if changed == ["sdk_versions"]:
+            _refuse(SDK_CHANGED, {"bound": binding["sdk_versions"], "installed": snapshot["sdk_versions"]})
+        _refuse(K_BINDING_CHANGED, {"code": "privacy_authority_stale", "changed": changed})
+    stage.verify_closed_binding(root, head["binding_id"])
+    found = _w(root, log)
+    authorized = stage.read_binding(root, _last(log, "authorized")["data"]["candidate_binding_id"])
+    authority_equal = binding["authority"]["digest"] == authorized["authority"]["digest"]
+    if found["report"]["class"] != W_EQUAL or not authority_equal:
+        _refuse(RETIRE_PROTECTED_CHANGED, {"w": found["report"], "w_sha256": found["sha256"],
+                                           "authority_equal": authority_equal})
+    resurrected = launcher.resurrection_counts(Path(binding["state_root"]))
+    if any(resurrected.values()):
+        _refuse(RETIRE_RESURRECTED, {"resurrected": resurrected})
+    return {"class": W_EQUAL, "sha256": found["sha256"]}
 
 
 def _pre_retire(root: Path, log: dict, head: dict, scan, *, now: float,
@@ -2371,42 +2434,359 @@ def _new_rows(h_state: Path, k_state: Path) -> dict:
     return counts
 
 
+# --- SC-4b: W, the release-mode abort predicate (sc-release-design v4 mechanism.w_abort_predicate) ---
+
+def _sqlite_primary(error: sqlite3.Error) -> int | None:
+    code = getattr(error, "sqlite_errorcode", None)
+    return code & 0xFF if type(code) is int else None
+
+
+def _sqlite_name(error: sqlite3.Error) -> str:
+    code = getattr(error, "sqlite_errorname", None)
+    primary = _sqlite_primary(error)
+    names = {getattr(sqlite3, name): name for name in dir(sqlite3)
+             if name.startswith("SQLITE_") and type(getattr(sqlite3, name)) is int and name.count("_") == 1}
+    return names.get(primary, code if type(code) is str else "unknown")
+
+
+def _w0_refusal(error: BaseException) -> CompactionRefusal:
+    """W0's mapping of an exception while reading H: a transient refusal (row AT) or the drift HD.
+
+    Transient (R3-OPS-5, R4-PRIV-1, R4-OPS-3): writer_active, busy and
+    sdk_version_unavailable; an errno in W0_TRANSIENT_ERRNOS; a SQLite error
+    whose primary code is in W0_TRANSIENT_SQLITE (by code, not by class).
+    Everything else is h_changed carrying the underlying code (terminal stop
+    HD). Both write nothing. The report is content-free (codes and names only).
+    """
+    if isinstance(error, ValueError) and str(error) in W0_TRANSIENT_CODES:
+        return CompactionRefusal(str(error), {"w0": "transient"})
+    if isinstance(error, OSError):
+        name = errno.errorcode.get(error.errno, "unknown")
+        if error.errno in W0_TRANSIENT_ERRNOS:
+            return CompactionRefusal(H_TRANSIENT, {"w0": "transient", "errno": name})
+        return CompactionRefusal(H_CHANGED, {"w0": "drift", "code": "errno:" + name})
+    if isinstance(error, sqlite3.Error):
+        if _sqlite_primary(error) in W0_TRANSIENT_SQLITE:
+            return CompactionRefusal(H_TRANSIENT, {"w0": "transient", "sqlite": _sqlite_name(error)})
+        return CompactionRefusal(H_CHANGED, {"w0": "drift", "code": "sqlite:" + _sqlite_name(error)})
+    text = str(error)
+    code = text[:200] if isinstance(error, ValueError) and text.startswith(("runtime_admission_", "privacy_")) \
+        else "record_invalid"
+    return CompactionRefusal(H_CHANGED, {"w0": "drift", "code": code})
+
+
+def _w0_h(root: Path, intent: dict) -> dict:
+    """H intact (_h_intact) with the sdk_versions-only rule; raises whatever reading H raised."""
+    binding = stage.read_binding(root, intent["source_binding_id"])
+    snapshot = stage._binding_snapshot(root, binding["slot"])
+    if snapshot != binding:
+        changed = sorted(key for key in set(binding) | set(snapshot) if binding.get(key) != snapshot.get(key))
+        if changed == ["sdk_versions"]:  # the shared venv, not H's files (R4-PRIV-1)
+            _refuse(SDK_CHANGED, {"w0": "transient", "bound": binding["sdk_versions"],
+                                  "installed": snapshot["sdk_versions"]})
+        raise ValueError("privacy_authority_stale")
+    marker = stage._read_json(Path(binding["state_root"]) / stage._MARKER)
+    if marker.get("binding_id") != intent["source_binding_id"]:
+        raise ValueError("runtime_admission_marker_mismatch")
+    stage._closure_proof(root, intent["source_binding_id"])
+    return binding
+
+
+def w0(root: Path, log: dict) -> dict:
+    """W0: no live V child, K' writers closed, H intact; returns H's binding or raises a coded refusal.
+
+    Every refusal writes nothing, so repeating the command is harmless; a
+    transient one clears with its cause, h_changed is the terminal stop HD.
+    """
+    intent = log["intent"]
+    head = stage.read_admission_head(root)
+    if head is not None and head["status"] != "closed":
+        run = launcher.read_run_record(root, head["run_id"])
+        if run is not None and launcher.child_alive(run["child_pid"], run.get("child_start_time")):
+            _refuse("runtime_admission_recovery_child_alive", {"w0": "transient"})
+    try:
+        stage._assert_writers_closed(Path(intent["k_state_root"]))
+    except ValueError:
+        _refuse("runtime_admission_writer_active", {"w0": "transient", "state": "k_prime"})
+    try:
+        return _w0_h(root, intent)
+    except CompactionRefusal:
+        raise
+    except (ValueError, OSError, sqlite3.Error, KeyError, TypeError) as error:
+        raise _w0_refusal(error) from None
+
+
+def _w1_recover(path: Path) -> None:
+    """Open one K' database read-write without ever creating it (R3-OPS-7): hot-journal rollback and
+    WAL checkpoint in place, as R-b's _quick_check does, without its plain connect."""
+    with closing(sqlite3.connect(path.as_uri() + "?mode=rw", uri=True, isolation_level=None, timeout=1.0)) as db:
+        db.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+
+
+def _w1_database(path: Path, expected: dict, h_path: Path) -> dict:
+    """W1 for one database K's authorized projection names: its status and per-key differences."""
+    found = {"status": "ok", "tables": {}, "ledger": None, "unclassified": []}
+    if not os.path.lexists(path):
+        found["status"] = "missing"
+        current, names = {}, set()
+    else:
+        try:
+            if _kind(path) != "file":
+                raise ValueError("runtime_admission_redirected_database")
+            _w1_recover(path)
+            with stage._database_image(path) as db:
+                names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                current = stage._authority_table_selection(db, names)
+                if stage._LEDGER_TABLE in names:
+                    try:
+                        current[stage._LEDGER_TABLE] = stage._deletion_ledger_projection(db)
+                    except ValueError:
+                        current[stage._LEDGER_TABLE] = None  # a broken chain: 'other'
+                mixed = dict(current)
+                try:
+                    stage._mixed_projections(db, names, mixed)
+                except ValueError:  # a value the selection cannot classify: a changed row
+                    found["unclassified"] = sorted(key for key in expected if key not in current
+                                                   and key not in {stage._LEDGER_TABLE, "schema_contract_v1"})
+                else:
+                    current = mixed
+        except sqlite3.Error as error:
+            found.update(status="unreadable", error="sqlite:" + _sqlite_name(error))
+            current, names = {}, set()
+        except OSError as error:
+            found.update(status="unreadable", error="errno:" + errno.errorcode.get(error.errno, "unknown"))
+            current, names = {}, set()
+        except ValueError as error:
+            found.update(status="unreadable", error=str(error)[:120] if str(error).startswith("runtime_admission_")
+                         else "value_error")
+            current, names = {}, set()
+    for key, value in sorted(expected.items()):
+        if key == "schema_contract_v1" or key in found["unclassified"]:
+            continue  # the contract is not part of W1 (no _schema_contract)
+        if key == stage._LEDGER_TABLE:
+            found["ledger"] = _w1_ledger(current.get(key), value, h_path)
+            continue
+        before = _multiset(value["row_hashes"])
+        after = _multiset((current.get(key) or {"row_hashes": []})["row_hashes"])
+        found["tables"][key] = {"added": _count(after, before), "removed": _count(before, after)}
+    return found
+
+
+def _multiset(values) -> dict:
+    counts: dict = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+def _count(left: dict, right: dict) -> int:
+    return sum(max(0, number - right.get(value, 0)) for value, number in left.items())
+
+
+def _w1_ledger(current: dict | None, bound: dict, h_path: Path) -> str:
+    """'equal', 'strict_prefix' (K' holds a strict prefix of H's chain) or 'other' (a missing or broken
+    ledger, an entry H lacks, a fork)."""
+    if current is None:
+        return "other"
+    if current == bound:
+        return "equal"
+    if current["count"] >= bound["count"]:
+        return "other"
+    try:
+        with stage._database_image(h_path) as db:
+            prefix = stage._deletion_ledger_projection(db, upto=current["max_seq"])
+    except (ValueError, OSError, sqlite3.Error):
+        return "other"
+    return "strict_prefix" if prefix == current else "other"
+
+
+def w1(k_state: Path, h_state: Path, projection: dict, *, verify_branch: str) -> dict:
+    """W1: K' against K's authorized projection; returns the content-free report and its digest.
+
+    Only the databases, tables and selections the projection names, plus its
+    accounts and configuration entries, are compared; objects only in K' are
+    ignored. A database missing or unreadable in K' counts as every row of
+    it absent; a value the selection cannot classify counts as changed.
+    Content-free (counts, relative paths, status words); no clock input, so
+    the same K' and H give the same digest. Never raises an uncoded error.
+    """
+    report = {"schema_version": W_REPORT_SCHEMA, "verify_branch_reached": verify_branch, "databases": {},
+              "tables": {}, "ledgers": {}, "unclassified": {}, "accounts": {}, "configuration": {}}
+    restrictive = loss = False
+    for relative, expected in sorted(projection["tables"].items()):
+        found = _w1_database(k_state / relative, expected, h_state / relative)
+        report["databases"][relative] = {key: found[key] for key in ("status", "error") if key in found}
+        report["tables"][relative] = found["tables"]
+        if found["ledger"] is not None:
+            report["ledgers"][relative] = found["ledger"]
+        if found["unclassified"]:
+            report["unclassified"][relative] = found["unclassified"]
+            restrictive = True
+        if found["status"] != "ok":
+            restrictive = True  # R3-PRIV-3 (stricter, SC4B-N3): a missing or unreadable database never 'loss_only'
+        if found["ledger"] == "strict_prefix":
+            loss = True
+        elif found["ledger"] == "other":
+            restrictive = True
+        for key, change in found["tables"].items():
+            if key in W_LOSS:
+                restrictive |= change["added"] > 0
+                loss |= change["removed"] > 0
+            elif key in W_GRANT:
+                restrictive |= change["removed"] > 0
+                loss |= change["added"] > 0
+            elif change["added"] or change["removed"]:
+                restrictive = True
+    for relative, expected in sorted(projection["accounts"].items()):
+        path = k_state / relative
+        try:
+            if not os.path.lexists(path):
+                current, status = [], "missing"
+            else:
+                current, status = stage._account_projection(path), "ok"
+        except (ValueError, OSError):
+            current, status = [], "unclassifiable"
+        before, after = _multiset(expected), _multiset(current)
+        change = {"status": status, "added": _count(after, before), "removed": _count(before, after)}
+        report["accounts"][relative] = change
+        restrictive |= status != "ok" or change["added"] > 0 or change["removed"] > 0
+    for relative, expected in sorted(projection["configuration"].items()):
+        path = k_state / relative
+        try:
+            status = "missing" if not os.path.lexists(path) or _kind(path) != "file" else (
+                "equal" if hashlib.sha256(path.read_bytes()).hexdigest() == expected else "changed")
+        except OSError:
+            status = "unreadable"
+        report["configuration"][relative] = status
+        restrictive |= status != "equal"
+    report["class"] = W_RESTRICTIVE if restrictive else W_LOSS_ONLY if loss else W_EQUAL
+    return {"report": report, "sha256": stage._digest(report)}
+
+
+def _w(root: Path, log: dict) -> dict:
+    """W0 then W1 for a release-mode log under the lease: {'report', 'sha256'}."""
+    h_binding = w0(root, log)
+    authorized = stage.read_binding(root, _last(log, "authorized")["data"]["candidate_binding_id"])
+    return w1(Path(log["intent"]["k_state_root"]), Path(h_binding["state_root"]),
+              authorized["authority"]["projection"], verify_branch=verify_branch_reached(root, log) or "not run")
+
+
+def _w_counts(report: dict) -> dict:
+    """The non-zero counts of a W report, for the 'abort_started' / 'abort_rechecked' record."""
+    tables = {relative: {key: change for key, change in changes.items() if change["added"] or change["removed"]}
+              for relative, changes in report["tables"].items()}
+    return {"tables": {relative: changes for relative, changes in tables.items() if changes},
+            "databases": {relative: found["status"] for relative, found in report["databases"].items()
+                          if found["status"] != "ok"},
+            "ledgers": {relative: status for relative, status in report["ledgers"].items() if status != "equal"},
+            "unclassified": report["unclassified"],
+            "accounts": {relative: change for relative, change in report["accounts"].items()
+                         if change["status"] != "ok" or change["added"] or change["removed"]},
+            "configuration": {relative: status for relative, status in report["configuration"].items()
+                              if status != "equal"}}
+
+
+def _release_head_is_v(root: Path, log: dict, head: dict) -> bool:
+    """A closed head is the armed run's seal: its closure names the armed generation (V1, V3, V4).
+
+    Unlike compaction_verified, this does not need the run to be verified: a
+    sealed but unverified K' (row V3) is aborted through W like a verified one.
+    """
+    _armed, started = stage._armed_run(log)
+    try:
+        proof = stage._closure_proof(root, head["binding_id"])
+    except (OSError, ValueError):
+        return False
+    running = proof["running_head"]
+    return (started is not None and running["generation"] == started["data"]["generation"]
+            and running["binding_id"] == started["data"]["binding_id"])
+
+
+def _w_checks(root: Path, log: dict, *, confirm_h: str | None, discard_k_changes: str | None,
+              verified: bool) -> dict:
+    """The release-mode return to H's checks: no live child, (the head is V's), H confirmed, W0, W1.
+
+    Returns the record for 'abort_started' / 'abort_rechecked' ({'head', 'w'},
+    plus 'discarded' when --discard-k-changes matched). ``verified`` False is
+    the recheck after the head moved behind the abort (R5-OPS-1).
+    """
+    intent = log["intent"]
+    head = stage.read_admission_head(root)
+    if head["status"] != "closed":
+        run = launcher.read_run_record(root, head["run_id"])
+        if run is not None and launcher.child_alive(run["child_pid"], run.get("child_start_time")):
+            _refuse("runtime_admission_recovery_child_alive")
+    if verified and head["status"] == "closed" and not _release_head_is_v(root, log, head):
+        _refuse("runtime_admission_compaction_head_moved")
+    if confirm_h is None or len(confirm_h) < 12 or not intent["source_binding_id"].startswith(confirm_h):
+        _refuse("runtime_admission_compaction_abort_confirmation")
+    found = _w(root, log)
+    report, digest = found["report"], found["sha256"]
+    record = {"head": head, "w": {"class": report["class"], "sha256": digest}}
+    if report["class"] == W_RESTRICTIVE:
+        if discard_k_changes is None:
+            _refuse(ABORT_PROTECTED_CHANGED, {"w": report, "w_sha256": digest})  # safe stop SS
+        if len(discard_k_changes) < 12 or not digest.startswith(discard_k_changes.lower()):
+            _refuse(DISCARD_MISMATCH, {"w": report, "w_sha256": digest})
+        record["discarded"] = {"w_sha256": digest, "counts": _w_counts(report)}  # SC-D8 A
+    elif discard_k_changes is not None:
+        _refuse(DISCARD_MISMATCH, {"w": report, "w_sha256": digest})  # nothing to discard: stricter (SC4B-N6)
+    return record
+
+
 def compact_abort(root, compaction_id: str, *, to_h: bool = False, discard_k_writes: bool = False,
                   confirm_h: str | None = None, member: int | None = None, accept_missing: bool = False,
-                  wall=time.time) -> dict:
-    """Abort before the verification run, or return to H after it under the Q6 predicate.
+                  discard_k_changes: str | None = None, wall=time.time) -> dict:
+    """Abort before the verification run, or return to H after it (Q6 in plain mode, W in release mode).
 
     ``member`` with ``accept_missing`` (review r3 R3-1) leaves out one of the
     abort's own items (a snapshot, the placeholder, K) that is gone from its
     path and was never renamed by this compaction, like ``retire
     --accept-missing``: logged, no tombstone, no copies-retired.
+    ``discard_k_changes`` (release mode, SC-D8 A) is the 12+ hex prefix of
+    the latest W report digest: the person's confirmation that nobody used
+    the system during V, the only exit from the safe stop SS.
     """
     root = checked_root(root)
     with stage.AdmissionController(root, gate="compaction:" + compaction_id, allow_open_head=True):
         log = _log(root, compaction_id)
         if log["terminal"] or _has(log, "retire_started"):
             _refuse("runtime_admission_compaction_phase")
+        release = release_log(log)
         if discard_k_writes:
             _require_plain_mode(log)  # no --discard-k-writes in release mode (w_abort_predicate.command)
+        if discard_k_changes is not None and not release:
+            _refuse(RELEASE_MODE_ONLY)  # --discard-k-changes answers a W report (SC-D8 A)
+        if discard_k_changes is not None and not to_h:
+            _refuse(DISCARD_MISMATCH)  # a discard is part of the return to H only
         if not _has(log, "abort_started"):
             started = _armed_run_consumed(root, log)
             if started and not to_h:
                 _refuse("runtime_admission_compaction_abort_after_run")
+            data = {"to_h": bool(to_h), "head": stage.read_admission_head(root)}
             if to_h:
                 if not started:
                     _refuse("runtime_admission_compaction_abort_to_h_before_run")
                 if _has(log, "allow_run_started"):
                     _refuse("runtime_admission_compaction_abort_after_allow_run")
-                _q6_checks(root, log, discard_k_writes=discard_k_writes, confirm_h=confirm_h, verified=True)
-            log = stage.append_compaction_event(root, log, "abort_started", {
-                "to_h": bool(to_h), "head": stage.read_admission_head(root)}, at=_now(wall))
+                if release:  # SC-4b: W replaces Q6 (rows V1-V4, RX, SS)
+                    data = {"to_h": True, **_w_checks(root, log, confirm_h=confirm_h,
+                                                      discard_k_changes=discard_k_changes, verified=True)}
+                else:
+                    _q6_checks(root, log, discard_k_writes=discard_k_writes, confirm_h=confirm_h, verified=True)
+            log = stage.append_compaction_event(root, log, "abort_started", data, at=_now(wall))
         elif _abort_head_moved(root, log):
             # Review r2 N1: the head moved after 'abort_started' (a K run the gate should have refused):
-            # whatever ran is checked again as a return to H (Q6 and the discard acknowledgement).
+            # whatever ran is checked again as a return to H (Q6, or W in release mode, R5-OPS-1).
             if not to_h:
                 _refuse("runtime_admission_compaction_abort_recheck_required")
-            head = _q6_checks(root, log, discard_k_writes=discard_k_writes, confirm_h=confirm_h, verified=False)
-            log = stage.append_compaction_event(root, log, "abort_rechecked", {"head": head}, at=_now(wall))
+            if release:
+                record = _w_checks(root, log, confirm_h=confirm_h, discard_k_changes=discard_k_changes,
+                                   verified=False)
+            else:
+                record = {"head": _q6_checks(root, log, discard_k_writes=discard_k_writes, confirm_h=confirm_h,
+                                             verified=False)}
+            log = stage.append_compaction_event(root, log, "abort_rechecked", record, at=_now(wall))
         if accept_missing:
             log = _accept_missing(root, log, member, wall, members=_abort_members(root, log))
         return _finish_abort(root, log, wall)
@@ -2626,6 +3006,14 @@ def verify_branch_reached(root: Path, log: dict) -> str | None:
     return "yes" if ready is not None and ready["verify_acknowledged"] is True else "no"
 
 
+def _armed_run_state(root: Path, log: dict) -> str:
+    """Status' view of the armed run (row A0, R3-OPS-4): read-only, no W, no clock."""
+    armed, _started = stage._armed_run(log)
+    if armed is None:
+        return "not armed"
+    return "consumed" if _armed_run_consumed(root, log) else "not consumed"
+
+
 def compact_status(root, compaction_id: str | None = None) -> dict:
     """Read-only, content-free: each log's phase, without a lease.
 
@@ -2647,6 +3035,7 @@ def compact_status(root, compaction_id: str | None = None) -> dict:
             log = stage.read_compaction_log(root, name)
             mode = RELEASE_MODE if release_log(log) else "plain"
             reached = verify_branch_reached(root, log) if mode == RELEASE_MODE else None
+            armed = _armed_run_state(root, log) if mode == RELEASE_MODE else None
         except (OSError, ValueError) as error:
             found.append({"compaction_id": name[:64], "invalid": True,
                           "code": str(error)[:200] if str(error).startswith("runtime_admission_")
@@ -2656,7 +3045,8 @@ def compact_status(root, compaction_id: str | None = None) -> dict:
                       "phase": log["events"][-1]["kind"] if log["events"] else "intent",
                       "phases": [event["kind"] for event in log["events"]],
                       "members": len(log["intent"]["members"]),
-                      "mode": mode, **({"verify_branch_reached": reached or "not run"}
+                      "mode": mode, **({"verify_branch_reached": reached or "not run",
+                                        "armed_run": armed, "verified": _has(log, "verified")}
                                        if mode == RELEASE_MODE else {})})
     return {"compactions": found}
 
@@ -2698,6 +3088,8 @@ def add_commands(commands) -> None:
         if name == "abort":
             parser.add_argument("--to-h", action="store_true")
             parser.add_argument("--discard-k-writes", action="store_true")
+            parser.add_argument("--discard-k-changes", metavar="W_SHA256_PREFIX",
+                                help="Release mode, safe stop only (SC-D8 A): the latest W report digest")
             parser.add_argument("--confirm-h")
             parser.add_argument("--member", type=int)
             parser.add_argument("--accept-missing", action="store_true")
@@ -2734,7 +3126,8 @@ def run_command(args, *, scan=None, worker=None) -> int:
             result = compact_abort(args.root, args.compaction_id, to_h=args.to_h,
                                    discard_k_writes=args.discard_k_writes, confirm_h=args.confirm_h,
                                    member=getattr(args, "member", None),
-                                   accept_missing=getattr(args, "accept_missing", False))
+                                   accept_missing=getattr(args, "accept_missing", False),
+                                   discard_k_changes=getattr(args, "discard_k_changes", None))
         elif command == "allow-run":
             result = compact_allow_run(args.root, args.compaction_id, reason=args.reason, hours=args.hours)
         else:

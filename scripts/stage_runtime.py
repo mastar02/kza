@@ -1711,6 +1711,7 @@ _AUTHORITY_SQLITE_SIDE_SUFFIXES = ("-wal", "-shm", "-journal")
 _AUTHORITY_CONFIGURATION_SUFFIXES = frozenset({".json", ".yaml", ".yml", ".toml"})
 _AUTHORITY_MEMO_CODE = ("_capture_state_authority", "_authority_database", "_authority_record",
                         "_authority_configuration", "_authority_input", "_database_image", "_schema_contract",
+                        "_authority_selection", "_authority_table_selection", "_account_projection",
                         "_row_projection", "_deletion_ledger_projection", "_mixed_projections",
                         "_deadline_projection", "_source_deadline", "_digest", "_canonical_json", "_typed",
                         "_read_json", "_safe_directory", "_PROTECTED_TABLES", "_LEDGER_TABLE", "_SCHEMA_MARKERS",
@@ -1845,6 +1846,66 @@ def capture_state_authority(state_root: Path) -> dict:
     return result
 
 
+def _authority_table_selection(db: sqlite3.Connection, names: set[str]) -> dict:
+    """The row projections of one database that classify no value (SC-4b split, shared with W1).
+
+    Every protected table except the deletion ledger, and the filtered fact,
+    deleted-revision, voice-group and suggestion selections. Raises only
+    sqlite3.Error (never a ValueError): nothing here interprets a value.
+    """
+    selected = {name: _row_projection(db, name) for name in sorted(names & _PROTECTED_TABLES - {_LEDGER_TABLE})}
+    if "facts" in names:
+        condition = " WHERE state IN ('confirmed','deleted','quarantined')"
+        if {"fact_owners", "fact_owner_revisions"} <= names:
+            # U3b R4: every owned or ever-assigned fact is pinned in any
+            # state, matching payload_derivation's never-cut set.
+            condition += (" OR id IN (SELECT fact_id FROM fact_owners"
+                          " UNION SELECT fact_id FROM fact_owner_revisions)")
+        selected["facts"] = _row_projection(db, "facts", condition)
+        for table in ("fact_sources", "fact_dependencies"):
+            if table in names:
+                selected[table] = _row_projection(db, table,
+                    " WHERE fact_id IN (SELECT id FROM facts" + condition + ")")
+    if "policy_index_deletions" in names:
+        selected["deleted_fact_revisions"] = {"columns": ["fact_id", "revision"],
+            "row_hashes": sorted(_digest(list(row)) for row in db.execute(
+                "SELECT fact_id,MAX(revision) FROM policy_index_deletions GROUP BY fact_id"))}
+    if "voice_groups" in names:
+        condition = " WHERE state='manual' OR reason LIKE 'manual%'"
+        selected["voice_groups"] = _row_projection(db, "voice_groups", condition)
+        for table in ("voice_group_members", "voice_group_lineage"):
+            if table in names:
+                selected[table] = _row_projection(db, table,
+                    " WHERE group_id IN (SELECT id FROM voice_groups" + condition + ")")
+    if "suggestions_policy_v1" in names:
+        selected["suggestions_policy_v1"] = _row_projection(db, "suggestions_policy_v1",
+            " WHERE status!='pending' OR snooze_until IS NOT NULL")
+    return selected
+
+
+def _authority_selection(db: sqlite3.Connection, names: set[str]) -> dict:
+    """Every row projection capture_state_authority records for one database (without its contract).
+
+    The table selection, the deletion-ledger chain and the mixed deadline and
+    closure projections; the last two classify values and raise ValueError on
+    one they cannot classify (a broken chain, an unknown deadline or feedback).
+    """
+    selected = _authority_table_selection(db, names)
+    if _LEDGER_TABLE in names:
+        selected[_LEDGER_TABLE] = _deletion_ledger_projection(db)
+    _mixed_projections(db, names, selected)
+    return selected
+
+
+def _account_projection(path: Path) -> list[str]:
+    """The sorted digests of one accounts record's users, activity time excluded."""
+    value = _read_json(path)
+    if value.get("schema") != "kza-users-accounts-v1" or type(value.get("users")) is not list:
+        raise ValueError("runtime_admission_account_schema")
+    return sorted(_digest({key: item for key, item in user.items() if key != "last_seen"})
+                  for user in value["users"])
+
+
 def _capture_state_authority(state: Path) -> dict:
     projection = {"tables": {}, "accounts": {}, "configuration": {}}
     for path in sorted(state.rglob("*")):
@@ -1859,46 +1920,12 @@ def _capture_state_authority(state: Path) -> dict:
                 contract = _schema_contract(db, names, relative)
                 if contract is None:
                     continue
-                selected = {name: _row_projection(db, name)
-                            for name in sorted(names & _PROTECTED_TABLES - {_LEDGER_TABLE})}
-                if _LEDGER_TABLE in names:
-                    selected[_LEDGER_TABLE] = _deletion_ledger_projection(db)
+                selected = _authority_selection(db, names)
                 selected["schema_contract_v1"] = contract
-                if "facts" in names:
-                    condition = " WHERE state IN ('confirmed','deleted','quarantined')"
-                    if {"fact_owners", "fact_owner_revisions"} <= names:
-                        # U3b R4: every owned or ever-assigned fact is pinned in any
-                        # state, matching payload_derivation's never-cut set.
-                        condition += (" OR id IN (SELECT fact_id FROM fact_owners"
-                                      " UNION SELECT fact_id FROM fact_owner_revisions)")
-                    selected["facts"] = _row_projection(db, "facts", condition)
-                    for table in ("fact_sources", "fact_dependencies"):
-                        if table in names:
-                            selected[table] = _row_projection(db, table,
-                                " WHERE fact_id IN (SELECT id FROM facts" + condition + ")")
-                if "policy_index_deletions" in names:
-                    selected["deleted_fact_revisions"] = {"columns": ["fact_id", "revision"],
-                        "row_hashes": sorted(_digest(list(row)) for row in db.execute(
-                            "SELECT fact_id,MAX(revision) FROM policy_index_deletions GROUP BY fact_id"))}
-                if "voice_groups" in names:
-                    condition = " WHERE state='manual' OR reason LIKE 'manual%'"
-                    selected["voice_groups"] = _row_projection(db, "voice_groups", condition)
-                    for table in ("voice_group_members", "voice_group_lineage"):
-                        if table in names:
-                            selected[table] = _row_projection(db, table,
-                                " WHERE group_id IN (SELECT id FROM voice_groups" + condition + ")")
-                if "suggestions_policy_v1" in names:
-                    selected["suggestions_policy_v1"] = _row_projection(db, "suggestions_policy_v1",
-                        " WHERE status!='pending' OR snooze_until IS NOT NULL")
-                _mixed_projections(db, names, selected)
                 if selected:
                     projection["tables"][relative] = selected
         elif _authority_record(path):
-            value = _read_json(path)
-            if value.get("schema") != "kza-users-accounts-v1" or type(value.get("users")) is not list:
-                raise ValueError("runtime_admission_account_schema")
-            projection["accounts"][relative] = sorted(_digest({key: item for key, item in user.items()
-                if key != "last_seen"}) for user in value["users"])
+            projection["accounts"][relative] = _account_projection(path)
         elif _authority_configuration(state, path):
             projection["configuration"][relative] = hashlib.sha256(path.read_bytes()).hexdigest()
     return {"schema_version": 1, "digest": _digest(projection), "projection": projection}

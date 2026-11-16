@@ -40,12 +40,9 @@ SMOKE = 10  # the smallest N compact verify accepts
 def checkout_controller(monkeypatch):
     """P7's installed-controller location cannot hold for an in-process controller.
 
-    SC4A-N13: a release-mode log is armed only once SC-4b ships V's exits; these tests cover V
-    itself, so they run as if that gate were lifted (its refusal is pinned in
-    test_the_release_gate_refuses_to_arm_until_sc4b and in test_sc1b_release_plan).
+    SC-4b lifted the release gate (SC4A-N13): a release-mode log is armed as shipped.
     """
     monkeypatch.setattr(compaction, "controller_location", lambda root, members: None)
-    monkeypatch.setattr(compaction, "RELEASE_EXITS_AVAILABLE", True)
 
 
 def _scaled(factor: float):
@@ -119,10 +116,8 @@ def test_release_verify_run_is_the_acknowledged_isolated_boot_and_serve_stops_it
     again = compaction.compact_verify(root, compaction_id, smoke_seconds=SMOKE)
     assert again["verified"] is True and again["started"] is True
     assert cw.serve(root, tmp_path, "after").code == 78
-    # SC4A-N1: retire with the strict W equality is SC-4b's; the plain retire refuses a release log.
-    _refusal(compaction.RELEASE_RETIRE_UNAVAILABLE, lambda: compaction.compact_retire(root, compaction_id))
-    assert not any(event["kind"] == "retire_started"
-                   for event in stage.read_compaction_log(root, compaction_id)["events"])
+    # SC-4b: retire with the strict W equality (SC4A-N1 lifted) keeps K'.
+    assert compaction.compact_retire(root, compaction_id, scan=cw.no_units)["phase"] == "complete"
 
 
 def test_a_wall_clock_step_backwards_during_v_keeps_a_good_run_verified(x4, x5, tmp_path):
