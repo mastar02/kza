@@ -257,11 +257,12 @@ async def test_sequence_that_becomes_late_between_actions_stops_executing(schedu
         return ACCEPTED
 
     mock_deps["ha_client"].call_service_once.side_effect = slow_send
-    r = await store.create("u1", "escena", clock() - 1, ha_actions=[ACTION, ACTION | {"service": "turn_off"}],
-                           scope=ReminderScope.SHARED)
+    r = await store.create("u1", "escena", clock() - 1, scope=ReminderScope.SHARED,
+                           ha_actions=[ACTION, ACTION | {"service": "turn_off"}, ACTION | {"service": "toggle"}])
     assert await scheduler._fire_reminder(r) is True
     mock_deps["ha_client"].call_service_once.assert_awaited_once_with("light", "turn_on", "light.patio", None)
-    assert await receipts(store) == [("confirmed", None), ("failed", "late_not_executed")]
+    # Every remaining action gets its durable barrier, not only the first one after lateness.
+    assert await receipts(store) == [("confirmed", None)] + [("failed", "late_not_executed")] * 2
 
 @pytest.mark.asyncio
 async def test_recurring_catch_up_executes_only_the_latest_on_time_occurrence(scheduler, store, mock_deps, clock):
