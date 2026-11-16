@@ -11,11 +11,19 @@ Scenarios: clean, stop_before_ready, no_ready, crash, self_end, exit_no_receipt,
 receipt_then_hang, watchdog_silent, slow_stop, restore_after_receipt, notify_stop (U3b-0e4: the
 child itself sends STOPPING=1 after READY, closes for --seconds, optionally sending
 EXTEND_TIMEOUT_USEC every --extend-every seconds, then writes its receipt and exits 0).
+
+SC-4a verify scenarios read serve's flag through the runtime's own
+take_release_verify_flag and then close like 'clean': verify (VERIFY=<run_id>
+before READY only when the flag is set, as Application.run's verify branch),
+verify_ignored (a NEW without the branch: READY, no VERIFY), verify_wrong
+(VERIFY with another run_id), verify_unflagged (VERIFY whatever the flag) and
+verify_after_ready (READY, then VERIFY).
 """
 
 import argparse
 import asyncio
 import importlib.util
+import json
 import os
 from pathlib import Path
 import signal
@@ -63,7 +71,8 @@ async def main() -> None:
     phase("mask", ",".join(map(str, BLOCKED_AT_ENTRY)) or "empty")
     phase("env", ",".join(sorted(key for key in os.environ
                                  if key in {"NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID", "KZA_NOTIFY_FD",
-                                            "KZA_CONTROL_FD", "KZA_WATCHDOG_INTERVAL_USEC"})) or "clean")
+                                            "KZA_CONTROL_FD", "KZA_WATCHDOG_INTERVAL_USEC",
+                                            "KZA_RUNTIME_RELEASE_VERIFY"})) or "clean")
     phase("pythonpath", os.environ.get("PYTHONPATH", ""))
     phase("config_path", os.environ.get("CONFIG_PATH", ""))
     scenario = ARGS.scenario
@@ -78,10 +87,25 @@ async def main() -> None:
         while not LIFECYCLE.stop.requested and time.monotonic() < deadline:
             await asyncio.sleep(0.01)
         phase("held_for_stop", LIFECYCLE.stop.requested)
+    run_id = json.loads(os.environ["KZA_RUNTIME_ADMISSION"])["run_id"]
+    if scenario.startswith("verify"):
+        from src.core.runtime_admission import take_release_verify_flag
+        flag = take_release_verify_flag()
+        phase("release_verify", flag)
+        phase("flag_left", "KZA_RUNTIME_RELEASE_VERIFY" in os.environ)
+        if (scenario == "verify" and flag) or scenario == "verify_unflagged":
+            LIFECYCLE.acknowledge_verify(run_id)
+            phase("verify_sent")
+        elif scenario == "verify_wrong":
+            LIFECYCLE.acknowledge_verify("0" * 32 if run_id != "0" * 32 else "1" * 32)
+            phase("verify_sent")
     if scenario != "no_ready":
         try:
             LIFECYCLE.ready()
             phase("ready")
+            if scenario == "verify_after_ready":
+                LIFECYCLE.acknowledge_verify(run_id)
+                phase("verify_sent")
         except StopRequested:  # a stop before READY: never ready, still a clean close
             phase("ready_skipped")
     if scenario == "crash":
