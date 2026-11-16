@@ -152,6 +152,17 @@ RELEASE_MODE_ONLY = "runtime_admission_compaction_release_mode_only"
 RETIRE_PROTECTED_CHANGED = "runtime_admission_compaction_retire_protected_changed"
 RETIRE_RESURRECTED = "runtime_admission_compaction_retire_resurrected"
 K_BINDING_CHANGED = "runtime_admission_compaction_k_binding_changed"
+# SC-4b review RA4B-5/RB-7: K' read while a live holder keeps one of its databases locked (or a resource
+# errno) is a transient refusal that writes nothing; a fault that persists (EIO, SQLITE_IOERR, damage) stays
+# 'unreadable', so SS keeps its exit (SC4B-N19).
+K_TRANSIENT = "runtime_admission_compaction_k_transient"
+K_TRANSIENT_ERRNOS = W0_TRANSIENT_ERRNOS - {errno.EIO}
+K_TRANSIENT_SQLITE = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_NOMEM,
+                                sqlite3.SQLITE_INTERRUPT})
+# Review RB-3: K' head's closure proof unreadable after V (storage damage, a manual edit): an HD-like stop.
+K_CLOSURE_UNREADABLE = "runtime_admission_compaction_k_closure_unreadable"
+# Review RA4B-1: what a value the selection cannot classify raises (W1 never raises an uncoded error).
+_W1_VALUE_ERRORS = (ValueError, TypeError, AttributeError, KeyError, IndexError)
 
 
 # --- small helpers -----------------------------------------------------------------------------------
@@ -2100,6 +2111,7 @@ def _release_retire_gates(root: Path, log: dict, head: dict) -> dict:
         if changed == ["sdk_versions"]:
             _refuse(SDK_CHANGED, {"bound": binding["sdk_versions"], "installed": snapshot["sdk_versions"]})
         _refuse(K_BINDING_CHANGED, {"code": "privacy_authority_stale", "changed": changed})
+    _k_closure_proof(root, head)  # an unreadable proof is the coded HD-like stop (review RB-3)
     stage.verify_closed_binding(root, head["binding_id"])
     found = _w(root, log)
     authorized = stage.read_binding(root, _last(log, "authorized")["data"]["candidate_binding_id"])
@@ -2449,6 +2461,18 @@ def _sqlite_name(error: sqlite3.Error) -> str:
     return names.get(primary, code if type(code) is str else "unknown")
 
 
+def _error_code(error: BaseException) -> str:
+    """A content-free code for an exception: errno or SQLite primary-code name, a coded ValueError's
+    code, otherwise 'record_invalid' (never a path or a value)."""
+    if isinstance(error, OSError):
+        return "errno:" + errno.errorcode.get(error.errno, "unknown")
+    if isinstance(error, sqlite3.Error):
+        return "sqlite:" + _sqlite_name(error)
+    text = str(error)
+    return text[:200] if isinstance(error, ValueError) and text.startswith(("runtime_admission_", "privacy_")) \
+        else "record_invalid"
+
+
 def _w0_refusal(error: BaseException) -> CompactionRefusal:
     """W0's mapping of an exception while reading H: a transient refusal (row AT) or the drift HD.
 
@@ -2464,15 +2488,9 @@ def _w0_refusal(error: BaseException) -> CompactionRefusal:
         name = errno.errorcode.get(error.errno, "unknown")
         if error.errno in W0_TRANSIENT_ERRNOS:
             return CompactionRefusal(H_TRANSIENT, {"w0": "transient", "errno": name})
-        return CompactionRefusal(H_CHANGED, {"w0": "drift", "code": "errno:" + name})
-    if isinstance(error, sqlite3.Error):
-        if _sqlite_primary(error) in W0_TRANSIENT_SQLITE:
-            return CompactionRefusal(H_TRANSIENT, {"w0": "transient", "sqlite": _sqlite_name(error)})
-        return CompactionRefusal(H_CHANGED, {"w0": "drift", "code": "sqlite:" + _sqlite_name(error)})
-    text = str(error)
-    code = text[:200] if isinstance(error, ValueError) and text.startswith(("runtime_admission_", "privacy_")) \
-        else "record_invalid"
-    return CompactionRefusal(H_CHANGED, {"w0": "drift", "code": code})
+    elif isinstance(error, sqlite3.Error) and _sqlite_primary(error) in W0_TRANSIENT_SQLITE:
+        return CompactionRefusal(H_TRANSIENT, {"w0": "transient", "sqlite": _sqlite_name(error)})
+    return CompactionRefusal(H_CHANGED, {"w0": "drift", "code": _error_code(error)})
 
 
 def _w0_h(root: Path, intent: dict) -> dict:
@@ -2493,10 +2511,14 @@ def _w0_h(root: Path, intent: dict) -> dict:
 
 
 def w0(root: Path, log: dict) -> dict:
-    """W0: no live V child, K' writers closed, H intact; returns H's binding or raises a coded refusal.
+    """W0: no live V child, K' writers closed, H intact; returns {'h_binding', 'k_writers'} or raises
+    a coded refusal.
 
     Every refusal writes nothing, so repeating the command is harmless; a
     transient one clears with its cause, h_changed is the terminal stop HD.
+    A K' lock entry that cannot be opened (a symlink, no permission: review
+    RB-1) is not a refusal: ``k_writers`` says 'unverifiable' and W1 makes
+    the class restrictive_or_unclear, so SS and its SC-D8 A exit apply.
     """
     intent = log["intent"]
     head = stage.read_admission_head(root)
@@ -2504,12 +2526,18 @@ def w0(root: Path, log: dict) -> dict:
         run = launcher.read_run_record(root, head["run_id"])
         if run is not None and launcher.child_alive(run["child_pid"], run.get("child_start_time")):
             _refuse("runtime_admission_recovery_child_alive", {"w0": "transient"})
+    k_writers = {"status": "closed"}
     try:
         stage._assert_writers_closed(Path(intent["k_state_root"]))
     except ValueError:
         _refuse("runtime_admission_writer_active", {"w0": "transient", "state": "k_prime"})
+    except OSError as error:
+        name = errno.errorcode.get(error.errno, "unknown")
+        if error.errno in K_TRANSIENT_ERRNOS:
+            _refuse(K_TRANSIENT, {"w0": "transient", "state": "k_prime", "errno": name})
+        k_writers = {"status": "unverifiable", "error": "errno:" + name}
     try:
-        return _w0_h(root, intent)
+        return {"h_binding": _w0_h(root, intent), "k_writers": k_writers}
     except CompactionRefusal:
         raise
     except (ValueError, OSError, sqlite3.Error, KeyError, TypeError) as error:
@@ -2523,15 +2551,28 @@ def _w1_recover(path: Path) -> None:
         db.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
 
 
-def _w1_database(path: Path, expected: dict, h_path: Path) -> dict:
-    """W1 for one database K's authorized projection names: its status and per-key differences."""
+def _w1_regular(path: Path) -> bool:
+    """An entry W1 may open: a regular file at its own path, no link on the way (review RA4B-4).
+
+    Checked before the read-write open of _w1_recover, which would follow a
+    link in a parent directory to a database outside K' (H's, for one)."""
+    return path.resolve(strict=True) == path and _kind(path) == "file"
+
+
+def _w1_database(k_state: Path, relative: str, expected: dict, h_path: Path) -> dict:
+    """W1 for one database K's authorized projection names: its status and per-key differences.
+
+    Raises only the transient K_TRANSIENT (a live holder's lock, a resource
+    errno); every other failure is a status ('missing', 'unreadable' with a
+    content-free code) or a value the selection cannot classify."""
+    path = k_state / relative
     found = {"status": "ok", "tables": {}, "ledger": None, "unclassified": []}
     if not os.path.lexists(path):
         found["status"] = "missing"
         current, names = {}, set()
     else:
         try:
-            if _kind(path) != "file":
+            if not _w1_regular(path):
                 raise ValueError("runtime_admission_redirected_database")
             _w1_recover(path)
             with stage._database_image(path) as db:
@@ -2540,25 +2581,34 @@ def _w1_database(path: Path, expected: dict, h_path: Path) -> dict:
                 if stage._LEDGER_TABLE in names:
                     try:
                         current[stage._LEDGER_TABLE] = stage._deletion_ledger_projection(db)
-                    except ValueError:
+                    except _W1_VALUE_ERRORS:
                         current[stage._LEDGER_TABLE] = None  # a broken chain: 'other'
                 mixed = dict(current)
                 try:
                     stage._mixed_projections(db, names, mixed)
-                except ValueError:  # a value the selection cannot classify: a changed row
+                except _W1_VALUE_ERRORS:  # a value the selection cannot classify: a changed row (RA4B-1)
                     found["unclassified"] = sorted(key for key in expected if key not in current
                                                    and key not in {stage._LEDGER_TABLE, "schema_contract_v1"})
                 else:
                     current = mixed
         except sqlite3.Error as error:
-            found.update(status="unreadable", error="sqlite:" + _sqlite_name(error))
+            if _sqlite_primary(error) in K_TRANSIENT_SQLITE:
+                _refuse(K_TRANSIENT, {"w1": "transient", "state": "k_prime", "database": relative,
+                                      "sqlite": _sqlite_name(error)})
+            found.update(status="unreadable", error=_error_code(error))
             current, names = {}, set()
         except OSError as error:
-            found.update(status="unreadable", error="errno:" + errno.errorcode.get(error.errno, "unknown"))
+            if error.errno in K_TRANSIENT_ERRNOS:
+                _refuse(K_TRANSIENT, {"w1": "transient", "state": "k_prime", "database": relative,
+                                      "errno": errno.errorcode.get(error.errno, "unknown")})
+            found.update(status="unreadable", error=_error_code(error))
             current, names = {}, set()
         except ValueError as error:
             found.update(status="unreadable", error=str(error)[:120] if str(error).startswith("runtime_admission_")
                          else "value_error")
+            current, names = {}, set()
+        except Exception as error:  # noqa: BLE001 - W1 never raises an uncoded error (RA4B-1)
+            found.update(status="unreadable", error="python:" + type(error).__name__)
             current, names = {}, set()
     for key, value in sorted(expected.items()):
         if key == "schema_contract_v1" or key in found["unclassified"]:
@@ -2600,7 +2650,8 @@ def _w1_ledger(current: dict | None, bound: dict, h_path: Path) -> str:
     return "strict_prefix" if prefix == current else "other"
 
 
-def w1(k_state: Path, h_state: Path, projection: dict, *, verify_branch: str) -> dict:
+def w1(k_state: Path, h_state: Path, projection: dict, *, verify_branch: str,
+       k_writers: dict | None = None) -> dict:
     """W1: K' against K's authorized projection; returns the content-free report and its digest.
 
     Only the databases, tables and selections the projection names, plus its
@@ -2608,13 +2659,17 @@ def w1(k_state: Path, h_state: Path, projection: dict, *, verify_branch: str) ->
     ignored. A database missing or unreadable in K' counts as every row of
     it absent; a value the selection cannot classify counts as changed.
     Content-free (counts, relative paths, status words); no clock input, so
-    the same K' and H give the same digest. Never raises an uncoded error.
+    the same K' and H give the same digest. Never raises an uncoded error;
+    its only refusal is the transient K_TRANSIENT. ``k_writers`` is W0's
+    view of K' locks: 'unverifiable' is restrictive (review RB-1).
     """
-    report = {"schema_version": W_REPORT_SCHEMA, "verify_branch_reached": verify_branch, "databases": {},
-              "tables": {}, "ledgers": {}, "unclassified": {}, "accounts": {}, "configuration": {}}
-    restrictive = loss = False
+    k_writers = k_writers or {"status": "closed"}
+    report = {"schema_version": W_REPORT_SCHEMA, "verify_branch_reached": verify_branch, "k_writers": k_writers,
+              "databases": {}, "tables": {}, "ledgers": {}, "unclassified": {}, "accounts": {},
+              "configuration": {}}
+    restrictive, loss = k_writers["status"] != "closed", False
     for relative, expected in sorted(projection["tables"].items()):
-        found = _w1_database(k_state / relative, expected, h_state / relative)
+        found = _w1_database(k_state, relative, expected, h_state / relative)
         report["databases"][relative] = {key: found[key] for key in ("status", "error") if key in found}
         report["tables"][relative] = found["tables"]
         if found["ledger"] is not None:
@@ -2642,9 +2697,11 @@ def w1(k_state: Path, h_state: Path, projection: dict, *, verify_branch: str) ->
         try:
             if not os.path.lexists(path):
                 current, status = [], "missing"
+            elif not _w1_regular(path):
+                current, status = [], "unclassifiable"  # a link on the way is never read (RA4B-4)
             else:
                 current, status = stage._account_projection(path), "ok"
-        except (ValueError, OSError):
+        except Exception:  # noqa: BLE001 - unreadable, or a record it cannot classify (RA4B-1)
             current, status = [], "unclassifiable"
         before, after = _multiset(expected), _multiset(current)
         change = {"status": status, "added": _count(after, before), "removed": _count(before, after)}
@@ -2653,8 +2710,12 @@ def w1(k_state: Path, h_state: Path, projection: dict, *, verify_branch: str) ->
     for relative, expected in sorted(projection["configuration"].items()):
         path = k_state / relative
         try:
-            status = "missing" if not os.path.lexists(path) or _kind(path) != "file" else (
-                "equal" if hashlib.sha256(path.read_bytes()).hexdigest() == expected else "changed")
+            if not os.path.lexists(path):
+                status = "missing"
+            elif not _w1_regular(path):
+                status = "not_regular"  # a link on the way, or not a file (RA4B-4)
+            else:
+                status = "equal" if hashlib.sha256(path.read_bytes()).hexdigest() == expected else "changed"
         except OSError:
             status = "unreadable"
         report["configuration"][relative] = status
@@ -2665,17 +2726,19 @@ def w1(k_state: Path, h_state: Path, projection: dict, *, verify_branch: str) ->
 
 def _w(root: Path, log: dict) -> dict:
     """W0 then W1 for a release-mode log under the lease: {'report', 'sha256'}."""
-    h_binding = w0(root, log)
+    checked = w0(root, log)
     authorized = stage.read_binding(root, _last(log, "authorized")["data"]["candidate_binding_id"])
-    return w1(Path(log["intent"]["k_state_root"]), Path(h_binding["state_root"]),
-              authorized["authority"]["projection"], verify_branch=verify_branch_reached(root, log) or "not run")
+    return w1(Path(log["intent"]["k_state_root"]), Path(checked["h_binding"]["state_root"]),
+              authorized["authority"]["projection"], verify_branch=verify_branch_reached(root, log) or "not run",
+              k_writers=checked["k_writers"])
 
 
 def _w_counts(report: dict) -> dict:
     """The non-zero counts of a W report, for the 'abort_started' / 'abort_rechecked' record."""
     tables = {relative: {key: change for key, change in changes.items() if change["added"] or change["removed"]}
               for relative, changes in report["tables"].items()}
-    return {"tables": {relative: changes for relative, changes in tables.items() if changes},
+    return {"k_writers": {} if report["k_writers"]["status"] == "closed" else report["k_writers"],
+            "tables": {relative: changes for relative, changes in tables.items() if changes},
             "databases": {relative: found["status"] for relative, found in report["databases"].items()
                           if found["status"] != "ok"},
             "ledgers": {relative: status for relative, status in report["ledgers"].items() if status != "equal"},
@@ -2691,31 +2754,35 @@ def _release_head_is_v(root: Path, log: dict, head: dict) -> bool:
 
     Unlike compaction_verified, this does not need the run to be verified: a
     sealed but unverified K' (row V3) is aborted through W like a verified one.
+    A proof that cannot be read refuses K_CLOSURE_UNREADABLE (review RB-3),
+    told apart from a readable proof of another run (False: head_moved).
     """
     _armed, started = stage._armed_run(log)
-    try:
-        proof = stage._closure_proof(root, head["binding_id"])
-    except (OSError, ValueError):
-        return False
-    running = proof["running_head"]
+    running = _k_closure_proof(root, head)["running_head"]
     return (started is not None and running["generation"] == started["data"]["generation"]
             and running["binding_id"] == started["data"]["binding_id"])
 
 
+def _k_closure_proof(root: Path, head: dict) -> dict:
+    """K' head's closure proof, or the coded HD-like stop K_CLOSURE_UNREADABLE (review RB-3): after V
+    the proof is unreadable only through storage damage or a manual edit under admission/."""
+    try:
+        return stage._closure_proof(root, head["binding_id"])
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        _refuse(K_CLOSURE_UNREADABLE, {"code": _error_code(error)})
+
+
 def _w_checks(root: Path, log: dict, *, confirm_h: str | None, discard_k_changes: str | None,
               verified: bool) -> dict:
-    """The release-mode return to H's checks: no live child, (the head is V's), H confirmed, W0, W1.
+    """The release-mode return to H's checks: (the head is V's), H confirmed, W0 (no live child), W1.
 
     Returns the record for 'abort_started' / 'abort_rechecked' ({'head', 'w'},
     plus 'discarded' when --discard-k-changes matched). ``verified`` False is
-    the recheck after the head moved behind the abort (R5-OPS-1).
+    the recheck after the head moved behind the abort (R5-OPS-1). The live V
+    child is refused by W0 alone (SC4B-N21), before anything is written.
     """
     intent = log["intent"]
     head = stage.read_admission_head(root)
-    if head["status"] != "closed":
-        run = launcher.read_run_record(root, head["run_id"])
-        if run is not None and launcher.child_alive(run["child_pid"], run.get("child_start_time")):
-            _refuse("runtime_admission_recovery_child_alive")
     if verified and head["status"] == "closed" and not _release_head_is_v(root, log, head):
         _refuse("runtime_admission_compaction_head_moved")
     if confirm_h is None or len(confirm_h) < 12 or not intent["source_binding_id"].startswith(confirm_h):
