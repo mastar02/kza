@@ -20,6 +20,7 @@ hand, since a release-mode log cannot reach 'complete' before SC-4a/SC-4b.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -376,6 +377,19 @@ def test_new_manifest_integers_and_schema_contracts(x5, x5s, tmp_path, monkeypat
     monkeypatch.setattr(compaction, "_release_manifest", original)
     assert cw.plan(root, x5s["archive"])["plan_sha256"]
 
+    # Review RA-4: SR-2's legs for the installed controller and for H (NEW unchanged).
+    installed = compaction._installed_manifest
+    integers = stage.release_integers
+    for target, name, patched in (
+            (compaction, "_installed_manifest", lambda root_path: {**installed(root_path), "schema_contract": 2}),
+            (stage, "release_integers", lambda binding: {**integers(binding), "schema_contract": 2})):
+        witness = cw.witness(root)
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(target, name, patched)
+            _refusal("runtime_admission_compaction_schema_contract", lambda: cw.plan(root, x5s["archive"]))
+        assert cw.witness(root) == witness
+    assert cw.plan(root, x5s["archive"])["plan_sha256"]
+
     def h_refused(binding):
         raise ValueError("runtime_admission_launcher_contract_missing")
     monkeypatch.setattr(stage, "_require_launcher_slot", h_refused)  # (d) H passes serve's slot integers
@@ -384,35 +398,67 @@ def test_new_manifest_integers_and_schema_contracts(x5, x5s, tmp_path, monkeypat
 
 # --- plan.other: unproven copies and the legacy exemption ----------------------------------------------
 
-def _adoption_record(root: Path, container: str, legacy: str, *, aborted: bool = False) -> None:
-    head = {"status": "closed", "binding_id": "0" * 64, "generation": 1}
+def _adoption_record(root: Path, container: str, legacy: str, *, aborted: bool = False, generation: int = 1,
+                     named_as: dict | None = None) -> dict:
+    head = {"status": "closed", "binding_id": "0" * 64, "generation": generation}
     record = {"kind": "adoption", "head": head, "container_slot": container,
               "layout": {"legacy_state": str(root / "slots" / legacy / "state")}}
-    stage._atomic_record(stage.adoption_record_path(root, head), record, immutable=True)
+    stage._atomic_record(stage.adoption_record_path(root, named_as or head), record, immutable=True)
     if aborted:
         stage._atomic_record(stage.abort_record_path(root, head), {"aborted": True}, immutable=True)
+    return head
 
 
-def test_release_plan_refuses_an_unproven_copy_under_slots_but_not_the_legacy_slots(x5, tmp_path):
-    world = _world(x5, tmp_path)
-    root = world["root"]
-    old = root / "slots" / "old"
-    (old / "state" / "data").mkdir(parents=True)
-    (old / "state" / "data" / "x.txt").write_text("CANARY-UNPROVEN")
-    error = _refusal("runtime_admission_compaction_release_unproven_copy", lambda: cw.plan(root, x5["archive"]))
-    assert error.report == {"paths": ["slots/old"]}
-    assert "CANARY" not in json.dumps(error.report)
-    _adoption_record(root, "old", "legacy_b0866e8", aborted=True)  # an aborted adoption exempts nothing
-    _refusal("runtime_admission_compaction_release_unproven_copy", lambda: cw.plan(root, x5["archive"]))
+def _clear_adoption(root: Path) -> None:
     for path in (root / "admission" / "adoption").iterdir():
         path.chmod(0o600)
         path.unlink()
-    _adoption_record(root, "old", "legacy_b0866e8")  # the committed record's two legacy names
-    planned = cw.plan(root, x5["archive"])
-    assert {entry["path"] for entry in planned["untouched"]} >= {"slots/old"}
+
+
+def test_release_plan_refuses_an_unproven_copy_under_slots_but_not_the_legacy_slots(x5, tmp_path):
+    """plan.other: the container and the legacy-state slot of exactly one committed adoption record
+    (named by its head digest) are exempt; anything else under slots/ refuses as row P (review RA-3, B2)."""
+    world = _world(x5, tmp_path)
+    root = world["root"]
+    unproven = "runtime_admission_compaction_release_unproven_copy"
+    plan = lambda: cw.plan(root, x5["archive"])  # noqa: E731
+    both = ["slots/legacy_b0866e8", "slots/old"]
+    for name in ("old", "legacy_b0866e8"):  # R1's 63ea8d3 container and its b0866e8 legacy-state slot
+        (root / "slots" / name / "state" / "data").mkdir(parents=True)
+        (root / "slots" / name / "state" / "data" / "x.txt").write_text("CANARY-UNPROVEN")
+    witness = cw.witness(root)
+    error = _refusal(unproven, plan)
+    assert error.report == {"paths": both}
+    assert "CANARY" not in json.dumps(error.report)
+    assert cw.witness(root) == witness and cw.serve(root, tmp_path, "h-unproven").code == 0  # row P
+    _adoption_record(root, "old", "legacy_b0866e8", aborted=True)  # an aborted adoption exempts nothing
+    assert _refusal(unproven, plan).report == {"paths": both}
+    _clear_adoption(root)
+    first = _adoption_record(root, "old", "legacy_b0866e8")  # the committed record's two legacy names
+    planned = plan()
+    assert {entry["path"] for entry in planned["untouched"]} >= set(both)
+    # Two committed records (naming the same slots, either one sorting first) exempt nothing.
+    _adoption_record(root, "old", "legacy_b0866e8", generation=2)
+    assert _refusal(unproven, plan).report == {"paths": both}
+    _clear_adoption(root)
+    # A record whose file name is not its own head's digest exempts nothing.
+    _adoption_record(root, "old", "legacy_b0866e8", generation=3, named_as=first)
+    assert _refusal(unproven, plan).report == {"paths": both}
+    _clear_adoption(root)
+    _adoption_record(root, "old", "legacy_b0866e8")
+    assert plan()["plan_sha256"]
+    # Review B2: an empty, unrecorded .prepare-* (a start cut before its staging record) refuses as
+    # row P; the documented exit is rmdir, then the plan again.
+    leftover = root / "slots" / ".prepare-sc1bcut"
+    leftover.mkdir()
+    witness = cw.witness(root)
+    _row_p(root, tmp_path, "h-prepare", unproven, plan)
+    assert _refusal(unproven, plan).report == {"paths": ["slots/.prepare-sc1bcut"]}
+    assert cw.witness(root) == witness
+    os.rmdir(leftover)
+    assert plan()["plan_sha256"]
     (root / "slots" / "other").mkdir()
-    error = _refusal("runtime_admission_compaction_release_unproven_copy", lambda: cw.plan(root, x5["archive"]))
-    assert error.report == {"paths": ["slots/other"]}
+    assert _refusal(unproven, plan).report == {"paths": ["slots/other"]}
 
 
 # --- start: A1 schemas equality ----------------------------------------------------------------------
@@ -541,14 +587,19 @@ def test_a_queue_path_naming_a_source_root_outside_it_still_refuses(table):
         assert str(caught.value) == "runtime_admission_compaction_absolute_locator:" + table + ".path"
 
 
-def test_two_queue_rows_relocated_to_one_k_path_refuse_before_any_write():
+@pytest.mark.parametrize("table", sorted(oc.QUEUE_PATH_TABLES))
+def test_two_queue_rows_relocated_to_one_k_path_refuse_before_any_write(table):
+    """Two relocated rows, or a relocated row and an unchanged row already naming K's path (review RA-5)."""
     roots = ("/r/slots/a/state", "/r/slots/b/state")
-    rows = [{"path": roots[0] + "/data/x.flac"}, {"path": roots[1] + "/data/x.flac"}]
-    with pytest.raises(oc.CompactionCloneError) as caught:
-        oc._check_queue_relocations(_snapshot(rows), roots, Path("/r/slots/k/state"))
-    assert str(caught.value) == "runtime_admission_compaction_locator_collision:pending_audio_deletions.path"
-    oc._check_queue_relocations(_snapshot(rows[:1] + [{"path": "/elsewhere/x.flac"}]), roots,
-                                Path("/r/slots/k/state"))
+    destination = Path("/r/slots/k/state")
+    code = "runtime_admission_compaction_locator_collision:" + table + ".path"
+    for rows in ([{"path": roots[0] + "/data/x.flac"}, {"path": roots[1] + "/data/x.flac"}],
+                 [{"path": roots[1] + "/data/x.flac"}, {"path": str(destination) + "/data/x.flac"}]):
+        with pytest.raises(oc.CompactionCloneError) as caught:
+            oc._check_queue_relocations(_snapshot(rows, table), roots, destination)
+        assert str(caught.value) == code
+    oc._check_queue_relocations(_snapshot([{"path": roots[0] + "/data/x.flac"}, {"path": "/elsewhere/x.flac"},
+                                           {"path": str(destination) + "/data/y.flac"}], table), roots, destination)
 
 
 def test_the_controller_remaps_queue_paths_as_the_worker_does():
