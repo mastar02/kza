@@ -1265,7 +1265,8 @@ async def test_history_shows_the_text_only_while_the_reminder_is_shared(schedule
     [entry] = await scheduler.notice_entries()
     assert entry.text == "regar"
     # Scope is fixed at creation today; force a private row to pin the projection.
-    await store._work.write(lambda db: db.execute("UPDATE reminders SET scope = 'private' WHERE id = ?", (r.id,)))
+    await store._work.write(lambda db: db.execute("UPDATE reminders SET scope = 'private' WHERE id = ?",
+                                                  (r.id,)).rowcount)
     [entry] = await scheduler.notice_entries()
     assert (entry.reminder_id, entry.status, entry.text) == (r.id, "confirmed", None)
 
