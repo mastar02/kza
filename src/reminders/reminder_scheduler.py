@@ -391,7 +391,9 @@ class ReminderScheduler:
         """Start a new notice round (zone available again, unmute) and wake the loop.
 
         Occurrences that used up their attempts in the previous round become
-        claimable again; attempt numbers continue in the ledger.
+        claimable again; attempt numbers continue in the ledger. No event source
+        calls this yet (review round 1 R1): today a new round starts only at
+        process startup.
         """
         self._holds = {identity: hold for identity, hold in self._holds.items() if identity in self._in_flight}
         self._wake_event.set()

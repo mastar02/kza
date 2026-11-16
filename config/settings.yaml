@@ -666,10 +666,12 @@ reminders:
   db_path: "./data/reminders.db"
   # Cada anuncio es un intento durable ("notice:") reclamado antes del audio. Solo un
   # intento que no llegó a sonar (failed) se reintenta: hasta notice_max_attempts por
-  # ronda (arranque, zona disponible), separados por notice_retry_min_gap_s y luego el
-  # doble (30 s, 60 s). Agotar los intentos no lo cierra: queda pendiente y visible en la
-  # web. El primer reintento debe quedar por debajo de late_action_grace_s para que un
-  # anuncio fallido no le haga perder sus acciones de la casa.
+  # ronda, separados por notice_retry_min_gap_s y luego el doble (30 s, 60 s). Hoy una
+  # ronda nueva empieza solo al arrancar el proceso; que la empiece "zona disponible" o
+  # el fin de un silencio es trabajo futuro (todavía ningún evento la dispara). Agotar los
+  # intentos no lo cierra: queda pendiente, visible en la API web, hasta el próximo
+  # arranque o un descarte desde la web. El primer reintento debe quedar por debajo de
+  # late_action_grace_s para que un anuncio fallido no le haga perder sus acciones de la casa.
   notice_max_attempts: 3
   notice_retry_min_gap_s: 30
   # Historial de avisos terminados (entregado, descartado, cortado, incompleto): 48 h
