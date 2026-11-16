@@ -2606,15 +2606,23 @@ def verify_branch_reached(root: Path, log: dict) -> str | None:
     verify_only branch before READY. That proves only that the branch was
     reached, not that V was isolated or unused (the SC-D8 A confirmation
     rests on a person's direct knowledge). 'no': the run started without it.
-    None: no armed run has started. No clock is read.
+    'unreadable': a run record or a verify record cannot be read (review RB-3;
+    status still reports the phase). None: no armed run has started. No clock
+    is read.
     """
     _armed, started = stage._armed_run(log)
     if started is None:
         return None
-    run_id = _started_run_id(root, started)
+    try:
+        run_id = _started_run_id(root, started)
+    except (OSError, ValueError):
+        return "unreadable"  # review RB-3: an unreadable run record (LauncherRefusal is a ValueError)
     if run_id is None:
         return None
-    ready, _smoke = stage.verify_run_records(root, run_id)
+    try:
+        ready, _smoke = stage.verify_run_records(root, run_id)
+    except (OSError, ValueError):
+        return "unreadable"  # review RB-3: status still shows the log's phase
     return "yes" if ready is not None and ready["verify_acknowledged"] is True else "no"
 
 

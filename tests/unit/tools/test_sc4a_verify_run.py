@@ -88,6 +88,11 @@ def _status(root: Path, compaction_id: str) -> dict:
     return status
 
 
+def _rewrite(path: Path, raw: bytes) -> None:
+    path.unlink()
+    path.write_bytes(raw)
+
+
 # --- a correct NEW: verified on serve's records -----------------------------------------------------
 
 def test_release_verify_run_is_the_acknowledged_isolated_boot_and_serve_stops_it(x4, x5, tmp_path):
@@ -151,6 +156,19 @@ def test_a_short_run_is_not_verified_and_serve_refuses_it_afterwards(x4, x5, tmp
     assert ready is not None and smoke["reason"] == "stop_request" and smoke["measured_seconds"] < SMOKE
     assert stage.read_admission_head(root)["status"] == "closed"  # sealed with its receipt ...
     assert not compaction._has(log, "verified")  # ... and still not verified
+    assert _status(root, compaction_id)["verify_branch_reached"] == "yes"
+    # Review RB-3: an unreadable ready.json, or an unreadable run record of another run, leaves the
+    # log's phase visible in status (V2/V3's read-only view) instead of 'invalid'.
+    ready_path = stage.verify_ready_path(root, _run_id(root, log))
+    saved = ready_path.read_bytes()
+    other = root / "admission" / "runs" / ("0" * 32 + ".json")  # sorts before every real run record
+    for damage, undo in ((lambda: _rewrite(ready_path, b"{}"), lambda: _rewrite(ready_path, saved)),
+                         (lambda: other.write_bytes(b"{}"), other.unlink)):
+        damage()
+        status = _status(root, compaction_id)
+        assert "invalid" not in status and status["verify_branch_reached"] == "unreadable"
+        assert status["phase"] == log["events"][-1]["kind"] and status["mode"] == "release"
+        undo()
     assert _status(root, compaction_id)["verify_branch_reached"] == "yes"
     assert stage.compaction_serve_decision(root, stage.read_admission_head(root), wall=time.time())["code"] \
         == "runtime_admission_compaction_verify_consumed"
