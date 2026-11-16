@@ -520,8 +520,13 @@ def test_t0f_exit_a_corrected_controller_at_a_higher_revision_serves_h(builds, t
 
 
 def _open_k_under_a_pending_log(builds, root, tmp_path):
-    """A plain-mode compaction at epoch 5 (no owners), then K's head left open as by a run that died."""
-    started = cw.start(root, builds["archives"]["x4"])
+    """A compaction at epoch 5 (no owners), then K's head left open as by a run that died.
+
+    Since SC-1b every new log at epoch 5 is a release-mode log (intent.mode = 'release', NEW = X5);
+    a carried plain-mode log is emulated by making release_mode_log answer False.
+    """
+    started = cw.start(root, builds["archives"]["x5"])
+    assert stage.pending_compaction(root)["intent"]["mode"] == "release"
     head = stage.read_admission_head(root)
     with stage.AdmissionController(root, allow_open_head=True, gate="compaction:" + started["compaction_id"]):
         stage._cas_head(root, head, head["binding_id"], "unknown", "1" * 32)
@@ -534,8 +539,9 @@ def test_later_install_over_an_open_head_needs_a_release_mode_log_and_h_binding_
     root = t0_root["root"]
     started = _open_k_under_a_pending_log(builds, root, tmp_path)
     witness = cw.witness(root)
-    _unchanged_t0(root, witness, lambda: _install(root, builds, "x5r2"), "runtime_admission_not_closed")
-    monkeypatch.setattr(launcher, "release_mode_log", lambda log: True)  # SC-1b writes intent.mode
+    with monkeypatch.context() as patch:
+        patch.setattr(launcher, "release_mode_log", lambda log: False)  # a carried plain-mode log
+        _unchanged_t0(root, witness, lambda: _install(root, builds, "x5r2"), "runtime_admission_not_closed")
     policy = t0_root["h"]["state"] / ".kza-target-ownership.json"
     policy.write_text("{}")  # H's binding, recomputed by this code, no longer equals the log's source binding
     witness = cw.witness(root)
@@ -553,7 +559,9 @@ def test_later_install_over_an_open_head_needs_a_release_mode_log_and_h_binding_
 def test_release_mode_log_reads_the_intent_mode():
     assert launcher.release_mode_log({"intent": {"mode": "release"}})
     assert not launcher.release_mode_log({"intent": {}})
-    assert not launcher.release_mode_log({"intent": {"mode": "plain"}})
+    # SC-1b review RA-2: plain mode is only a log without 'mode'; any other value is an invalid log.
+    with pytest.raises(ValueError, match="^runtime_admission_compaction_log_invalid$"):
+        launcher.release_mode_log({"intent": {"mode": "plain"}})
 
 
 # --- the wrong installer (R3-OPS-6b, R4-OPS-4) ----------------------------------------------------------
@@ -582,10 +590,13 @@ def test_the_epoch4_installer_carries_a_plain_log_and_epoch5_finishes_it(builds,
     compaction.compact_verify(root, started["compaction_id"])
     assert _serve(root, tmp_path, "verify").code == 0
     assert compaction.compact_retire(root, started["compaction_id"], scan=cw.no_units)["phase"] == "complete"
-    # The correct T0 is an equal-triple no-op, and a plan is admitted afterwards.
+    # The correct T0 is an equal-triple no-op, and a plan is admitted afterwards (R4-OPS-4). Since SC-1b
+    # every new log is release mode: NEW is the epoch-5 X5 (equal triple), never the epoch-4 head's release.
     _install(root, builds)
     assert _record(root)["commit"] == builds["manifests"]["x5"]["git_commit"]
-    assert cw.plan(root, builds["archives"]["x4"], "k2")["plan_sha256"]
+    assert cw.plan(root, builds["archives"]["x5"], "k2")["plan_sha256"]
+    with pytest.raises(compaction.CompactionRefusal, match="runtime_admission_compaction_release_epoch"):
+        cw.plan(root, builds["archives"]["x4"], "k2")
 
 
 def test_an_epoch4_controller_cannot_lease_an_epoch5_root(builds, t0_root, tmp_path):
@@ -768,8 +779,7 @@ def test_a_missing_or_damaged_controller_json_keeps_the_triple_checks(builds, t0
 def test_later_install_refuses_an_open_head_the_pending_log_does_not_own(builds, t0_root, tmp_path, monkeypatch):
     """Review F4: the open head must be the log's H or its authorized K."""
     root = t0_root["root"]
-    started = _open_k_under_a_pending_log(builds, root, tmp_path)
-    monkeypatch.setattr(launcher, "release_mode_log", lambda log: True)  # SC-1b writes intent.mode
+    started = _open_k_under_a_pending_log(builds, root, tmp_path)  # a release-mode log (SC-1b)
     gate = "compaction:" + started["compaction_id"]
     head = stage.read_admission_head(root)
     with stage.AdmissionController(root, allow_open_head=True, gate=gate):
@@ -788,13 +798,15 @@ def test_later_install_over_a_closed_head_refuses_a_plain_or_unreadable_log(buil
                                                                             monkeypatch):
     """Review r2 F2 (stricter reading): over a closed head only a release-mode log is carried."""
     root = t0_root["root"]
-    started = cw.start(root, builds["archives"]["x4"])  # a plain-mode log; K's head is closed
+    started = cw.start(root, builds["archives"]["x5"])  # a release-mode log (SC-1b); K's head is closed
     assert stage.read_admission_head(root)["status"] == "closed"
+    assert stage.pending_compaction(root)["intent"]["mode"] == "release"
     witness = cw.witness(root)
-    _unchanged_t0(root, witness, lambda: _install(root, builds, "x5r2"), "runtime_admission_compaction_pending")
     with monkeypatch.context() as patch:
-        patch.setattr(launcher, "release_mode_log", lambda log: True)
-        _install(root, builds, "x5r2")  # D4 / row CI: a release-mode log, closed head, SR-1
+        patch.setattr(launcher, "release_mode_log", lambda log: False)  # a carried plain-mode log
+        _unchanged_t0(root, witness, lambda: _install(root, builds, "x5r2"),
+                      "runtime_admission_compaction_pending")
+    _install(root, builds, "x5r2")  # D4 / row CI: a release-mode log, closed head, SR-1
     assert _current(root) == builds["manifests"]["x5r2"]["git_commit"]
     events = stage.compaction_log_path(root, started["compaction_id"]) / "events"
     (events / "000099.json").write_text("{}")

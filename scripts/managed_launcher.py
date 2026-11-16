@@ -2307,8 +2307,17 @@ def _first_install_checks(root: Path, manifest: dict, *, probe_timeout: float) -
 
 
 def release_mode_log(log: dict) -> bool:
-    """A compaction log planned in release mode (SC-1b writes intent.mode = 'release')."""
-    return log["intent"].get("mode") == "release"
+    """A compaction log planned in release mode (SC-1b writes intent.mode = 'release').
+
+    Plain mode is only a log without 'mode' (mechanism.mode); any other value
+    raises ValueError('runtime_admission_compaction_log_invalid') (review RA-2).
+    """
+    intent = log["intent"]
+    if "mode" not in intent:
+        return False
+    if intent["mode"] != "release":
+        raise ValueError("runtime_admission_compaction_log_invalid")
+    return True
 
 
 def _later_install_checks(root: Path, manifest: dict, *, probe_timeout: float) -> None:
@@ -2333,9 +2342,9 @@ def _later_install_checks(root: Path, manifest: dict, *, probe_timeout: float) -
     _guard_checks(root, stage.read_binding(root, head["binding_id"]) if closed else None)
     try:
         pending = stage.pending_compaction(root)
+        release = pending is not None and release_mode_log(pending)
     except ValueError:
         raise LauncherRefusal("runtime_admission_compaction_log_invalid") from None
-    release = pending is not None and release_mode_log(pending)
     if head is None or closed:
         if pending is not None and not release:
             raise LauncherRefusal("runtime_admission_compaction_pending")

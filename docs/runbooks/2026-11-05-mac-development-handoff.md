@@ -1452,6 +1452,83 @@ lecturas más estrictas quedan como notas de diseño en `sc1a-evidence.json`
   desde bundle, checkout restaurado en b15ce86) SC-1a, los cuatro módulos
   Linux y SC-6a, sin fallas. Mutantes de la revisión 16/16 (total 47/47).
 
+## SC-1b — plan y start del modo release (2026-11-16)
+
+Segunda unidad del modo release posterior a R1 (diseño
+`t040-t041/sc-release-design-v4.json`, unidad SC-1b, aceptado). Rama
+`sc1b-release-plan-start` desde 748df3f, sin push; la suite batch y el merge
+los hace la sesión coordinadora. Sin release. Evidencia:
+`t040-t041/sc1b-evidence.json` (notas de diseño SC1B-N1.., lista
+`follow_up`).
+
+- En época 5 todo log nuevo es del modo release: `intent.mode = "release"`
+  (lo lee la instalación de SC-1a), `--retire-prepare-leftovers` forzado, una
+  entrada no probada bajo `slots/` rechaza salvo los dos slots heredados del
+  registro de adopción confirmado.
+- P6' en `compact plan`: contrato y formato del NUEVO, época del NUEVO entre
+  5 y la instalada (R1 nunca es destino), served(root) o el mismo triple;
+  si no, `t0_required`, `controller_behind` o `controller_revision_conflict`
+  con los dos triples; H pasa las comprobaciones de slot; SR-2 (mismo
+  contrato de esquema en NUEVO, controlador instalado y H). El digest liga
+  modo y archivo NUEVO.
+- `compact start`: K desde el archivo NUEVO (`_k_runtime` contra el
+  intent), A1 con `schemas` de K iguales a los de H.
+- Hasta SC-4a/SC-4b: `compact verify` de un log del modo release rechaza
+  (`release_verify_unavailable`); `allow-run`, `--discard-k-writes` y Q6
+  rechazan (`plain_mode_only`). La salida es la abort simple antes de la
+  corrida (fila A0).
+- Reubicación de `pending_audio_deletions.path` y `audio_write_intents.path`
+  en toda compactación (antes una cola no vacía bloqueaba), con la misma
+  reubicación en la proyección esperada de A1 y colisiones rechazadas.
+- Tests: `tests/unit/tools/test_sc1b_release_plan.py`; el test de SC-1a que
+  planificaba con el archivo de época 4 después del T0 ahora planifica con
+  X5 y comprueba que el de época 4 rechaza.
+- Pruebas dirigidas (server, `yo`, clones propios en `runs/sc1b` y
+  `runs/sc1b-mut`, sin tocar `kza`): SC-1b, SC-1a, compactación y sus
+  revisiones, SC-2, unidades, admisión, lanzador, contrato de esquema,
+  `build_runtime`, `owner_compaction`, docs de SC-5a/SC-6a, `tests/unit/core`
+  e integración (compactación compilada y Linux, ensayo de SC-6a, adopción,
+  lanzador compilado y Linux), sin fallas tras corregir tres tests de SC-1a.
+  Los ensayos compilados con presupuesto de tiempo (checkpoints, reconciliación,
+  copias) no se corrieron: no tocan lo que cambió. Mutantes 34/34.
+- Queda para después (`follow_up`): `--accept-regressed-source` (R5-1, con el
+  testigo de recuperación de SC-4b).
+- Revisión 1 (dos revisores, `changes_needed`), aplicada en commits propios:
+  - RA-1/B1: `compact resume` no repite P6'. `_k_runtime` compara ahora el
+    `release.json` del archivo dado con el del intent **antes** de escribir
+    nada; un `resume` con el archivo de H (o un NUEVO no admitido) después de
+    un `start` cortado rechaza `compaction_artifact` con `"archive":
+    "not_the_intent_archive"` y el `resume` con el NUEVO sigue llegando a la
+    activación. P6'(f) queda probado con dos cambios entre la comprobación y
+    la extracción (otro archivo; `release.json` de K reescrito).
+  - RA-2: modo simple es sólo un log **sin** `mode`; cualquier otro valor es
+    `compaction_log_invalid` (lanzador, verify, allow-run, descarte, Q6,
+    served(root)); `status` lo lista como inválido; el abort simple antes de
+    la corrida sigue.
+  - B3: un NUEVO de época mayor que la instalada rechaza `t0_required` con los
+    dos triples (antes `release_epoch`); menor que 5 sigue `release_epoch`.
+  - B4: `start`/`resume` de un log del modo release dicen `next: compact
+    abort <id>` hasta SC-4a; un log simple sigue con `compact verify`.
+  - B2/B5: runbook de compactación con `NEW_ARCHIVE` (época 5: `--archive` es
+    siempre el NUEVO, también en `resume`) y filas con salida para
+    `t0_required` por época, `controller_revision_conflict`,
+    `release_unproven_copy` (un `slots/.prepare-*` vacío se quita con `rmdir`;
+    otra ruta: servicio en H, investigar, decisión de 48 horas),
+    `compaction_artifact`, `schema_changed` y `locator_collision`.
+  - RA-3/RA-4/RA-5: tests de la exención heredada (slot de estado heredado,
+    dos registros confirmados, nombre de registro distinto del digest), de
+    las tres patas de SR-2 y de las colisiones de cola en las dos tablas.
+  - RA-6, RA-7 y B6 van a `follow_up` (no bloquean la primera actualización
+    posterior a R1).
+  - Pruebas (server, `yo`, `runs/sc1b` y `runs/sc1b-mut`, salidas en
+    `runs/sc1b-r1-out/`): SC-1b 15/15, SC-1a 45/45, módulos de compactación
+    507 pasan y 5 saltados, admisión y lanzador, integración de compactación
+    compilada y Linux y el ensayo de SC-6a, y el control final (docs de
+    SC-5a/SC-6a, SC-1b, `tests/unit/core`) 541/541. Dos fallas intermedias se
+    corrigieron: el test de SC-1a que leía `mode: "plain"` como simple (ahora
+    `log_invalid`) y un `next` agregado al no-op de `resume` que el ensayo
+    compilado fija (revertido). Mutantes de la revisión 17/17.
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.

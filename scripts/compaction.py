@@ -111,6 +111,16 @@ _INTERNAL_TABLES = frozenset({"sqlite_sequence", "sqlite_stat1", "sqlite_stat4"}
 _SCHEDULING = frozenset({"erasure_targets", "erasure_steps", "policy_index_deletions", "index_jobs"})
 # F7: a dashboard login during the smoke window does not block abort-to-H.
 ABORT_EXCLUDED_PROTECTED = frozenset({"sessions", "credential_attempts"})
+# SC-1b (sc-release-design v4 mechanism.mode): at controller epoch >= 5 every new log is a
+# release-mode log, intent.mode = "release"; a log without 'mode' is a plain-mode log.
+RELEASE_MODE = "release"
+T0_REQUIRED = "runtime_admission_compaction_t0_required"
+CONTROLLER_BEHIND = "runtime_admission_compaction_controller_behind"
+# The plain-mode paths (Q6, allow-run, --discard-k-writes) finish only a log without 'mode'.
+PLAIN_MODE_ONLY = "runtime_admission_compaction_plain_mode_only"
+# Until SC-4a ships the isolated verification run, a release-mode log cannot be armed (design note
+# SC1B-N3): its only way forward is the lossless plain abort of row A0.
+RELEASE_VERIFY_UNAVAILABLE = "runtime_admission_compaction_release_verify_unavailable"
 
 
 # --- small helpers -----------------------------------------------------------------------------------
@@ -609,6 +619,154 @@ def launcher_contract_ok(root: Path, head_binding: dict) -> None:
         _refuse("runtime_admission_compaction_launcher_contract")
 
 
+# --- SC-1b: release mode (sc-release-design v4 mechanism.mode, plan.p6_prime) ------------------------
+
+def release_mode() -> bool:
+    """Whether new logs are release-mode logs: keyed on this code's epoch, like the AUTHZ3-1 guard."""
+    return stage.CONTROLLER_EPOCH >= stage.RELEASE_MODE_EPOCH
+
+
+def release_log(log: dict) -> bool:
+    """A log planned in release mode (intent.mode == 'release'); install-controller reads the same key.
+
+    A log without 'mode' is a plain-mode log; any other 'mode' value refuses
+    (runtime_admission_compaction_log_invalid, review RA-2), so no path treats it as plain.
+    """
+    try:
+        return launcher.release_mode_log(log)
+    except ValueError as error:
+        _refuse(str(error))
+
+
+def _require_plain_mode(log: dict) -> None:
+    """V4R2-A1: Q6, allow-run and --discard-k-writes only finish a log without 'mode'."""
+    if release_log(log):
+        _refuse(PLAIN_MODE_ONLY)
+
+
+def served_releases(root: Path, head_binding: dict) -> set[str]:
+    """served(root) (P6'(c)): the archives of complete, verified release-mode logs, plus the head's release.
+
+    Derived from immutable intents and events only (CO-2): no release-history
+    record. A plain-mode log, a log completed without 'verified' or one still
+    pending or aborted serves nothing.
+    """
+    served = {head_binding["release_sha256"]}
+    for log in stage.compaction_logs(root):
+        if (log["terminal"] and log["events"][-1]["kind"] == "complete" and release_log(log)
+                and _has(log, "verified")):
+            served.add(log["intent"]["archive"]["release_sha256"])
+    return served
+
+
+def _triple_text(triple: tuple) -> str:
+    return ".".join(str(item) for item in triple)
+
+
+def _installed_manifest(root: Path) -> dict:
+    """controller/current/release.json, the installed controller's manifest (R4-OPS-4)."""
+    try:
+        manifest = json.loads((root / "controller" / "current" / "release.json").read_bytes())
+    except (OSError, ValueError, UnicodeDecodeError):
+        _refuse("runtime_admission_controller_tampered")
+    if type(manifest) is not dict:
+        _refuse("runtime_admission_controller_tampered")
+    return manifest
+
+
+def release_admission(root: Path, source: dict, manifest: dict) -> dict:
+    """P6'(a)-(d) and (g): may the closed head H move to NEW (``manifest``) without a T0?
+
+    (a) NEW's launcher contract and format epoch meet serve's minima; (b)
+    5 <= NEW's controller epoch <= the installed one, so R1 (epoch 4) is never
+    NEW (release_epoch), and an epoch above the installed one names its T0
+    (t0_required with both triples, R5-3); (c) NEW is in served(root) or its controller triple equals the
+    installed one, else t0_required (greater pair), controller_behind (lower
+    pair) or a revision conflict (equal pair, other closure), each naming both
+    triples (R5-3); (d) H passes serve's slot integers; (g) SR-2: NEW's,
+    the installed controller's and H's schema contracts are equal and >= 1.
+    Returns the archive fields the plan digest binds (e).
+    """
+    integers = {}
+    for key in ("launcher_contract", "format_epoch", "schema_contract", "controller_epoch"):
+        value = manifest.get(key, 0)
+        if type(value) is not int or value < 0:
+            _refuse("runtime_admission_release_integer")
+        integers[key] = value
+    if integers["launcher_contract"] < stage.LAUNCHER_CONTRACT:  # (a)
+        _refuse("runtime_admission_launcher_contract_missing")
+    if integers["format_epoch"] < stage.MIN_FORMAT_EPOCH:
+        _refuse("runtime_admission_rollback_format_closed")
+    installed_manifest = _installed_manifest(root)
+    try:
+        installed = stage.controller_triple(installed_manifest)
+        triple = stage.controller_triple(manifest)
+    except ValueError as error:
+        _refuse(str(error))
+    detail = ":installed=" + _triple_text(installed) + ",archive=" + _triple_text(triple)
+    if triple[0] < stage.RELEASE_MODE_EPOCH:  # (b): R1 (epoch 4) is never NEW (SC-D7 A)
+        _refuse("runtime_admission_compaction_release_epoch")
+    if triple[0] > installed[0]:  # (b) upper bound: a greater triple, so (c)'s named case (review B3)
+        _refuse(T0_REQUIRED + detail)
+    release_sha256 = _sha256_bytes(_release_json_bytes(manifest))
+    if release_sha256 not in served_releases(root, source) and triple != installed:  # (c)
+        if triple[:2] > installed[:2]:
+            _refuse(T0_REQUIRED + detail)
+        if triple[:2] < installed[:2]:
+            _refuse(CONTROLLER_BEHIND + detail)
+        _refuse("runtime_admission_compaction_controller_revision_conflict" + detail)  # equal pair (CR2-9)
+    try:
+        stage._require_launcher_slot(source)  # (d)
+        head_contract = stage.release_integers(source)["schema_contract"]
+    except ValueError as error:
+        _refuse(str(error))
+    contracts = {integers["schema_contract"], installed_manifest.get("schema_contract", 0), head_contract}
+    if len(contracts) != 1 or type(integers["schema_contract"]) is not int or integers["schema_contract"] < 1:
+        _refuse("runtime_admission_compaction_schema_contract")  # (g) SR-2, SC-D4 A
+    return {"release_sha256": release_sha256, "git_commit": manifest["git_commit"],
+            "schema_contract": integers["schema_contract"], "controller_triple": list(triple)}
+
+
+def _legacy_slot_names(root: Path) -> set[str]:
+    """The two legacy slot names of the committed adoption record (container and legacy state slot).
+
+    Read-only; any record that is not exactly one committed (not aborted)
+    adoption record exempts nothing (stricter reading).
+    """
+    directory = stage.adoption_directory(root)
+    if not os.path.isdir(directory) or os.path.islink(directory):
+        return set()
+    committed = []
+    for name in sorted(os.listdir(directory)):
+        if not (name.startswith("adoption-") and name.endswith(".json")):
+            continue
+        try:
+            record = stage._read_json(directory / name)
+        except (OSError, ValueError):
+            return set()
+        head = record.get("head")
+        if (record.get("kind") != "adoption" or type(head) is not dict
+                or stage.adoption_record_path(root, head).name != name):
+            return set()
+        if not stage.head_aborted(root, head):
+            committed.append(record)
+    if len(committed) != 1:
+        return set()
+    record = committed[0]
+    layout = record.get("layout")
+    legacy = layout.get("legacy_state") if type(layout) is dict else None
+    if type(record.get("container_slot")) is not str or type(legacy) is not str:
+        return set()
+    return {record["container_slot"], Path(legacy).parent.name}
+
+
+def _unproven_copies(root: Path, untouched: list[dict]) -> list[str]:
+    """Release mode: every untouched entry under slots/ but the two legacy slots (plan.other)."""
+    exempt = _legacy_slot_names(root)
+    return sorted(entry["path"] for entry in untouched if entry["path"].startswith("slots/")
+                  and entry["path"].split("/")[1] not in exempt)
+
+
 def _install_logrotate(root: Path) -> tuple[Path, ...]:
     directory = root / "admission" / "launcher"
     records = sorted(directory.glob("install-*.json")) if _lexists(directory) else []
@@ -1047,6 +1205,9 @@ def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftov
                 wall, compaction_id: str | None = None, named_units: tuple[str, ...] = ()) -> dict:
     """Every read-only check of P1-P14 and the retirement set; the value whose digest the operator acks."""
     stage._slot_name(k_slot)
+    release = release_mode()  # SC-1b: the only mode for new logs at epoch >= 5
+    if release:
+        retire_prepare_leftovers = True  # plan.other: forced on in release mode
     head = stage.read_admission_head(root)
     if head is None or head["status"] != "closed":
         _refuse("runtime_admission_not_closed")
@@ -1070,6 +1231,10 @@ def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftov
                                         compaction_id=compaction_id)
     if any(entry["path"] == "slots/" + k_slot for entry in untouched):
         _refuse("runtime_admission_compaction_k_exists")
+    if release:
+        unproven = _unproven_copies(root, untouched)
+        if unproven:
+            _refuse("runtime_admission_compaction_release_unproven_copy", {"paths": unproven})
     head_member = next((member for member in members if member.get("state_root") == source["state_root"]), None)
     if head_member is None:
         _refuse("runtime_admission_compaction_head_unproven")
@@ -1078,10 +1243,14 @@ def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftov
             _refuse("runtime_admission_compaction_owner_unproven")
     _writers_closed([source["state_root"]] + [owner["state_root"] for owner in owners]
                     + [member.get("state_root") or member["path"] for member in members])  # P5
-    manifest = _release_manifest(archive)  # P6: K's runtime is H's archive
-    if (_sha256_bytes(_release_json_bytes(manifest)) != source["release_sha256"]
-            or manifest["git_commit"] != source["code_commit"]):
-        _refuse("runtime_admission_compaction_artifact")
+    manifest = _release_manifest(archive)
+    if release:
+        archive_fields = release_admission(root, source, manifest)  # P6'(a)-(d), (g)
+    else:  # P6 (plain mode, epoch <= 4): K's runtime is H's archive
+        if (_sha256_bytes(_release_json_bytes(manifest)) != source["release_sha256"]
+                or manifest["git_commit"] != source["code_commit"]):
+            _refuse("runtime_admission_compaction_artifact")
+        archive_fields = {"release_sha256": source["release_sha256"], "git_commit": manifest["git_commit"]}
     state = Path(source["state_root"])
     needles = [source["state_root"]] + [owner["state_root"] for owner in owners] + \
         [member["path"] for member in members]
@@ -1120,7 +1289,7 @@ def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftov
     advice = advisory_counts(state, retained, owners=len(owners))
     value = {"schema_version": SCHEMA_VERSION, "head": head, "source_binding_id": head["binding_id"],
              "k_slot": k_slot, "k_state_root": str(root / "slots" / k_slot / "state"),
-             "archive": {"release_sha256": source["release_sha256"], "git_commit": manifest["git_commit"]},
+             "archive": archive_fields,
              "privacy_relative": privacy, "owners": owners, "members": members,
              "untouched": untouched, "untouched_sha256": untouched_digest(untouched),
              "coverage": covered["totals"], "coverage_members": covered["members"], "capacity": {
@@ -1130,6 +1299,8 @@ def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftov
              "retire_prepare_leftovers": retire_prepare_leftovers, "named_units": sorted(set(named_units)),
              "abandoned_copies": sorted(abandoned),
              "decisions": list(DECISIONS)}
+    if release:
+        value["mode"] = RELEASE_MODE  # P6'(e): the digest and the intent bind it with the archive fields
     return value
 
 
@@ -1271,11 +1442,15 @@ def _last(log: dict, kind: str) -> dict | None:
 
 
 def _k_runtime(root: Path, log: dict, archive: Path, wall) -> dict:
-    """C2a: K from H's archive, with an empty placeholder state (P6), under this compaction's gate."""
+    """C2a: K from the intent's archive (H's, or NEW's in release mode), with an empty placeholder state."""
     intent = log["intent"]
     compaction_id = log["compaction_id"]
     slot = root / "slots" / intent["k_slot"]
     if not _lexists(slot):
+        # Review B1: a resume given another archive than the intent's (H's, after a cut start in
+        # release mode) refuses before anything is written, so the next resume with NEW still works.
+        if _sha256_bytes(_release_json_bytes(_release_manifest(archive))) != intent["archive"]["release_sha256"]:
+            _refuse("runtime_admission_compaction_artifact", {"archive": "not_the_intent_archive"})
         _destroy_own_staging(root, log, wall)
         log = _log(root, compaction_id)
         placeholder = root / "compaction" / compaction_id / "placeholder"
@@ -1300,7 +1475,8 @@ def _k_runtime(root: Path, log: dict, archive: Path, wall) -> dict:
         _refuse("runtime_admission_compaction_k_identity")
     source = stage.read_binding(root, intent["source_binding_id"])
     runtime = slot / "runtime"
-    if _sha256_bytes((runtime / "release.json").read_bytes()) != source["release_sha256"]:
+    # P6'(f): K's release.json is the intent's archive (H's own for a plain-mode log, NEW's in release mode).
+    if _sha256_bytes((runtime / "release.json").read_bytes()) != intent["archive"]["release_sha256"]:
         _refuse("runtime_admission_compaction_artifact")
     if _runtime_link_set(runtime) != _runtime_link_set(Path(source["runtime_root"])):
         _refuse("runtime_admission_compaction_links")
@@ -1400,7 +1576,10 @@ def _authorize(root: Path, log: dict, wall) -> dict:
     if materialized["state_identity"] != candidate["state_identity"]:
         _refuse("runtime_admission_compaction_k_identity")
     evidence_map = materialized["evidence_map"]
-    if not stage._compaction_authority_equivalent(root, source, candidate, evidence_map):
+    if candidate["schemas"] != source["schemas"]:  # start.a1_extra (SC-1b): K's schemas are H's
+        _refuse("runtime_admission_compaction_schema_changed")
+    if not stage._compaction_authority_equivalent(root, source, candidate, evidence_map,
+                                                  stage.compaction_source_roots(intent, source)):
         _refuse("runtime_admission_compaction_payload_changed")
     if stage._binding_snapshot(root, source["slot"]) != source or stage.read_admission_head(root) != head:
         _refuse("privacy_authority_stale")
@@ -1446,6 +1625,17 @@ def _destroy_partial_snapshots(root: Path, log: dict, wall) -> dict:
     return log
 
 
+def _next_after_activation(log: dict) -> str:
+    """The operator's next command once K is active (review B4).
+
+    A release-mode log cannot be armed before SC-4a (SC1B-N3): its only
+    exit is the lossless plain abort, so the tool names that, not verify.
+    """
+    if release_log(log):
+        return "compact abort " + log["compaction_id"]
+    return "compact verify " + log["compaction_id"]
+
+
 def _continue(root: Path, compaction_id: str, *, archive: Path | None, worker=None, wall=time.time) -> dict:
     """Resume C2a-C5 from the last logged event (every step idempotent or refused)."""
     gate = "compaction:" + compaction_id
@@ -1468,7 +1658,7 @@ def _continue(root: Path, compaction_id: str, *, archive: Path | None, worker=No
             log = _authorize(root, log, wall)
         if not _has(log, "activated"):
             log = _activate(root, controller, log, wall)
-    return {"compaction_id": compaction_id, "phase": "activated", "next": "compact verify " + compaction_id,
+    return {"compaction_id": compaction_id, "phase": "activated", "next": _next_after_activation(log),
             "materialized": _last(log, "materialized")["data"]["counts"]}
 
 
@@ -1483,6 +1673,8 @@ def compact_verify(root, compaction_id: str, *, smoke_seconds: int = 120, wall=t
         log = _log(root, compaction_id)
         if not _has(log, "activated") or _has(log, "abort_started"):
             _refuse("runtime_admission_compaction_phase")
+        if release_log(log):
+            _refuse(RELEASE_VERIFY_UNAVAILABLE)  # SC1B-N3: the isolated run V is SC-4a's
         head = stage.read_admission_head(root)
         armed, started = stage._armed_run(log)
         if armed is not None:
@@ -1509,6 +1701,7 @@ def compact_allow_run(root, compaction_id: str, *, reason: str, hours: int, wall
         _refuse("runtime_admission_compaction_allow_run_hours")
     with stage.AdmissionController(root, gate="compaction:" + compaction_id):
         log = _log(root, compaction_id)
+        _require_plain_mode(log)  # V4R2-A1: allow-run finishes only a plain-mode log
         head = stage.read_admission_head(root)
         stage.record_compaction_verified(root, head, wall=_now(wall))
         log = _log(root, compaction_id)
@@ -2166,6 +2359,8 @@ def compact_abort(root, compaction_id: str, *, to_h: bool = False, discard_k_wri
         log = _log(root, compaction_id)
         if log["terminal"] or _has(log, "retire_started"):
             _refuse("runtime_admission_compaction_phase")
+        if discard_k_writes:
+            _require_plain_mode(log)  # no --discard-k-writes in release mode (w_abort_predicate.command)
         if not _has(log, "abort_started"):
             started = _armed_run_consumed(root, log)
             if started and not to_h:
@@ -2192,7 +2387,9 @@ def compact_abort(root, compaction_id: str, *, to_h: bool = False, discard_k_wri
 
 def _q6_checks(root: Path, log: dict, *, discard_k_writes: bool, confirm_h: str | None, verified: bool) -> dict:
     """The return to H's checks against the current head: no live child, (the verified head), H confirmed,
-    Q6, discard. ``verified`` False is the recheck after a K run behind the abort (review r2 N1)."""
+    Q6, discard. ``verified`` False is the recheck after a K run behind the abort (review r2 N1).
+    Plain mode only: a release-mode log returns to H through W (SC-4b), never through Q6."""
+    _require_plain_mode(log)
     intent = log["intent"]
     head = stage.read_admission_head(root)
     if head["status"] != "closed":
@@ -2378,6 +2575,7 @@ def compact_status(root, compaction_id: str | None = None) -> dict:
             if not _lexists(directory / name / "intent.json"):
                 continue
             log = stage.read_compaction_log(root, name)
+            mode = RELEASE_MODE if release_log(log) else "plain"
         except (OSError, ValueError) as error:
             found.append({"compaction_id": name[:64], "invalid": True,
                           "code": str(error)[:200] if str(error).startswith("runtime_admission_")
@@ -2386,7 +2584,8 @@ def compact_status(root, compaction_id: str | None = None) -> dict:
         found.append({"compaction_id": log["compaction_id"], "terminal": log["terminal"],
                       "phase": log["events"][-1]["kind"] if log["events"] else "intent",
                       "phases": [event["kind"] for event in log["events"]],
-                      "members": len(log["intent"]["members"])})
+                      "members": len(log["intent"]["members"]),
+                      "mode": mode})
     return {"compactions": found}
 
 
