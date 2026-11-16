@@ -204,6 +204,16 @@ def test_capture_progress_needs_the_same_substream_running_in_both_samples():
     assert tool.capture_progress(first, {}) == {'cocina': {'hw_ptr_advanced': None}}
 
 
+def test_capture_progress_counts_only_running_substreams():
+    def sample(ptr):
+        status = f'state: PREPARED\n-----\nhw_ptr      : {ptr}'
+        return {'alsa_cards': [{'card': '2', 'captures': [
+            {'path': '/a/status', 'status': status, 'hw_ptr': ptr}]}]}
+
+    assert tool.capture_progress({'cocina': sample(0)}, {'cocina': sample(64)}) == {
+        'cocina': {'hw_ptr_advanced': None}}
+
+
 # --- kernel lines -----------------------------------------------------------------------------
 
 KERNEL = [
@@ -217,6 +227,7 @@ KERNEL = [
     '2026-11-16T10:00:07-0300 kza kernel: cannot submit capture urb (err = -19)',
     '2026-11-16T10:00:08-0300 kza kernel: audit: type=1400 apparmor="ALLOWED" name="/home/kza/secrets/.env"',
     '2026-11-16T10:00:09-0300 kza kernel: usb 7-5.3:1.0: interface 0 claimed',
+    '2026-11-16T10:00:10-0300 kza kernel: usb 1-243: new full-speed USB device',
 ]
 
 
