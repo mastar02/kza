@@ -1437,6 +1437,10 @@ def _k_runtime(root: Path, log: dict, archive: Path, wall) -> dict:
     compaction_id = log["compaction_id"]
     slot = root / "slots" / intent["k_slot"]
     if not _lexists(slot):
+        # Review B1: a resume given another archive than the intent's (H's, after a cut start in
+        # release mode) refuses before anything is written, so the next resume with NEW still works.
+        if _sha256_bytes(_release_json_bytes(_release_manifest(archive))) != intent["archive"]["release_sha256"]:
+            _refuse("runtime_admission_compaction_artifact", {"archive": "not_the_intent_archive"})
         _destroy_own_staging(root, log, wall)
         log = _log(root, compaction_id)
         placeholder = root / "compaction" / compaction_id / "placeholder"

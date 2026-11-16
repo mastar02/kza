@@ -232,6 +232,64 @@ def test_first_post_r1_plan_admits_new_and_start_runs_k_from_new(x4, x5, tmp_pat
     assert cw.serve(root, tmp_path, "h-again").code == 0
 
 
+def _cut_start(root: Path, archive: Path, k: str) -> str:
+    """Crash row S: start writes its intent, then is cut before C2a (K's runtime)."""
+    def cut(*args, **kwargs):
+        raise RuntimeError("cut")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(compaction, "_k_runtime", cut)
+        with pytest.raises(RuntimeError, match="cut"):
+            cw.start(root, archive, k)
+    [log] = [log for log in stage.compaction_logs(root) if not log["terminal"]]
+    assert [event["kind"] for event in log["events"]] == []
+    return log["compaction_id"]
+
+
+def _resume_refused(root: Path, compaction_id: str, h_head: dict, action, report) -> None:
+    error = _refusal("runtime_admission_compaction_artifact", action)
+    assert error.report == report
+    log = stage.read_compaction_log(root, compaction_id)
+    assert not any(event["kind"] == "k_runtime" for event in log["events"])
+    assert stage.read_admission_head(root) == h_head
+
+
+def test_a_cut_start_resumes_only_with_the_intent_archive(x4, x5, x5r2, tmp_path):
+    """Row S of the first post-R1 update (reviews RA-1, B1). resume does not re-run P6': an unadmitted
+    NEW (x5r2, greater triple, no T0) or H's own archive is refused before anything is written, so the
+    resume with the intent's NEW still reaches activation. P6'(f) itself (K's release.json against
+    intent.archive) refuses an archive swapped between that check and the extraction."""
+    world = _post_r1_world(x4, x5, tmp_path)
+    root = world["root"]
+    h_head = stage.read_admission_head(root)
+    h_state = cw.tree(world["h"]["state"])
+    compaction_id = _cut_start(root, x5["archive"], "k")
+    witness = cw.witness(root)
+    for archive in (x5r2["archive"], x4["archive"]):  # an unadmitted NEW; H's archive ($H_ARCHIVE)
+        _resume_refused(root, compaction_id, h_head,
+                        lambda: compaction.compact_resume(root, compaction_id, archive=archive),
+                        {"archive": "not_the_intent_archive"})
+        assert cw.witness(root) == witness and not (root / "slots" / "k").exists()
+    resumed = compaction.compact_resume(root, compaction_id, archive=x5["archive"])
+    assert resumed["phase"] == "activated" and resumed["next"] == "compact abort " + compaction_id
+    k = stage.read_binding(root, stage.read_admission_head(root)["binding_id"])
+    assert k["slot"] == "k" and k["release_sha256"] == x5["release_sha256"]
+    assert compaction.compact_abort(root, compaction_id)["phase"] == "aborted"
+    assert stage.read_admission_head(root)["binding_id"] == h_head["binding_id"]
+    h_head = stage.read_admission_head(root)  # the return to H may publish a new generation
+    # P6'(f): the archive passes the pre-check, then another one is extracted (swapped in between).
+    compaction_id = _cut_start(root, x5["archive"], "k2")
+    prepare = stage._prepare_slot
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(stage, "_prepare_slot", lambda archive, *args, **kwargs: prepare(x5r2["archive"], *args,
+                                                                                         **kwargs))
+        _resume_refused(root, compaction_id, h_head,
+                        lambda: compaction.compact_resume(root, compaction_id, archive=x5["archive"]), None)
+    assert compaction.compact_abort(root, compaction_id)["phase"] == "aborted"  # lossless, serves H
+    assert stage.read_admission_head(root) == h_head
+    assert cw.tree(world["h"]["state"]) == h_state
+    assert cw.serve(root, tmp_path, "h-after-cut").code == 0
+
+
 def test_equal_triple_roll_forward_needs_no_t0_and_a_greater_triple_does(x5, x5s, x5r2, x5c, tmp_path):
     """CR-9, CR2-9, R5-3: equal triple admitted; greater -> t0_required, equal pair with another digest
     -> revision conflict, each naming both triples; after the T0 the greater release is admitted."""
