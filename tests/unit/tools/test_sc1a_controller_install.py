@@ -559,7 +559,9 @@ def test_later_install_over_an_open_head_needs_a_release_mode_log_and_h_binding_
 def test_release_mode_log_reads_the_intent_mode():
     assert launcher.release_mode_log({"intent": {"mode": "release"}})
     assert not launcher.release_mode_log({"intent": {}})
-    assert not launcher.release_mode_log({"intent": {"mode": "plain"}})
+    # SC-1b review RA-2: plain mode is only a log without 'mode'; any other value is an invalid log.
+    with pytest.raises(ValueError, match="^runtime_admission_compaction_log_invalid$"):
+        launcher.release_mode_log({"intent": {"mode": "plain"}})
 
 
 # --- the wrong installer (R3-OPS-6b, R4-OPS-4) ----------------------------------------------------------
