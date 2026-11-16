@@ -14,9 +14,14 @@ change K' at boot as a defective NEW (or an isolation breach) would.
 
 from __future__ import annotations
 
+from contextlib import closing, contextmanager
+import errno
 import fcntl
 import json
+import os
 from pathlib import Path
+import sqlite3
+import stat
 import time
 
 import pytest
@@ -116,6 +121,37 @@ def _back_on_h(world: dict, tmp_path: Path, name: str) -> None:
 def _no_canary(world: dict) -> None:
     for path in (world["root"] / "compaction").rglob("*.json"):
         assert CANARY not in path.read_text()
+
+
+@contextmanager
+def _sqlite_held(path: Path):
+    """An operator's sqlite3 session holding a lock on a database (no .lock file): readers get BUSY in
+    rollback-journal and in WAL mode (exclusive locking mode)."""
+    holder = sqlite3.connect(path, isolation_level=None)
+    try:
+        holder.execute("PRAGMA locking_mode=EXCLUSIVE")
+        holder.execute("BEGIN EXCLUSIVE")
+        yield
+    finally:
+        holder.close()
+
+
+@contextmanager
+def _restored(*paths: Path):
+    """Put back the bytes and modes of ``paths`` (and drop the SQLite side files a change left)."""
+    saved = {path: (path.read_bytes(), stat.S_IMODE(path.stat().st_mode)) for path in paths}
+    sides = {path: {suffix for suffix in ("-journal", "-wal", "-shm")
+                    if os.path.lexists(str(path) + suffix)} for path in paths}
+    try:
+        yield
+    finally:
+        for path, (raw, mode) in saved.items():
+            for suffix in ("-journal", "-wal", "-shm"):
+                if suffix not in sides[path] and os.path.lexists(str(path) + suffix):
+                    os.unlink(str(path) + suffix)
+            os.chmod(path, 0o600)
+            path.write_bytes(raw)
+            os.chmod(path, mode)
 
 
 def _tombstone(conversation: str) -> str:
@@ -220,6 +256,9 @@ def test_a_loss_only_change_is_never_retired_and_abort_returns_to_h(x4, x5, tmp_
     assert report["class"] == compaction.W_LOSS_ONLY
     found = report[part]["data/privacy.db"]
     assert (found[key] if key else found) == expected
+    # SC4B-N6 (review RA4B-3 R1): with the current digest, a discard of a loss-only K' is refused.
+    _refused_writes_nothing(world, compaction.DISCARD_MISMATCH,
+                            lambda: _abort(world, discard_k_changes=retired.report["w_sha256"][:12]))
     assert _abort(world)["phase"] == "aborted"
     [started] = [event for event in _log(world)["events"] if event["kind"] == "abort_started"]
     assert started["data"]["w"]["class"] == compaction.W_LOSS_ONLY and "discarded" not in started["data"]
@@ -362,6 +401,23 @@ def test_transient_refusals_write_nothing_and_clear_with_their_cause(x4, x5, tmp
             error = _refused_writes_nothing(world, "runtime_admission_writer_active", lambda: _abort(world))
             assert error.report == ({"w0": "transient", "state": "k_prime"} if where else {"w0": "transient"})
         stray.unlink()
+    # Review RA4B-5/RB-7: a live holder's SQLite lock on a K' database (no .lock file) and a resource errno
+    # in K's writer check are transient refusals of K', not the safe stop.
+    with _sqlite_held(root / "slots" / "k" / "state" / "data" / "privacy.db"):
+        error = _refused_writes_nothing(world, compaction.K_TRANSIENT, lambda: _abort(world))
+    assert error.report == {"w1": "transient", "state": "k_prime", "database": "data/privacy.db",
+                            "sqlite": "SQLITE_BUSY"}
+    writers, k_state = stage._assert_writers_closed, root / "slots" / "k" / "state"
+
+    def no_descriptors(state):
+        if Path(state) == k_state:
+            raise OSError(errno.EMFILE, "Too many open files")
+        return writers(state)
+
+    monkeypatch.setattr(stage, "_assert_writers_closed", no_descriptors)
+    error = _refused_writes_nothing(world, compaction.K_TRANSIENT, lambda: _abort(world))
+    assert error.report == {"w0": "transient", "state": "k_prime", "errno": "EMFILE"}
+    monkeypatch.setattr(stage, "_assert_writers_closed", writers)
 
     def cut(path):
         raise RuntimeError("cut")
@@ -410,6 +466,13 @@ def test_a_discard_interrupted_after_abort_started_finishes_through_the_w_rechec
     monkeypatch.setattr(stage, "seal_admission_run", seal)
     open_head = stage.read_admission_head(root)
     assert open_head["status"] == "running"
+    alive = launcher.child_alive
+    monkeypatch.setattr(launcher, "child_alive", lambda pid, start_time: True)  # V's child still running
+    for options in ({}, {"discard_k_changes": "0" * 12}):  # review RA4B-3/RB-2(a): W0 refuses it first
+        error = _refused_writes_nothing(world, "runtime_admission_recovery_child_alive",
+                                        lambda: _abort(world, **options))
+        assert error.report == {"w0": "transient"}
+    monkeypatch.setattr(launcher, "child_alive", alive)
     first = _refused_writes_nothing(world, compaction.ABORT_PROTECTED_CHANGED, lambda: _abort(world))
     digest = first.report["w_sha256"]
     original = stage.compaction_return_to_h
@@ -455,6 +518,150 @@ def test_a_protected_table_created_only_in_k_prime_is_never_retired(x4, x5, tmp_
     error = _refused_writes_nothing(world, compaction.RETIRE_PROTECTED_CHANGED, lambda: _retire(world))
     assert error.report["w"]["class"] == compaction.W_EQUAL and error.report["authority_equal"] is False
     assert _abort(world)["phase"] == "aborted"
+    _back_on_h(world, tmp_path, "h")
+
+
+# --- HD: each real change to H's own files after V (review RA4B-2, RB-2(d)(e)) ------------------------
+
+def _old_copy_write(world: dict) -> None:
+    with closing(sqlite3.connect(world["h"]["state"] / "data" / "privacy.db")) as db, db:
+        db.execute("INSERT INTO conversation_tombstones VALUES ('conv-old-copy', 1.0, 'owner')")
+
+
+def _dropped_table(world: dict) -> None:
+    with closing(sqlite3.connect(world["h"]["state"] / "data" / "privacy.db")) as db, db:
+        db.execute("DROP TABLE conversation_tombstones")
+
+
+def _not_a_database(world: dict) -> None:
+    (world["h"]["state"] / "data" / "privacy.db").write_bytes(b"garbage" * 1000)
+
+
+def _marker_rewritten(world: dict) -> None:
+    path = world["h"]["state"] / stage._MARKER
+    value = json.loads(path.read_text())
+    os.chmod(path, 0o600)
+    path.write_text(json.dumps({**value, "binding_id": "0" * 64}))
+
+
+def _closure_malformed(world: dict) -> None:
+    path = world["root"] / "admission" / "closures" / (world["h_binding"] + ".json")
+    value = json.loads(path.read_text())
+    os.chmod(path, 0o600)
+    path.write_text(json.dumps({**value, "running_head": {**value["running_head"], "run_id": 5}}))
+
+
+H_CHANGES = {
+    # (change, the files it touches relative to the world, the coded underlying reason)
+    "old_copy_writes_a_protected_row": (_old_copy_write, ("h", "data/privacy.db"), "privacy_authority_stale"),
+    "table_dropped": (_dropped_table, ("h", "data/privacy.db"), "privacy_authority_stale"),
+    "database_overwritten": (_not_a_database, ("h", "data/privacy.db"), "sqlite:SQLITE_NOTADB"),
+    "marker_rewritten": (_marker_rewritten, ("h", stage._MARKER), "runtime_admission_marker_mismatch"),
+    "closure_proof_malformed": (_closure_malformed, ("closure", None), "record_invalid"),
+}
+
+
+def test_each_change_to_h_after_v_is_hd_and_nothing_is_written(x4, x5, tmp_path):
+    """Row HD (design: 'a real change to H's own files: an unauthorized writer, a manual edit or storage
+    damage'; test plan R4-OPS-3): after a verified V, an old copy writing a protected row to H, a dropped
+    H table, an H database overwritten (SQLITE_NOTADB), H's marker rewritten and a malformed H closure
+    proof (a TypeError while reading it). Each refuses h_changed with its code in abort --to-h (with and
+    without the discard) and in retire, writing nothing; with H put back, abort returns to H."""
+    world = _world(x4, x5, tmp_path)
+    root = world["root"]
+    assert _v(world, tmp_path, "v").code == 0 and _kinds(world)[-1] == "verified"
+    for name, (change, (where, relative), code) in sorted(H_CHANGES.items()):
+        path = (world["h"]["state"] / relative if where == "h"
+                else root / "admission" / "closures" / (world["h_binding"] + ".json"))
+        with _restored(path):
+            change(world)
+            for action in (lambda: _abort(world), lambda: _abort(world, discard_k_changes="0" * 12),
+                           lambda: _retire(world)):
+                error = _refused_writes_nothing(world, compaction.H_CHANGED, action)
+                assert error.report == {"w0": "drift", "code": code}, name
+    assert _abort(world)["phase"] == "aborted"
+    _back_on_h(world, tmp_path, "h")
+
+
+# --- the return to H's own authority checks after V (review RA4B-3, RB-2(b)(c), RB-3) ---------------
+
+def test_the_return_to_h_checks_its_confirmation_the_head_and_k_prime_and_writes_nothing(x4, x5, tmp_path,
+                                                                                        monkeypatch):
+    """After a verified V with W 'equal': --confirm-h missing, short or another binding's prefix refuses
+    abort_confirmation; a discard with the current digest refuses (nothing to discard, SC4B-N6); a
+    readable closure proof of another run refuses head_moved; K' head's closure proof gone refuses
+    k_closure_unreadable in abort and retire (RB-3, an HD-like stop); a K' binding change outside
+    sdk_versions refuses retire with k_binding_changed and its keys, and abort then returns to H."""
+    world = _world(x4, x5, tmp_path)
+    root = world["root"]
+    assert _v(world, tmp_path, "v").code == 0 and _kinds(world)[-1] == "verified"
+    k_head = stage.read_admission_head(root)
+    for confirm in (None, world["h_binding"][:11], k_head["binding_id"][:12]):
+        _refused_writes_nothing(world, "runtime_admission_compaction_abort_confirmation",
+                                lambda: compaction.compact_abort(root, world["id"], to_h=True, confirm_h=confirm))
+    digest = compaction._w(root, _log(world))["sha256"]
+    _refused_writes_nothing(world, compaction.DISCARD_MISMATCH, lambda: _abort(world, discard_k_changes=digest[:12]))
+    proof = stage._closure_proof
+
+    def another_run(root_path, binding_id):
+        found = proof(root_path, binding_id)
+        if binding_id != k_head["binding_id"]:
+            return found
+        return {**found, "running_head": {**found["running_head"],
+                                          "generation": found["running_head"]["generation"] + 1}}
+
+    monkeypatch.setattr(stage, "_closure_proof", another_run)
+    _refused_writes_nothing(world, "runtime_admission_compaction_head_moved", lambda: _abort(world))
+    monkeypatch.setattr(stage, "_closure_proof", proof)
+    closure = root / "admission" / "closures" / (k_head["binding_id"] + ".json")
+    aside = tmp_path / "k-closure-aside.json"
+    os.rename(closure, aside)
+    for action in (lambda: _abort(world), lambda: _retire(world)):
+        error = _refused_writes_nothing(world, compaction.K_CLOSURE_UNREADABLE, action)
+        assert error.report == {"code": "errno:ENOENT"}
+    os.rename(aside, closure)
+    snapshot = stage._binding_snapshot
+
+    def another_commit(root_path, name, **options):
+        found = snapshot(root_path, name, **options)
+        return {**found, "code_commit": "0" * 40} if name == "k" else found
+
+    monkeypatch.setattr(stage, "_binding_snapshot", another_commit)
+    error = _refused_writes_nothing(world, compaction.K_BINDING_CHANGED, lambda: _retire(world))
+    assert error.report == {"code": "privacy_authority_stale", "changed": ["code_commit"]}
+    assert _abort(world)["phase"] == "aborted"  # the route of k_binding_changed (design test plan R5-2)
+    monkeypatch.setattr(stage, "_binding_snapshot", snapshot)
+    _back_on_h(world, tmp_path, "h")
+
+
+# --- RB-1: a K'-only lock entry that cannot be opened (row V2) ----------------------------------------
+
+_STRAY_LOCK_LINK = "import os\nos.symlink(state / 'data' / 'privacy.db', state / 'data' / 'stray.lock')"
+
+
+def test_a_k_prime_lock_entry_that_cannot_be_opened_stops_safely_until_the_discard(x4, x5, tmp_path):
+    """Review RB-1: NEW plants data/stray.lock in K' as a symlink at boot (an isolation breach); serve's
+    seal fails (ELOOP) and the head stays open. abort --to-h is the safe stop SS, its W report naming the
+    K' locks 'unverifiable'; the discard returns to H, K's destruction refuses the link without following
+    it (compaction_symlink, runbook: remove it by hand) and resume then finishes."""
+    world = _world(x4, x5, tmp_path)
+    root = world["root"]
+    assert _v(world, tmp_path, "v", execute=_STRAY_LOCK_LINK).code != 0
+    assert stage.read_admission_head(root)["status"] != "closed"
+    first = _refused_writes_nothing(world, compaction.ABORT_PROTECTED_CHANGED, lambda: _abort(world))
+    report = first.report["w"]
+    assert report["k_writers"] == {"status": "unverifiable", "error": "errno:ELOOP"}
+    assert report["class"] == compaction.W_RESTRICTIVE
+    assert all(found == {"status": "ok"} for found in report["databases"].values())
+    _refused_writes_nothing(world, compaction.ABORT_PROTECTED_CHANGED, lambda: _abort(world))
+    _refusal("runtime_admission_compaction_symlink",
+             lambda: _abort(world, discard_k_changes=first.report["w_sha256"][:12]))
+    head = stage.read_admission_head(root)
+    assert head["status"] == "closed" and head["binding_id"] == world["h_binding"]  # returned to H
+    [started] = [event for event in _log(world)["events"] if event["kind"] == "abort_started"]
+    assert started["data"]["discarded"]["counts"]["k_writers"] == {"status": "unverifiable", "error": "errno:ELOOP"}
+    (root / "slots" / "k" / "state" / "data" / "stray.lock").unlink()
+    assert compaction.compact_resume(root, world["id"])["phase"] == "aborted"
     _back_on_h(world, tmp_path, "h")
 
 
