@@ -108,6 +108,22 @@ class Sampler:
         self._thread.join()
 
 
+class FreeSampler(Sampler):
+    """SC-0b: filesystem free space only (one statvfs), every few milliseconds.
+
+    VACUUM's temporary database is unlinked as soon as it is opened and its
+    spike lasts under a second, so a tree walk misses it; the drop in free
+    space does not (other activity on the filesystem adds noise).
+    """
+
+    def _run(self):
+        while not self._stop.is_set():
+            free = shutil.disk_usage(self.root).free
+            self.min_free = free if self.min_free is None else min(self.min_free, free)
+            self.samples += 1
+            self._stop.wait(self.interval)
+
+
 def _compact(deployment, *arguments):
     began = time.monotonic()
     result = subprocess.run([sys.executable, "-I", "-B", str(deployment.controller), "--root", str(deployment.root),
@@ -160,6 +176,7 @@ def main() -> None:
     parser.add_argument("--utterances", type=int, default=250_000)
     parser.add_argument("--sample", type=float, default=0.5)
     parser.add_argument("--no-dry-run", action="store_true")
+    parser.add_argument("--free-sample", type=float, default=0.01)
     args = parser.parse_args()
     work = Path(args.work).resolve()
     if work.exists():
@@ -192,7 +209,12 @@ def main() -> None:
                 raise RuntimeError("head not closed after adopt")
         result["root_allocated_before"] = _tree_bytes(deployment.root)
         archive = str(artifacts["archives"]["x"])
-        with Sampler(deployment.root, args.sample) as sampler:
+        # SC-0b: SQLite's temp directory (VACUUM's temporary database) on the root's filesystem, named.
+        temp = work / "sqlite-tmp"
+        temp.mkdir()
+        deployment.env = {**deployment.env, "TMPDIR": str(temp), "SQLITE_TMPDIR": str(temp)}
+        result["fs_free_before"] = shutil.disk_usage(deployment.root).free
+        with Sampler(deployment.root, args.sample) as sampler, FreeSampler(deployment.root, args.free_sample) as fast:
             planned, result["plan_seconds"] = _compact(deployment, "plan", "k", "--archive", archive)
             started, result["start_seconds"] = _compact(
                 deployment, "start", "k", "--archive", archive, "--plan-sha256", planned["plan_sha256"],
@@ -203,8 +225,15 @@ def main() -> None:
         result["root_allocated_peak"] = sampler.peak
         result["root_peak_delta_bytes"] = sampler.peak - result["root_allocated_before"]
         result["root_allocated_after"] = _tree_bytes(deployment.root)
-        result["fs_min_free"] = sampler.min_free
+        result["fs_min_free"] = min(sampler.min_free, fast.min_free)
         result["samples"] = sampler.samples
+        result["free_samples"] = fast.samples
+        result["fs_peak_growth_bytes"] = result["fs_free_before"] - result["fs_min_free"]
+        result["fs_peak_growth_over_h_state"] = round(result["fs_peak_growth_bytes"]
+                                                      / max(result["h_state_bytes"], 1), 2)
+        result["p9_need_bytes"] = (planned.get("capacity") or {}).get("need_bytes")
+        snapshots = sorted((deployment.root / "compaction" / started["compaction_id"]).glob("snapshot-*"))
+        result["manifest_bytes"] = (snapshots[-1] / "manifest.json").stat().st_size if snapshots else None
         result["peak_over_h_state"] = round(sampler.peak / max(result["h_state_allocated_bytes"], 1), 2)
         log = stage.read_compaction_log(deployment.root, started["compaction_id"])
         result["log_events"] = [(event["kind"], event.get("at")) for event in log["events"]]

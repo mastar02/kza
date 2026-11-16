@@ -287,3 +287,211 @@ def test_d5_digests_refuse_any_difference(tmp_path, mutation):
 def test_d5_digest_of_an_empty_table_matches_only_an_empty_snapshot(tmp_path):
     assert _compare(tmp_path, [], [])
     assert not _compare(tmp_path, [(1, "a", 1.0, None)], [])
+
+
+# --- verify_snapshot: one canonical serialization, the same three facts ---------------------------------
+
+def _image(tmp_path):
+    from src.memory import state_snapshot as snapshots
+    root = tmp_path / "image"
+    (root / "state").mkdir(parents=True)
+    data = root / "state" / "ordinary.json"
+    data.write_text('{"ordinary":"original"}')
+    binding = {"state_root": str(tmp_path / "original")}
+    identity = hashlib.sha256(snapshots._json(binding)).hexdigest()
+    manifest = {"schema_version": 1, "source_binding_id": identity, "source_binding": binding, "score": 1.0,
+                "files": {"state/ordinary.json": {"sha256": snapshots._sha(data), "size": data.stat().st_size}}}
+    (root / "manifest.json").write_bytes(snapshots._json(manifest) + b"\n")
+    return snapshots, snapshots.ClosedStateSnapshot(root, identity, binding, manifest)
+
+
+@pytest.mark.parametrize("mutation", ["non_canonical_file", "no_newline", "equal_but_retyped_dto", "dto_value",
+                                      "file_replaced_with_other_canonical", "file_and_dto_changed_together",
+                                      "not_a_dict"])
+def test_verify_snapshot_refuses_every_departure_from_the_pinned_canonical_text(tmp_path, mutation):
+    snapshots, image = _image(tmp_path)
+    path = image.snapshot_root / "manifest.json"
+    returned = snapshots.verify_snapshot(image)
+    assert returned == image.manifest and returned is not image.manifest
+    canonical = snapshots._json(image.manifest)
+    if mutation == "non_canonical_file":
+        path.write_bytes(json.dumps(image.manifest, sort_keys=True).encode() + b"\n")  # same value, other text
+    elif mutation == "no_newline":
+        path.write_bytes(canonical)
+    elif mutation == "equal_but_retyped_dto":
+        image.manifest["score"] = 1  # == 1.0 for a deep compare, not for the pinned text
+    elif mutation == "dto_value":
+        image.manifest["files"]["state/ordinary.json"]["size"] += 1
+    elif mutation == "file_replaced_with_other_canonical":
+        path.write_bytes(snapshots._json(dict(image.manifest, score=2.0)) + b"\n")
+    elif mutation == "file_and_dto_changed_together":
+        image.manifest["score"] = 2.0  # only the hash captured with the DTO tells
+        path.write_bytes(snapshots._json(image.manifest) + b"\n")
+    else:
+        path.write_bytes(b"[]\n")
+    with pytest.raises(ValueError, match="state_snapshot_manifest_changed"):
+        snapshots.verify_snapshot(image)
+
+
+# --- P9 -----------------------------------------------------------------------------------------------
+
+S, M, L, R = 154_116_457, 377_000_000, 93_335_552, 17_000_000  # SC-0b: the measured synthetic state
+PEAK_GROWTH = 861_000_000  # SC-0b: filesystem growth at the peak (VACUUM of K's events.db), temp on the root
+
+
+def test_free_space_need_is_exactly_the_terms_of_the_measured_peak():
+    margin = compaction.FREE_MARGIN
+    assert margin == 256 << 20 == oc.FREE_MARGIN
+    base = compaction.free_space_need(0, 0, 0, 0, temp_on_root=True)
+    assert base == {"root": margin, "temp": 0}
+    for args, root in (((1, 0, 0, 0), 2), ((0, 1, 0, 0), 1), ((0, 0, 1, 0), 2), ((0, 0, 0, 1), 1)):
+        assert compaction.free_space_need(*args, temp_on_root=True)["root"] - margin == root
+    assert compaction.free_space_need(0, 0, 1, 0, temp_on_root=False) == {"root": margin + 1, "temp": margin + 1}
+
+
+def test_free_space_need_covers_the_measured_peak_with_the_real_manifest_and_with_the_estimate():
+    margin = compaction.FREE_MARGIN
+    real = compaction.free_space_need(S, M, L, R, temp_on_root=True)["root"]
+    assert real - margin >= PEAK_GROWTH
+    estimated = compaction.free_space_need(S, compaction.MANIFEST_ESTIMATE_FACTOR * S, L, R, temp_on_root=True)
+    assert estimated["root"] >= real
+    assert 2 * S + (256 << 20) < PEAK_GROWTH  # the old rule fell short of the measured peak
+
+
+def test_worker_need_is_k_plus_the_vacuum_of_its_largest_database():
+    manifest = {"files": {"state/data/events.db": {"size": L, "kind": "sqlite_backup"},
+                          "state/data/ambient.db": {"size": 60_375_040, "kind": "sqlite_backup"},
+                          "state/config/settings.yaml": {"size": 405_865, "kind": "file"},
+                          "history/x.json": {"size": 10**9, "kind": "history_archive"}}}
+    snapshot = SimpleNamespace(manifest=manifest)
+    state = L + 60_375_040 + 405_865
+    assert oc.free_space_need(snapshot, temp_on_root=True) == {"root": state + 2 * L + oc.FREE_MARGIN, "temp": 0}
+    assert oc.free_space_need(snapshot, temp_on_root=False) == {"root": state + L + oc.FREE_MARGIN,
+                                                                "temp": L + oc.FREE_MARGIN}
+
+
+def test_worker_refuses_before_k_when_the_real_need_does_not_fit(tmp_path, monkeypatch):
+    destination = tmp_path / "slots" / "k" / "state"
+    destination.mkdir(parents=True)
+    snapshot = SimpleNamespace(manifest={"files": {"state/data/events.db": {"size": 1000, "kind": "sqlite_backup"}}})
+    need = oc.free_space_need(snapshot, temp_on_root=True)["root"]
+    monkeypatch.setenv("SQLITE_TMPDIR", str(tmp_path))
+    monkeypatch.setattr(oc.shutil, "disk_usage", lambda path: SimpleNamespace(free=need))
+    oc._check_free_space(snapshot, destination)
+    monkeypatch.setattr(oc.shutil, "disk_usage", lambda path: SimpleNamespace(free=need - 1))
+    with pytest.raises(oc.CompactionCloneError, match="runtime_admission_compaction_capacity"):
+        oc._check_free_space(snapshot, destination)
+
+
+def test_sqlite_temp_directory_follows_sqlites_own_search_order(tmp_path):
+    first, second = tmp_path / "a", tmp_path / "b"
+    first.mkdir()
+    second.mkdir()
+    assert compaction.sqlite_temp_directory({"SQLITE_TMPDIR": str(first), "TMPDIR": str(second)}) == first
+    assert compaction.sqlite_temp_directory({"SQLITE_TMPDIR": str(tmp_path / "missing"),
+                                             "TMPDIR": str(second)}) == second
+    assert compaction.sqlite_temp_directory({}) in {Path("/var/tmp"), Path("/usr/tmp"), Path("/tmp"), None}
+
+
+def _capacity_root(tmp_path):
+    state = _state(tmp_path)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "code.pyc").write_bytes(b"\0" * 4096)
+    (runtime / "link").symlink_to(state)  # never followed
+    root = tmp_path / "root"
+    root.mkdir()
+    binding = {"state_root": str(state), "runtime_root": str(runtime), "authority": {}}
+    return root, binding, state
+
+
+def test_capacity_refuses_below_the_need_and_reports_it_content_free(tmp_path, monkeypatch):
+    root, binding, state = _capacity_root(tmp_path)
+    monkeypatch.setenv("SQLITE_TMPDIR", str(tmp_path))
+    largest = max((path.stat().st_size for path in state.rglob("*.db")), default=0)
+    need = compaction.free_space_need(compaction._state_bytes(state),
+                                      compaction.MANIFEST_ESTIMATE_FACTOR * compaction._state_bytes(state),
+                                      largest, 4096, temp_on_root=True)["root"]
+    monkeypatch.setattr(compaction.shutil, "disk_usage", lambda path: SimpleNamespace(free=need))
+    report = compaction.capacity(root, binding, PRIVACY)
+    assert report["need_bytes"] == need and report["temp_need_bytes"] == 0 and report["temp_free_bytes"] is None
+    monkeypatch.setattr(compaction.shutil, "disk_usage", lambda path: SimpleNamespace(free=need - 1))
+    with pytest.raises(compaction.CompactionRefusal, match="runtime_admission_compaction_capacity") as error:
+        compaction.capacity(root, binding, PRIVACY)
+    assert set(error.value.report) >= {"need_bytes", "free_bytes", "state_bytes", "temp_need_bytes"}
+
+
+def test_capacity_checks_sqlites_temp_filesystem_when_it_is_another_one(tmp_path, monkeypatch):
+    root, binding, state = _capacity_root(tmp_path)
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    monkeypatch.setenv("SQLITE_TMPDIR", str(temp))
+    real_device = compaction._device
+    monkeypatch.setattr(compaction, "_device", lambda path: -1 if Path(path) == temp else real_device(path))
+    frees = {}
+    monkeypatch.setattr(compaction.shutil, "disk_usage",
+                        lambda path: SimpleNamespace(free=frees.get(Path(path), 10**12)))
+    report = compaction.capacity(root, binding, PRIVACY)
+    assert report["temp_need_bytes"] == compaction._largest_sqlite(state) + compaction.FREE_MARGIN
+    frees[temp] = report["temp_need_bytes"] - 1
+    with pytest.raises(compaction.CompactionRefusal, match="runtime_admission_compaction_capacity"):
+        compaction.capacity(root, binding, PRIVACY)
+
+
+def test_the_worker_checks_p9_again_before_k_is_planned():
+    import inspect
+    source = inspect.getsource(oc.run_materialization)
+    assert source.index("_check_free_space(snapshot, destination)") < source.index("\"materializing\", {")
+
+
+def _identity_world(tmp_path, k_rows):
+    destination = tmp_path / "k"
+    (destination / "data").mkdir(parents=True)
+    with closing(sqlite3.connect(destination / "data" / "x.db")) as db, db:
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT, score REAL)")
+        db.executemany("INSERT INTO t VALUES (?,?,?)", k_rows)
+    with closing(sqlite3.connect(destination / "data" / "x.db")) as db:
+        db.row_factory = sqlite3.Row
+        schema = [dict(row) for row in db.execute("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name")]
+    rows = [{"id": 1, "label": "a", "score": 0.5}, {"id": 2, "label": "b", "score": None}]
+    manifest = {"files": {"state/data/x.db": {"kind": "sqlite_backup", "sha256": "0" * 64, "size": 1}},
+                "databases": {"data/x.db": {"schema": schema, "tables": {"t": {"rows": rows}}}}}
+    plan = SimpleNamespace(latest=SimpleNamespace(manifest=manifest, snapshot_root=tmp_path / "snapshot"),
+                           privacy_relative="data/privacy.db", destination=destination, source_roots=(),
+                           evidence_map={})
+    return plan, destination, SimpleNamespace(registered_target_ids=(), target_id_map={})
+
+
+@pytest.mark.parametrize("k_rows,code", [
+    ([(1, "a", 0.5), (2, "b", None)], None),
+    ([(2, "b", None), (1, "a", 0.5)], None),
+    ([(1, "a", 0.5), (2, "c", None)], "payload_changed:t"),
+    ([(1, "a", 0.5), (2, "b", 0.0)], "payload_changed:t"),
+    ([(1, "a", 0.5)], "payload_changed:t"),
+    ([(1, "a", 0.5), (2, "b", None), (3, "b", None)], "payload_changed:t"),
+])
+def test_verify_identity_on_a_real_database_compares_every_value(tmp_path, k_rows, code):
+    plan, destination, journal = _identity_world(tmp_path, k_rows)
+    if code is None:
+        assert oc.verify_identity(plan, destination, journal) == {"databases": 1, "tables": 1, "rows": 2, "files": 0}
+        (destination / "data" / "stray.txt").write_text("x")
+        code = "payload_changed:extra_file"
+    with pytest.raises(oc.CompactionCloneError, match="runtime_admission_compaction_" + code):
+        oc.verify_identity(plan, destination, journal)
+
+
+@pytest.mark.parametrize("salt_row", [False, True])
+def test_verify_identity_accepts_an_added_ledger_only_while_it_is_empty(tmp_path, salt_row):
+    from src.memory.deletion_ledger import deletion_ledger_schema_objects
+    plan, destination, journal = _identity_world(tmp_path, [(1, "a", 0.5), (2, "b", None)])
+    with closing(sqlite3.connect(destination / "data" / "x.db")) as db, db:
+        for row in deletion_ledger_schema_objects():
+            if row["type"] == "table":
+                db.execute(row["sql"])
+        if salt_row:
+            db.execute("INSERT INTO deletion_ledger_salt_v1 VALUES (1, 'synthetic')")
+    if salt_row:
+        with pytest.raises(oc.CompactionCloneError, match="runtime_admission_compaction_payload_changed:added_rows"):
+            oc.verify_identity(plan, destination, journal)
+    else:
+        assert oc.verify_identity(plan, destination, journal)["tables"] == 1

@@ -451,14 +451,22 @@ def verify_snapshot(snapshot: ClosedStateSnapshot) -> dict:
     if type(snapshot) is not ClosedStateSnapshot:
         raise TypeError("state_snapshot_dto_required")
     root = snapshot.snapshot_root
-    manifest = _read_json(root / "manifest.json")
-    if (hashlib.sha256(_json(manifest)).hexdigest() != snapshot._manifest_sha256
-            or manifest != snapshot.manifest or manifest.get("schema_version") != 1
+    path = root / "manifest.json"
+    _regular(path)
+    raw = path.read_bytes()
+    # SC-0b: one canonical serialization, of the DTO. Its captured hash pins it (a mutated
+    # in-memory manifest refuses), the file must be exactly that canonical text, and the parsed
+    # file must still equal the DTO: the same three facts as before, without re-serializing the file.
+    canonical = _json(snapshot.manifest)
+    if hashlib.sha256(canonical).hexdigest() != snapshot._manifest_sha256 or raw != canonical + b"\n":
+        raise ValueError("state_snapshot_manifest_changed")
+    manifest = json.loads(raw)
+    if type(manifest) is not dict:
+        raise ValueError("state_snapshot_record_schema")
+    if (manifest != snapshot.manifest or manifest.get("schema_version") != 1
             or manifest.get("source_binding_id") != snapshot.source_binding_id
             or manifest.get("source_binding") != snapshot.source_binding
             or hashlib.sha256(_json(snapshot.source_binding)).hexdigest() != snapshot.source_binding_id):
-        raise ValueError("state_snapshot_manifest_changed")
-    if (root / "manifest.json").read_bytes() != _json(manifest) + b"\n":
         raise ValueError("state_snapshot_manifest_changed")
     _verify_files(root, manifest["files"], manifest_present=True)
     return manifest

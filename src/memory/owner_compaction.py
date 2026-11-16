@@ -33,7 +33,9 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 import math
+import os
 from pathlib import Path, PurePosixPath
+import shutil
 import sqlite3
 from typing import Mapping
 
@@ -49,6 +51,7 @@ RELOCATED_COLUMNS = {("wake_clips_v1", "target_id"): "target_id_map",
 DERIVATION_FILES = frozenset({".kza-target-ownership.json", ".kza-payload-preparation.json",
                               ".kza-state-binding.json"})
 SQLITE_SIDE_SUFFIXES = ("-wal", "-shm", "-journal")
+FREE_MARGIN = 256 << 20  # P9 (scripts/compaction.FREE_MARGIN)
 
 
 class CompactionCloneError(ValueError):
@@ -547,6 +550,39 @@ def _load_snapshot(path: Path, binding_id: str, manifest_sha256: str | None = No
     return snapshot
 
 
+def free_space_need(snapshot: ClosedStateSnapshot, *, temp_on_root: bool) -> dict:
+    """P9, worker side: what K still needs once the snapshot (and its real manifest) is on disk.
+
+    K's state is the snapshot's state files (S); VACUUM of K's largest database (L) needs its
+    rollback journal beside it and its temporary database in SQLite's temp directory. K's runtime
+    already exists ('k_runtime' precedes the snapshot).
+    """
+    files = [record for key, record in snapshot.manifest["files"].items() if key.startswith("state/")]
+    state = sum(record["size"] for record in files)
+    largest = max((record["size"] for record in files if record["kind"] == "sqlite_backup"), default=0)
+    root = state + largest + FREE_MARGIN
+    if temp_on_root:
+        return {"root": root + largest, "temp": 0}
+    return {"root": root, "temp": largest + FREE_MARGIN}
+
+
+def _sqlite_temp_directory():
+    for value in (os.environ.get("SQLITE_TMPDIR"), os.environ.get("TMPDIR"), "/var/tmp", "/usr/tmp", "/tmp"):
+        if value and os.path.isdir(value) and os.access(value, os.W_OK | os.X_OK):
+            return Path(value)
+    return None
+
+
+def _check_free_space(snapshot: ClosedStateSnapshot, destination: Path) -> None:
+    """P9 again with the manifest's real size: refuses before K is written (resumable after freeing space)."""
+    anchor = destination.parent
+    temp = _sqlite_temp_directory()
+    temp_on_root = temp is None or os.stat(temp).st_dev == os.stat(anchor).st_dev
+    need = free_space_need(snapshot, temp_on_root=temp_on_root)
+    _require(shutil.disk_usage(anchor).free >= need["root"]
+             and (temp_on_root or shutil.disk_usage(temp).free >= need["temp"]), "capacity")
+
+
 def _events(log: dict, kind: str) -> list[dict]:
     return [event for event in log["events"] if event["kind"] == kind]
 
@@ -603,6 +639,7 @@ def run_materialization(root: Path, compaction_id: str, *, wall, before_vacuum=N
             plan = plan_compaction_clone(snapshot, now=now, destination=destination,
                                          privacy_relative=intent["privacy_relative"], source_roots=roots)
             return _finish_interrupted(root, log, plan, destination, wall)
+        _check_free_space(snapshot, destination)  # P9 with the real manifest, before K's first byte
         now = float(wall())
         plan = plan_compaction_clone(snapshot, now=now, destination=destination,
                                      privacy_relative=intent["privacy_relative"], source_roots=roots)
