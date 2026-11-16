@@ -1520,6 +1520,14 @@ los hace la sesión coordinadora. Sin release. Evidencia:
     las tres patas de SR-2 y de las colisiones de cola en las dos tablas.
   - RA-6, RA-7 y B6 van a `follow_up` (no bloquean la primera actualización
     posterior a R1).
+  - Pruebas (server, `yo`, `runs/sc1b` y `runs/sc1b-mut`, salidas en
+    `runs/sc1b-r1-out/`): SC-1b 15/15, SC-1a 45/45, módulos de compactación
+    507 pasan y 5 saltados, admisión y lanzador, integración de compactación
+    compilada y Linux y el ensayo de SC-6a, y el control final (docs de
+    SC-5a/SC-6a, SC-1b, `tests/unit/core`) 541/541. Dos fallas intermedias se
+    corrigieron: el test de SC-1a que leía `mode: "plain"` como simple (ahora
+    `log_invalid`) y un `next` agregado al no-op de `resume` que el ensayo
+    compilado fija (revertido). Mutantes de la revisión 17/17.
 
 ## Prompt para la sesión nueva
 
