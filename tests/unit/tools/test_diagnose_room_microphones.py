@@ -249,7 +249,7 @@ def test_kernel_lines_are_only_configured_ports_and_host_controller_errors():
 
 
 def test_kernel_lines_skip_an_invalid_port_and_unconfigured_rooms():
-    result = tool.kernel_messages(['1-2.3', '.*'], _journal('\n'.join(KERNEL)))
+    result = tool.kernel_messages(['1-2.3', 'kernel'], _journal('\n'.join(KERNEL)))
     assert result['messages'] == [KERNEL[5], KERNEL[6], KERNEL[7]]
 
 
