@@ -601,6 +601,8 @@ async def test_loop_errors_back_off_exponentially_up_to_sixty_seconds(store, moc
     calls, delays, real_sleep = [], [], asyncio.sleep
 
     async def recorded_sleep(delay, result=None):
+        if delay == 0:  # the store's own cooperative yields
+            return await real_sleep(0, result)
         delays.append(delay)
         if len(delays) == len(expected):
             scheduler._running = False
