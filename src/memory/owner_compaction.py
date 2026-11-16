@@ -33,7 +33,9 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 import math
+import os
 from pathlib import Path, PurePosixPath
+import shutil
 import sqlite3
 from typing import Mapping
 
@@ -49,6 +51,7 @@ RELOCATED_COLUMNS = {("wake_clips_v1", "target_id"): "target_id_map",
 DERIVATION_FILES = frozenset({".kza-target-ownership.json", ".kza-payload-preparation.json",
                               ".kza-state-binding.json"})
 SQLITE_SIDE_SUFFIXES = ("-wal", "-shm", "-journal")
+FREE_MARGIN = 256 << 20  # P9 (scripts/compaction.FREE_MARGIN)
 
 
 class CompactionCloneError(ValueError):
@@ -303,16 +306,52 @@ def _expected_rows(plan: CompactionClonePlan, name: str, rows: list[dict], journ
     return rows
 
 
+def _row_digest(values: list) -> bytes:
+    return hashlib.sha256(_json(values)).digest()
+
+
+def _destination_digests(db: sqlite3.Connection, name: str) -> tuple[tuple[str, ...], list[bytes]]:
+    """K's rows of one table as sorted per-row SHA-256 digests (BLOBs as _token), and its columns.
+
+    Each digest covers the canonical JSON of the row's typed values in sorted
+    column-name order, so equal digest lists mean equal row multisets up to
+    SHA-256 collisions (SC-0b O4; the old projection compared the same JSON).
+    """
+    from src.memory.state_journal_derivation import _token
+    cursor = db.execute("SELECT * FROM " + _quote(name))
+    names = [item[0] for item in cursor.description]
+    order = sorted(range(len(names)), key=names.__getitem__)
+    digests = [_row_digest([_token(row[index]) for index in order]) for row in cursor]
+    digests.sort()
+    return tuple(names[index] for index in order), digests
+
+
+def _expected_digests(plan: CompactionClonePlan, rows: list[dict], columns: tuple[str, ...]) -> list[bytes] | None:
+    """The snapshot side of one table in the same digest form; None if a row's columns differ from K's."""
+    from src.memory.state_journal_derivation import _token
+    wanted = set(columns)
+    digests = []
+    for row in rows:
+        if row.keys() != wanted:
+            return None
+        digests.append(_row_digest([_token(read_blob(plan.latest, row[key]))
+                                    if type(row[key]) is dict and "$blob" in row[key] else row[key]
+                                    for key in columns]))
+    digests.sort()
+    return digests
+
+
 def verify_identity(plan: CompactionClonePlan, destination: Path, journal) -> dict:
     """D5: K equals H exactly except the relocated columns and the rebuilt scheduling tables.
 
     Per database and table, row sets compare as typed projections (BLOBs by
-    sha256); per file, relative path and sha256; SDK-opaque stores byte for
+    sha256), as sorted per-row SHA-256 digests of their canonical JSON (SC-0b
+    O4); per file, relative path and sha256; SDK-opaque stores byte for
     byte (stricter than record ids). Extra files in K beyond the derivation
     records and SQLite side files refuse. Returns content-free counts.
     """
     from src.memory.payload_derivation import _privacy_schema_added
-    from src.memory.state_journal_derivation import _projection, _snapshot_projection, _token
+    from src.memory.state_journal_derivation import _token
     counts = {"databases": 0, "tables": 0, "rows": 0, "files": 0}
     manifest = plan.latest.manifest
     expected_files = set()
@@ -334,40 +373,47 @@ def verify_identity(plan: CompactionClonePlan, destination: Path, journal) -> di
         path = destination / relative
         _require(path.is_file() and path.resolve() == path, "payload_changed:database_missing")
         with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
-            db.row_factory = sqlite3.Row
-            schema = [dict(row) for row in db.execute(
+            schema = [{"type": row[0], "name": row[1], "tbl_name": row[2], "sql": row[3]} for row in db.execute(
                 "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name")]
-            actual = _projection(db)
-        source_schema = database["schema"]
-        added = set()
-        if schema != source_schema:
-            groups = None if relative == plan.privacy_relative else _authority_groups()
-            _require(_privacy_schema_added(source_schema, schema, groups), "payload_changed:schema")
-            added = {row["name"] for row in schema if row["type"] == "table"} - set(database["tables"])
-        expected = _snapshot_projection(plan.latest, database)
-        _require(set(actual) == set(expected) | added, "payload_changed:tables")
-        for name in sorted(actual):
-            if name in added:
-                _require(actual[name] == [], "payload_changed:added_rows")
-                continue
-            if name in SCHEDULING_TABLES:
-                continue
-            if name == "sqlite_sequence":
-                # The scheduling tables' AUTOINCREMENT counters move with their rebuild.
-                kept = [row for row in actual[name] if row["name"] not in SCHEDULING_TABLES]
-                wanted = sorted((row for row in expected[name] if row["name"] not in SCHEDULING_TABLES), key=_json)
-                _require(sorted(kept, key=_json) == wanted, "payload_changed:sqlite_sequence")
+            names = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+            source_schema = database["schema"]
+            added = set()
+            if schema != source_schema:
+                groups = None if relative == plan.privacy_relative else _authority_groups()
+                _require(_privacy_schema_added(source_schema, schema, groups), "payload_changed:schema")
+                added = {row["name"] for row in schema if row["type"] == "table"} - set(database["tables"])
+            _require(set(names) == set(database["tables"]) | added, "payload_changed:tables")
+            for name in names:
+                if name in added:
+                    _require(db.execute("SELECT 1 FROM " + _quote(name) + " LIMIT 1").fetchone() is None,
+                             "payload_changed:added_rows")
+                    continue
+                if name in SCHEDULING_TABLES:
+                    continue
+                if name == "sqlite_sequence":
+                    # The scheduling tables' AUTOINCREMENT counters move with their rebuild.
+                    db.row_factory = sqlite3.Row
+                    kept = sorted(({key: _token(row[key]) for key in row.keys()}
+                                   for row in db.execute("SELECT * FROM sqlite_sequence")
+                                   if row["name"] not in SCHEDULING_TABLES), key=_json)
+                    db.row_factory = None
+                    wanted = sorted(({key: _token(read_blob(plan.latest, value))
+                                      if type(value) is dict and "$blob" in value else value
+                                      for key, value in row.items()}
+                                     for row in database["tables"][name]["rows"]
+                                     if row["name"] not in SCHEDULING_TABLES), key=_json)
+                    _require(kept == wanted, "payload_changed:sqlite_sequence")
+                    counts["tables"] += 1
+                    continue
+                columns, actual = _destination_digests(db, name)
+                rows = _expected_rows(plan, name, [dict(row) for row in database["tables"][name]["rows"]], journal)
+                wanted = _expected_digests(plan, rows, columns)
+                _require(wanted is not None and actual == wanted, "payload_changed:" + name)
                 counts["tables"] += 1
-                continue
-            rows = _expected_rows(plan, name, [dict(row) for row in database["tables"][name]["rows"]], journal)
-            wanted = sorted(({key: _token(read_blob(plan.latest, value)) if type(value) is dict and "$blob" in value
-                              else value for key, value in row.items()} for row in rows), key=_json)
-            _require(actual[name] == wanted, "payload_changed:" + name)
-            counts["tables"] += 1
-            counts["rows"] += len(wanted)
-        if relative == plan.privacy_relative:
-            ids = sorted(row["id"] for row in actual["erasure_targets"])
-            _require(ids == sorted(journal.registered_target_ids), "payload_changed:erasure_targets")
+                counts["rows"] += len(wanted)
+            if relative == plan.privacy_relative:
+                ids = sorted(row[0] for row in db.execute("SELECT id FROM erasure_targets"))
+                _require(ids == sorted(journal.registered_target_ids), "payload_changed:erasure_targets")
         counts["databases"] += 1
     allowed = set(DERIVATION_FILES)
     for relative in manifest["databases"]:
@@ -504,6 +550,49 @@ def _load_snapshot(path: Path, binding_id: str, manifest_sha256: str | None = No
     return snapshot
 
 
+def free_space_need(snapshot: ClosedStateSnapshot, *, temp_on_root: bool, pending_bytes: int = 0) -> dict:
+    """P9, worker side: what K still needs once the snapshot (and its real manifest) is on disk.
+
+    K's state is the snapshot's state files (S); VACUUM of K's largest database (L) needs its
+    rollback journal beside it and its temporary database in SQLite's temp directory. K's runtime
+    already exists ('k_runtime' precedes the snapshot). ``pending_bytes`` is what the snapshot
+    has still to write (its manifest, when checked just before it is written).
+    """
+    return _files_need(snapshot.manifest["files"], temp_on_root=temp_on_root, pending_bytes=pending_bytes)
+
+
+def _files_need(files: Mapping, *, temp_on_root: bool, pending_bytes: int = 0) -> dict:
+    state_files = [record for key, record in files.items() if key.startswith("state/")]
+    state = sum(record["size"] for record in state_files)
+    largest = max((record["size"] for record in state_files if record["kind"] == "sqlite_backup"), default=0)
+    root = pending_bytes + state + largest + FREE_MARGIN
+    if temp_on_root:
+        return {"root": root + largest, "temp": 0}
+    return {"root": root, "temp": largest + FREE_MARGIN}
+
+
+def _device(path: Path) -> int:
+    return os.stat(path).st_dev
+
+
+def _sqlite_temp_directory():
+    return _stage().sqlite_temp_directory()  # one search order for the controller and the worker
+
+
+def _check_free_space(snapshot: ClosedStateSnapshot, destination: Path) -> None:
+    """P9 again with the manifest's real size: refuses before K is written (resumable after freeing space)."""
+    _check_free_files(snapshot.manifest["files"], destination)
+
+
+def _check_free_files(files: Mapping, destination: Path, pending_bytes: int = 0) -> None:
+    anchor = destination.parent
+    temp = _sqlite_temp_directory()
+    temp_on_root = temp is None or _device(temp) == _device(anchor)
+    need = _files_need(files, temp_on_root=temp_on_root, pending_bytes=pending_bytes)
+    _require(shutil.disk_usage(anchor).free >= need["root"]
+             and (temp_on_root or shutil.disk_usage(temp).free >= need["temp"]), "capacity")
+
+
 def _events(log: dict, kind: str) -> list[dict]:
     return [event for event in log["events"] if event["kind"] == kind]
 
@@ -522,7 +611,9 @@ def run_materialization(root: Path, compaction_id: str, *, wall, before_vacuum=N
     from src.memory.state_snapshot import snapshot_closed_state
     stage = _stage()
     root = Path(root).resolve(strict=True)
-    with stage.AdmissionController(root, gate="compaction:" + compaction_id) as controller:
+    # SC-0b O1: H does not change under the lease, so its repeated authority
+    # captures reuse one content-addressed result (every input byte is still hashed).
+    with stage.authority_memo(), stage.AdmissionController(root, gate="compaction:" + compaction_id) as controller:
         log = controller.compaction
         intent = log["intent"]
         _require(_events(log, "k_runtime") and not _events(log, "materialized"), "phase_order")
@@ -544,7 +635,12 @@ def run_materialization(root: Path, compaction_id: str, *, wall, before_vacuum=N
             stage.private_directories(path.parent)
             log = stage.append_compaction_event(root, log, "snapshot_reserved", {"n": n, "path": str(path)},
                                                 at=wall())
-            snapshot = snapshot_closed_state(controller, intent["source_binding_id"], path)
+            # P9 with the exact manifest size before it is written (SC-0b review F4): the snapshot's
+            # backups are on disk, and the manifest plus K's state and VACUUM must still fit.
+            k_state = Path(intent["k_state_root"])
+            snapshot = snapshot_closed_state(
+                controller, intent["source_binding_id"], path,
+                before_manifest=lambda size, files: _check_free_files(files, k_state, size))
             log = stage.append_compaction_event(root, log, "snapshot", {
                 "n": n, "path": str(path), "identity": stage._identity(path),
                 "manifest_sha256": snapshot.manifest_sha256}, at=wall())
@@ -558,6 +654,7 @@ def run_materialization(root: Path, compaction_id: str, *, wall, before_vacuum=N
             plan = plan_compaction_clone(snapshot, now=now, destination=destination,
                                          privacy_relative=intent["privacy_relative"], source_roots=roots)
             return _finish_interrupted(root, log, plan, destination, wall)
+        _check_free_space(snapshot, destination)  # P9 with the real manifest, before K's first byte
         now = float(wall())
         plan = plan_compaction_clone(snapshot, now=now, destination=destination,
                                      privacy_relative=intent["privacy_relative"], source_roots=roots)

@@ -199,7 +199,17 @@ Requisitos (el comando los verifica y rechaza con un código si falta alguno):
   existe: si es un snapshot viejo que ya no se quiere, **el usuario** decide
   borrarla a mano (no lo hace el controlador). Si se quiere conservar, no se
   puede compactar hasta moverla dentro de la raíz;
-- espacio libre para un snapshot más K, y binding de K de 12 MiB o menos (P9).
+- binding de K de 12 MiB o menos y espacio libre para el pico medido (P9,
+  corregido en SC-0b): en el sistema de archivos de la raíz 2·S + M + 2·L + R
+  + 256 MiB, donde S es el estado de H, M el manifiesto del snapshot
+  (estimado en 3·S; medido 2,45), L la base SQLite más grande de H y R el
+  runtime de K. `compact plan` muestra la necesidad en
+  `capacity.need_bytes`. Si el directorio temporal de SQLite
+  (`SQLITE_TMPDIR`, `TMPDIR`, `/var/tmp`, `/usr/tmp`, `/tmp`) está en otro
+  sistema de archivos, ahí hacen falta L + 256 MiB (`temp_need_bytes`) y en
+  la raíz una L menos. Para un estado de unos 154 MB son unos 1,24 GB
+  libres. Hasta el retiro quedan ocupados unos 4,5 veces el estado (snapshot
+  con su manifiesto, K y su runtime).
 
 **No reinicies el servidor durante una compactación.** Si hace falta, primero
 `compact abort` (antes de la verificación) o terminá el retiro.
@@ -496,7 +506,7 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
 | `runtime_admission_compaction_launcher_missing` / `_launcher_contract` | Falta el controlador o el lanzador, o su contrato es menor que 3. |
 | `runtime_admission_compaction_unit_path:<unidad>` | Una unidad systemd o logrotate nombra un miembro. |
 | `runtime_admission_compaction_absolute_locator` | `config/` o `.env` de H nombran una ruta absoluta de H, de un dueño o de un miembro. |
-| `runtime_admission_compaction_capacity` | El binding o el archivo histórico de K pasaría de 12 MiB, o no hay espacio. |
+| `runtime_admission_compaction_capacity` | El binding o el archivo histórico de K pasaría de 12 MiB, o no hay espacio (P9). Si lo dice el trabajador (durante el snapshot, antes de escribir su manifiesto, o después del snapshot), el tamaño real no entra: liberá espacio y seguí con `compact resume <id>` (un snapshot completo se conserva; uno a medias se destruye y se vuelve a hacer). |
 | `runtime_admission_compaction_owner_only_data` | Hay datos sólo en miembros; en `start` requiere `--accept-owner-only-loss`, en `retire` (datos nuevos desde el plan) `--accept-owner-only-loss <coverage_sha256>`. |
 | `runtime_admission_compaction_identity` | Un miembro o su `state/` ya no es el del plan, o un slot miembro tiene entradas nuevas. |
 | `runtime_admission_compaction_log_invalid` | Un log de compactación ilegible; ver «Compactación trabada». |

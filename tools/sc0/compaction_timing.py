@@ -108,15 +108,49 @@ class Sampler:
         self._thread.join()
 
 
-def _compact(deployment, *arguments):
+class FreeSampler(Sampler):
+    """SC-0b: filesystem free space only (one statvfs), every few milliseconds.
+
+    VACUUM's temporary database is unlinked as soon as it is opened and its
+    spike lasts under a second, so a tree walk misses it; the drop in free
+    space does not (other activity on the filesystem adds noise).
+    """
+
+    def _run(self):
+        while not self._stop.is_set():
+            free = shutil.disk_usage(self.root).free
+            self.min_free = free if self.min_free is None else min(self.min_free, free)
+            self.samples += 1
+            self._stop.wait(self.interval)
+
+
+# SC-0b review F6: a wrapper reports the largest resident set of the controller and every
+# descendant it waited for (the worker included), in bytes; the time includes its start-up.
+_MAXRSS = "\n".join([
+    "import json, resource, subprocess, sys",
+    "code = subprocess.run(sys.argv[2:]).returncode",
+    "rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss",
+    "open(sys.argv[1], 'w').write(json.dumps(rss if sys.platform == 'darwin' else rss * 1024))",
+    "sys.exit(code)",
+])
+
+
+def _compact(deployment, *arguments, maxrss: dict | None = None):
     began = time.monotonic()
-    result = subprocess.run([sys.executable, "-I", "-B", str(deployment.controller), "--root", str(deployment.root),
-                             "--offline", "compact", *arguments], capture_output=True, text=True, timeout=3600,
-                            env=deployment.env)
+    command = [sys.executable, "-I", "-B", str(deployment.controller), "--root", str(deployment.root),
+               "--offline", "compact", *arguments]
+    report = None
+    if maxrss is not None:
+        report = Path(deployment.root).parent / ("maxrss-" + arguments[0] + ".json")
+        command = [sys.executable, "-I", "-c", _MAXRSS, str(report), *command]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=3600, env=deployment.env)
     seconds = time.monotonic() - began
     if result.returncode != 0:
         raise RuntimeError(f"compact {arguments[0]} exit {result.returncode}: "
                            f"{result.stdout[-2000:]} {result.stderr[-3000:]}")
+    if report is not None:
+        maxrss[arguments[0]] = json.loads(report.read_text())
+        report.unlink()
     return json.loads(result.stdout.strip().splitlines()[-1]), round(seconds, 2)
 
 
@@ -160,6 +194,7 @@ def main() -> None:
     parser.add_argument("--utterances", type=int, default=250_000)
     parser.add_argument("--sample", type=float, default=0.5)
     parser.add_argument("--no-dry-run", action="store_true")
+    parser.add_argument("--free-sample", type=float, default=0.01)
     args = parser.parse_args()
     work = Path(args.work).resolve()
     if work.exists():
@@ -192,19 +227,32 @@ def main() -> None:
                 raise RuntimeError("head not closed after adopt")
         result["root_allocated_before"] = _tree_bytes(deployment.root)
         archive = str(artifacts["archives"]["x"])
-        with Sampler(deployment.root, args.sample) as sampler:
-            planned, result["plan_seconds"] = _compact(deployment, "plan", "k", "--archive", archive)
+        # SC-0b: SQLite's temp directory (VACUUM's temporary database) on the root's filesystem, named.
+        temp = work / "sqlite-tmp"
+        temp.mkdir()
+        deployment.env = {**deployment.env, "TMPDIR": str(temp), "SQLITE_TMPDIR": str(temp)}
+        result["fs_free_before"] = shutil.disk_usage(deployment.root).free
+        with Sampler(deployment.root, args.sample) as sampler, FreeSampler(deployment.root, args.free_sample) as fast:
+            result["max_rss_bytes"] = rss = {}
+            planned, result["plan_seconds"] = _compact(deployment, "plan", "k", "--archive", archive, maxrss=rss)
             started, result["start_seconds"] = _compact(
                 deployment, "start", "k", "--archive", archive, "--plan-sha256", planned["plan_sha256"],
-                "--acknowledge-untouched", planned["untouched_sha256"], "--destroy-rollback-states")
+                "--acknowledge-untouched", planned["untouched_sha256"], "--destroy-rollback-states", maxrss=rss)
         result["copy_seconds"] = round(result["plan_seconds"] + result["start_seconds"], 2)
         result["plan_view"] = {key: planned.get(key) for key in ("owners", "members", "capacity", "coverage")}
         result["start"] = {key: started.get(key) for key in ("phase", "materialized")}
         result["root_allocated_peak"] = sampler.peak
         result["root_peak_delta_bytes"] = sampler.peak - result["root_allocated_before"]
         result["root_allocated_after"] = _tree_bytes(deployment.root)
-        result["fs_min_free"] = sampler.min_free
+        result["fs_min_free"] = min(sampler.min_free, fast.min_free)
         result["samples"] = sampler.samples
+        result["free_samples"] = fast.samples
+        result["fs_peak_growth_bytes"] = result["fs_free_before"] - result["fs_min_free"]
+        result["fs_peak_growth_over_h_state"] = round(result["fs_peak_growth_bytes"]
+                                                      / max(result["h_state_bytes"], 1), 2)
+        result["p9_need_bytes"] = (planned.get("capacity") or {}).get("need_bytes")
+        snapshots = sorted((deployment.root / "compaction" / started["compaction_id"]).glob("snapshot-*"))
+        result["manifest_bytes"] = (snapshots[-1] / "manifest.json").stat().st_size if snapshots else None
         result["peak_over_h_state"] = round(sampler.peak / max(result["h_state_allocated_bytes"], 1), 2)
         log = stage.read_compaction_log(deployment.root, started["compaction_id"])
         result["log_events"] = [(event["kind"], event.get("at")) for event in log["events"]]

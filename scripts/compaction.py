@@ -87,6 +87,12 @@ DECISIONS = ("P1=A", "P2=A", "P2b=A", "P3=A", "P4=A", "P5=C", "P5b=A", "P6=A", "
              "Q3=A", "Q4=inside-/home/kza", "Q5=A", "Q6=A", "Q7=A", "P5_vacuum_new_state=Yes")
 OWNER_WARNING = 6  # P1: the advisory recommends compaction at 6 owners
 BINDING_MARGIN = 12 * 1024 * 1024  # P9 / M6: K's binding and each projected history archive
+FREE_MARGIN = 256 << 20  # P9: free space left over at the measured peak
+# P9 (SC-0b): the snapshot manifest holds every row as JSON; this estimate of its size per state byte
+# is calibrated, not a bound (measured 2.45 on the synthetic production-size state). The worker
+# checks again with the real manifest on disk before it writes K (owner_compaction.free_space_need).
+MANIFEST_ESTIMATE_FACTOR = 3
+SQLITE_SUFFIXES = (".db", ".sqlite", ".sqlite3")
 ALLOW_RUN_HOURS = (1, 72)  # Q7
 ADVISORY_KINDS = ("conversation_erased", "fact_deleted", "fact_pruned_retired_owner", "voice_profile_deleted",
                   "user_retired")
@@ -646,8 +652,54 @@ def _state_bytes(state: Path) -> int:
     return total
 
 
+def _tree_bytes(path: Path) -> int:
+    """Bytes of the regular files under ``path``, symlinks not followed (K's runtime is H's archive)."""
+    total = 0
+    for directory, _subdirectories, files in os.walk(path):
+        for name in files:
+            info = os.lstat(os.path.join(directory, name))
+            if stat.S_ISREG(info.st_mode):
+                total += info.st_size
+    return total
+
+
+def _largest_sqlite(state: Path) -> int:
+    """L: the largest SQLite database under the state, its WAL included (what VACUUM rewrites at once)."""
+    largest = 0
+    for path in state.rglob("*"):
+        if path.suffix in SQLITE_SUFFIXES and path.is_file() and not path.is_symlink():
+            wal = Path(str(path) + "-wal")
+            size = path.stat().st_size + (wal.stat().st_size if wal.is_file() and not wal.is_symlink() else 0)
+            largest = max(largest, size)
+    return largest
+
+
+def _device(path: Path) -> int:
+    return os.stat(path).st_dev
+
+
+def sqlite_temp_directory(environ=None) -> Path | None:
+    """Where SQLite's unix VFS puts VACUUM's temporary database (stage_runtime's shared helper)."""
+    return stage.sqlite_temp_directory(environ)
+
+
+def free_space_need(state_bytes: int, manifest_bytes: int, largest_sqlite: int, runtime_bytes: int, *,
+                    temp_on_root: bool) -> dict:
+    """P9 (SC-0b): free bytes the transition needs at its measured peak, on the root and on SQLite's temp.
+
+    The peak is VACUUM of K's largest database, with H already on disk: the snapshot's SQLite backups
+    (S) and its manifest (M), K's state (S) and runtime (R), VACUUM's rollback journal (L) beside the
+    database and its temporary database (L) in SQLite's temp directory. Until retire, S + M + S + R
+    stay allocated.
+    """
+    root = 2 * state_bytes + manifest_bytes + largest_sqlite + runtime_bytes + FREE_MARGIN
+    if temp_on_root:
+        return {"root": root + largest_sqlite, "temp": 0}
+    return {"root": root, "temp": largest_sqlite + FREE_MARGIN}
+
+
 def capacity(root: Path, head_binding: dict, privacy_relative: str) -> dict:
-    """P9: projected K binding and history archive at most 12 MiB; free space for a snapshot plus K."""
+    """P9: projected K binding and history archive at most 12 MiB; free space for the measured peak."""
     binding_bytes = len(stage._canonical_json(head_binding))
     state = Path(head_binding["state_root"])
     archive_bytes = binding_bytes
@@ -662,9 +714,16 @@ def capacity(root: Path, head_binding: dict, privacy_relative: str) -> dict:
         archive_bytes += len(stage._canonical_json(record))
     state_bytes = _state_bytes(state)
     free = shutil.disk_usage(root).free
+    temp = sqlite_temp_directory()
+    temp_on_root = temp is None or _device(temp) == _device(root)
+    need = free_space_need(state_bytes, MANIFEST_ESTIMATE_FACTOR * state_bytes, _largest_sqlite(state),
+                           _tree_bytes(Path(head_binding["runtime_root"])), temp_on_root=temp_on_root)
+    temp_free = None if temp_on_root else shutil.disk_usage(temp).free
     report = {"binding_bytes": binding_bytes, "history_archive_bytes": archive_bytes,
-              "state_bytes": state_bytes, "free_bytes": free, "limit_bytes": BINDING_MARGIN}
-    if binding_bytes > BINDING_MARGIN or archive_bytes > BINDING_MARGIN or free < 2 * state_bytes + (256 << 20):
+              "state_bytes": state_bytes, "free_bytes": free, "limit_bytes": BINDING_MARGIN,
+              "need_bytes": need["root"], "temp_need_bytes": need["temp"], "temp_free_bytes": temp_free}
+    if (binding_bytes > BINDING_MARGIN or archive_bytes > BINDING_MARGIN or free < need["root"]
+            or (temp_free is not None and temp_free < need["temp"])):
         _refuse("runtime_admission_compaction_capacity", report)
     return report
 
@@ -1056,7 +1115,8 @@ def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftov
              "privacy_relative": privacy, "owners": owners, "members": members,
              "untouched": untouched, "untouched_sha256": untouched_digest(untouched),
              "coverage": covered["totals"], "coverage_members": covered["members"], "capacity": {
-                 key: room[key] for key in ("binding_bytes", "history_archive_bytes", "state_bytes")},
+                 key: room[key] for key in ("binding_bytes", "history_archive_bytes", "state_bytes", "need_bytes",
+                                            "temp_need_bytes")},
              "units": scanned, "advisory": advice, "has_env": _lexists(state / ".env"),
              "retire_prepare_leftovers": retire_prepare_leftovers, "named_units": sorted(set(named_units)),
              "abandoned_copies": sorted(abandoned),
@@ -1136,7 +1196,7 @@ def compact_plan(root, k_slot: str, archive, *, retire_prepare_leftovers: bool =
                  wall=time.time, units: tuple[str, ...] = ()) -> dict:
     """``compact plan``: read-only; returns the plan, its digest and the untouched-list digest."""
     root = checked_root(root)
-    with stage.AdmissionController(root):
+    with stage.authority_memo(), stage.AdmissionController(root):  # SC-0b O1: content-addressed
         if stage.pending_compaction(root) is not None:
             _refuse("runtime_admission_compaction_pending")
         value = _plan_value(root, k_slot, Path(archive), retire_prepare_leftovers=retire_prepare_leftovers,
@@ -1166,7 +1226,7 @@ def compact_start(root, k_slot: str, archive, *, plan_sha256: str, acknowledge_u
     root = checked_root(root)
     if not destroy_rollback_states:
         _refuse("runtime_admission_compaction_not_acknowledged")
-    with stage.AdmissionController(root):
+    with stage.authority_memo(), stage.AdmissionController(root):
         if stage.pending_compaction(root) is not None:
             _refuse("runtime_admission_compaction_pending")
         value = _plan_value(root, k_slot, Path(archive), retire_prepare_leftovers=retire_prepare_leftovers,
@@ -1380,7 +1440,7 @@ def _destroy_partial_snapshots(root: Path, log: dict, wall) -> dict:
 def _continue(root: Path, compaction_id: str, *, archive: Path | None, worker=None, wall=time.time) -> dict:
     """Resume C2a-C5 from the last logged event (every step idempotent or refused)."""
     gate = "compaction:" + compaction_id
-    with stage.AdmissionController(root, gate=gate) as controller:
+    with stage.authority_memo(), stage.AdmissionController(root, gate=gate) as controller:
         log = _log(root, compaction_id)
         if _has(log, "abort_started") or log["terminal"]:
             _refuse("runtime_admission_compaction_phase")
@@ -1391,7 +1451,7 @@ def _continue(root: Path, compaction_id: str, *, archive: Path | None, worker=No
         log = _destroy_partial_snapshots(root, log, wall)
     if not _has(log, "materialized"):
         (worker or run_worker)(root, compaction_id)
-    with stage.AdmissionController(root, gate=gate) as controller:
+    with stage.authority_memo(), stage.AdmissionController(root, gate=gate) as controller:
         log = _log(root, compaction_id)
         if not _has(log, "materialized"):
             _refuse("runtime_admission_compaction_worker_failed")

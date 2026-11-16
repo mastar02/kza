@@ -451,14 +451,22 @@ def verify_snapshot(snapshot: ClosedStateSnapshot) -> dict:
     if type(snapshot) is not ClosedStateSnapshot:
         raise TypeError("state_snapshot_dto_required")
     root = snapshot.snapshot_root
-    manifest = _read_json(root / "manifest.json")
-    if (hashlib.sha256(_json(manifest)).hexdigest() != snapshot._manifest_sha256
-            or manifest != snapshot.manifest or manifest.get("schema_version") != 1
+    path = root / "manifest.json"
+    _regular(path)
+    raw = path.read_bytes()
+    # SC-0b: one canonical serialization, of the DTO. Its captured hash pins it (a mutated
+    # in-memory manifest refuses), the file must be exactly that canonical text, and the parsed
+    # file must still equal the DTO: the same three facts as before, without re-serializing the file.
+    canonical = _json(snapshot.manifest)
+    if hashlib.sha256(canonical).hexdigest() != snapshot._manifest_sha256 or raw != canonical + b"\n":
+        raise ValueError("state_snapshot_manifest_changed")
+    manifest = json.loads(raw)
+    if type(manifest) is not dict:
+        raise ValueError("state_snapshot_record_schema")
+    if (manifest != snapshot.manifest or manifest.get("schema_version") != 1
             or manifest.get("source_binding_id") != snapshot.source_binding_id
             or manifest.get("source_binding") != snapshot.source_binding
             or hashlib.sha256(_json(snapshot.source_binding)).hexdigest() != snapshot.source_binding_id):
-        raise ValueError("state_snapshot_manifest_changed")
-    if (root / "manifest.json").read_bytes() != _json(manifest) + b"\n":
         raise ValueError("state_snapshot_manifest_changed")
     _verify_files(root, manifest["files"], manifest_present=True)
     return manifest
@@ -500,12 +508,16 @@ def _record_snapshot_failure(operation, destination: Path, root_identity: dict |
 
 
 def snapshot_closed_state(controller: "AdmissionController", binding_id: str,
-                          destination: Path) -> ClosedStateSnapshot:
+                          destination: Path, *, before_manifest=None) -> ClosedStateSnapshot:
     """Capture a source-qualified image while the caller retains admission.
 
     A failed copy remains private and incomplete. No success manifest is
     published before public SDK close and a second closed-source verification.
     Cross-store crash atomicity and payload reconciliation are separate work.
+    ``before_manifest(manifest_bytes, files)``, when given, runs once the
+    manifest is serialized and before it is written (owner compaction's exact
+    P9 check, SC-0b review F4); an exception there fails the snapshot as any
+    other step does. It receives sizes and the file records only.
     """
     from src.memory.copy_catalog import reserve_copy
 
@@ -591,7 +603,10 @@ def snapshot_closed_state(controller: "AdmissionController", binding_id: str,
             "history_archives": history_archives}
         shutil.rmtree(work)  # SDK close already returned; no unknown owner is erased.
         _verify_files(destination, files, manifest_present=False)
-        _write(destination / "manifest.json", _json(manifest) + b"\n")
+        payload = _json(manifest) + b"\n"
+        if before_manifest is not None:
+            before_manifest(len(payload), files)
+        _write(destination / "manifest.json", payload)
         snapshot = ClosedStateSnapshot(destination, binding_id, binding, manifest)
         verify_snapshot(snapshot)
         if stage.verify_closed_binding(root, binding_id) != binding or _inventory(source) != inventory:

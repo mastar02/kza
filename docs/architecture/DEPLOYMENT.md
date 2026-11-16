@@ -1351,6 +1351,51 @@ Límites que siguen valiendo (decisiones P5 = C y Q4):
   vuelve a H. Después, `compact abort --to-h` vuelve a H sólo si durante la
   corrida de K no hubo borrados (Q6).
 
+Duración y espacio (SC-0 y SC-0b, medidos en el servidor como `yo`, CPU, con
+un estado sintético de producción de 154 MB: `events.db` 93 MB, `ambient.db`
+60 MB). La copia (`compact plan` + `compact start`) tardaba 290-292 s; desde
+SC-0b tarda 145-146 s (dos muestras: plan 10 s; start 135 s, con snapshot
+42 s, materialización 74 s, autorización 3,5 s y activación 3,2 s). La
+ganancia viene de la representación, no de quitar controles: la autoridad de
+H se captura una vez por contenido y se reutiliza sólo si es idéntico todo lo
+que la captura lee (el contenido de cada base SQLite con su `-wal`, `-shm` y
+`-journal`, de cada registro de cuentas, de la configuración y de `.env`) y
+la ruta y el tipo de cada entrada del árbol (cualquier cambio en eso, archivo
+nuevo, renombrado o borrado, enlace simbólico o archivo especial vuelve a la
+captura completa; el audio y los archivos opacos del SDK no se leen ni se
+hashean, porque la captura no los lee), los plazos de cada texto de fuentes
+se leen una vez, D5 compara digests SHA-256 por fila (las dos pasadas, antes
+y después de VACUUM, siguen) y el manifiesto del snapshot se serializa una
+vez por verificación. Diferidos: manifiesto sin filas (hoy guarda cada fila
+como JSON, 377 MB, 2,4 veces el estado), VACUUM INTO dentro de K, menos
+re-verificaciones del binding cerrado y hash en paralelo. Con SC-D2 = A
+(10 minutos por transición) quedan unos 454 s para V boot + N + V stop +
+arranque real.
+
+Espacio (P9, corregido en SC-0b). El pico es el VACUUM de la base más grande
+de K, con H en disco: backups del snapshot (S), manifiesto (M), estado de K
+(S), runtime de K (R), journal de rollback del VACUUM (L, junto a la base) y
+su base temporal (L, en el directorio temporal de SQLite: `SQLITE_TMPDIR`,
+`TMPDIR`, `/var/tmp`, `/usr/tmp`, `/tmp`). `compact plan` y `compact start`
+exigen libres en el sistema de archivos de la raíz 2·S + M + 2·L + R +
+256 MiB, con M estimado en 3·S (calibrado: medido 2,45; no es una cota); si
+el directorio temporal de SQLite está en otro sistema de archivos, una L pasa
+a ese (L + 256 MiB). El trabajador vuelve a comprobar con tamaños reales dos
+veces: dentro del snapshot, con el manifiesto ya serializado y antes de
+escribirlo, M + estado de K + 2·L + 256 MiB; y después del snapshot, antes de
+escribir K, estado de K + 2·L + 256 MiB (en ambos casos una L pasa al
+directorio temporal si está en otro sistema de archivos; rechazo reanudable,
+`runtime_admission_compaction_capacity`: el snapshot parcial se destruye al
+reanudar). Así M sólo es una estimación para `compact plan`. Para el estado de
+prueba: necesidad 1241 MB; términos reales 2·S + M + 2·L + R ≈ 887 MB;
+crecimiento medido en el servidor 823-942 MB (5,3-6,1 veces el estado, por la
+caída del espacio libre muestreada cada 10 ms; el servidor comparte el disco y
+otros procesos escriben, así que una muestra pasa los términos por ~55 MB y
+la absorbe el margen de 256 MiB). La regla anterior (2·S + 256 MiB = 577 MB)
+no alcanzaba.
+Hasta el retiro quedan ocupados el snapshot (S + M), K y su runtime: unos
+697 MB, 4,5 veces el estado.
+
 Compatibilidad: la época del controlador sube a 3. Mientras haya una
 compactación pendiente, cualquier entrada al controlador que no sea `compact`
 (prepare, activate, run, delegate, adopción) rechaza con
