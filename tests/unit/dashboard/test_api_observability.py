@@ -3,7 +3,7 @@
 import time
 import pytest
 import pytest_asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from httpx import AsyncClient, ASGITransport
 
 from src.dashboard.api import DashboardAPI
@@ -65,9 +65,17 @@ def mock_priority_queue():
 
 @pytest.fixture
 def mock_reminder_scheduler():
+    from src.reminders.reminder_scheduler import NoticeEntry
+
     scheduler = MagicMock()
     scheduler._running = True
-    scheduler._retry_counts = {"r1": 1, "r2": 2}
+    # T034-U2: status counts come from durable notice receipts, not in-process retry counters.
+    scheduler.notice_entries = AsyncMock(return_value=[
+        NoticeEntry("r1", 1.0, "uno", "pending", None, 1, 1, 1.0),
+        NoticeEntry("r2", 2.0, "dos", "pending", None, 0, 0, None),
+        NoticeEntry("r3", 3.0, "tres", "uncertain", "delivery_cancelled", 1, 0, 3.0),
+        NoticeEntry("r4", 4.0, "cuatro", "confirmed", None, 2, 1, 4.0),
+    ])
     return scheduler
 
 
@@ -304,7 +312,7 @@ class TestRemindersStatusEndpoint:
         assert "pending_count" in data
         assert "next_trigger_at" in data
         assert "scheduler_running" in data
-        assert "delivery_failures" in data
+        assert "notices" in data and "delivery_failures" not in data
 
     @pytest.mark.asyncio
     async def test_status_values(self, client):
@@ -312,7 +320,7 @@ class TestRemindersStatusEndpoint:
         assert data["pending_count"] == 1
         assert data["next_trigger_at"] is not None
         assert data["scheduler_running"] is True
-        assert data["delivery_failures"] == 3  # 1 + 2 from mock retry_counts
+        assert data["notices"] == {"pending": 2, "pending_not_delivered": 1, "confirmed": 1, "uncertain": 1}
         assert data["output_zone_configured"] is True
 
     @pytest.mark.asyncio
@@ -331,5 +339,5 @@ class TestRemindersStatusEndpoint:
         assert data["pending_count"] == 0
         assert data["next_trigger_at"] is None
         assert data["scheduler_running"] is False
-        assert data["delivery_failures"] == 0
+        assert data["notices"] == {"pending": 0, "pending_not_delivered": 0, "confirmed": 0, "uncertain": 0}
         assert data["output_zone_configured"] is False
