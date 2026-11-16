@@ -395,3 +395,131 @@ async def test_forget_is_refused_before_initialization(tmp_path):
             await recorders.forget_carried(0, authorize=_allowed)
     finally:
         await privacy.aclose()
+
+
+async def test_a_forget_overlapping_close_is_refused_and_keeps_every_row(tmp_path, caplog):
+    """RR2-1: aclose stops reclaiming tokens, so a forget it overlaps rolls back.
+
+    The forget is inside its transaction (rows deleted, not committed) when
+    aclose begins; a holder then presents its token, which ``_reclaim`` no
+    longer records. The forget must not commit (its guard refuses, so no
+    restore is needed): the closure proof keeps reporting both carried
+    owners, and the refusal does not fail aclose.
+    """
+    _, privacy, recorders, (holder, lost) = await _carried_boot(tmp_path, "closing.sqlite")
+    before = _rows(privacy)
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def authorize() -> None:
+        calls.append(None)
+        if len(calls) == 3:  # The first guard after the deletes.
+            entered.set()
+            assert release.wait(5)
+
+    caplog.set_level(logging.WARNING, logger=capture_recorders.__name__)
+    forgetting = asyncio.create_task(recorders.forget_carried(2, authorize=authorize))
+    closing = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        closing = asyncio.create_task(recorders.aclose())
+        await asyncio.sleep(0)
+        assert recorders._closed
+        status = await recorders.poll(holder, actor())
+        assert status["retirement_required"] is True
+    finally:
+        release.set()
+    try:
+        with pytest.raises(RuntimeError, match="^capture_recorders_unavailable$"):
+            await forgetting
+        await asyncio.wait_for(closing, 2)  # a refused forget is no unconfirmed state
+        assert _forget_lines(caplog) == [] and "restored" not in caplog.text  # rolled back, never committed
+        assert _rows(privacy) == before and not recorders._fault
+        assert recorders.carried() == 2 and recorders.pending() == 2
+        assert recorders._forgetting == frozenset() and recorders._forget_contested is False
+    finally:
+        await privacy.aclose()
+
+
+async def test_close_beginning_after_the_last_check_restores_every_row(tmp_path, caplog):
+    """RR2-1: aclose begins between the forget's last guard and its commit.
+
+    A token presented then is not reclaimed, so the committed forget cannot
+    tell a returning holder: it restores every row and is refused.
+    """
+    _, privacy, recorders, (holder, lost) = await _carried_boot(tmp_path, "late-close.sqlite")
+    before = _rows(privacy)
+    entered, release = threading.Event(), threading.Event()
+    connection = privacy.ledger._db
+
+    class HeldCommit:
+        """Hold the forget's commit, after every guard already passed."""
+
+        def commit(self):
+            if recorders._forgetting and not entered.is_set():
+                entered.set()
+                assert release.wait(5)
+            return connection.commit()
+
+        def __getattr__(self, name):
+            return getattr(connection, name)
+
+    privacy.ledger._db = HeldCommit()
+    closing = None
+    try:
+        with caplog.at_level(logging.WARNING, logger=capture_recorders.__name__):
+            forgetting = asyncio.create_task(recorders.forget_carried(2, authorize=_allowed))
+            try:
+                assert await asyncio.to_thread(entered.wait, 5)
+                closing = asyncio.create_task(recorders.aclose())
+                await asyncio.sleep(0)
+                assert recorders._closed
+                await recorders.poll(holder, actor())
+            finally:
+                release.set()
+            with pytest.raises(RuntimeError, match="^capture_recorders_unavailable$"):
+                await forgetting
+            await asyncio.wait_for(closing, 2)
+    finally:
+        privacy.ledger._db = connection
+    try:
+        assert _rows(privacy) == before and not recorders._fault
+        assert recorders.carried() == 2 and recorders.pending() == 2
+        assert _forget_lines(caplog) == []
+        assert ("[CaptureRecorders] shutdown began as a forget committed; its 2 carried "
+                "owner(s) were restored") in caplog.messages
+        for token in (holder, lost):
+            assert token not in caplog.text and recorders._key(token) not in caplog.text
+    finally:
+        await privacy.aclose()
+
+
+async def test_a_refused_forget_drained_by_close_does_not_fail_it(tmp_path):
+    """A forget refused while aclose drains it rolled back: aclose still completes."""
+    _, privacy, recorders, _tokens = await _carried_boot(tmp_path, "refused-close.sqlite")
+    before = _rows(privacy)
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def authorize() -> None:
+        calls.append(None)
+        if len(calls) == 3:
+            entered.set()
+            assert release.wait(5)
+            raise PermissionError("capture_control_denied")
+
+    forgetting = asyncio.create_task(recorders.forget_carried(2, authorize=authorize))
+    closing = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        closing = asyncio.create_task(recorders.aclose())
+        await asyncio.sleep(0)
+    finally:
+        release.set()
+    try:
+        with pytest.raises(PermissionError, match="^capture_control_denied$"):
+            await forgetting
+        await asyncio.wait_for(closing, 2)
+        assert _rows(privacy) == before and recorders.carried() == 2 and not recorders._fault
+    finally:
+        await privacy.aclose()

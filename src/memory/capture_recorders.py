@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 LIVE_OWNER_CAPACITY = 256
 
 
+class _ForgetClosed(Exception):
+    """``aclose`` began while a forget ran; the forget is refused (RR2-1)."""
+
+
 class RecorderState(str, Enum):
     """Permission already issued is never inferred retired from silence."""
 
@@ -55,7 +59,10 @@ class CaptureRecorders:
     count the page showed. Forgetting deletes only rows still carried; a
     holder that presents its token while the transaction is checked aborts
     it, and one that does so between the last check and the commit has its
-    row restored as a live owner (the rest stay forgotten).
+    row restored as a live owner (the rest stay forgotten). ``aclose`` stops
+    reclaiming tokens, so a forget whose transaction overlaps it cannot see a
+    returning holder: it is refused and leaves every carried row in place
+    (RR2-1), and the closure proof keeps reporting them.
 
     Args:
         privacy: Actual private SQLite service and its retained I/O owner.
@@ -355,10 +362,28 @@ class CaptureRecorders:
                     + len(self._operations) + self._work.status()['operations']
                     + int(self._fault))
 
-    def _forget_carried(self, expected: int, authorize: Callable[[], None]) -> int:
+    def _forget_carried(self, expected: int,
+                        authorize: Callable[[], None]) -> tuple[int, Exception | None]:
+        """Run the forget; a refusal that rolled back is returned, not raised.
+
+        A refused forget leaves the recorder state confirmed, so it must not
+        count as a failed operation when ``aclose`` drains it.
+        """
+        try:
+            return self._forget_transaction(expected, authorize), None
+        except (ValueError, PermissionError) as refusal:
+            return 0, refusal
+        except _ForgetClosed:
+            return 0, RuntimeError("capture_recorders_unavailable")
+
+    def _forget_transaction(self, expected: int, authorize: Callable[[], None]) -> int:
         def guard() -> None:
             authorize()
             with self._lock:
+                # RR2-1: once ``aclose`` began, ``_reclaim`` ignores tokens, so
+                # a holder presenting one could no longer abort this forget.
+                if self._closed:
+                    raise _ForgetClosed()
                 if self._forget_contested:
                     raise ValueError("capture_carried_count_conflict")
 
@@ -385,8 +410,11 @@ class CaptureRecorders:
                     # R1B2-3: ``_reclaim`` does not take the ledger lock, so a
                     # holder may present its token after the last guard and
                     # before the commit. It left the carried set: it is live.
-                    returned = keys - self._carried
-                    self._carried -= keys
+                    closed = self._closed
+                    # RR2-1: ``aclose`` began after the last guard; a token
+                    # presented since was not reclaimed. Restore every row.
+                    returned = keys if closed else keys - self._carried
+                    self._carried -= keys - returned
                 if returned:
                     # Restore its row before any cache refresh or retire can
                     # observe the deletion; drains await its retire again.
@@ -394,11 +422,18 @@ class CaptureRecorders:
                         db.executemany("INSERT INTO capture_browser_recorders(token_hash,state,kind) "
                                        "VALUES (?,?,?)", [(key, RecorderState.UNKNOWN.value, kinds[key])
                                                           for key in returned])
-                    logger.warning("[CaptureRecorders] %d carried owner(s) contacted this process "
-                                   "as a forget committed; kept as live owners", len(returned))
+                    if closed:
+                        logger.warning("[CaptureRecorders] shutdown began as a forget committed; "
+                                       "its %d carried owner(s) were restored", len(returned))
+                    else:
+                        logger.warning("[CaptureRecorders] %d carried owner(s) contacted this "
+                                       "process as a forget committed; kept as live owners",
+                                       len(returned))
                 self._read_cache()
+                if closed:
+                    raise _ForgetClosed()
                 return len(keys) - len(returned)
-            except (ValueError, PermissionError):
+            except (ValueError, PermissionError, _ForgetClosed):
                 raise
             except BaseException:
                 self._fault = True
@@ -427,13 +462,17 @@ class CaptureRecorders:
             ValueError: ``capture_carried_count_conflict`` when the count
                 differs or a holder presented its token before the last
                 check inside the transaction.
-            RuntimeError: The recorders are closed, faulted or not ready.
+            RuntimeError: The recorders are closed, faulted or not ready,
+                also when ``aclose`` began while the transaction ran (the
+                forget is undone and every carried row stays).
         """
         if type(expected) is not int or expected < 0:
             raise ValueError("capture_carried_count_conflict")
         if self._closed or self._fault or not self._ready:
             raise RuntimeError("capture_recorders_unavailable")
-        forgotten = await self._call(self._forget_carried, expected, authorize)
+        forgotten, refusal = await self._call(self._forget_carried, expected, authorize)
+        if refusal is not None:
+            raise refusal
         if forgotten:
             logger.warning("[CaptureRecorders] an administrator forgot %d carried owner(s), "
                            "affirming none is still recording", forgotten)

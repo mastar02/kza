@@ -473,10 +473,24 @@ arrancar y conservarlas para siempre.
   agrega `[CaptureRecorders] N carried owner(s) contacted this process as a
   forget committed; kept as live owners`. Un titular que se presenta después
   de esa restitución ya fue olvidado y recibe `retirement_required`.
+- Un olvido que se cruza con el cierre se rechaza (503, re-revisión RR2-1,
+  2026-11-15). Desde que empieza el `aclose` de `CaptureRecorders`, un token
+  presentado ya no se reclama, así que el olvido no podría ver a un titular
+  que volvió. Si el cierre empezó antes de una comprobación de la
+  transacción, el olvido se revierte; si empezó entre la última comprobación
+  y el commit, todas sus filas se restituyen como `unknown` y el log agrega
+  `[CaptureRecorders] shutdown began as a forget committed; its N carried
+  owner(s) were restored`. En los dos casos no se olvida nada, la prueba de
+  cierre sigue informando esos dueños arrastrados y el rechazo no cuenta como
+  estado sin confirmar del cierre (antes, un olvido rechazado durante el
+  `aclose` lo hacía fallar).
 - Dos olvidos simultáneos (dos pestañas de administrador, una vieja) se
   serializan: el lock del ledger cubre todo el olvido, su limpieza y la
-  restitución, así que uno que falla no puede borrar el conjunto que el otro
-  está olvidando y perder a un titular que volvió (R1B2-2).
+  restitución. Así, uno que falla no puede borrar el conjunto que el otro
+  está olvidando, y un titular que vuelve durante el segundo lo revierte entero
+  (409) en vez de quedar restituido (R1B2-2). Con la restitución de R1B2-3, el
+  lock es una segunda defensa: sin él, el olvido se confirma y la fila del
+  titular se restituye como dueño vivo (re-revisión RR2-2).
 - Idempotente: sin dueños arrastrados devuelve 200 con
   `forgotten_capture_owners: 0`, cualquiera sea `N`, y no registra nada.
 - Respuesta: el estado de captura más `forgotten_capture_owners`. Si no queda
