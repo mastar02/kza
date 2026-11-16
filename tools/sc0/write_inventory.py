@@ -67,8 +67,11 @@ def projected_tables(repo: Path) -> dict[str, str]:
     if str(repo) not in sys.path:
         sys.path.insert(0, str(repo))
     from scripts import stage_runtime  # noqa: PLC0415
-    source = inspect.getsource(stage_runtime.capture_state_authority) \
-        + inspect.getsource(stage_runtime._mixed_projections)
+    # The capture's body moved into _capture_state_authority in SC-0b (capture_state_authority is
+    # its memo wrapper); both are read so either layout yields the same table set.
+    source = "".join(inspect.getsource(function) for function in (
+        stage_runtime.capture_state_authority, getattr(stage_runtime, "_capture_state_authority", None),
+        stage_runtime._mixed_projections) if function is not None)
     partial: set[str] = set()
     for pattern in _SOURCE_PATTERNS:
         partial.update(pattern.findall(source))
