@@ -64,14 +64,25 @@ class CaptureRecorders:
     returning holder: it is refused and leaves every carried row in place
     (RR2-1), and the closure proof keeps reporting them.
 
+    In a release-mode verification run (``verify_only``, SC-4a capture_close,
+    R5V-1) no browser can reach the process, so no acknowledgement could
+    arrive: initialization keeps ``active`` rows as they are, drains never
+    delete reserved rows nor wait, and the close requires the rows read at
+    construction unchanged. They go to K' as they were in K.
+
     Args:
         privacy: Actual private SQLite service and its retained I/O owner.
         capture_allowed: Current global admission, independent of actor roles.
+        verify_only: Release-mode verification run (no write, no wait).
     """
 
     def __init__(self, privacy: PrivacyServices, *,
-                 capture_allowed: Callable[[], bool]) -> None:
+                 capture_allowed: Callable[[], bool], verify_only: bool = False) -> None:
         self._privacy = privacy
+        self.verify_only = verify_only is True
+        # Verify mode: (token_hash, state, kind) of every row read at construction.
+        self._construction_rows: frozenset[tuple[str, str, str]] | None = None
+        self._rows_confirmed = False
         # CaptureControl retains this borrower through privacy shutdown. Keep
         # admitted SQL usable until its initialization and retirement finish;
         # closing public privacy admission does not retire this owner.
@@ -136,9 +147,12 @@ class CaptureRecorders:
                 if "kind" not in columns:
                     db.execute("ALTER TABLE capture_browser_recorders "
                                "ADD COLUMN kind TEXT NOT NULL DEFAULT 'browser'")
-                db.execute("UPDATE capture_browser_recorders SET state='unknown' WHERE state='active'")
+                if not self.verify_only:  # skip list d-recorders-initialize
+                    db.execute("UPDATE capture_browser_recorders SET state='unknown' WHERE state='active'")
                 carried = frozenset(str(row[0]) for row in db.execute(
                     "SELECT token_hash FROM capture_browser_recorders WHERE state='unknown'"))
+                if self.verify_only:
+                    self._construction_rows = self._rows(db)
             with self._lock:
                 self._carried = set(carried)
             self._read_cache()
@@ -478,6 +492,44 @@ class CaptureRecorders:
                            "affirming none is still recording", forgotten)
         return forgotten
 
+    @staticmethod
+    def _rows(db) -> frozenset[tuple[str, str, str]]:
+        return frozenset((str(row[0]), str(row[1]), str(row[2])) for row in db.execute(
+            "SELECT token_hash, state, kind FROM capture_browser_recorders"))
+
+    def _confirm_rows(self) -> bool:
+        with self._privacy.ledger._lock:
+            rows = self._rows(self._privacy.ledger._db)
+        return self._construction_rows is not None and rows == self._construction_rows
+
+    async def confirm_unchanged(self) -> bool:
+        """Verify mode, at pre_close: the rows equal those read at construction.
+
+        Returns:
+            Whether every (token_hash, state, kind) is unchanged; the result
+            is kept for ``unchanged_confirmed``.
+
+        Raises:
+            RuntimeError: Outside a verification run.
+        """
+        if not self.verify_only:
+            raise RuntimeError("capture_recorders_not_verify_mode")
+        self._rows_confirmed = await self._call(self._confirm_rows) is True
+        return self._rows_confirmed
+
+    def unchanged_confirmed(self) -> bool:
+        """Verify mode, at verify_closed: sealed, closed, nothing in flight, no fault, rows unchanged."""
+        with self._lock:
+            cache = frozenset((key, state.value, self._kinds.get(key, "")) for key, state in self._records.items())
+            return (self.verify_only and self._sealed and self._closed and not self._fault
+                    and not self._operations and self._work.status()['operations'] == 0
+                    and self._rows_confirmed and cache == self._construction_rows)
+
+    def carried_rows(self) -> int:
+        """Verify mode: the number of rows carried unchanged to K' (a count, no token hash)."""
+        with self._lock:
+            return len(self._construction_rows or ())
+
     def _retire_reserved(self) -> None:
         try:
             with self._privacy.ledger._transaction() as db:
@@ -514,6 +566,10 @@ class CaptureRecorders:
         await self._work.drain_admitted()
         if self._fault:
             raise RuntimeError("capture_recorder_state_unconfirmed")
+        if self.verify_only:
+            # SC-4a capture_close: no _retire_reserved and no wait for an acknowledgement
+            # that no browser can send to a verification run; the rows stay as they were.
+            return
         await self._call(self._retire_reserved)
         while self.pending_live():
             if self._fault:

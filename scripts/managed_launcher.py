@@ -103,6 +103,10 @@ NOTIFY_FD_ENV = "KZA_NOTIFY_FD"
 WATCHDOG_INTERVAL_ENV = "KZA_WATCHDOG_INTERVAL_USEC"
 CONTROL_FD_ENV = "KZA_CONTROL_FD"
 TICKET_ENV = "KZA_RUNTIME_ADMISSION"
+# SC-4a flag: added by child_environment AFTER the KZA_RUNTIME_* filter, only for the
+# armed verify run of a release-mode log (src.core.runtime_admission.RELEASE_VERIFY_ENV).
+RELEASE_VERIFY_ENV = "KZA_RUNTIME_RELEASE_VERIFY"
+_VERIFY_LINE = re.compile(r"VERIFY=([0-9a-f]{32})")
 # Removed from the controller environment before the child gets it; the
 # KZA_RUNTIME_* prefix is removed as well (v1 child_environment, v2 relay).
 _CHILD_ENV_DROPPED = frozenset({"PYTHONPATH", "CONFIG_PATH", "PYTHONHOME", "NOTIFY_SOCKET",
@@ -262,15 +266,20 @@ class NotifyRelay:
 
     READY=1 is relayed once; WATCHDOG=1 only after READY; STATUS=<ascii,
     at most 200>, STOPPING=1 and EXTEND_TIMEOUT_USEC=<int> as given. ARMED=1
-    (the child's stop handler is installed) is consumed, never relayed. Any
-    other line, or a malformed one, is dropped and counted.
+    (the child's stop handler is installed) is consumed, never relayed.
+    VERIFY=<run_id> (SC-4a verify_ack) is consumed, never relayed: it counts
+    only in a release-mode verify run, before READY=1 and with that run's
+    run_id; otherwise it is dropped. Any other line, or a malformed one, is
+    dropped and counted.
     """
 
-    def __init__(self, notifier: SystemdNotifier) -> None:
+    def __init__(self, notifier: SystemdNotifier, *, verify_run_id: str | None = None) -> None:
         self._notifier = notifier
         self._buffer = b""
+        self._verify_run_id = verify_run_id
         self.ready = False
         self.armed = False
+        self.verify_acknowledged = False
         self.dropped = 0
         self.watchdog_relayed = 0
 
@@ -293,6 +302,13 @@ class NotifyRelay:
             return
         if line == "ARMED=1":  # the child's stop handler exists; private, never relayed
             self.armed = True
+            return
+        verify = _VERIFY_LINE.fullmatch(line)
+        if verify is not None:  # private, never relayed (SC-4a verify_ack)
+            if self._verify_run_id is not None and not self.ready and verify.group(1) == self._verify_run_id:
+                self.verify_acknowledged = True
+            else:
+                self.dropped += 1
             return
         if line == "READY=1":
             if not self.ready:
@@ -1640,15 +1656,19 @@ class ServeOptions:
 
 
 def child_environment(environ: dict, runtime: Path, ticket: dict, notify_fd: int, control_fd: int,
-                      watchdog_interval_usec: int | None) -> dict:
+                      watchdog_interval_usec: int | None, *, release_verify: bool = False) -> dict:
     """The child's environment: the controller's minus manager and loader variables.
 
     Credentials from the unit's EnvironmentFiles are kept. PYTHONPATH names
     the slot runtime; CONFIG_PATH is relative to that runtime (its config
-    link resolves to the slot state).
+    link resolves to the slot state). ``release_verify`` (SC-4a) adds
+    KZA_RUNTIME_RELEASE_VERIFY=1 after the filter that drops every
+    KZA_RUNTIME_* variable, so the unit can never inject it.
     """
     child = {key: value for key, value in environ.items()
              if key not in _CHILD_ENV_DROPPED and not key.startswith("KZA_RUNTIME_")}
+    if release_verify is True:
+        child[RELEASE_VERIFY_ENV] = "1"
     child["PYTHONPATH"] = str(runtime)
     child["CONFIG_PATH"] = "config/settings.yaml"
     child[TICKET_ENV] = stage._canonical_json(ticket).decode()
@@ -1752,6 +1772,8 @@ class Serve:
         self.stop = StopPipe()
         self.boot_id = read_boot_id(options.boot_id_path)
         self.events: list[str] = []  # content-free order log (tests, evidence)
+        # SC-4a: {"smoke_seconds": N} for the armed verify run of a release-mode log, else None.
+        self.release_verify: dict | None = None
 
     def _event(self, name: str) -> None:
         self.events.append(name)
@@ -1853,6 +1875,13 @@ class Serve:
             raise LauncherRefusal(gate["code"])
         if gate["kind"] is not None:
             self._event("compaction gate " + gate["kind"])
+        if gate["kind"] == "verify" and stage.release_mode_intent(gate["log"]):
+            armed, _started = stage._armed_run(gate["log"])
+            smoke = armed["data"].get("smoke_seconds")
+            if type(smoke) is not int or smoke < 1:
+                raise LauncherRefusal("runtime_admission_compaction_smoke_seconds")
+            self.release_verify = {"smoke_seconds": smoke}
+            self._event("release verify run armed")
         binding = stage.read_binding(root, head["binding_id"])
         try:
             check_slot(root, binding)
@@ -1886,7 +1915,8 @@ class Serve:
         os.set_blocking(notify_read, False)
         os.set_blocking(control_write, False)
         environment = child_environment(self.environ, runtime, ticket, notify_write, control_read,
-                                        watchdog_interval(self.environ))
+                                        watchdog_interval(self.environ),
+                                        release_verify=self.release_verify is not None)
         command = (list(self.options.child_command) if self.options.child_command is not None
                    else [self.options.python, "-B", "-P", "-m", "src.main"])
         try:
@@ -1913,7 +1943,7 @@ class Serve:
                 "child_start_time": process_start_time(process.pid), "controller_pid": os.getpid(),
                 "boot_id": self.boot_id, "started_at": float(self.wall())}, immutable=True)
             self._event("child started")
-            outcome = self._wait(process, notify_read, control_write, budget)
+            outcome = self._wait(process, notify_read, control_write, budget, run_id=running["run_id"])
         except Exception as error:  # noqa: BLE001 - a controller bug after CAS: stop the child, UNKNOWN
             self._event("controller error after CAS " + type(error).__name__)
             outcome = {"reason": "controller_error", "manager_stopping": False}
@@ -1957,7 +1987,9 @@ class Serve:
                     self._event("compaction verified")
             except (OSError, ValueError) as error:  # any later reader records it (idempotent)
                 self._event("compaction verified deferred " + str(error)[:80])
-            return ExitCode.CLEAN if stop_requested else ExitCode.CHILD_ENDED
+            # SC-4a: serve's own stop of a verify run is a requested stop (exit 0, no restart).
+            serve_stopped = outcome["reason"] in ("smoke_elapsed", "verify_unacknowledged")
+            return ExitCode.CLEAN if stop_requested or serve_stopped else ExitCode.CHILD_ENDED
         if transient:
             # The receipt may still prove the close: leave the head running for R-a.
             self._event("seal deferred " + seal_error)
@@ -1972,10 +2004,70 @@ class Serve:
         self.notifier.status("head unknown: " + (seal_error or "no receipt"))
         return code
 
-    def _wait(self, process, notify_read: int, control_write: int, budget: RebootBudget) -> dict:
-        """The controller loop (v2 M1): self-pipe, notify pipe, 0.5 s poll; never an unbounded wait."""
-        relay = NotifyRelay(self.notifier)
+    def _write_ready(self, run_id: str) -> float:
+        """SC-4a: ready.json once READY followed the VERIFY acknowledgement; returns the monotonic start."""
+        stage._atomic_record(stage.verify_ready_path(self.root, run_id), {
+            "schema_version": 1, "run_id": run_id, "verify_acknowledged": True,
+            "ready_at": float(self.wall())}, immutable=True)
+        self._event("verify acknowledged; smoke interval started")
+        return self.clock()
+
+    def _write_smoke_stop(self, run_id: str, measured: float, reason: str) -> None:
+        """SC-4a smoke-stop.json: the monotonic seconds since ready.json (0 without it) and the reason."""
+        stage._atomic_record(stage.verify_smoke_stop_path(self.root, run_id), {
+            "schema_version": 1, "run_id": run_id, "smoke_seconds": self.release_verify["smoke_seconds"],
+            "measured_seconds": float(measured), "reason": reason,
+            "verify_unacknowledged": reason == "verify_unacknowledged",
+            "stopped_at": float(self.wall())}, immutable=True)
+        self._event("smoke stop " + reason)
+
+    def _smoke_step(self, relay: NotifyRelay, run_id: str, smoke: dict) -> str | None:
+        """Advance the verify run: write ready.json, or the smoke-stop that ends the run (its reason)."""
+        if smoke["recorded"]:
+            return None
+        if smoke["started"] is None:
+            if not relay.ready:
+                return None
+            if not relay.verify_acknowledged:
+                # R5-PRIV-2: READY without the acknowledgement. Stop at once; never verified (row V3).
+                self._write_smoke_stop(run_id, 0.0, "verify_unacknowledged")
+                smoke["recorded"] = True
+                return "verify_unacknowledged"
+            smoke["started"] = self._write_ready(run_id)
+            return None
+        measured = self.clock() - smoke["started"]
+        if measured >= self.release_verify["smoke_seconds"]:
+            self._write_smoke_stop(run_id, measured, "smoke_elapsed")
+            smoke["recorded"] = True
+            return "smoke_elapsed"
+        return None
+
+    def _close_smoke(self, relay: NotifyRelay, run_id: str, smoke: dict, reason: str) -> None:
+        """An external stop or a child exit during V: record the (short) interval measured so far.
+
+        Lines already read are applied first, so an acknowledged READY still gets its ready.json.
+        """
+        if self.release_verify is None:
+            return
+        self._smoke_step(relay, run_id, smoke)
+        if smoke["recorded"]:
+            return
+        measured = 0.0 if smoke["started"] is None else self.clock() - smoke["started"]
+        self._write_smoke_stop(run_id, measured, reason)
+        smoke["recorded"] = True
+
+    def _wait(self, process, notify_read: int, control_write: int, budget: RebootBudget, *,
+              run_id: str | None = None) -> dict:
+        """The controller loop (v2 M1): self-pipe, notify pipe, 0.5 s poll; never an unbounded wait.
+
+        In a release-mode verify run (SC-4a) the loop also measures the smoke
+        interval with the monotonic clock from the acknowledged READY and
+        stops the child itself when it ends, or at once on READY without VERIFY.
+        """
+        verify = self.release_verify is not None and run_id is not None
+        relay = NotifyRelay(self.notifier, verify_run_id=run_id if verify else None)
         self.relay = relay
+        smoke = {"started": None, "recorded": False}
         selector = selectors.DefaultSelector()
         selector.register(self.stop.read_fd, selectors.EVENT_READ, "stop")
         selector.register(notify_read, selectors.EVENT_READ, "notify")
@@ -1993,6 +2085,9 @@ class Serve:
                     elif self.stop.drain() and stop_at is None:
                         stop_at = self.clock()
                         reason = "stop"
+                        if verify:  # lines already written (an acknowledged READY) count first
+                            self._read_notify(selector, notify_read, relay)
+                            self._close_smoke(relay, run_id, smoke, "stop_request")
                         # (1) forward at once (as soon as the child's handler exists),
                         # (2) only then ask the system manager (v3 N9).
                         forwarded = self._forward(process, relay, stop_at)
@@ -2010,6 +2105,14 @@ class Serve:
                             self._event(f"shutdown mode grace={grace:.1f}")
                         deadline = stop_at + grace
                         self.notifier.status("stopping")
+                if verify and stop_at is None:
+                    ended = self._smoke_step(relay, run_id, smoke)
+                    if ended is not None:
+                        stop_at = self.clock()
+                        reason = ended
+                        forwarded = self._forward(process, relay, stop_at)
+                        deadline = stop_at + self.options.stop_grace
+                        self.notifier.status("stopping")
                 if stop_at is not None and not forwarded:
                     forwarded = self._forward(process, relay, stop_at)
                 if deadline is not None and self.clock() >= deadline and process.poll() is None:
@@ -2018,6 +2121,8 @@ class Serve:
                     process.wait()
                     reason = "stop_grace_exceeded" if not manager_stopping else "manager_stopping"
             self._read_notify(selector, notify_read, relay)
+            if verify:
+                self._close_smoke(relay, run_id, smoke, "child_exit")
         finally:
             selector.close()
         if relay.dropped:

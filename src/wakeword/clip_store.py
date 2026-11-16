@@ -446,8 +446,15 @@ class WakeClipStore:
                 'operations': self._work.status()['operations']}
 
 
-async def build_wake_clip_store(config: dict, *, privacy, shutdown, owner=None) -> WakeClipStore:
-    """Construct retention before the optional writer and register its close early."""
+async def build_wake_clip_store(config: dict, *, privacy, shutdown, owner=None,
+                                verify_only: bool = False) -> WakeClipStore:
+    """Construct retention before the optional writer and register its close early.
+
+    A release-mode verification run starts no maintenance (SC-4a skip list
+    a-wake-clip-maintenance: maintain loop, reconcile, _sweep_native). The
+    collector eraser is registered with the erasure coordinator, whose loop
+    is not started in that run either, so it never pages.
+    """
     store = WakeClipStore(privacy)
     shutdown.push_async_callback(store.aclose)
     await store._work.run(store.initialize)
@@ -460,5 +467,6 @@ async def build_wake_clip_store(config: dict, *, privacy, shutdown, owner=None) 
     if owner is not None:
         from src.training.collector_erasure import build_collector_erasure
         await build_collector_erasure(config, store=store, owner=owner, shutdown=shutdown)
-    store.start()
+    if not verify_only:
+        store.start()
     return store

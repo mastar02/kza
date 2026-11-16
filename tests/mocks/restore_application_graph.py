@@ -296,7 +296,7 @@ async def _bundle(graph, root, clock, config, models, home, requests, clients,
 @asynccontextmanager
 async def application_graph(root, monkeypatch, clock, *, gates=(),
                             subject_gate=None, unrelated_gate=None, before_voices=None,
-                            configuration_factory=None, application_builder=None):
+                            configuration_factory=None, application_builder=None, verify_only=False):
     """Construct actual main owners and close them before loopback leaves leave."""
     releases = (*gates, *((subject_gate,) if subject_gate is not None else ()),
         *((unrelated_gate,) if unrelated_gate is not None else ()))
@@ -318,14 +318,15 @@ async def application_graph(root, monkeypatch, clock, *, gates=(),
             original_voices = main_module.build_voice_registry
             observed = []
 
-            async def privacy_factory(config, *, shutdown):
-                return await original_privacy(config, shutdown=shutdown, clock=clock)
+            async def privacy_factory(config, *, shutdown, verify_only=False):
+                return await original_privacy(config, shutdown=shutdown, clock=clock, verify_only=verify_only)
 
-            async def voice_factory(*, privacy, owner, shutdown):
+            async def voice_factory(*, privacy, owner, shutdown, verify_only=False):
                 observed.append(privacy)
                 if before_voices is not None:
                     await before_voices(privacy)
-                return await original_voices(privacy=privacy, owner=owner, shutdown=shutdown)
+                return await original_voices(privacy=privacy, owner=owner, shutdown=shutdown,
+                                             verify_only=verify_only)
 
             patch.setattr(main_module, "build_privacy_services", privacy_factory)
             patch.setattr(main_module, "build_voice_registry", voice_factory)
@@ -335,7 +336,8 @@ async def application_graph(root, monkeypatch, clock, *, gates=(),
                     configure = configuration_factory or configuration
                     config = configure(root, home_url, model_url)
                     builder = application_builder or main_module.build_application
-                    graph = await builder(config, shutdown=stack, factories=factories)
+                    graph = await builder(config, shutdown=stack, factories=factories,
+                                          **({"verify_only": True} if verify_only else {}))
                     assert isinstance(graph, ApplicationGraph)
                     assert {part.value for part in graph.erasure_services._drivers} == PARTICIPANTS
                     assert graph.erasure_services.privacy is graph.producer_erasure.privacy is graph.privacy

@@ -23,6 +23,7 @@ from collections.abc import Callable, Coroutine
 from enum import Enum
 import logging
 import os
+import re
 import signal
 import stat
 import sys
@@ -35,6 +36,7 @@ WATCHDOG_INTERVAL_ENV = "KZA_WATCHDOG_INTERVAL_USEC"
 CONTROL_FD_ENV = "KZA_CONTROL_FD"
 STOP_SIGNALS = frozenset({signal.SIGTERM, signal.SIGINT})
 _STATUS_LIMIT = 200
+_RUN_ID = re.compile(r"[0-9a-f]{32}")  # the admission ticket's run_id (stage_runtime begin_run)
 
 
 class StopPhase(Enum):
@@ -162,8 +164,8 @@ class StopSignal:
 class ReadinessNotifier:
     """Write notification lines to a private pipe passed in by the parent.
 
-    Allowed lines: ARMED=1, READY=1, STOPPING=1, WATCHDOG=1 and STATUS=<ascii,
-    at most 200>. The
+    Allowed lines: ARMED=1, VERIFY=<run_id>, READY=1, STOPPING=1, WATCHDOG=1 and
+    STATUS=<ascii, at most 200>. The
     descriptor is non-blocking: a full pipe drops the line instead of blocking
     the event loop.
     """
@@ -215,6 +217,16 @@ class ReadinessNotifier:
     def armed(self) -> None:
         """Send ARMED=1 once: the stop handler is installed (consumed by the launcher, never relayed)."""
         self._send_once("ARMED=1")
+
+    def verify(self, run_id: str) -> None:
+        """Send VERIFY=<run_id> once (SC-4a verify_ack; consumed by the launcher, never relayed).
+
+        Raises:
+            ValueError: ``run_id`` is not the ticket's 32-hex run identifier.
+        """
+        if type(run_id) is not str or _RUN_ID.fullmatch(run_id) is None:
+            raise ValueError("notify_verify_invalid")
+        self._send_once("VERIFY=" + run_id)
 
     def ready(self) -> None:
         """Send READY=1 once."""
@@ -360,6 +372,20 @@ class ProcessLifecycle:
         self.stop.enter(StopPhase.READY)
         self.notifier.ready()
         self._start_watchdog()
+
+    def acknowledge_verify(self, run_id: str) -> None:
+        """SC-4a verify_ack: prove to serve that this run reached the verify_only branch.
+
+        Called only from ``ApplicationGraph.run``'s verify branch, after it
+        skipped every ingress and house-effect start and before ``ready()``.
+        The line carries the admission ticket's run_id; serve writes the run's
+        ready.json only when this line precedes READY=1.
+
+        Raises:
+            StopRequested: a stop arrived first; nothing is announced.
+        """
+        self.stop.checkpoint("verify")
+        self.notifier.verify(run_id)
 
     def capture_blocked(self) -> None:
         """Announce a degraded but serving process: capture is blocked.

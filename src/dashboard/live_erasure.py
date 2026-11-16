@@ -33,8 +33,12 @@ class LiveStreamEraser:
         return ErasureResult(pending==0,pending_count=pending)
 
 
-async def build_live_services(config: dict, *, privacy, owner, shutdown) -> LiveEventBus:
-    """Register the owner before metadata work or private publishers can start."""
+async def build_live_services(config: dict, *, privacy, owner, shutdown, verify_only: bool = False) -> LiveEventBus:
+    """Register the owner before metadata work or private publishers can start.
+
+    The bus retention is not started in a release-mode verification run
+    (SC-4a skip list a-other-loops).
+    """
     receipts = LiveReceiptStore(privacy.ledger)
     settings = config.get('dashboard',{})
     bus = LiveEventBus(queue_size=settings.get('live_event_queue_size',256),
@@ -49,5 +53,6 @@ async def build_live_services(config: dict, *, privacy, owner, shutdown) -> Live
     await privacy.acall(privacy.ledger.erasures.register_target,ErasureParticipant.STREAMS,4,VOICE_REVIEW_TARGET)
     await privacy.acall(privacy.ledger.erasures.register_target,ErasureParticipant.STREAMS,2,
         {'kind':'unresolved_stream_inventory'})
-    bus.start()
+    if not verify_only:
+        bus.start()
     return bus

@@ -23,6 +23,8 @@ if TYPE_CHECKING:
 
 MARKER = ".kza-state-binding.json"
 TICKET_ENV = "KZA_RUNTIME_ADMISSION"
+# SC-4a: set by serve for a release-mode verify run only (managed_launcher.RELEASE_VERIFY_ENV).
+RELEASE_VERIFY_ENV = "KZA_RUNTIME_RELEASE_VERIFY"
 _MAX_NATIVE_WITNESSES = 128
 _guard = threading.RLock()
 _companions: dict[str, ModuleType] = {}
@@ -96,6 +98,30 @@ def _marker_for(path: str | Path) -> Path | None:
             raise RuntimeError("runtime_admission_marker_not_regular")
         return parent
     return None
+
+
+def take_release_verify_flag(environ: dict | None = None) -> bool:
+    """SC-4a: read serve's verify-only flag once and drop it from the environment.
+
+    serve adds ``KZA_RUNTIME_RELEASE_VERIFY=1`` only for the armed verify run
+    of a release-mode compaction log, after the filter that removes every
+    ``KZA_RUNTIME_*`` variable of the unit (mechanism.v_verification_run.flag).
+    The value lives only in memory afterwards: no subprocess inherits it.
+
+    Returns:
+        True for a release-mode verification run, False otherwise.
+
+    Raises:
+        RuntimeError: ``runtime_admission_release_verify_invalid`` for any
+            other value, or for the flag without an admission ticket.
+    """
+    environ = os.environ if environ is None else environ
+    raw = environ.pop(RELEASE_VERIFY_ENV, None)
+    if raw is None:
+        return False
+    if raw != "1" or environ.get(TICKET_ENV) is None:
+        raise RuntimeError("runtime_admission_release_verify_invalid")
+    return True
 
 
 def _ticket() -> dict | None:
@@ -384,6 +410,11 @@ class RuntimeAdmission:
         if self._before_receipt is not None:
             raise RuntimeError("runtime_admission_receipt_preparation_already_set")
         self._before_receipt = callback
+
+    @property
+    def run_id(self) -> str:
+        """The admission ticket's run_id (the VERIFY acknowledgement names it)."""
+        return self._ticket["run_id"]
 
     @property
     def state_root(self) -> Path:

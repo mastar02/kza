@@ -66,7 +66,8 @@ class CaptureControl:
     """Persistent intent is distinct from confirmed native and browser exit."""
 
     def __init__(self, privacy, audio_loop, command_processor, *, ambient_control=None,
-                 voices=None, collectors=(), native_drains=(), native_supported=True):
+                 voices=None, collectors=(), native_drains=(), native_supported=True,
+                 verify_only: bool = False):
         from src.ambient.control import AmbientControl
         from src.memory.capture_recorders import CaptureRecorders
         from src.pipeline.audio_loop import AudioLoop
@@ -121,7 +122,8 @@ class CaptureControl:
         # and ledger. Its public work admission may already be sealed while an
         # admitted transition still needs to compensate an uncertain commit.
         self._policy_work = OwnedBlockingWork(worker=privacy._offload, capacity=2)
-        self.recorders = CaptureRecorders(privacy, capture_allowed=lambda: self.capture_allowed)
+        self.recorders = CaptureRecorders(privacy, capture_allowed=lambda: self.capture_allowed,
+                                          verify_only=verify_only)
 
     @property
     def capture_allowed(self) -> bool:
@@ -481,11 +483,12 @@ class CaptureControl:
 
 async def build_capture_control(*, privacy, audio_loop, command_processor,
                                 ambient_control=None, voices=None, collectors=(),
-                                native_drains=(), native_supported=True, shutdown) -> CaptureControl:
+                                native_drains=(), native_supported=True, shutdown,
+                                verify_only: bool = False) -> CaptureControl:
     control = CaptureControl(privacy, audio_loop, command_processor,
                              ambient_control=ambient_control, voices=voices,
                              collectors=collectors, native_drains=native_drains,
-                             native_supported=native_supported)
+                             native_supported=native_supported, verify_only=verify_only)
     privacy.add_borrower(control.begin_close)
     shutdown.push_async_callback(control.aclose)
     await control.initialize()

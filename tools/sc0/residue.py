@@ -375,6 +375,17 @@ def retention_shortened(data, final):
             "config": {"memory.automatic_retention_days": 1, "analytics.retention_days": 7}}
 
 
+def no_default_control_row(data, final):
+    """CR-7 extra (SC-4a): H without the default ambient control row (no_op_exemption backstop).
+
+    AmbientControl._load inserts it when absent, in V as at any boot: K' gains
+    a row, so retire's strict equality refuses (abort with W or SS).
+    """
+    with _connect(_graph(data) / "privacy.db") as db:
+        db.execute("DELETE FROM ambient_runtime_control")
+    return {"planted": ["ambient_runtime_control row removed"]}
+
+
 STATES = {
     "clean": clean,
     "retired_owner_facts": retired_owner_facts,
@@ -400,4 +411,5 @@ STATES = {
     "retention_shortened": retention_shortened,
     "wake_clip_expiring_late": wake_clip_expiring_late,
     "clean_long_settle": clean_long_settle,
+    "no_default_control_row": no_default_control_row,
 }

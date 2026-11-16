@@ -806,7 +806,7 @@ def _fact_owner_shape_valid(db: sqlite3.Connection) -> bool:
     return len(versions) == 1 and type(versions[0][0]) is int and versions[0][0] == 1
 
 
-def initialize_fact_owner_schema(db: sqlite3.Connection) -> int:
+def initialize_fact_owner_schema(db: sqlite3.Connection, *, prune: bool = True) -> int:
     """Create or verify the owner tables atomically; prune rows of deleted facts.
 
     A ledger without any owner object gets the exact FACT_OWNER_SCHEMA. Any
@@ -828,7 +828,8 @@ def initialize_fact_owner_schema(db: sqlite3.Connection) -> int:
             raise RuntimeError("fact_owner_schema_unavailable")
         _scan_fact_owner_rows(db)
         pruned = 0
-        for table in ("fact_owners", "fact_owner_revisions"):
+        # SC-4a skip list d-fact-owner-schema-prune: a verification run validates, never prunes.
+        for table in ("fact_owners", "fact_owner_revisions") if prune else ():
             pruned += db.execute("DELETE FROM " + table + " WHERE fact_id IN (SELECT id FROM facts WHERE state=?)",
                                  (FactState.DELETED.value,)).rowcount
         db.commit()
@@ -842,10 +843,15 @@ class FactLedger:
     """Own expiry, source links, review transitions and durable deletion intent."""
 
     def __init__(self, path: str = ":memory:", *, clock: Callable[[], float] | None = None,
-                 automatic_days: float = 30.0, voice_settings: VoiceProposalSettings | None = None):
+                 automatic_days: float = 30.0, voice_settings: VoiceProposalSettings | None = None,
+                 verify_only: bool = False):
         if type(automatic_days) not in (int, float) or not math.isfinite(automatic_days) or not 0 < automatic_days <= 30:
             raise ValueError("automatic_memory_retention_must_be_at_most_30_days")
         self.path, self.automatic_days = path, automatic_days
+        # SC-4a: a release-mode verification run opens and validates but repairs nothing
+        # (no owner prune at open, no index-target backfill). Off for every other user,
+        # including the controller and the compaction worker.
+        self.verify_only = verify_only is True
         self.clock = time.time if clock is None else clock
         if voice_settings is not None and type(voice_settings) is not VoiceProposalSettings:
             raise ValueError("voice_proposals_config_invalid")
@@ -939,7 +945,7 @@ class FactLedger:
                     except BaseException:
                         db.rollback()
                         raise
-                initialize_fact_owner_schema(db)
+                initialize_fact_owner_schema(db, prune=not self.verify_only)
                 # U3b-4a-0: voice-attribution authority (validated, never pruned at open).
                 initialize_voice_attribution_schema(db)
                 # U3b-0d3: the deletion ledger (validated and chained, never written at open).

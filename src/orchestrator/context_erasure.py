@@ -137,7 +137,8 @@ class ContextEraser:
 
 
 async def build_context_erasure(
-    config: dict, *, privacy: PrivacyServices, owner: ErasureCoordinator, memory=None
+    config: dict, *, privacy: PrivacyServices, owner: ErasureCoordinator, memory=None,
+    verify_only: bool = False,
 ) -> ContextEraser:
     """Register historical roots even with persistence, recall or orchestration off."""
     base = (
@@ -163,5 +164,6 @@ async def build_context_erasure(
     if memory is not None:
         driver.attach_short_term(memory.short_term)
     await driver.retention.refresh()
-    driver.retention.start()
+    if not verify_only:  # SC-4a skip list a-other-loops (context retention)
+        driver.retention.start()
     return driver

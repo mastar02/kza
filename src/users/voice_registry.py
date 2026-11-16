@@ -389,14 +389,19 @@ class VoiceRegistry:
             raise WorkCloseTimeout('voice_resources_still_running') from None
 
 
-async def build_voice_registry(*, privacy, owner, shutdown) -> VoiceRegistry:
-    """Bind the local registry to the mandatory authority before audio starts."""
+async def build_voice_registry(*, privacy, owner, shutdown, verify_only: bool = False) -> VoiceRegistry:
+    """Bind the local registry to the mandatory authority before audio starts.
+
+    A release-mode verification run skips the boot prune and the maintain
+    loop (SC-4a skip list a-voice-registry).
+    """
     voices = VoiceRegistry(privacy)
     privacy.add_borrower(voices.begin_close)
     shutdown.push_async_callback(voices.aclose)
     owner.register(ErasureParticipant.VOICES,voices.clean,versions=frozenset({1}),begin_close=voices.begin_close)
     await privacy.acall(privacy.ledger.erasures.register_target,ErasureParticipant.VOICES,1,VOICE_TARGET)
     await privacy.acall(privacy.ledger.erasures.register_target,ErasureParticipant.VOICES,2,{'kind':'unresolved_voice_inventory'})
-    await voices.acall(voices.ledger.prune)
-    voices.start()
+    if not verify_only:
+        await voices.acall(voices.ledger.prune)
+        voices.start()
     return voices

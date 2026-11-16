@@ -64,8 +64,11 @@ class SuggestionStore:
     """
 
     def __init__(self, events: EventLogger, legacy_path: str | Path, *,
-                 output_reservation: output_registration.ConstructorReservation | None = None) -> None:
+                 output_reservation: output_registration.ConstructorReservation | None = None,
+                 verify_only: bool = False) -> None:
         self.events = events
+        # SC-4a skip list d-boot-retention-clamps: a verification run does not clamp.
+        self.verify_only = verify_only is True
         output_registration.enter_suggestions(self, output_reservation)
         self.retention_notify = None
         self.policy = events.source_policy
@@ -103,7 +106,8 @@ class SuggestionStore:
             db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_suggestion_pattern ON suggestions_policy_v1(pattern_key)"
             )
-            clamp_suggestion_deadlines(db, self.policy.automatic_days)
+            if not self.verify_only:
+                clamp_suggestion_deadlines(db, self.policy.automatic_days)
 
     @contextmanager
     def _connect(self):

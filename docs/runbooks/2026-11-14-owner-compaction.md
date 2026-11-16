@@ -290,9 +290,12 @@ R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
 
    Las mismas `--unit` que en el plan (forman parte de su digest); el retiro
    vuelve a escanear con esa lista. Época 5: `--archive "$NEW_ARCHIVE"`, el
-   mismo archivo del plan. Hasta SC-4a la salida dice `next: compact abort
-   <id>`: un log del modo release no se verifica todavía, y su única salida es
-   ese abort (sin pérdida) y después habilitar y arrancar la unidad (sirve H).
+   mismo archivo del plan. Un log simple dice `next: compact verify <id>`.
+   Un log del modo release dice `next: compact abort <id>` hasta SC-4b
+   (compuerta de release SC4A-N13: `compact verify` lo rechaza con
+   `runtime_admission_compaction_release_exit_unavailable`); su única salida
+   es ese abort, sin pérdida, y después habilitar y arrancar la unidad (sirve
+   H).
 
    Si el plan cambió desde el paso 2 (otro slot, otra entrada en la raíz),
    rechaza con `runtime_admission_compaction_plan_changed`: repetir el plan.
@@ -313,6 +316,37 @@ R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
    Cualquier otro arranque de `kza-voice` sale con 78 mientras la
    compactación esté pendiente (y `RestartPreventExitStatus=78` evita el
    bucle).
+
+   Época 5, log del modo release (SC-4a, desarrollado, sin release; **sólo
+   con un controlador que incluya SC-4b**: antes, `compact verify` rechaza
+   `runtime_admission_compaction_release_exit_unavailable` y la salida es
+   `compact abort <id>`): la corrida es la verificación aislada V (sin
+   entrada ni efectos en la casa; hace las mismas pruebas de conexión sin
+   contenido a HA y al gateway LLM que cualquier arranque). No se detiene a
+   mano ni se habilita la unidad: `serve` la arranca sin tablero, micrófono,
+   rutinas ni recordatorios, mide N segundos desde el `READY` reconocido y la
+   detiene él mismo (salida 0).
+
+   N es obligatorio en el modo release y va de 10 a 60
+   (`runtime_admission_compaction_release_smoke_seconds` si falta o pasa de
+   60): N = min(60, 600 − T_copy − arranques × B − paradas). Con los valores
+   de hoy (T_copy ≈ 146 s, B ≈ 146 s): primera transición, con T0,
+   `--smoke-seconds 10`; transiciones posteriores, como mucho 60. SC-6b fija
+   el valor por omisión.
+
+   ```bash
+   $ST compact verify <compaction_id> --smoke-seconds <N>
+   systemctl --user start kza-voice.service   # la unidad sigue deshabilitada
+   # esperar a que la unidad quede inactiva sola (unos N segundos después de READY)
+   $ST compact status <compaction_id>    # 'verified' y verify_branch_reached: yes
+   ```
+
+   `verify_branch_reached: no` (el NUEVO no envió su reconocimiento antes de
+   `READY`) o una parada antes de N dejan la corrida sin verificar
+   (fila V3); `unreadable` quiere decir que un registro de la corrida no se
+   puede leer (la fase del log se sigue mostrando). Las salidas después de
+   la corrida (el retiro con igualdad W y la vuelta a H con W) son de SC-4b;
+   por eso el código no arma V antes de SC-4b.
 
 5. Retiro (destruye los miembros; irreversible):
 
@@ -542,7 +576,9 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
 | `runtime_admission_compaction_artifact` | `start` o `resume`: el archivo dado no es el del intent (`"archive": "not_the_intent_archive"`, nada escrito: repetir con el archivo del plan, en época 5 `"$NEW_ARCHIVE"`), o el `release.json` de K no es el del intent (el archivo cambió entre lectura y extracción): `$ST compact abort <id>`, después habilitar y arrancar la unidad. |
 | `runtime_admission_compaction_schema_changed` | `start`, época 5 (A1): los `schemas` del binding de K no son los de H. El head sigue en H: `$ST compact abort <id>`, después `systemctl --user enable kza-voice.service` y `systemctl --user start kza-voice.service`. Repetir con el mismo NUEVO rechaza igual. |
 | `runtime_admission_compaction_locator_collision:<tabla>.path` | `start` (trabajador): dos filas de una cola de audio caerían en la misma ruta de K. Se rechaza antes de escribir K; el head sigue en H: `$ST compact abort <id>`, después habilitar y arrancar la unidad. Cada reintento rechaza igual; no hay salida por `resume`. |
-| `runtime_admission_compaction_release_verify_unavailable` / `_plain_mode_only` | Época 5, hasta SC-4a/SC-4b: un log del modo release no se verifica ni vuelve a H por Q6; la salida es `compact abort <id>` antes de la corrida. |
+| `runtime_admission_compaction_release_exit_unavailable` | Época 5, hasta SC-4b (compuerta de release SC4A-N13): un log del modo release no se arma. Nada se escribió: `$ST compact abort <id>` (sin pérdida), después `systemctl --user enable kza-voice.service` y `systemctl --user start kza-voice.service` (sirve H). |
+| `runtime_admission_compaction_release_smoke_seconds` | Época 5: `compact verify` de un log del modo release sin `--smoke-seconds` o con más de 60. Nada se escribió: repetir con N de 10 a 60 (paso 4). |
+| `runtime_admission_compaction_release_retire_unavailable` / `_plain_mode_only` | Época 5, hasta SC-4b: un log del modo release no se retira con el retiro simple ni vuelve a H por Q6 (ambos son de SC-4b, con W). Antes de la corrida, `compact abort <id>` (sin pérdida). Con la compuerta SC4A-N13 ningún log del modo release llega a correr V antes de SC-4b. |
 | `runtime_admission_compaction_capacity` | El binding o el archivo histórico de K pasaría de 12 MiB, o no hay espacio (P9). Si lo dice el trabajador (durante el snapshot, antes de escribir su manifiesto, o después del snapshot), el tamaño real no entra: liberá espacio y seguí con `compact resume <id>` (un snapshot completo se conserva; uno a medias se destruye y se vuelve a hacer). |
 | `runtime_admission_compaction_owner_only_data` | Hay datos sólo en miembros; en `start` requiere `--accept-owner-only-loss`, en `retire` (datos nuevos desde el plan) `--accept-owner-only-loss <coverage_sha256>`. |
 | `runtime_admission_compaction_identity` | Un miembro o su `state/` ya no es el del plan, o un slot miembro tiene entradas nuevas. |

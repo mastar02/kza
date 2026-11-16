@@ -122,12 +122,15 @@ class EventLogger:
         *, source_policy: FactLedger | None = None, clock=None, io_worker=None,
         observation_timeout_s: float = .1,
         retention_notify=None,
+        verify_only: bool = False,
     ):
         """
         Args:
             db_path: Ruta a la base de datos SQLite
             retention_days: Dias a retener eventos (default 90)
             context_provider: Callback para obtener contexto adicional
+            verify_only: SC-4a release-mode verification run; the boot clamp of
+                ``expires_at`` is skipped (skip list d-boot-retention-clamps).
         """
         if type(retention_days) not in (int, float) or not math.isfinite(retention_days) or retention_days <= 0:
             raise ValueError("invalid_event_retention")
@@ -135,6 +138,7 @@ class EventLogger:
             raise ValueError("invalid_event_observation_timeout")
         self.db_path = Path(db_path)
         self.retention_days = retention_days
+        self.verify_only = verify_only is True
         self.context_provider = context_provider
         self.source_policy = source_policy
         self._clock = clock if clock is not None else (source_policy.clock if source_policy is not None else time.time)
@@ -208,10 +212,11 @@ class EventLogger:
             # a shorter configuration is loaded. Persist the reduction before
             # admitting reads, so a later expansion cannot restore the old TTL.
             conn.create_function("clamped_event_deadline", 5, self._clamped_deadline)
-            conn.execute("""UPDATE events_policy_v1 SET expires_at=clamped_event_deadline(
-                timestamp,expires_at,text_expires_at,sources_json,
-                trigger_phrase IS NOT NULL OR user_name IS NOT NULL OR context_json IS NULL OR context_json!=metrics_json)
-                WHERE expires_at>timestamp+?""", (self.retention_days * 86400,))
+            if not self.verify_only:
+                conn.execute("""UPDATE events_policy_v1 SET expires_at=clamped_event_deadline(
+                    timestamp,expires_at,text_expires_at,sources_json,
+                    trigger_phrase IS NOT NULL OR user_name IS NOT NULL OR context_json IS NULL OR context_json!=metrics_json)
+                    WHERE expires_at>timestamp+?""", (self.retention_days * 86400,))
             conn.commit()
 
     def _clamped_deadline(self, captured, expiry, raw_expiry, encoded, raw):

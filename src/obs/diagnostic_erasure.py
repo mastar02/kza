@@ -146,8 +146,14 @@ class DiagnosticServices:
         return self._closing
 
 
-async def build_diagnostic_services(config: dict, *, privacy, owner) -> DiagnosticServices:
-    """Register cleanup before opening catalogs or admitting conversation metrics."""
+async def build_diagnostic_services(config: dict, *, privacy, owner,
+                                    verify_only: bool = False) -> DiagnosticServices:
+    """Register cleanup before opening catalogs or admitting conversation metrics.
+
+    In a release-mode verification run (SC-4a skip list d-diagnostic-repair)
+    neither the emitter's retention start (aprune: quarantine repair, staged
+    cleanup, _publish) nor either maintenance loop runs.
+    """
     settings = config.get('observability', {})
     descriptor = await privacy.acall(diagnostic_descriptor,
         settings.get('metrics_path', '/home/kza/logs/kza-metrics.jsonl'))
@@ -179,9 +185,11 @@ async def build_diagnostic_services(config: dict, *, privacy, owner) -> Diagnost
         services.emitter = emitter
         privacy.add_borrower(emitter.begin_close)
         services._history.discard(descriptor['path'])
-        try:
-            await emitter.start()
-        except Exception:
-            logger.warning('Diagnostic retention unavailable; local repair will retry')
-    services.start()
+        if not verify_only:
+            try:
+                await emitter.start()
+            except Exception:
+                logger.warning('Diagnostic retention unavailable; local repair will retry')
+    if not verify_only:
+        services.start()
     return services
