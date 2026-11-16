@@ -1,20 +1,26 @@
-"""Output-free signal of ResponseHandler (T034-U2, user answer Q31)."""
+"""Output-free signal of ResponseHandler and the reminder rounds it opens (T034-U2, user answer Q31)."""
 
 import asyncio
+import json
 import sys
 import threading
-from unittest.mock import MagicMock
+import time
+from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
+import pytest_asyncio
 
 sys.modules.setdefault('sounddevice', MagicMock())
 sys.modules.setdefault('soundfile', MagicMock())
 
-from src.core.voice_delivery import SIGNALS_OUTPUT_FREE, ResponseBudgets
+from src.core.voice_delivery import SIGNALS_OUTPUT_FREE, LocalVoiceDelivery, ResponseBudgets
 from src.pipeline.response_handler import ResponseHandler
+from src.reminders.reminder_scheduler import ReminderScheduler
+from src.reminders.reminder_store import ReminderScope, ReminderState, ReminderStore
 from src.tts import piper_tts
 from tests.mocks.audio_output import AudioBackend
+from tests.mocks.home_control import selected_actions
 
 pytestmark = pytest.mark.asyncio
 
@@ -116,3 +122,86 @@ async def test_a_failing_listener_never_breaks_delivery_or_the_other_listeners(h
     await until(lambda: calls == [1])
     assert (await handler.aspeak("otra", zone_id="zone_cocina")).success
     await until(lambda: calls == [1, 1])
+
+
+@pytest_asyncio.fixture
+async def store(tmp_path):
+    s = ReminderStore(str(tmp_path / "free.db"))
+    await s.initialize()
+    yield s
+    await s.close()
+
+
+async def notices(store) -> list[tuple]:
+    rows = await store._work.read(lambda db: [tuple(row) for row in db.execute(
+        "SELECT status, reason, body FROM reminder_home_actions WHERE request_id LIKE 'notice:%' "
+        "ORDER BY rowid").fetchall()])
+    return [(status, reason, json.loads(body)["reminder_id"], json.loads(body)["attempt"])
+            for status, reason, body in rows]
+
+
+def reminder_scheduler(handler, store) -> ReminderScheduler:
+    """The production wiring of build_voice_services: one attempt per round and no fallback round,
+    so only the output-free signal can retry."""
+    ha = AsyncMock()
+    scheduler = ReminderScheduler(
+        store, LocalVoiceDelivery(handler, "zone_living", True), None, ha,
+        {"output_zone": "zone_living", "notice_max_attempts": 1, "notice_fallback_max_rounds": 0},
+        home_actions=selected_actions(ha, ("light.patio",)))
+    handler.add_output_free_listener(scheduler.notify_output_available)
+    return scheduler
+
+
+async def test_a_notice_that_found_the_output_busy_is_announced_when_the_response_ends(handler, output, store):
+    """Q31: the living output busy past the queue budget -> not started; its end opens the new round."""
+    scheduler = reminder_scheduler(handler, store)
+    output.release.clear()
+    other = asyncio.create_task(handler.aspeak("respuesta larga", zone_id="zone_cocina", timeout_s=10))
+    await until(output.busy.is_set)
+    r = await store.create("u1", "regar", time.time() - 1, scope=ReminderScope.SHARED)
+    loop = asyncio.create_task(scheduler.start())
+    try:
+        await until(lambda: r.id in scheduler._holds)
+        assert await notices(store) == [("failed", "delivery_not_started:timed_out", r.id, 1)]
+        await asyncio.sleep(.2)
+        assert len(await notices(store)) == 1  # exhausted, and no fallback round: waits for the signal
+        output.release.set()
+        assert (await other).success
+        async with asyncio.timeout(3):
+            while (await store.get_by_id(r.id)).state is not ReminderState.FIRED:
+                await asyncio.sleep(.01)
+    finally:
+        output.release.set()
+        await scheduler.stop()
+        await asyncio.gather(loop, other, return_exceptions=True)
+    assert await notices(store) == [("failed", "delivery_not_started:timed_out", r.id, 1),
+                                    ("confirmed", None, r.id, 2)]
+    assert output.zones == ["zone_cocina", "zone_living"]
+
+
+async def test_the_end_of_a_notice_never_opens_another_round(handler, output, store):
+    """No ping-pong: one notice's end is not other activity, so held notices stay held until a real response."""
+    scheduler = reminder_scheduler(handler, store)
+    output.living_plays = False
+    first = await store.create("u1", "regar", time.time() - 1, scope=ReminderScope.SHARED)
+    loop = asyncio.create_task(scheduler.start())
+    try:
+        await until(lambda: first.id in scheduler._holds)
+        second = await store.create("u1", "ventilar", time.time() - 1, scope=ReminderScope.SHARED)
+        scheduler.notify_new_reminder()
+        await until(lambda: second.id in scheduler._holds)
+        await asyncio.sleep(.3)
+        assert [(item, attempt) for *_, item, attempt in await notices(store)] == [(first.id, 1), (second.id, 1)]
+        assert (await handler.aspeak("hola", zone_id="zone_cocina")).success
+        async with asyncio.timeout(3):
+            while len(await notices(store)) < 4:
+                await asyncio.sleep(.01)
+        await asyncio.sleep(.3)
+    finally:
+        await scheduler.stop()
+        await asyncio.gather(loop, return_exceptions=True)
+    rows = await notices(store)
+    assert all(status == "failed" for status, *_ in rows)
+    assert sorted((item, attempt) for *_, item, attempt in rows) == sorted(
+        [(first.id, 1), (first.id, 2), (second.id, 1), (second.id, 2)])
+    assert output.zones.count("zone_living") == 3  # first, second, then one summary for both

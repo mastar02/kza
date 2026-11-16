@@ -85,6 +85,8 @@ async def test_real_factory_shares_household_output_privacy_and_managers(leaves,
                 assert reminders._store is graph.reminder_manager._store
                 assert reminders._tts is graph.voice_services.features.voice_delivery
                 assert graph.voice_services.reminder_task is None
+                # Q31: other activity freeing the output opens a new notice round.
+                assert graph.voice_services.responses._output_free_listeners == [reminders.notify_output_available]
         assert graph.ha_client._session.closed
         assert graph.dashboard_authority._lease_fd is None
         assert not graph.privacy.resource_status()["writer_lease"]

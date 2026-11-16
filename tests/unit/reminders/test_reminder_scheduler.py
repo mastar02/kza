@@ -16,7 +16,8 @@ from src.core.voice_delivery import (
 )
 from src.reminders.recurrence import next_trigger
 from src.reminders.reminder_scheduler import (
-    DEFAULT_LATE_ACTION_GRACE_S, NoticeDismissal, ReminderScheduler, notice_request_id,
+    DEFAULT_LATE_ACTION_GRACE_S, DEFAULT_NOTICE_FALLBACK_MAX_ROUNDS, DEFAULT_NOTICE_FALLBACK_ROUND_S,
+    NoticeDismissal, ReminderScheduler, notice_request_id,
 )
 from src.reminders.reminder_store import ReminderScope, ReminderState, ReminderStore
 from src.home_assistant.home_actions import HomeActionService
@@ -358,8 +359,10 @@ async def test_delivery_mapping_row_by_row(scheduler, store, mock_deps, clock, r
     final = expected[-1][0]
     current = await store.get_by_id(r.id)
     if final == "failed":
-        # Running out of attempts is not terminal: still pending, no actions, no further try this round.
-        assert scheduler._holds[r.id].retry_at is None
+        # Running out of attempts is not terminal: still pending, no actions, no further try this round;
+        # the next try is the fallback round 15 min after the last failed attempt (user answer Q31).
+        hold, last_claim = scheduler._holds[r.id], json.loads((await ledger(store))[-1][1])["claimed_at"]
+        assert (hold.failures, hold.fallback_rounds, hold.retry_at) == (3, 1, last_claim + 900)
         assert current.state is ReminderState.ACTIVE and current.fire_count == 0
         assert [e.status for e in await scheduler.notice_entries()] == ["pending"]
     else:
@@ -596,7 +599,8 @@ async def test_an_edited_occurrence_starts_its_own_backoff(scheduler, store, moc
     for _ in range(3):
         assert await scheduler._fire_reminder(r) is False
         clock.advance(5)
-    assert scheduler._holds[r.id].retry_at is None and scheduler._holds[r.id].failures == 3
+    exhausted = scheduler._holds[r.id]
+    assert (exhausted.failures, exhausted.retry_at) == (3, clock() - 5 + 900)  # waiting for its fallback round
     assert await store.update_trigger(r.id, clock() - 1, shared_only=True)  # edited from the web
     edited = await store.get_by_id(r.id)
     assert await scheduler._fire_reminder(edited) is False
@@ -789,6 +793,8 @@ async def test_one_failing_reminder_does_not_stop_the_rest_of_the_due_batch(sche
     ("late_action_grace_s", True), ("late_action_grace_s", None), ("notice_retry_min_gap_s", 0),
     ("notice_retry_min_gap_s", math.inf), ("notice_max_attempts", 0), ("notice_max_attempts", 1.5),
     ("notice_max_attempts", True), ("notice_retention_hours", -1), ("notice_retention_hours", "48"),
+    ("notice_fallback_round_s", 0), ("notice_fallback_round_s", math.inf), ("notice_fallback_round_s", "900"),
+    ("notice_fallback_max_rounds", -1), ("notice_fallback_max_rounds", 1.5), ("notice_fallback_max_rounds", True),
 ])
 def test_invalid_delivery_policy_configuration_is_rejected(key, value):
     with pytest.raises(ValueError, match=key):
@@ -841,6 +847,9 @@ def test_settings_declare_the_notice_policy_of_the_design():
     reminders = yaml.safe_load((ROOT / "config/settings.yaml").read_text(encoding="utf-8"))["reminders"]
     assert (reminders["notice_max_attempts"], reminders["notice_retry_min_gap_s"],
             reminders["notice_retention_hours"]) == (3, 30, 48)
+    # User answer Q31: a fallback round every 15 min, at most 4, when no output-free signal comes.
+    assert (reminders["notice_fallback_round_s"], reminders["notice_fallback_max_rounds"]) == (
+        DEFAULT_NOTICE_FALLBACK_ROUND_S, DEFAULT_NOTICE_FALLBACK_MAX_ROUNDS) == (900, 4)
 
 def test_settings_declare_the_recommended_late_action_grace():
     config = yaml.safe_load((ROOT / "config/settings.yaml").read_text(encoding="utf-8"))
@@ -948,7 +957,7 @@ async def test_restart_while_announcing_is_uncertain_and_never_spoken(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_two_recoveries_produce_one_announcement(store, mock_deps, clock):
-    """Two passes (e.g. startup and a zone-available round) over the same occurrence: one notice."""
+    """Two passes (e.g. startup and an output-free round) over the same occurrence: one notice."""
     ha = mock_deps["ha_client"]
     entered, release = asyncio.Event(), asyncio.Event()
 
@@ -1307,7 +1316,7 @@ async def test_retention_runs_at_startup_and_every_six_hours(store, mock_deps, c
 async def test_exhausted_round_is_not_terminal_and_a_new_round_continues_the_attempt_numbers(
     scheduler, store, mock_deps, clock,
 ):
-    """attempts_and_backoff: 3 attempts, gaps 1 s then 2 s, no spin; zone-available starts a new round."""
+    """attempts_and_backoff: 3 attempts, gaps 1 s then 2 s, no spin; a free output starts a new round (Q31)."""
     mock_deps["tts"].aspeak.return_value = failed()
     r = await store.create("u1", "regar", clock() - 1, ha_actions=[ACTION], scope=ReminderScope.SHARED)
     await scheduler._deliver_due(clock())
@@ -1320,7 +1329,7 @@ async def test_exhausted_round_is_not_terminal_and_a_new_round_continues_the_att
     assert await scheduler._next_timeout() == 2
     clock.advance(2)
     await scheduler._deliver_due(clock())
-    assert await scheduler._next_timeout() is None  # exhausted: wait for a wake, never spin
+    assert await scheduler._next_timeout() == 900  # exhausted: only the fallback round wakes it, never spin
     clock.advance(DEFAULT_LATE_ACTION_GRACE_S)
     await scheduler._deliver_due(clock())
     assert mock_deps["tts"].aspeak.await_count == 3
@@ -1343,3 +1352,128 @@ async def test_dismiss_with_a_retired_session_writes_nothing(scheduler, store, c
     assert await ledger(store) == []
     assert (await store.get_by_id(r.id)).state is ReminderState.ACTIVE
     assert r.id not in scheduler._in_flight
+
+
+# ---------------------------------------------------------------------------
+# T034-U2 follow-up: user answer Q31 (new notice rounds)
+# ---------------------------------------------------------------------------
+
+async def fail_one_round(scheduler, clock) -> None:
+    """Three not-started attempts with the test gaps (1 s, 2 s)."""
+    await scheduler._deliver_due(clock())
+    clock.advance(1)
+    await scheduler._deliver_due(clock())
+    clock.advance(2)
+    await scheduler._deliver_due(clock())
+
+
+@pytest.mark.asyncio
+async def test_an_exhausted_round_gets_at_most_four_fallback_rounds_fifteen_minutes_apart(
+    scheduler, store, mock_deps, clock,
+):
+    """Q31: without an output-free signal, a fallback round 900 s after each exhausted round, at most 4."""
+    mock_deps["tts"].aspeak.return_value = failed()
+    r = await store.create("u1", "regar", clock() - 1, ha_actions=[ACTION], scope=ReminderScope.SHARED)
+    for round_number in range(1 + DEFAULT_NOTICE_FALLBACK_MAX_ROUNDS):
+        await fail_one_round(scheduler, clock)
+        attempts = 3 * (round_number + 1)
+        assert mock_deps["tts"].aspeak.await_count == attempts
+        hold = scheduler._holds[r.id]
+        if round_number < DEFAULT_NOTICE_FALLBACK_MAX_ROUNDS:
+            assert (hold.fallback_rounds, hold.retry_at) == (round_number + 1, clock() + 900)
+            assert await scheduler._next_timeout() == 900
+            clock.advance(899)
+            await scheduler._deliver_due(clock())  # still inside the fallback wait: nothing
+            assert mock_deps["tts"].aspeak.await_count == attempts
+            clock.advance(1)
+    # Bounded: after the fourth fallback round only a free output, a restart or a dismiss retries it.
+    assert scheduler._holds[r.id].retry_at is None
+    assert await scheduler._next_timeout() is None
+    clock.advance(10 * HOUR)
+    await scheduler._deliver_due(clock())
+    assert mock_deps["tts"].aspeak.await_count == 15
+    assert await notices(store) == [("failed", "delivery_not_started:failed", k) for k in range(1, 16)]
+    # Every fallback round is late: its actions were barred before it spoke, never executed.
+    texts = [call.args[0] for call in mock_deps["tts"].aspeak.await_args_list]
+    assert texts[:3] == ["Oye, recuerda regar"] * 3 and texts[3:] == [LATE_NOT_RUN] * 12
+    assert await receipts(store) == [("failed", "late_not_executed")]
+    mock_deps["ha_client"].call_service_once.assert_not_called()
+    # The output-free signal still opens a round after the fallback rounds ran out.
+    mock_deps["tts"].aspeak.return_value = delivered()
+    scheduler.notify_output_available()
+    await scheduler._deliver_due(clock())
+    assert (await notices(store))[-1] == ("confirmed", None, 16)
+    assert (await store.get_by_id(r.id)).state is ReminderState.FIRED
+
+
+@pytest.mark.asyncio
+async def test_an_output_free_round_neither_resets_the_fallback_bound_nor_wakes_without_a_held_notice(
+    build, store, mock_deps, clock,
+):
+    scheduler = build(notice_fallback_max_rounds=1)
+    scheduler.notify_output_available()
+    assert not scheduler._wake_event.is_set()  # nothing held: every finished response stays cheap
+    mock_deps["tts"].aspeak.return_value = failed()
+    r = await store.create("u1", "regar", clock() - 1, scope=ReminderScope.SHARED)
+    await fail_one_round(scheduler, clock)
+    assert (scheduler._holds[r.id].fallback_rounds, scheduler._holds[r.id].retry_at) == (1, clock() + 900)
+    scheduler._wake_event.clear()
+    scheduler.notify_output_available()
+    assert scheduler._wake_event.is_set()
+    hold = scheduler._holds[r.id]
+    assert (hold.failures, hold.retry_at) == (0, clock())  # a fresh round, claimable now
+    await fail_one_round(scheduler, clock)  # the new round has its own three attempts and gaps
+    assert mock_deps["tts"].aspeak.await_count == 6
+    hold = scheduler._holds[r.id]
+    assert (hold.failures, hold.fallback_rounds, hold.retry_at) == (3, 1, None)  # the single fallback was used
+    assert await scheduler._next_timeout() is None
+
+
+@pytest.mark.asyncio
+async def test_a_held_daily_reminder_still_announces_its_next_occurrence(build, store, mock_deps, clock):
+    """Q31: an occurrence held after its rounds never makes the reminder lose the next day's occurrence."""
+    scheduler = build(notice_fallback_max_rounds=0)
+    mock_deps["tts"].aspeak.return_value = failed()
+    r = await store.create("u1", "regar", clock() - 1, recurrence="daily", ha_actions=[ACTION],
+                           scope=ReminderScope.SHARED)
+    following = next_trigger(r.trigger_at, "daily")
+    await fail_one_round(scheduler, clock)
+    assert scheduler._holds[r.id].retry_at is None
+    assert await scheduler._next_timeout() == following - clock()  # the next occurrence wakes the loop
+    clock.now = following + 10
+    assert await scheduler._next_timeout() == 0
+    mock_deps["tts"].aspeak.return_value = delivered()
+    await scheduler._deliver_due(clock())
+    # Announced on time like any catch-up: one notice, its action runs after the confirmed notice.
+    assert [call.args[0] for call in mock_deps["tts"].aspeak.await_args_list] == ["Oye, recuerda regar"] * 4
+    assert await notices(store) == [("failed", "delivery_not_started:failed", k) for k in (1, 2, 3)] + [
+        ("confirmed", None, 1)]
+    mock_deps["ha_client"].call_service_once.assert_awaited_once()
+    assert await receipts(store) == [("confirmed", None)]
+    current = await store.get_by_id(r.id)
+    assert current.state is ReminderState.ACTIVE and current.trigger_at == next_trigger(following, "daily")
+
+
+@pytest.mark.asyncio
+async def test_a_held_occurrence_gets_one_round_per_newly_due_occurrence_and_never_spins(
+    scheduler, store, mock_deps, clock,
+):
+    """The successor round is opened once per due occurrence: a round that cannot claim waits for the next."""
+    r = await store.create("u1", "regar", clock() - 1, recurrence="daily", scope=ReminderScope.SHARED)
+    # Another owner claimed attempt 1 and is still announcing it: this scheduler parks the occurrence.
+    assert await store.claim_home_action(notice_request_id(r.id, r.trigger_at, 1), {
+        "kind": "voice_notice", "reminder_id": r.id, "trigger_at": r.trigger_at, "attempt": 1,
+        "claimed_at": clock(), "room": "living"})
+    await scheduler._deliver_due(clock())
+    assert scheduler._holds[r.id].retry_at is None
+    first, second = next_trigger(r.trigger_at, "daily"), next_trigger(next_trigger(r.trigger_at, "daily"), "daily")
+    clock.now = first + 5
+    assert await scheduler._next_timeout() == 0
+    await scheduler._deliver_due(clock())  # the round is opened, but attempt 1 is still 'sending'
+    assert scheduler._holds[r.id].successor_round == first
+    assert await scheduler._next_timeout() == second - clock()  # not 0: no spin
+    for _ in range(3):
+        await scheduler._deliver_due(clock())
+    mock_deps["tts"].aspeak.assert_not_awaited()
+    assert (await store.get_by_id(r.id)).trigger_at == r.trigger_at
+    assert await notices(store) == [("sending", None, 1)]

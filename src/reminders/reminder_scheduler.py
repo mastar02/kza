@@ -12,7 +12,7 @@ from enum import Enum, StrEnum
 from typing import Any
 
 from src.core.sqlite_work import AuthorityGuard
-from src.core.voice_delivery import DeliveryState, ResponseResult, ResponseStage
+from src.core.voice_delivery import SIGNALS_OUTPUT_FREE, DeliveryState, ResponseResult, ResponseStage
 from src.reminders.recurrence import next_trigger
 from src.reminders.reminder_store import (
     NOTICE_ID_PREFIX, Reminder, ReminderActionStatus, ReminderHomeActionReceipt, ReminderLedgerRow,
@@ -27,6 +27,10 @@ DEFAULT_LATE_ACTION_GRACE_S = 120.0
 DEFAULT_NOTICE_MAX_ATTEMPTS = 3
 DEFAULT_NOTICE_RETRY_MIN_GAP_S = 30.0
 DEFAULT_NOTICE_RETENTION_HOURS = 48.0
+# User answer Q31 (2026-11-16): after a round is exhausted, a fallback round every 15 min,
+# at most 4 per occurrence, in case the output-free signal never comes.
+DEFAULT_NOTICE_FALLBACK_ROUND_S = 900.0
+DEFAULT_NOTICE_FALLBACK_MAX_ROUNDS = 4
 NOTICE_CLEANUP_INTERVAL_S = 6 * 3600.0
 LATE_NOT_EXECUTED = "late_not_executed"
 # A recurring catch-up never walks further than this many missed occurrences
@@ -148,6 +152,10 @@ class DeliveryHold:
         reason: Last failure reason, for logs.
         completion_errors: Failed tries to complete (advance) an occurrence whose notice is
             already terminal; such a retry never speaks.
+        fallback_rounds: Timed fallback rounds already scheduled for this occurrence in this
+            process (bounded by notice_fallback_max_rounds; an output-free round keeps the count).
+        successor_round: Latest later occurrence of a recurring reminder for which a round was
+            already opened while this occurrence was held (one round per newly due occurrence).
     """
 
     trigger_at: float
@@ -155,6 +163,8 @@ class DeliveryHold:
     completion_errors: int = 0
     retry_at: float | None = None
     reason: str = ""
+    fallback_rounds: int = 0
+    successor_round: float | None = None
 
 
 @dataclass(frozen=True)
@@ -212,6 +222,12 @@ class ReminderScheduler:
         with a bounded backoff. A crash while announcing is recovered as
         uncertain by the store. An occurrence stays pending until one attempt
         is confirmed or uncertain, then advances once.
+      * A round has ``notice_max_attempts`` attempts. A new round starts at
+        startup, when other activity frees the output (``notify_output_available``,
+        wired to ResponseHandler), every ``notice_fallback_round_s`` after an
+        exhausted round (at most ``notice_fallback_max_rounds``), and when a later
+        occurrence of a held recurring reminder becomes due, which the catch-up
+        collapse then announces instead.
       * An occurrence later than ``late_action_grace_s`` never runs its home
         actions: each action gets a terminal ``failed``/``late_not_executed``
         receipt before anything is spoken. On time, actions run only after a
@@ -250,17 +266,25 @@ class ReminderScheduler:
         self._retry_gap = self._config.get("notice_retry_min_gap_s", DEFAULT_NOTICE_RETRY_MIN_GAP_S)
         self._retention_h = self._config.get("notice_retention_hours", DEFAULT_NOTICE_RETENTION_HOURS)
         self._late_grace = self._config.get("late_action_grace_s", DEFAULT_LATE_ACTION_GRACE_S)
+        self._fallback_round_s = self._config.get("notice_fallback_round_s", DEFAULT_NOTICE_FALLBACK_ROUND_S)
+        self._fallback_max_rounds = self._config.get("notice_fallback_max_rounds",
+                                                     DEFAULT_NOTICE_FALLBACK_MAX_ROUNDS)
         self._tts_prefix = self._config.get("tts_prefix", "Oye, recuerda")
         self._output_zone = self._config.get("output_zone")
         if type(self._max_attempts) is not int or self._max_attempts < 1:
             raise ValueError("reminders.notice_max_attempts must be a positive integer")
+        if type(self._fallback_max_rounds) is not int or self._fallback_max_rounds < 0:
+            raise ValueError("reminders.notice_fallback_max_rounds must be a non-negative integer")
         for name, value in (("notice_retry_min_gap_s", self._retry_gap),
                             ("notice_retention_hours", self._retention_h),
-                            ("late_action_grace_s", self._late_grace)):
+                            ("late_action_grace_s", self._late_grace),
+                            ("notice_fallback_round_s", self._fallback_round_s)):
             if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
                 raise ValueError(f"reminders.{name} must be a finite non-negative number")
         if self._retry_gap <= 0:
             raise ValueError("reminders.notice_retry_min_gap_s must be positive")
+        if self._fallback_round_s <= 0:
+            raise ValueError("reminders.notice_fallback_round_s must be positive")
         if self._output_zone is None:
             logger.warning("No reminder output zone configured: shared reminders are not announced, executed or "
                            "marked fired until reminders.output_zone or tts.streaming.default_output_zone is set")
@@ -347,7 +371,35 @@ class ReminderScheduler:
         current = {reminder.id: reminder.trigger_at for reminder in due}
         self._holds = {identity: hold for identity, hold in self._holds.items()
                        if current.get(identity) == hold.trigger_at}
+        for reminder in due:
+            self._open_successor_round(reminder, now)
         await self._deliver_batch(due, raise_errors=False)
+
+    def _open_successor_round(self, reminder: Reminder, now: float) -> None:
+        """A held recurring occurrence gets one new round when a later occurrence becomes due.
+
+        Q31: a recurring reminder never loses its later occurrences while one is
+        held (exhausted, waiting for a fallback round, parked). The round goes
+        through _prepare, so the catch-up collapse announces the latest due
+        occurrence once. One round per newly due occurrence: a round that
+        cannot claim again is not reopened until the next occurrence is due.
+        """
+        hold = self._holds.get(reminder.id)
+        if (hold is None or reminder.id in self._in_flight or hold.trigger_at != reminder.trigger_at
+                or not self._held_for_occurrence(reminder, now)):
+            return
+        try:
+            following = self._next_occurrence(reminder, hold.successor_round or reminder.trigger_at)
+            if following is None or following > now:
+                return
+            latest = self._latest_due(reminder, following, now)
+        except ValueError:
+            # A recurrence the catch-up cannot walk stays held (MAX_CATCH_UP_STEPS); the
+            # marker keeps _next_timeout from waking the loop for it again and again.
+            hold.successor_round = now
+            return
+        hold.successor_round, hold.failures, hold.retry_at = latest, 0, now
+        logger.info("Reminder %s: a later occurrence is due while a notice is held; new round", reminder.id)
 
     async def _next_timeout(self) -> float | None:
         """Seconds until the next claimable occurrence or retry, or None to wait for a wake.
@@ -366,6 +418,15 @@ class ReminderScheduler:
             if not self._is_held(reminder, now):
                 deadlines.append(now)
                 break
+            hold = self._holds.get(reminder.id)
+            if reminder.id not in self._in_flight and hold is not None and hold.trigger_at == reminder.trigger_at:
+                # A held recurring occurrence wakes the loop when its next occurrence is due (Q31).
+                try:
+                    following = self._next_occurrence(reminder, hold.successor_round or reminder.trigger_at)
+                except ValueError:
+                    following = None
+                if following is not None:
+                    deadlines.append(following)
         return max(0.0, min(deadlines) - now) if deadlines else None
 
     def _is_held(self, reminder: Reminder, now: float) -> bool:
@@ -388,15 +449,42 @@ class ReminderScheduler:
         self._wake_event.set()
 
     def notify_output_available(self) -> None:
-        """Start a new notice round (zone available again, unmute) and wake the loop.
+        """Start a new notice round because the output became free again; thread-safe.
 
-        Occurrences that used up their attempts in the previous round become
-        claimable again; attempt numbers continue in the ledger. No event source
-        calls this yet (review round 1 R1): today a new round starts only at
-        process startup.
+        Wired to ResponseHandler.add_output_free_listener (user answer Q31): it
+        fires when other activity (not a reminder notice) stops owning the
+        output. It may be called from any thread and never blocks; the round
+        itself is opened on the scheduler loop.
         """
-        self._holds = {identity: hold for identity, hold in self._holds.items() if identity in self._in_flight}
-        self._wake_event.set()
+        loop = self._loop
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(self._start_output_round)
+            except RuntimeError:
+                logger.debug("Output-free signal arrived after the reminder loop stopped")
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no scheduler loop and not on an event loop: nothing to wake
+        self._start_output_round()
+
+    def _start_output_round(self) -> None:
+        """Every held occurrence not in flight becomes claimable now with a fresh round.
+
+        Attempt numbers continue in the ledger; the fallback round count is kept,
+        so the bound on timed fallback rounds holds across output-free rounds.
+        The loop is woken only when some occurrence was held.
+        """
+        now, opened = self._clock(), False
+        for identity, hold in self._holds.items():
+            if identity in self._in_flight:
+                continue
+            hold.failures, hold.completion_errors, hold.retry_at = 0, 0, now
+            opened = True
+        if opened:
+            logger.info("Reminder output is free again; new notice round")
+            self._wake_event.set()
 
     async def _shared_occurrence(self, reminder: Reminder, *, guard: AuthorityGuard | None = None) -> Reminder | None:
         """Resolve the same active, due shared occurrence without adopting its successor."""
@@ -546,8 +634,13 @@ class ReminderScheduler:
         return True
 
     async def _announce(self, message: str) -> tuple[ReminderActionStatus, str | None]:
-        """Speak once through the output's aspeak and map its ResponseResult."""
+        """Speak once through the output's aspeak and map its ResponseResult.
+
+        The notice's own output never counts as the output becoming free
+        (SIGNALS_OUTPUT_FREE), so its end cannot start another round.
+        """
         callback = getattr(self._tts, "aspeak", None)
+        token = SIGNALS_OUTPUT_FREE.set(False)
         try:
             if inspect.iscoroutinefunction(callback):
                 result = await callback(message, zone_id=self._output_zone)
@@ -560,6 +653,8 @@ class ReminderScheduler:
         except Exception as error:
             logger.warning("Reminder voice output raised %s; notice is uncertain", type(error).__name__)
             return ReminderActionStatus.UNCERTAIN, NOTICE_UNVERIFIED
+        finally:
+            SIGNALS_OUTPUT_FREE.reset(token)
         return notice_outcome(result)
 
     async def _finish(self, claim: NoticeClaim, status: ReminderActionStatus, reason: str | None) -> bool:
@@ -597,14 +692,29 @@ class ReminderScheduler:
         return hold
 
     def _hold_after_failure(self, reminder: Reminder, reason: str, failed_at: float) -> None:
-        """Back off 30 s, 60 s, ...; after notice_max_attempts no further attempt in this round."""
+        """Back off 30 s, 60 s, ...; after notice_max_attempts the round ends.
+
+        An exhausted round schedules a fallback round notice_fallback_round_s
+        later, at most notice_fallback_max_rounds times per occurrence (Q31);
+        after that the occurrence waits for the output to become free, a later
+        occurrence, a restart or a web dismiss.
+        """
         hold = self._hold(reminder)
+        if hold.failures >= self._max_attempts:
+            hold.failures = 0  # the first failure of a new (fallback) round
         hold.failures += 1
         hold.reason = reason
         if hold.failures >= self._max_attempts:
-            hold.retry_at = None
-            logger.warning("Reminder %s not delivered (%s) after %d attempts in this round; kept pending",
-                           reminder.id, reason, hold.failures)
+            if hold.fallback_rounds < self._fallback_max_rounds:
+                hold.fallback_rounds += 1
+                hold.retry_at = failed_at + self._fallback_round_s
+                logger.warning("Reminder %s not delivered (%s) after %d attempts in this round; fallback round "
+                               "%d/%d in %.0f s", reminder.id, reason, hold.failures, hold.fallback_rounds,
+                               self._fallback_max_rounds, hold.retry_at - self._clock())
+            else:
+                hold.retry_at = None
+                logger.warning("Reminder %s not delivered (%s) after %d attempts in this round; kept pending "
+                               "until the output is free again", reminder.id, reason, hold.failures)
         else:
             hold.retry_at = failed_at + self._retry_gap * 2 ** (hold.failures - 1)
             logger.info("Reminder %s not delivered (%s); attempt %d/%d in %.0f s", reminder.id, reason,
@@ -638,16 +748,7 @@ class ReminderScheduler:
         """Move a recurring reminder to its latest due occurrence so a long outage yields one notice."""
         if not reminder.recurrence:
             return reminder
-        now, latest = self._clock(), reminder.trigger_at
-        for _ in range(MAX_CATCH_UP_STEPS):
-            following = next_trigger(latest, reminder.recurrence)
-            if following <= latest:
-                raise ValueError("reminder_recurrence_not_advancing")
-            if following > now or (reminder.recurrence_end is not None and following > reminder.recurrence_end):
-                break
-            latest = following
-        else:
-            raise ValueError("reminder_catch_up_unbounded")
+        latest = self._latest_due(reminder, reminder.trigger_at, self._clock())
         if latest == reminder.trigger_at:
             return reminder
         if not await self._store.update_trigger(reminder.id, latest, shared_only=True,
@@ -655,6 +756,28 @@ class ReminderScheduler:
             return None
         logger.info("Recurring reminder %s collapsed missed occurrences into one notice", reminder.id)
         return replace(reminder, trigger_at=latest)
+
+    @staticmethod
+    def _next_occurrence(reminder: Reminder, after: float) -> float | None:
+        """The recurring reminder's occurrence after ``after``, or None (one-shot or past recurrence_end)."""
+        if not reminder.recurrence:
+            return None
+        following = next_trigger(after, reminder.recurrence)
+        if following <= after:
+            raise ValueError("reminder_recurrence_not_advancing")
+        if reminder.recurrence_end is not None and following > reminder.recurrence_end:
+            return None
+        return following
+
+    def _latest_due(self, reminder: Reminder, start: float, now: float) -> float:
+        """Latest occurrence from ``start`` on that is due by ``now`` (``start`` when none is later)."""
+        latest = start
+        for _ in range(MAX_CATCH_UP_STEPS):
+            following = self._next_occurrence(reminder, latest)
+            if following is None or following > now:
+                return latest
+            latest = following
+        raise ValueError("reminder_catch_up_unbounded")
 
     def _message(self, reminder: Reminder, late: bool, outcomes: list[LateActionOutcome] | tuple) -> str:
         """Build the announcement; a late notice states only what the receipts prove.
