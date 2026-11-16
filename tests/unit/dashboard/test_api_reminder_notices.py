@@ -15,7 +15,7 @@ from src.dashboard.api import DashboardAPI
 from src.dashboard.auth import _route_permissions
 from src.dashboard.authority import DashboardAuthority, DashboardRole, _permissions
 from src.reminders.reminder_manager import ReminderManager
-from src.reminders.reminder_scheduler import ReminderScheduler
+from src.reminders.reminder_scheduler import NoticeDismissal, ReminderScheduler
 from src.reminders.reminder_store import ReminderScope, ReminderState, ReminderStore
 from tests.mocks.home_control import selected_actions
 from tests.mocks.responses import voice_output
@@ -130,6 +130,23 @@ async def test_dismiss_from_the_web_confirms_advances_without_actions_and_never_
     invalid = await graph.client.post('/api/reminders/notices/dismiss',
                                       json={'reminder_id': reminder.id, 'trigger_at': 1., 'extra': 1})
     assert invalid.status_code == 422
+
+
+@pytest.mark.parametrize('recurrence', [None, 'daily'])
+async def test_dismissing_an_occurrence_that_is_not_due_yet_changes_nothing(notices_graph, recurrence):
+    """Review round 1 R4: a future shared occurrence cannot be dismissed (or advanced) before it is due."""
+    graph = notices_graph
+    future = await graph.store.create('u1', 'Regar', time.time() + 3600, ha_actions=[ACTION],
+                                      recurrence=recurrence, scope=ReminderScope.SHARED)
+    response = await graph.client.post('/api/reminders/notices/dismiss',
+                                       json={'reminder_id': future.id, 'trigger_at': future.trigger_at})
+    assert response.status_code == 404 and response.json()['detail'] == 'reminder_notice_not_found'
+    assert await graph.scheduler.dismiss_notice(future.id, future.trigger_at) is NoticeDismissal.NOT_FOUND
+    assert await notice_rows(graph.store) == []
+    current = await graph.store.get_by_id(future.id)
+    assert (current.state, current.trigger_at, current.fire_count) == (ReminderState.ACTIVE, future.trigger_at, 0)
+    graph.tts.aspeak.assert_not_awaited()
+    graph.ha.call_service_once.assert_not_called()
 
 
 @pytest.mark.parametrize('method, path', [('GET', '/api/reminders/notices'),
