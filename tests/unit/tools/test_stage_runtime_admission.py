@@ -623,7 +623,9 @@ def _registered_targets(state):
 
 
 @pytest.fixture
-def delegated_pair(admission_archive, tmp_path, legacy_managed_transitions):
+def delegated_pair(x4_archive, tmp_path, legacy_managed_transitions):
+    """An owner pair: since SC-1a only the epoch-4 build of this tree honours delegation (tests/mocks/epoch4.py)."""
+    admission_archive = x4_archive
     registered = []
 
     def statements(state):
@@ -665,13 +667,13 @@ def test_delegate_grants_only_local_path_targets_then_activate(delegated_pair):
     assert os.readlink(root / "current") == "slots/candidate/runtime"
 
 
-def test_delegate_grants_a_second_hop(delegated_pair, admission_archive):
+def test_delegate_grants_a_second_hop(delegated_pair, x4_archive):
     """U3b-0b inverts the 0a one-hop refusal: the CLI re-delegates what the head holds."""
     root, candidate = delegated_pair["root"], delegated_pair["candidate"]
     assert _delegate_legacy(root, "candidate").returncode == 0
     stage.run_slot(root, "candidate", _command(_CLOSING_CHILD, "[]"), timeout=30)
     assert stage.read_admission_head(root)["status"] == "closed"
-    _copy_candidate(admission_archive, root, candidate, "third")
+    _copy_candidate(x4_archive, root, candidate, "third")
     result = _delegate_legacy(root, "third")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["targets"] == [delegated_pair["local"]]
@@ -746,7 +748,7 @@ def test_cli_probe_timeout_outside_bounds_is_refused(tmp_path, text):
     assert not (tmp_path / "root").exists()
 
 
-def test_delegation_api_refuses_a_grant_that_drops_a_held_pathless_target(delegated_pair, admission_archive):
+def test_delegation_api_refuses_a_grant_that_drops_a_held_pathless_target(delegated_pair, x4_archive):
     """U3b-0b D3: the API, like the CLI, never turns a held delegation into ownership."""
     root, candidate = delegated_pair["root"], delegated_pair["candidate"]
     head = stage.read_admission_head(root)
@@ -758,7 +760,7 @@ def test_delegation_api_refuses_a_grant_that_drops_a_held_pathless_target(delega
     stage.run_slot(root, "candidate", _command(_CLOSING_CHILD, "[]"), timeout=30)
     closed = stage.read_admission_head(root)
     assert closed["status"] == "closed"
-    third = _copy_candidate(admission_archive, root, candidate, "third")
+    third = _copy_candidate(x4_archive, root, candidate, "third")
     with stage.AdmissionController(root) as controller:
         _refused(root, (delegated_pair["state"], candidate, third),
                  lambda: controller.authorize_target_delegation(third, closed["binding_id"],

@@ -33,8 +33,13 @@ from tests.unit.tools.test_stage_runtime_admission import (
     _witness,
 )
 
-admission_archive = admission.admission_archive  # The module-scoped built HEAD artifact fixture.
 pytestmark = pytest.mark.usefixtures("legacy_managed_transitions")
+
+
+@pytest.fixture
+def admission_archive(x4_archive):
+    """SC-1a: owner chains exist only at epoch <= 4, so this module runs the epoch-4 build of this tree."""
+    return x4_archive
 
 _INSERT = "INSERT INTO erasure_targets VALUES(?,?,?,?)"
 
@@ -538,7 +543,8 @@ def test_probe_with_0b_code_snapshots_each_owner_once(two_owner_five_targets, mo
     source = stage._PROBE_SOURCE
     head = "module_path, root, slot = sys.argv[1:4]"
     assert source.count(head) == 1 and source.count("spec.loader.exec_module(module)") == 1
-    source = source.replace(head, head + "\nmodule_path = " + repr(str(Path(stage.__file__))))
+    # SC-1a: the candidate's own companion is this tree's code already (the epoch-4 build of this tree);
+    # this tree's source at epoch 5 would refuse the owners it is asked to count.
     source = source.replace("spec.loader.exec_module(module)", "\n".join([
         "spec.loader.exec_module(module)",
         "_seen, _original = [], module._binding_snapshot",

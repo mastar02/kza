@@ -19,6 +19,7 @@ from src.memory.copy_observation import ObservedExtent, observe_existing_copy, r
 from tests.integration.test_checkpoint_binary_lineage import _current
 from tests.integration.test_compiled_material_reconciliation import _run_catalog_child
 from tests.mocks.compiled_restore import write_json
+from tests.mocks.epoch4 import epoch4_checkout
 from tests.mocks.slot_reconciliation import exercise_material_reconciliation
 
 
@@ -215,12 +216,15 @@ async def _retire(controller, observation, layout, operation_id, monkeypatch, or
         await owner.aclose()
 
 
-def test_compiled_checkpoint_cleanup_unlinks_only_withdrawn_blob_and_preserves_historical_pins(tmp_path, monkeypatch, legacy_managed_transitions):
+def test_compiled_checkpoint_cleanup_unlinks_only_withdrawn_blob_and_preserves_historical_pins(tmp_path, tmp_path_factory, epoch4_controller, monkeypatch, legacy_managed_transitions):
     # SC-2: the material reconciliation world (derived-state grants and runs of derived slots under
     # the managed head) is a legacy world; it runs under the legacy_managed_transitions fixture.
     repo = Path(__file__).resolve().parents[2]
     revision = os.environ.get("KZA_RECONCILIATION_REVISION") or subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    # SC-1a: no epoch-5 controller honours a delegation, so the new release and the in-process
+    # controller are that revision's epoch-4 build, from a shared checkout outside the task tree.
+    repo, revision = epoch4_checkout(tmp_path_factory.mktemp("epoch4"), repo, revision)
     task = tmp_path.resolve()
     selected = os.environ.get("KZA_CHECKPOINT_CLEANUP_EVIDENCE_ROOT")
     evidence = task / "evidence" if selected is None else Path(selected).resolve() / ("attempt-" + uuid4().hex)

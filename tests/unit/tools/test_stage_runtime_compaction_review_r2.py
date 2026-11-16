@@ -132,9 +132,10 @@ def _h_restored(world, tmp_path, h_head, members):
     assert cw.serve(root, tmp_path, "h").code == 0
 
 
-def test_a_cut_inside_the_return_to_h_keeps_every_k_run_out(x_archive, tmp_path, monkeypatch):
+def test_a_cut_inside_the_return_to_h_keeps_every_k_run_out(x4_archive, tmp_path, monkeypatch):
     """N1: allow-run granted, abort --to-h cut after its manual head (before the CAS): K is still the
     closed head and an allow-run run would have started; the gate holds until the abort finishes."""
+    x_archive = x4_archive  # SC-1a: an owner world needs the epoch-4 build
     world = cw.world(x_archive, tmp_path, hops=("b",))
     root = world["root"]
     h_head = stage.read_admission_head(root)
@@ -176,9 +177,10 @@ _ERASED = cw.sql(("INSERT INTO conversation_tombstones VALUES ('conv-1', 1.0, 'o
 
 
 @pytest.mark.parametrize("during_run", ["ordinary_rows", "conversation_erased"])
-def test_a_k_run_after_abort_started_is_checked_again(x_archive, tmp_path, monkeypatch, during_run):
+def test_a_k_run_after_abort_started_is_checked_again(x4_archive, tmp_path, monkeypatch, during_run):
     """N1: a K run the gate should have refused (the pre-fix gate, emulated) happens after
     'abort_started': resume refuses, and the repeated abort applies Q6 and the discard to what ran."""
+    x_archive = x4_archive  # SC-1a: an owner world needs the epoch-4 build
     world = cw.world(x_archive, tmp_path, hops=("b",))
     root = world["root"]
     h_head = stage.read_admission_head(root)
@@ -562,7 +564,8 @@ def test_accept_missing_refuses_a_member_this_compaction_renamed(tmp_path, monke
 # --- N9: a placeholder cut before its 'own_work' is still this compaction's ------------------------
 
 @pytest.mark.parametrize("then", ["resume", "abort"])
-def test_a_placeholder_cut_before_own_work_is_found(x_archive, tmp_path, monkeypatch, then):
+def test_a_placeholder_cut_before_own_work_is_found(x4_archive, tmp_path, monkeypatch, then):
+    x_archive = x4_archive  # SC-1a: an owner world needs the epoch-4 build
     world = cw.world(x_archive, tmp_path, hops=("b",))
     root = world["root"]
     h_head = stage.read_admission_head(root)
@@ -600,7 +603,8 @@ def _dead_pid() -> int:
     return int(child.stdout)
 
 
-def test_a_copy_in_preparation_refuses_the_plan_and_an_abandoned_one_is_listed(x_archive, tmp_path):
+def test_a_copy_in_preparation_refuses_the_plan_and_an_abandoned_one_is_listed(x4_archive, tmp_path):
+    x_archive = x4_archive  # SC-1a: an owner world needs the epoch-4 build
     world = cw.world(x_archive, tmp_path, hops=("b",))
     root = world["root"]
     destination = root / "backups" / "copy-in-flight"

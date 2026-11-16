@@ -95,8 +95,9 @@ def test_an_abort_accepts_a_snapshot_deleted_by_hand_and_claims_no_destruction(t
     assert len(tombstones) == 1 and not (root / "slots" / "k").exists()
 
 
-def test_compact_abort_member_accept_missing_on_a_managed_root(x_archive, tmp_path):
+def test_compact_abort_member_accept_missing_on_a_managed_root(x4_archive, tmp_path):
     """R3-1 through the operator's command: snapshot and placeholder deleted by hand, then abort."""
+    x_archive = x4_archive  # SC-1a: an owner world needs the epoch-4 build
     world = cw.world(x_archive, tmp_path, hops=("b",))
     root = world["root"]
     h_head = stage.read_admission_head(root)

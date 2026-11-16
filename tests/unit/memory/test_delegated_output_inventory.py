@@ -73,7 +73,13 @@ def _journal(directory, header, event, policy_events=(), *, policy_after_target=
 
 
 @pytest.fixture
-def decoder(tmp_path, monkeypatch, request):
+def delegated_decoder_world(tmp_path, monkeypatch, request):
+    """A closed v2 run that joins a delegated target to its delegation record, at the shipped epoch.
+
+    SC-1a (AUTHZ3-1, review F7): the shipped controller epoch never reads the
+    record, so the run decodes as unknown
+    (test_shipped_epoch_decodes_the_delegated_run_as_unknown_without_reading_the_record).
+    """
     tmp_path = tmp_path.resolve()  # Match the real controller's canonical roots.
     root, state, old = tmp_path / "controller", tmp_path / "current", tmp_path / "old"
     state.mkdir(); old.mkdir()
@@ -140,6 +146,50 @@ def decoder(tmp_path, monkeypatch, request):
             "source_receipt_path": receipt_path, "policy": policy, "policy_path": policy_path,
             "source": source, "source_id": source_id, "source_proof": proof,
             "delegation": record, "delegation_id": delegation_id, "policy_event": policy_event}
+
+
+@pytest.fixture
+def decoder(delegated_decoder_world, epoch4_controller):
+    """The delegated world read by the epoch-4 build of this tree (SC-1a N11; tests/mocks/epoch4.py).
+
+    The decoder's proofs on delegated scopes need a controller that honours a
+    delegation record; the shipped epoch's refusal is its own test below.
+    """
+    return delegated_decoder_world
+
+
+def test_shipped_epoch_decodes_the_delegated_run_as_unknown_without_reading_the_record(
+        delegated_decoder_world, monkeypatch):
+    """SC-1a AUTHZ3-1 (review F7): the guard runs before any delegation metadata is opened.
+
+    The epoch-4 twins are the decoder tests of this module (the delegated form observed).
+    """
+    decoder = delegated_decoder_world
+    assert stage.CONTROLLER_EPOCH >= stage.RELEASE_MODE_EPOCH
+    record = decoder["root"] / "admission/delegations" / (decoder["delegation_id"] + ".json")
+    before = _metadata_bytes(decoder)
+    guard, refusals, opened = stage.require_no_delegation_records, [], []
+    original_open = os.open
+
+    def observed_guard(root):
+        try:
+            guard(root)
+        except ValueError as error:
+            refusals.append(str(error))
+            raise
+
+    def observe_open(*args, **kwargs):
+        if args and args[0] in {record.name, str(record)}:
+            opened.append(args[0])
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(stage, "require_no_delegation_records", observed_guard)
+    monkeypatch.setattr(os, "open", observe_open)
+    result, = registration.read_inventory(decoder["controller"])
+    monkeypatch.setattr(os, "open", original_open)
+    _assert_unknown(result)
+    assert refusals == [stage.DELEGATION_FROZEN] and opened == []
+    assert _metadata_bytes(decoder) == before
 
 
 @pytest.mark.parametrize("form", ["delegated", "legacy_local"])
@@ -210,7 +260,7 @@ def test_closed_decoder_uses_captured_policy_after_current_owned_targets_change(
     assert _metadata_bytes(decoder) == before
 
 
-@pytest.mark.parametrize("decoder", [True, 2], indirect=True, ids=["boolean", "unknown"])
+@pytest.mark.parametrize("delegated_decoder_world", [True, 2], indirect=True, ids=["boolean", "unknown"])
 def test_closed_decoder_refuses_policy_schema_even_with_matching_synthetic_binding(decoder):
     """Fixture hashes include the invalid version; rejection cannot be a stale hash."""
     assert base._sha(base._encoded(decoder["policy"])) == decoder["policy_event"]["ownership_sha256"]

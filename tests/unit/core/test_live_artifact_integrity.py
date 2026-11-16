@@ -49,7 +49,13 @@ def artifact_admission(admission_root, admission_archive, monkeypatch, request):
     (state / ".env").write_text("UNIT_ARTIFACT_OBSERVATION=ordinary\n")
     (runtime / ".env").symlink_to("../state/.env")
     inspected = runtime
-    if getattr(request, "param", "current") == "source":
+    world = getattr(request, "param", "current")
+    if world in {"source", "source_at_shipped_epoch"}:
+        # SC-1a (N11): a delegated source is a world with an owner and a delegation record, which
+        # only the epoch-4 build of this tree honours; the shipped epoch's refusal of the same world
+        # is test_shipped_epoch_refuses_the_delegated_source_world.
+        if world == "source":
+            request.getfixturevalue("epoch4_controller")
         stage.prepare_slot(admission_archive, root, "source", state)
         source_state = root / "slots/source/state"
         inspected = writable_runtime(root / "slots/source/runtime")
@@ -226,6 +232,18 @@ def test_full_capture_rejects_mutation_after_real_payload_read(artifact_admissio
     with pytest.raises(ValueError, match="runtime_admission_artifact_changed"):
         stage.admission_validation_snapshot(state, ticket)
     assert changed == [inspected / relative]
+
+
+@pytest.mark.parametrize("artifact_admission", ["source_at_shipped_epoch"], indirect=True)
+def test_shipped_epoch_refuses_the_delegated_source_world(artifact_admission):
+    """SC-1a AUTHZ3-1: the real full validation of the built source world refuses its delegation record.
+
+    The epoch-4 twins are the ``source`` cases above.
+    """
+    _, state, _, _, _, ticket = artifact_admission
+    assert stage.CONTROLLER_EPOCH >= stage.RELEASE_MODE_EPOCH
+    with pytest.raises(ValueError, match="^" + stage.DELEGATION_FROZEN + "$"):
+        stage.admission_validation_snapshot(state, ticket)
 
 
 def test_full_capture_fifo_swap_rejects_without_waiting_and_closes_fds(artifact_admission, monkeypatch):

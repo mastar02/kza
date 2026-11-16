@@ -20,11 +20,19 @@ from scripts import compaction
 from scripts import managed_launcher as launcher
 from scripts import stage_runtime as stage
 from tests.mocks import compaction_world as cw
+from tests.mocks.epoch4 import apply_epoch4
 
 
 @pytest.fixture(scope="module")
-def x_archive(tmp_path_factory):
-    return cw.build_x(tmp_path_factory.mktemp("compaction-review-x"))
+def x5_archive(tmp_path_factory):
+    """X as it ships (epoch 5), for the controller-epoch pin (CO-10 d)."""
+    return cw.build_x(tmp_path_factory.mktemp("compaction-review-x5"))
+
+
+@pytest.fixture
+def x_archive(x4_archive):
+    """SC-1a: this module's worlds have owners, which exist only at epoch <= 4 (tests/mocks/epoch4.py)."""
+    return x4_archive
 
 
 @pytest.fixture(autouse=True)
@@ -125,6 +133,7 @@ def test_abort_crash_at_every_boundary_finishes_on_the_next_command(x_archive, t
     with pytest.raises(RuntimeError, match="synthetic-crash"):
         compaction.compact_abort(root, compaction_id, **options)
     monkeypatch.undo()
+    apply_epoch4(monkeypatch)  # SC-1a: undo() also dropped the epoch-4 build
     monkeypatch.setattr(compaction, "controller_location", lambda root, members: None)
     [status] = compaction.compact_status(root, compaction_id)["compactions"]
     assert status["terminal"] is False
@@ -191,6 +200,7 @@ def test_k_prepare_crash_resumes_or_aborts(x_archive, tmp_path, monkeypatch, cut
     with pytest.raises(RuntimeError, match="synthetic-crash"):
         cw.start(root, world["archive"])
     monkeypatch.undo()
+    apply_epoch4(monkeypatch)  # SC-1a: undo() also dropped the epoch-4 build
     monkeypatch.setattr(compaction, "controller_location", lambda root, members: None)
     [log] = stage.compaction_logs(root)
     compaction_id = log["compaction_id"]
@@ -352,12 +362,12 @@ def test_a_copy_made_after_the_plan_refuses_retire_as_plan_changed(x_archive, tm
 
 # --- F8 / D1: forward epoch; D4 / F3: install-controller is the way out ---
 
-def test_a_newer_installed_epoch_refuses_this_controller(x_archive, tmp_path):
-    world = cw.world(x_archive, tmp_path, hops=())
+def test_a_newer_installed_epoch_refuses_this_controller(x5_archive, tmp_path):
+    world = cw.world(x5_archive, tmp_path, hops=())
     root = world["root"]
     path = root / "admission" / "controller.json"
     record = json.loads(path.read_text())
-    assert record["controller_epoch"] == stage.CONTROLLER_EPOCH == 4  # SC-2
+    assert record["controller_epoch"] == stage.CONTROLLER_EPOCH == 5  # SC-1a (SC-2: 4)
     stage._atomic_record(path, dict(record, controller_epoch=stage.CONTROLLER_EPOCH + 1))
     _refusal("runtime_admission_controller_downgrade", lambda: stage.AdmissionController(root).__enter__())
     _refusal("runtime_admission_controller_downgrade",

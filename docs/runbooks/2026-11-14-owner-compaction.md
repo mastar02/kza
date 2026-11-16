@@ -486,6 +486,17 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
    compactación pendiente o un log inválido, siempre que el archivo sea de
    época 4 o posterior (desde SC-2) y no menor que la instalada. Después, repetir el paso 2
    con el `$ST` del controlador nuevo.
+   Desde SC-1a (época 5, sin release), con una compactación de **estados
+   dueños** el controlador corregido tiene que ser una construcción de
+   **época 4**: uno de época 5 rechaza el log pendiente en la primera
+   instalación y, si igual entra (instalado por error con el `$ST` de época
+   4), los registros de delegación y los dueños dejan la compactación sin
+   ninguna salida (ver «Controlador de época 5 (SC-1a)» en DEPLOYMENT.md). Una
+   compactación de dueños se retira o se aborta en la época 4 antes del T0.
+   Un controlador de época 5 se instala siempre desde el archivo NUEVO
+   extraído (`$PY -I -B <tmp>/scripts/stage_runtime.pyc ... install-controller
+   <archivo nuevo>`), nunca con el `$ST` instalado
+   (`runtime_admission_controller_installer_mismatch`).
 4. Log inválido (por ejemplo un evento truncado por un corte de luz en un
    sistema de archivos sin orden de escritura): todos los comandos que toman
    el lock rechazan y serve sale con 78 (falla cerrado). Antes de tocar nada,

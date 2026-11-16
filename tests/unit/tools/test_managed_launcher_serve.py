@@ -587,7 +587,15 @@ def test_format_epoch_below_the_minimum_is_refused(root, tmp_path, monkeypatch):
 def test_pre_launcher_slot_is_refused_by_serve(artifacts, tmp_path):
     assert "pre" in artifacts["archives"], "the pre-0d artifact must be built"
     root, _state = rehearsal.managed_root(artifacts["archives"]["pre"], tmp_path, controller=False)
-    launcher.install_controller(root, artifacts["archives"]["x"])
+    # SC-1a: a correct first T0 already refuses this head (SR-1 (3): the pre-SC-2 slot declares no
+    # schema contract), before current moves (crash row T0).
+    with pytest.raises(launcher.LauncherRefusal, match="runtime_admission_controller_schema_contract"):
+        launcher.install_controller(root, artifacts["archives"]["x"])
+    assert not os.path.lexists(root / "controller" / "current")
+    # A wrong installer skips SR-1 (t0_controller_install.wrong_installer); serve still refuses.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(launcher, "_first_install_checks", lambda *args, **kwargs: None)
+        launcher.install_controller(root, artifacts["archives"]["x"])
     _refused(root, tmp_path, "runtime_admission_launcher_contract_missing")
 
 

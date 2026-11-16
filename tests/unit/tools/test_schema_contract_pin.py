@@ -484,7 +484,7 @@ def test_build_runtime_declares_the_schema_contract_from_the_revision_text():
     assert build_runtime.RELEASE_INTEGERS["schema_contract"] == "SCHEMA_CONTRACT_EPOCH"
     declared = build_runtime.release_integers((REPO / "scripts" / "stage_runtime.py").read_bytes())
     assert declared["schema_contract"] == stage.SCHEMA_CONTRACT_EPOCH == 1
-    assert declared["controller_epoch"] == stage.CONTROLLER_EPOCH == 4
+    assert declared["controller_epoch"] == stage.CONTROLLER_EPOCH == 5  # SC-1a (R1 stays epoch 4)
     # A revision before SC-2 declares no contract: release_integers reads it as 0.
     assert "schema_contract" not in build_runtime.release_integers(b"CONTROLLER_EPOCH = 3\n")
     assert "schema_contract" in stage._RELEASE_INTEGER_KEYS

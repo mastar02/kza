@@ -1894,7 +1894,13 @@ def _read_scope_record(path: Path) -> tuple[dict, bytes]:
 
 
 def _read_delegated_observation(stage: object, root: Path, binding: dict, event: dict, policy_json: bytes) -> bytes:
-    """Join a closed observation to this controller's actual immutable records."""
+    """Join a closed observation to this controller's actual immutable records.
+
+    SC-1a AUTHZ3-1 (defense in depth, review F7): the controller's stateless
+    guard runs first, so at controller epoch >= 5 no delegation record is ever
+    read here (runtime_admission_delegation_frozen).
+    """
+    stage.require_no_delegation_records(root)
     state, scope = Path(binding["state_root"]), event["scope"]
     source_root = _scope_shape(scope, state)
     policy = json.loads(policy_json)

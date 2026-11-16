@@ -23,9 +23,10 @@ from tests.unit.tools.test_stage_runtime_compaction_review import _A_CLIPS
 WALL = 1_900_000_000.0
 
 
-@pytest.fixture(scope="module")
-def x_archive(tmp_path_factory):
-    return cw.build_x(tmp_path_factory.mktemp("compaction-sc0b-review-x"))
+@pytest.fixture
+def x_archive(x4_archive):
+    """SC-1a: this module's worlds have owners, which exist only at epoch <= 4 (tests/mocks/epoch4.py)."""
+    return x4_archive
 
 
 @pytest.fixture(autouse=True)

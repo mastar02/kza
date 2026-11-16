@@ -313,6 +313,7 @@ def _prepare_proof(root: Path, name: str, slot: Path, state: Path, prepared: lis
 
 def _delegation_proof(root: Path, state: Path) -> dict | None:
     """Proof (c): a delegation record names this state as its destination."""
+    stage.require_no_delegation_records(root)  # SC-1a AUTHZ3-1: no record is read at epoch >= 5
     directory = root / "admission" / "delegations"
     for _name, record in _read_records(directory):
         if record.get("destination_state") == str(state):
@@ -1049,6 +1050,14 @@ def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftov
     head = stage.read_admission_head(root)
     if head is None or head["status"] != "closed":
         _refuse("runtime_admission_not_closed")
+    # SC-1a AUTHZ3-1 (mechanism.authz3_1, V4R2-A1): at controller epoch >= 5 a delegation record
+    # anywhere under the root, or a head whose policy lists owners' targets, refuses before the
+    # head is verified (whose ownership validation would name a record or a missing one instead).
+    try:
+        stage.require_no_delegation_records(root)
+        stage.require_no_owners(stage.read_binding(root, head["binding_id"]), stage.COMPACTION_OWNERS_PRESENT)
+    except ValueError as error:
+        _refuse(str(error))
     source = stage.verify_closed_binding(root, head["binding_id"])  # P1, P2
     if stage.head_aborted(root, head):
         _refuse("runtime_admission_adoption_aborted_head")

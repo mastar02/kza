@@ -2,6 +2,7 @@
 """Build a committed KZA revision into a source-free CPython 3.13 archive."""
 
 import argparse
+import ast
 import gzip
 import hashlib
 import importlib.util
@@ -29,9 +30,96 @@ ASSET_SUFFIXES = {".html", ".css", ".js", ".jsx", ".json", ".csv", ".svg", ".txt
 # key (read as 0) and cannot claim a contract it does not implement.
 # SC-2 adds "schema_contract" (SCHEMA_CONTRACT_EPOCH, design mechanism.schema_rule):
 # an archive built from a revision before SC-2 has no key and reads as 0.
+# SC-1a adds "controller_revision" (CONTROLLER_REVISION, sc-release-design v4
+# epochs.controller_revision); a revision that declares it also gets the
+# controller's import closure recorded (controller_sources and
+# controller_sources_sha256, R4-OPS-1).
 RELEASE_INTEGERS = {"launcher_contract": "LAUNCHER_CONTRACT", "format_epoch": "FORMAT_EPOCH",
                     "receipt_state": "RECEIPT_STATE_SCHEMA", "controller_epoch": "CONTROLLER_EPOCH",
-                    "schema_contract": "SCHEMA_CONTRACT_EPOCH"}
+                    "schema_contract": "SCHEMA_CONTRACT_EPOCH", "controller_revision": "CONTROLLER_REVISION"}
+
+# SC-1a (R4-OPS-1): the controller's entry points. The compaction worker runs
+# the controller's own tree (scripts/compaction.py worker_command).
+CONTROLLER_ENTRY_POINTS = ("scripts/stage_runtime.py", "scripts/compaction.py", "scripts/managed_launcher.py",
+                           "scripts/adoption_commands.py", "src/core/compaction_worker.py")
+# Modules the controller loads by file path, not by an import statement
+# (stage_runtime._launcher_module, _load_beside, _manual_module). A test pins
+# this list against every spec_from_file_location in the closure.
+CONTROLLER_PATH_LOADED = ("scripts/adoption.py", "scripts/adoption_commands.py", "scripts/compaction.py",
+                          "scripts/compaction_units.py", "scripts/managed_launcher.py",
+                          "src/memory/manual_components.py")
+# Modules the controller never imports but whose record format its own parser mirrors
+# (stage_runtime._read_copy_observation reads what src/memory/copy_observation writes):
+# a change there is a controller change too (R4-OPS-1 names it in the closure).
+CONTROLLER_FORMAT_COMPANIONS = ("src/memory/copy_observation.py",)
+_CLOSURE_PACKAGES = ("src", "scripts")
+
+
+def _module_path(module: str, sources: dict) -> str | None:
+    """The tracked source file that importing ``module`` executes, if it is one of ours."""
+    if not module or module.split(".")[0] not in _CLOSURE_PACKAGES:
+        return None
+    base = module.replace(".", "/")
+    for candidate in (base + ".py", base + "/__init__.py"):
+        if candidate in sources:
+            return candidate
+    return None
+
+
+def _imported_modules(path: str, source: bytes) -> list[str]:
+    """Every module an import statement in ``source`` names (module and function level, any guard)."""
+    package = PurePosixPath(path).parent.parts
+    found = []
+    for node in ast.walk(ast.parse(source, filename=path)):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                parts = alias.name.split(".")
+                found.extend(".".join(parts[:end]) for end in range(1, len(parts) + 1))
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                anchor = list(package[:len(package) - (node.level - 1)])
+                module = ".".join(anchor + ([node.module] if node.module else []))
+            else:
+                module = node.module or ""
+            parts = module.split(".")
+            found.extend(".".join(parts[:end]) for end in range(1, len(parts) + 1))
+            found.extend(module + "." + alias.name for alias in node.names if alias.name != "*")
+    return found
+
+
+def controller_closure(sources: dict) -> list[list[str]]:
+    """The controller's import closure: sorted [path, sha256 of the source] pairs (R4-OPS-1).
+
+    A static AST scan of every ``import``/``from`` statement naming src.* or
+    scripts.* (relative ones resolved), from CONTROLLER_ENTRY_POINTS plus
+    CONTROLLER_PATH_LOADED and CONTROLLER_FORMAT_COMPANIONS, including the
+    package __init__ files an import executes. Third-party packages (the
+    shared venv) are outside it.
+    """
+    pending = list(CONTROLLER_ENTRY_POINTS) + list(CONTROLLER_PATH_LOADED) + list(CONTROLLER_FORMAT_COMPANIONS)
+    seen = set()
+    while pending:
+        path = pending.pop()
+        if path in seen:
+            continue
+        if path not in sources:
+            raise ValueError(f"Controller closure file missing: {path}")
+        seen.add(path)
+        parts = PurePosixPath(path).parts
+        for end in range(1, len(parts)):
+            package = "/".join(parts[:end]) + "/__init__.py"
+            if package in sources:
+                pending.append(package)
+        for module in _imported_modules(path, sources[path]):
+            found = _module_path(module, sources)
+            if found is not None:
+                pending.append(found)
+    return [[path, hashlib.sha256(sources[path]).hexdigest()] for path in sorted(seen)]
+
+
+def controller_sources_digest(closure: list) -> str:
+    """sha256 over the sorted [path, sha256] list (= stage_runtime.controller_sources_digest)."""
+    return hashlib.sha256(json.dumps(closure, separators=(",", ":")).encode()).hexdigest()
 
 _WARNING_TYPES = {"SyntaxWarning": SyntaxWarning, "DeprecationWarning": DeprecationWarning}
 _SYNTAX_FIELDS = ("msg", "filename", "lineno", "offset", "text", "end_lineno",
@@ -360,6 +448,7 @@ def build_runtime(repo: Path, output: Path, revision: str = "HEAD") -> dict:
     )
     files = {}
     declared = {}
+    sources = {}
     with tempfile.TemporaryDirectory(prefix="kza-runtime-") as temporary:
         staging = Path(temporary).resolve()
         modules = []
@@ -393,6 +482,7 @@ def build_runtime(repo: Path, output: Path, revision: str = "HEAD") -> dict:
                 source.parent.mkdir(parents=True, exist_ok=True)
                 source.write_bytes(data)
                 modules.append({"path": str(path), "sha256": hashlib.sha256(data).hexdigest()})
+                sources[str(path)] = data
             else:
                 files[str(path)] = data
         if modules:
@@ -409,6 +499,10 @@ def build_runtime(repo: Path, output: Path, revision: str = "HEAD") -> dict:
                   for name, data in sorted(files.items())},
         **declared,
     }
+    if "controller_revision" in declared:
+        closure = controller_closure(sources)
+        manifest["controller_sources"] = closure
+        manifest["controller_sources_sha256"] = controller_sources_digest(closure)
     files["release.json"] = (json.dumps(manifest, indent=2) + "\n").encode()
     output.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=".kza-release-", dir=output.parent)

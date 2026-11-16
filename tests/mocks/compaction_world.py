@@ -9,7 +9,8 @@ every grant refuse (runtime_admission_delegation_retired), so a world with
 hops builds them inside tests.mocks.legacy_transitions (the grant and each
 hop's first run, a cross-slot activation); everything after world() runs
 with the production flag, so compaction of existing owners is exercised as
-an epoch-4 controller runs it. The launcher
+an epoch-4 controller runs it (since SC-1a, an epoch-4 build of this tree:
+tests/mocks/epoch4.py). The launcher
 install record is written as install-launcher would (systemd is not touched
 here; the P14 scan is injected and tested in its own modules).
 """
@@ -26,6 +27,7 @@ from scripts import compaction
 from scripts import stage_runtime as stage
 from scripts.build_runtime import build_runtime
 from tests.mocks import launcher_rehearsal as rehearsal
+from tests.mocks.epoch4 import epoch4_commit
 from tests.mocks.legacy_transitions import legacy_managed_transitions
 
 REPO = rehearsal.REPO
@@ -103,16 +105,22 @@ def no_units(root, members):
     return {"units_scanned": 0, "unit_names": [], "logrotate_files": []}
 
 
-def build_x(base: Path) -> Path:
-    """X = HEAD + the working tree's scripts/ and src/, compiled (cached by KZA_COMPACTION_ARTIFACT)."""
-    cached = os.environ.get("KZA_COMPACTION_ARTIFACT")
+def build_x(base: Path, *, epoch4: bool = False) -> Path:
+    """X = HEAD + the working tree's scripts/ and src/, compiled (cached by KZA_COMPACTION_ARTIFACT).
+
+    ``epoch4`` builds the same tree with CONTROLLER_EPOCH = 4 (tests/mocks/epoch4.py), for worlds
+    with owners (cached by KZA_COMPACTION_ARTIFACT_EPOCH4).
+    """
+    cached = os.environ.get("KZA_COMPACTION_ARTIFACT_EPOCH4" if epoch4 else "KZA_COMPACTION_ARTIFACT")
     if cached:
         return Path(cached)
     clone = base / "clone"
     subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(REPO), str(clone)],
                    check=True, timeout=120)
     revision = rehearsal.overlay_commit(REPO, clone, message="u3b-0c rehearsal")
-    archive = base / "x.tar.gz"
+    if epoch4:
+        revision = epoch4_commit(clone, revision)
+    archive = base / ("x4.tar.gz" if epoch4 else "x.tar.gz")
     build_runtime(clone, archive, revision)
     return archive
 
@@ -167,7 +175,11 @@ def hop(archive: Path, root: Path, source_state: Path, slot: str, *codes: str) -
 
 def world(archive: Path, tmp_path: Path, *, hops: tuple[str, ...] = ("b", "c"), first: tuple[str, ...] = (),
           env: str | None = None) -> dict:
-    """A -> hops..., each a real closed head; the last hop is H. Controller and launcher installed."""
+    """A -> hops..., each a real closed head; the last hop is H. Controller and launcher installed.
+
+    SC-1a: a world with hops has owners, so it needs the epoch-4 build (the x4_archive fixture).
+    """
+    assert not hops or stage.CONTROLLER_EPOCH == 4, "owner worlds need the epoch-4 build (x4_archive)"
     source = rehearsal.offline_source(tmp_path)
     if env is not None:
         (source / ".env").write_text(env)

@@ -204,16 +204,30 @@ def test_tc1_clean_lifecycle_restart_and_delegation(artifacts, tmp_path, deploym
     with pytest.raises(ValueError, match="^runtime_admission_transition_requires_release_mode$"):
         stage.activate_slot(deployment.root, "b")
     assert deployment.head() == second
+    # SC-1a: from controller epoch 5 even the legacy flag gets no grant: the grant's own
+    # post-write self-check refuses the record it just wrote (as an old copy would leave it),
+    # the compiled serve refuses it too (row DL in test_sc1a_controller_install), and serving
+    # resumes once the record is removed. Serving a delegated slot is an epoch-4 world,
+    # rehearsed compiled in test_compiled_owner_compaction.
     with legacy_managed_transitions():
-        assert stage.delegate_slot(deployment.root, "b")["targets"]
-        assert stage.activate_slot(deployment.root, "b") == "slots/s/runtime"
+        with pytest.raises(ValueError, match="^runtime_admission_delegation_frozen$"):
+            stage.delegate_slot(deployment.root, "b")
+    assert list((deployment.root / "admission" / "delegations").iterdir())
+    assert deployment.head() == second
     deployment.phase_file.unlink()
+    unit = deployment.supervise("clean")
+    unit.start()
+    unit.wait_inactive(60)
+    assert unit.exits == [78] and "runtime_admission_delegation_frozen" in deployment.console_text()
+    assert deployment.head() == second
+    for granted in (deployment.root / "admission" / "delegations").iterdir():
+        granted.unlink()
     unit = deployment.supervise("clean")
     unit.start()
     assert unit.wait_for(_ready, 60)
     assert unit.stop() == 0
     final = deployment.head()
-    assert stage.read_binding(deployment.root, final["binding_id"])["slot"] == "b" and final["status"] == "closed"
+    assert stage.read_binding(deployment.root, final["binding_id"])["slot"] == "s" and final["status"] == "closed"
 
 
 # --- T-C2 failures ---------------------------------------------------------------------------------

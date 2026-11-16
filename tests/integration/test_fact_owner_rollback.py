@@ -29,6 +29,7 @@ import pytest
 
 from scripts import stage_runtime as stage
 from scripts.build_runtime import build_runtime
+from tests.mocks.epoch4 import epoch4_commit
 from tests.mocks.slot_rollback import is_managed_capable
 
 # SC-2 (sc-release-design v3 delegation_off.test_fixture): this module rehearses legacy
@@ -36,7 +37,7 @@ from tests.mocks.slot_rollback import is_managed_capable
 # SC-2 retired; they keep testing chain validation, the candidate probe and data
 # survival under the legacy_managed_transitions fixture. The refusals are in
 # tests/unit/tools/test_sc2_delegation_retired.py.
-pytestmark = pytest.mark.usefixtures("legacy_managed_transitions")
+pytestmark = pytest.mark.usefixtures("legacy_managed_transitions", "epoch4_controller")
 
 REPO = Path(__file__).resolve().parents[2]
 PRIVACY = "data/privacy.db"
@@ -159,7 +160,9 @@ def artifacts(tmp_path_factory):
     _git(clone, "add", "-A", "--", "src", "scripts", "tools", env=env)
     tree = _git(clone, "write-tree", env=env)
     x = _git(clone, "commit-tree", tree, "-p", head, "-m", "U3b-1a rehearsal X (working tree)", env=env)
-    y = _git(clone, "commit-tree", tree, "-p", x, "-m", "U3b-1a rehearsal Y (trivial descendant)", env=env)
+    # SC-1a: owner worlds exist only at epoch <= 4, so X is this working tree built at epoch 4.
+    x = epoch4_commit(clone, x)
+    y = _git(clone, "commit-tree", x + "^{tree}", "-p", x, "-m", "U3b-1a rehearsal Y (trivial descendant)", env=env)
     pre = _pre_u3b_parent(clone, x)
     shown = _git(clone, "show", pre + ":scripts/stage_runtime.py")
     assert '"fact_owner_schema"' not in shown and is_managed_capable(clone, pre)
