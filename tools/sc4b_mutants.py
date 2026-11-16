@@ -1,6 +1,7 @@
 """SC-4b mutants (test_plan.mutant_rules): each refusal code, each W1 classifier boundary, the
 transient-vs-drift mapping, the retire gates, the adopt refusal, the status view and the selection
-split. Restore-in-finally runner; a mutant is killed only by a failing test (pytest exit 1).
+split; review round 1 adds the rules it asked for (RA4B-1..5, RB-1..3). Restore-in-finally
+runner; a mutant is killed only by a failing test (pytest exit 1).
 
 Usage (server, a mutation clone): python tools/sc4b_mutants.py OUT.json [NAME ...]
 """
@@ -24,6 +25,11 @@ LOSS = EX + "test_a_loss_only_change_is_never_retired_and_abort_returns_to_h"
 AT = EX + "test_transient_refusals_write_nothing_and_clear_with_their_cause"
 W0 = W + "test_w0_maps_each_failure_reading_h"
 W0_SQL = W + "test_w0_classifies_sqlite_errors_by_code_not_by_class"
+UNCLASSIFIABLE = W + "test_a_value_of_another_type_is_unclassified_never_an_uncoded_error"
+LINK = W + "test_w1_never_opens_a_k_prime_entry_through_a_link"
+HD = EX + "test_each_change_to_h_after_v_is_hd_and_nothing_is_written"
+AUTH = EX + "test_the_return_to_h_checks_its_confirmation_the_head_and_k_prime_and_writes_nothing"
+V1 = EX + "test_a_discard_interrupted_after_abort_started_finishes_through_the_w_recheck"
 
 MUTANTS = [
     # --- W1 classifier boundaries (8) ---
@@ -88,8 +94,8 @@ MUTANTS = [
     ("W0: ENOENT transient", C, "                                 errno.EBUSY})",
      "                                 errno.EBUSY, errno.ENOENT})", [W0]),
     ("W0: SQLite classified by class", C,
-     "        if _sqlite_primary(error) in W0_TRANSIENT_SQLITE:",
-     "        if isinstance(error, sqlite3.OperationalError):", [W0_SQL]),
+     "    elif isinstance(error, sqlite3.Error) and _sqlite_primary(error) in W0_TRANSIENT_SQLITE:",
+     "    elif isinstance(error, sqlite3.OperationalError):", [W0_SQL]),
     ("W0: sdk_versions-only difference is drift", C,
      "        if changed == [\"sdk_versions\"]:  # the shared venv, not H's files (R4-PRIV-1)",
      "        if False:  # the shared venv, not H's files (R4-PRIV-1)", [AT]),
@@ -138,6 +144,81 @@ MUTANTS = [
     ("retire: sdk_versions-only K' difference not transient", C,
      "        if changed == [\"sdk_versions\"]:\n            _refuse(SDK_CHANGED, {\"bound\"",
      "        if False:\n            _refuse(SDK_CHANGED, {\"bound\"", [AT]),
+    # --- review round 1 (RA4B-*, RB-*) ---
+    ("RA4B-1: a TypeError from the selection escapes W1", C,
+     "                except _W1_VALUE_ERRORS:  # a value the selection cannot classify",
+     "                except ValueError:  # a value the selection cannot classify", [UNCLASSIFIABLE]),
+    ("RA4B-1: any other failure reading K' escapes W1", C,
+     "        except Exception as error:  # noqa: BLE001 - W1 never raises an uncoded error (RA4B-1)",
+     "        except ZeroDivisionError as error:  # noqa: BLE001 - W1 never raises an uncoded error (RA4B-1)",
+     [W + "test_any_other_failure_reading_a_k_prime_database_is_unreadable_with_a_code"]),
+    ("RA4B-1: accounts catch only ValueError/OSError", C,
+     "        except Exception:  # noqa: BLE001 - unreadable, or a record it cannot classify (RA4B-1)",
+     "        except (ValueError, OSError):  # noqa: BLE001 - unreadable, or a record it cannot classify (RA4B-1)",
+     [W + "test_an_account_user_that_is_not_an_object_is_unclassifiable"]),
+    ("RA4B-2 R4: H binding drift (non-sdk) accepted by W0", C,
+     "                                  \"installed\": snapshot[\"sdk_versions\"]})\n        raise ValueError(\"privacy_authority_stale\")",
+     "                                  \"installed\": snapshot[\"sdk_versions\"]})", [HD]),
+    ("RA4B-2 R3: H marker not checked by W0", C,
+     "    if marker.get(\"binding_id\") != intent[\"source_binding_id\"]:\n        raise ValueError(\"runtime_admission_marker_mismatch\")",
+     "    if False:\n        raise ValueError(\"runtime_admission_marker_mismatch\")", [HD]),
+    ("RB-2(e): KeyError/TypeError reading H escape W0 uncoded", C,
+     "    except (ValueError, OSError, sqlite3.Error, KeyError, TypeError) as error:\n        raise _w0_refusal(error) from None",
+     "    except (ValueError, OSError, sqlite3.Error) as error:\n        raise _w0_refusal(error) from None", [HD]),
+    ("RA4B-3 R6: --confirm-h not checked in release mode", C,
+     "    if confirm_h is None or len(confirm_h) < 12 or not intent[\"source_binding_id\"].startswith(confirm_h):\n        _refuse(\"runtime_admission_compaction_abort_confirmation\")\n    found = _w(root, log)",
+     "    found = _w(root, log)", [AUTH]),
+    ("RA4B-3 R1: a discard accepted with W equal or loss_only (SC4B-N6)", C,
+     "    elif discard_k_changes is not None:\n        _refuse(DISCARD_MISMATCH, {\"w\": report, \"w_sha256\": digest})  # nothing to discard",
+     "    elif False:\n        _refuse(DISCARD_MISMATCH, {\"w\": report, \"w_sha256\": digest})  # nothing to discard",
+     [AUTH, LOSS]),
+    ("RA4B-3 R2: a non-sdk K' binding change at retire not routed (k_binding_changed)", C,
+     "        _refuse(K_BINDING_CHANGED, {\"code\": \"privacy_authority_stale\", \"changed\": changed})",
+     "        pass", [AUTH]),
+    ("RA4B-3 R5: W0 does not check a live V child", C,
+     "            _refuse(\"runtime_admission_recovery_child_alive\", {\"w0\": \"transient\"})",
+     "            pass", [V1]),
+    ("RB-2(c) R7: a closed head need not be V's seal", C,
+     "    return (started is not None and running[\"generation\"] == started[\"data\"][\"generation\"]\n            and running[\"binding_id\"] == started[\"data\"][\"binding_id\"])",
+     "    return True", [AUTH]),
+    ("RB-3: an unreadable K' closure proof reads as head_moved / io_error", C,
+     "    except (OSError, ValueError, TypeError, KeyError) as error:\n        _refuse(K_CLOSURE_UNREADABLE, {\"code\": _error_code(error)})",
+     "    except ZeroDivisionError as error:\n        _refuse(K_CLOSURE_UNREADABLE, {\"code\": _error_code(error)})", [AUTH]),
+    ("RA4B-4: a K' database opened read-write through a link", C,
+     "            if not _w1_regular(path):\n                raise ValueError(\"runtime_admission_redirected_database\")\n            _w1_recover(path)",
+     "            _w1_recover(path)", [LINK]),
+    ("RA4B-4: an accounts record read through a link", C,
+     "            elif not _w1_regular(path):\n                current, status = [], \"unclassifiable\"",
+     "            elif False:\n                current, status = [], \"unclassifiable\"", [LINK]),
+    ("RA4B-4: a configuration file read through a link", C,
+     "            elif not _w1_regular(path):\n                status = \"not_regular\"",
+     "            elif False:\n                status = \"not_regular\"", [LINK]),
+    ("RA4B-5: a live holder's SQLite lock on K' is 'unreadable' (SS)", C,
+     "            if _sqlite_primary(error) in K_TRANSIENT_SQLITE:\n                _refuse(K_TRANSIENT,",
+     "            if False:\n                _refuse(K_TRANSIENT,", [W + "test_a_k_prime_database_a_live_holder_locks_is_a_transient_refusal", AT]),
+    ("RA4B-5: EIO on K' transient (the only exit held shut)", C,
+     "K_TRANSIENT_ERRNOS = W0_TRANSIENT_ERRNOS - {errno.EIO}", "K_TRANSIENT_ERRNOS = W0_TRANSIENT_ERRNOS",
+     [W + "test_a_k_prime_errno_is_transient_only_for_a_resource_that_clears"]),
+    ("RA4B-5: a resource errno on a K' database is 'unreadable'", C,
+     "            if error.errno in K_TRANSIENT_ERRNOS:\n                _refuse(K_TRANSIENT, {\"w1\"",
+     "            if False:\n                _refuse(K_TRANSIENT, {\"w1\"",
+     [W + "test_a_k_prime_errno_is_transient_only_for_a_resource_that_clears"]),
+    ("RA4B-5: a resource errno in K's writer check is 'unverifiable'", C,
+     "        if error.errno in K_TRANSIENT_ERRNOS:\n            _refuse(K_TRANSIENT, {\"w0\"",
+     "        if False:\n            _refuse(K_TRANSIENT, {\"w0\"", [AT]),
+    ("RB-1: an OSError in K's writer check escapes W0", C,
+     "    except OSError as error:\n        name = errno.errorcode.get(error.errno, \"unknown\")\n        if error.errno in K_TRANSIENT_ERRNOS:",
+     "    except ZeroDivisionError as error:\n        name = errno.errorcode.get(error.errno, \"unknown\")\n        if error.errno in K_TRANSIENT_ERRNOS:",
+     [EX + "test_a_k_prime_lock_entry_that_cannot_be_opened_stops_safely_until_the_discard"]),
+    ("RB-1: unverifiable K' locks not restrictive", C,
+     "    restrictive, loss = k_writers[\"status\"] != \"closed\", False",
+     "    restrictive, loss = False, False",
+     [W + "test_unverifiable_k_prime_locks_are_restrictive",
+      EX + "test_a_k_prime_lock_entry_that_cannot_be_opened_stops_safely_until_the_discard"]),
+    ("RA4B-7 R13: an unreadable database counts as 'ok'", C,
+     "        if found[\"status\"] != \"ok\":\n            restrictive = True",
+     "        if found[\"status\"] == \"missing\":\n            restrictive = True",
+     [W + "test_a_missing_database_holding_only_loss_tables_is_still_restrictive"]),
     # --- adopt, status, gate, selection ---
     ("adopt under a pending release-mode log", "scripts/managed_launcher.py",
      "        if admission.compaction is not None and release_mode_log(admission.compaction):",
