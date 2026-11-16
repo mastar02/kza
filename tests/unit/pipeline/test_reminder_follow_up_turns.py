@@ -178,6 +178,7 @@ async def test_a_follow_up_command_still_being_said_when_the_window_ends_holds_t
     assert not scheduler._wake_event.is_set()  # the command is being answered: still held
     await scheduler._deliver_due(clock())
     assert output.aspeak.await_count == 1
+    scheduler._wake_event.clear()  # a direct _deliver_due sets it; only the end of the answer may set it now
     answered.set()
     await asyncio.gather(*audio.dispatches)
     await asyncio.sleep(0)  # the dispatch's done callbacks
