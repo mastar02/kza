@@ -175,37 +175,39 @@ async def test_restart_with_three_day_old_reminders_gives_one_notice_each_and_no
     await first.close()
     store = ReminderStore(path)
     await store.initialize()
-    ha = mock_deps["ha_client"]
-    scheduler = ReminderScheduler(store, mock_deps["tts"], None, ha, {"output_zone": "living"},
-                                  home_actions=selected_actions(ha, ("light.patio",)))
-    reads = AsyncMock(wraps=store.get_due)
-    store.get_due = reads
-    task = asyncio.create_task(scheduler.start())
     try:
-        async with asyncio.timeout(3):
-            while ((await store.get_by_id(one_shot.id)).state is not ReminderState.FIRED
-                   or (await store.get_by_id(daily.id)).trigger_at < time.time()):
-                await asyncio.sleep(.01)
-        await asyncio.sleep(.1)
-        count = reads.await_count
-        await asyncio.sleep(.1)
-        assert reads.await_count == count
+        ha = mock_deps["ha_client"]
+        scheduler = ReminderScheduler(store, mock_deps["tts"], None, ha, {"output_zone": "living"},
+                                      home_actions=selected_actions(ha, ("light.patio",)))
+        reads = AsyncMock(wraps=store.get_due)
+        store.get_due = reads
+        task = asyncio.create_task(scheduler.start())
+        try:
+            async with asyncio.timeout(3):
+                while ((await store.get_by_id(one_shot.id)).state is not ReminderState.FIRED
+                       or (await store.get_by_id(daily.id)).trigger_at < time.time()):
+                    await asyncio.sleep(.01)
+            await asyncio.sleep(.1)
+            count = reads.await_count
+            await asyncio.sleep(.1)
+            assert reads.await_count == count
+        finally:
+            await scheduler.stop()
+            await asyncio.gather(task, return_exceptions=True)
+        texts = [call.args[0] for call in mock_deps["tts"].aspeak.await_args_list]
+        assert sorted(texts) == [
+            "Oye, recuerda regar. Este aviso llega con atraso y no ejecuté sus acciones programadas.",
+            "Oye, recuerda sacar la basura. Este aviso llega con atraso y no ejecuté sus acciones programadas.",
+        ]
+        ha.call_service_once.assert_not_called()
+        assert await receipts(store) == [("failed", "late_not_executed")] * 2
+        advanced = await store.get_by_id(daily.id)
+        latest = daily.trigger_at
+        while next_trigger(latest, "daily") <= time.time():
+            latest = next_trigger(latest, "daily")
+        assert advanced.state is ReminderState.ACTIVE and advanced.trigger_at == next_trigger(latest, "daily")
     finally:
-        await scheduler.stop()
-        await asyncio.gather(task, return_exceptions=True)
-    texts = [call.args[0] for call in mock_deps["tts"].aspeak.await_args_list]
-    assert sorted(texts) == [
-        "Oye, recuerda regar. Este aviso llega con atraso y no ejecuté sus acciones programadas.",
-        "Oye, recuerda sacar la basura. Este aviso llega con atraso y no ejecuté sus acciones programadas.",
-    ]
-    ha.call_service_once.assert_not_called()
-    assert await receipts(store) == [("failed", "late_not_executed")] * 2
-    advanced = await store.get_by_id(daily.id)
-    latest = daily.trigger_at
-    while next_trigger(latest, "daily") <= time.time():
-        latest = next_trigger(latest, "daily")
-    assert advanced.state is ReminderState.ACTIVE and advanced.trigger_at == next_trigger(latest, "daily")
-    await store.close()
+        await store.close()
 
 @pytest.mark.asyncio
 async def test_late_notice_without_actions_does_not_mention_actions(scheduler, store, mock_deps, clock):
@@ -324,9 +326,11 @@ async def test_uncertain_receipt_is_never_resent_or_overwritten(tmp_path, mock_d
     await store.initialize()
     r = await store.create("u1", "regar", time.time() - (DAY if late else 1), ha_actions=[ACTION],
                            scope=ReminderScope.SHARED)
-    # A send interrupted by a crash: claimed, never finished.
-    assert await store.claim_home_action(request_id_for(r), ACTION)
-    await store.close()
+    try:
+        # A send interrupted by a crash: claimed, never finished.
+        assert await store.claim_home_action(request_id_for(r), ACTION)
+    finally:
+        await store.close()
     restarted = ReminderStore(path)
     await restarted.initialize()
     try:
