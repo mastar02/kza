@@ -60,10 +60,17 @@ def _owned_fact(ledger, person: str, content: str, *, expires_in: float = DAY):
     return fact
 
 
+def _floor(data: Path) -> float:
+    """The authority's persisted clock floor: history rows must not be later (history_clock check)."""
+    with _connect(_graph(data) / "dashboard-auth.db") as db:
+        row = db.execute("SELECT value FROM auth_meta WHERE key='clock_floor'").fetchone()
+    return float(row[0]) if row is not None else time.time()
+
+
 def _retire(data: Path, user_id: str) -> None:
     from src.memory.deletion_ledger import DeletionKind, append_deletion
     with _connect(_graph(data) / "dashboard-auth.db") as db:
-        now = time.time() - 60
+        now = min(time.time(), _floor(data)) - 60
         db.execute("INSERT OR IGNORE INTO retired_users VALUES (?,?)", (user_id, now))
         append_deletion(db, DeletionKind.USER_RETIRED, user_id, now)
 
@@ -106,7 +113,7 @@ def tombstone_without_operation(data, final):
 def retired_user_credential_session(data, final):
     """A credential and a session of a retired user (purged by every authority transaction)."""
     _retire(data, RETIRED_LOGIN)
-    now = time.time()
+    now = min(time.time(), _floor(data)) - 1
     credential = uuid4().hex
     with _connect(_graph(data) / "dashboard-auth.db") as db:
         db.execute("INSERT INTO credentials VALUES (?,?,?,?,?,?,?,?,?)",
@@ -144,7 +151,7 @@ def queued_audio_deletion(data, final):
 
 def expired_sessions_credentials(data, final):
     """An expired credential and an expired session (purged by every authority transaction)."""
-    now = time.time()
+    now = min(time.time(), _floor(data)) - 1
     credential = uuid4().hex
     with _connect(_graph(data) / "dashboard-auth.db") as db:
         db.execute("INSERT INTO credentials VALUES (?,?,?,?,?,?,?,?,?)",
@@ -252,6 +259,18 @@ def owned_fact_expired(data, final):
     return {"planted": [f"owned fact state={state['state']} expires_at set in the past"]}
 
 
+def expired_voice_group_request(data, final):
+    """A manual voice-group request past its expiry (the voice registry's prune deletes it)."""
+    from src.memory.fact_ledger import MemoryOrigin, MemorySource
+    now = time.time()
+    source = MemorySource(str(uuid4()), str(uuid4()), now - DAY, now - 600, MemoryOrigin.VOICE, ())
+    with _connect(_graph(data) / "privacy.db") as db:
+        db.execute("INSERT INTO voice_group_requests VALUES (?,?,?,?,?)",
+                   ("synthetic-operator", str(uuid4()), secrets.token_hex(32), now - 600,
+                    json.dumps([source.to_dict()])))
+    return {"planted": ["voice_group_requests row past expiry"]}
+
+
 STATES = {
     "clean": clean,
     "retired_owner_facts": retired_owner_facts,
@@ -271,4 +290,5 @@ STATES = {
     "deleted_fact_owner_rows": deleted_fact_owner_rows,
     "routine_run_interrupted": routine_run_interrupted,
     "owned_fact_expired": owned_fact_expired,
+    "expired_voice_group_request": expired_voice_group_request,
 }

@@ -135,7 +135,8 @@ def _traced_connect(*args, **kwargs):
         record = {"t": round(time.monotonic() - T0, 4), "phase": _lifecycle_phase(),
                   "db": database, "verb": re.sub(r"\s+", " ", match.group(1).upper()),
                   "table": match.group(2), "thread": threading.current_thread().name,
-                  "frames": _frames(), "caller": CALLER.get()}
+                  "frames": _frames(),
+                  "caller": CALLER.get() or SUBMITTED.get(threading.current_thread().name)}
         with _TRACE_LOCK:
             _TRACE_OUT.write(json.dumps(record) + "\n")
 
@@ -148,6 +149,21 @@ import asyncio as _asyncio  # noqa: E402
 
 _asyncio.to_thread = _with_caller(_asyncio.to_thread)
 from src.core import owned_work as _owned_work  # noqa: E402
+
+import aiosqlite.core as _aiosqlite_core  # noqa: E402
+
+SUBMITTED: dict = {}
+_aio_execute = _aiosqlite_core.Connection._execute
+
+
+async def _aio_traced(self, fn, *args, **kwargs):
+    # aiosqlite runs each statement on its connection's own thread, which
+    # does not see the loop's context: remember the submitting coroutine.
+    SUBMITTED[self._thread.name] = (CALLER.get() or [])[-2:] + [_submitter()]
+    return await _aio_execute(self, fn, *args, **kwargs)
+
+
+_aiosqlite_core.Connection._execute = _aio_traced
 
 for _name in ("run", "run_async", "native_step"):
     setattr(_owned_work.OwnedBlockingWork, _name,
