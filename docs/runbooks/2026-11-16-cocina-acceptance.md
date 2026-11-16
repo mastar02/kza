@@ -14,14 +14,26 @@ asigna cada muestra a un segundo y cuánto hueco del muestreador se tolera
 la pausa autenticada intencional (pregunta abierta 4), el estado conocido de
 Living y Cocina, y el alcance de C19 que este guion no mide.
 
+Revisión 2 (2026-11-16, antes de cualquier ventana): el usuario respondió las
+preguntas abiertas (decisión `t025_p4d0_questions_20261116` en
+`data/autonomous-roadmap-20261102/t040-t041/user-decisions-20261110.json`).
+Segundo útil = heartbeat sano; silencio global prohibido dentro del bloque de
+72 h; F3 autorizada en una ventana propia; la captura `closed` de la Cocina se
+diagnostica con el usuario, como `kza`, antes de congelar el candidato; el
+muestreador corre como unidad transitoria de `systemd-run --user`; la
+disponibilidad de KZA como servicio va a P6/P7 con un instrumento propio. El
+cálculo de C19 no cambia: las respuestas eligen las opciones que ya suponía.
+Ver «Preguntas respondidas».
+
 Alcance: la entrada de audio de la Cocina y el efecto sobre las demás entradas.
 La parte de C20 sobre HA/WebSocket (recuperación en <=60 s) no está en este
 guion. De C19, este guion mide sólo la disponibilidad de cada entrada de audio
 en el bloque físico. **No mide** la disponibilidad de KZA como servicio ni el
 soak local de 72 h: el soak local es de P6 (Candidato) y la disponibilidad de
-KZA no tiene todavía instrumento ni unidad (ver «Fuera de este guion»). La
-frescura del snapshot (`t - wall` <= 10 s) es aquí una condición del heartbeat
-de cada entrada, no una medida de la disponibilidad de KZA.
+KZA se mide en P6/P7 con un instrumento propio, todavía sin escribir (ver
+«Fuera de este guion»). La frescura del snapshot (`t - wall` <= 10 s) es aquí
+una condición del heartbeat de cada entrada, no una medida de la
+disponibilidad de KZA.
 
 ## Criterios
 
@@ -60,8 +72,11 @@ de cada entrada, no una medida de la disponibilidad de KZA.
 - Consecuencia: la precondición 2 (las cuatro habitaciones `running`) y la 3
   (las cuatro con heartbeat) **bloquean toda ventana de P7** hasta que la
   Cocina vuelva a capturar (y Living, si su heartbeat no se cumple). Restaurar
-  la Cocina es trabajo previo a P7, con su propia autorización (pregunta
-  abierta 5); no forma parte de este guion ni cuenta como falla inyectada.
+  la Cocina es trabajo previo a P7. Decisión del usuario (pregunta 5): la
+  captura `closed` se diagnostica juntos, como `kza` y con el usuario
+  presente, **antes de congelar el candidato**, y ahí se confirma también el
+  heartbeat de Living. Es una precondición del candidato y **no está hecha**;
+  no forma parte de las fallas de este guion ni cuenta como falla inyectada.
 
 ## Reglas de la ventana
 
@@ -77,8 +92,9 @@ de cada entrada, no una medida de la disponibilidad de KZA.
   veredictos.
 - Cada falla espontánea durante el soak cuenta. Si aparece el cuelgue de
   isócronos (ceros exactos, ver más abajo), se registra como espontáneo.
-- Dentro del bloque de C19 no se activa el silencio global de captura salvo lo
-  que resuelva la pregunta abierta 4.
+- Dentro del bloque de C19 está **prohibido** activar el silencio global de
+  captura (pregunta 4). Si ocurre igual, se registra con su evento de política
+  y cuenta como dice «Pausa autenticada intencional».
 
 ## Instrumentos
 
@@ -137,9 +153,19 @@ deja de estar fresco y la muestra no cumple para ninguna entrada.
 
 ### 3. Muestreador de la ventana
 
-Desde `kza`, solo lectura, una línea JSON por **segundo de reloj**. `PORT` es
-el `mic_usb_port` de la Cocina que informó el diagnóstico. Requiere `bash`
+Bajo `kza`, solo lectura, una línea JSON por **segundo de reloj**. `PORT`
+(primer argumento del script, hoy `7-5.3`) es el `mic_usb_port` de la Cocina
+que informó el diagnóstico. Requiere `bash`
 (aritmética `10#`) y `date` de GNU (`%N`).
+
+Corre como unidad **transitoria** de `systemd-run --user` (pregunta 3): no se
+instala ninguna unit y `--collect` la descarta al detenerla. `kza` tiene
+linger (`DEPLOYMENT.md:95`), así que la unidad sigue viva al cerrar la sesión
+SSH. El bucle va en un script del directorio privado de salida y no en la
+línea de comando, porque systemd puede expandir `$VAR` en los argumentos de
+la unidad. Este comando todavía no se ejecutó en el servidor: se comprueba en
+la precondición 3 de la primera ventana (unidad `active` y una línea por
+segundo en el `.jsonl`).
 
 Cada vuelta duerme hasta el próximo segundo entero del reloj y recién ahí
 toma la muestra, así el error de una vuelta no se acumula. El bucle de la
@@ -150,9 +176,12 @@ evidencia de T025).
 
 ```bash
 umask 077
-PORT=7-5.3
+mkdir -p ~/cocina-ventanas
+TS=$(date -u +%Y%m%dT%H%M%SZ)               # anotarlo en el registro privado
+cat > ~/cocina-ventanas/muestreador-$TS.sh <<'EOF'
+PORT=$1
+OUT=$2
 STATE=$(readlink -f /home/kza/releases/current)/../state
-OUT=~/cocina-ventana-$(date -u +%Y%m%dT%H%M%SZ).jsonl
 while :; do
   rem=$(( 1000000000 - 10#$(date +%N) ))      # ns hasta el próximo segundo
   sleep "$(( rem / 1000000000 )).$(printf %09d $(( rem % 1000000000 )))"
@@ -160,10 +189,18 @@ while :; do
     "$(test -e /sys/bus/usb/devices/$PORT && echo true || echo false)" \
     "$(cat "$STATE/data/audio_health.json" 2>/dev/null || echo null)" >> "$OUT"
 done
+EOF
+systemd-run --user --unit=kza-cocina-muestreo-$TS --collect -p UMask=0077 \
+  /bin/bash ~/cocina-ventanas/muestreador-$TS.sh 7-5.3 \
+  ~/cocina-ventanas/ventana-$TS.jsonl
+systemctl --user is-active kza-cocina-muestreo-$TS   # -> active
 ```
 
-Se corta con Ctrl-C al cerrar la ventana (para C19, después del fin del
-bloque; ver «Soak de 72 h»). Si el archivo `health` sale `null`, la línea
+Se detiene al cerrar la ventana (para C19, después del fin del bloque; ver
+«Soak de 72 h») con `systemctl --user stop kza-cocina-muestreo-$TS`. La unidad
+no se reinicia sola: si muere, los segundos sin muestra son huecos del
+muestreador y cuentan como tales. El script y el `.jsonl` quedan en
+`~/cocina-ventanas/` (`0700`). Si el archivo `health` sale `null`, la línea
 cuenta como heartbeat ausente para todas las entradas. El muestreador no
 distingue una pausa autenticada de una caída: eso lo da la fuente de política
 (abajo).
@@ -183,7 +220,8 @@ distingue una pausa autenticada de una caída: eso lo da la fuente de política
 
 Si una precondición falla, no se inyecta nada: se registra como fallo
 espontáneo y se diagnostica por separado. Hoy fallan la 2 y la 3 por la
-Cocina (ver «Estado conocido antes de P7»).
+Cocina; se resuelven en el diagnóstico conjunto previo al congelamiento del
+candidato (ver «Estado conocido antes de P7»).
 
 ## Fallas preregistradas (C20)
 
@@ -195,7 +233,7 @@ volver a cumplir las precondiciones.
 |----|---------------|---------------|
 | F1 | Desenchufar el XVF3800 de la Cocina del hub del extensor, esperar 30 s y volver a enchufarlo **en el mismo puerto**. | `present` pasa a `false` y vuelve a `true`. Watchdog: `cocina: device <puerto> ausente — esperando en background`, reintentos `absent, retry in Ns` con N <= 10, y `cocina: recovered`. Recuperación <=180 s. Las demás entradas mantienen el heartbeat. |
 | F2 | Igual que F1 pero desenchufado 10 min. | Además de F1: reintentos acotados (como máximo uno cada ~10 s, sin avalancha en la consola ni en el journal del kernel). |
-| F3 | Desconectar el extensor Cat5e de la Cocina del lado del servidor, 30 s, y reconectarlo. Arrastra el adaptador BT de la Cocina (cuelga del mismo hub). **Pendiente de autorización (pregunta abierta 2).** | Como F1 para el micrófono; la presencia BLE de la Cocina queda fuera de este criterio y se anota aparte. |
+| F3 | Desconectar el extensor Cat5e de la Cocina del lado del servidor, 30 s, y reconectarlo. Arrastra el adaptador BT de la Cocina (cuelga del mismo hub). **Autorizada (pregunta 2) en una ventana propia, después de F1 y F2, con el usuario presente.** | Como F1 para el micrófono; la presencia BLE de la Cocina queda fuera de este criterio y se anota aparte. |
 | F4 | Con la Cocina desenchufada, reiniciar `kza-voice.service` en la ventana autorizada; esperar el arranque y enchufar la Cocina. | El servicio arranca con las otras tres entradas sanas; la Cocina se recupera <=180 s desde su enumeración. Usa la gracia de primer frame (`first_frame_grace_s`, 180 s). |
 
 El cuelgue de isócronos (el mic enumera, responde al DSP y entrega ceros) no se
@@ -239,9 +277,10 @@ Sobre el `.jsonl` de cada falla:
   muestra de `s`; las vecinas sólo cubren una vuelta perdida. El margen de 2 s
   es el período con que KZA escribe el heartbeat, así que una muestra a 2 s
   describe el mismo snapshot.
-- **Segundo útil** para una entrada: su muestra cumple el heartbeat esperado
-  de esa entrada, evaluado con el `t` de esa muestra (`ever: true`, `age_s` <=
-  8 s, `t - wall` <= 10 s).
+- **Segundo útil** para una entrada (pregunta 1: heartbeat sano): su muestra
+  cumple el heartbeat esperado de esa entrada, evaluado con el `t` de esa
+  muestra (`ever: true`, `age_s` <= 8 s, `t - wall` <= 10 s). No se exige
+  además captura `running` del diagnóstico.
 - **Hueco del muestreador** (N = 2 s, fijado ahora): un segundo sin ninguna
   muestra con `floor(t)` entre `s - 2` y `s + 2` es no útil **para todas las
   entradas**. En la práctica, una racha de `k` segundos de reloj seguidos sin
@@ -283,11 +322,13 @@ C19 pide que la pausa autenticada intencional se identifique por política.
   silencio dentro del bloque. El muestreador **no** lee
   `data/memory_privacy.db`: un lector por segundo sobre la base viva del ledger
   puede competir con su escritor.
-- Cómo cuenta: **pendiente de la pregunta abierta 4**. Mientras no se
-  responda, no empieza ningún bloque de C19. El cálculo de arriba, sin
-  cambios, cuenta esos segundos como no útiles (el heartbeat no se cumple). Si
-  la respuesta pide otra cosa (excluirlos del denominador), hace falta una
-  versión nueva de este guion antes de la ventana.
+- Cómo cuenta (pregunta 4): el silencio global está **prohibido** dentro del
+  bloque fijo, como las inyecciones. Si ocurre igual, se registra con su
+  evento de política (la `revision` de captura de la precondición 5 y la del
+  fin del bloque) y sus segundos cuentan como útiles **sólo si el heartbeat lo
+  cumple**, sin descuento manual ni exclusión del denominador. Con el código
+  actual el heartbeat no se cumple durante el silencio, así que esos segundos
+  salen no útiles. El cálculo de arriba no cambia.
 
 ## Evidencia
 
@@ -301,33 +342,30 @@ del diagnóstico quedan en el directorio privado de quien los tomó.
 ## Fuera de este guion
 
 - Disponibilidad de KZA como servicio (C19 dice «de KZA y de cada entrada»):
-  sin instrumento ni unidad asignada. La frescura del snapshot no la
+  asignada por el usuario a P6/P7 con un instrumento propio, todavía sin
+  escribir. La frescura del snapshot no la
   reemplaza: sólo muestra que el watchdog de audio escribe.
 - Soak local de 72 h (C19): P6 (Candidato).
 - Recuperación de HA/WebSocket en <=60 s (C20).
 
-## Preguntas abiertas (para el usuario, antes de P7)
+## Preguntas respondidas (2026-11-16)
 
-1. **Segundo útil del soak.** Recomendado: útil = heartbeat esperado (`ever`,
-   `age_s` <= 8 s y snapshot fresco). Alternativa: exigir además que el
-   diagnóstico muestre captura `running`, que agrega otra fuente sin mejorar la
-   señal.
-2. **F3 (extensor completo).** Recomendado: autorizarla en una ventana propia
-   después de F1 y F2, porque es el modo de falla real del extensor; arrastra el
-   BT de la Cocina, que se anota aparte.
-3. **Muestreo de 72 h.** El muestreador de arriba es un bucle interactivo bajo
-   `kza`. Recomendado: correrlo con `systemd-run --user` como unidad transitoria
-   de solo lectura, sin instalar una unit nueva; alternativa: una sesión
-   `tmux` de `kza`. Ninguna de las dos se usó todavía en producción.
-4. **Pausa autenticada dentro del bloque.** ¿Una pausa autenticada
-   intencional (silencio global) dentro del bloque de 72 h cuenta como segundo
-   útil, se excluye del denominador o se prohíbe dentro del bloque?
-   Recomendación: prohibirla dentro del bloque fijo (como las inyecciones) y,
-   si ocurre, registrarla con su evento de política (`revision` de captura) y
-   contarla como útil sólo si el heartbeat lo cumple, sin descuento manual.
-   Con el código actual el heartbeat no se cumple durante el silencio, así que
-   esos segundos salen no útiles.
-5. **Restaurar la captura de la Cocina antes de P7.** Recomendado: una ventana
-   propia, autorizada, para diagnosticar la Cocina (`present` con captura
-   `closed`) y confirmar como `kza` el heartbeat de Living, antes de fijar el
-   candidato de P7; sin eso ninguna ventana de este guion puede empezar.
+Respuestas del usuario, decisión `t025_p4d0_questions_20261116`. En los cinco
+casos eligió la opción recomendada.
+
+1. **Segundo útil del soak**: heartbeat sano (`ever: true`, `age_s` <= 8 s,
+   snapshot <= 10 s). No se agrega la captura `running` del diagnóstico.
+2. **F3 (extensor completo)**: sí, en una ventana propia, después de F1 y F2,
+   con el usuario presente. El BT de la Cocina que arrastra se anota aparte.
+3. **Muestreo de 72 h**: unidad transitoria de solo lectura con
+   `systemd-run --user` bajo `kza`, sin unit instalada (ver «Muestreador de la
+   ventana»).
+4. **Pausa autenticada dentro del bloque**: prohibida dentro del bloque de
+   72 h. Si ocurre, se registra con su evento de política y cuenta como útil
+   sólo si el heartbeat lo cumple, sin descuento manual.
+5. **Captura `closed` de la Cocina**: se diagnostica juntos, como `kza`,
+   cuando el usuario vuelva y antes de congelar el candidato, junto con el
+   heartbeat de Living. Es una precondición, no está hecha; sin ella ninguna
+   ventana de este guion puede empezar.
+6. **Disponibilidad de KZA como servicio (C19)**: P6/P7, con un instrumento
+   propio (no la frescura del snapshot de audio).
