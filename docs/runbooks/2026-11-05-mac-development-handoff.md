@@ -1483,6 +1483,14 @@ los hace la sesión coordinadora. Sin release. Evidencia:
 - Tests: `tests/unit/tools/test_sc1b_release_plan.py`; el test de SC-1a que
   planificaba con el archivo de época 4 después del T0 ahora planifica con
   X5 y comprueba que el de época 4 rechaza.
+- Pruebas dirigidas (server, `yo`, clones propios en `runs/sc1b` y
+  `runs/sc1b-mut`, sin tocar `kza`): SC-1b, SC-1a, compactación y sus
+  revisiones, SC-2, unidades, admisión, lanzador, contrato de esquema,
+  `build_runtime`, `owner_compaction`, docs de SC-5a/SC-6a, `tests/unit/core`
+  e integración (compactación compilada y Linux, ensayo de SC-6a, adopción,
+  lanzador compilado y Linux), sin fallas tras corregir tres tests de SC-1a.
+  Los ensayos compilados con presupuesto de tiempo (checkpoints, reconciliación,
+  copias) no se corrieron: no tocan lo que cambió. Mutantes 34/34.
 - Queda para después (`follow_up`): `--accept-regressed-source` (R5-1, con el
   testigo de recuperación de SC-4b).
 
