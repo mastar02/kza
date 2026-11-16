@@ -1608,6 +1608,59 @@ Dos revisiones independientes (A y B) pidieron cambios. Registro completo en
   passed; módulos de compactación más sc1b y SC-4a 561 passed, 5 skipped.
   Mutantes 57/57 matados, todos con salida 1 (`runs/sc4a-mut`).
 
+## SC-4b — salidas de V: W, abort y retiro del modo release (2026-11-16)
+
+Cuarta unidad del modo release (diseño `t040-t041/sc-release-design-v4.json`,
+unidad SC-4b: `mechanism.w_abort_predicate`, `retire`, `safe_stop`, filas de
+`crash_table`). Rama `sc4b-w-retire-abort` desde `batch-b` (f9f1d03), sin push;
+la suite batch, la revisión independiente (SC-R) y el merge los hace la sesión
+coordinadora. Sin release. Evidencia: `t040-t041/sc4b-evidence.json` (notas
+SC4B-N1.., `follow_up`, pruebas por módulo, mutantes, preguntas abiertas).
+Prioridad del usuario: sólo lo que hace segura la primera actualización
+posterior a R1; lo demás queda en `follow_up`.
+
+- W0 en `scripts/compaction.py`: sin hijo vivo de V, escritores de K'
+  cerrados, H intacto. Transitorios (no escriben nada): `writer_active`,
+  `busy`, `sdk_version_unavailable`, `compaction_sdk_changed` (el binding de
+  H difiere sólo en `sdk_versions`) y `compaction_h_transient` (errno y
+  códigos SQLite de la lista, por código). Todo lo demás:
+  `compaction_h_changed` con el código de abajo (HD).
+- W1: K' contra la proyección autorizada de K, abriendo cada base con
+  `mode=rw` (recupera journal caliente o WAL en el lugar, nunca crea), con la
+  selección compartida (`stage_runtime._authority_selection`, digest dorado);
+  informe sin contenido con estado por base y `verify_branch_reached`, sin
+  reloj. Clases `equal` / `loss_only` / `restrictive_or_unclear` con
+  `W_LOSS`/`W_GRANT` cerradas.
+- `compact abort --to-h` del modo release usa W (Q6 queda para el modo
+  simple): `equal`/`loss_only` vuelven a H; `restrictive_or_unclear` es la
+  parada segura SS con el informe y su digest; `--discard-k-changes <digest>`
+  es su única salida (SC-D8 A), registrada en `abort_started` o, después de
+  un head movido, en `abort_rechecked` (R5-OPS-1).
+- `compact retire` del modo release: binding de K' (regla de
+  `sdk_versions`), prueba de cierre, W0 y W1 `equal`, autoridad completa de
+  K' igual a la autorizada (SC4B-N4) y escaneo de resurrección absoluto
+  (SC4B-N5). Nada escrito en un rechazo salvo el `verified` de siempre.
+- `adopt` y `adopt --dry-run` rechazan `compaction_pending` con un log del
+  modo release pendiente (R5-PRIV-3). `compact status` muestra `armed_run`
+  (`not armed` / `not consumed` / `consumed`) y `verified`, sin W.
+- `RELEASE_EXITS_AVAILABLE = True` (se levanta SC4A-N13); se quitó la negativa
+  `release_retire_unavailable` (SC4A-N1). Las pruebas de SC-1b y SC-4a ahora
+  esperan `next: compact verify` y el retiro completo; una prueba fija la
+  compuerta con la constante en `False`.
+- Quedan en `follow_up` (sólo después de la aceptación o refinamientos):
+  `closed_witness` por registro de recuperación y `--accept-regressed-source`
+  (fila PA; hasta entonces su salida es L4 mientras exista), la línea base
+  salada de resurrección de K con el reencolado del residuo no protegido, la
+  sombra de `adopt --dry-run` bajo `admission/dry-run/`, el campo
+  `capture_permissions_carried` del recibo y el `smoke_elapsed` exigido en el
+  registro de salida (RA-6 de SC-4a).
+- Tests: `tests/unit/tools/test_sc4b_w.py` (clases, 16 casos por tabla y
+  dirección, ledger, bases faltantes o ilegibles, valor sin clasificar,
+  journal caliente, mapeo W0, digest dorado) y
+  `tests/unit/tools/test_sc4b_release_exits.py` (filas A0, V1-V4, AT, AB, SS,
+  HD, RS, RX, C, N12 y el descarte sobre un log simple). Mutantes:
+  `tools/sc4b_mutants.py`. Resultados del server en la evidencia.
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.
