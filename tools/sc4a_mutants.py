@@ -2,6 +2,10 @@
 capture close, the flag, the records and the verified predicate. Restore-in-finally runner.
 
 Usage (server, a mutation clone): python tools/sc4a_mutants.py OUT.json [ID ...]
+
+SC-4b lifted the release gate (SC4A-N13) and replaced SC4A-N1's plain-retire refusal with the
+release-mode retire gates: those four mutants left this list (their code is gone or, with
+RELEASE_EXITS_AVAILABLE = True, equivalent); tools/sc4b_mutants.py has 'release gate closed again'.
 """
 from __future__ import annotations
 
@@ -198,18 +202,7 @@ MUTANTS = [
     ("verify branch reached ignores ready.json", "scripts/compaction.py",
      "    return \"yes\" if ready is not None and ready[\"verify_acknowledged\"] is True else \"no\"",
      "    return \"yes\"", [RUN + "test_ready_without_the_acknowledgement_is_stopped_at_once_and_never_verified[verify_ignored]"]),
-    ("SC4A-N1: plain retire of a verified release log", "scripts/compaction.py",
-     "        if release_log(log):\n            _refuse(RELEASE_RETIRE_UNAVAILABLE)", "        if False:\n            _refuse(RELEASE_RETIRE_UNAVAILABLE)",
-     [RUN + "test_release_verify_run_is_the_acknowledged_isolated_boot_and_serve_stops_it"]),
     # --- review round 1 (SC4A-RA-1/RB-1, RA-2, RA-3, RB-2, RB-3) ---
-    ("release gate lifted before SC-4b", "scripts/compaction.py",
-     "RELEASE_EXITS_AVAILABLE = False", "RELEASE_EXITS_AVAILABLE = True", GATE),
-    ("release gate: verify arms a release log", "scripts/compaction.py",
-     "            if not RELEASE_EXITS_AVAILABLE:\n                _refuse(RELEASE_EXIT_UNAVAILABLE)",
-     "            if False:\n                _refuse(RELEASE_EXIT_UNAVAILABLE)", GATE[:1]),
-    ("release gate: start/resume name verify", "scripts/compaction.py",
-     "    if release_log(log) and not RELEASE_EXITS_AVAILABLE:\n        return \"compact abort \"",
-     "    if False:\n        return \"compact abort \"", GATE),
     ("release N: no explicit N needed", "scripts/compaction.py",
      "            if smoke_seconds is None or smoke_seconds > RELEASE_SMOKE_SECONDS_MAX:",
      "            if smoke_seconds is not None and smoke_seconds > RELEASE_SMOKE_SECONDS_MAX:",

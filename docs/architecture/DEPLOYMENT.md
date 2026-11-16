@@ -704,9 +704,9 @@ Estado al 2026-11-16: implementado en la rama `sc1a-controller-epoch5`
 (diseño `sc-release-design-v4`, unidad SC-1a, aceptado). No hay release:
 producción y R1 siguen en época 4. Es la primera pieza del modo release
 posterior a R1; plan/start en modo release (SC-1b) está en la sección
-siguiente, y la corrida de verificación (SC-4a) y las salidas (SC-4b) siguen
-sin implementar, así que esta sección no habilita ninguna transición
-gestionada (ver «Sin
+siguiente, la corrida de verificación (SC-4a) y las salidas (SC-4b) en las
+suyas; faltan SC-4c, SC-R, SC-6b y SC-5b, así que esta sección no habilita
+ninguna transición gestionada (ver «Sin
 transiciones gestionadas después de R1 hasta el modo release»). Evidencia:
 `data/autonomous-roadmap-20261102/t040-t041/sc1a-evidence.json` (local,
 fuera de Git).
@@ -829,9 +829,9 @@ T0F, DL y DO están en `tests/unit/tools/test_sc1a_controller_install.py`.
 Estado al 2026-11-16: implementado en la rama `sc1b-release-plan-start`
 (diseño `sc-release-design-v4`, unidad SC-1b, aceptado). No hay release. Con
 SC-1b una transición del modo release se planifica y se empieza (K activado
-con el código NUEVO), pero no se puede verificar ni aceptar hasta SC-4a y
-SC-4b (ver «Sin transiciones gestionadas después de R1 hasta el modo
-release»). Evidencia: `data/autonomous-roadmap-20261102/t040-t041/sc1b-evidence.json`
+con el código NUEVO); SC-4a y SC-4b agregan la verificación y las salidas en
+desarrollo, sin release (ver «Sin transiciones gestionadas después de R1 hasta
+el modo release»). Evidencia: `data/autonomous-roadmap-20261102/t040-t041/sc1b-evidence.json`
 (local, fuera de Git).
 
 Modo: con el controlador en época 5 todo log nuevo es del modo release
@@ -894,14 +894,12 @@ el archivo de H después de un `start` cortado no deja un K equivocado y el
 `schemas` del binding de K sean los de H
 (`runtime_admission_compaction_schema_changed`); A2 sigue probando K con su
 propio código antes del CAS. `allow-run`, `--discard-k-writes` y la vuelta a
-H por Q6 rechazan `runtime_admission_compaction_plain_mode_only`. SC-4a quitó
-la negativa de SC1B-N3 (`release_verify_unavailable`), pero la reemplazó por
-una compuerta de release hasta SC-4b (sección siguiente, SC4A-N13): `compact
-verify` de un log del modo release rechaza
-`runtime_admission_compaction_release_exit_unavailable`, y `start`/`resume`
-siguen diciendo `next: compact abort <id>` para ese log; su única salida es
-ese abort, sin pérdida (fila A0), y después habilitar y arrancar la unidad.
-Un log simple sigue diciendo `next: compact verify <id>`. Un `intent.mode` distinto de
+H por Q6 rechazan `runtime_admission_compaction_plain_mode_only` (la vuelta a
+H del modo release es W, de SC-4b). SC-4a quitó la negativa de SC1B-N3
+(`release_verify_unavailable`) y la reemplazó por una compuerta de release
+(SC4A-N13) que SC-4b levantó: `start`/`resume` dicen `next: compact verify
+<id>` también para un log del modo release, y antes de armar V el abort
+simple sigue sin pérdida (fila A0). Un `intent.mode` distinto de
 `"release"` no es un log simple: `verify`, `allow-run`, `--discard-k-writes`,
 la vuelta a H por Q6, `plan` (served(root)) e `install-controller` lo
 rechazan como `runtime_admission_compaction_log_invalid`, `compact status` lo
@@ -919,7 +917,8 @@ y dos filas que caerían en la misma ruta de K rechazan
 escribir.
 
 Queda pendiente (lista `follow_up` de la evidencia): `--accept-regressed-source`
-(R5-1) depende del testigo de cierre por registro de recuperación de SC-4b;
+(R5-1) depende del testigo de cierre por registro de recuperación, que SC-4b
+dejó en su `follow_up` (sólo hace falta después de la aceptación, fila PA);
 hasta entonces un head cerrado por un registro de recuperación no es fuente de
 ninguna transición (`plan` rechaza como antes). Tampoco se exige todavía que
 el código corra desde `controller/current` (revisión RA-6): P7 acepta
@@ -942,8 +941,8 @@ ninguna transición gestionada existe hasta cerrar el resto del modo release
 
 - **Bandera.** `compact verify <id> --smoke-seconds N` arma la única corrida
   del log (modo simple: 10..3600, 120 por omisión; modo release: N explícito
-  de 10 a 60, ver más abajo), en el modo release sólo cuando SC-4b levante la
-  compuerta. Para esa corrida, y sólo
+  de 10 a 60, ver más abajo; la compuerta SC4A-N13 la levantó SC-4b).
+  Para esa corrida, y sólo
   para ella, `serve` agrega `KZA_RUNTIME_RELEASE_VERIFY=1` al entorno del
   hijo después del filtro que quita todo `KZA_RUNTIME_*` de la unidad: la
   unidad no puede inyectarla, y ni H ni las corridas de un log abortado o
@@ -1009,23 +1008,17 @@ ninguna transición gestionada existe hasta cerrar el resto del modo release
   primera transición, con T0, N ≈ 10 s; transiciones posteriores, N ≤ 60 s.
   SC-6b fija el valor por omisión con los B y T_copy medidos.
 
-**Compuerta de release hasta SC-4b (SC4A-N13, revisión RA-1/RB-1).** El
-retiro del modo release exige igualdad exacta con W, que es de SC-4b
-(SC4A-N1: hasta entonces `compact retire` de un log del modo release
-verificado rechaza
-`runtime_admission_compaction_release_retire_unavailable`), y después de la
-corrida no hay otra salida (Q6 y el abort simple rechazan). Un V armado antes
-de SC-4b dejaría el servicio apagado sin salida por la herramienta, contra
-SC-D2 A. Por eso el código mismo lo impide: mientras
-`RELEASE_EXITS_AVAILABLE` (en `scripts/compaction.py`) sea `False`, `compact
-verify` no arma un log del modo release
-(`runtime_admission_compaction_release_exit_unavailable`) y `start`/`resume`
-dicen `next: compact abort <id>`. SC-4b lo pone en `True` junto con W, el
-abort con W y el retiro con igualdad W; un controlador de época 5 sin SC-4b
-no puede arrancar V. Queda en la lista `follow_up`:
-el recibo no registra todavía `capture_permissions_carried` (cambiaría el
-esquema del recibo que el controlador compara exacto), y el encabezado del
-informe W y la salida «abort con W» son de SC-4b.
+**Compuerta de release hasta SC-4b (SC4A-N13, revisión RA-1/RB-1), levantada
+por SC-4b.** Sin W, después de la corrida no había salida por la herramienta
+(SC4A-N1: el retiro simple rechazaba un log del modo release y Q6 y el abort
+simple también), así que `RELEASE_EXITS_AVAILABLE` (en
+`scripts/compaction.py`) impedía armar V. SC-4b agrega W, el abort con W y el
+retiro con igualdad W (sección siguiente) y la pone en `True`: `compact
+verify` arma un log del modo release (con N explícito, SC4A-N14) y
+`start`/`resume` dicen `next: compact verify <id>`. El mecanismo queda y una
+prueba lo fija con la constante en `False`. Sigue en `follow_up`: el recibo no
+registra todavía `capture_permissions_carried` (cambiaría el esquema del
+recibo que el controlador compara exacto).
 
 Tests: `tests/unit/tools/test_sc4a_verify_run.py`,
 `tests/integration/test_sc4a_verify_boot.py`,
@@ -1035,12 +1028,150 @@ activa: `python tools/sc0/run_states.py --verify --revision <commit>
 --template-revision <commit de H>` (por ejemplo, H de R1 con
 `--template-revision 357dcb5`; cada resultado nombra los dos commits).
 
+### Salidas de V del modo release: W, abort y retiro (SC-4b) — desarrolladas, sin release
+
+SC-4b implementa las salidas de la corrida V del diseño v4
+(`mechanism.w_abort_predicate`, `retire`, `safe_stop`, filas de
+`crash_table`; decisiones del usuario SC-D6 = A, SC-D7 = A, SC-D8 = A). Nada
+está instalado: el servidor sigue en R1 (época 4) y el hueco de la sección
+siguiente sigue abierto hasta SC-4c, SC-R, SC-6b y SC-5b.
+
+- **W0 (H intacto).** Sin hijo vivo de V, sin escritores abiertos en K' y H
+  igual a su binding, marcador y prueba de cierre. Lo que se cura solo es
+  transitorio (fila AT, no escribe nada, se repite después):
+  `runtime_admission_writer_active`, `runtime_admission_busy`,
+  `runtime_admission_sdk_version_unavailable`,
+  `runtime_admission_compaction_sdk_changed` (el binding difiere sólo en
+  `sdk_versions`: es el venv compartido, no los archivos de H; el informe
+  nombra la versión ligada y la instalada, y la salida es reinstalar la
+  ligada) y `runtime_admission_compaction_h_transient` (errno EMFILE, ENFILE,
+  EIO, EAGAIN, EINTR, ENOMEM, EBUSY; SQLite BUSY, LOCKED, IOERR, NOMEM,
+  INTERRUPT, por código y no por clase). Cualquier otra falla al leer H
+  (ENOENT, otro código SQLite, binding distinto, marcador, prueba de cierre)
+  es `runtime_admission_compaction_h_changed` con el código de abajo: la
+  parada terminal HD. Revisión 1 (RB-1): una entrada de lock de K' que no se
+  puede abrir (un enlace simbólico, sin permiso) no es un error sin código:
+  W0 la informa como `k_writers: unverifiable` con su errno y W1 da
+  `restrictive_or_unclear` (SS y su salida); un errno de recursos ahí
+  (EMFILE, ENFILE, EAGAIN, EINTR, ENOMEM, EBUSY) es el transitorio
+  `runtime_admission_compaction_k_transient`.
+- **W1 (K' contra K).** Abre cada base que nombra la proyección autorizada de
+  K con `mode=rw` (recupera en el lugar un journal caliente o un WAL, nunca
+  crea el archivo) y compara las mismas proyecciones que
+  `capture_state_authority`, sin `_schema_contract`; la selección es una sola
+  función compartida (`_authority_selection`, digest dorado fijado en
+  `test_sc4b_w.py`). Lo que sólo existe en K' se ignora. Una base que falta o
+  no se lee cuenta como todas sus filas ausentes; un valor que la selección no
+  clasifica cuenta como fila cambiada. El informe no tiene contenido: por
+  tabla, filas agregadas y quitadas; por ledger, `equal`, `strict_prefix` u
+  `other`; por base, `ok`, `missing` o `unreadable` (con el código); cuentas y
+  configuración; y el encabezado `verify_branch_reached`. No lee el reloj: el
+  mismo K' y el mismo H dan el mismo digest. Revisión 1: W1 nunca lanza un
+  error sin código (RA4B-1: un valor de otro tipo, por ejemplo un
+  `sources_json` nulo o un `expires_at` de texto, cuenta como fila sin
+  clasificar; cualquier otra falla al leer una base de K' es `unreadable`
+  con un código sin contenido); abre una base, un registro de cuentas o un
+  archivo de configuración de K' sólo si es un archivo regular en su propia
+  ruta resuelta, antes de la apertura `mode=rw` (RA4B-4: un directorio de K'
+  enlazado a H nunca se escribe); y un lock SQLite de otro proceso sobre una
+  base de K' (SQLITE_BUSY, LOCKED, NOMEM, INTERRUPT) o un errno de recursos
+  rechaza el transitorio `runtime_admission_compaction_k_transient`, que no
+  escribe nada (RA4B-5/RB-7). EIO, SQLITE_IOERR y el daño siguen como
+  `unreadable`: una falla que persiste no puede cerrar la única salida de SS
+  (SC4B-N19).
+- **Clases.** `equal`; `loss_only` (filas quitadas de `W_LOSS` =
+  conversation_tombstones, conversation_erasures, retired_users,
+  fact_owner_revisions, voice_attribution_suspensions,
+  pending_audio_deletions; filas agregadas a `W_GRANT` = credentials,
+  sessions; un ledger que es prefijo estricto del de H): volver a H restaura
+  todo eso y no revive nada; `restrictive_or_unclear`: todo lo demás, y
+  también una base que falta o no se lee (SC4B-N3), cuentas o configuración
+  distintas, y un valor sin clasificar. Una fila cambiada aparece como una
+  quitada y una agregada (los hashes no se emparejan), lo que da la misma
+  clase que el diseño.
+- **Abort.** `compact abort <id> --to-h --confirm-h <prefijo>` de un log del
+  modo release usa W en lugar de Q6: con `equal` o `loss_only` vuelve a H
+  (`abort_started` registra la clase y el digest); con
+  `restrictive_or_unclear` rechaza
+  `runtime_admission_compaction_abort_protected_changed` con el informe y su
+  digest y no escribe nada: la parada segura SS. Única salida de SS (SC-D8 A):
+  una persona revisa el informe y, si confirma por conocimiento directo que
+  nadie usó el sistema durante V, corre lo mismo con `--discard-k-changes
+  <12+ hex del digest del último rechazo>`; se recalcula W, el digest tiene
+  que coincidir y `abort_started` guarda el digest y las cuentas. Un digest
+  equivocado, o un descarte sin nada que descartar, rechaza
+  `runtime_admission_compaction_discard_k_changes_mismatch` (SC4B-N6). Si el
+  head se movió después de `abort_started`, `resume` y el abort simple
+  rechazan `abort_recheck_required` y `abort --to-h` rehace W (con su propio
+  digest para el descarte, guardado en `abort_rechecked`). El abort simple
+  después de V sigue rechazando `abort_after_run`; `--discard-k-writes` es
+  sólo del modo simple, y `--discard-k-changes` sólo del modo release
+  (`runtime_admission_compaction_release_mode_only`). Un head cerrado cuya
+  prueba de cierre se lee pero nombra otra corrida rechaza
+  `runtime_admission_compaction_head_moved`; una prueba de cierre de K' que
+  no se puede leer rechaza `runtime_admission_compaction_k_closure_unreadable`
+  (revisión RB-3), también en el retiro. Las dos son paradas como HD: sólo
+  aparecen con daño o una edición bajo `admission/`, o con una corrida de K
+  detrás de la compuerta (un controlador viejo), y no tienen salida por
+  herramienta.
+- **Retiro.** `compact retire <id>` de un log del modo release exige, antes
+  de escribir nada más que el `verified` de siempre: binding de K' igual (si
+  difiere sólo en `sdk_versions`, `sdk_changed` transitorio; si difiere en
+  otra cosa, `runtime_admission_compaction_k_binding_changed` y la salida es
+  el abort), prueba de cierre (`verify_closed_binding`), W0 y W1 `equal` sin
+  tolerancias, y además el digest de toda la autoridad de K' igual al
+  autorizado (SC4B-N4: también rechaza objetos protegidos que sólo existen en
+  K' o otro contrato de esquema), y ningún id resucitado en K'
+  (`runtime_admission_compaction_retire_resurrected`, cuentas sin contenido).
+  Un retiro rechazado por W muestra el informe; la salida es el abort con W.
+- **HD.** Con H cambiado, `abort --to-h` (con o sin descarte), el abort
+  simple, el retiro, `adopt` y el `uninstall-launcher` de L4 rechazan y no
+  escriben nada. No hay salida por herramienta: unidad deshabilitada, nada
+  cambiado bajo la raíz ni en `/home/kza/kza/.venv`, y desarrollo con las
+  decisiones escritas cada 48 h (runbook).
+- **Adopt.** Con un log del modo release pendiente, `adopt` y `adopt
+  --dry-run` rechazan `runtime_admission_compaction_pending` antes de
+  cualquier copia (R5-PRIV-3).
+- **Estado.** `compact status` no calcula W: muestra `armed_run` (`not
+  armed`, `not consumed` o `consumed`), `verified` y `verify_branch_reached`,
+  sin escribir.
+
+Pendiente, no resuelto: el diseño marca toda la unidad SC-4b como previa a
+la primera transición gestionada (`before_first_managed_transition`). Las
+partes que esta implementación dejó en `follow_up` siguen siendo previas a
+esa transición salvo lo que el usuario respondió el 2026-11-16 a SC4B-Q1 y
+SC4B-Q2 (`t040-t041/user-decisions-20261110.json`, clave
+`sc4b_questions_20261116`): la primera transición puede hacerse sin
+`closed_witness` con registros de recuperación ni `--accept-regressed-source`
+si cae dentro de los 14 días de L4 (si cae después, se implementan antes), y
+el retiro con escaneo de resurrección absoluto se acepta si el conteo de solo
+lectura del paso 0 del runbook da 0 (si no, se implementan antes la línea
+base salada de K y el reencolado). Lo que queda en `follow_up`: `closed_witness` con registros de
+recuperación y `--accept-regressed-source` (fila PA: hasta entonces un head
+cerrado por recuperación no es fuente de una transición, y la salida de PA es
+L4 mientras exista; SC4B-Q1), la línea base salada de resurrección de K y el
+reencolado del residuo no protegido (hasta entonces el escaneo del retiro es
+absoluto: un H con residuo hace rechazar el retiro, y el abort vuelve a H sin
+pérdida; SC4B-Q2). La sombra de `adopt --dry-run` bajo `admission/dry-run/`
+es posterior a la aceptación (hoy `adopt` rechaza antes de copiar). El tiempo
+del retiro y del abort con W (T_retire, T_abort: binding de K', W0 y W1 con
+imágenes en memoria, escaneo de resurrección, destrucción) no está en la
+fórmula D de SC-D2 ni se midió: queda en la lista de medición de SC-6b
+(revisión RB-5).
+
+Tests: `tests/unit/tools/test_sc4b_w.py`,
+`tests/unit/tools/test_sc4b_release_exits.py`.
+
 ### Sin transiciones gestionadas después de R1 hasta el modo release
 
 Después de R1 no se puede activar ningún arreglo de código (release, rollback
 o roll-forward gestionados) hasta que el modo release (SC-0, SC-1, SC-3a,
 SC-3c, SC-4a/b/c, SC-R, SC-6b y SC-5b) esté desarrollado, revisado de forma
-independiente y ensayado. Una release gestionada copiará entero el head,
+independiente y ensayado. Para SC-4b, el usuario respondió SC4B-Q1 y SC4B-Q2
+el 2026-11-16 (ver «Salidas de V del modo release»): la primera transición
+tiene que caer dentro de los 14 días de L4 y el paso 0 del runbook tiene que
+dar `resurrected` en 0; si no se cumple alguna, esa parte se implementa
+antes. Una release gestionada copiará entero el head,
 verificará la copia con una corrida corta y retirará el estado anterior; nada
 de eso está disponible hoy. Mientras tanto, el único rollback es L4 a 63ea8d3
 durante sus 14 días (con la frase 'revivir datos borrados'); a partir del día

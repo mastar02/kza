@@ -2178,7 +2178,11 @@ def adopt(root: Path, *, confirm: str, regressions: list[str], boot_id_path: str
     """
     root = Path(root).resolve()
     # gate "serve": under a pending compaction recover_open_head decides (allow-run runs only).
-    with stage.AdmissionController(root, allow_open_head=True, gate="serve"):
+    with stage.AdmissionController(root, allow_open_head=True, gate="serve") as admission:
+        # SC-4b (R5-PRIV-3): under a pending release-mode log K' is never adopted, and a dry run makes
+        # no copy of it: the log's own exits (abort with W, retire) decide. Checked before anything else.
+        if admission.compaction is not None and release_mode_log(admission.compaction):
+            raise LauncherRefusal("runtime_admission_compaction_pending")
         head = stage.read_admission_head(root)
         if head is None or head["status"] == "closed":
             raise LauncherRefusal("runtime_admission_adopt_head_closed")

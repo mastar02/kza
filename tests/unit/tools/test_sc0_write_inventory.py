@@ -32,7 +32,8 @@ def test_projected_tables_are_pinned():
 
 
 def test_the_inventory_reads_the_capture_body_not_only_its_memo_wrapper():
-    """fact_dependencies, policy_index_deletions and voice_group_lineage appear only in the body."""
+    """fact_dependencies, policy_index_deletions and voice_group_lineage appear only in the body
+    (since SC-4b, in its shared selection _authority_table_selection)."""
     kinds = write_inventory.projected_tables(REPO)
     for name in ("fact_dependencies", "policy_index_deletions", "voice_group_lineage"):
         assert kinds[name] == "partial", name
