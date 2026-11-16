@@ -689,6 +689,8 @@ def test_invalid_delivery_policy_configuration_is_rejected(key, value):
         ReminderScheduler(MagicMock(), AsyncMock(), None, AsyncMock(), {key: value}, home_actions=MagicMock())
 
 NO_ZONE_WARNING = "No reminder output zone configured"
+ALWAYS_LATE_WARNING = "every retry after a failed first announcement is late"
+
 def scheduler_warnings(caplog, config: dict) -> list[str]:
     caplog.clear()
     with caplog.at_level("WARNING", logger="src.reminders.reminder_scheduler"):
@@ -698,22 +700,26 @@ def scheduler_warnings(caplog, config: dict) -> list[str]:
 @pytest.mark.parametrize("config, expected", [
     ({"output_zone": None}, [NO_ZONE_WARNING]),
     ({}, [NO_ZONE_WARNING]),
-    ({"output_zone": "living"}, []),
+    ({"output_zone": "living", "retry_interval_seconds": 300}, [ALWAYS_LATE_WARNING]),
+    ({"output_zone": "living", "retry_interval_seconds": 120}, [ALWAYS_LATE_WARNING]),
+    ({"output_zone": "living", "retry_interval_seconds": 119.5}, []),
+    ({"output_zone": "living", "retry_interval_seconds": 300, "late_action_grace_s": 900}, []),
 ])
-def test_construction_warns_when_no_shared_reminder_can_be_announced(caplog, config, expected):
-    """Review F4: a missing zone is logged at startup, not discovered later."""
+def test_construction_warns_about_unannounceable_or_always_late_policy(caplog, config, expected):
+    """Review F4/F5: the consequences of the delivery settings are logged at startup, not discovered later."""
     messages = scheduler_warnings(caplog, config)
     assert len(messages) == len(expected)
     for message, fragment in zip(messages, expected):
         assert fragment in message
 
-def test_committed_settings_warn_that_no_shared_reminder_is_announced(caplog):
-    """The committed settings have no output zone (pending user input)."""
+def test_committed_settings_warn_that_no_shared_reminder_is_announced_and_retries_are_late(caplog):
+    """The committed settings have no output zone and a 300 s retry against a 120 s grace (pending user input)."""
     config = yaml.safe_load((ROOT / "config/settings.yaml").read_text(encoding="utf-8"))
     reminders = dict(config["reminders"])
     if reminders.get("output_zone") is None:  # the same fallback as voice_services
         reminders["output_zone"] = config["tts"]["streaming"].get("default_output_zone")
-    assert any(NO_ZONE_WARNING in m for m in scheduler_warnings(caplog, reminders))
+    messages = scheduler_warnings(caplog, reminders)
+    assert [any(fragment in m for m in messages) for fragment in (NO_ZONE_WARNING, ALWAYS_LATE_WARNING)] == [True, True]
 
 def test_settings_declare_the_recommended_late_action_grace():
     config = yaml.safe_load((ROOT / "config/settings.yaml").read_text(encoding="utf-8"))

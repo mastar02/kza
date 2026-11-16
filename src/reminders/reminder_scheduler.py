@@ -170,6 +170,10 @@ class ReminderScheduler:
         if self._output_zone is None:
             logger.warning("No reminder output zone configured: shared reminders are not announced, executed or "
                            "marked fired until reminders.output_zone or tts.streaming.default_output_zone is set")
+        if self._retry_interval >= self._late_grace:
+            logger.warning("reminders.retry_interval_seconds (%s) >= late_action_grace_s (%s): every retry after a "
+                           "failed first announcement is late, so its home actions will not run",
+                           self._retry_interval, self._late_grace)
 
         # Arrival only re-checks due shared reminders; it never selects their room.
         if self._presence_detector is not None:
