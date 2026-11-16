@@ -46,10 +46,13 @@ class FakeHost:
         (self.sys / 'bus/usb/devices').mkdir(parents=True)
         (self.sys / 'class/sound').mkdir(parents=True)
         (self.proc / 'asound').mkdir(parents=True)
+        self.real = {}
 
-    def device(self, port, product='XVF3800 Voice Processor'):
-        real = self.sys / 'devices/pci0000:00/usb' / port
+    def device(self, port, product='XVF3800 Voice Processor', parent=None):
+        """Add a USB device; ``parent`` nests it under a hub as real sysfs does."""
+        real = (self.real[parent] if parent else self.sys / 'devices/pci0000:00/usb') / port
         real.mkdir(parents=True)
+        self.real[port] = real
         (real / 'product').write_text(product + '\n')
         (real / 'speed').write_text('480\n')
         (real / 'authorized').write_text('1\n')
@@ -59,8 +62,12 @@ class FakeHost:
         return real
 
     def card(self, number, port, status):
-        interface = self.sys / 'devices/pci0000:00/usb' / port / f'{port}:1.0'
-        interface.mkdir(parents=True, exist_ok=True)
+        """A sound card on the device's own interface, linked as the kernel does."""
+        interface = self.real[port] / f'{port}:1.0'
+        (interface / 'sound' / f'card{number}').mkdir(parents=True)
+        link = self.sys / 'bus/usb/devices' / f'{port}:1.0'
+        if not link.exists():
+            link.symlink_to(interface)
         card = self.sys / 'class/sound' / f'card{number}'
         card.mkdir()
         (card / 'device').symlink_to(interface)
@@ -170,6 +177,24 @@ def test_sound_card_of_another_usb_device_is_not_attributed(tmp_path):
     host.card(3, '7-5.1', RUNNING.format(ptr=5))
     info = tool.inspect_room('7-5.3', host.sys, host.proc)
     assert info['alsa_cards'] == [] and info['capture_state'] == 'no_capture'
+
+
+def test_a_hub_port_never_claims_the_card_of_a_downstream_device(tmp_path):
+    """R5: like the application's binding, only the port's own interfaces count.
+
+    The extender hub (7-5) carries the Cocina microphone (7-5.3) below it; sysfs
+    ancestry would attribute the child's capture to the hub's room.
+    """
+    host = FakeHost(tmp_path)
+    host.device('7-5', product='USB2.0 Hub')
+    host.device('7-5.3', parent='7-5')
+    host.card(2, '7-5.3', RUNNING.format(ptr=1000))
+    hub = tool.inspect_room('7-5', host.sys, host.proc)
+    assert hub['present'] is True
+    assert hub['alsa_cards'] == [] and hub['capture_state'] == 'no_capture'
+    child = tool.inspect_room('7-5.3', host.sys, host.proc)
+    assert [card['card'] for card in child['alsa_cards']] == ['2']
+    assert child['capture_state'] == 'running'
 
 
 @pytest.mark.parametrize('port', ['../../../etc', '7-5.3/..', '', '7-5.3 ', 'usb7'])

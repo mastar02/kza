@@ -105,12 +105,13 @@ def inspect_room(port, sys_root=SYS_ROOT, proc_root=PROC_ROOT):
         return info
     for name in ('product', 'speed', 'authorized', 'power/runtime_status'):
         info[name] = read_text(usb / name)
-    usb_path = usb.resolve()
     cards, statuses = [], []
-    for card in sorted((Path(sys_root) / 'class/sound').glob('card[0-9]*')):
-        if usb_path not in (card / 'device').resolve().parents:
-            continue
+    # Same rule as the application's binding (room_context.usb_port_to_alsa_card):
+    # only the port's own interfaces, so a hub port never claims a downstream card.
+    for card in sorted(Path(sys_root).glob(f'bus/usb/devices/{port}:*/sound/card[0-9]*')):
         number = card.name[4:]
+        if not number.isdigit():
+            continue
         captures = []
         for status_path in sorted((Path(proc_root) / f'asound/card{number}').glob('pcm*c/sub*/status')):
             status = read_text(status_path)
