@@ -17,7 +17,7 @@ from src.core.voice_delivery import (
 from src.reminders.recurrence import next_trigger
 from src.reminders.reminder_scheduler import (
     DEFAULT_LATE_ACTION_GRACE_S, DEFAULT_NOTICE_FALLBACK_MAX_ROUNDS, DEFAULT_NOTICE_FALLBACK_ROUND_S,
-    NoticeDismissal, ReminderScheduler, notice_request_id,
+    NoticeDismissal, ReminderScheduler, notice_contended, notice_request_id,
 )
 from src.reminders.reminder_store import ReminderScope, ReminderState, ReminderStore
 from src.home_assistant.home_actions import HomeActionService
@@ -1760,3 +1760,79 @@ async def test_several_missed_days_open_one_successor_round_when_it_cannot_claim
         assert scheduler._holds[r.id].retry_at is None
     mock_deps["tts"].aspeak.assert_not_awaited()
     assert await notices(store) == [("sending", None, 1)]
+
+
+@pytest.mark.parametrize("result, contended", [
+    (output_busy(), True),
+    (failed(delivery=DeliveryState.CANCELLED), True),
+    # output may have started: never a retryable failure, so never contended either
+    (failed(delivery=DeliveryState.CANCELLED, started=True), False),
+    (failed(delivery=DeliveryState.CANCELLED, spoken_segments=1), False),
+    (ResponseResult("x", GenerationState.COMPLETE, DeliveryState.TIMED_OUT, timeout_stage=ResponseStage.QUEUE,
+                    output_started=True), False),
+    (failed(delivery=DeliveryState.TIMED_OUT, stage=ResponseStage.DELIVERY), False),
+    (failed(), False),
+    (failed(delivery=DeliveryState.BLOCKED), False),
+    (failed(delivery=DeliveryState.EMPTY), False),
+    (delivered(), False),
+    (None, False),
+])
+def test_notice_contended_is_only_a_not_started_queue_timeout_or_cancellation(result, contended):
+    assert notice_contended(result) is contended
+
+
+async def claim_elsewhere(store, r, attempt: int, *, finish: str | None = None) -> None:
+    """Another owner claims (and optionally finishes) this attempt of the occurrence."""
+    request_id = notice_request_id(r.id, r.trigger_at, attempt)
+    assert await store.claim_home_action(request_id, {
+        "kind": "voice_notice", "reminder_id": r.id, "trigger_at": r.trigger_at, "attempt": attempt,
+        "claimed_at": 0.0, "room": "living"})
+    if finish is not None:
+        await store.finish_home_action(request_id, finish, None)
+
+
+@pytest.mark.parametrize("later", ["parked", "completion_retry"])
+@pytest.mark.asyncio
+async def test_a_hold_held_for_another_reason_after_a_refused_attempt_is_reopened_by_a_free_output(
+    scheduler, store, mock_deps, clock, later,
+):
+    """The refused mark belongs to the last failure only: once the occurrence is parked behind another
+    owner or retries a failed completion, a free output reopens it again."""
+    mock_deps["tts"].aspeak.return_value = failed()
+    r = await store.create("u1", "regar", clock() - 1, scope=ReminderScope.SHARED)
+    await scheduler._deliver_due(clock())
+    hold = scheduler._holds[r.id]
+    assert hold.output_refused
+    if later == "parked":
+        await claim_elsewhere(store, r, 2)
+    else:
+        await claim_elsewhere(store, r, 2, finish="confirmed")
+        store.mark_fired = AsyncMock(side_effect=RuntimeError("database is locked"))
+    clock.advance(1)
+    await scheduler._deliver_due(clock())
+    assert scheduler._holds[r.id] is hold and not hold.output_refused
+    assert hold.retry_at == (None if later == "parked" else clock() + 1)
+    scheduler.notify_output_available()
+    assert hold.retry_at == clock()
+    mock_deps["tts"].aspeak.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_an_output_free_signal_during_a_web_dismiss_is_applied_when_it_ends(scheduler, store, mock_deps, clock):
+    """A dismiss also owns single flight: a signal meanwhile is applied when it returns, never left over."""
+    mock_deps["tts"].aspeak.return_value = output_busy()
+    r = await store.create("u1", "regar", clock() - 1, scope=ReminderScope.SHARED)
+    await scheduler._deliver_due(clock())
+    hold = scheduler._holds[r.id]
+    assert hold.retry_at == clock() + 1
+    await claim_elsewhere(store, r, 2)
+    get_by_id = store.get_by_id
+
+    async def signalled(*args, **kwargs):
+        scheduler.notify_output_available()  # the other response ends while the dismiss runs
+        return await get_by_id(*args, **kwargs)
+
+    store.get_by_id = signalled
+    assert await scheduler.dismiss_notice(r.id, r.trigger_at) is NoticeDismissal.BUSY
+    assert (hold.failures, hold.retry_at) == (0, clock())
+    assert not scheduler._signal_pending and not scheduler._in_flight
