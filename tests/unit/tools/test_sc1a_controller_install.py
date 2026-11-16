@@ -457,6 +457,16 @@ def test_cs2_9_unit(tmp_path):
     _refused(stage.CONTROLLER_INSTALL_INCOMPLETE, lambda: launcher.check_controller_epoch(root))
     stage._atomic_record(root / "admission" / "controller.json", {"controller_epoch": 5, "commit": "a" * 40})
     launcher.check_controller_epoch(root)
+    # Review F5: an unreadable or missing current manifest never counts as matching at a lease gate.
+    manifest = root / "controller" / "c1" / "release.json"
+    manifest.write_text("not json")
+    with pytest.raises(ValueError, match=stage.CONTROLLER_INSTALL_INCOMPLETE):
+        stage.require_forward_epoch(root, gate="normal")
+    manifest.unlink()
+    with pytest.raises(ValueError, match=stage.CONTROLLER_INSTALL_INCOMPLETE):
+        stage.require_forward_epoch(root, gate="normal")
+    with pytest.raises(ValueError, match=stage.CONTROLLER_INSTALL_INCOMPLETE):
+        stage.AdmissionController(root, gate="serve").__enter__()
 
 
 # --- later installs (t0_controller_install.later_installs) ---------------------------------------------
@@ -710,6 +720,25 @@ def test_owners_are_read_from_the_pinned_policy(tmp_path):
 
 # --- review round 1 ---------------------------------------------------------------------------------------
 
+def test_later_install_refuses_a_delegation_record_and_owners(builds, t0_root, tmp_path):
+    """Review F2 (design note N3, guard (3) at every install): an epoch-5 to epoch-5 install refuses too."""
+    root = t0_root["root"]
+    current = _current(root)
+    record = root / "admission" / "delegations" / ("a" * 64 + ".json")
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text("{}")
+    witness = cw.witness(root)
+    _unchanged_t0(root, witness, lambda: _install(root, builds, "x5r2"), stage.DELEGATION_FROZEN)
+    record.unlink()
+    with epoch4_in_process(old_copy=True):  # an old copy delegates and activates after T0 (row DO)
+        cw.hop(builds["archives"]["x4"], root, t0_root["h"]["state"], "b")
+    shutil.move(root / "admission" / "delegations", tmp_path / "records-aside")
+    head = stage.read_admission_head(root)
+    assert head["status"] == "closed" and stage.delegated_target_ids(stage.read_binding(root, head["binding_id"]))
+    witness = cw.witness(root)
+    _unchanged_t0(root, witness, lambda: _install(root, builds, "x5r2"), stage.OWNERS_PRESENT)
+    assert _current(root) == current
+
 
 def test_a_missing_or_damaged_controller_json_keeps_the_triple_checks(builds, t0_root, tmp_path):
     """Review F3: the installed triple is read from controller/current whatever controller.json says."""
@@ -773,6 +802,30 @@ def test_later_install_over_a_closed_head_refuses_a_plain_or_unreadable_log(buil
     _unchanged_t0(root, witness, lambda: _install(root, builds, "x5r3"), "runtime_admission_compaction_log_invalid")
 
 
+def test_sr1_runs_serves_slot_check_on_the_head_slot(builds, tmp_path):
+    """Review r2 F1 (CR-6, SR-1 step 4): a head slot that only serve's check_slot refuses."""
+    world = _world(builds, tmp_path)
+    root = world["root"]
+    selection = root / "current"
+    selection.unlink()
+    selection.symlink_to("slots/b/runtime")  # a selection published for another slot
+    witness = cw.witness(root)
+    _unchanged_t0(root, witness, lambda: _install(root, builds), "runtime_admission_launcher_selection_mismatch")
+    served = _serve(root, tmp_path, "selection")
+    assert served.code == 78
+
+
+def test_a_compiled_installer_with_another_managed_launcher_is_refused(builds, t0_root, tmp_path):
+    """Review F5: the installer identity covers managed_launcher.pyc, not only stage_runtime.pyc."""
+    root = t0_root["root"]
+    st = _extract(builds["archives"]["x5r2"], tmp_path / "x5r2")
+    foreign = stage._read_archive(builds["archives"]["x5m"])[1]["scripts/managed_launcher.pyc"]
+    assert foreign != (st.parent / "managed_launcher.pyc").read_bytes()
+    (st.parent / "managed_launcher.pyc").write_bytes(foreign)
+    witness = cw.witness(root)
+    refused = _compiled(st, root, "install-controller", str(builds["archives"]["x5r2"]))
+    assert refused.returncode == 78 and launcher.CONTROLLER_INSTALLER_MISMATCH in refused.stderr, refused.stderr
+    assert cw.witness(root) == witness
 
 
 def test_a_source_installer_must_run_the_archives_own_sources(builds, t0_root, tmp_path):
@@ -791,8 +844,100 @@ def test_a_source_installer_must_run_the_archives_own_sources(builds, t0_root, t
     assert cw.witness(root) == witness
 
 
+def test_kill_between_the_switch_and_controller_json_of_a_later_install_then_repeat(builds, t0_root, tmp_path):
+    """Review r2 F7: row T0S for an epoch-5 to epoch-5 install."""
+    root = t0_root["root"]
+    record = _record(root)
+
+    def die(step):
+        if step == "switched":
+            raise KeyboardInterrupt("synthetic kill")
+    with pytest.raises(KeyboardInterrupt):
+        _install(root, builds, "x5r2", step_hook=die)
+    assert _record(root) == record and _current(root) == builds["manifests"]["x5r2"]["git_commit"]
+    served = _serve(root, tmp_path, "t0s")
+    assert served.code == 78 and any(stage.CONTROLLER_INSTALL_INCOMPLETE in event for event in served.serve.events)
+    witness = cw.witness(root)
+    _unchanged_t0(root, witness, lambda: _install(root, builds, "x5"), "runtime_admission_controller_downgrade")
+    _install(root, builds, "x5r2")  # the repeat: an equal triple read from current
+    assert _record(root)["commit"] == builds["manifests"]["x5r2"]["git_commit"]
+    assert _serve(root, tmp_path, "after").code == 0
 
 
+def test_the_epoch4_installer_over_a_pending_owner_compaction_leaves_no_tool_exit(builds, tmp_path):
+    """Review F1: R3-OPS-6b's 'plain log finishes' holds only without owners; pinned as a terminal stop."""
+    world = _world(builds, tmp_path, hops=("b",))
+    root = world["root"]
+    with epoch4_in_process():
+        uninstall = _l4(root, builds, tmp_path)
+        started = cw.start(root, builds["archives"]["x4"])
+    old_st = _extract(builds["archives"]["pre"], tmp_path / "pre-sc1a")  # the epoch-4 $ST, by mistake
+    installed = _compiled(old_st, root, "install-controller", str(builds["archives"]["x5"]))
+    assert installed.returncode == 0, installed.stderr
+    compaction_id = started["compaction_id"]
+    assert compaction.compact_verify(root, compaction_id)["armed"] is True  # it only arms
+    served = _serve(root, tmp_path, "owner-log")
+    assert served.code == 78 and ("refused " + stage.DELEGATION_FROZEN) in served.serve.events
+    with pytest.raises(compaction.CompactionRefusal, match="runtime_admission_compaction_abort_to_h_before_run"):
+        compaction.compact_abort(root, compaction_id, to_h=True)
+    # The plain abort logs abort_started, then its return to H validates H's binding and refuses; every
+    # later abort resumes there and refuses the same way.
+    for to_h in (False, False, True):
+        with pytest.raises(ValueError, match=stage.DELEGATION_FROZEN):
+            compaction.compact_abort(root, compaction_id, to_h=to_h)
+    assert [event["kind"] for event in stage.pending_compaction(root)["events"]].count("abort_started") == 1
+    with pytest.raises(ValueError, match="runtime_admission_compaction_pending"):
+        uninstall()  # L4 takes gate 'normal'
+    witness = cw.witness(root)
+    _unchanged_t0(root, witness, lambda: _install(root, builds, "x5r2"), stage.DELEGATION_FROZEN)
+    assert stage.pending_compaction(root)["compaction_id"] == compaction_id
+
+
+def test_sr1_recomputes_the_binding_with_the_staged_code(builds, tmp_path):
+    """Review r2 F6: a staged controller whose projection output differs is refused at first and later T0."""
+    world = _world(builds, tmp_path)
+    root = world["root"]
+    original = stage.capture_state_authority
+
+    def changed(state_root):
+        return dict(original(state_root), sc1a_projection="changed")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(stage, "capture_state_authority", changed)
+        witness = cw.witness(root)
+        _unchanged_t0(root, witness, lambda: _install(root, builds), launcher.CONTROLLER_BINDING_CHANGED)
+    _install(root, builds)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(stage, "capture_state_authority", changed)
+        witness = cw.witness(root)
+        _unchanged_t0(root, witness, lambda: _install(root, builds, "x5r2"), launcher.CONTROLLER_BINDING_CHANGED)
+    assert _current(root) == builds["manifests"]["x5"]["git_commit"]
+
+
+def test_a_first_t0_over_an_r1_head_passes_sr1_and_serves_r1s_slot(builds, tmp_path):
+    """Review r1 F7 / r2 F6: the pinned R1 (357dcb5), not the x4 stand-in.
+
+    R1's own stage_runtime computes the head's binding byte-equal to this
+    code's; the first T0 of X5 then passes SR-1 and the R1 slot serves under
+    the epoch-5 controller.
+    """
+    assert builds["manifests"]["r1"]["git_commit"].startswith(R1_COMMIT)
+    with epoch4_in_process():
+        world = cw.world(builds["archives"]["r1"], tmp_path, hops=())
+    root = world["root"]
+    head = stage.read_admission_head(root)
+    stored = stage.read_binding(root, head["binding_id"])
+    runtime = root / "slots" / "a" / "runtime"
+    environment = {key: os.environ[key] for key in stage._PROBE_ENVIRONMENT if key in os.environ}
+    probe = subprocess.run([sys.executable, "-I", "-B", "-c", stage._PROBE_SOURCE,
+                            str(runtime / "scripts" / "stage_runtime.pyc"), str(root), "a"],
+                           cwd=runtime, env=environment, capture_output=True, text=True, timeout=300)
+    assert probe.returncode == 0, probe.stdout + probe.stderr
+    r1_binding = json.loads(probe.stdout)["binding"]
+    assert stage._canonical_json(r1_binding) == stage._canonical_json(stored)
+    assert stage._canonical_json(stage._binding_snapshot(root, "a")) == stage._canonical_json(stored)
+    _install(root, builds)
+    assert _record(root)["controller_epoch"] == 5
+    assert _serve(root, tmp_path, "r1-under-epoch5").code == 0
 
 
 def test_the_delegated_observation_reader_runs_the_guard_first(tmp_path):
