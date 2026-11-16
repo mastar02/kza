@@ -41,6 +41,7 @@ from tests.mocks import compiled_restore as compiled  # noqa: E402
 from tests.mocks.managed_slot_graph import canonical_template  # noqa: E402
 from tests.mocks.restore_application_graph import configuration as restore_configuration  # noqa: E402
 from tools.sc0 import residue  # noqa: E402
+from tools.sc0.write_inventory import projected_tables  # noqa: E402
 
 CHILD = REPO / "tools/sc0/sc0_child.py"
 BASE_REVISION = "0bd9f98"
@@ -272,11 +273,14 @@ def measure(archive: Path, work: Path, label: str, data_source: Path | None, *, 
         result["diff"] = diff_projection(before, after)
     except Exception as error:  # an unreadable state is a result too
         result["diff_error"] = f"{type(error).__name__}: {error}"
-    from tools.sc0.residue import PROTECTED
+    projected = projected_tables(REPO)
     writers = _writers(run.trace)
-    result["protected_writes"] = [w for w in writers if w["table"] in PROTECTED]
+    # Every table capture_state_authority can hash (full, partial, schema
+    # marker), each with its frames; other_writes is the rest.
+    result["projected_writes"] = [{**w, "projection": projected[w["table"]]}
+                                  for w in writers if w["table"] in projected]
     result["other_writes"] = sorted({(w["db"], w["table"], w["verb"], w["phase"]) for w in writers
-                                     if w["table"] not in PROTECTED})
+                                     if w["table"] not in projected})
     (run.logs / "result.json").write_text(json.dumps(result, indent=1))
     return result
 

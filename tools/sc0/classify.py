@@ -1,4 +1,9 @@
-"""SC-0 (1): classify every static protected writer and join the dynamic observations.
+"""SC-0 (1): classify every static writer of a projected table and join the dynamic observations.
+
+"Projected" is every table capture_state_authority can hash (write_inventory.
+projected_tables: _PROTECTED_TABLES, the partially projected tables and the
+schema markers). UNSCANNED lists the projection writers the SQL scan cannot
+see (configuration and accounts files, the implicit sqlite_sequence row).
 
 Classes (reachability from process start until the sealed receipt, normal mode):
   boot_repair      one-shot write during construction or start-up before READY,
@@ -14,6 +19,11 @@ Classes (reachability from process start until the sealed receipt, normal mode):
   ingress          needs audio, a browser stream or a house effect firing (V has none)
   user             only from a dashboard, voice or CLI request
   controller       compaction worker / adoption / operator script, never the app
+  upgrade          schema migration: runs only when H's schema is older than NEW's
+                   (changes schema_contract_v1 and every row hash of the table)
+  boot_config      config-driven boot clamp: rewrites rows only when NEW's
+                   retention setting is shorter than the one the rows were written under
+  follows_caller   runs inside the transaction of the statement that calls it
 
 Usage: python tools/sc0/classify.py --logs DIR [--json OUT]
 """
@@ -123,10 +133,101 @@ RULES: list[tuple[str, str, str, str]] = [
      "user profile delete (voice_ledger.py:544) and VoiceLedger.prune (:568) for a profile whose source conversation was erased"),
     ("src/users/voice_ledger.py", "", "user", "voice profile confirm"),
     ("src/users/voice_people.py", "", "user", "person links (dashboard) and user retirement"),
+    # ---- partially projected tables (R1) ----
+    ("src/ambient/store.py", "AmbientStore.add", "ingress", "ambient transcription of captured audio"),
+    ("src/ambient/store.py", "AmbientStore.mark_distilled", "recurring",
+     "ambient distiller loop (distiller.py:357/:394, ambient_path.start): writes only when H holds undistilled utterances; distilled!=0 rows are projected"),
+    ("src/ambient/store.py", "AmbientStore._migrate", "upgrade",
+     "ALTER pending_audio_deletions ADD conversation_id when H predates it"),
+    ("src/ambient/store.py", "<constant _MIGRATIONS>", "upgrade",
+     "utterances column migrations run by AmbientStore._migrate (store.py:224-227) when H lacks the column"),
+    ("src/analytics/erasure.py", "EventEraser._clean", "recurring",
+     "erasure driver step for events (pending conversation erasure)"),
+    ("src/analytics/event_logger.py", "EventLogger._init_db", "boot_config",
+     "every boot: EventLogger.initialize (analytics/services.py, before SuggestionStore at main.py:1058) clamps expires_at to analytics.retention_days; expires_at is not in event_text_deadline_fences (id, sources_json, text_expires_at), so no projected column changes"),
+    ("src/analytics/event_logger.py", "EventLogger.log", "ingress", "event logging of house/voice actions"),
+    ("src/analytics/event_logger.py", "EventLogger.cleanup_old_events", "recurring",
+     "event logger maintenance loop (analytics/services.py:34 -> event_logger.py:778)"),
+    ("src/analytics/event_storage.py", "sweep_events", "recurring",
+     "event retention (analytics/erasure.py:32 EventRetention -> analytics/retention.py:92)"),
+    ("src/analytics/suggestion_storage.py", "clamp_suggestion_deadlines", "boot_config",
+     "every boot: SuggestionStore.__init__ (suggestion_store.py:106) from construct_suggestions (main.py:1058) clamps expires_at to memory.automatic_retention_days; non-pending/snoozed rows are hashed with every column and fences use expires_at"),
+    ("src/analytics/suggestion_storage.py", "cleanup_suggestions", "recurring",
+     "suggestion eraser step (analytics/suggestion_erasure.py:177)"),
+    ("src/analytics/suggestion_store.py", "SuggestionStore.create", "ingress",
+     "suggestion generation from observed patterns (suggestion_engine.py:138, request path)"),
+    ("src/analytics/suggestion_store.py", "SuggestionStore.respond", "user", "accept/reject/snooze"),
+    ("src/analytics/suggestion_sweep.py", "sweep_suggestions", "recurring",
+     "suggestion retention (analytics/suggestion_retention.py:176, started by build_suggestion_erasure main.py:923)"),
+    ("src/core/adoption_schema.py", "", "controller", "schema-only adoption (core/schema_only.py:159)"),
+    ("src/memory/copy_cleanup.py", "", "controller", "compaction retained-copy cleanup"),
+    ("src/memory/owner_compaction.py", "", "controller", "compaction worker (compaction_worker.py:55)"),
+    ("src/memory/fact_ledger.py", "<constant FACT_OWNER_SCHEMA>", "boot_init",
+     "schema marker INSERT inside FACT_OWNER_SCHEMA, run by initialize_fact_owner_schema only when the tables are absent (first boot or upgrade)"),
+    ("src/memory/fact_ledger.py", "FactLedger.initialize:930", "upgrade",
+     "ALTER fact_sources ADD dependencies when H predates it (fact_ledger.py:927-937)"),
+    ("src/memory/fact_ledger.py", "FactLedger.initialize:935", "upgrade",
+     "same migration: every automatic fact -> quarantined (revision+1) and queued for index deletion"),
+    ("src/memory/fact_ledger.py", "FactLedger.store", "ingress", "fact extraction (conversation / ambient distiller)"),
+    ("src/memory/fact_ledger.py", "FactLedger.confirm", "user", "fact confirmation"),
+    ("src/memory/fact_ledger.py", "FactLedger.assign_owner", "user", "owner assignment"),
+    ("src/memory/index_deletions.py", "IndexDeletionQueue.enqueue", "follows_caller",
+     "inside every fact deletion/quarantine transaction (FactLedger._queue)"),
+    ("src/memory/index_deletions.py", "IndexDeletionQueue.register_target", "boot_repair",
+     "INSERT..SELECT of every deleted/quarantined fact without a row, at construction three times: index_deletions.recover (privacy_services.py:78 -> :94), register_policy_index_target from build_memory_services (services.py:118) and from build_erasure_services (index_erasure.py:152 -> :143), both through erasure_journal.register_target (:313 -> :327)"),
+    ("src/memory/index_deletions.py", "IndexDeletionQueue.recover", "boot_repair",
+     "privacy_services.py:78: state/claim reset only (deleted_fact_revisions hashes fact_id,MAX(revision): no projected change)"),
+    ("src/memory/index_deletions.py", "", "recurring",
+     "index maintenance claim/record/finish (memory/index_erasure.py:156-157): state columns only"),
+    ("src/memory/voice_schema.py", "initialize_voice_people_schema", "boot_init", "schema marker on first boot"),
+    ("src/memory/voice_schema.py", "initialize_voice_review_schema", "boot_init", "schema marker on first boot"),
+    ("src/memory/voice_schema.py", "<constant VOICE_ATTRIBUTION_SCHEMA>", "boot_init",
+     "schema marker INSERT inside VOICE_ATTRIBUTION_SCHEMA, run by initialize_voice_attribution_schema only when the objects are absent"),
+    ("src/training/collector_erasure.py", "CollectorEraser._page", "recurring",
+     "collector eraser (build_collector_erasure from build_wake_clip_store, clip_store.py:461-462): erasure step for a pending conversation erasure; also deletes expired or unavailable clips met on that page"),
+    ("src/training/conversation_collector.py", "", "ingress", "conversation collection (voice turns)"),
+    ("src/training/stt_correction_collector.py", "STTCorrectionCollector.cleanup_old", "user",
+     "no caller in src at 0bd9f98"),
+    ("src/training/stt_correction_collector.py", "", "ingress", "STT correction collection (voice)"),
+    ("src/users/voice_groups.py", "VoiceGroups.initialize", "upgrade",
+     "first open of a ledger without voice_group_schema: backfill unknown groups + marker"),
+    ("src/users/voice_groups.py", "VoiceGroups._seal", "ingress", "voice clustering"),
+    ("src/users/voice_groups.py", "VoiceGroups._create", "ingress", "voice clustering (and the upgrade backfill)"),
+    ("src/users/voice_groups.py", "VoiceGroups.add", "ingress", "voice clustering"),
+    ("src/users/voice_groups.py", "VoiceGroups.correct", "user", "manual group correction"),
+    ("src/users/voice_ledger.py", "VoiceLedger.put", "ingress", "voice fingerprint capture"),
+    ("src/users/voice_ledger.py", "VoiceLedger.prune", "recurring",
+     "VoiceLedger.prune: boot prune (voice_registry.py:400) and maintain loop (:401 -> :351-356)"),
+    ("src/wakeword/clip_store.py", "WakeClipStore._sweep_native", "recurring",
+     "wake clip store maintenance: build_wake_clip_store (main.py:925) -> store.start() (clip_store.py:463, :390-406) -> reconcile (:374-379) -> _sweep_native (:334): deletes unpublished, expired, stale-parent and source-unavailable clips during construction and then at each cycle deadline (min of now+60 s and the earliest clip deadline, :341/:368)"),
+    ("src/wakeword/clip_store.py", "", "ingress", "wake clip writer reserve/publish/discard/rotate (wake_clip_writer.py:221, collectors)"),
+    ("src/dashboard/live_receipts.py", "LiveReceiptStore._recover:109", "upgrade",
+     "ALTER live_deliveries ADD owner_namespace when H predates it"),
+    ("src/memory/capture_recorders.py", "CaptureRecorders._initialize:137", "upgrade",
+     "ALTER capture_browser_recorders when H predates the kind column"),
+    ("src/reminders/reminder_store.py", "reminder_schema", "upgrade", "ALTER reminders ADD scope when H predates it"),
+]
+
+# Projection writers the SQL scan cannot see (R5). Same row shape as the scan.
+UNSCANNED: list[dict] = [
+    {"file": "src/core/state_configuration.py", "line": 599, "function": "StateConfiguration._after_graph_close",
+     "call": "file_write", "verb": "REPLACE FILE", "table": "config/settings.yaml", "projection": "configuration",
+     "dynamic": False, "class": "close_path",
+     "reached_by": "exit stack (state_configuration.py:145 push_async_exit) -> _commit (:455-467, os.replace :511): rewrites settings.yaml with reasoner.cloud.consent=false only when a consent withdrawal is pending (user-triggered; V has none, so not reached without traffic)"},
+    {"file": "src/users/user_manager.py", "line": 246, "function": "UserManager._save",
+     "call": "file_write", "verb": "REPLACE FILE", "table": "*_accounts_v1.json", "projection": "accounts",
+     "dynamic": False, "class": "user",
+     "reached_by": "UserManager._mutate (:233-243) from account edits only (os.replace :312); never at load"},
+    {"file": "src/dashboard/live_receipts.py", "line": 290, "function": "LiveReceiptStore (live_deliveries INSERT)",
+     "call": "implicit", "verb": "AUTOINCREMENT", "table": "sqlite_sequence", "projection": "partial",
+     "dynamic": False, "class": "ingress",
+     "reached_by": "sqlite_sequence name='live_deliveries' advances with each live delivery (dashboard websocket); no SQL statement names it"},
 ]
 
 
 def rule_for(row: dict) -> tuple[str, str]:
+    """The most specific matching rule: a line pin first, then the longest function prefix."""
+    best, rank = ("unclassified", ""), None
     for file, prefix, kind, how in RULES:
         if row["file"] != file:
             continue
@@ -135,15 +236,17 @@ def rule_for(row: dict) -> tuple[str, str]:
             continue
         if line and int(line) != row["line"]:
             continue
-        return kind, how
-    return "unclassified", ""
+        score = (bool(line), len(name))
+        if rank is None or score > rank:
+            best, rank = (kind, how), score
+    return best
 
 
 def observations(logs: Path) -> dict:
     seen: dict = {}
     for result in sorted(logs.glob("*/result.json")):
         data = json.loads(result.read_text())
-        for write in data.get("protected_writes", []):
+        for write in data.get("projected_writes", data.get("protected_writes", [])):
             site = write["stack"][0] if write["stack"] else None
             if site is None:
                 # aiosqlite runs the statement on its own thread: use the submitter's frame.
@@ -168,6 +271,16 @@ def classify(logs: Path) -> list[dict]:
         rows.append({**row, "class": kind, "reached_by": how,
                      "observed_phases": sorted({p for hit in hits for p in hit["phases"]}),
                      "observed_states": sorted({s for hit in hits for s in hit["states"]})})
+    known = {(row["file"], row["line"]) for row in rows}
+    for (file, line), value in sorted(seen.items()):
+        if (file, line) not in known:
+            # A runtime writer the static scan missed: listed, never dropped.
+            rows.append({"file": file, "line": line, "function": value["function"], "call": "?",
+                         "verb": "?", "table": "?", "projection": "?", "dynamic": True,
+                         "class": "unclassified", "reached_by": "observed at runtime, not in the static scan",
+                         "observed_phases": sorted(value["phases"]), "observed_states": sorted(value["states"])})
+    for row in UNSCANNED:
+        rows.append({**row, "observed_phases": [], "observed_states": []})
     return rows
 
 
@@ -180,7 +293,7 @@ def main() -> None:
     if args.json:
         Path(args.json).write_text(json.dumps(rows, indent=1))
     for row in rows:
-        print(f"{row['file']}:{row['line']}\t{row['verb']} {row['table']}\t{row['class']}\t"
+        print(f"{row['file']}:{row['line']}\t{row['verb']} {row['table']}\t{row['projection']}\t{row['class']}\t"
               f"{','.join(row['observed_phases']) or '-'}")
 
 
