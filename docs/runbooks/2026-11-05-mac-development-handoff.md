@@ -1529,6 +1529,41 @@ los hace la sesión coordinadora. Sin release. Evidencia:
     `log_invalid`) y un `next` agregado al no-op de `resume` que el ensayo
     compilado fija (revertido). Mutantes de la revisión 17/17.
 
+## SC-4a — corrida de verificación aislada del modo release (2026-11-16)
+
+Tercera unidad del modo release (diseño `t040-t041/sc-release-design-v4.json`,
+unidad SC-4a, `mechanism.v_verification_run`, enmiendas A1/A2). Rama
+`sc4a-verification-boot` desde `batch-sc1b` (561e80e), sin push; la suite
+batch y el merge los hace la sesión coordinadora. Sin release. Evidencia:
+`t040-t041/sc4a-evidence.json` (notas de diseño SC4A-N1.., `follow_up`,
+mutantes, CR-7).
+
+- Se quita la compuerta SC1B-N3: `compact verify` de un log del modo release
+  arma la corrida y `start`/`resume` dicen `next: compact verify <id>`.
+- `serve` agrega `KZA_RUNTIME_RELEASE_VERIFY=1` sólo a la corrida armada de un
+  log del modo release, después del filtro de `KZA_RUNTIME_*`. El hijo la toma
+  una vez (`take_release_verify_flag`), construye el grafo con
+  `verify_only` (lista `skip_list` completa, autoridad del tablero con
+  ROLLBACK) y `Application.run` toma la rama de verificación: prepara el
+  pipeline, envía `VERIFY=<run_id>` y `READY=1`, y espera la parada.
+- `serve` escribe `admission/runs/<run_id>.ready.json` (sólo con el
+  reconocimiento antes de `READY`) y `<run_id>.smoke-stop.json` (N segundos
+  monotónicos, motivo), detiene al hijo y sale 0. `verified` del modo release
+  exige los dos registros y `measured_seconds >= N`. `compact status` muestra
+  `verify_branch_reached`.
+- Cierre de captura en V: sin borrar reservadas ni esperar, filas iguales a
+  las del arranque, cantidad llevada en la prueba de cierre.
+- SC4A-N1: hasta SC-4b, `compact retire` de un log del modo release rechaza
+  `release_retire_unavailable`; no armar un log del modo release en
+  producción antes de SC-4b.
+- CR-7: `tools/sc0/run_states.py --verify --revision <commit>` corre los
+  estados de SC-0 más `no_default_control_row` con la lista activa.
+- Tests: `tests/unit/tools/test_sc4a_verify_run.py`,
+  `tests/integration/test_sc4a_verify_boot.py`,
+  `tests/unit/memory/test_sc4a_verify_stores.py`,
+  `tests/unit/core/test_sc4a_application_verify.py`; mutantes con
+  `tools/sc4a_mutants.py`. Resultados en la evidencia.
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.
