@@ -8,7 +8,8 @@ candidate is read, while the head's own slot and compaction's K (under its own
 gate) stay allowed; an epoch-3 controller copy that has require_forward_epoch
 (b0c322d and later, here the pinned 26de262) cannot take the lease on an epoch-4
 root (older copies do not check the epoch: AUTHZ3-1, DEPLOYMENT); an existing
-owner chain still validates, serves and compacts.
+owner chain still validates, serves and compacts at epoch 4 (since SC-1a, with
+the epoch-4 build of this tree; the epoch-5 refusals are in test_sc1a_controller_install).
 No test here uses the legacy_managed_transitions fixture except to build the
 owner chain whose later handling runs with the production flag.
 """
@@ -49,9 +50,9 @@ admission_archive = admission.admission_archive  # The module-scoped built HEAD 
 
 
 def test_production_defaults():
-    """M-2.6, M-2.7: the flag is off and the controller epoch is 4."""
+    """M-2.6, M-2.7: the flag is off; the controller epoch was 4 at SC-2 and is 5 since SC-1a."""
     assert stage.LEGACY_MANAGED_TRANSITIONS is False
-    assert stage.CONTROLLER_EPOCH == 4
+    assert stage.CONTROLLER_EPOCH == 5
     assert stage.DELEGATION_RETIRED == "runtime_admission_delegation_retired"
     assert stage.TRANSITION_REQUIRES_RELEASE_MODE == "runtime_admission_transition_requires_release_mode"
 
@@ -321,7 +322,7 @@ def test_an_epoch3_controller_copy_cannot_take_the_lease_or_be_installed(x_archi
     world = cw.world(x_archive, tmp_path, hops=())
     root = world["root"]
     record = json.loads((root / "admission" / "controller.json").read_text())
-    assert record["controller_epoch"] == 4
+    assert record["controller_epoch"] == 5  # SC-1a (4 at SC-2): the lockout holds for any newer epoch
     stage.prepare_slot(epoch3_archive, root, "p", world["states"]["a"]["state"])
     states = (world["states"]["a"]["state"], root / "slots" / "p" / "state")
     before = _witness(root, *states)
@@ -337,7 +338,9 @@ def test_an_epoch3_controller_copy_cannot_take_the_lease_or_be_installed(x_archi
 
 # --- an existing owner chain still validates, serves and compacts --------------------------------------
 
-def test_an_existing_two_owner_chain_validates_serves_and_compacts(x_archive, tmp_path, checkout_controller):
+def test_an_existing_two_owner_chain_validates_serves_and_compacts(x4_archive, tmp_path, checkout_controller):
+    """At epoch 4 (SC-2). Since SC-1a an epoch-5 controller refuses the chain (test_sc1a_controller_install)."""
+    x_archive = x4_archive
     world = cw.world(x_archive, tmp_path, hops=("b", "c"))  # owners built in the legacy context only
     assert stage.LEGACY_MANAGED_TRANSITIONS is False
     root = world["root"]
@@ -363,10 +366,12 @@ def test_an_existing_two_owner_chain_validates_serves_and_compacts(x_archive, tm
         stage.delegate_slot(root, "next")
 
 
-def test_an_epoch3_root_with_owners_compacts_under_the_epoch4_controller(x_archive, epoch3_archive, tmp_path,
+def test_an_epoch3_root_with_owners_compacts_under_the_epoch4_controller(x4_archive, epoch3_archive, tmp_path,
                                                                          checkout_controller):
     """The design's legacy rehearsal: owners granted by the pinned epoch-3 compiled CLI (never the flag),
-    then the epoch-4 controller is installed, every grant is refused and the owners are compacted."""
+    then the epoch-4 controller is installed, every grant is refused and the owners are compacted.
+    Since SC-1a the epoch-4 controller is the epoch-4 build of this tree (tests/mocks/epoch4.py)."""
+    x_archive = x4_archive
     from tests.mocks import launcher_rehearsal as rehearsal
 
     source = rehearsal.offline_source(tmp_path)

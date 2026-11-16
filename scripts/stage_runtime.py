@@ -303,7 +303,19 @@ _CLOSED_STATE_KEYS = ("state_identity", "store_roots", "schemas", "sdk_versions"
 #   epoch-3 controller would still grant, so it must never take the lease on
 #   an epoch-4 root (require_forward_epoch) and install-controller refuses it
 #   (managed_launcher.py install_controller).
+#   5 (SC-1a, sc-release-design v4 epochs) means release mode only, no
+#   delegation record or owner honoured (AUTHZ3-1 guard, mechanism.authz3_1)
+#   and verify-mode-capable src. An epoch-4 copy must never lease an epoch-5
+#   root (require_forward_epoch). R1 (epoch 4) slots stay servable.
 #   install-controller refuses an archive below this epoch.
+# CONTROLLER_REVISION (SC-1a, epochs.controller_revision): a release integer
+#   ordering controllers of one epoch. build_runtime also records
+#   controller_sources_sha256 over the controller's import closure in
+#   release.json; (controller_epoch, controller_revision,
+#   controller_sources_sha256) is the controller triple. install-controller is
+#   monotone in (epoch, revision) and an equal pair needs an equal digest
+#   (CR2-9); the installed triple is read from controller/current/release.json
+#   (R4-OPS-4). Bump it whenever a released controller's closure changes.
 # SCHEMA_CONTRACT_EPOCH (SC-2, design mechanism.schema_rule): the version of
 #   schema_contract_document() (tables, columns, markers, protected set,
 #   pragma and auth_meta rules, value vocabularies). Independent of
@@ -313,11 +325,15 @@ _CLOSED_STATE_KEYS = ("state_identity", "store_roots", "schemas", "sdk_versions"
 LAUNCHER_CONTRACT = 3
 FORMAT_EPOCH = 1
 RECEIPT_STATE_SCHEMA = 2
-CONTROLLER_EPOCH = 4
+CONTROLLER_EPOCH = 5
+CONTROLLER_REVISION = 1
 SCHEMA_CONTRACT_EPOCH = 1
 MIN_FORMAT_EPOCH = 1
 _RELEASE_INTEGER_KEYS = ("launcher_contract", "format_epoch", "receipt_state", "controller_epoch",
-                         "schema_contract")
+                         "schema_contract", "controller_revision")
+# SC-1a: the first controller epoch that freezes delegation (mechanism.authz3_1)
+# and keys install-controller's first_install checks (t0_controller_install).
+RELEASE_MODE_EPOCH = 5
 # SC-2 (sc-release-design v3 delegation_off): delegation grants (delegate,
 # authorize_target_delegation, authorize_derived_state) and the activation of
 # another slot under a managed head are retired; only release mode (not yet
@@ -327,6 +343,11 @@ _RELEASE_INTEGER_KEYS = ("launcher_contract", "format_epoch", "receipt_state", "
 # compiled controller has no way to set it.
 LEGACY_MANAGED_TRANSITIONS = False
 DELEGATION_RETIRED = "runtime_admission_delegation_retired"
+# SC-1a AUTHZ3-1 guard (stateless): at controller epoch >= 5 the accepted
+# delegation set is the empty constant and a head with owners is refused.
+DELEGATION_FROZEN = "runtime_admission_delegation_frozen"
+OWNERS_PRESENT = "runtime_admission_owners_present"
+COMPACTION_OWNERS_PRESENT = "runtime_admission_compaction_owners_present"
 TRANSITION_REQUIRES_RELEASE_MODE = "runtime_admission_transition_requires_release_mode"
 
 _ADMISSION_VALIDATION_LOCK = threading.RLock()
@@ -805,13 +826,21 @@ _TOMBSTONE_KEYS = frozenset({"schema_version", "compaction_id", "member", "class
 GATES = ("normal", "serve", "install")
 
 
-def require_forward_epoch(root: Path) -> None:
+CONTROLLER_INSTALL_INCOMPLETE = "runtime_admission_controller_install_incomplete"
+
+
+def require_forward_epoch(root: Path, *, gate: str = "normal") -> None:
     """Refuse when admission/controller.json declares a newer controller epoch than this code (review F8).
 
     Every slot runtime and every controller/<commit> ships its own
     stage_runtime; a copy older than the installed controller must not take
     the lease or prepare a slot. Only a readable integer epoch above ours
     refuses here (a missing or damaged record is the launcher's refusal).
+
+    SC-1a (CS2-9): for every gate except "install", the record's commit must
+    be the commit of controller/current/release.json. install-controller
+    switches current before it writes the record, so a cut install refuses
+    here until the install is repeated (crash row T0S).
     """
     path = Path(root) / "admission" / "controller.json"
     try:
@@ -821,6 +850,20 @@ def require_forward_epoch(root: Path) -> None:
     epoch = value.get("controller_epoch") if type(value) is dict else None
     if type(epoch) is int and epoch > CONTROLLER_EPOCH:
         raise ValueError("runtime_admission_controller_downgrade")
+    if gate != "install" and type(value) is dict and "commit" in value:
+        require_installed_commit(root, value)
+
+
+def require_installed_commit(root: Path, record: dict) -> None:
+    """CS2-9: controller.json's commit names controller/current/release.json's git_commit."""
+    current = Path(root) / "controller" / "current" / "release.json"
+    try:
+        manifest = json.loads(current.read_bytes())
+        commit = manifest.get("git_commit") if type(manifest) is dict else None
+    except (OSError, ValueError, UnicodeDecodeError):
+        commit = None
+    if type(record.get("commit")) is not str or commit != record["commit"]:
+        raise ValueError(CONTROLLER_INSTALL_INCOMPLETE)
 
 
 def compaction_directory(root: Path) -> Path:
@@ -1287,6 +1330,69 @@ def release_integers(binding: dict) -> dict:
             raise ValueError("runtime_admission_release_integer")
         values[key] = value
     return values
+
+
+CONTROLLER_UNMANAGED = "runtime_admission_controller_unmanaged"
+
+
+def controller_sources_digest(sources: list) -> str:
+    """sha256 over the sorted [path, file sha256] list of a controller's import closure.
+
+    The same canonical form build_runtime records (controller_sources_sha256,
+    epochs.controller_revision); a test pins that both agree.
+    """
+    return hashlib.sha256(json.dumps(sources, separators=(",", ":")).encode()).hexdigest()
+
+
+def controller_triple(manifest: dict, files: dict | None = None) -> tuple[int, int, str | None]:
+    """(controller_epoch, controller_revision, controller_sources_sha256) of a release manifest.
+
+    Below epoch 5 the triple is (epoch, revision or 0, digest or None): such
+    a manifest predates the revision. From epoch 5 on the revision is a
+    positive integer and the closure list must hash to the recorded digest
+    (sorted, unique source paths under src/ or scripts/); with ``files`` (an
+    archive's members) every listed module must also be compiled into it.
+    """
+    epoch = manifest.get("controller_epoch", 0)
+    revision = manifest.get("controller_revision", 0)
+    digest = manifest.get("controller_sources_sha256")
+    if type(epoch) is not int or epoch < 0 or type(revision) is not int or revision < 0:
+        raise ValueError(CONTROLLER_UNMANAGED)
+    if epoch < RELEASE_MODE_EPOCH:
+        return epoch, revision, digest if _hex64(digest) else None
+    sources = manifest.get("controller_sources")
+    if (revision < 1 or not _hex64(digest) or type(sources) is not list or not sources
+            or any(type(entry) is not list or len(entry) != 2 or type(entry[0]) is not str
+                   or not _hex64(entry[1]) for entry in sources)):
+        raise ValueError(CONTROLLER_UNMANAGED)
+    paths = [entry[0] for entry in sources]
+    if paths != sorted(set(paths)) or controller_sources_digest(sources) != digest:
+        raise ValueError(CONTROLLER_UNMANAGED)
+    for path in paths:
+        pure = PurePosixPath(path)
+        if (pure.is_absolute() or ".." in pure.parts or pure.parts[0] not in {"src", "scripts"}
+                or pure.suffix != ".py"):
+            raise ValueError(CONTROLLER_UNMANAGED)
+        if files is not None and str(pure.with_suffix(".pyc")) not in files:
+            raise ValueError(CONTROLLER_UNMANAGED)
+    return epoch, revision, digest
+
+
+def installed_controller_triple(root: Path) -> tuple[int, int, str | None]:
+    """The installed triple, read from controller/current/release.json (R4-OPS-4).
+
+    install-controller copies the archive's manifest there verbatim, so every
+    installer (an epoch-4 one included) records the full triple; controller.json
+    keeps its five fields. An unreadable manifest is a damaged install.
+    """
+    path = Path(root) / "controller" / "current" / "release.json"
+    try:
+        manifest = json.loads(path.read_bytes())
+    except (OSError, ValueError, UnicodeDecodeError):
+        raise ValueError("runtime_admission_controller_tampered") from None
+    if type(manifest) is not dict:
+        raise ValueError("runtime_admission_controller_tampered")
+    return controller_triple(manifest)
 
 
 def _require_launcher_slot(binding: dict) -> None:
@@ -2411,6 +2517,7 @@ def _chain_path(root: Path, capability: str) -> Path:
 
 def _read_delegation_record(root: Path, capability: str) -> dict:
     """Read one content-addressed v1 delegation record named by a chain hop."""
+    require_no_delegation_records(root)
     if not _hex64(capability):
         raise ValueError("runtime_admission_delegation_chain")
     path = root / "admission" / "delegations" / (capability + ".json")
@@ -2590,6 +2697,7 @@ def _delegation_states(root: Path) -> tuple[set, set]:
     unrelated directory that recycled the inode number.
     """
     paths, identities = set(), set()
+    require_no_delegation_records(root)
     directory = root / "admission" / "delegations"
     if not directory.exists():
         return paths, identities
@@ -2614,7 +2722,68 @@ def _delegation_states(root: Path) -> tuple[set, set]:
     return paths, identities
 
 
+def delegations_frozen() -> bool:
+    """AUTHZ3-1 (SC-1a): from controller epoch 5 on, no delegation record is honoured."""
+    return CONTROLLER_EPOCH >= RELEASE_MODE_EPOCH
+
+
+def require_no_delegation_records(root: Path) -> None:
+    """At epoch >= 5 the accepted delegation set is the empty constant (mechanism.authz3_1 guard (1)).
+
+    Stateless: anything under admission/delegations/ (a record, a leftover
+    temporary of a cut write, or the directory replaced by another kind of
+    entry) means a pre-SC-2 copy ran against the root, and every reader
+    refuses with runtime_admission_delegation_frozen. An empty or absent
+    directory is the only accepted state.
+    """
+    if not delegations_frozen():
+        return
+    directory = Path(root) / "admission" / "delegations"
+    try:
+        info = os.lstat(directory)
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise ValueError(DELEGATION_FROZEN) from None
+    if not stat.S_ISDIR(info.st_mode):
+        raise ValueError(DELEGATION_FROZEN)
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        raise ValueError(DELEGATION_FROZEN) from None
+    if entries:
+        raise ValueError(DELEGATION_FROZEN)
+
+
+def delegated_target_ids(binding: dict) -> list[str]:
+    """The delegated targets a binding's ownership policy lists (its owners' targets), sorted.
+
+    Read from the state's policy file whose sha256 the binding pins, never
+    from a delegation record, so it holds whether or not a record exists.
+    """
+    if binding.get("ownership_sha256") is None:
+        return []
+    path = Path(binding["state_root"]) / ".kza-target-ownership.json"
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("runtime_admission_ownership_changed")
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != binding["ownership_sha256"]:
+        raise ValueError("runtime_admission_ownership_changed")
+    policy = json.loads(raw)
+    delegated = policy.get("delegated_targets") if type(policy) is dict else None
+    if type(delegated) is not list or any(type(item) is not str for item in delegated):
+        raise ValueError("runtime_admission_ownership_schema")
+    return sorted(delegated)
+
+
+def require_no_owners(binding: dict, code: str = OWNERS_PRESENT) -> None:
+    """AUTHZ3-1 guard (2): at epoch >= 5 a head whose policy lists delegated targets is refused."""
+    if delegations_frozen() and delegated_target_ids(binding):
+        raise ValueError(code)
+
+
 def _delegation_records(root: Path, state: Path):
+    require_no_delegation_records(root)
     directory = root / "admission" / "delegations"
     if not directory.exists():
         return
@@ -2681,6 +2850,9 @@ def _target_ownership_validation(
 ) -> dict:
     """Reject foreign active paths; historical journals confer no execution grant."""
     root = _safe_directory(Path(root).resolve(strict=True))
+    # SC-1a AUTHZ3-1: every binding validation (serve's activation, prepare, recovery) refuses a
+    # delegation record at epoch >= 5, whether or not this binding lists a delegated target.
+    require_no_delegation_records(root)
     state = _safe_directory(Path(binding["state_root"]))
     targets = _target_inventory(state)
     policy = None
@@ -4367,7 +4539,7 @@ class AdmissionController:
             head = read_admission_head(self.root)
             if head is not None and head["status"] != "closed" and not self.allow_open_head:
                 raise ValueError("runtime_admission_not_closed")
-            require_forward_epoch(self.root)
+            require_forward_epoch(self.root, gate=self.gate)
             # U3b-0c gate (design v2 gate.choke_points): every lease-taking path enters here.
             if self.gate == "install":
                 try:

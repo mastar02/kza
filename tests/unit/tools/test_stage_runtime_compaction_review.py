@@ -23,8 +23,15 @@ from tests.mocks import compaction_world as cw
 
 
 @pytest.fixture(scope="module")
-def x_archive(tmp_path_factory):
-    return cw.build_x(tmp_path_factory.mktemp("compaction-review-x"))
+def x5_archive(tmp_path_factory):
+    """X as it ships (epoch 5), for the controller-epoch pin (CO-10 d)."""
+    return cw.build_x(tmp_path_factory.mktemp("compaction-review-x5"))
+
+
+@pytest.fixture
+def x_archive(x4_archive):
+    """SC-1a: this module's worlds have owners, which exist only at epoch <= 4 (tests/mocks/epoch4.py)."""
+    return x4_archive
 
 
 @pytest.fixture(autouse=True)
@@ -352,12 +359,12 @@ def test_a_copy_made_after_the_plan_refuses_retire_as_plan_changed(x_archive, tm
 
 # --- F8 / D1: forward epoch; D4 / F3: install-controller is the way out ---
 
-def test_a_newer_installed_epoch_refuses_this_controller(x_archive, tmp_path):
-    world = cw.world(x_archive, tmp_path, hops=())
+def test_a_newer_installed_epoch_refuses_this_controller(x5_archive, tmp_path):
+    world = cw.world(x5_archive, tmp_path, hops=())
     root = world["root"]
     path = root / "admission" / "controller.json"
     record = json.loads(path.read_text())
-    assert record["controller_epoch"] == stage.CONTROLLER_EPOCH == 4  # SC-2
+    assert record["controller_epoch"] == stage.CONTROLLER_EPOCH == 5  # SC-1a (SC-2: 4)
     stage._atomic_record(path, dict(record, controller_epoch=stage.CONTROLLER_EPOCH + 1))
     _refusal("runtime_admission_controller_downgrade", lambda: stage.AdmissionController(root).__enter__())
     _refusal("runtime_admission_controller_downgrade",

@@ -33,8 +33,13 @@ from tests.unit.tools.test_stage_runtime_admission import (
     _witness,
 )
 
-admission_archive = admission.admission_archive  # The module-scoped built HEAD artifact fixture.
 pytestmark = pytest.mark.usefixtures("legacy_managed_transitions")
+
+
+@pytest.fixture
+def admission_archive(x4_archive):
+    """SC-1a: owner chains exist only at epoch <= 4, so this module runs the epoch-4 build of this tree."""
+    return x4_archive
 
 _INSERT = "INSERT INTO erasure_targets VALUES(?,?,?,?)"
 

@@ -80,8 +80,9 @@ def test_k_never_built_is_not_an_abort_member(tmp_path, monkeypatch):
     assert compaction._k_abort_member(root, log) is None
 
 
-def test_compact_abort_accepts_k_moved_by_hand_on_a_managed_root(x_archive, tmp_path):
+def test_compact_abort_accepts_k_moved_by_hand_on_a_managed_root(x4_archive, tmp_path):
     """R4-2 through the operator's command, after a start that built K."""
+    x_archive = x4_archive  # SC-1a: an owner world needs the epoch-4 build
     world = cw.world(x_archive, tmp_path, hops=("b",))
     root = world["root"]
     h_head = stage.read_admission_head(root)

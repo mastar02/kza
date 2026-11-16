@@ -62,6 +62,32 @@ for _module_name in ("torch", "soundfile"):
 del _module_name
 
 
+# ==================== SC-1a epoch-4 worlds with owners ====================
+
+@pytest.fixture
+def epoch4_controller(monkeypatch):
+    """Run the in-process controller as the epoch-4 build of this tree (tests/mocks/epoch4.py).
+
+    SC-1a: from epoch 5 no delegation record or owner is honoured; owner
+    worlds are built, served and compacted by an epoch-4 controller only.
+    """
+    from scripts import stage_runtime
+    monkeypatch.setattr(stage_runtime, "CONTROLLER_EPOCH", 4)
+    return stage_runtime
+
+
+@pytest.fixture(scope="session")
+def _x4_build(tmp_path_factory):
+    from tests.mocks import compaction_world
+    return compaction_world.build_x(tmp_path_factory.mktemp("x4"), epoch4=True)
+
+
+@pytest.fixture
+def x4_archive(_x4_build, epoch4_controller):
+    """X (HEAD + working tree) built at epoch 4, with the in-process controller at epoch 4."""
+    return _x4_build
+
+
 # ==================== SC-2 legacy managed transitions ====================
 
 @pytest.fixture

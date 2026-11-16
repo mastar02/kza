@@ -1709,6 +1709,11 @@ def check_controller_epoch(root: Path) -> None:
         intact = False
     if not intact:
         raise LauncherRefusal("runtime_admission_controller_tampered")
+    # SC-1a (CS2-9): install-controller switches current before it writes controller.json, so a
+    # cut install leaves the record naming the previous commit; serve and every other gate refuse
+    # until the install is repeated (crash row T0S). install itself never calls this check.
+    if record.get("commit") != manifest.get("git_commit"):
+        raise LauncherRefusal(stage.CONTROLLER_INSTALL_INCOMPLETE)
 
 
 def check_slot(root: Path, binding: dict) -> dict:
@@ -1811,6 +1816,12 @@ class Serve:
         if self._stopped_before_start():
             return ExitCode.CLEAN
         check_controller_epoch(root)
+        try:
+            # SC-1a AUTHZ3-1 guard (1): a delegation record means an old copy ran against the root
+            # (crash rows DL, DO); refused before recovery or the compaction gate writes anything.
+            stage.require_no_delegation_records(root)
+        except ValueError as error:
+            raise LauncherRefusal(str(error)) from None
         head = stage.read_admission_head(root)
         if head is None:
             raise LauncherRefusal("runtime_admission_launcher_no_managed_head")
@@ -1827,6 +1838,11 @@ class Serve:
                 self.notifier.status("recovery refused: " + decision.code)
                 return decision.exit_code
             head = decision.closed_head
+        try:
+            # SC-1a AUTHZ3-1 guard (2): a head with owners is never served at epoch >= 5.
+            stage.require_no_owners(stage.read_binding(root, head["binding_id"]))
+        except ValueError as error:
+            raise LauncherRefusal(str(error)) from None
         if self._stopped_before_start():
             return ExitCode.CLEAN
         # U3b-0c (owner-compaction v3 V1-V4, v4 F1): the compaction gate decides only after
@@ -2160,15 +2176,151 @@ def _fsync_tree(directory: Path) -> None:
             _fsync_path(path)
 
 
-def install_controller(root: Path, archive: Path, *, wall=time.time) -> dict:
-    """Install a controller under <root>/controller/<commit>; monotonic epoch, atomic switch.
+CONTROLLER_REVISION_CONFLICT = "runtime_admission_controller_revision_conflict"
+CONTROLLER_INSTALLER_MISMATCH = "runtime_admission_controller_installer_mismatch"
+CONTROLLER_BINDING_CHANGED = "runtime_admission_controller_binding_changed"
+SDK_CHANGED = "runtime_admission_compaction_sdk_changed"
+SCHEMA_CONTRACT_CHANGED = "runtime_admission_controller_schema_contract"
+
+
+def _require_staged_installer(manifest: dict) -> None:
+    """SR-1 runs the staged controller's own code (t0_controller_install.command).
+
+    A compiled install must run from the extracted NEW archive, never from
+    the installed $ST: the stage_runtime and managed_launcher this process
+    executes must be the archive's. A source tree (development, in-process
+    tests) has no compiled identity to compare and is not a release path.
+    """
+    for module, name in ((stage, "scripts/stage_runtime.pyc"),
+                         (sys.modules[__name__], "scripts/managed_launcher.pyc")):
+        own = Path(module.__file__)
+        if own.suffix != ".pyc":
+            return
+        if hashlib.sha256(own.read_bytes()).hexdigest() != manifest["files"].get(name):
+            raise LauncherRefusal(CONTROLLER_INSTALLER_MISMATCH)
+
+
+def _binding_equality(root: Path, binding: dict) -> None:
+    """SR-1 (1) (R3-OPS-2): this code recomputes the slot's binding in-process; it must be byte-equal.
+
+    A difference confined to sdk_versions refuses with
+    runtime_admission_compaction_sdk_changed naming the bound version (the
+    same rule as W0, R4-PRIV-1): reinstall the bound version.
+    """
+    recomputed = stage._binding_snapshot(root, binding["slot"])
+    if stage._canonical_json(recomputed) == stage._canonical_json(binding):
+        return
+    if {key: value for key, value in recomputed.items() if key != "sdk_versions"} == \
+            {key: value for key, value in binding.items() if key != "sdk_versions"}:
+        bound, now = binding["sdk_versions"], recomputed["sdk_versions"]
+        name = sorted(key for key in set(bound) | set(now) if bound.get(key) != now.get(key))[0]
+        raise LauncherRefusal(f"{SDK_CHANGED}: {name}=={bound.get(name)}"[:200])
+    raise LauncherRefusal(CONTROLLER_BINDING_CHANGED)
+
+
+def _sr1(root: Path, head: dict, manifest: dict, *, probe_timeout: float) -> None:
+    """SR-1 for a closed head, before current moves (t0_controller_install.sr_1).
+
+    (1) in-process binding equality; (2) the slot's own probe, kept as an
+    extra check; (3) the archive's schema contract equals the head slot's;
+    (4) serve's read-only slot checks (check_slot and _checked_slot).
+    """
+    binding = stage.read_binding(root, head["binding_id"])
+    _binding_equality(root, binding)
+    try:
+        stage._probe_candidate(root, binding["slot"], binding, timeout=probe_timeout)
+    except ValueError as error:
+        raise LauncherRefusal(str(error)[:200]) from None
+    if manifest.get("schema_contract", 0) != stage.release_integers(binding)["schema_contract"]:
+        raise LauncherRefusal(SCHEMA_CONTRACT_CHANGED)
+    check_slot(root, binding)
+    try:
+        stage._checked_slot(root, binding["slot"])
+    except ValueError as error:
+        raise LauncherRefusal(str(error)[:200]) from None
+
+
+def _guard_checks(root: Path, binding: dict | None) -> None:
+    """AUTHZ3-1 at install (guard (3)): no delegation record under the root, no owners in the head."""
+    try:
+        stage.require_no_delegation_records(root)
+        if binding is not None:
+            stage.require_no_owners(binding)
+    except ValueError as error:
+        raise LauncherRefusal(str(error)) from None
+
+
+def _first_install_checks(root: Path, manifest: dict, *, probe_timeout: float) -> None:
+    """The first epoch-5 install (installed controller.json epoch < 5, CR2-1): read-only refusals.
+
+    (1) pending_compaction is read here, not through the install gate (which
+    turns an unreadable log into 'no log'): a pending log refuses (V4R2-L2)
+    and an unreadable one refuses with runtime_admission_compaction_log_invalid
+    (R3-OPS-6a); (3) a delegation record or owners refuse (V4R2-A1); (2) the
+    head must be closed and pass SR-1. Nothing is written by these checks.
+    """
+    try:
+        pending = stage.pending_compaction(root)
+    except ValueError:
+        raise LauncherRefusal("runtime_admission_compaction_log_invalid") from None
+    if pending is not None:
+        raise LauncherRefusal("runtime_admission_compaction_pending")
+    head = stage.read_admission_head(root)
+    if head is not None and head["status"] != "closed":
+        raise LauncherRefusal("runtime_admission_not_closed")
+    _guard_checks(root, None if head is None else stage.read_binding(root, head["binding_id"]))
+    if head is not None:
+        _sr1(root, head, manifest, probe_timeout=probe_timeout)
+
+
+def release_mode_log(log: dict) -> bool:
+    """A compaction log planned in release mode (SC-1b writes intent.mode = 'release')."""
+    return log["intent"].get("mode") == "release"
+
+
+def _later_install_checks(root: Path, manifest: dict, *, probe_timeout: float) -> None:
+    """Installed epoch >= 5 (t0_controller_install.later_installs), before current moves.
+
+    A closed head passes SR-1. An open head is admitted only under a pending
+    release-mode log (D4, CR2-3), and then H's binding, recomputed by this
+    code, must equal the log's source binding (R3-OPS-2); K's authorized
+    binding rests on the projection invariant. An open head with no pending
+    release-mode log is an unknown head: close it with R-b or adopt first
+    (runtime_admission_not_closed, R4-OPS-2).
+    """
+    head = stage.read_admission_head(root)
+    closed = head is not None and head["status"] == "closed"
+    _guard_checks(root, stage.read_binding(root, head["binding_id"]) if closed else None)
+    if head is None:
+        return
+    if closed:
+        _sr1(root, head, manifest, probe_timeout=probe_timeout)
+        return
+    try:
+        pending = stage.pending_compaction(root)
+    except ValueError:
+        raise LauncherRefusal("runtime_admission_compaction_log_invalid") from None
+    if pending is None or not release_mode_log(pending):
+        raise LauncherRefusal("runtime_admission_not_closed")
+    _binding_equality(root, stage.read_binding(root, pending["intent"]["source_binding_id"]))
+
+
+def install_controller(root: Path, archive: Path, *, wall=time.time,
+                       probe_timeout: float | None = None, step_hook=None) -> dict:
+    """Install a controller under <root>/controller/<commit>; monotonic triple, atomic switch.
 
     The archive is verified (manifest hashes, CPython 3.13) and must declare
-    launcher_contract >= 3 and a controller_epoch at least the installed one.
-    Returns which installed slots the new controller closes for rollback
-    (format_epoch below its minimum) -- the rollback window.
+    launcher_contract >= 3 and a controller_epoch at least this code's.
+    SC-1a: the controller triple (epoch, revision, sources digest) is
+    monotone in (epoch, revision), an equal pair needs an equal digest
+    (CR2-9), and the epoch-5 checks (first_install or later_installs) run
+    read-only before current moves. ``step_hook(name)`` is called at
+    'checked' (before the switch) and 'switched' (before controller.json),
+    the two crash windows of rows T0 and T0S. Returns which installed slots
+    the new controller closes for rollback (format_epoch below its minimum).
     """
     root = Path(root).resolve()
+    probe_timeout = stage._PROBE_TIMEOUT_SECONDS if probe_timeout is None else probe_timeout
     manifest, files = stage._read_archive(Path(archive))
     epoch = manifest.get("controller_epoch", 0)
     if type(epoch) is not int or epoch < 1 or manifest.get("launcher_contract", 0) < stage.LAUNCHER_CONTRACT:
@@ -2178,6 +2330,11 @@ def install_controller(root: Path, archive: Path, *, wall=time.time) -> dict:
         raise LauncherRefusal("runtime_admission_controller_epoch_too_old")
     if "scripts/managed_launcher.pyc" not in files or "scripts/stage_runtime.pyc" not in files:
         raise LauncherRefusal("runtime_admission_controller_unmanaged")
+    try:
+        triple = stage.controller_triple(manifest, files)
+    except ValueError as error:
+        raise LauncherRefusal(str(error)) from None
+    _require_staged_installer(manifest)
     commit = manifest["git_commit"]
     try:
         installed = _read_optional(_records(root, "controller.json"))
@@ -2188,13 +2345,38 @@ def install_controller(root: Path, archive: Path, *, wall=time.time) -> dict:
         # Before the lease: the controller entry's own forward-epoch check (review F8) would
         # refuse with the same code, but as a lease error rather than this command's refusal.
         raise LauncherRefusal("runtime_admission_controller_downgrade")
-    # The install gate (review D4): allowed under a pending or invalid compaction log, so a
-    # corrected controller (epoch >= 3 above, never older than the installed one) can finish it.
+    # The install gate (review D4): the lease is taken under a pending or invalid compaction log, so
+    # a corrected controller can finish it; SC-1a's checks below decide which of those it admits.
     with stage.AdmissionController(root, allow_open_head=True, gate="install"):
         record_path = _records(root, "controller.json")
-        installed = _read_optional(record_path)
-        if installed is not None and installed.get("controller_epoch", 0) > epoch:
+        try:
+            installed = _read_optional(record_path)
+        except (OSError, ValueError):
+            installed = None  # damaged: keyed as epoch < 5, so the first_install checks run
+        installed_epoch = installed.get("controller_epoch", 0) if type(installed) is dict else 0
+        if type(installed_epoch) is not int:
+            installed_epoch = 0
+        if installed_epoch > epoch:
             raise LauncherRefusal("runtime_admission_controller_downgrade")
+        if epoch < stage.RELEASE_MODE_EPOCH:
+            pass  # an epoch-4 build of this code (test worlds with owners): today's install
+        elif installed_epoch >= stage.RELEASE_MODE_EPOCH:
+            # R4-OPS-4: the installed triple is the copied manifest under controller/current.
+            try:
+                current = stage.installed_controller_triple(root)
+            except ValueError as error:
+                raise LauncherRefusal(str(error)) from None
+            if triple[:2] < current[:2]:
+                raise LauncherRefusal("runtime_admission_controller_downgrade")
+            if triple[:2] == current[:2] and triple[2] != current[2]:
+                raise LauncherRefusal(CONTROLLER_REVISION_CONFLICT)  # CR2-9
+            _later_install_checks(root, manifest, probe_timeout=probe_timeout)
+        else:
+            # first_install (CR2-1): keyed on the installed controller.json epoch < 5, never on a
+            # file this install writes, so a repeat after a cut install runs the same checks.
+            _first_install_checks(root, manifest, probe_timeout=probe_timeout)
+        if step_hook is not None:
+            step_hook("checked")
         controllers = root / "controller"
         stage.private_directories(controllers)
         target = controllers / commit
@@ -2222,6 +2404,8 @@ def install_controller(root: Path, archive: Path, *, wall=time.time) -> dict:
             link.symlink_to(commit)
             os.replace(link, controllers / "current")
             _fsync_path(controllers)  # the switch itself
+        if step_hook is not None:
+            step_hook("switched")
         closed = []
         for release in sorted((root / "slots").glob("*/runtime/release.json")):
             try:
@@ -2236,7 +2420,8 @@ def install_controller(root: Path, archive: Path, *, wall=time.time) -> dict:
         stage._atomic_record(record_path, record)
         stage._atomic_record(_records(root, "launcher", f"controller-{stamp}.json"),
                              dict(record, closed_for_rollback=closed, previous=installed), immutable=True)
-    return {"commit": commit, "controller_epoch": epoch, "closed_for_rollback": closed,
+    return {"commit": commit, "controller_epoch": epoch, "controller_revision": triple[1],
+            "controller_sources_sha256": triple[2], "closed_for_rollback": closed,
             "path": str(controllers / "current" / "scripts" / "stage_runtime.pyc")}
 
 
