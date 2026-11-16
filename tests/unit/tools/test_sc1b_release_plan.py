@@ -451,8 +451,8 @@ def test_release_plan_refuses_an_unproven_copy_under_slots_but_not_the_legacy_sl
     # row P; the documented exit is rmdir, then the plan again.
     leftover = root / "slots" / ".prepare-sc1bcut"
     leftover.mkdir()
-    witness = cw.witness(root)
     _row_p(root, tmp_path, "h-prepare", unproven, plan)
+    witness = cw.witness(root)  # after row P's serve, which moves the head's run records
     assert _refusal(unproven, plan).report == {"paths": ["slots/.prepare-sc1bcut"]}
     assert cw.witness(root) == witness
     os.rmdir(leftover)
