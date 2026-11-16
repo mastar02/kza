@@ -120,3 +120,38 @@ class AudioBackend:
     def heard(self):
         arrays = [chunk for output in self.outputs for chunk in output.frames]
         return np.concatenate(arrays) if arrays else np.empty((0, 1), dtype=np.float32)
+
+
+class GatedZones:
+    """Zone output that pulls PCM on demand and can block before or inside the first chunk.
+
+    ``block`` applies to the zones in ``gated`` (all when None); ``plays`` records each zone played.
+    """
+
+    def __init__(self, *, block: str | None = None, gated: set[str] | None = None):
+        self.block = block  # None, 'before_pull' or 'after_first_chunk'
+        self.gated = gated
+        self.plays: list[str] = []
+        self.pulled = 0
+        self.waiting = threading.Event()
+        self.release = threading.Event()
+
+    def _hold(self, cancel_event):
+        self.waiting.set()
+        while not self.release.is_set() and not cancel_event.is_set():
+            self.release.wait(.01)
+
+    def play_stream_to_zone(self, zone_id, source, *, cancel_event=None, **kwargs):
+        self.plays.append(zone_id)
+        block = self.block if self.gated is None or zone_id in self.gated else None
+        if block == 'before_pull':
+            self._hold(cancel_event)
+            if cancel_event.is_set():
+                return False
+        for _chunk in source:
+            self.pulled += 1
+            if block == 'after_first_chunk':
+                self._hold(cancel_event)
+                if cancel_event.is_set():
+                    return False
+        return True

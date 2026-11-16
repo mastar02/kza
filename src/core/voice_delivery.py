@@ -74,6 +74,9 @@ class ResponseResult:
     speech_handled: bool = True
     spoken_segments: int = 0
     timeout_stage: ResponseStage | None = None
+    # True once the first PCM chunk was handed to a player. spoken_segments counts
+    # only segments that finished uncancelled, so a cut first sentence reports 0.
+    output_started: bool = False
 
     @property
     def success(self) -> bool:

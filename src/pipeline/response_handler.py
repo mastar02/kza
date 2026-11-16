@@ -50,6 +50,7 @@ class _Session:
     delivery: DeliveryState = DeliveryState.COMPLETE
     error: str | None = None
     spoken: int = 0
+    output_started: bool = False
     peak_queue: int = 0
     filler: str | None = None
     broadcast: bool = False
@@ -613,6 +614,7 @@ class ResponseHandler:
                         if chunk is None:
                             raise AudioPlaybackError("tts_returned_no_audio")
                         frames += len(chunk)
+                        session.output_started = True
                         yield chunk
                 finally:
                     close_source()
@@ -748,7 +750,8 @@ class ResponseHandler:
             delivery = session.delivery
         if delivery is DeliveryState.CANCELLED:
             generation = GenerationState.CANCELLED
-        return ResponseResult(text, generation, delivery, error or session.error, spoken_segments=session.spoken)
+        return ResponseResult(text, generation, delivery, error or session.error, spoken_segments=session.spoken,
+                              output_started=session.output_started)
 
     async def _wait_output(self, session: _Session, worker: asyncio.Task) -> None:
         await self._wait_output_until(session, worker)
@@ -844,7 +847,9 @@ class ResponseHandler:
             except TimeoutError as error:
                 raise ResponseTimedOut(ResponseStage.QUEUE) from error
             if not acquired:
-                return ResponseResult(utterance.text, GenerationState.CANCELLED, DeliveryState.CANCELLED)
+                # Cancelled while queued: no worker started, so no output.
+                return ResponseResult(utterance.text, GenerationState.CANCELLED, DeliveryState.CANCELLED,
+                                      output_started=False)
             session.queue.append(utterance)
             session.done = True
             worker = self._start_native(session, self._worker, session)
@@ -856,7 +861,7 @@ class ResponseHandler:
         except ResponseTimedOut as error:
             await self._stop_session(session)
             return ResponseResult(utterance.text, GenerationState.COMPLETE, DeliveryState.TIMED_OUT,
-                                  str(error), timeout_stage=error.stage)
+                                  str(error), timeout_stage=error.stage, output_started=session.output_started)
         except asyncio.CancelledError:
             await self._stop_session(session)
             raise

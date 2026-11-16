@@ -130,3 +130,104 @@ class TestSpeakWithLlmStreamRoomContext:
         )
 
         assert handler.zone_manager.play_stream_to_zone.call_args[0][0] == "zone_living"
+
+
+# ---------------------------------------------------------------------------
+# T034-U2: ResponseResult.output_started (notice delivery mapping input)
+# ---------------------------------------------------------------------------
+
+import asyncio  # noqa: E402
+
+from src.core.voice_delivery import DeliveryState, ResponseBudgets, ResponseStage  # noqa: E402
+from tests.mocks.audio_output import GatedZones  # noqa: E402
+
+
+def gated_handler(monkeypatch, zones, **kwargs):
+    monkeypatch.setattr(piper_tts, "sd", AudioBackend())
+    tts = MagicMock()
+    tts.synthesize.return_value = (np.ones(1600, dtype=np.float32), 0.1)
+    tts.sample_rate = 16000
+    del tts.synthesize_stream
+    return ResponseHandler(tts=tts, zone_manager=zones, streaming_enabled=False, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_output_started_is_true_once_a_pcm_chunk_reached_the_player(monkeypatch):
+    zones = GatedZones()
+    handler = gated_handler(monkeypatch, zones)
+    try:
+        result = await handler.aspeak("Oye, recuerda regar", zone_id="zone_living")
+    finally:
+        await handler.aclose()
+    assert result.success and result.spoken_segments == 1 and result.output_started is True
+    assert zones.pulled == 1
+
+
+@pytest.mark.asyncio
+async def test_living_barge_in_during_the_first_sentence_reports_output_started_with_zero_segments(monkeypatch):
+    """C02-NTC-0010 input: session.spoken counts finished segments only, so the cut sentence reports 0."""
+    zones = GatedZones(block='after_first_chunk')
+    handler = gated_handler(monkeypatch, zones)
+    try:
+        task = asyncio.create_task(handler.aspeak("Oye, recuerda regar", zone_id="zone_living"))
+        assert await asyncio.to_thread(zones.waiting.wait, 2)
+        assert await handler.cancel(zone_id="zone_living")  # as multi_room_audio_loop._trigger_barge_in issues it
+        result = await asyncio.wait_for(task, 2)
+    finally:
+        zones.release.set()
+        await handler.aclose()
+    assert result.delivery is DeliveryState.CANCELLED
+    assert result.spoken_segments == 0 and result.output_started is True
+
+
+@pytest.mark.asyncio
+async def test_cancel_before_the_first_chunk_reports_no_output(monkeypatch):
+    zones = GatedZones(block='before_pull')
+    handler = gated_handler(monkeypatch, zones)
+    try:
+        task = asyncio.create_task(handler.aspeak("Oye, recuerda regar", zone_id="zone_living"))
+        assert await asyncio.to_thread(zones.waiting.wait, 2)
+        assert await handler.cancel(zone_id="zone_living")
+        result = await asyncio.wait_for(task, 2)
+    finally:
+        zones.release.set()
+        await handler.aclose()
+    assert result.delivery is DeliveryState.CANCELLED
+    assert (result.spoken_segments, result.output_started, zones.pulled) == (0, False, 0)
+
+
+@pytest.mark.asyncio
+async def test_queue_stage_cancel_result_has_output_started_false(monkeypatch):
+    """C02-NTC-0011 input: a notice still waiting for the output is cancelled by the living barge-in."""
+    zones = GatedZones(block='after_first_chunk')
+    handler = gated_handler(monkeypatch, zones)
+    try:
+        busy = asyncio.create_task(handler.aspeak("Otra respuesta", zone_id="zone_hall"))
+        assert await asyncio.to_thread(zones.waiting.wait, 2)
+        queued = asyncio.create_task(handler.aspeak("Oye, recuerda regar", zone_id="zone_living"))
+        while handler.get_delivery_status()['pending'] == 0:
+            await asyncio.sleep(.005)
+        assert await handler.cancel(zone_id="zone_living")
+        result = await asyncio.wait_for(queued, 2)
+        zones.release.set()
+        assert (await asyncio.wait_for(busy, 2)).success
+    finally:
+        zones.release.set()
+        await handler.aclose()
+    assert result.delivery is DeliveryState.CANCELLED
+    assert result.spoken_segments == 0 and result.output_started is False
+    assert zones.pulled == 1  # only the other response played
+
+
+@pytest.mark.parametrize("block, started", [("after_first_chunk", True), ("before_pull", False)])
+@pytest.mark.asyncio
+async def test_timed_out_result_carries_output_started(monkeypatch, block, started):
+    zones = GatedZones(block=block)
+    handler = gated_handler(monkeypatch, zones, response_budgets=ResponseBudgets(delivery_s=.2))
+    try:
+        result = await asyncio.wait_for(handler.aspeak("Oye, recuerda regar", zone_id="zone_living"), 5)
+    finally:
+        zones.release.set()
+        await handler.aclose()
+    assert result.delivery is DeliveryState.TIMED_OUT and result.timeout_stage is ResponseStage.DELIVERY
+    assert result.spoken_segments == 0 and result.output_started is started
