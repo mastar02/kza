@@ -634,9 +634,10 @@ async def test_confirmed_speech_then_a_failing_step_is_never_spoken_again(schedu
     assert await scheduler._fire_reminder(r) is False  # inside the gap: nothing at all
     assert (await store.get_by_id(r.id)).state is ReminderState.ACTIVE
     if failing_step == "advance":
-        for gap in (1, 2):
+        for gap, next_gap in ((1, 2), (2, None)):
             clock.advance(gap)
             assert await scheduler._fire_reminder(r) is False  # the retried advance fails again
+            assert scheduler._holds[r.id].retry_at == (None if next_gap is None else clock() + next_gap)
             assert await scheduler.missed_reminder_on_arrival("u1", "cocina") == 0
         assert scheduler._holds[r.id].retry_at is None  # bounded: no timed retry any more, never spins
         assert await scheduler._next_timeout() is None
