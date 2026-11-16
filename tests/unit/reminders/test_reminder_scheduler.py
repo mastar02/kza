@@ -242,6 +242,21 @@ async def test_occurrence_that_becomes_late_while_speaking_does_not_execute(sche
     assert (await store.get_by_id(r.id)).state is ReminderState.FIRED
 
 @pytest.mark.asyncio
+async def test_sequence_that_becomes_late_between_actions_stops_executing(scheduler, store, mock_deps, clock):
+    from tests.mocks.home_control import ACCEPTED
+
+    async def slow_send(*args):
+        clock.advance(DEFAULT_LATE_ACTION_GRACE_S)
+        return ACCEPTED
+
+    mock_deps["ha_client"].call_service_once.side_effect = slow_send
+    r = await store.create("u1", "escena", clock() - 1, ha_actions=[ACTION, ACTION | {"service": "turn_off"}],
+                           scope=ReminderScope.SHARED)
+    assert await scheduler._fire_reminder(r) is True
+    mock_deps["ha_client"].call_service_once.assert_awaited_once_with("light", "turn_on", "light.patio", None)
+    assert await receipts(store) == [("confirmed", None), ("failed", "late_not_executed")]
+
+@pytest.mark.asyncio
 async def test_recurring_catch_up_executes_only_the_latest_on_time_occurrence(scheduler, store, mock_deps, clock):
     start = clock() - 4 * DAY
     latest = start

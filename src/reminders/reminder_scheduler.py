@@ -243,11 +243,12 @@ class ReminderScheduler:
 
     async def _deliver_occurrence(self, reminder: Reminder) -> bool:
         """Barrier, announce, act and advance one occurrence; hold it after any failure."""
-        current = await self._shared_occurrence(reminder)
-        if current is None or self._held_for_occurrence(current, self._clock()):
-            return False
-        spoken = False
+        current, spoken = reminder, False
         try:
+            resolved = await self._shared_occurrence(reminder)
+            if resolved is None or self._held_for_occurrence(resolved, self._clock()):
+                return False
+            current = resolved
             collapsed = await self._collapse_missed(current)
             if collapsed is None:
                 return False
@@ -438,11 +439,10 @@ class ReminderScheduler:
         reminder = await self._shared_occurrence(reminder)
         if reminder is None:
             return
-        late = self._is_late(reminder)
         for index, action in enumerate(reminder.ha_actions or []):
             identity = json.dumps([reminder.id, reminder.trigger_at, index], separators=(",", ":"), allow_nan=False)
             request_id = "reminder:" + hashlib.sha256(identity.encode()).hexdigest()
-            if late:
+            if self._is_late(reminder):
                 if await self._store.claim_home_action(request_id, action):
                     await self._store.finish_home_action(request_id, "failed", LATE_NOT_EXECUTED)
                 logger.warning("Late reminder home action not executed")
