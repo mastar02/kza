@@ -582,10 +582,13 @@ def test_the_epoch4_installer_carries_a_plain_log_and_epoch5_finishes_it(builds,
     compaction.compact_verify(root, started["compaction_id"])
     assert _serve(root, tmp_path, "verify").code == 0
     assert compaction.compact_retire(root, started["compaction_id"], scan=cw.no_units)["phase"] == "complete"
-    # The correct T0 is an equal-triple no-op, and a plan is admitted afterwards.
+    # The correct T0 is an equal-triple no-op, and a plan is admitted afterwards (R4-OPS-4). Since SC-1b
+    # every new log is release mode: NEW is the epoch-5 X5 (equal triple), never the epoch-4 head's release.
     _install(root, builds)
     assert _record(root)["commit"] == builds["manifests"]["x5"]["git_commit"]
-    assert cw.plan(root, builds["archives"]["x4"], "k2")["plan_sha256"]
+    assert cw.plan(root, builds["archives"]["x5"], "k2")["plan_sha256"]
+    with pytest.raises(compaction.CompactionRefusal, match="runtime_admission_compaction_release_epoch"):
+        cw.plan(root, builds["archives"]["x4"], "k2")
 
 
 def test_an_epoch4_controller_cannot_lease_an_epoch5_root(builds, t0_root, tmp_path):

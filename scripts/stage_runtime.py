@@ -4128,17 +4128,61 @@ def compaction_evidence_json(text: str, evidence_map: dict) -> str:
     return json.dumps(result, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
-def _compaction_authority_equivalent(root: Path, source: dict, candidate: dict, evidence_map: dict) -> bool:
+# SC-1b (sc-release-design v4 start.relocation_fix): the protected queues whose path the
+# compaction worker relocates into K (src/memory/owner_compaction.QUEUE_PATH_TABLES).
+_COMPACTION_QUEUE_TABLES = ("audio_write_intents", "pending_audio_deletions")
+
+
+def compaction_source_roots(intent: dict, source: dict) -> tuple[str, ...]:
+    """The state roots the worker relocates from: H's and every owner's (owner_compaction roots)."""
+    return tuple(sorted({source["state_root"]} | {owner["state_root"] for owner in intent["owners"]}))
+
+
+def _queue_path_in_k(value, roots: tuple[str, ...], destination: str):
+    """owner_compaction._relocated_value, on the controller side (no src import)."""
+    if type(value) is not str:
+        return value
+    matches = [item for item in roots if value == item or value.startswith(item.rstrip("/") + "/")]
+    if not matches:
+        return value
+    relative = PurePosixPath(value).relative_to(max(matches, key=len))
+    if ".." in relative.parts:
+        raise ValueError("privacy_authority_stale")
+    return str(Path(destination) / relative) if relative.parts else destination
+
+
+def _protected_queues(binding: dict) -> dict:
+    """H's rows of the relocated queue tables, per authority database (SC-1b)."""
+    stores = {}
+    state = Path(binding["state_root"])
+    for relative, schema in binding["authority"]["projection"]["tables"].items():
+        names = [name for name in _COMPACTION_QUEUE_TABLES if name in schema]
+        if not names:
+            continue
+        with _database_image(state / relative) as db:
+            for name in names:
+                cursor = db.execute("SELECT * FROM " + _quote(name))
+                stores.setdefault(relative, {})[name] = ([column[0] for column in cursor.description],
+                                                         [dict(row) for row in cursor])
+    return stores
+
+
+def _compaction_authority_equivalent(root: Path, source: dict, candidate: dict, evidence_map: dict,
+                                     source_roots: tuple[str, ...] | None = None) -> bool:
     """K's authority equals H's own projection with only the evidence substitution (design v2 R1).
 
     Reads H's rows only: no owner image. Every other protected projection,
     the deletion-ledger chain projection (v5 G2: count, max_seq, chain_head)
     included, must be identical; the known additive schema groups a newer
     controller's ledger may add are admitted empty, as for derivation.
+    SC-1b: the queued audio deletions and write intents are expected with
+    their path relocated from ``source_roots`` (default: H's own root) into
+    K's state, as the worker rewrote them.
     """
     if (type(evidence_map) is not dict or any(type(key) is not str or type(value) is not str
             or not _hex64(key) or not _hex64(value) for key, value in evidence_map.items())):
         raise ValueError("privacy_authority_stale")
+    roots = (source["state_root"],) if source_roots is None else tuple(source_roots)
     expected = json.loads(_canonical_json(source["authority"]["projection"]))
     for relative, (columns, rows) in _protected_suggestions(source).items():
         hashes = []
@@ -4147,6 +4191,12 @@ def _compaction_authority_equivalent(root: Path, source: dict, candidate: dict, 
             value["evidence_json"] = compaction_evidence_json(row["evidence_json"], evidence_map)
             hashes.append(_digest([_typed(value[column]) for column in columns]))
         expected["tables"][relative]["suggestions_policy_v1"] = {"columns": columns, "row_hashes": sorted(hashes)}
+    for relative, tables in _protected_queues(source).items():
+        for name, (columns, rows) in tables.items():
+            hashes = [_digest([_typed(_queue_path_in_k(row[column], roots, candidate["state_root"])
+                                      if column == "path" else row[column]) for column in columns])
+                      for row in rows]
+            expected["tables"][relative][name] = {"columns": columns, "row_hashes": sorted(hashes)}
     _expect_empty_schema_additions(expected, candidate["authority"]["projection"])
     return candidate["authority"] == {"schema_version": 1, "digest": _digest(expected), "projection": expected}
 
@@ -4177,7 +4227,8 @@ def _validate_compaction_capability(root: Path, head: dict, source: dict, candid
             return False
         if verify_closed_binding(root, head["binding_id"]) != source:
             return False
-        if not _compaction_authority_equivalent(root, source, candidate, record["evidence_map"]):
+        if not _compaction_authority_equivalent(root, source, candidate, record["evidence_map"],
+                                                compaction_source_roots(pending["intent"], source)):
             return False
         return (_binding_snapshot(root, source["slot"]) == source
                 and _binding_snapshot(root, candidate["slot"]) == candidate

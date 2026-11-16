@@ -22,6 +22,12 @@ change:
 * utterances.audio_path, a path under H or an owner, to the same relative
   path under K (stricter than the design, which did not list this column:
   without it a retained utterance would point into a destroyed state).
+* pending_audio_deletions.path and audio_write_intents.path (SC-1b,
+  sc-release-design v4 start.relocation_fix), the queued deletions and write
+  intents of ambient audio, the same way: a value under H or an owner is
+  admitted and relocated; one that names H or an owner without being under
+  it refuses. Both tables are protected, so A1 remaps H's expected projection
+  the same way (stage_runtime._compaction_authority_equivalent).
 
 Any other absolute locator of H or an owner inside a database refuses
 (compaction_absolute_locator). Refusal codes are content-free.
@@ -46,7 +52,13 @@ SCHEDULING_TABLES = frozenset({"erasure_targets", "erasure_steps", "policy_index
 # Columns compaction may rewrite, with the rule that rewrites them.
 RELOCATED_COLUMNS = {("wake_clips_v1", "target_id"): "target_id_map",
                      ("suggestions_policy_v1", "evidence_json"): "evidence",
-                     ("utterances", "audio_path"): "path"}
+                     ("utterances", "audio_path"): "path",
+                     ("pending_audio_deletions", "path"): "path",
+                     ("audio_write_intents", "path"): "path"}
+# Path locators relocated under K (rule "path"); a value naming H or an owner must lie under it.
+PATH_COLUMNS = tuple(sorted(key for key, rule in RELOCATED_COLUMNS.items() if rule == "path"))
+# SC-1b relocation fix: the two protected queues whose path is their primary key.
+QUEUE_PATH_TABLES = frozenset({"pending_audio_deletions", "audio_write_intents"})
 # Files the derivation itself writes into K beside the cloned state.
 DERIVATION_FILES = frozenset({".kza-target-ownership.json", ".kza-payload-preparation.json",
                               ".kza-state-binding.json"})
@@ -181,11 +193,32 @@ def _check_locators(snapshot: ClosedStateSnapshot, roots: tuple[str, ...]) -> No
         for name, column, value in _text_values(database):
             if not any(needle in value for needle in needles):
                 continue
-            if (name, column) == ("utterances", "audio_path"):
+            if (name, column) in PATH_COLUMNS:
                 _require(any(_under(value, root) for root in roots), "absolute_locator:" + name + "." + column)
                 continue
             raise CompactionCloneError("runtime_admission_compaction_absolute_locator:" + relative
                                        + ":" + name + "." + column)
+
+
+def _relocated_value(value, roots: tuple[str, ...], destination: Path):
+    """A path column's value in K: relocated when it lies under H or an owner, else unchanged."""
+    if type(value) is str and any(_under(value, root) for root in roots):
+        return relocate_path(value, roots, destination)
+    return value
+
+
+def _check_queue_relocations(snapshot: ClosedStateSnapshot, roots: tuple[str, ...], destination: Path) -> None:
+    """SC-1b: the queues' paths are primary keys; two H rows that relocate to one K path refuse.
+
+    Many-to-one relocation (an owner's file and H's file at the same relative
+    path) would make K's UPDATE violate the key: refused here, read-only and
+    content-free, before anything is written.
+    """
+    for _relative, database in sorted(snapshot.manifest["databases"].items()):
+        for name in sorted(QUEUE_PATH_TABLES & set(database["tables"])):
+            values = [row["path"] for row in database["tables"][name]["rows"]]
+            relocated = [_relocated_value(value, roots, destination) for value in values]
+            _require(len(set(relocated)) == len(relocated), "locator_collision:" + name + ".path")
 
 
 def _events_rows(snapshot: ClosedStateSnapshot, relative: str) -> dict:
@@ -238,6 +271,7 @@ def plan_compaction_clone(latest: ClosedStateSnapshot, *, now: float, destinatio
     _require(all(Path(root).is_absolute() and not _under(str(destination), root) and not _under(root, str(destination))
                  for root in roots), "destination_invalid")
     _check_locators(latest, roots)
+    _check_queue_relocations(latest, roots, destination)
     relocations = target_relocations(latest, privacy_relative, roots, destination)
     evidence_map = _evidence_map(latest, privacy_relative, relocations)
     _check_evidence(latest, privacy_relative, relocations, evidence_map, destination)
@@ -262,12 +296,13 @@ def _identity_proof(plan: CompactionClonePlan, destination: Path) -> dict:
 
 
 def _relocate_columns(plan: CompactionClonePlan, destination: Path) -> dict:
-    """Rewrite evidence_json and audio_path in K (wake clip targets are the journal's)."""
+    """Rewrite evidence_json and the path columns in K (wake clip targets are the journal's)."""
     stage = _stage()
     counts = {"evidence_json": 0, "audio_path": 0}
+    counts.update({name + "_path": 0 for name in sorted(QUEUE_PATH_TABLES)})
     for relative, database in sorted(plan.latest.manifest["databases"].items()):
         tables = database["tables"]
-        if "suggestions_policy_v1" not in tables and "utterances" not in tables:
+        if "suggestions_policy_v1" not in tables and not any(name in tables for name, _column in PATH_COLUMNS):
             continue
         path = destination / relative
         _require(path.is_file() and path.resolve() == path, "destination_database")
@@ -287,6 +322,13 @@ def _relocate_columns(plan: CompactionClonePlan, destination: Path) -> dict:
                         db.execute("UPDATE utterances SET audio_path=? WHERE id=?",
                                    (relocate_path(value, plan.source_roots, destination), identity))
                         counts["audio_path"] += 1
+            for name in sorted(QUEUE_PATH_TABLES & set(tables)):
+                # SC-1b: rowid, since the path itself is the key being rewritten.
+                for rowid, value in db.execute("SELECT rowid,path FROM " + _quote(name)).fetchall():
+                    new = _relocated_value(value, plan.source_roots, destination)
+                    if new != value:
+                        db.execute("UPDATE " + _quote(name) + " SET path=? WHERE rowid=?", (new, rowid))
+                        counts[name + "_path"] += 1
     return counts
 
 
@@ -303,6 +345,8 @@ def _expected_rows(plan: CompactionClonePlan, name: str, rows: list[dict], journ
                      if type(row["audio_path"]) is str and any(_under(row["audio_path"], root)
                                                                for root in plan.source_roots)
                      else row["audio_path"]) for row in rows]
+    if name in QUEUE_PATH_TABLES:
+        return [dict(row, path=_relocated_value(row["path"], plan.source_roots, plan.destination)) for row in rows]
     return rows
 
 
