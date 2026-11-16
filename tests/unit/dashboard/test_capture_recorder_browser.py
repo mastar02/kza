@@ -40,7 +40,8 @@ function fixture(config={}) {
   onRetiring(){events.push('retiring');}});
   function pcm(proc){proc.onaudioprocess({inputBuffer:{getChannelData(){reads++;return new Float32Array([0,0.3,0.6,-0.3,-0.6,-0.9]);}}});}
   const encode=(samples,rate)=>{events.push('encode');assert.equal(rate,16000);return {samples:[...samples],rate};};
-  return {owner,events,contexts,track,stream,fire,pcm,encode,reads:()=>reads};
+  const scheduled=delay=>[...timers.values()].some(v=>v.delay===delay);
+  return {owner,events,contexts,track,stream,fire,scheduled,pcm,encode,reads:()=>reads};
 }
 """
 
@@ -103,6 +104,18 @@ await assert.rejects(recording,/capture_retirement_unconfirmed/);
 await assert.rejects(f.owner.stop(),/capture_retirement_unconfirmed/);
 assert.equal(f.events.includes('retire'),false);assert.equal(f.owner.sampleCount(),0);
 assert.equal(f.events.filter(x=>x==='context-close-enter').length,1);
+assert.equal(f.scheduled(2000),false);
+""",
+    "lost-retire-is-retried": r"""
+let failures=2;
+const f=fixture({fetch:async(_p,_o,action)=>action==='retire'&&failures-->0?{ok:false,status:503,json:async()=>({})}:null});
+await assert.rejects(f.owner.stop(),/capture_recorder_unavailable/);
+assert.equal(f.events.filter(x=>x==='retire').length,1);assert.ok(f.scheduled(2000));
+f.fire(2000);await until(()=>f.events.filter(x=>x==='retire').length===2);
+await until(()=>f.scheduled(2000));assert.equal(f.events.filter(x=>x==='retire').length,2);
+f.fire(2000);await until(()=>f.events.filter(x=>x==='retire').length===3);
+await f.owner.stop();
+assert.equal(f.events.filter(x=>x==='retire').length,3);assert.equal(f.scheduled(2000),false);
 """,
 }
 

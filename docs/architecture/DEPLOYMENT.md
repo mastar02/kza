@@ -337,6 +337,178 @@ autocontenidas y la delegación a estados dueños se apaga. Desde SC-2
   transferencia: R1 se toma sólo del archivo cuyo sha256 fija el runbook de R1
   (paso obligatorio antes de W1).
 
+#### R5V-1: dueños de captura arrastrados de un arranque anterior (2026-11-15)
+
+Hallazgo R5V-1 de la revisión del diseño v4 (`t040-t041/sc-release-design-v4.json`).
+El token de un grabador (navegador o cliente nativo) vive sólo en la memoria
+de la página o del proceso. `_initialize` pasa cada fila `active` a `unknown`
+en cada arranque. Si la pestaña se cerró sin `retire` durante un reinicio,
+nadie puede volver a retirar esa fila. Hasta 81ed568, `drain()` esperaba su ACK:
+toda parada gestionada quedaba colgada hasta el SIGKILL de `TimeoutStopSec`,
+sin recibo de cierre (head `UNKNOWN` en cada parada, y la compactación y R1
+necesitaban recuperación cada vez). Además, un mute total quedaba en
+`muting` y el unmute se rechazaba con `capture_control_busy`.
+
+Arreglo técnico (opción e, rama `r1b1-orphan-recorder`, sin release). Es una
+**decisión técnica**, no un reconocimiento pendiente del usuario. La regla del
+2026-11-04 (`docs/research/2026-11-04-global-capture-control.json`) es un
+registro técnico: exige un recibo de parada explícito de todo dueño
+`active`/`unknown`. El arreglo conserva su parte de confirmación («Unknown/foreign
+participants cannot receive confirmation»: `total_mute_confirmed` sigue falso
+mientras exista uno). Sólo deja de exigir ese recibo a la parada, al cierre y a
+la fase `muted` cuando el dueño quedó `unknown` al arrancar y no volvió a
+hablar con el proceso. Con eso restituye la garantía H0 del usuario: el mute
+siempre se puede reactivar desde el control autenticado. La versión
+anterior de este texto (5b40447) lo presentaba como un visto bueno
+bloqueante del usuario; no lo es.
+
+- Las filas que ya estaban `unknown` al arrancar este proceso quedan como
+  *arrastradas* (`carried`). `drain()`, el `pre_close` del testigo y
+  `verify_closed` esperan sólo `pending_live()`, que no las incluye. El
+  servidor no les concede activación ni permiso de captura (`poll` da
+  `capture_allowed: false`). Las subidas no dependen del token del grabador:
+  `capture_ingress` y `CaptureControl.admit_upload` las admiten por la sesión
+  de administrador y la política global, así que una pestaña que sobrevivió
+  sólo deja de subir por su propio sellado (`sealed`) del lado del cliente.
+- Premisa: el servidor no distingue un token perdido de un titular que
+  sobrevivió al reinicio (una pestaña abierta o un cliente nativo como
+  `scripts/train_wakeword.py` o zone_setup). No esperar a ese titular depende
+  de los monitores de cierre seguro de cada cliente: el nativo consulta cada
+  0,25 s con 1 s de timeout y el navegador cada 0,5 s con 5 s de timeout; ante
+  un fallo o `retirement_required` cada uno sella su captura.
+- Un titular que presenta su token a `poll` o `activate` (con su tipo, antes
+  de `aclose`) demuestra que está vivo: deja de estar arrastrado y las drains
+  vuelven a esperar su `retire`, que el cliente envía al ver
+  `retirement_required`. Sólo quedan sin esperar los titulares que nunca
+  contactan al proceso nuevo. Si uno contacta después de que la drain del
+  cierre terminó y no retira, el cierre se rechaza (sin recibo), como con
+  cualquier dueño vivo.
+- El silencio nunca cuenta como ACK. `pending()` sigue contándolas: mientras
+  exista una, `total_mute_confirmed` es falso (el panel no muestra «Captura
+  global pausada y confirmada»). La prueba de cierre del testigo
+  (`verify_closed`) da `capture_permissions_retired: false` con
+  `capture_permissions_carried: N`, pero sólo en memoria: el recibo de
+  admisión guarda únicamente `graph_closed`, `privacy_closed`, `sdk_closed` y
+  `native_closed`, así que se escribe igual y no se distingue de uno limpio.
+  Lo único observable es una advertencia sin contenido que el cierre registra
+  antes de cerrar el logging (`[Admission] closing with N carried capture
+  permission(s) never acknowledged; the receipt does not record them`) y las
+  filas de `capture_browser_recorders` en el estado. Guardar el conteo en el
+  recibo es un cambio de esquema que queda para SC: el diseño v4 lo prevé en
+  modo verificación con la misma clave, `capture_permissions_carried`.
+- Los dueños emitidos por el proceso actual mantienen la barrera completa de ACK
+  explícito. La capacidad de 256 cuenta sólo esos dueños vivos. Al arrancar se
+  registra únicamente el conteo de filas arrastradas, sin tokens ni hashes.
+- Residuo: un dueño vivo (emitido por el proceso actual o reclamado) cuya
+  pestaña o cliente muere sin `retire` sigue bloqueando la parada de ese
+  proceso hasta el SIGKILL de `TimeoutStopSec`: sin recibo, head `UNKNOWN` y
+  recuperación para la compactación o R1. Es el síntoma de R5V-1, ahora una
+  vez por dueño perdido y no en cada parada. En el arranque siguiente esa
+  fila pasa a arrastrada. Mitigaciones:
+  - el estado de captura (`GET /api/capture/control`) informa
+    `live_capture_owners` (los que una parada esperará) y
+    `carried_capture_owners` (los que no); el panel de Privacidad muestra
+    ambos;
+  - los runbooks de R1 y de compactación exigen `live_capture_owners` = 0
+    justo antes de la parada gestionada;
+  - la página reintenta cada 2 s un `retire` fallido mientras siga abierta
+    (antes sólo lo reintentaba en `pagehide`).
+- Filas arrastradas sin tope: la capacidad sólo cuenta dueños vivos, así que
+  cada caída con N dueños activos suma N filas permanentes. `_read_cache` y
+  `_register` las recorren en cada mutación (costo lineal), y nada las acota
+  ni alerta salvo la advertencia de arranque. Con una sola, la pausa total no
+  se confirma hasta que un administrador las olvida (R1-B2, abajo). Antes
+  quedaba en `muting`; ahora llega a `muted` sin «confirmada». Un tope o un
+  umbral de alerta siguen sin existir.
+
+#### R1-B2: «Olvidar grabaciones perdidas» (2026-11-15)
+
+Decisión del usuario del 2026-11-15 (`r1b1_lost_recordings` en
+`t040-t041/user-decisions-20261110.json`, aceptada): las grabaciones perdidas
+(dueños arrastrados) las resuelve un administrador desde Privacidad con
+«Olvidar grabaciones perdidas», afirmando que no queda ninguna pestaña
+grabando. Queda un registro sin contenido. Hasta entonces el panel muestra
+cuántas hay y nunca dice «confirmada». Rechazadas: el retiro automático al
+arrancar y conservarlas para siempre.
+
+- Ruta: `POST /api/capture/control/forget-carried` (rama
+  `r1b1-orphan-recorder`, sin release). Cuerpo estricto
+  `{"expected_carried": N, "no_capture_running": true}`: `N` es el conteo
+  `carried_capture_owners` que la página mostró y la afirmación tiene que ser
+  literalmente `true`. Campos extra, claves duplicadas, tipos laxos (`1`,
+  `"true"`, `2.0`, `true` como conteo) o un cuerpo que no es JSON dan 422/415
+  sin tocar nada.
+- Permiso: `admin:manage`, el mismo del control de captura global, en la capa
+  de sesión (`_route_permissions` para `/api/capture/*`) y otra vez al crear el
+  `CaptureController`. Ningún rol de hogar ni de evaluación lo tiene; la voz o
+  la persona reconocida no eligen permisos. La autoridad del administrador se
+  vuelve a comprobar dentro de la transacción, también en la última
+  comprobación previa al commit: si vence antes de esa comprobación, se
+  revierte (403). Lo prueban tests de integración a través de
+  `CaptureControl.forget_carried` y de HTTP con una sesión que vence recién
+  cuando la transacción ya eligió las filas (R1B2-1).
+- Sólo olvida dueños **arrastrados**: filas `unknown` al arrancar este proceso
+  que ningún titular reclamó presentando su token. Nunca toca dueños vivos
+  (emitidos por este proceso o reclamados), ni reservas. Si el conteo actual
+  difiere de `N`, responde 409 `capture_carried_count_conflict` y no olvida
+  nada, así que una página vieja no puede olvidar dueños que no mostró. Si un
+  titular presenta su token mientras la transacción hace sus comprobaciones,
+  el olvido se revierte entero (409) y ese dueño pasa a vivo. El reclamo no
+  toma el lock del ledger, así que puede caer entre la última comprobación y
+  el commit (R1B2-3): en ese caso el olvido se confirma para los demás y la
+  fila de ese titular se restituye como `unknown` en una transacción
+  inmediata, antes de que ninguna lectura de caché ni `retire` vea el borrado.
+  Queda como dueño vivo: las drains y `total_mute_confirmed` esperan su
+  `retire`, la respuesta no lo cuenta en `forgotten_capture_owners` y el log
+  agrega `[CaptureRecorders] N carried owner(s) contacted this process as a
+  forget committed; kept as live owners`. Un titular que se presenta después
+  de esa restitución ya fue olvidado y recibe `retirement_required`.
+- Dos olvidos simultáneos (dos pestañas de administrador, una vieja) se
+  serializan: el lock del ledger cubre todo el olvido, su limpieza y la
+  restitución, así que uno que falla no puede borrar el conjunto que el otro
+  está olvidando y perder a un titular que volvió (R1B2-2).
+- Idempotente: sin dueños arrastrados devuelve 200 con
+  `forgotten_capture_owners: 0`, cualquiera sea `N`, y no registra nada.
+- Respuesta: el estado de captura más `forgotten_capture_owners`. Si no queda
+  otro dueño ni trabajo, `total_mute_confirmed` pasa a verdadero por las
+  reglas normales (fase `muted`, persistida, sellada, soportada, sin
+  pendientes). La prueba de cierre en memoria da entonces
+  `capture_permissions_retired: true` y `capture_permissions_carried: 0`, y el
+  cierre ya no registra la advertencia de dueños arrastrados.
+- Registro sin contenido: **sólo log**. `CaptureRecorders` registra
+  `[CaptureRecorders] an administrator forgot N carried owner(s), affirming
+  none is still recording` (nivel WARNING): el conteo, sin tokens, hashes ni
+  el sujeto del administrador. No se usa ninguna tabla: el contrato de
+  esquema de la época 1 está congelado (sin tablas, columnas ni valores de
+  enumeración nuevos), el ledger de borrados tiene un vocabulario cerrado y
+  la auditoría SQLite está apagada en R1. El registro dura lo que dure el
+  journal del servicio.
+- Las filas se borran de `capture_browser_recorders` con `state='unknown'`;
+  no hay cambio de esquema. Un titular olvidado que vuelve a consultar recibe
+  `state: retired` y `retirement_required: true`, y su `retire` es un no-op.
+- Panel de Privacidad (Captura global): con dueños arrastrados muestra
+  «Grabaciones perdidas: N» y, en fase `muted`, «Entrada sellada; la pausa no
+  se confirma mientras haya grabaciones perdidas». El botón «Olvidar
+  grabaciones perdidas» abre una confirmación con la casilla «Confirmo que
+  ninguna pestaña ni herramienta sigue grabando» y el botón «Olvidar N
+  grabaciones perdidas», que envía el conteo mostrado. Si el conteo cambia
+  mientras la confirmación está abierta, se cierra; un clic sobre la
+  confirmación vieja todavía en pantalla envía el conteo que mostraba, y el
+  servidor responde 409 si ya no coincide. Un cambio (olvidar, pausar o
+  reactivar) pulsado mientras corre la consulta periódica de 1 s se envía en
+  cuanto termina; un segundo cambio mientras otro está pendiente se rechaza
+  con «Ya hay un cambio en curso. Esperá su resultado antes de elegir otro.»
+  (R1B2-7). El panel rechaza un estado que diga confirmada con dueños vivos o
+  arrastrados.
+- Defensas CSRF de la ruta: cookie `SameSite=strict`, chequeo de `Origin` en
+  `require_dashboard_session` y exigencia de `Content-Type: application/json`.
+  Un test con sesión de operador (que sí tiene `admin:manage`) prueba que un
+  `Origin` ajeno da 403 y un cuerpo de formulario o `text/plain` da 415 sin
+  tocar nada (R1B2-4).
+- Límite: el olvido no detiene ninguna captura. Se apoya en la afirmación del
+  administrador y en los monitores de cierre seguro de los clientes (el
+  servidor ya no concedía nada a esos dueños).
+
 #### Contrato de esquema (época 1)
 
 SC-2 declara `SCHEMA_CONTRACT_EPOCH = 1` y `release.json` lo copia como

@@ -48,6 +48,7 @@ async def test_real_graph_and_public_sdk_close_produce_content_free_proof(tmp_pa
     assert ha_session.closed and witness._ha.close_returned
     assert proof["authority_lease_acquired"] is True
     assert proof["capture_permissions_retired"] is True
+    assert proof["capture_permissions_carried"] == 0
     assert {key: proof[key] for key in ("bindings_unchanged", "model_owners_closed",
         "graph_closed", "privacy_closed", "sdk_closed", "native_closed")} == dict.fromkeys(
             ("bindings_unchanged", "model_owners_closed", "graph_closed",
@@ -268,7 +269,11 @@ async def test_pending_remote_capture_cannot_become_a_universal_close_ack(tmp_pa
             recovered = CaptureRecorders(bundle.privacy, capture_allowed=lambda: control.capture_allowed)
             await recovered.initialize()
             control.recorders = recovered
+            # Carried at boot (R5V-1), but this holder presents its token: it
+            # is alive, so the close waits for its own retire again.
+            assert recovered.carried() == 1
             assert (await recovered.poll(issued["token"], actor, kind="calibration"))["state"] == "unknown"
+            assert recovered.carried() == 0
         owner = asyncio.create_task(work.run(native))
         preparation = None
         try:
@@ -297,6 +302,97 @@ async def test_pending_remote_capture_cannot_become_a_universal_close_ack(tmp_pa
                 await asyncio.gather(preparation, return_exceptions=True)
     with pytest.raises(RuntimeClosureError, match="^runtime_closure_pre_close_required$"):
         witness.verify_closed()
+
+
+async def test_silent_carried_owner_is_reported_not_awaited_by_close(tmp_path, monkeypatch):
+    """R5V-1: an owner unknown at boot whose holder never returns.
+
+    No holder presents the token, so the close does not wait for an ACK that
+    cannot arrive. The owner stays pending and unretired, and the proof says
+    so instead of claiming ``capture_permissions_retired``. The premise is the
+    client fail-closed monitor: a holder that outlived the restart either
+    polls (and is awaited again) or has sealed its own capture.
+    """
+    from src.memory.capture_control import CaptureController
+    from src.memory.capture_recorders import CaptureRecorders
+    from tests.mocks.application_restore import root_lease
+
+    async with application_graph(tmp_path, monkeypatch, Clock(time.time())) as bundle:
+        control = bundle.graph.capture_control
+        actor = root_lease(bundle)
+        actor = CaptureController.from_dashboard(actor.principal, actor.current)
+        issued = await control.recorders.register(actor, kind="calibration")
+        await control.recorders.activate(issued["token"], actor, kind="calibration")
+        await control.recorders.aclose()
+        recovered = CaptureRecorders(bundle.privacy, capture_allowed=lambda: control.capture_allowed)
+        await recovered.initialize()
+        control.recorders = recovered
+        assert recovered.carried() == recovered.pending() == 1
+        witness = RuntimeClosureWitness.capture(bundle.graph)
+        await asyncio.wait_for(witness.pre_close(), 2)
+        assert recovered.pending(kind="calibration") == recovered.carried() == 1
+    proof = witness.verify_closed()
+    assert proof["capture_permissions_retired"] is False
+    assert proof["capture_permissions_carried"] == 1
+    # Closed: a late token cannot reclaim the owner and change the proof.
+    assert (await recovered.poll(issued["token"], actor, kind="calibration"))["state"] == "unknown"
+    assert recovered.carried() == 1 and witness.verify_closed()["capture_permissions_carried"] == 1
+
+
+async def test_holder_reclaimed_after_the_close_drain_refuses_the_proof(tmp_path, monkeypatch):
+    """R1B1-5: verify_closed re-checks pending_live, not only the drain.
+
+    The close drain skipped a silent carried owner. Its holder then presents
+    the token before the owner set closes: it is alive and never retired, so
+    the proof is refused (no receipt) rather than reported as carried.
+    """
+    from src.memory.capture_control import CaptureController
+    from src.memory.capture_recorders import CaptureRecorders
+    from tests.mocks.application_restore import root_lease
+
+    async with application_graph(tmp_path, monkeypatch, Clock(time.time())) as bundle:
+        control = bundle.graph.capture_control
+        actor = root_lease(bundle)
+        actor = CaptureController.from_dashboard(actor.principal, actor.current)
+        issued = await control.recorders.register(actor, kind="calibration")
+        await control.recorders.activate(issued["token"], actor, kind="calibration")
+        await control.recorders.aclose()
+        recovered = CaptureRecorders(bundle.privacy, capture_allowed=lambda: control.capture_allowed)
+        await recovered.initialize()
+        control.recorders = recovered
+        witness = RuntimeClosureWitness.capture(bundle.graph)
+        await asyncio.wait_for(witness.pre_close(), 2)
+        assert (await recovered.poll(issued["token"], actor, kind="calibration"))["retirement_required"]
+        assert recovered.carried() == 0 and recovered.pending_live() == 1
+    with pytest.raises(RuntimeClosureError, match="^runtime_closure_capture_not_closed$"):
+        witness.verify_closed()
+
+
+async def test_pre_close_refuses_a_live_owner_left_by_a_returned_drain(tmp_path, monkeypatch):
+    """R1B1-5: pre_close checks pending_live itself, not only through drain."""
+    from src.memory.capture_control import CaptureController
+    from tests.mocks.application_restore import root_lease
+
+    async with application_graph(tmp_path, monkeypatch, Clock(time.time())) as bundle:
+        control = bundle.graph.capture_control
+        recorders = control.recorders
+        actor = root_lease(bundle)
+        actor = CaptureController.from_dashboard(actor.principal, actor.current)
+        issued = await recorders.register(actor, kind="calibration")
+        await recorders.activate(issued["token"], actor, kind="calibration")
+        try:
+            witness = RuntimeClosureWitness.capture(bundle.graph)
+
+            async def returned_early():
+                recorders.seal()
+
+            with monkeypatch.context() as patch:
+                patch.setattr(recorders, "drain", returned_early)
+                with pytest.raises(RuntimeClosureError,
+                                   match="^runtime_closure_capture_permissions_pending$"):
+                    await witness.pre_close()
+        finally:
+            await recorders.retire(issued["token"], kind="calibration")
 
 
 async def test_real_ha_session_closed_flag_does_not_replace_public_close_return(monkeypatch):

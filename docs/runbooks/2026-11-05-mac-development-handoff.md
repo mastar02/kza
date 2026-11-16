@@ -1116,6 +1116,108 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   revisión independiente de U3b-0e5); las decisiones del usuario ya no la
   bloquean.
 
+## R5V-1 — dueños de captura huérfanos ya no bloquean parada ni mute (2026-11-15)
+
+Rama `r1b1-orphan-recorder` desde `81ed568`, en un clon del roadmap. Sin
+integrar ni subir. Evidencia:
+`data/autonomous-roadmap-20261102/t040-t041/r1b1-evidence.json`.
+
+- Problema confirmado por la ruta real de parada. Si una pestaña o un cliente
+  nativo pierde su token en un reinicio, queda una fila `unknown` que nadie
+  puede retirar. Con eso, toda parada gestionada se colgaba sin recibo y
+  dejaba el head en `UNKNOWN`. Un mute total además quedaba en `muting` sin
+  unmute posible, contra la garantía H0 de reactivar con un control
+  autenticado.
+- Arreglo técnico (opción e): las filas `unknown` al arrancar quedan como
+  *arrastradas*. Drain, `pre_close` y `verify_closed` ya no las esperan;
+  `pending()` y `total_mute_confirmed` sí las cuentan. Un titular que
+  presenta su token a `poll` o `activate` deja de estar arrastrado y vuelve a
+  ser esperado. Para los que nunca contactan, la barrera depende de los
+  monitores de cierre seguro de los clientes (nativo 0,25 s/1 s, navegador
+  0,5 s/5 s). Es una decisión técnica, no un reconocimiento del usuario: la
+  regla del 2026-11-04 («active/unknown owners require explicit stop
+  receipt») es un registro técnico; el arreglo conserva «unknown participants
+  cannot receive confirmation» y restituye la garantía H0 del usuario (el mute
+  siempre se puede reactivar). Sólo la parada y el cierre dejan de esperar a
+  esos dueños. La prueba de cierre en
+  memoria da `capture_permissions_retired: false` y
+  `capture_permissions_carried` (clave del diseño v4); el recibo no los guarda,
+  y el cierre sólo deja una advertencia con el conteo en el log. Los dueños
+  del proceso actual mantienen la barrera de ACK. La capacidad cuenta sólo
+  dueños vivos. Detalle en DEPLOYMENT (R5V-1).
+- Tests: el test que reproduce el problema
+  (`test_capture_orphan_owner_stop.py`) falla en 81ed568 y pasa con el
+  arreglo. Tras la revisión 1, los tests de reinicio de navegador, de los
+  cinco tipos nativos y el caso `unknown` de `test_runtime_closure` vuelven a
+  su contrato de 81ed568: el titular presenta su token, así que el cierre
+  espera su `retire`. Tests nuevos cubren el dueño arrastrado silencioso, el
+  que reaparece durante una drain o después de la drain del cierre, dos
+  reinicios seguidos y los términos de `pending_live`.
+- Revisión 1 (R1B1-1 a R1B1-7), aplicada en la misma rama: reclamo por token
+  (`poll`/`activate`), premisa de los monitores documentada, advertencia con
+  el conteo al cerrar y clave `capture_permissions_carried`, conteos
+  `live_capture_owners`/`carried_capture_owners` en el estado y el panel,
+  preflight de dueños vivos en los runbooks de R1 y compactación, reintento
+  de `retire` en la página, y redacción corregida sobre subidas y filas sin
+  tope. Mutantes: 33 de 33 muertos (30 en la primera corrida; M5, N2 y N8
+  después, con tests nuevos). Corridas dirigidas en la evidencia (`review_round_1`).
+- Corrección de 5b40447: R1B1-1 no necesita un visto bueno del usuario ni
+  bloquea la integración por eso. Es una decisión técnica sobre un registro
+  técnico (ver arriba y DEPLOYMENT R5V-1).
+- Las filas arrastradas se resuelven con R1-B2 (abajo), según la decisión del
+  usuario del 2026-11-15.
+
+## R1-B2 — «Olvidar grabaciones perdidas» desde Privacidad (2026-11-15)
+
+Misma rama `r1b1-orphan-recorder`, sin integrar ni subir. Decisión del
+usuario `r1b1_lost_recordings` (aceptada el 2026-11-15): un administrador
+olvida las grabaciones perdidas desde Privacidad, afirmando que no queda
+ninguna pestaña grabando; queda un registro sin contenido; hasta entonces el
+panel muestra cuántas hay y nunca dice «confirmada». Rechazadas: retiro
+automático al arrancar y conservarlas para siempre. Evidencia:
+`data/autonomous-roadmap-20261102/t040-t041/r1b1-evidence.json`, clave `r1b2`.
+
+- `POST /api/capture/control/forget-carried` con
+  `{"expected_carried": N, "no_capture_running": true}` (estricto). Permiso
+  `admin:manage`, el del control de captura global; ningún rol de hogar.
+- Olvida sólo dueños arrastrados (desconocidos al arrancar y no reclamados
+  por su token), nunca vivos ni reservas. Conteo distinto: 409 sin cambios.
+  Un titular que se presenta mientras la transacción hace sus comprobaciones
+  la revierte (409). Si lo hace entre la última comprobación y el commit, el
+  olvido vale para los demás y su fila se restituye en seguida como dueño
+  vivo (R1B2-3). Dos olvidos simultáneos se serializan bajo el lock del
+  ledger (R1B2-2). Sin dueños arrastrados es un no-op (200,
+  `forgotten_capture_owners: 0`).
+- Registro sin contenido sólo en el log (WARNING con el conteo): el contrato
+  de esquema de la época 1 está congelado y la auditoría está apagada en R1.
+  Sin tablas, columnas ni valores nuevos; el pin del contrato pasa.
+- Después, si no queda otro dueño, `total_mute_confirmed` vuelve a ser
+  verdadero por las reglas normales y la prueba de cierre da
+  `capture_permissions_retired: true`.
+- Panel: «Grabaciones perdidas: N», botón «Olvidar grabaciones perdidas»,
+  confirmación con casilla y botón «Olvidar N grabaciones perdidas»; un
+  conteo nuevo cierra la confirmación. Detalle en DEPLOYMENT (R1-B2).
+- Tests: unitarios de `CaptureRecorders.forget_carried`, integración con la
+  aplicación real (mute confirmado tras olvidar, dueño vivo intacto, parada
+  gestionada con prueba limpia), HTTP (cuerpo estricto, 409, roles 403/401),
+  permisos de ruta y node del panel. Resultados y mutantes en la evidencia.
+- Revisión 1 (R1B2-1 a R1B2-7, veredicto `changes_needed`), aplicada en la
+  misma rama, un commit por hallazgo: tests de integración y HTTP de la
+  recomprobación de autoridad dentro de la transacción (mata el mutante X1
+  del revisor); olvidos serializados bajo el lock del ledger; restitución del
+  titular que vuelve entre la última comprobación y el commit; test de
+  `Origin` ajeno y cuerpo de formulario con sesión de operador; test del
+  conteo mostrado en el panel (mata X7); el panel encola un cambio pulsado
+  durante la consulta periódica en vez de descartarlo. La evidencia ya no
+  marca `needs_user_decision` en el nivel superior: la pregunta vieja quedó
+  como histórica y reemplazada por `r1b2.wording_correction`. Corridas
+  dirigidas en Mac: 225 y 99 pasados (dos procesos), node del panel 13/13 y
+  `test_obs_panel.cjs` 23/23. Mutantes: 44 de 44 muertos (los 32 originales,
+  B2/B3/B10/B11 re-anclados al código nuevo, más X1, X7 y uno por regla
+  nueva). Detalle en `r1b2.review_round_1`.
+- Pendiente: revisión independiente de la ronda 1; el visto bueno visual del
+  panel sigue con el usuario como en las demás pantallas.
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.

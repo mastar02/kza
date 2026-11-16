@@ -5,7 +5,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.dashboard.auth import require_dashboard_session, session_guard
 from src.dashboard.authority import DashboardPrincipal
@@ -16,6 +16,25 @@ class CaptureBody(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     muted: bool
     expected_revision: int = Field(ge=0)
+
+
+class ForgetCarriedBody(BaseModel):
+    """Explicit confirmation to forget lost recordings (R1-B2).
+
+    ``expected_carried`` is the carried count the page showed; the
+    affirmation that no tab or tool is still recording must be literally true.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    expected_carried: int = Field(ge=0)
+    no_capture_running: bool
+
+    @field_validator("no_capture_running")
+    @classmethod
+    def _affirmed(cls, value: bool) -> bool:
+        if value is not True:
+            raise ValueError("no_capture_running_not_affirmed")
+        return value
 
 
 class _CaptureRoute(APIRoute):
@@ -99,5 +118,24 @@ def register_capture_routes(app, *, control=None) -> None:
                 raise HTTPException(503, detail="capture_control_unavailable") from None
         finally:
             payload = body = None
+
+    @router.post("/forget-carried")
+    async def forget_carried(request: Request, actor: CaptureController = Depends(controller)):
+        if request.headers.get("content-type", "").partition(";")[0].strip().lower() != "application/json":
+            raise HTTPException(415, detail="capture_control_json_required")
+        try:
+            payload = json.loads(await request.body(), object_pairs_hook=_unique_object)
+            body = ForgetCarriedBody.model_validate(payload)
+        except ValueError:
+            raise HTTPException(422, detail="invalid_capture_forget_body") from None
+        try:
+            actor.require_current()
+            return await service().forget_carried(body.expected_carried, actor)
+        except PermissionError:
+            raise HTTPException(403, detail="capture_control_denied") from None
+        except ValueError:
+            raise HTTPException(409, detail="capture_carried_count_conflict") from None
+        except RuntimeError:
+            raise HTTPException(503, detail="capture_control_unavailable") from None
 
     app.include_router(router)

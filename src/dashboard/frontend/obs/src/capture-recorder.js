@@ -11,7 +11,7 @@
     const later = options.setTimeout || root.setTimeout.bind(root);
     const cancelTimer = options.clearTimeout || root.clearTimeout.bind(root);
     let token = null, sealed = false, stopPromise = null, heartbeat = null;
-    let activation = null, cleanupFailed = false;
+    let activation = null, cleanupFailed = false, retireSent = false, retireRetry = null;
     const operations = new Set(), resources = new Set(), uploads = new Set(), blobs = [];
     let owner;
 
@@ -215,13 +215,22 @@
         if (activation) await activation.catch(() => {});
         if (cleanupFailed || resources.size) throw Error('capture_retirement_unconfirmed');
         if (token) {
+          retireSent = true;
           const value = await json('retire', { token }, true);
           if (value.retired !== true) throw Error('capture_retirement_unconfirmed');
           token = null;
         }
         owners.delete(owner);
       })();
-      stopPromise.catch(() => { stopPromise = null; });
+      stopPromise.catch(() => {
+        stopPromise = null;
+        // A lost retire keeps the token and would hold the server's next
+        // managed stop: retry while this page lives, not only on pagehide.
+        if (token && retireSent && retireRetry === null) {
+          retireRetry = later(() => { retireRetry = null; stop().catch(() => {}); },
+            options.retireRetryMs || 2000);
+        }
+      });
       return stopPromise;
     }
 

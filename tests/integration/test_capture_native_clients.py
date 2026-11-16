@@ -141,9 +141,14 @@ async def test_native_active_restart_is_unknown_until_capability_retirement(tmp_
     draining = None
     try:
         await recovered.initialize()
+        # Every issued owner is carried until it presents its token; the reservation is not.
+        assert recovered.carried() == recovered.pending() - 1
         state = await recovered.poll(active["token"], actor(), kind="calibration")
         assert state["state"] == "unknown" and not state["capture_allowed"]
         assert recovered.pending(kind="browser") == 0
+        # R5V-1: every holder presented its token after the restart, so none
+        # stays carried and drain awaits each one's own retire.
+        assert recovered.carried() == 0 and recovered.pending_live() == recovered.pending()
         draining = asyncio.create_task(recovered.drain())
         await until(lambda: recovered.pending() == 1)
         assert not draining.done()
@@ -304,9 +309,14 @@ async def test_restart_keeps_training_unknown_until_its_own_retirement(tmp_path)
     draining = None
     try:
         await recovered.initialize()
+        # Every issued owner is carried until it presents its token; the reservation is not.
+        assert recovered.carried() == recovered.pending() - 1
         for entry, kind in ((calibration, "calibration"), (training, "wakeword_training")):
             state = await recovered.poll(entry["token"], actor(), kind=kind)
             assert state["state"] == "unknown" and not state["capture_allowed"]
+        # R5V-1: every holder presented its token after the restart, so none
+        # stays carried and drain awaits each one's own retire.
+        assert recovered.carried() == 0 and recovered.pending_live() == recovered.pending()
         draining = asyncio.create_task(recovered.drain())
         await until(lambda: recovered.pending() == 2)
         assert not draining.done()
@@ -441,10 +451,15 @@ async def test_restart_preserves_three_native_unknown_kinds_until_separate_recei
     draining = None
     try:
         await recovered.initialize()
+        # Every issued owner is carried until it presents its token; the reservation is not.
+        assert recovered.carried() == recovered.pending() - 1
         for token, kind in issued:
             state = await recovered.poll(token, actor(), kind=kind)
             assert state["state"] == "unknown" and state["capture_allowed"] is False
         assert recovered.pending(kind="browser") == 0
+        # R5V-1: every holder presented its token after the restart, so none
+        # stays carried and drain awaits each one's own retire.
+        assert recovered.carried() == 0 and recovered.pending_live() == recovered.pending()
         draining = asyncio.create_task(recovered.drain())
         await until(lambda: recovered.pending() == 3)
         assert not draining.done()
@@ -586,10 +601,15 @@ async def test_restart_keeps_four_native_kinds_unknown_and_zone_reservation_reti
     draining = None
     try:
         await recovered.initialize()
+        # Every issued owner is carried until it presents its token; the reservation is not.
+        assert recovered.carried() == recovered.pending() - 1
         for token, kind in issued:
             state = await recovered.poll(token, actor(), kind=kind)
             assert state["state"] == "unknown" and state["capture_allowed"] is False
         assert recovered.pending(kind="browser") == 0
+        # R5V-1: every holder presented its token after the restart, so none
+        # stays carried and drain awaits each one's own retire.
+        assert recovered.carried() == 0 and recovered.pending_live() == recovered.pending()
         draining = asyncio.create_task(recovered.drain())
         await until(lambda: recovered.pending() == 4)
         assert not draining.done()
@@ -749,10 +769,15 @@ async def test_restart_keeps_five_native_kinds_unknown_and_manual_reservation_re
     draining = None
     try:
         await recovered.initialize()
+        # Every issued owner is carried until it presents its token; the reservation is not.
+        assert recovered.carried() == recovered.pending() - 1
         for token, kind in issued:
             state = await recovered.poll(token, actor(), kind=kind)
             assert state["state"] == "unknown" and state["capture_allowed"] is False
         assert recovered.pending(kind="browser") == 0
+        # R5V-1: every holder presented its token after the restart, so none
+        # stays carried and drain awaits each one's own retire.
+        assert recovered.carried() == 0 and recovered.pending_live() == recovered.pending()
         draining = asyncio.create_task(recovered.drain())
         await until(lambda: recovered.pending() == 5)
         assert not draining.done()

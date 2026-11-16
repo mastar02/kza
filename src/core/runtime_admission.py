@@ -631,6 +631,14 @@ class RuntimeAdmission:
         await asyncio.to_thread(self.revalidate)
         resources = {name: proof[name] for name in
             ("graph_closed", "privacy_closed", "sdk_closed", "native_closed")}
+        carried = proof.get("capture_permissions_carried")
+        if type(carried) is int and carried > 0:
+            # R5V-1: the receipt schema does not record carried owners, so
+            # the close states their count while logging is still open.
+            import logging
+            logging.getLogger(__name__).warning(
+                "[Admission] closing with %d carried capture permission(s) never "
+                "acknowledged; the receipt does not record them", carried)
         if self._before_receipt is not None:
             # D1: logging is closed before the last state observation.
             self._before_receipt()

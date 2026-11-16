@@ -1,35 +1,61 @@
 // Capture controls use server state and the current authenticated session.
+function lostRecordings(count) {
+  return count===1 ? '1 grabación perdida' : `${count} grabaciones perdidas`;
+}
+
 function CaptureControlCard() {
   const [status,setStatus] = React.useState(null);
   const [message,setMessage] = React.useState('Consultando captura global…');
   const [notice,setNotice] = React.useState('');
   const [busy,setBusy] = React.useState(false);
+  // R1-B2: the carried count the administrator is confirming, or null.
+  const [forgetShown,setForgetShown] = React.useState(null);
+  const [affirmed,setAffirmed] = React.useState(false);
   const action = React.useRef(null);
   React.useEffect(() => {
-    let active = true, pending = false, denied = false, sequence = 0;
+    let active = true, pending = false, pendingChange = false, denied = false, sequence = 0, queued;
     const requests = new Set();
     const phases = ['initializing','running','muting','muted','resuming','failed','closed'];
     function valid(data) {
       if (!data || !Number.isSafeInteger(data.revision) || data.revision<0
           || !phases.includes(data.phase)
           || !['target_muted','persisted_muted','ingress_sealed','supported','total_mute_confirmed'].every(key => typeof data[key]==='boolean')
-          || !['pending_operations','pending_browser_recorders','pending_native_clients'].every(key => Number.isSafeInteger(data[key]) && data[key]>=0)
+          || !['pending_operations','pending_browser_recorders','pending_native_clients','live_capture_owners','carried_capture_owners'].every(key => Number.isSafeInteger(data[key]) && data[key]>=0)
           || !(data.error_code===null || typeof data.error_code==='string' && /^[a-z][a-z0-9_]{0,79}$/.test(data.error_code))) return false;
       if (data.total_mute_confirmed && (data.phase!=='muted' || !data.supported || !data.target_muted
-          || !data.persisted_muted || !data.ingress_sealed || data.pending_operations!==0 || data.pending_browser_recorders!==0 || data.pending_native_clients!==0)) return false;
+          || !data.persisted_muted || !data.ingress_sealed || data.pending_operations!==0 || data.pending_browser_recorders!==0 || data.pending_native_clients!==0
+          || data.live_capture_owners!==0 || data.carried_capture_owners!==0)) return false;
+      if (data.forgotten_capture_owners!==undefined && !(Number.isSafeInteger(data.forgotten_capture_owners) && data.forgotten_capture_owners>=0)) return false;
       if (data.phase==='running' && (data.target_muted || data.persisted_muted || data.ingress_sealed || data.total_mute_confirmed)) return false;
       return true;
     }
-    async function readOrChange(muted,revision) {
-      if (!active || pending || denied) return;
-      const change = typeof muted==='boolean';
-      pending = true; setBusy(true);
-      if (change) { setStatus(null); setMessage('Enviando solicitud de captura…'); setNotice(''); }
+    // request: undefined reads; {muted,revision} changes the policy; {forget}
+    // forgets the lost recordings whose count the administrator confirmed.
+    async function readOrChange(request) {
+      if (!active || denied) return;
+      const forget = request!==undefined && Number.isSafeInteger(request.forget) ? request.forget : null;
+      const change = forget!==null || typeof request?.muted==='boolean';
+      if (request!==undefined && !change) return;
+      if (pending) {
+        // A change clicked while a background read is in flight runs right
+        // after it; a second change while another is pending is refused.
+        if (change && (pendingChange || queued!==undefined)) setNotice('Ya hay un cambio en curso. Esperá su resultado antes de elegir otro.');
+        else if (change) queued = request;
+        return;
+      }
+      pending = true; pendingChange = change; setBusy(true);
+      if (change) {
+        setStatus(null); setNotice('');
+        setMessage(forget===null ? 'Enviando solicitud de captura…' : 'Olvidando las grabaciones perdidas…');
+      }
       const attempt = ++sequence, controller = new AbortController(); requests.add(controller);
       let refresh = false;
       try {
-        const response = await fetch('/api/capture/control',{credentials:'same-origin',cache:'no-store',signal:controller.signal,
-          ...(change ? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({muted,expected_revision:revision})} : {})});
+        const body = forget!==null ? {expected_carried:forget,no_capture_running:true}
+          : {muted:request?.muted,expected_revision:request?.revision};
+        const response = await fetch(forget!==null ? '/api/capture/control/forget-carried' : '/api/capture/control',
+          {credentials:'same-origin',cache:'no-store',signal:controller.signal,
+          ...(change ? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)} : {})});
         if (!active || sequence!==attempt) return;
         if (response.status===401) {
           denied = true; setStatus(null); setMessage('La sesión venció. Volvé a iniciar sesión.');
@@ -41,22 +67,34 @@ function CaptureControlCard() {
           return;
         }
         if (response.status===409) {
-          refresh = true; setNotice('La revisión cambió. Revisá el estado actualizado y volvé a elegir el cambio.');
+          refresh = true;
+          setNotice(forget===null ? 'La revisión cambió. Revisá el estado actualizado y volvé a elegir el cambio.'
+            : 'La cantidad de grabaciones perdidas cambió. No se olvidó ninguna; revisá el estado actualizado.');
           throw Error('Actualizando el estado de captura…');
         }
-        if (!response.ok) throw Error('No se pudo verificar la captura global.');
+        if (!response.ok) {
+          if (forget!==null) { refresh = true; setNotice('No se pudieron olvidar las grabaciones perdidas.'); }
+          throw Error('No se pudo verificar la captura global.');
+        }
         const data = await response.json();
         if (!valid(data)) throw Error('El estado de captura global no se pudo verificar.');
-        if (active && sequence===attempt) { setStatus(data); setMessage(''); }
+        if (active && sequence===attempt) {
+          setStatus(data); setMessage('');
+          if (forget!==null) setNotice(data.forgotten_capture_owners>0
+            ? `${data.forgotten_capture_owners===1 ? 'Se olvidó' : 'Se olvidaron'} ${lostRecordings(data.forgotten_capture_owners)}. Quedó un registro sin contenido con la cantidad.`
+            : 'No quedaban grabaciones perdidas para olvidar.');
+        }
       } catch (error) {
         if (active && sequence===attempt) {
           setStatus(null);
           setMessage(error.name==='AbortError' ? 'Consulta cancelada.' : 'No se pudo verificar la captura global.');
         }
       } finally {
-        requests.delete(controller); pending = false;
+        requests.delete(controller); pending = false; pendingChange = false;
         if (active && sequence===attempt) setBusy(false);
-        if (refresh && active && !denied) queueMicrotask(() => readOrChange());
+        const next = queued; queued = undefined;
+        if (next!==undefined) { if (active && !denied) queueMicrotask(() => readOrChange(next)); }
+        else if (refresh && active && !denied) queueMicrotask(() => readOrChange());
       }
     }
     function retire() {
@@ -89,21 +127,43 @@ function CaptureControlCard() {
   };
   const confirmed = status?.total_mute_confirmed===true;
   const waiting = busy || !status || !status.supported || ['initializing','muting','resuming','closed'].includes(status.phase);
+  const lost = status?.carried_capture_owners ?? 0;
+  // A confirmation is only for the count it showed; a new count closes it.
+  React.useEffect(() => { if (forgetShown!==null && lost!==forgetShown) { setForgetShown(null); setAffirmed(false); } },[lost,forgetShown]);
+  const statusLine = message || (!status?.supported ? 'Captura global sin confirmar'
+    : confirmed ? 'Captura global pausada y confirmada'
+    : status?.phase==='muted' && lost>0 ? 'Entrada sellada; la pausa no se confirma mientras haya grabaciones perdidas'
+    : labels[status?.phase]);
   return <section className="card" aria-label="Captura global">
     <h2>Captura global</h2>
-    <p role="status">{message || (!status?.supported ? 'Captura global sin confirmar' : confirmed ? 'Captura global pausada y confirmada' : labels[status?.phase])}</p>
+    <p role="status">{statusLine}</p>
     {notice && <p role="alert">{notice}</p>}
     {status && !status.supported && <p>El control global no está disponible. No se confirmó la pausa de todos los participantes.</p>}
     {status?.pending_operations>0 && <p className="mute">Hay procesamiento iniciado que todavía debe terminar.</p>}
     {status?.pending_browser_recorders>0 && <p className="mute">Hay grabaciones del navegador pendientes de retiro.</p>}
     {status?.pending_native_clients>0 && <p className="mute">Hay capturas de herramientas pendientes de retiro.</p>}
+    {status?.live_capture_owners>0 && <p className="mute">Grabaciones o capturas en curso que una parada del servicio va a esperar: {status.live_capture_owners}.</p>}
+    {lost>0 && <div aria-label="Grabaciones perdidas">
+      <p className="mute">Grabaciones perdidas: {lost}. Son grabaciones o capturas de un arranque anterior que nadie retiró. No frenan la parada, pero la pausa no se confirma mientras existan.</p>
+      {forgetShown===null ? <button type="button" className="btn" disabled={busy || status?.phase==='closed'}
+          onClick={() => { setForgetShown(lost); setAffirmed(false); }}>Olvidar grabaciones perdidas</button>
+        : <div role="group" aria-label="Confirmar olvido de grabaciones perdidas">
+          <p>Olvidarlas no detiene ninguna grabación: sólo deja de esperarlas para confirmar la pausa. Queda un registro sin contenido con la cantidad.</p>
+          <label><input type="checkbox" checked={affirmed} onChange={event => setAffirmed(event.target.checked===true)} /> Confirmo que ninguna pestaña ni herramienta sigue grabando.</label>
+          <div className="row">
+            <button type="button" className="btn" disabled={busy || !affirmed}
+              onClick={() => { const shown = forgetShown; setForgetShown(null); setAffirmed(false); action.current?.({forget:shown}); }}>Olvidar {lostRecordings(forgetShown)}</button>
+            <button type="button" className="btn" onClick={() => { setForgetShown(null); setAffirmed(false); }}>Cancelar</button>
+          </div>
+        </div>}
+    </div>}
     {status?.ingress_sealed && !confirmed && <p className="mute">La entrada está sellada; el retiro completo sigue sin confirmar.</p>}
     {status?.phase==='failed' && <p>Actualizá el estado antes de volver a solicitar un cambio. No se mostrará una pausa completa sin confirmación.</p>}
     <p>La pausa global incluye la captura de comandos y la captura ambiental. La reactivación se solicita desde este panel autenticado.</p>
     <p>Los datos anteriores conservan sus vencimientos. Pausar no equivale a borrarlos.</p>
     <div className="row">
-      <button type="button" className="btn" disabled={waiting || confirmed} onClick={() => action.current?.(true,status.revision)}>Pausar captura global</button>
-      <button type="button" className="btn" disabled={waiting || status?.phase==='running'} onClick={() => action.current?.(false,status.revision)}>Reactivar captura global</button>
+      <button type="button" className="btn" disabled={waiting || confirmed} onClick={() => action.current?.({muted:true,revision:status.revision})}>Pausar captura global</button>
+      <button type="button" className="btn" disabled={waiting || status?.phase==='running'} onClick={() => action.current?.({muted:false,revision:status.revision})}>Reactivar captura global</button>
     </div>
   </section>;
 }
