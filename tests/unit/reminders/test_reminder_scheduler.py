@@ -1233,6 +1233,27 @@ async def test_retention_keeps_pending_and_sending_rows_and_never_touches_action
 
 
 @pytest.mark.asyncio
+async def test_retention_keeps_every_attempt_of_an_occurrence_until_its_newest_claim_expires(
+    scheduler, store, mock_deps, clock,
+):
+    """Review round 1 R6: rows of one occurrence are purged together, so history never has attempt gaps."""
+    mock_deps["tts"].aspeak.side_effect = [failed(), delivered()]
+    r = await store.create("u1", "regar", clock() - 1, scope=ReminderScope.SHARED)
+    assert await scheduler._fire_reminder(r) is False  # attempt 1 failed, claimed at T
+    clock.advance(3 * HOUR)
+    assert await scheduler._fire_reminder(r) is True  # attempt 2 confirmed, claimed at T + 3 h
+    clock.advance(47 * HOUR)  # attempt 1 is 50 h old, attempt 2 is 47 h old
+    await scheduler._cleanup_notices()
+    assert await notices(store) == [("failed", "delivery_not_started:failed", 1), ("confirmed", None, 2)]
+    [entry] = await scheduler.notice_entries()
+    assert (entry.status, entry.attempts, entry.failed_attempts, entry.pending) == ("confirmed", 2, 1, False)
+    clock.advance(HOUR + 1)
+    await scheduler._cleanup_notices()
+    assert await notices(store) == []
+    assert await scheduler.notice_entries() == []
+
+
+@pytest.mark.asyncio
 async def test_retention_runs_at_startup_and_every_six_hours(store, mock_deps, clock, monkeypatch):
     scheduler = scheduler_on(store, mock_deps["tts"], mock_deps["ha_client"], clock)
     calls = []

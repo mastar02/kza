@@ -232,15 +232,19 @@ class ReminderStore:
     async def purge_notice_rows(self, claimed_before: float, *, reminder_id: str | None = None,
                                 trigger_at: float | None = None,
                                 guard: AuthorityGuard | None = None) -> int:
-        """Delete finished notice rows claimed before a cutoff whose occurrence is no longer pending.
+        """Delete the notice rows of finished occurrences whose newest claim is before a cutoff.
 
-        Selection uses status only ('sending' rows are never deleted) plus the
-        immutable body; the diagnostic reason is never read. A row is kept while
-        an active reminder still has the body's id and trigger_at, because its
-        attempts still count for that occurrence. Rows with an unreadable body are kept.
+        Retention works per occurrence (reminder id, trigger_at), so a kept
+        history entry never loses its earlier attempts: all of an occurrence's
+        rows go together, once every one of them was claimed before the cutoff.
+        Selection uses status only ('sending' rows are never deleted, and an
+        occurrence with one keeps all its rows) plus the immutable body; the
+        diagnostic reason is never read. An occurrence is kept while an active
+        reminder still has its id and trigger_at, because its attempts still
+        count. Rows with an unreadable body are kept.
 
         Args:
-            claimed_before: Epoch seconds; only rows claimed earlier are deleted.
+            claimed_before: Epoch seconds; only occurrences whose every row was claimed earlier are deleted.
             reminder_id: Restrict to one occurrence (with trigger_at), for a web purge.
             trigger_at: The occurrence's scheduled time when reminder_id is given.
             guard: Optional authority guard of the caller.
@@ -249,9 +253,9 @@ class ReminderStore:
             Number of deleted rows.
         """
         def operation(db):
-            doomed = []
-            for row in db.execute("SELECT request_id, body FROM reminder_home_actions "
-                                  "WHERE request_id >= ? AND request_id < ? AND status != 'sending'",
+            occurrences: dict[tuple[str, float], list] = {}
+            for row in db.execute("SELECT request_id, body, status FROM reminder_home_actions "
+                                  "WHERE request_id >= ? AND request_id < ?",
                                   (NOTICE_ID_PREFIX, NOTICE_ID_RANGE_END)).fetchall():
                 try:
                     body = json.loads(row["body"])
@@ -260,15 +264,20 @@ class ReminderStore:
                 if type(body) is not dict:
                     continue
                 identity, trigger, claimed = body.get("reminder_id"), body.get("trigger_at"), body.get("claimed_at")
-                if (type(identity) is not str or type(trigger) not in (int, float)
-                        or type(claimed) not in (int, float) or not claimed < claimed_before):
+                if type(identity) is not str or type(trigger) not in (int, float):
                     continue
                 if reminder_id is not None and (identity != reminder_id or trigger != trigger_at):
+                    continue
+                occurrences.setdefault((identity, trigger), []).append((row["request_id"], row["status"], claimed))
+            doomed = []
+            for (identity, trigger), rows in occurrences.items():
+                if any(status == "sending" or type(claimed) not in (int, float) or not claimed < claimed_before
+                       for _, status, claimed in rows):
                     continue
                 if db.execute("SELECT 1 FROM reminders WHERE id = ? AND trigger_at = ? AND state = 'active'",
                               (identity, trigger)).fetchone() is not None:
                     continue
-                doomed.append(row["request_id"])
+                doomed.extend(request_id for request_id, _, _ in rows)
             for request_id in doomed:
                 db.execute("DELETE FROM reminder_home_actions WHERE request_id = ? AND status != 'sending'",
                            (request_id,))
