@@ -1995,6 +1995,9 @@ async def build_application(
     from src.memory.capture_native import build_capture_native_drains
 
     active_audio_loop = multi_room_loop if multi_room_loop else audio_loop
+    if reminder_scheduler is not None:
+        # Q33: a held notice reopened by the output-free signal waits for this loop's follow-up conversation.
+        reminder_scheduler.watch_conversation(active_audio_loop.follow_up)
     capture_drains, capture_native_supported = build_capture_native_drains(
         model_owners=(stt_executors, tts_models, speaker_models, wake_models,
                       http_reasoners, hermes_reasoners),

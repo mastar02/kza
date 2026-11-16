@@ -181,6 +181,10 @@ class DeliveryHold:
         output_refused: The last failed attempt started no output although no other activity
             held the output (failed, blocked, empty); an output-free signal does not reopen it,
             so a fast-failing output cannot add one attempt per finished response (RV-Q31-1).
+        output_round: The current round was opened by the output-free signal; it is not claimed
+            while a follow-up conversation is active (user answer Q33).
+        timed_retry_at: The backoff or fallback time the output-free round replaced; it still
+            applies while that round waits for the conversation to end (bounded wait).
     """
 
     trigger_at: float
@@ -191,6 +195,8 @@ class DeliveryHold:
     fallback_rounds: int = 0
     successor_round: float | None = None
     output_refused: bool = False
+    output_round: bool = False
+    timed_retry_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -256,7 +262,10 @@ class ReminderScheduler:
         collapse then announces instead. The output-free round skips an
         occurrence whose last attempt the output itself refused (no other
         activity held it), and a signal that finds an occurrence in flight is
-        applied when that flight ends.
+        applied when that flight ends. A round opened by that signal is not
+        claimed while a follow-up conversation is active (``watch_conversation``,
+        user answer Q33): it waits for the conversation to end, while the
+        occurrence's own backoff or fallback time still applies.
       * An occurrence later than ``late_action_grace_s`` never runs its home
         actions: each action gets a terminal ``failed``/``late_not_executed``
         receipt before anything is spoken. On time, actions run only after a
@@ -295,6 +304,8 @@ class ReminderScheduler:
         self._signal_pending: set[str] = set()
         # Q32b: reminder id -> occurrence that groups occurrences missed after a terminal notice.
         self._grouped: dict[str, float] = {}
+        # Q33: the follow-up conversation (FollowUpMode) whose activity holds output-free rounds.
+        self._conversation = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._runner_task: asyncio.Task | None = None
 
@@ -437,6 +448,7 @@ class ReminderScheduler:
             hold.successor_round = now
             return
         hold.successor_round, hold.failures, hold.retry_at = latest, 0, now
+        hold.output_round = False  # a newly due occurrence is scheduled, not an output-free round
         logger.info("Reminder %s: a later occurrence is due while a notice is held; new round", reminder.id)
 
     async def _next_timeout(self) -> float | None:
@@ -448,7 +460,8 @@ class ReminderScheduler:
         if not self._can_announce:
             return None
         now = self._clock()
-        deadlines = [hold.retry_at for hold in self._holds.values() if hold.retry_at is not None]
+        deadlines = [deadline for deadline in map(self._retry_deadline, self._holds.values())
+                     if deadline is not None]
         for reminder in await self._store.get_active_for_user(None, shared_only=True):
             if reminder.trigger_at > now:
                 deadlines.append(reminder.trigger_at)
@@ -507,6 +520,67 @@ class ReminderScheduler:
             return  # no scheduler loop and not on an event loop: nothing to wake
         self._start_output_round()
 
+    def watch_conversation(self, conversation) -> None:
+        """Hold output-free rounds while this follow-up conversation is active (user answer Q33).
+
+        A held notice reopened by the output-free signal waits until the
+        follow-up window ends and, if the person keeps talking, until the
+        conversation ends, so it never interrupts it. The conversation's own
+        end (add_end_listener) wakes the loop; nothing is timed here.
+
+        Args:
+            conversation: The active audio loop's FollowUpMode (``is_active`` and
+                ``add_end_listener``).
+        """
+        self._conversation = conversation
+        conversation.add_end_listener(self.notify_conversation_ended)
+
+    def _conversation_active(self) -> bool:
+        """Whether the watched follow-up conversation is active; False when none is watched."""
+        conversation = self._conversation
+        if conversation is None:
+            return False
+        try:
+            return bool(conversation.is_active)
+        except Exception as error:
+            logger.warning("Follow-up conversation state unavailable (%s); not holding notices",
+                           type(error).__name__)
+            return False
+
+    def notify_conversation_ended(self) -> None:
+        """Wake the loop for output-free rounds held by the conversation; thread-safe, never blocks.
+
+        Wired to FollowUpMode.add_end_listener, which may call it from the
+        event loop, the audio thread or the follow-up timer thread.
+        """
+        loop = self._loop
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(self._conversation_ended)
+            except RuntimeError:
+                logger.debug("Conversation end arrived after the reminder loop stopped")
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no scheduler loop and not on an event loop: nothing to wake
+        self._conversation_ended()
+
+    def _conversation_ended(self) -> None:
+        if any(hold.output_round for hold in self._holds.values()):
+            logger.info("Follow-up conversation ended; held reminder notice round may speak")
+            self._wake_event.set()
+
+    def _retry_deadline(self, hold: DeliveryHold) -> float | None:
+        """When a held occurrence becomes claimable again, or None to wait for a wake.
+
+        An output-free round waits while a follow-up conversation is active
+        (Q33); meanwhile only the backoff or fallback time it replaced applies.
+        """
+        if hold.output_round and self._conversation_active():
+            return hold.timed_retry_at
+        return hold.retry_at
+
     def _start_output_round(self) -> None:
         """Every held occurrence not in flight becomes claimable now with a fresh round.
 
@@ -515,7 +589,8 @@ class ReminderScheduler:
         An occurrence the output itself refused is not reopened (RV-Q31-1). An
         occurrence in flight is left untouched; the signal is kept and applied
         when its flight ends (RV-Q31-2). The loop is woken only when some
-        occurrence was reopened.
+        occurrence was reopened. During a follow-up conversation the reopened
+        rounds are not claimed until it ends (Q33, _retry_deadline).
         """
         self._signal_pending.update(self._in_flight)
         now, opened = self._clock(), False
@@ -528,9 +603,17 @@ class ReminderScheduler:
 
     @staticmethod
     def _reopen_for_output(hold: DeliveryHold, now: float) -> bool:
-        """Open a fresh round now for one held occurrence, unless the output itself refused it."""
+        """Open a fresh round now for one held occurrence, unless the output itself refused it.
+
+        The round is marked as an output-free round (Q33): it is claimed only
+        while no follow-up conversation is active; the timed retry it replaces
+        is kept for that wait.
+        """
         if hold.output_refused:
             return False
+        if not hold.output_round:
+            hold.timed_retry_at = hold.retry_at
+        hold.output_round = True
         hold.failures, hold.completion_errors, hold.retry_at = 0, 0, now
         return True
 
@@ -782,7 +865,8 @@ class ReminderScheduler:
         hold = self._holds.get(reminder.id)
         if hold is None or hold.trigger_at != reminder.trigger_at:
             return False
-        return hold.retry_at is None or hold.retry_at > now
+        deadline = self._retry_deadline(hold)
+        return deadline is None or deadline > now
 
     def _backing_off(self, reminder: Reminder, now: float) -> bool:
         """True while this exact occurrence waits for a timed retry (not when parked for the round)."""
@@ -806,7 +890,9 @@ class ReminderScheduler:
         occurrence, a restart or a web dismiss. When the output became free
         while this attempt was in flight and the attempt lost the output to
         other activity, a new round opens now instead (RV-Q31-2), without
-        using a fallback round.
+        using a fallback round; during a follow-up conversation that round
+        waits for the conversation to end and the timed retry set here still
+        applies (Q33).
 
         Args:
             reminder: The occurrence.
@@ -820,13 +906,26 @@ class ReminderScheduler:
         hold.failures += 1
         hold.reason = reason
         hold.output_refused = refused
-        if reminder.id in self._signal_pending and not refused:
+        hold.output_round = False  # the attempt ended the round it was claimed in
+        signalled = reminder.id in self._signal_pending and not refused
+        if signalled:
             self._signal_pending.discard(reminder.id)
+            if not self._conversation_active():
+                self._reopen_for_output(hold, self._clock())
+                logger.info("Reminder %s not delivered (%s) while the output became free; new round now",
+                            reminder.id, reason)
+                self._wake_event.set()
+                return
+        self._schedule_after_failure(hold, reminder, reason, failed_at)
+        if signalled:
+            # Q33: the new round waits for the follow-up conversation; the backoff just set still applies.
             self._reopen_for_output(hold, self._clock())
-            logger.info("Reminder %s not delivered (%s) while the output became free; new round now",
-                        reminder.id, reason)
-            self._wake_event.set()
-            return
+            logger.info("Reminder %s not delivered (%s) while the output became free; new round after the "
+                        "follow-up conversation", reminder.id, reason)
+
+    def _schedule_after_failure(self, hold: DeliveryHold, reminder: Reminder, reason: str,
+                                failed_at: float) -> None:
+        """Set the next timed retry of a failed attempt: in-round backoff or a bounded fallback round."""
         if hold.failures >= self._max_attempts:
             if hold.fallback_rounds < self._fallback_max_rounds:
                 hold.fallback_rounds += 1
@@ -853,6 +952,7 @@ class ReminderScheduler:
         hold.completion_errors += 1
         hold.reason = reason
         hold.output_refused = False
+        hold.output_round = False
         if hold.completion_errors >= self._max_attempts:
             hold.retry_at = None
             logger.warning("Reminder %s completion failed (%s) %d times; retried on the next wake", reminder.id,
@@ -868,6 +968,7 @@ class ReminderScheduler:
         hold.retry_at = None
         hold.reason = reason
         hold.output_refused = False
+        hold.output_round = False
 
     async def _collapse_missed(self, reminder: Reminder) -> Reminder | None:
         """Move a recurring reminder to its latest due occurrence so a long outage yields one notice."""

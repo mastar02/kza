@@ -80,6 +80,8 @@ class FollowUpMode:
         self._on_state_change: Callable | None = None
         self._on_timeout: Callable | None = None
         self._on_conversation_end: Callable | None = None
+        # Observers of the end of a conversation (any number; see add_end_listener).
+        self._end_listeners: list[Callable[[], None]] = []
 
         # Audio level tracking para whisper detection
         self._recent_audio_levels: list[float] = []
@@ -210,9 +212,32 @@ class FollowUpMode:
             if self._on_conversation_end:
                 self._on_conversation_end(self._context, reason)
 
+        ended = self._context is not None
         self._cancel_timeout()
         self._context = None
         self._transition_to(ConversationState.IDLE)
+        if ended:
+            self._notify_end_listeners()
+
+    def add_end_listener(self, callback: Callable[[], None]) -> None:
+        """Register an observer called after a conversation ends (the state is already IDLE).
+
+        Unlike on_conversation_end, any number of observers can be registered.
+        The call happens on the thread that ended the conversation (the event
+        loop, the audio thread or the timeout timer thread), so an observer must
+        be thread-safe and must not block; its errors are logged and ignored.
+
+        Args:
+            callback: Called without arguments.
+        """
+        self._end_listeners.append(callback)
+
+    def _notify_end_listeners(self) -> None:
+        for callback in tuple(self._end_listeners):
+            try:
+                callback()
+            except Exception as error:
+                logger.warning("Conversation end listener failed: %s", type(error).__name__)
 
     def is_whisper(self, audio_level: float) -> bool:
         """Detectar si el audio es un susurro"""

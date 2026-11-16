@@ -1980,3 +1980,231 @@ async def test_a_grouped_notice_that_waits_past_another_occurrence_stays_late(tm
         assert (await restarted.get_by_id(r.id)).trigger_at == next_trigger(further, "daily")
     finally:
         await restarted.close()
+
+
+@pytest_asyncio.fixture
+async def conversation():
+    """The real FollowUpMode, with a window long enough that only the test ends it."""
+    from src.conversation.follow_up_mode import FollowUpMode
+
+    follow_up = FollowUpMode(follow_up_window=600)
+    yield follow_up
+    follow_up.end_conversation("test_teardown")
+
+
+@pytest.mark.parametrize("started", ["before_signal", "after_signal"])
+@pytest.mark.asyncio
+async def test_an_output_free_round_waits_for_the_follow_up_conversation_to_end(
+    build, store, mock_deps, clock, conversation, started,
+):
+    """Q33: a notice reopened by the output-free signal is not claimed while the person can keep
+    talking without the wake word (also when the window opens after the signal, before the claim);
+    the conversation's end wakes the loop and the notice speaks. Its own backoff still applies."""
+    scheduler = build(notice_retry_min_gap_s=60)
+    scheduler.watch_conversation(conversation)
+    assert conversation._end_listeners == [scheduler.notify_conversation_ended]
+    mock_deps["tts"].aspeak.return_value = output_busy()
+    r = await store.create("u1", "regar", clock() - 1, scope=ReminderScope.SHARED)
+    await scheduler._deliver_due(clock())
+    if started == "before_signal":
+        conversation.start_conversation()
+    scheduler.notify_output_available()
+    if started == "after_signal":
+        conversation.start_conversation()
+    hold = scheduler._holds[r.id]
+    assert (hold.output_round, hold.retry_at, hold.timed_retry_at) == (True, clock(), clock() + 60)
+    for _ in range(3):
+        await scheduler._deliver_due(clock())
+    conversation.start_conversation()  # the person keeps talking: still the same wait
+    scheduler.notify_output_available()  # and KZA's answer to it ends: the wait is not shortened
+    await scheduler._deliver_due(clock())
+    assert mock_deps["tts"].aspeak.await_count == 1
+    assert await scheduler._next_timeout() == 60  # no spin: only the backoff it replaced
+    mock_deps["tts"].aspeak.return_value = delivered()
+    scheduler._wake_event.clear()
+    conversation.end_conversation("timeout")
+    assert scheduler._wake_event.is_set()
+    assert await scheduler._next_timeout() == 0
+    await scheduler._deliver_due(clock())
+    assert await notices(store) == [("failed", "delivery_not_started:timed_out", 1), ("confirmed", None, 2)]
+    assert (await store.get_by_id(r.id)).state is ReminderState.FIRED
+
+
+@pytest.mark.asyncio
+async def test_a_fallback_round_still_runs_while_an_output_free_round_waits(build, store, mock_deps, clock,
+                                                                             conversation):
+    """Q33 is bounded: the fallback round the output-free round replaced still comes at its time."""
+    scheduler = build(notice_max_attempts=1)
+    scheduler.watch_conversation(conversation)
+    mock_deps["tts"].aspeak.return_value = output_busy()
+    r = await store.create("u1", "regar", clock() - 1, scope=ReminderScope.SHARED)
+    await scheduler._deliver_due(clock())
+    assert scheduler._holds[r.id].retry_at == clock() + 900
+    conversation.start_conversation()
+    scheduler.notify_output_available()
+    await scheduler._deliver_due(clock())
+    assert mock_deps["tts"].aspeak.await_count == 1
+    assert await scheduler._next_timeout() == 900
+    clock.advance(900)
+    await scheduler._deliver_due(clock())
+    assert mock_deps["tts"].aspeak.await_count == 2
+    assert [attempt for *_, attempt in await notices(store)] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_an_attempt_ends_the_output_free_round_so_its_own_backoff_is_never_held(
+    build, store, mock_deps, clock, conversation,
+):
+    """After an output-free round's attempt fails, the next try is the ordinary backoff of the new
+    round, which a later conversation does not hold."""
+    scheduler = build(notice_max_attempts=2, notice_fallback_max_rounds=0)
+    scheduler.watch_conversation(conversation)
+    mock_deps["tts"].aspeak.return_value = output_busy()
+    r = await store.create("u1", "regar", clock() - 1, scope=ReminderScope.SHARED)
+    await scheduler._deliver_due(clock())
+    clock.advance(1)
+    await scheduler._deliver_due(clock())
+    assert scheduler._holds[r.id].retry_at is None  # exhausted, no fallback round left
+    scheduler.notify_output_available()
+    await scheduler._deliver_due(clock())  # the output-free round's attempt fails again
+    hold = scheduler._holds[r.id]
+    assert (hold.output_round, hold.failures, hold.retry_at) == (False, 1, clock() + 1)
+    conversation.start_conversation()
+    clock.advance(1)
+    await scheduler._deliver_due(clock())
+    assert [attempt for *_, attempt in await notices(store)] == [1, 2, 3, 4]
+
+
+@pytest.mark.asyncio
+async def test_an_output_free_signal_during_a_flight_waits_for_the_conversation(store, clock, conversation):
+    """RV-Q31-2 with Q33: a last attempt that gave up in the queue just before the other response
+    ended gets its new round only after the follow-up conversation; its timed retry still applies."""
+    entered, release = asyncio.Event(), asyncio.Event()
+    results = [output_busy(), output_busy()]
+
+    class Output:
+        def __init__(self):
+            self.texts = []
+
+        async def aspeak(self, text, **kwargs):
+            self.texts.append(text)
+            if results:
+                return results.pop(0)
+            if len(self.texts) == 3:
+                entered.set()
+                await release.wait()
+                return output_busy()
+            return delivered(text)
+
+    output = Output()
+    scheduler = scheduler_on(store, output, AsyncMock(), clock)
+    scheduler.watch_conversation(conversation)
+    r = await store.create("u1", "regar", clock() - 1, scope=ReminderScope.SHARED)
+    await scheduler._deliver_due(clock())
+    clock.advance(1)
+    await scheduler._deliver_due(clock())
+    clock.advance(2)
+    task = asyncio.create_task(scheduler._deliver_due(clock()))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        conversation.start_conversation()
+        scheduler.notify_output_available()
+    finally:
+        release.set()
+    await asyncio.wait_for(task, 2)
+    hold = scheduler._holds[r.id]
+    assert (hold.output_round, hold.failures, hold.fallback_rounds) == (True, 0, 1)
+    assert hold.timed_retry_at == clock() + 900
+    assert await scheduler._next_timeout() == 900
+    await scheduler._deliver_due(clock())
+    assert len(output.texts) == 3
+    conversation.end_conversation("timeout")
+    await scheduler._deliver_due(clock())
+    assert len(output.texts) == 4
+    assert (await store.get_by_id(r.id)).state is ReminderState.FIRED
+
+
+@pytest.mark.asyncio
+async def test_an_on_time_notice_is_not_held_by_a_conversation(scheduler, store, mock_deps, clock, conversation):
+    """Q33 applies only to rounds the output-free signal opens; a due reminder speaks as before."""
+    scheduler.watch_conversation(conversation)
+    conversation.start_conversation()
+    r = await store.create("u1", "regar", clock() - 1, ha_actions=[ACTION], scope=ReminderScope.SHARED)
+    await scheduler._deliver_due(clock())
+    mock_deps["tts"].aspeak.assert_awaited_once_with("Oye, recuerda regar", zone_id="living")
+    mock_deps["ha_client"].call_service_once.assert_awaited_once()
+    assert (await store.get_by_id(r.id)).state is ReminderState.FIRED
+
+
+@pytest.mark.asyncio
+async def test_the_end_of_a_conversation_wakes_only_for_a_waiting_output_free_round(
+    scheduler, store, mock_deps, clock, conversation,
+):
+    scheduler.watch_conversation(conversation)
+    conversation.start_conversation()
+    conversation.end_conversation("timeout")
+    assert not scheduler._wake_event.is_set()  # nothing held: a conversation end stays cheap
+    mock_deps["tts"].aspeak.return_value = failed()
+    r = await store.create("u1", "regar", clock() - 1, scope=ReminderScope.SHARED)
+    await scheduler._deliver_due(clock())
+    scheduler._wake_event.clear()
+    conversation.start_conversation()
+    conversation.end_conversation("timeout")
+    assert not scheduler._wake_event.is_set()  # held by its backoff only, not by an output-free round
+    assert not scheduler._holds[r.id].output_round
+
+
+@pytest.mark.asyncio
+async def test_the_end_of_a_conversation_wakes_the_running_loop_from_the_audio_thread(store, clock, conversation):
+    """The conversation may start and end on the audio or timer thread (threading.Timer): the end
+    listener only marshals a wake to the scheduler loop."""
+    output = voice_output()
+    output.aspeak.return_value = output_busy()
+    scheduler = scheduler_on(store, output, AsyncMock(), clock, notice_max_attempts=1,
+                             notice_fallback_max_rounds=0)
+    scheduler.watch_conversation(conversation)
+    r = await store.create("u1", "regar", clock() - 1, scope=ReminderScope.SHARED)
+    loop = asyncio.create_task(scheduler.start())
+    try:
+        async with asyncio.timeout(3):
+            while r.id not in scheduler._holds:
+                await asyncio.sleep(.005)
+        await asyncio.to_thread(conversation.start_conversation)
+        output.aspeak.return_value = delivered()
+        scheduler.notify_output_available()
+        async with asyncio.timeout(3):
+            while not scheduler._holds[r.id].output_round:
+                await asyncio.sleep(.005)
+        await asyncio.sleep(.1)
+        assert output.aspeak.await_count == 1  # held by the conversation
+        await asyncio.to_thread(conversation.end_conversation, "timeout")
+        async with asyncio.timeout(3):
+            while (await store.get_by_id(r.id)).state is not ReminderState.FIRED:
+                await asyncio.sleep(.01)
+    finally:
+        await scheduler.stop()
+        await asyncio.gather(loop, return_exceptions=True)
+    assert [status for status, *_ in await notices(store)] == ["failed", "confirmed"]
+
+
+@pytest.mark.asyncio
+async def test_a_newly_due_occurrence_is_not_held_by_a_conversation(build, store, mock_deps, clock, conversation):
+    """The successor round of a held daily reminder is a scheduled occurrence, not an output-free
+    round: it speaks during a conversation like any due reminder."""
+    scheduler = build(notice_max_attempts=1, notice_fallback_max_rounds=0)
+    scheduler.watch_conversation(conversation)
+    mock_deps["tts"].aspeak.return_value = output_busy()
+    r = await store.create("u1", "regar", clock() - 1, recurrence="daily", scope=ReminderScope.SHARED)
+    await scheduler._deliver_due(clock())
+    conversation.start_conversation()
+    scheduler.notify_output_available()
+    await scheduler._deliver_due(clock())
+    assert mock_deps["tts"].aspeak.await_count == 1
+    following = next_trigger(r.trigger_at, "daily")
+    assert await scheduler._next_timeout() == following - clock()
+    clock.now = following + 10
+    mock_deps["tts"].aspeak.return_value = delivered()
+    await scheduler._deliver_due(clock())
+    mock_deps["tts"].aspeak.assert_awaited_with("Oye, recuerda regar", zone_id="living")
+    assert mock_deps["tts"].aspeak.await_count == 2
+    assert (await store.get_by_id(r.id)).trigger_at == next_trigger(following, "daily")

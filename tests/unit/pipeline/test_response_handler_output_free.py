@@ -278,3 +278,44 @@ async def test_a_living_output_that_refuses_notices_gets_no_attempt_per_finished
     assert rows[0][1] not in ("delivery_not_started:timed_out", "delivery_not_started:cancelled")
     assert output.zones.count("zone_living") == 1 and output.zones.count("zone_cocina") == 20
     assert (await store.get_by_id(r.id)).state is ReminderState.ACTIVE
+
+
+async def test_a_notice_held_behind_a_response_waits_for_the_follow_up_conversation(handler, output, store):
+    """Q33: the response that frees the living output leaves the follow-up window open; the held notice
+    speaks only after the conversation ends (here on the audio thread), never over the person."""
+    from src.conversation.follow_up_mode import FollowUpMode
+
+    follow_up = FollowUpMode(follow_up_window=600)
+    ended_at = []
+    follow_up.add_end_listener(lambda: ended_at.append(time.time()))
+    scheduler = reminder_scheduler(handler, store)
+    scheduler.watch_conversation(follow_up)
+    output.release.clear()
+    other = asyncio.create_task(handler.aspeak("respuesta larga", zone_id="zone_cocina", timeout_s=10))
+    await until(output.busy.is_set)
+    r = await store.create("u1", "regar", time.time() - 1, scope=ReminderScope.SHARED)
+    loop = asyncio.create_task(scheduler.start())
+    try:
+        await until(lambda: r.id in scheduler._holds)
+        await asyncio.to_thread(follow_up.start_conversation)  # the wake word opened the conversation
+        output.release.set()
+        assert (await other).success
+        await until(lambda: scheduler._holds[r.id].output_round)  # the free output reopened it
+        await asyncio.sleep(.2)
+        assert len(await notices(store)) == 1 and output.zones == ["zone_cocina"]
+        await asyncio.to_thread(follow_up.end_conversation, "timeout")
+        async with asyncio.timeout(3):
+            while (await store.get_by_id(r.id)).state is not ReminderState.FIRED:
+                await asyncio.sleep(.01)
+    finally:
+        output.release.set()
+        follow_up.end_conversation("test_teardown")
+        await scheduler.stop()
+        await asyncio.gather(loop, other, return_exceptions=True)
+    rows = await store._work.read(lambda db: [json.loads(row[0]) for row in db.execute(
+        "SELECT body FROM reminder_home_actions WHERE request_id LIKE 'notice:%' ORDER BY rowid").fetchall()])
+    assert [body["attempt"] for body in rows] == [1, 2]
+    assert rows[1]["claimed_at"] >= ended_at[0]
+    assert await notices(store) == [("failed", "delivery_not_started:timed_out", r.id, 1),
+                                    ("confirmed", None, r.id, 2)]
+    assert output.zones == ["zone_cocina", "zone_living"]
