@@ -190,8 +190,10 @@ def test_a_deleted_database_is_restrictive_and_w1_never_creates_it(world, relati
     assert all(change["added"] == 0 for change in found["report"]["tables"][relative].values())
 
 
-def test_a_missing_database_holding_only_loss_tables_is_still_restrictive(tmp_path):
-    """SC4B-N3 (stricter): every row of it absent would read as loss_only; a missing database never is."""
+@pytest.mark.parametrize("damage", ["missing", "unreadable"])
+def test_a_missing_database_holding_only_loss_tables_is_still_restrictive(tmp_path, damage):
+    """SC4B-N3 (stricter): every row of it absent would read as loss_only; a missing or unreadable
+    database never is (review RA4B-7 R13: 'unreadable' is not 'ok')."""
     k = tmp_path / "k"
     (k / "data").mkdir(parents=True)
     with closing(sqlite3.connect(k / "data" / "tombstones.db")) as db, db:
@@ -201,8 +203,12 @@ def test_a_missing_database_holding_only_loss_tables_is_still_restrictive(tmp_pa
     assert set(projection["tables"]) == {"data/tombstones.db"}
     k_prime = tmp_path / "k-prime"
     shutil.copytree(k, k_prime)
-    (k_prime / "data" / "tombstones.db").unlink()
+    if damage == "missing":
+        (k_prime / "data" / "tombstones.db").unlink()
+    else:
+        (k_prime / "data" / "tombstones.db").write_bytes(b"not a database" * 100)
     found = compaction.w1(k_prime, k, projection, verify_branch="yes")["report"]
+    assert found["databases"]["data/tombstones.db"]["status"] == damage
     assert found["tables"]["data/tombstones.db"]["conversation_tombstones"] == {"added": 0, "removed": 1}
     assert found["class"] == compaction.W_RESTRICTIVE
 
@@ -227,6 +233,158 @@ def test_an_unclassifiable_value_counts_as_a_changed_row(world):
     assert "wake_deadline_fences" in found["report"]["unclassified"]["data/privacy.db"]
     assert found["report"]["class"] == compaction.W_RESTRICTIVE
     assert found["report"]["tables"]["data/privacy.db"]["conversation_tombstones"] == {"added": 0, "removed": 0}
+
+
+# Review RA4B-1: values a defective NEW (or an isolation breach) writes during V that the selection cannot
+# classify by TypeError or AttributeError, not only ValueError (probe2 of the review).
+UNCLASSIFIABLE = {
+    "wake_clip_sources_null": ("data/privacy.db", "UPDATE wake_clips_v1 SET sources_json=NULL WHERE rowid=1",
+                               "wake_deadline_fences"),
+    "wake_clip_expires_text": ("data/privacy.db",
+                               "UPDATE wake_clips_v1 SET expires_at='2026-01-01' WHERE rowid=1",
+                               "wake_deadline_fences"),
+    "voice_fingerprint_expires_text": ("data/privacy.db",
+                                       "UPDATE voice_fingerprints SET expires_at='soon' WHERE rowid=1",
+                                       "voice_deadline_fences"),
+    "fact_source_expires_text": ("data/privacy.db", "UPDATE fact_sources SET expires_at='soon'",
+                                 "fact_deadline_fences"),
+    "suggestion_sources_number": ("data/suggestions.db",
+                                  "UPDATE suggestions_policy_v1 SET sources_json=7 WHERE rowid=1",
+                                  "suggestion_deadline_fences"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(UNCLASSIFIABLE))
+def test_a_value_of_another_type_is_unclassified_never_an_uncoded_error(world, case):
+    relative, statement, key = UNCLASSIFIABLE[case]
+    states.execute(world["k_prime"] / relative, (statement, ()))
+    found = _w1(world)
+    assert key in found["report"]["unclassified"][relative]
+    assert found["report"]["databases"][relative] == {"status": "ok"}
+    assert found["report"]["class"] == compaction.W_RESTRICTIVE
+    _assert_content_free(found)
+
+
+def test_an_account_user_that_is_not_an_object_is_unclassifiable(world):
+    """Review RA4B-1: users [1] raised AttributeError out of W1 before."""
+    accounts = world["k_prime"] / "data" / "home_accounts_v1.json"
+    accounts.write_text(json.dumps({"schema": "kza-users-accounts-v1", "users": [1]}))
+    found = _w1(world)
+    assert found["report"]["accounts"]["data/home_accounts_v1.json"] == {"status": "unclassifiable", "added": 0,
+                                                                         "removed": 2}
+    assert found["report"]["class"] == compaction.W_RESTRICTIVE
+
+
+def test_any_other_failure_reading_a_k_prime_database_is_unreadable_with_a_code(world, monkeypatch):
+    """Review RA4B-1: W1 never raises an uncoded error; the code names only the exception type."""
+    def broken(db, names):
+        raise RuntimeError(states.CANARY)
+
+    monkeypatch.setattr(stage, "_authority_table_selection", broken)
+    found = _w1(world)
+    assert found["report"]["databases"]["data/privacy.db"] == {"status": "unreadable",
+                                                               "error": "python:RuntimeError"}
+    assert found["report"]["class"] == compaction.W_RESTRICTIVE
+    _assert_content_free(found)
+
+
+def _wal_pending(path: Path) -> None:
+    """Leave committed frames in ``path``'s WAL that a read-write open would checkpoint."""
+    db = sqlite3.connect(path, isolation_level=None)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("CREATE TABLE wal_scratch (x INTEGER)")
+    db.execute("INSERT INTO wal_scratch VALUES (1)")
+    db.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
+    db.close()
+    wal = path.with_name(path.name + "-wal")
+    assert wal.exists() and wal.stat().st_size > 0
+
+
+def _tree(path: Path) -> dict:
+    return {item.relative_to(path).as_posix(): (item.read_bytes(), item.stat().st_mtime_ns)
+            for item in sorted(path.rglob("*")) if item.is_file()}
+
+
+@pytest.mark.parametrize("link", ["directory", "file"])
+def test_w1_never_opens_a_k_prime_entry_through_a_link(world, link):
+    """Review RA4B-4: K'/data (or one database) a link into H: W1 writes nothing outside K' (H's pending
+    WAL is not checkpointed, no mtime moves) and reports the entries as not read: restrictive."""
+    h_data, k_data = world["h"] / "data", world["k_prime"] / "data"
+    _wal_pending(h_data / "privacy.db")
+    before = _tree(world["h"])
+    if link == "directory":
+        shutil.rmtree(k_data)
+        k_data.symlink_to(h_data)
+        shutil.rmtree(world["k_prime"] / "config")
+        (world["k_prime"] / "config").symlink_to(world["h"] / "config")
+    else:
+        (k_data / "privacy.db").unlink()
+        (k_data / "privacy.db").symlink_to(h_data / "privacy.db")
+    found = _w1(world)
+    assert _tree(world["h"]) == before
+    report = found["report"]
+    assert report["class"] == compaction.W_RESTRICTIVE
+    redirected = {"status": "unreadable", "error": "runtime_admission_redirected_database"}
+    assert report["databases"]["data/privacy.db"] == redirected
+    if link == "directory":
+        assert all(found == redirected for found in report["databases"].values())
+        assert report["accounts"]["data/home_accounts_v1.json"]["status"] == "unclassifiable"
+        assert report["configuration"]["config/policy.yaml"] == "not_regular"
+    else:
+        assert report["databases"]["data/auth.db"] == {"status": "ok"}
+
+
+def test_a_k_prime_database_a_live_holder_locks_is_a_transient_refusal(world):
+    """Review RA4B-5/RB-7: an operator's sqlite3 session holding a lock on K' is not storage damage: a
+    transient refusal (nothing written, content-free), and once released the same K' is 'equal'."""
+    holder = sqlite3.connect(world["k_prime"] / "data" / "auth.db", isolation_level=None)
+    try:
+        holder.execute("BEGIN EXCLUSIVE")
+        with pytest.raises(compaction.CompactionRefusal) as caught:
+            _w1(world)
+    finally:
+        holder.close()
+    assert str(caught.value) == compaction.K_TRANSIENT
+    assert caught.value.report == {"w1": "transient", "state": "k_prime", "database": "data/auth.db",
+                                   "sqlite": "SQLITE_BUSY"}
+    assert _class(world) == compaction.W_EQUAL
+
+
+@pytest.mark.parametrize("number, transient", [(errno.EMFILE, True), (errno.ENOMEM, True), (errno.EIO, False),
+                                               (errno.ENOENT, False)])
+def test_a_k_prime_errno_is_transient_only_for_a_resource_that_clears(world, monkeypatch, number, transient):
+    """SC4B-N19: EIO on K' persists with the damage, so it stays 'unreadable' (SS and its exit), never a
+    transient refusal that would hold the only exit shut."""
+    def failing(path):
+        raise OSError(number, "x")
+
+    monkeypatch.setattr(compaction, "_w1_recover", failing)
+    if transient:
+        with pytest.raises(compaction.CompactionRefusal) as caught:
+            _w1(world)
+        assert str(caught.value) == compaction.K_TRANSIENT
+        assert caught.value.report["errno"] == errno.errorcode[number]
+    else:
+        found = _w1(world)
+        assert found["report"]["databases"]["data/privacy.db"] == {"status": "unreadable",
+                                                                   "error": "errno:" + errno.errorcode[number]}
+        assert found["report"]["class"] == compaction.W_RESTRICTIVE
+
+
+def test_k_transient_lists_are_the_w0_lists_without_persistent_faults():
+    assert compaction.K_TRANSIENT_ERRNOS == compaction.W0_TRANSIENT_ERRNOS - {errno.EIO}
+    assert compaction.K_TRANSIENT_SQLITE == {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_NOMEM,
+                                             sqlite3.SQLITE_INTERRUPT}
+
+
+def test_unverifiable_k_prime_locks_are_restrictive(world):
+    """Review RB-1: W0 could not open a K' lock entry; W1 is restrictive_or_unclear (SS) and says why."""
+    found = compaction.w1(world["k_prime"], world["h"], world["projection"], verify_branch="yes",
+                          k_writers={"status": "unverifiable", "error": "errno:ELOOP"})
+    assert found["report"]["class"] == compaction.W_RESTRICTIVE
+    assert found["report"]["k_writers"] == {"status": "unverifiable", "error": "errno:ELOOP"}
+    assert compaction._w_counts(found["report"])["k_writers"] == {"status": "unverifiable", "error": "errno:ELOOP"}
+    assert _w1(world)["report"]["k_writers"] == {"status": "closed"}
 
 
 def test_objects_only_in_k_prime_are_ignored(world):
