@@ -679,7 +679,8 @@ def release_admission(root: Path, source: dict, manifest: dict) -> dict:
 
     (a) NEW's launcher contract and format epoch meet serve's minima; (b)
     5 <= NEW's controller epoch <= the installed one, so R1 (epoch 4) is never
-    NEW; (c) NEW is in served(root) or its controller triple equals the
+    NEW (release_epoch), and an epoch above the installed one names its T0
+    (t0_required with both triples, R5-3); (c) NEW is in served(root) or its controller triple equals the
     installed one, else t0_required (greater pair), controller_behind (lower
     pair) or a revision conflict (equal pair, other closure), each naming both
     triples (R5-3); (d) H passes serve's slot integers; (g) SR-2: NEW's,
@@ -702,11 +703,13 @@ def release_admission(root: Path, source: dict, manifest: dict) -> dict:
         triple = stage.controller_triple(manifest)
     except ValueError as error:
         _refuse(str(error))
-    if not stage.RELEASE_MODE_EPOCH <= triple[0] <= installed[0]:  # (b)
+    detail = ":installed=" + _triple_text(installed) + ",archive=" + _triple_text(triple)
+    if triple[0] < stage.RELEASE_MODE_EPOCH:  # (b): R1 (epoch 4) is never NEW (SC-D7 A)
         _refuse("runtime_admission_compaction_release_epoch")
+    if triple[0] > installed[0]:  # (b) upper bound: a greater triple, so (c)'s named case (review B3)
+        _refuse(T0_REQUIRED + detail)
     release_sha256 = _sha256_bytes(_release_json_bytes(manifest))
     if release_sha256 not in served_releases(root, source) and triple != installed:  # (c)
-        detail = ":installed=" + _triple_text(installed) + ",archive=" + _triple_text(triple)
         if triple[:2] > installed[:2]:
             _refuse(T0_REQUIRED + detail)
         if triple[:2] < installed[:2]:

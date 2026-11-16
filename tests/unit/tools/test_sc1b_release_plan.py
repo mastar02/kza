@@ -199,6 +199,8 @@ def test_first_post_r1_plan_admits_new_and_start_runs_k_from_new(x4, x5, tmp_pat
     h_state = cw.tree(world["h"]["state"])
     _row_p(root, tmp_path, "h-epoch4-new", "runtime_admission_compaction_release_epoch",
            lambda: cw.plan(root, x4["archive"]))  # P6'(b): R1 (epoch 4) is never NEW (SC-D7 A)
+    assert str(_refusal("runtime_admission_compaction_release_epoch", lambda: cw.plan(root, x4["archive"]))) \
+        == "runtime_admission_compaction_release_epoch"  # not t0_required: no T0 makes R1 a NEW
     witness = cw.witness(root)
     planned = cw.plan(root, x5["archive"])  # retire_prepare_leftovers not given: forced on
     assert cw.witness(root) == witness  # read-only
@@ -363,10 +365,12 @@ def test_new_manifest_integers_and_schema_contracts(x5, x5s, tmp_path, monkeypat
     def with_values(**values):
         monkeypatch.setattr(compaction, "_release_manifest", lambda archive: {**original(archive), **values})
 
+    # Review B3: an epoch above the installed one is (c)'s greater triple: t0_required naming both.
+    epoch6 = compaction.T0_REQUIRED + _triples(x5["triple"], (6,) + tuple(x5s["triple"][1:]))
     for values, code in (({"launcher_contract": 2}, "runtime_admission_launcher_contract_missing"),
                          ({"format_epoch": 0}, "runtime_admission_rollback_format_closed"),
                          ({"schema_contract": 2}, "runtime_admission_compaction_schema_contract"),
-                         ({"controller_epoch": 6}, "runtime_admission_compaction_release_epoch")):
+                         ({"controller_epoch": 6}, epoch6)):
         with_values(**values)
         _row_p(root, tmp_path, "h-" + next(iter(values)), code, lambda: cw.plan(root, x5s["archive"]))
     monkeypatch.setattr(compaction, "_release_manifest", original)
