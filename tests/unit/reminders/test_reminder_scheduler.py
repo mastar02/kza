@@ -18,7 +18,7 @@ from src.core.voice_delivery import (
 from src.reminders.recurrence import next_trigger
 from src.reminders.reminder_scheduler import (
     DEFAULT_LATE_ACTION_GRACE_S, DEFAULT_NOTICE_FALLBACK_MAX_ROUNDS, DEFAULT_NOTICE_FALLBACK_ROUND_S,
-    NoticeDismissal, ReminderScheduler, grouped_request_id, notice_contended, notice_request_id,
+    NoticeDismissal, ReminderScheduler, grouped_request_id, notice_body, notice_contended, notice_request_id,
 )
 from src.reminders.reminder_store import ReminderScope, ReminderState, ReminderStore
 from src.home_assistant.home_actions import HomeActionService
@@ -2295,6 +2295,33 @@ async def test_a_signal_during_a_flight_bounds_the_round_by_the_fresh_backoff_wh
     await scheduler._deliver_due(clock())
     assert len(output.texts) == 3
     assert (await store.get_by_id(r.id)).state is ReminderState.FIRED
+
+
+@pytest.mark.asyncio
+async def test_a_parked_output_free_round_does_not_spin_during_a_conversation(build, store, mock_deps, clock,
+                                                                             conversation):
+    """Review round 3 (Q33-2): an output-free round waiting for a conversation that is then parked
+    (here another claimant is announcing the occurrence) is no longer an output-free round: its
+    stale timed retry, already past, must not make it claimable, or the loop would park it again
+    and again with a zero timeout."""
+    scheduler = build()
+    scheduler.watch_conversation(conversation)
+    mock_deps["tts"].aspeak.return_value = output_busy()
+    r = await store.create("u1", "regar", clock() - 1, scope=ReminderScope.SHARED)
+    await scheduler._deliver_due(clock())
+    conversation.start_conversation()
+    scheduler.notify_output_available()
+    hold = scheduler._holds[r.id]
+    assert (hold.output_round, hold.timed_retry_at) == (True, clock() + 1)
+    other = notice_request_id(r.id, r.trigger_at, 2)
+    assert await store.claim_home_action(other, notice_body(r.id, r.trigger_at, 2, clock(), "living"))
+    clock.advance(2)  # the replaced backoff is past
+    await scheduler._deliver_due(clock())
+    assert (hold.output_round, hold.retry_at, hold.reason) == (False, None, "notice_in_flight")
+    assert await scheduler._next_timeout() is None
+    await scheduler._deliver_due(clock())
+    assert mock_deps["tts"].aspeak.await_count == 1
+    assert [status for status, *_ in await notices(store)] == ["failed", "sending"]
 
 
 @pytest.mark.asyncio
