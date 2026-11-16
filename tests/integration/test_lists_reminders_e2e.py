@@ -13,6 +13,7 @@ from src.reminders.reminder_store import ReminderStore, ReminderScope
 from src.reminders.reminder_manager import ReminderManager
 from src.reminders.reminder_scheduler import ReminderScheduler
 from tests.mocks.home_control import selected_actions
+from tests.mocks.responses import voice_output
 
 
 @pytest_asyncio.fixture
@@ -36,7 +37,7 @@ async def reminder_system(tmp_path):
     wake = asyncio.Event()
     store = ReminderStore(str(tmp_path / "reminders.db"), on_created=wake.set)
     await store.initialize()
-    tts = AsyncMock()
+    tts = voice_output()
     presence = MagicMock()
     presence.get_user_zone = MagicMock(return_value="living")
     ha_client = AsyncMock()
@@ -44,7 +45,7 @@ async def reminder_system(tmp_path):
     manager = ReminderManager(store=store, config={"tts_prefix": "Oye, recuerda"}, home_actions=actions)
     scheduler = ReminderScheduler(
         store=store, tts=tts, presence_detector=presence, home_actions=actions,
-        ha_client=ha_client, config={"max_retries": 2, "retry_interval_seconds": 1, "tts_prefix": "Oye, recuerda", "output_zone": "living"},
+        ha_client=ha_client, config={"notice_max_attempts": 2, "notice_retry_min_gap_s": 1, "tts_prefix": "Oye, recuerda", "output_zone": "living"},
         wake_event=wake,
     )
     yield {

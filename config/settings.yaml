@@ -664,11 +664,17 @@ lists:
 
 reminders:
   db_path: "./data/reminders.db"
-  max_retries: 3
-  # Primer reintento tras un anuncio fallido; luego se duplica (30, 60, 120 s) hasta
-  # max_retries. Debe quedar por debajo de late_action_grace_s: con 300 s cualquier
-  # reintento ya llegaba tarde y el recordatorio perdía sus acciones de la casa.
-  retry_interval_seconds: 30
+  # Cada anuncio es un intento durable ("notice:") reclamado antes del audio. Solo un
+  # intento que no llegó a sonar (failed) se reintenta: hasta notice_max_attempts por
+  # ronda (arranque, zona disponible), separados por notice_retry_min_gap_s y luego el
+  # doble (30 s, 60 s). Agotar los intentos no lo cierra: queda pendiente y visible en la
+  # web. El primer reintento debe quedar por debajo de late_action_grace_s para que un
+  # anuncio fallido no le haga perder sus acciones de la casa.
+  notice_max_attempts: 3
+  notice_retry_min_gap_s: 30
+  # Historial de avisos terminados (entregado, descartado, cortado, incompleto): 48 h
+  # desde el reclamo, una vez que la ocurrencia ya no está pendiente (respuesta Q3).
+  notice_retention_hours: 48
   missed_reminder_on_arrival: true
   default_time: "09:00"
   tts_prefix: "Oye, recuerda"

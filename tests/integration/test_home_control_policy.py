@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 import numpy as np
 import pytest
 
-from tests.mocks.responses import response_handler_mock
+from tests.mocks.responses import delivered, response_handler_mock, voice_output
 from src.dashboard.api import DashboardAPI
 from src.home_assistant.control_policy import ActionOrigin, ActorKind, HomeActor, HomeControlPolicy
 from src.home_assistant.ha_client import HomeAssistantClient, ServiceCallOutcome, ServiceCallStatus
@@ -351,15 +351,18 @@ async def test_reminders_validate_at_creation_and_again_at_both_delivery_paths(g
         reminder = await manager.create("unverified-profile", "test", time.time() - 1, ha_actions=[action], scope=ReminderScope.SHARED)
         presence = MagicMock()
         presence.get_user_zone.return_value = "test-zone"
-        scheduler = ReminderScheduler(store, AsyncMock(), presence, ha, config={"output_zone": "test-zone"}, home_actions=actions)
+        scheduler = ReminderScheduler(store, voice_output(), presence, ha, config={"output_zone": "test-zone"}, home_actions=actions)
         write_selection(path, enabled=False)
         with pytest.raises(ValueError, match="action_not_selected"):
             await manager.create("profile", "denied", 2.0, ha_actions=[action])
         if delivery == "due":
             await scheduler._fire_reminder(reminder)
         else:
-            await scheduler.missed_reminder_on_arrival(reminder.user_id, "test-zone")
-        async with store._db.execute("SELECT status, reason FROM reminder_home_actions") as cursor:
+            # T034-U2 single flight: the arrival only wakes the loop, whose pass delivers.
+            assert await scheduler.missed_reminder_on_arrival(reminder.user_id, "test-zone") == 0
+            assert ha.sends == []
+            await scheduler._deliver_due(time.time())
+        async with store._db.execute("SELECT status, reason FROM reminder_home_actions WHERE request_id LIKE 'reminder:%'") as cursor:
             assert [tuple(row) for row in await cursor.fetchall()] == [("failed", "action_not_selected")]
         assert ha.sends == []
     finally:
@@ -375,7 +378,7 @@ async def test_reminder_claim_survives_lost_scheduler_completion_and_restart(gra
     reminder = await store.create("profile", "test", time.time() - 1, ha_actions=[action], scope=ReminderScope.SHARED)
     presence = MagicMock()
     presence.get_user_zone.return_value = "test-zone"
-    scheduler = ReminderScheduler(store, AsyncMock(), presence, ha, config={"output_zone": "test-zone"}, home_actions=actions)
+    scheduler = ReminderScheduler(store, voice_output(), presence, ha, config={"output_zone": "test-zone"}, home_actions=actions)
     ha.outcome = ServiceCallOutcome(ServiceCallStatus.UNCERTAIN, "response_lost")
     store.mark_fired = AsyncMock(side_effect=RuntimeError("scheduler interrupted"))
     with pytest.raises(RuntimeError, match="scheduler interrupted"):
@@ -385,10 +388,10 @@ async def test_reminder_claim_survives_lost_scheduler_completion_and_restart(gra
     restarted = ReminderStore(db_path)
     await restarted.initialize()
     try:
-        scheduler = ReminderScheduler(restarted, AsyncMock(), presence, ha, config={"output_zone": "test-zone"}, home_actions=HomeActionService(ha, policy=actions.policy))
+        scheduler = ReminderScheduler(restarted, voice_output(), presence, ha, config={"output_zone": "test-zone"}, home_actions=HomeActionService(ha, policy=actions.policy))
         await scheduler._fire_reminder(await restarted.get_by_id(reminder.id))
         assert len(ha.sends) == 1
-        async with restarted._db.execute("SELECT status FROM reminder_home_actions") as cursor:
+        async with restarted._db.execute("SELECT status FROM reminder_home_actions WHERE request_id LIKE 'reminder:%'") as cursor:
             assert [row[0] for row in await cursor.fetchall()] == ["uncertain"]
     finally:
         await restarted.close()
@@ -419,7 +422,7 @@ async def test_due_and_arrival_race_share_one_committed_reminder_effect(graph, t
         reminder = await store.create("profile", "test", time.time() - 1, ha_actions=[{"domain": "light", "service": "turn_on", "entity_id": "light.test_lamp"}], scope=ReminderScope.SHARED)
         presence = MagicMock()
         presence.get_user_zone.return_value = "test-zone"
-        scheduler = ReminderScheduler(store, AsyncMock(), presence, ha, config={"output_zone": "test-zone"}, home_actions=actions)
+        scheduler = ReminderScheduler(store, voice_output(), presence, ha, config={"output_zone": "test-zone"}, home_actions=actions)
         await asyncio.gather(scheduler._fire_reminder(reminder), scheduler.missed_reminder_on_arrival("profile", "test-zone"))
         assert len(ha.sends) == 1
     finally:
@@ -439,6 +442,7 @@ async def test_recurring_reminder_late_arrival_cannot_adopt_or_overwrite_next_oc
         if len(spoken) == 1:
             entered.set()
             await release.wait()
+        return delivered(text)
 
     arrival = None
     try:
@@ -450,9 +454,11 @@ async def test_recurring_reminder_late_arrival_cannot_adopt_or_overwrite_next_oc
         tts.aspeak.side_effect = speak
         scheduler = ReminderScheduler(store, tts, presence, ha, config={"output_zone": "test-zone"},
                                       home_actions=actions)
-        arrival = asyncio.create_task(scheduler.missed_reminder_on_arrival("profile", "arrival-zone"))
+        # T034-U2: arrivals only wake the loop; the first delivery here is the loop's own pass.
+        assert await scheduler.missed_reminder_on_arrival("profile", "arrival-zone") == 0
+        arrival = asyncio.create_task(scheduler._fire_reminder(reminder))
         await asyncio.wait_for(entered.wait(), 2)
-        # Single flight: the loop's attempt is refused while the arrival announces.
+        # Single flight: a second attempt is refused while the first announces.
         assert await scheduler._fire_reminder(reminder) is False
         assert len(spoken) == 1 and ha.sends == []
         latest = reminder.trigger_at
@@ -462,14 +468,14 @@ async def test_recurring_reminder_late_arrival_cannot_adopt_or_overwrite_next_oc
         assert in_flight.state == "active" and in_flight.trigger_at == latest
         assert (latest > reminder.trigger_at) is (days_late > 0)
         release.set()
-        assert await asyncio.wait_for(arrival, 2) == 1
+        assert await asyncio.wait_for(arrival, 2) is True
         successor = await store.get_by_id(reminder.id)
         assert successor.state == "active" and successor.trigger_at == next_trigger(latest, "daily")
         assert successor.trigger_at > time.time()
         assert len(spoken) == 1 and len(ha.sends) == 1
         assert tts.aspeak.call_args.kwargs["zone_id"] == "test-zone"
         assert await store._work.read(lambda db: [row[0] for row in db.execute(
-            "SELECT status FROM reminder_home_actions").fetchall()]) == ["confirmed"]
+            "SELECT status FROM reminder_home_actions WHERE request_id LIKE 'reminder:%'").fetchall()]) == ["confirmed"]
         for stale in {reminder.trigger_at, latest}:
             assert not await store.update_trigger(reminder.id, 1., shared_only=True, expected_trigger_at=stale)
             assert not await store.mark_fired(reminder.id, shared_only=True, expected_trigger_at=stale)
@@ -501,10 +507,10 @@ async def test_reminder_sequence_advances_only_after_confirmation(graph, tmp_pat
             ha.outcome = ServiceCallOutcome(ServiceCallStatus.UNCERTAIN, "response_lost")
         presence = MagicMock()
         presence.get_user_zone.return_value = "test-zone"
-        scheduler = ReminderScheduler(store, AsyncMock(), presence, ha, config={"output_zone": "test-zone"}, home_actions=actions)
+        scheduler = ReminderScheduler(store, voice_output(), presence, ha, config={"output_zone": "test-zone"}, home_actions=actions)
         await scheduler._fire_reminder(reminder)
         assert [send[1] for send in ha.sends] == (["turn_on"] if uncertain else ["turn_on", "turn_off"])
-        async with store._db.execute("SELECT status FROM reminder_home_actions ORDER BY rowid") as cursor:
+        async with store._db.execute("SELECT status FROM reminder_home_actions WHERE request_id LIKE 'reminder:%' ORDER BY rowid") as cursor:
             assert [row[0] for row in await cursor.fetchall()] == (["uncertain"] if uncertain else ["confirmed", "confirmed"])
     finally:
         await store.close()
