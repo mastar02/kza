@@ -276,6 +276,10 @@ autocontenidas y la delegación a estados dueños se apaga. Desde SC-2
   limpieza de SC-6a: las releases legadas no tienen `delegate` y, bajo un
   head gestionado, `run()` sólo corre el slot del head, así que mover
   `current` no cambia lo que corre.
+  SC-1a (2026-11-16, desarrollado, sin release) la implementó de otra forma,
+  según el diseño v4 aceptado (`mechanism.authz3_1`): una guarda sin estado
+  de época 5, sin conjunto congelado ni registro de heads. Ver «Controlador
+  de época 5 (SC-1a)» más abajo; R1 (época 4) no la tiene.
 - Ese bloqueo necesita un `admission/controller.json` legible: si falta, es un
   symlink, no se puede leer o no es JSON válido, `require_forward_epoch` no
   rechaza nada e incluso una copia que lo contiene podría volver a conceder y
@@ -693,6 +697,99 @@ Hasta que exista una herramienta, retirar a mano una copia vieja requiere una de
 Versiones del controlador: una raíz con dueños sólo se valida y se compacta;
 no se le agregan dueños. Usá siempre `controller/current` (época 4 o
 posterior), nunca el `stage_runtime` de un slot.
+
+### Controlador de época 5 (SC-1a) — desarrollado, sin release
+
+Estado al 2026-11-16: implementado en la rama `sc1a-controller-epoch5`
+(diseño `sc-release-design-v4`, unidad SC-1a, aceptado). No hay release:
+producción y R1 siguen en época 4. Es la primera pieza del modo release
+posterior a R1; plan/start en modo release (SC-1b), la corrida de
+verificación (SC-4a) y las salidas (SC-4b) siguen sin implementar, así que
+esta sección no habilita ninguna transición gestionada (ver «Sin
+transiciones gestionadas después de R1 hasta el modo release»). Evidencia:
+`data/autonomous-roadmap-20261102/t040-t041/sc1a-evidence.json` (local,
+fuera de Git).
+
+Qué es la época 5: sólo modo release para logs nuevos (lo completa SC-1b),
+ningún registro de delegación ni dueño se acepta, y `src` capaz de la corrida
+de verificación (SC-4a). Una copia de época 4 (R1 incluida) no puede tomar el
+lease de una raíz de época 5 (`runtime_admission_controller_downgrade`). Los
+slots de R1 siguen sirviéndose: `SCHEMA_CONTRACT_EPOCH` 1, `FORMAT_EPOCH` 1,
+`LAUNCHER_CONTRACT` 3 y `RECEIPT_STATE_SCHEMA` 2 no cambian.
+
+Triple del controlador. `release.json` declara `controller_epoch`,
+`controller_revision` (`CONTROLLER_REVISION`, hoy 1) y
+`controller_sources_sha256`, el sha256 de la lista ordenada (ruta, sha256 del
+fuente) de la clausura de imports del controlador, que `build_runtime`
+calcula y también registra (`controller_sources`). La clausura sale de un
+análisis estático de todos los `import` de `src.*` y `scripts.*` (de módulo y
+de función) desde `stage_runtime`, `compaction`, `managed_launcher`,
+`adoption_commands` y el worker `src/core/compaction_worker.py`, más los
+módulos que el controlador carga por ruta y `src/memory/copy_observation.py`,
+cuyo formato lee con su propio parser. Hoy son unas 300 fuentes, casi todo
+`src`: casi cualquier release cambia el triple, y entonces necesita un T0 con
+`CONTROLLER_REVISION` subido. El triple instalado se lee de
+`controller/current/release.json` (la copia que hace la instalación);
+`admission/controller.json` conserva sus cinco campos.
+
+`install-controller` desde la época 5, siempre antes de mover `current` y sin
+escribir nada en los rechazos:
+
+- se corre desde el archivo NUEVO extraído, nunca desde el `$ST` instalado:
+  el controlador compilado que corre la instalación debe ser el del archivo
+  (`runtime_admission_controller_installer_mismatch`);
+- monotonía en (época, revisión): menor rechaza
+  (`runtime_admission_controller_downgrade`); el mismo par con otro digest
+  rechaza (`runtime_admission_controller_revision_conflict`); el mismo
+  triple repite la instalación sin efecto;
+- primera instalación de época 5 (el `controller.json` instalado declara
+  época menor que 5): rechaza un log de compactación pendiente
+  (`runtime_admission_compaction_pending`) o ilegible
+  (`runtime_admission_compaction_log_invalid`), un head abierto
+  (`runtime_admission_not_closed`), cualquier entrada en
+  `admission/delegations/` (`runtime_admission_delegation_frozen`) y un head
+  con dueños (`runtime_admission_owners_present`); después corre SR-1;
+- SR-1 sobre el head cerrado: el binding del slot recalculado por el código
+  nuevo debe ser idéntico al guardado
+  (`runtime_admission_controller_binding_changed`; si sólo difiere
+  `sdk_versions`, `runtime_admission_compaction_sdk_changed: <paquete>==<versión
+  ligada>`: reinstalar esa versión), la sonda del propio slot, el mismo
+  contrato de esquema que el slot (`runtime_admission_controller_schema_contract`)
+  y las comprobaciones de slot de `serve`;
+- instalaciones siguientes: head cerrado, SR-1; head abierto sólo bajo un log
+  pendiente del modo release, y entonces el binding de H recalculado debe ser
+  igual al del log; un head desconocido sin ese log rechaza
+  `runtime_admission_not_closed`: cerrarlo antes con R-b o `adopt`.
+
+Corte entre el cambio de `current` y `controller.json` (fila T0S): todo lo
+que no sea `install-controller` rechaza con
+`runtime_admission_controller_install_incomplete` (`serve` incluido) hasta
+repetir la instalación, que vuelve a correr las mismas comprobaciones. Un
+corte antes del cambio (fila T0) deja el controlador anterior: H sigue
+sirviendo con él.
+
+Guarda AUTHZ3-1 (sin estado): en época 5 cualquier entrada en
+`admission/delegations/` hace rechazar a `serve`, `plan` y toda validación de
+binding (`runtime_admission_delegation_frozen`), y un head cuya política lista
+destinos delegados no se sirve (`runtime_admission_owners_present`) ni se
+planifica (`runtime_admission_compaction_owners_present`). Un registro que
+aparece después del T0 significa que corrió una copia vieja (fila DL): si el
+head no tiene dueños, borrarlo a mano restituye `serve`. Si además hay dueños
+en el head (fila DO), no borrarlo: la salida es L4 mientras exista y sin log
+pendiente, o trabajo de desarrollo. `uninstall-launcher` (L4) no queda
+bloqueado por la guarda. Es detección, no prevención: una copia vieja todavía
+puede mover el head.
+
+Instalador equivocado: si el primer T0 se corre con el `$ST` de época 4, no
+corre ninguna de esas comprobaciones; un log simple pendiente queda arrastrado
+y lo terminan los comandos simples de la época 5, y las guardas de `plan` y
+`serve` siguen vigentes. Repetir después la instalación con el instalador
+correcto es el mismo triple: no cambia nada y deja admitido el plan.
+
+Tests: los mundos con dueños (compactación simple de estados dueños,
+cadenas de delegación) corren con una construcción de época 4 de este mismo
+árbol (`tests/mocks/epoch4.py`); los rechazos de época 5 y las filas T0, T0S,
+T0F, DL y DO están en `tests/unit/tools/test_sc1a_controller_install.py`.
 
 ### Sin transiciones gestionadas después de R1 hasta el modo release
 
@@ -1410,7 +1507,9 @@ cada miembro por su identidad registrada, sin registrar el final mientras
 quede algo en la cuarentena.
 `install-controller` (época 4 o posterior desde SC-2, nunca menor que la instalada) sí
 entra, también con un log inválido: es la salida de una compactación trabada
-(D4 = A). La recuperación automática R-b queda apagada mientras tanto. No
+(D4 = A). Desde SC-1a (época 5, sin release) la primera instalación de época 5
+rechaza cualquier log pendiente o ilegible, y las siguientes sólo entran con
+un log pendiente del modo release (ver «Controlador de época 5 (SC-1a)»). La recuperación automática R-b queda apagada mientras tanto. No
 reinicies el servidor durante una compactación.
 
 Épocas (D1 = A): R1 se construye desde un árbol que ya contiene U3b-0c y,

@@ -48,6 +48,10 @@ CONTROLLER_ENTRY_POINTS = ("scripts/stage_runtime.py", "scripts/compaction.py", 
 CONTROLLER_PATH_LOADED = ("scripts/adoption.py", "scripts/adoption_commands.py", "scripts/compaction.py",
                           "scripts/compaction_units.py", "scripts/managed_launcher.py",
                           "src/memory/manual_components.py")
+# Modules the controller never imports but whose record format its own parser mirrors
+# (stage_runtime._read_copy_observation reads what src/memory/copy_observation writes):
+# a change there is a controller change too (R4-OPS-1 names it in the closure).
+CONTROLLER_FORMAT_COMPANIONS = ("src/memory/copy_observation.py",)
 _CLOSURE_PACKAGES = ("src", "scripts")
 
 
@@ -88,10 +92,11 @@ def controller_closure(sources: dict) -> list[list[str]]:
 
     A static AST scan of every ``import``/``from`` statement naming src.* or
     scripts.* (relative ones resolved), from CONTROLLER_ENTRY_POINTS plus
-    CONTROLLER_PATH_LOADED, including the package __init__ files an import
-    executes. Third-party packages (the shared venv) are outside it.
+    CONTROLLER_PATH_LOADED and CONTROLLER_FORMAT_COMPANIONS, including the
+    package __init__ files an import executes. Third-party packages (the
+    shared venv) are outside it.
     """
-    pending = list(CONTROLLER_ENTRY_POINTS) + list(CONTROLLER_PATH_LOADED)
+    pending = list(CONTROLLER_ENTRY_POINTS) + list(CONTROLLER_PATH_LOADED) + list(CONTROLLER_FORMAT_COMPANIONS)
     seen = set()
     while pending:
         path = pending.pop()

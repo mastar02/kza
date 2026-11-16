@@ -2207,7 +2207,10 @@ def _binding_equality(root: Path, binding: dict) -> None:
     runtime_admission_compaction_sdk_changed naming the bound version (the
     same rule as W0, R4-PRIV-1): reinstall the bound version.
     """
-    recomputed = stage._binding_snapshot(root, binding["slot"])
+    try:
+        recomputed = stage._binding_snapshot(root, binding["slot"])
+    except (OSError, ValueError) as error:  # the slot's files or state no longer check: a coded refusal
+        raise LauncherRefusal(str(error)[:200] or type(error).__name__) from None
     if stage._canonical_json(recomputed) == stage._canonical_json(binding):
         return
     if {key: value for key, value in recomputed.items() if key != "sdk_versions"} == \
@@ -2231,13 +2234,17 @@ def _sr1(root: Path, head: dict, manifest: dict, *, probe_timeout: float) -> Non
         stage._probe_candidate(root, binding["slot"], binding, timeout=probe_timeout)
     except ValueError as error:
         raise LauncherRefusal(str(error)[:200]) from None
-    if manifest.get("schema_contract", 0) != stage.release_integers(binding)["schema_contract"]:
+    try:
+        contract = stage.release_integers(binding)["schema_contract"]
+    except (OSError, ValueError) as error:
+        raise LauncherRefusal(str(error)[:200]) from None
+    if manifest.get("schema_contract", 0) != contract:
         raise LauncherRefusal(SCHEMA_CONTRACT_CHANGED)
     check_slot(root, binding)
     try:
         stage._checked_slot(root, binding["slot"])
-    except ValueError as error:
-        raise LauncherRefusal(str(error)[:200]) from None
+    except (OSError, ValueError) as error:
+        raise LauncherRefusal(str(error)[:200] or type(error).__name__) from None
 
 
 def _guard_checks(root: Path, binding: dict | None) -> None:

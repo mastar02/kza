@@ -2,7 +2,7 @@
 
 sc-release-design v3 epochs.r1_rebuild step 4 and implementation_units SC-6a,
 run on the U3b-0e3 world (the b0866e8-written legacy root adopted into R1, the
-R1 archive built from this working tree):
+R1 archive built from this working tree at controller epoch 4, R1's epoch, since SC-1a):
 
 - (i) after the adoption, ``delegate``, ``authorize_derived_state`` and a
   cross-slot ``activate`` are refused, by the library and by the installed
@@ -26,7 +26,8 @@ AUTHZ3-1 (SC-2 review round 3): a ``stage_runtime`` copy from
 the adopted epoch-4 root it still grants and activates another slot, which
 becomes the head. That residual is pinned as found, not weakened: DEPLOYMENT
 keeps the operating rule (run only ``controller/current``), SC-6a removes those
-copies and SC-1 owns the structural guard. The first copy with
+copies and SC-1 owns the structural guard (SC-1a: from epoch 5 every reader
+refuses the record, test_sc1a_controller_install rows DL and DO). The first copy with
 ``require_forward_epoch`` (b0c322d) is refused, which pins the range's end.
 
 The same additions run compiled under real systemd in
@@ -51,7 +52,9 @@ from scripts import stage_runtime as stage
 from scripts.build_runtime import build_runtime
 from tests.integration import test_adoption_commands as adoption_tests
 from tests.mocks import compaction_world as cw
+from tests.mocks import launcher_rehearsal
 from tests.mocks import r1_runbook
+from tests.mocks.epoch4 import apply_epoch4, epoch4_commit
 from tests.unit.tools.test_stage_runtime_admission import _witness
 
 REPO = Path(__file__).resolve().parents[2]
@@ -62,7 +65,33 @@ FIRST_LOCKED = "b0c322d"  # the first one with it
 RETIRED = "runtime_admission_delegation_retired"
 RELEASE_MODE = "runtime_admission_transition_requires_release_mode"
 
-artifacts = adoption_tests.artifacts  # the R1 archive of this working tree (module scope)
+
+
+@pytest.fixture(scope="module")
+def artifacts(tmp_path_factory):
+    """R1's stand-in: this working tree built at controller epoch 4 (R1 = epoch 4), plus an epoch-1 copy.
+
+    SC-1a raised this tree to epoch 5; R1 stays epoch 4 (the pinned 357dcb5, rebuilt below in
+    test_the_runbook_pin_is_the_archive_of_its_commit). The in-process controller runs as the same
+    epoch-4 build (the autouse ``r1_epoch`` fixture), so every statement here is about an epoch-4 root.
+    """
+    base = tmp_path_factory.mktemp("r1-artifact-epoch4")
+    clone = base / "clone"
+    subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(REPO), str(clone)],
+                   check=True, timeout=120)
+    revision = epoch4_commit(clone, launcher_rehearsal.overlay_commit(REPO, clone))
+    archive = base / "r1.tar.gz"
+    manifest = build_runtime(clone, archive, revision)
+    assert manifest["controller_epoch"] == 4
+    old = base / "epoch1.tar.gz"
+    adoption_tests._rewrite_release(archive, old, controller_epoch=1)
+    return {"archive": archive, "epoch1": old, "commit": manifest["git_commit"]}
+
+
+@pytest.fixture(autouse=True)
+def r1_epoch(monkeypatch):
+    apply_epoch4(monkeypatch)
+
 tree = adoption_tests.tree  # the b0866e8 tree (module scope)
 world = adoption_tests.world
 

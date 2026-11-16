@@ -20,6 +20,7 @@ from scripts import compaction
 from scripts import managed_launcher as launcher
 from scripts import stage_runtime as stage
 from tests.mocks import compaction_world as cw
+from tests.mocks.epoch4 import apply_epoch4
 
 
 @pytest.fixture(scope="module")
@@ -132,6 +133,7 @@ def test_abort_crash_at_every_boundary_finishes_on_the_next_command(x_archive, t
     with pytest.raises(RuntimeError, match="synthetic-crash"):
         compaction.compact_abort(root, compaction_id, **options)
     monkeypatch.undo()
+    apply_epoch4(monkeypatch)  # SC-1a: undo() also dropped the epoch-4 build
     monkeypatch.setattr(compaction, "controller_location", lambda root, members: None)
     [status] = compaction.compact_status(root, compaction_id)["compactions"]
     assert status["terminal"] is False
@@ -198,6 +200,7 @@ def test_k_prepare_crash_resumes_or_aborts(x_archive, tmp_path, monkeypatch, cut
     with pytest.raises(RuntimeError, match="synthetic-crash"):
         cw.start(root, world["archive"])
     monkeypatch.undo()
+    apply_epoch4(monkeypatch)  # SC-1a: undo() also dropped the epoch-4 build
     monkeypatch.setattr(compaction, "controller_location", lambda root, members: None)
     [log] = stage.compaction_logs(root)
     compaction_id = log["compaction_id"]

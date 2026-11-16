@@ -72,7 +72,8 @@ def epoch4_controller(monkeypatch):
     worlds are built, served and compacted by an epoch-4 controller only.
     """
     from scripts import stage_runtime
-    monkeypatch.setattr(stage_runtime, "CONTROLLER_EPOCH", 4)
+    from tests.mocks.epoch4 import apply_epoch4
+    apply_epoch4(monkeypatch)  # the worker, too, runs the installed epoch-4 controller tree
     return stage_runtime
 
 

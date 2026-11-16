@@ -24,6 +24,7 @@ from scripts import compaction
 from scripts import stage_runtime as stage
 from src.core import entry_guard
 from tests.mocks import compaction_world as cw
+from tests.mocks.epoch4 import apply_epoch4
 from tests.mocks.legacy_transitions import legacy_managed_transitions
 
 
@@ -189,6 +190,7 @@ def test_full_compaction_on_a_production_like_root(x_archive, tmp_path, monkeypa
         monkeypatch.setattr(compaction.os, name, spy)
     retired = compaction.compact_retire(root, compaction_id, scan=cw.no_units)
     monkeypatch.undo()
+    apply_epoch4(monkeypatch)  # SC-1a: undo() also dropped the epoch-4 build
     monkeypatch.setattr(compaction, "controller_location", lambda root, members: None)
     assert retired["phase"] == "complete" and retired["destroyed"] == retired["members"] == 8
     # T-Q4-4: no call ever names a path inside an untouched entry. The one exception is retire's
@@ -493,6 +495,7 @@ def test_crash_then_resume_or_abort_from_each_start_phase(x_archive, tmp_path, m
     with pytest.raises(RuntimeError, match="synthetic-crash"):
         cw.start(root, world["archive"], **(options if phase == "worker" else {}))
     monkeypatch.undo()
+    apply_epoch4(monkeypatch)  # SC-1a: undo() also dropped the epoch-4 build
     monkeypatch.setattr(compaction, "controller_location", lambda root, members: None)
     [log] = stage.compaction_logs(root)
     compaction_id = log["compaction_id"]
