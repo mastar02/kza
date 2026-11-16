@@ -500,3 +500,188 @@ def test_verify_identity_accepts_an_added_ledger_only_while_it_is_empty(tmp_path
             oc.verify_identity(plan, destination, journal)
     else:
         assert oc.verify_identity(plan, destination, journal)["tables"] == 1
+
+
+# --- SC-0b review round 1 ------------------------------------------------------------------------------
+
+# F2: the memo key hashes the content of what the capture reads, and only the path and kind of the rest.
+
+def test_bytes_the_capture_never_reads_do_not_miss_but_their_paths_do(tmp_path, monkeypatch):
+    state = _state(tmp_path)
+    audio = state / "data" / "audio"
+    audio.mkdir()
+    (audio / "clip.wav").write_bytes(b"RIFF" + b"\0" * 4096)
+    calls = _counting(monkeypatch)
+    with stage.authority_memo():
+        first = stage.capture_state_authority(state)
+        _flip_one_byte(audio / "clip.wav")  # audio is never read by the capture: same key, a hit
+        assert stage.capture_state_authority(state) == first and len(calls) == 1
+        (audio / "clip.wav").rename(audio / "clip2.wav")
+        stage.capture_state_authority(state)
+        assert len(calls) == 2
+        (audio / "other.wav").write_bytes(b"x")
+        stage.capture_state_authority(state)
+        assert len(calls) == 3
+    monkeypatch.undo()
+    assert first == stage.capture_state_authority(state)
+
+
+@pytest.mark.parametrize("relative", ["data/privacy.db-wal", "data/privacy.db-shm", "data/privacy.db-journal",
+                                      "data/x.sqlite3-wal", "data/people_accounts_v1.json", ".env",
+                                      "config/nested/policy.toml", "config/settings.yml"])
+def test_every_input_the_capture_or_sqlite_reads_is_hashed(tmp_path, relative):
+    state = _state(tmp_path)
+    path = state / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"a" * 64)
+    before = stage._authority_tree_key(state)
+    path.write_bytes(b"b" * 64)
+    assert stage._authority_tree_key(state) != before
+    assert stage._authority_input(state, path)
+
+
+@pytest.mark.parametrize("relative", ["data/audio/1.wav", "data/chroma_db/abc/data_level0.bin", "data/x.db.bak",
+                                      "data/x-wal", "config/notes.txt", "data/.env", "data/settings.yaml"])
+def test_files_the_capture_skips_are_not_inputs(tmp_path, relative):
+    state = _state(tmp_path)
+    assert not stage._authority_input(state, state / relative)
+
+
+def test_every_file_the_capture_opens_is_a_key_input(tmp_path):
+    """Soundness of the narrowed key: the capture opens nothing that _authority_input leaves out."""
+    import sys
+    from urllib.parse import unquote, urlparse
+    state = _state(tmp_path)
+    (state / "data" / "people_accounts_v1.json").write_text(json.dumps(
+        {"schema": "kza-users-accounts-v1", "users": [{"id": "u1", "role": "admin", "last_seen": 1.0}]}))
+    (state / ".env").write_text("SYNTHETIC=1\n")
+    (state / "data" / "audio").mkdir()
+    (state / "data" / "audio" / "1.wav").write_bytes(b"RIFF")
+    (state / "config" / "notes.txt").write_text("not an input")
+    opened, active = [], []
+
+    def hook(event, args):
+        if not active:
+            return
+        if event == "open" and isinstance(args[0], (str, bytes, os.PathLike)):
+            opened.append(Path(os.fsdecode(args[0])))
+        elif event == "sqlite3.connect":
+            target = str(args[0])
+            opened.append(Path(unquote(urlparse(target).path)) if target.startswith("file:") else Path(target))
+    sys.addaudithook(hook)
+    active.append(True)
+    try:
+        stage._capture_state_authority(state)
+    finally:
+        active.clear()
+    under = {path for path in opened if path.is_relative_to(state)}
+    assert {state / PRIVACY, state / ".env", state / "config" / "settings.yaml",
+            state / "data" / "people_accounts_v1.json"} <= under
+    assert all(stage._authority_input(state, path) for path in under), sorted(map(str, under))
+
+
+# F3: a rename in the same sorted slot must miss (the relative path is part of the key).
+
+def test_a_rename_that_keeps_the_sorted_slot_and_the_bytes_misses(tmp_path, monkeypatch):
+    state = _state(tmp_path)
+    calls = _counting(monkeypatch)
+    with stage.authority_memo():
+        before = stage.capture_state_authority(state)
+        (state / "config" / "settings.yaml").rename(state / "config" / "settings.yml")
+        after = stage.capture_state_authority(state)
+    assert len(calls) == 2
+    monkeypatch.undo()
+    assert after == stage.capture_state_authority(state) != before
+    assert "config/settings.yml" in after["projection"]["configuration"]
+
+
+# F3: the worker's temp-filesystem refusal, the WAL in L and SQLite's permission test.
+
+def test_worker_refuses_when_sqlites_temp_filesystem_is_short(tmp_path, monkeypatch):
+    destination = tmp_path / "slots" / "k" / "state"
+    destination.mkdir(parents=True)
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    snapshot = SimpleNamespace(manifest={"files": {"state/data/events.db": {"size": 1000, "kind": "sqlite_backup"}}})
+    need = oc.free_space_need(snapshot, temp_on_root=False)
+    monkeypatch.setattr(oc, "_sqlite_temp_directory", lambda: temp)
+    monkeypatch.setattr(oc, "_device", lambda path: 2 if Path(path) == temp else 1)
+    frees = {temp: need["temp"], destination.parent: need["root"]}
+    monkeypatch.setattr(oc.shutil, "disk_usage", lambda path: SimpleNamespace(free=frees[Path(path)]))
+    oc._check_free_space(snapshot, destination)
+    frees[temp] = need["temp"] - 1
+    with pytest.raises(oc.CompactionCloneError, match="runtime_admission_compaction_capacity"):
+        oc._check_free_space(snapshot, destination)
+    frees[temp], frees[destination.parent] = need["temp"], need["root"] - 1
+    with pytest.raises(oc.CompactionCloneError, match="runtime_admission_compaction_capacity"):
+        oc._check_free_space(snapshot, destination)
+
+
+def test_largest_sqlite_counts_the_wal_beside_the_database(tmp_path):
+    state = _state(tmp_path)
+    database = state / PRIVACY
+    (state / (PRIVACY + "-wal")).write_bytes(b"\0" * 5_000_000)
+    assert compaction._largest_sqlite(state) == database.stat().st_size + 5_000_000
+
+
+def test_sqlite_temp_directory_skips_a_directory_it_cannot_write(tmp_path):
+    locked, open_ = tmp_path / "locked", tmp_path / "open"
+    locked.mkdir()
+    open_.mkdir()
+    locked.chmod(0o500)
+    try:
+        assert compaction.sqlite_temp_directory({"SQLITE_TMPDIR": str(locked), "TMPDIR": str(open_)}) == open_
+        locked.chmod(0o600)  # writable but not searchable
+        assert compaction.sqlite_temp_directory({"SQLITE_TMPDIR": str(locked), "TMPDIR": str(open_)}) == open_
+    finally:
+        locked.chmod(0o700)
+    assert oc._sqlite_temp_directory() == stage.sqlite_temp_directory()
+
+
+def test_sqlite_temp_directory_falls_back_to_the_working_directory_as_sqlite_does(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    real_isdir = os.path.isdir
+    monkeypatch.setattr(stage.os.path, "isdir", lambda value: value == "." and real_isdir(value))
+    assert stage.sqlite_temp_directory({}) == tmp_path.absolute()
+
+
+# F4: the snapshot checks P9 with the exact manifest size before writing it.
+
+def test_the_snapshot_phase_check_counts_the_unwritten_manifest(tmp_path, monkeypatch):
+    destination = tmp_path / "slots" / "k" / "state"
+    destination.mkdir(parents=True)
+    files = {"state/data/events.db": {"size": 1000, "kind": "sqlite_backup"},
+             "blobs/x": {"size": 10**9, "kind": "blob"}}
+    monkeypatch.setenv("SQLITE_TMPDIR", str(tmp_path))
+    need = oc._files_need(files, temp_on_root=True, pending_bytes=12345)["root"]
+    assert need == 12345 + 1000 + 2 * 1000 + oc.FREE_MARGIN
+    monkeypatch.setattr(oc.shutil, "disk_usage", lambda path: SimpleNamespace(free=need))
+    oc._check_free_files(files, destination, 12345)
+    monkeypatch.setattr(oc.shutil, "disk_usage", lambda path: SimpleNamespace(free=need - 1))
+    with pytest.raises(oc.CompactionCloneError, match="runtime_admission_compaction_capacity"):
+        oc._check_free_files(files, destination, 12345)
+
+
+def test_the_worker_passes_the_exact_check_to_the_snapshot_and_it_runs_before_the_manifest_is_written():
+    import inspect
+    from src.memory import state_snapshot
+    worker = inspect.getsource(oc.run_materialization)
+    assert "before_manifest=lambda size, files: _check_free_files(files, k_state, size)" in worker
+    source = inspect.getsource(state_snapshot.snapshot_closed_state)
+    assert (source.index("before_manifest(len(payload), files)")
+            < source.index("_write(destination / \"manifest.json\", payload)"))
+
+
+def test_replacing_the_capture_itself_inside_a_scope_never_reuses_a_result(tmp_path, monkeypatch):
+    """F8 (a): the core function and _canonical_json are part of the key's code identities."""
+    state = _state(tmp_path)
+    with stage.authority_memo():
+        stage.capture_state_authority(state)
+        monkeypatch.setattr(stage, "_capture_state_authority", lambda path: {"replaced": True})
+        assert stage.capture_state_authority(state) == {"replaced": True}
+        monkeypatch.undo()
+        stage.capture_state_authority(state)
+        monkeypatch.setattr(stage, "_canonical_json", lambda value: b"replaced")
+        key = stage._authority_tree_key(state)
+        monkeypatch.undo()
+        assert key != stage._authority_tree_key(state)
