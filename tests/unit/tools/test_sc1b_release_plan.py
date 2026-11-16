@@ -415,16 +415,19 @@ def _queue_rows(state: Path) -> dict:
                 "intents": [row[0] for row in db.execute("SELECT path FROM audio_write_intents")]}
 
 
-def test_queued_audio_paths_are_relocated_into_k_and_k_removes_its_own_file(x4_archive, tmp_path):
+@pytest.mark.parametrize("hops", [(), ("b",)], ids=["h-root", "owner-root"])
+def test_queued_audio_paths_are_relocated_into_k_and_k_removes_its_own_file(x4_archive, tmp_path, hops):
     """Before SC-1b _check_locators refused these rows (absolute_locator:...pending_audio_deletions.path).
     Now (plain mode here: the fix covers every compaction) K's rows name K's path, D5 and A1 pass
-    (K's protected projection is H's with the path remapped), and K's run unlinks K's file, not H's."""
-    world = cw.world(x4_archive, tmp_path, hops=(), first=(_QUEUE,))
+    (K's protected projection is H's with the path remapped, also from an owner's root, which only an
+    epoch-4 world has), and K's run unlinks K's file, never the source's."""
+    world = cw.world(x4_archive, tmp_path, hops=hops, first=(_QUEUE,))
     root = world["root"]
     h_state = world["h"]["state"]
-    h_file = h_state / "data" / "ambient_audio" / "queued.flac"
+    source = world["states"]["a"]["state"]  # the rows name the state that queued them (H, or owner a)
+    h_file = source / "data" / "ambient_audio" / "queued.flac"
     assert _queue_rows(h_state) == {"deletions": [str(h_file)],
-                                    "intents": [str(h_state / "data" / "ambient_audio" / "intent.flac")]}
+                                    "intents": [str(source / "data" / "ambient_audio" / "intent.flac")]}
     started = cw.start(root, x4_archive)
     k_state = root / "slots" / "k" / "state"
     k_file = k_state / "data" / "ambient_audio" / "queued.flac"
@@ -438,7 +441,7 @@ def test_queued_audio_paths_are_relocated_into_k_and_k_removes_its_own_file(x4_a
     report = json.loads(out.read_text())
     assert report == {"removed": 1}, report
     assert not k_file.exists() and _queue_rows(k_state)["deletions"] == []
-    assert h_file.read_bytes() == b"fLaC-sc1b-queued"  # H is never touched by K's run
+    assert h_file.read_bytes() == b"fLaC-sc1b-queued"  # the source is never touched by K's run
 
 
 def _snapshot(rows: list[dict], table: str = "pending_audio_deletions") -> SimpleNamespace:
