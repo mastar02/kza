@@ -8,6 +8,7 @@ Neither copying nor selecting performs schema or data reconciliation.
 
 import argparse
 from contextlib import closing, contextmanager
+import copy
 import fcntl
 import hashlib
 import importlib.util
@@ -1445,10 +1446,19 @@ def _source_deadline(encoded: str) -> float:
 
 def _deadline_projection(db: sqlite3.Connection, table: str, identity: str,
                          sources: str, deadline: str) -> dict:
-    hashes = []
+    # SC-0b O9: each distinct sources text is parsed once per call. Every row is
+    # still validated (a malformed value refuses at its first occurrence, as
+    # before); _source_deadline is a pure function of that text.
+    hashes, ceilings = [], {}
     for row in db.execute("SELECT " + ",".join(map(_quote, (identity, sources, deadline)))
                           + " FROM " + _quote(table)):
-        ceiling = _source_deadline(row[sources])
+        encoded = row[sources]
+        if type(encoded) is str:
+            ceiling = ceilings.get(encoded)
+            if ceiling is None:
+                ceiling = ceilings[encoded] = _source_deadline(encoded)
+        else:
+            ceiling = _source_deadline(encoded)
         if row[deadline] is not None and row[deadline] < ceiling:
             hashes.append(_digest([row[identity], row[sources], row[deadline]]))
     return {"columns": [identity, sources, deadline], "row_hashes": sorted(hashes)}
@@ -1507,14 +1517,99 @@ def _mixed_projections(db: sqlite3.Connection, names: set[str], selected: dict) 
             " WHERE name='live_deliveries'")
 
 
+# SC-0b O1: a content-addressed memo of capture_state_authority, active only
+# inside an explicit authority_memo() scope (the owner-compaction controller
+# commands and worker). The key hashes every byte the capture can read; a
+# symlink or special file gives no key and the full capture runs (and refuses
+# exactly as before). A result is stored only when the key is unchanged after
+# the capture, and a hit returns a deep copy.
+_AUTHORITY_MEMO: dict = {}
+_AUTHORITY_MEMO_LOCK = threading.Lock()
+_AUTHORITY_MEMO_DEPTH = 0
+_AUTHORITY_MEMO_LIMIT = 8
+_AUTHORITY_MEMO_CODE = ("_database_image", "_schema_contract", "_row_projection", "_deletion_ledger_projection",
+                        "_mixed_projections", "_deadline_projection", "_source_deadline", "_digest", "_typed",
+                        "_read_json", "_safe_directory", "_PROTECTED_TABLES", "_LEDGER_TABLE", "_TABLE_COLUMNS",
+                        "_DATABASE_TABLE_COLUMNS", "_SQLITE_INTERNAL_TABLES", "_UNBOUND_ALONE_TABLES",
+                        "_SDK_INTERNAL_TABLES", "_REFUSED_SQLITE_OBJECTS")
+
+
+@contextmanager
+def authority_memo():
+    """Enable the content-addressed authority memo for this scope (nestable); cleared on exit."""
+    global _AUTHORITY_MEMO_DEPTH
+    with _AUTHORITY_MEMO_LOCK:
+        _AUTHORITY_MEMO_DEPTH += 1
+    try:
+        yield
+    finally:
+        with _AUTHORITY_MEMO_LOCK:
+            _AUTHORITY_MEMO_DEPTH -= 1
+            if not _AUTHORITY_MEMO_DEPTH:
+                _AUTHORITY_MEMO.clear()
+
+
+def _authority_tree_key(state: Path) -> str | None:
+    """SHA-256 over the sorted tree (relative path, kind, file content sha256), or None.
+
+    Files are read through O_NOFOLLOW and checked regular on the open
+    descriptor; anything that is not a plain directory or regular file yields
+    None (no memo). The identities of the capture's code and constants are part
+    of the key, so a different contract never reuses a result.
+    """
+    module = sys.modules[__name__]
+    digest = hashlib.sha256(b"kza-state-authority-memo-v1\0" + str(state).encode() + b"\0")
+    digest.update(repr([(name, id(getattr(module, name))) for name in _AUTHORITY_MEMO_CODE]).encode())
+    for path in sorted(state.rglob("*")):
+        relative = path.relative_to(state).as_posix().encode()
+        info = os.lstat(path)
+        if stat.S_ISDIR(info.st_mode):
+            digest.update(b"d\0" + relative + b"\0")
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError:
+            return None
+        with os.fdopen(descriptor, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return None
+            content = hashlib.sha256()
+            while block := stream.read(1 << 20):
+                content.update(block)
+        digest.update(b"f\0" + relative + b"\0" + content.digest())
+    return digest.hexdigest()
+
+
 def capture_state_authority(state_root: Path) -> dict:
     """Hash source-owned protected decisions, excluding ordinary payload and SDK bytes.
 
     Control records retain row digests, not biometric BLOBs or credential material.
     Configuration files are consent/policy inputs; account activity timestamps are
     excluded while role, entity grants, names, preferences and retirement remain.
+    Inside authority_memo() an unchanged tree reuses an earlier capture (SC-0b O1).
     """
     state = _safe_directory(Path(state_root).resolve(strict=True))
+    if not _AUTHORITY_MEMO_DEPTH:
+        return _capture_state_authority(state)
+    key = _authority_tree_key(state)
+    if key is not None:
+        with _AUTHORITY_MEMO_LOCK:
+            cached = _AUTHORITY_MEMO.get(key)
+        if cached is not None:
+            return copy.deepcopy(cached)
+    result = _capture_state_authority(state)
+    if key is not None and _authority_tree_key(state) == key:
+        with _AUTHORITY_MEMO_LOCK:
+            if _AUTHORITY_MEMO_DEPTH:
+                while len(_AUTHORITY_MEMO) >= _AUTHORITY_MEMO_LIMIT:
+                    _AUTHORITY_MEMO.pop(next(iter(_AUTHORITY_MEMO)))
+                _AUTHORITY_MEMO[key] = copy.deepcopy(result)
+    return result
+
+
+def _capture_state_authority(state: Path) -> dict:
     projection = {"tables": {}, "accounts": {}, "configuration": {}}
     for path in sorted(state.rglob("*")):
         if path.is_symlink():

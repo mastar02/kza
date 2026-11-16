@@ -1136,7 +1136,7 @@ def compact_plan(root, k_slot: str, archive, *, retire_prepare_leftovers: bool =
                  wall=time.time, units: tuple[str, ...] = ()) -> dict:
     """``compact plan``: read-only; returns the plan, its digest and the untouched-list digest."""
     root = checked_root(root)
-    with stage.AdmissionController(root):
+    with stage.authority_memo(), stage.AdmissionController(root):  # SC-0b O1: content-addressed
         if stage.pending_compaction(root) is not None:
             _refuse("runtime_admission_compaction_pending")
         value = _plan_value(root, k_slot, Path(archive), retire_prepare_leftovers=retire_prepare_leftovers,
@@ -1166,7 +1166,7 @@ def compact_start(root, k_slot: str, archive, *, plan_sha256: str, acknowledge_u
     root = checked_root(root)
     if not destroy_rollback_states:
         _refuse("runtime_admission_compaction_not_acknowledged")
-    with stage.AdmissionController(root):
+    with stage.authority_memo(), stage.AdmissionController(root):
         if stage.pending_compaction(root) is not None:
             _refuse("runtime_admission_compaction_pending")
         value = _plan_value(root, k_slot, Path(archive), retire_prepare_leftovers=retire_prepare_leftovers,
@@ -1380,7 +1380,7 @@ def _destroy_partial_snapshots(root: Path, log: dict, wall) -> dict:
 def _continue(root: Path, compaction_id: str, *, archive: Path | None, worker=None, wall=time.time) -> dict:
     """Resume C2a-C5 from the last logged event (every step idempotent or refused)."""
     gate = "compaction:" + compaction_id
-    with stage.AdmissionController(root, gate=gate) as controller:
+    with stage.authority_memo(), stage.AdmissionController(root, gate=gate) as controller:
         log = _log(root, compaction_id)
         if _has(log, "abort_started") or log["terminal"]:
             _refuse("runtime_admission_compaction_phase")
@@ -1391,7 +1391,7 @@ def _continue(root: Path, compaction_id: str, *, archive: Path | None, worker=No
         log = _destroy_partial_snapshots(root, log, wall)
     if not _has(log, "materialized"):
         (worker or run_worker)(root, compaction_id)
-    with stage.AdmissionController(root, gate=gate) as controller:
+    with stage.authority_memo(), stage.AdmissionController(root, gate=gate) as controller:
         log = _log(root, compaction_id)
         if not _has(log, "materialized"):
             _refuse("runtime_admission_compaction_worker_failed")
