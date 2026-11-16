@@ -1538,8 +1538,12 @@ batch y el merge los hace la sesión coordinadora. Sin release. Evidencia:
 `t040-t041/sc4a-evidence.json` (notas de diseño SC4A-N1.., `follow_up`,
 mutantes, CR-7).
 
-- Se quita la compuerta SC1B-N3: `compact verify` de un log del modo release
-  arma la corrida y `start`/`resume` dicen `next: compact verify <id>`.
+- Se quita la compuerta SC1B-N3 (`release_verify_unavailable`), y la
+  revisión ronda 1 (RA-1/RB-1) la reemplaza por una compuerta de release
+  hasta SC-4b (SC4A-N13): mientras `RELEASE_EXITS_AVAILABLE` sea `False`,
+  `compact verify` de un log del modo release rechaza
+  `release_exit_unavailable` y `start`/`resume` dicen `next: compact abort
+  <id>` (fila A0, sin pérdida). SC-4b la levanta junto con las salidas de V.
 - `serve` agrega `KZA_RUNTIME_RELEASE_VERIFY=1` sólo a la corrida armada de un
   log del modo release, después del filtro de `KZA_RUNTIME_*`. El hijo la toma
   una vez (`take_release_verify_flag`), construye el grafo con
@@ -1554,10 +1558,15 @@ mutantes, CR-7).
 - Cierre de captura en V: sin borrar reservadas ni esperar, filas iguales a
   las del arranque, cantidad llevada en la prueba de cierre.
 - SC4A-N1: hasta SC-4b, `compact retire` de un log del modo release rechaza
-  `release_retire_unavailable`; no armar un log del modo release en
-  producción antes de SC-4b.
-- CR-7: `tools/sc0/run_states.py --verify --revision <commit>` corre los
-  estados de SC-0 más `no_default_control_row` con la lista activa.
+  `release_retire_unavailable`; con la compuerta SC4A-N13 ningún log del
+  modo release llega a V antes de SC-4b.
+- SC4A-N14 (RB-2): N del modo release explícito, de 10 a 60
+  (`release_smoke_seconds`); con los valores de hoy, 10 s en la primera
+  transición (con T0). El modo simple mantiene 120 s por omisión.
+- CR-7: `tools/sc0/run_states.py --verify --revision <commit>
+  --template-revision <commit de H>` corre los estados de SC-0 más
+  `no_default_control_row` con la lista activa, sobre la plantilla de H del
+  commit dado (RA-4: H de R1, 357dcb5).
 - Tests: `tests/unit/tools/test_sc4a_verify_run.py`,
   `tests/integration/test_sc4a_verify_boot.py`,
   `tests/unit/memory/test_sc4a_verify_stores.py`,

@@ -894,11 +894,14 @@ el archivo de H después de un `start` cortado no deja un K equivocado y el
 `schemas` del binding de K sean los de H
 (`runtime_admission_compaction_schema_changed`); A2 sigue probando K con su
 propio código antes del CAS. `allow-run`, `--discard-k-writes` y la vuelta a
-H por Q6 rechazan `runtime_admission_compaction_plain_mode_only`. Desde SC-4a
-`compact verify` arma la corrida de verificación aislada (sección siguiente)
-y `start`/`resume` dicen `next: compact verify <id>` en los dos modos; antes
-de que la corrida se consuma, `compact abort <id>` sigue siendo la salida sin
-pérdida (fila A0). Un `intent.mode` distinto de
+H por Q6 rechazan `runtime_admission_compaction_plain_mode_only`. SC-4a quitó
+la negativa de SC1B-N3 (`release_verify_unavailable`), pero la reemplazó por
+una compuerta de release hasta SC-4b (sección siguiente, SC4A-N13): `compact
+verify` de un log del modo release rechaza
+`runtime_admission_compaction_release_exit_unavailable`, y `start`/`resume`
+siguen diciendo `next: compact abort <id>` para ese log; su única salida es
+ese abort, sin pérdida (fila A0), y después habilitar y arrancar la unidad.
+Un log simple sigue diciendo `next: compact verify <id>`. Un `intent.mode` distinto de
 `"release"` no es un log simple: `verify`, `allow-run`, `--discard-k-writes`,
 la vuelta a H por Q6, `plan` (served(root)) e `install-controller` lo
 rechazan como `runtime_admission_compaction_log_invalid`, `compact status` lo
@@ -937,8 +940,10 @@ A1/A2; decisiones del usuario SC-D5 = A, corrida aislada sin tráfico, y SC-D8
 ninguna transición gestionada existe hasta cerrar el resto del modo release
 (sección siguiente).
 
-- **Bandera.** `compact verify <id> --smoke-seconds N` (10..3600) arma la
-  única corrida del log, también en el modo release. Para esa corrida, y sólo
+- **Bandera.** `compact verify <id> --smoke-seconds N` arma la única corrida
+  del log (modo simple: 10..3600, 120 por omisión; modo release: N explícito
+  de 10 a 60, ver más abajo), en el modo release sólo cuando SC-4b levante la
+  compuerta. Para esa corrida, y sólo
   para ella, `serve` agrega `KZA_RUNTIME_RELEASE_VERIFY=1` al entorno del
   hijo después del filtro que quita todo `KZA_RUNTIME_*` de la unidad: la
   unidad no puede inyectarla, y ni H ni las corridas de un log abortado o
@@ -986,14 +991,38 @@ ninguna transición gestionada existe hasta cerrar el resto del modo release
 - **Estado.** `compact status` muestra `verify_branch_reached`: `yes` sólo
   prueba que el código NUEVO llegó a su rama de verificación, no que V
   estuvo aislada ni que nadie usó el sistema; `no` quiere decir que ni eso
-  quedó probado; `not run`, que la corrida armada no empezó.
+  quedó probado; `not run`, que la corrida armada no empezó; `unreadable`,
+  que un registro de la corrida no se puede leer (el estado sigue mostrando
+  la fase del log en vez de `invalid`).
+- **Qué quiere decir «aislada».** Sin entrada (ni micrófono, ni tablero, ni
+  camino ambiental) y sin efectos en la casa. No quiere decir sin red: como
+  cualquier arranque, V hace al construir las mismas pruebas de conexión sin
+  contenido a Home Assistant (`test_connection`), al gateway LLM `:8200`
+  (`HttpReasoner.load`) y al router local `:8101`.
+- **N del modo release (SC4A-N14).** N es un término del presupuesto de
+  SC-D2 A (como mucho 10 minutos de servicio caído): `formula_check` del
+  diseño dice N = min(60, 600 − T_copy − arranques × B − paradas), nunca
+  menos de 10. Por eso un log del modo release no tiene N por omisión
+  (`compact verify` sin `--smoke-seconds` rechaza
+  `runtime_admission_compaction_release_smoke_seconds`) y rechaza N > 60.
+  Con los valores de hoy (T_copy ≈ 146 s, B ≈ 146 s de la compuerta de W8):
+  primera transición, con T0, N ≈ 10 s; transiciones posteriores, N ≤ 60 s.
+  SC-6b fija el valor por omisión con los B y T_copy medidos.
 
-Lectura más estricta (SC4A-N1): el retiro del modo release exige igualdad
-exacta con W, que es de SC-4b. Hasta entonces `compact retire` de un log del
-modo release verificado rechaza
-`runtime_admission_compaction_release_retire_unavailable`, y después de la
-corrida no queda salida (Q6 y el abort simple rechazan): no armar un log del
-modo release en producción antes de SC-4b. Queda en la lista `follow_up`:
+**Compuerta de release hasta SC-4b (SC4A-N13, revisión RA-1/RB-1).** El
+retiro del modo release exige igualdad exacta con W, que es de SC-4b
+(SC4A-N1: hasta entonces `compact retire` de un log del modo release
+verificado rechaza
+`runtime_admission_compaction_release_retire_unavailable`), y después de la
+corrida no hay otra salida (Q6 y el abort simple rechazan). Un V armado antes
+de SC-4b dejaría el servicio apagado sin salida por la herramienta, contra
+SC-D2 A. Por eso el código mismo lo impide: mientras
+`RELEASE_EXITS_AVAILABLE` (en `scripts/compaction.py`) sea `False`, `compact
+verify` no arma un log del modo release
+(`runtime_admission_compaction_release_exit_unavailable`) y `start`/`resume`
+dicen `next: compact abort <id>`. SC-4b lo pone en `True` junto con W, el
+abort con W y el retiro con igualdad W; un controlador de época 5 sin SC-4b
+no puede arrancar V. Queda en la lista `follow_up`:
 el recibo no registra todavía `capture_permissions_carried` (cambiaría el
 esquema del recibo que el controlador compara exacto), y el encabezado del
 informe W y la salida «abort con W» son de SC-4b.
@@ -1002,7 +1031,9 @@ Tests: `tests/unit/tools/test_sc4a_verify_run.py`,
 `tests/integration/test_sc4a_verify_boot.py`,
 `tests/unit/memory/test_sc4a_verify_stores.py`,
 `tests/unit/core/test_sc4a_application_verify.py`; arnés de SC-0 con la lista
-activa: `python tools/sc0/run_states.py --verify --revision <commit>`.
+activa: `python tools/sc0/run_states.py --verify --revision <commit>
+--template-revision <commit de H>` (por ejemplo, H de R1 con
+`--template-revision 357dcb5`; cada resultado nombra los dos commits).
 
 ### Sin transiciones gestionadas después de R1 hasta el modo release
 
