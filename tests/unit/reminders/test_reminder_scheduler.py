@@ -730,16 +730,21 @@ def test_construction_warns_about_unannounceable_or_always_late_policy(caplog, c
     for message, fragment in zip(messages, expected):
         assert fragment in message
 
-def test_committed_settings_announce_shared_reminders_in_the_living_zone(caplog):
+def test_committed_settings_announce_shared_reminders_in_the_living_zone_without_startup_warnings(caplog):
     """User decision 2026-11-16: until SCHEMA-V2 adds delivery_room, shared reminders are announced in the living.
 
-    The committed retry interval (300 s) is still above the 120 s grace, so that warning remains.
+    The committed first retry is shorter than the 120 s grace, so neither F4 nor F5 warns.
     """
     config = yaml.safe_load((ROOT / "config/settings.yaml").read_text(encoding="utf-8"))
     reminders = dict(config["reminders"])
     assert reminders["output_zone"] == "zone_living"
-    messages = scheduler_warnings(caplog, reminders)
-    assert [any(fragment in m for m in messages) for fragment in (NO_ZONE_WARNING, ALWAYS_LATE_WARNING)] == [False, True]
+    assert scheduler_warnings(caplog, reminders) == []
+
+def test_committed_first_retry_falls_inside_the_late_action_grace():
+    """Review F5: one failed first announcement must not by itself forfeit an on-time occurrence's actions."""
+    reminders = yaml.safe_load((ROOT / "config/settings.yaml").read_text(encoding="utf-8"))["reminders"]
+    assert 0 < reminders["retry_interval_seconds"] < reminders["late_action_grace_s"]
+    assert reminders["max_retries"] >= 1
 
 def test_settings_declare_the_recommended_late_action_grace():
     config = yaml.safe_load((ROOT / "config/settings.yaml").read_text(encoding="utf-8"))

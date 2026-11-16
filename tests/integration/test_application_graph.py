@@ -413,7 +413,8 @@ async def test_committed_settings_announce_a_due_shared_reminder_in_the_living(l
     """User decision 2026-11-16: shared reminders are spoken in the living until SCHEMA-V2 adds delivery_room.
 
     The committed reminders/tts blocks and the committed living/hall MA1260 zones go through the
-    actual main factory; the reminder must reach the living's amplifier zone, not the hall's.
+    actual main factory, which must not warn about the reminder policy; the reminder must reach
+    the living's amplifier zone, not the hall's.
     """
     import src.tts.piper_tts as output_module
 
@@ -436,7 +437,8 @@ async def test_committed_settings_announce_a_due_shared_reminder_in_the_living(l
             caplog.clear()
             with caplog.at_level("WARNING", logger="src.reminders.reminder_scheduler"):
                 graph = await build_application(config, shutdown=stack, factories=factories)
-            assert not any("No reminder output zone configured" in record.getMessage() for record in caplog.records)
+            assert [record.getMessage() for record in caplog.records
+                    if record.name == "src.reminders.reminder_scheduler" and record.levelname == "WARNING"] == []
             reminders = graph.voice_services.reminders
             # The living room's own voice responses use this id (request_router: f"zone_{room_id}").
             assert reminders.output_zone == "zone_living"

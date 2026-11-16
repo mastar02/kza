@@ -665,7 +665,10 @@ lists:
 reminders:
   db_path: "./data/reminders.db"
   max_retries: 3
-  retry_interval_seconds: 300
+  # Primer reintento tras un anuncio fallido; luego se duplica (30, 60, 120 s) hasta
+  # max_retries. Debe quedar por debajo de late_action_grace_s: con 300 s cualquier
+  # reintento ya llegaba tarde y el recordatorio perdía sus acciones de la casa.
+  retry_interval_seconds: 30
   missed_reminder_on_arrival: true
   default_time: "09:00"
   tts_prefix: "Oye, recuerda"
