@@ -662,6 +662,46 @@ def test_tonight_counts_as_today_against_other_day_words():
     assert parse("recordame todos los días esta noche a las 9 x").ambiguity is A.AMBIGUOUS_DAY
 
 
+@pytest.mark.parametrize("utterance,expected,text,time_phrase", [
+    # Review F8: the read-back text keeps no time words.
+    ("recordame a las 8 de la mañana del martes llamar", local(2026, 11, 17, 8), "llamar",
+     "a las 8 de la mañana del martes"),
+    ("recordame la reunión del martes a las 8 de la noche", local(2026, 11, 17, 20), "la reunión",
+     "del martes a las 8 de la noche"),
+    ("recordame a las 20 tipo sacar la basura", local(2026, 11, 16, 20), "sacar la basura", "a las 20 tipo"),
+    ("recordame tipo a las 20 sacar la basura", local(2026, 11, 16, 20), "sacar la basura", "tipo a las 20"),
+    ("recordame a las 20 más o menos sacar la basura", local(2026, 11, 16, 20), "sacar la basura",
+     "a las 20 más o menos"),
+    ("recordame a las 20 aproximadamente sacar la basura", local(2026, 11, 16, 20), "sacar la basura",
+     "a las 20 aproximadamente"),
+    ("recordame en cinco minutitos mirar la olla", MONDAY_10.timestamp() + 300, "mirar la olla", "en cinco minutitos"),
+    ("recordame en una horita sacar la ropa", MONDAY_10.timestamp() + 3600, "sacar la ropa", "en una horita"),
+    ("recordame en dos horitas sacar la ropa", MONDAY_10.timestamp() + 7200, "sacar la ropa", "en dos horitas"),
+    ("recordame en 30 segunditos mirar", MONDAY_10.timestamp() + 30, "mirar", "en 30 segunditos"),
+    ("recordame comprar más o menos dos kilos a las 9 de la noche", local(2026, 11, 16, 21),
+     "comprar más o menos dos kilos", "a las 9 de la noche"),
+])
+def test_read_back_text_has_no_time_words(utterance, expected, text, time_phrase):
+    result = parse(utterance)
+    assert result.ok, (result.ambiguity, result.detail)
+    assert (result.trigger_at, result.text, result.time_phrase) == (expected, text, time_phrase)
+
+
+@pytest.mark.parametrize("utterance,detail", [
+    # A time was said but not as one point in time: refused, not "¿a qué hora?" (MISSING_TIME).
+    ("recordame antes de las 9 de la noche llamar", "unsupported_time_range"),
+    ("recordame después de las 9 de la noche llamar", "unsupported_time_range"),
+    ("recordame hasta las 9 de la noche llamar", "unsupported_time_range"),
+    ("recordame desde la una de la tarde llamar", "unsupported_time_range"),
+    ("recordame a partir de las 9 de la noche llamar", "unsupported_time_range"),
+    ("recordame entre las 8 y las 9 de la noche llamar", "unsupported_time_range"),
+    ("recordame a los 10 minutos sacar la pizza", "unrecognised_time"),
+])
+def test_time_said_in_an_unread_form_is_not_missing_time(utterance, detail):
+    result = parse(utterance)
+    assert (result.ambiguity, result.detail, result.trigger_at) == (A.UNPARSEABLE, detail, None)
+
+
 def test_time_phrase_lists_the_spoken_time_words():
     result = parse("recordame pasado mañana sacar la basura a las 9 de la noche")
     assert result.time_phrase == "pasado mañana a las 9 de la noche"

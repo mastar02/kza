@@ -152,6 +152,10 @@ _CUT_WORDS = {"salvo", "excepto", "menos"}
 _SINGULAR_ONE = {"un", "una", "uno"}
 # Words that may follow bare "y N" minutes without making N part of the content.
 _LOOSE_FOLLOWERS = {"que", "de", "y", "en", "para", "a"}
+# "antes de las 9", "hasta las 9", "a partir de las 9": a range, not one time.
+_RANGE_WORDS = {"antes", "despues", "hasta", "desde", "entre"}
+# Approximation words tolerated next to a taken time, like "a eso de las 8".
+_APPROX_PHRASES = (("mas", "o", "menos"), ("tipo",), ("aproximadamente",))
 
 _UNITS = {"cero": 0, "un": 1, "uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5,
           "seis": 6, "siete": 7, "ocho": 8, "nueve": 9}
@@ -162,8 +166,9 @@ _SMALL = {"diez": 10, "once": 11, "doce": 12, "trece": 13, "catorce": 14, "quinc
           "veintiocho": 28, "veintinueve": 29}
 _TENS = {"treinta": 30, "cuarenta": 40, "cincuenta": 50, "sesenta": 60, "setenta": 70,
          "ochenta": 80, "noventa": 90}
-_DURATION_UNITS = {"segundo": 1, "segundos": 1, "seg": 1, "minuto": 60, "minutos": 60, "min": 60,
-                   "mins": 60, "hora": 3600, "horas": 3600, "hs": 3600, "hrs": 3600}
+_DURATION_UNITS = {"segundo": 1, "segundos": 1, "seg": 1, "segundito": 1, "segunditos": 1,
+                   "minuto": 60, "minutos": 60, "min": 60, "mins": 60, "minutito": 60, "minutitos": 60,
+                   "hora": 3600, "horas": 3600, "hs": 3600, "hrs": 3600, "horita": 3600, "horitas": 3600}
 _VAGUE = {"unos", "unas", "pocos", "pocas", "algunos", "algunas", "varios", "varias"}
 _WEEKDAYS = {"lunes": 0, "martes": 1, "miercoles": 2, "jueves": 3, "viernes": 4, "sabado": 5,
              "domingo": 6}
@@ -454,7 +459,7 @@ def _day_at(words: list[str], i: int, *, joined: bool = False) -> tuple[str, int
     if w == "hoy":
         return "today", 0, None, i + 1
     k, modifier = i, None
-    if w in ("el", "este"):
+    if w in ("el", "del", "este"):
         modifier, k = ("este" if w == "este" else None), i + 1
     if k < n and words[k] == "proximo":
         modifier, k = "proximo", k + 1
@@ -546,6 +551,13 @@ def _scan(words: list[str]) -> _Scan:
                 continue
             scan.take(i, end)
             i = end
+    n = len(words)
+    for k in range(n):
+        for phrase in _APPROX_PHRASES:
+            end = k + len(phrase)
+            if _at(words, k, phrase) and not any(scan.used[k:end]) \
+                    and ((k > 0 and scan.used[k - 1]) or (end < n and scan.used[end])):
+                scan.take(k, end)
     return scan
 
 
@@ -773,6 +785,12 @@ def _leftover_problem(words: list[str], used: list[bool], skip: range, clocks: l
         after_time = k > 0 and used[k - 1]
         if w in _DATE_WORDS or w in _WEEKDAYS_ANY:
             return "unrecognised_date"
+        if w in _RANGE_WORDS or (w == "partir" and prev == "a"):
+            j = k + 2 if nxt == "de" else k + 1
+            if j + 1 < n and words[j] in ("la", "las") and _is_number_word(words[j + 1]):
+                return "unsupported_time_range"
+        if _is_number_word(w) and nxt in _DURATION_UNITS:
+            return "unrecognised_time"           # "a los 10 minutos"
         if w == "manana" and prev != "la":
             return "unrecognised_date"
         if w == "primero" and (prev == "el" or nxt == "de"):
