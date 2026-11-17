@@ -147,7 +147,8 @@ def test_no_second_reload_while_one_is_still_running_past_the_interval():
 async def test_failed_primary_uses_the_shadow_transcript(veto, caplog):
     primary, shadow = _FlakyPrimary(), _Shadow()
     cp, health = _processor(primary, shadow, veto=veto)
-    with caplog.at_level(logging.INFO):
+    # DEBUG: neither the error text nor the transcript at any level.
+    with caplog.at_level(logging.DEBUG):
         result = await cp.process_command(AUDIO, use_parallel=False)
         await _drain(cp)
     assert result.text == "prende la luz" and result.success is True

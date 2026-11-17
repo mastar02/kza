@@ -41,7 +41,8 @@ def _verifier(mode="shadow", tmp_path=None, clock=None):
 
 def test_shadow_marks_missing_wake_without_rejecting(caplog):
     verifier = _verifier()
-    with caplog.at_level(logging.INFO):
+    # DEBUG: the transcript must not reach any level, not only INFO.
+    with caplog.at_level(logging.DEBUG):
         check = verifier.evaluate(SECRET, room_id="escritorio", wake_score=0.47, wake_vad=0.03, gate_accept=True)
     assert check.code is WakeCheckCode.WOULD_REJECT and check.reject is False
     line = next(r.getMessage() for r in caplog.records if "[wake-verify]" in r.getMessage())
@@ -134,7 +135,7 @@ def test_settings_default_is_shadow():
 
 # ---------------------------------------------------------------- router
 
-def _router(verifier, text):
+def _router(verifier, text, orchestrated=True):
     cmd = MagicMock(text=text, user=None, emotion=None, timings={}, stt_confidence=None)
     processor = MagicMock()
     processor.process_command = AsyncMock(return_value=cmd)
@@ -142,10 +143,14 @@ def _router(verifier, text):
     orch.process = AsyncMock(return_value=MagicMock(
         intent="domotics", response="ok", success=True, action=None, path=None, timings={},
         was_queued=False, queue_position=None))
+    # Legacy path: a routine manager that takes the accepted command.
+    routines = MagicMock()
+    routines.handle = AsyncMock(return_value={"handled": True, "response": "ok", "success": True})
     router = RequestRouter(
-        command_processor=processor, orchestrator=orch, orchestrator_enabled=True,
+        command_processor=processor, orchestrator=orch, orchestrator_enabled=orchestrated,
         response_handler=response_handler_mock(), audio_manager=MagicMock(), wake_words=("nexa",),
-        command_gate=CommandAcceptanceGate(), wake_acoustically_confirmed=True, wake_verifier=verifier)
+        command_gate=CommandAcceptanceGate(), wake_acoustically_confirmed=True, wake_verifier=verifier,
+        routine_manager=routines)
     return router, orch
 
 
@@ -177,6 +182,21 @@ async def test_router_enforce_rejects_as_missing_wake():
     present_router, present_orch = _router(_verifier("enforce"), "Nexa prendé la luz")
     present = await present_router.process_command(_event())
     assert not str(present["intent"]).startswith("gate_rejected")
+
+
+@pytest.mark.asyncio
+async def test_legacy_path_shadow_never_rejects_and_enforce_does():
+    """Same rule on the non-orchestrated path (orchestrator.enabled: false)."""
+    verifier = _verifier()
+    router, _orch = _router(verifier, "prendé la luz", orchestrated=False)
+    shadow_result = await router.process_command(_event())
+    assert verifier.snapshot()["totals"] == {"would_reject": 1}
+    baseline_router, _baseline_orch = _router(None, "prendé la luz", orchestrated=False)
+    baseline = await baseline_router.process_command(_event())
+    assert shadow_result["intent"] == baseline["intent"] == "routine"
+    enforce_router, _enforce_orch = _router(_verifier("enforce"), "prendé la luz", orchestrated=False)
+    enforced = await enforce_router.process_command(_event())
+    assert enforced["intent"] == "gate_rejected:missing_wake:'nexa'" and enforced["success"] is False
 
 
 @pytest.mark.asyncio
