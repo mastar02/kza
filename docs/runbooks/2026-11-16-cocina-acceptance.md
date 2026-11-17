@@ -34,6 +34,14 @@ las habitaciones (decisión del usuario «Corte breve automático»,
 cómo cuenta ese corte en F1–F4. Los criterios, los umbrales y el cálculo no
 cambian.
 
+Revisión 4 (2026-11-17, antes de cualquier ventana): se registran las
+respuestas del usuario del 2026-11-17 (ver «Preguntas respondidas
+(2026-11-17)»): el corte breve cuenta para C20 sin excepción, y el aviso
+escalado de un micrófono que no se recupera queda sólo en consola por ahora.
+Se agregan los cambios de la revisión 3 del código (casa sorda, confirmación
+de la tarjeta antes del primer refresco). Los criterios, los umbrales y el
+cálculo no cambian.
+
 Alcance: la entrada de audio de la Cocina y el efecto sobre las demás entradas.
 La parte de C20 sobre HA/WebSocket (recuperación en <=60 s) no está en este
 guion. De C19, este guion mide sólo la disponibilidad de cada entrada de audio
@@ -143,7 +151,20 @@ disponibilidad de KZA.
   300 s si la tarjeta sale de sysfs o cambia de número. Al segundo refresco
   inútil se registra una sola advertencia por racha: `<room>: PortAudio still
   does not list ALSA card N after 2 catalog refreshes; backing off the next
-  refresh to 600s, doubling up to 3600s`.
+  refresh to 600s, doubling up to 3600s`. Un reinicio en el que `terminate`
+  falla con PortAudio todavía inicializado no vuelve a leer la lista y no
+  cuenta como refresco inútil (revisión T025-U2-RV3-5).
+- Casa sorda (revisión T025-U2-RV3-1): el intervalo de 300 s y el backoff de
+  arriba sólo protegen a las habitaciones que capturan. Si ninguna tiene un
+  stream abierto que entregue audio (o que siga dentro de la gracia del
+  primer frame), el corte no interrumpe nada: el refresco siguiente espera el
+  backoff corto (10 s, duplicándose por refresco inútil seguido hasta 300 s)
+  y no crece el backoff por habitación. Ejemplo: tras un reset del hub las
+  tarjetas vuelven a sysfs pero todavía no se pueden abrir. Al segundo
+  refresco inútil en esa situación se registra una sola advertencia:
+  `PortAudio still does not list ALSA cards {...} after 2 catalog refreshes
+  with no microphone capturing; retrying the refresh in N s, doubling up to
+  300s`.
 - Consecuencia: la precondición 2 (las cuatro habitaciones `running`) y la 3
   (las cuatro con heartbeat) se vuelven a comprobar en cada ventana, como
   siempre. La captura `closed` de la Cocina quedó explicada y resuelta por el
@@ -333,9 +354,15 @@ lista. En esos casos se espera, además de lo que dice la tabla:
   catalog refresh deferred (command|conversation|response)` y el refresco
   apenas termina; `deferred (rate_limit)` si hubo otro refresco hace menos de
   300 s;
-- si aparece `still does not list ALSA card N after 2 catalog refreshes`, la
-  tarjeta no se recupera con refrescos: se anota y se sale con un replug
-  físico (F1) o un reinicio autorizado;
+- si aparece `still does not list ALSA card N after 2 catalog refreshes` (o,
+  con la casa sorda, `still does not list ALSA cards {...} after 2 catalog
+  refreshes with no microphone capturing`), la tarjeta no se recupera con
+  refrescos: se anota y se sale con un replug físico (F1) o un reinicio
+  autorizado. Esa advertencia escalada es **sólo de consola** por ahora
+  (respuesta del usuario a T025-U2-RV2-Q4, 2026-11-17): no hay aviso por voz
+  ni en el dashboard, y la alerta visible queda pendiente para P6/P7 con el
+  watchdog externo de audio. Quien conduce la ventana tiene que mirar la
+  consola;
 - si aparece `PortAudio is not initialized after the catalog reset`, todas
   las entradas quedan sin audio hasta el reintento (backoff corto, ver
   «Estado conocido antes de P7»): se anota como fallo de C20 de todas las
@@ -343,7 +370,8 @@ lista. En esos casos se espera, además de lo que dice la tabla:
 
 El corte breve alcanza a las entradas sanas. No se excluye del cálculo: si
 alguna muestra de una entrada sana sale con `age_s` > 8 s, es un fallo de C20
-para esa entrada, como cualquier otro. Para no mezclar efectos, durante la
+para esa entrada, como cualquier otro (respuesta del usuario a T025-U2-Q1,
+2026-11-17). Para no mezclar efectos, durante la
 falla no se dan órdenes de voz ni se deja una conversación abierta.
 
 El cuelgue de isócronos (el mic enumera, responde al DSP y entrega ceros) no se
@@ -417,13 +445,13 @@ C19 pide que la pausa autenticada intencional se identifique por política.
   (`src/memory/capture_control.py:175-204`, `:311-347`). Cada cambio sube la
   `revision`.
 - Efecto en el heartbeat: el silencio pausa el lazo de audio
-  (`pause_admission`, `src/pipeline/multi_room_audio_loop.py:894-907`), que
-  cierra las entradas (`begin_pause_inputs`, `:717-734`) y deja de publicar
+  (`pause_admission`, `src/pipeline/multi_room_audio_loop.py:918-931`), que
+  cierra las entradas (`begin_pause_inputs`, `:741-758`) y deja de publicar
   `audio_health.json` (`_publish_audio_health` vuelve sin escribir si
-  `_auxiliary_allowed()` es falso, `:2178-2179`, `:736-738`). En el
+  `_auxiliary_allowed()` es falso, `:2267-2268`, `:760-762`). En el
   muestreador se ve como snapshot viejo: segundos no útiles para todas las
   entradas. Que `last_frame_ts` se actualice antes de `room.accepts()`
-  (`:2377-2379`) no sostiene el heartbeat durante el silencio global, porque
+  (`:2466-2468`) no sostiene el heartbeat durante el silencio global, porque
   las entradas ya están cerradas; esa compuerta corresponde a los límites por
   conversación de cada habitación, que no son una pausa.
 - Fuente de política para la evidencia: la `revision` y la `phase` de
@@ -479,3 +507,19 @@ casos eligió la opción recomendada.
    ventana de este guion puede empezar.
 6. **Disponibilidad de KZA como servicio (C19)**: P6/P7, con un instrumento
    propio (no la frescura del snapshot de audio).
+
+## Preguntas respondidas (2026-11-17)
+
+Respuestas del usuario, decisión `followups_20261117` en
+`data/autonomous-roadmap-20261102/t040-t041/user-decisions-20261110.json`.
+En los dos casos eligió la opción recomendada.
+
+1. **T025-U2-Q1, C20 y el corte breve**: «Sí, cuenta». El criterio no cambia:
+   el corte breve del refresco del catálogo no se excluye, y una muestra de
+   una entrada sana con `age_s` > 8 s es un fallo de C20 para esa entrada
+   (ver «Fallas preregistradas (C20)»).
+2. **T025-U2-RV2-Q4, micrófono que no se recupera**: «Consola ahora, alerta
+   después». La advertencia escalada (`still does not list ALSA card N after
+   2 catalog refreshes`, y su variante con la casa sorda) queda sólo en la
+   consola; no se agrega aviso por voz ni en el dashboard. La alerta visible
+   queda pendiente para P6/P7, con el watchdog externo de audio.
