@@ -876,3 +876,75 @@ class TestActiveAlerts:
         a = await manager.create_alert(AlertType.DEVICE, AlertPriority.LOW, "a")
         b = await manager.create_alert(AlertType.DEVICE, AlertPriority.LOW, "b")
         assert manager.get_active_alerts() == [b, a]
+
+
+class TestHistoryEvictionKeepsOpenEpisodes:
+    """Review R4: trimming the history never hides an open episode that still dedups."""
+
+    @pytest.mark.asyncio
+    async def test_evicted_open_episode_is_reopened_not_deduplicated(self):
+        """Reviewer probe: max_history=2, door open, three unrelated open alerts, then the door again."""
+        manager = AlertManager(max_history=2)
+        door = await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "Puerta abierta", condition=DOOR)
+        for i in range(3):
+            await manager.create_alert(AlertType.DEVICE, AlertPriority.LOW, f"otra {i}")
+        assert manager.get_alert(door.alert_id) is None
+        again = await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "Puerta abierta", condition=DOOR)
+        assert again is not None and again is not door
+        assert again in manager.get_active_alerts()
+        assert await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "Puerta abierta",
+                                          condition=DOOR) is None
+
+    @pytest.mark.asyncio
+    async def test_unrelated_overflow_evicts_closed_alerts_before_the_open_episode(self):
+        """With closed alerts in the history the open door is never the one evicted."""
+        clock = FakeClock()
+        manager = AlertManager(max_history=2, cooldown_seconds=10, clock=clock)
+        door = await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "Puerta abierta", condition=DOOR)
+        for i in range(3):
+            await manager.create_alert(AlertType.DEVICE, AlertPriority.LOW, f"otra {i}")
+            clock.t += 10
+        assert manager.get_alert(door.alert_id) is door
+        assert door in manager.get_active_alerts()
+        assert await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "Puerta abierta",
+                                          condition=DOOR) is None
+
+    @pytest.mark.asyncio
+    async def test_resolved_alert_is_evicted_before_an_open_one(self):
+        manager = AlertManager(max_history=2)
+        battery = AlertCondition("s1", "battery_low")
+        old = await manager.create_alert(AlertType.DEVICE, AlertPriority.LOW, "vieja", condition=battery)
+        door = await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "puerta", condition=DOOR)
+        await manager.resolve_condition(AlertType.DEVICE, battery)
+        newest = await manager.create_alert(AlertType.DEVICE, AlertPriority.LOW, "nueva",
+                                            condition=AlertCondition("s2", "offline"))
+        assert manager.get_history() == [newest, door]
+        assert manager.get_alert(old.alert_id) is None
+
+    @pytest.mark.asyncio
+    async def test_expired_momentary_event_is_evicted_before_an_open_one(self):
+        clock = FakeClock()
+        manager = AlertManager(max_history=2, cooldown_seconds=10, clock=clock)
+        event = await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "evento",
+                                           condition=AlertCondition("z", "access_denied:x", latched=False))
+        door = await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "puerta", condition=DOOR)
+        clock.t += 10
+        newest = await manager.create_alert(AlertType.DEVICE, AlertPriority.LOW, "nueva")
+        assert manager.get_history() == [newest, door]
+        assert manager.get_alert(event.alert_id) is None
+        assert manager.get_stats()["dedup_keys"] == 2
+
+    @pytest.mark.asyncio
+    async def test_history_full_of_open_episodes_drops_the_evicted_episode(self):
+        """When every alert is open, the evicted one's episode goes too: the next observation reopens it."""
+        tts = AsyncMock(return_value=_ok())
+        manager = AlertManager(max_history=1, tts_callback=tts)
+        first = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "puerta", condition=DOOR)
+        window = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "ventana",
+                                            condition=AlertCondition("cocina", "window_open"))
+        assert manager.get_history() == [window]
+        assert manager.get_stats()["dedup_keys"] == 1
+        reopened = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "puerta", condition=DOOR)
+        assert reopened is not None and reopened is not first
+        assert manager.get_active_alerts() == [reopened]
+        assert tts.await_count == 3

@@ -312,7 +312,7 @@ class AlertManager:
         async with self._lock:
             now = self._clock()
             episode = self._episodes.get(key)
-            if episode is not None and not episode.latched and now - episode.opened_at >= self.cooldown_seconds:
+            if episode is not None and not self._is_live(episode, now):
                 del self._episodes[key]
                 episode = None
 
@@ -334,8 +334,7 @@ class AlertManager:
 
             # Agregar al historial
             self._history.append(alert)
-            if len(self._history) > self.max_history:
-                self._history.pop(0)
+            self._evict_overflow(now)
 
             logger.info(
                 "Alert created: %s (id=%s, priority=%s, source=%s, condition=%s)",
@@ -350,6 +349,32 @@ class AlertManager:
                 await self._announce(episode)
 
             return alert
+
+    def _is_live(self, episode: _Episode, now: float) -> bool:
+        """Whether an episode is still open: latched, or momentary within cooldown."""
+        return episode.latched or now - episode.opened_at < self.cooldown_seconds
+
+    def _evict_overflow(self, now: float) -> None:
+        """Trim the history to max_history without hiding an open episode (caller holds the lock).
+
+        The oldest alert not owned by a live episode (resolved, expired momentary
+        event, or legacy) goes first. Only when every alert belongs to a live
+        episode is the oldest one evicted, and its episode is dropped with it so
+        the next observation reopens the condition instead of being deduplicated
+        against an alert nobody can see.
+        """
+        while len(self._history) > self.max_history:
+            owners = {id(ep.alert): key for key, ep in self._episodes.items()}
+            live = {id(ep.alert) for ep in self._episodes.values() if self._is_live(ep, now)}
+            index = next((i for i, a in enumerate(self._history) if id(a) not in live), 0)
+            evicted = self._history.pop(index)
+            key = owners.get(id(evicted))
+            if key is None:
+                continue
+            del self._episodes[key]
+            if id(evicted) in live:
+                logger.warning("Alert history full of open episodes; evicted open alert %s (id=%s)",
+                               evicted.alert_type.value, evicted.alert_id)
 
     async def _observe_open_episode(
         self,
