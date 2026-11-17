@@ -1210,6 +1210,42 @@ descompilación. Requiere el intérprete y las dependencias del entorno de
 ejecución. Ver [py_compile](https://docs.python.org/3.13/library/py_compile.html)
 y [SourcelessFileLoader](https://docs.python.org/3.13/library/importlib.html#importlib.machinery.SourcelessFileLoader).
 
+### Captura post-wake, wake en sombra y salud del STT (voice-capture) — desarrollado, sin release
+
+Rama `voice-capture` (2026-11-17), desde el diagnóstico
+`data/autonomous-roadmap-20261102/voice-diag-20261117/evidence.json` y las
+respuestas del usuario (`voice_diag_questions_20261117`). Sin release: la
+fecha la decide el usuario después de los tests del servidor y de la prueba en
+vivo de la Cocina (`docs/runbooks/2026-11-16-cocina-acceptance.md`, «Prueba en
+vivo de la captura post-wake»).
+
+- V1, `rooms.endpointing.post_wake`: los tiempos se miden desde el wake (el
+  pre-roll no cuenta); escucha >= 1 s y como mucho 5 s; cierra sólo tras voz
+  después del wake y silencio sostenido (600 ms; 150 ms si el parser ya tiene
+  el comando completo); voz = nivel >= 1,8 × el piso de ruido medido de la
+  habitación, o Silero del wake >= 0,5. Sin voz en 2,5 s descarta sin STT
+  (`[endpoint] code=drop_no_speech`, cuenta como captura vacía para el
+  AmbientGuard). El follow-up arranca con la misma prueba. El `command_duration`
+  que estaba fijo en `main.py` pasa a `rooms.endpointing.command_duration_s`
+  (endpoint legacy y AudioManager). `enabled: false` restaura el endpoint
+  anterior.
+- V2, `rooms.wake_word.verification.mode: shadow`: para wakes acústicos, la
+  transcripción debe contener una variante de `rooms.wake_word.words` (regla
+  `missing_wake` del gate). En sombra sólo registra `would_reject`; `enforce`
+  rechaza como `gate_rejected:missing_wake`. Contadores para la revisión de 7
+  días en `data/wake_verification.json` del estado (archivo nuevo, `0600`,
+  sólo fecha, habitación, código, score y VAD; nunca texto). Cada wake loguea
+  su VAD.
+- V3, `stt.primary_health`: cada fallo del STT primario se loguea con un código
+  saneado (`Tipo:categoría:hash`); tras 3 seguidos, una alerta por episodio en
+  el AlertManager (MEDIUM, texto en español), recarga del Whisper (libera y
+  después carga, bajo el lock del modelo, como mucho una cada 600 s; nunca dos
+  copias en cuda:1) y, mientras falle, el transcript del shadow (Parakeet, CPU)
+  reemplaza al primario (`stt_source=shadow_fallback`). Se recupera con el
+  primer éxito (alerta LOW).
+
+Sin dependencias ni modelos nuevos; la asignación de GPUs no cambia.
+
 ### Índice de comandos: puntero, colección legacy y rollback (U3b-0d2)
 
 Desde U3b-0d2, la sincronización de comandos del runtime construye el índice

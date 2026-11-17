@@ -369,3 +369,59 @@ casos eligió la opción recomendada.
    ventana de este guion puede empezar.
 6. **Disponibilidad de KZA como servicio (C19)**: P6/P7, con un instrumento
    propio (no la frescura del snapshot de audio).
+
+## Prueba en vivo de la captura post-wake (voice-capture, 2026-11-17)
+
+Revisión 3 (2026-11-17). Agrega una prueba funcional de voz, distinta de
+C19/C20 y sin cambiar su cálculo. Motivo: el diagnóstico
+`voice-diag-20261117/evidence.json` mostró que la captura cerraba ~50 ms
+después del wake sobre la propia wake word (Cocina 3 de 3) y que el arranque
+del follow-up (RMS > 0,02) era inalcanzable con la voz de la Cocina (RMS
+0,003-0,006). La rama `voice-capture` cambia la regla (V1), agrega la
+verificación del wake en sombra (V2) y la salud del STT primario (V3).
+
+Precondiciones:
+
+1. Release con la rama `voice-capture` instalada (todavía **no** hay release;
+   la fecha la decide el usuario después de los tests del servidor y de esta
+   prueba). Anotar slot y commit.
+2. `rooms.endpointing.post_wake.enabled: true` y
+   `rooms.wake_word.verification.mode: shadow` en la configuración activa.
+3. La Cocina captura (`running` y heartbeat, «Estado conocido antes de P7»).
+4. Sin silencio global de captura y con la casa en uso normal (no hace falta
+   silencio total: la regla mide el piso de ruido de cada habitación).
+
+Procedimiento (el usuario, parado donde cocina habitualmente, voz normal):
+
+- **Serie A, sin pausa (10 intentos)**: «Nexa, prendé la luz de la cocina» de
+  corrido. Entre intento e intento, esperar la respuesta y luego «Nexa, apagá
+  la luz de la cocina» como intento siguiente (cuenta como intento).
+- **Serie B, con pausa (10 intentos)**: «Nexa» … pausa de ~1 s … «prendé la
+  luz de la cocina» (y alternar con «apagá»).
+- Anotar en el registro privado la hora de cada intento y si la luz respondió.
+  Nada de texto dictado va a la evidencia del roadmap.
+
+Qué mirar en la consola de KZA (`journalctl --user -u kza-voice`, como
+`kza`), sólo códigos y números:
+
+- `Wake word in cocina (nexa: S, vad=V)`: cada wake trae su VAD.
+- `[endpoint] room=cocina code=close_silence trigger=wake post_wake_s=… speech_s=… floor=… peak_rms=… vad_max=…`:
+  `post_wake_s` >= 1,0 y > 0 de `speech_s`. `code=drop_no_speech` en un intento
+  real es una falla de captura (la voz no superó ni `noise_ratio` × `floor` ni
+  Silero).
+- `[wake-verify] code=wake_present|would_reject room=cocina score=… vad=…`:
+  en sombra; no cambia el resultado.
+- `[stt-health] code=primary_failure …` no debería aparecer; si aparece, anotar
+  `error=` (código saneado) y si hubo `[STT-fallback] code=shadow_used`.
+
+Criterio: en cada serie, >= 8 de 10 intentos ejecutan la acción y ninguno
+cierra con `post_wake_s` < 1,0 salvo `close_parser_ready`. Si la serie B falla
+por `drop_no_speech` o la A por cierres prematuros, se reporta con los
+números de `[endpoint]` (`floor`, `peak_rms`, `vad_max`) y recién entonces se
+evalúa la ganancia por habitación de la Cocina (pendiente del usuario, sólo si
+la regla nueva no alcanza).
+
+Rollback sin release nueva no existe hoy (ver «Sin transiciones gestionadas
+después de R1» en DEPLOYMENT.md); el interruptor de configuración
+`rooms.endpointing.post_wake.enabled: false` restaura exactamente el endpoint
+anterior en la próxima release o reinicio con esa configuración.
