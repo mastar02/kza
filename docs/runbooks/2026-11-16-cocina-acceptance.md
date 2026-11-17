@@ -25,6 +25,15 @@ disponibilidad de KZA como servicio va a P6/P7 con un instrumento propio. El
 cálculo de C19 no cambia: las respuestas eligen las opciones que ya suponía.
 Ver «Preguntas respondidas».
 
+Revisión 3 (2026-11-17, antes de cualquier ventana): la Cocina volvió a
+capturar al reiniciar `kza-voice` y se encontró la causa raíz de su captura
+`closed` (ver «Estado conocido antes de P7»). T025-U2 agrega el refresco
+automático del catálogo de PortAudio con un corte breve de captura en todas
+las habitaciones (decisión del usuario «Corte breve automático»,
+`home_return_20261117`). Se agregan las líneas de consola que lo muestran y
+cómo cuenta ese corte en F1–F4. Los criterios, los umbrales y el cálculo no
+cambian.
+
 Alcance: la entrada de audio de la Cocina y el efecto sobre las demás entradas.
 La parte de C20 sobre HA/WebSocket (recuperación en <=60 s) no está en este
 guion. De C19, este guion mide sólo la disponibilidad de cada entrada de audio
@@ -53,7 +62,7 @@ disponibilidad de KZA.
 - `docs/architecture/DEPLOYMENT.md:47-48` (instalación del 2026-10-29): «La
   observación posterior confirma captura en Hall y Escritorio; Living y Cocina
   siguen sin captura útil».
-- `docs/architecture/DEPLOYMENT.md:96-104`: una avalancha de captura USB tumbó
+- `docs/architecture/DEPLOYMENT.md:107-115`: una avalancha de captura USB tumbó
   journald; «retirar sólo el micrófono involucrado» lo recuperó y «el defecto
   de la ruta USB sigue pendiente». El documento no dice qué micrófono fue.
 - Observación de T025 (2026-11-16, como `yo`, diagnóstico compilado, sin leer
@@ -69,14 +78,43 @@ disponibilidad de KZA.
   `data/` `0700` de `kza` y `yo` no lee. Se verifica como `kza` en la
   precondición 3 de la primera ventana; hasta entonces el estado de Living
   queda **sin confirmar**.
+- Restauración (2026-11-17, con el usuario en casa): con su autorización
+  («Sí, reiniciar ahora») se reinició `kza-voice` como `kza` a las 00:00:19.
+  El heartbeat de la Cocina pasó a `ever: true` a las 00:00:57 y las cuatro
+  habitaciones quedaron capturando. El reinicio no cuenta como falla
+  inyectada ni como ventana de este guion.
+- Causa raíz de la captura `closed`: el XVF3800 de la Cocina (puerto `7-5.3`)
+  enumeró como tarjeta ALSA 6 el 2026-11-15 a las 16:02, cuando `kza-voice` ya
+  corría desde el 2026-11-02. PortAudio arma su lista de dispositivos una sola
+  vez, al inicializarse (`Pa_Initialize`), y no la vuelve a leer. Por eso
+  `resolve_mic_usb_port` encontraba la tarjeta en sysfs pero no en PortAudio,
+  y la consola repitió cada 10 s durante días `Mic USB port 7-5.3 → ALSA card
+  6, pero PortAudio no lista esa card`. `MultiRoomAudioLoop` sólo
+  reinicializaba PortAudio cuando ninguna otra habitación estaba sana; con
+  tres sanas, el micrófono tardío no se veía hasta reiniciar el servicio.
+- Arreglo (T025-U2, desarrollado, **sin release**): cuando la tarjeta de un
+  micrófono configurado está en sysfs y PortAudio no la lista, la espera de
+  reapertura de esa habitación pide un refresco del catálogo por la ruta de
+  recuperación global que ya existía (`InputGroup.catalog_call`, con la época
+  de recuperación): cierra la captura de **todas** las habitaciones,
+  reinicializa PortAudio y las reabre todas. Límites: como mucho un refresco
+  cada `rooms.stream_watchdog.catalog_refresh_min_interval_s` (300 s en
+  `config/settings.yaml`; 0 lo desactiva); nunca mientras se captura o
+  despacha un comando (`CommandTurns`), con una conversación activa
+  (`FollowUpMode`) o con una respuesta de voz en curso (un reinicio de
+  PortAudio también cortaría la salida). Esas condiciones se vuelven a mirar
+  al empezar el corte y justo antes de reinicializar; si aparecen después de
+  cerrar las entradas, no se reinicializa y sólo se reabre. Si la tarjeta
+  tampoco está en sysfs (micrófono desenchufado) no hay refresco. Hasta que
+  una release lo instale, un micrófono que enumera después del arranque sigue
+  necesitando reiniciar `kza-voice`.
 - Consecuencia: la precondición 2 (las cuatro habitaciones `running`) y la 3
-  (las cuatro con heartbeat) **bloquean toda ventana de P7** hasta que la
-  Cocina vuelva a capturar (y Living, si su heartbeat no se cumple). Restaurar
-  la Cocina es trabajo previo a P7. Decisión del usuario (pregunta 5): la
-  captura `closed` se diagnostica juntos, como `kza` y con el usuario
-  presente, **antes de congelar el candidato**, y ahí se confirma también el
-  heartbeat de Living. Es una precondición del candidato y **no está hecha**;
-  no forma parte de las fallas de este guion ni cuenta como falla inyectada.
+  (las cuatro con heartbeat) se vuelven a comprobar en cada ventana, como
+  siempre. La captura `closed` de la Cocina quedó explicada y resuelta por el
+  reinicio del 2026-11-17; el heartbeat de Living se confirma en la
+  precondición 3 de la primera ventana. El candidato que se congele para P7
+  debe incluir T025-U2: sin él, F4 (y F1–F3 si la tarjeta vuelve con otro
+  número) no puede recuperarse sin reinicio.
 
 ## Reglas de la ventana
 
@@ -160,7 +198,7 @@ que informó el diagnóstico. Requiere `bash`
 
 Corre como unidad **transitoria** de `systemd-run --user` (pregunta 3): no se
 instala ninguna unit y `--collect` la descarta al detenerla. `kza` tiene
-linger (`DEPLOYMENT.md:95`), así que la unidad sigue viva al cerrar la sesión
+linger (`DEPLOYMENT.md:105`), así que la unidad sigue viva al cerrar la sesión
 SSH. El bucle va en un script del directorio privado de salida y no en la
 línea de comando, porque systemd puede expandir `$VAR` en los argumentos de
 la unidad. Este comando todavía no se ejecutó en el servidor: se comprueba en
@@ -235,6 +273,26 @@ volver a cumplir las precondiciones.
 | F2 | Igual que F1 pero desenchufado 10 min. | Además de F1: reintentos acotados (como máximo uno cada ~10 s, sin avalancha en la consola ni en el journal del kernel). |
 | F3 | Desconectar el extensor Cat5e de la Cocina del lado del servidor, 30 s, y reconectarlo. Arrastra el adaptador BT de la Cocina (cuelga del mismo hub). **Autorizada (pregunta 2) en una ventana propia, después de F1 y F2, con el usuario presente.** | Como F1 para el micrófono; la presencia BLE de la Cocina queda fuera de este criterio y se anota aparte. |
 | F4 | Con la Cocina desenchufada, reiniciar `kza-voice.service` en la ventana autorizada; esperar el arranque y enchufar la Cocina. | El servicio arranca con las otras tres entradas sanas; la Cocina se recupera <=180 s desde su enumeración. Usa la gracia de primer frame (`first_frame_grace_s`, 180 s). |
+
+Refresco del catálogo (T025-U2). F4 reproduce exactamente el incidente del
+2026-11-15: la tarjeta de la Cocina aparece después de `Pa_Initialize`. En
+F1–F3 pasa lo mismo si la tarjeta vuelve con un número que PortAudio no
+lista. En esos casos se espera, además de lo que dice la tabla:
+
+- `[audio-watchdog] PortAudio does not list ALSA cards {'cocina': N} present
+  in sysfs; refreshing the catalog with a brief capture cut in [...]` con
+  todas las habitaciones en la lista;
+- `stream reopened` para cada habitación, incluida la Cocina, y después su
+  primer audio en el heartbeat;
+- si coincide con un comando, una conversación o una respuesta, `PortAudio
+  catalog refresh deferred (command|conversation|response)` y el refresco
+  apenas termina; `deferred (rate_limit)` si hubo otro refresco hace menos de
+  300 s.
+
+El corte breve alcanza a las entradas sanas. No se excluye del cálculo: si
+alguna muestra de una entrada sana sale con `age_s` > 8 s, es un fallo de C20
+para esa entrada, como cualquier otro. Para no mezclar efectos, durante la
+falla no se dan órdenes de voz ni se deja una conversación abierta.
 
 El cuelgue de isócronos (el mic enumera, responde al DSP y entrega ceros) no se
 puede inyectar a voluntad. Si aparece: `hw_ptr_advanced: true` con `age_s` de la
