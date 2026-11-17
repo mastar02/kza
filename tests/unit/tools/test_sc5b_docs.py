@@ -212,25 +212,28 @@ def test_the_gate_states_sc4b_q1_and_q2():
 
 
 def test_the_gate_requires_pa_and_dr_before_day_14():
-    """User answer SC5B-Q1/Q2 (batch_f_questions_20261117): the first transition, inside L4's 14 days,
-    runs on today's fail-closed PA and the documented manual dry-run cleanup; rows PA and DR are
-    implemented before day 14 of R1, and no transition runs after day 14 without them."""
+    """User answer SC5B-Q1/Q2 (batch_f_questions_20261117): rows PA and DR are implemented before day 14
+    of R1. Unit SC-PA-DR implemented both (2026-11-17), so the gate now says they are implemented and must
+    be in the installed controller, reviewed and rehearsed; the former pins of the fail-closed interim (PA
+    exit L4 only, the dry-run copy in $TMPDIR removed by hand) were replaced deliberately with the code."""
     text = _text()
     gate = _flat(_section(text, "## Compuerta: cuándo se puede usar"))
-    head = "**Filas PA y DR implementadas antes del día 14 de R1 (SC5B-Q1 y SC5B-Q2).**"
+    head = "**Filas PA y DR (SC5B-Q1 y SC5B-Q2).**"
     assert head in gate
     assert gate.index("**Primera transición dentro de los 14 días de L4 (SC4B-Q1).**") < gate.index(head)
     rule = gate.split(head, 1)[1].split("**Paso 0 con", 1)[0]
-    assert ("La primera transición, dentro de los 14 días de L4, se hace con lo que el código hace hoy: la fila PA "
-            "falla cerrado (salida L4 mientras exista) y la copia en claro de `adopt --dry-run` en `$TMPDIR` se borra "
-            "a mano con la comprobación documentada (fila T0F, punto 2, y «Después de la aceptación»).") in rule
-    assert ("Antes de DÍA 0 + 14 × 24 h se implementan la salida de la fila PA (testigo de cierre por registro de "
-            "recuperación y `--accept-regressed-source`) y la sombra de la fila DR bajo `<raíz>/admission/dry-run/`") in rule
-    assert "Sin las dos, ninguna transición después del día 14." in rule
+    assert ("El usuario pidió implementarlas antes del día 14 de R1 y están implementadas (unidad SC-PA-DR): un "
+            "head cerrado por un registro de recuperación limpio es fuente de un hotfix o un rollback, uno con "
+            "regresiones confirmadas sólo con `--accept-regressed-source` (fila PA), y la copia en claro de `adopt "
+            "--dry-run` vive sólo bajo `<raíz>/admission/dry-run/`, que borra el próximo que toma la concesión "
+            "(fila DR).") in rule
+    assert ("Las dos tienen que estar en el controlador instalado (el `$ST` de `controller/current`), revisadas "
+            "(SC-R) y ensayadas (SC-6b, ensayos 12, 15 y 17); sin las dos, ninguna transición después del día "
+            "14.") in rule
+    assert "`$TMPDIR` se borra a mano" not in gate and "hoy no existe en el código" not in gate
     assert "SC5B-Q2 (`batch_f_questions_20261117`)" in _flat(text.split("## Compuerta", 1)[0])
     after = _flat(_section(text, "## Después de la aceptación"))
-    assert "(se implementa antes del día 14 de R1, SC5B-Q1)" in after
-    assert "(fila DR) es trabajo pendiente, que se implementa antes del día 14 de R1 (SC5B-Q2)." in after
+    assert "trabajo pendiente" not in after and "se implementa antes del día 14" not in after
 
 
 def test_the_plan_review_names_the_closed_chroma_list():
@@ -420,30 +423,57 @@ def test_the_post_r1_gap_stops_the_service():
 
 
 def test_after_acceptance_states_what_the_code_does_today(monkeypatch):
-    """PA's recovery-head source and --accept-regressed-source are not implemented (fail closed), and
-    adopt --dry-run still copies to the system temporary directory: the runbook says so, and these
-    pins fail when the code changes, so the runbook is updated with it."""
+    """Rows PA and DR as implemented by SC-PA-DR: a recovery-closed head is a transition source through
+    closed_witness, a regressed one only with --accept-regressed-source (plan and start parse it, the plan
+    refusals are named), and adopt --dry-run copies only under <root>/admission/dry-run/, never TMPDIR.
+    These pins replaced the fail-closed interim's (PA exit L4 only, a TemporaryDirectory in TMPDIR removed by
+    hand), deliberately and with the code; they fail when the code changes again."""
     after = _flat(_section(_text(), "## Después de la aceptación"))
-    assert "**Hoy un head cerrado por recuperación no es fuente de ninguna transición**" in after
-    assert "la salida de PA es **L4 mientras exista** (SC-D7 A, SC4B-Q1)" in after
-    assert "`kza-adopt-dry-run-*` bajo `$TMPDIR` o `/tmp`" in after
+    assert ("**El head cerrado por recuperación es fuente del hotfix o del rollback** (`closed_witness`)"
+            in after)
+    assert "**Sin regresiones** (R-b, o `adopt` sin `--confirm-regressions`): los pasos 4 a 9 de siempre" in after
+    assert ("**Con regresiones confirmadas**: `plan` rechaza `runtime_admission_compaction_regressed_source_required` "
+            "y nombra el `recovery_record_sha256` (el mismo que imprime `adopt --confirm`) y las familias.") in after
+    assert ("sólo ese registro y sólo para el H de ese log, nunca para K'. Un prefijo corto, ajeno o sobre un head "
+            "sin regresiones rechaza `runtime_admission_compaction_regressed_source_mismatch` sin escribir "
+            "nada.") in after
+    # The honest limit until K's salted baseline (SC4B-Q2): a confirmed resurrected_* family blocks retire.
+    assert ("**Límite de hoy:** si entre las familias confirmadas hay una `resurrected_*`, el retiro rechaza "
+            "`runtime_admission_compaction_retire_resurrected`") in after
+    assert "Hoy un head cerrado por recuperación no es fuente de ninguna transición" not in after
+    assert "la salida de PA es **L4 mientras exista**" not in after
     # Review SC5B-R3: with no pending log adopt is admitted, so the dry run also runs in T0F and on
-    # the T0's not_closed refusal, during the first transition; the cleanup sits where it runs.
+    # the T0's not_closed refusal, during the first transition.
     assert "Sólo corre después de la aceptación" not in after
     assert ("también durante la primera transición, antes del plan, en la salida T0F (punto 2) y en el rechazo "
             "`runtime_admission_not_closed` del T0") in after
+    assert ("La copia se hace sólo bajo la concesión, en `<raíz>/admission/dry-run/<id>/` (0700, en el mismo "
+            "sistema de archivos que el estado, nunca en `$TMPDIR`), y se borra al terminar.") in after
+    assert ("Si el dry-run se corta, queda ahí hasta el próximo comando que toma la concesión (`serve`, `plan`, "
+            "`adopt`, `install-controller`), que la borra antes de cualquier otra comprobación") in after
     t0f = _flat(_text().split("**Sin vuelta atrás (fila T0F).**", 1)[1].split("### Paso 4", 1)[0])
-    assert 'ls -d "${TMPDIR:-/tmp}"/kza-adopt-dry-run-*' in t0f
-    assert t0f.index("`$ST adopt --dry-run`") < t0f.index('ls -d "${TMPDIR:-/tmp}"/kza-adopt-dry-run-*') < \
-        t0f.index("borrarla a mano")
-    assert "release_mode_log(admission.compaction)" in (REPO / "scripts/managed_launcher.py").read_text()
-    assert 'prefix="kza-adopt-dry-run-"' in (REPO / "scripts/managed_launcher.py").read_text()
-    for relative in SOURCES:
-        assert "accept-regressed-source" not in (REPO / relative).read_text(), relative
-    with pytest.raises(pytest.fail.Exception):
-        _parse(monkeypatch, ["compact", "plan", "k", "--archive", "a", "--accept-regressed-source", "abc"])
+    assert "TMPDIR:-/tmp" not in t0f and "kza-adopt-dry-run" not in _text()
+    assert t0f.index("`$ST adopt --dry-run`") < t0f.index("`<raíz>/admission/dry-run/<id>/` (0700, nunca a `$TMPDIR`)")
+    launcher_source = (REPO / "scripts/managed_launcher.py").read_text()
+    stage_source = (REPO / "scripts/stage_runtime.py").read_text()
+    assert "release_mode_log(admission.compaction)" in launcher_source
+    assert "kza-adopt-dry-run" not in launcher_source
+    assert "shadow_root = stage.dry_run_directory(root) / uuid4().hex" in launcher_source
+    assert '"admission" / "dry-run"' in stage_source
+    enter = stage_source.split("\nclass AdmissionController:", 1)[1].split("    def __enter__(self):", 1)[1].split(
+        "\n    def ", 1)[0]
+    assert enter.index("fcntl.flock(descriptor") < enter.index("remove_dry_run_shadows(self.root)") < enter.index(
+        "read_admission_head(self.root)")
+    for command in ("plan", "start"):
+        tokens = ["compact", command, "k", "--archive", "a", "--accept-regressed-source", "0123456789ab"]
+        if command == "start":
+            tokens += ["--plan-sha256", "p", "--acknowledge-untouched", "u"]
+        assert _parse(monkeypatch, tokens).accept_regressed_source == "0123456789ab"
+    for code in (compaction.REGRESSED_SOURCE_REQUIRED, compaction.REGRESSED_SOURCE_MISMATCH):
+        assert f"`{code}`" in after
     assert "`adopt --confirm`** pide el `head_sha256` que imprime `adopt --dry-run`" in after
-    assert '"head_sha256": head_sha' in (REPO / "scripts/managed_launcher.py").read_text()
+    assert '"head_sha256": head_sha' in launcher_source
+    assert '"recovery_record_sha256": stage.recovery_record_sha256(root, decision.closed_head)' in launcher_source
 
 
 def test_a_delegation_record_after_t0_is_split_record_only_or_owners_in_head():
@@ -653,24 +683,28 @@ def test_rereview_safety_sentences_are_pinned_exactly():
     each sentence is pinned whole, so dropping, inverting or loosening it fails."""
     text = _text()
     gate = _flat(_section(text, "## Compuerta: cuándo se puede usar"))
-    # RR5: SC4B-Q1, a first transition after day 14 does not run.
-    assert ("Si cae después, no se hace: primero se implementa la salida de la fila PA (testigo de cierre por "
-            "registro de recuperación y `--accept-regressed-source`), que hoy no existe en el código.") in gate
+    # RR5: SC4B-Q1, a first transition after day 14 does not run without PA's exit in the installed
+    # controller (SC-PA-DR implemented it; the pin moved with the code, deliberately).
+    assert ("antes de DÍA 0 + 14 × 24 h y antes de que exista la intención del retiro Q5, salvo que la salida de "
+            "la fila PA (testigo de cierre por registro de recuperación y `--accept-regressed-source`) ya esté en "
+            "el controlador instalado.") in gate
     # RR6: step 0 with resurrected != 0 stops while H serves.
     zero = _flat(_section(text, "### Paso 0: residuo de resurrección (sólo lectura, el servicio sigue en H)"))
     assert "Si no da 0, no seguir: el servicio queda en H y se pasa a desarrollo." in zero
-    # RR7: R-b or adopt on the T0's not_closed refusal, with the dry-run cleanup check of row T0F.
+    # RR7: R-b or adopt on the T0's not_closed refusal; the dry run's copy is row DR's (SC-PA-DR).
     t0 = _section(text, "### Paso 3: T0, instalar el controlador del NUEVO (sólo con `T0`)")
     row = next(line for line in t0.splitlines() if line.startswith("| `runtime_admission_not_closed` |"))
     assert row == (
         "| `runtime_admission_not_closed` | head abierto o desconocido | cerrarlo con R-b (arrancar la unidad una vez; "
         "R-b cierra el head y sirve H, así que después detener y deshabilitar la unidad otra vez antes de repetir "
-        "`install-controller`, que rechaza mientras H corre) o `adopt` (sin log pendiente lo admite; después de "
-        "`adopt --dry-run`, la comprobación de su copia en claro de la fila T0F, punto 2), y repetir |"), row
-    # RR2, RR15: T0F removes only the exact leftover path, before continuing.
+        "`install-controller`, que rechaza mientras H corre) o `adopt` (sin log pendiente lo admite; la copia en "
+        "claro de `adopt --dry-run` queda sólo bajo `<raíz>/admission/dry-run/` y la borra el próximo comando que "
+        "toma la concesión, fila DR), y repetir |"), row
+    # RR2, RR15: since SC-PA-DR nothing is removed by hand in T0F: the next lease holder removes the copy.
     t0f = _flat(text.split("**Sin vuelta atrás (fila T0F).**", 1)[1].split("### Paso 4", 1)[0])
-    assert ("Si aparece alguna, borrarla a mano (`rm -rf` sobre esa ruta exacta) antes de seguir: está fuera de "
-            "todo retiro y de todo borrado.") in t0f
+    assert ("si se corta, la copia queda ahí hasta el próximo comando que toma la concesión (`serve`, `plan`, "
+            "`adopt`, `install-controller`), que la borra antes de cualquier otra comprobación (fila DR). No se "
+            "busca ni se borra a mano.") in t0f
     assert all("rm -rf" not in line or line in {"rm -rf", 'rm -rf "$NEW"'} for line in _code_lines(text)), [
         line for line in _code_lines(text) if "rm -rf" in line]
     # RR1: an unproven entry under slots/ is never deleted, except an empty slots/.prepare-* by rmdir.
@@ -704,10 +738,9 @@ def test_rereview_safety_sentences_are_pinned_exactly():
     hd = _flat(_section(text, "### Parada terminal HD (`runtime_admission_compaction_h_changed`)"))
     assert ("Qué hacer: 1. Dejar la unidad deshabilitada. 2. No cambiar nada bajo `/home/kza/releases` ni en "
             "`/home/kza/kza/.venv`.") in hd
-    # RR12: after acceptance, a cut dry run's copy is looked for and removed by hand.
+    # RR12: after acceptance, a cut dry run's copy stays under the root until the next lease (SC-PA-DR).
     after = _flat(_section(text, "## Después de la aceptación"))
-    assert ("si el dry-run se corta, queda ahí, fuera de todo retiro y de todo borrado: comprobarlo con `ls -d "
-            "\"${TMPDIR:-/tmp}\"/kza-adopt-dry-run-*` y borrarlo a mano.") in after
+    assert ("en ese intervalo un borrado no la alcanza. No se busca ni se borra a mano.") in after
 
 
 def test_retire_refusals_after_retire_started_are_a_cut_retire():
@@ -770,24 +803,34 @@ def test_the_compaction_runbook_repeats_retire_for_a_link_refusal():
 
 def test_deployment_and_handoff_state_where_the_dry_run_runs_and_the_day_14_deadline():
     """Re-review SC5B-RR3: R3 showed that adopt --dry-run also runs during the first transition (no pending
-    log: T0F and the T0's not_closed refusal); DEPLOYMENT still said it runs only after acceptance. The
-    SC5B-Q1/Q2 deadline is in DEPLOYMENT's 'Pendiente en el código' and in the handoff's SC-5b section."""
+    log: T0F and the T0's not_closed refusal). The SC5B-Q1/Q2 deadline is in DEPLOYMENT's SC-5b section and
+    in the handoff's SC-5b section. Since SC-PA-DR, DEPLOYMENT states rows PA and DR as implemented (the
+    'Pendiente en el código' item keeps only K's baseline) and has their own section."""
     deployment = _flat(DEPLOYMENT.read_text())
     for stale in ("sólo corre después de la aceptación", "es posterior a la aceptación (hoy `adopt` rechaza antes de copiar)",
-                  "sólo hace falta después de la aceptación, fila PA"):
+                  "sólo hace falta después de la aceptación, fila PA", "kza-adopt-dry-run",
+                  "copia el estado en claro a un temporal del sistema",
+                  "un head cerrado por recuperación no es fuente de ninguna transición"):
         assert stale not in deployment, stale
     section = _flat(_section(DEPLOYMENT.read_text(), "### Procedimiento del modo release (SC-5b) — runbook, sin release"))
-    pending = section.split("- **Pendiente en el código, fallando cerrado.**", 1)[1]
-    assert ("hoy `adopt --dry-run`, que corre siempre que no haya un log del modo release pendiente (después de la "
-            "aceptación, y también en la salida T0F y en el rechazo `runtime_admission_not_closed` del T0, durante "
-            "la primera transición)") in pending
+    implemented = section.split("- **Filas PA y DR, implementadas (SC-PA-DR).**", 1)[1].split(
+        "- **Pendiente en el código, fallando cerrado.**", 1)
+    assert ("La copia en claro de `adopt --dry-run`, que corre siempre que no haya un log del modo release pendiente "
+            "(después de la aceptación, y también en la salida T0F y en el rechazo `runtime_admission_not_closed` del "
+            "T0, durante la primera transición), vive sólo bajo `<raíz>/admission/dry-run/` y la borra el próximo que "
+            "toma la concesión (fila DR).") in implemented[0]
     deadline = ("**Plazo de PA y DR (SC5B-Q1 y SC5B-Q2, respuesta del usuario del 2026-11-17):** las dos filas se "
-                "implementan antes de DÍA 0 + 14 × 24 h de R1. La primera transición, dentro de los 14 días de L4, se "
-                "hace con lo que el código hace hoy; sin las dos, ninguna transición después del día 14.")
-    assert deadline in pending
-    assert ("pero sin log pendiente el dry-run corre (después de la aceptación, y también en la salida T0F y en el "
-            "rechazo `runtime_admission_not_closed` del T0) y copia el estado en claro a un temporal del sistema; se "
-            "implementa antes del día 14 de R1 (SC5B-Q2).") in deployment
+                "implementan antes de DÍA 0 + 14 × 24 h de R1; ya están en el código, y tienen que estar en el "
+                "controlador instalado, revisadas (SC-R) y ensayadas (SC-6b) para una transición después del día 14.")
+    assert deadline in implemented[0]
+    pending = implemented[1]
+    assert "La línea base salada de resurrección de K y el reencolado" in pending
+    assert "`runtime_admission_compaction_retire_resurrected`" in pending
+    rows = _flat(_section(DEPLOYMENT.read_text(), "### Filas PA y DR (SC-PA-DR)"))
+    for code in (stage.RECOVERY_REGRESSED_SOURCE, compaction.REGRESSED_SOURCE_REQUIRED,
+                 compaction.REGRESSED_SOURCE_MISMATCH, stage.DRY_RUN_SHADOW_UNSAFE):
+        assert f"`{code}`" in rows, code
+    assert "`compaction_verified`, el retiro de K' y las delegaciones siguen exigiendo una prueba de cierre." in rows
     handoff = (REPO / "docs/runbooks/2026-11-05-mac-development-handoff.md").read_text()
     sc5b = _flat(_section(handoff, "## SC-5b — runbook del modo release (2026-11-17)"))
     assert ("**Plazo de PA y DR (SC5B-Q1 y SC5B-Q2, respuesta del usuario del 2026-11-17):** las filas PA y DR se "

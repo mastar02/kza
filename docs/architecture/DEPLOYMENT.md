@@ -941,11 +941,10 @@ y dos filas que caerían en la misma ruta de K rechazan
 (`runtime_admission_compaction_locator_collision:<tabla>.path`) antes de
 escribir.
 
-Queda pendiente (lista `follow_up` de la evidencia): `--accept-regressed-source`
-(R5-1) depende del testigo de cierre por registro de recuperación, que SC-4b
-dejó en su `follow_up` (fila PA; se implementa antes del día 14 de R1,
-SC5B-Q1); hasta entonces un head cerrado por un registro de recuperación no es fuente de
-ninguna transición (`plan` rechaza como antes). Tampoco se exige todavía que
+`--accept-regressed-source` (R5-1) y el testigo de cierre por registro de
+recuperación, que esta unidad dejó en `follow_up`, están implementados desde
+la unidad SC-PA-DR (fila PA, sección «Filas PA y DR (SC-PA-DR)»). Queda
+pendiente (lista `follow_up` de la evidencia): tampoco se exige todavía que
 el código corra desde `controller/current` (revisión RA-6): P7 acepta
 cualquier `controller/<commit>` de la misma época, así que después de un T0
 que sube la revisión un `controller/<commit>` anterior podría planificar y
@@ -1172,18 +1171,14 @@ SC4B-Q2 (`t040-t041/user-decisions-20261110.json`, clave
 si cae dentro de los 14 días de L4 (si cae después, se implementan antes), y
 el retiro con escaneo de resurrección absoluto se acepta si el conteo de solo
 lectura del paso 0 del runbook da 0 (si no, se implementan antes la línea
-base salada de K y el reencolado). Lo que queda en `follow_up`: `closed_witness` con registros de
-recuperación y `--accept-regressed-source` (fila PA: hasta entonces un head
-cerrado por recuperación no es fuente de una transición, y la salida de PA es
-L4 mientras exista; SC4B-Q1), la línea base salada de resurrección de K y el
-reencolado del residuo no protegido (hasta entonces el escaneo del retiro es
-absoluto: un H con residuo hace rechazar el retiro, y el abort vuelve a H sin
-pérdida; SC4B-Q2). La sombra de `adopt --dry-run` bajo `admission/dry-run/`
-(fila DR) también queda pendiente: con un log del modo release pendiente
-`adopt` rechaza antes de copiar, pero sin log pendiente el dry-run corre
-(después de la aceptación, y también en la salida T0F y en el rechazo
-`runtime_admission_not_closed` del T0) y copia el estado en claro a un
-temporal del sistema; se implementa antes del día 14 de R1 (SC5B-Q2). El tiempo
+base salada de K y el reencolado). `closed_witness` con registros de
+recuperación, `--accept-regressed-source` (fila PA) y la sombra de `adopt
+--dry-run` bajo `admission/dry-run/` (fila DR) están implementados desde la
+unidad SC-PA-DR (sección «Filas PA y DR (SC-PA-DR)»). Lo que queda en
+`follow_up`: la línea base salada de resurrección de K y el reencolado del
+residuo no protegido (hasta entonces el escaneo del retiro es absoluto: un H
+con residuo hace rechazar el retiro, y el abort vuelve a H sin pérdida;
+SC4B-Q2). El tiempo
 del retiro y del abort con W (T_retire, T_abort: binding de K', W0 y W1 con
 imágenes en memoria, escaneo de resurrección, destrucción) no está en la
 fórmula D de SC-D2 ni se midió: queda en la lista de medición de SC-6b
@@ -1373,25 +1368,80 @@ en 0 en el paso 0). Lo que el operador tiene que saber de antemano:
   la decisión escrita cada 48 horas. El borrado es sólo `unlink`. El
   snapshot conserva la copia opaca de Chroma de H hasta el retiro o el abort.
   Nada fuera de la raíz se alcanza.
-- **Pendiente en el código, fallando cerrado.** El testigo de cierre por
-  registro de recuperación y `--accept-regressed-source` (fila PA): hasta
-  entonces un head cerrado por recuperación no es fuente de ninguna
-  transición y la salida de PA es L4 mientras exista. La sombra de `adopt
-  --dry-run` bajo `admission/dry-run/` (fila DR): hoy `adopt --dry-run`, que
-  corre siempre que no haya un log del modo release pendiente (después de la
-  aceptación, y también en la salida T0F y en el rechazo
-  `runtime_admission_not_closed` del T0, durante la primera transición),
-  copia el estado a un temporal del sistema (`kza-adopt-dry-run-*`), que un
-  corte deja ahí; el runbook dice cómo buscarlo y borrarlo. La línea base
-  salada de resurrección de K y el reencolado (el retiro sigue con escaneo
-  absoluto; por eso el paso 0). **Plazo de PA y DR (SC5B-Q1 y SC5B-Q2,
-  respuesta del usuario del 2026-11-17):** las dos filas se implementan
-  antes de DÍA 0 + 14 × 24 h de R1. La primera transición, dentro de los 14
-  días de L4, se hace con lo que el código hace hoy; sin las dos, ninguna
-  transición después del día 14.
+- **Filas PA y DR, implementadas (SC-PA-DR).** Un head cerrado por un
+  registro de recuperación limpio es fuente de un hotfix o un rollback; uno
+  con regresiones confirmadas, sólo con `--accept-regressed-source` (fila
+  PA). La copia en claro de `adopt --dry-run`, que corre siempre que no haya
+  un log del modo release pendiente (después de la aceptación, y también en
+  la salida T0F y en el rechazo `runtime_admission_not_closed` del T0,
+  durante la primera transición), vive sólo bajo `<raíz>/admission/dry-run/`
+  y la borra el próximo que toma la concesión (fila DR). Detalle en «Filas PA
+  y DR (SC-PA-DR)». **Plazo de PA y DR (SC5B-Q1 y SC5B-Q2, respuesta del
+  usuario del 2026-11-17):** las dos filas se implementan antes de DÍA 0 + 14
+  × 24 h de R1; ya están en el código, y tienen que estar en el controlador
+  instalado, revisadas (SC-R) y ensayadas (SC-6b) para una transición
+  después del día 14.
+- **Pendiente en el código, fallando cerrado.** La línea base salada de
+  resurrección de K y el reencolado (el retiro sigue con escaneo absoluto;
+  por eso el paso 0). Mientras tanto, una fuente regresada cuyas regresiones
+  confirmadas incluyen una familia `resurrected_*` no llega al retiro
+  (`runtime_admission_compaction_retire_resurrected`): vuelve a H con W.
 
 Tests: `tests/unit/tools/test_sc5b_docs.py` (comandos y códigos del runbook
 contra el código, el orden de los pasos y las salidas).
+
+### Filas PA y DR (SC-PA-DR)
+
+Unidad SC-PA-DR (2026-11-17; diseño `sc-release-design-v4`,
+`mechanism.closed_witness` y `mechanism.dry_run_shadow`, filas PA y DR de
+`crash_table`; respuesta SC5B-Q1/Q2 del usuario: antes del día 14 de R1;
+evidencia `data/autonomous-roadmap-20261102/t040-t041/sc-pa-dr-evidence.json`,
+local y fuera de Git). Nada instalado.
+
+- **Testigo de cierre (`stage_runtime.closed_witness`).** Un head cerrado
+  por recuperación (o el head de una vuelta a ese H) se prueba con el
+  registro de recuperación inmutable que escribió `adopt_recovered_state`,
+  aunque una prueba de cierre anterior pruebe el mismo binding (una
+  regresión puede restaurar exactamente un estado cerrado antes); cualquier
+  otro head, con su prueba de cierre como antes. El registro vale con su
+  companion `recovery` verificado contra el registro, `new_binding_id`
+  igual al binding del head y `checks.regressed` vacío (sin regresión del
+  ledger ni de familias append-only, sin `resurrected_*`, sin
+  `state_changed_after_close`, sin ledger faltante). Lo usan
+  `verify_closed_binding` (plan P1/P2, A1, el worker, el catálogo de
+  copias), `_h_intact` y W0 (H después del start: el head de la intención,
+  también a través del registro de vuelta de un abort a H), el snapshot
+  (registra `source_witness`: `closure` con prueba y recibo, o `recovery`
+  con el registro y su sha256) y la derivación del journal (exige que el
+  testigo registrado sea el de la fuente). `compaction_verified`, el retiro
+  de K' y las delegaciones siguen exigiendo una prueba de cierre.
+- **Fuente regresada (R5-1).** Un registro con regresiones confirmadas no es
+  testigo (`runtime_admission_recovery_regressed_source`) salvo para el H de
+  un log planeado con `compact plan|start --accept-regressed-source <12 o
+  más hex del sha256 del registro>`: sin la marca `plan` rechaza
+  `runtime_admission_compaction_regressed_source_required` (nombra el
+  sha256 y las familias); un prefijo corto, ajeno o sobre un head limpio
+  rechaza `runtime_admission_compaction_regressed_source_mismatch`; la marca
+  es sólo del modo release. El digest del plan y la intención ligan el
+  sha256 completo (`intent.source_recovery_sha256`); el plan, A1 y W0 lo
+  pasan explícito, y el worker lo liga desde la intención
+  (`regressed_source_bound`) para el snapshot, el catálogo y la derivación.
+- **Sombra del dry-run.** `adopt --dry-run` copia el estado sólo bajo la
+  concesión, en `<raíz>/admission/dry-run/<id aleatorio>/` (0700, mismo
+  sistema de archivos que el estado), nunca en `$TMPDIR`, y la borra al
+  terminar. `AdmissionController.__enter__` borra todo lo que haya bajo
+  `admission/dry-run/` justo después del `flock`, antes de cualquier otra
+  comprobación y en toda compuerta (sin seguir enlaces;
+  `runtime_admission_dry_run_shadow_unsafe` si `admission/` es un enlace).
+  Residuo aceptado: entre un dry-run cortado y la próxima concesión hay una
+  copia completa bajo la raíz.
+
+Tests: `tests/unit/tools/test_sc_pa_dr.py` (rollback desde un head de
+recuperación limpio; fuente regresada con plan, start, vuelta a H con W,
+otra transición y retiro; la transición siguiente sin la marca; la
+derivación con un testigo cambiado; el dry-run cortado a mitad de la copia
+con `SIGKILL`, sin nada en `$TMPDIR`, borrado por la concesión siguiente
+aunque después rechace) y `tests/unit/tools/test_sc5b_docs.py`.
 
 ### Sin transiciones gestionadas después de R1 hasta el modo release
 
@@ -1705,7 +1755,11 @@ Recuperación al arrancar (L1 = A):
   imprime el sha del head, si R-a sigue siendo posible (recibo, registro y
   manifiesto) y sólo conteos. Es de sólo lectura: no abre nada del estado
   para escribir y corre los chequeos de bases sobre una copia privada (con su
-  `-wal`, sin `-shm`), así que no puede romper un R-a pendiente. Después
+  `-wal`, sin `-shm`), así que no puede romper un R-a pendiente. La copia
+  está en `<raíz>/admission/dry-run/<id>/` (0700, nunca en `$TMPDIR`) y la
+  borra el próximo que toma la concesión si el dry-run se corta (fila DR,
+  «Filas PA y DR (SC-PA-DR)»). `adopt --confirm` imprime además
+  `recovery_record_sha256`, el que pide `--accept-regressed-source`. Después
   `adopt --confirm <sha> --confirm-regressions <familias>`, con las familias
   exactamente como las informó el dry-run.
 - Un head recuperado no puede delegar hasta un cierre limpio posterior (desde SC-2
