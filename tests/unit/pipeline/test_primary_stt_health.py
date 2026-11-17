@@ -564,3 +564,74 @@ async def test_fallback_text_never_gets_the_primary_lineage():
         assert values["transcript_truncated"] is None
     finally:
         await cp.aclose()
+
+
+# ---------------------------------------------------------------- config switches and fallback bounds (VCP-4)
+
+@pytest.mark.asyncio
+async def test_fallback_switch_off_leaves_the_primary_failure_empty():
+    primary, shadow = _FlakyPrimary(), _Shadow()
+    health = PrimarySttHealth(PrimarySttHealthConfig(fallback_to_shadow=False), clock=lambda: 0.0)
+    cp = CommandProcessor(stt=primary, shadow_stt=shadow, stt_health=health)
+    result = await cp.process_command(AUDIO, use_parallel=False)
+    await _drain(cp)
+    assert result.text == "" and result.stt_source == "none"
+    assert shadow.calls == 0 and health.snapshot()["fallbacks_used"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_hung_shadow_cannot_stall_the_command_past_the_fallback_timeout():
+    release = threading.Event()
+
+    class _HungShadow:
+        def transcribe_with_confidence(self, audio, sr=16000):
+            release.wait(10)
+            return STTResult("tarde", 1.0)
+
+    health = PrimarySttHealth(PrimarySttHealthConfig(fallback_timeout_s=0.2), clock=lambda: 0.0)
+    cp = CommandProcessor(stt=_FlakyPrimary(), shadow_stt=_HungShadow(), stt_health=health)
+    try:
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        result = await cp.process_command(AUDIO, use_parallel=False)
+        elapsed = loop.time() - started
+        assert result.stt_source == "none" and result.text == ""
+        assert elapsed < 0.2 + 1.0
+        assert health.snapshot()["fallbacks_missing"] == 1
+    finally:
+        release.set()
+        await _drain(cp)
+        await cp.aclose()
+
+
+@pytest.mark.asyncio
+async def test_an_empty_shadow_is_not_counted_as_a_used_fallback():
+    cp, health = _processor(_FlakyPrimary(), _Shadow(text="   "))
+    result = await cp.process_command(AUDIO, use_parallel=False)
+    await _drain(cp)
+    assert result.success is False
+    snap = health.snapshot()
+    assert snap["fallbacks_used"] == 0 and snap["fallbacks_missing"] == 1
+
+
+@pytest.mark.asyncio
+async def test_configured_alert_priority_reaches_the_alert_manager():
+    primary, shadow = _FlakyPrimary(), _Shadow()
+    alerts = MagicMock()
+    alerts.create_alert = AsyncMock(return_value=object())
+    health = PrimarySttHealth(PrimarySttHealthConfig.from_dict({"failure_threshold": 1, "alert_priority": "high"}),
+                              alert_manager=alerts, clock=lambda: 0.0)
+    cp = CommandProcessor(stt=primary, shadow_stt=shadow, stt_health=health)
+    await cp.process_command(AUDIO, use_parallel=False)
+    await _drain(cp)
+    alerts.create_alert.assert_awaited_once()
+    assert alerts.create_alert.await_args.args[1] is AlertPriority.HIGH
+
+
+@pytest.mark.asyncio
+async def test_a_reload_requested_after_close_does_not_stay_in_flight():
+    cp, health = _processor(_FlakyPrimary(), _Shadow(), threshold=1)
+    await cp.aclose()
+    cp._primary_failed("RuntimeError:cuda:abcdef")
+    snap = health.snapshot()
+    assert snap["reloading"] is False and snap["reloads_failed"] == 1
