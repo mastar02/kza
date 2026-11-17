@@ -207,12 +207,24 @@ class UserSystemd:
 
     def __init__(self, workdir: Path) -> None:
         # The manager is this rehearsal's alone until cleanup() (module docstring, BB-2).
+        self._lock: int | None
         self._lock, self.lock_wait = _acquire()
         try:
             self._setup(workdir)
         except BaseException:
-            _release(self._lock)
+            self._release_lock()
             raise
+
+    def _release_lock(self) -> None:
+        """Release the manager lock once per object (review AWR-R1).
+
+        ``_release`` matches a bare descriptor number, which the kernel hands out again once it is closed: a
+        second release by this object (a retried cleanup() after a failed one) would otherwise close a later
+        holder's lock, a later UserSystemd's in this process, and end its isolation silently.
+        """
+        lock, self._lock = self._lock, None
+        if lock is not None:
+            _release(lock)
 
     def _setup(self, workdir: Path) -> None:
         self.token = secrets.token_hex(3)
@@ -342,13 +354,14 @@ class UserSystemd:
     def cleanup(self) -> dict:
         """Stop, disable and remove every rehearsal unit; daemon-reload; the before/after listings.
 
-        The manager lock is released last, whatever happens here."""
+        The manager lock is released last, whatever happens here, and only once: a retry after a failed
+        cleanup runs without it (AWR-R1)."""
         if self.cleaned is not None:
             return self.cleaned
         try:
             return self._cleanup()
         finally:
-            _release(self._lock)
+            self._release_lock()
 
     def _cleanup(self) -> dict:
         real = self.real
