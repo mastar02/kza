@@ -1184,6 +1184,19 @@ class TestVoiceRetryOnce:
         assert tts.await_count == 3
 
     @pytest.mark.asyncio
+    async def test_dropped_retry_leaves_the_configured_reannounce_unchanged(self):
+        clock = FakeClock()
+        tts = AsyncMock(side_effect=[OUTPUT_FREE["failed"], _ok()])
+        manager = AlertManager(tts_callback=tts, clock=clock, reannounce_interval_seconds=600)
+        alert = await _check(manager)
+        await manager.mark_processed(alert.alert_id)
+        await _check(manager)
+        assert tts.await_count == 1
+        clock.t += 600
+        await _check(manager)
+        assert tts.await_count == 2 and alert.delivery is AlertDelivery.DELIVERED
+
+    @pytest.mark.asyncio
     async def test_momentary_event_retries_at_its_next_observation_within_cooldown(self):
         tts = AsyncMock(side_effect=[OUTPUT_FREE["failed"], _ok()])
         manager = AlertManager(tts_callback=tts)
