@@ -750,3 +750,19 @@ def test_a_hard_link_refusal_never_removes_a_k_name():
     assert "hard_link" not in links
     source = (REPO / "scripts/compaction.py").read_text()
     assert source.count("info.st_nlink != 1 or (info.st_dev, info.st_ino) in k_inodes") == 2
+
+
+def test_the_compaction_runbook_repeats_retire_for_a_link_refusal():
+    """Re-review SC5B-RR5: the sibling compaction runbook (linked from this one) said 'compact resume' after a
+    link refusal at retire; before 'retire_started' compact_resume is a no-op, in plain mode too."""
+    flat = _flat(COMPACTION_RUNBOOK.read_text())
+    assert ("Revisar y quitar la causa a mano (de un enlace simbólico, el enlace, nunca su destino) y repetir el "
+            "mismo `compact retire <id>`, no `compact resume <id>`: antes de `retire_started`, `resume` no hace "
+            "nada (devuelve `\"noop\": true` con la fase `activated`).") in flat
+    assert "Revisar y quitar la causa a mano, después `compact resume <id>`." not in flat
+    assert ("- **Un miembro tiene un enlace duro** (`compaction_hard_link`: un archivo con más de un nombre, o con "
+            "el inodo de un archivo de K): no se arregla a mano. Nunca quitar un nombre bajo `slots/<K>/` (son los "
+            "datos de K' que se aceptan) ni una copia fuera de la raíz; cualquier otro caso se entrega a "
+            "desarrollo.") in flat
+    resume = (REPO / "scripts/compaction.py").read_text().split("def compact_resume(", 1)[1].split("\ndef ", 1)[0]
+    assert resume.index('if _has(log, "retire_started"):') < resume.index('if _has(log, "activated"):')

@@ -527,11 +527,19 @@ R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
   `retire` rechaza con `compaction_identity`. Revisar qué es. Sólo si es
   seguro borrarlo: `compact retire <id> --member <n> --accept-identity-change`
   (queda registrado; sólo un miembro por vez).
-- **Un miembro tiene un enlace simbólico, un enlace duro hacia K, un punto de
-  montaje o un archivo especial**: el borrado rechaza sin seguirlo
-  (`compaction_symlink`, `compaction_hard_link`, `compaction_mount`,
-  `compaction_special_file`, `compaction_cross_device`). Revisar y quitar la
-  causa a mano, después `compact resume <id>`.
+- **Un miembro tiene un enlace simbólico, un punto de montaje o un archivo
+  especial**: el retiro rechaza sin seguirlo (`compaction_symlink`,
+  `compaction_mount`, `compaction_special_file`, `compaction_cross_device`).
+  Revisar y quitar la causa a mano (de un enlace simbólico, el enlace, nunca
+  su destino) y repetir el mismo `compact retire <id>`, no `compact resume
+  <id>`: antes de `retire_started`, `resume` no hace nada (devuelve
+  `"noop": true` con la fase `activated`). El mismo retiro también termina
+  uno ya empezado.
+- **Un miembro tiene un enlace duro** (`compaction_hard_link`: un archivo con
+  más de un nombre, o con el inodo de un archivo de K): no se arregla a
+  mano. Nunca quitar un nombre bajo `slots/<K>/` (son los datos de K' que se
+  aceptan) ni una copia fuera de la raíz; cualquier otro caso se entrega a
+  desarrollo.
 - **Se cortó `retire`**: `compact resume <id>` termina el retiro; cada paso es
   idempotente y deja el mismo resultado. Mientras el retiro no termine, serve
   sale con 78 (`compaction_retire_in_progress`), aun con un `allow-run`
