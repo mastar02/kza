@@ -54,6 +54,20 @@ async def test_create_uses_household_actor_and_the_given_ring_zone(manager):
     assert reply.outcome.effect.value == "observed" and reply.outcome.observation_scope == "software_state"
 
 
+@pytest.mark.parametrize(("text", "expected"), [
+    ("poné un temporizador de 5 minutos", [60]),
+    ("poné un temporizador de 3 minutos", [60]),
+    ("poné un temporizador de 2 minutos", []),
+    ("poné un temporizador de minuto y medio", []),
+    ("poné un temporizador de 30 segundos", []),
+])
+async def test_voice_timer_warns_only_at_one_minute_and_never_when_short(manager, text, expected):
+    """T030-U1-Q4: a single 'le queda 1 minuto' warning, none for timers of 2 minutes or less."""
+    await say(TimerVoiceCommands(manager), text)
+    (timer,) = manager.get_all_timers()
+    assert timer.announce_at == expected
+
+
 async def test_labelled_create_reads_back_label_and_duration(manager):
     reply = await say(TimerVoiceCommands(manager), "poné un timer de 8 minutos para la pasta", zone_id="default")
     assert reply.response == "Temporizador de pasta en marcha: 8 minutos."

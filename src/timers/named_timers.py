@@ -13,7 +13,7 @@ import asyncio
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Callable
 from enum import StrEnum
@@ -24,6 +24,28 @@ from src.core.task_outcome import EffectState, PersistenceState, TaskOutcome, Ta
 from src.timers.voice_request import format_duration
 
 logger = logging.getLogger(__name__)
+
+# T030-U1-Q4 (user answer 2026-11-17): one "le queda 1 minuto" warning, and none
+# for timers of 2 minutes or less (they ring soon enough on their own).
+TIME_LEFT_WARNING_S = 60
+NO_WARNING_UP_TO_S = 120
+
+
+def warning_thresholds(
+    duration_seconds: float, intervals: list[int] | tuple[int, ...] = (TIME_LEFT_WARNING_S,)
+) -> list[int]:
+    """Seconds-left marks at which a timer of this duration speaks a warning.
+
+    Args:
+        duration_seconds: Total duration of the timer.
+        intervals: Warning marks for a timer long enough to get any.
+
+    Returns:
+        A new list: empty for 2 minutes or less, else ``intervals``.
+    """
+    if duration_seconds <= NO_WARNING_UP_TO_S:
+        return []
+    return list(intervals)
 
 
 class TimerState(StrEnum):
@@ -50,7 +72,7 @@ class NamedTimer:
     completed_at: datetime | None = None
 
     # Configuración
-    announce_at: list[int] = field(default_factory=lambda: [60, 30, 10])  # Anunciar a X segundos
+    announce_at: list[int] | None = None  # Seconds-left warnings; None -> warning_thresholds(duration)
     repeat: bool = False               # ¿Repetir automáticamente?
 
     def __post_init__(self):
@@ -58,6 +80,8 @@ class NamedTimer:
             self.remaining_seconds = self.duration_seconds
         if self.started_at is None:
             self.started_at = datetime.now()
+        if self.announce_at is None:
+            self.announce_at = warning_thresholds(self.duration_seconds)
 
     @property
     def elapsed_seconds(self) -> float:
@@ -130,7 +154,7 @@ class NamedTimerManager:
     ):
         self.tts = tts_callback
         self.max_timers = max_timers
-        self.default_announce = default_announce_intervals or [60, 30, 10, 5]
+        self.default_announce = list(default_announce_intervals or [TIME_LEFT_WARNING_S])
 
         # Timers activos
         self._timers: dict[str, NamedTimer] = {}
@@ -338,7 +362,7 @@ class NamedTimerManager:
             created_at=datetime.now(),
             zone_id=zone_id,
             user_id=user_id,
-            announce_at=self.default_announce
+            announce_at=warning_thresholds(duration, self.default_announce)
         )
 
         self._timers[timer.timer_id] = timer
@@ -603,7 +627,7 @@ class NamedTimerManager:
             created_at=datetime.now(),
             zone_id=zone_id,
             user_id=user_id,
-            announce_at=self.default_announce
+            announce_at=warning_thresholds(duration_seconds, self.default_announce)
         )
         self._timers[timer.timer_id] = timer
         return timer

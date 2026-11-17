@@ -2,10 +2,13 @@
 
 import asyncio
 import logging
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from src.timers.named_timers import NamedTimerManager, TimerState
+import pytest
+
+from src.timers.named_timers import NamedTimer, NamedTimerManager, TimerState, warning_thresholds
 
 
 async def test_running_requires_start_and_a_live_update_task():
@@ -98,3 +101,67 @@ async def test_legacy_create_and_ring_logs_carry_no_label(caplog):
     assert result["timer"].name == "pastilla"
     assert [r for r in caplog.records if r.levelno >= logging.INFO and "pastilla" in r.getMessage()] == []
     assert len([r for r in caplog.records if r.levelno >= logging.INFO]) == 3
+
+
+# T030-U1-Q4 (user answer 2026-11-17): one "le queda 1 minuto" warning; none at 2 minutes or less.
+@pytest.mark.parametrize(("duration", "expected"), [
+    (1, []), (60, []), (90, []), (119, []), (120, []), (121, [60]), (180, [60]), (300, [60]), (7200, [60]),
+])
+def test_a_timer_warns_once_at_one_minute_unless_it_lasts_two_minutes_or_less(duration, expected):
+    timers = NamedTimerManager()
+    assert warning_thresholds(duration) == expected
+    assert timers.create_timer("", duration).announce_at == expected
+    assert timers.create_timer("pasta", duration).announce_at == expected
+    direct = NamedTimer(timer_id="t", name="", duration_seconds=duration, created_at=datetime.now())
+    assert direct.announce_at == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("pon un timer pasta 2 minutos", []),
+    ("pon un timer pasta 3 minutos", [60]),
+])
+def test_legacy_voice_create_gets_the_same_warning_rule(text, expected):
+    assert NamedTimerManager().handle_voice_command(text)["timer"].announce_at == expected
+
+
+def test_each_timer_owns_its_warning_list():
+    timers = NamedTimerManager()
+    first, second = timers.create_timer("", 300), timers.create_timer("", 300)
+    first.announce_at.append(30)
+    assert second.announce_at == [60] and timers.default_announce == [60]
+
+
+async def test_ticking_speaks_only_the_one_minute_warning_then_rings(monkeypatch):
+    """Real update loop on a fake clock: 3 min and 1 h 30 s warn once at 1 minute, 2 min never; all three ring."""
+    import src.timers.named_timers as module
+    spoken = AsyncMock()
+    timers = NamedTimerManager(tts_callback=spoken)
+    warned = []
+    timers.on_timer_warning(lambda timer, seconds_left: warned.append((timer.duration_seconds, seconds_left)))
+    clock = [1000.0]
+    ticks = [0]
+
+    async def fake_sleep(_seconds):
+        clock[0] += 5
+        ticks[0] += 1
+        assert ticks[0] < 5000, "timers never finished"
+        if not timers.get_active_timers():
+            timers._running = False
+
+    monkeypatch.setattr(module, "time", SimpleNamespace(time=lambda: clock[0]))
+    monkeypatch.setattr(module, "asyncio", SimpleNamespace(sleep=fake_sleep, CancelledError=asyncio.CancelledError))
+    timers.create_timer("", 180, zone_id="zone_hall")
+    timers.create_timer("salsa", 120, zone_id="zone_hall")
+    timers.create_timer("arroz", 3630, zone_id="zone_hall")
+    timers._running = True
+    await timers._update_loop()
+    assert warned == [(180, 60), (3630, 60)]
+    said = [call.args for call in spoken.await_args_list]
+    assert [s for s in said if s[0].startswith("Al temporizador")] == [
+        ("Al temporizador de 3 minutos le queda 1 minuto.", "zone_hall"),
+        ("Al temporizador de arroz le queda 1 minuto.", "zone_hall")]
+    assert sorted(set(said) - {s for s in said if s[0].startswith("Al temporizador")}) == [
+        ("¡Terminó el temporizador de 3 minutos!", "zone_hall"),
+        ("¡Terminó el temporizador de arroz!", "zone_hall"),
+        ("¡Terminó el temporizador de salsa!", "zone_hall")]
+    assert len(said) == 2 + 3 * 3
