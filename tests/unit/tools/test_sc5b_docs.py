@@ -337,8 +337,10 @@ def test_every_disabled_period_has_the_48_hour_decision():
     text = _text()
     rule = _flat(_section(text, "## Decisión escrita cada 48 horas"))
     assert "Para **todo** período con la unidad deshabilitada" in rule
-    for cause in ("SS", "HD", "CI", "T0F", "(PA)", "un paso que no terminó", "una parada del hueco posterior a R1"):
-        assert cause in rule, cause
+    # Mutant M5 (review of this unit): the causes are pinned as the rule's own list, not as words that the
+    # template below also contains.
+    assert ("sea cual sea la causa: SS, HD, CI, T0F, una release aceptada rota que espera un hotfix (PA), un paso "
+            "que no terminó, o una parada del hueco posterior a R1.") in rule
     for heading in ("### Parada segura SS (`runtime_admission_compaction_abort_protected_changed`)",
                     "### Parada terminal HD (`runtime_admission_compaction_h_changed`)",
                     "### Controlador corregido con K' abierto (fila CI)", "## Hueco posterior a R1 (SC-D5 A)"):
