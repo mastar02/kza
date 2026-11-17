@@ -1,9 +1,10 @@
 """T037-U5: a capture without its own wake needs the 7B veto for every shortcut.
 
-User answer T037-U4-Q1 (A): follow-up, barge-in and inline captures carry no
-wake of their own; MultiRoomAudioLoop keeps the last real wake's score on
-them. Like the T037-U4 clock rule, only a capture opened by its own wake
-(``capture_trigger == "wake"``) with no other TV signal skips the 7B for the
+User answer T037-U4-Q1 (A): follow-up and barge-in captures carry no wake of
+their own; MultiRoomAudioLoop keeps the last real wake's score on them. Like
+the T037-U4 clock rule, only a capture opened by its own wake
+(``capture_trigger`` "wake", or "inline": the wake's own utterance, T037-U5-R2)
+with no other TV signal skips the 7B for the
 household shortcuts (timer, list, reminder claims), the extended home command
 and the domotics grammar fast path. While :8101 is down such a turn fails
 silently and the user repeats it with the wake word; with no LLMCommandRouter
@@ -39,13 +40,14 @@ from tests.unit.pipeline.test_reminder_follow_up_turns import echo_suppressor  #
 # wake's clear 0.9 score, so the trigger is the only thing that tells them apart.
 OWN = {
     "wake": {"capture_trigger": "wake", "wake_score": 0.9},
+    # The wake's own utterance handed over by the wake detector (T037-U5-R2).
+    "inline": {"capture_trigger": "inline", "wake_score": 0.9},
     # Raw audio, the single-room loop's own wake: no trigger, own signals as before.
     "untagged": {"wake_score": 0.9},
 }
 BORROWED = {
     "follow_up": {"capture_trigger": "follow_up", "wake_score": 0.9},
     "barge_in": {"capture_trigger": "barge_in", "wake_score": 0.9},
-    "inline": {"capture_trigger": "inline", "wake_score": 0.9},
     "unknown": {"capture_trigger": "unknown", "wake_score": 0.9},
 }
 CAPTURES = {**OWN, **BORROWED}
@@ -97,7 +99,9 @@ def assert_silent_no_turn(house: Household, result: dict, before, intent: str) -
 
 @pytest.mark.parametrize("trigger", list(CaptureTrigger))
 def test_only_a_wake_tagged_capture_has_its_own_wake(trigger):
-    assert _capture_without_own_wake(trigger.value) is (trigger is not CaptureTrigger.WAKE)
+    own = trigger in (CaptureTrigger.WAKE, CaptureTrigger.INLINE)
+    assert _capture_without_own_wake(trigger.value) is not own
+    assert _capture_without_own_wake(trigger) is not own
     assert _capture_without_own_wake(None) is False
 
 
@@ -221,6 +225,25 @@ async def test_partial_grammar_on_own_wake_still_asks_while_8101_is_unavailable(
     result = await turn(house, capture)
     assert result["needs_confirmation"] is True and result["response"]
     house.orchestrator.process.assert_not_awaited()
+
+
+@pytest.mark.parametrize("llm", ["stub:unavailable", "down"])
+async def test_inline_on_a_transcript_wake_engine_is_unchanged_with_no_7b_call(leaves, llm):
+    """The reviewer's R2 probe: a whisper inline turn with :8101 unavailable dispatches as on base.
+
+    'apagá la luz del living' parses at 0.8, so the grammar decides with no wake
+    bonus; an inline capture is the wake's own utterance, not a borrowed wake.
+    """
+    house = Household(leaves, text="apagá la luz del living", llm="stub:unavailable", engine="whisper")
+    await leaves.apply_state(house.orchestrator.dispatcher, "light_match")
+    if llm == "down":
+        down(house)
+    before = leaves.snapshot()
+    result = await turn(house, "inline")
+    house.veto.classify.assert_not_awaited()
+    assert "llm_router" not in result["timings"]
+    assert result["success"] is True and result["path"] == "fast_domotics"
+    assert house.effects(before) == effects(ha_service_calls=1, vector_searches=1)
 
 
 # --- Unresolved light location (T037-U5-R1) --------------------------------------
@@ -367,11 +390,12 @@ async def test_home_command_without_own_wake_the_7b_accepts_reaches_selection(le
     ("poné un temporizador de 5 minutos", None, "fast_timer"),
     ("apagá la luz del living", "light_match", "fast_domotics"),
 ])
-async def test_own_wake_fast_path_waits_on_no_model_call(leaves, text, state, path):
+@pytest.mark.parametrize("capture", ["wake", "inline"])
+async def test_own_wake_fast_path_waits_on_no_model_call(leaves, text, state, path, capture):
     """The own-wake fast path adds no 7B round trip: the 7B is never awaited, so its latency never counts."""
     house = await house_for(leaves, text, "stub:noise", state)
     house.veto.classify.side_effect = AssertionError("7B awaited on an own-wake fast path turn")
-    result = await turn(house, "wake")
+    result = await turn(house, capture)
     house.veto.classify.assert_not_awaited()
     assert result["path"] == path and "llm_router" not in result["timings"]
 

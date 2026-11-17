@@ -111,7 +111,8 @@ class CommandEvent:
     # ("wake", "follow_up", "barge_in", "inline"; None for other producers;
     # the single-room AudioLoop sets only "follow_up").
     # Used by the shadow wake verification (V2 2026-11-17) and, since T037-U5,
-    # by the router: any trigger other than "wake" needs the 7B veto.
+    # by the router: any trigger other than "wake" or "inline" (the wake's
+    # own utterance) needs the 7B veto.
     wake_vad: float | None = None
     capture_trigger: str | None = None
     # How the post-wake endpoint closed the capture ("close_silence",

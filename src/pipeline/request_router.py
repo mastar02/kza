@@ -98,15 +98,20 @@ _UNSUPPORTED_INTENT_MESSAGES: dict[str, str] = {
 _GRAMMAR_BONUS_MIN_WAKE_SCORE = 0.50
 
 
+_OWN_WAKE_TRIGGERS = frozenset({CaptureTrigger.WAKE, CaptureTrigger.INLINE})
+
+
 def _capture_without_own_wake(capture_trigger: str | None) -> bool:
     """Whether the producer says this capture was not opened by its own wake (T037-U5).
 
-    MultiRoomAudioLoop tags every capture: only ``wake`` was opened by an
-    acoustic wake. A follow-up, barge-in or inline capture (or an
-    ``unknown`` one) carries the score of the last real wake, so that score
-    says nothing about this turn. None means the producer does not say (raw
-    audio, the textual wake channel, the single-room loop's own wake): those
-    keep their own signals as before.
+    MultiRoomAudioLoop tags every capture. ``wake`` was opened by an acoustic
+    wake, and ``inline`` is that wake's own utterance ('nexa apagá la luz'
+    said in one go, when the wake detector hands over the command audio), so
+    its wake score belongs to this turn (T037-U5-R2). A follow-up or barge-in
+    capture (or an ``unknown`` one, fail closed) carries the score of the
+    last real wake, so that score says nothing about this turn. None means
+    the producer does not say (raw audio, the textual wake channel, the
+    single-room loop's own wake): those keep their own signals as before.
 
     Args:
         capture_trigger: ``CommandEvent.capture_trigger``, or None.
@@ -114,7 +119,7 @@ def _capture_without_own_wake(capture_trigger: str | None) -> bool:
     Returns:
         True when the capture has no wake of its own.
     """
-    return capture_trigger is not None and capture_trigger != CaptureTrigger.WAKE
+    return capture_trigger is not None and capture_trigger not in _OWN_WAKE_TRIGGERS
 
 
 _LIGHT_WORDS = frozenset({"light", "luz", "luces", "lampara", "lamparas"})
@@ -1030,8 +1035,8 @@ class RequestRouter:
         # P3-F2 S5: the household layer runs before the extended home
         # command, the grammar and the 7B, so a claimed turn never reaches a
         # domotics producer (design F26: never move it after the grammar).
-        # T037-U5 (user answer T037-U4-Q1): a follow-up, barge-in or inline
-        # capture has no wake of its own, so it counts as a TV signal: household
+        # T037-U5 (user answer T037-U4-Q1): a follow-up or barge-in capture
+        # (or an unknown one) has no wake of its own, so it counts as a TV signal: household
         # shortcuts and the extended home command need the 7B veto, and the
         # grammar fast path below is skipped. While :8101 is down, or with no
         # LLMCommandRouter configured (T037-U5-R1), such a turn fails silently
@@ -1070,7 +1075,7 @@ class RequestRouter:
         # textual no está en el presupuesto <300ms.
         if textual_wake or borrowed_wake:
             # T037-U5: a capture without its own wake (follow-up, barge-in,
-            # inline) never bypasses the 7B either, whatever wake score it carries.
+            # unknown) never bypasses the 7B either, whatever wake score it carries.
             grammar_cls = None
             logger.info(
                 "[GRAMMAR_FASTPATH] skip %s — forcing LLM router: %r",
