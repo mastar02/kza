@@ -362,6 +362,12 @@ ROUTINE_CREATION_REQUESTS = [
     "quiero inventar una rutina que apague las luces",
     "creá una regla que apague las luces",
     "quiero crear reglas que apaguen las luces",
+    # Q4-RV-4: 'otra' with a verb that can also run a routine, the plural noun, the 'bueno' filler.
+    "hacé otra rutina que apague las luces",
+    "armame rutinas que apaguen las luces",
+    "bueno, creá una rutina que apague las luces",
+    # Two determiners before the noun.
+    "armame esta otra rutina que apague las luces",
 ]
 
 
@@ -418,6 +424,10 @@ def test_routine_content_alone_would_be_a_grammar_command(text):
     ("quiero ver las rutinas nuevas", None),
     ("quiero ver una rutina nueva", None),
     ("me harías la rutina nueva", None),
+    # Q4-RV-4: only a desire head ('quiero que ...') skips 'que'; 'a ver qué ...' is a question.
+    ("a ver qué rutinas nuevas hay", None),
+    # A known command verb with an enclitic ('ponerme') is not the unlisted verb either.
+    ("quiero ponerme una rutina de ejercicios", None),
 ])
 def test_routine_creation_leaves_other_phrases_alone(text, expected):
     intent = classify_household_intent(text)

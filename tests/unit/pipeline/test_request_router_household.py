@@ -352,3 +352,11 @@ def test_gate_passes_a_claimed_routine_creation_but_keeps_the_silent_drops():
                  "ejecutá la rutina que apaga la luz en 10 minutos"):
         decision = gate.evaluate(text)
         assert decision.accept is False and decision.reason.startswith("non_immediate:"), text
+    # Q4-RV-4: a routine PROPOSE that is not a creation (no reason new_routine) keeps the drop too.
+    classifier = HouseholdIntentClassifier()
+    for text in ("programá la rutina que apaga la luz en 10 minutos",
+                 "hacé la rutina de apagar las luces a las siete"):
+        claimed = classifier.classify(text)
+        assert (claimed.family.value, claimed.operation.value, claimed.reason) == ("routine", "propose", None), text
+        decision = gate.evaluate(text)
+        assert decision.accept is False and decision.reason.startswith("non_immediate:"), text
