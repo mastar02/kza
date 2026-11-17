@@ -243,8 +243,9 @@ def test_the_first_post_r1_transition_rebuilds_chroma_from_the_closed_list(x4, x
         ("data/chroma_db", "home_assistant_commands__pointer"): 0, ("data/chroma_db", "home_assistant_routines"): 2,
         ("data/memory_db", sc.POLICY): 5}
     planned = cw.plan(root, x5["archive"])
-    assert planned["chroma"] == {"stores": {"data/chroma_db": {"rebuilt": 0, "copied": 3, "dropped": 1},
-                                            "data/memory_db": {"rebuilt": 1, "copied": 0, "dropped": 0}}}
+    assert planned["chroma"] == {"stores": {
+        "data/chroma_db": {"rebuilt": 0, "copied": 3, "dropped": 1, "other_files": 0},
+        "data/memory_db": {"rebuilt": 1, "copied": 0, "dropped": 0, "other_files": 0}}}
     started = cw.start(root, x5["archive"], planned=planned)
     compaction_id = started["compaction_id"]
     log = stage.read_compaction_log(root, compaction_id)
@@ -651,3 +652,31 @@ def test_resume_refuses_a_rebuilt_store_changed_after_the_evidence(x4, x5, tmp_p
     assert compaction.compact_abort(root, log["compaction_id"])["phase"] == "aborted"
     assert stage.read_admission_head(root) == world["h_head"]
     assert sorted(os.listdir(root / "slots")) == ["a"]
+
+
+# --- SC4C-RV-5 (4): files inside a store that are not Chroma's own are named in the plan's counts -----
+
+SEGMENT = "0b7f6c3e-1d2a-4c5b-9e8f-112233445566"
+
+
+def test_the_store_census_counts_every_file_that_is_not_chroma_s_own(tmp_path):
+    store = tmp_path / "store"
+    own = ["chroma.sqlite3", "chroma.sqlite3-wal", "chroma.sqlite3-shm", "chroma.sqlite3-journal",
+           *(SEGMENT + "/" + name for name in ("header.bin", "data_level0.bin", "length.bin", "link_lists.bin",
+                                               "index_metadata.pickle"))]
+    other = ["notes.txt", SEGMENT + "/extra.bin", "backup/chroma.sqlite3", "not-a-uuid/header.bin"]
+    for relative in own + other:
+        (store / relative).parent.mkdir(parents=True, exist_ok=True)
+        (store / relative).write_bytes(b"x")
+    os.symlink(tmp_path / "elsewhere", store / "link")
+    assert compaction._other_store_files(store) == len(other) + 1
+
+
+def test_the_plan_counts_a_file_left_inside_a_store(x4, x5, tmp_path):
+    """Nothing inside a store is dropped from K silently: the plan's chroma counts name it per store."""
+    world = _post_r1(x4, x5, tmp_path, sc.chroma_state())
+    root, h_state = world["root"], world["h"]["state"]
+    (h_state / "data" / "chroma_db" / "notes.txt").write_bytes(b"left by hand")
+    planned = cw.plan(root, x5["archive"])
+    assert planned["chroma"]["stores"]["data/chroma_db"]["other_files"] == 1
+    assert planned["chroma"]["stores"]["data/memory_db"]["other_files"] == 0

@@ -170,6 +170,11 @@ CHROMA_POLICY_SUFFIX = "_policy_v1"  # SC4C-RV-5 (1): the exact names the runtim
 CHROMA_COMMAND_NAMES = re.compile(re.escape(CHROMA_COMMAND_INDEX) + r"(__pointer|__[0-9]{14}[0-9a-f]{6})?")
 CHROMA_DROPPED = frozenset({"home_assistant_routines"})  # not copied into K (named drop); K's boot recreates it
 UNLISTED_COLLECTION = "runtime_admission_compaction_unlisted_collection"
+# SC4C-RV-5 (4): a store's own files (the pinned SDK's layout); any other file inside a store directory is
+# not carried into K (the store is rebuilt), so the plan counts it per store ('other_files').
+CHROMA_STORE_FILES = re.compile(r"chroma\.sqlite3(-wal|-shm|-journal)?|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+                                r"[0-9a-f]{4}-[0-9a-f]{12}/(header|data_level0|length|link_lists)\.bin|"
+                                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/index_metadata\.pickle")
 # What the worker inherits; its Chroma rebuild child gets the same (owner_compaction._CHILD_ENVIRONMENT).
 WORKER_ENVIRONMENT = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SQLITE_TMPDIR", "HOME")
 # Review RA4B-1: what a value the selection cannot classify raises (W1 never raises an uncoded error).
@@ -630,7 +635,9 @@ def chroma_collections(state: Path, privacy_relative: str) -> dict:
     Reads private images of H's chroma.sqlite3 (collection names only, never
     a record) and H's semantic_index targets; an unlisted collection (the
     legacy 'user_memories' among them) or a store with no collection table
-    refuses with compaction_unlisted_collection. Returns content-free counts.
+    refuses with compaction_unlisted_collection. Returns content-free counts,
+    with the files inside each store that are not Chroma's own and so are not
+    carried into K (``other_files``, SC4C-RV-5 (4)).
     """
     policy = set()
     with stage._database_image(state / privacy_relative) as db:
@@ -651,7 +658,7 @@ def chroma_collections(state: Path, privacy_relative: str) -> dict:
         if names is None:
             unlisted.append([store, None])
             continue
-        counts = {"rebuilt": 0, "copied": 0, "dropped": 0}
+        counts = {"rebuilt": 0, "copied": 0, "dropped": 0, "other_files": _other_store_files(path.parent)}
         for name in names:
             kind = collection_kind(name, policy=(store, name) in policy)
             if kind is None:
@@ -662,6 +669,18 @@ def chroma_collections(state: Path, privacy_relative: str) -> dict:
     if unlisted:
         _refuse(UNLISTED_COLLECTION, {"collections": unlisted})
     return {"stores": stores}
+
+
+def _other_store_files(store: Path) -> int:
+    """How many entries under one Chroma store are not the SDK's own files (links and special files count)."""
+    count = 0
+    for directory, names, files in os.walk(store, followlinks=False):
+        for name in files + [name for name in names if os.path.islink(os.path.join(directory, name))]:
+            path = Path(directory) / name
+            relative = path.relative_to(store).as_posix()
+            if path.is_symlink() or not path.is_file() or not CHROMA_STORE_FILES.fullmatch(relative):
+                count += 1
+    return count
 
 
 def owner_selection(root: Path, head_binding: dict) -> list[dict]:
