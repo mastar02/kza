@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><title>T046 harness: preview attach</title></head>
+<body><main id="harness"><div id="voice-dialog"><div class="row"><button type="button" style="width:160px;height:50px">Escuchar</button></div>
+<section class="nexo-voice-review" aria-label="Escuchar muestra"></section></div></main>
+<script>
+// Fixture page (smoke_gate.preview_gap, R5-8, R5-13). Query: longtask=1 schedules a 300 ms task right after the
+// <audio> element attaches; button=1 adds a light-DOM 'Reproducir muestra' button next to the native controls.
+const query = new URLSearchParams(location.search);
+function wav(seconds) {
+  const rate = 16000, samples = rate * seconds, buffer = new ArrayBuffer(44 + samples * 2), view = new DataView(buffer);
+  const text = (offset, value) => { for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i)); };
+  text(0, 'RIFF'); view.setUint32(4, 36 + samples * 2, true); text(8, 'WAVE'); text(12, 'fmt ');
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true); view.setUint32(24, rate, true);
+  view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true); text(36, 'data'); view.setUint32(40, samples * 2, true);
+  for (let i = 0; i < samples; i++) view.setInt16(44 + i * 2, Math.round(Math.sin(i / 8) * 3000), true);
+  return new Blob([buffer], {type: 'audio/wav'});
+}
+document.querySelector('.row button').addEventListener('click', () => {
+  const panel = document.querySelector('.nexo-voice-review');
+  const audio = document.createElement('audio'); audio.controls = true; audio.preload = 'metadata'; audio.src = URL.createObjectURL(wav(2));
+  audio.style.width = '300px';
+  if (query.get('button') === '1') {
+    // The native control first, then the light-DOM button named by its trimmed textContent.
+    const play = document.createElement('button'); play.type = 'button'; play.textContent = '  Reproducir muestra  '; play.style.cssText = 'width:180px;height:44px';
+    play.addEventListener('click', () => audio.play());
+    panel.append(audio, play);
+  } else if (query.get('aria') === '1') {
+    // Name rule: the trimmed aria-label wins over textContent. The decoy reads 'Reproducir' but is labelled 'Detener'.
+    const decoy = document.createElement('button'); decoy.type = 'button'; decoy.textContent = 'Reproducir'; decoy.setAttribute('aria-label', 'Detener'); decoy.style.cssText = 'width:120px;height:44px';
+    const play = document.createElement('div'); play.setAttribute('role', 'button'); play.setAttribute('aria-label', '  reproducir  '); play.textContent = '▶'; play.style.cssText = 'display:inline-block;width:90px;height:44px';
+    play.addEventListener('click', () => audio.play());
+    panel.append(audio, decoy, play);
+  } else panel.append(audio);
+  if (query.get('longtask') === '1') setTimeout(() => { const start = performance.now(); while (performance.now() - start < 300) { /* long task */ } }, 0);
+});
+</script></body></html>

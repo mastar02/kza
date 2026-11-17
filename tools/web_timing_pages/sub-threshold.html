@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><title>T046 harness: sub-threshold interaction</title></head>
+<body><main id="harness"><h1>Interacción breve</h1><button id="noop" type="button" style="width:200px;height:60px">Encender</button>
+<p data-receipt data-status="" role="status"></p></main>
+<script>
+// Fixture page (smoke_gate.sub_threshold, R5-10): a no-op handler that only toggles the feedback marker.
+document.getElementById('noop').addEventListener('click', () => { document.querySelector('[data-receipt]').dataset.status = 'in_progress'; });
+</script></body></html>

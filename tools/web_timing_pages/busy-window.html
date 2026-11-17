@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><title>T046 harness: busy loop inside the timed window</title></head>
+<body><main id="harness"><h1>Bloqueo en la ventana medida</h1><button id="busy" type="button" style="width:200px;height:60px">Bloquear</button></main>
+<script>
+// Fixture page (smoke_gate.cdp_timeout): the scripted click starts a blocking loop inside the timed window.
+document.getElementById('busy').addEventListener('click', () => { for (;;) { /* never yields */ } });
+</script></body></html>

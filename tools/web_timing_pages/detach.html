@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><title>T046 harness: detached target</title></head>
+<body><main id="harness"><div id="list"><button id="first" type="button" style="width:200px;height:60px">Escuchar</button></div></main>
+<script>
+// Fixture page (R4-1, G11): the handler works ~60 ms and replaces its own button, so Event Timing target is null.
+document.getElementById('first').addEventListener('click', () => {
+  const start = performance.now(); while (performance.now() - start < 60) { /* work */ }
+  const next = document.createElement('button'); next.id = 'replaced'; next.textContent = 'Escuchar'; next.type = 'button';
+  document.getElementById('list').replaceChildren(next);
+});
+</script></body></html>
