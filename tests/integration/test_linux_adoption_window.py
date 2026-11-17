@@ -930,7 +930,8 @@ def _journal_until(unit: str, line: str, budget: float) -> tuple[str, int]:
 
     systemctl can return before journald has written the line (BB-2: one entry was processed 23 ms after
     its source timestamp under load), so one read right after it races journald. The reads share the
-    ``budget`` the single read had as its timeout; none gets longer than what is left of it.
+    ``budget`` the single read had as its timeout: each gets what is left of it, but at least 0.1 s, so the
+    last read can end up to 0.1 s past the budget (AWR-R3).
     """
     deadline, reads = time.monotonic() + budget, 0
     while True:
