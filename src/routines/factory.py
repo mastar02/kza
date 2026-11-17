@@ -2,6 +2,8 @@
 
 from src.memory import output_registration_v2 as output_registration
 import asyncio
+from collections.abc import Callable
+from datetime import datetime
 
 from src.home_assistant.home_actions import HomeActionService
 from src.routines.routine_executor import RoutineExecutor
@@ -11,6 +13,7 @@ from src.routines.routine_store import RoutineStore
 
 async def build_routine_scheduler(
     *, db_path: str, timezone: str, ha_client, home_actions: HomeActionService,
+    clock: Callable[[], datetime] | None = None,
 ) -> RoutineScheduler:
     """Initialize storage and construct a scheduler without starting its loop.
 
@@ -19,6 +22,8 @@ async def build_routine_scheduler(
         timezone: Supported local timezone for scheduled occurrences.
         ha_client: Shared HA client owned by the application.
         home_actions: Shared Casa action service owned by the application.
+        clock: Aware UTC clock shared with the application (P3-F1 household
+            clock's ``now_utc``); None keeps the scheduler's own UTC clock.
 
     Returns:
         A constructed scheduler whose loop the application starts explicitly.
@@ -32,7 +37,7 @@ async def build_routine_scheduler(
         await output_registration.attach_output(store, "routines")
         await store.initialize()
         executor = RoutineExecutor(ha_client=ha_client, home_actions=home_actions, store=store)
-        return RoutineScheduler(executor, ha_client=ha_client, store=store, timezone=timezone)
+        return RoutineScheduler(executor, ha_client=ha_client, store=store, timezone=timezone, clock=clock)
     except BaseException:
         # Keep ownership until close completes even if cancellation repeats.
         cleanup = asyncio.create_task(store.close())

@@ -286,7 +286,7 @@ def _preflight_vram(threshold_mib: int = 1500) -> None:
 
 async def _initialize_routines(
     config: dict, *, ha_client, home_actions: HomeActionService, shutdown: AsyncExitStack,
-    start: bool = True,
+    start: bool = True, household_clock: HouseholdClock | None = None,
 ) -> RoutineScheduler | None:
     """Build persistent routines with shared Casa services and owned cleanup.
 
@@ -297,6 +297,8 @@ async def _initialize_routines(
         shutdown: Application lifecycle stack that outlives web admission.
         start: Start immediately for existing callers. The application factory
             defers this until all construction and warmup have succeeded.
+        household_clock: The application's household clock (P3-F1); when
+            given, its timezone and ``now_utc`` are the scheduler's zone and clock.
 
     Returns:
         An initialized scheduler, or None when routines are unavailable. Other
@@ -308,9 +310,11 @@ async def _initialize_routines(
         routines_config = config.get("routines", {})
         scheduler = await build_routine_scheduler(
             db_path=routines_config.get("db_path", "./data/routines.db"),
-            timezone=routines_config.get("timezone", "America/Montevideo"),
+            timezone=(household_clock.timezone if household_clock is not None
+                      else routines_config.get("timezone", "America/Montevideo")),
             ha_client=ha_client,
             home_actions=home_actions,
+            clock=household_clock.now_utc if household_clock is not None else None,
         )
         cleanup.push_async_callback(scheduler.store.close)
         cleanup.push_async_callback(scheduler.stop)
@@ -2040,6 +2044,7 @@ async def build_application(
     )
     routine_scheduler = await _initialize_routines(
         config, ha_client=ha_client, home_actions=home_action_service, shutdown=shutdown, start=False,
+        household_clock=household_clock,
     )
 
     if dashboard_authority is not None:
