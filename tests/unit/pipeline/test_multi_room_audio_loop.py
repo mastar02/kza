@@ -1754,7 +1754,7 @@ class TestLateMicrophoneCatalogRefresh:
         rig = _LateCatalogRig(tmp_path)
         rig.plug_cocina()
         rig.loop._catalog_missing["cocina"] = rig.COCINA_CARD
-        rig.old_living.close.side_effect = lambda: setattr(rig.living, "listening", True)
+        rig.old_living.close.side_effect = lambda **_kw: setattr(rig.living, "listening", True)
         with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
             "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
         ), caplog.at_level("WARNING", logger="src.pipeline.multi_room_audio_loop"):
