@@ -814,6 +814,23 @@ def test_later_install_over_a_closed_head_refuses_a_plain_or_unreadable_log(buil
     _unchanged_t0(root, witness, lambda: _install(root, builds, "x5r3"), "runtime_admission_compaction_log_invalid")
 
 
+def test_later_install_over_a_closed_k_head_needs_h_binding_equality(builds, t0_root, tmp_path):
+    """SCR-C-1 (row CI, A0): over K's closed head under a pending release-mode log, SR-1 checks K and
+    H's binding, recomputed by this code, must still equal the log's source binding (as for an open head)."""
+    root = t0_root["root"]
+    cw.start(root, builds["archives"]["x5"])  # a release-mode log (SC-1b); K's head is closed
+    head = stage.read_admission_head(root)
+    source = stage.pending_compaction(root)["intent"]["source_binding_id"]
+    assert head["status"] == "closed" and head["binding_id"] != source
+    policy = t0_root["h"]["state"] / ".kza-target-ownership.json"
+    policy.write_text("{}")  # H's binding, recomputed by this code, no longer equals the log's source binding
+    witness = cw.witness(root)
+    _unchanged_t0(root, witness, lambda: _install(root, builds, "x5r2"), launcher.CONTROLLER_BINDING_CHANGED)
+    policy.unlink()
+    _install(root, builds, "x5r2")
+    assert _current(root) == builds["manifests"]["x5r2"]["git_commit"]
+
+
 def test_sr1_runs_serves_slot_check_on_the_head_slot(builds, tmp_path):
     """Review r2 F1 (CR-6, SR-1 step 4): a head slot that only serve's check_slot refuses."""
     world = _world(builds, tmp_path)
