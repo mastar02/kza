@@ -75,6 +75,8 @@ CREATE = [
     ("poné una alarma de minuto y medio", 90, None),
     ("poné una alarma de treinta y un minutos", 1860, None),
     ("poné una alarma de 1,5 horas", 5400, None),
+    # T030-U1 RR-1: a filler word after a counted noun still leaves the noun in the label.
+    ("poné un timer de diez minutos para las dos pizzas, gracias", 600, "dos pizzas"),
 ]
 
 
@@ -124,7 +126,26 @@ NEGATIVE = [
     ("a las dos y media", I.CLOCK_TIME),
     ("para la una", I.CLOCK_TIME),
     ("de diez minutos para las dos", I.UNPARSEABLE),
+    # T030-U1 RR-1: a trailing filler word never hides a clock time.
+    ("de 10 minutos para las 7 gracias", I.UNPARSEABLE),
+    ("de 10 minutos para las 7 ya", I.UNPARSEABLE),
+    ("de diez minutos para las dos dale", I.UNPARSEABLE),
+    ("para las 7 gracias", I.CLOCK_TIME),
+    ("para las 7 ya", I.CLOCK_TIME),
+    ("a las ocho y media, gracias", I.CLOCK_TIME),
+    ("de 5 minutos y 3 gracias", I.UNPARSEABLE),  # a filler word is not what the 3 counts
 ]
+
+
+@pytest.mark.parametrize("text", ["poné un timer de 10 minutos para las 7 gracias", "poné un timer para las 7 gracias",
+                                  "poné un timer para las 7 ya"])
+def test_whole_utterance_with_a_clock_time_and_filler_is_never_a_timer(text):
+    """T030-U1 RR-1 (server probe): the classifier keeps 'gracias'/'ya' in the complement; nothing is created."""
+    intent = classify_household_intent(text)
+    assert (intent.family, intent.operation) == (HouseholdFamily.TIMER, HouseholdOperation.CREATE)
+    parsed = parse_timer_request(intent.complement)
+    assert parsed.duration_s is None
+    assert parsed.issue is (I.UNPARSEABLE if "minutos" in text else I.CLOCK_TIME)
 
 
 @pytest.mark.parametrize(("complement", "issue"), NEGATIVE)

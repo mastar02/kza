@@ -111,7 +111,8 @@ _LEAD = frozenset({"de", "del", "para", "por", "en", "a", "al", "con", "llamado"
 _TRAIL = frozenset({"de", "del", "para", "por", "en", "a", "al", "con", "y", "que", "el", "la", "los", "las"})
 # Courtesy and filler words that never name a timer at the edge of a label or selector ("..., gracias",
 # "cancelá el timer ya", "pausá el timer un momento", "el timer que puse", "de la pasta nomás",
-# "de 5 minutos exactos", "para avisarme", "para dentro de 10 minutos"). Stripped with the connectors above.
+# "de 5 minutos exactos", "para avisarme", "para dentro de 10 minutos"). Stripped with the connectors above;
+# never a counted noun ("para las 7 gracias" is a clock time, not seven of something).
 _FILLER = frozenset({"gracias", "ya", "ahora", "dale", "nomas", "mas", "exacto", "exactos", "exacta", "exactas",
                      "justo", "justos", "justa", "justas", "momento", "momentito", "dentro", "puse", "pusiste",
                      "pusimos", "puso", "pusieron", "recien", "mismo", "porfa", "porfi", "porfis", "favor", "che",
@@ -247,7 +248,7 @@ def _counts_a_noun(w: list[str], k: int, end: int) -> bool:
     word = w[k]
     return (word.isalpha() and word not in _TIME_UNITS and word not in _UNITS and word not in _SMALL
             and word not in _TENS and word not in _LEAD and word not in _TRAIL and word not in _HALF
-            and word not in ("cuarto", "cuartos", "y", "menos"))
+            and word not in _FILLER and word not in ("cuarto", "cuartos", "y", "menos"))
 
 
 def _trim(original: list[str], folded: list[str], *, state_words: bool) -> list[str]:
@@ -305,7 +306,8 @@ def parse_timer_request(complement: str) -> TimerRequest:
     rest = folded if span is None else folded[:span[0]] + folded[span[1]:]
     if _room_target(folded, span):
         return TimerRequest(None, label, TimerRequestIssue.ROOM_TARGET)
-    if _CLOCK_RE.search(" ".join(rest)):
+    # A filler word never hides a clock time ("para las 7 gracias", "de 10 minutos para las 7 ya").
+    if _CLOCK_RE.search(" ".join(w for w in rest if w not in _FILLER)):
         return TimerRequest(None, label, TimerRequestIssue.CLOCK_TIME if span is None
                             else TimerRequestIssue.UNPARSEABLE)
     if found is None:
