@@ -650,6 +650,37 @@ async def test_the_only_text_with_its_clock_phrase_is_named_by_its_text(store, t
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["de la una de la tarde", "de la 1 de la tarde"])
+async def test_a_period_word_alone_in_a_text_is_no_literal_reading(store, query):
+    """Review T032-U1-FV-3: 'tarde' of 'por la tarde' does not make 'de la una de la tarde' ask."""
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    pill = await _shared(manager, "tomar la pastilla", _local(2026, 11, 11, 13, 0).timestamp())
+    await _shared(manager, "pasear al perro por la tarde", _local(2026, 11, 11, 18, 0).timestamp())
+    found = await manager.resolve(None, query, shared_only=True)
+    assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, pill.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("spoken_text", "spoken_due", "timed_text", "query"), [
+    # "una" without its article is no clock phrase of "comprar una torta".
+    ("comprar una torta", (11, 10, 0), "comprar torta", "de comprar torta a la una"),
+    # Every word of "la una de la tarde" is in the first text, but not as one phrase.
+    ("llevar una torta de la abuela por la tarde", (11, 18, 0), "llevar la torta de la abuela",
+     "de llevar la torta de la abuela a la una de la tarde"),
+])
+async def test_the_literal_reading_is_the_whole_time_phrase_not_its_words(store, spoken_text, spoken_due,
+                                                                          timed_text, query):
+    """Review T032-U1-FV-3: a text with the time's words apart is no literal reading, so nothing is asked."""
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    await _shared(manager, spoken_text, _local(2026, 11, *spoken_due).timestamp())
+    timed = await _shared(manager, timed_text, _local(2026, 11, 11, 13, 0).timestamp())
+    found = await manager.resolve(None, query, shared_only=True)
+    assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, timed.id)
+
+
+@pytest.mark.asyncio
 async def test_time_words_in_no_text_keep_the_time_reading(store):
     """A time no reminder text contains only filters by trigger, as before."""
     clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
