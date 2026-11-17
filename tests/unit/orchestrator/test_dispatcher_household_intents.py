@@ -416,3 +416,33 @@ async def test_unclaimed_routine_creation_never_reaches_cloud_extraction(leaves,
     assert reasoner.mock_calls == []
     assert leaves.effects(before) == ZERO
 
+
+
+@pytest.mark.parametrize(("room", "ring_zone"), [("hall", "zone_hall"), ("zone_living", "zone_living"),
+                                                 ("patio", "default"), (None, "default")])
+async def test_timer_rings_in_the_origin_room_for_the_household(leaves, room, ring_zone):
+    """T030-U1: actor 'household' (never the caller's id); ring zone from the mic room only, else the default output."""
+    from src.core.household_clock import RoomNamespace
+    dispatcher = leaves.dispatcher(room_namespace=RoomNamespace(("living", "hall")))
+    result = await dispatcher.dispatch(user_id="speaker_ana", text="poné un timer de 5 minutos", zone_id="zone_living",
+                                       context_room_id=room)
+    assert (result.path, result.intent, result.success) == (PathType.FAST_TIMER, "timer", True)
+    (timer,) = leaves.timers.get_all_timers()
+    assert (timer.user_id, timer.zone_id) == ("household", ring_zone)
+
+
+async def test_timer_success_follows_the_outcome(leaves):
+    dispatcher = leaves.dispatcher()
+    asked = await dispatcher.dispatch(user_id="unknown", text="poné una alarma")
+    assert (asked.success, asked.outcome.status.value) == (False, "needs_input")
+    await leaves.timers.stop()
+    refused = await dispatcher.dispatch(user_id="unknown", text="poné un timer de 5 minutos")
+    assert (refused.success, refused.outcome.status.value) == (False, "failed")
+    assert refused.response == "Ahora no puedo manejar temporizadores. Probá de nuevo en un rato."
+
+
+async def test_dispatcher_without_a_timer_manager_is_unsupported(leaves):
+    dispatcher = leaves.dispatcher(timer_manager=None)
+    result = await dispatcher.dispatch(user_id="unknown", text="poné un timer de 5 minutos")
+    assert (result.path, result.success, result.outcome.status.value) == (PathType.FAST_TIMER, False, "unsupported")
+    assert leaves.timers.get_all_timers() == []

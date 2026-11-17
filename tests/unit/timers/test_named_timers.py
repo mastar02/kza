@@ -60,6 +60,7 @@ def test_unnamed_timer_never_matches_a_legacy_name_lookup():
     assert timers._find_timer_by_name("") is None
     named = timers.create_timer("pasta", 60)
     assert timers._find_timer_by_name("pasta") is named
+    assert timers._find_timer_by_name("") is None
 
 
 async def test_ring_and_warning_name_the_timer_by_label_or_duration(monkeypatch):

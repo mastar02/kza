@@ -82,6 +82,7 @@ NEGATIVE = [
     ("de 1:30", I.UNPARSEABLE),
     ("de 1 hora 30", I.UNPARSEABLE),
     ("de 5 minutos y 10 minutos", I.UNPARSEABLE),
+    ("de 5 minutos y un rato", I.UNPARSEABLE),
     ("de 5 minutos para las 7", I.UNPARSEABLE),
     ("de unos minutos", I.VAGUE_DURATION),
     ("de algunos segundos", I.VAGUE_DURATION),
