@@ -12,7 +12,8 @@ already claimed the turn and split off the words after the timer noun (its
   pasta", "de 5 minutos", ""): the label and/or duration that pick a timer.
 
 It never guesses: a missing or vague duration ("unos minutos", "un rato"), a
-number without a unit, two durations, a clock time ("para las 7", which is a
+number without a unit, a number of a hundred or more said in words ("ciento
+veinte segundos"), two durations, a clock time ("para las 7", which is a
 reminder) or a room ("en la cocina": the timer rings where it was asked, P3F1-R3)
 yields an issue code and no duration.
 
@@ -88,6 +89,10 @@ _SMALL = {"diez": 10, "once": 11, "doce": 12, "trece": 13, "catorce": 14, "quinc
           "veintiseis": 26, "veintisiete": 27, "veintiocho": 28, "veintinueve": 29}
 _TENS = {"treinta": 30, "cuarenta": 40, "cincuenta": 50, "sesenta": 60, "setenta": 70, "ochenta": 80,
          "noventa": 90}
+# Hundreds and thousands are not read: "ciento veinte segundos" must not become 20 seconds named "ciento".
+_HUNDREDS = frozenset({"cien", "ciento", "doscientos", "doscientas", "trescientos", "trescientas", "cuatrocientos",
+                       "cuatrocientas", "quinientos", "quinientas", "seiscientos", "seiscientas", "setecientos",
+                       "setecientas", "ochocientos", "ochocientas", "novecientos", "novecientas", "mil"})
 _TIME_UNITS = {"segundo": 1, "segundos": 1, "seg": 1, "segs": 1, "segundito": 1, "segunditos": 1,
                "minuto": 60, "minutos": 60, "min": 60, "mins": 60, "minutito": 60, "minutitos": 60,
                "hora": 3600, "horas": 3600, "h": 3600, "hs": 3600, "hrs": 3600, "horita": 3600, "horitas": 3600}
@@ -238,6 +243,10 @@ def _bare_number(w: list[str], start: int, end: int) -> bool:
                 or word in _TENS or (word in _UNITS and word not in ("un", "una", "uno")):
             if not _counts_a_noun(w, k + 1, end):
                 return True
+        elif word in _HUNDREDS and not (k + 1 < end and _number(w, k + 1) is not None):
+            # "de ciento", "cien personas" is a label; "ciento veinte" is decided by the next number.
+            if not _counts_a_noun(w, k + 1, end):
+                return True
     return False
 
 
@@ -248,7 +257,7 @@ def _counts_a_noun(w: list[str], k: int, end: int) -> bool:
     word = w[k]
     return (word.isalpha() and word not in _TIME_UNITS and word not in _UNITS and word not in _SMALL
             and word not in _TENS and word not in _LEAD and word not in _TRAIL and word not in _HALF
-            and word not in _FILLER and word not in ("cuarto", "cuartos", "y", "menos"))
+            and word not in _FILLER and word not in _HUNDREDS and word not in ("cuarto", "cuartos", "y", "menos"))
 
 
 def _trim(original: list[str], folded: list[str], *, state_words: bool) -> list[str]:
@@ -285,6 +294,9 @@ def _find_duration(folded: list[str]) -> tuple[int | str, tuple[int, int]] | Non
     for i in range(len(folded)):
         found = _duration_at(folded, i)
         if found is not None:
+            if i > 0 and folded[i - 1] in _HUNDREDS:
+                # "ciento veinte segundos": only the tail would be read, so the whole number is asked again.
+                return "invalid", (i - 1, found[1])
             return found[0], (i, found[1])
     return None
 

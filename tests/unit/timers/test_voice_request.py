@@ -77,6 +77,9 @@ CREATE = [
     ("poné una alarma de 1,5 horas", 5400, None),
     # T030-U1 RR-1: a filler word after a counted noun still leaves the noun in the label.
     ("poné un timer de diez minutos para las dos pizzas, gracias", 600, "dos pizzas"),
+    # T030-U1 RR-2: a hundreds word that counts a noun stays in the label.
+    ("poné un timer de 5 minutos para cien empanadas", 300, "cien empanadas"),
+    ("poné un timer de 5 minutos para ciento veinte empanadas", 300, "ciento veinte empanadas"),
 ]
 
 
@@ -134,6 +137,14 @@ NEGATIVE = [
     ("para las 7 ya", I.CLOCK_TIME),
     ("a las ocho y media, gracias", I.CLOCK_TIME),
     ("de 5 minutos y 3 gracias", I.UNPARSEABLE),  # a filler word is not what the 3 counts
+    # T030-U1 RR-2: hundreds said in words are not read, and never misread as their tail.
+    ("de ciento veinte segundos", I.UNPARSEABLE),
+    ("de ciento ochenta segundos para el pan", I.UNPARSEABLE),
+    ("de doscientos cincuenta segundos", I.UNPARSEABLE),
+    ("de mil quinientos segundos", I.UNPARSEABLE),
+    ("de cien segundos", I.UNPARSEABLE),
+    ("de cien", I.UNPARSEABLE),
+    ("de ciento veinte", I.UNPARSEABLE),
 ]
 
 
@@ -179,6 +190,8 @@ SELECT = [
     ("decime los timers", TimerSelector()),
     ("pará el timer que está sonando", TimerSelector()),
     ("cancelá todos los timers", TimerSelector()),
+    # T030-U1 RR-2: never the 20-second timer.
+    ("cancelá el timer de ciento veinte segundos", TimerSelector("ciento veinte segundos")),
 ]
 
 
