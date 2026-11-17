@@ -350,14 +350,18 @@ class FeatureManager:
     # ------------------------------------------------------------------
 
     def alerts_available(self) -> bool:
-        """Whether alerts reflect the house: a manager plus at least one connected producer.
+        """Whether alerts reflect the house: a manager plus a running scheduler with producers.
 
-        Without producers (no handler registered in the scheduler) an empty alert
-        list means "unknown", not "no alerts".
+        Without producers (no handler registered in the scheduler) or while the
+        scheduler is not running (never started, stopped, or its loop exited on
+        an error) an empty alert list means "unknown", not "no alerts".
         """
         if self.alert_manager is None or self.alert_scheduler is None:
             return False
-        handlers = self.alert_scheduler.get_status().get("registered_handlers", {})
+        status = self.alert_scheduler.get_status()
+        if status.get("running") is not True:
+            return False
+        handlers = status.get("registered_handlers", {})
         return sum(handlers.values()) > 0
 
     def get_active_alerts(self) -> list:
@@ -373,7 +377,7 @@ class FeatureManager:
         """Return a voice-friendly alert summary in Spanish.
 
         Returns:
-            ALERTS_UNAVAILABLE without a manager or connected producers,
+            ALERTS_UNAVAILABLE without a manager or a running scheduler with producers,
             ALERTS_NONE when available and nothing is active, else the count
             and up to three alert messages.
         """

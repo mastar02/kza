@@ -9,6 +9,7 @@ Tests ensure that:
 5. Passthrough methods delegate correctly
 """
 
+import asyncio
 import sys
 from unittest.mock import MagicMock, AsyncMock
 
@@ -21,7 +22,7 @@ sys.modules.setdefault('torch.cuda', MagicMock())
 
 import pytest
 
-from src.alerts import AlertManager, AlertPriority, AlertScheduler, AlertType
+from src.alerts import AlertManager, AlertPriority, AlertScheduler, AlertType, CheckType
 from src.pipeline.feature_manager import ALERTS_NONE, ALERTS_UNAVAILABLE, FeatureManager, build_feature_manager
 
 
@@ -83,13 +84,13 @@ def _make_alert_manager():
     return m
 
 
-def _make_alert_scheduler(handlers: int = 1):
+def _make_alert_scheduler(handlers: int = 1, running: bool = True):
     """Create a mock AlertScheduler restricted to its real interface."""
     m = MagicMock(spec=AlertScheduler)
     m.start = AsyncMock()
     m.stop = AsyncMock()
     m.get_status.return_value = {
-        "running": True, "checks": {},
+        "running": running, "checks": {},
         "registered_handlers": {"security": handlers, "pattern": 0, "device": 0},
     }
     return m
@@ -524,14 +525,68 @@ class TestFeatureManagerAlerts:
         await manager.mark_processed(door.alert_id)
         assert fm.get_alert_summary() == ALERTS_NONE
 
+    @pytest.mark.parametrize("running", [False, None, "yes"])
+    def test_producers_without_running_scheduler_are_unavailable(self, running):
+        """Review R2: registered producers do not count while the scheduler is not running."""
+        fm = FeatureManager(alert_manager=_make_alert_manager(),
+                            alert_scheduler=_make_alert_scheduler(handlers=2, running=running))
+        assert fm.alerts_available() is False
+        assert fm.get_alert_summary() == ALERTS_UNAVAILABLE
+        assert fm.get_status()["alerts"] == {"available": False, "active": None}
+
     @pytest.mark.asyncio
     async def test_summary_with_real_scheduler_needs_registered_producer(self):
         manager = AlertManager()
         scheduler = AlertScheduler(alert_manager=manager)
         fm = FeatureManager(alert_manager=manager, alert_scheduler=scheduler)
-        assert fm.get_alert_summary() == ALERTS_UNAVAILABLE
+        task = asyncio.create_task(scheduler.start())
+        await asyncio.sleep(0)
+        try:
+            assert scheduler.get_status()["running"] is True
+            assert fm.get_alert_summary() == ALERTS_UNAVAILABLE
+            scheduler.register_device_handler(AsyncMock())
+            assert fm.get_alert_summary() == ALERTS_NONE
+        finally:
+            await scheduler.stop()
+            await task
+
+    @pytest.mark.asyncio
+    async def test_real_scheduler_with_producer_never_started_or_stopped_is_unavailable(self):
+        """Review R2: before start() and after stop() the summary never says 'no hay alertas'."""
+        manager = AlertManager()
+        scheduler = AlertScheduler(alert_manager=manager)
         scheduler.register_device_handler(AsyncMock())
+        fm = FeatureManager(alert_manager=manager, alert_scheduler=scheduler)
+        assert scheduler.get_status()["running"] is False
+        assert fm.alerts_available() is False
+        assert fm.get_alert_summary() == ALERTS_UNAVAILABLE
+        assert fm.get_status()["alerts"] == {"available": False, "active": None}
+        task = asyncio.create_task(scheduler.start())
+        await asyncio.sleep(0)
         assert fm.get_alert_summary() == ALERTS_NONE
+        await scheduler.stop()
+        await task
+        assert scheduler.get_status()["running"] is False
+        assert fm.alerts_available() is False
+        assert fm.get_alert_summary() == ALERTS_UNAVAILABLE
+        assert fm.get_status()["alerts"] == {"available": False, "active": None}
+
+    @pytest.mark.asyncio
+    async def test_scheduler_loop_that_exits_on_error_is_unavailable(self, monkeypatch):
+        """Review R2: start() ending on an exception leaves the alerts unavailable."""
+        manager = AlertManager()
+        scheduler = AlertScheduler(alert_manager=manager)
+        scheduler.register_device_handler(AsyncMock())
+        fm = FeatureManager(alert_manager=manager, alert_scheduler=scheduler)
+
+        async def boom(check_type, _interval):
+            if check_type is CheckType.DEVICE:
+                raise RuntimeError("loop died")
+
+        monkeypatch.setattr(scheduler, "_run_periodic_check", boom)
+        await scheduler.start()
+        assert scheduler.get_status()["running"] is False
+        assert fm.get_alert_summary() == ALERTS_UNAVAILABLE
 
 
 class TestBuildFeatureManagerAlerts:
