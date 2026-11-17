@@ -73,6 +73,8 @@ async def test_real_factory_shares_household_output_privacy_and_managers(leaves,
             assert orchestrator.context_manager.source_policy is orchestrator.queue.source_policy is authority
             assert graph.voice_registry.privacy is graph.privacy
             assert orchestrator.dispatcher.response_handler is graph.voice_services.responses
+            # T030-U1: the orchestrated timer handler drives the one manager the FeatureManager starts.
+            assert orchestrator.dispatcher.timer_manager is graph.voice_services.features.timer_manager
             # P3-F1: one household clock, built once from routines.timezone, and one room namespace.
             # Imported here: compiled-restore children import this module's fixtures against
             # older compiled slots that predate src.core.household_clock.
@@ -317,6 +319,156 @@ async def test_phrase_reaches_actual_main_feature_and_shared_pcm_output(leaves, 
             assert graph.models.tts.texts
             assert len(backend.heard()) > 0
             assert observations["service_calls"] == 0
+
+
+def _timer_turn(room_id: str = "", **wake) -> CommandEvent:
+    return CommandEvent(np.full(16000, 0.1, dtype=np.float32), room_id=room_id, **wake)
+
+
+async def test_orchestrated_twin_reaches_the_main_timer_and_shared_pcm_output(leaves, monkeypatch, tmp_path):
+    """T030-U1: the T010 journey above with orchestrator.enabled true: create, query, pause, resume, cancel."""
+    import src.tts.piper_tts as output_module
+    from src.timers.named_timers import TimerState
+
+    backend = AudioBackend()
+    monkeypatch.setattr(output_module, "sd", backend)
+    async with offline_home() as (url, observations):
+        config = offline_config(tmp_path, url)
+        assert config["orchestrator"]["enabled"] is True
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=leaves)
+            features = graph.voice_services.features
+            timers = features.timer_manager
+            router = graph.pipeline.request_router
+            assert router.llm_command_router is None and graph.pipeline._orchestrator.dispatcher.router is None
+            search = AsyncMock(side_effect=AssertionError("vector search reached"))
+            monkeypatch.setattr(graph.models.chroma, "asearch_command", search)
+            await features.start()
+
+            created = await graph.pipeline.process_command(_timer_turn())  # "pon un timer de 5 minutos"
+            assert (created["intent"], created["path"], created["success"]) == ("timer", "fast_timer", True)
+            assert created["task_completed"] and created["outcome"]["persistence"] == "volatile"
+            (timer,) = timers.get_all_timers()
+            assert (timer.user_id, timer.zone_id, timer.duration_seconds, timer.name) == ("household", "default", 300, "")
+            assert graph.models.tts.texts == ["Temporizador de 5 minutos en marcha."]
+            assert graph.models.stt.calls == 1 and len(backend.heard()) > 0
+
+            journey = [
+                ("¿cuánto le falta al timer?", TimerState.RUNNING, "Al temporizador de 5 minutos, faltan "),
+                ("pausá el timer", TimerState.PAUSED, "Pausé el temporizador de 5 minutos; le quedan "),
+                ("seguí el timer", TimerState.RUNNING, "Sigue el temporizador de 5 minutos; faltan "),
+                ("cancelá el timer", TimerState.CANCELLED, "Cancelé el temporizador de 5 minutos."),
+            ]
+            for text, state, spoken in journey:
+                graph.models.stt.text = text
+                result = await graph.pipeline.process_command(_timer_turn())
+                assert (result["intent"], result["path"], result["task_completed"]) == ("timer", "fast_timer", True)
+                assert timer.state is state
+                assert graph.models.tts.texts[-1].startswith(spoken)
+            assert len(timers.get_all_timers()) == 1
+            assert observations["service_calls"] == 0
+            search.assert_not_awaited()
+
+
+async def test_replay_t010_bare_temporizador_phrase_creates_a_timer(leaves, monkeypatch, tmp_path):
+    """T010 graph-third.log:80-83: 'temporizador de 5 minutos' reached vector search; now it is a timer."""
+    async with offline_home() as (url, observations):
+        async with AsyncExitStack() as stack:
+            graph = await build_application(offline_config(tmp_path, url), shutdown=stack, factories=leaves)
+            search = AsyncMock(side_effect=AssertionError("vector search reached"))
+            monkeypatch.setattr(graph.models.chroma, "asearch_command", search)
+            await graph.voice_services.features.start()
+            graph.models.stt.text = "temporizador de 5 minutos"
+            result = await graph.pipeline.process_command(_timer_turn())
+            assert (result["path"], result["outcome"]["status"]) == ("fast_timer", "completed")
+            assert [t.duration_seconds for t in graph.voice_services.features.timer_manager.get_all_timers()] == [300]
+            search.assert_not_awaited()
+            assert observations["service_calls"] == 0
+
+
+@pytest.mark.parametrize("failure", ["never_started", "start_failed"])
+async def test_timer_manager_not_running_never_confirms(leaves, monkeypatch, tmp_path, failure):
+    """C02-TIM-0005: a FeatureManager start failure (or no start) gives a spoken refusal and no timer."""
+    async with offline_home() as (url, observations):
+        async with AsyncExitStack() as stack:
+            graph = await build_application(offline_config(tmp_path, url), shutdown=stack, factories=leaves)
+            features = graph.voice_services.features
+            if failure == "start_failed":
+                async def broken_load():
+                    raise RuntimeError("synthetic startup failure")
+                monkeypatch.setattr(features.intercom, "_load_zones", broken_load)
+                with pytest.raises(RuntimeError, match="synthetic startup failure"):
+                    await features.start()
+            graph.models.stt.text = "poné un temporizador de 5 minutos"
+            result = await graph.pipeline.process_command(_timer_turn())
+            assert (result["path"], result["outcome"]["status"], result["outcome"]["persistence"]) == (
+                "fast_timer", "failed", "not_written")
+            assert not result["task_completed"] and not result["success"]
+            assert graph.models.tts.texts == ["Ahora no puedo manejar temporizadores. Probá de nuevo en un rato."]
+            assert features.timer_manager.get_all_timers() == []
+            assert observations["service_calls"] == 0
+
+
+async def test_timer_with_the_7b_unavailable(leaves, monkeypatch, tmp_path):
+    """:8101 down: a strong acoustic wake of six words never calls it; a TV-signal turn fails closed."""
+    import httpx
+    from src.llm import reasoner
+
+    completions = []
+    actual_client = httpx.Client
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"object": "list", "data": [{"id": "synthetic-router", "object": "model"}]})
+        completions.append(request.url.path)
+        return httpx.Response(503, json={"error": "synthetic 7B unavailable"})
+
+    class HttpxLeaf:
+        @staticmethod
+        def Client(*args, **kwargs):
+            return actual_client(*args, transport=httpx.MockTransport(handler), **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(httpx, name)
+
+    monkeypatch.setattr(reasoner, "httpx", HttpxLeaf())
+    monkeypatch.setattr(reasoner, "_resolve_api_key", lambda *args, **kwargs: "synthetic-token")
+    async with offline_home() as (url, observations):
+        config = offline_config(tmp_path, url)
+        config["router"] = {"enabled": True, "base_url": "http://synthetic.invalid/v1", "model": "synthetic-router",
+                            "destination": "local"}
+        config["nlu"] = {"llm_router": {"enabled": True, "timeout_s": 1.0}}
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=leaves)
+            assert graph.pipeline.request_router.llm_command_router is not None
+            timers = graph.voice_services.features.timer_manager
+            await graph.voice_services.features.start()
+            graph.models.stt.text = "poné un temporizador de 5 minutos"
+            strong = await graph.pipeline.process_command(_timer_turn())
+            assert (strong["path"], strong["outcome"]["status"]) == ("fast_timer", "completed")
+            assert completions == []
+            graph.models.stt.text = "poné un temporizador de 10 minutos"
+            weak = await graph.pipeline.process_command(_timer_turn(wake_score=0.42))
+            assert weak["intent"] == "llm_rejected:household" and not weak["success"]
+            assert len(completions) >= 1
+            assert [t.duration_seconds for t in timers.get_all_timers()] == [300]
+            assert observations["service_calls"] == 0
+
+
+async def test_timer_label_never_reaches_timer_or_dispatcher_info_logs(leaves, tmp_path, caplog):
+    """C02-PRV-0002 for the timer path (the transcript INFO lines of the router and gate are reported apart)."""
+    async with offline_home() as (url, _):
+        async with AsyncExitStack() as stack:
+            graph = await build_application(offline_config(tmp_path, url), shutdown=stack, factories=leaves)
+            await graph.voice_services.features.start()
+            graph.models.stt.text = "poné un temporizador de 1 minuto para la pastilla"
+            with caplog.at_level("DEBUG"):
+                result = await graph.pipeline.process_command(_timer_turn())
+            assert result["task_completed"]
+            assert [t.name for t in graph.voice_services.features.timer_manager.get_all_timers()] == ["pastilla"]
+            leaked = [r for r in caplog.records if r.levelno >= 20 and "pastilla" in r.getMessage()
+                      and r.name.startswith(("src.timers", "src.orchestrator", "src.pipeline.feature_manager"))]
+            assert leaked == []
 
 
 async def test_late_factory_failure_retires_router_and_prior_resources(leaves, monkeypatch, tmp_path):

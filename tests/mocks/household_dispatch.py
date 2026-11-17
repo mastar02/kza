@@ -1,7 +1,8 @@
 """A RequestDispatcher whose leaves count every C02 effect (P3-F2 matrix harness).
 
 Lists and reminders use the real stores on disk, so mutations are counted as
-changed rows; the other leaves are spies. The home-action and slow-path
+changed rows; timers use a real started NamedTimerManager (T030-U1), counted
+as new timers and state changes; the other leaves are spies. The home-action and slow-path
 boundaries are replaced by counting stubs: a call there is the effect.
 """
 
@@ -20,6 +21,7 @@ from src.orchestrator.dispatcher import DispatchResult, PathType, Priority, Requ
 from src.orchestrator.priority_queue import PriorityRequestQueue
 from src.reminders.reminder_manager import ReminderManager
 from src.reminders.reminder_store import ReminderScope, ReminderStore
+from src.timers.named_timers import NamedTimerManager, TimerState
 from tests.mocks.c02_matrix import effects
 
 LIGHT_MATCH = {"entity_id": "light.living", "domain": "light", "service": "turn_off", "data": {},
@@ -56,14 +58,18 @@ class CountedLeaves:
         self.cloud = AsyncMock(return_value=DispatchResult(
             PathType.SLOW_LLM, Priority.LOW, True, "Respuesta del modelo.", intent="conversation",
             outcome=TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.NOT_REQUIRED)))
+        self.ring = AsyncMock()
+        self.timers = NamedTimerManager(tts_callback=self.ring)
         self.cancels: list[bool] = []
         self.queue: PriorityRequestQueue | None = None
 
     async def start(self) -> None:
         await self.list_store.initialize()
         await self.reminder_store.initialize()
+        await self.timers.start()
 
     async def close(self) -> None:
+        await self.timers.stop()
         await self.list_store.close()
         await self.reminder_store.close()
 
@@ -74,7 +80,7 @@ class CountedLeaves:
             chroma_sync=self.chroma, ha_client=self.ha, routine_manager=self.routines, router=self.router,
             llm=None, context_manager=ContextManager(), priority_queue=queue, music_dispatcher=self.music,
             list_manager=self.list_manager, reminder_manager=self.reminder_manager,
-            response_handler=self.responses, **kwargs)
+            response_handler=self.responses, **{"timer_manager": self.timers, **kwargs})
         self.attach(dispatcher)
         return dispatcher
 
@@ -106,28 +112,39 @@ class CountedLeaves:
                                                    scope=ReminderScope.SHARED)
             elif name == "light_match":
                 self.chroma.asearch_command.return_value = LIGHT_MATCH
+            elif name.startswith(("timer_running:", "timer_paused:")):
+                kind, label = name.split(":", 1)
+                timer = self.timers.create_timer(label, 600, user_id="household", zone_id="default")
+                if kind == "timer_paused":
+                    self.timers.pause_timer(timer.timer_id)
+            elif name == "timer_running_unnamed":
+                self.timers.create_timer("", 300, user_id="household", zone_id="default")
+            elif name == "feature_manager_start_failed":
+                await self.timers.stop()
             else:
                 raise ValueError(f"unknown state fixture {name}")
 
-    def snapshot(self) -> tuple[dict, dict, dict]:
+    def snapshot(self) -> tuple[dict, dict, dict, dict]:
         with sqlite3.connect(self.lists_db) as db:
             lists = {row[0]: row[1:] for row in db.execute("SELECT id, name, owner_type FROM lists")}
             items = {row[0]: row[1:] for row in db.execute("SELECT id, list_id, text, completed FROM list_items")}
         with sqlite3.connect(self.reminders_db) as db:
             reminders = {row[0]: row[1] for row in db.execute("SELECT id, state FROM reminders")}
-        return lists, items, reminders
+        timers = {timer.timer_id: TimerState(timer.state) for timer in self.timers.get_all_timers()}
+        return lists, items, reminders, timers
 
-    def effects(self, before: tuple[dict, dict, dict], *, llm_8101_calls: int = 0, spoken: int | None = None) -> dict:
+    def effects(self, before: tuple[dict, dict, dict, dict], *, llm_8101_calls: int = 0,
+                spoken: int | None = None) -> dict:
         """Every C02 counter since ``before``.
 
         list_mutations counts changed rows (lists and items, inserted,
-        deleted or updated); reminder_transitions counts state changes of
-        reminders that existed before. There is no timer manager and no
-        ledger on the orchestrated dispatcher path, so those counters are
-        structurally zero.
+        deleted or updated); reminder_transitions and timer_transitions count
+        state changes of reminders and timers that existed before; timer_delta
+        counts timers created. There is no ledger on the orchestrated
+        dispatcher path, so ledger_claims is structurally zero.
         """
-        lists0, items0, reminders0 = before
-        lists1, items1, reminders1 = self.snapshot()
+        lists0, items0, reminders0, timers0 = before
+        lists1, items1, reminders1, timers1 = self.snapshot()
         list_mutations = (len(lists0.keys() ^ lists1.keys()) + len(items0.keys() ^ items1.keys())
                           + sum(1 for key in items0.keys() & items1.keys() if items0[key] != items1[key]))
         return effects(
@@ -138,6 +155,8 @@ class CountedLeaves:
             reminder_rows_delta=len(reminders1) - len(reminders0),
             reminder_transitions=sum(1 for key in reminders0.keys() & reminders1.keys()
                                      if reminders0[key] != reminders1[key]),
+            timer_delta=len(timers1) - len(timers0),
+            timer_transitions=sum(1 for key in timers0.keys() & timers1.keys() if timers0[key] != timers1[key]),
             queue_cancels=sum(self.cancels),
             routine_runs=self.routines.handle.await_count,
             routine_changes=sum(1 for call in self.routines.method_calls if call[0] != "handle"),

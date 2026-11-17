@@ -1858,6 +1858,8 @@ async def build_application(
             household_clock=household_clock,
             room_namespace=room_namespace,
             household_intents=household_intents,
+            # T030-U1: the one timer manager the FeatureManager starts and stops.
+            timer_manager=voice_services.features.timer_manager,
             # Plan #2 OpenClaw
             compactor=compactor,
             persister=persister,

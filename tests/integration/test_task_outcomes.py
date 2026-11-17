@@ -297,14 +297,16 @@ async def test_stale_lookup_cannot_prove_a_committed_deletion(leaves, tmp_path, 
                     assert not await graph.list_manager.delete_list("unknown", "compras")
 
 
-@pytest.mark.parametrize(("text", "path", "intent"), [
-    ("recordame apagar la luz", "fast_reminder", "reminder"),
-    ("Nexa, recordame prender la luz del living", "fast_reminder", "reminder"),
-    ("poné un temporizador de 5 minutos", "fast_timer", "timer"),
-    ("cancelá el timer y el recordatorio", "fast_household", "compound"),
-    ("apagá la luz y pausá la música", "fast_household", "compound"),
+@pytest.mark.parametrize(("text", "path", "intent", "status"), [
+    ("recordame apagar la luz", "fast_reminder", "reminder", "unsupported"),
+    ("Nexa, recordame prender la luz del living", "fast_reminder", "reminder", "unsupported"),
+    # T030-U1: the graph is built but the FeatureManager was never started, so no timer is confirmed.
+    ("poné un temporizador de 5 minutos", "fast_timer", "timer", "failed"),
+    ("cancelá el timer y el recordatorio", "fast_household", "compound", "needs_input"),
+    ("apagá la luz y pausá la música", "fast_household", "compound", "needs_input"),
 ])
-async def test_claimed_household_turn_never_reaches_home_control(leaves, monkeypatch, tmp_path, text, path, intent):
+async def test_claimed_household_turn_never_reaches_home_control(leaves, monkeypatch, tmp_path, text, path, intent,
+                                                                 status):
     """P3-F2 (CORE-02): a household turn is claimed before the grammar, the 7B and vector search."""
     factories, _ = leaves
     transport = TaskTransport("confirmed")
@@ -321,7 +323,8 @@ async def test_claimed_household_turn_never_reaches_home_control(leaves, monkeyp
             result = await graph.pipeline.process_command(event())
             assert (result["path"], result["intent"]) == (path, intent)
             assert result["handled"] and not result["task_completed"] and not result["success"]
-            assert result["outcome"]["status"] in {"unsupported", "needs_input"}
+            assert result["outcome"]["status"] == status
+            assert graph.voice_services.features.timer_manager.get_all_timers() == []
             assert result["response_completed"]
             assert transport.sends == []
             search.assert_not_awaited()

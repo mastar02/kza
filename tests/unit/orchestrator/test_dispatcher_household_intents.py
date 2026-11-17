@@ -24,6 +24,17 @@ def _refused(id_, text, family, path="fast_reminder", *, sf=None, state=None, ef
               conditions=conditions, **kw)
 
 
+def _timer(id_, text, outcome, persistence, spoken, *, counts=ZERO, state=None, sf=None,
+           effect_class="unauthorized_effect", seed=None, note=""):
+    """A T030-U1 timer entry on the dispatcher layer (a real, started NamedTimerManager)."""
+    conditions = {k: v for k, v in (("service_filter", sf), ("state", state)) if v}
+    return _d(id_, text, "timer", effect_class, outcome, "fast_timer", outcome, persistence, spoken, counts=counts,
+              conditions=conditions, unit="T030-U1", seed=seed, note=note)
+
+
+CREATED = effects(timer_delta=1)
+CHANGED = effects(timer_transitions=1)
+
 INTERIM_CREATE = ("interim: reminder creation by voice lands with T031-U2; until then the existing honest "
                   "'Todavía no puedo crear ese recordatorio por voz' (UNSUPPORTED) instead of the seed's "
                   "needs_input clarification; every counter as the seed")
@@ -85,21 +96,51 @@ C02_DISPATCHER = tuple(_REMINDER_GRID) + (
        "readback", counts=effects(queue_cancels=1), conditions={"state": "queued_request"}),
     _refused("C02-CAN-0105", "cancelá la rutina de la noche", "routine", "fast_routine", state="queued_request",
              note="routine stop/cancel before T033: honest UNSUPPORTED, queue untouched"),
-    _refused("C02-CAN-0106", "pará el timer", "timer", "fast_timer", state="queued_request"),
+    _timer("C02-CAN-0106", "pará el timer", "needs_input", "not_written", "clarification", state="queued_request",
+           note="no timer: 'No hay temporizadores activos.'; the queued request is not cancelled"),
     _refused("C02-CAN-0107", "olvidate del recordatorio de la basura", "reminder", state="queued_request"),
-    _refused("C02-TIM-0101", "poné un temporizador de 5 minutos", "timer", "fast_timer", sf="turn_on",
-             note="never reaches vector search; timers land with T030-U1"),
-    _refused("C02-TIM-0102", "poneme un tímer de media hora", "timer", "fast_timer"),
-    _refused("C02-TIM-0103", "pausá el timer de la pasta", "timer", "fast_timer", finding="F12",
-             note="'pausá' no longer reaches FAST_MUSIC"),
-    _refused("C02-TIM-0104", "cancelá el timer de la pasta", "timer", "fast_timer", state="queued_request"),
-    _refused("C02-TIM-0105", "temporizador de 5 minutos", "timer", "fast_timer"),
-    _refused("C02-TIM-0106", "apagá el temporizador", "timer", "fast_timer", sf="turn_off", state="light_match"),
-    _refused("C02-TIM-0107", "¿cuánto le falta al timer?", "timer", "fast_timer"),
-    _refused("C02-ALM-0101", "poné una alarma de 10 minutos", "timer", "fast_timer", seed="C02-ALM-0001"),
+    _timer("C02-TIM-0101", "poné un temporizador de 5 minutos", "completed", "volatile", "readback", counts=CREATED,
+           sf="turn_on", seed="C02-TIM-0001", note="never reaches vector search; volatile until SCHEMA-V2"),
+    _timer("C02-TIM-0102", "poneme un tímer de media hora", "completed", "volatile", "readback", counts=CREATED,
+           seed="C02-TIM-0002"),
+    _timer("C02-TIM-0103", "pausá el timer de la pasta", "completed", "volatile", "readback", counts=CHANGED,
+           state="timer_running:pasta", seed="C02-TIM-0003", note="F12: 'pausá' no longer reaches FAST_MUSIC"),
+    _timer("C02-TIM-0104", "cancelá el timer de la pasta", "completed", "volatile", "readback", counts=CHANGED,
+           state="queued_request;timer_running:pasta", effect_class="false_confirmation", seed="C02-TIM-0004",
+           note="the timer is cancelled, the queued request is not"),
+    _timer("C02-TIM-0105", "temporizador de 5 minutos", "completed", "volatile", "readback", counts=CREATED,
+           note="T010 graph-third.log:80-83 replay text"),
+    _timer("C02-TIM-0106", "apagá el temporizador", "completed", "volatile", "readback", counts=CHANGED, sf="turn_off",
+           state="light_match;timer_running:pasta", note="stops the only timer; no turn_off reaches the light"),
+    _timer("C02-TIM-0107", "¿cuánto le falta al timer?", "completed", "not_required", "answer",
+           state="timer_running:pasta"),
+    _timer("C02-TIM-0108", "pará el timer", "completed", "volatile", "readback", counts=CHANGED,
+           state="queued_request;timer_running:pasta"),
+    _timer("C02-TIM-0109", "poné un temporizador de 5 minutos", "failed", "not_written", "refusal",
+           state="feature_manager_start_failed", effect_class="false_confirmation", seed="C02-TIM-0005",
+           note="manager not running: no 'Timer configurado', no timer"),
+    _timer("C02-TIM-0110", "poné un timer para la pasta de 8 minutos", "needs_input", "not_written", "clarification",
+           state="timer_running:pasta", effect_class="false_confirmation", note="duplicate label"),
+    _timer("C02-TIM-0111", "seguí el timer de la pasta", "completed", "volatile", "readback", counts=CHANGED,
+           state="timer_paused:pasta"),
+    _timer("C02-TIM-0112", "cancelá el timer", "needs_input", "not_written", "clarification",
+           state="timer_running:pasta;timer_running:salsa", effect_class="false_confirmation",
+           note="two candidates: asks which, cancels none"),
+    _timer("C02-TIM-0113", "cancelá todos los timers", "completed", "volatile", "readback",
+           counts=effects(timer_transitions=2), state="timer_running:pasta;timer_running:salsa"),
+    _timer("C02-TIM-0114", "poné un timer de unos minutos", "needs_input", "not_written", "clarification",
+           effect_class="false_confirmation", note="vague duration is asked, never guessed"),
+    _timer("C02-TIM-0115", "poné un temporizador de cinco minutos en la cocina", "needs_input", "not_written",
+           "clarification", effect_class="false_confirmation", note="rings only in the origin room (P3F1-R3)"),
+    _timer("C02-TIM-0116", "cancelá el timer de la salsa", "needs_input", "not_written", "clarification",
+           state="timer_running:pasta", effect_class="false_confirmation", note="no such timer: nothing cancelled"),
+    _timer("C02-TIM-0117", "cancelá el timer de 5 minutos", "completed", "volatile", "readback", counts=CHANGED,
+           state="timer_running_unnamed;timer_running:pasta", note="an unnamed timer is named by its duration"),
+    _timer("C02-ALM-0101", "poné una alarma de 10 minutos", "completed", "volatile", "readback", counts=CREATED,
+           seed="C02-ALM-0001", note="Q4: an alarm with a duration is a timer; no alarm_control_panel call"),
     _refused("C02-ALM-0102", "poné una alarma a las 7", "reminder", seed="C02-ALM-0002", note=INTERIM_CREATE),
-    _refused("C02-ALM-0103", "poné una alarma", "timer", "fast_timer", seed="C02-ALM-0004",
-             note="no handler yet for timers: refusal rather than the R3a clarification"),
+    _timer("C02-ALM-0103", "poné una alarma", "needs_input", "not_written", "clarification", seed="C02-ALM-0004",
+           effect_class="wrong_family", note="Q4: neither a duration nor a time: KZA asks"),
     _d("C02-RTN-0001", "cuando juega Peñarol", "routine", "wrong_family", "completed", "slow_llm", "completed",
        "not_required", "answer", counts=effects(cloud_calls=1), conditions={"cloud": "stub:answer"},
        unit="T033-U1", note="bare 'cuando' removed from the routine rule"),
