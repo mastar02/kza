@@ -220,7 +220,7 @@ Rechazos antes de mover `current` (fila T0; no escriben nada):
 | --- | --- | --- |
 | `runtime_admission_compaction_pending` | un log de compactación pendiente | terminarlo (con su runbook) y repetir |
 | `runtime_admission_compaction_log_invalid` | un log ilegible | «Compactación trabada» del runbook de compactación |
-| `runtime_admission_not_closed` | head abierto o desconocido | cerrarlo con R-b (arrancar la unidad una vez) o `adopt` (sin log pendiente lo admite; después de `adopt --dry-run`, la comprobación de su copia en claro de la fila T0F, punto 2), y repetir |
+| `runtime_admission_not_closed` | head abierto o desconocido | cerrarlo con R-b (arrancar la unidad una vez; R-b cierra el head y sirve H, así que después detener y deshabilitar la unidad otra vez antes de repetir `install-controller`, que rechaza mientras H corre) o `adopt` (sin log pendiente lo admite; después de `adopt --dry-run`, la comprobación de su copia en claro de la fila T0F, punto 2), y repetir |
 | `runtime_admission_delegation_frozen` | una entrada en `admission/delegations/` | filas DL/DO, abajo |
 | `runtime_admission_owners_present` | un head con dueños | fila DO, abajo |
 | `runtime_admission_controller_binding_changed` | SR-1: el código nuevo calcula otro binding para el slot de H | no instalar ese NUEVO; habilitar y arrancar (sirve H) y pasar a desarrollo |
@@ -659,7 +659,10 @@ un arreglo se construye sobre esa línea («Construir NUEVO», punto 3).
   rechaza: el testigo de cierre por registro de recuperación y
   `--accept-regressed-source` no están implementados). Así que hoy la salida
   de PA es **L4 mientras exista** (SC-D7 A, SC4B-Q1), con el servicio caído
-  mientras tanto y la decisión escrita cada 48 horas. Cuando esa parte
+  mientras tanto y la decisión escrita cada 48 horas. **L4 trae de vuelta
+  los datos borrados**: vuelve a servir el slot heredado, y lo que se borró
+  desde entonces vuelve con él (`uninstall-launcher`). Pide la frase del
+  runbook de R1 y la decisión del usuario, no del operador. Cuando esa parte
   exista: un head de recuperación limpio empieza el hotfix o el rollback
   directamente; con regresiones confirmadas, el plan las liga con
   `--accept-regressed-source`; y un hotfix con triple mayor lleva su T0 con
@@ -696,7 +699,9 @@ nada, copiar `admission/delegations/` fuera de la raíz como evidencia.
   `serve` rechaza `runtime_admission_owners_present` y `plan`
   `runtime_admission_compaction_owners_present`. La salida es L4 mientras
   exista y no haya log pendiente, o trabajo de desarrollo, con la decisión
-  escrita cada 48 horas. Ante la duda, tratarlo como DO.
+  escrita cada 48 horas. **L4 trae de vuelta los datos borrados** con el
+  slot heredado: pide la frase del runbook de R1 y la decisión del usuario,
+  no del operador. Ante la duda, tratarlo como DO.
 
 `uninstall-launcher` (L4) no queda bloqueado por la guarda.
 

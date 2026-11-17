@@ -482,3 +482,22 @@ def test_a_deferred_verified_goes_to_retire_first():
     retire = (REPO / "scripts/compaction.py").read_text().split("def compact_retire(", 1)[1].split("\ndef ", 1)[0]
     assert retire.index("stage.record_compaction_verified(") < retire.index(
         '_refuse("runtime_admission_compaction_not_verified")')
+
+
+def test_l4_exits_name_their_consequence_and_r_b_stops_again():
+    """Review SC5B-R9: L4 brings erased data back with the legacy slot (uninstall_launcher docstring) and
+    needs the R1 runbook's phrase and the user's decision; R-b on the T0 not_closed refusal serves H."""
+    text = _text()
+    after = _flat(_section(text, "## Después de la aceptación"))
+    split = _flat(_section(text, "## Registro de delegación después del T0 (filas DL y DO)"))
+    for section in (after, split):
+        assert "**L4 trae de vuelta los datos borrados**" in section
+        assert "pide la frase del runbook de R1 y la decisión del usuario, no del operador" in section.replace(
+            "Pide la frase", "pide la frase")
+    assert "Erased data comes back with the legacy slot: the user decides, not the operator." in _flat(
+        (REPO / "scripts/managed_launcher.py").read_text())
+    t0 = _section(text, "### Paso 3: T0, instalar el controlador del NUEVO (sólo con `T0`)")
+    row = next(line for line in t0.splitlines() if line.startswith("| `runtime_admission_not_closed` |"))
+    assert ("cerrarlo con R-b (arrancar la unidad una vez; R-b cierra el head y sirve H, así que después detener "
+            "y deshabilitar la unidad otra vez antes de repetir `install-controller`, que rechaza mientras H "
+            "corre)") in row
