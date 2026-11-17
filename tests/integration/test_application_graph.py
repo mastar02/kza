@@ -319,6 +319,41 @@ async def test_phrase_reaches_actual_main_feature_and_shared_pcm_output(leaves, 
             assert observations["service_calls"] == 0
 
 
+@pytest.mark.parametrize(("utc", "text", "spoken"), [
+    ((2026, 11, 18, 2, 59, 59), "¿Qué hora es?", "Son las 23:59."),
+    ((2026, 11, 18, 3, 0, 0), "Nexa, ¿qué día es hoy?", "Hoy es miércoles 18 de noviembre."),
+])
+async def test_time_and_date_come_from_the_household_clock_through_the_orchestrated_graph(
+        leaves, monkeypatch, tmp_path, utc, text, spoken):
+    """T037-U3: the built graph answers from its one household clock, with no model and no HA call."""
+    from datetime import UTC, datetime
+
+    from src.llm.reasoner import FastRouter
+    import src.tts.piper_tts as output_module
+
+    backend = AudioBackend()
+    monkeypatch.setattr(output_module, "sd", backend)
+    async with offline_home() as (url, observations):
+        async with AsyncExitStack() as stack:
+            graph = await build_application(offline_config(tmp_path, url), shutdown=stack, factories=leaves)
+            dispatcher = graph.pipeline._orchestrator.dispatcher
+            assert dispatcher.household_clock is graph.household_clock
+            moment = datetime(*utc, tzinfo=UTC).timestamp()
+            monkeypatch.setattr(graph.household_clock, "_time_source", lambda: moment)
+            spy = MagicMock(spec=FastRouter)
+            spy.complete = AsyncMock(side_effect=AssertionError("7B called"))
+            spy.generate = MagicMock(side_effect=AssertionError("7B called"))
+            dispatcher.router, dispatcher.use_router = spy, True
+            graph.models.stt.text = text
+            result = await graph.pipeline.process_command(CommandEvent(np.full(16000, 0.1, dtype=np.float32), room_id=""))
+            assert (result["intent"], result["path"], result["response"]) == ("clock", "fast_clock", spoken)
+            assert result["success"] and result["task_completed"]
+            assert graph.models.tts.texts == [spoken] and len(backend.heard()) > 0
+            spy.complete.assert_not_called()
+            spy.generate.assert_not_called()
+            assert observations["service_calls"] == 0
+
+
 async def test_late_factory_failure_retires_router_and_prior_resources(leaves, monkeypatch, tmp_path):
     import src.main as module
 

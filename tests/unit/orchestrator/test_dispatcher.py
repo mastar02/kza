@@ -180,9 +180,13 @@ class TestRequestClassification:
         assert priority == Priority.MEDIUM
 
     def test_classify_simple_query(self, dispatcher):
-        path, priority = dispatcher._classify_request("que hora es")
+        path, priority = dispatcher._classify_request("hola")
         assert path == PathType.FAST_ROUTER
         assert priority == Priority.MEDIUM
+
+    def test_classify_time_question_uses_household_clock(self, dispatcher):
+        # T037-U3: time/date questions no longer go to the 7B.
+        assert dispatcher._classify_request("que hora es") == (PathType.FAST_CLOCK, Priority.HIGH)
 
     def test_classify_conversation(self, dispatcher):
         path, priority = dispatcher._classify_request("explícame la teoría de la relatividad")
@@ -271,7 +275,7 @@ class TestDispatchFastPath:
 
         result = await dispatcher.dispatch(
             user_id="user_1",
-            text="que hora es",
+            text="hola",
             zone_id="living"
         )
 

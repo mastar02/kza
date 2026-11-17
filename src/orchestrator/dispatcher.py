@@ -73,6 +73,7 @@ from src.orchestrator.priority_queue import (
     Request,
     PriorityRequestQueue
 )
+from src.world.household_time import CLOCK_UNAVAILABLE, describe_clock, parse_clock_query
 from src.world.weather import DEFAULT_ENTITY as DEFAULT_WEATHER_ENTITY
 
 logger = get_logger(__name__)
@@ -352,6 +353,7 @@ class PathType(StrEnum):
     FAST_WEATHER = "fast_weather"           # Clima desde HA, sin red externa
     FAST_TIMER = "fast_timer"              # Temporizadores (P3-F2; handler en T030-U1)
     FAST_HOUSEHOLD = "fast_household"      # Familias del hogar sin handler todavía (P3-F2)
+    FAST_CLOCK = "fast_clock"              # Hora/fecha del reloj del hogar, sin LLM (T037-U3)
 
 
 @dataclass
@@ -843,6 +845,10 @@ class RequestDispatcher:
             result = await self._handle_weather(text, priority)
             self._stats["fast_path"] += 1
 
+        elif path == PathType.FAST_CLOCK:
+            result = self._answer_clock(text)
+            self._stats["fast_path"] += 1
+
         else:
             # Slow path - encolar para LLM
             result = await self._slow_path(
@@ -886,6 +892,12 @@ class RequestDispatcher:
         Returns:
             (PathType, Priority)
         """
+        # T037-U3: a whole-utterance time/date question is answered from the
+        # household clock. It precedes the service_filter shortcut so an
+        # upstream turn_on/turn_off guess never turns a question into an action.
+        if parse_clock_query(text_lower) is not None:
+            return PathType.FAST_CLOCK, Priority.HIGH
+
         if service_filter in ("turn_on", "turn_off"):
             return PathType.FAST_DOMOTICS, Priority.HIGH
 
@@ -976,10 +988,13 @@ class RequestDispatcher:
         return PathType.SLOW_LLM, Priority.LOW
 
     def _is_simple_query(self, text_lower: str) -> bool:
-        """Detectar si es una pregunta simple que el router puede manejar"""
+        """Detectar si es una pregunta simple que el router puede manejar.
+
+        La hora y la fecha ya no van al 7B (T037-U3): las contesta el reloj
+        del hogar en ``_answer_clock``; cualquier otra pregunta con "qué hora"
+        o "qué día" ("¿a qué hora es el partido?") sigue el camino general.
+        """
         simple_patterns = [
-            "que hora es",
-            "que dia es",
             "como esta el clima",
             "que temperatura",
             "hola", "buenos dias", "buenas tardes", "buenas noches"
@@ -1076,6 +1091,36 @@ class RequestDispatcher:
             )
 
         return None
+
+    def _answer_clock(self, text: str) -> DispatchResult:
+        """Answer a time or date question from the household clock (T037-U3).
+
+        The clock is read once; no language model, network or Home Assistant
+        call is involved. A clock that cannot be read is reported honestly
+        instead of guessing a time.
+
+        Args:
+            text: Dispatch text already classified as a clock question.
+
+        Returns:
+            COMPLETED with an observed software-state read, or FAILED.
+        """
+        query = parse_clock_query(text)
+        try:
+            if query is None:
+                raise ValueError("not a clock question")
+            response = describe_clock(query, self.household_clock.now_local())
+        except Exception as error:  # a silent turn is worse than an honest failure
+            logger.warning("[Clock] no answer from the household clock: %s", type(error).__name__)
+            return DispatchResult(
+                path=PathType.FAST_CLOCK, priority=Priority.HIGH, success=False, response=CLOCK_UNAVAILABLE,
+                intent="clock", outcome=TaskOutcome(TaskStatus.FAILED, effect=EffectState.NOT_OBSERVED),
+            )
+        logger.info("[Clock] answered %s (offset=%d)", query.kind.value, query.day_offset)
+        return DispatchResult(
+            path=PathType.FAST_CLOCK, priority=Priority.HIGH, success=True, response=response, intent="clock",
+            outcome=TaskOutcome(TaskStatus.COMPLETED, effect=EffectState.OBSERVED, observation_scope="software_state"),
+        )
 
     @staticmethod
     def _household_refusal(path: PathType, intent: str, response: str, status: TaskStatus) -> DispatchResult:
@@ -1297,7 +1342,9 @@ class RequestDispatcher:
                     if hasattr(result, "endpoint_id"):
                         timings["router_endpoint"] = result.endpoint_id
                 else:
-                    response = self.router.generate([text], max_tokens=128)[0]
+                    # T037-U3: the legacy synchronous client blocks on HTTP; run it
+                    # off the event loop so audio, timers and other turns keep going.
+                    response = (await asyncio.to_thread(self.router.generate, [text], max_tokens=128))[0]
                 timings["router"] = (time.perf_counter() - t0) * 1000
 
                 return DispatchResult(
