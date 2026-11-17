@@ -24,7 +24,7 @@ from src.home_assistant.operations import compile_effect, finite_number
 from src.home_assistant.voice_actions import VoiceHomeActionExecutor
 from src.home_assistant.voice_resolver import HomeVoiceResolver
 from src.nlu.home_command import parse_home_command
-from src.nlu.command_gate import AcceptanceDecision, CommandAcceptanceGate
+from src.nlu.command_gate import AcceptanceDecision, CommandAcceptanceGate, contains_wake_word
 from src.nlu.command_grammar import PartialCommand, has_unresolved_light_location, parse_default_light_target, parse_partial_command
 from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
@@ -49,6 +49,10 @@ logger = logging.getLogger(__name__)
 # (wake_score, wake_vad) of the acoustic-wake CommandEvent being processed by
 # this task; None for any other input (V2 shadow wake verification).
 _WAKE_CONTEXT: ContextVar = ContextVar("kza_wake_context", default=None)
+# Endpoint code of the CommandEvent being processed (post-wake rule); None
+# for other inputs. A capture dispatched at the cap must name the wake word.
+_ENDPOINT_CODE: ContextVar = ContextVar("kza_endpoint_code", default=None)
+_MAX_UTTERANCE_CODE = "close_max_utterance"
 
 
 # Mapeo intent → dominio HA requerido. Usado por el guard previo al NLU
@@ -668,6 +672,7 @@ class RequestRouter:
             (wake_score, getattr(audio_or_event, "wake_vad", None))
             if not textual_wake and getattr(audio_or_event, "capture_trigger", None) == "wake" else None
         )
+        _ENDPOINT_CODE.set(getattr(audio_or_event, "endpoint_code", None))
         wake_rms = (
             float(np.sqrt(np.mean(np.square(audio))))
             if audio is not None and len(audio) else 0.0
@@ -763,10 +768,15 @@ class RequestRouter:
 
     def _verify_wake(self, text: str, gate_decision: AcceptanceDecision,
                      room_id: str | None) -> AcceptanceDecision:
-        """Second-stage wake check of an acoustic wake (shadow by default).
+        """Capture checks after the gate: max-utterance wake word and wake verification.
 
-        Shadow mode only records ``would_reject``; enforce mode turns a missing
-        wake word into the gate's ``missing_wake`` rejection. Never fails the
+        A capture dispatched at the post-wake cap (only when
+        ``dispatch_at_max_utterance`` is set) is rejected as
+        ``max_utterance_without_wake`` unless the transcript names a wake word,
+        so long background speech after a false wake goes no further. Then the
+        second-stage wake check of an acoustic wake (shadow by default): shadow
+        mode only records ``would_reject``; enforce mode turns a missing wake
+        word into the gate's ``missing_wake`` rejection. Never fails the
         command on an internal error.
 
         Args:
@@ -777,6 +787,10 @@ class RequestRouter:
         Returns:
             The decision to apply.
         """
+        if (_ENDPOINT_CODE.get() == _MAX_UTTERANCE_CODE and gate_decision.accept
+                and not contains_wake_word(text, self._wake_words or ("nexa",))):
+            logger.info("[endpoint] code=max_utterance_without_wake room=%s", room_id)
+            return AcceptanceDecision(False, "max_utterance_without_wake", gate_decision.signals)
         context = _WAKE_CONTEXT.get()
         if self._wake_verifier is None or context is None:
             return gate_decision

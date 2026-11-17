@@ -572,7 +572,9 @@ class MultiRoomAudioLoop:
             ambient_strict=self._guard is not None and self._guard.state_for(rs.room_id) is GuardState.STRICT,
             wake_score=rs.wake_score, captured_at=rs.command_start_time,
             audio_provenance=self._capture_provenance(rs, audio),
-            wake_vad=rs.wake_vad, capture_trigger=rs.capture_trigger.value)
+            wake_vad=rs.wake_vad, capture_trigger=rs.capture_trigger.value,
+            endpoint_code=(rs.endpoint.decision.value
+                           if rs.endpoint is not None and rs.endpoint.decision is not None else None))
 
     def _drop_capture(self, rs: RoomStream) -> None:
         """Discard a capture without speech after the wake (no STT).
@@ -2562,7 +2564,9 @@ class MultiRoomAudioLoop:
 
         Every duration is measured in captured samples after the wake (the
         pre-roll is excluded). A capture without speech is dropped without
-        STT; ``_poll_command`` sees ``(True, None)`` for a drop.
+        STT; ``_poll_command`` sees ``(True, None)`` for a drop. A capture
+        that reaches the cap is returned incomplete unless
+        ``dispatch_at_max_utterance`` is set.
         """
         config = self._post_wake
         if rs.endpoint is None:
@@ -2577,6 +2581,7 @@ class MultiRoomAudioLoop:
         decision = state.decide(config, self.sample_rate, parser_ready, time.time() - wake_wall)
         if not decision.closes:
             return False, None
+        state.decision = decision
         self.endpoint_counts[decision.value] = self.endpoint_counts.get(decision.value, 0) + 1
         summary = state.summary(self.sample_rate)
         logger.info("[endpoint] room=%s code=%s trigger=%s post_wake_s=%.2f speech_s=%.2f floor=%.4f "
@@ -2585,7 +2590,11 @@ class MultiRoomAudioLoop:
                     _fmt_vad(summary["vad_max"]))
         if not decision.dispatches:
             return True, None
-        rs.capture_complete = True
+        # At the cap the capture stays incomplete unless the household chose to
+        # dispatch it (VC-Q2): the router then rejects it before STT, as the
+        # legacy timeout did, so a false wake into a call costs no STT.
+        rs.capture_complete = (decision is not EndpointDecision.CLOSE_MAX
+                               or config.dispatch_at_max_utterance)
         return True, np.array(rs.audio_buffer, dtype=np.float32)
 
     def _reset_listening(self, rs: RoomStream) -> None:

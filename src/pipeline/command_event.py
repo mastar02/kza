@@ -112,6 +112,9 @@ class CommandEvent:
     # Used by the shadow wake verification (V2 2026-11-17).
     wake_vad: float | None = None
     capture_trigger: str | None = None
+    # How the post-wake endpoint closed the capture ("close_silence",
+    # "close_parser_ready", "close_max_utterance"); None for other producers.
+    endpoint_code: str | None = None
     capture_id: str = field(default_factory=lambda: str(uuid4()))
     conversation_id: str | None = None
     captured_at: float | None = None

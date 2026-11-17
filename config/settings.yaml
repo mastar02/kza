@@ -1692,6 +1692,12 @@ rooms:
       frame_samples: 1280        # 80 ms
       stall_margin_s: 1.0        # cierre por reloj si el audio deja de llegar
       follow_up_preroll_s: 0.32  # audio previo al inicio de voz del follow-up
+      # Al llegar a max_utterance_s con voz (revisión 1, H1; pendiente VC-Q2):
+      # false = como antes, la captura queda incompleta y el router la rechaza
+      # (gate_rejected:incomplete_capture) SIN STT — un wake falso sobre una
+      # llamada o la TV no manda 6 s de audio al STT. true = se despacha y el
+      # router exige la wake word en la transcripción.
+      dispatch_at_max_utterance: false
 
   # Detection config
   detection:

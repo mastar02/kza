@@ -9,8 +9,9 @@ bounds of every close.
 
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 sys.modules.setdefault('sounddevice', MagicMock())
 sys.modules.setdefault('soundfile', MagicMock())
@@ -22,7 +23,10 @@ import numpy as np
 import pytest
 import yaml
 
+from tests.mocks.responses import response_handler_mock
+from src.nlu.command_gate import CommandAcceptanceGate
 from src.pipeline.multi_room_audio_loop import CHUNK_SIZE, MultiRoomAudioLoop, RoomStream
+from src.pipeline.request_router import RequestRouter
 from src.pipeline.post_wake_endpoint import (
     CaptureTrigger, EndpointDecision, EndpointState, NoiseFloorTracker, PostWakeConfig, classify_frame,
 )
@@ -30,6 +34,7 @@ from src.pipeline.post_wake_endpoint import (
 SR = 16000
 CHUNK_S = CHUNK_SIZE / SR
 CONFIG = PostWakeConfig()
+DISPATCH_AT_MAX = replace(CONFIG, dispatch_at_max_utterance=True)
 END_SILENCE_S = CONFIG.end_silence_ms / 1000
 
 
@@ -180,11 +185,84 @@ def test_short_speech_waits_for_the_minimum_listen():
 
 
 def test_continuous_speech_is_capped_at_max_utterance_and_dispatched():
-    out = _run(floor=0.003, nexa_rms=0.05, pause_s=0.0, command_s=8.0, command_rms=0.03)
+    """Opt-in dispatch at the cap (VC-Q2 pending; settings keep it off)."""
+    out = _run(floor=0.003, nexa_rms=0.05, pause_s=0.0, command_s=8.0, command_rms=0.03,
+               post_wake=DISPATCH_AT_MAX)
     event = out["event"]
     assert event is not None and event.capture_complete is True
+    assert event.endpoint_code == "close_max_utterance"
     assert abs(out["closed_after"] - CONFIG.max_utterance_s) <= CHUNK_S + 1e-9
     assert out["loop"].endpoint_counts == {"close_max_utterance": 1}
+
+
+def test_continuous_speech_at_the_cap_is_incomplete_by_default():
+    out = _run(floor=0.003, nexa_rms=0.05, pause_s=0.0, command_s=8.0, command_rms=0.03)
+    event = out["event"]
+    assert event is not None and event.capture_complete is False
+    assert event.endpoint_code == "close_max_utterance"
+    assert abs(out["closed_after"] - CONFIG.max_utterance_s) <= CHUNK_S + 1e-9
+
+
+def _false_wake_into_background_speech(post_wake=CONFIG):
+    """A false wake followed by a call in the escritorio (rms 0.006, Silero 0.8)."""
+    rng = np.random.default_rng(21)
+    before = np.concatenate([_segment(rng, 3.04, 0.002), _segment(rng, 0.48, 0.006)])
+    pre_chunks = _chunks(before)
+    loop, rs = _loop(_Detector(fire_at=len(pre_chunks) - 1), post_wake=post_wake)
+    loop._wake_vad_predictors["cocina"] = lambda _audio: 0.8
+    process = loop._make_audio_processor(rs)
+    for chunk in pre_chunks:
+        process(chunk[:, None], CHUNK_SIZE, None, None)
+    assert rs.listening
+    for index, chunk in enumerate(_chunks(_segment(rng, 8.0, 0.006)), start=1):
+        process(chunk[:, None], CHUNK_SIZE, None, None)
+        event = loop._poll_command(rs)
+        if event is not None:
+            return event, index * CHUNK_S
+    return None, None
+
+
+def _router(text):
+    cmd = MagicMock(text=text, user=None, emotion=None, timings={}, stt_confidence=None,
+                    stt_vetoed=False, stt_source="primary")
+    processor = MagicMock()
+    processor.process_command = AsyncMock(return_value=cmd)
+    orch = MagicMock()
+    orch.process = AsyncMock(return_value=MagicMock(
+        intent="domotics", response="ok", success=True, action=None, path=None, timings={},
+        was_queued=False, queue_position=None))
+    router = RequestRouter(
+        command_processor=processor, orchestrator=orch, orchestrator_enabled=True,
+        response_handler=response_handler_mock(), audio_manager=MagicMock(), wake_words=("nexa",),
+        command_gate=CommandAcceptanceGate(), wake_acoustically_confirmed=True)
+    return router, processor, orch
+
+
+@pytest.mark.asyncio
+async def test_false_wake_into_background_speech_costs_no_stt():
+    event, closed_after = _false_wake_into_background_speech()
+    assert event is not None and event.capture_complete is False
+    assert abs(closed_after - CONFIG.max_utterance_s) <= CHUNK_S + 1e-9
+    router, processor, orch = _router("prendé la luz del escritorio")
+    result = await router.process_command(event)
+    assert result["intent"] == "gate_rejected:incomplete_capture"
+    processor.process_command.assert_not_awaited()
+    orch.process.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_at_the_cap_requires_the_wake_word():
+    event, _closed_after = _false_wake_into_background_speech(DISPATCH_AT_MAX)
+    assert event is not None and event.capture_complete is True
+    router, processor, orch = _router("prendé la luz del escritorio")
+    result = await router.process_command(event)
+    assert result["intent"] == "gate_rejected:max_utterance_without_wake"
+    orch.process.assert_not_awaited()
+    event, _closed_after = _false_wake_into_background_speech(DISPATCH_AT_MAX)
+    named, _processor, named_orch = _router("Nexa prendé la luz del escritorio")
+    result = await named.process_command(event)
+    assert not str(result["intent"]).startswith("gate_rejected")
+    named_orch.process.assert_awaited()
 
 
 def test_wake_vad_reaches_the_event_and_reinforces_nothing_below_threshold():
@@ -236,9 +314,10 @@ def test_parser_ready_keeps_the_fast_close_before_min_listen():
     assert loop.endpoint_counts == {"close_parser_ready": 1}
 
 
-def test_stalled_audio_closes_by_wall_clock(monkeypatch):
+@pytest.mark.parametrize("post_wake", [CONFIG, DISPATCH_AT_MAX])
+def test_stalled_audio_closes_by_wall_clock(monkeypatch, post_wake):
     detector = _Detector(fire_at=None)
-    loop, rs = _loop(detector)
+    loop, rs = _loop(detector, post_wake=post_wake)
     rs.listening = True
     rs.command_start_time = 1000.0
     rs.capture_trigger = CaptureTrigger.WAKE
@@ -247,7 +326,8 @@ def test_stalled_audio_closes_by_wall_clock(monkeypatch):
     assert loop._poll_command(rs) is None and rs.listening
     monkeypatch.setattr(time, "time", lambda: 1000.0 + CONFIG.max_utterance_s + CONFIG.stall_margin_s + 0.01)
     event = loop._poll_command(rs)
-    assert event is not None and event.capture_complete is True
+    # A stall closes like the cap: complete only when dispatch at the cap is on.
+    assert event is not None and event.capture_complete is post_wake.dispatch_at_max_utterance
 
 
 # ---------------------------------------------------------------- follow-up start
@@ -368,6 +448,10 @@ def test_config_from_settings_enables_the_rule():
     endpointing = cfg["rooms"]["endpointing"]
     parsed = PostWakeConfig.from_dict(endpointing["post_wake"])
     assert parsed is not None and parsed.max_utterance_s == 5.0 and parsed.min_listen_s == 1.0
+    # VC-Q2 pending: the cap keeps the legacy rejection (no STT) by default.
+    assert parsed.dispatch_at_max_utterance is False
+    with pytest.raises(ValueError):
+        PostWakeConfig(dispatch_at_max_utterance="yes")
     assert endpointing["command_duration_s"] == 2.0
     assert PostWakeConfig.from_dict({"enabled": False, "min_listen_s": 1.0}) is None
     assert PostWakeConfig.from_dict(None) is None

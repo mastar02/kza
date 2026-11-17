@@ -82,6 +82,12 @@ class PostWakeConfig:
         stall_margin_s: Wall-clock margin past ``max_utterance_s`` that closes
             a capture whose audio stopped arriving.
         follow_up_preroll_s: Audio kept before a follow-up speech onset.
+        dispatch_at_max_utterance: Send a capture that reaches
+            ``max_utterance_s`` with speech to STT as complete. False (default,
+            pending the user's answer to VC-Q2) keeps the legacy rejection:
+            the capture is marked incomplete and the router rejects it as
+            ``gate_rejected:incomplete_capture`` without STT. True dispatches
+            it, and the router then requires a wake word in the transcript.
     """
 
     min_listen_s: float = 1.0
@@ -100,8 +106,11 @@ class PostWakeConfig:
     frame_samples: int = 1280
     stall_margin_s: float = 1.0
     follow_up_preroll_s: float = 0.32
+    dispatch_at_max_utterance: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.dispatch_at_max_utterance) is not bool:
+            raise ValueError("invalid post_wake.dispatch_at_max_utterance")
         positive = ("min_listen_s", "max_utterance_s", "no_speech_timeout_s", "end_silence_ms",
                     "ready_silence_ms", "min_speech_ms", "noise_ratio", "noise_floor_min_rms",
                     "noise_floor_default_rms", "noise_window_s", "frame_samples", "stall_margin_s")
@@ -236,6 +245,7 @@ class EndpointState:
         vad_max: Highest Silero probability evaluated in this capture.
         peak_rms: Highest frame RMS after the wake.
         trigger: What opened the capture.
+        decision: The closing decision, once the capture closed.
     """
 
     wake_index: int
@@ -247,6 +257,7 @@ class EndpointState:
     last_speech_end: int | None = None
     vad_max: float | None = None
     peak_rms: float = 0.0
+    decision: EndpointDecision | None = None
 
     def analyze(self, buffer, config: PostWakeConfig,
                 vad_predict: Callable[[np.ndarray], float] | None) -> None:

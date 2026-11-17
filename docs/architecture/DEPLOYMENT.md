@@ -1225,7 +1225,11 @@ vivo de la captura post-wake»).
   el comando completo); voz = nivel >= 1,8 × el piso de ruido medido de la
   habitación, o Silero del wake >= 0,5. Sin voz en 2,5 s descarta sin STT
   (`[endpoint] code=drop_no_speech`, cuenta como captura vacía para el
-  AmbientGuard). El follow-up arranca con la misma prueba. El `command_duration`
+  AmbientGuard). Al tope de 5 s con voz la captura queda incompleta y el router
+  la rechaza sin STT (`gate_rejected:incomplete_capture`, como el timeout
+  anterior) mientras el usuario no responda VC-Q2; `dispatch_at_max_utterance:
+  true` la despacha y entonces exige la wake word en la transcripción
+  (`gate_rejected:max_utterance_without_wake`). El follow-up arranca con la misma prueba. El `command_duration`
   que estaba fijo en `main.py` pasa a `rooms.endpointing.command_duration_s`
   (endpoint legacy y AudioManager). `enabled: false` restaura el endpoint
   anterior.
