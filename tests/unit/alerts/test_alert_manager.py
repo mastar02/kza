@@ -420,3 +420,418 @@ class TestAlertDataclass:
         assert alert_dict["message"] == "Test alert"
         assert alert_dict["details"]["zone"] == "entrada"
         assert not alert_dict["processed"]
+
+
+# ==================== T036-U1: truthful alert core ====================
+
+import asyncio
+from datetime import UTC, datetime, timedelta
+
+from src.alerts import AlertCondition, AlertDelivery, SecurityAlerts
+from src.core.voice_delivery import DeliveryState, GenerationState, ResponseResult, VoiceDeliveryError
+
+
+class FakeClock:
+    """Monotonic clock advanced by the test."""
+
+    def __init__(self, start: float = 1000.0):
+        self.t = start
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def _ok(text: str = "x") -> ResponseResult:
+    return ResponseResult(text, GenerationState.COMPLETE, DeliveryState.COMPLETE)
+
+
+DOOR = AlertCondition(source="entrada", condition="door_open_unexpected")
+
+
+class TestConditionKeyAndEpisodeLatch:
+    """The dedup key is the condition; an open episode alerts once."""
+
+    @pytest.mark.asyncio
+    async def test_same_condition_different_text_is_one_alert(self):
+        manager = AlertManager()
+        first = await manager.create_alert(AlertType.DEVICE, AlertPriority.MEDIUM, "Batería 19%",
+                                           condition=AlertCondition("s1", "battery_low"))
+        second = await manager.create_alert(AlertType.DEVICE, AlertPriority.MEDIUM, "Batería 18%",
+                                            condition=AlertCondition("s1", "battery_low"))
+        assert first is not None and second is None
+        assert len(manager.get_history()) == 1
+        assert first.source == "s1" and first.condition == "battery_low"
+
+    @pytest.mark.asyncio
+    async def test_key_includes_type_source_and_condition(self):
+        manager = AlertManager()
+        base = await manager.create_alert(AlertType.DEVICE, AlertPriority.LOW, "m",
+                                          condition=AlertCondition("s1", "c1"))
+        other_type = await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "m",
+                                                condition=AlertCondition("s1", "c1"))
+        other_source = await manager.create_alert(AlertType.DEVICE, AlertPriority.LOW, "m",
+                                                  condition=AlertCondition("s2", "c1"))
+        other_condition = await manager.create_alert(AlertType.DEVICE, AlertPriority.LOW, "m",
+                                                     condition=AlertCondition("s1", "c2"))
+        assert None not in (base, other_type, other_source, other_condition)
+        assert len(manager.get_history()) == 4
+
+    @pytest.mark.asyncio
+    async def test_door_open_twenty_minutes_checked_every_minute_announces_once(self):
+        clock = FakeClock()
+        tts = AsyncMock(return_value=_ok())
+        manager = AlertManager(cooldown_seconds=300, tts_callback=tts, clock=clock)
+        security = SecurityAlerts(manager)
+        created = []
+        for _ in range(21):
+            created.append(await security.check_door_status("entrada", is_open=True))
+            clock.t += 60
+        assert created[0] is not None
+        assert created[1:] == [None] * 20
+        assert tts.await_count == 1
+        assert len(manager.get_history()) == 1
+        assert created[0].last_seen_at is not None
+
+    @pytest.mark.asyncio
+    async def test_close_and_reopen_gives_a_new_announcement(self):
+        clock = FakeClock()
+        tts = AsyncMock(return_value=_ok())
+        manager = AlertManager(cooldown_seconds=300, tts_callback=tts, clock=clock)
+        security = SecurityAlerts(manager)
+        first = await security.check_door_status("entrada", is_open=True)
+        clock.t += 1
+        assert await security.check_door_status("entrada", is_open=False) is None
+        clock.t += 1
+        second = await security.check_door_status("entrada", is_open=True)
+        assert first is not None and second is not None
+        assert first.alert_id != second.alert_id
+        assert first.resolved_at is not None and second.resolved_at is None
+        assert tts.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_latched_episode_outlives_cooldown(self):
+        clock = FakeClock()
+        manager = AlertManager(cooldown_seconds=5, clock=clock)
+        assert await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "a", condition=DOOR)
+        clock.t += 10_000
+        assert await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "a", condition=DOOR) is None
+
+    @pytest.mark.asyncio
+    async def test_momentary_event_episode_closes_after_cooldown(self):
+        clock = FakeClock()
+        manager = AlertManager(cooldown_seconds=300, clock=clock)
+        event = AlertCondition("entrada", "access_denied:ana", latched=False)
+        assert await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "a", condition=event)
+        clock.t += 299.9
+        assert await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "a", condition=event) is None
+        clock.t += 0.1
+        assert await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "a", condition=event)
+        assert len(manager.get_history()) == 2
+
+    @pytest.mark.asyncio
+    async def test_legacy_message_key_keeps_cooldown_semantics(self):
+        clock = FakeClock()
+        manager = AlertManager(cooldown_seconds=300, clock=clock)
+        first = await manager.create_alert(AlertType.PATTERN, AlertPriority.LOW, "Patrón")
+        clock.t += 299
+        assert await manager.create_alert(AlertType.PATTERN, AlertPriority.LOW, "Patrón") is None
+        clock.t += 1
+        assert await manager.create_alert(AlertType.PATTERN, AlertPriority.LOW, "Patrón") is not None
+        assert first.source == "message" and first.condition == "Patrón"
+
+    @pytest.mark.asyncio
+    async def test_resolve_closes_episode_and_reports_it(self):
+        manager = AlertManager(now=lambda: datetime(2026, 11, 16, 12, 0, tzinfo=UTC))
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "a", condition=DOOR)
+        resolved = await manager.resolve_condition(AlertType.SECURITY, DOOR)
+        assert resolved is alert
+        assert alert.resolved_at == datetime(2026, 11, 16, 12, 0, tzinfo=UTC)
+        assert await manager.resolve_condition(AlertType.SECURITY, DOOR) is None
+        assert manager.get_stats()["dedup_keys"] == 0
+
+    @pytest.mark.asyncio
+    async def test_resolve_other_type_does_not_close(self):
+        manager = AlertManager()
+        await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "a", condition=DOOR)
+        assert await manager.resolve_condition(AlertType.DEVICE, DOOR) is None
+        assert await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "a", condition=DOOR) is None
+
+    @pytest.mark.asyncio
+    async def test_clear_cooldowns_forgets_open_episodes(self):
+        manager = AlertManager()
+        await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "a", condition=DOOR)
+        manager.clear_cooldowns()
+        assert await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "a", condition=DOOR)
+
+
+class TestEscalationAndReannounce:
+    """A more severe reading escalates the open alert; re-announce only by explicit config."""
+
+    @pytest.mark.asyncio
+    async def test_escalation_updates_in_place_and_announces(self):
+        tts = AsyncMock(return_value=_ok())
+        handler = Mock()
+        manager = AlertManager(tts_callback=tts)
+        manager.register_handler(AlertType.DEVICE, handler)
+        cond = AlertCondition("s1", "battery_low")
+        first = await manager.create_alert(AlertType.DEVICE, AlertPriority.MEDIUM, "15%", {"p": 15}, condition=cond)
+        assert tts.await_count == 0 and first.delivery is AlertDelivery.NOT_SPOKEN
+        escalated = await manager.create_alert(AlertType.DEVICE, AlertPriority.HIGH, "8%", {"p": 8}, condition=cond)
+        assert escalated is first
+        assert first.priority is AlertPriority.HIGH and first.message == "8%" and first.details == {"p": 8}
+        assert tts.await_count == 1 and "8%" in tts.await_args.args[0]
+        assert first.delivery is AlertDelivery.DELIVERED
+        assert handler.call_count == 2
+        assert await manager.create_alert(AlertType.DEVICE, AlertPriority.HIGH, "7%", condition=cond) is None
+        assert await manager.create_alert(AlertType.DEVICE, AlertPriority.MEDIUM, "15%", condition=cond) is None
+        assert first.priority is AlertPriority.HIGH and first.message == "8%"
+        assert tts.await_count == 1
+        assert len(manager.get_history()) == 1
+
+    @pytest.mark.asyncio
+    async def test_escalation_to_unspoken_priority_is_not_announced(self):
+        tts = AsyncMock(return_value=_ok())
+        manager = AlertManager(tts_callback=tts)
+        cond = AlertCondition("s1", "c")
+        alert = await manager.create_alert(AlertType.DEVICE, AlertPriority.LOW, "a", condition=cond)
+        assert await manager.create_alert(AlertType.DEVICE, AlertPriority.MEDIUM, "b", condition=cond) is alert
+        assert tts.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_no_reannounce_by_default(self):
+        clock = FakeClock()
+        tts = AsyncMock(return_value=_ok())
+        manager = AlertManager(tts_callback=tts, clock=clock)
+        await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a", condition=DOOR)
+        clock.t += 10 ** 7
+        assert await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a", condition=DOOR) is None
+        assert tts.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_explicit_interval_reannounces_open_episode(self):
+        clock = FakeClock()
+        tts = AsyncMock(return_value=_ok())
+        manager = AlertManager(tts_callback=tts, clock=clock, reannounce_interval_seconds=600)
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a", condition=DOOR)
+        clock.t += 599
+        assert await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a", condition=DOOR) is None
+        assert tts.await_count == 1
+        clock.t += 1
+        assert await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a", condition=DOOR) is None
+        assert tts.await_count == 2
+        clock.t += 599
+        await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a", condition=DOOR)
+        assert tts.await_count == 2
+        assert len(manager.get_history()) == 1 and alert.delivery is AlertDelivery.DELIVERED
+
+    @pytest.mark.asyncio
+    async def test_interval_never_reannounces_unspoken_or_momentary(self):
+        clock = FakeClock()
+        tts = AsyncMock(return_value=_ok())
+        manager = AlertManager(tts_callback=tts, clock=clock, cooldown_seconds=10_000,
+                               reannounce_interval_seconds=60)
+        await manager.create_alert(AlertType.DEVICE, AlertPriority.LOW, "a", condition=AlertCondition("s", "c"))
+        event = AlertCondition("z", "access_denied:x", latched=False)
+        await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "e", condition=event)
+        clock.t += 61
+        await manager.create_alert(AlertType.DEVICE, AlertPriority.LOW, "a", condition=AlertCondition("s", "c"))
+        await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "e", condition=event)
+        assert tts.await_count == 1
+
+    @pytest.mark.parametrize("bad", [0, -1, float("nan"), float("inf"), True, "60"])
+    def test_invalid_reannounce_interval_rejected(self, bad):
+        with pytest.raises(ValueError):
+            AlertManager(reannounce_interval_seconds=bad)
+
+    def test_valid_reannounce_interval_kept(self):
+        assert AlertManager(reannounce_interval_seconds=0.5).reannounce_interval_seconds == 0.5
+        assert AlertManager().reannounce_interval_seconds is None
+
+
+class TestVoiceDeliveryReceipt:
+    """The alert records what the voice output actually did."""
+
+    @pytest.mark.asyncio
+    async def test_delivered_receipt(self):
+        manager = AlertManager(tts_callback=AsyncMock(return_value=_ok()),
+                               now=lambda: datetime(2026, 1, 1, tzinfo=UTC))
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a")
+        assert alert.delivery is AlertDelivery.DELIVERED
+        assert alert.delivery_reason is None
+        assert alert.delivery_at == datetime(2026, 1, 1, tzinfo=UTC)
+
+    @pytest.mark.asyncio
+    async def test_failed_result_recorded_not_delivered(self):
+        failed = ResponseResult("a", GenerationState.COMPLETE, DeliveryState.FAILED, error="audio_device_lost")
+        manager = AlertManager(tts_callback=AsyncMock(return_value=failed))
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.CRITICAL, "a")
+        assert alert.delivery is AlertDelivery.FAILED
+        assert alert.delivery_reason == "audio_device_lost"
+        assert alert.delivery_at is not None
+
+    @pytest.mark.asyncio
+    async def test_failed_result_without_error_names_state(self):
+        result = ResponseResult("a", GenerationState.COMPLETE, DeliveryState.TIMED_OUT)
+        manager = AlertManager(tts_callback=AsyncMock(return_value=result))
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a")
+        assert (alert.delivery, alert.delivery_reason) == (AlertDelivery.FAILED, "voice_delivery_timed_out")
+
+    @pytest.mark.asyncio
+    async def test_complete_delivery_with_error_is_not_delivered(self):
+        result = ResponseResult("a", GenerationState.COMPLETE, DeliveryState.COMPLETE, error="late_error")
+        manager = AlertManager(tts_callback=AsyncMock(return_value=result))
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a")
+        assert (alert.delivery, alert.delivery_reason) == (AlertDelivery.FAILED, "late_error")
+
+    @pytest.mark.asyncio
+    async def test_blocked_result(self):
+        blocked = ResponseResult("a", GenerationState.COMPLETE, DeliveryState.BLOCKED, error="policy")
+        manager = AlertManager(tts_callback=AsyncMock(return_value=blocked))
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a")
+        assert (alert.delivery, alert.delivery_reason) == (AlertDelivery.BLOCKED, "policy")
+
+    @pytest.mark.asyncio
+    async def test_blocked_result_without_error(self):
+        blocked = ResponseResult("a", GenerationState.COMPLETE, DeliveryState.BLOCKED)
+        manager = AlertManager(tts_callback=AsyncMock(return_value=blocked))
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a")
+        assert (alert.delivery, alert.delivery_reason) == (AlertDelivery.BLOCKED, "voice_delivery_blocked")
+
+    @pytest.mark.asyncio
+    async def test_voice_delivery_error_recorded(self):
+        manager = AlertManager(tts_callback=AsyncMock(side_effect=VoiceDeliveryError("voice_output_zone_required")))
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a")
+        assert (alert.delivery, alert.delivery_reason) == (AlertDelivery.FAILED, "voice_output_zone_required")
+        assert manager.get_history() == [alert]
+
+    @pytest.mark.asyncio
+    async def test_empty_voice_delivery_error_has_reason(self):
+        manager = AlertManager(tts_callback=AsyncMock(side_effect=VoiceDeliveryError()))
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a")
+        assert (alert.delivery, alert.delivery_reason) == (AlertDelivery.FAILED, "voice_delivery_failed")
+
+    @pytest.mark.asyncio
+    async def test_unexpected_exception_recorded(self):
+        manager = AlertManager(tts_callback=AsyncMock(side_effect=RuntimeError("secret detail")))
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a")
+        assert (alert.delivery, alert.delivery_reason) == (AlertDelivery.FAILED, "RuntimeError")
+
+    @pytest.mark.asyncio
+    async def test_false_result_is_failed(self):
+        manager = AlertManager(tts_callback=Mock(return_value=False))
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a")
+        assert (alert.delivery, alert.delivery_reason) == (AlertDelivery.FAILED, "voice_delivery_failed")
+
+    @pytest.mark.asyncio
+    async def test_sync_callback_failed_result(self):
+        failed = ResponseResult("a", GenerationState.COMPLETE, DeliveryState.FAILED, error="e")
+        manager = AlertManager(tts_callback=Mock(return_value=failed))
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a")
+        assert alert.delivery is AlertDelivery.FAILED
+
+    @pytest.mark.asyncio
+    async def test_sync_callback_returning_awaitable(self):
+        async def receipt():
+            return ResponseResult("a", GenerationState.COMPLETE, DeliveryState.BLOCKED, error="b")
+        manager = AlertManager(tts_callback=lambda text: receipt())
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a")
+        assert alert.delivery is AlertDelivery.BLOCKED
+
+    @pytest.mark.asyncio
+    async def test_muted_without_voice_output(self):
+        manager = AlertManager(tts_callback=None)
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.CRITICAL, "a")
+        assert (alert.delivery, alert.delivery_reason) == (AlertDelivery.MUTED, "voice_notifications_disabled")
+        assert alert.delivery_at is not None
+
+    @pytest.mark.asyncio
+    async def test_unspoken_priority_keeps_not_spoken(self):
+        manager = AlertManager(tts_callback=None)
+        alert = await manager.create_alert(AlertType.DEVICE, AlertPriority.MEDIUM, "a")
+        assert alert.delivery is AlertDelivery.NOT_SPOKEN and alert.delivery_at is None
+
+    @pytest.mark.asyncio
+    async def test_pending_while_output_speaks(self):
+        seen = {}
+        manager = None
+
+        async def speak(text):
+            alert = manager.get_history()[0]
+            seen["state"], seen["at"] = alert.delivery, alert.delivery_at
+            return _ok(text)
+        manager = AlertManager(tts_callback=speak)
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a")
+        assert seen == {"state": AlertDelivery.PENDING, "at": None}
+        assert alert.delivery is AlertDelivery.DELIVERED
+
+    @pytest.mark.asyncio
+    async def test_cancelled_delivery_recorded_and_propagated(self):
+        manager = AlertManager(tts_callback=AsyncMock(side_effect=asyncio.CancelledError()))
+        with pytest.raises(asyncio.CancelledError):
+            await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a")
+        [alert] = manager.get_history()
+        assert (alert.delivery, alert.delivery_reason) == (AlertDelivery.FAILED, "voice_delivery_cancelled")
+
+    @pytest.mark.asyncio
+    async def test_receipt_in_to_dict(self):
+        manager = AlertManager(tts_callback=None, now=lambda: datetime(2026, 1, 1, tzinfo=UTC))
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a", condition=DOOR)
+        await manager.resolve_condition(AlertType.SECURITY, DOOR)
+        data = alert.to_dict()
+        assert data["delivery"] == "muted"
+        assert data["delivery_reason"] == "voice_notifications_disabled"
+        assert data["delivery_at"] == "2026-01-01T00:00:00+00:00"
+        assert data["source"] == "entrada" and data["condition"] == "door_open_unexpected"
+        assert data["resolved_at"] == "2026-01-01T00:00:00+00:00"
+        assert data["last_seen_at"] is None
+        assert data["timestamp"] == "2026-01-01T00:00:00+00:00"
+
+
+class TestTimezoneAwareTimestamps:
+    """Every stored instant carries an explicit offset."""
+
+    @pytest.mark.asyncio
+    async def test_default_timestamps_are_utc_aware(self):
+        manager = AlertManager()
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "a")
+        assert alert.timestamp.utcoffset() == timedelta(0)
+        assert abs(datetime.now(UTC) - alert.timestamp) < timedelta(seconds=5)
+        await manager.mark_processed(alert.alert_id)
+        assert alert.processed_at.utcoffset() == timedelta(0)
+
+    def test_dataclass_default_is_aware(self):
+        alert = Alert(alert_id="x", alert_type=AlertType.DEVICE, priority=AlertPriority.LOW, message="m")
+        assert alert.timestamp.tzinfo is not None
+
+    @pytest.mark.asyncio
+    async def test_injected_now_used_for_creation_seen_and_processed(self):
+        instants = iter(datetime(2026, 11, 16, 10, minute, tzinfo=UTC) for minute in range(10))
+        manager = AlertManager(now=lambda: next(instants))
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "a", condition=DOOR)
+        await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "a", condition=DOOR)
+        await manager.mark_processed(alert.alert_id)
+        assert alert.timestamp.minute == 0
+        assert alert.last_seen_at.minute == 1
+        assert alert.processed_at.minute == 2
+
+
+class TestActiveAlerts:
+    """Active = unacknowledged and condition not resolved."""
+
+    @pytest.mark.asyncio
+    async def test_active_excludes_resolved_and_processed(self):
+        manager = AlertManager()
+        door = await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "door", condition=DOOR)
+        acked = await manager.create_alert(AlertType.DEVICE, AlertPriority.LOW, "acked")
+        live = await manager.create_alert(AlertType.DEVICE, AlertPriority.LOW, "live")
+        await manager.resolve_condition(AlertType.SECURITY, DOOR)
+        await manager.mark_processed(acked.alert_id)
+        assert manager.get_active_alerts() == [live]
+        assert door.resolved_at is not None
+
+    @pytest.mark.asyncio
+    async def test_active_newest_first(self):
+        manager = AlertManager()
+        a = await manager.create_alert(AlertType.DEVICE, AlertPriority.LOW, "a")
+        b = await manager.create_alert(AlertType.DEVICE, AlertPriority.LOW, "b")
+        assert manager.get_active_alerts() == [b, a]

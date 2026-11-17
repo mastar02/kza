@@ -27,14 +27,27 @@ Uso:
 """
 
 
+from src.alerts.alert_manager import Alert, AlertCondition, AlertManager, AlertPriority, AlertType
 from src.core.logging import get_logger
-from .alert_manager import Alert, AlertManager, AlertPriority, AlertType
 
 logger = get_logger(__name__)
 
 
+# Condition names: the dedup key is (device, condition), never the message text,
+# so a battery reading 19 -> 18 -> 17 stays one episode.
+BATTERY_LOW = "battery_low"
+OFFLINE = "offline"
+WEAK_SIGNAL = "weak_signal"
+FIRMWARE_UPDATE = "firmware_update"
+SLOW_RESPONSE = "slow_response"
+
+
 class DeviceAlerts:
-    """Gestor de alertas de estado de dispositivos"""
+    """Gestor de alertas de estado de dispositivos.
+
+    Each check opens its condition's episode when the condition holds and closes
+    it (AlertManager.resolve_condition) when it no longer does.
+    """
 
     # Umbrales de batería baja por tipo de dispositivo
     BATTERY_THRESHOLDS = {
@@ -84,15 +97,18 @@ class DeviceAlerts:
             device_type: Tipo de dispositivo para usar umbral correcto
 
         Returns:
-            Alert si batería está baja, None si está ok
+            Alert si se abre el episodio de batería baja o escala a crítica;
+            None si está ok o el episodio ya estaba abierto
         """
         threshold = self.BATTERY_THRESHOLDS.get(
             device_type,
             self.BATTERY_THRESHOLDS["sensor_default"],
         )
 
+        condition = AlertCondition(source=device_name, condition=BATTERY_LOW)
         if battery_percent > threshold:
-            # Batería ok
+            # Batería ok: termina el episodio de batería baja
+            await self.alert_manager.resolve_condition(AlertType.DEVICE, condition)
             return None
 
         # Batería baja
@@ -110,6 +126,7 @@ class DeviceAlerts:
                 "battery_percent": round(battery_percent, 1),
                 "threshold_percent": threshold,
             },
+            condition=condition,
         )
 
         if alert:
@@ -136,8 +153,10 @@ class DeviceAlerts:
         Returns:
             Alert si está offline, None si está online
         """
+        condition = AlertCondition(source=device_name, condition=OFFLINE)
         if is_online:
-            # Dispositivo online, sin alerta
+            # Dispositivo online: termina el episodio offline
+            await self.alert_manager.resolve_condition(AlertType.DEVICE, condition)
             return None
 
         # Dispositivo offline
@@ -153,6 +172,7 @@ class DeviceAlerts:
                 "device_type": device_type,
                 "is_online": is_online,
             },
+            condition=condition,
         )
 
         if alert:
@@ -177,8 +197,10 @@ class DeviceAlerts:
         Returns:
             Alert si señal es débil, None si está ok
         """
+        condition = AlertCondition(source=device_name, condition=WEAK_SIGNAL)
         if signal_strength_db > min_signal_db:
-            # Señal ok
+            # Señal ok: termina el episodio de señal débil
+            await self.alert_manager.resolve_condition(AlertType.DEVICE, condition)
             return None
 
         # Señal débil
@@ -193,6 +215,7 @@ class DeviceAlerts:
                 "signal_strength_db": round(signal_strength_db, 1),
                 "min_threshold_db": min_signal_db,
             },
+            condition=condition,
         )
 
         if alert:
@@ -217,7 +240,9 @@ class DeviceAlerts:
         Returns:
             Alert si hay actualización, None si está actualizado
         """
+        condition = AlertCondition(source=device_name, condition=FIRMWARE_UPDATE)
         if current_version == latest_version:
+            await self.alert_manager.resolve_condition(AlertType.DEVICE, condition)
             return None
 
         message = (
@@ -234,6 +259,7 @@ class DeviceAlerts:
                 "current_version": current_version,
                 "latest_version": latest_version,
             },
+            condition=condition,
         )
 
         if alert:
@@ -260,7 +286,9 @@ class DeviceAlerts:
         Returns:
             Alert si es muy lento, None si responde bien
         """
+        condition = AlertCondition(source=device_name, condition=SLOW_RESPONSE)
         if response_time_ms <= max_response_time_ms:
+            await self.alert_manager.resolve_condition(AlertType.DEVICE, condition)
             return None
 
         message = (
@@ -277,6 +305,7 @@ class DeviceAlerts:
                 "response_time_ms": round(response_time_ms, 1),
                 "max_threshold_ms": max_response_time_ms,
             },
+            condition=condition,
         )
 
         if alert:

@@ -361,3 +361,102 @@ class TestDeviceAlertsMultiple:
         non_none_alerts = [a for a in alerts if a is not None]
         # dev_2 genera 2 alertas (batería baja + offline)
         assert len(non_none_alerts) == 2
+
+
+# ==================== T036-U1: condition key and episodes ====================
+
+from unittest.mock import AsyncMock
+
+from src.alerts import AlertDelivery
+from src.core.voice_delivery import DeliveryState, GenerationState, ResponseResult
+
+
+def _ok() -> ResponseResult:
+    return ResponseResult("x", GenerationState.COMPLETE, DeliveryState.COMPLETE)
+
+
+class TestBatteryEpisode:
+    """The battery percentage is no longer part of the dedup key."""
+
+    @pytest.mark.asyncio
+    async def test_battery_19_18_17_gives_one_alert(self):
+        manager = AlertManager()
+        device = DeviceAlerts(manager)
+        results = [await device.check_battery_level("sensor_puerta", pct) for pct in (19, 18, 17)]
+        assert results[0] is not None
+        assert results[1:] == [None, None]
+        assert len(manager.get_history()) == 1
+        assert results[0].condition == "battery_low" and results[0].source == "sensor_puerta"
+
+    @pytest.mark.asyncio
+    async def test_battery_recovered_then_low_again_is_new_alert(self):
+        manager = AlertManager()
+        device = DeviceAlerts(manager)
+        first = await device.check_battery_level("s", 15)
+        assert await device.check_battery_level("s", 100) is None
+        assert first.resolved_at is not None
+        second = await device.check_battery_level("s", 15)
+        assert second is not None and second.alert_id != first.alert_id
+
+    @pytest.mark.asyncio
+    async def test_battery_at_threshold_keeps_episode_open(self):
+        manager = AlertManager()
+        device = DeviceAlerts(manager)
+        first = await device.check_battery_level("s", 15)
+        assert await device.check_battery_level("s", 20) is None
+        assert first.resolved_at is None
+
+    @pytest.mark.asyncio
+    async def test_battery_falling_to_critical_escalates_and_speaks_once(self):
+        tts = AsyncMock(return_value=_ok())
+        manager = AlertManager(tts_callback=tts)
+        device = DeviceAlerts(manager)
+        low = await device.check_battery_level("s", 15)
+        assert tts.await_count == 0
+        critical = await device.check_battery_level("s", 9)
+        assert critical is low and low.priority is AlertPriority.HIGH
+        assert low.details["battery_percent"] == 9
+        assert await device.check_battery_level("s", 8) is None
+        assert tts.await_count == 1 and low.delivery is AlertDelivery.DELIVERED
+        assert len(manager.get_history()) == 1
+
+    @pytest.mark.asyncio
+    async def test_different_devices_are_different_episodes(self):
+        manager = AlertManager()
+        device = DeviceAlerts(manager)
+        assert await device.check_battery_level("a", 15)
+        assert await device.check_battery_level("b", 15)
+
+
+@pytest.mark.parametrize("bad_call,good_call,condition", [
+    (lambda d: d.check_connectivity("s", is_online=False), lambda d: d.check_connectivity("s", is_online=True),
+     "offline"),
+    (lambda d: d.check_signal_strength("s", -90), lambda d: d.check_signal_strength("s", -60), "weak_signal"),
+    (lambda d: d.check_firmware_update("s", "1", "2"), lambda d: d.check_firmware_update("s", "2", "2"),
+     "firmware_update"),
+    (lambda d: d.check_response_time("s", 9000), lambda d: d.check_response_time("s", 10), "slow_response"),
+])
+@pytest.mark.asyncio
+async def test_device_condition_episode(bad_call, good_call, condition):
+    """Each device condition alerts once per episode and again after it clears."""
+    manager = AlertManager()
+    device = DeviceAlerts(manager)
+    first = await bad_call(device)
+    assert first is not None and first.condition == condition and first.source == "s"
+    assert await bad_call(device) is None
+    assert await good_call(device) is None
+    assert first.resolved_at is not None
+    second = await bad_call(device)
+    assert second is not None and second.alert_id != first.alert_id
+    assert len(manager.get_history()) == 2
+
+
+@pytest.mark.asyncio
+async def test_signal_strength_change_stays_one_episode():
+    """The message carries the reading, the key does not."""
+    manager = AlertManager()
+    device = DeviceAlerts(manager)
+    assert await device.check_signal_strength("s", -90)
+    assert await device.check_signal_strength("s", -91) is None
+    assert await device.check_response_time("s", 9000)
+    assert await device.check_response_time("s", 9500) is None
