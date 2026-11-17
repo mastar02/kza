@@ -812,6 +812,24 @@ async def test_the_only_reminder_with_a_day_in_its_text_is_named_and_cancelled(l
     assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
 
 
+async def test_a_clock_in_the_text_is_left_out_of_a_proposed_command_with_the_time(leaves):
+    """With several reminders the command carries the time, so the text's own clock is left out."""
+    dispatcher = leaves.dispatcher()
+    manager, at = leaves.reminder_manager, _minute_start(1)
+    text = f"llamar a mamá a las {_hour_word_not(manager._household_clock.to_local(at).hour)}"
+    call, water = await _two_shared(leaves, text, "tomar agua", at, at + 3 * 3600)
+    clock = manager._household_clock
+    asked, counted = await _cancel(leaves, "cancelá el recordatorio", dispatcher=dispatcher)
+    assert counted == ZERO and asked.outcome.status.value == "needs_input"
+    example = f"cancelá el recordatorio de llamar a mamá de {manager.spoken_time_reference(call)}"
+    assert asked.response == (f"Hay 2: {text} a las {clock.format_time(at)} y tomar agua a las "
+                              f"{clock.format_time(water.trigger_at)}. Para cancelar uno, decímelo entero, por "
+                              f"ejemplo: {example}.")
+    done, counted = await _cancel(leaves, example, dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
+    assert [r.id for r in await manager.get_active(None, shared_only=True)] == [water.id]
+
+
 async def test_the_only_reminder_is_never_called_indistinct(leaves, monkeypatch):
     """Last resort when no command can be proposed: singular wording, not 'no los puedo distinguir'."""
     dispatcher = leaves.dispatcher()
