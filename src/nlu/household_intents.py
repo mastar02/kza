@@ -22,7 +22,10 @@ design.json), evaluated in the order R3, R5, R1, R2, R3a, R4, R6:
 * R2: timer creation, and list item additions/removals.
 * R3a: "alarma" with a duration (timer) or a clock time (reminder).
 * R4: a domotics verb with a deferral time expression.
-* R6: routine, intercom and notification phrases.
+* R6: routine, intercom and notification phrases. A request to create a
+  routine ("quiero crear una nueva rutina que apague las luces", "armame una
+  rutina que ...", "nueva rutina para ...") is a routine proposal with the
+  reason ``new_routine``: its content never reaches a domotics producer.
 
 No I/O and no logging of user text: the module never logs.
 """
@@ -103,7 +106,7 @@ class HouseholdIntent:
         reason: Code for clarifications and refusals (``other_person``,
             ``second_clause``, ``too_many_parts``, ``conflicting_parts``,
             ``deferred_part``, ``unparsed_part``, ``duration``, ``clock_time``,
-            ``no_time``), or None.
+            ``no_time``, ``new_routine``), or None.
         parts: COMPOUND only: the parts in spoken order.
     """
 
@@ -636,11 +639,110 @@ def _r4(utt: _Utterance) -> HouseholdIntent | None:
     return HouseholdIntent(HouseholdFamily.DEFERRED_ACTION, HouseholdOperation.CREATE, "R4", utt.heard, verb.form)
 
 
+# R6 routine creation (user answer P3F2-R1-Q4, 2026-11-17): a request to create a
+# routine claims the turn as a routine PROPOSE with reason "new_routine", so the
+# routine's content ("que apague las luces") never reaches the grammar, the
+# extended home command or the 7B service_filter.
+_ROUTINE_NOUNS = frozenset({"rutina", "rutinas", "automatizacion", "automatizaciones"})
+_INDEFINITE = frozenset({"un", "una", "unos", "unas", "otro", "otra"})
+# Fillers before the request ("dale, creá ...", "bueno, quiero ...", "a ver, armame ...").
+_ROUTINE_FILLERS = frozenset({"dale", "bueno", "ahora", "entonces", "yo"})
+# Request heads before the creation verb, longest first ("quiero", "me gustaría",
+# "te pido que", "me podés", "vamos a"). Leading podés/podrías/puedes are already
+# stripped by _normalize.
+_ROUTINE_REQUEST_HEADS = tuple(sorted((
+    ("quiero",), ("quisiera",), ("queria",), ("querria",), ("necesito",), ("necesitaria",), ("preciso",),
+    ("me", "gustaria"), ("nos", "gustaria"), ("me", "encantaria"), ("vamos", "a"), ("voy", "a"), ("podemos",),
+    ("podriamos",), ("hay", "que"), ("habria", "que"), ("se", "puede"), ("me", "podes"), ("me", "podrias"),
+    ("me", "puedes"), ("nos", "podes"), ("nos", "podrias"), ("nos", "puedes"), ("te", "pido", "que"),
+    ("ayudame", "a"), ("me", "ayudas", "a"), ("me", "ayudarias", "a"), ("a", "ver"),
+), key=len, reverse=True))
+_DESIRE_HEADS = frozenset({("quiero",), ("quisiera",), ("queria",), ("querria",), ("necesito",), ("necesitaria",),
+                           ("preciso",), ("me", "gustaria"), ("nos", "gustaria"), ("me", "encantaria")})
+# Creation verbs (voseo/tú/usted imperative, infinitive, the subjunctive of 'quiero
+# que me armes', and the questions '¿me armás/armarías ...?'): any determiner
+# ("creá la rutina de la mañana").
+_ROUTINE_CREATE_FORMS = frozenset({
+    "crea", "cree", "crear", "crees", "creas", "crearias", "arma", "arme", "armar", "armes", "armas", "armarias",
+    "genera", "genere", "generar", "generes", "generas", "generarias", "defini", "define", "defina", "definir",
+    "definas", "definis", "definirias",
+})
+# Verbs that also run or change an existing routine ("hacé la rutina", "activá la
+# rutina X"): a creation only with 'un/una/otra' or 'nueva'.
+_ROUTINE_NEW_ONLY_FORMS = frozenset({
+    "hace", "haz", "haga", "hacer", "hagas", "haces", "agrega", "agregue", "agregar", "agregues",
+    "agregas", "agregarias", "suma", "sume", "sumar", "sumes", "sumas", "sumarias", "anadi", "anade", "anada",
+    "anadir", "anadas", "programa", "programe", "programar", "programes", "programas", "programarias", "configura",
+    "configure", "configurar", "configures", "configuras", "configurarias", "agenda", "agende", "agendar",
+    "agendes", "agendas", "activa", "active", "activar", "actives", "activas", "prepara", "prepare", "preparar",
+    "prepares", "preparas", "prepararias", "tener", "automatiza", "automatice", "automatizar",
+})
+
+
+def _routine_create_form(word: str) -> str | None:
+    """The creation verb form of ``word``, enclitics stripped ('armame' -> 'arma')."""
+    for form in [word] + [word[:-len(suffix)] for suffix in _ENCLITICS
+                          if word.endswith(suffix) and len(word) - len(suffix) >= 2]:
+        if form in _ROUTINE_CREATE_FORMS or form in _ROUTINE_NEW_ONLY_FORMS:
+            return form
+    return None
+
+
+def _routine_creation(utt: _Utterance) -> HouseholdIntent | None:
+    """A request to create a routine (P3F2-R1-Q4), or None.
+
+    Shape: [filler] [request head [que]] [me|nos] [creation verb] [determiners]
+    [nueva] rutina|automatización. Without a creation verb, or with a verb that
+    can also run or change a routine, the noun needs 'un/una/otra' or 'nueva'
+    ("una rutina que ...", "quiero una rutina nueva ..."). After a request head
+    or a clitic, an unlisted word that is not a known command verb stands for
+    the verb under that same condition (a conditional such as "¿me ...rías
+    una rutina nueva?").
+    """
+    k = 0
+    while utt.at(k) in _ROUTINE_FILLERS:
+        k += 1
+    head = next((words for words in _ROUTINE_REQUEST_HEADS if utt.folded[k:k + len(words)] == words), None)
+    if head is not None:
+        k += len(head)
+        if head in _DESIRE_HEADS and utt.at(k) == "que":
+            k += 1
+    clitic = utt.at(k) in ("me", "nos")
+    if clitic:
+        k += 1
+    form = _routine_create_form(utt.at(k))
+    if form is not None:
+        k += 1
+    elif (head is not None or clitic) and utt.at(k) not in _VERB_FORMS \
+            and utt.at(k) not in _DETERMINERS | _ADJECTIVES | _ROUTINE_NOUNS:
+        k += 1
+    indefinite = False
+    for _ in range(2):
+        if utt.at(k) in _DETERMINERS:
+            indefinite = indefinite or utt.at(k) in _INDEFINITE
+            k += 1
+    new = utt.at(k) in _ADJECTIVES
+    if new:
+        k += 1
+    if utt.at(k) not in _ROUTINE_NOUNS:
+        return None
+    if utt.at(k + 1) in _ADJECTIVES:
+        new = True
+        k += 1
+    if form in _ROUTINE_CREATE_FORMS or indefinite or new:
+        return HouseholdIntent(HouseholdFamily.ROUTINE, HouseholdOperation.PROPOSE, "R6", _rest(utt, k + 1),
+                               form or "", reason="new_routine")
+    return None
+
+
 def _r6(utt: _Utterance) -> HouseholdIntent | None:
+    created = _routine_creation(utt)
+    if created is not None:
+        return created
     verb = _verb_at(utt, 0)
     if verb is not None and _AUTOMATE in verb.classes:
         return HouseholdIntent(HouseholdFamily.ROUTINE, HouseholdOperation.PROPOSE, "R6", _rest(utt, verb.end),
-                               verb.form)
+                               verb.form, reason="new_routine")
     if verb is not None:
         governed = _governed_object(utt, verb.end, allow_adjective=True)
         if governed is not None and governed[0] is HouseholdFamily.ROUTINE:

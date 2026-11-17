@@ -111,6 +111,22 @@ C02_ROUTER = (
     _r("C02-INT-0201", "avisá en la cocina que la comida está lista", "intercom", "no_turn", None, None, None,
        "none", llm="stub:noise", state="shared_list_compras", counts=effects(llm_8101_calls=1),
        effect_class="stale_audio", note="8 words: the veto runs and rejects"),
+    _r("C02-RTN-0201", "quiero crear una nueva rutina que apague las luces", "routine", "unsupported",
+       "fast_routine", "unsupported", "not_written", "refusal", llm="stub:turn_off@0.95", state="light_match",
+       counts=effects(llm_8101_calls=1, spoken_utterances=1),
+       note="P3F2-R1-Q4: before, unclaimed and the grammar fast path turned the lights off; now a routine "
+            "proposal refused until T033, and a 7B that reads turn_off only passes the veto"),
+    _r("C02-RTN-0202", "una rutina que apague las luces", "routine", "unsupported", "fast_routine", "unsupported",
+       "not_written", "refusal", llm="stub:turn_off@0.95", state="light_match", counts=SPOKEN_ONE,
+       note="6 words on a strong acoustic wake: no 7B call, no grammar, no HA send"),
+    _r("C02-RTN-0203", "che armame una rutina que apague las luces a las once", "routine", "unsupported",
+       "fast_routine", "unsupported", "not_written", "refusal", llm="stub:command@0.9", state="light_match",
+       counts=effects(llm_8101_calls=1, spoken_utterances=1),
+       note="the gate lets a claimed routine creation through like a reminder (its time is the routine's "
+            "content), so the refusal is spoken instead of the silent non_immediate:deferred drop"),
+    _r("C02-RTN-0204", "quiero crear una nueva rutina que apague las luces", "routine", "no_turn", None, None, None,
+       "none", wake="textual", llm="stub:noise", state="light_match", counts=effects(llm_8101_calls=1),
+       effect_class="stale_audio", note="TV signal: the 7B veto rejects; zero effects"),
 )
 
 WAKES = {
@@ -290,3 +306,49 @@ async def test_default_router_builds_one_classifier_for_itself_and_its_gate(leav
                            audio_manager=MagicMock(), wake_words=("jarvis",))
     assert router.household_intents.settings.wake_words == ("jarvis",)
     assert router.command_gate._household_intents is router.household_intents
+
+
+ROUTINE_CREATE = "Todavía no creo rutinas por voz. Podés crearlas desde la web."
+
+
+@pytest.mark.parametrize("text", [
+    "quiero crear una nueva rutina que apague las luces", "quisiera crear una rutina que apague las luces del living",
+    "creá una rutina para apagar las luces a la noche", "armame una rutina que apague las luces",
+    "haceme una rutina que apague todas las luces", "una rutina que apague las luces",
+    "nueva automatización que apague las luces", "quiero que me armes una rutina que apague las luces",
+    "me podés armar una rutina que prenda la luz del living", "dale creá una rutina que apague las luces",
+    "che armame una rutina que apague las luces a las once",
+    "creá una rutina que cuando salga el sol prenda la luz",
+])
+async def test_routine_creation_request_never_reaches_a_domotics_producer(leaves, monkeypatch, text):
+    """P3F2-R1-Q4: claimed before the home command, the grammar and the 7B service_filter; refused honestly."""
+    import src.pipeline.request_router as module
+    monkeypatch.setattr(module, "_grammar_fastpath_classification",
+                        MagicMock(side_effect=AssertionError("grammar reached")))
+    house = Household(leaves, text=text, llm="stub:turn_off@0.95")
+    house.router._try_home_command = AsyncMock(side_effect=AssertionError("home command reached"))
+    await leaves.apply_state(house.orchestrator.dispatcher, "light_match")
+    before = leaves.snapshot()
+    result = await house.turn()
+    vetoes = 1 if len(text.split()) > 6 else 0
+    assert house.effects(before) == effects(llm_8101_calls=vetoes, spoken_utterances=1)
+    assert (result["path"], result["outcome"]["status"], result["response"]) == (
+        "fast_routine", "unsupported", ROUTINE_CREATE)
+    assert result["household"] == {"family": "routine", "operation": "propose", "rule": "R6",
+                                   "reason": "new_routine", "parts": 0}
+    kwargs = house.orchestrator.process.await_args.kwargs
+    assert (kwargs["service_filter"], kwargs["query_slots"]) == (None, None)
+    house.audio.detect_source_zone.assert_not_called()
+
+
+def test_gate_passes_a_claimed_routine_creation_but_keeps_the_silent_drops():
+    """Q4 speaks the routine refusal; Q1/Q5 keep the silent drop of deferred actions and 'no molestar'."""
+    gate = CommandAcceptanceGate()
+    for text in ("che armame una rutina que apague las luces a las once",
+                 "creá una rutina que cuando salga el sol prenda la luz"):
+        assert gate.evaluate(text).accept is True, text
+    # Only a routine creation is exempt: running a routine with a deferred action stays gated.
+    for text in ("apagá la luz en 10 minutos", "activá el no molestar",
+                 "ejecutá la rutina que apaga la luz en 10 minutos"):
+        decision = gate.evaluate(text)
+        assert decision.accept is False and decision.reason.startswith("non_immediate:"), text

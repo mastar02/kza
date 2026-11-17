@@ -127,6 +127,9 @@ _BOUNDARY_RE = {
 # or the pending confirmation (design F11, C02-CAN-0007).
 _OBJECT_NOUN_RE = re.compile(r"\b(?:recordatorios?|t[ií]mers?|temporizador(?:es)?|listas?|rutinas?)\b")
 
+# P3F2-R1-Q4: a request to create a routine is refused honestly until T033.
+_ROUTINE_CREATE_REFUSAL = "Todavía no creo rutinas por voz. Podés crearlas desde la web."
+
 # P3-F2 decision on F10: the orchestrated path has no sync or enrollment
 # consumer, so only the explicit whole requests are recognised (the same
 # phrases as the legacy path) and they are answered honestly as unsupported;
@@ -1131,6 +1134,8 @@ class RequestDispatcher:
             # T033 has not landed: no routine runs, stops or changes by voice yet.
             if operation in (HouseholdOperation.STOP, HouseholdOperation.DISABLE, HouseholdOperation.CANCEL):
                 response = "Todavía no controlo rutinas por voz. Podés detenerla o cambiarla desde la web."
+            elif household.reason == "new_routine":
+                response = _ROUTINE_CREATE_REFUSAL
             else:
                 response = "Todavía no manejo rutinas por voz. Podés verlas desde la web."
             return self._household_refusal(PathType.FAST_ROUTINE, "routine", response, TaskStatus.UNSUPPORTED)
@@ -1313,8 +1318,7 @@ class RequestDispatcher:
             # HA entity list to the cloud reasoner.
             detected = self.routines.detect_intent(text)
             if isinstance(detected, dict) and detected.get("intent") == "create":
-                return self._household_refusal(PathType.FAST_ROUTINE, "routine",
-                                               "Todavía no manejo rutinas por voz. Podés verlas desde la web.",
+                return self._household_refusal(PathType.FAST_ROUTINE, "routine", _ROUTINE_CREATE_REFUSAL,
                                                TaskStatus.UNSUPPORTED)
             # Procesar rutina
             t0 = time.perf_counter()

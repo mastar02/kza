@@ -8,6 +8,7 @@ from tests.mocks.c02_matrix import C02Entry, effects
 from tests.mocks.household_dispatch import CountedLeaves
 
 ZERO = effects()
+ROUTINE_CREATE = "Todavía no creo rutinas por voz. Podés crearlas desde la web."
 
 
 def _d(id_, text, family, effect_class, outcome, path, status, persistence, spoken, *, counts=ZERO,
@@ -109,6 +110,17 @@ C02_DISPATCHER = tuple(_REMINDER_GRID) + (
     _refused("C02-RTN-0103", "creá una rutina que cuando salga el sol prenda la luz", "routine", "fast_routine",
              note="no cloud extraction of a routine proposal (Q15); no routine change by voice (Q19)"),
     _refused("C02-RTN-0104", "desactivá la rutina de la noche", "routine", "fast_routine", sf="turn_off"),
+    *(_refused(f"C02-RTN-{106 + i:04d}", text, "routine", "fast_routine", sf=sf, state="light_match",
+               note="P3F2-R1-Q4: a routine creation request is a routine proposal; its content never reaches "
+                    "a domotics producer, even with a caller's service_filter")
+      for i, (text, sf) in enumerate((
+          ("quiero crear una nueva rutina que apague las luces", "turn_off"),
+          ("armame una rutina que apague las luces", "turn_off"),
+          ("creá una rutina para apagar las luces a la noche", "turn_off"),
+          ("nueva automatización que apague las luces", "turn_off"),
+          ("me podés armar una rutina que prenda la luz del living", "turn_on"),
+          ("quiero que me armes una rutina que apague las luces", "turn_off"),
+      ))),
     _refused("C02-INT-0101", "anunciá que la comida está lista", "intercom", "fast_household",
              state="shared_list_compras"),
     _refused("C02-NTF-0101", "activá el no molestar", "notification", "fast_household", sf="turn_on",
@@ -321,7 +333,10 @@ async def test_claimed_item_removal_drops_the_article(leaves):
     ("desactivá la rutina de la noche", "Todavía no controlo rutinas por voz. Podés detenerla o cambiarla desde la web."),
     ("pará la rutina de la noche", "Todavía no controlo rutinas por voz. Podés detenerla o cambiarla desde la web."),
     ("ejecutá la rutina buenas noches", "Todavía no manejo rutinas por voz. Podés verlas desde la web."),
-    ("creá una rutina que cuando salga el sol prenda la luz", "Todavía no manejo rutinas por voz. Podés verlas desde la web."),
+    ("activá la rutina buenas noches", "Todavía no manejo rutinas por voz. Podés verlas desde la web."),
+    ("creá una rutina que cuando salga el sol prenda la luz", ROUTINE_CREATE),
+    ("quiero crear una nueva rutina que apague las luces", ROUTINE_CREATE),
+    ("automatizá las luces del living", ROUTINE_CREATE),
 ])
 async def test_routine_refusal_names_what_the_web_can_do(leaves, text, response):
     dispatcher = leaves.dispatcher()
@@ -336,9 +351,13 @@ async def test_sync_request_after_a_wake_word_is_still_the_explicit_request(leav
     assert result.response == "Todavía no puedo sincronizar los comandos por voz en este modo."
 
 
-@pytest.mark.parametrize("text", ["nueva rutina para la noche", "quiero crear una nueva rutina que apague las luces",
-                                  "nexa nueva automatización de luces"])
-async def test_unclaimed_routine_creation_never_reaches_cloud_extraction(leaves, text):
+@pytest.mark.parametrize(("text", "claimed"), [
+    ("nueva rutina para la noche", True), ("quiero crear una nueva rutina que apague las luces", True),
+    ("nexa nueva automatización de luces", True),
+    # Unclaimed (P3F2-R1-Q4 covers request heads only): the dispatcher's FAST_ROUTINE guard still refuses.
+    ("no sé si crear rutina para la noche", False), ("pensaba en una nueva rutina para la noche", False),
+])
+async def test_unclaimed_routine_creation_never_reaches_cloud_extraction(leaves, text, claimed):
     """Review F5 (user answer Q15): no routine proposal is extracted by the cloud reasoner."""
     from unittest.mock import AsyncMock, MagicMock
 
@@ -348,9 +367,10 @@ async def test_unclaimed_routine_creation_never_reaches_cloud_extraction(leaves,
     dispatcher = leaves.dispatcher()
     dispatcher.routines = RoutineManager(ha_client=ha, chroma_sync=MagicMock(), llm_reasoner=reasoner)
     before = leaves.snapshot()
+    assert (dispatcher.household_intents.classify(text) is not None) is claimed
     result = await dispatcher.dispatch(user_id="unknown", text=text)
     assert (result.path, result.outcome.status.value) == (PathType.FAST_ROUTINE, "unsupported")
-    assert result.response == "Todavía no manejo rutinas por voz. Podés verlas desde la web."
+    assert result.response == ROUTINE_CREATE
     ha.get_domotics_entities.assert_not_awaited()
     assert reasoner.mock_calls == []
     assert leaves.effects(before) == ZERO

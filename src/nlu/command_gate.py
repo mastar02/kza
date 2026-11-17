@@ -173,18 +173,23 @@ class CommandAcceptanceGate:
             return AcceptanceDecision(True, "gate_error", {"error": str(e)})
 
     def _claimed_reminder(self, text: str) -> bool:
-        """A reminder request ("recordame apagar la luz a las 11") is not an action.
+        """A reminder or routine creation request is not an action.
 
-        Its action words are the reminder's content: the household layer
-        (router S5) claims it and no domotics producer sees it, so the
-        non-immediate rule must not drop it before an honest reply (P3-F2).
-        Other claimed families keep the rule: a deferred home action
-        ("apagá la luz en 10 minutos") stays rejected here until T031-U5.
+        In "recordame apagar la luz a las 11" and "armame una rutina que
+        apague las luces a las 11" the action words are the reminder's or the
+        routine's content: the household layer (router S5) claims the turn and
+        no domotics producer sees it, so the non-immediate rule must not drop
+        it before an honest reply (P3-F2, user answer P3F2-R1-Q4). Other claimed
+        families keep the rule: a deferred home action ("apagá la luz en 10
+        minutos") and "no molestar" stay rejected here (P3F2-R1-Q1/Q5).
         """
         from src.nlu.household_intents import HouseholdFamily
 
         claimed = self._household_intents.classify(text)
-        return claimed is not None and claimed.family is HouseholdFamily.REMINDER
+        if claimed is None:
+            return False
+        return claimed.family is HouseholdFamily.REMINDER or (
+            claimed.family is HouseholdFamily.ROUTINE and claimed.reason == "new_routine")
 
     def _hard_reason(self, text: str) -> str | None:
         """Return the first matching hard rule name, or None. Migrated from _is_noise_text."""

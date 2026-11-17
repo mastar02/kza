@@ -151,6 +151,10 @@ PRECEDENCE = [
     ("activá la rutina buenas noches", (F.ROUTINE, O.PROPOSE, "R6")),
     ("creá una rutina que cuando salga el sol prenda la luz", (F.ROUTINE, O.PROPOSE, "R6")),
     ("automatizá las luces del living", (F.ROUTINE, O.PROPOSE, "R6")),
+    # P3F2-R1-Q4: a routine creation request claims the turn before any domotics producer.
+    ("quiero crear una nueva rutina que apague las luces", (F.ROUTINE, O.PROPOSE, "R6")),
+    ("armame una rutina que apague las luces", (F.ROUTINE, O.PROPOSE, "R6")),
+    ("una rutina que apague las luces", (F.ROUTINE, O.PROPOSE, "R6")),
     ("anunciá que la comida está lista", (F.INTERCOM, O.EXECUTE, "R6")),
     ("avisá en la cocina que la comida está lista", (F.INTERCOM, O.EXECUTE, "R6")),
     ("decí en toda la casa que nos vamos", (F.INTERCOM, O.EXECUTE, "R6")),
@@ -293,6 +297,115 @@ def test_household_noun_target_is_its_own_claimed_part(text, segments):
     assert [p.segment for p in intent.parts] == segments
     timer = [p.intent for p in intent.parts if p.intent is not None]
     assert [_shape(t) for t in timer] == [(F.TIMER, O.STOP, "R1")]
+
+
+# P3F2-R1-Q4 (user answer 2026-11-17): a request to create a routine, in its rioplatense
+# variants, is a routine proposal; its content ("que apague las luces") is never a domotics command.
+ROUTINE_CREATION_REQUESTS = [
+    "quiero crear una nueva rutina que apague las luces",
+    "quiero crear una rutina que apague las luces",
+    "quisiera crear una rutina que apague las luces del living",
+    "quería crear una rutina que apague las luces",
+    "creá una rutina para apagar las luces a la noche",
+    "crea una rutina que apague las luces",
+    "creame una automatización que apague las luces",
+    "armame una rutina que apague las luces",
+    "armá una rutina que prenda la luz del living",
+    "haceme una rutina que apague todas las luces",
+    "hacé una rutina que cierre las persianas",
+    "programame una rutina que apague las luces",
+    "generá una rutina que apague las luces",
+    "agregá una rutina que apague las luces",
+    "sumá una rutina que prenda la luz",
+    "nueva rutina que apague las luces",
+    "una rutina que apague las luces",
+    "nueva automatización que apague las luces",
+    "necesito una rutina que apague las luces",
+    "me gustaría crear una rutina que apague las luces",
+    "quiero que me armes una rutina que apague las luces",
+    "quiero que crees una rutina que apague las luces",
+    "te pido que crees una rutina que apague las luces",
+    "podés crear una rutina que apague las luces",
+    "me podés armar una rutina que apague las luces",
+    "¿me armás una rutina que apague las luces?",
+    "¿me harías una rutina nueva que apague las luces?",
+    "vamos a crear una rutina que apague las luces",
+    "quiero armar una rutina para apagar las luces",
+    "quiero hacer una rutina que apague la luz",
+    "quiero configurar una rutina que apague las luces",
+    "quiero agregar una rutina que apague las luces",
+    "quiero activar una nueva rutina que apague las luces",
+    "quiero una rutina nueva que apague las luces",
+    "nexa quiero crear una nueva rutina que apague las luces",
+    "che armame una rutina que apague las luces a las once",
+    "dale creá una rutina que apague las luces",
+    "a ver, armame otra rutina que apague las luces",
+    "quiero crear una rutina que apague las luces y cierre la persiana",
+    "armame una rutina que apague la luz del living y la de la cocina",
+    "haceme una rutina para apagar la luz del living y de la cocina",
+    "nueva rutina para la noche",
+    "nexa nueva automatización de luces",
+    "creá una rutina que cuando salga el sol prenda la luz",
+    "automatizá las luces del living",
+]
+
+
+@pytest.mark.parametrize("text", ROUTINE_CREATION_REQUESTS)
+def test_routine_creation_request_is_a_routine_proposal(text):
+    intent = classify_household_intent(text, wake_words=("nexa",))
+    assert (intent.family, intent.operation, intent.rule, intent.reason) == (F.ROUTINE, O.PROPOSE, "R6",
+                                                                             "new_routine")
+    assert intent.parts == ()
+
+
+@pytest.mark.parametrize("text", [
+    "quiero crear una nueva rutina que apague las luces", "armame una rutina que apague las luces",
+    "una rutina que apague las luces", "quiero que me armes una rutina que apague las luces",
+    "creá una rutina para apagar las luces a la noche",
+])
+def test_routine_content_alone_would_be_a_grammar_command(text):
+    """Why the claim matters: unclaimed, the grammar reads the routine's content as an immediate turn_off."""
+    parsed = parse_command(text)
+    assert (parsed.intent, parsed.domain, parsed.quality) == ("turn_off", "light", "full")
+    assert non_immediate_action_reason(text) is None
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("activá la rutina buenas noches", (F.ROUTINE, O.PROPOSE, "R6", None)),
+    ("programá la rutina de la noche", (F.ROUTINE, O.PROPOSE, "R6", None)),
+    ("hacé la rutina de la noche", (F.ROUTINE, O.PROPOSE, "R6", None)),
+    ("ejecutá la rutina buenas noches", (F.ROUTINE, O.EXECUTE, "R6", None)),
+    ("poné la rutina de buenas noches", (F.ROUTINE, O.EXECUTE, "R6", None)),
+    ("qué rutinas tengo", (F.ROUTINE, O.QUERY, "R1", None)),
+    ("borrá la rutina buenas noches", (F.ROUTINE, O.CANCEL, "R1", None)),
+    ("creá una rutina para la noche y apagá las luces", (F.COMPOUND, O.EXECUTE, "R5", None)),
+    ("la rutina de la noche", None),
+    ("quiero la rutina de la noche", None),
+    ("rutina", None),
+    ("quiero apagar las luces", None),
+    ("quiero que apagues las luces", None),
+    # The unlisted-verb slot never stands for a known command verb, and needs 'una'/'nueva'.
+    ("quiero borrar una rutina", None),
+    ("quiero ejecutar una nueva rutina", None),
+    ("me encanta la rutina de la noche", None),
+    ("no sé si crear rutina para la noche", None),
+    ("pensaba en una nueva rutina para la noche", None),
+    ("qué rutina más aburrida", None),
+    ("haceme una lista", None),
+    ("una canción", None),
+])
+def test_routine_creation_leaves_other_phrases_alone(text, expected):
+    intent = classify_household_intent(text)
+    assert (None if intent is None else (intent.family, intent.operation, intent.rule, intent.reason)) == expected
+
+
+def test_routine_creation_complement_and_verb():
+    intent = classify_household_intent("Nexa, quiero crear una nueva rutina que apague las luces", wake_words=("nexa",))
+    assert (intent.verb, intent.complement) == ("crear", "que apague las luces")
+    assert (classify_household_intent("armame una rutina nueva para la noche").verb,
+            classify_household_intent("armame una rutina nueva para la noche").complement) == ("arma", "para la noche")
+    verbless = classify_household_intent("una automatización que cierre las persianas")
+    assert (verbless.verb, verbless.complement) == ("", "que cierre las persianas")
 
 
 def test_compound_limit_comes_from_settings():
