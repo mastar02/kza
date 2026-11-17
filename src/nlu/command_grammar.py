@@ -385,6 +385,11 @@ def non_immediate_action_reason(text: str) -> str | None:
         return "invalid_brightness_percentage"
     if not _has_any_action_verb(text) and extract_entity(text) is None and not light_request:
         return None
+    # P3-F2 defence in depth: a head reminder verb ("recordame apagar la luz")
+    # makes the action the reminder's content, never an immediate command.
+    from src.nlu.household_intents import starts_with_reminder_request
+    if starts_with_reminder_request(text):
+        return "non_immediate:reminder_request"
     normalized = normalize(text)
     blocked = {"negation", "subjunctive_cond", "report_of_speech"}
     for name, pattern in BLOCKERS:

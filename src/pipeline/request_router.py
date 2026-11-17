@@ -26,6 +26,7 @@ from src.home_assistant.voice_resolver import HomeVoiceResolver
 from src.nlu.home_command import parse_home_command
 from src.nlu.command_gate import AcceptanceDecision, CommandAcceptanceGate, contains_wake_word
 from src.nlu.command_grammar import PartialCommand, has_unresolved_light_location, parse_default_light_target, parse_partial_command
+from src.nlu.household_intents import HouseholdIntent, HouseholdIntentClassifier, HouseholdIntentSettings
 from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
 from src.pipeline.earcon_gate import should_play_earcon
@@ -241,6 +242,7 @@ class RequestRouter:
         voice_attributor=None,
         wake_verifier: WakeVerifier | None = None,
         household_clock: HouseholdClock | None = None,
+        household_intents: HouseholdIntentClassifier | None = None,
     ):
         """
         Initialize RequestRouter with injected dependencies.
@@ -283,6 +285,9 @@ class RequestRouter:
             household_clock: Household clock built once in main (P3-F1) for
                 the legacy prompt's current time; None builds a default one,
                 never the process's local time.
+            household_intents: Household intent classifier (P3-F2), the same
+                instance the dispatcher uses; None builds one with the default
+                settings and this router's wake words.
         """
         # Core pipeline components
         self.command_processor = command_processor
@@ -333,9 +338,13 @@ class RequestRouter:
         else:
             self._wake_words = _default_wakes
 
+        # P3-F2: claims household turns before any domotics producer.
+        self.household_intents = household_intents if household_intents is not None else HouseholdIntentClassifier(
+            HouseholdIntentSettings(wake_words=self._wake_words))
+
         # Command acceptance gate (consolidates _is_noise_text + STT confidence).
         self.command_gate = command_gate or CommandAcceptanceGate(
-            wake_words=self._wake_words
+            wake_words=self._wake_words, household_intents=self.household_intents,
         )
 
         # LLM-based command validator. Si está configurado, intercepta el
@@ -921,6 +930,16 @@ class RequestRouter:
             result["latency_ms"] = (time.perf_counter()-pipeline_start)*1000
             return result
 
+        # P3-F2 S5: the household layer runs before the extended home
+        # command, the grammar and the 7B, so a claimed turn never reaches a
+        # domotics producer (design F26: never move it after the grammar).
+        household = self.household_intents.classify(text)
+        if household is not None:
+            return await self._process_household_turn(
+                text, household, result, cmd=cmd, audio=audio, room_id=room_id, pipeline_start=pipeline_start,
+                tv_signal=textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE,
+            )
+
         if await self._try_home_command(
             text, result, room_id=room_id, pipeline_start=pipeline_start,
             extra_gate=textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE,
@@ -1129,13 +1148,7 @@ class RequestRouter:
 
         # 5. Process with orchestrator
         self._response_zone.set(zone_id)
-        async def on_response(dispatch_result):
-            if dispatch_result.was_queued and dispatch_result.queue_position and not self.response_handler.is_responding:
-                await self._speak_response(
-                    dispatch_result.response,
-                    zone_id=zone_id,
-                    room_context=room_context,
-                )
+        on_response = self._queued_reply(zone_id, room_context)
 
         # Propagar intent + slots del LLMRouter al orchestrator. Migración del
         # patrón ya existente en el path legacy (líneas 962-968 abajo). Sin
@@ -1196,7 +1209,105 @@ class RequestRouter:
             **({"target_entity_id": target_entity_id} if target_entity_id else {}),
             memory_sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
         )
+        return await self._finish_orchestrated_turn(
+            dispatch_result, result, text=text, zone_id=zone_id, room_context=room_context, emotion=emotion,
+            pipeline_start=pipeline_start,
+        )
 
+    def _queued_reply(self, zone_id: str | None, room_context):
+        """Callback that speaks a queued slow-path reply in the turn's zone."""
+        async def on_response(dispatch_result):
+            if dispatch_result.was_queued and dispatch_result.queue_position and not self.response_handler.is_responding:
+                await self._speak_response(
+                    dispatch_result.response,
+                    zone_id=zone_id,
+                    room_context=room_context,
+                )
+        return on_response
+
+    async def _household_veto_passes(self, text: str, result: dict, *, room_id: str | None, tv_signal: bool) -> bool:
+        """Run the 7B as a veto on a weakly woken claimed turn (P3-F2 S6).
+
+        Same acceptance test as the extended home command: is_command, not
+        'unavailable', and a finite confidence within the configured range.
+        The model can only stop the turn; it never chooses a family, a part,
+        a target or a service. Without a configured LLMCommandRouter a turn
+        with a TV signal (textual wake, ambient_strict, low wake score) fails
+        closed; otherwise it proceeds as an unclaimed turn would without a
+        model gate.
+        """
+        if self.llm_command_router is None:
+            return not tv_signal
+        classification = None
+        started = time.perf_counter()
+        try:
+            classification = await self._classify_command(text, room_id=room_id)
+        except Exception:
+            logger.exception("[Household] Veto unavailable")
+        result["timings"]["llm_router"] = (time.perf_counter() - started) * 1000
+        confidence = getattr(classification, "confidence", None)
+        return (
+            getattr(classification, "is_command", None) is True
+            and getattr(classification, "rejection_reason", None) != "unavailable"
+            and finite_number(confidence)
+            and self.llm_min_command_confidence <= confidence <= 1
+        )
+
+    async def _process_household_turn(self, text: str, household: HouseholdIntent, result: dict, *, cmd, audio,
+                                      room_id: str | None, pipeline_start: float, tv_signal: bool) -> dict:
+        """Dispatch a claimed household turn (P3-F2 S6).
+
+        A weak wake (TV signal, a transcript-based wake engine, or a turn
+        longer than ``household_intents.unvetoed_max_words``) needs the 7B
+        veto; a rejection ends the turn with no effect. The turn never
+        carries a service_filter, slots or a target from any producer, never
+        uses audio_manager.detect_source_zone, and its origin room is only the
+        capturing microphone's room (the dispatcher derives it from
+        ``context_room_id``, P3F1-R3 option A).
+        """
+        result["household"] = household.summary()
+        logger.info("[Household] claimed %s", household.summary())
+        weak_wake = (
+            tv_signal
+            or not self.wake_acoustically_confirmed
+            or len(text.split()) > self.household_intents.settings.unvetoed_max_words
+        )
+        if weak_wake and not await self._household_veto_passes(text, result, room_id=room_id, tv_signal=tv_signal):
+            logger.info("[Household] vetoed %s", household.summary())
+            result["intent"] = "llm_rejected:household"
+            result["success"] = False
+            result["response"] = ""
+            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+            return result
+
+        # The reply zone follows the room context as for any turn; the audio
+        # source-zone detector is never consulted for a household object.
+        room_context = None
+        if self.room_context_manager and room_id:
+            room_context = self.room_context_manager.resolve_room(mic_zone_id=room_id, user_id=None)
+        zone_id = f"zone_{room_context.room_id}" if room_context else None
+        if zone_id:
+            self.response_handler.set_active_zone(zone_id)
+            self._response_zone.set(zone_id)
+        dispatch_result = await self._orchestrator.process(
+            user_id=None,
+            text=text,
+            audio=audio,
+            zone_id=zone_id,
+            context_room_id=room_id,
+            on_response=self._queued_reply(zone_id, room_context),
+            service_filter=None,
+            query_slots=None,
+            memory_sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
+        )
+        return await self._finish_orchestrated_turn(
+            dispatch_result, result, text=text, zone_id=zone_id, room_context=room_context, emotion=cmd.emotion,
+            pipeline_start=pipeline_start,
+        )
+
+    async def _finish_orchestrated_turn(self, dispatch_result, result: dict, *, text: str, zone_id: str | None,
+                                        room_context, emotion, pipeline_start: float) -> dict:
+        """Record the dispatch outcome, speak the reply and log the turn."""
         if isinstance(getattr(dispatch_result, "memory_sources", None), tuple):
             self._response_sources.set(dispatch_result.memory_sources)
         if dispatch_result.intent in {"conversation", "cancelled"} and not self._current_source_available():

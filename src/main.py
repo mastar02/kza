@@ -112,6 +112,7 @@ from src.dashboard.home_api import build_home_services, build_microphone_rooms
 from src.dashboard.live_erasure import build_live_services
 from src.monitoring.health_aggregator import HealthAggregator
 from src.nlu.command_gate import CommandAcceptanceGate
+from src.nlu.household_intents import HouseholdIntentClassifier, HouseholdIntentSettings
 
 if TYPE_CHECKING:
     from src.hooks.registry import HookRegistry
@@ -1178,6 +1179,11 @@ async def build_application(
     ROOMS_RESERVED_KEYS = ROOM_SECTION_KEYS
     # P3-F1: canonical bare room ids from the catalog; zone_<room> stays a transport form.
     room_namespace = RoomNamespace.from_rooms_config(rooms_config, ROOMS_RESERVED_KEYS)
+    # P3-F2: one household intent classifier for the router and the dispatcher.
+    household_intents = HouseholdIntentClassifier(HouseholdIntentSettings.from_config(
+        config.get("household_intents"),
+        wake_words=rooms_config.get("wake_word", {}).get("words", wake_config.get("words", ["nexa"])),
+    ))
 
     if rooms_config.get("enabled", False):
         # Presence detector
@@ -1851,6 +1857,7 @@ async def build_application(
             home_capabilities=home_capabilities,
             household_clock=household_clock,
             room_namespace=room_namespace,
+            household_intents=household_intents,
             # Plan #2 OpenClaw
             compactor=compactor,
             persister=persister,
@@ -1914,6 +1921,7 @@ async def build_application(
         # wake_engine=="whisper" (nunca corre con openwakeword) y usarla acá
         # era UnboundLocalError al boot (review 2026-07-05).
         initial_prompt=config.get("stt", {}).get("initial_prompt"),
+        household_intents=household_intents,
     )
     home_voice_resolver = HomeVoiceResolver(
         home_action_service, room_context_manager.get_all_rooms() if room_context_manager else {},
@@ -1962,6 +1970,7 @@ async def build_application(
         asr_event_logger=event_logger,
         wake_verifier=wake_verifier,
         household_clock=household_clock,
+        household_intents=household_intents,
     )
 
     shutdown.push_async_callback(request_router.aclose)

@@ -295,3 +295,38 @@ async def test_stale_lookup_cannot_prove_a_committed_deletion(leaves, tmp_path, 
                 else:
                     graph.list_manager._store.delete_list = AsyncMock(return_value=False)
                     assert not await graph.list_manager.delete_list("unknown", "compras")
+
+
+@pytest.mark.parametrize(("text", "path", "intent"), [
+    ("recordame apagar la luz", "fast_reminder", "reminder"),
+    ("Nexa, recordame prender la luz del living", "fast_reminder", "reminder"),
+    ("poné un temporizador de 5 minutos", "fast_timer", "timer"),
+    ("cancelá el timer y el recordatorio", "fast_household", "compound"),
+    ("apagá la luz y pausá la música", "fast_household", "compound"),
+])
+async def test_claimed_household_turn_never_reaches_home_control(leaves, monkeypatch, tmp_path, text, path, intent):
+    """P3-F2 (CORE-02): a household turn is claimed before the grammar, the 7B and vector search."""
+    factories, _ = leaves
+    transport = TaskTransport("confirmed")
+    async with transport.serve() as url:
+        config = offline_config(tmp_path, url)
+        config["home_assistant"].update(control_selection_path=selection(tmp_path), state_confirmation_timeout_s=.03)
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=factories)
+            command = {"entity_id": "light.living", "domain": "light", "service": "turn_off", "data": {},
+                       "description": "Luz apagada", "similarity": 1.0}
+            search = AsyncMock(return_value=command)
+            monkeypatch.setattr(graph.models.chroma, "asearch_command", search)
+            graph.models.stt.text = text
+            result = await graph.pipeline.process_command(event())
+            assert (result["path"], result["intent"]) == (path, intent)
+            assert result["handled"] and not result["task_completed"] and not result["success"]
+            assert result["outcome"]["status"] in {"unsupported", "needs_input"}
+            assert result["response_completed"]
+            assert transport.sends == []
+            search.assert_not_awaited()
+            assert await graph.reminder_manager.get_active(None) == []
+            router = graph.pipeline.request_router
+            classifier = router.household_intents
+            assert classifier is router._orchestrator.dispatcher.household_intents
+            assert classifier is router.command_gate._household_intents

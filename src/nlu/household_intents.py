@@ -1,0 +1,807 @@
+"""Deterministic household intent precedence layer (P3-F2).
+
+A pure, regex/stdlib classifier that claims a turn for a household family
+(timer, reminder, list, routine, intercom, notification, deferred action or a
+compound) before any domotics producer can act on it: the extended home
+command, the grammar fast path, the 7B ``service_filter``, the default light
+target, the dispatcher's special commands and its music/list/domotics keywords.
+
+Blocking is unconditional; acting is gated. Once a turn is claimed no later
+stage may produce an effect for it. The router decides whether the claimed
+turn may proceed (wake guards and the 7B veto); the dispatcher sends it to the
+family path, or to an honest refusal when the family has no handler yet.
+
+Rules (design ``precedence_contract`` at data/autonomous-roadmap-20261102/p3/
+design.json), evaluated in the order R3, R5, R1, R2, R3a, R4, R6:
+
+* R3: a reminder or deferral verb at the head ("recordame ...").
+* R5: a compound pre-split (two imperative clauses, one verb with two
+  household objects, or one domotics verb with two targets).
+* R1: an object operation (cancel/stop/pause/resume/disable/query) on one
+  household object noun.
+* R2: timer creation, and list item additions/removals.
+* R3a: "alarma" with a duration (timer) or a clock time (reminder).
+* R4: a domotics verb with a deferral time expression.
+* R6: routine, intercom and notification phrases.
+
+No I/O and no logging of user text: the module never logs.
+"""
+from __future__ import annotations
+
+import re
+import unicodedata
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from enum import Enum
+
+from src.nlu.command_grammar import (
+    ENTITY_TERMS,
+    ROOM_ALIASES,
+    WAKE_TERMS,
+    non_immediate_action_reason,
+    parse_command,
+)
+from src.nlu.home_command import parse_home_command
+
+
+class HouseholdFamily(str, Enum):
+    """Household object family that claimed a turn."""
+
+    TIMER = "timer"
+    REMINDER = "reminder"
+    LIST = "list"
+    ROUTINE = "routine"
+    INTERCOM = "intercom"
+    NOTIFICATION = "notification"
+    DEFERRED_ACTION = "deferred_action"
+    COMPOUND = "compound"
+
+
+class HouseholdOperation(str, Enum):
+    """Operation requested on the claimed family."""
+
+    CREATE = "create"
+    CANCEL = "cancel"
+    STOP = "stop"
+    PAUSE = "pause"
+    RESUME = "resume"
+    DISABLE = "disable"
+    QUERY = "query"
+    ADD_ITEM = "add_item"
+    REMOVE_ITEM = "remove_item"
+    EXECUTE = "execute"
+    PROPOSE = "propose"
+    CLARIFY = "clarify"
+
+
+@dataclass(frozen=True)
+class HouseholdPart:
+    """One spoken part of a compound turn, in spoken order.
+
+    Attributes:
+        segment: The part's words as heard (lowercase, punctuation removed).
+        intent: The part's own classification, or None for an unclaimed
+            segment that belongs to the domotics/music path.
+    """
+
+    segment: str
+    intent: "HouseholdIntent | None" = None
+
+
+@dataclass(frozen=True)
+class HouseholdIntent:
+    """A claimed household turn.
+
+    Attributes:
+        family: Claimed family.
+        operation: Requested operation.
+        rule: Rule id (R1..R6, R3a) for audit and the C02 matrix tags.
+        complement: Words after the governed object or reminder verb; family
+            handlers parse it, the classifier does not.
+        verb: Accent-folded head verb as heard (e.g. ``borra``), or "".
+        reason: Code for clarifications and refusals (``other_person``,
+            ``second_clause``, ``too_many_parts``, ``conflicting_parts``,
+            ``deferred_part``, ``unparsed_part``, ``duration``, ``clock_time``,
+            ``no_time``), or None.
+        parts: COMPOUND only: the parts in spoken order.
+    """
+
+    family: HouseholdFamily
+    operation: HouseholdOperation
+    rule: str
+    complement: str = ""
+    verb: str = ""
+    reason: str | None = None
+    parts: tuple[HouseholdPart, ...] = ()
+
+    def summary(self) -> dict:
+        """Content-free description for logs and turn results (no user text)."""
+        return {"family": self.family.value, "operation": self.operation.value, "rule": self.rule,
+                "reason": self.reason, "parts": len(self.parts)}
+
+
+@dataclass(frozen=True)
+class HouseholdIntentSettings:
+    """``household_intents`` settings (config/settings.yaml).
+
+    Attributes:
+        unvetoed_max_words: Longest claimed turn that skips the 7B veto on a
+            strong acoustic wake (same limit as the grammar's wake bonus).
+        compound_max_parts: More parts make a compound not admissible.
+        compound_execute: Compound execution (T037-U6). Must stay False until
+            that unit lands; compounds then answer "Decímelo de a una cosa".
+        wake_words: Configured wake words stripped from the head of a turn,
+            in addition to the grammar's wake terms.
+    """
+
+    unvetoed_max_words: int = 6
+    compound_max_parts: int = 3
+    compound_execute: bool = False
+    wake_words: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.unvetoed_max_words) is not int or self.unvetoed_max_words < 1:
+            raise ValueError("household_intents.unvetoed_max_words must be a positive integer")
+        if type(self.compound_max_parts) is not int or self.compound_max_parts < 2:
+            raise ValueError("household_intents.compound_max_parts must be an integer >= 2")
+        if type(self.compound_execute) is not bool:
+            raise ValueError("household_intents.compound_execute must be a boolean")
+        if self.compound_execute:
+            raise ValueError("household_intents.compound_execute requires compound execution (T037-U6)")
+
+    @classmethod
+    def from_config(cls, section: Mapping | None, wake_words: Iterable[str] = ()) -> "HouseholdIntentSettings":
+        """Build from the ``household_intents`` section and the configured wake words.
+
+        Args:
+            section: The ``household_intents`` mapping, or None for defaults.
+            wake_words: ``rooms.wake_word.words`` (or ``wake_word.words``).
+
+        Raises:
+            ValueError: A value is out of range, or compound execution is on.
+        """
+        section = section or {}
+        if not isinstance(section, Mapping):
+            raise ValueError("household_intents must be a mapping")
+        words = tuple(_fold(w).strip() for w in wake_words if isinstance(w, str) and w.strip())
+        return cls(
+            unvetoed_max_words=section.get("unvetoed_max_words", 6),
+            compound_max_parts=section.get("compound_max_parts", 3),
+            compound_execute=section.get("compound_execute", False),
+            wake_words=words,
+        )
+
+
+class HouseholdIntentClassifier:
+    """The one classifier instance shared by the router and the dispatcher.
+
+    Args:
+        settings: Household intent settings; defaults when None.
+    """
+
+    def __init__(self, settings: HouseholdIntentSettings | None = None) -> None:
+        self._settings = settings if settings is not None else HouseholdIntentSettings()
+
+    @property
+    def settings(self) -> HouseholdIntentSettings:
+        """Settings this classifier was built with."""
+        return self._settings
+
+    def classify(self, text: str) -> HouseholdIntent | None:
+        """Classify one utterance (see :func:`classify_household_intent`)."""
+        return classify_household_intent(text, wake_words=self._settings.wake_words,
+                                         max_compound_parts=self._settings.compound_max_parts)
+
+
+# --------------------------------------------------------------------------
+# Normalization
+# --------------------------------------------------------------------------
+
+_WORD_RE = re.compile(r"\d+(?:[:.]\d{2})?|[^\W\d_]+")
+_LEAD_WORDS = frozenset({"che", "ey", "oye", "hola", "porfa", "podes", "podrias", "puedes", "podras"})
+
+
+def _fold(text: str) -> str:
+    """Lowercase and strip accents ("ñ" folds to "n")."""
+    decomposed = unicodedata.normalize("NFD", text.lower())
+    return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
+
+
+@dataclass(frozen=True)
+class _Utterance:
+    """Tokens of one utterance: lowercase as heard, and accent-folded."""
+
+    original: tuple[str, ...]
+    folded: tuple[str, ...]
+
+    @property
+    def text(self) -> str:
+        return " ".join(self.folded)
+
+    @property
+    def heard(self) -> str:
+        return " ".join(self.original)
+
+    def __len__(self) -> int:
+        return len(self.folded)
+
+    def at(self, i: int) -> str:
+        return self.folded[i] if 0 <= i < len(self.folded) else ""
+
+    def slice(self, start: int, end: int | None = None) -> "_Utterance":
+        return _Utterance(self.original[start:end], self.folded[start:end])
+
+    def join(self, other: "_Utterance") -> "_Utterance":
+        return _Utterance(self.original + other.original, self.folded + other.folded)
+
+
+def _tokens(text: str) -> _Utterance:
+    original = tuple(_WORD_RE.findall((text or "").lower()))
+    return _Utterance(original, tuple(_fold(t) for t in original))
+
+
+def _normalize(text: str, wake_words: Iterable[str] = ()) -> _Utterance:
+    """Tokenize and strip leading wake words, politeness and trailing 'por favor'."""
+    utt = _tokens(text)
+    wakes = WAKE_TERMS | {_fold(w) for w in wake_words}
+    start, end = 0, len(utt)
+    for _ in range(6):
+        word = utt.at(start)
+        if word in wakes or word in _LEAD_WORDS:
+            start += 1
+        elif word == "por" and utt.at(start + 1) == "favor":
+            start += 2
+        else:
+            break
+    while end - start >= 2 and utt.folded[end - 2:end] == ("por", "favor"):
+        end -= 2
+    while end - start >= 1 and utt.folded[end - 1] == "porfa":
+        end -= 1
+    return utt.slice(start, end)
+
+
+# --------------------------------------------------------------------------
+# Lexicon (accent-folded)
+# --------------------------------------------------------------------------
+
+_ENCLITICS = ("noslo", "nosla", "melo", "mela", "selo", "sela", "me", "te", "le", "lo", "la", "nos", "les",
+              "los", "las")
+
+_CANCEL = "cancel"
+_CLEAR = "clear"
+_STOP = "stop"
+_STOP_RINGING = "stop_ringing"
+_PAUSE = "pause"
+_RESUME = "resume"
+_DISABLE = "disable"
+_CREATE = "create"
+_ADD = "add"
+_REMOVE = "remove"
+_ROUTINE_EXEC = "routine_exec"
+_ROUTINE_PROPOSE = "routine_propose"
+_INTERCOM = "intercom"
+_DOMOTICS = "domotics"
+_AUTOMATE = "automate"
+
+_VERB_FORMS: dict[str, frozenset[str]] = {}
+
+
+def _forms(cls: str, *words: str) -> None:
+    for word in words:
+        _VERB_FORMS[word] = _VERB_FORMS.get(word, frozenset()) | {cls}
+
+
+_forms(_CANCEL, "cancela", "cancele", "cancelen", "cancelar", "borra", "borre", "borren", "borrar", "elimina",
+       "elimine", "eliminar", "saca", "saque", "sacar", "quita", "quite", "quitar", "anula", "anule", "anular")
+_forms(_CLEAR, "vacia", "vacie", "vaciar", "limpia", "limpie", "limpiar")
+_forms(_STOP, "pare", "parar", "detene", "deten", "detenga", "detener", "frena", "frene", "frenar")
+_forms(_STOP_RINGING, "apaga", "apague", "apagar", "calla", "calle", "callar", "silencia", "silencie", "silenciar")
+_forms(_PAUSE, "pausa", "pause", "pausar")
+_forms(_RESUME, "segui", "sigue", "seguir", "continua", "continue", "continuar", "reanuda", "reanude", "reanudar")
+_forms(_DISABLE, "desactiva", "desactive", "desactivar")
+_forms(_CREATE, "pone", "pon", "ponga", "poner", "crea", "crear", "programa", "programe", "programar", "arranca",
+       "arranque", "arrancar", "inicia", "inicie", "iniciar", "activa", "active", "activar", "configura",
+       "configure", "configurar", "agenda", "agendar")
+_forms(_ADD, "agrega", "agregue", "agregar", "anadi", "anade", "anada", "anadir", "suma", "sume", "sumar", "anota",
+       "anote", "anotar")
+_forms(_REMOVE, "quita", "quite", "quitar", "saca", "saque", "sacar", "borra", "borre", "borrar", "elimina",
+       "elimine", "eliminar", "tacha", "tache", "tachar")
+_forms(_ROUTINE_EXEC, "ejecuta", "ejecute", "ejecutar", "corre", "corra", "correr", "lanza", "lance", "lanzar",
+       "arranca", "arranque", "arrancar", "inicia", "inicie", "iniciar", "pone", "pon", "ponga", "poner")
+_forms(_ROUTINE_PROPOSE, "crea", "crear", "arma", "arme", "armar", "hace", "haga", "hacer", "programa", "programe",
+       "programar", "activa", "active", "activar", "configura", "configure", "configurar", "agenda", "agendar")
+_forms(_AUTOMATE, "automatiza", "automatice", "automatizar")
+_forms(_INTERCOM, "anuncia", "anuncie", "anunciar", "avisa", "avise", "deci", "di", "diga")
+_forms(_DOMOTICS, "prende", "prenda", "prendan", "prender", "encende", "enciende", "encienda", "encender", "apaga",
+       "apague", "apaguen", "apagar", "sube", "subi", "suba", "subir", "baja", "baje", "bajen", "bajar", "abri",
+       "abre", "abra", "abrir", "cierra", "cerra", "cierre", "cerrar", "pone", "pon", "ponga", "poner", "activa",
+       "active", "activar", "desactiva", "desactive", "desactivar", "cambia", "cambie", "cambiar", "pausa",
+       "pause", "pausar", "segui", "sigue", "reproduci", "reproduce", "reproducir", "ilumina", "corta", "corte")
+
+_INFINITIVE_ENDINGS = ("ar", "er", "ir")
+
+_OBJECT_NOUNS: dict[str, HouseholdFamily] = {
+    "timer": HouseholdFamily.TIMER, "timers": HouseholdFamily.TIMER,
+    "temporizador": HouseholdFamily.TIMER, "temporizadores": HouseholdFamily.TIMER,
+    "recordatorio": HouseholdFamily.REMINDER, "recordatorios": HouseholdFamily.REMINDER,
+    "rutina": HouseholdFamily.ROUTINE, "rutinas": HouseholdFamily.ROUTINE,
+    "lista": HouseholdFamily.LIST, "listas": HouseholdFamily.LIST,
+}
+_DETERMINERS = frozenset({
+    "el", "la", "los", "las", "un", "una", "mi", "mis", "ese", "esa", "esos", "esas", "este", "esta", "estos",
+    "estas", "del", "al", "todos", "todas", "nuestro", "nuestra", "nuestros", "nuestras", "otro", "otra",
+})
+_ADJECTIVES = frozenset({"nuevo", "nueva", "nuevos", "nuevas"})
+_CONJUNCTIONS = frozenset({"y", "tambien", "despues", "luego"})
+_CONNECTORS = frozenset({"despues", "luego", "tambien", "ademas"})
+_CONTENT_MARKERS = frozenset({"que", "cuando", "si", "porque"})
+
+# Delete and clear verbs that reach the existing whole-list handler (user answer Q30).
+LIST_DELETE_VERBS = frozenset({"borra", "borre", "borrar", "elimina", "elimine", "eliminar"})
+LIST_CLEAR_VERBS = frozenset({"vacia", "vacie", "vaciar", "limpia", "limpie", "limpiar"})
+
+_REMINDER_HEAD = re.compile(
+    r"^(?:no (?:me|nos) dejes olvidar"
+    r"|hace(?:me|nos) acordar"
+    r"|(?:me|nos) (?:podes|podrias|puedes) (?:recordar|avisar)"
+    r"|(?:me|nos) (?:recordas|avisas)"
+    r"|recorda(?:me|nos|melo)|recuerda(?:me|nos|melo)|acorda(?:me|nos)|acuerda(?:me|nos)|avisa(?:me|nos)"
+    r"|recordar(?:me|nos)|avisar(?:me|nos)"
+    r"|(?P<other>recorda(?:le|les)|recuerda(?:le|les)|avisa(?:le|les)|recordar(?:le|les)|avisar(?:le|les)"
+    r"|(?:le|les) (?:podes|podrias|puedes) (?:recordar|avisar)))\b"
+)
+
+_NUMBER = (r"(?:\d+|un|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince"
+           r"|veinte|veinticinco|treinta|cuarenta|cincuenta|sesenta|noventa|media|medio|cuarto)")
+_DURATION = re.compile(rf"\b{_NUMBER}(?: y \w+)? (?:de )?(?:segundos?|minutos?|mins?|horas?)\b|\bmedia hora\b")
+_CLOCK = re.compile(r"\b(?:a|para) (?:las? )?(?:\d{1,2}(?:[:.]\d{2})?|una|dos|tres|cuatro|cinco|seis|siete|ocho"
+                    r"|nueve|diez|once|doce|mediodia|medianoche)\b")
+_INTERCOM_TARGET = re.compile(
+    r"\b(?:en|a|por) (?:el |la |los |las |toda la |todas las )?(?:casa|todos|parlantes|"
+    + "|".join(re.escape(alias) for alias in sorted(ROOM_ALIASES)) + r")\b")
+_NOTIFICATION = re.compile(r"\bno molestar\b|\bsolo (?:las )?urgen(?:tes|cias)\b")
+_MUSIC_WORDS = frozenset({"musica", "cancion", "canciones", "tema", "temas", "playlist", "spotify", "reproduccion",
+                          "album", "disco"})
+_QUERY_HEADS = frozenset({"que", "cuales", "cuantos", "cuantas"})
+_QUERY_VERBS = frozenset({"hay", "tengo", "tenemos", "quedan", "queda", "son", "tiene", "estan", "activos",
+                          "activas", "pendientes", "corriendo", "anda", "andan"})
+_READ_HEADS = frozenset({"decime", "dime", "leeme", "lee", "mostrame", "listame", "nombrame", "contame"})
+_ROOM_PREPS = (("del",), ("de", "la"), ("de", "el"), ("en", "el"), ("en", "la"), ("al",), ("a", "la"))
+_ENTITY_WORDS = frozenset(_fold(term) for terms in ENTITY_TERMS.values() for term in terms if " " not in term)
+_OPPOSITES = ({"turn_on", "turn_off"}, {"open", "close"}, {"media_play", "media_pause"})
+
+
+@dataclass(frozen=True)
+class _Verb:
+    form: str
+    classes: frozenset[str]
+    end: int
+    infinitive: bool = False
+
+
+def _verb_at(utt: _Utterance, i: int, *, strict: bool = False) -> _Verb | None:
+    """Head verb at token ``i``: its classes and the index after it.
+
+    ``strict`` accepts only imperative forms and the accented "pará" (the
+    unaccented "para" is a preposition); it is used for clause heads inside
+    a turn. Infinitives are accepted only at the head of the turn.
+    """
+    word = utt.at(i)
+    if not word:
+        return None
+    if word == "olvidate" and utt.at(i + 1) in ("de", "del"):
+        return _Verb("olvidate", frozenset({_CANCEL}), i + 2 if utt.at(i + 1) == "de" else i + 1)
+    if word == "para":
+        # Unaccented "para" is usually the preposition: it is a verb only when
+        # spoken "pará", or at the head of a turn with no other imperative.
+        if utt.original[i] != "pará" and (strict or any(
+                _verb_at(utt, k, strict=True) is not None for k in range(i + 1, len(utt)))):
+            return None
+        return _Verb("para", frozenset({_STOP}), i + 1)
+    candidates = [word] + [word[:-len(suffix)] for suffix in _ENCLITICS
+                           if word.endswith(suffix) and len(word) - len(suffix) >= 2]
+    for form in candidates:
+        classes = _VERB_FORMS.get(form)
+        if classes is None:
+            continue
+        infinitive = form.endswith(_INFINITIVE_ENDINGS)
+        if strict and infinitive:
+            return None
+        return _Verb(form, classes, i + 1, infinitive)
+    return None
+
+
+def _governed_object(utt: _Utterance, j: int, *, allow_adjective: bool = False) -> tuple[HouseholdFamily, int] | None:
+    """The object noun right after the verb and its determiners, if any."""
+    k = j
+    if utt.at(k) == "me":
+        k += 1
+    for _ in range(2):
+        if utt.at(k) in _DETERMINERS:
+            k += 1
+    if allow_adjective and utt.at(k) in _ADJECTIVES:
+        k += 1
+    family = _OBJECT_NOUNS.get(utt.at(k))
+    return (family, k) if family is not None else None
+
+
+# --------------------------------------------------------------------------
+# Rules
+# --------------------------------------------------------------------------
+
+def _rest(utt: _Utterance, start: int, *, skip: Iterable[str] = ()) -> str:
+    skip = frozenset(skip)
+    while start < len(utt) and utt.at(start) in skip:
+        start += 1
+    return " ".join(utt.original[start:])
+
+
+def _clause_head(utt: _Utterance, j: int) -> bool:
+    """An imperative verb, or a reminder verb, opens a clause at token ``j``."""
+    return _verb_at(utt, j, strict=True) is not None or _REMINDER_HEAD.match(" ".join(utt.folded[j:])) is not None
+
+
+def _has_second_clause(utt: _Utterance, start: int) -> bool:
+    for k in range(start, len(utt)):
+        if utt.at(k) not in _CONJUNCTIONS:
+            continue
+        j = k + 1
+        while utt.at(j) in _CONNECTORS:
+            j += 1
+        if _clause_head(utt, j):
+            return True
+    return False
+
+
+def _r3(utt: _Utterance) -> HouseholdIntent | None:
+    match = _REMINDER_HEAD.match(utt.text)
+    if match is None:
+        return None
+    used = len(match.group(0).split())
+    verb = utt.at(0)
+    if match.group("other"):
+        return HouseholdIntent(HouseholdFamily.REMINDER, HouseholdOperation.CREATE, "R3",
+                               _rest(utt, used), verb, reason="other_person")
+    if _has_second_clause(utt, used):
+        return HouseholdIntent(HouseholdFamily.REMINDER, HouseholdOperation.CLARIFY, "R3",
+                               _rest(utt, used, skip=("que", "de")), verb, reason="second_clause")
+    return HouseholdIntent(HouseholdFamily.REMINDER, HouseholdOperation.CREATE, "R3",
+                           _rest(utt, used, skip=("que", "de")), verb)
+
+
+_R1_OPERATIONS = (
+    (_CANCEL, HouseholdOperation.CANCEL), (_CLEAR, HouseholdOperation.CANCEL), (_STOP, HouseholdOperation.STOP),
+    (_STOP_RINGING, HouseholdOperation.STOP), (_PAUSE, HouseholdOperation.PAUSE),
+    (_RESUME, HouseholdOperation.RESUME), (_DISABLE, HouseholdOperation.DISABLE),
+)
+
+
+def _r1_object(utt: _Utterance, verb: _Verb) -> tuple[HouseholdFamily, HouseholdOperation, int] | None:
+    governed = _governed_object(utt, verb.end)
+    if governed is None:
+        return None
+    family, k = governed
+    for cls, operation in _R1_OPERATIONS:
+        if cls not in verb.classes:
+            continue
+        if cls == _CLEAR and family is not HouseholdFamily.LIST:
+            continue
+        return family, operation, k
+    return None
+
+
+def _query(utt: _Utterance) -> HouseholdIntent | None:
+    head = utt.at(0)
+    nouns = [(k, _OBJECT_NOUNS[w]) for k, w in enumerate(utt.folded) if w in _OBJECT_NOUNS]
+    if not nouns:
+        return None
+    k, family = nouns[0]
+    if head == "cuanto" and family is HouseholdFamily.TIMER and {"falta", "queda"} & set(utt.folded[:5]):
+        return HouseholdIntent(family, HouseholdOperation.QUERY, "R1", _rest(utt, k + 1), head)
+    if head in _QUERY_HEADS and _QUERY_VERBS & set(utt.folded):
+        return HouseholdIntent(family, HouseholdOperation.QUERY, "R1", _rest(utt, k + 1), head)
+    if head in _READ_HEADS:
+        governed = _governed_object(utt, 1)
+        if governed is not None:
+            return HouseholdIntent(governed[0], HouseholdOperation.QUERY, "R1", _rest(utt, governed[1] + 1), head)
+    return None
+
+
+def _r1(utt: _Utterance) -> HouseholdIntent | None:
+    verb = _verb_at(utt, 0)
+    if verb is not None:
+        found = _r1_object(utt, verb)
+        if found is not None:
+            family, operation, k = found
+            return HouseholdIntent(family, operation, "R1", _rest(utt, k + 1), verb.form)
+    return _query(utt)
+
+
+def _list_target_follows(utt: _Utterance) -> bool:
+    """'... a/en la lista' (an item goes into a list), not 'poné la lista'."""
+    for k in range(len(utt) - 1):
+        if utt.at(k) in ("a", "en") and utt.at(k + 1) in ("la", "mi", "nuestra") and utt.at(k + 2) in ("lista", "listas"):
+            return True
+    return False
+
+
+def _r2(utt: _Utterance) -> HouseholdIntent | None:
+    verb = _verb_at(utt, 0)
+    if verb is None:
+        if utt.at(0) in ("timer", "temporizador") and utt.at(1) in ("de", "para", "por"):
+            return HouseholdIntent(HouseholdFamily.TIMER, HouseholdOperation.CREATE, "R2", _rest(utt, 1))
+        return None
+    if _CREATE in verb.classes:
+        governed = _governed_object(utt, verb.end, allow_adjective=True)
+        if governed is not None and governed[0] is HouseholdFamily.TIMER:
+            return HouseholdIntent(HouseholdFamily.TIMER, HouseholdOperation.CREATE, "R2",
+                                   _rest(utt, governed[1] + 1), verb.form)
+        if governed is not None and governed[0] is HouseholdFamily.LIST and verb.form not in ("pone", "pon", "ponga", "poner"):
+            return HouseholdIntent(HouseholdFamily.LIST, HouseholdOperation.CREATE, "R2",
+                                   _rest(utt, governed[1] + 1), verb.form)
+    words = set(utt.folded)
+    if not words & {"lista", "listas"}:
+        return None
+    if _ADD in verb.classes:
+        return HouseholdIntent(HouseholdFamily.LIST, HouseholdOperation.ADD_ITEM, "R2", _rest(utt, verb.end), verb.form)
+    if verb.form in ("pone", "pon", "ponga", "poner") and _list_target_follows(utt) and not words & _MUSIC_WORDS:
+        return HouseholdIntent(HouseholdFamily.LIST, HouseholdOperation.ADD_ITEM, "R2", _rest(utt, verb.end), verb.form)
+    if _REMOVE in verb.classes:
+        return HouseholdIntent(HouseholdFamily.LIST, HouseholdOperation.REMOVE_ITEM, "R2", _rest(utt, verb.end),
+                               verb.form)
+    return None
+
+
+_ALARM_VERBS = frozenset({"pone", "pon", "ponga", "poner", "programa", "programe", "programar", "crea", "crear",
+                          "configura", "configure", "configurar", "agenda", "agendar"})
+
+
+def _r3a(utt: _Utterance) -> HouseholdIntent | None:
+    if utt.at(0) in ("alarma", "despertador"):
+        k = 0
+        verb = ""
+    else:
+        found = _verb_at(utt, 0)
+        if found is None or found.form not in _ALARM_VERBS:
+            return None
+        k = found.end
+        if utt.at(k) == "me":
+            k += 1
+        if utt.at(k) in _DETERMINERS:
+            k += 1
+        if utt.at(k) not in ("alarma", "despertador"):
+            return None
+        verb = found.form
+    rest = " ".join(utt.folded[k + 1:])
+    complement = _rest(utt, k + 1)
+    if _DURATION.search(rest):
+        return HouseholdIntent(HouseholdFamily.TIMER, HouseholdOperation.CREATE, "R3a", complement, verb,
+                               reason="duration")
+    if _CLOCK.search(rest):
+        return HouseholdIntent(HouseholdFamily.REMINDER, HouseholdOperation.CREATE, "R3a", complement, verb,
+                               reason="clock_time")
+    return HouseholdIntent(HouseholdFamily.TIMER, HouseholdOperation.CLARIFY, "R3a", complement, verb,
+                           reason="no_time")
+
+
+def _r4(utt: _Utterance) -> HouseholdIntent | None:
+    verb = _verb_at(utt, 0)
+    if verb is None or _DOMOTICS not in verb.classes:
+        return None
+    if non_immediate_action_reason(utt.heard) != "non_immediate:deferred":
+        return None
+    return HouseholdIntent(HouseholdFamily.DEFERRED_ACTION, HouseholdOperation.CREATE, "R4", utt.heard, verb.form)
+
+
+def _r6(utt: _Utterance) -> HouseholdIntent | None:
+    verb = _verb_at(utt, 0)
+    if verb is not None and _AUTOMATE in verb.classes:
+        return HouseholdIntent(HouseholdFamily.ROUTINE, HouseholdOperation.PROPOSE, "R6", _rest(utt, verb.end),
+                               verb.form)
+    if verb is not None:
+        governed = _governed_object(utt, verb.end, allow_adjective=True)
+        if governed is not None and governed[0] is HouseholdFamily.ROUTINE:
+            if _ROUTINE_EXEC in verb.classes:
+                operation = HouseholdOperation.EXECUTE
+            elif _ROUTINE_PROPOSE in verb.classes:
+                operation = HouseholdOperation.PROPOSE
+            else:
+                operation = None
+            if operation is not None:
+                return HouseholdIntent(HouseholdFamily.ROUTINE, operation, "R6", _rest(utt, governed[1] + 1),
+                                       verb.form)
+    if _NOTIFICATION.search(utt.text):
+        disable = verb is not None and bool(verb.classes & {_DISABLE, _CANCEL, _STOP_RINGING})
+        return HouseholdIntent(HouseholdFamily.NOTIFICATION,
+                               HouseholdOperation.DISABLE if disable else HouseholdOperation.EXECUTE, "R6",
+                               utt.heard, verb.form if verb is not None else "")
+    if verb is not None and _INTERCOM in verb.classes and not verb.infinitive:
+        if verb.form.startswith("anunci") or _INTERCOM_TARGET.search(" ".join(utt.folded[verb.end:])):
+            return HouseholdIntent(HouseholdFamily.INTERCOM, HouseholdOperation.EXECUTE, "R6",
+                                   _rest(utt, verb.end), verb.form)
+    return None
+
+
+_SINGLE_RULES = (_r3, _r1, _r2, _r3a, _r4, _r6)
+
+
+def _classify_single(utt: _Utterance) -> HouseholdIntent | None:
+    for rule in _SINGLE_RULES:
+        found = rule(utt)
+        if found is not None:
+            return found
+    return None
+
+
+# --------------------------------------------------------------------------
+# R5: compound pre-split
+# --------------------------------------------------------------------------
+
+def _split_clauses(utt: _Utterance) -> list[_Utterance]:
+    """(a) Imperative clauses joined by y/también/y después/y luego."""
+    segments, start = [], 0
+    for k in range(1, len(utt)):
+        if utt.at(k) not in _CONJUNCTIONS or k <= start:
+            continue
+        if _CONTENT_MARKERS & set(utt.folded[start:k]):
+            return []
+        j = k + 1
+        while utt.at(j) in _CONNECTORS:
+            j += 1
+        if not _clause_head(utt, j):
+            continue
+        segments.append(utt.slice(start, k))
+        start = j
+    if not segments:
+        return []
+    segments.append(utt.slice(start))
+    return segments
+
+
+def _split_objects(utt: _Utterance, verb: _Verb) -> list[_Utterance]:
+    """(b) One verb governing two or more household object nouns."""
+    first = _r1_object(utt, verb)
+    if first is None:
+        return []
+    family, _, k = first
+    if family is HouseholdFamily.REMINDER and utt.at(k + 1) in ("de", "para", "que"):
+        return []
+    splits = []  # (conjunction index, start of the next object phrase)
+    for c in range(k + 1, len(utt)):
+        if utt.at(c) != "y":
+            continue
+        j = c + 1
+        if utt.at(j) == "tambien":
+            j += 1
+        if _governed_object(utt, j) is not None:
+            splits.append((c, j))
+    if not splits:
+        return []
+    head = utt.slice(0, verb.end)
+    segments = [utt.slice(0, splits[0][0])]
+    for index, (_, start) in enumerate(splits):
+        end = splits[index + 1][0] if index + 1 < len(splits) else None
+        segments.append(head.join(utt.slice(start, end)))
+    return segments
+
+
+def _room_prep_at(utt: _Utterance, k: int) -> int:
+    for prep in _ROOM_PREPS:
+        if utt.folded[k:k + len(prep)] == prep and utt.at(k + len(prep)) in ROOM_ALIASES:
+            return len(prep)
+    return 0
+
+
+def _split_targets(utt: _Utterance, verb: _Verb) -> list[_Utterance]:
+    """(c) One domotics verb with two or more targets by deterministic ellipsis."""
+    if _DOMOTICS not in verb.classes or set(utt.folded) & {"lista", "listas"}:
+        return []
+    for c in range(verb.end, len(utt)):
+        if utt.at(c) != "y":
+            continue
+        if _CONTENT_MARKERS & set(utt.folded[:c]):
+            return []
+        j = c + 1
+        if utt.at(j) == "tambien":
+            j += 1
+        if _room_prep_at(utt, j):
+            first = utt.slice(0, c)
+            room_at = next((k for k in range(verb.end, c) if _room_prep_at(utt, k)), c)
+            return [first, utt.slice(0, room_at).join(utt.slice(j))]
+        k = j + 1 if utt.at(j) in _DETERMINERS else j
+        if utt.at(k) in _ENTITY_WORDS and k > j:
+            return [utt.slice(0, c), utt.slice(0, verb.end).join(utt.slice(j))]
+    return []
+
+
+def _deferred(intent: HouseholdIntent | None, segment: _Utterance) -> bool:
+    if intent is None:
+        return non_immediate_action_reason(segment.heard) == "non_immediate:deferred"
+    return (intent.family is HouseholdFamily.DEFERRED_ACTION
+            or (intent.family is HouseholdFamily.REMINDER and intent.operation is HouseholdOperation.CREATE))
+
+
+def _conflicting(segments: list[_Utterance], intents: list[HouseholdIntent | None]) -> bool:
+    seen: dict[tuple[str | None, str | None], set[str]] = {}
+    for segment, intent in zip(segments, intents):
+        if intent is not None:
+            continue
+        parsed = parse_command(segment.heard)
+        if parsed.intent is None:
+            continue
+        seen.setdefault((parsed.domain, parsed.room), set()).add(parsed.intent)
+    return any(pair <= operations for operations in seen.values() for pair in _OPPOSITES)
+
+
+def _r5(utt: _Utterance, max_parts: int) -> HouseholdIntent | None:
+    verb = _verb_at(utt, 0)
+    if verb is None:
+        return None
+    segments = _split_clauses(utt) or _split_objects(utt, verb) or _split_targets(utt, verb)
+    if len(segments) < 2:
+        return None
+
+    def clarify(reason: str) -> HouseholdIntent:
+        return HouseholdIntent(HouseholdFamily.COMPOUND, HouseholdOperation.CLARIFY, "R5", utt.heard, verb.form,
+                               reason=reason)
+
+    if len(segments) > max_parts:
+        return clarify("too_many_parts")
+    intents = [_classify_single(segment) for segment in segments]
+    for segment, intent in zip(segments, intents):
+        if _deferred(intent, segment):
+            return clarify("deferred_part")
+        if intent is not None and intent.operation is HouseholdOperation.CLARIFY:
+            return clarify("unparsed_part")
+        if intent is None and parse_command(segment.heard).quality != "full" \
+                and parse_home_command(segment.heard) is None:
+            return clarify("unparsed_part")
+    if _conflicting(segments, intents):
+        return clarify("conflicting_parts")
+    parts = tuple(HouseholdPart(segment.heard, intent) for segment, intent in zip(segments, intents))
+    return HouseholdIntent(HouseholdFamily.COMPOUND, HouseholdOperation.EXECUTE, "R5", utt.heard, verb.form,
+                           parts=parts)
+
+
+# --------------------------------------------------------------------------
+# Public API
+# --------------------------------------------------------------------------
+
+def classify_household_intent(text: str, *, wake_words: Iterable[str] = (),
+                              max_compound_parts: int = 3) -> HouseholdIntent | None:
+    """Claim a turn for a household family, or return None to leave it unclaimed.
+
+    Pure (no I/O, no logging); the router and the dispatcher call it on the
+    same text and must agree.
+
+    Args:
+        text: Utterance as transcribed (wake words may still be present).
+        wake_words: Configured wake words to strip besides the grammar's.
+        max_compound_parts: More compound parts make the compound CLARIFY.
+
+    Returns:
+        The claimed intent, or None when no rule claims the turn.
+    """
+    utt = _normalize(text, wake_words)
+    if not len(utt):
+        return None
+    found = _r3(utt)
+    if found is not None:
+        return found
+    found = _r5(utt, max_compound_parts)
+    if found is not None:
+        return found
+    for rule in (_r1, _r2, _r3a, _r4, _r6):
+        found = rule(utt)
+        if found is not None:
+            return found
+    return None
+
+
+def starts_with_reminder_request(text: str, wake_words: Iterable[str] = ()) -> bool:
+    """True when the utterance's head is a reminder or deferral verb (R3).
+
+    Used by the grammar's ``non_immediate_action_reason`` as a second guard
+    so "recordame apagar la luz" never becomes an immediate action.
+    """
+    return _REMINDER_HEAD.match(_normalize(text, wake_words).text) is not None
