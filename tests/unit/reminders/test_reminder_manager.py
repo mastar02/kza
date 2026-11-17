@@ -302,3 +302,49 @@ async def test_an_article_and_number_before_a_content_word_is_content(store, lit
     # A time after the number is still read as one.
     timed = await manager.resolve(None, f"de {other} de las {literal.split()[2]}", shared_only=True)
     assert timed.match is CancelMatch.UNIQUE and timed.reminder.id != named.id
+
+
+_DOCUMENTED_FORMS = ((12, 3, 0), (11, 15, 0), (11, 8, 15), (11, 8, 30), (11, 20, 30))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("query", "expected"), [
+    ("de las 3 de la madrugada", {"03:00"}), ("de las 3 de la tarde", {"15:00"}),
+    ("de las 8 y cuarto", {"08:15"}), ("de las 8.30", {"08:30", "20:30"}), ("de las 8.30 de la noche", {"20:30"}),
+    ("de tomar agua de las 8:30 de la mañana", {"08:30"}),
+])
+async def test_every_documented_clock_form_selects_its_time(store, query, expected):
+    """'de la madrugada', 'y cuarto' and '8.30' are times (review T032-U1-R4)."""
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    by_time = {}
+    for day, hour, minute in _DOCUMENTED_FORMS:
+        reminder = await _shared(manager, "tomar agua", _local(2026, 11, day, hour, minute).timestamp())
+        by_time[reminder.id] = f"{hour:02d}:{minute:02d}"
+    resolution = await manager.resolve(None, query, shared_only=True)
+    found = {resolution.reminder.id} if resolution.reminder else {r.id for r in resolution.candidates}
+    assert {by_time[i] for i in found} == expected
+    assert resolution.match is (CancelMatch.UNIQUE if len(expected) == 1 else CancelMatch.AMBIGUOUS)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("text", "query"), [("regar la flor", "de regar las flores"),
+                                             ("regar las flores", "de regar la flor")])
+async def test_an_es_plural_matches_its_singular(manager, text, query):
+    """'flores' and 'flor' are one word (review T032-U1-R4)."""
+    flower = await _shared(manager, text)
+    await _shared(manager, "regar el pasto")
+    found = await manager.resolve(None, query, shared_only=True)
+    assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, flower.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("number", ["25", "8:75"])
+async def test_an_impossible_clock_time_is_a_word_of_the_reminder(store, number):
+    """'las 25' is not a time, so it stays content and still names the reminder (review T032-U1-R4)."""
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    quota = await _shared(manager, f"pagar la cuota de las {number}", _local(2026, 11, 11, 9, 0).timestamp())
+    await _shared(manager, "pagar la cuota", _local(2026, 11, 11, 9, 0).timestamp())
+    found = await manager.resolve(None, f"de pagar la cuota de las {number}", shared_only=True)
+    assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, quota.id)
