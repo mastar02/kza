@@ -2084,9 +2084,18 @@ class NetworkLedger:
 # Method identity, closure, environment (method_identity, statistics.before_after, quiet_machine).
 # --------------------------------------------------------------------------------------------
 
+C_LOCALE_ENV = {'LC_ALL': 'C', 'LANG': 'C'}
+
+
 def run_text(command: list, *, timeout: float = 30) -> str:
+    """Run a command whose output is parsed: always under the C locale.
+
+    A Spanish macOS locale prints decimal commas ('24,75' from sysctl vm.loadavg, '0:01,23' from ps time=),
+    which the parsers read as numbers with a dot (harness fix found on the first Mac smoke, 2026-11-17).
+    """
     try:
-        return subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False).stdout
+        return subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False,
+                              env={**os.environ, **C_LOCALE_ENV}).stdout
     except (OSError, subprocess.TimeoutExpired):
         return ''
 

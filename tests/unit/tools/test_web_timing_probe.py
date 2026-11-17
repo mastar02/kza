@@ -2579,3 +2579,17 @@ async def test_minimise_check_addresses_only_the_probe_window_never_chrome_by_ap
     assert not check({'outcome': Outcome.INVALID,
                       'facts': {'environment_faults': ['timed_harness_error:CdpError:Browser.setWindowBounds']}})['ok']
     assert not check({'outcome': Outcome.VALID, 'facts': {'environment_faults': []}})['ok']
+
+
+def test_parsed_subprocess_output_runs_under_the_c_locale(monkeypatch):
+    """Harness fix (first Mac smoke, 2026-11-17): a Spanish locale printed '24,75' and broke parse_loadavg."""
+    seen = {}
+
+    def fake_run(command, **kwargs):
+        seen.update(kwargs.get('env') or {})
+        return probe.subprocess.CompletedProcess(command, 0, stdout='{ 24.75 20.00 18.00 }\n')
+
+    monkeypatch.setenv('LC_ALL', 'es_UY.UTF-8')
+    monkeypatch.setattr(probe.subprocess, 'run', fake_run)
+    assert probe.parse_loadavg(probe.run_text(['sysctl', '-n', 'vm.loadavg'])) == 24.75
+    assert seen.get('LC_ALL') == 'C' and seen.get('LANG') == 'C'
