@@ -196,10 +196,32 @@ def _parse_query(query: str) -> _ParsedQuery:
     return _ParsedQuery(content, clock, day, clock_phrase, tuple(day_words))
 
 
+def _hour_of(word: str) -> int | None:
+    """The hour an hour word or plain number names ("una" -> 1, "1" -> 1, "13" -> 13)."""
+    if word in _HOUR_WORDS:
+        return _HOUR_WORDS[word]
+    return int(word) if word.isdecimal() else None
+
+
+def _same_token(text_word: str, phrase_word: str, after_article: bool) -> bool:
+    """Tokens are equal; after "la"/"las" an hour word equals its digits ("la una" = "la 1")."""
+    if text_word == phrase_word:
+        return True
+    if not after_article:
+        return False
+    hour = _hour_of(phrase_word)
+    return hour is not None and hour == _hour_of(text_word)
+
+
+def _phrase_at(text: list[str], k: int, phrase: tuple[str, ...]) -> bool:
+    """The folded text tokens hold ``phrase`` at ``k`` (review FV2-2: "las dos" = "las 2")."""
+    return len(text) - k >= len(phrase) and all(
+        _same_token(text[k + j], word, j > 0 and phrase[j - 1] in ("la", "las")) for j, word in enumerate(phrase))
+
+
 def _contains_phrase(text: list[str], phrase: tuple[str, ...]) -> bool:
     """The folded text tokens hold ``phrase`` as contiguous tokens."""
-    size = len(phrase)
-    return size > 0 and any(tuple(text[k:k + size]) == phrase for k in range(len(text) - size + 1))
+    return len(phrase) > 0 and any(_phrase_at(text, k, phrase) for k in range(len(text) - len(phrase) + 1))
 
 
 def _spans(words: list[str]) -> tuple[_SpokenClock | None, range, _SpokenDay | None, range]:
