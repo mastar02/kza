@@ -1926,6 +1926,19 @@ unidad SC-5b. Evidencia: `t040-t041/sc5b-evidence.json` (local).
   recuperación ni `--accept-regressed-source` (salida L4 mientras exista) y
   la sombra de `adopt --dry-run` todavía en `$TMPDIR`
   (`kza-adopt-dry-run-*`).
+- Revisión independiente, ronda 1 (2026-11-17): `changes_needed`, 3
+  hallazgos medios (SC5B-R1 a R3), 6 bajos (R4 a R9) y 2 informativos (R10,
+  R11 sin cambio), cada uno en su commit. CI se instala sin servir H (arrancar
+  la unidad recuperaría K'); `io_error` del retiro se rutea por fase (después
+  de `retire_started` sólo `retire` o `resume`); `adopt --dry-run` también
+  corre en T0F y en el `not_closed` del T0, con la limpieza ahí; fila por
+  defecto del retiro; `retire` en vez de `resume` para enlaces; `verified`
+  diferido va primero al retiro; el desajuste de descarte con `equal` o
+  `loss_only` saca `--discard-k-changes`; L4 trae de vuelta los datos
+  borrados (PA y DO); «Compactación trabada» con la forma extraída. Los 16
+  mutantes de la revisión sobrevivían al test de docs; ahora 32 de 32
+  muertos (los 16, uno más de CI, 14 de los arreglos y un control). Detalle
+  en la evidencia (`review_round_1`).
 
 ## Prompt para la sesión nueva
 
