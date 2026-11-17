@@ -31,6 +31,7 @@ import src.pipeline.multi_room_audio_loop as mra_mod
 from src.audio.owned_input import OwnedInputStream
 from src.pipeline.multi_room_audio_loop import (
     MultiRoomAudioLoop,
+    PortAudioReset,
     RoomStream,
     CHUNK_SIZE,
     _resolve_capture_channels,
@@ -1998,6 +1999,8 @@ class TestLateMicrophoneCatalogRefresh:
             assert "living" not in rig.loop._streams and "cocina" not in rig.loop._streams
             assert rig.loop._catalog_missing == {"cocina": rig.COCINA_CARD, "living": rig.LIVING_CARD}
             assert rig.loop._catalog_reinit_failures == 1
+            # Un reset fallido no re-escaneó nada: no cuenta como refresco inútil.
+            assert rig.loop._catalog_futile == {}
             # Backoff corto = techo del backoff de reapertura (0.002 s en el rig).
             rig.clock[0] = 1000.001
             await rig.spin(20)
@@ -2039,8 +2042,46 @@ class TestLateMicrophoneCatalogRefresh:
         fake_sd._initialized = 1
         fake_sd._terminate.side_effect = RuntimeError("terminate failed")
         with patch("src.pipeline.multi_room_audio_loop.sd", fake_sd):
-            assert loop._reinit_portaudio() is True
+            assert loop._reinit_portaudio() is PortAudioReset.UNCHANGED
         fake_sd._initialize.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_terminate_failure_does_not_count_the_refresh_as_futile(self, tmp_path):
+        """Sin re-scan no se sabe si la card sigue sin listarse (T025-U2-RV3-5)."""
+        rig = _LateCatalogRig(tmp_path)  # un re-scan real SÍ la listaría
+        rig.plug_cocina()
+        rig.sd._initialized = 1
+        rig.sd._terminate.side_effect = RuntimeError("terminate failed")
+        with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
+        ):
+            await rig.start()
+            await _until(lambda: rig.refreshes == 1)
+            await _until(lambda: rig.loop._recovery_task is None)
+            await rig.stop()
+        rig.sd._initialize.assert_not_called()
+        assert rig.loop._catalog_futile == {}
+        assert rig.loop._catalog_deaf_refreshes == 0
+        assert rig.loop._catalog_reinit_failures == 0
+        assert rig.loop._catalog_missing == {"cocina": rig.COCINA_CARD}
+
+    @pytest.mark.asyncio
+    async def test_failed_initialize_in_the_watchdog_recovery_gets_the_short_backoff(self, tmp_path):
+        """La recuperación global del watchdog también anota el reinit fallido (RV3-5)."""
+        rig = _LateCatalogRig(tmp_path)
+        _RealisticPortAudio(rig, init_failures=1)
+        rig.loop._watchdog_backoff_max_s = 10.0
+        with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
+        ):
+            await _seed_owned_inputs(rig.loop, {"living": rig.old_living})
+            # Living dejó de entregar y no hay otra room sana: recuperación global.
+            await rig.loop._recover_streams(["living"])
+            assert rig.sd._initialize.call_count == 1
+            assert rig.loop._catalog_reinit_failures == 1
+            assert rig.loop._catalog_refresh_wait_s() == 10.0
+            assert rig.loop._catalog_refreshed_at is None, "no es un refresco del catálogo"
+            await rig.stop()
 
     @pytest.mark.asyncio
     async def test_a_notice_during_the_portaudio_reset_waits_for_it(self, tmp_path, monkeypatch):

@@ -16,6 +16,7 @@ from collections import deque
 from contextvars import Context
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from enum import Enum
 from threading import Event, Lock
 from pathlib import Path
 from typing import Callable, Awaitable, Optional
@@ -205,6 +206,17 @@ class RoomStream:
     # watchdog distinga "abrió y todavía no entregó" (gracia larga) de
     # "entregaba y dejó de entregar" (timeout corto).
     opened_ts: float = 0.0
+
+
+class PortAudioReset(Enum):
+    """Outcome of a PortAudio terminate+initialize (T025-U2-RV3-5)."""
+
+    # Terminated and initialized again: the device list was re-read.
+    RESCANNED = "rescanned"
+    # Terminate failed while still initialized: the old device list is kept.
+    UNCHANGED = "unchanged"
+    # Initialize failed: no stream can open until a later reset.
+    UNINITIALIZED = "uninitialized"
 
 
 class _CaptureHolder:
@@ -1410,7 +1422,7 @@ class MultiRoomAudioLoop:
         rs.opened_ts = time.monotonic()
         rs.last_frame_ts = 0.0
 
-    def _reinit_portaudio(self) -> bool:
+    def _reinit_portaudio(self) -> PortAudioReset:
         """Force PortAudio to re-scan the device list (sync; fail-open).
 
         PortAudio snapshots devices at Pa_Initialize and never re-scans. After a
@@ -1424,8 +1436,10 @@ class MultiRoomAudioLoop:
         reset or no microphone could ever open again (T025-U2-RV2-1).
 
         Returns:
-            True when PortAudio is initialized afterwards; False when it was
-            left uninitialized and no stream can open until a later reset.
+            ``RESCANNED`` when the device list was re-read; ``UNCHANGED``
+            when terminate failed while PortAudio stayed initialized, so its
+            old list is kept (no re-scan happened); ``UNINITIALIZED`` when it
+            was left uninitialized and no stream can open until a later reset.
         """
         try:
             sd._terminate()
@@ -1436,13 +1450,13 @@ class MultiRoomAudioLoop:
                 # Still initialized with its old catalog: initializing again
                 # would only nest sounddevice's count, and a later terminate
                 # would then never re-scan.
-                return True
+                return PortAudioReset.UNCHANGED
         try:
             sd._initialize()
         except Exception as e:
             logger.warning(f"[audio-watchdog] PortAudio reinit failed: {e}")
-            return False
-        return True
+            return PortAudioReset.UNINITIALIZED
+        return PortAudioReset.RESCANNED
 
     def _note_catalog_gap(self, rs: RoomStream) -> None:
         """Record whether a configured card is in sysfs but not in PortAudio.
@@ -1655,7 +1669,7 @@ class MultiRoomAudioLoop:
         """Record whether the last PortAudio reset left it initialized.
 
         Args:
-            ready: Result of ``_reinit_portaudio``.
+            ready: Whether ``_reinit_portaudio`` left PortAudio initialized.
         """
         if ready:
             self._catalog_reinit_failures = 0
@@ -1875,7 +1889,7 @@ class MultiRoomAudioLoop:
                     if output_busy and catalog_refresh:
                         blocker = 'response'
                 if blocker is None:
-                    outcome: list[bool] = []
+                    outcome: list[PortAudioReset] = []
 
                     def reset_catalog() -> None:
                         try:
@@ -1889,8 +1903,10 @@ class MultiRoomAudioLoop:
                         # Also when the reset was not admitted; idempotent.
                         self._release_output(hold)
                     if outcome:
-                        self._note_catalog_reinit(outcome[0])
-                        refreshed = catalog_refresh and outcome[0]
+                        self._note_catalog_reinit(outcome[0] is not PortAudioReset.UNINITIALIZED)
+                        # Only a real re-scan can tell whether a card is
+                        # still unlisted (RV3-5).
+                        refreshed = catalog_refresh and outcome[0] is PortAudioReset.RESCANNED
                 else:
                     # Never reset PortAudio under a starting command or a
                     # playing response; the cut already happened, so reopen.
