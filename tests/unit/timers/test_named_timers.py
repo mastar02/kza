@@ -73,10 +73,20 @@ async def test_ring_and_warning_name_the_timer_by_label_or_duration(monkeypatch)
     await timers._announce_complete(timers.create_timer("pasta", 300))
     await timers._announce_warning(timers.create_timer("", 90), 30)
     await timers._announce_warning(SimpleNamespace(name="salsa", zone_id="default"), 60)
+    await timers._announce_warning(timers.create_timer("", 300), 60)
+    await timers._announce_warning(timers.create_timer("arroz", 7200), 3600)
+    await timers._announce_warning(timers.create_timer("", 10), 5)
+    await timers._announce_warning(timers.create_timer("té", 10), 1)
+    # T030-U1 R4: the warning names the timer like the ring and agrees in number ("1 minuto", not "1 minutos").
     assert [call.args for call in spoken.await_args_list] == (
         [("¡Terminó el temporizador de 5 minutos!", "zone_hall")] * 3
         + [("¡Terminó el temporizador de pasta!", "default")] * 3
-        + [("Quedan 30 segundos para 1 minuto y 30 segundos", "default"), ("Quedan 1 minutos para salsa", "default")])
+        + [("Al temporizador de 1 minuto y 30 segundos le quedan 30 segundos.", "default"),
+           ("Al temporizador de salsa le queda 1 minuto.", "default"),
+           ("Al temporizador de 5 minutos le queda 1 minuto.", "default"),
+           ("Al temporizador de arroz le queda 1 hora.", "default"),
+           ("Al temporizador de 10 segundos le quedan 5 segundos.", "default"),
+           ("Al temporizador de té le queda 1 segundo.", "default")])
 
 
 async def test_legacy_create_and_ring_logs_carry_no_label(caplog):

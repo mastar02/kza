@@ -560,13 +560,13 @@ class NamedTimerManager:
     # ==================== Anuncios ====================
 
     async def _announce_warning(self, timer: NamedTimer, seconds_left: int):
-        """Anunciar advertencia de tiempo"""
-        if seconds_left >= 60:
-            time_str = f"{seconds_left // 60} minutos"
-        else:
-            time_str = f"{seconds_left} segundos"
+        """Announce the time left, naming the timer like its ring does.
 
-        message = f"Quedan {time_str} para {_spoken_name(timer)}"
+        "Al temporizador de pasta le queda 1 minuto." / "Al temporizador de
+        5 minutos le quedan 30 segundos." (T030-U1 R4).
+        """
+        verb = "queda" if seconds_left in (1, 60, 3600) else "quedan"
+        message = f"Al temporizador {_describe(timer)} le {verb} {format_duration(seconds_left)}."
         logger.info("Timer warning id=%s seconds_left=%d", getattr(timer, "timer_id", None), seconds_left)
 
         if self._on_timer_warning:
