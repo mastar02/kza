@@ -431,6 +431,11 @@ class MultiRoomAudioLoop:
         # did not list that card). Dropped when the card leaves sysfs, comes
         # back with another number, or is listed.
         self._catalog_futile: dict[str, tuple[int, int]] = {}
+        # Consecutive refreshes that ran while no microphone was capturing and
+        # still left a card unlisted. The cut interrupts nothing then, so the
+        # next refresh waits only the short backoff and the futile streak
+        # above, which protects working rooms, does not grow (T025-U2-RV3-1).
+        self._catalog_deaf_refreshes = 0
         self._watchdog_task = None
         self._recovery_task = None
         self._recovery_epoch = 0
@@ -1546,8 +1551,44 @@ class MultiRoomAudioLoop:
         if callable(release):
             release(token)
 
+    def _capture_working(self) -> bool:
+        """Whether a brief all-room capture cut would interrupt a microphone.
+
+        Returns:
+            True when some room has an open stream that delivered audio within
+            the watchdog timeout, or was opened and is still inside its
+            first-frame grace; False when every room is deaf.
+        """
+        now = time.monotonic()
+        for room_id, rs in self.room_streams.items():
+            if room_id not in self._streams:
+                continue
+            if rs.last_frame_ts > 0.0:
+                if now - rs.last_frame_ts <= self._watchdog_timeout_s:
+                    return True
+            elif rs.opened_ts > 0.0 and now - rs.opened_ts <= self._watchdog_first_frame_grace_s:
+                return True
+        return False
+
+    def _catalog_short_wait_s(self, attempts: int) -> float:
+        """Reopen backoff ceiling doubled per consecutive attempt, capped at the interval."""
+        exponent = min(max(attempts, 1) - 1, 16)
+        return min(self._watchdog_backoff_max_s * 2 ** exponent, self._catalog_refresh_interval_s)
+
+    def _catalog_futile_wait_s(self, room_id: str | None) -> float:
+        """The interval, doubled per refresh that left this room's card unlisted, up to the ceiling."""
+        interval = self._catalog_refresh_interval_s
+        futile = self._catalog_futile.get(room_id) if room_id is not None else None
+        if futile is None:
+            return interval
+        return min(interval * 2 ** min(futile[1] - 1, 16), self._catalog_refresh_ceiling_s)
+
     def _catalog_refresh_wait_s(self, room_id: str | None = None) -> float:
         """Minimum time between two catalog refresh cuts.
+
+        The interval and the futile backoff only protect working rooms from
+        the cut. When nothing captures, a refresh cuts nothing and the house
+        stays deaf until one succeeds.
 
         Args:
             room_id: Room asking for the refresh; its card may have survived
@@ -1556,21 +1597,19 @@ class MultiRoomAudioLoop:
         Returns:
             A short backoff (the reopen backoff ceiling, doubling per
             consecutive failure, capped at the interval) while the last reset
-            left PortAudio uninitialized: every room is already deaf then, so
-            retrying cuts nothing that works. Otherwise the configured
-            interval, doubled per further refresh that left this room's card
-            unlisted, up to the ceiling.
+            left PortAudio uninitialized (RV2-1), or while no room has a
+            working stream (RV3-1, doubling per refresh that ran deaf and left
+            a card unlisted). Otherwise the configured interval, doubled per
+            further refresh that left this room's card unlisted, up to the
+            ceiling.
         """
-        interval = self._catalog_refresh_interval_s
-        failures = self._catalog_reinit_failures
-        if failures:
-            return min(self._watchdog_backoff_max_s * 2 ** min(failures - 1, 16), interval)
-        futile = self._catalog_futile.get(room_id) if room_id is not None else None
-        if futile is None:
-            return interval
-        return min(interval * 2 ** min(futile[1] - 1, 16), self._catalog_refresh_ceiling_s)
+        if self._catalog_reinit_failures:
+            return self._catalog_short_wait_s(self._catalog_reinit_failures)
+        if not self._capture_working():
+            return self._catalog_short_wait_s(self._catalog_deaf_refreshes)
+        return self._catalog_futile_wait_s(room_id)
 
-    def _note_catalog_refresh_result(self, before: dict[str, int]) -> None:
+    def _note_catalog_refresh_result(self, before: dict[str, int], *, deaf: bool = False) -> None:
         """Count refreshes after which PortAudio still did not list a card.
 
         Called once every room was reopened after a successful reset, so
@@ -1578,10 +1617,25 @@ class MultiRoomAudioLoop:
 
         Args:
             before: ``_catalog_missing`` as it was when the refresh started.
+            deaf: No room was capturing when the refresh started, so the cut
+                interrupted nothing: count it toward the short deaf backoff
+                instead of the per-room futile streak.
         """
+        unlisted = {room_id: card for room_id, card in before.items()
+                    if self._catalog_missing.get(room_id) == card}
+        self._catalog_deaf_refreshes = self._catalog_deaf_refreshes + 1 if deaf and unlisted else 0
+        if self._catalog_deaf_refreshes == 2:
+            logger.warning(
+                f"[audio-watchdog] PortAudio still does not list ALSA cards {unlisted} after "
+                f"{self._catalog_deaf_refreshes} catalog refreshes with no microphone capturing; "
+                f"retrying the refresh in {self._catalog_short_wait_s(self._catalog_deaf_refreshes):.1f}s, "
+                f"doubling up to {self._catalog_refresh_interval_s:.0f}s"
+            )
         for room_id, card in before.items():
             if self._catalog_missing.get(room_id) != card:
                 self._catalog_futile.pop(room_id, None)
+                continue
+            if deaf:
                 continue
             previous = self._catalog_futile.get(room_id)
             streak = previous[1] + 1 if previous is not None and previous[0] == card else 1
@@ -1590,7 +1644,7 @@ class MultiRoomAudioLoop:
                 logger.warning(
                     f"[audio-watchdog] {room_id}: PortAudio still does not list ALSA card {card} "
                     f"after {streak} catalog refreshes; backing off the next refresh to "
-                    f"{self._catalog_refresh_wait_s(room_id):.0f}s, doubling up to "
+                    f"{self._catalog_futile_wait_s(room_id):.0f}s, doubling up to "
                     f"{self._catalog_refresh_ceiling_s:.0f}s"
                 )
         for room_id, (card, _streak) in tuple(self._catalog_futile.items()):
@@ -1771,6 +1825,8 @@ class MultiRoomAudioLoop:
         )
         affected = trigger_room_ids if healthy_other else list(self.room_streams)
         missing_before = dict(self._catalog_missing)
+        # Whether the cut interrupts a working microphone (RV3-1).
+        deaf_before = catalog_refresh and not self._capture_working()
         refreshed = False
         if catalog_refresh:
             cards = {room: self._catalog_missing.get(room) for room in trigger_room_ids}
@@ -1855,7 +1911,7 @@ class MultiRoomAudioLoop:
             elif self._input_epoch_current(epoch):
                 self._schedule_reopen(rs)
         if refreshed:
-            self._note_catalog_refresh_result(missing_before)
+            self._note_catalog_refresh_result(missing_before, deaf=deaf_before)
 
     def _update_audio_anchors(self, now_mono: float, now_wall: float) -> None:
         """Refrescar las anclas de salud que la reapertura no puede resetear.

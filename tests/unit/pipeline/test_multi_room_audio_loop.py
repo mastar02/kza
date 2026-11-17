@@ -1595,6 +1595,20 @@ class _LateCatalogRig:
             await asyncio.gather(self.loop._recovery_task, return_exceptions=True)
 
 
+def _capturing_loop(**kwargs) -> MultiRoomAudioLoop:
+    """Loop with one room whose open stream is delivering audio right now.
+
+    The catalog refresh interval and its futile backoff only apply while a
+    cut would interrupt a working microphone (T025-U2-RV3-1).
+    """
+    living = _make_room_stream("living", device_index=4)
+    loop = _make_multi_room_loop(rooms={"living": living}, **kwargs)
+    loop._streams["living"] = MagicMock()
+    living.last_frame_ts = time.monotonic()
+    assert loop._capture_working()
+    return loop
+
+
 class _RealisticPortAudio:
     """Semántica de sounddevice 0.5.5 para `_terminate`/`_initialize`.
 
@@ -1762,6 +1776,99 @@ class TestLateMicrophoneCatalogRefresh:
         assert "next refresh to 600s, doubling up to 3600s" in escalated[0].getMessage()
 
     @pytest.mark.asyncio
+    async def test_deaf_house_retries_on_the_short_backoff(self, tmp_path, caplog):
+        """Sin ningún mic capturando el corte no interrumpe nada: backoff corto (T025-U2-RV3-1).
+
+        Las dos cards están en sysfs y PortAudio no lista ninguna ni tras el
+        refresco (p. ej. todavía ocupadas tras un reset del hub).
+        """
+        rig = _LateCatalogRig(tmp_path, refresh_lists_card=False)
+        rig.plug_cocina()
+        rig.listed = {}
+        # Potencias de dos: el reloj falso suma sin error de redondeo.
+        rig.loop._watchdog_backoff_max_s = 2 ** -9
+        with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
+        ), caplog.at_level("INFO", logger="src.pipeline.multi_room_audio_loop"):
+            rig.loop._schedule_reopen(rig.living)
+            rig.loop._schedule_reopen(rig.cocina)
+            await _until(lambda: rig.refreshes == 1)
+            last = rig.clock[0]
+            for count, wait in ((2, 2 ** -9), (3, 2 ** -8), (4, 2 ** -7)):
+                await _until(lambda: rig.loop._recovery_task is None)
+                await _until(lambda: rig.loop._is_awaiting_reopen("living")
+                             and rig.loop._is_awaiting_reopen("cocina"))
+                assert not rig.loop._capture_working()
+                rig.clock[0] = last + wait / 2
+                await rig.spin(20)
+                assert rig.refreshes == count - 1, f"refresco {count} antes del backoff corto"
+                rig.clock[0] = last = last + wait
+                await _until(lambda c=count: rig.refreshes == c)
+            await _until(lambda: rig.loop._recovery_task is None)
+            await rig.stop()
+        # Nada de 300/600/... s: la racha que protege a las rooms sanas no crece.
+        assert rig.loop._catalog_futile == {}
+        assert rig.loop._catalog_deaf_refreshes == 4
+        assert "living" not in rig.loop._streams and "cocina" not in rig.loop._streams
+        messages = [r.getMessage() for r in caplog.records]
+        deaf = [m for m in messages if "with no microphone capturing" in m]
+        assert len(deaf) == 1, "un solo aviso escalado por racha"
+        assert "'cocina': 6" in deaf[0] and "'living': 2" in deaf[0]
+        assert "after 2 catalog refreshes" in deaf[0]
+        assert not any("still does not list ALSA card 6 after" in m for m in messages)
+
+    @pytest.mark.asyncio
+    async def test_late_card_next_to_a_capturing_room_keeps_the_futile_backoff(self, tmp_path):
+        """Con una room entregando audio, la card tardía inútil sigue esperando 300 s (RV3-1)."""
+        rig = _LateCatalogRig(tmp_path, refresh_lists_card=False)
+        rig.plug_cocina()
+        # Sólo cuenta el audio real, no la gracia del primer frame.
+        rig.loop._watchdog_first_frame_grace_s = 0.0
+        with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
+        ):
+            await rig.start()
+            await _until(lambda: rig.refreshes == 1)
+            await _until(lambda: rig.loop._recovery_task is None)
+            await _until(lambda: "living" in rig.loop._streams)
+            rig.living.last_frame_ts = time.monotonic()  # living vuelve a entregar
+            assert rig.loop._capture_working()
+            rig.clock[0] = 1299.9
+            await rig.spin(20)
+            assert rig.refreshes == 1
+            rig.clock[0] = 1300.0
+            await _until(lambda: rig.refreshes == 2)
+            await _until(lambda: rig.loop._recovery_task is None)
+            await rig.stop()
+        assert rig.loop._catalog_futile == {"cocina": (rig.COCINA_CARD, 2)}
+        assert rig.loop._catalog_deaf_refreshes == 0
+
+    def test_capture_working_needs_an_open_stream_with_audio_or_in_its_grace(self):
+        living = _make_room_stream("living", device_index=4)
+        loop = _make_multi_room_loop(rooms={"living": living},
+                                     stream_watchdog_catalog_refresh_min_interval_s=300.0)
+        loop._watchdog_backoff_max_s = 10.0
+        loop._watchdog_timeout_s = 8.0
+        loop._watchdog_first_frame_grace_s = 180.0
+        now = time.monotonic()
+        living.last_frame_ts = now
+        assert not loop._capture_working(), "sin stream abierto no hay nada que cortar"
+        loop._streams["living"] = MagicMock()
+        assert loop._capture_working()
+        living.last_frame_ts = now - 9.0
+        assert not loop._capture_working(), "un stream sin audio hace > timeout no cuenta"
+        living.last_frame_ts, living.opened_ts = 0.0, now - 10.0
+        assert loop._capture_working(), "recién abierto, dentro de la gracia del primer frame"
+        living.opened_ts = now - 181.0
+        assert not loop._capture_working()
+        # Casa sorda: backoff corto que se duplica hasta el intervalo.
+        waits = []
+        for streak in range(8):
+            loop._catalog_deaf_refreshes = streak
+            waits.append(loop._catalog_refresh_wait_s("living"))
+        assert waits == [10.0, 10.0, 20.0, 40.0, 80.0, 160.0, 300.0, 300.0]
+
+    @pytest.mark.asyncio
     async def test_backoff_restarts_when_the_card_changes_number(self, tmp_path):
         rig = _LateCatalogRig(tmp_path, refresh_lists_card=False)
         rig.plug_cocina()
@@ -1915,7 +2022,7 @@ class TestLateMicrophoneCatalogRefresh:
                    for m in messages)
 
     def test_failed_initialize_backoff_doubles_up_to_the_interval(self):
-        loop = _make_multi_room_loop(stream_watchdog_catalog_refresh_min_interval_s=300.0)
+        loop = _capturing_loop(stream_watchdog_catalog_refresh_min_interval_s=300.0)
         loop._watchdog_backoff_max_s = 10.0
         waits = []
         for _ in range(8):
@@ -2054,8 +2161,8 @@ class TestLateMicrophoneCatalogRefresh:
                 _make_multi_room_loop(stream_watchdog_catalog_refresh_max_interval_s=bad)
 
     def test_ceiling_never_drops_below_the_interval(self):
-        loop = _make_multi_room_loop(stream_watchdog_catalog_refresh_min_interval_s=300.0,
-                                     stream_watchdog_catalog_refresh_max_interval_s=60.0)
+        loop = _capturing_loop(stream_watchdog_catalog_refresh_min_interval_s=300.0,
+                               stream_watchdog_catalog_refresh_max_interval_s=60.0)
         loop._catalog_futile["cocina"] = (6, 5)
         assert loop._catalog_refresh_wait_s("cocina") == 300.0
 
