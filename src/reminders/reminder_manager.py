@@ -310,8 +310,10 @@ class ReminderManager:
         6 de la tarde") and day ("de hoy", "del lunes", the T031 day
         grammar) must equal its next trigger on the household clock. A
         leading "que (te) pedí/puse/hay" clause is not content.
-        Among several matches, the single one whose words are exactly the
-        reference's wins; otherwise the reference is ambiguous. There is no
+        Several matches are always ambiguous, even when one reminder's words
+        are exactly the reference's: another active reminder that contains
+        every spoken word may be the one meant, so KZA asks rather than
+        cancel the wrong one (user answer T032-U1-Q1 = A). There is no
         similarity threshold: a misheard word finds nothing rather than a
         neighbouring reminder.
 
@@ -325,6 +327,10 @@ class ReminderManager:
             The resolution; never a reminder outside the selected scope.
         """
         active = await self._store.get_active_for_user(user_id, shared_only=shared_only, guard=guard)
+        return self._resolve_among(active, reference)
+
+    def _resolve_among(self, active: list[Reminder], reference: str) -> CancelResolution:
+        """Resolve a reference among already scoped active reminders (see :meth:`resolve`)."""
         if not active:
             return CancelResolution(CancelMatch.NONE_ACTIVE)
         words, clock, day = _parse_query(reference)
@@ -341,15 +347,45 @@ class ReminderManager:
                 continue
             if day is not None and not day.matches(local.date(), today):
                 continue
-            matches.append((reminder, text_words))
+            matches.append(reminder)
         if not matches:
             return CancelResolution(CancelMatch.NOT_FOUND)
         if len(matches) == 1:
-            return CancelResolution(CancelMatch.UNIQUE, matches[0][0])
-        exact = [reminder for reminder, text_words in matches if words and _covers(words, text_words)]
-        if len(exact) == 1:
-            return CancelResolution(CancelMatch.UNIQUE, exact[0])
-        return CancelResolution(CancelMatch.AMBIGUOUS, candidates=tuple(reminder for reminder, _ in matches))
+            return CancelResolution(CancelMatch.UNIQUE, matches[0])
+        return CancelResolution(CancelMatch.AMBIGUOUS, candidates=tuple(matches))
+
+    async def voice_references(self, user_id: str | None, candidates: tuple[Reminder, ...], *, with_time: bool,
+                               shared_only: bool = False,
+                               guard: AuthorityGuard | None = None) -> dict[str, str]:
+        """Spoken references that :meth:`resolve` maps back to exactly one candidate.
+
+        A clarification proposes "<text>" or "<text> de <time>"; it is kept
+        only when, said back now, it selects that candidate and no other
+        active reminder. A reminder whose words and time are all inside
+        another one's (or identical to it) gets no reference: by voice it
+        cannot be told apart (T032-U1-Q1 = A).
+
+        Args:
+            user_id: Trusted user for a private view (ignored when ``shared_only``).
+            candidates: Reminders to name, from a previous resolution.
+            with_time: Add the unambiguous spoken time of the next trigger.
+            shared_only: Restrict to shared household reminders.
+            guard: Authority guard of the caller.
+
+        Returns:
+            Reminder id -> reference (without the leading "de"), for the
+            candidates that have one.
+        """
+        active = await self._store.get_active_for_user(user_id, shared_only=shared_only, guard=guard)
+        references = {}
+        for reminder in candidates:
+            reference = reminder.text
+            if with_time:
+                reference += f" de {self.spoken_time_reference(reminder)}"
+            found = self._resolve_among(active, f"de {reference}")
+            if found.match is CancelMatch.UNIQUE and found.reminder.id == reminder.id:
+                references[reminder.id] = reference
+        return references
 
     async def cancel_resolved(self, reminder: Reminder, *, shared_only: bool = False,
                               guard: AuthorityGuard | None = None) -> bool:

@@ -186,7 +186,8 @@ async def test_accents_case_articles_and_plurals_are_ignored(manager):
 
 
 @pytest.mark.asyncio
-async def test_several_matches_are_ambiguous_unless_one_is_exact(manager):
+async def test_several_matches_are_ambiguous_even_when_one_is_exact(manager):
+    """User answer T032-U1-Q1 = A: another reminder holding every spoken word means ask, never cancel."""
     cold = await _shared(manager, "tomar agua fría")
     gas = await _shared(manager, "tomar agua con gas", time.time() + 7200)
     tied = await manager.resolve(None, "de tomar agua", shared_only=True)
@@ -194,7 +195,12 @@ async def test_several_matches_are_ambiguous_unless_one_is_exact(manager):
     assert await manager.cancel_by_text(None, "tomar agua", shared_only=True) is False
     plain = await _shared(manager, "tomar agua", time.time() + 9000)
     exact = await manager.resolve(None, "de tomar agua", shared_only=True)
-    assert (exact.match, exact.reminder.id) == (CancelMatch.UNIQUE, plain.id)
+    assert exact.match is CancelMatch.AMBIGUOUS and exact.reminder is None
+    assert [r.id for r in exact.candidates] == [cold.id, gas.id, plain.id]
+    assert await manager.cancel_by_text(None, "tomar agua", shared_only=True) is False
+    assert [r.id for r in await manager.get_active(None, shared_only=True)] == [cold.id, gas.id, plain.id]
+    alone = await manager.resolve(None, "de tomar agua con gas", shared_only=True)
+    assert (alone.match, alone.reminder.id) == (CancelMatch.UNIQUE, gas.id)
 
 
 @pytest.mark.asyncio
@@ -409,3 +415,69 @@ async def test_the_spoken_time_reference_resolves_to_exactly_its_reminder(store)
         phrase = manager.spoken_time_reference(reminder)
         found = await manager.resolve(None, f"de tomar agua de {phrase}", shared_only=True)
         assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, reminder.id), phrase
+
+
+# ---------------------------------------------------------------------------
+# User answer T032-U1-Q1 = A: a clarification proposes only a command that
+# selects exactly one reminder; one inside another at the same time has none.
+# ---------------------------------------------------------------------------
+
+def _minute_start(hours_ahead: int) -> float:
+    return (int(time.time()) // 60 + 1) * 60 + hours_ahead * 3600
+
+
+@pytest.mark.asyncio
+async def test_a_superset_at_the_same_time_leaves_only_the_larger_reminder_nameable(manager):
+    base = _minute_start(1)
+    plain = await _shared(manager, "tomar agua", base)
+    lemon = await _shared(manager, "tomar agua con limón", base + 30)
+    candidates = (plain, lemon)
+    spoken = manager.spoken_time_reference(lemon)
+    assert spoken == manager.spoken_time_reference(plain)
+    assert await manager.voice_references(None, candidates, with_time=True, shared_only=True) == {
+        lemon.id: f"tomar agua con limón de {spoken}"}
+    assert await manager.voice_references(None, candidates, with_time=False, shared_only=True) == {
+        lemon.id: "tomar agua con limón"}
+    said = await manager.resolve(None, f"de tomar agua de {spoken}", shared_only=True)
+    assert said.match is CancelMatch.AMBIGUOUS and [r.id for r in said.candidates] == [plain.id, lemon.id]
+
+
+@pytest.mark.asyncio
+async def test_a_superset_at_another_time_leaves_both_nameable_with_the_time(manager):
+    plain = await _shared(manager, "tomar agua", _minute_start(1))
+    lemon = await _shared(manager, "tomar agua con limón", _minute_start(4))
+    references = await manager.voice_references(None, (plain, lemon), with_time=True, shared_only=True)
+    assert references == {plain.id: f"tomar agua de {manager.spoken_time_reference(plain)}",
+                          lemon.id: f"tomar agua con limón de {manager.spoken_time_reference(lemon)}"}
+    for reminder in (plain, lemon):
+        found = await manager.resolve(None, f"de {references[reminder.id]}", shared_only=True)
+        assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, reminder.id)
+    assert await manager.voice_references(None, (plain, lemon), with_time=False, shared_only=True) == {
+        lemon.id: "tomar agua con limón"}
+
+
+@pytest.mark.asyncio
+async def test_same_words_at_the_same_time_have_no_voice_reference(manager):
+    base = _minute_start(1)
+    one = await _shared(manager, "tomar agua", base)
+    other = await _shared(manager, "tomar el agua", base + 30)
+    assert await manager.voice_references(None, (one, other), with_time=True, shared_only=True) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_reference_is_checked_against_every_active_reminder_not_only_the_candidates(manager):
+    base = _minute_start(1)
+    plain = await _shared(manager, "tomar agua", base)
+    await _shared(manager, "tomar agua con limón", base + 30)
+    assert await manager.voice_references(None, (plain,), with_time=True, shared_only=True) == {}
+    assert await manager.voice_references(None, (plain,), with_time=False, shared_only=True) == {}
+
+
+@pytest.mark.asyncio
+async def test_voice_references_never_read_a_private_reminder(manager):
+    base = _minute_start(1)
+    plain = await _shared(manager, "tomar agua", base)
+    await manager.create(user_id="ana", text="tomar agua con limón", trigger_at=base,
+                         scope=ReminderScope.PRIVATE)
+    assert await manager.voice_references(None, (plain,), with_time=True, shared_only=True) == {
+        plain.id: f"tomar agua de {manager.spoken_time_reference(plain)}"}
