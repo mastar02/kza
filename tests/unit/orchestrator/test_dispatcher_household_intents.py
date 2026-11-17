@@ -775,3 +775,54 @@ async def test_two_reminders_in_one_turn_are_asked_one_at_a_time(leaves, text, r
     assert counted == ZERO
     assert (result.response, result.outcome.status.value) == (response, "needs_input")
     assert set(await _states(leaves)) == {"tomar agua", "sacar la basura"}
+
+
+# Review T032-U1-RR-F1: a clock or day word inside the only reminder's text
+# never makes KZA say it cannot tell reminders apart.
+
+def _hour_word_not(hour: int) -> str:
+    return next(str(h) for h in (3, 5, 7) if h not in (hour % 12, hour))
+
+
+async def test_the_only_reminder_with_a_clock_in_its_text_is_named_and_cancelled(leaves):
+    dispatcher = leaves.dispatcher()
+    manager, at = leaves.reminder_manager, _minute_start(1)
+    text = f"llamar a mamá a las {_hour_word_not(manager._household_clock.to_local(at).hour)}"
+    await manager.create("household", text, at, scope=ReminderScope.SHARED)
+    hm = manager._household_clock.format_time(at)
+    asked, counted = await _cancel(leaves, "cancelá el recordatorio", dispatcher=dispatcher)
+    assert counted == ZERO and asked.outcome.status.value == "needs_input"
+    assert asked.response == f"Hay uno: {text} a las {hm}. Para cancelarlo, decime: cancelá el recordatorio de {text}."
+    done, counted = await _cancel(leaves, f"cancelá el recordatorio de {text}", dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
+    assert await manager.get_active(None, shared_only=True) == []
+
+
+@pytest.mark.parametrize("said", ["llevar el auto al taller mañana", "llevar el auto al taller"])
+async def test_the_only_reminder_with_a_day_in_its_text_is_named_and_cancelled(leaves, said):
+    dispatcher = leaves.dispatcher()
+    manager, at = leaves.reminder_manager, _minute_start(1)
+    await manager.create("household", "llevar el auto al taller mañana", at, scope=ReminderScope.SHARED)
+    asked, counted = await _cancel(leaves, "cancelá el recordatorio", dispatcher=dispatcher)
+    assert counted == ZERO and asked.outcome.status.value == "needs_input"
+    assert asked.response.endswith(". Para cancelarlo, decime: cancelá el recordatorio de llevar el auto al taller "
+                                   "mañana.")
+    done, counted = await _cancel(leaves, f"cancelá el recordatorio de {said}", dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
+
+
+async def test_the_only_reminder_is_never_called_indistinct(leaves, monkeypatch):
+    """Last resort when no command can be proposed: singular wording, not 'no los puedo distinguir'."""
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, "reminder_shared_active:tomar agua")
+    calls = []
+
+    async def none_found(user_id, candidates, *, with_time, **kwargs):
+        calls.append(with_time)
+        return {}
+    monkeypatch.setattr(leaves.reminder_manager, "voice_references", none_found)
+    result, counted = await _cancel(leaves, "cancelá el recordatorio", dispatcher=dispatcher)
+    assert counted == ZERO and result.outcome.status.value == "needs_input"
+    assert result.response.startswith("Hay uno: tomar agua a las ")
+    assert result.response.endswith(". Por voz no lo puedo nombrar; podés borrarlo desde la web.")
+    assert calls == [False, True]

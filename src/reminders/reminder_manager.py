@@ -162,6 +162,17 @@ def _without_relative_clause(words: list[str]) -> list[str]:
 def _parse_query(query: str) -> tuple[tuple[frozenset[str], ...], _SpokenClock | None, _SpokenDay | None]:
     """Content words, an optional clock time and day of a spoken cancel complement."""
     words = _without_relative_clause(_WORD.findall(_fold(query)))
+    taken, clock, day = _time_spans(words)
+    return _content([w for k, w in enumerate(words) if k not in taken]), clock, day
+
+
+def _literal_words(query: str) -> tuple[frozenset[str], ...]:
+    """Content words of a complement with its clock and day words kept as words."""
+    return _content(_without_relative_clause(_WORD.findall(_fold(query))))
+
+
+def _time_spans(words: list[str]) -> tuple[set[int], _SpokenClock | None, _SpokenDay | None]:
+    """Indexes of the first clock time and day phrase, and what they name."""
     clock, taken = None, set()
     for i in range(len(words)):
         found = _clock_at(words, i)
@@ -182,7 +193,40 @@ def _parse_query(query: str) -> tuple[tuple[frozenset[str], ...], _SpokenClock |
             day = _SpokenDay(kind, value)
             taken |= set(range(i, end))
             break
-    return _content([w for k, w in enumerate(words) if k not in taken]), clock, day
+    return taken, clock, day
+
+
+def _without_time_words(text: str) -> str | None:
+    """A reminder text without the clock and day words the resolver would read as times.
+
+    "llamar a mamá a las 3" -> "llamar a mamá"; "llevar el auto al taller
+    mañana" -> "llevar el auto al taller". Articles and prepositions left
+    hanging at a cut are dropped. None when nothing is read as a time or
+    the folded and spoken tokens do not line up.
+    """
+    spoken = _WORD.findall(unicodedata.normalize("NFC", text.lower()))
+    folded = ["de"] + [_fold(word) for word in spoken]
+    if folded[1:] != _WORD.findall(_fold(text)):
+        return None
+    taken, _, _ = _time_spans(folded)
+    if not taken:
+        return None
+    runs, run = [], []
+    for k, word in enumerate(spoken, start=1):
+        if k in taken:
+            runs.append(run)
+            run = []
+        else:
+            run.append((word, folded[k]))
+    runs.append(run)
+    kept = []
+    for n, run in enumerate(runs):
+        while n > 0 and run and run[0][1] in _QUERY_STOPWORDS:
+            run = run[1:]
+        while n < len(runs) - 1 and run and run[-1][1] in _QUERY_STOPWORDS:
+            run = run[:-1]
+        kept.extend(word for word, _ in run)
+    return " ".join(kept) or None
 
 
 class CancelMatch(StrEnum):
@@ -348,6 +392,12 @@ class ReminderManager:
             if day is not None and not day.matches(local.date(), today):
                 continue
             matches.append(reminder)
+        if not matches and (clock is not None or day is not None):
+            # Review T032-U1-RR-F1: the time words may be the reminder's own text
+            # ("llamar a mamá a las 3" due at 17:43); when no trigger fits, they
+            # are words to match.
+            literal = _literal_words(reference)
+            matches = [r for r in active if _covers(_content(_WORD.findall(_fold(r.text))), literal)]
         if not matches:
             return CancelResolution(CancelMatch.NOT_FOUND)
         if len(matches) == 1:
@@ -359,11 +409,13 @@ class ReminderManager:
                                guard: AuthorityGuard | None = None) -> dict[str, str]:
         """Spoken references that :meth:`resolve` maps back to exactly one candidate.
 
-        A clarification proposes "<text>" or "<text> de <time>"; it is kept
-        only when, said back now, it selects that candidate and no other
-        active reminder. A reminder whose words and time are all inside
-        another one's (or identical to it) gets no reference: by voice it
-        cannot be told apart (T032-U1-Q1 = A).
+        A clarification proposes "<text>" or "<text> de <time>", or the
+        same without the text's own clock and day words when those keep it
+        from selecting itself ("llamar a mamá a las 3" due at 17:43); one is
+        kept only when, said back now, it selects that candidate and no
+        other active reminder. A reminder whose words and time are all
+        inside another one's (or identical to it) gets no reference: by
+        voice it cannot be told apart (T032-U1-Q1 = A).
 
         Args:
             user_id: Trusted user for a private view (ignored when ``shared_only``).
@@ -379,13 +431,28 @@ class ReminderManager:
         active = await self._store.get_active_for_user(user_id, shared_only=shared_only, guard=guard)
         references = {}
         for reminder in candidates:
-            reference = reminder.text
-            if with_time:
-                reference += f" de {self.spoken_time_reference(reminder)}"
-            found = self._resolve_among(active, f"de {reference}")
-            if found.match is CancelMatch.UNIQUE and found.reminder.id == reminder.id:
-                references[reminder.id] = reference
+            for reference in self._reference_attempts(reminder, with_time=with_time):
+                found = self._resolve_among(active, f"de {reference}")
+                if found.match is CancelMatch.UNIQUE and found.reminder.id == reminder.id:
+                    references[reminder.id] = reference
+                    break
         return references
+
+    def _reference_attempts(self, reminder: Reminder, *, with_time: bool) -> list[str]:
+        """Spoken references to try for one reminder, most natural first.
+
+        The whole text, then the text without the words the resolver reads
+        as a time or day ("llamar a mamá a las 3" -> "llamar a mamá"), each
+        with the spoken time when ``with_time``.
+        """
+        bases = [reminder.text]
+        content = _without_time_words(reminder.text)
+        if content is not None and content != reminder.text:
+            bases.append(content)
+        if not with_time:
+            return bases
+        spoken_time = self.spoken_time_reference(reminder)
+        return [f"{base} de {spoken_time}" for base in bases]
 
     async def cancel_resolved(self, reminder: Reminder, *, shared_only: bool = False,
                               guard: AuthorityGuard | None = None) -> bool:

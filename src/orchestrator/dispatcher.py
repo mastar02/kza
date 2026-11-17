@@ -142,6 +142,8 @@ _ONE_AT_A_TIME = "Por voz cancelo de a un recordatorio. "
 # T032-U1-Q1 = A: a reminder whose words and time are all inside another's is
 # never cancelled by voice; the reply says where it can be removed.
 _VOICE_INDISTINCT = "Por voz no los puedo distinguir; podés borrar el que querés desde la web."
+# The only active reminder can always be named; this is a last resort (review T032-U1-RR-F1).
+_VOICE_UNNAMEABLE = "Por voz no lo puedo nombrar; podés borrarlo desde la web."
 _OTHER_FROM_WEB = "Si es otro, borralo desde la web."
 
 # P3-F2 decision on F10: the orchestrated path has no sync or enrollment
@@ -1846,9 +1848,11 @@ class RequestDispatcher:
             lead = _ONE_AT_A_TIME if re.search(r"\brecordatorios\b", folded) else ""
             several = len(resolution.candidates) > 1
             example, all_reachable = await self._cancel_example(resolution.candidates, with_time=several)
+            if example is None and not several:
+                example, all_reachable = await self._cancel_example(resolution.candidates, with_time=True)
             choices = f"{lead}Hay {self._reminder_choices(resolution.candidates)}."
             if example is None:
-                return f"{choices} {_VOICE_INDISTINCT}", needs_input
+                return f"{choices} {_VOICE_INDISTINCT if several else _VOICE_UNNAMEABLE}", needs_input
             ask = "Para cancelar uno, decímelo entero, por ejemplo" if several else "Para cancelarlo, decime"
             tail = "" if all_reachable else f" {_OTHER_FROM_WEB}"
             return f"{choices} {ask}: {example}.{tail}", needs_input

@@ -481,3 +481,57 @@ async def test_voice_references_never_read_a_private_reminder(manager):
                          scope=ReminderScope.PRIVATE)
     assert await manager.voice_references(None, (plain,), with_time=True, shared_only=True) == {
         plain.id: f"tomar agua de {manager.spoken_time_reference(plain)}"}
+
+
+# ---------------------------------------------------------------------------
+# Review T032-U1-RR-F1: a clock or day word inside a reminder's own text
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("text", "content"), [
+    ("llamar a mamá a las 3", "llamar a mamá"),
+    ("llevar el auto al taller mañana", "llevar el auto al taller"),
+])
+async def test_a_time_word_in_the_text_still_names_the_only_reminder(store, text, content):
+    """The text said whole selects its reminder even when its time words fit no trigger."""
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    reminder = await _shared(manager, text, _local(2026, 11, 11, 17, 43).timestamp())
+    for query in (f"de {text}", f"de {content}"):
+        found = await manager.resolve(None, query, shared_only=True)
+        assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, reminder.id), query
+    assert await manager.voice_references(None, (reminder,), with_time=False, shared_only=True) == {
+        reminder.id: text}
+    assert await manager.voice_references(None, (reminder,), with_time=True, shared_only=True) == {
+        reminder.id: f"{content} de las 5:43 de la tarde"}
+    found = await manager.resolve(None, f"de {content} de las 5:43 de la tarde", shared_only=True)
+    assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, reminder.id)
+
+
+@pytest.mark.asyncio
+async def test_time_words_are_text_only_when_no_trigger_fits(store):
+    """A spoken time that fits a trigger still selects by time; one that fits none is matched as words."""
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    call = await _shared(manager, "llamar a mamá a las 3", _local(2026, 11, 11, 17, 43).timestamp())
+    water = await _shared(manager, "tomar agua", _local(2026, 11, 11, 15, 0).timestamp())
+    assert (await manager.resolve(None, "de llamar a mamá a las 4", shared_only=True)).match is CancelMatch.NOT_FOUND
+    assert (await manager.resolve(None, "de tomar agua de las 9", shared_only=True)).match is CancelMatch.NOT_FOUND
+    assert (await manager.resolve(None, "de tomar agua de hoy", shared_only=True)).reminder.id == water.id
+    assert (await manager.resolve(None, "de tomar agua mañana", shared_only=True)).match is CancelMatch.NOT_FOUND
+    found = await manager.resolve(None, "de llamar a mamá a las 3", shared_only=True)
+    assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, call.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("text", "content"), [
+    ("llamar a las 3 a mamá", "llamar mamá"),
+    ("pagar la luz el lunes a las 9", "pagar la luz"),
+    ("tomar la pastilla de las 8 de la noche", "tomar la pastilla"),
+    ("tomar agua", None),
+    ("tomar las 2 pastillas", None),
+    ("a las 3", None),
+])
+async def test_the_content_reference_drops_only_the_time_words(store, text, content):
+    from src.reminders.reminder_manager import _without_time_words
+    assert _without_time_words(text) == content
