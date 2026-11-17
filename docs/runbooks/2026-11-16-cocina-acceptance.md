@@ -121,6 +121,16 @@ disponibilidad de KZA.
   `PortAudio is not initialized after the catalog reset; ... retrying the
   refresh in N s` y, en el reintento, `PortAudio terminate failed: ...
   PortAudio not initialized` antes de reabrir.
+- Tarjeta que PortAudio no lista ni después del refresco (revisión
+  T025-U2-RV2-3: dispositivo ocupado, interfaz de captura rota): antes cada
+  300 s había un corte de toda la casa, sin fin (~288 por día). Ahora el
+  segundo refresco espera 300 s y cada refresco inútil seguido duplica la
+  espera (600, 1200, 2400 s) hasta
+  `rooms.stream_watchdog.catalog_refresh_max_interval_s` (3600 s); vuelve a
+  300 s si la tarjeta sale de sysfs o cambia de número. Al segundo refresco
+  inútil se registra una sola advertencia por racha: `<room>: PortAudio still
+  does not list ALSA card N after 2 catalog refreshes; backing off the next
+  refresh to 600s, doubling up to 3600s`.
 - Consecuencia: la precondición 2 (las cuatro habitaciones `running`) y la 3
   (las cuatro con heartbeat) se vuelven a comprobar en cada ventana, como
   siempre. La captura `closed` de la Cocina quedó explicada y resuelta por el
@@ -301,6 +311,9 @@ lista. En esos casos se espera, además de lo que dice la tabla:
   catalog refresh deferred (command|conversation|response)` y el refresco
   apenas termina; `deferred (rate_limit)` si hubo otro refresco hace menos de
   300 s;
+- si aparece `still does not list ALSA card N after 2 catalog refreshes`, la
+  tarjeta no se recupera con refrescos: se anota y se sale con un replug
+  físico (F1) o un reinicio autorizado;
 - si aparece `PortAudio is not initialized after the catalog reset`, todas
   las entradas quedan sin audio hasta el reintento (backoff corto, ver
   «Estado conocido antes de P7»): se anota como fallo de C20 de todas las

@@ -1732,6 +1732,68 @@ class TestLateMicrophoneCatalogRefresh:
         assert len(deferred) == 2, "un aviso por ventana, no uno por reintento"
 
     @pytest.mark.asyncio
+    async def test_unlisted_card_backs_off_until_the_ceiling(self, tmp_path, caplog):
+        """Una card que PortAudio nunca lista no corta la casa cada 300 s para siempre (RV2-3)."""
+        rig = _LateCatalogRig(tmp_path, refresh_lists_card=False)
+        rig.plug_cocina()
+        # Refresco n -> momento en que se permite (intervalo 300, techo 3600).
+        schedule = [(2, 1300.0), (3, 1900.0), (4, 3100.0), (5, 5500.0), (6, 9100.0), (7, 12700.0)]
+        with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
+        ), caplog.at_level("INFO", logger="src.pipeline.multi_room_audio_loop"):
+            await rig.start()
+            await _until(lambda: rig.refreshes == 1)
+            for count, allowed_at in schedule:
+                await _until(lambda: rig.loop._recovery_task is None)
+                await _until(lambda: rig.loop._is_awaiting_reopen("cocina"))
+                rig.clock[0] = allowed_at - 0.1
+                await rig.spin(20)
+                assert rig.refreshes == count - 1, f"refresco {count} antes de {allowed_at}"
+                rig.clock[0] = allowed_at
+                await _until(lambda c=count: rig.refreshes == c)
+            await _until(lambda: rig.loop._recovery_task is None)
+            await rig.stop()
+        assert rig.loop._catalog_futile == {"cocina": (rig.COCINA_CARD, 7)}
+        assert "living" in rig.loop._streams
+        escalated = [r for r in caplog.records if "still does not list ALSA card 6" in r.getMessage()]
+        assert len(escalated) == 1, "un solo aviso escalado por racha"
+        assert escalated[0].levelname == "WARNING"
+        assert "after 2 catalog refreshes" in escalated[0].getMessage()
+        assert "next refresh to 600s, doubling up to 3600s" in escalated[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_backoff_restarts_when_the_card_changes_number(self, tmp_path):
+        rig = _LateCatalogRig(tmp_path, refresh_lists_card=False)
+        rig.plug_cocina()
+        card_dir = tmp_path / f"{rig.COCINA_PORT}:1.0" / "sound"
+        with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
+        ):
+            await rig.start()
+            await _until(lambda: rig.refreshes == 1)
+            await _until(lambda: rig.loop._recovery_task is None)
+            rig.clock[0] = 1300.0
+            await _until(lambda: rig.refreshes == 2)
+            await _until(lambda: rig.loop._recovery_task is None)
+            assert rig.loop._catalog_futile == {"cocina": (rig.COCINA_CARD, 2)}
+            # La card vuelve a enumerar con otro número: el backoff empieza de nuevo.
+            (card_dir / f"card{rig.COCINA_CARD}").rmdir()
+            (card_dir / "card7").mkdir()
+            await _until(lambda: rig.loop._catalog_missing.get("cocina") == 7)
+            rig.clock[0] = 1600.0
+            await _until(lambda: rig.refreshes == 3)
+            await _until(lambda: rig.loop._recovery_task is None)
+            await rig.stop()
+        assert rig.loop._catalog_futile == {"cocina": (7, 1)}
+
+    @pytest.mark.asyncio
+    async def test_backoff_is_dropped_when_the_card_leaves_sysfs(self, tmp_path):
+        rig = _LateCatalogRig(tmp_path)
+        rig.loop._catalog_futile["cocina"] = (rig.COCINA_CARD, 4)
+        assert rig.loop._request_catalog_refresh(rig.cocina) is False
+        assert rig.loop._catalog_futile == {}
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("blocker", ["command_capture", "command_dispatch", "conversation", "response"])
     async def test_refresh_waits_for_the_household_activity_to_end(self, tmp_path, blocker):
         follow_up = _make_follow_up()
@@ -1913,6 +1975,14 @@ class TestLateMicrophoneCatalogRefresh:
         for bad in (-1.0, float("nan"), float("inf"), "300"):
             with pytest.raises(ValueError):
                 _make_multi_room_loop(stream_watchdog_catalog_refresh_min_interval_s=bad)
+            with pytest.raises(ValueError):
+                _make_multi_room_loop(stream_watchdog_catalog_refresh_max_interval_s=bad)
+
+    def test_ceiling_never_drops_below_the_interval(self):
+        loop = _make_multi_room_loop(stream_watchdog_catalog_refresh_min_interval_s=300.0,
+                                     stream_watchdog_catalog_refresh_max_interval_s=60.0)
+        loop._catalog_futile["cocina"] = (6, 5)
+        assert loop._catalog_refresh_wait_s("cocina") == 300.0
 
     def test_settings_enable_the_refresh_and_main_wires_it(self):
         import yaml
@@ -1925,6 +1995,10 @@ class TestLateMicrophoneCatalogRefresh:
         main_source = (root / "src" / "main.py").read_text()
         assert "stream_watchdog_catalog_refresh_min_interval_s=watchdog_cfg.get(" in main_source
         assert '"catalog_refresh_min_interval_s"' in main_source
+        ceiling = settings["rooms"]["stream_watchdog"]["catalog_refresh_max_interval_s"]
+        assert type(ceiling) in (int, float) and interval < ceiling <= 7200
+        assert "stream_watchdog_catalog_refresh_max_interval_s=watchdog_cfg.get(" in main_source
+        assert '"catalog_refresh_max_interval_s"' in main_source
 
 
 class TestAudioHealthPublication:

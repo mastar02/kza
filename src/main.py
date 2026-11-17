@@ -1527,6 +1527,9 @@ async def build_application(
                 stream_watchdog_catalog_refresh_min_interval_s=watchdog_cfg.get(
                     "catalog_refresh_min_interval_s", 0.0
                 ),
+                stream_watchdog_catalog_refresh_max_interval_s=watchdog_cfg.get(
+                    "catalog_refresh_max_interval_s", 3600.0
+                ),
                 audio_health_path=watchdog_cfg.get(
                     "health_path", "./data/audio_health.json"
                 ),
