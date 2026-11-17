@@ -826,3 +826,40 @@ async def test_the_only_reminder_is_never_called_indistinct(leaves, monkeypatch)
     assert result.response.startswith("Hay uno: tomar agua a las ")
     assert result.response.endswith(". Por voz no lo puedo nombrar; podés borrarlo desde la web.")
     assert calls == [False, True]
+
+
+# Review T032-U1-RR-F2: only the same text and the same trigger are duplicates;
+# the same text and HH:MM on another day is named by its day.
+
+async def test_the_same_text_and_time_on_two_days_are_not_duplicates(leaves):
+    dispatcher = leaves.dispatcher()
+    manager, base = leaves.reminder_manager, _minute_start(1)
+    first, second = await _two_shared(leaves, "tomar agua", "tomar agua", base, base + 86400)
+    hm, spoken = manager._household_clock.format_time(base), manager.spoken_time_reference(first)
+    assert manager._household_clock.format_time(second.trigger_at) == hm  # America/Montevideo has no DST
+    d1, d2 = manager.spoken_day_reference(first), manager.spoken_day_reference(second)
+    asked, counted = await _cancel(leaves, "cancelá el recordatorio de tomar agua", dispatcher=dispatcher)
+    assert counted == ZERO and asked.outcome.status.value == "needs_input"
+    example = f"cancelá el recordatorio de tomar agua de {spoken} {d1}"
+    assert asked.response == (f"Encontré 2: tomar agua a las {hm} {d1} y tomar agua a las {hm} {d2}. "
+                              f"Repetímelo con la hora y el día, por ejemplo: {example}.")
+    done, counted = await _cancel(leaves, example, dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
+    assert [r.id for r in await manager.get_active(None, shared_only=True)] == [second.id]
+
+
+async def test_a_superset_on_another_day_is_named_by_the_day_not_sent_to_the_web(leaves):
+    dispatcher = leaves.dispatcher()
+    manager, base = leaves.reminder_manager, _minute_start(1)
+    plain, lemon = await _two_shared(leaves, "tomar agua", "tomar agua con limón", base, base + 86400)
+    hm = manager._household_clock.format_time(base)
+    assert manager._household_clock.format_time(lemon.trigger_at) == hm  # America/Montevideo has no DST
+    asked, counted = await _cancel(leaves, "cancelá el recordatorio de tomar agua", dispatcher=dispatcher)
+    assert counted == ZERO and asked.outcome.status.value == "needs_input"
+    example = (f"cancelá el recordatorio de tomar agua de {manager.spoken_time_reference(plain)} "
+               f"{manager.spoken_day_reference(plain)}")
+    assert asked.response == (f"Encontré 2: tomar agua a las {hm} y tomar agua con limón a las {hm}. "
+                              f"Repetímelo con la hora y el día, por ejemplo: {example}.")
+    done, counted = await _cancel(leaves, example, dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
+    assert [r.id for r in await manager.get_active(None, shared_only=True)] == [lemon.id]

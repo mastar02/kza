@@ -535,3 +535,47 @@ async def test_time_words_are_text_only_when_no_trigger_fits(store):
 async def test_the_content_reference_drops_only_the_time_words(store, text, content):
     from src.reminders.reminder_manager import _without_time_words
     assert _without_time_words(text) == content
+
+
+# ---------------------------------------------------------------------------
+# Review T032-U1-RR-F2: the day tells apart reminders with the same text and time
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_the_spoken_day_reference_resolves_to_exactly_its_day(store):
+    """'de hoy', the weekday for tomorrow (never 'de mañana'), 'de pasado mañana'."""
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)  # a Wednesday
+    manager = ReminderManager(store=store, household_clock=clock)
+    by_day = {day: await _shared(manager, "tomar agua", _local(2026, 11, day, 9, 0).timestamp())
+              for day in (11, 12, 13, 16, 18)}
+    assert {day: manager.spoken_day_reference(r) for day, r in by_day.items()} == {
+        11: "de hoy", 12: "del jueves", 13: "de pasado mañana", 16: "del lunes", 18: "del miércoles"}
+    for day in (11, 12, 13, 16):
+        reminder = by_day[day]
+        found = await manager.resolve(None, f"de tomar agua {manager.spoken_day_reference(reminder)}",
+                                      shared_only=True)
+        assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, reminder.id), day
+
+
+@pytest.mark.asyncio
+async def test_the_same_text_and_time_on_two_days_are_named_by_the_day(store):
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    today = await _shared(manager, "tomar agua", _local(2026, 11, 11, 9, 0).timestamp())
+    tomorrow = await _shared(manager, "tomar agua", _local(2026, 11, 12, 9, 0).timestamp())
+    references = await manager.voice_references(None, (today, tomorrow), with_time=True, shared_only=True)
+    assert references == {today.id: "tomar agua de las 9 de la mañana de hoy",
+                          tomorrow.id: "tomar agua de las 9 de la mañana del jueves"}
+    for reminder in (today, tomorrow):
+        found = await manager.resolve(None, f"de {references[reminder.id]}", shared_only=True)
+        assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, reminder.id)
+
+
+@pytest.mark.asyncio
+async def test_a_superset_on_another_day_leaves_both_nameable(store):
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    plain = await _shared(manager, "tomar agua", _local(2026, 11, 11, 9, 0).timestamp())
+    lemon = await _shared(manager, "tomar agua con limón", _local(2026, 11, 12, 9, 0).timestamp())
+    assert await manager.voice_references(None, (plain, lemon), with_time=True, shared_only=True) == {
+        plain.id: "tomar agua de las 9 de la mañana de hoy", lemon.id: "tomar agua con limón de las 9 de la mañana"}

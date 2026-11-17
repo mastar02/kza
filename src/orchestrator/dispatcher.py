@@ -1798,18 +1798,30 @@ class RequestDispatcher:
 
         Returns:
             The command for the first candidate that has one (None when no
-            candidate can be told apart by voice), and whether every
-            candidate has one.
+            candidate can be told apart by voice), whether every candidate
+            has one, and whether the command names the day.
         """
         references = await self.reminder_manager.voice_references(None, candidates, with_time=with_time,
                                                                    shared_only=True)
-        reference = next((references[r.id] for r in candidates if r.id in references), None)
-        command = f"cancelá el recordatorio de {reference}" if reference is not None else None
-        return command, len(references) == len(candidates)
+        named = next((r for r in candidates if r.id in references), None)
+        if named is None:
+            return None, False, False
+        reference = references[named.id]
+        with_day = with_time and reference.endswith(f" {self.reminder_manager.spoken_day_reference(named)}")
+        return f"cancelá el recordatorio de {reference}", len(references) == len(candidates), with_day
 
     def _reminder_choices(self, candidates: tuple) -> str:
-        """At most three shared candidates in trigger order ("2: A y B")."""
-        labels = [self.reminder_manager.voice_label(r) for r in candidates[:_REMINDER_CHOICES_SPOKEN]]
+        """At most three shared candidates in trigger order ("2: A y B").
+
+        Candidates with the same text and time are told apart by their day
+        ("tomar agua a las 17:00 de hoy y tomar agua a las 17:00 del jueves").
+        """
+        spoken = candidates[:_REMINDER_CHOICES_SPOKEN]
+        labels = [self.reminder_manager.voice_label(r) for r in spoken]
+        if len(set(labels)) < len(labels):
+            dated = [f"{label} {self.reminder_manager.spoken_day_reference(r)}" for label, r in zip(labels, spoken)]
+            if len(set(dated)) > len(set(labels)):
+                labels = dated
         if len(candidates) == 1:
             return f"uno: {labels[0]}"
         joined = ", ".join(labels[:-1]) + " y " + labels[-1]
@@ -1847,9 +1859,9 @@ class RequestDispatcher:
         if resolution.match is CancelMatch.NO_REFERENCE:
             lead = _ONE_AT_A_TIME if re.search(r"\brecordatorios\b", folded) else ""
             several = len(resolution.candidates) > 1
-            example, all_reachable = await self._cancel_example(resolution.candidates, with_time=several)
+            example, all_reachable, _ = await self._cancel_example(resolution.candidates, with_time=several)
             if example is None and not several:
-                example, all_reachable = await self._cancel_example(resolution.candidates, with_time=True)
+                example, all_reachable, _ = await self._cancel_example(resolution.candidates, with_time=True)
             choices = f"{lead}Hay {self._reminder_choices(resolution.candidates)}."
             if example is None:
                 return f"{choices} {_VOICE_INDISTINCT if several else _VOICE_UNNAMEABLE}", needs_input
@@ -1860,16 +1872,19 @@ class RequestDispatcher:
             return ("No encontré un recordatorio activo con eso. Podés preguntarme qué recordatorios hay.",
                     needs_input)
         if resolution.match is CancelMatch.AMBIGUOUS:
-            labels = {self.reminder_manager.voice_label(r) for r in resolution.candidates}
-            if len(labels) == 1:
-                return (f"Hay {len(resolution.candidates)} recordatorios iguales: {labels.pop()}. "
+            # Duplicates only when text and trigger are the same: the same text
+            # and HH:MM on another day is told apart by its day (review RR-F2).
+            if len({(r.text, r.trigger_at) for r in resolution.candidates}) == 1:
+                label = self.reminder_manager.voice_label(resolution.candidates[0])
+                return (f"Hay {len(resolution.candidates)} recordatorios iguales: {label}. "
                         "Podés borrar el que sobra desde la web."), needs_input
-            example, all_reachable = await self._cancel_example(resolution.candidates, with_time=True)
+            example, all_reachable, with_day = await self._cancel_example(resolution.candidates, with_time=True)
             choices = f"Encontré {self._reminder_choices(resolution.candidates)}."
             if example is None:
                 return f"{choices} {_VOICE_INDISTINCT}", needs_input
             tail = "" if all_reachable else f" {_OTHER_FROM_WEB}"
-            return f"{choices} Repetímelo con la hora, por ejemplo: {example}.{tail}", needs_input
+            ask = "Repetímelo con la hora y el día" if with_day else "Repetímelo con la hora"
+            return f"{choices} {ask}, por ejemplo: {example}.{tail}", needs_input
         reminder = resolution.reminder
         if not await self.reminder_manager.cancel_resolved(reminder, shared_only=True):
             return "Ese recordatorio ya no estaba activo. No cancelé nada.", needs_input

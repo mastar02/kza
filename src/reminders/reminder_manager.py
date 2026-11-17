@@ -33,6 +33,8 @@ _AM_PERIODS = frozenset({"manana", "madrugada"})
 _PM_PERIODS = frozenset({"tarde", "noche", "mediodia"})
 # "las 12 de la noche" is midnight and "las 2 de la noche" is 02:00, not 14:00.
 _NIGHT_EARLY_HOURS = frozenset({12, 1, 2, 3, 4})
+# Weekday names a clarification speaks ("del miércoles"), Monday first.
+_SPOKEN_WEEKDAYS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
 # A leading relative clause names how the reminder was made, not what it says:
 # "que (te) pedí", "que puse", "que hay" (review T032-U1-R6).
 _RELATIVE_PRONOUNS = frozenset({"te", "le", "les", "me", "nos", "se"})
@@ -442,8 +444,10 @@ class ReminderManager:
         """Spoken references to try for one reminder, most natural first.
 
         The whole text, then the text without the words the resolver reads
-        as a time or day ("llamar a mamá a las 3" -> "llamar a mamá"), each
-        with the spoken time when ``with_time``.
+        as a time or day ("llamar a mamá a las 3" -> "llamar a mamá"). With
+        ``with_time`` each carries the spoken time, and then the time and
+        day ("de las 5 de la tarde de hoy") for reminders the time alone
+        does not tell apart (review T032-U1-RR-F2).
         """
         bases = [reminder.text]
         content = _without_time_words(reminder.text)
@@ -452,7 +456,9 @@ class ReminderManager:
         if not with_time:
             return bases
         spoken_time = self.spoken_time_reference(reminder)
-        return [f"{base} de {spoken_time}" for base in bases]
+        spoken_day = self.spoken_day_reference(reminder)
+        return ([f"{base} de {spoken_time}" for base in bases]
+                + [f"{base} de {spoken_time} {spoken_day}" for base in bases])
 
     async def cancel_resolved(self, reminder: Reminder, *, shared_only: bool = False,
                               guard: AuthorityGuard | None = None) -> bool:
@@ -500,6 +506,21 @@ class ReminderManager:
             period = "de la noche"
         clock = f"{hour}:{local.minute:02d}" if local.minute else str(hour)
         return f"{'la' if hour == 1 else 'las'} {clock} {period}"
+
+    def spoken_day_reference(self, reminder: Reminder) -> str:
+        """Spoken day that :meth:`resolve` reads back as the trigger's household date.
+
+        "de hoy", "de pasado mañana" or "del <weekday>". Never "de mañana",
+        which the T031 day grammar reads as the morning; tomorrow is named
+        by its weekday.
+        """
+        day = self._household_clock.to_local(reminder.trigger_at).date()
+        offset = (day - self._household_clock.local_date()).days
+        if offset == 0:
+            return "de hoy"
+        if offset == 2:
+            return "de pasado mañana"
+        return f"del {_SPOKEN_WEEKDAYS[day.weekday()]}"
 
     def voice_label(self, reminder: Reminder) -> str:
         """Short spoken name of a shared reminder: its text and next time."""
