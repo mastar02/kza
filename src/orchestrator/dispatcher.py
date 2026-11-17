@@ -136,6 +136,9 @@ _REMINDER_CHOICES_SPOKEN = 3
 # (accent-folded); "un recordatorio para cancelar ..." is a creation instead.
 _UNCLAIMED_CANCEL_RE = re.compile(r"\b(?:cancel|borr|elimin|anul|quit|sac)\w*\b.*\brecordatorios?\b")
 _UNCLAIMED_CANCEL_REPLY = "Si querés cancelar un recordatorio, decime: cancelá el recordatorio de, y lo que dice."
+# "cancelá el recordatorio de X y el de Y": two reminders in one turn (review T032-U1-R7).
+_SECOND_REMINDER_RE = re.compile(r"\s+y\s+(?:el|la|los|las)\s+(?:recordatorios?\s+)?de\b")
+_ONE_AT_A_TIME = "Por voz cancelo de a un recordatorio. "
 
 # P3-F2 decision on F10: the orchestrated path has no sync or enrollment
 # consumer, so only the explicit whole requests are recognised (the same
@@ -1777,6 +1780,20 @@ class RequestDispatcher:
             return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, "Hubo un error con el recordatorio",
                 intent="reminder", outcome=TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.UNCERTAIN))
 
+    def _cancel_example(self, candidates: tuple, *, with_time: bool) -> str:
+        """A full cancel command the resolver maps back to one candidate.
+
+        There is no pending clarification, so a short answer ("el de las
+        8") would not be routed back here: the reply proposes the whole
+        command, with the time when the text alone is not enough.
+        """
+        labels = [self.reminder_manager.voice_label(r) for r in candidates]
+        reminder = next((r for r, label in zip(candidates, labels) if labels.count(label) == 1), candidates[0])
+        command = f"cancelá el recordatorio de {reminder.text}"
+        if with_time:
+            command += f" de {self.reminder_manager.spoken_time_reference(reminder)}"
+        return command
+
     def _reminder_choices(self, candidates: tuple) -> str:
         """At most three shared candidates in trigger order ("2: A y B")."""
         labels = [self.reminder_manager.voice_label(r) for r in candidates[:_REMINDER_CHOICES_SPOKEN]]
@@ -1804,14 +1821,22 @@ class RequestDispatcher:
             The spoken response and the task outcome.
         """
         needs_input = TaskOutcome(TaskStatus.NEEDS_INPUT, persistence=PersistenceState.NOT_WRITTEN)
+        second = _SECOND_REMINDER_RE.search(reference or "")
+        if second is not None:
+            first = re.sub(r"^\s*(?:de|del)\s+", "", reference[:second.start()]).strip()
+            example = f" Decime uno por vez, por ejemplo: cancelá el recordatorio de {first}." if first else ""
+            return f"{_ONE_AT_A_TIME.strip()}{example}", needs_input
         resolution: CancelResolution = await self.reminder_manager.resolve(None, reference, shared_only=True)
         logger.info("[Reminder] voice cancel resolution=%s candidates=%d", resolution.match.value,
                     len(resolution.candidates))
         if resolution.match is CancelMatch.NONE_ACTIVE:
             return "No hay recordatorios compartidos activos para cancelar.", needs_input
         if resolution.match is CancelMatch.NO_REFERENCE:
-            lead = "Por voz cancelo de a un recordatorio. " if re.search(r"\brecordatorios\b", folded) else ""
-            return f"{lead}Decime cuál querés cancelar. Hay {self._reminder_choices(resolution.candidates)}.", needs_input
+            lead = _ONE_AT_A_TIME if re.search(r"\brecordatorios\b", folded) else ""
+            several = len(resolution.candidates) > 1
+            example = self._cancel_example(resolution.candidates, with_time=several)
+            ask = "Para cancelar uno, decímelo entero, por ejemplo" if several else "Para cancelarlo, decime"
+            return f"{lead}Hay {self._reminder_choices(resolution.candidates)}. {ask}: {example}.", needs_input
         if resolution.match is CancelMatch.NOT_FOUND:
             return ("No encontré un recordatorio activo con eso. Podés preguntarme qué recordatorios hay.",
                     needs_input)
@@ -1820,7 +1845,9 @@ class RequestDispatcher:
             if len(labels) == 1:
                 return (f"Hay {len(resolution.candidates)} recordatorios iguales: {labels.pop()}. "
                         "Podés borrar el que sobra desde la web."), needs_input
-            return f"Encontré {self._reminder_choices(resolution.candidates)}. Decime cuál, con la hora.", needs_input
+            example = self._cancel_example(resolution.candidates, with_time=True)
+            return (f"Encontré {self._reminder_choices(resolution.candidates)}. "
+                    f"Repetímelo con la hora, por ejemplo: {example}."), needs_input
         reminder = resolution.reminder
         if not await self.reminder_manager.cancel_resolved(reminder, shared_only=True):
             return "Ese recordatorio ya no estaba activo. No cancelé nada.", needs_input

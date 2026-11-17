@@ -480,15 +480,17 @@ async def test_no_object_asks_which_and_lists_the_shared_candidates(leaves):
                                     "reminder_private_active:la clave")
     assert counted == ZERO
     assert result.outcome.status.value == "needs_input"
-    assert result.response.startswith("Decime cuál querés cancelar. Hay 2: tomar agua a las ")
+    assert result.response.startswith("Hay 2: tomar agua a las ")
     assert " y sacar la basura a las " in result.response and "clave" not in result.response
+    assert ". Para cancelar uno, decímelo entero, por ejemplo: cancelá el recordatorio de tomar agua de las " \
+        in result.response
 
 
 async def test_plural_without_object_never_cancels_them_all(leaves):
     result, counted = await _cancel(leaves, "eliminá todos los recordatorios", "reminder_shared_active:tomar agua")
     assert counted == ZERO and result.outcome.status.value == "needs_input"
-    assert result.response.startswith("Por voz cancelo de a un recordatorio. Decime cuál querés cancelar. Hay uno: "
-                                      "tomar agua a las ")
+    assert result.response.startswith("Por voz cancelo de a un recordatorio. Hay uno: tomar agua a las ")
+    assert result.response.endswith(". Para cancelarlo, decime: cancelá el recordatorio de tomar agua.")
 
 
 async def test_more_than_three_candidates_speak_three(leaves):
@@ -496,7 +498,8 @@ async def test_more_than_three_candidates_speak_three(leaves):
     result, counted = await _cancel(leaves, "cancelá el recordatorio de regar", state)
     assert counted == ZERO and result.outcome.status.value == "needs_input"
     assert result.response.startswith("Encontré 4, por ejemplo: regar helecho a las ")
-    assert result.response.endswith(". Decime cuál, con la hora.")
+    assert ". Repetímelo con la hora, por ejemplo: cancelá el recordatorio de regar helecho de las " \
+        in result.response
     assert result.response.count(" a las ") == 3
 
 
@@ -509,12 +512,17 @@ async def test_two_matches_ask_with_the_time_and_the_time_resolves_them(leaves):
     clock = leaves.reminder_manager._household_clock
     asked, counted = await _cancel(leaves, "cancelá el recordatorio de tomar agua", dispatcher=dispatcher)
     assert counted == ZERO and asked.outcome.status.value == "needs_input"
+    example = f"cancelá el recordatorio de tomar agua de {leaves.reminder_manager.spoken_time_reference(early)}"
     assert asked.response == (f"Encontré 2: tomar agua a las {clock.format_time(early.trigger_at)} y tomar agua "
-                              f"a las {clock.format_time(late.trigger_at)}. Decime cuál, con la hora.")
-    done, counted = await _cancel(leaves, f"cancelá el recordatorio de tomar agua de las "
-                                          f"{clock.format_time(late.trigger_at)}", dispatcher=dispatcher)
+                              f"a las {clock.format_time(late.trigger_at)}. Repetímelo con la hora, por ejemplo: "
+                              f"{example}.")
+    # Review T032-U1-R7: the proposed command, said as is, cancels exactly that reminder.
+    done, counted = await _cancel(leaves, example, dispatcher=dispatcher)
     assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
-    assert [r.id for r in await leaves.reminder_manager.get_active(None, shared_only=True)] == [early.id]
+    assert [r.id for r in await leaves.reminder_manager.get_active(None, shared_only=True)] == [late.id]
+    again, counted = await _cancel(leaves, f"cancelá el recordatorio de tomar agua de las "
+                                           f"{clock.format_time(late.trigger_at)}", dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1) and again.outcome.task_completed
 
 
 async def test_identical_duplicates_point_to_the_web(leaves):
@@ -661,3 +669,20 @@ async def test_a_number_in_the_reminder_text_never_cancels_another_reminder(leav
     assert result.response.startswith("Cancelé el recordatorio tomar las 2 pastillas a las 09:00")
     assert [r.id for r in await leaves.reminder_manager.get_active(None, shared_only=True)] == [other.id]
     assert (await leaves.reminder_store.get_by_id(literal.id)).state == "cancelled"
+
+
+@pytest.mark.parametrize(("text", "response"), [
+    ("cancelá el recordatorio de tomar agua y el de sacar la basura",
+     "Por voz cancelo de a un recordatorio. Decime uno por vez, por ejemplo: cancelá el recordatorio de tomar agua."),
+    ("borrá el recordatorio de tomar agua y la de sacar la basura",
+     "Por voz cancelo de a un recordatorio. Decime uno por vez, por ejemplo: cancelá el recordatorio de tomar agua."),
+    ("cancelá el recordatorio de tomar agua y el recordatorio de sacar la basura",
+     "Por voz cancelo de a un recordatorio. Decime uno por vez, por ejemplo: cancelá el recordatorio de tomar agua."),
+])
+async def test_two_reminders_in_one_turn_are_asked_one_at_a_time(leaves, text, response):
+    """Review T032-U1-R7: 'y el de ...' names a second reminder; nothing is cancelled."""
+    result, counted = await _cancel(leaves, text, "reminder_shared_active:tomar agua;"
+                                    "reminder_shared_active:sacar la basura;queued_request")
+    assert counted == ZERO
+    assert (result.response, result.outcome.status.value) == (response, "needs_input")
+    assert set(await _states(leaves)) == {"tomar agua", "sacar la basura"}

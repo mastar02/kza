@@ -375,6 +375,29 @@ class ReminderManager:
         trigger_time = self._household_clock.format_time(reminder.trigger_at)
         return f"{self._tts_prefix} {reminder.text} a las {trigger_time}"
 
+    def spoken_time_reference(self, reminder: Reminder) -> str:
+        """Spoken time that :meth:`resolve` reads back as exactly this trigger.
+
+        The period removes the half-day doubt: "las 8 de la mañana", "las
+        8:30 de la noche", "las 12 del mediodía", "la 1 de la madrugada".
+        """
+        local = self._household_clock.to_local(reminder.trigger_at)
+        hour = local.hour % 12 or 12
+        if local.hour == 0:
+            period = "de la noche"
+        elif local.hour < 6:
+            period = "de la madrugada"
+        elif local.hour < 12:
+            period = "de la mañana"
+        elif local.hour == 12:
+            period = "del mediodía"
+        elif local.hour < 20:
+            period = "de la tarde"
+        else:
+            period = "de la noche"
+        clock = f"{hour}:{local.minute:02d}" if local.minute else str(hour)
+        return f"{'la' if hour == 1 else 'las'} {clock} {period}"
+
     def voice_label(self, reminder: Reminder) -> str:
         """Short spoken name of a shared reminder: its text and next time."""
         if reminder.scope is not ReminderScope.SHARED:

@@ -392,3 +392,20 @@ async def test_a_relative_clause_verb_inside_the_text_is_still_content(manager):
     """Only a leading clause is dropped: 'pedí' later in the reference is a word to match."""
     await _shared(manager, "tomar agua")
     assert (await manager.resolve(None, "de tomar agua que pedí", shared_only=True)).match is CancelMatch.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_the_spoken_time_reference_resolves_to_exactly_its_reminder(store):
+    """Review T032-U1-R7: the time a clarification proposes reads back as one trigger, any hour."""
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 0, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    reminders = [await _shared(manager, "tomar agua", _local(2026, 11, 11, hour, minute).timestamp())
+                 for hour in range(24) for minute in (0, 30)]
+    phrases = {manager.spoken_time_reference(r) for r in reminders}
+    assert len(phrases) == len(reminders)
+    assert {"las 12 de la noche", "la 1 de la madrugada", "las 8:30 de la mañana", "las 12 del mediodía",
+            "las 7 de la tarde", "las 8 de la noche"} <= phrases
+    for reminder in reminders:
+        phrase = manager.spoken_time_reference(reminder)
+        found = await manager.resolve(None, f"de tomar agua de {phrase}", shared_only=True)
+        assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, reminder.id), phrase
