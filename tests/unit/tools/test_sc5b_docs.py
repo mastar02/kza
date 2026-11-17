@@ -211,6 +211,28 @@ def test_the_gate_states_sc4b_q1_and_q2():
     assert "Este runbook no autoriza ni programa ninguna transición" in _flat(_text())
 
 
+def test_the_gate_requires_pa_and_dr_before_day_14():
+    """User answer SC5B-Q1/Q2 (batch_f_questions_20261117): the first transition, inside L4's 14 days,
+    runs on today's fail-closed PA and the documented manual dry-run cleanup; rows PA and DR are
+    implemented before day 14 of R1, and no transition runs after day 14 without them."""
+    text = _text()
+    gate = _flat(_section(text, "## Compuerta: cuándo se puede usar"))
+    head = "**Filas PA y DR implementadas antes del día 14 de R1 (SC5B-Q1 y SC5B-Q2).**"
+    assert head in gate
+    assert gate.index("**Primera transición dentro de los 14 días de L4 (SC4B-Q1).**") < gate.index(head)
+    rule = gate.split(head, 1)[1].split("**Paso 0 con", 1)[0]
+    assert ("La primera transición, dentro de los 14 días de L4, se hace con lo que el código hace hoy: la fila PA "
+            "falla cerrado (salida L4 mientras exista) y la copia en claro de `adopt --dry-run` en `$TMPDIR` se borra "
+            "a mano con la comprobación documentada (fila T0F, punto 2, y «Después de la aceptación»).") in rule
+    assert ("Antes de DÍA 0 + 14 × 24 h se implementan la salida de la fila PA (testigo de cierre por registro de "
+            "recuperación y `--accept-regressed-source`) y la sombra de la fila DR bajo `<raíz>/admission/dry-run/`") in rule
+    assert "Sin las dos, ninguna transición después del día 14." in rule
+    assert "SC5B-Q2 (`batch_f_questions_20261117`)" in _flat(text.split("## Compuerta", 1)[0])
+    after = _flat(_section(text, "## Después de la aceptación"))
+    assert "(se implementa antes del día 14 de R1, SC5B-Q1)" in after
+    assert "(fila DR) es trabajo pendiente, que se implementa antes del día 14 de R1 (SC5B-Q2)." in after
+
+
 def test_the_plan_review_names_the_closed_chroma_list():
     """SC-4c: dropped_collections per store and other_files (SC4C-Q5) are reviewed before start."""
     plan = _flat(_section(_text(), "### Paso 4: plan (sólo lectura; se puede repetir)"))

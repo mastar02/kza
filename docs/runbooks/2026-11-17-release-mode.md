@@ -6,7 +6,8 @@ Diseño: `sc-release-design-v4.json` (aceptado el 2026-11-15, enmiendas A1 y
 A2), `operator_procedure`, `crash_table` y la unidad SC-5b. Decisiones del
 usuario: SC-D2, SC-D4, SC-D5, SC-D6, SC-D7 y SC-D8 = A
 (`u3b_sc_release_mode_questions`), SC4B-Q1 y SC4B-Q2
-(`sc4b_questions_20261116`) y SC4C-Q1, SC4C-Q2b y SC4C-Q6, todas en
+(`sc4b_questions_20261116`), SC4C-Q1, SC4C-Q2b y SC4C-Q6, y SC5B-Q1 y
+SC5B-Q2 (`batch_f_questions_20261117`), todas en
 `data/autonomous-roadmap-20261102/t040-t041/user-decisions-20261110.json`
 (local, fuera de Git). Los comandos y códigos de rechazo son los de
 `scripts/stage_runtime.py`, `scripts/compaction.py` y
@@ -42,6 +43,16 @@ Todas estas condiciones, antes de la primera transición:
   hoy no existe en el código. Sin ella, si la release nueva ya aceptada muere
   en cada arranque sin recibo (fila PA), la única salida es L4, y L4 existe
   sólo hasta el retiro Q5.
+- **Filas PA y DR implementadas antes del día 14 de R1 (SC5B-Q1 y
+  SC5B-Q2).** La primera transición, dentro de los 14 días de L4, se hace con
+  lo que el código hace hoy: la fila PA falla cerrado (salida L4 mientras
+  exista) y la copia en claro de `adopt --dry-run` en `$TMPDIR` se borra a
+  mano con la comprobación documentada (fila T0F, punto 2, y «Después de la
+  aceptación»). Antes de DÍA 0 + 14 × 24 h se implementan la salida de la
+  fila PA (testigo de cierre por registro de recuperación y
+  `--accept-regressed-source`) y la sombra de la fila DR bajo
+  `<raíz>/admission/dry-run/`, que borra el próximo que toma la concesión.
+  Sin las dos, ninguna transición después del día 14.
 - **Paso 0 con `resurrected` en 0 (SC4B-Q2)**, abajo. Si no da 0, no hay
   transición: se implementan antes la línea base salada de K y el
   reencolado (R5V-2, R5V-3).
@@ -664,7 +675,8 @@ un arreglo se construye sobre esa línea («Construir NUEVO», punto 3).
   desde entonces vuelve con él (`uninstall-launcher`). Pide la frase del
   runbook de R1 y la decisión del usuario, no del operador. Cuando esa parte
   exista: un head de recuperación limpio empieza el hotfix o el rollback
-  directamente; con regresiones confirmadas, el plan las liga con
+  directamente (se implementa antes del día 14 de R1, SC5B-Q1); con
+  regresiones confirmadas, el plan las liga con
   `--accept-regressed-source`; y un hotfix con triple mayor lleva su T0 con
   la comprobación de H salteada (paso 3).
 - **`adopt --dry-run` hace una copia completa en claro.** Corre siempre que
@@ -677,7 +689,7 @@ un arreglo se construye sobre esa línea («Construir NUEVO», punto 3).
   todo retiro y de todo borrado: comprobarlo con `ls -d
   "${TMPDIR:-/tmp}"/kza-adopt-dry-run-*` y borrarlo a mano. La sombra bajo
   `<raíz>/admission/dry-run/` que el diseño pide (fila DR) es trabajo
-  pendiente.
+  pendiente, que se implementa antes del día 14 de R1 (SC5B-Q2).
 - **`adopt --confirm`** pide el `head_sha256` que imprime `adopt --dry-run`
   (`runtime_admission_adopt_confirmation` si no coincide).
 - **Defectos de las reparaciones que V saltea** (SC-D6 A): aparecen recién
