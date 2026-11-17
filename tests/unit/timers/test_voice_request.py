@@ -260,3 +260,19 @@ def test_courtesy_and_filler_words_are_not_selectors(text, selector):
 ])
 def test_format_duration_rounds_up_to_whole_seconds(seconds, spoken):
     assert format_duration(seconds) == spoken
+
+
+# T030-U1 RR-5: every courtesy/filler word, written out so dropping one from the set fails a row.
+EVERY_FILLER_WORD = [
+    "gracias", "ya", "ahora", "dale", "nomás", "más", "exacto", "exactos", "exacta", "exactas", "justo", "justos",
+    "justa", "justas", "momento", "momentito", "dentro", "puse", "pusiste", "pusimos", "puso", "pusieron", "recién",
+    "mismo", "porfa", "porfi", "porfis", "favor", "che", "bueno", "listo", "ok", "okey", "avisar", "avisarme",
+    "avisame", "avisarnos", "avisanos", "me", "nos", "avise", "avises", "avisen", "suene", "suenes", "suenen",
+]
+
+
+@pytest.mark.parametrize("word", EVERY_FILLER_WORD)
+def test_each_filler_word_is_stripped_at_either_edge_of_a_label(word):
+    assert parse_timer_request(f"de 5 minutos para la pasta {word}") == TimerRequest(300, "pasta")
+    assert parse_timer_request(f"de 5 minutos {word} para la pasta") == TimerRequest(300, "pasta")
+    assert parse_timer_selector(f"de la pasta {word}") == TimerSelector("pasta")

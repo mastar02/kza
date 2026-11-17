@@ -303,7 +303,8 @@ async def test_cancel_all(manager):
     assert (empty.outcome.status, empty.response) == (TaskStatus.NEEDS_INPUT, NO_ACTIVE)
 
 
-@pytest.mark.parametrize("text", ["cancelá los timers", "cancelá los temporizadores", "cancelá las alarmas"])
+@pytest.mark.parametrize("text", ["cancelá los timers", "cancelá los temporizadores", "cancelá las alarmas",
+                                  "cancelá los despertadores"])
 async def test_plural_noun_cancels_every_timer(manager, text):
     """T030-U1 R6 (reviewer mutant V11): the plural names every timer, without 'todos'."""
     manager.create_timer("pasta", 600)

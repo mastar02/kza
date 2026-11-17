@@ -131,6 +131,15 @@ def test_each_timer_owns_its_warning_list():
     assert second.announce_at == [60] and timers.default_announce == [60]
 
 
+def test_a_manager_with_custom_intervals_uses_them_for_long_timers_only():
+    """T030-U1 RR-5 (reviewer mutant Q_manager_default_ignored): create paths honour default_announce_intervals."""
+    timers = NamedTimerManager(default_announce_intervals=[90])
+    assert timers.create_timer("", 300).announce_at == [90]
+    assert timers.create_timer("", 120).announce_at == []
+    assert timers.handle_voice_command("pon un timer pasta 5 minutos")["timer"].announce_at == [90]
+    assert timers.handle_voice_command("pon un timer arroz 2 minutos")["timer"].announce_at == []
+
+
 async def test_ticking_speaks_only_the_one_minute_warning_then_rings(monkeypatch):
     """Real update loop on a fake clock: 3 min and 1 h 30 s warn once at 1 minute, 2 min never; all three ring."""
     import src.timers.named_timers as module
