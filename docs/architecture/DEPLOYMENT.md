@@ -622,8 +622,11 @@ excluida (esta lista), diagnóstico o sin conjunto cerrado. Los enums de las dem
 
 Desaparecen con esto el límite de 8 dueños y el hallazgo F8 (un borrado del
 head en filas protegidas de un dueño dejaba el head en UNKNOWN): sin dueños
-no hay ni uno ni otro. R1 no tiene dueños. La constante del límite sigue en el
-código, inalcanzable, hasta que SC-5b la retire.
+no hay ni uno ni otro. R1 no tiene dueños. SC-5b retiró del código la
+constante del límite (`runtime_admission_delegation_owner_limit` ya no existe)
+y la rama de concesión heredada del CLI `delegate`, que ahora rechaza siempre
+con `runtime_admission_delegation_retired`, también en una raíz de prueba con
+`LEGACY_MANAGED_TRANSITIONS`.
 
 Lo que sigue vale sólo para raíces que ya tienen dueños (raíces de prueba y
 desarrollo creadas antes de SC-2): la validación de cadenas existentes, la
@@ -715,7 +718,8 @@ Estado al 2026-11-16: implementado en la rama `sc1a-controller-epoch5`
 producción y R1 siguen en época 4. Es la primera pieza del modo release
 posterior a R1; plan/start en modo release (SC-1b) está en la sección
 siguiente, la corrida de verificación (SC-4a), las salidas (SC-4b) y la
-lista cerrada de Chroma (SC-4c) en las suyas; faltan SC-R, SC-6b y SC-5b,
+lista cerrada de Chroma (SC-4c) en las suyas y el procedimiento del operador
+(SC-5b) en «Procedimiento del modo release (SC-5b)»; falta SC-6b,
 así que esta sección no habilita
 ninguna transición gestionada (ver «Sin
 transiciones gestionadas después de R1 hasta el modo release»). Evidencia:
@@ -1055,7 +1059,8 @@ SC-4b implementa las salidas de la corrida V del diseño v4
 (`mechanism.w_abort_predicate`, `retire`, `safe_stop`, filas de
 `crash_table`; decisiones del usuario SC-D6 = A, SC-D7 = A, SC-D8 = A). Nada
 está instalado: el servidor sigue en R1 (época 4) y el hueco de la sección
-siguiente sigue abierto hasta SC-4c, SC-R, SC-6b y SC-5b.
+siguiente sigue abierto hasta SC-6b (SC-4c, SC-R y el runbook de SC-5b ya
+están).
 
 - **W0 (H intacto).** Sin hijo vivo de V, sin escritores abiertos en K' y H
   igual a su binding, marcador y prueba de cierre. Lo que se cura solo es
@@ -1314,6 +1319,68 @@ compactación podía pasar del snapshot.
   2026-11-16); SC-6b lo ajusta con la medición de tamaño de producción.
 
 Tests: `tests/unit/tools/test_sc4c_chroma_closed_list.py`.
+
+### Procedimiento del modo release (SC-5b) — runbook, sin release
+
+El orden completo del operador, con cada salida, está en
+[el runbook del modo release](../runbooks/2026-11-17-release-mode.md)
+(diseño `sc-release-design-v4`, unidad SC-5b; evidencia
+`data/autonomous-roadmap-20261102/t040-t041/sc5b-evidence.json`, local y
+fuera de Git). Nada está instalado: el hueco de la sección siguiente sigue
+abierto hasta SC-6b, y la primera transición tiene además las dos
+condiciones de SC4B-Q1 y SC4B-Q2 (dentro de los 14 días de L4; `resurrected`
+en 0 en el paso 0). Lo que el operador tiene que saber de antemano:
+
+- **Punto de aceptación.** La release nueva queda aceptada con el retiro
+  (`compact retire` terminado). Hasta ahí el tráfico de la casa no llega a
+  K'; después, H ya no existe y un problema se arregla con otra transición
+  (hotfix o rollback), nunca volviendo a H.
+- **T0.** Sólo cuando el triple del NUEVO es estrictamente mayor que el
+  instalado, como `$PY -I -B <tmp>/scripts/stage_runtime.pyc --root
+  /home/kza/releases --offline install-controller <archivo NUEVO>` desde el
+  archivo extraído (nunca el `$ST` instalado). Como la clausura del
+  controlador incluye casi todo `src`, toda release que cambia `src`
+  necesita un T0 con `CONTROLLER_REVISION` subido (revisión SC-R SCR-C-3).
+  Después del T0, H sirve una vez con el controlador nuevo y la unidad se
+  detiene y deshabilita otra vez antes del plan. No hay vuelta al
+  controlador anterior (fila T0F). Un rollback no lleva T0.
+- **Reparaciones que V no ejercita (SC-D6 A).** V saltea las reparaciones de
+  una vez y los bucles de mantenimiento (lista medida por SC-0): un defecto
+  ahí aparece recién después de aceptar, y arreglarlo no devuelve lo que
+  borró.
+- **`home_assistant_routines` se descarta en cada transición** (SC4C-Q1,
+  SC4C-Q6): el arranque de K' la recrea vacía, así que después de cada
+  transición «listar mis rutinas» por voz responde vacío hasta que se dicte
+  una rutina nueva. La `user_memories` heredada de `data/memory_db` se
+  descarta en la primera (SC4C-Q2b).
+- **Colas de borrado de audio.** La premisa anterior («una cola de borrados
+  pendiente deja rutas viejas de H») estaba equivocada: una cola no vacía
+  bloqueaba toda compactación. Desde SC-1b las rutas de
+  `pending_audio_deletions` y `audio_write_intents` se reubican en K y A1
+  compara la proyección con esas rutas reubicadas (sección SC-1b).
+- **Raíces con dueños sólo en ensayos.** Las raíces con dueños (archivos
+  anteriores a SC-2) existen sólo en tests y ensayos de época 4 o menor, se
+  recrean en cada uno y siguen en modo simple; producción no puede tener
+  dueños (`runtime_admission_owners_present`,
+  `runtime_admission_compaction_owners_present`).
+- **Residuos aceptados.** Durante SS, HD y CI quedan tres copias (H, el
+  snapshot y K') con los borrados por plazo en pausa, y durante T0F, PA o
+  una parada del hueco, una; todo período con la unidad deshabilitada lleva
+  la decisión escrita cada 48 horas. El borrado es sólo `unlink`. El
+  snapshot conserva la copia opaca de Chroma de H hasta el retiro o el abort.
+  Nada fuera de la raíz se alcanza.
+- **Pendiente en el código, fallando cerrado.** El testigo de cierre por
+  registro de recuperación y `--accept-regressed-source` (fila PA): hasta
+  entonces un head cerrado por recuperación no es fuente de ninguna
+  transición y la salida de PA es L4 mientras exista. La sombra de `adopt
+  --dry-run` bajo `admission/dry-run/` (fila DR): hoy `adopt --dry-run`, que
+  sólo corre después de la aceptación, copia el estado a un temporal del
+  sistema (`kza-adopt-dry-run-*`), que un corte deja ahí; el runbook dice
+  cómo buscarlo y borrarlo. La línea base salada de resurrección de K y el
+  reencolado (el retiro sigue con escaneo absoluto; por eso el paso 0).
+
+Tests: `tests/unit/tools/test_sc5b_docs.py` (comandos y códigos del runbook
+contra el código, el orden de los pasos y las salidas).
 
 ### Sin transiciones gestionadas después de R1 hasta el modo release
 
@@ -1641,7 +1708,9 @@ Instalación en la ventana de R1 (bajo `kza`, sin sudo; el servicio detenido):
    `scripts/stage_runtime.py` de esa revisión.
 2. Transferir el archivo y `systemd/kza-voice.service.d/managed.conf.template`.
 3. Extraer el archivo en un directorio temporal y correr
-   `<tmp>/scripts/stage_runtime.pyc --root /home/kza/releases --offline install-controller <archivo>`.
+   `$PY -I -B <tmp>/scripts/stage_runtime.pyc --root /home/kza/releases --offline install-controller <archivo>`,
+   con `$PY` = `/home/kza/kza/.venv/bin/python` (un `.pyc` no es ejecutable
+   solo; corrección SC-5b, R4-OPS-6b).
    Instala en `controller/<commit>` y cambia `controller/current` de forma
    atómica. Antes del cambio hace fsync de cada archivo y directorio del
    árbol, y después fsync del directorio `controller/`. Cada `serve` vuelve

@@ -12,6 +12,11 @@ fuera de Git).
 Estado: **desarrollada y probada en raíces de prueba; nunca se ejecutó sobre
 `/home/kza/releases`.** Esta unidad es la última planificada antes de R1.
 
+Con el controlador en época 5 (modo release, después de R1), el orden
+completo de una transición, con el T0, el rollback y cada salida, está en
+[el runbook del modo release](2026-11-17-release-mode.md) (SC-5b); este
+runbook sigue siendo la referencia de cada paso de la compactación.
+
 ## Qué hace
 
 Toma el head cerrado H y crea un estado nuevo K que es una copia idéntica de H,
@@ -301,11 +306,13 @@ R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
    Época 5: `--archive "$NEW_ARCHIVE"` (el archivo NUEVO), y
    `--retire-prepare-leftovers` queda forzado.
 
-   Anotar `source_binding_id` de la salida (el binding de H) junto al
-   `compaction_id` del paso 3: toda vuelta a H pide `--confirm-h <primeros
-   12+ caracteres>` de ese valor, quizá días después (SS y la decisión de 48
-   horas), y ni `compact status` ni un plan nuevo lo muestran mientras el log
-   siga pendiente (revisión RB-6).
+   Anotar el binding de H (`source_binding_id`) junto al `compaction_id` del
+   paso 3: toda vuelta a H pide `--confirm-h <primeros 12+ caracteres>` de ese
+   valor, quizá días después (SS y la decisión de 48 horas), y ni la salida
+   del plan, ni `compact status`, ni un plan nuevo lo muestran (revisión RB-6;
+   corrección SC-5b: la vista del plan no lo incluye). Después del paso 3 se
+   lee, sin escribir nada, del registro de intención del log:
+   `"$PY" -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_binding_id"])' /home/kza/releases/admission/compaction/v1/<compaction_id>/intent.json`.
 
    Revisar, sin datos personales en la salida:
    - `members`: cada miembro con su clase, prueba y conteos (archivos, bytes);
@@ -684,7 +691,9 @@ que sigue vale para cada resultado de la corrida V:
   bajo la raíz, guardar la salida y `compact status`, buscar la copia vieja
   o la edición, y pasarlo a desarrollo con la decisión escrita de 48 horas.
 - **Decisión escrita cada 48 horas.** Para todo período con la unidad
-  deshabilitada (SS, HD, una transición que no terminó): si el servicio no
+  deshabilitada (SS, HD, CI, T0F, una release aceptada rota que espera un
+  hotfix, una transición que no terminó o una parada del hueco posterior a
+  R1; plantilla en el runbook del modo release): si el servicio no
   vuelve dentro de las 48 horas desde que se detuvo (el plazo más corto, el
   audio ambiental), el operador anota una decisión, y otra cada 48 horas: la
   salida que se toma o seguir sin servicio sabiendo que los borrados por plazo
