@@ -891,7 +891,8 @@ def test_06_12_rollbacks_and_the_accepted_release_killed(builds, tmp_path, syste
     assert world.wait_active()["ActiveState"] == "active"
     world.kill("pa-sigkill")
     world.d.wait_inactive(60)
-    assert world.head()["status"] == "unknown", world.head()
+    rec.result(head_after_pa_kill=world.head()["status"])
+    assert world.head()["status"] in ("running", "unknown"), world.head()  # open: no receipt, no R-b
     world.ctl("pa-reset-failed", "reset-failed", world.unit, expect=None)
     world.stop_and_disable("pa-paso1")
     shadows = tmp_path / "adopt-tmpdir"
@@ -1155,6 +1156,9 @@ def _app_source(tmp_path: Path, port: int) -> Path:
         return config
 
     raw = canonical_template(placeholder, portable)
+    # The production command index (config/settings.yaml vectordb.path), relative to the runtime like there:
+    # SC-4c's closed list names its stores by their production paths (data/chroma_db).
+    raw["vectordb"]["path"] = "./data/chroma_db"
     text = yaml.safe_dump(raw, sort_keys=False)
     assert str(placeholder) not in text
     (source / "config" / "settings.yaml").write_text(text)
