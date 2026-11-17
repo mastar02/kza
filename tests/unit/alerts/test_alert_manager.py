@@ -1145,6 +1145,17 @@ class TestVoiceRetryOnce:
         assert tts.await_count == 2 and alert.delivery is AlertDelivery.DELIVERED
 
     @pytest.mark.asyncio
+    async def test_cancelled_escalation_clears_a_pending_retry(self):
+        tts = AsyncMock(side_effect=[OUTPUT_FREE["failed"], asyncio.CancelledError(), _ok()])
+        manager = AlertManager(tts_callback=tts)
+        alert = await _check(manager, AlertPriority.HIGH, "a")
+        with pytest.raises(asyncio.CancelledError):
+            await _check(manager, AlertPriority.CRITICAL, "b")
+        await _check(manager, AlertPriority.CRITICAL, "b")
+        assert tts.await_count == 2
+        assert (alert.delivery, alert.delivery_reason) == (AlertDelivery.FAILED, "voice_delivery_cancelled")
+
+    @pytest.mark.asyncio
     async def test_failed_escalation_notice_gets_its_own_single_retry(self):
         tts = AsyncMock(side_effect=[_ok(), OUTPUT_FREE["failed"], _ok(), _ok()])
         manager = AlertManager(tts_callback=tts)
