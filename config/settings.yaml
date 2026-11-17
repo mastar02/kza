@@ -1671,14 +1671,15 @@ rooms:
     # se miden desde el wake; se cierra solo tras voz después del wake y luego
     # silencio sostenido, con voz = nivel >= noise_ratio × piso de ruido medido
     # de la room, o Silero (el predictor por room ya cargado) >= vad_threshold.
-    # Sin voz en no_speech_timeout_s → se descarta sin STT. El arranque del
+    # Sin voz confirmada (>= min_speech_ms; la cola del "Nexa" o un golpe no
+    # alcanzan) en no_speech_timeout_s → se descarta sin STT. El arranque del
     # follow-up usa la misma prueba (reemplaza rms > 0.02). enabled: false =
     # rollback exacto al endpoint legacy.
     post_wake:
       enabled: true
       min_listen_s: 1.0          # escucha mínima tras el wake
       max_utterance_s: 5.0       # tope de audio tras el wake
-      no_speech_timeout_s: 2.5   # sin voz tras el wake → descartar sin STT
+      no_speech_timeout_s: 2.5   # sin voz confirmada (min_speech_ms) tras el wake → descartar sin STT
       end_silence_ms: 300        # silencio por nivel (Silero ignorado) que cierra el comando (revisión 1, M1: 600 sumaba +400 ms a cada comando)
       vad_end_silence_ms: 600    # silencio (nivel y Silero) si la voz sólo se confirmó con Silero
       ready_silence_ms: 150      # cierre rápido si el parser ya tiene comando completo

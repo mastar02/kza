@@ -60,8 +60,9 @@ class PostWakeConfig:
     Attributes:
         min_listen_s: Minimum audio after the wake before a silence close.
         max_utterance_s: Hard cap of audio after the wake.
-        no_speech_timeout_s: Without any speech frame after the wake for this
-            long, the capture is dropped without STT.
+        no_speech_timeout_s: Without confirmed speech (``min_speech_ms``)
+            after the wake for this long, the capture is dropped without STT;
+            a wake-word tail or a click alone does not keep it open.
         end_silence_ms: Sustained level-only silence (RMS below
             ``noise_ratio`` x floor, Silero ignored) after speech confirmed by
             level that ends the command. Silero is ignored here because its
@@ -321,7 +322,7 @@ class EndpointState:
                 return EndpointDecision.CLOSE_SILENCE
         if post_s >= config.max_utterance_s or wall_since_wake_s >= config.max_utterance_s + config.stall_margin_s:
             return EndpointDecision.CLOSE_MAX if confirmed else EndpointDecision.DROP_NO_SPEECH
-        if not self.speech_frames and post_s >= config.no_speech_timeout_s:
+        if not confirmed and post_s >= config.no_speech_timeout_s:
             return EndpointDecision.DROP_NO_SPEECH
         return EndpointDecision.CONTINUE
 

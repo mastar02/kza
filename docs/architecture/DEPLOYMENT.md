@@ -1225,7 +1225,8 @@ vivo de la captura post-wake»).
   para el silencio porque su probabilidad se arrastra tras la voz), 600 ms si
   la voz sólo se confirmó con Silero, 150 ms si el parser ya tiene el comando
   completo (sólo con `early_dispatch`, hoy apagado); voz = nivel >= 1,8 × el piso de ruido medido de la
-  habitación, o Silero del wake >= 0,5. Sin voz en 2,5 s descarta sin STT
+  habitación, o Silero del wake >= 0,5. Sin voz confirmada (>= 240 ms; la cola
+  del «Nexa» o un golpe aislado no alcanzan) en 2,5 s descarta sin STT
   (`[endpoint] code=drop_no_speech`, cuenta como captura vacía para el
   AmbientGuard). Al tope de 5 s con voz la captura queda incompleta y el router
   la rechaza sin STT (`gate_rejected:incomplete_capture`, como el timeout

@@ -98,7 +98,7 @@ def _loop(detector, post_wake=CONFIG, follow_up=None, **kwargs):
 
 
 def _run(*, floor, nexa_rms, pause_s, command_s, command_rms, tail_s=7.0, post_wake=CONFIG,
-         seed=7, **kwargs):
+         seed=7, tail_rms=None, **kwargs):
     """Feed ambient, "Nexa", the wake, a pause, a command and a long tail.
 
     Returns:
@@ -109,7 +109,8 @@ def _run(*, floor, nexa_rms, pause_s, command_s, command_rms, tail_s=7.0, post_w
     before = np.concatenate([_segment(rng, 3.04, floor), _segment(rng, 0.48, nexa_rms)])
     pre_chunks = _chunks(before)
     after = np.concatenate([
-        _segment(rng, pause_s, floor), _segment(rng, command_s, command_rms), _segment(rng, tail_s, floor),
+        _segment(rng, pause_s, floor if tail_rms is None else tail_rms),
+        _segment(rng, command_s, command_rms), _segment(rng, tail_s, floor),
     ])
     detector = _Detector(fire_at=len(pre_chunks) - 1)
     loop, rs = _loop(detector, post_wake=post_wake, **kwargs)
@@ -180,6 +181,32 @@ def test_silence_after_wake_is_dropped_without_stt():
     guard.on_capture_result.assert_called_once_with("cocina", "empty")
     stt.transcribe.assert_not_called()
     assert out["loop"].endpoint_counts == {"drop_no_speech": 1}
+
+
+@pytest.mark.parametrize("tail_frames", [1, 2])
+def test_wake_word_tail_does_not_delay_the_drop(tail_frames):
+    """1-2 frames of the "Nexa" tail after the detection, then silence: drop at 2.5 s."""
+    guard = MagicMock()
+    guard.state_for.return_value = None
+    out = _run(floor=0.0012, nexa_rms=0.0035, pause_s=tail_frames * CHUNK_S, command_s=0.0, command_rms=0.0,
+               ambient_guard=guard, tail_s=7.0, seed=19, tail_rms=0.0035)
+    assert out["event"] is None and out["rs"].listening is False
+    assert CONFIG.no_speech_timeout_s - 1e-9 <= out["closed_after"] <= CONFIG.no_speech_timeout_s + CHUNK_S + 1e-9
+    assert out["loop"].endpoint_counts == {"drop_no_speech": 1}
+    guard.on_capture_result.assert_called_once_with("cocina", "empty")
+
+
+def test_endpoint_state_drops_unconfirmed_speech_at_the_no_speech_timeout():
+    for tail_frames in (1, 2):
+        state = EndpointState(wake_index=0, floor=0.0012, next_frame=0)
+        buffer = list(np.full(tail_frames * CHUNK_SIZE, 0.0035, dtype=np.float32))
+        frames = math.ceil(CONFIG.no_speech_timeout_s / CHUNK_S - 1e-9)
+        buffer += list(np.full((frames - tail_frames) * CHUNK_SIZE, 0.0012, dtype=np.float32))
+        state.analyze(buffer[:-CHUNK_SIZE], CONFIG, None)
+        assert state.decide(CONFIG, SR, False, 0.0) is EndpointDecision.CONTINUE
+        state.analyze(buffer, CONFIG, None)
+        assert state.speech_frames == tail_frames
+        assert state.decide(CONFIG, SR, False, 0.0) is EndpointDecision.DROP_NO_SPEECH
 
 
 def test_short_speech_waits_for_the_minimum_listen():
