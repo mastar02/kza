@@ -500,3 +500,74 @@ def test_a_rebuild_that_overruns_its_timeout_is_killed_and_refused(tmp_path, mon
     finally:
         os.close(lease)
     assert _gone(int(marker.read_text()))
+
+
+# --- SC4C-RV-2: the clean child is pinned, not left to the raw-byte canary ---------------------------
+
+MODULES_PROBE = "\n".join([
+    "import sys as probe_sys",
+    "probe_sys.stderr.write('SC4C-MODULES ' + json.dumps(sorted(",
+    "    name for name, module in list(probe_sys.modules.items())",
+    "    if name == 'src' or name.startswith('src.')",
+    "    or str(getattr(module, '__file__', None) or '').startswith({owned!r}))) + '\\n')",
+    "probe_sys.stderr.write('SC4C-FLAGS ' + json.dumps([probe_sys.flags.isolated, probe_sys.flags.dont_write_bytecode]) + '\\n')",
+])
+
+
+def test_each_store_is_written_by_a_clean_child_that_gets_only_k_s_records(x4, x5, tmp_path, monkeypatch):
+    """The rebuild runs in 'python -I -B -c CHROMA_REBUILD_CHILD' (never in the worker), under the minimal
+    environment, holding the worker's lease, with only K's planned records on stdin; the child imports
+    nothing of this repository (its modules are read back from the child itself)."""
+    import re
+    world = _post_r1(x4, x5, tmp_path, sc.chroma_state())
+    root, h_state = world["root"], world["h"]["state"]
+    before = _stores(h_state, tmp_path / "h-copy")
+    real_run = subprocess.run
+    calls = []
+
+    def spy(argv, *args, **kwargs):
+        if isinstance(argv, list) and oc.CHROMA_REBUILD_CHILD in argv:
+            lock = os.stat(root / ".admission.lock")
+            held = [os.fstat(fd) for fd in kwargs.get("pass_fds", ())]
+            calls.append({"argv": list(argv), "kwargs": {key: value for key, value in kwargs.items()
+                                                         if key != "input"},
+                          "spec": json.loads(kwargs["input"]), "raw": kwargs["input"],
+                          "lease": [(item.st_dev, item.st_ino) for item in held] == [(lock.st_dev, lock.st_ino)]})
+            probed = list(argv)
+            owned = tuple(str(REPO / name) + os.sep for name in ("src", "scripts", "tests", "tools"))
+            probed[-1] = argv[-1] + "\n" + MODULES_PROBE.format(owned=owned)
+            completed = real_run(probed, *args, **kwargs)
+            calls[-1]["stderr"] = completed.stderr.decode("utf-8", "replace")
+            return completed
+        return real_run(argv, *args, **kwargs)
+    monkeypatch.setattr(subprocess, "run", spy)
+    started = cw.start(root, x5["archive"], worker=_in_process_worker())
+    monkeypatch.setattr(subprocess, "run", real_run)
+    assert started["phase"] == "activated"
+    assert not re.search(r"^\s*(from|import)\s+src\b", oc.CHROMA_REBUILD_CHILD, re.M)
+    k_state = root / "slots" / "k" / "state"
+    assert [call["spec"]["path"] for call in calls] == [str(k_state / "data" / "chroma_db"),
+                                                         str(k_state / "data" / "memory_db")]
+    for call in calls:
+        assert call["argv"] == [sys.executable, "-I", "-B", "-c", oc.CHROMA_REBUILD_CHILD]
+        assert set(call["kwargs"]["env"]) <= set(oc._CHILD_ENVIRONMENT)
+        assert call["kwargs"]["capture_output"] is True and call["kwargs"]["timeout"] == oc.CHROMA_REBUILD_TIMEOUT
+        assert call["lease"] is True  # the worker's admission lease, nothing else
+        assert call["spec"]["parent"] == os.getpid()
+        assert "SC4C-MODULES []" in call["stderr"] and "SC4C-FLAGS [1, 1]" in call["stderr"]
+        for needle in EXCLUDED:
+            assert needle.encode() not in call["raw"], needle
+    commands, memory = (call["spec"]["collections"] for call in calls)
+
+    def ids_and_documents(records):
+        return sorted((row["id"], row["document"]) for row in records)
+    assert {item["collection"] for item in commands} == {
+        "home_assistant_commands", "home_assistant_commands__pointer", sc.STAGING}  # no routines
+    for item in commands:
+        assert ids_and_documents(item["records"]) == ids_and_documents(
+            before[("data/chroma_db", item["collection"])]["records"])
+    [policy] = memory
+    assert policy["collection"] == sc.POLICY
+    assert ids_and_documents(policy["records"]) == ids_and_documents(
+        [row for row in before[("data/memory_db", sc.POLICY)]["records"] if row["document"] == sc.LIVE])
+
