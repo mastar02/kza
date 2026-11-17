@@ -311,8 +311,11 @@ R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
    - `chroma` (SC-4c): por almacén de Chroma de H, cuántas colecciones se
      reconstruyen (`rebuilt`, la memoria de política), se copian enteras
      (`copied`, el índice de comandos) y no se copian (`dropped`,
-     `home_assistant_routines`). Lo esperado en producción es
-     `data/chroma_db` con `dropped: 1` y `data/memory_db` con `rebuilt: 1`.
+     `home_assistant_routines`), y `other_files`: archivos dentro del
+     almacén que no son de Chroma (K no los recibe). Lo esperado en
+     producción es `data/chroma_db` con `dropped: 1` y `data/memory_db` con
+     `rebuilt: 1`, los dos con `other_files: 0`; si no es 0, mirar qué se
+     dejó a mano dentro del almacén antes de seguir.
      Después de la transición, «listar mis rutinas» por voz responde vacío
      hasta que se dicte una rutina nueva (las rutinas programadas de
      `routines.db` no cambian);
@@ -737,6 +740,9 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
 | `runtime_admission_compaction_locator_collision:<tabla>.path` | `start` (trabajador): dos filas de una cola de audio caerían en la misma ruta de K. Se rechaza antes de escribir K; el head sigue en H: `$ST compact abort <id>`, después habilitar y arrancar la unidad. Cada reintento rechaza igual; no hay salida por `resume`. |
 | `runtime_admission_compaction_unlisted_collection` | `plan` o `start` (SC-4c): un almacén de Chroma de H tiene una colección fuera de la lista cerrada (por ejemplo la heredada `user_memories`, o una `*_policy_v1` que H no registró); el informe del plan nombra almacén y colección, nunca registros. El plan no escribió nada: habilitar y arrancar la unidad (sirve H) y pasar a desarrollo; no borrar la colección a mano. Si aparece en `start` (el trabajador, fila S): `$ST compact abort <id>` (sin pérdida antes de V), después habilitar y arrancar la unidad. |
 | `runtime_admission_compaction_chroma_rebuild_failed` | `start` (trabajador): el proceso hijo que reconstruye un almacén de Chroma de K falló (su salida no se muestra: podría tener contenido). El head sigue en H: `$ST compact abort <id>`, después habilitar y arrancar la unidad; pasar a desarrollo. |
+| `runtime_admission_compaction_chroma_rebuild_timeout` | `start` (trabajador): la reconstrucción de un almacén de Chroma tardó más de 600 s (el presupuesto de bajada entero); el hijo ya fue terminado. El head sigue en H: `$ST compact abort <id>`, después habilitar y arrancar la unidad; pasar a desarrollo (medir el almacén). |
+| `runtime_admission_compaction_deletion_ledger_salt_invalid`, `..._deletion_ledger_subject_invalid` | `start` (trabajador): el registro de borrados de H no sirve para la segunda compuerta de la memoria de Chroma (sal mal formada, hecho sin id). Nada se copió a K todavía: `$ST compact abort <id>`, después habilitar y arrancar la unidad; pasar a desarrollo. |
+| `runtime_admission_busy` justo después de que murió el trabajador | Un hijo de reconstrucción de Chroma todavía tiene el lease (SC4C-RV-1). En Linux muere con el trabajador en milisegundos; si no, sale antes de su siguiente escritura. Esperar unos segundos y repetir el mismo comando; no matar nada a mano ni borrar K. |
 | `runtime_admission_compaction_payload_changed:chroma` | `start` (trabajador, D5): un almacén de Chroma reconstruido en K no coincide con lo planeado o cambió después de su comprobación. El head sigue en H: `$ST compact abort <id>`, después habilitar y arrancar la unidad. Con `resume` se acepta sólo si la evidencia de K ya dice `materialized` y el pin coincide. |
 | `runtime_admission_compaction_release_exit_unavailable` | Sólo con la compuerta de release SC4A-N13 cerrada (`RELEASE_EXITS_AVAILABLE = False`; SC-4b la dejó abierta): un log del modo release no se arma. Nada se escribió: `$ST compact abort <id>` (sin pérdida), después habilitar y arrancar la unidad. |
 | `runtime_admission_compaction_release_smoke_seconds` | Época 5: `compact verify` de un log del modo release sin `--smoke-seconds` o con más de 60. Nada se escribió: repetir con N de 10 a 60 (paso 4). |

@@ -1766,6 +1766,27 @@ necesita la primera actualización posterior a R1.
   mismo residuo de heap en los HNSW que escribe `kza-voice` (anterior a
   esta unidad).
 
+### SC-4c — revisión independiente, ronda 1 (2026-11-16)
+
+Veredicto `changes_needed` (SC4C-RV-1 a RV-5); todo aplicado en la rama
+`sc4c` (commits por hallazgo, sin push), evidencia en
+`t040-t041/sc4c-evidence.json`, clave `review_round_1`.
+
+- RV-1 (medio): el hijo de reconstrucción sobrevivía a un SIGKILL del
+  trabajador y recreaba el almacén de K después del `abort`. Ahora muere
+  con el trabajador en Linux (`PR_SET_PDEATHSIG`), sale antes de cada
+  escritura si quedó huérfano, hereda el lease de admisión (todo rechaza
+  `runtime_admission_busy` mientras vive) y tiene timeout de 600 s. Tests
+  con un trabajador real matado con SIGKILL a mitad de la reconstrucción.
+- RV-2 (medio): un test espía fija el hijo limpio (argv, entorno, lease,
+  timeout, stdin sólo con lo planeado; el propio hijo informa que no cargó
+  nada del repositorio). RV-3 (bajo): tests del hash de la imagen del hijo
+  (inyección de fallas) y de los pins de la evidencia en `resume`.
+- RV-5: nombres exactos en la lista cerrada (`<colección>_policy_v1`,
+  `__pointer`, staging versionado); error del registro de borrados con
+  código; `SQLITE_TMPDIR` para el hijo; `other_files` por almacén en el plan.
+- Mutantes de la ronda en `tools/sc4c_mutants.py` (`REVIEW_1`).
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.

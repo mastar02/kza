@@ -1178,7 +1178,7 @@ compactación podía pasar del snapshot.
   exportación del snapshot; nunca se copian sus bytes, así que lo que queda
   afuera no sobrevive en páginas libres ni en los archivos del índice HNSW.
   (1) La colección de memoria de política (la que H registró como destino
-  `semantic_index`, `<colección>_policy_v1`) recibe sólo los registros de
+  `semantic_index` y sólo con nombre `<colección>_policy_v1`) recibe sólo los registros de
   hechos que `get()` devolvería en t_clone (estado `automatic` o
   `confirmed`, sin vencer, sin conversación fuente con tombstone) cuyo dueño
   no está en `retired_users`, con el registro de borrados como segunda
@@ -1188,7 +1188,8 @@ compactación podía pasar del snapshot.
   un dueño retirado cuya poda no corrió y un id huérfano. Las filas de
   `facts` siguen idénticas (lo que vence lo vence K en su corrida). (2) Las
   colecciones del índice de comandos (`home_assistant_commands`, su
-  `__pointer` y las versionadas `home_assistant_commands__*`) se copian
+  `__pointer` y las versionadas `home_assistant_commands__<AAAAmmddHHMMSS><6
+  hex>`, exactamente los nombres que crea `ChromaSync`) se copian
   enteras: registros, metadata (el puntero conserva `active`) y
   configuración. (3) `home_assistant_routines` **no se copia** (texto de
   rutinas dictadas, sin camino de borrado): es una baja con nombre en el
@@ -1209,6 +1210,21 @@ compactación podía pasar del snapshot.
   H), un `data_level0.bin` de K llegó a tener el texto de un hecho vencido.
   Un fallo del hijo rechaza `runtime_admission_compaction_chroma_rebuild_failed`
   sin devolver su stderr.
+- **El hijo no sobrevive al trabajador como escritor (revisión SC4C-RV-1).**
+  La revisión mostró en el server que, si el trabajador moría con SIGKILL
+  (el OOM killer, un `kill -9`) durante la reconstrucción, el hijo seguía y
+  volvía a crear el almacén de K, con los hechos, después de que `abort`
+  lo había borrado. Ahora: (a) en Linux el hijo pide `PR_SET_PDEATHSIG`
+  (SIGKILL) antes de leer nada, así el kernel lo mata con el trabajador; en
+  toda plataforma, antes de cada escritura sale si su padre ya no es el
+  trabajador; (b) hereda el descriptor del lease de admisión del
+  trabajador, así que mientras vive el lock sigue tomado y `abort`,
+  `resume`, `plan` y cualquier otra entrada rechazan `runtime_admission_busy`
+  (lo impone el kernel; no hace falta registrar su pid ni su hora de
+  arranque); (c) una reconstrucción de un almacén que tarda más que
+  `CHROMA_REBUILD_TIMEOUT` (600 s, el presupuesto de bajada entero de
+  SC-D2 A) mata al hijo y rechaza
+  `runtime_admission_compaction_chroma_rebuild_timeout`.
 - **D5 para almacenes reconstruidos.** El hijo vuelve a leer su almacén y
   el sha256 de esa imagen (exactamente las colecciones planeadas, cada una
   con su metadata, configuración y registros) tiene que coincidir con la del
@@ -1218,7 +1234,9 @@ compactación podía pasar del snapshot.
   todas de baja se crea igual, vacío, para que los `schemas` de K sigan
   iguales a los de H (A1).
 - **Registros sin contenido.** `plan` muestra `chroma` con conteos por
-  almacén (`rebuilt`, `copied`, `dropped`); el evento `materialized` y la
+  almacén (`rebuilt`, `copied`, `dropped` y `other_files`: archivos dentro
+  del almacén que no son de Chroma y que K no recibe, revisión SC4C-RV-5);
+  el evento `materialized` y la
   evidencia de preparación de K guardan conteos (almacenes, colecciones por
   clase, registros, excluidos) y los pins (rutas y sha256). El snapshot
   conserva la exportación de las colecciones copiadas y de la de política
