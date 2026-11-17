@@ -86,3 +86,30 @@ async def test_cleanup_old_fired(store):
     await store.mark_fired(r.id)
     cleaned = await store.cleanup_old(days=30)
     assert cleaned >= 1
+
+
+# T032-U1: cancel transitions only an active reminder (WHERE clause, no DDL).
+@pytest.mark.asyncio
+async def test_cancel_transitions_only_an_active_reminder(store):
+    r = await store.create(user_id="u1", text="x", trigger_at=time.time() + 100)
+    assert await store.cancel(r.id) is True
+    assert await store.cancel(r.id) is False
+    assert (await store.get_by_id(r.id)).state == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_cancel_of_a_fired_reminder_returns_false_and_keeps_it_fired(store):
+    r = await store.create(user_id="u1", text="x", trigger_at=time.time() - 10)
+    assert await store.mark_fired(r.id)
+    assert await store.cancel(r.id) is False
+    fired = await store.get_by_id(r.id)
+    assert (fired.state, fired.fire_count) == ("fired", 1)
+
+
+@pytest.mark.asyncio
+async def test_cancel_keeps_the_scope_check(store):
+    from src.reminders.reminder_store import ReminderScope
+    private = await store.create(user_id="u1", text="x", trigger_at=time.time() + 100, scope=ReminderScope.PRIVATE)
+    assert await store.cancel(private.id, shared_only=True) is False
+    assert (await store.get_by_id(private.id)).state == "active"
+    assert await store.cancel("missing") is False

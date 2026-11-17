@@ -127,6 +127,18 @@ C02_ROUTER = (
     _r("C02-RTN-0204", "quiero crear una nueva rutina que apague las luces", "routine", "no_turn", None, None, None,
        "none", wake="textual", llm="stub:noise", state="light_match", counts=effects(llm_8101_calls=1),
        effect_class="stale_audio", note="TV signal: the 7B veto rejects; zero effects"),
+    _r("C02-CAN-0002", "borrá el recordatorio de tomar agua", "reminder", "completed", "fast_reminder", "completed",
+       "committed", "readback", state="reminder_shared_active:tomar agua;queued_request",
+       counts=effects(reminder_transitions=1, spoken_utterances=1), effect_class="false_confirmation",
+       seed="C02-CAN-0002", note="T032-U1: the seed's 'Todavía no puedo crear' branch is gone; the queue is "
+                                 "untouched (seed layer graph; the graph journey is in test_task_outcomes)"),
+    _r("C02-CAN-0301", "sacá el recordatorio de tomar agua", "reminder", "needs_input", "fast_reminder",
+       "needs_input", "not_written", "clarification", state="reminder_shared_fired:tomar agua;queued_request",
+       counts=SPOKEN_ONE, effect_class="false_confirmation", note="T032-U1: a fired reminder is never cancelled"),
+    _r("C02-CAN-0302", "cancelá el recordatorio de la clave", "reminder", "needs_input", "fast_reminder",
+       "needs_input", "not_written", "clarification",
+       state="reminder_private_active:la clave;reminder_shared_active:tomar agua", counts=SPOKEN_ONE,
+       effect_class="privacy_disclosure", note="T032-U1: private text is never read or spoken by household voice"),
 )
 
 WAKES = {

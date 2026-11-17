@@ -146,3 +146,107 @@ def test_one_clock_source_only(store):
         ReminderManager(store=store, clock=time.time, household_clock=HouseholdClock())
     clock = HouseholdClock()
     assert ReminderManager(store=store, household_clock=clock)._household_clock is clock
+
+
+# ---------------------------------------------------------------------------
+# T032-U1: unique-match resolution replaces the 0.4 similarity threshold
+# ---------------------------------------------------------------------------
+
+from src.reminders.reminder_manager import CancelMatch  # noqa: E402
+
+
+async def _shared(manager, text, trigger_at=None):
+    return await manager.create(user_id="household", text=text, trigger_at=trigger_at or time.time() + 3600,
+                                scope=ReminderScope.SHARED)
+
+
+@pytest.mark.asyncio
+async def test_resolve_needs_every_content_word(manager):
+    water = await _shared(manager, "Tomar agua")
+    await _shared(manager, "sacar la basura")
+    unique = await manager.resolve(None, "de tomar el agua", shared_only=True)
+    assert (unique.match, unique.reminder.id) == (CancelMatch.UNIQUE, water.id)
+    assert (await manager.resolve(None, "de tomar agua fría", shared_only=True)).match is CancelMatch.NOT_FOUND
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["tomar aguja", "tomar awa", "toma agua", "agua mineral"])
+async def test_a_misheard_word_finds_nothing(manager, query):
+    """The old SequenceMatcher >= 0.4 picked the neighbouring reminder for these."""
+    await _shared(manager, "tomar agua")
+    assert (await manager.resolve(None, query, shared_only=True)).match is CancelMatch.NOT_FOUND
+    assert await manager.cancel_by_text(None, query, shared_only=True) is False
+
+
+@pytest.mark.asyncio
+async def test_accents_case_articles_and_plurals_are_ignored(manager):
+    pill = await _shared(manager, "Darle la pastilla al perro")
+    found = await manager.resolve(None, "que dice darle las pastíllas a los perros", shared_only=True)
+    assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, pill.id)
+
+
+@pytest.mark.asyncio
+async def test_several_matches_are_ambiguous_unless_one_is_exact(manager):
+    cold = await _shared(manager, "tomar agua fría")
+    gas = await _shared(manager, "tomar agua con gas", time.time() + 7200)
+    tied = await manager.resolve(None, "de tomar agua", shared_only=True)
+    assert tied.match is CancelMatch.AMBIGUOUS and [r.id for r in tied.candidates] == [cold.id, gas.id]
+    assert await manager.cancel_by_text(None, "tomar agua", shared_only=True) is False
+    plain = await _shared(manager, "tomar agua", time.time() + 9000)
+    exact = await manager.resolve(None, "de tomar agua", shared_only=True)
+    assert (exact.match, exact.reminder.id) == (CancelMatch.UNIQUE, plain.id)
+
+
+@pytest.mark.asyncio
+async def test_empty_reference_lists_every_candidate_and_no_active_says_so(manager):
+    assert (await manager.resolve(None, "", shared_only=True)).match is CancelMatch.NONE_ACTIVE
+    a = await _shared(manager, "a uno")
+    b = await _shared(manager, "b dos", time.time() + 7200)
+    empty = await manager.resolve(None, "de los", shared_only=True)
+    assert empty.match is CancelMatch.NO_REFERENCE and [r.id for r in empty.candidates] == [a.id, b.id]
+
+
+@pytest.mark.asyncio
+async def test_resolution_never_sees_a_private_reminder(manager):
+    await manager.create(user_id="ana", text="la clave", trigger_at=time.time() + 3600, scope=ReminderScope.PRIVATE)
+    assert (await manager.resolve("ana", "la clave", shared_only=True)).match is CancelMatch.NONE_ACTIVE
+    await _shared(manager, "tomar agua")
+    assert (await manager.resolve("ana", "la clave", shared_only=True)).match is CancelMatch.NOT_FOUND
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("query", "expected"), [
+    ("de las 8", {"08:00", "20:00"}), ("de las 8 de la mañana", {"08:00"}), ("de las 8 de la noche", {"20:00"}),
+    ("de las ocho de la noche", {"20:00"}), ("a las 20", {"20:00"}), ("de las 20:00", {"20:00"}),
+    ("de las 8 y media", {"08:30"}), ("de la una", {"13:00"}), ("de las 9", set()),
+    ("de tomar agua a las 8 de la mañana", {"08:00"}), ("de tomar agua de las 8:30", {"08:30"}),
+])
+async def test_a_spoken_clock_time_selects_by_the_household_time(store, query, expected):
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    by_time = {}
+    for hour, minute in ((8, 0), (20, 0), (8, 30), (13, 0)):
+        reminder = await _shared(manager, "tomar agua", _local(2026, 11, 11, hour, minute).timestamp())
+        by_time[reminder.id] = f"{hour:02d}:{minute:02d}"
+    resolution = await manager.resolve(None, query, shared_only=True)
+    found = {resolution.reminder.id} if resolution.reminder else {r.id for r in resolution.candidates}
+    assert {by_time[i] for i in found} == expected
+    assert resolution.match is {0: CancelMatch.NOT_FOUND, 1: CancelMatch.UNIQUE}.get(len(expected),
+                                                                                       CancelMatch.AMBIGUOUS)
+
+
+@pytest.mark.asyncio
+async def test_cancel_resolved_reports_only_a_stored_transition(manager, store):
+    reminder = await _shared(manager, "tomar agua")
+    assert await manager.cancel_resolved(reminder, shared_only=True) is True
+    assert await manager.cancel_resolved(reminder, shared_only=True) is False
+    assert (await store.get_by_id(reminder.id)).state == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_voice_label_is_shared_only(manager):
+    shared = await _shared(manager, "tomar agua")
+    assert manager.voice_label(shared).startswith("tomar agua a las ")
+    private = await manager.create(user_id="ana", text="la clave", trigger_at=time.time() + 60)
+    with pytest.raises(PermissionError):
+        manager.voice_label(private)

@@ -1,9 +1,13 @@
 """P3-F2 D1-D3: claimed household turns reach their family path with zero foreign effects."""
 
+import sqlite3
+import time
+
 import pytest
 
 from src.nlu.household_intents import HouseholdIntentClassifier, HouseholdIntentSettings
 from src.orchestrator.dispatcher import MultiUserOrchestrator, PathType
+from src.reminders.reminder_store import ReminderScope
 from tests.mocks.c02_matrix import C02Entry, effects
 from tests.mocks.household_dispatch import CountedLeaves
 
@@ -12,9 +16,9 @@ ROUTINE_CREATE = "Todavía no creo rutinas por voz. Podés crearlas desde la web
 
 
 def _d(id_, text, family, effect_class, outcome, path, status, persistence, spoken, *, counts=ZERO,
-       conditions=None, unit="P3-F2", finding=None, seed=None, note=""):
+       conditions=None, unit="P3-F2", finding=None, seed=None, note="", actor="household_unknown_voice"):
     return C02Entry(id_, text, "dispatcher", family, effect_class, outcome, path, status, persistence, spoken,
-                    counts, conditions or {}, unit=unit, finding=finding, seed=seed, note=note)
+                    counts, conditions or {}, actor=actor, unit=unit, finding=finding, seed=seed, note=note)
 
 
 def _refused(id_, text, family, path="fast_reminder", *, sf=None, state=None, effect_class="unauthorized_effect",
@@ -62,11 +66,12 @@ C02_DISPATCHER = tuple(_REMINDER_GRID) + (
              note="second imperative clause after a reminder: not split (planner choice)"),
     _refused("C02-REM-0124", "recordale a Ana apagar la luz", "reminder", sf="turn_off", seed="C02-REM-0008",
              note="a name from text is never an actor"),
-    _refused("C02-CAN-0101", "cancelá el recordatorio de agregar leche a la lista", "reminder",
-             state="shared_list_compras;reminder_shared_active:agregar leche a la lista;queued_request",
-             seed="C02-CAN-0001",
-             note="interim until T032-U1 (voseo cancel, unique match): honest UNSUPPORTED; the list, the "
-                  "reminder and the queue are untouched"),
+    _d("C02-CAN-0101", "cancelá el recordatorio de agregar leche a la lista", "reminder", "unauthorized_effect",
+       "completed", "fast_reminder", "completed", "committed", "readback", counts=effects(reminder_transitions=1),
+       conditions={"state": "shared_list_compras;reminder_shared_active:agregar leche a la lista;queued_request"},
+       unit="T032-U1", finding="CORE-03", seed="C02-CAN-0001",
+       note="T032-U1 closes the P3-F2 interim UNSUPPORTED: the voseo cancel resolves the unique named reminder; "
+            "the list and the queue are untouched"),
     _d("C02-CAN-0102", "cancela el recordatorio de agregar leche a la lista", "reminder", "unauthorized_effect",
        "completed", "fast_reminder", "completed", "committed", "readback",
        counts=effects(reminder_transitions=1),
@@ -86,7 +91,9 @@ C02_DISPATCHER = tuple(_REMINDER_GRID) + (
     _refused("C02-CAN-0105", "cancelá la rutina de la noche", "routine", "fast_routine", state="queued_request",
              note="routine stop/cancel before T033: honest UNSUPPORTED, queue untouched"),
     _refused("C02-CAN-0106", "pará el timer", "timer", "fast_timer", state="queued_request"),
-    _refused("C02-CAN-0107", "olvidate del recordatorio de la basura", "reminder", state="queued_request"),
+    _refused("C02-CAN-0107", "olvidate del recordatorio de la basura", "reminder", state="queued_request",
+             status="needs_input", spoken="clarification", unit="T032-U1",
+             note="T032-U1 closes the P3-F2 interim UNSUPPORTED: no shared reminder is active, so it says so"),
     _refused("C02-TIM-0101", "poné un temporizador de 5 minutos", "timer", "fast_timer", sf="turn_on",
              note="never reaches vector search; timers land with T030-U1"),
     _refused("C02-TIM-0102", "poneme un tímer de media hora", "timer", "fast_timer"),
@@ -151,6 +158,46 @@ C02_DISPATCHER = tuple(_REMINDER_GRID) + (
        finding="F10", note="a bare 'registrar' is not an enrollment request"),
 )
 
+# T032-U1: reminder cancel by voice, every accented/voseo verb x {exists, absent, 2 matches, fired,
+# private-only}; a queued request is always present and never cancelled.
+CANCEL_VERBS = ("cancelá el", "cancela el", "borrá el", "eliminá el", "sacá el", "quitá el", "anulá el",
+                "cancelame el", "cancelar el", "olvidate del")
+CANCEL_STATES = (
+    ("exists", "reminder_shared_active:tomar agua;reminder_shared_active:sacar la basura;queued_request",
+     "completed", "committed", "readback", effects(reminder_transitions=1), "unauthorized_effect"),
+    ("absent", "reminder_shared_active:sacar la basura;queued_request",
+     "needs_input", "not_written", "clarification", ZERO, "false_confirmation"),
+    ("two_matches", "reminder_shared_active:tomar agua fría;reminder_shared_active:tomar agua con gas;queued_request",
+     "needs_input", "not_written", "clarification", ZERO, "unauthorized_effect"),
+    ("fired", "reminder_shared_fired:tomar agua;queued_request",
+     "needs_input", "not_written", "clarification", ZERO, "false_confirmation"),
+    ("private_only", "reminder_private_active:tomar agua;queued_request",
+     "needs_input", "not_written", "clarification", ZERO, "privacy_disclosure"),
+)
+C02_CANCEL = tuple(
+    _d(f"C02-CAN-{201 + i * len(CANCEL_STATES) + j:04d}", f"{verb} recordatorio de tomar agua", "reminder",
+       effect_class, status, "fast_reminder", status, persistence, spoken, counts=counts,
+       conditions={"state": state, **({"speaker_label": "ana"} if name == "private_only" else {})},
+       unit="T032-U1", finding="CORE-03", note=name)
+    for i, verb in enumerate(CANCEL_VERBS)
+    for j, (name, state, status, persistence, spoken, counts, effect_class) in enumerate(CANCEL_STATES)
+) + (
+    _d("C02-CAN-0003", "cancelá el recordatorio", "reminder", "unauthorized_effect", "needs_input", "fast_reminder",
+       "needs_input", "not_written", "clarification",
+       conditions={"state": "reminder_shared_active:tomar agua;reminder_shared_active:sacar la basura"},
+       unit="T032-U1", finding="CORE-03", seed="C02-CAN-0003", note="no object named: asks which, lists both"),
+    _d("C02-CAN-0004", "cancelá el recordatorio de agua", "reminder", "false_confirmation", "needs_input",
+       "fast_reminder", "needs_input", "not_written", "clarification",
+       conditions={"state": "reminder_shared_fired:tomar agua"}, unit="T032-U1", seed="C02-CAN-0004",
+       note="a fired reminder is never reported cancelled"),
+    _d("C02-CAN-0005", "cancelá el recordatorio de la clave", "reminder", "privacy_disclosure", "needs_input",
+       "fast_reminder", "needs_input", "not_written", "clarification",
+       conditions={"state": "reminder_private_active:la clave", "speaker_label": "ana"}, actor="acoustic_label",
+       unit="T032-U1", seed="C02-CAN-0005", note="private text never read nor spoken; the label adds no scope"),
+)
+
+C02_DISPATCHER = C02_DISPATCHER + C02_CANCEL
+
 # Spoken replies a claimed or unclaimed turn must never give (design extra.forbidden_reply).
 FORBIDDEN = ("Sincronizando comandos...", "Iniciando registro de usuario...", "Listo", "Timer configurado")
 
@@ -168,7 +215,8 @@ async def _dispatch(leaves, entry, dispatcher=None):
     await leaves.apply_state(dispatcher, entry.conditions.get("state"))
     before = leaves.snapshot()
     leaves.cancels.clear()
-    result = await dispatcher.dispatch(user_id="unknown", text=entry.text,
+    # An acoustic speaker label is passed as the caller id; it must never widen the scope.
+    result = await dispatcher.dispatch(user_id=entry.conditions.get("speaker_label", "unknown"), text=entry.text,
                                        service_filter=entry.conditions.get("service_filter"))
     return result, leaves.effects(before)
 
@@ -375,3 +423,160 @@ async def test_unclaimed_routine_creation_never_reaches_cloud_extraction(leaves,
     assert reasoner.mock_calls == []
     assert leaves.effects(before) == ZERO
 
+
+
+# ---------------------------------------------------------------------------
+# T032-U1: what the reminder cancel says, and the store transition behind it
+# ---------------------------------------------------------------------------
+
+async def _cancel(leaves, text, state=None, *, user_id="unknown", dispatcher=None):
+    dispatcher = dispatcher or leaves.dispatcher()
+    await leaves.apply_state(dispatcher, state)
+    before = leaves.snapshot()
+    leaves.cancels.clear()
+    result = await dispatcher.dispatch(user_id=user_id, text=text)
+    return result, leaves.effects(before)
+
+
+async def _states(leaves) -> dict:
+    return {r.text: r.state.value for r in await leaves.reminder_manager.get_active(None, shared_only=True)}
+
+
+@pytest.mark.parametrize("verb", CANCEL_VERBS)
+async def test_every_cancel_verb_cancels_exactly_the_named_shared_reminder(leaves, verb):
+    result, counted = await _cancel(leaves, f"{verb} recordatorio de tomar agua",
+                                    "reminder_shared_active:tomar agua;reminder_shared_active:sacar la basura;"
+                                    "queued_request")
+    assert counted == effects(reminder_transitions=1)
+    assert result.response.startswith("Cancelé el recordatorio tomar agua a las ")
+    assert (result.success, result.outcome.task_completed, result.outcome.effect.value) == (True, True, "observed")
+    assert await _states(leaves) == {"sacar la basura": "active"}
+    assert len(leaves.queue) == 1
+
+
+async def test_accents_articles_and_plural_do_not_hide_the_reminder(leaves):
+    result, counted = await _cancel(leaves, "Nexa, borrá el recordatorio que dice las pastillas del abuelo",
+                                    "reminder_shared_active:Pastilla del Abuelo")
+    assert counted == effects(reminder_transitions=1)
+    assert result.response.startswith("Cancelé el recordatorio Pastilla del Abuelo")
+
+
+async def test_no_object_asks_which_and_lists_the_shared_candidates(leaves):
+    result, counted = await _cancel(leaves, "cancelá el recordatorio",
+                                    "reminder_shared_active:tomar agua;reminder_shared_active:sacar la basura;"
+                                    "reminder_private_active:la clave")
+    assert counted == ZERO
+    assert result.outcome.status.value == "needs_input"
+    assert result.response.startswith("Decime cuál querés cancelar. Hay 2: tomar agua a las ")
+    assert " y sacar la basura a las " in result.response and "clave" not in result.response
+
+
+async def test_plural_without_object_never_cancels_them_all(leaves):
+    result, counted = await _cancel(leaves, "eliminá todos los recordatorios", "reminder_shared_active:tomar agua")
+    assert counted == ZERO and result.outcome.status.value == "needs_input"
+    assert result.response.startswith("Por voz cancelo de a un recordatorio. Decime cuál querés cancelar. Hay uno: "
+                                      "tomar agua a las ")
+
+
+async def test_more_than_three_candidates_speak_three(leaves):
+    state = ";".join(f"reminder_shared_active:regar {name}" for name in ("helecho", "cactus", "potus", "ficus"))
+    result, counted = await _cancel(leaves, "cancelá el recordatorio de regar", state)
+    assert counted == ZERO and result.outcome.status.value == "needs_input"
+    assert result.response.startswith("Encontré 4, por ejemplo: regar helecho a las ")
+    assert result.response.endswith(". Decime cuál, con la hora.")
+    assert result.response.count(" a las ") == 3
+
+
+async def test_two_matches_ask_with_the_time_and_the_time_resolves_them(leaves):
+    dispatcher = leaves.dispatcher()
+    early = await leaves.reminder_manager.create("household", "tomar agua", time.time() + 3600,
+                                                 scope=ReminderScope.SHARED)
+    late = await leaves.reminder_manager.create("household", "tomar agua", time.time() + 4 * 3600,
+                                                scope=ReminderScope.SHARED)
+    clock = leaves.reminder_manager._household_clock
+    asked, counted = await _cancel(leaves, "cancelá el recordatorio de tomar agua", dispatcher=dispatcher)
+    assert counted == ZERO and asked.outcome.status.value == "needs_input"
+    assert asked.response == (f"Encontré 2: tomar agua a las {clock.format_time(early.trigger_at)} y tomar agua "
+                              f"a las {clock.format_time(late.trigger_at)}. Decime cuál, con la hora.")
+    done, counted = await _cancel(leaves, f"cancelá el recordatorio de tomar agua de las "
+                                          f"{clock.format_time(late.trigger_at)}", dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
+    assert [r.id for r in await leaves.reminder_manager.get_active(None, shared_only=True)] == [early.id]
+
+
+async def test_identical_duplicates_point_to_the_web(leaves):
+    trigger = time.time() + 3600
+    for _ in range(2):
+        await leaves.reminder_manager.create("household", "tomar agua", trigger, scope=ReminderScope.SHARED)
+    result, counted = await _cancel(leaves, "cancelá el recordatorio de tomar agua")
+    assert counted == ZERO and result.outcome.status.value == "needs_input"
+    assert result.response.startswith("Hay 2 recordatorios iguales: tomar agua a las ")
+    assert result.response.endswith("Podés borrar el que sobra desde la web.")
+
+
+@pytest.mark.parametrize(("state", "text", "response"), [
+    ("reminder_shared_active:sacar la basura", "cancelá el recordatorio de tomar agua",
+     "No encontré un recordatorio activo con eso. Podés preguntarme qué recordatorios hay."),
+    ("reminder_shared_fired:tomar agua", "cancelá el recordatorio de agua",
+     "No hay recordatorios compartidos activos para cancelar."),
+    ("reminder_shared_fired:tomar agua;reminder_shared_active:sacar la basura", "cancelá el recordatorio de agua",
+     "No encontré un recordatorio activo con eso. Podés preguntarme qué recordatorios hay."),
+    ("reminder_private_active:la clave", "cancelá el recordatorio de la clave",
+     "No hay recordatorios compartidos activos para cancelar."),
+    ("reminder_private_active:la clave;reminder_shared_active:tomar agua", "cancelá el recordatorio de la clave",
+     "No encontré un recordatorio activo con eso. Podés preguntarme qué recordatorios hay."),
+])
+async def test_honest_refusals_never_report_a_cancellation(leaves, state, text, response):
+    result, counted = await _cancel(leaves, text, state, user_id="ana")
+    assert counted == ZERO
+    assert (result.response, result.outcome.status.value, result.success) == (response, "needs_input", False)
+    with sqlite3.connect(leaves.reminders_db) as db:
+        assert db.execute("SELECT COUNT(*) FROM reminders WHERE state = 'cancelled'").fetchone()[0] == 0
+
+
+async def test_a_reminder_that_fires_between_match_and_cancel_is_not_reported(leaves, monkeypatch):
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, "reminder_shared_active:tomar agua")
+    original = leaves.reminder_manager.cancel_resolved
+
+    async def fire_first(reminder, **kwargs):
+        assert await leaves.reminder_store.mark_fired(reminder.id)
+        return await original(reminder, **kwargs)
+    monkeypatch.setattr(leaves.reminder_manager, "cancel_resolved", fire_first)
+    result = await dispatcher.dispatch(user_id="unknown", text="cancelá el recordatorio de tomar agua")
+    assert (result.response, result.outcome.status.value) == (
+        "Ese recordatorio ya no estaba activo. No cancelé nada.", "needs_input")
+    with sqlite3.connect(leaves.reminders_db) as db:
+        assert [row[0] for row in db.execute("SELECT state FROM reminders")] == ["fired"]
+
+
+async def test_a_store_failure_is_uncertain_not_cancelled(leaves, monkeypatch):
+    from unittest.mock import AsyncMock
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, "reminder_shared_active:tomar agua")
+    monkeypatch.setattr(leaves.reminder_manager, "resolve", AsyncMock(side_effect=RuntimeError("synthetic")))
+    result = await dispatcher.dispatch(user_id="unknown", text="cancelá el recordatorio de tomar agua")
+    assert (result.success, result.outcome.status.value) == (False, "uncertain")
+    assert result.response == "Hubo un error con el recordatorio"
+
+
+async def test_unclaimed_keyword_path_uses_the_same_unique_resolution(leaves):
+    """operation None (keyword routing) resolves like a claimed cancel, never by similarity."""
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, "reminder_shared_active:tomar agua;reminder_shared_active:tomar mate")
+    before = leaves.snapshot()
+    ambiguous = await dispatcher._fast_reminder_path("cancela el recordatorio de tomar", "unknown")
+    assert ambiguous.outcome.status.value == "needs_input" and leaves.effects(before) == ZERO
+    misheard = await dispatcher._fast_reminder_path("cancela el recordatorio de tomar aguja", "unknown")
+    assert misheard.outcome.status.value == "needs_input" and leaves.effects(before) == ZERO
+    done = await dispatcher._fast_reminder_path("cancela el recordatorio de tomar agua", "unknown")
+    assert done.outcome.task_completed and leaves.effects(before) == effects(reminder_transitions=1)
+
+
+async def test_cancel_never_touches_the_request_queue(leaves):
+    from unittest.mock import MagicMock
+    dispatcher = leaves.dispatcher()
+    dispatcher.queue.cancel_user_request = MagicMock(side_effect=AssertionError("queue cancel"))
+    await leaves.apply_state(dispatcher, "reminder_shared_active:tomar agua;queued_request")
+    result = await dispatcher.dispatch(user_id="unknown", text="cancelá el recordatorio de tomar agua")
+    assert result.outcome.task_completed and len(dispatcher.queue) == 1
