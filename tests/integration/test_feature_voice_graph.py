@@ -9,7 +9,7 @@ import time
 import numpy as np
 import pytest
 
-from src.alerts.alert_manager import AlertType, AlertPriority
+from src.alerts.alert_manager import AlertDelivery, AlertType, AlertPriority
 from src.core.voice_delivery import VoiceDeliveryError
 from src.intercom.intercom_system import Announcement
 from src.notifications.smart_notifications import Notification, NotificationChannel
@@ -41,7 +41,8 @@ async def test_all_feature_callbacks_share_one_pcm_output_and_correct_origin(mon
         assert announcement.delivered and announcement.failed_zones == []
         notice = Notification('notice', 'Aviso', 'Mensaje de prueba.', user_id='synthetic', zone_id='zone_origin')
         await features.notifications._deliver_to_channel(notice, 'synthetic', NotificationChannel.VOICE, {})
-        await features.alert_manager.create_alert(AlertType.DEVICE, AlertPriority.HIGH, 'Alerta de prueba.')
+        alert = await features.alert_manager.create_alert(AlertType.DEVICE, AlertPriority.HIGH, 'Alerta de prueba.')
+        assert (alert.delivery, alert.delivery_reason) == (AlertDelivery.DELIVERED, None)
         reminder = await store.create(user_id='synthetic', text='Recordatorio de prueba.', trigger_at=time.time()-1,
             scope=ReminderScope.SHARED)
         await services.reminders._fire_reminder(reminder)
@@ -72,6 +73,58 @@ async def test_feature_delivery_failure_is_not_announced_as_completed_or_retried
         assert not announcement.delivered and announcement.failed_zones == ['zone_origin']
         assert len(backend.outputs) == 1 and len(engine.calls) == 1
         ha.call_service.assert_not_called()
+
+
+async def test_alert_output_failure_is_recorded_on_the_alert_not_swallowed(monkeypatch):
+    original, engine, backend, _, _ = voice_graph(monkeypatch)
+    backend.fail_start = True
+    async with AsyncExitStack() as stack:
+        services = build_voice_services({'alerts': {'scheduler': {'enabled': False}}}, tts=engine,
+            shutdown=stack, zone_manager=original.zone_manager)
+        alert = await services.features.alert_manager.create_alert(
+            AlertType.SECURITY, AlertPriority.CRITICAL, 'Alerta de prueba.')
+        assert alert.delivery is AlertDelivery.FAILED
+        assert alert.delivery_reason and alert.delivery_at is not None
+        assert services.features.alert_manager.get_history() == [alert]
+        assert len(engine.calls) == 1
+
+
+async def test_alert_notice_that_never_started_is_retried_once_on_the_real_graph(monkeypatch):
+    """T036-U1-Q1: synthesis failed before any PCM reached the player, so the next check retries once."""
+    original, engine, backend, _, _ = voice_graph(monkeypatch)
+    engine.failure = RuntimeError('synthetic synthesis failure')
+    async with AsyncExitStack() as stack:
+        services = build_voice_services({'alerts': {'scheduler': {'enabled': False}}}, tts=engine,
+            shutdown=stack, zone_manager=original.zone_manager)
+        manager = services.features.alert_manager
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.CRITICAL, 'Alerta de prueba.')
+        assert alert.delivery is AlertDelivery.FAILED and alert.delivery_attempts == 1
+        assert backend.heard().size == 0
+        engine.failure = None
+        assert await manager.create_alert(AlertType.SECURITY, AlertPriority.CRITICAL, 'Alerta de prueba.') is None
+        assert (alert.delivery, alert.delivery_reason) == (AlertDelivery.DELIVERED, None)
+        assert alert.delivery_attempts == 2 and len(engine.calls) == 2
+        np.testing.assert_array_equal(backend.heard()[:, 0], engine.audio(engine.calls[-1]))
+        assert await manager.create_alert(AlertType.SECURITY, AlertPriority.CRITICAL, 'Alerta de prueba.') is None
+        assert len(engine.calls) == 2
+
+
+async def test_alert_notice_whose_pcm_reached_the_player_is_never_repeated(monkeypatch):
+    """T036-U1-Q1: PCM handed to the player counts as output started (shared convention), even if the
+    device then fails to start; the notice stays failed and is never spoken again."""
+    original, engine, backend, _, _ = voice_graph(monkeypatch)
+    backend.fail_start = True
+    async with AsyncExitStack() as stack:
+        services = build_voice_services({'alerts': {'scheduler': {'enabled': False}}}, tts=engine,
+            shutdown=stack, zone_manager=original.zone_manager)
+        manager = services.features.alert_manager
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.CRITICAL, 'Alerta de prueba.')
+        assert alert.delivery is AlertDelivery.FAILED
+        backend.fail_start = False
+        for _ in range(2):
+            assert await manager.create_alert(AlertType.SECURITY, AlertPriority.CRITICAL, 'Alerta de prueba.') is None
+        assert alert.delivery is AlertDelivery.FAILED and alert.delivery_attempts == 1
+        assert len(engine.calls) == 1 and len(backend.outputs) == 1
 
 
 async def test_missing_background_route_does_not_follow_active_zone(monkeypatch):

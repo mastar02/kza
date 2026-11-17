@@ -9,7 +9,9 @@ Tests ensure that:
 5. Passthrough methods delegate correctly
 """
 
+import asyncio
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock
 
 # Mock system-level modules BEFORE any imports
@@ -20,8 +22,12 @@ sys.modules.setdefault('torch', MagicMock())
 sys.modules.setdefault('torch.cuda', MagicMock())
 
 import pytest
+import yaml
 
-from src.pipeline.feature_manager import FeatureManager
+from src.alerts import AlertManager, AlertPriority, AlertScheduler, AlertType, CheckType
+from src.pipeline.feature_manager import ALERTS_NONE, ALERTS_UNAVAILABLE, FeatureManager, build_feature_manager
+
+SETTINGS_PATH = Path(__file__).resolve().parents[3] / "config" / "settings.yaml"
 
 
 # ============================================================
@@ -76,20 +82,21 @@ def _make_notifications():
 
 
 def _make_alert_manager():
-    """Create a mock AlertManager."""
-    m = MagicMock()
-    m.get_pending_alerts.return_value = []
-    m.acknowledge.return_value = True
-    m.get_summary.return_value = "No hay alertas activas"
+    """Create a mock AlertManager restricted to its real interface (no phantom calls)."""
+    m = MagicMock(spec=AlertManager)
+    m.get_active_alerts.return_value = []
     return m
 
 
-def _make_alert_scheduler():
-    """Create a mock AlertScheduler."""
-    m = MagicMock()
+def _make_alert_scheduler(handlers: int = 1, running: bool = True):
+    """Create a mock AlertScheduler restricted to its real interface."""
+    m = MagicMock(spec=AlertScheduler)
     m.start = AsyncMock()
     m.stop = AsyncMock()
-    m.add_check_simple = MagicMock()
+    m.get_status.return_value = {
+        "running": running, "checks": {},
+        "registered_handlers": {"security": handlers, "pattern": 0, "device": 0},
+    }
     return m
 
 
@@ -285,7 +292,7 @@ class TestFeatureManagerStatus:
         assert status["timers"]["status"] == {"active_timers": 0}
         assert status["intercom"]["status"] == {"zones": 3}
         assert status["notifications"]["status"] == {"pending": 0}
-        assert status["alerts"]["active"] == 0
+        assert status["alerts"] == {"available": True, "active": 0}
         assert status["briefings"]["enabled"] is True
         assert status["ha_integration"]["enabled"] is True
 
@@ -296,7 +303,7 @@ class TestFeatureManagerStatus:
         assert status["timers"]["status"] is None
         assert status["intercom"]["status"] is None
         assert status["notifications"]["status"] is None
-        assert status["alerts"]["active"] == 0
+        assert status["alerts"] == {"available": False, "active": None}
         assert status["briefings"]["enabled"] is False
         assert status["ha_integration"]["enabled"] is False
 
@@ -452,50 +459,173 @@ class TestFeatureManagerNotifications:
 class TestFeatureManagerAlerts:
     """Alert passthrough tests."""
 
-    def test_add_alert_condition(self, fm_full, all_deps):
-        """add_alert_condition should delegate to alert_scheduler."""
-        fm_full.add_alert_condition(
-            "binary_sensor.garage_door",
-            state_equals="on",
-            duration_minutes=30,
-            message="Garage open for {duration}",
-        )
-        all_deps["alert_scheduler"].add_check_simple.assert_called_once_with(
-            entity_id="binary_sensor.garage_door",
-            state="on",
-            duration_minutes=30,
-            message="Garage open for {duration}",
-        )
-
-    def test_add_alert_condition_no_scheduler(self, fm_empty):
-        """add_alert_condition should not raise when no scheduler."""
-        fm_empty.add_alert_condition("sensor.x", state_equals="on")
+    def test_phantom_alert_methods_removed(self, fm_full):
+        """No FeatureManager method may call an API the alert classes do not have."""
+        assert not hasattr(fm_full, "add_alert_condition")
+        assert not hasattr(fm_full, "acknowledge_alert")
+        for name in ("get_pending_alerts", "acknowledge", "get_summary"):
+            assert not hasattr(AlertManager, name)
+        assert not hasattr(AlertScheduler, "add_check_simple")
 
     def test_get_active_alerts(self, fm_full, all_deps):
-        """get_active_alerts should delegate."""
-        result = fm_full.get_active_alerts()
-        all_deps["alert_manager"].get_pending_alerts.assert_called_once()
-        assert result == []
+        """get_active_alerts should delegate to the manager's real method."""
+        all_deps["alert_manager"].get_active_alerts.return_value = ["a"]
+        assert fm_full.get_active_alerts() == ["a"]
+        all_deps["alert_manager"].get_active_alerts.assert_called_once_with()
 
     def test_get_active_alerts_no_manager(self, fm_empty):
         """get_active_alerts should return empty list."""
         assert fm_empty.get_active_alerts() == []
 
-    def test_acknowledge_alert(self, fm_full, all_deps):
-        """acknowledge_alert should delegate."""
-        result = fm_full.acknowledge_alert("a1", user_id="u1")
-        all_deps["alert_manager"].acknowledge.assert_called_once_with("a1")
-        assert result is True
+    def test_get_alert_summary_no_manager_is_unavailable(self, fm_empty):
+        """Without a manager the summary never says there are no alerts."""
+        text = fm_empty.get_alert_summary()
+        assert text == ALERTS_UNAVAILABLE
+        assert "no está disponible" in text
+        assert "no hay alertas" not in text.lower()
 
-    def test_acknowledge_alert_no_manager(self, fm_empty):
-        """acknowledge_alert should return False when no manager."""
-        assert fm_empty.acknowledge_alert("a1") is False
+    def test_get_alert_summary_without_scheduler_is_unavailable(self):
+        """A manager without producers cannot know there are no alerts."""
+        fm = FeatureManager(alert_manager=_make_alert_manager())
+        assert fm.get_alert_summary() == ALERTS_UNAVAILABLE
+        assert fm.alerts_available() is False
+        assert fm.get_status()["alerts"] == {"available": False, "active": None}
 
-    def test_get_alert_summary(self, fm_full, all_deps):
-        """get_alert_summary should delegate."""
-        result = fm_full.get_alert_summary()
-        assert result == "No hay alertas activas"
+    def test_get_alert_summary_without_producers_is_unavailable(self):
+        """A scheduler with no registered producer is not a source of truth."""
+        fm = FeatureManager(alert_manager=_make_alert_manager(), alert_scheduler=_make_alert_scheduler(0))
+        assert fm.get_alert_summary() == ALERTS_UNAVAILABLE
+        assert fm.alerts_available() is False
 
-    def test_get_alert_summary_no_manager(self, fm_empty):
-        """get_alert_summary should return default message."""
-        assert fm_empty.get_alert_summary() == "No hay alertas activas"
+    def test_get_alert_summary_no_alerts_with_producers(self, fm_full):
+        """Only a connected producer allows 'no hay alertas activas'."""
+        assert fm_full.alerts_available() is True
+        assert fm_full.get_alert_summary() == ALERTS_NONE == "No hay alertas activas."
+
+    def test_get_alert_summary_one_alert(self, fm_full, all_deps):
+        all_deps["alert_manager"].get_active_alerts.return_value = [MagicMock(message="Puerta de entrada abierta")]
+        assert fm_full.get_alert_summary() == "Hay una alerta activa: Puerta de entrada abierta."
+
+    def test_get_alert_summary_lists_three_and_counts_rest(self, fm_full, all_deps):
+        all_deps["alert_manager"].get_active_alerts.return_value = [
+            MagicMock(message=f"m{i}") for i in range(5)]
+        assert fm_full.get_alert_summary() == "Hay 5 alertas activas: m0; m1; m2; y 2 más."
+
+    def test_get_alert_summary_three_without_rest(self, fm_full, all_deps):
+        all_deps["alert_manager"].get_active_alerts.return_value = [
+            MagicMock(message=f"m{i}") for i in range(3)]
+        assert fm_full.get_alert_summary() == "Hay 3 alertas activas: m0; m1; m2."
+
+    def test_status_counts_active_alerts(self, fm_full, all_deps):
+        all_deps["alert_manager"].get_active_alerts.return_value = ["a", "b"]
+        assert fm_full.get_status()["alerts"] == {"available": True, "active": 2}
+
+    @pytest.mark.asyncio
+    async def test_summary_with_real_manager_skips_resolved_and_acknowledged(self):
+        manager = AlertManager()
+        fm = FeatureManager(alert_manager=manager, alert_scheduler=_make_alert_scheduler())
+        door = await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "Puerta abierta")
+        assert fm.get_alert_summary() == "Hay una alerta activa: Puerta abierta."
+        await manager.mark_processed(door.alert_id)
+        assert fm.get_alert_summary() == ALERTS_NONE
+
+    @pytest.mark.parametrize("running", [False, None, "yes"])
+    def test_producers_without_running_scheduler_are_unavailable(self, running):
+        """Review R2: registered producers do not count while the scheduler is not running."""
+        fm = FeatureManager(alert_manager=_make_alert_manager(),
+                            alert_scheduler=_make_alert_scheduler(handlers=2, running=running))
+        assert fm.alerts_available() is False
+        assert fm.get_alert_summary() == ALERTS_UNAVAILABLE
+        assert fm.get_status()["alerts"] == {"available": False, "active": None}
+
+    @pytest.mark.asyncio
+    async def test_summary_with_real_scheduler_needs_registered_producer(self):
+        manager = AlertManager()
+        scheduler = AlertScheduler(alert_manager=manager)
+        fm = FeatureManager(alert_manager=manager, alert_scheduler=scheduler)
+        task = asyncio.create_task(scheduler.start())
+        await asyncio.sleep(0)
+        try:
+            assert scheduler.get_status()["running"] is True
+            assert fm.get_alert_summary() == ALERTS_UNAVAILABLE
+            scheduler.register_device_handler(AsyncMock())
+            assert fm.get_alert_summary() == ALERTS_NONE
+        finally:
+            await scheduler.stop()
+            await task
+
+    @pytest.mark.asyncio
+    async def test_real_scheduler_with_producer_never_started_or_stopped_is_unavailable(self):
+        """Review R2: before start() and after stop() the summary never says 'no hay alertas'."""
+        manager = AlertManager()
+        scheduler = AlertScheduler(alert_manager=manager)
+        scheduler.register_device_handler(AsyncMock())
+        fm = FeatureManager(alert_manager=manager, alert_scheduler=scheduler)
+        assert scheduler.get_status()["running"] is False
+        assert fm.alerts_available() is False
+        assert fm.get_alert_summary() == ALERTS_UNAVAILABLE
+        assert fm.get_status()["alerts"] == {"available": False, "active": None}
+        task = asyncio.create_task(scheduler.start())
+        await asyncio.sleep(0)
+        assert fm.get_alert_summary() == ALERTS_NONE
+        await scheduler.stop()
+        await task
+        assert scheduler.get_status()["running"] is False
+        assert fm.alerts_available() is False
+        assert fm.get_alert_summary() == ALERTS_UNAVAILABLE
+        assert fm.get_status()["alerts"] == {"available": False, "active": None}
+
+    @pytest.mark.asyncio
+    async def test_scheduler_loop_that_exits_on_error_is_unavailable(self, monkeypatch):
+        """Review R2: start() ending on an exception leaves the alerts unavailable."""
+        manager = AlertManager()
+        scheduler = AlertScheduler(alert_manager=manager)
+        scheduler.register_device_handler(AsyncMock())
+        fm = FeatureManager(alert_manager=manager, alert_scheduler=scheduler)
+
+        async def boom(check_type, _interval):
+            if check_type is CheckType.DEVICE:
+                raise RuntimeError("loop died")
+
+        monkeypatch.setattr(scheduler, "_run_periodic_check", boom)
+        await scheduler.start()
+        assert scheduler.get_status()["running"] is False
+        assert fm.get_alert_summary() == ALERTS_UNAVAILABLE
+
+
+class TestBuildFeatureManagerAlerts:
+    """Alert wiring from the existing alerts section of settings."""
+
+    def _build(self, alerts: dict):
+        handler = MagicMock()
+        handler.aspeak_to_all_zones = AsyncMock()
+        return build_feature_manager({"alerts": alerts}, response_handler=handler), handler
+
+    def test_reannounce_interval_default_is_one_notice_per_episode(self):
+        features, _ = self._build({})
+        assert features.alert_manager.reannounce_interval_seconds is None
+
+    def test_real_settings_keep_one_notice_per_episode(self):
+        """Review R3: the shipped config/settings.yaml honours Q20 (one notice per episode)."""
+        settings = yaml.safe_load(SETTINGS_PATH.read_text(encoding="utf-8"))
+        general = settings["alerts"]["general"]
+        assert "reannounce_interval_seconds" in general
+        assert general["reannounce_interval_seconds"] is None
+        features, _ = self._build(settings["alerts"])
+        assert features.alert_manager is not None
+        assert features.alert_manager.reannounce_interval_seconds is None
+
+    def test_reannounce_interval_from_config(self):
+        features, handler = self._build({"general": {"reannounce_interval_seconds": 900}})
+        assert features.alert_manager.reannounce_interval_seconds == 900
+        assert features.alert_manager.tts_callback == handler.aspeak_to_all_zones
+
+    def test_voice_notifications_off_mutes(self):
+        features, _ = self._build({"general": {"voice_notifications": False}})
+        assert features.alert_manager.tts_callback is None
+
+    def test_production_wiring_without_producers_is_unavailable(self):
+        """Today's graph registers no producer: the summary must say unavailable (CORE-05)."""
+        features, _ = self._build({})
+        assert features.alert_scheduler is not None
+        assert features.get_alert_summary() == ALERTS_UNAVAILABLE

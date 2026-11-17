@@ -270,3 +270,61 @@ class TestSecurityAlertsDeduplication:
         assert alert1 is not None
         assert alert2 is not None
         assert alert1.alert_id != alert2.alert_id
+
+
+# ==================== T036-U1: condition episodes ====================
+
+
+class TestSecurityEpisodes:
+    """Door and motion are stateful episodes; sequences and access denials are momentary."""
+
+    @pytest.mark.asyncio
+    async def test_door_expected_open_resolves_episode(self):
+        manager = AlertManager()
+        security = SecurityAlerts(manager)
+        first = await security.check_door_status("entrada", is_open=True)
+        assert await security.check_door_status("entrada", is_open=True, expected_open=True) is None
+        assert first.resolved_at is not None
+        assert first.condition == "door_open_unexpected" and first.source == "entrada"
+
+    @pytest.mark.asyncio
+    async def test_motion_episode_closes_when_motion_clears(self):
+        manager = AlertManager()
+        security = SecurityAlerts(manager)
+        first = await security.check_unusual_motion("patio", True, expected_occupancy=False)
+        assert await security.check_unusual_motion("patio", True, expected_occupancy=False) is None
+        assert await security.check_unusual_motion("patio", False, expected_occupancy=False) is None
+        assert first.resolved_at is not None
+        assert await security.check_unusual_motion("patio", True, expected_occupancy=False) is not None
+
+    @pytest.mark.asyncio
+    async def test_motion_expected_occupancy_resolves(self):
+        manager = AlertManager()
+        security = SecurityAlerts(manager)
+        first = await security.check_unusual_motion("patio", True, expected_occupancy=False)
+        assert await security.check_unusual_motion("patio", True, expected_occupancy=True) is None
+        assert first.resolved_at is not None
+
+    @pytest.mark.asyncio
+    async def test_access_denied_is_momentary_per_user(self):
+        clock = [0.0]
+        manager = AlertManager(cooldown_seconds=300, clock=lambda: clock[0])
+        security = SecurityAlerts(manager)
+        first = await security.check_access_denied("entrada", "ana")
+        assert await security.check_access_denied("entrada", "ana", reason="otro") is None
+        assert await security.check_access_denied("entrada", "beto") is not None
+        clock[0] = 300.0
+        assert await security.check_access_denied("entrada", "ana") is not None
+        assert first.condition == "access_denied:ana"
+
+    @pytest.mark.asyncio
+    async def test_door_sequence_is_momentary_per_direction(self):
+        clock = [0.0]
+        manager = AlertManager(cooldown_seconds=300, clock=lambda: clock[0])
+        security = SecurityAlerts(manager)
+        opening = await security.check_door_sequence("garaje", is_opening=True)
+        assert await security.check_door_sequence("garaje", is_opening=True) is None
+        assert await security.check_door_sequence("garaje", is_opening=False) is not None
+        clock[0] = 300.0
+        assert await security.check_door_sequence("garaje", is_opening=True) is not None
+        assert opening.condition == "door_sequence_anomaly:abriendo"

@@ -16,6 +16,12 @@ from src.alerts import AlertManager, AlertScheduler
 
 logger = logging.getLogger(__name__)
 
+# Voice texts of the alert summary (Spanish, rioplatense). An absent manager or
+# producer is reported as unavailable, never as "no alerts".
+ALERTS_UNAVAILABLE = "El sistema de alertas no está disponible ahora."
+ALERTS_NONE = "No hay alertas activas."
+_SUMMARY_LISTED = 3
+
 
 class FeatureManager:
     """Owns lifecycle and delegation for KZA differentiating features.
@@ -128,12 +134,10 @@ class FeatureManager:
         else:
             status["notifications"] = {"status": None}
 
-        if self.alert_manager and hasattr(self.alert_manager, "get_pending_alerts"):
-            status["alerts"] = {
-                "active": len(self.alert_manager.get_pending_alerts())
-            }
+        if self.alerts_available():
+            status["alerts"] = {"available": True, "active": len(self.alert_manager.get_active_alerts())}
         else:
-            status["alerts"] = {"active": 0}
+            status["alerts"] = {"available": False, "active": None}
 
         if self.briefing:
             status["briefings"] = {
@@ -345,56 +349,49 @@ class FeatureManager:
     # Alert passthroughs
     # ------------------------------------------------------------------
 
-    def add_alert_condition(
-        self,
-        entity_id: str,
-        state_equals: str = None,
-        duration_minutes: int = 0,
-        message: str = None,
-    ) -> None:
-        """Add a simple alert condition.
+    def alerts_available(self) -> bool:
+        """Whether alerts reflect the house: a manager plus a running scheduler with producers.
 
-        Args:
-            entity_id: HA entity to watch.
-            state_equals: Trigger when entity reaches this state.
-            duration_minutes: How long the state must persist before alerting.
-            message: Custom alert message (supports {duration} placeholder).
+        Without producers (no handler registered in the scheduler) or while the
+        scheduler is not running (never started, stopped, or its loop exited on
+        an error) an empty alert list means "unknown", not "no alerts".
         """
-        if not self.alert_scheduler:
-            logger.warning("add_alert_condition called but alert_scheduler is None")
-            return
-        self.alert_scheduler.add_check_simple(
-            entity_id=entity_id,
-            state=state_equals,
-            duration_minutes=duration_minutes,
-            message=message or f"{entity_id} en estado {state_equals}",
-        )
+        if self.alert_manager is None or self.alert_scheduler is None:
+            return False
+        status = self.alert_scheduler.get_status()
+        if status.get("running") is not True:
+            return False
+        handlers = status.get("registered_handlers", {})
+        return sum(handlers.values()) > 0
 
     def get_active_alerts(self) -> list:
-        """Return currently active (pending) alerts."""
-        if not self.alert_manager or not hasattr(self.alert_manager, "get_pending_alerts"):
-            return []
-        return self.alert_manager.get_pending_alerts()
+        """Return active alerts (unacknowledged, condition not resolved), newest first.
 
-    def acknowledge_alert(self, alert_id: str, user_id: str = None) -> bool:
-        """Acknowledge an alert.
-
-        Args:
-            alert_id: Alert identifier.
-            user_id: User acknowledging.
-
-        Returns:
-            True if the alert was found and acknowledged.
+        An empty list is only meaningful when alerts_available() is True.
         """
-        if not self.alert_manager or not hasattr(self.alert_manager, "acknowledge"):
-            return False
-        return self.alert_manager.acknowledge(alert_id)
+        if self.alert_manager is None:
+            return []
+        return self.alert_manager.get_active_alerts()
 
     def get_alert_summary(self) -> str:
-        """Return voice-friendly alert summary."""
-        if not self.alert_manager or not hasattr(self.alert_manager, "get_summary"):
-            return "No hay alertas activas"
-        return self.alert_manager.get_summary()
+        """Return a voice-friendly alert summary in Spanish.
+
+        Returns:
+            ALERTS_UNAVAILABLE without a manager or a running scheduler with producers,
+            ALERTS_NONE when available and nothing is active, else the count
+            and up to three alert messages.
+        """
+        if not self.alerts_available():
+            return ALERTS_UNAVAILABLE
+        active = self.alert_manager.get_active_alerts()
+        if not active:
+            return ALERTS_NONE
+        listed = "; ".join(alert.message for alert in active[:_SUMMARY_LISTED])
+        rest = len(active) - _SUMMARY_LISTED
+        more = f"; y {rest} más" if rest > 0 else ""
+        if len(active) == 1:
+            return f"Hay una alerta activa: {listed}."
+        return f"Hay {len(active)} alertas activas: {listed}{more}."
 
 
 def build_feature_manager(config: dict, *, response_handler, zone_manager=None,
@@ -423,6 +420,7 @@ def build_feature_manager(config: dict, *, response_handler, zone_manager=None,
             tts_callback=response_handler.aspeak_to_all_zones if general.get("voice_notifications", True) else None,
             cooldown_seconds=general.get("cooldown_seconds", 300.0),
             max_history=general.get("max_history", 1000),
+            reannounce_interval_seconds=general.get("reannounce_interval_seconds"),
         )
         schedule = alerts.get("scheduler", {})
         if schedule.get("enabled", True):

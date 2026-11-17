@@ -87,7 +87,14 @@ alerts:
 
   # Configuración general
   general:
-    cooldown_seconds: 300        # Tiempo mínimo entre alertas idénticas (5 min)
+    cooldown_seconds: 300        # Duración del episodio de un evento momentáneo (acceso denegado, secuencia)
+    # Condiciones con estado (puerta abierta, batería baja, offline): un aviso por
+    # episodio (Q20); se vuelve a avisar sólo al cerrarse y reabrirse. Un número
+    # de segundos re-anuncia el episodio abierto y sin reconocer cada ese
+    # intervalo; null = nunca. Una alerta reconocida sólo se vuelve a decir si empeora,
+    # mientras el proceso sigue vivo; tras un reinicio una condición aún activa se
+    # anuncia como episodio nuevo (los reconocimientos viven sólo en memoria).
+    reannounce_interval_seconds: null
     max_history: 1000            # Máximo número de alertas en historial
     voice_notifications: true    # Activar notificaciones de voz para alertas críticas
 

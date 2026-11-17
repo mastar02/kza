@@ -175,19 +175,46 @@ await devices.check_multiple_devices(devices_status)
 
 ## Deduplicación
 
-El sistema evita alertas duplicadas automáticamente:
+El sistema evita alertas duplicadas por **condición**, nunca por el texto:
 
-- **Cooldown configurable**: Por defecto 5 minutos (300 segundos)
-- **Clave de deduplicación**: Basada en tipo de alerta + mensaje
-- **Limpieza**: Método `clear_cooldowns()` para resetear
+- **Clave de deduplicación**: `(tipo, fuente, condición)` de `AlertCondition`;
+  sin condición explícita (productores legacy) la clave es el mensaje
+- **Latch por episodio**: una condición con estado (`latched=True`: puerta
+  abierta, batería baja, offline) avisa al abrirse y no vuelve a avisar hasta
+  `resolve_condition()`; un evento momentáneo (`latched=False`) cierra su
+  episodio tras `cooldown_seconds` (default 300)
+- **Escalada**: una lectura más grave actualiza la alerta abierta, la vuelve a
+  activar aunque estuviera reconocida y la anuncia si es CRITICAL/HIGH
+- **Re-anuncio**: con `reannounce_interval_seconds` configurado (`null` por
+  defecto: nunca), un episodio con estado ya anunciado y sin reconocer se
+  vuelve a decir cada ese intervalo
+- **Alerta reconocida**: mientras el proceso sigue vivo, una alerta reconocida
+  (o descartada) en la web no se vuelve a decir, ni por el reintento de voz ni
+  por el re-anuncio, salvo que empeore: la escalada la reactiva y la anuncia
+  (respuesta T036-U1-Q5, opción A). El reconocimiento cubre sólo su episodio:
+  si la condición se cierra y se reabre (o un evento momentáneo se repite tras
+  `cooldown_seconds`) la alerta nueva se anuncia. Historial, episodios y
+  reconocimientos viven sólo en memoria: tras un reinicio o una release, una
+  condición aún activa se anuncia como episodio nuevo aunque se hubiera
+  reconocido antes
+- **Limpieza**: `clear_cooldowns()` cierra todos los episodios abiertos (sus
+  alertas quedan resueltas) y la próxima observación alerta de nuevo
+- **Reintento de voz**: si el aviso falla sin que suene nada (la salida lo
+  confirma con `output_started` en falso y sin segmentos dichos), se reintenta
+  **una sola vez** en la siguiente observación del episodio abierto, salvo que
+  la alerta ya esté reconocida. Si la salida empezó a sonar, fue bloqueada por
+  política, está silenciada (`voice_notifications: false`), lanzó una excepción
+  o no devolvió comprobante, no se repite. El reintento dice la alerta tal como
+  está guardada (prioridad y texto del registro), no la última lectura: una
+  lectura menos grave no baja de nivel la alerta abierta. `delivery_attempts`
+  cuenta los intentos de voz de la alerta
 
 ```python
-# Las alertas idénticas en menos de 5 min retornan None
-alert1 = await alert_manager.create_alert(...)  # Crea alerta
-alert2 = await alert_manager.create_alert(...)  # Retorna None (deduplicada)
-
-# Resetear cooldowns si es necesario
-alert_manager.clear_cooldowns()
+door = AlertCondition(source="entrada", condition="door_open_unexpected")
+alert1 = await alert_manager.create_alert(..., condition=door)  # Crea alerta
+alert2 = await alert_manager.create_alert(..., condition=door)  # None (episodio abierto)
+await alert_manager.resolve_condition(AlertType.SECURITY, door)  # Se cerró la puerta
+alert3 = await alert_manager.create_alert(..., condition=door)  # Nueva alerta
 ```
 
 ## Notificaciones de Voz

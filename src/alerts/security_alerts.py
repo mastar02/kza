@@ -24,14 +24,26 @@ Uso:
 """
 
 
+from src.alerts.alert_manager import Alert, AlertCondition, AlertManager, AlertPriority, AlertType
 from src.core.logging import get_logger
-from .alert_manager import Alert, AlertManager, AlertPriority, AlertType
 
 logger = get_logger(__name__)
 
 
+# Condition names: the dedup key is (zone, condition), never the message text.
+DOOR_OPEN_UNEXPECTED = "door_open_unexpected"
+UNUSUAL_MOTION = "unusual_motion"
+DOOR_SEQUENCE_ANOMALY = "door_sequence_anomaly"
+ACCESS_DENIED = "access_denied"
+
+
 class SecurityAlerts:
-    """Gestor de alertas de seguridad"""
+    """Gestor de alertas de seguridad.
+
+    Door and motion checks are stateful episodes: one alert when the condition
+    opens, closed when the check sees it no longer holds. Door sequences and
+    denied accesses are momentary events whose episode lasts cooldown_seconds.
+    """
 
     # Mapeo de zonas a nombres legibles
     ZONE_NAMES = {
@@ -69,12 +81,10 @@ class SecurityAlerts:
         Returns:
             Alert si se creó, None si fue deduplicada
         """
-        if not is_open:
-            # Puerta cerrada, sin alerta
-            return None
-
-        if expected_open:
-            # Puerta abierta pero esperada, sin alerta
+        condition = AlertCondition(source=zone, condition=DOOR_OPEN_UNEXPECTED)
+        if not is_open or expected_open:
+            # Puerta cerrada o abierta esperada: termina el episodio
+            await self.alert_manager.resolve_condition(AlertType.SECURITY, condition)
             return None
 
         # Puerta abierta e inesperada = alerta
@@ -90,6 +100,7 @@ class SecurityAlerts:
                 "type": "door_open",
                 "is_open": is_open,
             },
+            condition=condition,
         )
 
         if alert:
@@ -114,12 +125,10 @@ class SecurityAlerts:
         Returns:
             Alert si se creó, None si fue deduplicada
         """
-        if not motion_detected:
-            # Sin movimiento, sin alerta
-            return None
-
-        if expected_occupancy:
-            # Movimiento esperado, sin alerta
+        condition = AlertCondition(source=zone, condition=UNUSUAL_MOTION)
+        if not motion_detected or expected_occupancy:
+            # Sin movimiento o movimiento esperado: termina el episodio
+            await self.alert_manager.resolve_condition(AlertType.SECURITY, condition)
             return None
 
         # Movimiento detectado en zona sin ocupación esperada = alerta
@@ -134,6 +143,7 @@ class SecurityAlerts:
                 "type": "unusual_motion",
                 "motion_detected": motion_detected,
             },
+            condition=condition,
         )
 
         if alert:
@@ -175,6 +185,7 @@ class SecurityAlerts:
                 "type": "door_sequence_anomaly",
                 "is_opening": is_opening,
             },
+            condition=AlertCondition(source=zone, condition=f"{DOOR_SEQUENCE_ANOMALY}:{action}", latched=False),
         )
 
         if alert:
@@ -211,6 +222,7 @@ class SecurityAlerts:
                 "type": "access_denied",
                 "reason": reason,
             },
+            condition=AlertCondition(source=zone, condition=f"{ACCESS_DENIED}:{user}", latched=False),
         )
 
         if alert:

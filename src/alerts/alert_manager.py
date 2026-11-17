@@ -4,16 +4,19 @@ Sistema central de gestión de alertas con deduplicación, historial y notificac
 
 Proporciona:
 - Definición de prioridades y tipos de alerta
-- Deduplicación de alertas con cooldown configurable
-- Notificaciones de voz para alertas críticas/altas
+- Deduplicación por condición (tipo, fuente, condición), nunca por el texto
+- Latch por episodio: una alerta al abrirse la condición; otra sólo después de
+  cerrarla (resolve_condition) o, si se configura, tras un intervalo explícito
+- Recibo de entrega de voz en la alerta (delivered/failed/blocked/muted)
+- Un único reintento del aviso en el siguiente chequeo si falló sin sonar nada
 - Registro de handlers por tipo de alerta
-- Historial de alertas con límite configurable
-- Resumen de alertas pendientes
+- Historial de alertas con límite configurable y timestamps con zona horaria
+- Resumen de alertas pendientes y activas
 
 Uso:
-    from src.alerts import AlertManager, AlertPriority, AlertType
+    from src.alerts import AlertCondition, AlertManager, AlertPriority, AlertType
 
-    alert_manager = AlertManager(tts_callback=lambda msg: print(msg))
+    alert_manager = AlertManager(tts_callback=response_handler.aspeak)
 
     # Registrar handler para alertas de seguridad
     alert_manager.register_handler(
@@ -26,21 +29,29 @@ Uso:
         alert_type=AlertType.SECURITY,
         priority=AlertPriority.CRITICAL,
         message="Puerta principal abierta",
-        details={"zone": "entrada", "time": "2024-01-20 15:30"}
+        details={"zone": "entrada"},
+        condition=AlertCondition(source="entrada", condition="door_open_unexpected"),
+    )
+
+    # Al cerrarse la puerta el episodio termina; la próxima apertura alerta de nuevo
+    await alert_manager.resolve_condition(
+        AlertType.SECURITY, AlertCondition(source="entrada", condition="door_open_unexpected")
     )
 """
 
 import asyncio
+import inspect
+import math
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum, StrEnum
-from typing import Callable
+from typing import Any, Callable
 from uuid import uuid4
 
-from src.core.voice_delivery import invoke_voice_callback
 from src.core.logging import get_logger
+from src.core.voice_delivery import DeliveryState, ResponseResult, ResponseStage, VoiceDeliveryError
 
 logger = get_logger(__name__)
 
@@ -62,6 +73,47 @@ class AlertType(StrEnum):
     WELLNESS = "wellness"       # Bienestar
 
 
+# Priorities spoken by voice; lower ones only stay in the history (web).
+SPOKEN_PRIORITIES = frozenset({AlertPriority.CRITICAL, AlertPriority.HIGH})
+
+
+class AlertDelivery(StrEnum):
+    """Voice delivery receipt of an alert's notice."""
+
+    NOT_SPOKEN = "not_spoken"   # Priority below the voice threshold; web only
+    PENDING = "pending"         # Notice in flight
+    DELIVERED = "delivered"     # The output confirmed a complete delivery
+    FAILED = "failed"           # The output failed, raised or did not confirm
+    BLOCKED = "blocked"         # The output refused the notice (policy/route)
+    MUTED = "muted"             # Voice notices disabled; nothing was attempted
+
+
+def _utc_now() -> datetime:
+    """Return the current instant with an explicit UTC offset."""
+    return datetime.now(UTC)
+
+
+@dataclass(frozen=True)
+class AlertCondition:
+    """Identity of the condition an alert reports; the dedup key never uses the text.
+
+    Attributes:
+        source: Entity or producer source (entity_id, device name, zone).
+        condition: Stable condition name (e.g. "battery_low", "door_open_unexpected").
+        latched: True for a stateful condition whose episode stays open until
+            resolve_condition; False for a momentary event whose episode closes
+            by itself after the manager's cooldown_seconds.
+    """
+
+    source: str
+    condition: str
+    latched: bool = True
+
+    def key(self, alert_type: AlertType) -> tuple[str, str, str]:
+        """Return the deduplication key of this condition for an alert type."""
+        return (alert_type.value, self.source, self.condition)
+
+
 @dataclass
 class Alert:
     """Representa una alerta individual"""
@@ -70,9 +122,17 @@ class Alert:
     priority: AlertPriority
     message: str
     details: dict = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=_utc_now)
     processed: bool = False
     processed_at: datetime | None = None
+    source: str | None = None
+    condition: str | None = None
+    last_seen_at: datetime | None = None
+    resolved_at: datetime | None = None
+    delivery: AlertDelivery = AlertDelivery.NOT_SPOKEN
+    delivery_reason: str | None = None
+    delivery_at: datetime | None = None
+    delivery_attempts: int = 0
 
     def to_dict(self) -> dict:
         """Convertir alerta a diccionario"""
@@ -85,7 +145,77 @@ class Alert:
             "timestamp": self.timestamp.isoformat(),
             "processed": self.processed,
             "processed_at": self.processed_at.isoformat() if self.processed_at else None,
+            "source": self.source,
+            "condition": self.condition,
+            "last_seen_at": self.last_seen_at.isoformat() if self.last_seen_at else None,
+            "resolved_at": self.resolved_at.isoformat() if self.resolved_at else None,
+            "delivery": self.delivery.value,
+            "delivery_reason": self.delivery_reason,
+            "delivery_at": self.delivery_at.isoformat() if self.delivery_at else None,
+            "delivery_attempts": self.delivery_attempts,
         }
+
+
+@dataclass
+class _Episode:
+    """Open episode of one condition key (latched until resolved or expired)."""
+
+    alert: Alert
+    latched: bool
+    opened_at: float
+    announced_at: float | None = None
+    # The last notice failed without any audio and is retried once at the next check.
+    retry_due: bool = False
+
+
+# Failed delivery states that can prove no audio was produced (with output_started
+# False and no spoken segment). BLOCKED is a refusal by policy and is never retried.
+_OUTPUT_FREE_STATES = frozenset({DeliveryState.FAILED, DeliveryState.EMPTY, DeliveryState.CANCELLED})
+
+
+def _failed_without_output(result: Any) -> bool:
+    """Whether a voice result proves the notice failed before any audio started.
+
+    Mirrors the reminder notice mapping (T034): only a typed ResponseResult can
+    prove it. Output started (a PCM chunk or a spoken segment), a blocked notice,
+    a timeout after the queue stage, an exception or a receipt-less return are
+    never treated as output-free, so they are never spoken again.
+
+    Args:
+        result: What the voice output returned.
+
+    Returns:
+        True when the notice may be retried without risking a repeated sound.
+    """
+    if not isinstance(result, ResponseResult) or result.success:
+        return False
+    if result.output_started or result.spoken_segments > 0:
+        return False
+    if result.delivery is DeliveryState.TIMED_OUT:
+        return result.timeout_stage is ResponseStage.QUEUE
+    return result.delivery in _OUTPUT_FREE_STATES
+
+
+def _delivery_outcome(result: Any) -> tuple[AlertDelivery, str | None]:
+    """Map what the voice output returned to the alert's delivery receipt.
+
+    Args:
+        result: The output's return value (ResponseResult for application outputs).
+
+    Returns:
+        (delivery state, diagnostic reason).
+    """
+    if isinstance(result, ResponseResult):
+        if result.success:
+            return AlertDelivery.DELIVERED, None
+        if result.delivery is DeliveryState.BLOCKED:
+            return AlertDelivery.BLOCKED, result.error or "voice_delivery_blocked"
+        return AlertDelivery.FAILED, result.error or "voice_delivery_" + result.delivery.value
+    if result is False:
+        return AlertDelivery.FAILED, "voice_delivery_failed"
+    # Legacy callbacks without a receipt keep the shared acknowledgement convention
+    # of src.core.voice_delivery.invoke_voice_callback.
+    return AlertDelivery.DELIVERED, None
 
 
 class AlertManager:
@@ -101,26 +231,45 @@ class AlertManager:
         self,
         cooldown_seconds: float = 300.0,
         max_history: int = 1000,
-        tts_callback: Callable[[str], None] | None = None,
+        tts_callback: Callable[[str], Any] | None = None,
+        reannounce_interval_seconds: float | None = None,
+        clock: Callable[[], float] | None = None,
+        now: Callable[[], datetime] | None = None,
     ):
         """
         Inicializar AlertManager.
 
         Args:
-            cooldown_seconds: Tiempo mínimo entre alertas idénticas (default: 300s = 5 min)
+            cooldown_seconds: Duración del episodio de un evento momentáneo
+                (AlertCondition.latched=False, o sin condición explícita).
             max_history: Máximo número de alertas en historial (default: 1000)
-            tts_callback: Callback para notificaciones de voz. Recibe string con mensaje.
-                         Ej: lambda msg: play_tts(msg)
+            tts_callback: Salida de voz; recibe el texto y devuelve su ResponseResult.
+                None significa avisos de voz desactivados (recibo 'muted').
+            reannounce_interval_seconds: Re-anunciar un episodio que sigue abierto
+                y sin reconocer cada este intervalo. None (default) = un solo aviso
+                por episodio. Una alerta reconocida no se vuelve a decir salvo que
+                empeore (T036-U1-Q5).
+            clock: Reloj monotónico inyectable (segundos) para episodios.
+            now: Fábrica de instantes con zona horaria para los timestamps.
         """
+        if reannounce_interval_seconds is not None and (
+            type(reannounce_interval_seconds) not in (int, float)
+            or not math.isfinite(reannounce_interval_seconds)
+            or reannounce_interval_seconds <= 0
+        ):
+            raise ValueError("reannounce_interval_seconds must be None or finite and positive")
         self.cooldown_seconds = cooldown_seconds
         self.max_history = max_history
         self.tts_callback = tts_callback
+        self.reannounce_interval_seconds = reannounce_interval_seconds
+        self._clock = clock or time.monotonic
+        self._now = now or _utc_now
 
         # Handlers por tipo de alerta: {AlertType: [callback1, callback2, ...]}
         self._handlers: dict[AlertType, list[Callable[[Alert], None]]] = defaultdict(list)
 
-        # Deduplicación: {alert_key: last_timestamp}
-        self._last_alert_time: dict[str, float] = {}
+        # Episodios abiertos por condición: {(type, source, condition): _Episode}
+        self._episodes: dict[tuple[str, str, str], _Episode] = {}
 
         # Historial de alertas (FIFO)
         self._history: list[Alert] = []
@@ -129,7 +278,8 @@ class AlertManager:
         self._lock = asyncio.Lock()
 
         logger.info(
-            f"AlertManager initialized (cooldown={cooldown_seconds}s, max_history={max_history})"
+            "AlertManager initialized (cooldown=%ss, reannounce=%s, max_history=%s)",
+            cooldown_seconds, reannounce_interval_seconds, max_history,
         )
 
     def register_handler(
@@ -169,62 +319,167 @@ class AlertManager:
         priority: AlertPriority,
         message: str,
         details: dict | None = None,
+        *,
+        condition: AlertCondition | None = None,
     ) -> Alert | None:
         """
-        Crear una alerta con deduplicación automática.
+        Crear una alerta con latch por episodio de su condición.
+
+        The dedup key is (type, source, condition), never the message text. While
+        the condition's episode is open, a repeated observation creates nothing; a
+        more severe priority escalates the open alert in place and announces it.
+        Without an explicit condition the message identifies a momentary event
+        (legacy producers), whose episode closes after cooldown_seconds.
 
         Args:
             alert_type: Tipo de alerta
             priority: Prioridad de la alerta
-            message: Mensaje descriptivo
+            message: Mensaje descriptivo (voz y web, en español)
             details: Detalles adicionales (dict)
+            condition: Identidad de la condición que reporta la alerta
 
         Returns:
-            Alert si se creó, None si fue deduplicada por cooldown
+            La alerta si se abrió un episodio o se escaló; None si el episodio ya
+            estaba abierto (deduplicada, aunque reintente o re-anuncie su aviso).
         """
+        cond = condition or AlertCondition(source="message", condition=message, latched=False)
+        key = cond.key(alert_type)
         async with self._lock:
-            # Generar clave de deduplicación
-            alert_key = self._make_dedup_key(alert_type, message)
+            now = self._clock()
+            episode = self._episodes.get(key)
+            if episode is not None and not self._is_live(episode, now):
+                del self._episodes[key]
+                episode = None
 
-            # Verificar cooldown
-            last_time = self._last_alert_time.get(alert_key, 0)
-            current_time = time.time()
+            if episode is not None:
+                return await self._observe_open_episode(episode, priority, message, details, now)
 
-            if current_time - last_time < self.cooldown_seconds:
-                logger.debug(
-                    f"Alert deduped (cooldown): {alert_type.value} - {message}"
-                )
-                return None
-
-            # Crear alerta
             alert = Alert(
                 alert_id=str(uuid4())[:8],
                 alert_type=alert_type,
                 priority=priority,
                 message=message,
                 details=details or {},
+                timestamp=self._now(),
+                source=cond.source,
+                condition=cond.condition,
             )
-
-            # Actualizar timestamp de deduplicación
-            self._last_alert_time[alert_key] = current_time
+            episode = _Episode(alert=alert, latched=cond.latched, opened_at=now)
+            self._episodes[key] = episode
 
             # Agregar al historial
             self._history.append(alert)
-            if len(self._history) > self.max_history:
-                self._history.pop(0)
+            self._evict_overflow(now)
 
             logger.info(
-                f"Alert created: {alert.alert_type.value} (id={alert.alert_id}, priority={alert.priority.name})"
+                "Alert created: %s (id=%s, priority=%s, source=%s, condition=%s)",
+                alert.alert_type.value, alert.alert_id, alert.priority.name, cond.source, cond.condition,
             )
 
             # Ejecutar handlers
             await self._execute_handlers(alert)
 
             # Notificación de voz para alertas críticas/altas
-            if priority in (AlertPriority.CRITICAL, AlertPriority.HIGH):
-                await self._notify_voice(alert)
+            if priority in SPOKEN_PRIORITIES:
+                await self._announce(episode)
 
             return alert
+
+    def _is_live(self, episode: _Episode, now: float) -> bool:
+        """Whether an episode is still open: latched, or momentary within cooldown."""
+        return episode.latched or now - episode.opened_at < self.cooldown_seconds
+
+    def _evict_overflow(self, now: float) -> None:
+        """Trim the history to max_history without hiding an open episode (caller holds the lock).
+
+        The oldest alert not owned by a live episode (resolved, expired momentary
+        event, or legacy) goes first. Only when every alert belongs to a live
+        episode is the oldest one evicted, and its episode is dropped with it so
+        the next observation reopens the condition instead of being deduplicated
+        against an alert nobody can see.
+        """
+        while len(self._history) > self.max_history:
+            owners = {id(ep.alert): key for key, ep in self._episodes.items()}
+            live = {id(ep.alert) for ep in self._episodes.values() if self._is_live(ep, now)}
+            index = next((i for i, a in enumerate(self._history) if id(a) not in live), 0)
+            evicted = self._history.pop(index)
+            key = owners.get(id(evicted))
+            if key is None:
+                continue
+            del self._episodes[key]
+            if id(evicted) in live:
+                logger.warning("Alert history full of open episodes; evicted open alert %s (id=%s)",
+                               evicted.alert_type.value, evicted.alert_id)
+
+    async def _observe_open_episode(
+        self,
+        episode: _Episode,
+        priority: AlertPriority,
+        message: str,
+        details: dict | None,
+        now: float,
+    ) -> Alert | None:
+        """Apply a repeated observation of an open episode (caller holds the lock)."""
+        alert = episode.alert
+        alert.last_seen_at = self._now()
+        if priority.value < alert.priority.value:
+            alert.priority = priority
+            alert.message = message
+            alert.details = details or {}
+            # The acknowledgement covered a less severe reading: the escalated alert
+            # is active again (web list and summary) until acknowledged anew.
+            alert.processed = False
+            alert.processed_at = None
+            logger.info("Alert escalated: %s (id=%s, priority=%s)",
+                        alert.alert_type.value, alert.alert_id, priority.name)
+            await self._execute_handlers(alert)
+            if priority in SPOKEN_PRIORITIES:
+                await self._announce(episode)
+            return alert
+        if alert.processed:
+            # User answer T036-U1-Q5 (option A): an acknowledged alert is never spoken
+            # again, neither by the retry nor by the re-announce. Only an escalation
+            # (above) reopens the acknowledgement and speaks.
+            if episode.retry_due:
+                episode.retry_due = False
+                logger.info("Alert voice retry dropped, alert acknowledged (id=%s)", alert.alert_id)
+            logger.debug("Alert not spoken again, acknowledged (id=%s)", alert.alert_id)
+            return None
+        if episode.retry_due:
+            episode.retry_due = False
+            logger.info("Alert voice notice retried: %s (id=%s)", alert.alert_type.value, alert.alert_id)
+            await self._announce(episode, retry=True)
+            return None
+        if (
+            episode.latched
+            and self.reannounce_interval_seconds is not None
+            and episode.announced_at is not None
+            and now - episode.announced_at >= self.reannounce_interval_seconds
+        ):
+            logger.info("Alert re-announced: %s (id=%s)", alert.alert_type.value, alert.alert_id)
+            await self._announce(episode)
+            return None
+        logger.debug("Alert deduped (open episode): %s (id=%s)", alert.alert_type.value, alert.alert_id)
+        return None
+
+    async def resolve_condition(self, alert_type: AlertType, condition: AlertCondition) -> Alert | None:
+        """Close the condition's open episode so its next opening alerts again.
+
+        Args:
+            alert_type: Tipo de alerta de la condición.
+            condition: Identidad de la condición que dejó de cumplirse.
+
+        Returns:
+            La alerta del episodio cerrado, o None si no había episodio abierto.
+        """
+        async with self._lock:
+            episode = self._episodes.pop(condition.key(alert_type), None)
+            if episode is None:
+                return None
+            episode.alert.resolved_at = self._now()
+            logger.info("Alert condition resolved: %s (id=%s, source=%s, condition=%s)",
+                        alert_type.value, episode.alert.alert_id, condition.source, condition.condition)
+            return episode.alert
 
     async def _execute_handlers(self, alert: Alert) -> None:
         """Ejecutar todos los handlers registrados para el tipo de alerta"""
@@ -242,17 +497,68 @@ class AlertManager:
                     f"Error executing alert handler: {e} (type={alert.alert_type.value}, id={alert.alert_id})"
                 )
 
-    async def _notify_voice(self, alert: Alert) -> None:
-        """Notificar alerta por voz si hay callback disponible"""
-        if not self.tts_callback:
-            return
+    async def _announce(self, episode: _Episode, *, retry: bool = False) -> None:
+        """Speak the episode's alert and record its delivery receipt.
 
+        A notice that failed before any audio started is retried once, at the
+        episode's next observation; a retry is never retried again (user answer
+        T036-U1-Q1). Output that started, a blocked or muted notice, and every
+        other failure are never repeated. Neither the retry nor the re-announce
+        speaks an acknowledged alert; only an escalation does (T036-U1-Q5).
+
+        Args:
+            episode: The open episode whose alert is spoken.
+            retry: This notice is the single retry of an output-free failure.
+        """
+        episode.announced_at = self._clock()
+        episode.retry_due = False
+        output_free = await self._notify_voice(episode.alert)
+        episode.retry_due = output_free and not retry
+        if episode.retry_due:
+            logger.info("Alert voice notice failed before any audio; one retry at the next check (id=%s)",
+                        episode.alert.alert_id)
+
+    async def _notify_voice(self, alert: Alert) -> bool:
+        """Speak the alert and record the output's receipt on it, never swallowing a failure.
+
+        Returns:
+            True when the notice failed before any audio started (retryable).
+        """
+        callback = self.tts_callback
+        if callback is None:
+            self._record_delivery(alert, AlertDelivery.MUTED, "voice_notifications_disabled")
+            return False
+        message = self._format_voice_message(alert)
+        alert.delivery_attempts += 1
+        self._record_delivery(alert, AlertDelivery.PENDING, None)
         try:
-            message = self._format_voice_message(alert)
-            # Soportar tanto callbacks sync como async
-            await invoke_voice_callback(self.tts_callback, message)
-        except Exception as e:
-            logger.error(f"Error in voice notification: {e}")
+            if inspect.iscoroutinefunction(callback):
+                result = await callback(message)
+            else:
+                result = await asyncio.to_thread(callback, message)
+                if inspect.isawaitable(result):
+                    result = await result
+        except asyncio.CancelledError:
+            self._record_delivery(alert, AlertDelivery.FAILED, "voice_delivery_cancelled")
+            raise
+        except VoiceDeliveryError as error:
+            self._record_delivery(alert, AlertDelivery.FAILED, str(error) or "voice_delivery_failed")
+            return False
+        except Exception as error:
+            self._record_delivery(alert, AlertDelivery.FAILED, type(error).__name__)
+            return False
+        self._record_delivery(alert, *_delivery_outcome(result))
+        return _failed_without_output(result)
+
+    def _record_delivery(self, alert: Alert, delivery: AlertDelivery, reason: str | None) -> None:
+        """Store the voice receipt on the alert and log anything not delivered."""
+        alert.delivery = delivery
+        alert.delivery_reason = reason
+        alert.delivery_at = None if delivery is AlertDelivery.PENDING else self._now()
+        if delivery in (AlertDelivery.FAILED, AlertDelivery.BLOCKED):
+            logger.warning("Alert voice notice %s (id=%s, reason=%s)", delivery.value, alert.alert_id, reason)
+        elif delivery is AlertDelivery.MUTED:
+            logger.info("Alert voice notice muted (id=%s, reason=%s)", alert.alert_id, reason)
 
     def _format_voice_message(self, alert: Alert) -> str:
         """Formatear mensaje para notificación de voz"""
@@ -262,11 +568,6 @@ class AlertManager:
         }
         prefix = priority_text.get(alert.priority, "")
         return f"{prefix}{alert.message}"
-
-    @staticmethod
-    def _make_dedup_key(alert_type: AlertType, message: str) -> str:
-        """Generar clave de deduplicación"""
-        return f"{alert_type.value}:{message}"
 
     def get_history(self, limit: int | None = None) -> list[Alert]:
         """
@@ -309,6 +610,10 @@ class AlertManager:
             "by_priority": dict(summary["by_priority"]),
         }
 
+    def get_active_alerts(self) -> list[Alert]:
+        """Return alerts still unacknowledged whose condition was not resolved, newest first."""
+        return [a for a in reversed(self._history) if not a.processed and a.resolved_at is None]
+
     async def mark_processed(self, alert_id: str, *, before_publish: Callable[[], None] | None = None,
                              update_timestamp: bool = True,
                              timestamp_factory: Callable[[], datetime] | None = None) -> bool:
@@ -318,7 +623,7 @@ class AlertManager:
                 raise PermissionError("alert_authority_retired")
             for alert in self._history:
                 if alert.alert_id == alert_id:
-                    timestamp = (timestamp_factory or datetime.utcnow)() if update_timestamp else None
+                    timestamp = (timestamp_factory or self._now)() if update_timestamp else None
                     if before_publish is not None and before_publish() is False:
                         raise PermissionError("alert_authority_retired")
                     alert.processed = True
@@ -336,9 +641,16 @@ class AlertManager:
         return None
 
     def clear_cooldowns(self) -> None:
-        """Limpiar todos los cooldowns de deduplicación"""
-        self._last_alert_time.clear()
-        logger.debug("All alert cooldowns cleared")
+        """Close every open episode; the next observation of a condition alerts again.
+
+        Each cleared episode's alert is marked resolved, so a condition never has
+        two active alerts (the cleared one and the one its next observation opens).
+        """
+        resolved_at = self._now()
+        for episode in self._episodes.values():
+            episode.alert.resolved_at = resolved_at
+        self._episodes.clear()
+        logger.debug("All alert episodes cleared")
 
     def clear_history(self) -> None:
         """Limpiar historial de alertas"""
@@ -351,7 +663,7 @@ class AlertManager:
             "total_alerts": len(self._history),
             "pending_alerts": sum(1 for a in self._history if not a.processed),
             "processed_alerts": sum(1 for a in self._history if a.processed),
-            "dedup_keys": len(self._last_alert_time),
+            "dedup_keys": len(self._episodes),
             "by_type": {
                 alert_type.value: sum(1 for a in self._history if a.alert_type == alert_type)
                 for alert_type in AlertType

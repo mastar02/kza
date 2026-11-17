@@ -1,5 +1,5 @@
 # Alerts module
-from .alert_manager import AlertManager, AlertPriority, AlertType, Alert
+from .alert_manager import Alert, AlertCondition, AlertDelivery, AlertManager, AlertPriority, AlertType
 from .security_alerts import SecurityAlerts
 from .pattern_alerts import PatternAlerts
 from .device_alerts import DeviceAlerts
@@ -10,6 +10,8 @@ __all__ = [
     "AlertPriority",
     "AlertType",
     "Alert",
+    "AlertCondition",
+    "AlertDelivery",
     "SecurityAlerts",
     "PatternAlerts",
     "DeviceAlerts",
