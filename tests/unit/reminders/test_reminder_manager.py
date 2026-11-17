@@ -284,3 +284,21 @@ async def test_midnight_and_small_night_hours_are_past_midnight(store, query, ex
     found = {resolution.reminder.id} if resolution.reminder else {r.id for r in resolution.candidates}
     assert {by_time[i] for i in found} == expected
     assert resolution.match is (CancelMatch.UNIQUE if len(expected) == 1 else CancelMatch.AMBIGUOUS)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("literal", "other"), [
+    ("tomar las 2 pastillas", "tomar las pastillas"), ("regar las 3 macetas", "regar las macetas"),
+])
+async def test_an_article_and_number_before_a_content_word_is_content(store, literal, other):
+    """'tomar las 2 pastillas' names that reminder, not 'tomar las pastillas' at 14:00 (review T032-U1-R2)."""
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    named = await _shared(manager, literal, _local(2026, 11, 11, 9, 0).timestamp())
+    await _shared(manager, other, _local(2026, 11, 11, 14, 0).timestamp())
+    await _shared(manager, other, _local(2026, 11, 11, 15, 0).timestamp())
+    found = await manager.resolve(None, f"de {literal}", shared_only=True)
+    assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, named.id)
+    # A time after the number is still read as one.
+    timed = await manager.resolve(None, f"de {other} de las {literal.split()[2]}", shared_only=True)
+    assert timed.match is CancelMatch.UNIQUE and timed.reminder.id != named.id

@@ -90,7 +90,8 @@ def _clock_at(words: list[str], i: int) -> tuple[_SpokenClock, int, int] | None:
 
     Accepted: "10:30" anywhere, and "las 10"/"la una" with an optional
     "y media"/"y cuarto" and "de la mañana/tarde/noche/madrugada" or
-    "del mediodía".
+    "del mediodía". A bare "las 2" followed by a content word is a number
+    of the reminder ("tomar las 2 pastillas"), not a time.
     """
     word = words[i]
     article = i > 0 and words[i - 1] in ("las", "la")
@@ -116,6 +117,9 @@ def _clock_at(words: list[str], i: int) -> tuple[_SpokenClock, int, int] | None:
     elif words[end:end + 2] == ["del", "mediodia"]:
         period = "mediodia"
         end += 2
+    bare = end == i + 1 and (digits is None or digits.group(2) is None)
+    if bare and words[end:end + 1] and words[end] not in _QUERY_STOPWORDS:
+        return None
     return _SpokenClock(hour, minute, period), i - 1 if article else i, end
 
 

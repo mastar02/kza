@@ -587,3 +587,23 @@ async def test_the_claimed_complement_drops_wake_words_and_politeness(leaves):
     result, counted = await _cancel(leaves, "Nexa, cancelá el recordatorio de tomar agua, por favor",
                                     "reminder_shared_active:tomar agua")
     assert counted == effects(reminder_transitions=1) and result.outcome.task_completed
+
+
+async def test_a_number_in_the_reminder_text_never_cancels_another_reminder(leaves):
+    """Review T032-U1-R2: 'las 2 pastillas' is content, not 14:00."""
+    from datetime import datetime, timedelta
+    dispatcher = leaves.dispatcher()
+    clock = leaves.reminder_manager._household_clock
+    tomorrow = clock.now_local().date() + timedelta(days=1)
+
+    def at(hour: int) -> float:
+        return clock.to_epoch(datetime(tomorrow.year, tomorrow.month, tomorrow.day, hour))
+    literal = await leaves.reminder_manager.create("household", "tomar las 2 pastillas", at(9),
+                                                   scope=ReminderScope.SHARED)
+    other = await leaves.reminder_manager.create("household", "tomar las pastillas", at(14),
+                                                 scope=ReminderScope.SHARED)
+    result, counted = await _cancel(leaves, "cancelá el recordatorio de tomar las 2 pastillas", dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1)
+    assert result.response.startswith("Cancelé el recordatorio tomar las 2 pastillas a las 09:00")
+    assert [r.id for r in await leaves.reminder_manager.get_active(None, shared_only=True)] == [other.id]
+    assert (await leaves.reminder_store.get_by_id(literal.id)).state == "cancelled"
