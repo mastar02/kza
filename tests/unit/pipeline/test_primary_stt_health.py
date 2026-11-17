@@ -21,7 +21,7 @@ from src.pipeline.command_processor import CommandModelFailed, CommandProcessor
 from src.stt.primary_health import (
     ALERT_MESSAGE, PrimarySttHealth, PrimarySttHealthConfig, SttHealthState, stt_error_code,
 )
-from src.stt.whisper_fast import FastWhisperSTT, STTResult
+from src.stt.whisper_fast import FastWhisperSTT, ModelReloadError, STTResult
 
 AUDIO = np.zeros(16000, dtype="float32")
 SECRET = "texto privado del comando"
@@ -298,3 +298,108 @@ def test_whisper_reload_runs_on_the_pinned_worker_and_refuses_after_close():
         stt.close()
     with pytest.raises(RuntimeError):
         stt.reload()
+
+
+def _old_model(unload_error=None):
+    class _Inner:
+        def unload_model(self):
+            if unload_error is not None:
+                raise unload_error
+
+    class _Old:
+        model = _Inner()
+
+    return _Old()
+
+
+def test_whisper_reload_does_not_load_when_the_unload_raises():
+    """The old model may still hold VRAM: loading now could leave two copies."""
+    stt = FastWhisperSTT(model="unused", device="cuda:1")
+    old = _old_model(RuntimeError(CUDA_ERROR))
+    stt._model = old
+    loads = []
+    stt._load_impl = lambda: loads.append(1)
+    with pytest.raises(ModelReloadError) as raised:
+        stt._reload_impl()
+    assert loads == [] and stt._model is old and stt.reload_failed is False
+    assert str(raised.value) == "unload_failed" and raised.value.__cause__ is None
+    assert stt_error_code(raised.value).startswith("ModelReloadError:unload_failed:")
+
+
+def test_failed_reload_makes_transcription_fail_fast_without_loading():
+    stt = FastWhisperSTT(model="unused", device="cuda:1")
+    stt._model = _old_model()
+    loads = [0]
+
+    def bad_load():
+        loads[0] += 1
+        raise RuntimeError("CUDA out of memory")
+    stt._load_impl = bad_load
+    with pytest.raises(ModelReloadError, match="load_failed"):
+        stt._reload_impl()
+    assert loads[0] == 1 and stt._model is None and stt.reload_failed is True
+    transcribed = []
+    stt._transcribe_impl = lambda audio: transcribed.append(1)
+    for _ in range(3):
+        with pytest.raises(ModelReloadError, match="model_unloaded"):
+            stt._transcribe_pinned(AUDIO)
+    # Only the (rate-limited) reload ever loads; the command path never does.
+    assert loads[0] == 1 and transcribed == []
+
+    def good_load():
+        loads[0] += 1
+        stt._model = "new"
+    stt._load_impl = good_load
+    stt._reload_impl()
+    assert loads[0] == 2 and stt.reload_failed is False
+    stt._transcribe_pinned(AUDIO)
+    assert transcribed == [1]
+
+
+def test_first_use_still_loads_lazily():
+    stt = FastWhisperSTT(model="unused", device="cuda:1")
+    loads = []
+
+    def load():
+        loads.append(1)
+        stt._model = "new"
+    stt._load_impl = load
+    stt._transcribe_impl = lambda audio: "ok"
+    assert stt._transcribe_pinned(AUDIO) == "ok" and loads == [1]
+
+
+@pytest.mark.asyncio
+async def test_commands_after_a_failed_reload_do_not_load_the_model():
+    """End to end: one failed reload, then commands; the load count stays at one."""
+    stt = FastWhisperSTT(model="unused", device="cuda:1")
+    stt._model = _old_model()
+    loads = [0]
+    fail = [True]
+
+    def load():
+        loads[0] += 1
+        if fail[0]:
+            raise RuntimeError("CUDA out of memory")
+        stt._model = "new"
+
+    def transcribe(audio):
+        if stt._model is not None and stt._model != "new":
+            raise RuntimeError(CUDA_ERROR)
+        return STTResult("primary text", 5.0)
+    stt._load_impl = load
+    stt._transcribe_impl = transcribe
+    shadow = _Shadow()
+    health = PrimarySttHealth(PrimarySttHealthConfig(failure_threshold=1, reload_min_interval_s=600),
+                              clock=lambda: 0.0)
+    cp = CommandProcessor(stt=stt, shadow_stt=shadow, stt_health=health)
+    try:
+        for _ in range(4):
+            result = await cp.process_command(AUDIO, use_parallel=False)
+            await _drain(cp)
+            assert result.stt_source == "shadow_fallback"
+        snap = health.snapshot()
+        assert loads[0] == 1 and snap["reloads_failed"] == 1
+        assert snap["codes"][next(c for c in snap["codes"] if c.startswith("ModelReloadError:model_unloaded:"))] == 3
+    finally:
+        await cp.aclose()
+        stt.close()

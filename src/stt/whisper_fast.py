@@ -25,6 +25,10 @@ from src.stt.pinned_executor import PinnedThreadPoolExecutor as ThreadPoolExecut
 logger = logging.getLogger(__name__)
 
 
+class ModelReloadError(RuntimeError):
+    """A reload did not leave a usable model; the message is a fixed code."""
+
+
 @dataclass
 class STTResult:
     """Resultado de transcripción con confianza del STT.
@@ -110,6 +114,10 @@ class FastWhisperSTT:
         self.compression_ratio_threshold = compression_ratio_threshold
         self.log_prob_threshold = log_prob_threshold
         self._model = None
+        # Set by a reload whose load failed (V3 review round 1, H2): the model
+        # is then absent and only another reload() may load it, never the lazy
+        # load of a transcription (command path, model lock, no rate limit).
+        self._reload_failed = False
         # Thread dedicado del modelo (fix 2026-06-07): CUDA/CTranslate2
         # mantienen estado per-thread; con DOS WhisperModel en GPUs distintas
         # (command path cuda:1 + ambient cuda:0) ejecutados desde el pool
@@ -343,13 +351,23 @@ class FastWhisperSTT:
 
         Runs on the instance's pinned worker. The previous model is released
         (CTranslate2 ``unload_model`` when available, then the reference and a
-        GC pass) before the new one is built, so cuda:1 never holds two
-        copies. Callers serialize it with the model's admission lock.
+        GC pass) before the new one is built. When the unload raises, nothing
+        is loaded and the previous model stays referenced: its memory may still
+        be held, and loading then could put a second copy on cuda:1. When the
+        load fails, the model stays absent and transcriptions fail fast until
+        a later reload succeeds. Callers serialize it with the model's
+        admission lock.
 
         Raises:
-            RuntimeError: When the instance is closed or loading fails.
+            ModelReloadError: When the unload or the load failed.
+            RuntimeError: When the instance is closed.
         """
         self._run_pinned(self._reload_impl)
+
+    @property
+    def reload_failed(self) -> bool:
+        """True after a reload whose load failed, until a reload succeeds."""
+        return self._reload_failed
 
     def _reload_impl(self) -> None:
         model, self._model = self._model, None
@@ -359,10 +377,21 @@ class FastWhisperSTT:
             try:
                 unload()
             except Exception as error:
-                logger.warning("Whisper unload failed: %s", type(error).__name__)
+                # Restore the old reference: never load while its memory may be held.
+                self._model = model
+                logger.warning("Whisper unload failed: %s; reload skipped", type(error).__name__)
+                model = inner = unload = None
+                raise ModelReloadError("unload_failed") from None
         model = inner = unload = None
         gc.collect()
-        self._load_impl()
+        try:
+            self._load_impl()
+        except Exception as error:
+            self._model = None
+            self._reload_failed = True
+            logger.warning("Whisper load after unload failed: %s", type(error).__name__)
+            raise ModelReloadError("load_failed") from None
+        self._reload_failed = False
 
     def _load_impl(self):
         """Cargar modelo en GPU (idempotente).
@@ -507,9 +536,16 @@ class FastWhisperSTT:
         return self._run_pinned(self._transcribe_pinned, audio_input)
 
     def _transcribe_pinned(self, audio_input: "np.ndarray | str") -> STTResult:
-        if self._model is None:
-            self._load_impl()
+        self._lazy_load()
         return self._transcribe_impl(audio_input)
+
+    def _lazy_load(self) -> None:
+        """Load on first use, except after a failed reload (fail fast then)."""
+        if self._model is not None:
+            return
+        if self._reload_failed:
+            raise ModelReloadError("model_unloaded")
+        self._load_impl()
 
     def _prepare_audio(self, audio: np.ndarray) -> np.ndarray:
         """
@@ -563,7 +599,7 @@ class FastWhisperSTT:
             dict con {"partial": bool, "text": str, "is_final": bool}
         """
         if self._model is None:
-            self.load()
+            self._run_pinned(self._lazy_load)
 
         audio_buffer = []
         silence_samples = 0
@@ -637,7 +673,7 @@ class FastWhisperSTT:
             (texto, tiempo_ms, early_detected) - early_detected=True si terminó antes
         """
         if self._model is None:
-            self.load()
+            self._run_pinned(self._lazy_load)
 
         # Analizar desde el final para encontrar dónde termina el habla
         chunk_samples = int(sample_rate * chunk_ms / 1000)

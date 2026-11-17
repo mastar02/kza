@@ -1243,10 +1243,16 @@ vivo de la captura post-wake»).
 - V3, `stt.primary_health`: cada fallo del STT primario se loguea con un código
   saneado (`Tipo:categoría:hash`); tras 3 seguidos, una alerta por episodio en
   el AlertManager (MEDIUM, texto en español), recarga del Whisper (libera y
-  después carga, bajo el lock del modelo, como mucho una cada 600 s; nunca dos
-  copias en cuda:1) y, mientras falle, el transcript del shadow (Parakeet, CPU)
+  después carga, bajo el lock del modelo, como mucho una cada 600 s) y,
+  mientras falle, el transcript del shadow (Parakeet, CPU)
   reemplaza al primario (`stt_source=shadow_fallback`). Se recupera con el
-  primer éxito (alerta LOW).
+  primer éxito (alerta LOW). Límite de la recarga: no carga mientras el modelo
+  anterior siga referenciado; si `unload_model` falla, no carga nada y conserva
+  el modelo anterior (cargar ahí podría dejar dos copias en cuda:1). Que la
+  VRAM se libere de verdad depende de CTranslate2 y no se verificó en la GPU.
+  Si la carga falla, el modelo queda ausente y las transcripciones fallan al
+  instante sin intentar cargarlo; sólo la siguiente recarga permitida (600 s)
+  vuelve a cargar.
 
 Sin dependencias ni modelos nuevos; la asignación de GPUs no cambia.
 

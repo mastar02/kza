@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 # Keyword → stable category. Only the category and a short digest of the
 # digit-free message reach logs; the message itself never does.
 _CATEGORIES = (
+    # Fixed messages of ModelReloadError (whisper_fast), most specific first.
+    ("unload_failed", "unload_failed"),
+    ("load_failed", "load_failed"),
+    ("model_unloaded", "model_unloaded"),
     ("out of memory", "oom"),
     ("cublas", "cublas"),
     ("cudnn", "cudnn"),
