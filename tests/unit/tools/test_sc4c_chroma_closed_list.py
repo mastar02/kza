@@ -177,7 +177,8 @@ def _snapshot(exports: list[dict], *, stores=("data/chroma_db", "data/memory_db"
     facts = [_fact("f-live", "live"), _fact("f-confirmed", "confirmed", state="confirmed", expires=None),
              _fact("f-overdue", "overdue", expires=NOW - 1), _fact("f-retired", "retired owner", state="confirmed",
              expires=None), _fact("f-tombstoned", "tombstoned source"), _fact("f-ledger", "ledger recorded"),
-             _fact("f-pruned", "pruned ledger"), _fact("f-proposed", "proposed", state="proposed"), _fact("f-deleted", None, state="deleted"),
+             _fact("f-pruned", "pruned ledger"), _fact("f-proposed", "proposed", state="proposed"),
+             _fact("f-deleted", None, state="deleted"),
              _fact("f-stale", "stale", revision=3), _fact("f-extra", "extra metadata")]
     privacy = {"tables": {
         "facts": {"rows": facts},
