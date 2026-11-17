@@ -44,14 +44,16 @@ pages or index files):
   not in retired_users, with the deletion ledger as a second gate;
 * the command-index collections (home_assistant_commands, its pointer and
   its versioned staging collections) are copied whole;
-* home_assistant_routines is not copied (a named drop: dictated routine
-  text with no erasure path; K's boot recreates it empty);
+* home_assistant_routines of the command store (data/chroma_db, settings
+  vectordb.path, where ChromaSync makes it) is not copied (a named drop:
+  dictated routine text with no erasure path; K's boot recreates it empty;
+  SC4C-Q6: by exact name in that store only, like the legacy collection);
 * the legacy 'user_memories' collection of the memory store (data/memory_db,
   where LongTermMemory made it before the memory policy; quarantined, never
   read) is not copied either (SC4C-Q2b, a named drop by exact name in that
   store only: never read by the snapshot, recorded by name only);
-* any other collection, a look-alike of a dropped name or 'user_memories'
-  in another store included, refuses (compaction_unlisted_collection), at
+* any other collection, a look-alike of a dropped name or a dropped name in
+  another store included, refuses (compaction_unlisted_collection), at
   plan (scripts/compaction.py) and here, in the snapshot and in the plan.
 
 Each store is written by a fresh child interpreter that gets only what K
@@ -109,10 +111,12 @@ CHROMA_COMMAND_INDEX = "home_assistant_commands"  # with "__pointer" and the "__
 # and ChromaSync's staging name, '<base>__' + strftime('%Y%m%d%H%M%S') + token_hex(3)).
 CHROMA_POLICY_SUFFIX = "_policy_v1"
 CHROMA_COMMAND_NAMES = re.compile(re.escape(CHROMA_COMMAND_INDEX) + r"(__pointer|__[0-9]{14}[0-9a-f]{6})?")
-CHROMA_DROPPED = frozenset({"home_assistant_routines"})  # V4R2-C1: not copied; K's boot recreates it empty
-# SC4C-Q2b: the pre-policy memory collection (settings memory.chroma_path / long_term_collection), quarantined
-# and never read; not copied, by exact name and only in the memory store.
-CHROMA_DROPPED_IN_STORE = frozenset({("data/memory_db", "user_memories")})
+# The named drops, each by exact name and only in its own store (never read, recorded by name only):
+# V4R2-C1 and SC4C-Q6: the routines of the command store (settings vectordb.path / ChromaSync's
+# routines_collection), not copied, K's boot recreates it empty; SC4C-Q2b: the pre-policy memory collection
+# (settings memory.chroma_path / long_term_collection), quarantined and never read.
+CHROMA_DROPPED_IN_STORE = frozenset({("data/chroma_db", "home_assistant_routines"),
+                                     ("data/memory_db", "user_memories")})
 CHROMA_KINDS = ("rebuilt", "copied", "dropped")
 _FACT_LIVE_STATES = ("automatic", "confirmed")
 _FACT_LEDGER_KINDS = ("fact_deleted", "fact_pruned_retired_owner")
@@ -152,7 +156,7 @@ def collection_kind(name: str, *, policy: bool, store: str) -> str:
         policy: True only for a collection H registered as its own
             semantic_index target in that store; it is rebuilt only under
             the ``<collection>_policy_v1`` name.
-        store: The store's path relative to the state root (a drop of
+        store: The store's path relative to the state root (each drop of
             CHROMA_DROPPED_IN_STORE holds only in its own store).
 
     Returns:
@@ -163,7 +167,7 @@ def collection_kind(name: str, *, policy: bool, store: str) -> str:
             return "rebuilt"
     elif CHROMA_COMMAND_NAMES.fullmatch(name):
         return "copied"
-    elif name in CHROMA_DROPPED or (store, name) in CHROMA_DROPPED_IN_STORE:
+    elif (store, name) in CHROMA_DROPPED_IN_STORE:
         return "dropped"
     raise CompactionCloneError("runtime_admission_compaction_unlisted_collection")
 

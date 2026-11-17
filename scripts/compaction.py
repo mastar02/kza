@@ -168,9 +168,10 @@ CHROMA_STORE = "chroma.sqlite3"
 CHROMA_COMMAND_INDEX = "home_assistant_commands"  # with "__pointer" and the "__<version>" staging collections
 CHROMA_POLICY_SUFFIX = "_policy_v1"  # SC4C-RV-5 (1): the exact names the runtime makes
 CHROMA_COMMAND_NAMES = re.compile(re.escape(CHROMA_COMMAND_INDEX) + r"(__pointer|__[0-9]{14}[0-9a-f]{6})?")
-CHROMA_DROPPED = frozenset({"home_assistant_routines"})  # not copied into K (named drop); K's boot recreates it
-# SC4C-Q2b: the quarantined pre-policy memory collection, a named drop by exact name in the memory store only.
-CHROMA_DROPPED_IN_STORE = frozenset({("data/memory_db", "user_memories")})
+# The named drops, by exact name in their own store only (not copied into K): the command store's routines
+# (K's boot recreates them; SC4C-Q6) and the quarantined pre-policy memory collection (SC4C-Q2b).
+CHROMA_DROPPED_IN_STORE = frozenset({("data/chroma_db", "home_assistant_routines"),
+                                     ("data/memory_db", "user_memories")})
 UNLISTED_COLLECTION = "runtime_admission_compaction_unlisted_collection"
 # SC4C-RV-5 (4): a store's own files (the pinned SDK's layout); any other file inside a store directory is
 # not carried into K (the store is rebuilt), so the plan counts it per store ('other_files').
@@ -621,13 +622,14 @@ def _privacy_relative(state: Path) -> str:
 
 def collection_kind(name: str, *, policy: bool, store: str) -> str | None:
     """SC-4c: 'rebuilt' (H's own policy memory collection), 'copied' (command index), 'dropped' (the named
-    drops: routines anywhere, the legacy memory collection only in ``store`` data/memory_db), else None."""
+    drops: routines only in ``store`` data/chroma_db, the legacy memory collection only in data/memory_db),
+    else None."""
     if policy:
         if name.endswith(CHROMA_POLICY_SUFFIX) and len(name) > len(CHROMA_POLICY_SUFFIX):
             return "rebuilt"
     elif CHROMA_COMMAND_NAMES.fullmatch(name):
         return "copied"
-    elif name in CHROMA_DROPPED or (store, name) in CHROMA_DROPPED_IN_STORE:
+    elif (store, name) in CHROMA_DROPPED_IN_STORE:
         return "dropped"
     return None
 
@@ -637,7 +639,7 @@ def chroma_collections(state: Path, privacy_relative: str) -> dict:
 
     Reads private images of H's chroma.sqlite3 (collection names only, never
     a record) and H's semantic_index targets; an unlisted collection (a
-    look-alike of a dropped name, or 'user_memories' outside data/memory_db,
+    look-alike of a dropped name, or a dropped name outside its own store,
     among them) or a store with no collection table refuses with
     compaction_unlisted_collection. Returns content-free counts, the dropped
     collections by name only (``dropped_collections``, SC4C-Q2b), and the

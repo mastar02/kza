@@ -4,10 +4,11 @@ mechanism.start.chroma_allowlist (PRIV-3, PA-8, V4R2-C1): the policy memory
 collection is rebuilt from the allowlist of facts get() would return at
 t_clone whose owner is not retired (ledger and tombstones as a second
 gate); the command-index collections are copied whole; home_assistant_routines
-is not copied (a named drop, K's boot recreates it empty), nor is the legacy
-'user_memories' of data/memory_db (SC4C-Q2b: a named drop by exact name in
-that store only); any other collection, a look-alike or 'user_memories' in
-another store included, refuses at plan and in the worker; D5 for rebuilt
+of data/chroma_db is not copied (a named drop, K's boot recreates it empty;
+SC4C-Q6: by exact name in that store only), nor is the legacy 'user_memories'
+of data/memory_db (SC4C-Q2b: a named drop by exact name in that store only);
+any other collection, a look-alike or a dropped name in another store
+included, refuses at plan and in the worker; D5 for rebuilt
 stores. Crash row S (a worker refusal) exits by a
 plain abort; a crash after the rebuild's evidence resumes through the pin.
 
@@ -64,9 +65,14 @@ NAMES = ["home_assistant_commands", "home_assistant_commands__pointer", sc.STAGI
          # SC4C-Q2b look-alikes of the legacy memory collection: none is dropped.
          "User_memories", "USER_MEMORIES", "user_memories ", " user_memories", "user_memories\n", "user_memorie",
          "user_memoriess", "user_memories_v0", "user_memories_old", "user_memories__pointer", "user-memories",
-         "user_memories_policy", "legacy_user_memories"]
+         "user_memories_policy", "legacy_user_memories",
+         # SC4C-Q6 look-alikes of the routines collection: none is dropped.
+         "Home_assistant_routines", "home_assistant_routines ", "home_assistant_routine",
+         "home_assistant_routines__pointer", "home_assistant_routines_old", "home-assistant-routines"]
 STORES = ["data/memory_db", "data/chroma_db", "data/memory_db/x", "memory_db", "./data/memory_db",
-          "data/memory_db/", "data/other_db", "."]
+          "data/memory_db/", "data/other_db", ".", "data/chroma_db/x", "chroma_db", "./data/chroma_db",
+          "data/chroma_db/", "data/Chroma_db"]
+DROPS = {("data/chroma_db", "home_assistant_routines"), ("data/memory_db", "user_memories")}
 
 
 def _worker_kind(name: str, policy: bool, store: str) -> str | None:
@@ -79,15 +85,14 @@ def _worker_kind(name: str, policy: bool, store: str) -> str | None:
 
 def test_the_closed_list_is_the_same_at_plan_and_in_the_worker():
     assert compaction.CHROMA_COMMAND_INDEX == oc.CHROMA_COMMAND_INDEX == "home_assistant_commands"
-    assert compaction.CHROMA_DROPPED == oc.CHROMA_DROPPED == frozenset({"home_assistant_routines"})
-    assert compaction.CHROMA_DROPPED_IN_STORE == oc.CHROMA_DROPPED_IN_STORE == frozenset(
-        {("data/memory_db", "user_memories")})
+    assert compaction.CHROMA_DROPPED_IN_STORE == oc.CHROMA_DROPPED_IN_STORE == frozenset(DROPS)
+    assert not hasattr(compaction, "CHROMA_DROPPED") and not hasattr(oc, "CHROMA_DROPPED")  # no store-free drop
     expected = {"home_assistant_commands": "copied", "home_assistant_commands__pointer": "copied",
-                sc.STAGING: "copied", "home_assistant_routines": "dropped"}
+                sc.STAGING: "copied"}
     for store in STORES:
         for name in NAMES:
-            # SC4C-Q2b: the legacy collection is dropped by its exact name, only in the memory store.
-            wanted = "dropped" if (store, name) == ("data/memory_db", "user_memories") else expected.get(name)
+            # SC4C-Q2b and SC4C-Q6: each named drop holds for its exact name, only in its own store.
+            wanted = "dropped" if (store, name) in DROPS else expected.get(name)
             assert compaction.collection_kind(name, policy=False, store=store) == _worker_kind(
                 name, False, store) == wanted, (store, name)
             # SC4C-RV-5 (1): a registered semantic_index target is rebuilt only under long_term's name (a
@@ -101,6 +106,9 @@ def test_the_closed_list_is_the_same_at_plan_and_in_the_worker():
     _refusal(UNLISTED, lambda: oc._snapshot_class("data/chroma_db", "user_memories", False))
     _refusal(UNLISTED, lambda: oc._snapshot_class("data/memory_db", "user_memories", True))
     _refusal(UNLISTED, lambda: oc._snapshot_class("data/memory_db", "user_memories_v0", False))
+    # SC4C-Q6: the routines name outside the command store is read by no one and refuses.
+    _refusal(UNLISTED, lambda: oc._snapshot_class("data/memory_db", "home_assistant_routines", False))
+    _refusal(UNLISTED, lambda: oc._snapshot_class("data/chroma_db", "home_assistant_routines", True))
 
 
 def test_the_legacy_drop_names_the_runtime_s_memory_store_and_collection():
@@ -111,11 +119,33 @@ def test_the_legacy_drop_names_the_runtime_s_memory_store_and_collection():
     import yaml
     from src.memory.long_term import LongTermMemory
     settings = yaml.safe_load((REPO / "config" / "settings.yaml").read_text(encoding="utf-8"))["memory"]
-    [(store, name)] = oc.CHROMA_DROPPED_IN_STORE
+    [(store, name)] = [pair for pair in oc.CHROMA_DROPPED_IN_STORE if pair[1] == "user_memories"]
     assert Path(settings["chroma_path"]).as_posix() == store
     assert settings["long_term_collection"] == name
     assert inspect.signature(LongTermMemory).parameters["collection_name"].default == name
     assert oc.collection_kind(name + oc.CHROMA_POLICY_SUFFIX, policy=True, store=store) == "rebuilt"
+
+
+def test_the_routines_drop_names_the_runtime_s_command_store_and_collection():
+    """SC4C-Q6: the dropped routines pair is where the runtime makes that collection: ChromaSync at settings
+    vectordb.path (main's default the same) under its routines_collection, which main leaves at ChromaSync's
+    default and settings names the same. Together with the legacy pair, those are the only named drops."""
+    import inspect
+    import yaml
+    from src.vectordb.chroma_sync import ChromaSync
+    config = yaml.safe_load((REPO / "config" / "settings.yaml").read_text(encoding="utf-8"))
+    vectordb, memory = config["vectordb"], config["memory"]
+    [(store, name)] = [pair for pair in oc.CHROMA_DROPPED_IN_STORE if pair[1] != "user_memories"]
+    assert Path(vectordb["path"]).as_posix() == store
+    assert vectordb["routines_collection"] == name
+    assert inspect.signature(ChromaSync).parameters["routines_collection"].default == name
+    main = (REPO / "src" / "main.py").read_text(encoding="utf-8")
+    assert main.count("ChromaSync)(") == 1 and "routines_collection" not in main
+    assert 'chroma_path=vectordb_config.get("path", "./data/chroma_db")' in main
+    assert Path("./data/chroma_db").as_posix() == store
+    assert oc.CHROMA_DROPPED_IN_STORE == {(Path(vectordb["path"]).as_posix(), vectordb["routines_collection"]),
+                                          (Path(memory["chroma_path"]).as_posix(), memory["long_term_collection"])}
+    assert compaction.CHROMA_DROPPED_IN_STORE == oc.CHROMA_DROPPED_IN_STORE
 
 
 def test_the_rebuild_child_gets_the_worker_s_environment_keys():
@@ -229,6 +259,10 @@ def test_the_plan_refuses_an_unlisted_or_unclassified_export():
             ([_export("data/memory_db", "user_memories", [_record("x", "legacy")], registered=True)], True),
             ([_export("data/chroma_db", "home_assistant_commands__backup", [COMMAND])], True),
             ([_export("data/chroma_db", "home_assistant_routines", [_record("r", "routine")])], True),  # read
+            # SC4C-Q6: the routines name outside the command store, omitted or read.
+            ([_export("data/memory_db", "home_assistant_routines", [], omitted=True)], True),
+            ([_export("data/memory_db", "home_assistant_routines", [_record("r", "routine")])], True),
+            ([_export("data/chroma_db", "home_assistant_routines", [], registered=True, omitted=True)], True),
             ([dict(_export("data/chroma_db", sc.STAGING, []), omitted=True)], True),
             ([_export("data/other_db", sc.STAGING, [])], True),  # not one of the listed stores
             ([], False)):  # a snapshot taken without the closed list
@@ -438,11 +472,14 @@ def test_the_legacy_user_memories_collection_is_dropped_by_name_and_never_reache
 
 @pytest.mark.parametrize("store, name", [("data/memory_db", "user_memories_v0"),
                                          ("data/memory_db", "User_memories"),
-                                         ("data/chroma_db", "user_memories")],
-                         ids=["look_alike", "case", "other_store"])
+                                         ("data/chroma_db", "user_memories"),
+                                         ("data/memory_db", "home_assistant_routines"),
+                                         ("data/chroma_db", "home_assistant_routines_v2")],
+                         ids=["look_alike", "case", "other_store", "routines_other_store", "routines_look_alike"])
 def test_a_collection_like_the_legacy_one_refuses_the_plan_and_writes_nothing(x4, x5, tmp_path, store, name):
-    """PA-8, crash row P: only the exact name in the memory store is dropped; a look-alike, or the same name
-    in another store, refuses the plan, which writes nothing, and the unit serves H."""
+    """PA-8, crash row P: only the exact name in its own store is dropped (the legacy collection in the
+    memory store, SC4C-Q2b; the routines in the command store, SC4C-Q6); a look-alike, or the same name in
+    another store, refuses the plan, which writes nothing, and the unit serves H."""
     world = _post_r1(x4, x5, tmp_path, sc.chroma_state(legacy=True, extra=((store, name),)))
     root = world["root"]
     witness = cw.witness(root)
@@ -454,10 +491,13 @@ def test_a_collection_like_the_legacy_one_refuses_the_plan_and_writes_nothing(x4
     assert cw.serve(root, tmp_path, "h").code == 0
 
 
-def test_the_worker_refuses_an_unlisted_collection_the_plan_missed(x4, x5, tmp_path, monkeypatch):
-    """The worker's own gate (snapshot and plan): crash row S, then the lossless plain abort serves H."""
-    world = _post_r1(x4, x5, tmp_path,
-                     sc.chroma_state(legacy=True, extra=(("data/memory_db", "user_memories_v0"),)))
+@pytest.mark.parametrize("extra", [("data/memory_db", "user_memories_v0"),
+                                   ("data/memory_db", "home_assistant_routines")],
+                         ids=["look_alike", "routines_other_store"])
+def test_the_worker_refuses_an_unlisted_collection_the_plan_missed(x4, x5, tmp_path, monkeypatch, extra):
+    """The worker's own gate (snapshot and plan): crash row S, then the lossless plain abort serves H. SC4C-Q6:
+    the routines name outside data/chroma_db is one such collection."""
+    world = _post_r1(x4, x5, tmp_path, sc.chroma_state(legacy=True, extra=(extra,)))
     root, h_state = world["root"], world["h"]["state"]
     h_tree = cw.tree(h_state)
     monkeypatch.setattr(compaction, "chroma_collections", lambda state, privacy: {"stores": {}})

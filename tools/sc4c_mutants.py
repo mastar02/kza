@@ -4,7 +4,8 @@ refusal at plan and in the worker, and D5 for rebuilt stores. Review round 1 add
 death signal, guard, inherited lease, timeout; RV-2: the rebuild in the worker process; RV-3: the
 afterimage and resume's evidence pins; RV-5: the exact names, the coded ledger error, SQLITE_TMPDIR, the
 store census). SC4C_Q2B adds the named drop of the legacy 'user_memories' of data/memory_db (exact name,
-that store only, never read, recorded by name). Restore-in-finally runner; a mutant is killed only by a
+that store only, never read, recorded by name); SC4C_Q6 scopes the routines drop the same way, to
+data/chroma_db (the same name in any other store refuses at plan and in the worker). Restore-in-finally runner; a mutant is killed only by a
 failing test (pytest exit 1). The household is home: every pytest runs on cores 24-47, niced.
 
 Usage (server, a mutation clone): python tools/sc4c_mutants.py OUT.json [NAME ...]
@@ -36,9 +37,8 @@ MUTANTS = [
      "            and record[\"metadata\"] == {\"fact_policy\": 1, \"revision\": fact[0]})",
      "    return True", [ALLOWLIST, E2E]),
     ("home_assistant_routines copied instead of dropped", OC,
-     "    elif name in CHROMA_DROPPED or (store, name) in CHROMA_DROPPED_IN_STORE:\n        return \"dropped\"\n"
-     "    raise CompactionCloneError",
-     "    elif name in CHROMA_DROPPED:\n        return \"copied\"\n"
+     "    elif (store, name) in CHROMA_DROPPED_IN_STORE:\n        return \"dropped\"\n    raise CompactionCloneError",
+     "    elif (store, name) == (\"data/chroma_db\", \"home_assistant_routines\"):\n        return \"copied\"\n"
      "    elif (store, name) in CHROMA_DROPPED_IN_STORE:\n        return \"dropped\"\n"
      "    raise CompactionCloneError", [E2E]),
     ("plan admits an unlisted collection", C,
@@ -126,14 +126,13 @@ LOOK_ALIKE = T + "test_a_collection_like_the_legacy_one_refuses_the_plan_and_wri
 IN_STORE = "(store, name) in CHROMA_DROPPED_IN_STORE"
 SC4C_Q2B = [
     ("Q2b worker copies the legacy collection instead of dropping it", OC,
-     "    elif name in CHROMA_DROPPED or (store, name) in CHROMA_DROPPED_IN_STORE:\n        return \"dropped\"\n"
-     "    raise CompactionCloneError",
-     "    elif name in CHROMA_DROPPED:\n        return \"dropped\"\n"
-     "    elif (store, name) in CHROMA_DROPPED_IN_STORE:\n        return \"copied\"\n"
+     "    elif (store, name) in CHROMA_DROPPED_IN_STORE:\n        return \"dropped\"\n    raise CompactionCloneError",
+     "    elif (store, name) == (\"data/memory_db\", \"user_memories\"):\n        return \"copied\"\n"
+     "    elif (store, name) in CHROMA_DROPPED_IN_STORE:\n        return \"dropped\"\n"
      "    raise CompactionCloneError", [LEGACY_E2E]),
     ("Q2b snapshot reads the legacy collection (classifier ignores the in-store drop)", OC,
      '    return "omit" if collection_kind(name, policy=registered, store=relative) == "dropped" else "export"',
-     '    return "omit" if name in CHROMA_DROPPED else "export"', [LEGACY_E2E]),
+     '    return "omit" if name == "home_assistant_routines" else "export"', [LEGACY_E2E]),
     ("Q2b worker drops the legacy name in any store", OC, IN_STORE,
      "name in {dropped for _store, dropped in CHROMA_DROPPED_IN_STORE}", [CLOSED]),
     ("Q2b plan drops the legacy name in any store", C, IN_STORE,
@@ -153,6 +152,32 @@ SC4C_Q2B = [
      [LEGACY_E2E]),
 ]
 MUTANTS += SC4C_Q2B
+
+# SC4C-Q6 (the user's answer of 2026-11-17): the routines drop holds only in data/chroma_db.
+WORKER_MISSED = T + "test_the_worker_refuses_an_unlisted_collection_the_plan_missed"
+ROUTINES_PIN = T + "test_the_routines_drop_names_the_runtime_s_command_store_and_collection"
+ANY_STORE = IN_STORE + " or name == \"home_assistant_routines\""
+SC4C_Q6 = [
+    ("Q6 worker drops the routines name in any store", OC, IN_STORE, ANY_STORE,
+     [CLOSED, WORKER_MISSED + "[routines_other_store]"]),
+    ("Q6 plan drops the routines name in any store", C, IN_STORE, ANY_STORE,
+     [CLOSED, LOOK_ALIKE + "[routines_other_store]"]),
+    ("Q6 snapshot omits the routines name in any store", OC,
+     '    return "omit" if collection_kind(name, policy=registered, store=relative) == "dropped" else "export"',
+     '    return "omit" if name == "home_assistant_routines" or collection_kind(name, policy=registered,'
+     ' store=relative) == "dropped" else "export"', [CLOSED]),
+    ("Q6 plan pins the routines drop to the memory store", C,
+     'frozenset({("data/chroma_db", "home_assistant_routines"),', 'frozenset({("data/memory_db", "home_assistant_routines"),',
+     [CLOSED, ROUTINES_PIN, E2E]),
+    ("Q6 worker pins the routines drop to the memory store", OC,
+     'frozenset({("data/chroma_db", "home_assistant_routines"),', 'frozenset({("data/memory_db", "home_assistant_routines"),',
+     [ROUTINES_PIN, E2E]),
+    ("Q6 the routines drop is store-free again (plan and worker by name)", OC,
+     "    elif (store, name) in CHROMA_DROPPED_IN_STORE:\n        return \"dropped\"\n    raise CompactionCloneError",
+     "    elif name in {dropped for _store, dropped in CHROMA_DROPPED_IN_STORE}:\n        return \"dropped\"\n"
+     "    raise CompactionCloneError", [WORKER_MISSED + "[routines_other_store]"]),
+]
+MUTANTS += SC4C_Q6
 
 
 def _wait_for_a_slot() -> None:
