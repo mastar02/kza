@@ -436,6 +436,17 @@ def test_number_words_in_minutes(words, hour, minute):
     assert result.trigger_at == local(2026, 11, 16, hour, minute)
 
 
+def test_period_words_inside_the_content_are_not_a_day():
+    result = parse("recordame cambiar la alarma de la mañana a las 9 de la noche")
+    assert result.text == "cambiar la alarma de la mañana"
+    assert result.trigger_at == local(2026, 11, 16, 21)
+
+
+def test_tonight_counts_as_today_against_other_day_words():
+    assert parse("recordame mañana esta noche a las 9 x").ambiguity is A.AMBIGUOUS_DAY
+    assert parse("recordame todos los días esta noche a las 9 x").ambiguity is A.AMBIGUOUS_DAY
+
+
 def test_time_phrase_lists_the_spoken_time_words():
     result = parse("recordame pasado mañana sacar la basura a las 9 de la noche")
     assert result.time_phrase == "pasado mañana a las 9 de la noche"
@@ -483,6 +494,11 @@ def test_zone_phrase_needs_contiguous_words():
     assert result.zone_phrase == "en la, cocina"
     split = parse("recordame en la x cocina en 5 minutos", zone_aliases=ALIASES)
     assert split.zone_phrase is None
+    # A time phrase between the article and the alias does not make a zone phrase.
+    around_time = parse("recordame x en el a las 9 de la noche living", zone_aliases=ALIASES)
+    assert around_time.zone_phrase is None
+    assert around_time.text == "x en el living"
+    assert around_time.trigger_at == local(2026, 11, 16, 21)
 
 
 def test_zone_only_request_is_missing_text():
@@ -558,11 +574,11 @@ def test_parser_reads_the_injected_clock_on_every_call():
     times = iter([MONDAY_10, MONDAY_2359])
     parser = VoiceRequestParser(lambda: next(times), zone_aliases=ALIASES, wake_words=("nexa",))
     first = parser.parse_reminder("nexa, recordame en la cocina sacar la basura a las 12 de la noche")
-    second = parser.parse_reminder("recordame a las 8 de la mañana x")
+    second = parser.parse_reminder("recordame en 5 minutos x")
     assert isinstance(first, VoiceReminderRequest)
     assert first.trigger_at == local(2026, 11, 17, 0)
     assert first.zone_phrase == "en la cocina"
-    assert second.ambiguity is A.PAST_TODAY
+    assert second.trigger_at == MONDAY_2359.timestamp() + 300
 
 
 def test_parser_deferred_uses_the_clock():

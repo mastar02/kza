@@ -130,7 +130,7 @@ _TOKEN = re.compile(r"\d{1,2}[:.]\d{2}(?!\d)|\d+|[ap]\.\s?m\.|[a-z]+")
 _CLOCK_TOKEN = re.compile(r"(\d{1,2})[:.](\d{2})")
 _UNSUPPORTED = re.compile(
     r"\b(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre"
-    r"|semana\s+que\s+viene|proxima\s+semana|mes\s+que\s+viene|proximo\s+mes|fines?\s+de\s+semana"
+    r"|semana\s+que\s+viene|proxima\s+semana|mes\s+que\s+viene|proximo\s+mes|fin(?:es)?\s+de\s+semana"
     r"|todos\s+los\s+(?:meses|anos)|todas\s+las\s+semanas"
     r"|cada\s+(?:mes|semana|ano|hora|\d+|[a-z]+\s+(?:dias|horas|semanas|minutos|meses))"
     r"|(?:en|dentro\s+de)\s+(?:[a-z0-9]+\s+){1,2}(?:dias|semanas|meses|anos)"
@@ -187,8 +187,8 @@ _H24_RANGES = {"pm": range(12, 24), "tarde": range(12, 22), "noche": range(18, 2
 
 @lru_cache(maxsize=512)
 def _fold_char(ch: str) -> str:
-    base = "".join(c for c in unicodedata.normalize("NFD", ch.lower()) if not unicodedata.combining(c))
-    return base[:1] or " "
+    # NFD puts the base letter first ("á" -> "a" + accent, "ñ" -> "n" + tilde).
+    return unicodedata.normalize("NFD", ch.lower())[:1] or " "
 
 
 def _fold(text: str) -> str:
