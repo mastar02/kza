@@ -145,7 +145,9 @@ CLASS_METHODS = {
     'setup': ('Target.', 'Network.', 'Emulation.', 'Page.enable', 'Runtime.enable',
               'Page.removeScriptToEvaluateOnNewDocument', 'Page.addScriptToEvaluateOnNewDocument',
               'Runtime.addBinding', 'Page.bringToFront', 'Runtime.evaluate', 'Browser.getWindowForTarget',
-              'Tracing.start', 'Browser.close'),
+              'Tracing.start', 'Browser.close',
+              # SA-1: smoke-only minimise check (minimise_own_window), windowState only, on the probe's own window.
+              'Browser.setWindowBounds'),
     'interaction_trace': ('Tracing.start', 'Page.startScreencast'),
     'navigate': ('Page.navigate',),
     'evaluate': ('Runtime.evaluate',),
@@ -2551,8 +2553,33 @@ class RunSpec:
     play_rule: dict | None = None
     # R6-3: the chosen frame event (fill-in) when known; None in the smoke, where it is being chosen.
     frame_event: str | None = None
-    # Smoke and harness only (smoke_gate.mac_environment): an action after the settle point.
+    # Smoke and harness only (smoke_gate.mac_environment): an action after the settle point; called with the Run.
     after_settle: Callable | None = None
+
+
+async def minimise_own_window(run: 'Run') -> dict:
+    """SA-1 (smoke_gate.mac_environment, quiet_machine.shared (3)): minimise only the probe's own window.
+
+    The window is addressed by the windowId that the run's own Browser.getWindowForTarget(targetId) answered (the
+    load_end read, or a fresh read of the same target), over the probe's own browser endpoint, with
+    Browser.setWindowBounds {windowState: 'minimized'} and no bounds. Never an Apple event addressed to Chrome by
+    application name: with the user's Chrome open, such an event can reach the user's instance instead of the
+    probe's. No osascript, no new TCC grant. Smoke only (fixture_page_checks, mode 'smoke'); no batch or measurement run sends it.
+    """
+    await run._await_window_reads()
+    window_id = next((read['window_id'] for read in reversed(run.window_reads) if read.get('window_id') is not None),
+                     None)
+    source = 'load_end_read'
+    if window_id is None:
+        window = await run.browser.client.send('Browser.getWindowForTarget', {'targetId': run.target_id},
+                                               klass='setup')
+        window_id, source = window.get('windowId'), 'fresh_read'
+    if window_id is None:
+        raise CdpError('Browser.getWindowForTarget: no windowId for the probe target')
+    await run.browser.client.send('Browser.setWindowBounds',
+                                  {'windowId': window_id, 'bounds': {'windowState': 'minimized'}}, klass='setup')
+    return {'action': 'minimise', 'method': 'Browser.setWindowBounds', 'window_id': window_id,
+            'target_id': run.target_id, 'window_id_source': source}
 
 
 class Run:
@@ -2674,6 +2701,7 @@ class Run:
                 result = await self.browser.client.send('Browser.getWindowForTarget', {'targetId': self.target_id},
                                                         klass='window_state', phase=phase)
                 entry['state'] = (result.get('bounds') or {}).get('windowState')
+                entry['window_id'] = result.get('windowId')
             except (CdpTimeout, CdpError, CdpDisconnected) as error:
                 entry['error'] = type(error).__name__
             self.window_reads.append(entry)
@@ -2830,7 +2858,7 @@ class Run:
         self._sample_window('load_end')
         self.timings['settled'] = settled['T']
         if spec.after_settle is not None:
-            self.timings['after_settle'] = await spec.after_settle()
+            self.timings['after_settle'] = await spec.after_settle(self)
         steps = self.config['steps']
         if steps:
             if spec.trace_interactions and not getattr(self, 'tracing', False):
@@ -4125,19 +4153,14 @@ async def fixture_page_checks(mode: str, out_dir: Path, *, binary: str, profile_
 
         if mode == 'smoke':
             # smoke_gate.mac_environment: minimising the window and switching focus each invalidate the run.
-            async def minimise():
-                return await asyncio.to_thread(run_text, [
-                    'osascript', '-e', 'tell application "Google Chrome" to set minimized of front window to true'])
-
-            async def switch():
+            # SA-1: the minimise addresses only the probe's own window (CDP windowId), never Chrome by app name.
+            async def switch(run):
                 return await asyncio.to_thread(run_text, ['open', '-a', 'Finder'])
-            for ordinal, (name, action) in enumerate((('minimise', minimise), ('switch_focus', switch)), start=14):
+            for ordinal, (name, action) in enumerate((('minimise', minimise_own_window), ('switch_focus', switch)),
+                                                     start=14):
                 (result,) = await sequence(f'visibility_{name}', [
                     fixture_spec(ordinal, 'cold', ready, 'plain', FIXTURE_STEPS['present'], after_settle=action)])
-                # F1 resolved: a healthy fixture run has no environment fault, so any fault here is the action's.
-                checks[f'visibility_{name}_invalidates'] = {
-                    'ok': result['outcome'] == Outcome.INVALID and bool(result['facts']['environment_faults']),
-                    'outcome': result['outcome'], 'faults': result['facts']['environment_faults']}
+                checks[f'visibility_{name}_invalidates'] = visibility_action_check(result)
 
         every = [run for results in raw.values() for run in results]
         checks['post_window_command_log'] = {'ok': all(run['post_window_violations'] == [] for run in every),
@@ -4157,6 +4180,18 @@ async def fixture_page_checks(mode: str, out_dir: Path, *, binary: str, profile_
                'ok': all(check['ok'] for check in checks.values())}
     write_json_atomic(out_dir / 'fixture-page-checks.json', summary)
     return summary
+
+
+VISIBILITY_FAULTS = ('page_hidden', 'page_unfocused', 'visibility_event', 'window_state')
+
+
+def visibility_action_check(result: dict) -> dict:
+    """smoke_gate.mac_environment (SA-1): the action made the run invalid through instrumentation.visibility; a
+    harness error alone (e.g. the action itself failing) does not pass the check."""
+    faults = (result.get('facts') or {}).get('environment_faults') or []
+    return {'ok': result.get('outcome') == Outcome.INVALID and any(fault in VISIBILITY_FAULTS for fault in faults),
+            'outcome': result.get('outcome'), 'faults': faults,
+            'action': (result.get('timings') or {}).get('after_settle')}
 
 
 # --------------------------------------------------------------------------------------------

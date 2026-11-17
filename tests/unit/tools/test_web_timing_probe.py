@@ -2503,3 +2503,79 @@ async def test_shared_machine_records_covariates_and_never_gates(tmp_path, monke
     # The probe-own sweep never touches the user's Chrome.
     killed = []
     assert sweep(rows, kill=lambda pid, sig: killed.append(pid)) == [] and killed == []
+
+
+async def test_minimise_check_addresses_only_the_probe_window_never_chrome_by_app_name(monkeypatch):
+    """SA-1 (smoke_gate.mac_environment, quiet_machine.shared (3)): with the user's Chrome open, the smoke minimise
+    action minimises only the probe's own window: Browser.setWindowBounds {windowState: 'minimized'} on the windowId
+    that the run's own Browser.getWindowForTarget(targetId) answered, over the probe's browser endpoint; no
+    osascript, no Apple event addressed to Chrome by application name; the check passes only through
+    instrumentation.visibility, never on a harness error alone."""
+    spawned = []
+    monkeypatch.setattr(probe, 'run_text', lambda command, **kwargs: spawned.append(command) or '')
+    monkeypatch.setattr(probe.subprocess, 'run', lambda *args, **kwargs: spawned.append(args) or None)
+    monkeypatch.setattr(probe.subprocess, 'Popen', lambda *args, **kwargs: spawned.append(args) or None)
+
+    # Inside a timed run: the hook gets the Run and uses the windowId of the load_end read of its own target.
+    run = make_run(view='#acciones', capture=None)
+    run.config = probe.injection_config(token=run.token, origin=run.spec.origin, view='#acciones', capture_id=None)
+    run.filter.committed = False
+    run.filter.time_origin = None
+    run.spec.after_settle = probe.minimise_own_window
+    targets = []
+
+    def window(params):
+        targets.append(params.get('targetId'))
+        return {'windowId': 41, 'bounds': {'windowState': 'normal'}}
+    run.browser.client.answers = {'Browser.getWindowForTarget': window}
+    page = run.page
+
+    def navigate(params):
+        page.events.append({'method': 'Page.frameNavigated', 'params': {'frame': {'loaderId': 'L'}}})
+        base = {'token': run.token, 'timeOrigin': 5.0}
+        items = [dict(base, type='document_start', t=1, **focus_doc(True)), dict(base, type='settled', t=900, T=900.0),
+                 dict(base, type='target_ready', t=901, index=0, rect={'x': 1, 'y': 1, 'width': 9, 'height': 9},
+                      in_viewport=True, step='accion'),
+                 dict(base, type='step_next_frame', t=950, index=0)]
+        asyncio.get_running_loop().call_soon(lambda: [run.records.offer(json.dumps(item)) for item in items])
+        return {'loaderId': 'L'}
+    page.answers = {'Page.navigate': navigate, 'Runtime.evaluate': {'result': {'value': 1}}}
+    run.facts.navigate_sent = True
+    await run._timed()
+    sent = [(entry['method'], entry['params']) for entry in run.browser.client.log]
+    bounds = [params for method, params in sent if method == 'Browser.setWindowBounds']
+    assert bounds == [{'windowId': 41, 'bounds': {'windowState': 'minimized'}}]
+    assert set(targets) == {'target'}
+    assert run.timings['after_settle'] == {'action': 'minimise', 'method': 'Browser.setWindowBounds', 'window_id': 41,
+                                           'target_id': 'target', 'window_id_source': 'load_end_read'}
+    assert not [entry for entry in page.log if entry['method'] == 'Browser.setWindowBounds']
+    assert spawned == []
+
+    # Without a recorded windowId: a fresh read of the same target; no windowId at all: nothing is minimised.
+    fresh = make_run(view='#rutinas', capture=None)
+    fresh.browser.client.answers = {'Browser.getWindowForTarget': lambda params: {'windowId': 7} if
+                                    params.get('targetId') == 'target' else {'windowId': 99}}
+    assert (await probe.minimise_own_window(fresh))['window_id'] == 7
+    assert [entry['params'] for entry in fresh.browser.client.log if entry['method'] == 'Browser.setWindowBounds'] \
+        == [{'windowId': 7, 'bounds': {'windowState': 'minimized'}}]
+    blind = make_run(view='#rutinas', capture=None)
+    blind.browser.client.answers = {'Browser.getWindowForTarget': {'bounds': {'windowState': 'normal'}}}
+    with pytest.raises(probe.CdpError):
+        await probe.minimise_own_window(blind)
+    assert not [entry for entry in blind.browser.client.log if entry['method'] == 'Browser.setWindowBounds']
+    assert spawned == []
+
+    # The smoke check uses this action, and nothing in the probe addresses an application by name.
+    source = Path(probe.__file__).read_text()
+    assert 'tell application' not in source and 'osascript\', \'-e\'' not in source
+    checks = source[source.index('async def fixture_page_checks('):source.index('def visibility_action_check(')]
+    assert "('minimise', minimise_own_window)" in checks and 'osascript' not in checks
+    action = source[source.index('async def minimise_own_window('):source.index('class Run:')]
+    assert source.replace(action, '').count("Browser.setWindowBounds'") == 1  # the setup-class entry only
+
+    # The check passes only through instrumentation.visibility.
+    check = probe.visibility_action_check
+    assert check({'outcome': Outcome.INVALID, 'facts': {'environment_faults': ['window_state', 'page_hidden']}})['ok']
+    assert not check({'outcome': Outcome.INVALID,
+                      'facts': {'environment_faults': ['timed_harness_error:CdpError:Browser.setWindowBounds']}})['ok']
+    assert not check({'outcome': Outcome.VALID, 'facts': {'environment_faults': []}})['ok']
