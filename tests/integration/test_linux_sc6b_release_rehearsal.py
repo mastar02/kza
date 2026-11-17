@@ -49,14 +49,12 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import socket
 import sqlite3
 import subprocess
 import sys
 import tarfile
 import time
-import traceback
 
 import pytest
 import yaml
@@ -86,7 +84,7 @@ REVISION_1 = b"\nCONTROLLER_REVISION = 1\n"
 FUTURE = b"from __future__ import annotations\n"
 OWNER_COMPACTION = "src/memory/owner_compaction.py"
 LEGACY = "63ea8d3"
-STATUS = real.STATUS
+STATUS = (*real.STATUS, "InvocationID")
 RESTART_SECONDS = 10.0  # managed.conf RestartSec
 CLEANUPS: list[dict] = []
 OFFLINE_ENV = ("HF_HUB_OFFLINE=1", "TRANSFORMERS_OFFLINE=1", "HF_DATASETS_OFFLINE=1", "HF_HUB_DISABLE_TELEMETRY=1",
@@ -348,7 +346,7 @@ class World:
         return completed
 
     def show(self) -> dict:
-        return self.d.show()
+        return self.systemd.raw_show(self.d.unit, *STATUS)
 
     def console(self) -> str:
         return self.d.console_text()
