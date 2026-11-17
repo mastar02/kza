@@ -645,7 +645,8 @@ def test_a_rebuild_child_that_outlives_its_worker_holds_the_lease_until_it_is_go
     _refusal(BUSY, lambda: cw.start(root, x5["archive"], worker=_killing_worker(tmp_path, child, seen)))
     pid = seen["child"]
     try:
-        assert not _gone(pid)
+        # SC4C-RV2-3: the paused child itself is alive, not only a thread of it.
+        assert compaction.process_started_at(pid) is not None and not _gone(pid)
         [log] = stage.compaction_logs(root)
         compaction_id = log["compaction_id"]
         _refusal(BUSY, lambda: compaction.compact_abort(root, compaction_id))
