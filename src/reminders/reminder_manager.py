@@ -171,8 +171,6 @@ class _ParsedQuery:
         day: The spoken day, if any.
         clock_phrase: The clock phrase as spoken tokens ("la una", "las 2
             de la tarde"), for the literal reading; empty without a clock.
-        clock_unperiodized: The clock phrase without its period ("las 2"
-            for "las 2 de la tarde"); empty without a spoken period.
         day_phrase: The day phrase from its day word ("mañana", "lunes"
             for "del lunes"), for the literal reading; empty without a day.
     """
@@ -182,7 +180,6 @@ class _ParsedQuery:
     day: _SpokenDay | None
     clock_phrase: tuple[str, ...] = ()
     day_phrase: tuple[str, ...] = ()
-    clock_unperiodized: tuple[str, ...] = ()
 
 
 def _parse_query(query: str) -> _ParsedQuery:
@@ -196,10 +193,7 @@ def _parse_query(query: str) -> _ParsedQuery:
     while day_words and day_words[0] in _QUERY_STOPWORDS:
         day_words.pop(0)
     content = _content([w for k, w in enumerate(words) if k not in taken])
-    unperiodized = ()
-    if clock is not None and clock.period is not None:
-        unperiodized = clock_phrase[:-2] if clock_phrase[-2:] == ("del", "mediodia") else clock_phrase[:-3]
-    return _ParsedQuery(content, clock, day, clock_phrase, tuple(day_words), unperiodized)
+    return _ParsedQuery(content, clock, day, clock_phrase, tuple(day_words))
 
 
 def _hour_of(word: str) -> int | None:
@@ -236,22 +230,27 @@ def _text_periods(text: list[str]) -> set[str]:
             if word == "mediodia" or (word in _AM_PERIODS | _PM_PERIODS and k > 0 and text[k - 1] == "la")}
 
 
-def _holds_clock_without_period(text: list[str], phrase: tuple[str, ...], period: str) -> bool:
-    """The text holds ``phrase`` as a clock time of its own with no period, and names no other period.
+def _holds_same_clock(text: list[str], clock: _SpokenClock) -> bool:
+    """A clock time of the text is the spoken clock, however its digits or minutes are written.
 
-    "tomar pastillas a las 2" is said "tomar pastillas a las 2 de la
-    tarde" too (review FV2-3); "tomar las 2 pastillas" holds no clock
-    (a number before a content word) and "... a las 2 de la mañana" or
-    "... por la noche" name another period.
+    Each clock of the text is read with the query's own grammar, so
+    "8:30", "8.30", "08:30" and "8 y media" are one clock (review
+    T032-U1-FV3-1). Hour and minute must agree; a text clock with a
+    period of its own needs the same period said, or none, and one
+    without takes the spoken period unless the text names another
+    ("tomar pastillas a las 2" is said "... a las 2 de la tarde" too,
+    review FV2-3; "... a las 2 por la noche" is not).
     """
-    if not phrase or _text_periods(text) - {period}:
-        return False
-    hour_at = 1 if phrase[0] in ("la", "las") else 0
-    for k in range(len(text) - len(phrase) + 1):
-        if not _phrase_at(text, k, phrase):
+    periods = _text_periods(text)
+    for i in range(len(text)):
+        found = _clock_at(text, i)
+        if found is None:
             continue
-        found = _clock_at(text, k + hour_at)
-        if found is not None and found[0].period is None and found[2] == k + len(phrase):
+        own = found[0]
+        if (own.hour, own.minute) != (clock.hour, clock.minute):
+            continue
+        if clock.period is None or own.period == clock.period \
+                or (own.period is None and not periods - {clock.period}):
             return True
     return False
 
@@ -495,7 +494,9 @@ class ReminderManager:
         # Wednesday at 17 alone (review T032-U1-FV2-1). A period said with
         # the clock is read into a text whose own clock has none ("tomar
         # pastillas a las 2" for "... a las 2 de la tarde") unless the text
-        # names another period (review T032-U1-FV2-3).
+        # names another period (review T032-U1-FV2-3). The text's clock is read
+        # as a clock, so "8:30", "8.30", "08:30" and "8 y media" are one
+        # (review T032-U1-FV3-1).
         matches = []
         for reminder in active:
             text = _WORD.findall(_fold(reminder.text))
@@ -504,8 +505,7 @@ class ReminderManager:
             local = self._household_clock.to_local(reminder.trigger_at)
             if clock is not None and not (clock.matches(local.hour, local.minute)
                                           or _contains_phrase(text, query.clock_phrase)
-                                          or _holds_clock_without_period(text, query.clock_unperiodized,
-                                                                         clock.period)):
+                                          or _holds_same_clock(text, clock)):
                 continue
             if day is not None and not (day.matches(local.date(), today)
                                         or _contains_phrase(text, query.day_phrase)):
