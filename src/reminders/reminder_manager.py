@@ -355,7 +355,10 @@ class ReminderManager:
         must be a word of the reminder's text; a spoken clock time ("de las
         6 de la tarde") and day ("de hoy", "del lunes", the T031 day
         grammar) must equal its next trigger on the household clock. A
-        leading "que (te) pedí/puse/hay" clause is not content.
+        leading "que (te) pedí/puse/hay" clause is not content. Spoken
+        clock and day words are also read as words of the text; when that
+        reading selects other reminders than the time reading, both sets
+        are candidates and KZA asks (T032-U1-RR-P1).
         Several matches are always ambiguous, even when one reminder's words
         are exactly the reference's: another active reminder that contains
         every spoken word may be the one meant, so KZA asks rather than
@@ -394,12 +397,20 @@ class ReminderManager:
             if day is not None and not day.matches(local.date(), today):
                 continue
             matches.append(reminder)
-        if not matches and (clock is not None or day is not None):
-            # Review T032-U1-RR-F1: the time words may be the reminder's own text
-            # ("llamar a mamá a las 3" due at 17:43); when no trigger fits, they
-            # are words to match.
+        if clock is not None or day is not None:
+            # The time words may be the reminder's own text ("llamar a mamá a
+            # las 3" due at 17:43): read as words they select by text alone
+            # (review T032-U1-RR-F1). When that reading and the time reading
+            # select different reminders, both are candidates and KZA asks
+            # which rather than pick one (user answer T032-U1-RR-P1: "tomar
+            # las pastillas de las 2" with "tomar las 2 pastillas" also
+            # active asks). A time spoken only with stopwords ("de la una")
+            # adds no word to match and has no literal reading.
             literal = _literal_words(reference)
-            matches = [r for r in active if _covers(_content(_WORD.findall(_fold(r.text))), literal)]
+            if set(literal) - set(words):
+                timed = {r.id for r in matches}
+                matches = [r for r in active
+                           if r.id in timed or _covers(_content(_WORD.findall(_fold(r.text))), literal)]
         if not matches:
             return CancelResolution(CancelMatch.NOT_FOUND)
         if len(matches) == 1:
