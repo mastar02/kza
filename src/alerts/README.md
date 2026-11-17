@@ -197,8 +197,10 @@ El sistema evita alertas duplicadas por **condición**, nunca por el texto:
   **una sola vez** en la siguiente observación del episodio abierto, salvo que
   la alerta ya esté reconocida. Si la salida empezó a sonar, fue bloqueada por
   política, está silenciada (`voice_notifications: false`), lanzó una excepción
-  o no devolvió comprobante, no se repite. `delivery_attempts` cuenta los
-  intentos de voz de la alerta
+  o no devolvió comprobante, no se repite. El reintento dice la alerta tal como
+  está guardada (prioridad y texto del registro), no la última lectura: una
+  lectura menos grave no baja de nivel la alerta abierta. `delivery_attempts`
+  cuenta los intentos de voz de la alerta
 
 ```python
 door = AlertCondition(source="entrada", condition="door_open_unexpected")
