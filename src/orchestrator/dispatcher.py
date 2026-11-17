@@ -1307,6 +1307,15 @@ class RequestDispatcher:
                 logger.warning(f"Router fallo, pasando a slow path: {e}")
 
         if path == PathType.FAST_ROUTINE:
+            # P3-F2 review F5 (user answer Q15: routine proposals are extracted
+            # only locally): an unclaimed creation phrase never reaches
+            # RoutineManager._handle_create, which sends the request and the
+            # HA entity list to the cloud reasoner.
+            detected = self.routines.detect_intent(text)
+            if isinstance(detected, dict) and detected.get("intent") == "create":
+                return self._household_refusal(PathType.FAST_ROUTINE, "routine",
+                                               "Todavía no manejo rutinas por voz. Podés verlas desde la web.",
+                                               TaskStatus.UNSUPPORTED)
             # Procesar rutina
             t0 = time.perf_counter()
             routine_result = await self.routines.handle(text)

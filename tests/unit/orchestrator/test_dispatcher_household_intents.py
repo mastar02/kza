@@ -335,3 +335,23 @@ async def test_sync_request_after_a_wake_word_is_still_the_explicit_request(leav
     assert (result.path, result.outcome.status.value) == (PathType.SYNC, "unsupported")
     assert result.response == "Todavía no puedo sincronizar los comandos por voz en este modo."
 
+
+@pytest.mark.parametrize("text", ["nueva rutina para la noche", "quiero crear una nueva rutina que apague las luces",
+                                  "nexa nueva automatización de luces"])
+async def test_unclaimed_routine_creation_never_reaches_cloud_extraction(leaves, text):
+    """Review F5 (user answer Q15): no routine proposal is extracted by the cloud reasoner."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from src.routines.routine_manager import RoutineManager
+    reasoner = MagicMock()
+    ha = AsyncMock()
+    dispatcher = leaves.dispatcher()
+    dispatcher.routines = RoutineManager(ha_client=ha, chroma_sync=MagicMock(), llm_reasoner=reasoner)
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text=text)
+    assert (result.path, result.outcome.status.value) == (PathType.FAST_ROUTINE, "unsupported")
+    assert result.response == "Todavía no manejo rutinas por voz. Podés verlas desde la web."
+    ha.get_domotics_entities.assert_not_awaited()
+    assert reasoner.mock_calls == []
+    assert leaves.effects(before) == ZERO
+
