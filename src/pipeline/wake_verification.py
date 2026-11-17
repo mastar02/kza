@@ -60,7 +60,8 @@ class WakeVerificationConfig:
         words: Wake word variants (``rooms.wake_word.words``).
         status_path: JSON file with the review counters; None keeps them in memory.
         max_events: Bound of the per-event review list.
-        keep_days: Days of per-day counters retained.
+        keep_days: Age limit, in days, of both the per-day counters and the
+            per-event records (also bounded by ``max_events``).
         flush_interval_s: Minimum time between status writes.
     """
 
@@ -109,6 +110,12 @@ class WakeCheck:
     code: WakeCheckCode
     reject: bool = False
     reason: str = ""
+
+
+def _event_current(event: dict, cutoff: float) -> bool:
+    """An event with a finite timestamp no older than ``cutoff``."""
+    ts = event.get("ts") if isinstance(event, dict) else None
+    return type(ts) in (int, float) and math.isfinite(ts) and ts >= cutoff
 
 
 def _fmt(value: float | None) -> str:
@@ -164,8 +171,7 @@ class WakeVerifier:
             counts[check.code.value] = counts.get(check.code.value, 0) + 1
             if not gate_accept:
                 counts["gate_rejected"] = counts.get("gate_rejected", 0) + 1
-            for stale in sorted(self._days)[:-self._config.keep_days]:
-                del self._days[stale]
+            self._prune_locked(now)
             self._events.append({
                 "ts": round(now, 3), "room": room, "code": check.code.value,
                 "score": None if wake_score is None else round(float(wake_score), 3),
@@ -177,9 +183,23 @@ class WakeVerifier:
                     self._config.mode.value)
         return check
 
+    def _prune_locked(self, now: float) -> None:
+        """Drop day counters and events older than ``keep_days`` (lock held)."""
+        cutoff = now - self._config.keep_days * 86400
+        cutoff_day = datetime.fromtimestamp(cutoff).strftime("%Y-%m-%d")
+        for stale in [day for day in self._days if day < cutoff_day]:
+            del self._days[stale]
+        for stale in sorted(self._days)[:-self._config.keep_days]:
+            del self._days[stale]
+        if any(not _event_current(event, cutoff) for event in self._events):
+            kept = [event for event in self._events if _event_current(event, cutoff)]
+            self._events.clear()
+            self._events.extend(kept)
+
     def snapshot(self) -> dict:
         """Counters for the 7-day review (codes and numbers only)."""
         with self._lock:
+            self._prune_locked(self._clock())
             totals: dict[str, int] = {}
             for rooms in self._days.values():
                 for counts in rooms.values():
@@ -223,11 +243,10 @@ class WakeVerifier:
                         for code, value in counts.items():
                             if type(value) is int and value >= 0:
                                 target[str(code)] = target.get(str(code), 0) + value
-                for stale in sorted(self._days)[:-self._config.keep_days]:
-                    del self._days[stale]
             if isinstance(events, list):
                 kept = [event for event in events if isinstance(event, dict)]
                 self._events.extendleft(reversed(kept[-self._config.max_events:]))
+            self._prune_locked(self._clock())
 
     def write_status(self) -> None:
         """Write the counters atomically with mode 0600 (blocking; call off-loop)."""

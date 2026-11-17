@@ -1244,7 +1244,8 @@ vivo de la captura post-wake»).
   `missing_wake` del gate). En sombra sólo registra `would_reject`; `enforce`
   rechaza como `gate_rejected:missing_wake`. Contadores para la revisión de 7
   días en `data/wake_verification.json` del estado (archivo nuevo, `0600`,
-  sólo fecha, habitación, código, score y VAD; nunca texto). Cada wake loguea
+  sólo fecha, habitación, código, score y VAD; nunca texto; contadores por día
+  y eventos se borran a los `keep_days` = 14 días). Cada wake loguea
   su VAD.
 - V3, `stt.primary_health`: cada fallo del STT primario se loguea con un código
   saneado (`Tipo:categoría:hash`); tras 3 seguidos, una alerta por episodio en

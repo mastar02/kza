@@ -99,6 +99,31 @@ def test_counters_status_file_is_private_atomic_and_resumable(tmp_path):
     assert len(resumed.snapshot()["events"]) == 4
 
 
+def test_events_and_days_older_than_keep_days_are_dropped(tmp_path):
+    day = 86400.0
+    now = [1_800_000_000.0]
+    verifier = _verifier(tmp_path=tmp_path, clock=lambda: now[0])
+    verifier.evaluate(SECRET, room_id="cocina", wake_score=0.55, wake_vad=0.2, gate_accept=True)
+    verifier.write_status()
+    # A quiet period: 15 days later a single wake; the old event and day go.
+    now[0] += 15 * day
+    verifier.evaluate(SECRET, room_id="living", wake_score=0.5, wake_vad=None, gate_accept=True)
+    snapshot = verifier.snapshot()
+    assert [e["room"] for e in snapshot["events"]] == ["living"]
+    assert len(snapshot["days"]) == 1 and snapshot["totals"] == {"would_reject": 1}
+    # Loading a stale file keeps nothing older than keep_days either.
+    resumed = _verifier(tmp_path=tmp_path, clock=lambda: now[0])
+    resumed.load()
+    assert resumed.snapshot()["events"] == [] and resumed.snapshot()["days"] == {}
+    # The snapshot written on shutdown is pruned too, even without new wakes.
+    idle = _verifier(tmp_path=tmp_path, clock=lambda: now[0] - 15 * day)
+    idle.load()
+    assert len(idle.snapshot()["events"]) == 1
+    idle._clock = lambda: now[0]
+    idle.write_status()
+    assert json.loads((tmp_path / "wv.json").read_text())["events"] == []
+
+
 def test_settings_default_is_shadow():
     cfg = yaml.safe_load((ROOT / "config" / "settings.yaml").read_text())
     wake = cfg["rooms"]["wake_word"]
