@@ -84,8 +84,8 @@ Todas estas condiciones, antes de la primera transición:
 - **Repetir no daña.** Todo rechazo de W0 (y todo rechazo con código del
   abort con W, del retiro y del plan) no escribe nada; el retiro sólo agrega
   el `verified` de siempre. Repetir el mismo comando es seguro.
-- **Nunca `adopt` durante una transición.** Con un log del modo release
-  pendiente, `adopt` y `adopt --dry-run` rechazan
+- **Nunca `adopt` con un log del modo release pendiente.** Desde `compact
+  start` hasta que el log termina, `adopt` y `adopt --dry-run` rechazan
   `runtime_admission_compaction_pending`. Un K' abierto (fila V2, o SS
   después de V2) se maneja sólo con `compact status` y `compact abort --to-h`.
 - **No reiniciar el servidor** durante una transición.
@@ -220,7 +220,7 @@ Rechazos antes de mover `current` (fila T0; no escriben nada):
 | --- | --- | --- |
 | `runtime_admission_compaction_pending` | un log de compactación pendiente | terminarlo (con su runbook) y repetir |
 | `runtime_admission_compaction_log_invalid` | un log ilegible | «Compactación trabada» del runbook de compactación |
-| `runtime_admission_not_closed` | head abierto o desconocido | cerrarlo con R-b (arrancar la unidad una vez) o `adopt`, y repetir |
+| `runtime_admission_not_closed` | head abierto o desconocido | cerrarlo con R-b (arrancar la unidad una vez) o `adopt` (sin log pendiente lo admite; después de `adopt --dry-run`, la comprobación de su copia en claro de la fila T0F, punto 2), y repetir |
 | `runtime_admission_delegation_frozen` | una entrada en `admission/delegations/` | filas DL/DO, abajo |
 | `runtime_admission_owners_present` | un head con dueños | fila DO, abajo |
 | `runtime_admission_controller_binding_changed` | SR-1: el código nuevo calcula otro binding para el slot de H | no instalar ese NUEVO; habilitar y arrancar (sirve H) y pasar a desarrollo |
@@ -276,7 +276,18 @@ rechaza un triple menor. Si H no llega a `READY` con el controlador nuevo:
    lo cerró), cerrarlo primero con el controlador instalado: R-b acotado (un
    arranque más de la unidad) o `$ST adopt --dry-run` y `$ST adopt --confirm
    <head_sha256>`. `install-controller` rechaza un head desconocido
-   (`runtime_admission_not_closed`).
+   (`runtime_admission_not_closed`). Sin log pendiente, `adopt` y `adopt
+   --dry-run` corren, también acá, en la primera transición, y el dry-run
+   copia todo el estado en claro a un directorio temporal del sistema
+   («Después de la aceptación»). Después del dry-run, cortado o no,
+   comprobar que no quedó ninguna copia:
+
+   ```bash
+   ls -d "${TMPDIR:-/tmp}"/kza-adopt-dry-run-*   # sin salida: no quedó ninguna
+   ```
+
+   Si aparece alguna, borrarla a mano (`rm -rf` sobre esa ruta exacta) antes
+   de seguir: está fuera de todo retiro y de todo borrado.
 3. Salida: un controlador corregido con una revisión mayor (otro T0 sobre el
    head cerrado, con SR-1), hecho por desarrollo; o L4 mientras exista (sin
    log pendiente su compuerta lo admite), con la frase y la decisión que pide
@@ -635,8 +646,11 @@ un arreglo se construye sobre esa línea («Construir NUEVO», punto 3).
   directamente; con regresiones confirmadas, el plan las liga con
   `--accept-regressed-source`; y un hotfix con triple mayor lleva su T0 con
   la comprobación de H salteada (paso 3).
-- **`adopt --dry-run` hace una copia completa en claro.** Sólo corre después
-  de la aceptación (durante una transición rechaza). Hoy la copia va a un
+- **`adopt --dry-run` hace una copia completa en claro.** Corre siempre que
+  no haya un log del modo release pendiente: después de la aceptación (fila
+  PA) y también durante la primera transición, antes del plan, en la salida
+  T0F (punto 2) y en el rechazo `runtime_admission_not_closed` del T0; con
+  un log pendiente rechaza. Hoy la copia va a un
   directorio temporal del sistema (`kza-adopt-dry-run-*` bajo `$TMPDIR` o
   `/tmp`) y se borra al terminar; si el dry-run se corta, queda ahí, fuera de
   todo retiro y de todo borrado: comprobarlo con `ls -d

@@ -347,7 +347,8 @@ def test_the_venv_rule_and_the_sdk_changed_exit():
     rules = _flat(_section(_text(), "## Reglas que valen en todo el procedimiento"))
     assert "no cambiar `/home/kza/kza/.venv` (nada de `pip install` ni `pip upgrade`)" in rules
     assert "La única excepción es la salida de `sdk_changed`: reinstalar la versión ligada" in rules
-    assert "**Nunca `adopt` durante una transición.**" in rules
+    assert "**Nunca `adopt` con un log del modo release pendiente.**" in rules
+    assert "**Nunca `adopt` durante una transición.**" not in rules  # review SC5B-R3: T0F runs it before plan
     assert "nunca el `$ST` instalado de época 4 para el T0" in rules
 
 
@@ -383,6 +384,16 @@ def test_after_acceptance_states_what_the_code_does_today(monkeypatch):
     assert "**Hoy un head cerrado por recuperación no es fuente de ninguna transición**" in after
     assert "la salida de PA es **L4 mientras exista** (SC-D7 A, SC4B-Q1)" in after
     assert "`kza-adopt-dry-run-*` bajo `$TMPDIR` o `/tmp`" in after
+    # Review SC5B-R3: with no pending log adopt is admitted, so the dry run also runs in T0F and on
+    # the T0's not_closed refusal, during the first transition; the cleanup sits where it runs.
+    assert "Sólo corre después de la aceptación" not in after
+    assert ("también durante la primera transición, antes del plan, en la salida T0F (punto 2) y en el rechazo "
+            "`runtime_admission_not_closed` del T0") in after
+    t0f = _flat(_text().split("**Sin vuelta atrás (fila T0F).**", 1)[1].split("### Paso 4", 1)[0])
+    assert 'ls -d "${TMPDIR:-/tmp}"/kza-adopt-dry-run-*' in t0f
+    assert t0f.index("`$ST adopt --dry-run`") < t0f.index('ls -d "${TMPDIR:-/tmp}"/kza-adopt-dry-run-*') < \
+        t0f.index("borrarla a mano")
+    assert "release_mode_log(admission.compaction)" in (REPO / "scripts/managed_launcher.py").read_text()
     assert 'prefix="kza-adopt-dry-run-"' in (REPO / "scripts/managed_launcher.py").read_text()
     for relative in SOURCES:
         assert "accept-regressed-source" not in (REPO / relative).read_text(), relative
