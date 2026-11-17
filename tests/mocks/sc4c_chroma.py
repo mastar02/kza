@@ -17,7 +17,10 @@ content only:
 * data/auth.db with the retired user in retired_users (the admission
   column contract of that table).
 
-``legacy=True`` adds the legacy 'user_memories' collection to data/memory_db.
+``legacy=True`` adds the legacy 'user_memories' collection to data/memory_db
+(LEGACY in a document and LEGACY_META in a metadata value, as the pre-policy
+LongTermMemory wrote them); ``extra`` adds one record (document EXTRA) to each
+named (store, collection), e.g. a look-alike of a dropped name.
 Every distinctive string starts with CANARY so raw-byte scans can find it.
 """
 from __future__ import annotations
@@ -32,13 +35,21 @@ ORPHAN = CANARY + "-orphan-record"
 ROUTINE = CANARY + "-routine-text"
 ROUTINE_GONE = CANARY + "-routine-gone"
 COMMAND = CANARY + "-command-entity"
+LEGACY = CANARY + "-legacy-memory"
+LEGACY_META = CANARY + "-legacy-metadata"
+EXTRA = CANARY + "-extra-collection"
 STAGING = "home_assistant_commands__20261116000000abcdef"
 POLICY = "user_memories_policy_v1"
 POLICY_METADATA = {"description": "Policy-managed memory index", "fact_policy": 1}
 EMBEDDING = [0.25, 0.5, 0.75]
 
 
-def chroma_state(*, legacy: bool = False) -> str:
+def _extra(store: str, extra: tuple[tuple[str, str], ...]) -> list[str]:
+    return [f"client.get_or_create_collection(name={name!r}).add(ids=['extra-1'], documents=[{EXTRA!r}],"
+            f" embeddings=[{EMBEDDING!r}])" for where, name in extra if where == store]
+
+
+def chroma_state(*, legacy: bool = False, extra: tuple[tuple[str, str], ...] = ()) -> str:
     """Child code for the world's first run (see the module doc)."""
     return "\n".join([
         "import sqlite3, time, json",
@@ -80,8 +91,11 @@ def chroma_state(*, legacy: bool = False) -> str:
         f"    documents=[f.content for f in facts] + [{ORPHAN!r}],",
         "    metadatas=[{'fact_policy': 1, 'revision': f.revision} for f in facts] + [{'fact_policy': 1, 'revision': 1}],",
         f"    embeddings=[{EMBEDDING!r}] * 5)",
-        *([f"client.get_or_create_collection(name='user_memories').add(ids=['legacy-1'],"
-           f" documents=[{CANARY + '-legacy'!r}], embeddings=[{EMBEDDING!r}])"] if legacy else []),
+        *([f"client.get_or_create_collection(name='user_memories').add(ids=['legacy-1', 'legacy-2'],"
+           f" documents=[{LEGACY + '-1'!r}, {LEGACY + '-2'!r}],"
+           f" metadatas=[{{'user_id': 'legacy-user', 'note': {LEGACY_META!r}}}, {{'user_id': 'legacy-user'}}],"
+           f" embeddings=[{EMBEDDING!r}] * 2)"] if legacy else []),
+        *_extra("data/memory_db", extra),
         "client.close()",
         "client = chromadb.PersistentClient(path=str(state / 'data' / 'chroma_db'), settings=settings)",
         "base = client.get_or_create_collection(name='home_assistant_commands', metadata={'hnsw:space': 'cosine'})",
@@ -99,5 +113,6 @@ def chroma_state(*, legacy: bool = False) -> str:
         "    metadatas=[{'routine_id': 'r-live', 'full_config': json.dumps({'name': " + repr(ROUTINE) + "})},",
         "               {'routine_id': 'r-gone', 'full_config': json.dumps({'name': " + repr(ROUTINE_GONE) + "})}],",
         f"    embeddings=[{EMBEDDING!r}, {EMBEDDING!r}])",
+        *_extra("data/chroma_db", extra),
         "client.close()",
     ])

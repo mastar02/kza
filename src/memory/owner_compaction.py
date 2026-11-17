@@ -46,9 +46,13 @@ pages or index files):
   its versioned staging collections) are copied whole;
 * home_assistant_routines is not copied (a named drop: dictated routine
   text with no erasure path; K's boot recreates it empty);
-* any other collection, the legacy 'user_memories' included, refuses
-  (compaction_unlisted_collection), at plan (scripts/compaction.py) and
-  here, in the snapshot and in the plan.
+* the legacy 'user_memories' collection of the memory store (data/memory_db,
+  where LongTermMemory made it before the memory policy; quarantined, never
+  read) is not copied either (SC4C-Q2b, a named drop by exact name in that
+  store only: never read by the snapshot, recorded by name only);
+* any other collection, a look-alike of a dropped name or 'user_memories'
+  in another store included, refuses (compaction_unlisted_collection), at
+  plan (scripts/compaction.py) and here, in the snapshot and in the plan.
 
 Each store is written by a fresh child interpreter that gets only what K
 keeps (CHROMA_REBUILD_CHILD): Chroma persists index buffers whose unused
@@ -106,6 +110,9 @@ CHROMA_COMMAND_INDEX = "home_assistant_commands"  # with "__pointer" and the "__
 CHROMA_POLICY_SUFFIX = "_policy_v1"
 CHROMA_COMMAND_NAMES = re.compile(re.escape(CHROMA_COMMAND_INDEX) + r"(__pointer|__[0-9]{14}[0-9a-f]{6})?")
 CHROMA_DROPPED = frozenset({"home_assistant_routines"})  # V4R2-C1: not copied; K's boot recreates it empty
+# SC4C-Q2b: the pre-policy memory collection (settings memory.chroma_path / long_term_collection), quarantined
+# and never read; not copied, by exact name and only in the memory store.
+CHROMA_DROPPED_IN_STORE = frozenset({("data/memory_db", "user_memories")})
 CHROMA_KINDS = ("rebuilt", "copied", "dropped")
 _FACT_LIVE_STATES = ("automatic", "confirmed")
 _FACT_LEDGER_KINDS = ("fact_deleted", "fact_pruned_retired_owner")
@@ -137,26 +144,33 @@ def _quote(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
-def collection_kind(name: str, *, policy: bool) -> str:
-    """SC-4c: the closed list. 'rebuilt' (policy memory), 'copied' (command index), 'dropped' (routines).
+def collection_kind(name: str, *, policy: bool, store: str) -> str:
+    """SC-4c: the closed list. 'rebuilt' (policy memory), 'copied' (command index), 'dropped' (named drops).
 
-    ``policy`` is True only for a collection H registered as its own
-    semantic_index target in that store; it is rebuilt only under the
-    ``<collection>_policy_v1`` name. Anything else refuses.
+    Args:
+        name: The collection's name.
+        policy: True only for a collection H registered as its own
+            semantic_index target in that store; it is rebuilt only under
+            the ``<collection>_policy_v1`` name.
+        store: The store's path relative to the state root (a drop of
+            CHROMA_DROPPED_IN_STORE holds only in its own store).
+
+    Returns:
+        The collection's kind. Anything else refuses.
     """
     if policy:
         if name.endswith(CHROMA_POLICY_SUFFIX) and len(name) > len(CHROMA_POLICY_SUFFIX):
             return "rebuilt"
     elif CHROMA_COMMAND_NAMES.fullmatch(name):
         return "copied"
-    elif name in CHROMA_DROPPED:
+    elif name in CHROMA_DROPPED or (store, name) in CHROMA_DROPPED_IN_STORE:
         return "dropped"
     raise CompactionCloneError("runtime_admission_compaction_unlisted_collection")
 
 
 def _snapshot_class(relative: str, name: str, registered: bool) -> str:
     """The snapshot's classifier (state_snapshot._export_stores): a dropped collection is never read."""
-    return "omit" if collection_kind(name, policy=registered) == "dropped" else "export"
+    return "omit" if collection_kind(name, policy=registered, store=relative) == "dropped" else "export"
 
 
 @dataclass(frozen=True)
@@ -415,7 +429,8 @@ def chroma_plan(snapshot: ClosedStateSnapshot, now: float) -> tuple[tuple[str, .
     plans = []
     for export in snapshot.manifest["index_exports"]:
         _require(export["relative_path"] in stores, "unlisted_collection")
-        kind = collection_kind(export["collection"], policy=export["registered"] is True)
+        kind = collection_kind(export["collection"], policy=export["registered"] is True,
+                               store=export["relative_path"])
         _require(export["omitted"] is (kind == "dropped"), "unlisted_collection")
         records = tuple(export["records"])
         excluded = 0
@@ -642,13 +657,15 @@ def rebuild_chroma(plan: CompactionClonePlan, destination: Path, operation, leas
 
 
 def _chroma_summary(plan: CompactionClonePlan) -> dict:
-    """Content-free counts of the closed list's outcome."""
+    """Content-free counts of the closed list's outcome, with the dropped collections by name only."""
     counts = {"stores": len(plan.chroma_stores), **{kind: 0 for kind in CHROMA_KINDS},
-              "records": 0, "excluded": 0}
+              "records": 0, "excluded": 0, "dropped_collections": []}
     for item in plan.chroma:
         counts[item.kind] += 1
         counts["records"] += len(item.records)
         counts["excluded"] += item.excluded
+        if item.kind == "dropped":
+            counts["dropped_collections"].append([item.store, item.collection])
     return counts
 
 

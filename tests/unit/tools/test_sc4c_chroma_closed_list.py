@@ -4,9 +4,11 @@ mechanism.start.chroma_allowlist (PRIV-3, PA-8, V4R2-C1): the policy memory
 collection is rebuilt from the allowlist of facts get() would return at
 t_clone whose owner is not retired (ledger and tombstones as a second
 gate); the command-index collections are copied whole; home_assistant_routines
-is not copied (a named drop, K's boot recreates it empty); any other
-collection, the legacy 'user_memories' included, refuses at plan and in the
-worker; D5 for rebuilt stores. Crash row S (a worker refusal) exits by a
+is not copied (a named drop, K's boot recreates it empty), nor is the legacy
+'user_memories' of data/memory_db (SC4C-Q2b: a named drop by exact name in
+that store only); any other collection, a look-alike or 'user_memories' in
+another store included, refuses at plan and in the worker; D5 for rebuilt
+stores. Crash row S (a worker refusal) exits by a
 plain abort; a crash after the rebuild's evidence resumes through the pin.
 
 The end-to-end worlds are the first post-R1 transition (test_sc1b_release_plan):
@@ -58,12 +60,18 @@ NAMES = ["home_assistant_commands", "home_assistant_commands__pointer", sc.STAGI
          "code_chunks", "_policy_v1", "user_memories_policy_v2", "home_assistant_commands__",
          "home_assistant_commands__pointer2", "home_assistant_commands__backup",
          "home_assistant_commands__20261116000000abcdeg", "home_assistant_commands__2026111600000abcdef",
-         "home_assistant_commands__20261116000000ABCDEF"]
+         "home_assistant_commands__20261116000000ABCDEF",
+         # SC4C-Q2b look-alikes of the legacy memory collection: none is dropped.
+         "User_memories", "USER_MEMORIES", "user_memories ", " user_memories", "user_memories\n", "user_memorie",
+         "user_memoriess", "user_memories_v0", "user_memories_old", "user_memories__pointer", "user-memories",
+         "user_memories_policy", "legacy_user_memories"]
+STORES = ["data/memory_db", "data/chroma_db", "data/memory_db/x", "memory_db", "./data/memory_db",
+          "data/memory_db/", "data/other_db", "."]
 
 
-def _worker_kind(name: str, policy: bool) -> str | None:
+def _worker_kind(name: str, policy: bool, store: str) -> str | None:
     try:
-        return oc.collection_kind(name, policy=policy)
+        return oc.collection_kind(name, policy=policy, store=store)
     except oc.CompactionCloneError as error:
         assert str(error) == UNLISTED
         return None
@@ -72,16 +80,42 @@ def _worker_kind(name: str, policy: bool) -> str | None:
 def test_the_closed_list_is_the_same_at_plan_and_in_the_worker():
     assert compaction.CHROMA_COMMAND_INDEX == oc.CHROMA_COMMAND_INDEX == "home_assistant_commands"
     assert compaction.CHROMA_DROPPED == oc.CHROMA_DROPPED == frozenset({"home_assistant_routines"})
+    assert compaction.CHROMA_DROPPED_IN_STORE == oc.CHROMA_DROPPED_IN_STORE == frozenset(
+        {("data/memory_db", "user_memories")})
     expected = {"home_assistant_commands": "copied", "home_assistant_commands__pointer": "copied",
                 sc.STAGING: "copied", "home_assistant_routines": "dropped"}
-    for name in NAMES:
-        assert compaction.collection_kind(name, policy=False) == _worker_kind(name, False) == expected.get(name)
-        # SC4C-RV-5 (1): a registered semantic_index target is rebuilt only under long_term's name.
-        rebuilt = "rebuilt" if name == "user_memories_policy_v1" else None
-        assert compaction.collection_kind(name, policy=True) == _worker_kind(name, True) == rebuilt
+    for store in STORES:
+        for name in NAMES:
+            # SC4C-Q2b: the legacy collection is dropped by its exact name, only in the memory store.
+            wanted = "dropped" if (store, name) == ("data/memory_db", "user_memories") else expected.get(name)
+            assert compaction.collection_kind(name, policy=False, store=store) == _worker_kind(
+                name, False, store) == wanted, (store, name)
+            # SC4C-RV-5 (1): a registered semantic_index target is rebuilt only under long_term's name (a
+            # registered 'user_memories' is not the legacy collection and refuses).
+            rebuilt = "rebuilt" if name == "user_memories_policy_v1" else None
+            assert compaction.collection_kind(name, policy=True, store=store) == _worker_kind(
+                name, True, store) == rebuilt, (store, name)
     assert oc._snapshot_class("data/chroma_db", "home_assistant_routines", False) == "omit"
     assert oc._snapshot_class("data/chroma_db", sc.STAGING, False) == "export"
-    _refusal(UNLISTED, lambda: oc._snapshot_class("data/memory_db", "user_memories", False))
+    assert oc._snapshot_class("data/memory_db", "user_memories", False) == "omit"
+    _refusal(UNLISTED, lambda: oc._snapshot_class("data/chroma_db", "user_memories", False))
+    _refusal(UNLISTED, lambda: oc._snapshot_class("data/memory_db", "user_memories", True))
+    _refusal(UNLISTED, lambda: oc._snapshot_class("data/memory_db", "user_memories_v0", False))
+
+
+def test_the_legacy_drop_names_the_runtime_s_memory_store_and_collection():
+    """SC4C-Q2b: the dropped pair is where the runtime made the pre-policy collection (settings memory
+    chroma_path and long_term_collection, LongTermMemory's default), and its policy index is that name's
+    _policy_v1, which the closed list rebuilds."""
+    import inspect
+    import yaml
+    from src.memory.long_term import LongTermMemory
+    settings = yaml.safe_load((REPO / "config" / "settings.yaml").read_text(encoding="utf-8"))["memory"]
+    [(store, name)] = oc.CHROMA_DROPPED_IN_STORE
+    assert Path(settings["chroma_path"]).as_posix() == store
+    assert settings["long_term_collection"] == name
+    assert inspect.signature(LongTermMemory).parameters["collection_name"].default == name
+    assert oc.collection_kind(name + oc.CHROMA_POLICY_SUFFIX, policy=True, store=store) == "rebuilt"
 
 
 def test_the_rebuild_child_gets_the_worker_s_environment_keys():
@@ -180,10 +214,17 @@ def test_a_deletion_ledger_the_allowlist_cannot_use_refuses_with_a_code(salt, fa
 
 def test_the_plan_refuses_an_unlisted_or_unclassified_export():
     routines = _export("data/chroma_db", "home_assistant_routines", [], omitted=True)
-    stores, plans = oc.chroma_plan(_snapshot([routines]), NOW)
-    assert [(item.kind, item.records) for item in plans] == [("dropped", ())]
+    legacy = _export("data/memory_db", "user_memories", [], omitted=True)
+    stores, plans = oc.chroma_plan(_snapshot([routines, legacy]), NOW)
+    assert [(item.store, item.collection, item.kind, item.records) for item in plans] == [
+        ("data/chroma_db", "home_assistant_routines", "dropped", ()),
+        ("data/memory_db", "user_memories", "dropped", ())]
     for exports, listed in (
-            ([_export("data/memory_db", "user_memories", [_record("x", "legacy")])], True),
+            ([_export("data/memory_db", "user_memories", [_record("x", "legacy")])], True),  # read
+            ([_export("data/chroma_db", "user_memories", [], omitted=True)], True),  # not the memory store
+            ([_export("data/memory_db", "user_memories_v0", [], omitted=True)], True),  # a look-alike
+            ([_export("data/memory_db", "User_memories", [], omitted=True)], True),
+            ([_export("data/memory_db", "user_memories", [], registered=True, omitted=True)], True),
             ([_export("data/memory_db", sc.POLICY, POLICY_RECORDS)], True),  # a policy name H never registered
             ([_export("data/memory_db", "user_memories", [_record("x", "legacy")], registered=True)], True),
             ([_export("data/chroma_db", "home_assistant_commands__backup", [COMMAND])], True),
@@ -244,14 +285,16 @@ def test_the_first_post_r1_transition_rebuilds_chroma_from_the_closed_list(x4, x
         ("data/memory_db", sc.POLICY): 5}
     planned = cw.plan(root, x5["archive"])
     assert planned["chroma"] == {"stores": {
-        "data/chroma_db": {"rebuilt": 0, "copied": 3, "dropped": 1, "other_files": 0},
-        "data/memory_db": {"rebuilt": 1, "copied": 0, "dropped": 0, "other_files": 0}}}
+        "data/chroma_db": {"rebuilt": 0, "copied": 3, "dropped": 1, "other_files": 0,
+                           "dropped_collections": ["home_assistant_routines"]},
+        "data/memory_db": {"rebuilt": 1, "copied": 0, "dropped": 0, "other_files": 0, "dropped_collections": []}}}
     started = cw.start(root, x5["archive"], planned=planned)
     compaction_id = started["compaction_id"]
     log = stage.read_compaction_log(root, compaction_id)
     [materialized] = [event for event in log["events"] if event["kind"] == "materialized"]
     assert materialized["data"]["chroma"] == {"stores": 2, "rebuilt": 1, "copied": 3, "dropped": 1,
-                                              "records": 4, "excluded": 4}
+                                              "records": 4, "excluded": 4,
+                                              "dropped_collections": [["data/chroma_db", "home_assistant_routines"]]}
     k_state = root / "slots" / "k" / "state"
     after = _stores(k_state, tmp_path / "k-copy")
     # Copied whole: the base, the pointer (its 'active' metadata) and the staging collection.
@@ -299,13 +342,77 @@ def test_the_first_post_r1_transition_rebuilds_chroma_from_the_closed_list(x4, x
     assert cw.serve(root, tmp_path, "k-prime").code == 0
 
 
-def test_a_legacy_user_memories_collection_refuses_the_plan_and_writes_nothing(x4, x5, tmp_path):
-    """PA-8, crash row P: the refused plan writes nothing and the unit serves H."""
+def test_the_legacy_user_memories_collection_is_dropped_by_name_and_never_reaches_k(x4, x5, tmp_path,
+                                                                                     monkeypatch):
+    """SC4C-Q2b: production's quarantined pre-policy collection (data/memory_db 'user_memories') is a named
+    drop: the plan names it, the snapshot never reads it, the rebuild child never gets it, the worker records
+    it by name only, and none of its text reaches K's bytes; H keeps it until retire destroys H."""
     world = _post_r1(x4, x5, tmp_path, sc.chroma_state(legacy=True))
+    root, h_state = world["root"], world["h"]["state"]
+    before = _stores(h_state, tmp_path / "h-copy")
+    assert len(before[("data/memory_db", "user_memories")]["records"]) == 2
+    assert _raw_hits(h_state / "data" / "memory_db", sc.LEGACY) and _raw_hits(h_state / "data" / "memory_db",
+                                                                               sc.LEGACY_META)
+    planned = cw.plan(root, x5["archive"])
+    assert planned["chroma"]["stores"]["data/memory_db"] == {
+        "rebuilt": 1, "copied": 0, "dropped": 1, "other_files": 0, "dropped_collections": ["user_memories"]}
+    assert planned["chroma"]["stores"]["data/chroma_db"]["dropped_collections"] == ["home_assistant_routines"]
+    real_run = subprocess.run
+    inputs = []
+
+    def spy(argv, *args, **kwargs):
+        if isinstance(argv, list) and oc.CHROMA_REBUILD_CHILD in argv:
+            inputs.append(kwargs["input"])
+        return real_run(argv, *args, **kwargs)
+    monkeypatch.setattr(subprocess, "run", spy)
+    started = cw.start(root, x5["archive"], planned=planned, worker=_in_process_worker())
+    monkeypatch.setattr(subprocess, "run", real_run)
+    compaction_id = started["compaction_id"]
+    assert len(inputs) == 2 and not any(sc.LEGACY.encode() in raw or sc.LEGACY_META.encode() in raw
+                                        for raw in inputs)
+    log = stage.read_compaction_log(root, compaction_id)
+    [snapshot] = [event for event in log["events"] if event["kind"] == "snapshot"]
+    [materialized] = [event for event in log["events"] if event["kind"] == "materialized"]
+    assert materialized["data"]["chroma"] == {
+        "stores": 2, "rebuilt": 1, "copied": 3, "dropped": 2, "records": 4, "excluded": 4,
+        "dropped_collections": [["data/chroma_db", "home_assistant_routines"], ["data/memory_db", "user_memories"]]}
+    k_state = root / "slots" / "k" / "state"
+    after = _stores(k_state, tmp_path / "k-copy")
+    assert set(after) == set(before) - {("data/chroma_db", "home_assistant_routines"),
+                                        ("data/memory_db", "user_memories")}
+    assert [row["document"] for row in after[("data/memory_db", sc.POLICY)]["records"]] == [sc.LIVE]
+    # Raw bytes: nothing of the legacy collection anywhere in K's state, nor in the compaction's records.
+    for needle in (sc.LEGACY, sc.LEGACY_META, *EXCLUDED):
+        assert _raw_hits(k_state, needle) == set(), needle
+        assert _raw_hits(stage.compaction_log_path(root, compaction_id), needle) == set(), needle
+    assert not Path(snapshot["data"]["path"]).exists()  # the snapshot (H's opaque store copy) is destroyed
+    assert _raw_hits(h_state / "data" / "memory_db", sc.LEGACY)  # H keeps it until H is retired
+    assert compaction.compact_verify(root, compaction_id, smoke_seconds=10)["armed"] is True
+    phase_file = tmp_path / "phases-v"
+    origin = time.monotonic()
+    result = rehearsal.run_serve(root, rehearsal.child_command(phase_file, "verify"), phase_file=phase_file,
+                                 stop_grace=200.0, timeout=60.0,
+                                 clock=lambda: origin + (time.monotonic() - origin) * 20.0)
+    assert result.code == 0
+    assert compaction.compact_retire(root, compaction_id, scan=cw.no_units)["phase"] == "complete"
+    assert not h_state.exists()
+    for needle in (sc.LEGACY, sc.LEGACY_META):
+        assert _raw_hits(root, needle) == set(), needle  # deleted for good once H is retired
+    assert cw.serve(root, tmp_path, "k-prime").code == 0
+
+
+@pytest.mark.parametrize("store, name", [("data/memory_db", "user_memories_v0"),
+                                         ("data/memory_db", "User_memories"),
+                                         ("data/chroma_db", "user_memories")],
+                         ids=["look_alike", "case", "other_store"])
+def test_a_collection_like_the_legacy_one_refuses_the_plan_and_writes_nothing(x4, x5, tmp_path, store, name):
+    """PA-8, crash row P: only the exact name in the memory store is dropped; a look-alike, or the same name
+    in another store, refuses the plan, which writes nothing, and the unit serves H."""
+    world = _post_r1(x4, x5, tmp_path, sc.chroma_state(legacy=True, extra=((store, name),)))
     root = world["root"]
     witness = cw.witness(root)
     error = _refusal(UNLISTED, lambda: cw.plan(root, x5["archive"]))
-    assert error.report == {"collections": [["data/memory_db", "user_memories"]]}
+    assert error.report == {"collections": [[store, name]]}
     _refusal(UNLISTED, lambda: cw.start(root, x5["archive"], planned={"plan_sha256": "0" * 64,
                                                                       "untouched_sha256": "0" * 64}))
     assert cw.witness(root) == witness
@@ -314,7 +421,8 @@ def test_a_legacy_user_memories_collection_refuses_the_plan_and_writes_nothing(x
 
 def test_the_worker_refuses_an_unlisted_collection_the_plan_missed(x4, x5, tmp_path, monkeypatch):
     """The worker's own gate (snapshot and plan): crash row S, then the lossless plain abort serves H."""
-    world = _post_r1(x4, x5, tmp_path, sc.chroma_state(legacy=True))
+    world = _post_r1(x4, x5, tmp_path,
+                     sc.chroma_state(legacy=True, extra=(("data/memory_db", "user_memories_v0"),)))
     root, h_state = world["root"], world["h"]["state"]
     h_tree = cw.tree(h_state)
     monkeypatch.setattr(compaction, "chroma_collections", lambda state, privacy: {"stores": {}})
