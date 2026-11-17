@@ -3,7 +3,9 @@
 refusal at plan and in the worker, and D5 for rebuilt stores. Review round 1 adds REVIEW_1 (SC4C-RV-1:
 death signal, guard, inherited lease, timeout; RV-2: the rebuild in the worker process; RV-3: the
 afterimage and resume's evidence pins; RV-5: the exact names, the coded ledger error, SQLITE_TMPDIR, the
-store census). Restore-in-finally runner; a mutant is killed only by a failing test (pytest exit 1).
+store census). SC4C_Q2B adds the named drop of the legacy 'user_memories' of data/memory_db (exact name,
+that store only, never read, recorded by name). Restore-in-finally runner; a mutant is killed only by a
+failing test (pytest exit 1). The household is home: every pytest runs on cores 24-47, niced.
 
 Usage (server, a mutation clone): python tools/sc4c_mutants.py OUT.json [NAME ...]
 """
@@ -34,12 +36,14 @@ MUTANTS = [
      "            and record[\"metadata\"] == {\"fact_policy\": 1, \"revision\": fact[0]})",
      "    return True", [ALLOWLIST, E2E]),
     ("home_assistant_routines copied instead of dropped", OC,
-     "    elif name in CHROMA_DROPPED:\n        return \"dropped\"\n    raise CompactionCloneError",
-     "    elif name in CHROMA_DROPPED:\n        return \"copied\"\n    raise CompactionCloneError", [E2E]),
+     "    elif name in CHROMA_DROPPED or (store, name) in CHROMA_DROPPED_IN_STORE:\n        return \"dropped\"\n"
+     "    raise CompactionCloneError",
+     "    elif name in CHROMA_DROPPED:\n        return \"copied\"\n"
+     "    elif (store, name) in CHROMA_DROPPED_IN_STORE:\n        return \"dropped\"\n"
+     "    raise CompactionCloneError", [E2E]),
     ("plan admits an unlisted collection", C,
-     "    elif name in CHROMA_DROPPED:\n        return \"dropped\"\n    return None",
-     "    elif name in CHROMA_DROPPED:\n        return \"dropped\"\n    return \"copied\"",
-     [T + "test_a_legacy_user_memories_collection_refuses_the_plan_and_writes_nothing"]),
+     "        return \"dropped\"\n    return None", "        return \"dropped\"\n    return \"copied\"",
+     [T + "test_a_collection_like_the_legacy_one_refuses_the_plan_and_writes_nothing"]),
     ("worker admits an unlisted collection", OC,
      "        return \"dropped\"\n    raise CompactionCloneError(\"runtime_admission_compaction_unlisted_collection\")",
      "        return \"dropped\"\n    return \"copied\"",
@@ -111,10 +115,44 @@ REVIEW_1 = [
      [T + "test_a_deletion_ledger_the_allowlist_cannot_use_refuses_with_a_code"]),
     ("RV-5 child drops SQLITE_TMPDIR", OC, '"TMPDIR", "SQLITE_TMPDIR")', '"TMPDIR")',
      [T + "test_the_rebuild_child_gets_the_worker_s_environment_keys"]),
-    ("RV-5 plan does not count other files in a store", C, '"other_files": _other_store_files(path.parent)}',
-     '"other_files": 0}', [T + "test_the_plan_counts_a_file_left_inside_a_store"]),
+    ("RV-5 plan does not count other files in a store", C, '"other_files": _other_store_files(path.parent),',
+     '"other_files": 0,', [T + "test_the_plan_counts_a_file_left_inside_a_store"]),
 ]
 MUTANTS += REVIEW_1
+
+# SC4C-Q2b (the user's answer of 2026-11-16): the legacy memory collection is a named drop.
+LEGACY_E2E = T + "test_the_legacy_user_memories_collection_is_dropped_by_name_and_never_reaches_k"
+LOOK_ALIKE = T + "test_a_collection_like_the_legacy_one_refuses_the_plan_and_writes_nothing"
+IN_STORE = "(store, name) in CHROMA_DROPPED_IN_STORE"
+SC4C_Q2B = [
+    ("Q2b worker copies the legacy collection instead of dropping it", OC,
+     "    elif name in CHROMA_DROPPED or (store, name) in CHROMA_DROPPED_IN_STORE:\n        return \"dropped\"\n"
+     "    raise CompactionCloneError",
+     "    elif name in CHROMA_DROPPED:\n        return \"dropped\"\n"
+     "    elif (store, name) in CHROMA_DROPPED_IN_STORE:\n        return \"copied\"\n"
+     "    raise CompactionCloneError", [LEGACY_E2E]),
+    ("Q2b snapshot reads the legacy collection (classifier ignores the in-store drop)", OC,
+     '    return "omit" if collection_kind(name, policy=registered, store=relative) == "dropped" else "export"',
+     '    return "omit" if name in CHROMA_DROPPED else "export"', [LEGACY_E2E]),
+    ("Q2b worker drops the legacy name in any store", OC, IN_STORE,
+     "name in {dropped for _store, dropped in CHROMA_DROPPED_IN_STORE}", [CLOSED]),
+    ("Q2b plan drops the legacy name in any store", C, IN_STORE,
+     "name in {dropped for _store, dropped in CHROMA_DROPPED_IN_STORE}", [CLOSED, LOOK_ALIKE + "[other_store]"]),
+    ("Q2b worker drops a look-alike (prefix)", OC, IN_STORE,
+     "any(store == where and name.startswith(dropped) for where, dropped in CHROMA_DROPPED_IN_STORE)", [CLOSED]),
+    ("Q2b plan drops a look-alike (prefix)", C, IN_STORE,
+     "any(store == where and name.startswith(dropped) for where, dropped in CHROMA_DROPPED_IN_STORE)",
+     [CLOSED, LOOK_ALIKE + "[look_alike]"]),
+    ("Q2b plan drops a look-alike (case)", C, IN_STORE, "(store, name.lower()) in CHROMA_DROPPED_IN_STORE",
+     [CLOSED, LOOK_ALIKE + "[case]"]),
+    ("Q2b plan does not name the drop", C,
+     '                if kind == "dropped":\n                    counts["dropped_collections"].append(name)\n', "",
+     [LEGACY_E2E]),
+    ("Q2b worker does not record the drop by name", OC,
+     '            counts["dropped_collections"].append([item.store, item.collection])', "            pass",
+     [LEGACY_E2E]),
+]
+MUTANTS += SC4C_Q2B
 
 
 def _wait_for_a_slot() -> None:
@@ -141,7 +179,8 @@ def main() -> None:
         started = time.monotonic()
         try:
             path.write_text(original.replace(old, new), encoding="utf-8")
-            run = subprocess.run(["nice", "-n", "10", PY, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider",
+            run = subprocess.run(["taskset", "-c", "24-47", "nice", "-n", "10", PY, "-m", "pytest", "-q", "-x",
+                                  "-p", "no:cacheprovider",
                                   "--timeout=600", *tests], cwd=ROOT, capture_output=True, text=True, timeout=2400)
         finally:
             path.write_text(original, encoding="utf-8")
