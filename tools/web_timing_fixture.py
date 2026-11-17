@@ -471,6 +471,8 @@ class Fixture:
 
 
 def main(argv=None) -> int:
+    import src  # noqa: F401  entry guard (N8): refuse before any store is opened
+
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--run-dir', required=True, type=Path)
     parser.add_argument('--seed', type=int, default=SEED)
