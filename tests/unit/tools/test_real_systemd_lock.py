@@ -7,7 +7,11 @@ never touch the account's real lock or its user manager.
 from __future__ import annotations
 
 import fcntl
+import json
+import logging
 import os
+import threading
+import time
 
 import pytest
 
@@ -73,3 +77,32 @@ def test_a_failed_setup_releases_the_lock_once(runtime, monkeypatch):
     with pytest.raises(RuntimeError, match="setup failed"):
         real_systemd.UserSystemd(runtime / "work")
     assert real_systemd._HELD == [] and not _taken_elsewhere(runtime / real_systemd.LOCK_NAME)
+
+
+def test_a_long_wait_names_the_holder_and_the_holder_is_recorded(runtime, monkeypatch, caplog):
+    """AWR-R4: the holder writes its pid, cwd and test into the lock file; a waiter reports it every
+    LOCK_WAIT_REPORT_SECONDS (shortened here) and still gets the lock once it is free."""
+    monkeypatch.setattr(real_systemd, "LOCK_WAIT_REPORT_SECONDS", 0.2)
+    path = runtime / real_systemd.LOCK_NAME
+    other = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)  # a holder outside _HELD
+    fcntl.flock(other, fcntl.LOCK_EX)
+    os.pwrite(other, json.dumps({"pid": 4242, "cwd": "/elsewhere", "test": "other::test"}).encode(), 0)
+    acquired: list[tuple[int, float]] = []
+    waiter = threading.Thread(target=lambda: acquired.append(real_systemd._acquire()))
+    with caplog.at_level(logging.WARNING, logger=real_systemd.__name__):
+        waiter.start()
+        deadline = time.monotonic() + 30
+        while not any("other::test" in record.getMessage() for record in caplog.records):
+            assert time.monotonic() < deadline and waiter.is_alive(), caplog.text
+            time.sleep(0.05)
+        assert not acquired
+        os.close(other)
+        waiter.join(30)
+    assert not waiter.is_alive() and real_systemd._HELD == [acquired[0][0]]
+    report = next(record.getMessage() for record in caplog.records if "other::test" in record.getMessage())
+    assert '"pid": 4242' in report and "/elsewhere" in report, report
+    holder = json.loads(path.read_text())
+    assert holder["pid"] == os.getpid() and holder["cwd"] == os.getcwd(), holder
+    assert "test_a_long_wait_names_the_holder" in holder["test"], holder
+    real_systemd._release(acquired[0][0])
+    assert path.read_text() == "" and not _taken_elsewhere(path)

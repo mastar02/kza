@@ -40,7 +40,9 @@ compiled CLIs can no longer leave their ``.kza-adoption-*`` scratch in the
 shared ``/run/user/<uid>`` while this one checks that its own left none.
 The lock is an ``flock`` on ``$XDG_RUNTIME_DIR/kza-rehearsal-manager.lock``:
 the kernel drops it when its holder dies, so a killed run never blocks the
-next one (whose sweep then removes the dead run's units). A copy of the
+next one (whose sweep then removes the dead run's units). The holder
+writes its pid, cwd and test into that file, and a waiter names it every
+minute it waits (AWR-R4); the wait has no deadline of its own. A copy of the
 code from before this lock does not take it and is still not isolated.
 """
 from __future__ import annotations
@@ -48,6 +50,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import fcntl
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -55,6 +58,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 PRODUCTION_NAMES = ("kza-voice", "kza-llm-fast", "kza-code-index", "kza-llm-ik")
@@ -63,6 +67,9 @@ ROLES = {"kza-voice.service": "voice", "kza-llm-fast.service": "llm-fast",
 REFUSED = 97
 LOCK_NAME = "kza-rehearsal-manager.lock"  # in $XDG_RUNTIME_DIR, outside the unit directory the sweep reads
 _HELD: list[int] = []  # this process's lock descriptor while it holds the lock
+LOCK_WAIT_REPORT_SECONDS = 60.0  # a wait this long (and each such interval after it) names the holder
+
+logger = logging.getLogger(__name__)
 
 
 def _lock_path() -> Path:
@@ -73,24 +80,64 @@ def _acquire() -> tuple[int, float]:
     """Block until this account's rehearsal manager lock is ours: (descriptor, seconds waited).
 
     A second acquisition in the same process would wait for itself forever (``flock`` is per open file
-    description), so it is an error instead.
+    description), so it is an error instead. The wait has no deadline of its own (pytest-timeout bounds
+    it); every :data:`LOCK_WAIT_REPORT_SECONDS` of it names the holder the lock file records (AWR-R4).
+    The wait is one blocking ``flock``, not a poll, so the kernel hands the lock to a waiter between two
+    of the holder's rehearsals instead of letting the holder take it back.
     """
     if _HELD:
         raise RuntimeError("the rehearsal manager lock is already held by this process")
-    descriptor = os.open(_lock_path(), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
-    started = time.monotonic()
+    path = _lock_path()
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    started, done = time.monotonic(), threading.Event()
+    reporter = threading.Thread(target=_report_wait, args=(path, started, done), daemon=True,
+                                name="rehearsal-lock-wait")
+    reporter.start()
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
     except BaseException:
         os.close(descriptor)
         raise
+    finally:
+        done.set()
+        reporter.join()
     _HELD.append(descriptor)
+    _record_holder(descriptor)
     return descriptor, time.monotonic() - started
+
+
+def _record_holder(descriptor: int) -> None:
+    """Write who holds the lock into the lock file, for a waiter's report (the lock is advisory)."""
+    holder = {"pid": os.getpid(), "cwd": os.getcwd(), "test": os.environ.get("PYTEST_CURRENT_TEST", ""),
+              "since": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+    try:
+        os.ftruncate(descriptor, 0)
+        os.pwrite(descriptor, json.dumps(holder).encode(), 0)
+    except OSError as error:  # the record only serves a report; the lock itself is held
+        logger.warning("[rehearsal-lock] holder record not written: %s", error.__class__.__name__)
+
+
+def _report_wait(path: Path, started: float, done: threading.Event) -> None:
+    while not done.wait(LOCK_WAIT_REPORT_SECONDS):
+        try:
+            holder = path.read_text(errors="replace").strip() or "not recorded"
+        except OSError as error:
+            holder = f"unreadable ({error.__class__.__name__})"
+        message = (f"[rehearsal-lock] pid {os.getpid()} has waited {time.monotonic() - started:.0f} s for "
+                   f"{path}; holder: {holder}")
+        logger.warning(message)
+        if sys.__stderr__ is not None:  # past pytest's capture: the run's own log names the holder
+            sys.__stderr__.write(message + "\n")
+            sys.__stderr__.flush()
 
 
 def _release(descriptor: int) -> None:
     if descriptor in _HELD:
         _HELD.remove(descriptor)
+        try:
+            os.ftruncate(descriptor, 0)  # no stale holder record once the lock is free
+        except OSError:
+            pass
         os.close(descriptor)  # closing the only descriptor of the open file description drops the flock
 
 
