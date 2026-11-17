@@ -719,6 +719,35 @@ class TestEscalationAndReannounce:
         assert tts.await_count == 3
 
     @pytest.mark.asyncio
+    async def test_new_episode_after_an_acknowledged_one_is_spoken(self):
+        """Review Q5RV-01: the acknowledgement covers its own episode, not the next one."""
+        clock = FakeClock()
+        tts = AsyncMock(return_value=_ok())
+        manager = AlertManager(tts_callback=tts, clock=clock)
+        first = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a", condition=DOOR)
+        assert await manager.mark_processed(first.alert_id)
+        assert await manager.resolve_condition(AlertType.SECURITY, DOOR) is first
+        clock.t += 1
+        second = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a", condition=DOOR)
+        assert second is not None and second is not first
+        assert tts.await_count == 2 and tts.await_args.args[0] == "Alerta importante: a"
+        assert second.delivery is AlertDelivery.DELIVERED and second.processed is False
+
+    @pytest.mark.asyncio
+    async def test_momentary_event_after_an_acknowledged_one_is_spoken(self):
+        """Review Q5RV-01: a momentary event observed after its cooldown is a new, spoken alert."""
+        clock = FakeClock()
+        tts = AsyncMock(return_value=_ok())
+        manager = AlertManager(cooldown_seconds=300, tts_callback=tts, clock=clock)
+        first = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "Acceso denegado")
+        assert await manager.mark_processed(first.alert_id)
+        clock.t += manager.cooldown_seconds
+        second = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "Acceso denegado")
+        assert second is not None and second is not first
+        assert tts.await_count == 2 and tts.await_args.args[0] == "Alerta importante: Acceso denegado"
+        assert second.delivery is AlertDelivery.DELIVERED and second.processed is False
+
+    @pytest.mark.asyncio
     async def test_interval_never_reannounces_unspoken_or_momentary(self):
         clock = FakeClock()
         tts = AsyncMock(return_value=_ok())
