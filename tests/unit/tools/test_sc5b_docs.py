@@ -457,3 +457,19 @@ def test_a_link_refusal_at_retire_repeats_the_retire_not_resume():
     assert "antes de `retire_started`, `resume` no hace nada" in retire
     source = (REPO / "scripts/compaction.py").read_text()
     assert 'return {"compaction_id": compaction_id, "phase": "activated", "noop": True}' in source
+
+
+def test_a_deferred_verified_goes_to_retire_first():
+    """Review SC5B-R7: serve logs 'compaction verified deferred' when recording 'verified' fails after the
+    seal; compact retire records it itself (or refuses not_verified, row V3), so it runs before abort."""
+    status = _flat(_section(_text(), "### Paso 7: estado"))
+    bullet = "- `armed_run: consumed`, `verify_branch_reached: yes` y `verified: false`:"
+    assert bullet in status
+    assert status.index(bullet) < status.index("- Cualquier otro resultado")
+    assert ("Correr primero el retiro, paso 8, no el abort: `$ST compact retire <compaction_id>` registra él "
+            "mismo el `verified` si K' cerró limpio, y si no rechaza `runtime_admission_compaction_not_verified` "
+            "(fila V3) sin escribir nada; recién ahí volver a H con W.") in status
+    assert '"compaction verified deferred "' in (REPO / "scripts/managed_launcher.py").read_text()
+    retire = (REPO / "scripts/compaction.py").read_text().split("def compact_retire(", 1)[1].split("\ndef ", 1)[0]
+    assert retire.index("stage.record_compaction_verified(") < retire.index(
+        '_refuse("runtime_admission_compaction_not_verified")')

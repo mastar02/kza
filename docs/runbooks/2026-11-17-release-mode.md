@@ -398,6 +398,14 @@ Muestra `phase`, `armed_run` (`not armed`, `not consumed` o `consumed`),
   sin pérdida. `--to-h` acá rechaza
   `runtime_admission_compaction_abort_to_h_before_run`. Después de un abort
   simple, habilitar y arrancar la unidad.
+- `armed_run: consumed`, `verify_branch_reached: yes` y `verified: false`:
+  V pudo salir bien con el registro de `verified` diferido (`serve` lo anota
+  después del sello; si esa escritura falla sólo deja `compaction verified
+  deferred` en su log). Correr primero el retiro, paso 8, no el abort: `$ST
+  compact retire <compaction_id>` registra él mismo el `verified` si K'
+  cerró limpio, y si no rechaza `runtime_admission_compaction_not_verified`
+  (fila V3) sin escribir nada; recién ahí volver a H con W. Volver a H
+  primero tiraría una V buena y la transición repetiría su bajada.
 - Cualquier otro resultado (no verificada: `verify_branch_reached: no`,
   intervalo corto, V muerta con o sin recibo): «Volver a H con W», abajo.
   No arrancar la unidad otra vez para «probar»: `serve` rechaza
