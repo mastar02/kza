@@ -475,6 +475,31 @@ def test_normalization_strips_wake_words_politeness_and_accents():
     assert _shape(configured.classify("jarvis poné un timer de 3 minutos")) == (F.TIMER, O.CREATE, "R2")
 
 
+@pytest.mark.parametrize(("text", "expected"), [
+    ("bueno, cancelá el recordatorio de tomar agua", (F.REMINDER, O.CANCEL, "R1")),
+    ("bue cancelá el recordatorio de tomar agua", (F.REMINDER, O.CANCEL, "R1")),
+    ("dale cancelá el recordatorio de tomar agua", (F.REMINDER, O.CANCEL, "R1")),
+    ("no, cancelá el recordatorio de tomar agua", (F.REMINDER, O.CANCEL, "R1")),
+    ("Nexa, no. Borrá el recordatorio de tomar agua", (F.REMINDER, O.CANCEL, "R1")),
+    ("cancelá ya el recordatorio de tomar agua", (F.REMINDER, O.CANCEL, "R1")),
+    ("dale, poné un timer de 3 minutos", (F.TIMER, O.CREATE, "R2")),
+    # A "no" without a pause is a negation; "ya" before the verb is not a filler.
+    ("no cancelar el recordatorio de tomar agua", None),
+    ("no cancelá el recordatorio de tomar agua", None),
+    ("no cancele el recordatorio de tomar agua", None),
+    ("¿ya cancelaron el recordatorio de tomar agua?", None),
+    ("¿cancelaste el recordatorio de tomar agua?", None),
+    ("quiero un recordatorio para cancelar la suscripción", None),
+    ("no me dejes olvidar sacar la basura", (F.REMINDER, O.CREATE, "R3")),
+])
+def test_fillers_a_paused_no_and_ya_after_a_cancel_verb(text, expected):
+    """Review T032-U1-R3: real imperatives are claimed; questions and negations are not."""
+    intent = classify_household_intent(text)
+    assert _shape(intent) == expected
+    if expected is not None and expected[1] is O.CANCEL:
+        assert intent.complement == "de tomar agua"
+
+
 def test_unaccented_para_is_a_clause_head_only_when_spoken_as_a_verb():
     """'pará' heads a clause inside a turn; the preposition 'para' does not."""
     assert classify_household_intent("apagá la luz y pará la música").family is F.COMPOUND

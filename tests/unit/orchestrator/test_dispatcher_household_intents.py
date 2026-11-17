@@ -560,17 +560,58 @@ async def test_a_store_failure_is_uncertain_not_cancelled(leaves, monkeypatch):
     assert result.response == "Hubo un error con el recordatorio"
 
 
-async def test_unclaimed_keyword_path_uses_the_same_unique_resolution(leaves):
-    """operation None (keyword routing) resolves like a claimed cancel, never by similarity."""
+UNCLAIMED_CANCEL_MENTIONS = (
+    ("¿cancelaste el recordatorio de tomar agua?", "needs_input"),
+    ("¿ya cancelaron el recordatorio de tomar agua?", "needs_input"),
+    ("no cancelar el recordatorio de tomar agua", "needs_input"),
+    ("no cancelá el recordatorio de tomar agua", "needs_input"),
+    ("quiero un recordatorio para cancelar la suscripción", "unsupported"),
+)
+
+
+@pytest.mark.parametrize(("text", "status"), UNCLAIMED_CANCEL_MENTIONS)
+async def test_an_unclaimed_cancel_mention_never_cancels(leaves, text, status):
+    """Review T032-U1-R3: questions, negations and creations are not cancels."""
     dispatcher = leaves.dispatcher()
-    await leaves.apply_state(dispatcher, "reminder_shared_active:tomar agua;reminder_shared_active:tomar mate")
+    assert dispatcher.household_intents.classify(text) is None
+    result, counted = await _cancel(leaves, text, "reminder_shared_active:tomar agua;"
+                                    "reminder_shared_active:cancelar la suscripción;queued_request",
+                                    dispatcher=dispatcher)
+    assert result.path.value == "fast_reminder"
+    assert counted == ZERO
+    assert (result.success, result.outcome.status.value, result.outcome.persistence.value) == (
+        False, status, "not_written")
+    assert not result.response.startswith("Cancelé")
+    assert set((await _states(leaves))) == {"tomar agua", "cancelar la suscripción"}
+    assert len(leaves.queue) == 1
+
+
+async def test_the_keyword_path_alone_never_cancels(leaves):
+    """operation None (keyword routing) answers how to ask; it never resolves nor cancels."""
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, "reminder_shared_active:tomar agua")
     before = leaves.snapshot()
-    ambiguous = await dispatcher._fast_reminder_path("cancela el recordatorio de tomar", "unknown")
-    assert ambiguous.outcome.status.value == "needs_input" and leaves.effects(before) == ZERO
-    misheard = await dispatcher._fast_reminder_path("cancela el recordatorio de tomar aguja", "unknown")
-    assert misheard.outcome.status.value == "needs_input" and leaves.effects(before) == ZERO
-    done = await dispatcher._fast_reminder_path("cancela el recordatorio de tomar agua", "unknown")
-    assert done.outcome.task_completed and leaves.effects(before) == effects(reminder_transitions=1)
+    result = await dispatcher._fast_reminder_path("cancela el recordatorio de tomar agua", "unknown")
+    assert leaves.effects(before) == ZERO
+    assert (result.outcome.status.value, result.response) == (
+        "needs_input", "Si querés cancelar un recordatorio, decime: cancelá el recordatorio de, y lo que dice.")
+
+
+@pytest.mark.parametrize("text", [
+    "bueno, cancelá el recordatorio de tomar agua", "dale cancelá el recordatorio de tomar agua",
+    "cancelá ya el recordatorio de tomar agua", "no, cancelá el recordatorio de tomar agua",
+    "Nexa, bueno, borrá ya el recordatorio de tomar agua",
+])
+async def test_fillers_before_and_ya_after_the_verb_are_claimed_cancels(leaves, text):
+    """Review T032-U1-R3: these real imperatives reach the cancel only as claimed turns."""
+    dispatcher = leaves.dispatcher()
+    intent = dispatcher.household_intents.classify(text)
+    assert (intent.family.value, intent.operation.value, intent.complement) == ("reminder", "cancel", "de tomar agua")
+    result, counted = await _cancel(leaves, text, "reminder_shared_active:tomar agua;"
+                                    "reminder_shared_active:sacar la basura;queued_request", dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1)
+    assert result.response.startswith("Cancelé el recordatorio tomar agua a las ")
+    assert await _states(leaves) == {"sacar la basura": "active"}
 
 
 async def test_cancel_never_touches_the_request_queue(leaves):

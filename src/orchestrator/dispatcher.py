@@ -132,6 +132,10 @@ _OBJECT_NOUN_RE = re.compile(r"\b(?:recordatorios?|t[ií]mers?|temporizador(?:es
 _ROUTINE_CREATE_REFUSAL = "Todavía no creo rutinas por voz. Podés crearlas desde la web."
 # Candidates a reminder clarification names aloud (T032-U1).
 _REMINDER_CHOICES_SPOKEN = 3
+# A cancel verb before "recordatorio" in a turn the classifier did not claim
+# (accent-folded); "un recordatorio para cancelar ..." is a creation instead.
+_UNCLAIMED_CANCEL_RE = re.compile(r"\b(?:cancel|borr|elimin|anul|quit|sac)\w*\b.*\brecordatorios?\b")
+_UNCLAIMED_CANCEL_REPLY = "Si querés cancelar un recordatorio, decime: cancelá el recordatorio de, y lo que dice."
 
 # P3-F2 decision on F10: the orchestrated path has no sync or enrollment
 # consumer, so only the explicit whole requests are recognised (the same
@@ -1740,10 +1744,12 @@ class RequestDispatcher:
             listing = not pending_today
         elif operation is not None:
             listing = pending_today = False
-        # T032-U1: a claimed cancel (any accented/voseo verb, P3-F2 R1) always
-        # resolves here; an unclaimed turn keeps the keyword form.
-        cancelling = operation is HouseholdOperation.CANCEL or (
-            operation is None and "cancela" in folded and "recordatorio" in folded)
+        # T032-U1: only a claimed cancel (any accented/voseo verb, P3-F2 R1)
+        # resolves and cancels. An unclaimed turn that mentions cancelling a
+        # reminder ("¿cancelaste el recordatorio ...?", "no cancelar el
+        # recordatorio ...") is a question or a negation: it never cancels.
+        cancelling = operation is HouseholdOperation.CANCEL
+        cancel_mention = operation is None and _UNCLAIMED_CANCEL_RE.search(folded) is not None
         try:
             if listing:
                 active = await self.reminder_manager.get_active(None, shared_only=True)
@@ -1758,6 +1764,9 @@ class RequestDispatcher:
                     match = re.search(r"recordatorios?\b(.*)", folded)
                     reference = match.group(1) if match else ""
                 response, outcome = await self._cancel_reminder_by_voice(folded, reference)
+            elif cancel_mention:
+                response = _UNCLAIMED_CANCEL_REPLY
+                outcome = TaskOutcome(TaskStatus.NEEDS_INPUT, persistence=PersistenceState.NOT_WRITTEN)
             else:
                 response = "Todavía no puedo crear ese recordatorio por voz. Necesito interpretar y confirmar la fecha y la hora."
                 outcome = TaskOutcome(TaskStatus.UNSUPPORTED, persistence=PersistenceState.NOT_WRITTEN)

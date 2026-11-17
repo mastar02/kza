@@ -216,7 +216,11 @@ class HouseholdIntentClassifier:
 # --------------------------------------------------------------------------
 
 _WORD_RE = re.compile(r"\d+(?:[:.]\d{2})?|[^\W\d_]+")
-_LEAD_WORDS = frozenset({"che", "ey", "oye", "hola", "porfa", "podes", "podrias", "puedes", "podras"})
+_LEAD_WORDS = frozenset({"che", "ey", "oye", "hola", "porfa", "podes", "podrias", "puedes", "podras", "bueno",
+                         "bue", "dale"})
+# A leading "no" is stripped only when punctuation follows it ("no, cancelá ..."):
+# "no cancelar el recordatorio" is a negation (review T032-U1-R3).
+_PAUSE_AFTER = re.compile(r"\s*[,;:.!]")
 
 
 def _fold(text: str) -> str:
@@ -259,8 +263,15 @@ def _tokens(text: str) -> _Utterance:
 
 
 def _normalize(text: str, wake_words: Iterable[str] = ()) -> _Utterance:
-    """Tokenize and strip leading wake words, politeness and trailing 'por favor'."""
+    """Tokenize and strip leading wake words, politeness and trailing 'por favor'.
+
+    Also strips the fillers "bueno"/"dale", a leading "no" followed by a
+    pause ("no, cancelá ...") and a "ya" right after a cancel verb
+    ("cancelá ya el recordatorio ..."), so these imperatives are claimed.
+    """
     utt = _tokens(text)
+    lowered = (text or "").lower()
+    ends = [m.end() for m in _WORD_RE.finditer(lowered)]
     wakes = WAKE_TERMS | {_fold(w) for w in wake_words}
     start, end = 0, len(utt)
     for _ in range(6):
@@ -269,12 +280,17 @@ def _normalize(text: str, wake_words: Iterable[str] = ()) -> _Utterance:
             start += 1
         elif word == "por" and utt.at(start + 1) == "favor":
             start += 2
+        elif word == "no" and _PAUSE_AFTER.match(lowered, ends[start]):
+            start += 1
         else:
             break
     while end - start >= 2 and utt.folded[end - 2:end] == ("por", "favor"):
         end -= 2
     while end - start >= 1 and utt.folded[end - 1] == "porfa":
         end -= 1
+    head = _verb_at(utt.slice(start, end), 0)
+    if head is not None and _CANCEL in head.classes and start + 1 < end and utt.at(start + 1) == "ya":
+        return utt.slice(start, start + 1).join(utt.slice(start + 2, end))
     return utt.slice(start, end)
 
 
