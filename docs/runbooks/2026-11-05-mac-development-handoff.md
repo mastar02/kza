@@ -1900,6 +1900,33 @@ Respuesta del 2026-11-17 (`t040-t041/user-decisions-20261110.json`, clave
   (`SC4C_Q2B` completos y los de rutinas y colección no listada de la
   lista original), 18/18 muertos (`mutants.json`).
 
+## SC-5b — runbook del modo release (2026-11-17)
+
+Rama `sc5b` desde `1541909a` (batch-e). Diseño `sc-release-design-v4`,
+unidad SC-5b. Evidencia: `t040-t041/sc5b-evidence.json` (local).
+
+- Runbook nuevo [2026-11-17-release-mode.md](2026-11-17-release-mode.md):
+  compuerta (SC-R, SC-6b, SC4B-Q1 dentro de los 14 días de L4, SC4B-Q2 con
+  el paso 0), construcción de NUEVO (toda release que cambia `src` lleva T0
+  y revisión subida; `RELEASED_CONTROLLERS`; arreglo sobre la línea
+  instalada), T0 con `"$PY" -I -B` desde el archivo extraído sólo con
+  triple mayor, H servido una vez y unidad detenida y deshabilitada antes
+  del plan, revisión del plan con la lista cerrada de Chroma, V, retiro
+  ruteado por código, salidas (AT, SS con la confirmación escrita de SC-D8
+  A, HD terminal sin L4, AB con el digest de la re-comprobación, CI),
+  rollback sin T0, después de la aceptación (PA, `adopt`), DL/DO, hueco
+  SC-D5 A y la plantilla de la decisión de 48 horas.
+- DEPLOYMENT: sección «Procedimiento del modo release (SC-5b)», forma del T0
+  corregida (`$PY -I -B`), estados de SC-1a/SC-4b. Runbook de compactación:
+  el binding de H se lee del `intent.json` del log (la vista del plan nunca
+  lo imprimió, como decía el paso 2).
+- Código: fuera `_DELEGATION_OWNER_LIMIT` y la rama de concesión heredada
+  del CLI `delegate` (rechaza siempre con 78), con sus tests.
+- Hoy fallan cerrado y el runbook lo dice: PA sin testigo por registro de
+  recuperación ni `--accept-regressed-source` (salida L4 mientras exista) y
+  la sombra de `adopt --dry-run` todavía en `$TMPDIR`
+  (`kza-adopt-dry-run-*`).
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.
