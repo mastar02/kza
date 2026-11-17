@@ -1434,7 +1434,9 @@ class MultiRoomAudioLoop:
             active, ``'response'`` while voice output is owned (a PortAudio
             reset would also stop playback), or None when a cut is allowed.
         """
-        if self.command_turns.active:
+        # Probe directly: CommandTurns.active would mark the turn as observed
+        # and notify its end listeners for a check that is not a consumer.
+        if self._command_turn_busy():
             return 'command'
         if bool(getattr(self.follow_up, 'is_active', False)):
             return 'conversation'

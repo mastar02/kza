@@ -1772,6 +1772,20 @@ class TestLateMicrophoneCatalogRefresh:
         assert reopened in rig.streams, "la room cortada vuelve aunque no haya refresh"
         assert any("refresh skipped (command)" in r.getMessage() for r in caplog.records)
 
+    @pytest.mark.asyncio
+    async def test_activity_check_does_not_notify_command_end_listeners(self, tmp_path):
+        """El chequeo del refresh no es un consumidor del turno (T025-U2-RV2-5)."""
+        rig = _LateCatalogRig(tmp_path)
+        ended = []
+        rig.loop.command_turns.add_end_listener(lambda: ended.append(True))
+        rig.living.listening = True
+        assert rig.loop._catalog_refresh_blocker() == "command"
+        rig.living.listening = False
+        assert rig.loop._catalog_refresh_blocker() is None
+        rig.loop._settle_turn()
+        assert rig.loop.command_turns._observed is False
+        assert ended == []
+
     def test_interval_must_be_a_finite_non_negative_number(self):
         for bad in (-1.0, float("nan"), float("inf"), "300"):
             with pytest.raises(ValueError):
