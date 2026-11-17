@@ -229,6 +229,10 @@ stt:
     reload_enabled: true
     reload_min_interval_s: 600
     alert_priority: "MEDIUM"   # MEDIUM = dashboard/historial sin voz; HIGH también la anuncia por voz
+    # Revisión 1 (L2): mientras recarga o está degradado, los comandos van
+    # directo al respaldo (no esperan el lock del modelo); un comando cada
+    # probe_interval_s, y el primero tras una recarga exitosa, prueba el primario.
+    probe_interval_s: 30
   model: "./models/whisper-v3-turbo"  # faster-whisper-large-v3-turbo-ct2 (~800MB, 8× más rápido que large-v3)
   device: "cuda:1"
   # 2026-05-07: float16 → int8_float16. FP16 + workspaces cuBLAS de

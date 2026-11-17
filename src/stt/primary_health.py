@@ -81,6 +81,10 @@ class PrimarySttHealthConfig:
         reload_enabled: Reload the primary model during an episode.
         reload_min_interval_s: Minimum time between reload attempts.
         alert_priority: AlertPriority name for the episode alert.
+        probe_interval_s: While degraded (and a fallback exists), commands
+            skip the primary and use the shadow; one command per interval
+            (and the first after a successful reload) still tries the primary
+            so the episode can end.
     """
 
     failure_threshold: int = 3
@@ -89,11 +93,12 @@ class PrimarySttHealthConfig:
     reload_enabled: bool = True
     reload_min_interval_s: float = 600.0
     alert_priority: str = "MEDIUM"
+    probe_interval_s: float = 30.0
 
     def __post_init__(self) -> None:
         if type(self.failure_threshold) is not int or self.failure_threshold < 1:
             raise ValueError("invalid primary_health.failure_threshold")
-        for name in ("fallback_timeout_s", "reload_min_interval_s"):
+        for name in ("fallback_timeout_s", "reload_min_interval_s", "probe_interval_s"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"invalid primary_health.{name}")
@@ -111,6 +116,7 @@ class PrimarySttHealthConfig:
             reload_enabled=bool(cfg.get("reload_enabled", True)),
             reload_min_interval_s=float(cfg.get("reload_min_interval_s", 600.0)),
             alert_priority=str(cfg.get("alert_priority", "MEDIUM")).upper(),
+            probe_interval_s=float(cfg.get("probe_interval_s", 30.0)),
         )
 
 
@@ -136,6 +142,8 @@ class _Counters:
     episodes: int = 0
     reloads_ok: int = 0
     reloads_failed: int = 0
+    primary_skipped: int = 0
+    primary_not_run: int = 0
     codes: dict[str, int] = field(default_factory=dict)
 
 
@@ -153,6 +161,8 @@ class PrimarySttHealth:
         self._last_code: str | None = None
         self._last_reload_at: float | None = None
         self._reloading = False
+        self._last_probe_at: float | None = None
+        self._probe_after_reload = False
         self._counters = _Counters()
 
     def attach_alert_manager(self, alert_manager) -> None:
@@ -187,6 +197,7 @@ class PrimarySttHealth:
             if self._consecutive >= self.config.failure_threshold and self._state is SttHealthState.HEALTHY:
                 self._state = SttHealthState.DEGRADED
                 self._counters.episodes += 1
+                self._last_probe_at = self._clock()
                 alert = True
             reload = (self._state is SttHealthState.DEGRADED and self.config.reload_enabled
                       and not self._reloading
@@ -216,6 +227,44 @@ class PrimarySttHealth:
             logger.info("[stt-health] code=primary_recovered after_failures=%d", failures)
         return recovered
 
+    def try_primary(self) -> bool:
+        """Whether this command should call the primary (fallback available).
+
+        False while a reload runs (it holds the model lock for seconds) and
+        while degraded, except for one probe per ``probe_interval_s`` and the
+        first command after a successful reload.
+
+        Returns:
+            True to call the primary, False to go straight to the fallback.
+        """
+        with self._lock:
+            if self._reloading:
+                allowed = False
+            elif self._state is SttHealthState.HEALTHY:
+                return True
+            elif self._probe_after_reload:
+                self._probe_after_reload = False
+                self._last_probe_at = self._clock()
+                allowed = True
+            elif (self._last_probe_at is None
+                  or self._clock() - self._last_probe_at >= self.config.probe_interval_s):
+                self._last_probe_at = self._clock()
+                allowed = True
+            else:
+                allowed = False
+            if not allowed:
+                self._counters.primary_skipped += 1
+            return allowed
+
+    def record_not_run(self, code: str) -> None:
+        """Count a primary call that never reached the model (capacity, closed).
+
+        Not a model failure: it neither extends nor starts an episode.
+        """
+        with self._lock:
+            self._counters.primary_not_run += 1
+        logger.warning("[stt-health] code=primary_not_run error=%s", code)
+
     def record_fallback(self, used: bool) -> None:
         """Count whether the shadow transcript replaced a failed primary."""
         with self._lock:
@@ -230,6 +279,7 @@ class PrimarySttHealth:
             self._reloading = False
             if ok:
                 self._counters.reloads_ok += 1
+                self._probe_after_reload = True
             else:
                 self._counters.reloads_failed += 1
         if ok:
@@ -247,6 +297,7 @@ class PrimarySttHealth:
                 "fallbacks_used": c.fallbacks_used, "fallbacks_missing": c.fallbacks_missing,
                 "episodes": c.episodes, "reloads_ok": c.reloads_ok, "reloads_failed": c.reloads_failed,
                 "codes": dict(c.codes), "reloading": self._reloading,
+                "primary_skipped": c.primary_skipped, "primary_not_run": c.primary_not_run,
             }
 
     async def send_alert(self, recovered: bool = False) -> bool:

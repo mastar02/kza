@@ -340,14 +340,33 @@ class CommandProcessor:
         finally:
             audio = stt = speaker = emotion = None
 
+    def _fallback_available(self) -> bool:
+        """The shadow transcript can stand in for a failed or skipped primary."""
+        return (self.shadow_stt is not None and self._stt_health is not None
+                and self._stt_health.config.fallback_to_shadow)
+
     async def _primary(self, audio):
+        if self._fallback_available() and not self._stt_health.try_primary():
+            # Reloading or degraded: do not queue on the model lock (or take a
+            # blocking-work slot) for a primary that is failing; the shadow
+            # stands in. A periodic probe still tries the primary.
+            audio = None
+            return None
         try:
             result = await self._native(self.stt, self.stt.transcribe_with_confidence, audio, self.sample_rate)
         except SourcesInvalidated:
             raise
+        except CommandModelFailed as error:
+            self._primary_failed(error.code)
+            return None
         except Exception as error:
-            code = error.code if isinstance(error, CommandModelFailed) else stt_error_code(error)
-            self._primary_failed(code)
+            # Never reached the model (blocking-work capacity, closed owner):
+            # not a model failure, so it neither starts nor extends an episode.
+            code = stt_error_code(error)
+            if self._stt_health is None:
+                logger.warning("Primary STT unavailable: code=%s", code)
+            else:
+                self._stt_health.record_not_run(code)
             return None
         finally:
             audio = None

@@ -175,10 +175,13 @@ async def test_threshold_raises_one_spanish_alert_and_one_guarded_reload():
     primary, shadow = _FlakyPrimary(), _Shadow()
     alerts = MagicMock()
     alerts.create_alert = AsyncMock(return_value=object())
-    cp, health = _processor(primary, shadow, threshold=3, alerts=alerts)
+    now = [0.0]
+    cp, health = _processor(primary, shadow, threshold=3, alerts=alerts, clock=lambda: now[0])
     for _ in range(5):
+        # One command per probe interval: while degraded each one probes the primary.
         await cp.process_command(AUDIO, use_parallel=False)
         await _drain(cp)
+        now[0] += health.config.probe_interval_s
     assert health.state is SttHealthState.DEGRADED and health.consecutive_failures == 5
     alerts.create_alert.assert_awaited_once()
     alert_type, priority, message, details = alerts.create_alert.await_args.args
@@ -404,17 +407,89 @@ async def test_commands_after_a_failed_reload_do_not_load_the_model():
     stt._load_impl = load
     stt._transcribe_impl = transcribe
     shadow = _Shadow()
+    now = [0.0]
     health = PrimarySttHealth(PrimarySttHealthConfig(failure_threshold=1, reload_min_interval_s=600),
-                              clock=lambda: 0.0)
+                              clock=lambda: now[0])
     cp = CommandProcessor(stt=stt, shadow_stt=shadow, stt_health=health)
     try:
         for _ in range(4):
             result = await cp.process_command(AUDIO, use_parallel=False)
             await _drain(cp)
             assert result.stt_source == "shadow_fallback"
+            now[0] += health.config.probe_interval_s  # each command probes the primary
         snap = health.snapshot()
         assert loads[0] == 1 and snap["reloads_failed"] == 1
         assert snap["codes"][next(c for c in snap["codes"] if c.startswith("ModelReloadError:model_unloaded:"))] == 3
     finally:
         await cp.aclose()
         stt.close()
+
+
+# ---------------------------------------------------------------- skip the primary while it fails (L2)
+
+@pytest.mark.asyncio
+async def test_commands_skip_the_primary_while_a_reload_runs():
+    primary, shadow = _FlakyPrimary(), _Shadow()
+    cp, health = _processor(primary, shadow, threshold=1)
+    assert health.record_failure("c").reload  # a reload is now in flight
+    result = await cp.process_command(AUDIO, use_parallel=False)
+    await _drain(cp)
+    assert result.stt_source == "shadow_fallback" and result.text == "prende la luz"
+    assert primary.calls == 0 and health.consecutive_failures == 1
+    assert health.snapshot()["primary_skipped"] == 1
+
+
+@pytest.mark.asyncio
+async def test_degraded_primary_is_probed_once_per_interval_and_after_a_reload():
+    now = [0.0]
+    primary, shadow = _FlakyPrimary(), _Shadow()
+    cp, health = _processor(primary, shadow, threshold=1, clock=lambda: now[0])
+    await cp.process_command(AUDIO, use_parallel=False)  # fails: degraded, reload ok
+    await _drain(cp)
+    assert primary.calls == 1 and primary.reloads == 1
+    # First command after the successful reload probes the primary.
+    await cp.process_command(AUDIO, use_parallel=False)
+    await _drain(cp)
+    assert primary.calls == 2
+    # Within the probe interval: shadow only, the primary is not touched.
+    now[0] += health.config.probe_interval_s / 2
+    result = await cp.process_command(AUDIO, use_parallel=False)
+    await _drain(cp)
+    assert primary.calls == 2 and result.stt_source == "shadow_fallback"
+    # The next probe finds the primary healthy and ends the episode.
+    now[0] += health.config.probe_interval_s
+    primary.failing = False
+    result = await cp.process_command(AUDIO, use_parallel=False)
+    await _drain(cp)
+    assert primary.calls == 3 and result.stt_source == "primary"
+    assert health.state is SttHealthState.HEALTHY
+
+
+@pytest.mark.asyncio
+async def test_without_a_fallback_the_primary_is_always_tried():
+    primary = _FlakyPrimary()
+    health = PrimarySttHealth(PrimarySttHealthConfig(failure_threshold=1), clock=lambda: 0.0)
+    cp = CommandProcessor(stt=primary, stt_health=health)
+    for _ in range(3):
+        await cp.process_command(AUDIO, use_parallel=False)
+        await _drain(cp)
+    assert primary.calls == 3 and health.snapshot()["primary_skipped"] == 0
+
+
+@pytest.mark.asyncio
+async def test_capacity_errors_are_not_model_failures():
+    primary, shadow = _FlakyPrimary(), _Shadow()
+    cp, health = _processor(primary, shadow, threshold=1)
+    run = cp._work.run
+
+    async def crowded(function, model, *args):
+        if model is primary:
+            raise RuntimeError("blocking_work_capacity")
+        return await run(function, model, *args)
+    cp._work.run = crowded
+    result = await cp.process_command(AUDIO, use_parallel=False)
+    await _drain(cp)
+    assert result.stt_source == "shadow_fallback"
+    snap = health.snapshot()
+    assert snap["failures"] == 0 and snap["primary_not_run"] == 1
+    assert health.state is SttHealthState.HEALTHY and primary.reloads == 0
