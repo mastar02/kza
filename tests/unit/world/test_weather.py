@@ -54,6 +54,7 @@ def test_includes_humidity_when_present():
 
 
 from datetime import UTC, date, datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -230,7 +231,9 @@ def test_target_date_refuses_a_naive_clock():
 def test_household_timezone_matches_the_shipped_routines_timezone():
     import yaml
 
-    with open("config/settings.yaml") as fh:
+    # Relativo al archivo de test, no al cwd: sigue valiendo si un shard cambia de directorio.
+    settings = Path(__file__).resolve().parents[3] / "config" / "settings.yaml"
+    with settings.open() as fh:
         configured = yaml.safe_load(fh)["routines"]["timezone"]
     assert HOUSEHOLD_TIMEZONE == configured
 
