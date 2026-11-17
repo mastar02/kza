@@ -214,6 +214,21 @@ stt:
   # anti-alucinación sin perder la calidad de Whisper. Corre en paralelo
   # (Parakeet ~87ms < Whisper ~179ms) → 0 latencia extra. Fail-open.
   shadow_veto: true
+  # Salud del STT primario (V3 2026-11-17): el 2026-11-16 Whisper (cuda:1)
+  # falló 1293/1296 capturas con RuntimeError sin ninguna alerta. Cada fallo
+  # se loguea con un código saneado (tipo:categoría:hash, sin texto); tras
+  # failure_threshold fallos seguidos: una alerta por episodio (AlertManager,
+  # texto en español), recarga del modelo (libera y recién después carga,
+  # bajo el lock del modelo, como mucho 1 cada reload_min_interval_s) y,
+  # mientras falle, el transcript del shadow reemplaza al primario
+  # (stt_source=shadow_fallback). Se recupera con el primer éxito.
+  primary_health:
+    failure_threshold: 3
+    fallback_to_shadow: true
+    fallback_timeout_s: 2.0
+    reload_enabled: true
+    reload_min_interval_s: 600
+    alert_priority: "MEDIUM"   # MEDIUM = dashboard/historial sin voz; HIGH también la anuncia por voz
   model: "./models/whisper-v3-turbo"  # faster-whisper-large-v3-turbo-ct2 (~800MB, 8× más rápido que large-v3)
   device: "cuda:1"
   # 2026-05-07: float16 → int8_float16. FP16 + workspaces cuBLAS de

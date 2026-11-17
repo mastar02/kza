@@ -11,6 +11,7 @@ Optimizado para latencia mínima:
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
 import threading
 import time
@@ -336,6 +337,32 @@ class FastWhisperSTT:
     def load(self):
         """Cargar modelo en GPU (idempotente, en el thread dedicado)."""
         self._run_pinned(self._load_impl)
+
+    def reload(self) -> None:
+        """Free the loaded model, then load it again (V3 2026-11-17).
+
+        Runs on the instance's pinned worker. The previous model is released
+        (CTranslate2 ``unload_model`` when available, then the reference and a
+        GC pass) before the new one is built, so cuda:1 never holds two
+        copies. Callers serialize it with the model's admission lock.
+
+        Raises:
+            RuntimeError: When the instance is closed or loading fails.
+        """
+        self._run_pinned(self._reload_impl)
+
+    def _reload_impl(self) -> None:
+        model, self._model = self._model, None
+        inner = getattr(model, "model", None)
+        unload = getattr(inner, "unload_model", None)
+        if callable(unload):
+            try:
+                unload()
+            except Exception as error:
+                logger.warning("Whisper unload failed: %s", type(error).__name__)
+        model = inner = unload = None
+        gc.collect()
+        self._load_impl()
 
     def _load_impl(self):
         """Cargar modelo en GPU (idempotente).

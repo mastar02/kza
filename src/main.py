@@ -96,6 +96,7 @@ from src.rooms.room_context import RoomContextManager, RoomConfig
 from src.presence.presence_detector import PresenceDetector
 from src.pipeline.multi_room_audio_loop import MultiRoomAudioLoop, RoomStream
 from src.pipeline.post_wake_endpoint import PostWakeConfig
+from src.stt.primary_health import PrimarySttHealth, PrimarySttHealthConfig
 from src.pipeline.wake_verification import WakeVerificationConfig, WakeVerificationMode, WakeVerifier
 from src.wakeword.detector import WakeWordDetector
 from src.lists.list_store import ListStore
@@ -1594,6 +1595,11 @@ async def build_application(
         command_duration=(rooms_config.get("endpointing", {}) or {}).get("command_duration_s", 2.0),
     )
 
+    # Salud del STT primario (V3 2026-11-17): código de error saneado,
+    # alerta + recarga segura tras N fallos seguidos, respaldo con el shadow.
+    stt_health = PrimarySttHealth(PrimarySttHealthConfig.from_dict(
+        (config.get("stt", {}) or {}).get("primary_health")))
+
     # Command processor (STT + speaker ID + emotion)
     command_processor = CommandProcessor(
         stt=stt,
@@ -1605,6 +1611,7 @@ async def build_application(
         shadow_veto=bool((config.get("stt", {}) or {}).get("shadow_veto", False)),
         privacy=privacy_services,
         model_locks=multi_room_loop.native_model_locks if multi_room_loop is not None else None,
+        stt_health=stt_health,
     )
     stt_executors.add_borrower(command_processor.begin_close)
     http_reasoners.add_borrower(command_processor.begin_close)
@@ -2003,6 +2010,7 @@ async def build_application(
 
     feature_manager = voice_services.features
     alert_manager = feature_manager.alert_manager
+    stt_health.attach_alert_manager(alert_manager)
 
     # ----------------------------------------------------------------
     # Dashboard API + Health Aggregator
