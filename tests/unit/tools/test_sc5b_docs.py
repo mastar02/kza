@@ -446,3 +446,14 @@ def test_the_ci_install_does_not_serve_h():
     assert "K' recibiría escrituras que nadie revisó" in flat
     assert "systemctl" not in ci and "paso 3" not in flat and "como un T0" not in flat
     assert "H sirve (" not in flat and "se comprueba que H sirve" not in flat
+
+
+def test_a_link_refusal_at_retire_repeats_the_retire_not_resume():
+    """Review SC5B-R6: _pre_retire raises symlink/hard_link/identity before 'retire_started', where
+    compact_resume with 'activated' logged returns a no-op."""
+    retire = _flat(_section(_text(), "### Paso 8: retiro (la aceptación)"))
+    assert ("quitar la causa a mano (de un enlace, el enlace, nunca su destino) y repetir el mismo "
+            "`$ST compact retire <compaction_id>`, no `compact resume`") in retire
+    assert "antes de `retire_started`, `resume` no hace nada" in retire
+    source = (REPO / "scripts/compaction.py").read_text()
+    assert 'return {"compaction_id": compaction_id, "phase": "activated", "noop": True}' in source

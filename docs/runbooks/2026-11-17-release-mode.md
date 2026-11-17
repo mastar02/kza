@@ -432,9 +432,13 @@ después de `retire_started`: ése es un retiro cortado (fila RS).
 
 Un enlace, punto de montaje o archivo especial dentro de un miembro
 (`runtime_admission_compaction_symlink`, `..._hard_link`, `..._mount`,
-`..._special_file`, `..._cross_device`): quitar la causa a mano y `$ST
-compact resume <compaction_id>`. **Retiro cortado (fila RS)**: `$ST compact
-resume <compaction_id>` lo termina.
+`..._special_file`, `..._cross_device`): quitar la causa a mano (de un
+enlace, el enlace, nunca su destino) y repetir el mismo `$ST compact retire
+<compaction_id>`, no `compact resume`: antes de `retire_started`, `resume`
+no hace nada (devuelve `"noop": true` con la fase `activated`). El mismo
+retiro también termina uno ya empezado. **Retiro cortado (fila RS)**: `$ST
+compact resume <compaction_id>` o el mismo `$ST compact retire
+<compaction_id>` lo termina.
 
 ### Paso 9: servir K'
 
