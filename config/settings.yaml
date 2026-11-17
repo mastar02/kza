@@ -1632,6 +1632,38 @@ rooms:
     silence_threshold: 0.015   # RMS de silencio (default histórico, a calibrar)
     silence_duration_ms: 300   # silencio sostenido p/ cerrar (fallback clásico)
     min_speech_ms: 300         # mínimo de captura antes de poder cerrar
+    # Timeout del endpoint LEGACY (antes hardcodeado 2.0 en main.py). Cuenta
+    # desde el inicio del pre-roll: solo rige con post_wake.enabled=false y en
+    # el AudioManager de una sola room.
+    command_duration_s: 2.0
+    # Regla post-wake (V1 2026-11-17, diagnóstico voice-diag-20261117): el
+    # endpoint legacy cerraba ~50 ms después del wake sobre la propia wake word
+    # (timeout 2 s contando el pre-roll de 0.96 s + umbral absoluto 0.015 que la
+    # voz de Cocina, RMS 0.003-0.006, nunca supera). Con esta regla los tiempos
+    # se miden desde el wake; se cierra solo tras voz después del wake y luego
+    # silencio sostenido, con voz = nivel >= noise_ratio × piso de ruido medido
+    # de la room, o Silero (el predictor por room ya cargado) >= vad_threshold.
+    # Sin voz en no_speech_timeout_s → se descarta sin STT. El arranque del
+    # follow-up usa la misma prueba (reemplaza rms > 0.02). enabled: false =
+    # rollback exacto al endpoint legacy.
+    post_wake:
+      enabled: true
+      min_listen_s: 1.0          # escucha mínima tras el wake
+      max_utterance_s: 5.0       # tope de audio tras el wake
+      no_speech_timeout_s: 2.5   # sin voz tras el wake → descartar sin STT
+      end_silence_ms: 600        # silencio tras la voz que cierra el comando
+      ready_silence_ms: 150      # cierre rápido si el parser ya tiene comando completo
+      min_speech_ms: 240         # voz post-wake mínima (la cola del "Nexa" no cuenta)
+      noise_ratio: 1.8           # voz = RMS >= 1.8 × piso de la room
+      noise_floor_min_rms: 0.0006
+      noise_floor_default_rms: 0.002   # piso hasta juntar noise_min_history_s
+      noise_window_s: 10.0
+      noise_percentile: 20.0
+      noise_min_history_s: 1.0
+      vad_threshold: 0.5         # Silero; null = solo nivel relativo
+      frame_samples: 1280        # 80 ms
+      stall_margin_s: 1.0        # cierre por reloj si el audio deja de llegar
+      follow_up_preroll_s: 0.32  # audio previo al inicio de voz del follow-up
 
   # Detection config
   detection:

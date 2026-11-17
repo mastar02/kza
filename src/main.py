@@ -95,6 +95,7 @@ from src.training.nightly_trainer import NightlyTrainer, NightlyConfig
 from src.rooms.room_context import RoomContextManager, RoomConfig
 from src.presence.presence_detector import PresenceDetector
 from src.pipeline.multi_room_audio_loop import MultiRoomAudioLoop, RoomStream
+from src.pipeline.post_wake_endpoint import PostWakeConfig
 from src.wakeword.detector import WakeWordDetector
 from src.lists.list_store import ListStore
 from src.lists.list_manager import ListManager
@@ -1498,7 +1499,8 @@ async def build_application(
                 ambient_guard=ambient_guard,
                 wake_clip_writer=wake_clip_writer,
                 sample_rate=16000,
-                command_duration=2.0,
+                command_duration=endpointing_cfg.get("command_duration_s", 2.0),
+                post_wake=PostWakeConfig.from_dict(endpointing_cfg.get("post_wake")),
                 dedup_window_ms=rooms_config.get("dedup_window_ms", 200),
                 min_wake_rms=early_cfg.get("min_wake_rms", 0.0),
                 wake_preroll_s=early_cfg.get("wake_preroll_s", 0.0),
@@ -1588,7 +1590,7 @@ async def build_application(
         wake_word_model=wake_config.get("model", "hey_jarvis"),
         wake_word_threshold=wake_config.get("threshold", 0.5),
         sample_rate=16000,
-        command_duration=2.0,
+        command_duration=(rooms_config.get("endpointing", {}) or {}).get("command_duration_s", 2.0),
     )
 
     # Command processor (STT + speaker ID + emotion)
