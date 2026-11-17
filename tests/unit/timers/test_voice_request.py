@@ -36,6 +36,7 @@ CREATE = [
     ("poné un timer de 1 hora 30 minutos", 5400, None),
     ("poné un timer de una hora y 15 minutos", 4500, None),
     ("poné un timer de dos minutos y medio", 150, None),
+    ("poné un timer de dos minutos y media", 150, None),  # T030-U1 RR-5 (reviewer mutant R5_minutes_y_media)
     ("poné un timer de un minuto y medio", 90, None),
     ("poné un timer de cinco y medio minutos", 330, None),
     ("poné un timer de dos minutos y 30 segundos", 150, None),
