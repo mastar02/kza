@@ -41,8 +41,9 @@ shared ``/run/user/<uid>`` while this one checks that its own left none.
 The lock is an ``flock`` on ``$XDG_RUNTIME_DIR/kza-rehearsal-manager.lock``:
 the kernel drops it when its holder dies, so a killed run never blocks the
 next one (whose sweep then removes the dead run's units). The holder
-writes its pid, cwd and test into that file, and a waiter names it every
-minute it waits (AWR-R4); the wait has no deadline of its own. A copy of the
+writes its pid, cwd and test into that file, and a waiter logs it every
+minute it waits and records those reports in its evidence (AWR-R4); the
+wait has no deadline of its own. A copy of the
 code from before this lock does not take it and is still not isolated.
 """
 from __future__ import annotations
@@ -76,12 +77,14 @@ def _lock_path() -> Path:
     return Path(os.environ["XDG_RUNTIME_DIR"]) / LOCK_NAME
 
 
-def _acquire() -> tuple[int, float]:
-    """Block until this account's rehearsal manager lock is ours: (descriptor, seconds waited).
+def _acquire() -> tuple[int, float, list[str]]:
+    """Block until this account's rehearsal manager lock is ours: (descriptor, seconds waited, wait reports).
 
     A second acquisition in the same process would wait for itself forever (``flock`` is per open file
     description), so it is an error instead. The wait has no deadline of its own (pytest-timeout bounds
-    it); every :data:`LOCK_WAIT_REPORT_SECONDS` of it names the holder the lock file records (AWR-R4).
+    it); every :data:`LOCK_WAIT_REPORT_SECONDS` of it logs a warning naming the holder the lock file
+    records (AWR-R4). pytest captures it (shown with a failure, a pytest-timeout one included, or live with
+    ``-o log_cli=true``); the reports also go to the sweep and cleanup evidence.
     The wait is one blocking ``flock``, not a poll, so the kernel hands the lock to a waiter between two
     of the holder's rehearsals instead of letting the holder take it back.
     """
@@ -89,8 +92,8 @@ def _acquire() -> tuple[int, float]:
         raise RuntimeError("the rehearsal manager lock is already held by this process")
     path = _lock_path()
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
-    started, done = time.monotonic(), threading.Event()
-    reporter = threading.Thread(target=_report_wait, args=(path, started, done), daemon=True,
+    started, done, reports = time.monotonic(), threading.Event(), []
+    reporter = threading.Thread(target=_report_wait, args=(path, started, done, reports), daemon=True,
                                 name="rehearsal-lock-wait")
     reporter.start()
     try:
@@ -103,7 +106,7 @@ def _acquire() -> tuple[int, float]:
         reporter.join()
     _HELD.append(descriptor)
     _record_holder(descriptor)
-    return descriptor, time.monotonic() - started
+    return descriptor, time.monotonic() - started, reports
 
 
 def _record_holder(descriptor: int) -> None:
@@ -117,7 +120,7 @@ def _record_holder(descriptor: int) -> None:
         logger.warning("[rehearsal-lock] holder record not written: %s", error.__class__.__name__)
 
 
-def _report_wait(path: Path, started: float, done: threading.Event) -> None:
+def _report_wait(path: Path, started: float, done: threading.Event, reports: list[str]) -> None:
     while not done.wait(LOCK_WAIT_REPORT_SECONDS):
         try:
             holder = path.read_text(errors="replace").strip() or "not recorded"
@@ -125,10 +128,8 @@ def _report_wait(path: Path, started: float, done: threading.Event) -> None:
             holder = f"unreadable ({error.__class__.__name__})"
         message = (f"[rehearsal-lock] pid {os.getpid()} has waited {time.monotonic() - started:.0f} s for "
                    f"{path}; holder: {holder}")
+        reports.append(message)
         logger.warning(message)
-        if sys.__stderr__ is not None:  # past pytest's capture: the run's own log names the holder
-            sys.__stderr__.write(message + "\n")
-            sys.__stderr__.flush()
 
 
 def _release(descriptor: int) -> None:
@@ -143,10 +144,10 @@ def _release(descriptor: int) -> None:
 
 @contextmanager
 def manager_lock():
-    """Hold the rehearsal manager lock (see the module docstring); yields the seconds waited for it."""
-    descriptor, waited = _acquire()
+    """Hold the rehearsal manager lock (see the module docstring); yields (seconds waited, wait reports)."""
+    descriptor, waited, reports = _acquire()
     try:
-        yield waited
+        yield waited, reports
     finally:
         _release(descriptor)
 
@@ -255,7 +256,7 @@ class UserSystemd:
     def __init__(self, workdir: Path) -> None:
         # The manager is this rehearsal's alone until cleanup() (module docstring, BB-2).
         self._lock: int | None
-        self._lock, self.lock_wait = _acquire()
+        self._lock, self.lock_wait, self.lock_wait_reports = _acquire()
         try:
             self._setup(workdir)
         except BaseException:
@@ -448,7 +449,8 @@ class UserSystemd:
                         "leftover_paths": leftovers, "unit_dir_removed": not self.unit_dir.exists(),
                         "calls": len(self.calls()), "guard_refusals": [call for call in self.calls()
                                                                       if call.get("refused")],
-                        "guard_breaches": self.guard_breaches(), "lock_wait_seconds": round(self.lock_wait, 2)}
+                        "guard_breaches": self.guard_breaches(), "lock_wait_seconds": round(self.lock_wait, 2),
+                        "lock_wait_reports": self.lock_wait_reports}
         return self.cleaned
 
 
@@ -463,8 +465,8 @@ def sweep_stale() -> dict:
     """
     if unavailable() is not None:
         return {"swept": [], "paths": []}
-    with manager_lock() as waited:
-        return dict(_sweep(), lock_wait_seconds=round(waited, 2))
+    with manager_lock() as (waited, reports):
+        return dict(_sweep(), lock_wait_seconds=round(waited, 2), lock_wait_reports=reports)
 
 
 def _sweep() -> dict:

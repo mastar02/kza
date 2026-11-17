@@ -39,10 +39,10 @@ def _taken_elsewhere(path) -> bool:
     return False
 
 
-def _holder(lock: int, lock_wait: float = 0.0) -> real_systemd.UserSystemd:
+def _holder(lock: int, lock_wait: float = 0.0, reports: list[str] | None = None) -> real_systemd.UserSystemd:
     """A UserSystemd holding ``lock`` whose rehearsal setup never ran (no unit, no systemctl)."""
     holder = real_systemd.UserSystemd.__new__(real_systemd.UserSystemd)
-    holder._lock, holder.lock_wait, holder.cleaned = lock, lock_wait, None
+    holder._lock, holder.lock_wait, holder.lock_wait_reports, holder.cleaned = lock, lock_wait, reports or [], None
     return holder
 
 
@@ -101,6 +101,7 @@ def test_a_long_wait_names_the_holder_and_the_holder_is_recorded(runtime, monkey
     assert not waiter.is_alive() and real_systemd._HELD == [acquired[0][0]]
     report = next(record.getMessage() for record in caplog.records if "other::test" in record.getMessage())
     assert '"pid": 4242' in report and "/elsewhere" in report, report
+    assert report in acquired[0][2], acquired  # the same report goes to the sweep or cleanup evidence
     holder = json.loads(path.read_text())
     assert holder["pid"] == os.getpid() and holder["cwd"] == os.getcwd(), holder
     assert "test_a_long_wait_names_the_holder" in holder["test"], holder
