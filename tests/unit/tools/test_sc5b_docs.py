@@ -271,7 +271,7 @@ def test_retire_refusals_are_routed_by_code():
                 "runtime_admission_compaction_owner_only_data": "RF",
                 compaction.RETIRE_PROTECTED_CHANGED: "RX", compaction.RETIRE_RESURRECTED: "RX",
                 compaction.K_BINDING_CHANGED: "RX", compaction.SDK_CHANGED: "AT", compaction.H_TRANSIENT: "AT",
-                compaction.K_TRANSIENT: "AT", compaction.H_CHANGED: "HD"}
+                compaction.K_TRANSIENT: "AT", compaction.H_CHANGED: "HD", "runtime_admission_not_closed": "V2"}
     for code, row in expected.items():
         assert rows[code][0] == row, (code, rows.get(code))
     assert "--accept-owner-only-loss <coverage_sha256>" in rows["runtime_admission_compaction_owner_only_data"][1]
@@ -504,6 +504,20 @@ def test_a_deferred_verified_goes_to_retire_first():
     retire = (REPO / "scripts/compaction.py").read_text().split("def compact_retire(", 1)[1].split("\ndef ", 1)[0]
     assert retire.index("stage.record_compaction_verified(") < retire.index(
         '_refuse("runtime_admission_compaction_not_verified")')
+    # Re-review SC5B-RR1: with K' still open (V died after READY, row V2) compact_retire's admission
+    # controller has no allow_open_head and refuses not_closed before writing; the exit is the lossless
+    # return to H, never the default retire row.
+    assert ("El retiro primero vale sólo con K' cerrado: si V murió después de `READY` con K' abierto (fila V2), "
+            "el retiro rechaza `runtime_admission_not_closed` sin escribir nada y la salida es volver a H con W, "
+            "que funciona con K' abierto y vuelve sin pérdida.") in status
+    assert status.index("Correr primero el retiro") < status.index("El retiro primero vale sólo con K' cerrado")
+    assert 'stage.AdmissionController(root, gate="compaction:" + compaction_id):\n        log = _log(root, ' \
+        'compaction_id)\n        if _has(log, "abort_started"):' in retire
+    assert "allow_open_head" not in retire
+    table = _section(_text(), "### Paso 8: retiro (la aceptación)")
+    row = next(line for line in table.splitlines() if line.startswith("| `runtime_admission_not_closed` |"))
+    assert row == ("| `runtime_admission_not_closed` | V2 | K' abierto (V murió después de `READY`; el retiro no "
+                   "escribió nada): volver a H con W |"), row
 
 
 def test_l4_exits_name_their_consequence_and_r_b_stops_again():
@@ -564,6 +578,8 @@ def test_every_retire_exit_cell_is_pinned():
         "`runtime_admission_compaction_retire_resurrected`": ("RX", "volver a H con W"),
         "`runtime_admission_compaction_k_binding_changed`": ("RX", "(`privacy_authority_stale`) volver a H con W"),
         "`runtime_admission_compaction_not_verified`": ("V3", "volver a H con W"),
+        "`runtime_admission_not_closed`": (
+            "V2", "K' abierto (V murió después de `READY`; el retiro no escribió nada): volver a H con W"),
         "`runtime_admission_compaction_sdk_changed`": ("AT", "reinstalar la versión ligada que nombra y repetir"),
         "`runtime_admission_compaction_h_transient`, `runtime_admission_compaction_k_transient`, "
         "`runtime_admission_writer_active`, `runtime_admission_busy`, `runtime_admission_sdk_version_unavailable`": (

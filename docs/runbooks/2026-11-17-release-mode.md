@@ -416,7 +416,11 @@ Muestra `phase`, `armed_run` (`not armed`, `not consumed` o `consumed`),
   compact retire <compaction_id>` registra él mismo el `verified` si K'
   cerró limpio, y si no rechaza `runtime_admission_compaction_not_verified`
   (fila V3) sin escribir nada; recién ahí volver a H con W. Volver a H
-  primero tiraría una V buena y la transición repetiría su bajada.
+  primero tiraría una V buena y la transición repetiría su bajada. El retiro
+  primero vale sólo con K' cerrado: si V murió después de `READY` con K'
+  abierto (fila V2), el retiro rechaza `runtime_admission_not_closed` sin
+  escribir nada y la salida es volver a H con W, que funciona con K'
+  abierto y vuelve sin pérdida.
 - Cualquier otro resultado (no verificada: `verify_branch_reached: no`,
   intervalo corto, V muerta con o sin recibo): «Volver a H con W», abajo.
   No arrancar la unidad otra vez para «probar»: `serve` rechaza
@@ -443,6 +447,7 @@ después de `retire_started`: ése es un retiro cortado (fila RS).
 | `runtime_admission_compaction_k_binding_changed` | RX | (`privacy_authority_stale`) volver a H con W |
 | `runtime_admission_compaction_io_error` | RS o AT | según la fase: mirar `phases` en `$ST compact status <compaction_id>`. Con `retire_started`, el retiro ya empezó (fila RS) y el abort rechaza `runtime_admission_compaction_phase`: quitar la causa del `errno` y repetir `$ST compact retire <compaction_id>` o `$ST compact resume <compaction_id>`, nunca volver a H. Sin `retire_started`: quitar la causa del `errno` y repetir una vez el mismo retiro, como en la fila AT; si rechaza igual, volver a H con W |
 | `runtime_admission_compaction_not_verified` | V3 | volver a H con W |
+| `runtime_admission_not_closed` | V2 | K' abierto (V murió después de `READY`; el retiro no escribió nada): volver a H con W |
 | `runtime_admission_compaction_sdk_changed` | AT | reinstalar la versión ligada que nombra y repetir |
 | `runtime_admission_compaction_h_transient`, `runtime_admission_compaction_k_transient`, `runtime_admission_writer_active`, `runtime_admission_busy`, `runtime_admission_sdk_version_unavailable` | AT | «Rechazos transitorios» |
 | `runtime_admission_compaction_h_changed` | HD | parada terminal HD |
