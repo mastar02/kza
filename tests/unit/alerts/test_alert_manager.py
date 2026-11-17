@@ -563,6 +563,21 @@ class TestConditionKeyAndEpisodeLatch:
         manager.clear_cooldowns()
         assert await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "a", condition=DOOR)
 
+    @pytest.mark.asyncio
+    async def test_clear_cooldowns_never_leaves_two_active_alerts_for_one_condition(self):
+        """Review R5: the cleared episode's alert is resolved; only the reopened one is active."""
+        instant = datetime(2026, 11, 16, 12, 0, tzinfo=UTC)
+        manager = AlertManager(now=lambda: instant)
+        first = await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "a", condition=DOOR)
+        manager.clear_cooldowns()
+        assert first.resolved_at == instant
+        assert manager.get_active_alerts() == []
+        second = await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "a", condition=DOOR)
+        assert second is not first
+        assert manager.get_active_alerts() == [second]
+        assert await manager.resolve_condition(AlertType.SECURITY, DOOR) is second
+        assert manager.get_active_alerts() == []
+
 
 class TestEscalationAndReannounce:
     """A more severe reading escalates the open alert; re-announce only by explicit config."""
@@ -777,6 +792,17 @@ class TestVoiceDeliveryReceipt:
         manager = AlertManager(tts_callback=lambda text: receipt())
         alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a")
         assert alert.delivery is AlertDelivery.BLOCKED
+
+    @pytest.mark.parametrize("sync", [False, True])
+    @pytest.mark.asyncio
+    async def test_legacy_receiptless_return_counts_as_delivered(self, sync):
+        """Review R5: a callback returning None keeps the invoke_voice_callback convention (delivered)."""
+        tts = Mock(return_value=None) if sync else AsyncMock(return_value=None)
+        manager = AlertManager(tts_callback=tts)
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a")
+        assert tts.call_count == 1
+        assert alert.delivery is AlertDelivery.DELIVERED
+        assert alert.delivery_reason is None and alert.delivery_at is not None
 
     @pytest.mark.asyncio
     async def test_muted_without_voice_output(self):

@@ -175,19 +175,25 @@ await devices.check_multiple_devices(devices_status)
 
 ## Deduplicación
 
-El sistema evita alertas duplicadas automáticamente:
+El sistema evita alertas duplicadas por **condición**, nunca por el texto:
 
-- **Cooldown configurable**: Por defecto 5 minutos (300 segundos)
-- **Clave de deduplicación**: Basada en tipo de alerta + mensaje
-- **Limpieza**: Método `clear_cooldowns()` para resetear
+- **Clave de deduplicación**: `(tipo, fuente, condición)` de `AlertCondition`;
+  sin condición explícita (productores legacy) la clave es el mensaje
+- **Latch por episodio**: una condición con estado (`latched=True`: puerta
+  abierta, batería baja, offline) avisa al abrirse y no vuelve a avisar hasta
+  `resolve_condition()`; un evento momentáneo (`latched=False`) cierra su
+  episodio tras `cooldown_seconds` (default 300)
+- **Escalada**: una lectura más grave actualiza la alerta abierta, la vuelve a
+  activar aunque estuviera reconocida y la anuncia si es CRITICAL/HIGH
+- **Limpieza**: `clear_cooldowns()` cierra todos los episodios abiertos (sus
+  alertas quedan resueltas) y la próxima observación alerta de nuevo
 
 ```python
-# Las alertas idénticas en menos de 5 min retornan None
-alert1 = await alert_manager.create_alert(...)  # Crea alerta
-alert2 = await alert_manager.create_alert(...)  # Retorna None (deduplicada)
-
-# Resetear cooldowns si es necesario
-alert_manager.clear_cooldowns()
+door = AlertCondition(source="entrada", condition="door_open_unexpected")
+alert1 = await alert_manager.create_alert(..., condition=door)  # Crea alerta
+alert2 = await alert_manager.create_alert(..., condition=door)  # None (episodio abierto)
+await alert_manager.resolve_condition(AlertType.SECURITY, door)  # Se cerró la puerta
+alert3 = await alert_manager.create_alert(..., condition=door)  # Nueva alerta
 ```
 
 ## Notificaciones de Voz

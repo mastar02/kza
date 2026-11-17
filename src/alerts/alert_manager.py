@@ -570,7 +570,14 @@ class AlertManager:
         return None
 
     def clear_cooldowns(self) -> None:
-        """Olvidar todos los episodios abiertos (la próxima observación alerta de nuevo)"""
+        """Close every open episode; the next observation of a condition alerts again.
+
+        Each cleared episode's alert is marked resolved, so a condition never has
+        two active alerts (the cleared one and the one its next observation opens).
+        """
+        resolved_at = self._now()
+        for episode in self._episodes.values():
+            episode.alert.resolved_at = resolved_at
         self._episodes.clear()
         logger.debug("All alert episodes cleared")
 
