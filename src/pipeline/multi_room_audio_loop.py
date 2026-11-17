@@ -52,7 +52,7 @@ from src.audio.microphone_status import (
 from src.conversation.command_turns import CommandTurns
 from src.conversation.follow_up_mode import FollowUpMode
 from src.nlu.command_grammar import PartialCommand, parse_partial_command
-from src.rooms.room_context import resolve_mic_usb_port
+from src.rooms.room_context import resolve_mic_usb_port, usb_port_to_alsa_card
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +261,7 @@ class MultiRoomAudioLoop:
         stream_watchdog_reopen_backoff_min_s: float = 1.0,
         stream_watchdog_reopen_backoff_max_s: float = 10.0,
         stream_watchdog_first_frame_grace_s: float = 180.0,
+        stream_watchdog_catalog_refresh_min_interval_s: float = 0.0,
         audio_health_path: str = "./data/audio_health.json",
         microphone_rooms: tuple[MicrophoneRoom, ...] | None = None,
         microphone_usb_root: Path = Path("/sys/bus/usb/devices"),
@@ -280,6 +281,10 @@ class MultiRoomAudioLoop:
             or microphone_stale_after_s < microphone_interval_s
         ):
             raise ValueError("invalid microphone telemetry interval/stale window")
+        refresh_interval = stream_watchdog_catalog_refresh_min_interval_s
+        if (type(refresh_interval) not in (int, float) or not math.isfinite(refresh_interval)
+                or refresh_interval < 0):
+            raise ValueError("invalid PortAudio catalog refresh interval")
         self.room_streams = room_streams
         self.follow_up = follow_up
         self.sample_rate = sample_rate
@@ -399,6 +404,18 @@ class MultiRoomAudioLoop:
         # Margen para el PRIMER frame tras abrir (arranques medidos:
         # 1.5-2s lo normal, 135s el peor observado el 2026-07-29).
         self._watchdog_first_frame_grace_s = stream_watchdog_first_frame_grace_s
+        # Late microphone (T025-U2, Cocina 2026-11-15): PortAudio lists only the
+        # devices present at Pa_Initialize. A configured card that enumerates
+        # later stays invisible while the other rooms are healthy, so the reopen
+        # waiter requests one global catalog refresh (a brief capture cut in
+        # every room), at most once per interval and never during a command,
+        # a conversation or a response. 0 disables it.
+        self._catalog_refresh_interval_s = float(refresh_interval)
+        # room_id -> ALSA card seen in sysfs but not listed by PortAudio, as
+        # observed by the latest open attempt (written by the native factory).
+        self._catalog_missing: dict[str, int] = {}
+        self._catalog_refreshed_at: float | None = None
+        self._catalog_refresh_deferred: str | None = None
         self._watchdog_task = None
         self._recovery_task = None
         self._recovery_epoch = 0
@@ -1286,6 +1303,7 @@ class MultiRoomAudioLoop:
         """Construct only; its retained owner configures and starts the handle."""
         if rs.mic_usb_port:
             rs.device_index = resolve_mic_usb_port(rs.mic_usb_port)
+            self._note_catalog_gap(rs)
         if rs.device_index is None or self._closed or not self._inputs.accepting:
             if report_not_admitted:
                 raise InputNotAdmitted()
@@ -1386,6 +1404,79 @@ class MultiRoomAudioLoop:
         except Exception as e:
             logger.warning(f"[audio-watchdog] PortAudio reinit failed: {e}")
 
+    def _note_catalog_gap(self, rs: RoomStream) -> None:
+        """Record whether a configured card is in sysfs but not in PortAudio.
+
+        Runs in the native open owner right after the port was resolved, so
+        the sysfs read never blocks the event loop. An unresolved port whose
+        card is also absent from sysfs (an unplugged microphone) is not a
+        catalog gap: refreshing PortAudio cannot bring it back.
+
+        Args:
+            rs: Room whose ``device_index`` was just resolved from its port.
+        """
+        if self._catalog_refresh_interval_s <= 0:
+            return
+        card = None
+        if rs.device_index is None:
+            card = usb_port_to_alsa_card(rs.mic_usb_port, str(self._microphone_usb_root))
+        if card is None:
+            self._catalog_missing.pop(rs.room_id, None)
+        else:
+            self._catalog_missing[rs.room_id] = card
+
+    def _catalog_refresh_blocker(self) -> str | None:
+        """Name the activity a brief all-room capture cut would interrupt.
+
+        Returns:
+            ``'command'`` while a command is captured or dispatched in some
+            room, ``'conversation'`` while the follow-up conversation is
+            active, ``'response'`` while voice output is owned (a PortAudio
+            reset would also stop playback), or None when a cut is allowed.
+        """
+        if self.command_turns.active:
+            return 'command'
+        if bool(getattr(self.follow_up, 'is_active', False)):
+            return 'conversation'
+        handler = self._response_handler
+        if handler is not None and bool(getattr(handler, 'is_responding', False)):
+            return 'response'
+        return None
+
+    def _request_catalog_refresh(self, rs: RoomStream) -> bool:
+        """Ask the global recovery to refresh PortAudio for a late microphone.
+
+        Called by a room's reopen waiter after a failed open. The refresh is
+        admitted only when that room's card is in sysfs but missing from
+        PortAudio, no command, conversation or response is active, and the
+        previous refresh is older than the configured interval.
+
+        Args:
+            rs: Room still waiting for its microphone.
+
+        Returns:
+            True when a global catalog recovery was scheduled.
+        """
+        if self._catalog_refresh_interval_s <= 0:
+            return False
+        card = self._catalog_missing.get(rs.room_id)
+        if card is None:
+            return False
+        reason = self._catalog_refresh_blocker()
+        last = self._catalog_refreshed_at
+        if (reason is None and last is not None
+                and self._microphone_monotonic() - last < self._catalog_refresh_interval_s):
+            reason = 'rate_limit'
+        if reason is not None:
+            if self._catalog_refresh_deferred != reason:
+                self._catalog_refresh_deferred = reason
+                logger.info(
+                    f"[audio-watchdog] {rs.room_id}: PortAudio catalog refresh deferred "
+                    f"({reason}); ALSA card {card} is present but not listed"
+                )
+            return False
+        return self._schedule_recovery([rs.room_id], catalog_refresh=True)
+
     def _input_epoch_current(self, epoch: int) -> bool:
         return not self._closed and self._inputs.accepting and epoch == self._recovery_epoch
 
@@ -1422,6 +1513,10 @@ class MultiRoomAudioLoop:
                 return
             if not self._input_epoch_current(epoch) or self._global_recovery:
                 return
+            # An admitted global recovery cancels this waiter and reopens every
+            # room after the refresh. Keep waiting meanwhile: the recovery may
+            # still decline the cut if a command starts before it runs.
+            self._request_catalog_refresh(rs)
             logger.warning(
                 f"[audio-watchdog] {rs.room_id}: device {rs.mic_usb_port} "
                 f"absent, retry in {backoff:.1f}s"
@@ -1460,19 +1555,38 @@ class MultiRoomAudioLoop:
         self._reopen_tasks[rs.room_id] = task
         task.add_done_callback(lambda done: None if done.cancelled() else done.exception(), context=Context())
 
-    def _schedule_recovery(self, trigger_room_ids: list) -> None:
-        """Admit one finite controller; native effects remain owned by InputGroup."""
+    def _schedule_recovery(self, trigger_room_ids: list, *, catalog_refresh: bool = False) -> bool:
+        """Admit one finite controller; native effects remain owned by InputGroup.
+
+        Args:
+            trigger_room_ids: Rooms that need recovery.
+            catalog_refresh: Refresh the PortAudio catalog for a late
+                microphone even while other rooms are healthy; re-checked
+                against active commands and conversations when it starts.
+
+        Returns:
+            True when a recovery controller was admitted.
+        """
         if (not self._running or not self._recovery_ready or self._closed
                 or not self._inputs.accepting
                 or self._recovery_task is not None and not self._recovery_task.done()):
-            return
+            return False
         epoch = self._recovery_epoch
         rooms = tuple(room for room in self.room_streams if room in trigger_room_ids)
         if not rooms:
-            return
+            return False
 
         async def recover():
-            if self._input_epoch_current(epoch) and self._running and self._recovery_ready:
+            if not (self._input_epoch_current(epoch) and self._running and self._recovery_ready):
+                return
+            if catalog_refresh:
+                # A wake or a response may have started since admission.
+                if self._catalog_refresh_blocker() is not None:
+                    return
+                self._catalog_refreshed_at = self._microphone_monotonic()
+                self._catalog_refresh_deferred = None
+                await self._recover_streams(list(rooms), catalog_refresh=True)
+            else:
                 await self._recover_streams(list(rooms))
 
         self._recovery_task = asyncio.create_task(recover(), context=Context())
@@ -1492,24 +1606,39 @@ class MultiRoomAudioLoop:
                 self._recovery_task = None
 
         self._recovery_task.add_done_callback(finished, context=Context())
+        return True
 
-    async def _recover_streams(self, trigger_room_ids: list) -> None:
+    async def _recover_streams(self, trigger_room_ids: list, *, catalog_refresh: bool = False) -> None:
         """Recover failed rooms without interrupting rooms still receiving audio.
 
         Reinitialize the shared PortAudio catalog only when no other stream is
-        healthy. Native stop/open calls must not block the asyncio event loop.
+        healthy, or when ``catalog_refresh`` asks for it because a configured
+        card is in sysfs but missing from PortAudio's device list. Native
+        stop/open calls must not block the asyncio event loop.
+
+        Args:
+            trigger_room_ids: Rooms that stopped delivering or never opened.
+            catalog_refresh: Force the global path: retire every room,
+                refresh the catalog and reopen every room.
         """
         epoch = self._recovery_epoch
         if not self._input_epoch_current(epoch):
             return
         now = time.monotonic()
-        healthy_other = any(
+        healthy_other = not catalog_refresh and any(
             room_id not in trigger_room_ids and rs.last_frame_ts > 0
             and now - rs.last_frame_ts <= self._watchdog_timeout_s
             for room_id, rs in self.room_streams.items()
         )
         affected = trigger_room_ids if healthy_other else list(self.room_streams)
-        logger.error(f"[audio-watchdog] streams {trigger_room_ids} stopped delivering audio; recovering {affected}")
+        if catalog_refresh:
+            cards = {room: self._catalog_missing.get(room) for room in trigger_room_ids}
+            logger.warning(
+                f"[audio-watchdog] PortAudio does not list ALSA cards {cards} present in sysfs; "
+                f"refreshing the catalog with a brief capture cut in {affected}"
+            )
+        else:
+            logger.error(f"[audio-watchdog] streams {trigger_room_ids} stopped delivering audio; recovering {affected}")
         if not healthy_other:
             # Catalog reset invalidates every native handle. Quiesce retry
             # controllers before the first await, then drain their retained
@@ -1537,7 +1666,15 @@ class MultiRoomAudioLoop:
                     await self._inputs.retire(room_id)
                     if not self._input_epoch_current(epoch):
                         return
-                await self._inputs.catalog_call(self._reinit_portaudio)
+                blocker = self._catalog_refresh_blocker() if catalog_refresh else None
+                if blocker is None:
+                    await self._inputs.catalog_call(self._reinit_portaudio)
+                else:
+                    # Never reset PortAudio under a starting command or a
+                    # playing response; the cut already happened, so reopen.
+                    logger.warning(
+                        f"[audio-watchdog] PortAudio catalog refresh skipped ({blocker}); reopening {affected}"
+                    )
                 if not self._input_epoch_current(epoch):
                     return
         finally:

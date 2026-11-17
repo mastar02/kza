@@ -1499,6 +1499,293 @@ class TestRecoverStreams:
         assert not loop._reopen_tasks
 
 
+async def _until(predicate, timeout: float = 3.0) -> None:
+    """Esperar (sin congelar el loop) hasta que `predicate()` sea verdadero."""
+    async with asyncio.timeout(timeout):
+        while not predicate():
+            await asyncio.sleep(0.002)
+
+
+class _LateCatalogRig:
+    """Mic que enumera tarde: sysfs falso + PortAudio falso con snapshot.
+
+    Reproduce el incidente de la Cocina (2026-11-15): la card ALSA del
+    XVF3800 aparece en sysfs después de `Pa_Initialize`, y PortAudio sigue
+    listando solo los devices que vio al inicializarse hasta que alguien
+    hace `_terminate` + `_initialize`.
+    """
+
+    COCINA_PORT, COCINA_CARD, COCINA_INDEX = "7-5.3", 6, 9
+    LIVING_PORT, LIVING_CARD, LIVING_INDEX = "3-1.4", 2, 4
+
+    def __init__(self, sysfs_root, *, refresh_lists_card: bool = True,
+                 interval_s: float = 300.0, follow_up=None):
+        self.sysfs_root = sysfs_root
+        self.refresh_lists_card = refresh_lists_card
+        self.clock = [1000.0]
+        self.present = {self.LIVING_PORT: self.LIVING_INDEX}   # sysfs
+        self.listed = dict(self.present)                        # PortAudio
+        self._card_dir(self.LIVING_PORT, self.LIVING_CARD)
+        self.resolutions = 0
+        self.streams = []
+        self.sd = MagicMock()
+        self.sd.PortAudioError = type("PortAudioError", (Exception,), {})
+        self.sd.query_devices.return_value = {"max_input_channels": 2}
+        self.sd.InputStream.side_effect = self._new_stream
+        self.sd._initialize.side_effect = self._initialize
+        self.cocina = _make_room_stream("cocina", device_index=None)
+        self.cocina.mic_usb_port = self.COCINA_PORT
+        self.living = _make_room_stream("living", device_index=self.LIVING_INDEX)
+        self.living.mic_usb_port = self.LIVING_PORT
+        kwargs = {}
+        if follow_up is not None:
+            kwargs["follow_up"] = follow_up
+        self.loop = MultiRoomAudioLoop(
+            room_streams={"cocina": self.cocina, "living": self.living},
+            follow_up=kwargs.get("follow_up", _make_follow_up()),
+            microphone_usb_root=sysfs_root,
+            microphone_monotonic=lambda: self.clock[0],
+            stream_watchdog_catalog_refresh_min_interval_s=interval_s,
+        )
+        self.loop._running = True
+        self.loop._watchdog_backoff_min_s = 0.001
+        self.loop._watchdog_backoff_max_s = 0.002
+        self.old_living = MagicMock()
+
+    def _card_dir(self, port, card):
+        (self.sysfs_root / f"{port}:1.0" / "sound" / f"card{card}").mkdir(parents=True)
+
+    def _new_stream(self, **_kwargs):
+        stream = MagicMock()
+        self.streams.append(stream)
+        return stream
+
+    def _initialize(self):
+        if self.refresh_lists_card:
+            self.listed = dict(self.present)
+
+    def resolve(self, port):
+        self.resolutions += 1
+        return self.listed.get(port)
+
+    def plug_cocina(self):
+        """La card aparece en sysfs; PortAudio NO la ve hasta un refresh."""
+        self._card_dir(self.COCINA_PORT, self.COCINA_CARD)
+        self.present[self.COCINA_PORT] = self.COCINA_INDEX
+
+    @property
+    def refreshes(self) -> int:
+        return self.sd._terminate.call_count
+
+    async def start(self):
+        """Living abierta y sana; la cocina esperando su device."""
+        await _seed_owned_inputs(self.loop, {"living": self.old_living})
+        self.living.last_frame_ts = time.monotonic()
+        self.loop._schedule_reopen(self.cocina)
+
+    async def spin(self, attempts: int = 6):
+        """Dejar correr al menos `attempts` intentos de reapertura más."""
+        target = self.resolutions + attempts
+        await _until(lambda: self.resolutions >= target)
+
+    async def stop(self):
+        self.loop._running = False
+        await asyncio.gather(*self.loop._cancel_reopen_tasks(), return_exceptions=True)
+        if self.loop._recovery_task is not None:
+            await asyncio.gather(self.loop._recovery_task, return_exceptions=True)
+
+
+class TestLateMicrophoneCatalogRefresh:
+    """T025-U2: un mic configurado que aparece tarde se abre sin reiniciar.
+
+    Incidente 2026-11-15 → 2026-11-17: la Cocina enumeró como card 6 después
+    de arrancar kza-voice; `resolve_mic_usb_port` la encontraba en sysfs pero
+    PortAudio no la listaba, y como las otras rooms estaban sanas nunca se
+    reinicializaba el catálogo. Decisión del usuario: "Corte breve
+    automático", limitado en frecuencia y nunca durante un comando.
+    """
+
+    @pytest.mark.asyncio
+    async def test_late_card_triggers_one_refresh_and_reopens_every_room(self, tmp_path, caplog):
+        rig = _LateCatalogRig(tmp_path)
+        with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
+        ), caplog.at_level("INFO", logger="src.pipeline.multi_room_audio_loop"):
+            await rig.start()
+            await rig.spin()
+            assert rig.refreshes == 0, "sin card en sysfs no hay nada que refrescar"
+            rig.plug_cocina()
+            await _until(lambda: "cocina" in rig.loop._streams)
+            await _until(lambda: "living" in rig.loop._streams)
+            await _until(lambda: rig.loop._recovery_task is None)
+            await rig.stop()
+
+        assert rig.refreshes == 1
+        assert rig.sd._initialize.call_count == 1
+        assert rig.cocina.device_index == rig.COCINA_INDEX
+        # El corte breve alcanza a TODAS las rooms y las sanas vuelven.
+        rig.old_living.close.assert_called_once()
+        assert rig.loop._streams["living"] in rig.streams
+        assert rig.loop._streams["living"] is not rig.old_living
+        assert rig.loop._streams["cocina"] in rig.streams
+        assert rig.loop._catalog_missing == {}
+        assert rig.loop._catalog_refreshed_at == 1000.0
+        assert any("PortAudio does not list ALSA cards {'cocina': 6}" in r.getMessage()
+                   and "brief capture cut in ['cocina', 'living']" in r.getMessage()
+                   for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_no_refresh_while_the_card_is_absent_from_sysfs(self, tmp_path):
+        rig = _LateCatalogRig(tmp_path)
+        with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
+        ):
+            await rig.start()
+            await rig.spin(20)
+            await rig.stop()
+        assert rig.refreshes == 0
+        assert rig.loop._streams.get("living") is rig.old_living
+        rig.old_living.close.assert_not_called()
+        assert "cocina" not in rig.loop._catalog_missing
+
+    @pytest.mark.asyncio
+    async def test_disabled_interval_never_refreshes(self, tmp_path):
+        rig = _LateCatalogRig(tmp_path, interval_s=0.0)
+        rig.plug_cocina()
+        with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
+        ):
+            await rig.start()
+            await rig.spin(20)
+            await rig.stop()
+        assert rig.refreshes == 0
+        assert rig.loop._streams.get("living") is rig.old_living
+
+    @pytest.mark.asyncio
+    async def test_refresh_is_rate_limited(self, tmp_path, caplog):
+        # PortAudio sigue sin listar la card tras el refresh: el waiter vuelve
+        # a pedirlo, y el límite tiene que frenarlo hasta que pase el intervalo.
+        rig = _LateCatalogRig(tmp_path, refresh_lists_card=False)
+        rig.plug_cocina()
+        with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
+        ), caplog.at_level("INFO", logger="src.pipeline.multi_room_audio_loop"):
+            await rig.start()
+            await _until(lambda: rig.refreshes == 1)
+            await _until(lambda: rig.loop._is_awaiting_reopen("cocina"))
+            await rig.spin(20)
+            assert rig.refreshes == 1
+            rig.clock[0] = 1299.9
+            await rig.spin(20)
+            assert rig.refreshes == 1
+            rig.clock[0] = 1300.0
+            await _until(lambda: rig.refreshes == 2)
+            await _until(lambda: rig.loop._is_awaiting_reopen("cocina"))
+            await rig.spin(20)
+            await rig.stop()
+        assert rig.refreshes == 2
+        assert rig.loop._catalog_refreshed_at == 1300.0
+        assert "living" in rig.loop._streams
+        deferred = [r for r in caplog.records if "refresh deferred (rate_limit)" in r.getMessage()]
+        assert len(deferred) == 2, "un aviso por ventana, no uno por reintento"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("blocker", ["command_capture", "command_dispatch", "conversation", "response"])
+    async def test_refresh_waits_for_the_household_activity_to_end(self, tmp_path, blocker):
+        follow_up = _make_follow_up()
+        rig = _LateCatalogRig(tmp_path, follow_up=follow_up)
+        rig.plug_cocina()
+        handler = MagicMock()
+        handler.is_responding = False
+        rig.loop.attach_response_handler(handler)
+        dispatch = asyncio.get_running_loop().create_future()
+
+        def set_active(active: bool):
+            if blocker == "command_capture":
+                rig.living.listening = active
+            elif blocker == "command_dispatch":
+                if active:
+                    rig.loop._dispatch_tasks.add(dispatch)
+                else:
+                    rig.loop._dispatch_tasks.discard(dispatch)
+            elif blocker == "conversation":
+                follow_up.is_active = active
+            else:
+                handler.is_responding = active
+
+        set_active(True)
+        with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
+        ):
+            await rig.start()
+            await rig.spin(20)
+            assert rig.refreshes == 0
+            rig.old_living.close.assert_not_called()
+            set_active(False)
+            await _until(lambda: "cocina" in rig.loop._streams)
+            await _until(lambda: "living" in rig.loop._streams)
+            await rig.stop()
+        dispatch.cancel()
+        assert rig.refreshes == 1
+        assert rig.loop._streams["living"] is not rig.old_living
+
+    @pytest.mark.asyncio
+    async def test_admitted_refresh_rechecks_activity_before_cutting(self, tmp_path):
+        """Un wake entre la admisión y el arranque del recovery cancela el corte."""
+        rig = _LateCatalogRig(tmp_path)
+        rig.plug_cocina()
+        rig.loop._catalog_missing["cocina"] = rig.COCINA_CARD
+        with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
+        ):
+            await _seed_owned_inputs(rig.loop, {"living": rig.old_living})
+            assert rig.loop._request_catalog_refresh(rig.cocina) is True
+            rig.living.listening = True
+            await rig.loop._recovery_task
+            await rig.stop()
+        assert rig.refreshes == 0
+        assert rig.loop._catalog_refreshed_at is None
+        assert rig.loop._streams.get("living") is rig.old_living
+        rig.old_living.close.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_activity_starting_during_the_cut_skips_the_portaudio_reset(self, tmp_path, caplog):
+        """Si algo arranca mientras se cierran los streams, no se resetea PortAudio."""
+        rig = _LateCatalogRig(tmp_path)
+        rig.plug_cocina()
+        rig.loop._catalog_missing["cocina"] = rig.COCINA_CARD
+        rig.old_living.close.side_effect = lambda: setattr(rig.living, "listening", True)
+        with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
+        ), caplog.at_level("WARNING", logger="src.pipeline.multi_room_audio_loop"):
+            await _seed_owned_inputs(rig.loop, {"living": rig.old_living})
+            assert rig.loop._request_catalog_refresh(rig.cocina) is True
+            await rig.loop._recovery_task
+            reopened = rig.loop._streams.get("living")
+            await rig.stop()
+        assert rig.refreshes == 0
+        rig.old_living.close.assert_called_once()
+        assert reopened in rig.streams, "la room cortada vuelve aunque no haya refresh"
+        assert any("refresh skipped (command)" in r.getMessage() for r in caplog.records)
+
+    def test_interval_must_be_a_finite_non_negative_number(self):
+        for bad in (-1.0, float("nan"), float("inf"), "300"):
+            with pytest.raises(ValueError):
+                _make_multi_room_loop(stream_watchdog_catalog_refresh_min_interval_s=bad)
+
+    def test_settings_enable_the_refresh_and_main_wires_it(self):
+        import yaml
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[3]
+        settings = yaml.safe_load((root / "config" / "settings.yaml").read_text())
+        interval = settings["rooms"]["stream_watchdog"]["catalog_refresh_min_interval_s"]
+        assert type(interval) in (int, float) and 60 <= interval <= 900
+        main_source = (root / "src" / "main.py").read_text()
+        assert "stream_watchdog_catalog_refresh_min_interval_s=watchdog_cfg.get(" in main_source
+        assert '"catalog_refresh_min_interval_s"' in main_source
+
+
 class TestAudioHealthPublication:
     """El snapshot de salud tiene que SALIR del proceso, no solo calcularse.
 

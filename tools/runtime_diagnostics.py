@@ -118,7 +118,8 @@ def _capture_settings(config: dict) -> dict:
                       if isinstance(room, dict) and 'mic_usb_port' in room},
             'watchdog': {key: rooms.get('stream_watchdog', {}).get(key) for key in
                          ('enabled', 'check_interval_s', 'no_frames_timeout_s',
-                          'first_frame_grace_s', 'reopen_backoff_min_s', 'reopen_backoff_max_s')}}
+                          'first_frame_grace_s', 'reopen_backoff_min_s', 'reopen_backoff_max_s',
+                          'catalog_refresh_min_interval_s')}}
 
 
 def collect_snapshot() -> dict:
