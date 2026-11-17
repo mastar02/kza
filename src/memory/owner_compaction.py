@@ -357,8 +357,18 @@ def policy_allowlist(snapshot: ClosedStateSnapshot, now: float) -> dict:
     get() (fact_ledger.FactLedger._eligible): state automatic or confirmed,
     not expired, no source conversation tombstoned. Owner (fact_owners)
     not in any retired_users table of H. Second gate: no fact deletion of
-    that id in the database's deletion ledger (salted digest).
+    that id in the database's deletion ledger (salted digest). A ledger the
+    digest cannot use (a malformed salt, an empty fact id) refuses with its
+    code (SC4C-RV-5 (2)).
     """
+    from src.memory.deletion_ledger import DeletionLedgerError
+    try:
+        return _policy_allowlist(snapshot, now)
+    except DeletionLedgerError as error:
+        raise CompactionCloneError("runtime_admission_compaction_" + str(error)) from None
+
+
+def _policy_allowlist(snapshot: ClosedStateSnapshot, now: float) -> dict:
     from src.memory.deletion_ledger import subject_digest
     retired = {row["user_id"] for database in snapshot.manifest["databases"].values()
                for row in _rows(database, "retired_users")}

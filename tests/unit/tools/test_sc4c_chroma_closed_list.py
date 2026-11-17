@@ -158,6 +158,20 @@ def test_the_policy_collection_keeps_only_facts_get_returns_with_a_live_owner():
     assert "live" not in summary and "cmd" not in summary  # content-free: counts and digests only
 
 
+@pytest.mark.parametrize("salt, fact_id, code", [
+    ("not-hex", "f-live", "runtime_admission_compaction_deletion_ledger_salt_invalid"),
+    (SALT, "", "runtime_admission_compaction_deletion_ledger_subject_invalid"),
+])
+def test_a_deletion_ledger_the_allowlist_cannot_use_refuses_with_a_code(salt, fact_id, code):
+    """SC4C-RV-5 (2): the worker maps it to a coded refusal (a ValueError), not the generic worker_failed."""
+    snapshot = _snapshot([_export("data/memory_db", sc.POLICY, POLICY_RECORDS, registered=True)])
+    privacy = snapshot.manifest["databases"]["data/privacy.db"]["tables"]
+    privacy["deletion_ledger_salt_v1"]["rows"] = [{"id": 1, "salt": salt}]
+    privacy["facts"]["rows"] = [_fact(fact_id, "live")]
+    error = _refusal(code, lambda: oc.chroma_plan(snapshot, NOW))
+    assert isinstance(error, oc.CompactionCloneError)
+
+
 def test_the_plan_refuses_an_unlisted_or_unclassified_export():
     routines = _export("data/chroma_db", "home_assistant_routines", [], omitted=True)
     stores, plans = oc.chroma_plan(_snapshot([routines]), NOW)
