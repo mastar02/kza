@@ -105,12 +105,14 @@ DEADLINE_MS = {
     'collect': 60000,
     'leave': 10000,
     'version': 2000,
+    # V4: window-state reads at the timed points (browser endpoint, not awaited by the timed sequence).
+    'window_state': 10000,
 }
 # instrumentation.cdp_deadlines.immutable (R5-5): product-failure thresholds the smoke never changes.
 IMMUTABLE_CLASSES = frozenset({'interaction_trace', 'navigate', 'load_wait', 'evaluate', 'input', 'wait_feedback',
                                'wait_preview', 'wait_other', 'leave'})
 # instrumentation.cdp_deadlines.harness_only_formula.
-HARNESS_ONLY_CLASSES = frozenset({'setup', 'collect', 'version'})
+HARNESS_ONLY_CLASSES = frozenset({'setup', 'collect', 'version', 'window_state'})
 QUIET_PERIOD_MS = 500
 LCP_CAP_MS = 10000
 EVENT_DURATION_THRESHOLD_MS = 16
@@ -132,6 +134,7 @@ CLASS_METHODS = {
     'collect': ('Tracing.end', 'Page.stopScreencast', 'Page.screencastFrameAck'),
     'leave': ('Page.navigate',),
     'version': ('Browser.getVersion',),
+    'window_state': ('Browser.getWindowForTarget',),
 }
 FORBIDDEN_PREFIXES = ('DOM.', 'Accessibility.')
 PHASES = ('setup', 'timed', 'collect', 'leave')
@@ -376,7 +379,7 @@ INJECTED_SOURCE = r"""(() => {
 
   // ---- capture listener (instrumentation.capture_listener) and visibility ----
   const STEPS = CONFIG.steps;
-  const steps = STEPS.map(() => ({started: false, ended: false, lastRect: null}));
+  const steps = STEPS.map(() => ({started: false, ended: false, lastRect: null, settledFrame: false}));
   let interactions = 0, open = false;
   const FIRST = new Set(['pointerdown', 'touchstart', 'keydown']), LAST = new Set(['click', 'keyup']);
   for (const type of ['pointerdown', 'pointerup', 'click', 'keydown', 'keyup', 'touchstart', 'touchend']) {
@@ -413,19 +416,43 @@ INJECTED_SOURCE = r"""(() => {
     if (rule.name_prefix) { const prefix = rule.name_prefix.toLowerCase(); found = found.filter(el => nameOf(el).toLowerCase().startsWith(prefix)); }
     return found.find(usable) || null;
   }
-  function inViewport(r) { return r.y >= 0 && r.x >= 0 && r.y + r.height <= window.innerHeight && r.x + r.width <= window.innerWidth; }
+  // The dispatch point (centre) lies inside the layout viewport (instrumentation.core_targets, V3).
+  function inViewport(r) { const x = r.x + r.width / 2, y = r.y + r.height / 2; return x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight; }
+  function report(index, el, force) {
+    const step = STEPS[index];
+    const rect = rectOf(el);
+    const last = steps[index].lastRect;
+    if (force || !last || last.x !== rect.x || last.y !== rect.y || last.width !== rect.width || last.height !== rect.height) {
+      steps[index].lastRect = rect;
+      emit('target_ready', {step: step.step, index, rect, in_viewport: inViewport(rect), time: now(), name: nameOf(el).slice(0, 80), describe: describe(el)});
+    }
+  }
+  // V3 (preregistered): the script brings step k+1's target into view only after step k's step_next_frame record
+  // (the frame after the frame that painted step k's end) and outside every capture window; never step 0, never
+  // during the load phase, never the play gesture.
+  function mayScroll(index) {
+    return index > 0 && index < STEPS.length && index === interactions && !open && !STEPS[index].play_gesture
+      && !steps[index].started
+      && steps[index - 1].settledFrame;
+  }
+  function bringIntoView(index) {
+    if (!mayScroll(index)) return;
+    const step = STEPS[index];
+    const el = lookup(step, document.querySelector(step.container));
+    if (!el) return;
+    const before = rectOf(el);
+    if (inViewport(before)) return;
+    el.scrollIntoView({block: 'center', inline: 'nearest', behavior: 'instant'});
+    emit('scrolled', {step: step.step, index, before, after: rectOf(el), time: now()});
+    report(index, el, true);
+  }
   function reportTargets() {
     STEPS.forEach((step, index) => {
       if (step.play_gesture || steps[index].started) return;
       const el = lookup(step, document.querySelector(step.container));
       if (!el) return;
-      let rect = rectOf(el);
-      if (index === interactions && !inViewport(rect)) { el.scrollIntoView({block: 'center', inline: 'nearest'}); rect = rectOf(el); }
-      const last = steps[index].lastRect;
-      if (!last || last.x !== rect.x || last.y !== rect.y || last.width !== rect.width || last.height !== rect.height) {
-        steps[index].lastRect = rect;
-        emit('target_ready', {step: step.step, index, rect, time: now(), name: nameOf(el).slice(0, 80), describe: describe(el)});
-      }
+      if (mayScroll(index) && !inViewport(rectOf(el))) { bringIntoView(index); return; }
+      report(index, el, false);
     });
   }
   function endHolds(end) {
@@ -444,7 +471,16 @@ INJECTED_SOURCE = r"""(() => {
     emit('mark', {name, time});
     emit('step_end', {step: step.step, index, time});
     emit('focus', focusState('interaction_end:' + index));
-    requestAnimationFrame(raf => { emit('step_frame', {step: step.step, index, raf}); requestAnimationFrame(next => emit('step_next_frame', {step: step.step, index, raf: next})); });
+    // V5: the first-rAF lower bound is performance.now() inside the callback (never before the mutation); the
+    // callback's frame timestamp is kept as frame_time.
+    requestAnimationFrame(frame => {
+      emit('step_frame', {step: step.step, index, raf: now(), frame_time: frame});
+      requestAnimationFrame(next => {
+        emit('step_next_frame', {step: step.step, index, raf: now(), frame_time: next});
+        steps[index].settledFrame = true;
+        bringIntoView(index + 1);
+      });
+    });
   }
   let audioTracked = null;
   function playTarget(audio) {
@@ -468,9 +504,17 @@ INJECTED_SOURCE = r"""(() => {
       const name = 'kza-probe:end:' + CONFIG.token + ':control_attached';
       try { performance.mark(name); } catch (_) {}
       emit('mark', {name, time});
+      target.in_viewport = inViewport(target.rect);
       emit('control_attached', {time, readyState: audio.readyState, target});
+      // V2 (preregistered): a native <audio controls> target is operable once metadata is loaded; control_ready
+      // carries the time (performance.now() in the listener) and the play target rectangle at that moment.
+      audio.addEventListener('loadedmetadata', () => {
+        const ready = playTarget(audio);
+        ready.in_viewport = inViewport(ready.rect);
+        emit('control_ready', {time: now(), readyState: audio.readyState, target: ready});
+      }, {once: true});
       const index = STEPS.findIndex(step => step.end.kind === 'control_attached');
-      if (index >= 0) { steps[index].ended = true; requestAnimationFrame(raf => emit('step_frame', {step: STEPS[index].step, index, raf})); }
+      if (index >= 0) { steps[index].ended = true; requestAnimationFrame(frame => emit('step_frame', {step: STEPS[index].step, index, raf: now(), frame_time: frame})); }
     } else emit('audio_replaced', {time, readyState: audio.readyState, target});
   }
   function onMutations() {
@@ -487,7 +531,7 @@ INJECTED_SOURCE = r"""(() => {
     if (index >= 0 && steps[index].started && !steps[index].ended) {
       steps[index].ended = true;
       emit('step_end', {step: STEPS[index].step, index, time: event.timeStamp});
-      requestAnimationFrame(raf => emit('step_frame', {step: STEPS[index].step, index, raf}));
+      requestAnimationFrame(frame => emit('step_frame', {step: STEPS[index].step, index, raf: now(), frame_time: frame}));
     }
   }, {capture: true});
 
@@ -539,12 +583,26 @@ class RecordFilter:
         self.time_origin = None
         self.accepted = []
         self.rejected = []
+        # V14b: current-token records that arrive before the Page.navigate reply names the loaderId are buffered,
+        # and main-frame commits seen before it are remembered; both are resolved when the reply arrives.
+        self.buffered = []
+        self.main_frame_loaders = []
+        self.navigation_replied = False
 
     def navigation_sent(self, loader_id: str) -> None:
         self.loader_id = loader_id
+        self.navigation_replied = True
+        if loader_id is not None and loader_id in self.main_frame_loaders:
+            self.committed = True
+        pending, self.buffered = self.buffered, []
+        for record in pending:
+            self.offer(record)
 
     def frame_navigated(self, frame: dict) -> None:
-        if frame.get('parentId') is None and self.loader_id is not None and frame.get('loaderId') == self.loader_id:
+        if frame.get('parentId') is not None:
+            return
+        self.main_frame_loaders.append(frame.get('loaderId'))
+        if self.loader_id is not None and frame.get('loaderId') == self.loader_id:
             self.committed = True
 
     def offer(self, record: dict) -> bool:
@@ -552,6 +610,9 @@ class RecordFilter:
         reason = None
         if record.get('token') != self.token:
             reason = 'token'
+        elif not self.committed and not self.navigation_replied:
+            self.buffered.append(record)
+            return False
         elif not self.committed:
             reason = 'before_commit'
         elif self.time_origin is None:
@@ -620,11 +681,28 @@ def percentile_runs(runs: list) -> list:
             and not run.get('primer')]
 
 
+# V1 (exclusion_rules.failure_scope): failures that make every metric of the run +inf. Any other product failure
+# makes only the metrics it names +inf (they are already +inf in the run's metrics).
+RUN_WIDE_PREFIXES = ('load_not_settled', 'navigation_error', 'navigation_http_error', 'cdp_timeout:',
+                     'leave_step_timeout', 'collect_timeout_renderer_busy')
+
+
+def run_wide_failure(run: dict) -> bool:
+    """True when the run's failure counts for every metric (load_not_settled, timed-window CDP timeout,
+    post_window_hang, failed navigation); False for a valid run or a metric-scoped product failure."""
+    if run['outcome'] == Outcome.POST_WINDOW_HANG:
+        return True
+    if run['outcome'] != Outcome.FAILURE:
+        return False
+    reasons = [run.get('reason') or ''] + list((run.get('facts') or {}).get('product_failures') or [])
+    return any(reason.startswith(RUN_WIDE_PREFIXES) for reason in reasons)
+
+
 def metric_values(runs: list, metric: str) -> list:
-    """Collect a metric with failures as +inf (C11 forbids excluding them)."""
+    """Collect a metric with failures as +inf (C11 forbids excluding them); per-metric scope (V1)."""
     values = []
     for run in percentile_runs(runs):
-        if run['outcome'] != Outcome.VALID:
+        if run_wide_failure(run):
             values.append(INF)
         else:
             values.append(run['metrics'].get(metric, INF))
@@ -753,13 +831,43 @@ def action_feedback(start: float | None, end: float | None):
     return end - start
 
 
-def preview(start, control_attached, gesture_ts, playing) -> dict:
-    """C11 preview: primary = (control_attached - start) + (playing - gesture_ts); gap > 16 ms invalid (R2-6)."""
-    if None in (start, control_attached, gesture_ts, playing):
+def preview(start, control_ready, gesture_ts, playing) -> dict:
+    """C11 preview: primary = (control_ready - start) + (playing - gesture_ts); gap > 16 ms invalid (R2-6).
+
+    control_ready is control_attached, or for a native <audio controls> target attached before its metadata the
+    control_ready record (loadedmetadata, V2), so the metadata wait is product time and only the gap is harness
+    wait."""
+    if None in (start, control_ready, gesture_ts, playing):
         return {'value': INF, 'failed_open': True, 'gap': None, 'unsubtracted': None, 'gap_invalid': False}
-    gap = gesture_ts - control_attached
-    return {'value': (control_attached - start) + (playing - gesture_ts), 'failed_open': False, 'gap': gap,
+    gap = gesture_ts - control_ready
+    return {'value': (control_ready - start) + (playing - gesture_ts), 'failed_open': False, 'gap': gap,
             'unsubtracted': playing - start, 'gap_invalid': gap > PREVIEW_GAP_MAX_MS}
+
+
+def native_play_interactions(typed: dict, interactions: list, steps: list, flush_time: float | None) -> list:
+    """F6: for a native <audio controls> play target the page sees none of the gesture's input events, so the
+    play gesture's window is [control_ready (or attach) time, flush sample time]: no other scripted input exists
+    there. A light-DOM button target keeps its capture-listener window."""
+    play_index = next((index for index, step in enumerate(steps) if step.get('play_gesture')), None)
+    attached = typed['control_attached'][0] if typed.get('control_attached') else None
+    ready = play_ready(attached, typed['control_ready'][0] if typed.get('control_ready') else None)
+    if play_index is None or ready is None or ready['target'].get('kind') != 'audio' \
+            or len(interactions) < play_index:
+        return interactions
+    synthetic = {'index': play_index, 'first': ready['time'] + 1,
+                 'last': (flush_time if flush_time is not None else INF) - 1, 'types': ['native_control'],
+                 'paths': set(), 'synthetic': True}
+    return interactions[:play_index] + [synthetic]
+
+
+def play_ready(attached: dict | None, ready: dict | None) -> dict | None:
+    """V2: the record whose time and target the play gesture uses: control_attached for a light-DOM button or a
+    native control that already has metadata (readyState >= 1), else the control_ready record (or None)."""
+    if attached is None:
+        return None
+    if attached['target'].get('kind') == 'button' or (attached.get('readyState') or 0) >= 1:
+        return attached
+    return ready
 
 
 # --------------------------------------------------------------------------------------------
@@ -831,16 +939,39 @@ def warm_slot_invalid(cold: dict) -> bool:
     return not cold.get('navigate_sent') or cold.get('reason') in ('browser_crashed', 'websocket_disconnected')
 
 
-def visibility_faults(focus_records: list, events: list, window_states: list) -> list:
-    """R2-3: hidden, unfocused or minimised during a timed phase -> invalid run."""
+def timed_records(records: list, flush_time: float | None) -> list:
+    """V4: only records of the timed phase (page time <= the flush sample) enter the visibility rule."""
+    if flush_time is None:
+        return list(records)
+    return [record for record in records if record.get('t', record.get('time', 0.0)) <= flush_time]
+
+
+def visibility_faults(document_start: dict, focus_records: list, events: list, window_reads: list) -> list:
+    """R2-3, F1 (instrumentation.visibility): hidden, unfocused or minimised during the timed phase -> invalid run.
+
+    document_start's hasFocus is a diagnostic only (Chromium dispatches the window focus to a new document after
+    its first script, F1); when it is false, a window 'focus' event of the run document must arrive before the
+    next sample point. visibilityState is 'visible' at every point, document_start included; hasFocus is true at
+    every later sample point; no visibilitychange, pagehide, freeze or window blur event; every window-state read
+    (Browser.getWindowForTarget at the timed points) answered 'normal'. Records are those of the timed phase."""
     faults = []
-    if any(record.get('visibility') != 'visible' for record in focus_records):
+    start_focus = document_start.get('focus') or {}
+    samples = sorted(focus_records, key=lambda record: record.get('time', 0.0))
+    if start_focus.get('visibility', 'visible') != 'visible' or any(
+            record.get('visibility') != 'visible' for record in samples):
         faults.append('page_hidden')
-    if any(record.get('hasFocus') is False for record in focus_records):
+    later_unfocused = any(record.get('hasFocus') is not True for record in samples)
+    if start_focus.get('hasFocus') is False:
+        next_point = samples[0].get('time') if samples else None
+        gained = [event for event in events if event.get('event') == 'focus'
+                  and (next_point is None or event.get('timeStamp', INF) <= next_point)]
+        if not gained:
+            later_unfocused = True
+    if later_unfocused:
         faults.append('page_unfocused')
     if any(event.get('event') in ('visibilitychange', 'pagehide', 'freeze', 'blur') for event in events):
         faults.append('visibility_event')
-    if any(state != 'normal' for state in window_states):
+    if any(read.get('state') != 'normal' for read in window_reads):
         faults.append('window_state')
     return faults
 
@@ -944,10 +1075,11 @@ def warm_cache_outcome(share: float) -> str | None:
 def invalid_batch_reasons(batch: dict) -> list:
     """exclusion_rules.invalid_batch. Failures never count toward the 10% (no selection bias)."""
     reasons = []
-    if batch.get('quiet_start_ok') is False or batch.get('quiet_end_ok') is False:
+    if batch.get('quiet_start_ok') is False or batch.get('quiet_end_ok') is False \
+            or batch.get('caffeinate_assertion_start') is False or batch.get('caffeinate_assertion_end') is False:
         reasons.append('quiet_machine')
     warm = [run for run in batch['runs'] if run.get('role') == 'warm' and run['outcome'] != Outcome.INVALID]
-    if warm and warm_share(warm)['share'] < 0.9:
+    if batch.get('warm_rule_active', True) and warm and warm_share(warm)['share'] < 0.9:
         reasons.append('warm_share_below_90')
     if batch.get('tree_dirty') or batch.get('commit_changed'):
         reasons.append('served_tree')
@@ -1066,18 +1198,72 @@ def warm_rows_comparable(before_mix: dict, after_mix: dict) -> bool:
     return all(abs(before_mix.get(key, 0) - after_mix.get(key, 0)) <= 10 for key in ('memory', 'disk', '304', 'network'))
 
 
-def overhead(arms: dict) -> dict:
-    """smoke_gate.instrumentation_overhead: overhead = median(a) - median(c); components a-b and b-c."""
+def arm_median(values: list):
+    """V10: median of an arm with '<16 ms' ranked below measured values and failures (+inf) above; the result is a
+    number, CENSORED or INF (the lower middle value when the two middle values differ in kind)."""
+    ordered = sorted_values(values)
+    if not ordered:
+        return None
+    low, high = ordered[(len(ordered) - 1) // 2], ordered[len(ordered) // 2]
+    if CENSORED in (low, high) or INF in (low, high):
+        return low
+    return (low + high) / 2
+
+
+def _bounds(median) -> tuple:
+    """A median as an interval: '<16 ms' is [0, 16), a number is [value, value]."""
+    return (0.0, float(EVENT_DURATION_THRESHOLD_MS)) if median == CENSORED else (float(median), float(median))
+
+
+def component(minuend, subtrahend) -> dict:
+    """Difference of two arm medians as an interval; 'no evaluable' if either is +inf or missing."""
+    if minuend is None or subtrahend is None or INF in (minuend, subtrahend):
+        return {'low': None, 'high': None, 'evaluable': False}
+    (a_low, a_high), (b_low, b_high) = _bounds(minuend), _bounds(subtrahend)
+    return {'low': a_low - b_high, 'high': a_high - b_low, 'evaluable': True}
+
+
+def overhead(arms: dict, metrics: tuple = ('inp', 'raf_feedback')) -> dict:
+    """smoke_gate.instrumentation_overhead: overhead = median(a) - median(c); components a-b and b-c.
+
+    V10 (preregistered): censored medians enter as [0, 16) intervals; a consequence triggers when the component's
+    lower bound exceeds 8 ms; an arm median of +inf leaves the component 'no evaluable', which is a method change
+    (run_rules.method_changes), never a silent default."""
     result = {}
-    for metric in ('inp', 'raf_feedback'):
-        median = {arm: statistics.median(arms[arm][metric]) for arm in ('a', 'b', 'c')}
-        result[metric] = {'overhead': median['a'] - median['c'], 'screencast': median['a'] - median['b'],
-                          'tracing': median['b'] - median['c'], 'medians': median}
+    unevaluable = []
+    for metric in metrics:
+        median = {arm: arm_median(arms[arm][metric]) for arm in ('a', 'b', 'c')}
+        result[metric] = {'overhead': component(median['a'], median['c']),
+                          'screencast': component(median['a'], median['b']),
+                          'tracing': component(median['b'], median['c']), 'medians': median}
+        unevaluable += [f'{metric}:{name}' for name in ('screencast', 'tracing')
+                        if not result[metric][name]['evaluable']]
+    exceeds = lambda item: item['evaluable'] and item['low'] > 8
     result['consequences'] = {
-        'screencast_limited_to_contrast': any(result[metric]['screencast'] > 8 for metric in ('inp', 'raf_feedback')),
-        'untraced_inp': result['inp']['tracing'] > 8,
+        'screencast_limited_to_contrast': any(exceeds(result[metric]['screencast']) for metric in metrics),
+        'untraced_inp': 'inp' in metrics and exceeds(result['inp']['tracing']),
+        'unevaluable': unevaluable,
+        'method_change': bool(unevaluable),
     }
     return result
+
+
+OVERHEAD_METRICS = {'#acciones': ('inp', 'raf_feedback'), '#voces': ('inp',)}
+
+
+def overhead_consequences(per_view: dict) -> dict:
+    """V10: the preregistered consequences over both views (#acciones INP and rAF bound, #voces INP; the C11
+    preview uses the #acciones rAF-bound overhead, R5-14e): a consequence applies if it applies on either view."""
+    results = {view: overhead(arms, OVERHEAD_METRICS[view]) for view, arms in per_view.items()}
+    consequences = {
+        'screencast_limited_to_contrast': any(item['consequences']['screencast_limited_to_contrast']
+                                              for item in results.values()),
+        'untraced_inp': any(item['consequences']['untraced_inp'] for item in results.values()),
+        'unevaluable': [f'{view}:{name}' for view, item in results.items()
+                        for name in item['consequences']['unevaluable']],
+    }
+    consequences['method_change'] = bool(consequences['unevaluable'])
+    return {'views': results, 'consequences': consequences}
 
 
 def reconfirmation_arm(metric: str) -> str:
@@ -1105,6 +1291,12 @@ def harness_only_deadlines(current: dict, healthy_use_ms: dict) -> dict:
         largest = max(healthy_use_ms.get(klass, [0]) or [0])
         result[klass] = max(current[klass], math.ceil(2 * largest / 1000) * 1000)
     return result
+
+
+def warm_rule_active(fill_ins: dict) -> bool:
+    """V9 (runs.warm, smoke_gate.warm_cache): the per-batch 90% warm-source rule discards batches only when the
+    smoke reached >= 90%; when it did not, warm rows are 'no evaluable' and no batch is discarded for it."""
+    return (fill_ins.get('warm_cache') or {}).get('reached', True) is not False
 
 
 def background_branch(profiles: list) -> str:
@@ -1167,25 +1359,42 @@ SMOKE_REPEAT_CAUSES = ('crash', 'disconnect', 'lock', 'quiet_machine', 'fixture_
 
 
 class SmokeRecord:
-    """Every smoke run is recorded in full; a repeat needs a recorded harness or environment cause (R4-3)."""
+    """Every smoke run is recorded in full; a repeat needs a harness or environment cause that the previous run of
+    the same item recorded (R4-3, V9). An entry left 'started' (the probe itself stopped) records 'crash'."""
 
     def __init__(self, path: Path):
         self.path = path
         self.data = json.loads(path.read_text()) if path.exists() else {'mode': 'smoke', 'runs': []}
 
+    def previous(self, item: str) -> list:
+        return [run for run in self.data['runs'] if run['item'] in (item, 'all') or item == 'all']
+
     def start(self, item: str, reviewed_sha256: str, cause: str | None = None) -> dict:
-        previous = [run for run in self.data['runs'] if run['item'] in (item, 'all') or item == 'all']
-        if previous and cause not in SMOKE_REPEAT_CAUSES:
-            raise SystemExit(f'smoke_repeat_refused_without_recorded_cause:{item}')
+        previous = self.previous(item)
+        if previous:
+            last = previous[-1]
+            recorded = set(last.get('faults') or [])
+            if last.get('status') == 'started':
+                recorded.add('crash')
+            if cause not in SMOKE_REPEAT_CAUSES or cause not in recorded:
+                raise SystemExit(f'smoke_repeat_refused_without_recorded_cause:{item}:{cause}:recorded={sorted(recorded)}')
         entry = {'item': item, 'reviewed_sha256': reviewed_sha256, 'started_at': time.time(),
                  'repeat_of': [run['started_at'] for run in previous], 'cause': cause, 'status': 'started'}
         self.data['runs'].append(entry)
         write_json_atomic(self.path, self.data)
         return entry
 
-    def finish(self, entry: dict, status: str, result: dict | None = None) -> None:
-        entry.update(status=status, finished_at=time.time(), result=result)
+    def finish(self, entry: dict, status: str, result: dict | None = None, faults=None) -> None:
+        entry.update(status=status, finished_at=time.time(), result=result, faults=sorted(set(faults or [])))
         write_json_atomic(self.path, self.data)
+
+
+def smoke_idle(record: SmokeRecord) -> float:
+    """The smoke's idle load from its own complete quiet_baseline item (smoke_gate.quiet_baseline)."""
+    done = [run for run in record.data['runs'] if run['item'] == 'quiet_baseline' and run['status'] == 'complete']
+    if not done:
+        raise SystemExit('smoke_quiet_baseline_missing: run `smoke-item quiet-baseline` first')
+    return done[-1]['result']['idle']
 
 
 def write_json_atomic(path: Path, value) -> None:
@@ -1232,6 +1441,17 @@ def _json_default(value):
     if hasattr(value, '__dataclass_fields__'):
         return asdict(value)
     raise TypeError(type(value).__name__)
+
+
+def restore_infinity(value):
+    """Inverse of json_safe for metric values: 'Infinity' back to +inf at any depth."""
+    if value == 'Infinity':
+        return INF
+    if isinstance(value, dict):
+        return {key: restore_infinity(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [restore_infinity(item) for item in value]
+    return value
 
 
 def json_safe(value):
@@ -1323,8 +1543,10 @@ class CdpClient:
                     future.set_exception(CdpDisconnected(self.name))
             self.pending.clear()
 
-    async def send(self, method: str, params: dict | None = None, *, klass: str) -> dict:
-        """Send one command and wait at most its class deadline from the send (events never extend it)."""
+    async def send(self, method: str, params: dict | None = None, *, klass: str, phase: str | None = None) -> dict:
+        """Send one command and wait at most its class deadline from the send (events never extend it).
+
+        ``phase`` labels a command scheduled in one phase and sent later (window-state reads, V4)."""
         if not method_class_allowed(method, klass):
             raise ValueError(f'no_deadline_class:{method}:{klass}')
         if self.disconnected:
@@ -1333,7 +1555,7 @@ class CdpClient:
         identity = self.sequence
         future = asyncio.get_running_loop().create_future()
         self.pending[identity] = future
-        entry = {'id': identity, 'method': method, 'class': klass, 'phase': self.phase, 'sent': self.clock(),
+        entry = {'id': identity, 'method': method, 'class': klass, 'phase': phase or self.phase, 'sent': self.clock(),
                  'connection': self.name}
         self.log.append(entry)
         await self.connection.send(json.dumps({'id': identity, 'method': method, 'params': params or {}}))
@@ -1602,6 +1824,16 @@ class NetworkLedger:
         item.update(url=response.get('url', item.get('url')), type=params.get('type'), status=response.get('status'),
                     disk=bool(response.get('fromDiskCache')), prefetch=bool(response.get('fromPrefetchCache')))
 
+    def errors(self) -> list:
+        """V11: same-origin responses with status >= 400 (path, status, resource type), recorded per run."""
+        found = []
+        for item in self.requests.values():
+            url = item.get('url') or ''
+            status = item.get('status')
+            if url.startswith(self.origin) and isinstance(status, int) and status >= 400:
+                found.append({'path': url[len(self.origin):][:200], 'status': status, 'type': item.get('type')})
+        return found
+
     def sources(self) -> dict:
         mix = Counter()
         for item in self.requests.values():
@@ -1701,6 +1933,77 @@ def lock_reads() -> dict:
     return result
 
 
+def display_asleep() -> bool | None:
+    """V8: CGDisplayIsAsleep(CGMainDisplayID()) through JXA (no new dependency); None when unreadable."""
+    text = run_text(['osascript', '-l', 'JavaScript', '-e',
+                     "ObjC.import('CoreGraphics');JSON.stringify({asleep: !!$.CGDisplayIsAsleep($.CGMainDisplayID())})"])
+    try:
+        return bool(json.loads(text)['asleep'])
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def chosen_lock_state(reads: dict, choice: str | None) -> bool | None:
+    """quiet_machine.lock_read with the read the smoke chose (fill-in): key true -> locked; absent or false ->
+    unlocked; unreadable or no read chosen yet -> None."""
+    if choice not in ('read1', 'read2'):
+        return None
+    read = reads.get(choice) or {}
+    if 'error' in read or not read:
+        return None
+    return bool(read.get('present') and read.get('locked'))
+
+
+def machine_state(lock_choice: str | None = None) -> dict:
+    """V8: AC power, display awake and lock state, read at batch start and end."""
+    power = run_text(['pmset', '-g', 'batt']).strip().splitlines()[:1]
+    reads = lock_reads()
+    return {'power': power, 'ac_power': bool(power) and "'AC Power'" in power[0],
+            'display_asleep': display_asleep(), 'lock_reads': reads, 'lock_choice': lock_choice,
+            'locked': chosen_lock_state(reads, lock_choice)}
+
+
+def start_caffeinate() -> subprocess.Popen:
+    """R2-3, V7: caffeinate -dimsu bound to the probe's own pid (-w), so it ends with the probe."""
+    return subprocess.Popen(['caffeinate', '-dimsu', '-w', str(os.getpid())])
+
+
+def caffeinate_assertion_held(process, assertions: str | None = None) -> bool:
+    """V8: `pmset -g assertions` lists PreventUserIdleDisplaySleep owned by this caffeinate process."""
+    if process is None:
+        return False
+    text = run_text(['pmset', '-g', 'assertions']) if assertions is None else assertions
+    marker = f'pid {process.pid}(caffeinate)'
+    return any(marker in line and 'PreventUserIdleDisplaySleep' in line for line in text.splitlines())
+
+
+PROFILE_PREFIXES = ('kza-t046-profile-', 'kza-t046-focus-', 'kza-t046-background-')
+
+
+def probe_browser_pids(rows: list) -> list:
+    """V7: main browser processes launched by a probe (profile directory under a probe prefix, no --type=)."""
+    found = []
+    for row in rows:
+        command = row['command']
+        if '--type=' in command:
+            continue
+        match = re.search(r'--user-data-dir=(\S+)', command)
+        if match and Path(match.group(1)).name.startswith(PROFILE_PREFIXES):
+            found.append(row['pid'])
+    return found
+
+
+def sweep_probe_browsers(rows: list | None = None, kill: Callable[[int, int], None] = os.kill) -> list:
+    """V7: kill any leftover probe-launched Chrome (with an open DevTools port) at start and exit."""
+    pids = probe_browser_pids(process_rows() if rows is None else rows)
+    for pid in pids:
+        try:
+            kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    return pids
+
+
 def process_rows() -> list:
     rows = []
     for line in run_text(['ps', '-axo', 'pid=,ppid=,command=']).splitlines():
@@ -1757,6 +2060,9 @@ class Browser:
         self.browser_path = None
         self.client = None
         self.argv = None
+        self.leftover = False
+        self.close_wait_s = 10.0
+        self.kill_wait_s = 5.0
 
     async def launch(self, *, netlog: Path | None = None) -> None:
         if self.mode == 'harness':
@@ -1819,7 +2125,13 @@ class Browser:
             except Exception:  # noqa: BLE001 - the process check below decides.
                 pass
             await self.client.close()
-        deadline = time.monotonic() + 10
+        if self.pid is None and self.mode != 'harness':
+            for _ in range(5):
+                self.pid = self._find_pid()
+                if self.pid is not None:
+                    break
+                await asyncio.sleep(0.2)
+        deadline = time.monotonic() + self.close_wait_s
         while self.alive() and time.monotonic() < deadline:
             await asyncio.sleep(0.1)
         if self.alive() and self.pid is not None:
@@ -1827,6 +2139,14 @@ class Browser:
                 os.kill(self.pid, signal.SIGKILL)
             except OSError:
                 pass
+            deadline = time.monotonic() + self.kill_wait_s
+            while self.alive() and time.monotonic() < deadline:
+                await asyncio.sleep(0.1)
+        # V7: never delete the profile while a browser still holds it (the exit sweep handles it).
+        if self.alive() or (self.mode != 'harness' and self._find_pid() is not None):
+            self.leftover = True
+            logger.warning('[web-timing] browser still holds %s; profile kept for the exit sweep', self.profile)
+            return
         shutil.rmtree(self.profile, ignore_errors=True)
 
 
@@ -2003,6 +2323,10 @@ class Run:
         self.trace_complete = asyncio.Event()
         self.frames = []
         self.window_states = []
+        self.window_reads = []
+        self.window_tasks = []
+        self.exceptions = []
+        self.detached = []
         self.timings = {}
         self.steps = []
         self.activation_polls = None
@@ -2023,6 +2347,8 @@ class Run:
             (page, 'Network.requestServedFromCache', self.network.served_from_cache),
             (page, 'Network.responseReceived', self.network.response),
             (page, 'Page.screencastFrame', self._frame),
+            (page, 'Runtime.exceptionThrown', self._exception),
+            (page, 'Inspector.detached', self._detached),
             (browser, 'Tracing.dataCollected', lambda params: self.trace_events.extend(params.get('value', []))),
             (browser, 'Tracing.tracingComplete', lambda params: self.trace_complete.set()),
         ]
@@ -2042,6 +2368,21 @@ class Run:
         except Exception:  # noqa: BLE001 - an ack failure stops the stream; the cross-check shows it.
             pass
 
+    def _exception(self, params: dict) -> None:
+        """V11: JavaScript exceptions are recorded per run with the phase they arrived in (reported, see
+        exclusion_rules.failure_scope)."""
+        details = params.get('exceptionDetails') or {}
+        exception = details.get('exception') or {}
+        self.exceptions.append({'phase': self.page.phase, 'received': time.monotonic(),
+                                'text': (details.get('text') or '')[:200],
+                                'description': (exception.get('description') or '')[:300],
+                                'url': details.get('url'), 'line': details.get('lineNumber')})
+
+    def _detached(self, params: dict) -> None:
+        """V11: Inspector.detached is a lost CDP session (invalid run, like a websocket disconnect)."""
+        self.detached.append({'phase': self.page.phase, 'reason': params.get('reason')})
+        self.facts.disconnected = True
+
     def _phase(self, phase: str) -> None:
         self.page.phase = phase
         self.browser.client.phase = phase
@@ -2049,16 +2390,55 @@ class Run:
     def _timeout(self, error: CdpTimeout | None, phase: str, klass: str, method: str) -> None:
         self.facts.timeouts.append(Timeout(phase, klass, method if error is None else error.method))
 
+    def _harness_error(self, phase: str, error: BaseException) -> str:
+        """V11: an unclassified error becomes a harness fault of its phase (invalid run), never a batch abort."""
+        method = getattr(error, 'method', None) or ''
+        return f'{phase}_harness_error:{type(error).__name__}:{method or str(error)[:120]}'
+
+    def _sample_window(self, point: str) -> None:
+        """V4: Browser.getWindowForTarget at a timed point, on the browser endpoint and not awaited by the timed
+        sequence (no renderer work can delay it); an unanswered read is a harness fault, never a failure."""
+        phase = self.browser.client.phase
+
+        async def read():
+            entry = {'point': point, 'state': None, 'sent': time.monotonic()}
+            try:
+                result = await self.browser.client.send('Browser.getWindowForTarget', {'targetId': self.target_id},
+                                                        klass='window_state', phase=phase)
+                entry['state'] = (result.get('bounds') or {}).get('windowState')
+            except (CdpTimeout, CdpError, CdpDisconnected) as error:
+                entry['error'] = type(error).__name__
+            self.window_reads.append(entry)
+        try:
+            self.window_tasks.append(asyncio.get_running_loop().create_task(read()))
+        except RuntimeError:
+            pass
+
+    async def _await_window_reads(self) -> None:
+        tasks, self.window_tasks = self.window_tasks, []
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def execute(self) -> dict:
         handlers = self._handlers()
         try:
             await self._run()
         finally:
             self._unhook(handlers)
-        return self.result()
+        try:
+            return self.result()
+        except Exception as error:  # noqa: BLE001 - V11: never abort the batch on an analysis error.
+            logger.exception('[web-timing] run %s result failed', self.spec.ordinal)
+            return {'ordinal': self.spec.ordinal, 'role': self.spec.role, 'viewport': self.spec.viewport,
+                    'view': self.spec.view, 'outcome': Outcome.INVALID,
+                    'reason': self._harness_error('result', error), 'navigate_sent': self.facts.navigate_sent,
+                    'metrics': {}, 'facts': asdict(self.facts), 'steps': self.steps,
+                    'browser_version': self.browser_version, 'script_identifier': self.script_identifier,
+                    'records': {'accepted': self.filter.accepted, 'rejected': self.filter.rejected},
+                    'post_window_violations': post_window_violations(self.page.log[self.page_log_start:]),
+                    'commands': list(self.page.log[self.page_log_start:]) + list(self.browser.client.log[self.browser_log_start:])}
 
     async def _run(self) -> None:
-        spec = self.spec
         # Phase 1: setup on about:blank.
         self._phase('setup')
         try:
@@ -2077,6 +2457,9 @@ class Run:
         except CdpDisconnected:
             self.facts.disconnected = True
             return
+        except Exception as error:  # noqa: BLE001 - V11: CdpError, login failure and the rest are setup faults.
+            self.facts.setup_faults.append(self._harness_error('setup', error))
+            return
         # Phase 2: timed window.
         self._phase('timed')
         try:
@@ -2088,6 +2471,8 @@ class Run:
             self.facts.disconnected = True
             self.facts.crashed = not self.browser.alive()
             return
+        except Exception as error:  # noqa: BLE001 - V11: a CDP error reply in the window is a harness fault.
+            self.facts.environment_faults.append(self._harness_error('timed', error))
         # Phase 3: collection, browser-side only.
         self._phase('collect')
         try:
@@ -2100,6 +2485,8 @@ class Run:
             self.facts.disconnected = True
             self.facts.crashed = not self.browser.alive()
             return
+        except Exception as error:  # noqa: BLE001
+            self.facts.environment_faults.append(self._harness_error('collect', error))
         # Phase 4: leave step.
         self._phase('leave')
         await self._leave()
@@ -2130,7 +2517,10 @@ class Run:
                 self.script_identifier = result.get('identifier')
         if spec.role == 'cold' and spec.token_for_login:
             from tests.frontend.browser_support import install_login_session
-            await install_login_session(SetupAdapter(self.page), spec.origin, spec.token_for_login)
+            try:
+                await install_login_session(SetupAdapter(self.page), spec.origin, spec.token_for_login)
+            except RuntimeError as error:
+                raise SetupFault('login_failed:' + str(error)[:80]) from None
         polls_started = time.monotonic()
         self.activation_polls = await activation_poll(self.page, self.browser.client, self.target_id,
                                                       DEADLINE_MS['setup'] / 1000)
@@ -2151,16 +2541,17 @@ class Run:
     async def _timed(self) -> None:
         spec = self.spec
         self.facts.navigate_sent = True
+        self._sample_window('navigation')
         navigate_sent = time.monotonic()
         result = await self.page.send('Page.navigate', {'url': spec.url}, klass='navigate')
         if result.get('errorText'):
             self.facts.product_failures.append('navigation_error:' + result['errorText'])
             return
-        self.filter.navigation_sent(result.get('loaderId'))
-        # The commit event can precede the reply; re-scan the received events once.
+        # The commit event can precede the reply; re-scan the received events once (V14b buffers records).
         for event in self.page.events:
             if event['method'] == 'Page.frameNavigated':
                 self.filter.frame_navigated(event['params'].get('frame', {}))
+        self.filter.navigation_sent(result.get('loaderId'))
         load_deadline = navigate_sent + DEADLINE_MS['load_wait'] / 1000
         try:
             settled = await self.records.wait(lambda record: record['type'] == 'settled', load_deadline)
@@ -2168,6 +2559,7 @@ class Run:
             self.facts.product_failures.append('load_not_settled')
             await self._flush()
             return
+        self._sample_window('load_end')
         self.timings['settled'] = settled['T']
         if spec.after_settle is not None:
             self.timings['after_settle'] = await spec.after_settle()
@@ -2182,6 +2574,14 @@ class Run:
             await self._interactions(steps)
         await self._flush()
 
+    def _outside_viewport(self, step: dict, target: dict) -> bool:
+        """V3: a dispatch point outside the layout viewport is never clicked (harness fault, invalid run)."""
+        if target.get('in_viewport') is False:
+            self.facts.environment_faults.append(f'target_outside_viewport:{step["step"]}')
+            self.steps.append({'step': step['step'], 'status': 'target_outside_viewport', 'target': target})
+            return True
+        return False
+
     async def _interactions(self, steps: list) -> None:
         spec = self.spec
         mobile = VIEWPORTS[spec.viewport]['mobile']
@@ -2193,15 +2593,34 @@ class Run:
                     self.facts.product_failures.append('preview_failed_open:no_control_attached')
                     self.steps.append({'step': step['step'], 'status': 'not_dispatched'})
                     return
-                await dispatch_click(self.page, attached['target']['point'], mobile)
-                self.steps.append({'step': step['step'], 'status': 'dispatched', 'target': attached['target']})
-                until = self.preview_until
+                ready = play_ready(attached, None)
+                if ready is None:
+                    # V2: a native control attached before its metadata is operable at loadedmetadata.
+                    try:
+                        ready = await self.records.wait(lambda record: record['type'] == 'control_ready',
+                                                        self.preview_until)
+                    except asyncio.TimeoutError:
+                        self.facts.product_failures.append('preview_failed_open:control_not_ready')
+                        self.steps.append({'step': step['step'], 'status': 'not_dispatched'})
+                        return
+                if self._outside_viewport(step, ready['target']):
+                    return
+                log_start = len(self.page.log)
+                await dispatch_click(self.page, ready['target']['point'], mobile)
+                self._sample_window(f'interaction_start:{index}')
+                sent = next((entry['sent'] for entry in self.page.log[log_start:]
+                             if entry['method'].startswith('Input.')), None)
+                # F6: probe-side wait from receiving the ready record to sending the first input event.
+                delay = (sent - ready['_received']) * 1000 if sent is not None and '_received' in ready else None
+                self.steps.append({'step': step['step'], 'status': 'dispatched', 'target': ready['target'],
+                                   'ready_record': ready['type'], 'probe_dispatch_delay_ms': delay})
                 try:
                     await self.records.wait(lambda record: record['type'] == 'media' and record['event'] == 'playing',
-                                            until)
+                                            self.preview_until)
                 except asyncio.TimeoutError:
                     self.facts.product_failures.append('preview_failed_open:no_playing')
                     return
+                self._sample_window(f'interaction_end:{index}')
                 previous_end = time.monotonic()
                 continue
             target_until = previous_end + DEADLINE_MS['wait_other'] / 1000
@@ -2216,8 +2635,11 @@ class Run:
             if spacing > 0:
                 await asyncio.sleep(spacing)
             ready = self.records.last(lambda record, i=index: record['type'] == 'target_ready' and record['index'] == i)
+            if self._outside_viewport(step, ready):
+                return
             dispatched = time.monotonic()
             await dispatch_click(self.page, centre(ready['rect']), mobile)
+            self._sample_window(f'interaction_start:{index}')
             self.steps.append({'step': step['step'], 'status': 'dispatched', 'rect': ready['rect']})
             wait_until = dispatched + DEADLINE_MS[step['wait']] / 1000
             if step['end']['kind'] == 'control_attached':
@@ -2232,6 +2654,7 @@ class Run:
                     step['wait'], 'interaction_end_missing')
                 self.facts.product_failures.append(f'{reason}:{step["step"]}')
                 return
+            self._sample_window(f'interaction_end:{index}')
             previous_end = time.monotonic()
 
     async def _flush(self) -> None:
@@ -2240,8 +2663,10 @@ class Run:
         await self.page.send('Runtime.evaluate', {'expression': expression, 'awaitPromise': True, 'returnByValue': True},
                              klass='evaluate')
         self.page.log[self.flush_sent]['flush'] = True
+        self._sample_window('flush')
 
     async def _collect(self) -> None:
+        await self._await_window_reads()
         for method, klass, side in post_window_commands(getattr(self, 'tracing', False),
                                                         getattr(self, 'screencast', False)):
             client = self.browser.client if side == 'browser' else self.page
@@ -2249,12 +2674,14 @@ class Run:
             started = time.monotonic()
             result = await client.send(method, params, klass=klass)
             if method == 'Tracing.end':
-                remaining = started + DEADLINE_MS['collect'] / 1000 - time.monotonic()
+                deadline = started + DEADLINE_MS['collect'] / 1000
                 try:
-                    await asyncio.wait_for(self.trace_complete.wait(), max(0.0, remaining))
+                    await asyncio.wait_for(self.trace_complete.wait(), max(0.0, deadline - time.monotonic()))
                 except asyncio.TimeoutError:
+                    # V6: the completion wait carries the Tracing.end send time and its absolute deadline.
                     self.browser.client.log.append({'method': 'Tracing.tracingComplete', 'class': 'collect',
-                                                    'phase': 'collect', 'timeout': True})
+                                                    'phase': 'collect', 'timeout': True, 'sent': started,
+                                                    'deadline': deadline, 'connection': 'browser'})
                     raise CdpTimeout('Tracing.end', 'collect', 'collect') from None
             elif method == 'Browser.getWindowForTarget':
                 self.window_states.append(result.get('bounds', {}).get('windowState'))
@@ -2263,6 +2690,7 @@ class Run:
 
     async def _leave(self) -> None:
         sent = time.monotonic()
+        self.timings['leave_sent'] = sent
         try:
             arrived = asyncio.Event()
             def navigated(params):
@@ -2282,6 +2710,8 @@ class Run:
         except CdpDisconnected:
             self.facts.disconnected = True
             self.facts.crashed = not self.browser.alive()
+        except Exception as error:  # noqa: BLE001 - V11: a CDP error reply of the leave step is a harness fault.
+            self.facts.environment_faults.append(self._harness_error('leave', error))
         finally:
             self.facts.leave_ok = self.leave_ok
 
@@ -2295,44 +2725,60 @@ class Run:
         entries = [record['entry'] for record in typed['perf']]
         interactions = interactions_from_inputs(typed['input'])
         steps = self.config['steps'] if hasattr(self, 'config') else []
-        completed = bool(steps) and len([s for s in self.steps if s.get('status') == 'dispatched']) == len(steps) \
-            and not self.facts.product_failures
+        # R5-4, V1: the core script completed when every step was dispatched; a later product failure (missing
+        # feedback, no 'playing') fails only the metric it names.
+        completed = bool(steps) and [s.get('status') for s in self.steps] == ['dispatched'] * len(steps)
         document_start = typed['document_start'][0] if typed['document_start'] else {}
-        # Environment faults from the timed window.
+        http_errors = self.network.errors()
+        document_errors = [item for item in http_errors if item.get('type') == 'Document']
+        if document_errors and not any(f.startswith('navigation_http_error') for f in self.facts.product_failures):
+            self.facts.product_failures.insert(0, f'navigation_http_error:{document_errors[0]["status"]}')
+        # Environment faults of the timed phase (V4: records up to the flush sample, F1 focus rule).
+        flush = next((record for record in reversed(typed['focus']) if record.get('point') == 'flush'), None)
+        flush_time = flush.get('time') if flush else None
         if self.facts.navigate_sent and document_start:
-            faults = visibility_faults([document_start.get('focus', {}), *typed['focus']], typed['visibility_event'],
-                                       self.window_states)
+            faults = visibility_faults(document_start, timed_records(typed['focus'], flush_time),
+                                       timed_records(typed['visibility_event'], flush_time), self.window_reads)
             viewport_faults, flags = viewport_check(spec.viewport, document_start, typed['viewport'])
-            self.facts.environment_faults += faults + viewport_faults
+            self.facts.environment_faults += [fault for fault in faults + viewport_faults
+                                              if fault not in self.facts.environment_faults]
         else:
             flags = []
         if self.facts.timeouts and any(t.phase == 'collect' for t in self.facts.timeouts):
             self.facts.renderer_busy_across_deadline = self._renderer_busy()
         metrics = {}
+        inp_interactions = native_play_interactions(typed, interactions, steps, flush_time)
+        native_step = next((step for step in self.steps if step.get('ready_record') and
+                            (step.get('target') or {}).get('kind') == 'audio'), None)
+        if native_step is not None and (native_step.get('probe_dispatch_delay_ms') or 0) > PREVIEW_GAP_MAX_MS:
+            self.facts.environment_faults.append('preview_dispatch_delay_over_16ms')
         if self.facts.navigate_sent and document_start:
             first_input = interactions[0]['first'] if interactions else None
             metrics['lcp'] = lcp(entries, first_input)
             metrics['cls'] = cls(entries, completed or not steps)
             if steps:
-                mapping = map_inp(entries, interactions[:len(steps)])
+                mapping = map_inp(entries, inp_interactions[:len(steps)])
                 metrics['inp'] = run_inp(mapping, completed)
                 metrics['inp_mapping'] = mapping
             else:
                 metrics['inp'] = LOAD_ONLY_INP
-            metrics.update(self._c11(typed, interactions, steps))
+            metrics.update(self._c11(typed, inp_interactions, steps))
             if metrics.get('preview', {}).get('gap_invalid'):
                 self.facts.environment_faults.append('preview_gap_over_16ms')
         outcome, reason = classify(self.facts)
         page_log = self.page.log[self.page_log_start:]
         log = page_log + self.browser.client.log[self.browser_log_start:]
-        return {
+        result = {
             'ordinal': spec.ordinal, 'role': spec.role, 'viewport': spec.viewport, 'view': spec.view,
             'warm_up': spec.warm_up, 'primer': spec.primer, 'trace_contrast': spec.trace_contrast,
             'outcome': outcome, 'reason': reason, 'navigate_sent': self.facts.navigate_sent,
             'facts': asdict(self.facts), 'metrics': metrics, 'flags': flags, 'steps': self.steps,
             'browser_version': self.browser_version, 'window_states': self.window_states,
+            'window_reads': self.window_reads,
             'activation_polls': self.activation_polls, 'timings': self.timings,
             'cache_sources': self.network.sources(), 'post_window_violations': post_window_violations(page_log),
+            'http_errors': http_errors, 'exceptions': self.exceptions, 'inspector_detached': self.detached,
+            'timed_exceptions': sum(1 for item in self.exceptions if item['phase'] == 'timed'),
             'commands': [{key: value for key, value in entry.items()} for entry in log],
             'records': {'accepted': accepted, 'rejected': self.filter.rejected},
             'document_start': document_start, 'screencast_frames': self.frames, 'trace_events': len(self.trace_events),
@@ -2340,6 +2786,8 @@ class Run:
                                                if values),
             'script_identifier': self.script_identifier,
         }
+        result['run_wide_failure'] = run_wide_failure(result)
+        return result
 
     def _renderer_busy(self) -> bool | None:
         timeout = next((t for t in self.facts.timeouts if t.phase == 'collect'), None)
@@ -2347,7 +2795,8 @@ class Run:
             return None
         command = next((entry for entry in self.page.log[self.page_log_start:]
                         + self.browser.client.log[self.browser_log_start:]
-                        if entry.get('timeout') and entry.get('phase') == 'collect'), None)
+                        if entry.get('timeout') and entry.get('phase') == 'collect'
+                        and 'sent' in entry and 'deadline' in entry), None)
         if command is None:
             return None
         marks = trace_marks(self.trace_events)
@@ -2391,8 +2840,13 @@ def c11_metrics(typed: dict, interactions: list, steps: list, trace: dict | None
         if step.get('c11') == 'action_feedback':
             start = interactions[index]['first'] if index < len(interactions) else None
             end = ends.get(index)
-            record = {'start': start, 'mutation': end['time'] if end else None,
-                      'raf': frames[index]['raf'] if index in frames else None, 'presented': {}}
+            mutation = end['time'] if end else None
+            raf = frames[index]['raf'] if index in frames else None
+            # V5: the first-rAF lower bound is never earlier than the end mutation.
+            if raf is not None and mutation is not None:
+                raf = max(raf, mutation)
+            record = {'start': start, 'mutation': mutation, 'raf': raf,
+                      'frame_time': frames[index].get('frame_time') if index in frames else None, 'presented': {}}
             if trace and end:
                 for name, values in trace['candidates'].items():
                     presented = presented_after(values, end['time'] + trace['offset'])
@@ -2403,12 +2857,23 @@ def c11_metrics(typed: dict, interactions: list, steps: list, trace: dict | None
         if step.get('c11') == 'preview':
             start = interactions[index]['first'] if index < len(interactions) else None
             attached = typed['control_attached'][0] if typed.get('control_attached') else None
+            ready = play_ready(attached, typed['control_ready'][0] if typed.get('control_ready') else None)
             play_index = names.index('reproducir') if 'reproducir' in names else None
             gesture = (interactions[play_index]['first']
                        if play_index is not None and play_index < len(interactions) else None)
             media = typed.get('media', [])
             playing = next((record['timeStamp'] for record in media if record['event'] == 'playing'), None)
-            value = preview(start, attached['time'] if attached else None, gesture, playing)
+            native = play_index is not None and play_index < len(interactions) \
+                and interactions[play_index].get('synthetic')
+            if native:
+                # F6: the native control's input events never reach page listeners, so the gesture time is not
+                # observable: the primary value is (playing - start), with no subtraction (one definition for
+                # the native target kind; the probe-side dispatch delay is checked instead of the gap).
+                value = preview(start, ready['time'] if ready else None, ready['time'] if ready else None, playing)
+                value.update(gap=None, gap_invalid=False, definition='native_unsubtracted')
+            else:
+                value = preview(start, ready['time'] if ready else None, gesture, playing)
+                value['definition'] = 'subtracted'
             review = next((entry for entry in (record['entry'] for record in typed.get('perf', []))
                            if entry.get('entryType') == 'resource' and '/review' in entry.get('name', '')), None)
             value['secondary'] = {
@@ -2416,7 +2881,11 @@ def c11_metrics(typed: dict, interactions: list, steps: list, trace: dict | None
                 'canplay': next((r['timeStamp'] for r in media if r['event'] == 'canplay'), None),
                 'ready_states': [{'event': r['event'], 'readyState': r['readyState']} for r in media],
                 'attach_ready_state': attached['readyState'] if attached else None,
-                'play_target': attached['target'] if attached else None,
+                'control_attached': attached['time'] if attached else None,
+                'control_ready': ready['time'] if ready else None,
+                'ready_record': ready['type'] if ready else None,
+                'metadata_wait': (ready['time'] - attached['time']) if ready and attached else None,
+                'play_target': ready['target'] if ready else (attached['target'] if attached else None),
                 'network': (review['responseEnd'] - review['requestStart']) if review else None,
             }
             result['preview'] = value
@@ -2429,6 +2898,8 @@ class SetupFault(Exception):
 
 def c11_feedback_value(run: dict, frame_event: str | None) -> float:
     """Final C11 action feedback with the chosen frame event (fill-in from smoke_gate.frame_event)."""
+    if run_wide_failure(run):
+        return INF
     record = run['metrics'].get('action_feedback')
     if not record or frame_event is None:
         return INF
@@ -2453,63 +2924,104 @@ class BatchEnvironment:
     close_browser: Callable
     caffeinate: Callable
     served_state: Callable
+    machine_state: Callable = lambda: {'ac_power': True, 'display_asleep': False, 'locked': False}
+    assertion_held: Callable = lambda caffeinate: True
+    sweep: Callable = lambda: []
     events: list = field(default_factory=list)
 
 
+async def maybe_await(value):
+    return await value if asyncio.iscoroutine(value) else value
+
+
+def machine_faults(state: dict, *, smoke: bool) -> list:
+    """V8 (quiet_machine.mac): AC power, display awake and screen unlocked at batch start and end. In the smoke the
+    lock read is not yet chosen and the display read is being confirmed, so an unreadable value is recorded only."""
+    faults = []
+    if state.get('ac_power') is not True:
+        faults.append('not_on_ac_power')
+    if state.get('display_asleep') is True or (state.get('display_asleep') is None and not smoke):
+        faults.append('display_asleep')
+    if state.get('locked') is True or (state.get('locked') is None and not smoke):
+        faults.append('screen_locked')
+    return faults
+
+
 async def run_batch(plan: dict, environment: BatchEnvironment, *, idle: float | None, post_batch: float | None,
-                    browser_version: Callable[[], str | None] = lambda: None, end_record_only: bool = False) -> dict:
+                    browser_version: Callable[[], str | None] = lambda: None, end_record_only: bool = False,
+                    warm_rule: bool = True, smoke: bool = False) -> dict:
     """One batch: start checks before the fixture and Chrome, runs with appended replacements, end checks 60 s
-    after Chrome and the fixture exit (R4-11, R5-7). Never reads a load average while the probe's Chrome runs."""
+    after Chrome and the fixture exit (R4-11, R5-7). Never reads a load average while the probe's Chrome runs.
+    V7: caffeinate and the fixture start inside try/finally, leftover probe browsers are swept at start and exit."""
     events = environment.events
+    events.append('sweep_start')
+    swept_start = environment.sweep()
     events.append('quiet_start')
     start_quiet = await environment.quiet_check()
     events.append('load_start')
     start_load = environment.loadavg()
+    start_machine = environment.machine_state()
+    start_faults = machine_faults(start_machine, smoke=smoke)
     batch = {'cell': plan['cell'], 'attempt': plan['attempt'], 'seed': plan['seed'], 'planned': plan['planned'],
-             'runs': [], 'start': {'quiet': start_quiet, 'load': start_load, 'idle': idle},
-             'quiet_start_ok': bool(start_quiet.get('ok')) and load_reading_ok(start_load, idle),
-             'started_at': time.time()}
+             'runs': [], 'start': {'quiet': start_quiet, 'load': start_load, 'idle': idle, 'machine': start_machine,
+                                   'machine_faults': start_faults, 'swept': swept_start},
+             'quiet_start_ok': bool(start_quiet.get('ok')) and load_reading_ok(start_load, idle) and not start_faults,
+             'started_at': time.time(), 'warm_rule_active': warm_rule}
     if not batch['quiet_start_ok']:
         batch.update(discarded=True, reasons=['quiet_machine'], ended_at=time.time())
         return batch
-    caffeinate = environment.caffeinate()
-    events.append('fixture_start')
-    fixture = await environment.start_fixture()
-    batch['fixture'] = {key: fixture.get(key) for key in ('digest', 'started_at', 'seed')}
-    batch['served'] = environment.served_state()
+    caffeinate = None
+    fixture = None
+    fault = None
     cold_by_pair = {}
-    index = 0
     try:
-        while index < len(plan['slots']):
-            slot = plan['slots'][index]
-            index += 1
-            if slot['role'] == 'warm':
-                cold = cold_by_pair.get((slot.get('pair'), slot.get('replaces'), 'cold'))
-                if cold is None or warm_slot_invalid(cold):
-                    result = {'ordinal': slot['ordinal'], 'role': 'warm', 'outcome': Outcome.INVALID,
-                              'reason': 'warm_slot_without_preceding_load', 'pair': slot.get('pair')}
+        caffeinate = environment.caffeinate()
+        batch['caffeinate_assertion_start'] = bool(await maybe_await(environment.assertion_held(caffeinate)))
+        events.append('fixture_start')
+        try:
+            fixture = await environment.start_fixture()
+        except Exception as error:  # noqa: BLE001 - a fixture that does not start is a fixture fault.
+            fault = f'fixture_fault:{type(error).__name__}:{str(error)[:120]}'
+        if fixture is not None:
+            batch['fixture'] = {key: fixture.get(key) for key in ('digest', 'started_at', 'seed')}
+            batch['served'] = environment.served_state()
+            index = 0
+            while index < len(plan['slots']):
+                slot = plan['slots'][index]
+                index += 1
+                if slot['role'] == 'warm':
+                    cold = cold_by_pair.get((slot.get('pair'), slot.get('replaces'), 'cold'))
+                    if cold is None or warm_slot_invalid(cold):
+                        result = {'ordinal': slot['ordinal'], 'role': 'warm', 'outcome': Outcome.INVALID,
+                                  'reason': 'warm_slot_without_preceding_load', 'pair': slot.get('pair')}
+                    else:
+                        events.append(f'run:{slot["ordinal"]}')
+                        result = await environment.run_slot(slot)
+                    await environment.close_browser()
                 else:
                     events.append(f'run:{slot["ordinal"]}')
                     result = await environment.run_slot(slot)
-                await environment.close_browser()
-            else:
-                events.append(f'run:{slot["ordinal"]}')
-                result = await environment.run_slot(slot)
-                cold_by_pair[(slot.get('pair'), slot.get('replaces'), 'cold')] = result
-                if slot.get('warm_up'):
-                    await environment.close_browser()
-            result.update({key: slot.get(key) for key in ('pair', 'trace_contrast', 'untraced_inp', 'warm_up',
-                                                          'primer', 'replaces')})
-            result['role'] = slot['role']
-            batch['runs'].append(result)
-            if result['outcome'] == Outcome.INVALID:
-                replacement_slots(plan, slot)
+                    cold_by_pair[(slot.get('pair'), slot.get('replaces'), 'cold')] = result
+                    if slot.get('warm_up'):
+                        await environment.close_browser()
+                result.update({key: slot.get(key) for key in ('pair', 'trace_contrast', 'untraced_inp', 'warm_up',
+                                                              'primer', 'replaces')})
+                result['role'] = slot['role']
+                batch['runs'].append(result)
+                if result['outcome'] == Outcome.INVALID:
+                    replacement_slots(plan, slot)
+            batch['caffeinate_assertion_end'] = bool(await maybe_await(environment.assertion_held(caffeinate)))
     finally:
         await environment.close_browser()
         events.append('fixture_stop')
         await environment.stop_fixture()
         if caffeinate is not None:
             caffeinate.terminate()
+        events.append('sweep_end')
+        batch['swept_end'] = environment.sweep()
+    if fault is not None:
+        batch.update(discarded=True, reasons=['fixture_fault'], fault=fault, ended_at=time.time())
+        return batch
     batch['elapsed_since_fixture_s'] = time.time() - (fixture.get('started_at') or time.time())
     events.append('wait_60s')
     await environment.sleep(60)
@@ -2517,9 +3029,13 @@ async def run_batch(plan: dict, environment: BatchEnvironment, *, idle: float | 
     end_load = environment.loadavg()
     end_quiet = await environment.quiet_check()
     events.append('quiet_end')
-    batch['end'] = {'quiet': end_quiet, 'load': end_load, 'post_batch': post_batch}
+    end_machine = environment.machine_state()
+    end_faults = machine_faults(end_machine, smoke=smoke)
+    batch['end'] = {'quiet': end_quiet, 'load': end_load, 'post_batch': post_batch, 'machine': end_machine,
+                    'machine_faults': end_faults}
     # In the smoke, post_batch is being measured (smoke_gate.quiet_baseline): the end reading is recorded only.
-    batch['quiet_end_ok'] = bool(end_quiet.get('ok')) and (end_record_only or load_reading_ok(end_load, post_batch))
+    batch['quiet_end_ok'] = bool(end_quiet.get('ok')) and not end_faults and (
+        end_record_only or load_reading_ok(end_load, post_batch))
     after = environment.served_state()
     batch['tree_dirty'] = batch['served'].get('dirty') or after.get('dirty')
     batch['commit_changed'] = after.get('commit') != batch['served'].get('commit')
@@ -2659,8 +3175,8 @@ def apply_fill_ins(fill_ins: dict) -> dict:
     return fill_ins
 
 
-async def measure_cell(args, mode: str, sha: str) -> int:
-    """Run one (client, viewport, view) batch on the Mac (baseline or smoke)."""
+async def measure_cell(args, mode: str, sha: str) -> dict:
+    """Run one (client, viewport, view) batch on the Mac (baseline or smoke); returns the batch record."""
     from tests.frontend.browser_support import browser_binary
     if sys.platform != 'darwin':
         raise SystemExit('measurement_runs_only_on_the_mac')
@@ -2669,24 +3185,27 @@ async def measure_cell(args, mode: str, sha: str) -> int:
     smoke = mode == 'smoke'
     if smoke:
         # The smoke's own fixed-procedure idle reading (smoke_gate.quiet_baseline) gates its batches.
-        record = SmokeRecord(SMOKE_ROOT / 'smoke-record.json')
-        done = [run for run in record.data['runs'] if run['item'] == 'quiet_baseline' and run['status'] == 'complete']
-        if not done:
-            raise SystemExit('smoke_quiet_baseline_missing: run `smoke-item quiet-baseline` first')
-        idle, post_batch = done[-1]['result']['idle'], None
+        idle, post_batch = smoke_idle(SmokeRecord(SMOKE_ROOT / 'smoke-record.json')), None
     else:
         idle, post_batch = fill_ins.get('idle_load'), fill_ins.get('post_batch_load')
         if idle is None or post_batch is None:
             raise SystemExit('quiet_baseline_fill_ins_missing: the smoke fill-ins are not in the frozen file')
     plan = plan_batch(sha, 'mac-chrome', args.viewport, args.view, args.attempt, smoke=smoke,
                       pairs=args.pairs, contrast_pairs=args.contrast_pairs, warm_ups=3,
-                      untraced_inp=bool(fill_ins.get('overhead', {}).get('untraced_inp')) and args.view in INTERACTION_VIEWS)
+                      untraced_inp=bool((fill_ins.get('overhead') or {}).get('untraced_inp'))
+                      and args.view in INTERACTION_VIEWS)
     stamp = time.strftime('%Y%m%dT%H%M%S')
     out_dir = checked_output(mode, output_root(mode) / f'{stamp}-{args.viewport}-{args.view.strip("#")}-a{args.attempt}')
     out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     session = BrowserSession(mode, browser_binary(), out_dir, netlog=fill_ins.get('background_branch') == 'netlog')
     fixture = FixtureProcess(out_dir, harness_pages=False)
     state = {}
+    environment_facts = mac_environment()
+    identity = {'mode': mode, 'preregistration_sha256': sha, 'script_id': script_id(),
+                'launch_flags': list(LAUNCH_FLAGS), 'launch_mechanism': LAUNCH_MECHANISM,
+                'os_version': environment_facts['os_version'], 'hardware': environment_facts['hardware'],
+                'ui_locale_apple_languages_first': environment_facts['apple_languages_first'],
+                'pip_freeze_sha256': pip_freeze_sha256(), 'commit': git('rev-parse', 'HEAD')}
 
     async def start_fixture():
         state['ready'] = await fixture.start()
@@ -2698,30 +3217,69 @@ async def measure_cell(args, mode: str, sha: str) -> int:
         spec.play_rule = fill_ins.get('play_control_rule')
         result = await session.execute(spec, fixture)
         result['mode'] = mode
+        # V14c: every result file names the full method_identity it was produced under.
+        language = (result.get('document_start') or {})
+        result['method_identity'] = {**identity, 'fixture_digest': state['ready'].get('digest'),
+                                     'browser_version': result.get('browser_version'),
+                                     'ui_locale_navigator': [language.get('language'), language.get('languages')]}
         write_json_atomic(out_dir / f'run-{slot["ordinal"]:05d}.json', json_safe(result))
         return result
 
-    def caffeinate():
-        return subprocess.Popen(['caffeinate', '-dimsu'])
-
+    lock_choice = (fill_ins.get('lock_read') or {}).get('read') if isinstance(fill_ins.get('lock_read'), dict) \
+        else fill_ins.get('lock_read')
     environment = BatchEnvironment(quiet_check=lambda: quiet_check(os.getpid()), loadavg=loadavg,
                                    sleep=asyncio.sleep, start_fixture=start_fixture, stop_fixture=fixture.stop,
-                                   run_slot=run_slot, close_browser=session.close_browser, caffeinate=caffeinate,
-                                   served_state=served_state)
+                                   run_slot=run_slot, close_browser=session.close_browser,
+                                   caffeinate=start_caffeinate, served_state=served_state,
+                                   machine_state=lambda: machine_state(lock_choice),
+                                   assertion_held=caffeinate_assertion_wait, sweep=sweep_probe_browsers)
     header = {'mode': mode, 'preregistration_sha256': sha, 'script_id': script_id(), 'plan_seed': plan['seed'],
-              'launch_flags': list(LAUNCH_FLAGS), 'launch_mechanism': LAUNCH_MECHANISM, 'environment': mac_environment(),
-              'lock_read': lock_reads(), 'pip_freeze_sha256': pip_freeze_sha256(), 'label': LOCAL_LABEL}
-    batch = await run_batch(plan, environment, idle=idle, post_batch=post_batch, end_record_only=smoke)
+              'launch_flags': list(LAUNCH_FLAGS), 'launch_mechanism': LAUNCH_MECHANISM,
+              'environment': environment_facts, 'method_identity': identity, 'label': LOCAL_LABEL,
+              'pip_freeze_sha256': identity['pip_freeze_sha256']}
+    batch = await run_batch(plan, environment, idle=idle, post_batch=post_batch, end_record_only=smoke,
+                            warm_rule=warm_rule_active(fill_ins), smoke=smoke)
     header['closure'] = recorded_closure(json.loads((out_dir / 'fixture-modules.json').read_text())
                                          if (out_dir / 'fixture-modules.json').exists() else [])
-    header['lock_read_end'] = lock_reads()
     batch_record = {**header, **{key: value for key, value in batch.items() if key != 'runs'},
                     'run_outcomes': [{'ordinal': run['ordinal'], 'role': run['role'], 'outcome': run['outcome'],
                                       'reason': run.get('reason')} for run in batch['runs']],
-                    'events': environment.events}
+                    'events': environment.events, 'directory': str(out_dir)}
+    batch_record['faults'] = sorted(batch_faults(batch_record))
     write_json_atomic(out_dir / 'batch.json', json_safe(batch_record))
     print(json.dumps({'batch': str(out_dir), 'discarded': batch.get('discarded'), 'reasons': batch.get('reasons')}))
-    return 0
+    return batch_record
+
+
+def batch_faults(batch: dict) -> set:
+    """V9: the harness or environment causes a batch recorded, which alone may justify a smoke repeat."""
+    faults = set()
+    reasons = batch.get('reasons') or []
+    if 'quiet_machine' in reasons:
+        faults.add('quiet_machine')
+    if 'fixture_fault' in reasons:
+        faults.add('fixture_fault')
+    machine = [*(batch.get('start') or {}).get('machine_faults', []), *(batch.get('end') or {}).get('machine_faults', [])]
+    if 'screen_locked' in machine:
+        faults.add('lock')
+    for run in batch.get('run_outcomes') or batch.get('runs') or []:
+        reason = run.get('reason') or ''
+        if reason == 'browser_crashed':
+            faults.add('crash')
+        elif reason == 'websocket_disconnected':
+            faults.add('disconnect')
+        elif reason.startswith(('fixture_not_ready', 'position_check_failed', 'login_failed')):
+            faults.add('fixture_fault')
+    return faults
+
+
+async def caffeinate_assertion_wait(process, attempts: int = 10) -> bool:
+    """The assertion appears shortly after caffeinate starts; poll it for up to ~2 s."""
+    for _ in range(attempts):
+        if await asyncio.to_thread(caffeinate_assertion_held, process):
+            return True
+        await asyncio.sleep(0.2)
+    return False
 
 
 # --------------------------------------------------------------------------------------------
@@ -2758,8 +3316,8 @@ async def harness_dry_run(args) -> int:
         'KZA_T046_HARNESS_EVIDENCE', str(HARNESS_ROOT.relative_to(REPOSITORY))))
     out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     fixture = FixtureProcess(out_dir, harness_pages=True)
-    ready = await fixture.start()
     try:
+        ready = await fixture.start()
         positions = json.loads(Path(ready['position_map']).read_text())
         specs = []
         ordinal = 0
@@ -2780,7 +3338,14 @@ async def harness_dry_run(args) -> int:
     summary = [{'ordinal': r['ordinal'], 'view': r['view'], 'viewport': r['viewport'], 'role': r['role'],
                 'outcome': r['outcome'], 'reason': r['reason'], 'steps': [s['status'] for s in r['steps']],
                 'accepted_records': len(r['records']['accepted']), 'rejected_records': len(r['records']['rejected']),
-                'post_window_violations': r['post_window_violations'], 'flags': r['flags']} for r in results]
+                'post_window_violations': r['post_window_violations'], 'flags': r['flags'],
+                'environment_faults': r.get('facts', {}).get('environment_faults'),
+                'product_failures': r.get('facts', {}).get('product_failures'),
+                'window_reads': [(item['point'], item['state']) for item in r.get('window_reads', [])],
+                'scrolled': [record['step'] for record in r['records']['accepted'] if record['type'] == 'scrolled'],
+                'play_ready_record': next((step.get('ready_record') for step in r['steps'] if step.get('ready_record')),
+                                          None),
+                'http_errors': r.get('http_errors'), 'timed_exceptions': r.get('timed_exceptions')} for r in results]
     for result in results:
         write_json_atomic(out_dir / f'run-{result["ordinal"]:05d}.json', json_safe(withhold_values(result)))
     write_json_atomic(out_dir / 'dry-run-summary.json', {'mode': 'harness', 'not_a_measurement': True,
@@ -2797,10 +3362,11 @@ async def smoke_quiet_baseline(record: SmokeRecord, sha: str, cause: str | None)
     """R5-7: idle = median of 5 readings 60 s apart with the process check passing and no probe Chrome."""
     entry = record.start('quiet_baseline', sha, cause)
     readings = []
+    sweep_probe_browsers()
     for number in range(5):
         check = await quiet_check(os.getpid())
         if not check['ok']:
-            record.finish(entry, 'aborted', {'check': check, 'readings': readings})
+            record.finish(entry, 'aborted', {'check': check, 'readings': readings}, faults=['quiet_machine'])
             raise SystemExit('quiet_baseline_process_check_failed')
         readings.append(loadavg())
         if number < 4:
@@ -2810,10 +3376,55 @@ async def smoke_quiet_baseline(record: SmokeRecord, sha: str, cause: str | None)
     return result
 
 
-async def smoke_cold_focus(record: SmokeRecord, sha: str, cause: str | None, out_dir: Path) -> dict:
+async def smoke_item_quiet_start(idle: float | None) -> dict:
+    """V8: the batch-start quiet_machine checks for a smoke item that is not a batch (sweep, process check, load
+    reading against the smoke idle, AC power, display; lock recorded)."""
+    swept = sweep_probe_browsers()
+    check = await quiet_check(os.getpid())
+    load = loadavg()
+    machine = machine_state()
+    faults = machine_faults(machine, smoke=True)
+    return {'ok': bool(check.get('ok')) and load_reading_ok(load, idle) and not faults, 'quiet': check,
+            'load': load, 'idle': idle, 'machine': machine, 'machine_faults': faults, 'swept': swept}
+
+
+async def run_smoke_item(record: SmokeRecord, item: str, sha: str, cause: str | None, body: Callable) -> dict:
+    """V8, V9: a smoke item under the quiet_machine start check and caffeinate, recorded with its faults."""
+    entry = record.start(item, sha, cause)
+    start = await smoke_item_quiet_start(smoke_idle(record))
+    if not start['ok']:
+        faults = ['quiet_machine'] + (['lock'] if 'screen_locked' in start['machine_faults'] else [])
+        record.finish(entry, 'aborted', {'quiet_start': start}, faults=faults)
+        raise SystemExit(f'smoke_item_quiet_machine_failed:{item}')
+    caffeinate = start_caffeinate()
+    try:
+        held = await caffeinate_assertion_wait(caffeinate)
+        if not held:
+            record.finish(entry, 'aborted', {'quiet_start': start, 'caffeinate_assertion': False},
+                          faults=['quiet_machine'])
+            raise SystemExit(f'smoke_item_caffeinate_assertion_missing:{item}')
+        result = await body()
+        held_end = await caffeinate_assertion_wait(caffeinate)
+    except SystemExit:
+        raise
+    except BaseException as error:
+        record.finish(entry, 'aborted', {'quiet_start': start, 'error': f'{type(error).__name__}: {str(error)[:200]}'},
+                      faults=['crash'])
+        raise
+    finally:
+        caffeinate.terminate()
+        sweep_probe_browsers()
+    faults = set(result.pop('faults', []) if isinstance(result, dict) else [])
+    if not held_end:
+        faults.add('quiet_machine')
+    record.finish(entry, 'complete', {**result, 'quiet_start': start, 'caffeinate_assertion_end': held_end},
+                  faults=faults)
+    return result
+
+
+async def smoke_cold_focus(out_dir: Path) -> dict:
     """R4-6, R5-14a: 20 consecutive `open -na` launches pass the activation poll on about:blank."""
     from tests.frontend.browser_support import browser_binary
-    entry = record.start('cold_focus', sha, cause)
     polls = []
     for number in range(20):
         browser = Browser('mac', browser_binary(), Path(tempfile.mkdtemp(prefix='kza-t046-focus-')),
@@ -2829,15 +3440,12 @@ async def smoke_cold_focus(record: SmokeRecord, sha: str, cause: str | None, out
             await page.close()
         finally:
             await browser.close()
-    result = {'polls': polls, 'passed': all(isinstance(value, int) for value in polls)}
-    record.finish(entry, 'complete', result)
-    return result
+    return {'polls': polls, 'passed': all(isinstance(value, int) for value in polls)}
 
 
-async def smoke_background(record: SmokeRecord, sha: str, cause: str | None, out_dir: Path) -> dict:
+async def smoke_background(out_dir: Path) -> dict:
     """R4-6, R5-5: 5 fresh profiles, first 10 s: non-loopback requests (net log), new targets, dialogs, focus."""
     from tests.frontend.browser_support import browser_binary
-    entry = record.start('background_activity', sha, cause)
     profiles = []
     for number in range(5):
         netlog = out_dir / f'background-netlog-{number}.json'
@@ -2863,25 +3471,28 @@ async def smoke_background(record: SmokeRecord, sha: str, cause: str | None, out
             await browser.close()
         profiles.append({'requests': netlog_hosts(netlog), 'new_targets': len(observed['targets']),
                          'dialogs': len(observed['dialogs']), 'focus_lost': False in observed['focus']})
-    result = {'profiles': profiles, 'branch': background_branch(profiles)}
-    record.finish(entry, 'complete', result)
-    return result
+    return {'profiles': profiles, 'branch': background_branch(profiles)}
 
 
 def smoke_lock_read(record: SmokeRecord, sha: str, cause: str | None, state: str) -> dict:
     """quiet_machine.lock_read: read while the user reports the screen 'locked' or 'unlocked'."""
     entry = record.start(f'lock_read_{state}', sha, cause)
-    result = {'state_reported': state, 'reads': lock_reads(), 'time': time.time()}
+    result = {'state_reported': state, 'reads': lock_reads(), 'display_asleep': display_asleep(), 'time': time.time()}
     record.finish(entry, 'complete', result)
     return result
 
 
 async def measure_client(args, mode: str, sha: str) -> int:
-    """All cells of the Mac client in the seeded cell order; two consecutive discards stop with a blocker."""
+    """All cells of the Mac client in the seeded cell order; two consecutive discards stop with a blocker.
+
+    V9: in smoke mode every cell is its own smoke record entry and a discarded batch is never repeated
+    automatically (a repeat needs a recorded harness or environment cause, run_rules.which_run_counts)."""
     cells = [(cell['viewport'], cell['view']) for cell in batch_plan_views()]
     ledger = BatchLedger()
     attempts = Counter()
-    order = cell_order(sha, 'mac-chrome', 1, cells, smoke=mode == 'smoke')
+    smoke = mode == 'smoke'
+    record = SmokeRecord(checked_output('smoke', SMOKE_ROOT / 'smoke-record.json')) if smoke else None
+    order = cell_order(sha, 'mac-chrome', 1, cells, smoke=smoke)
     queue = list(order)
     while queue:
         if not ledger.may_start():
@@ -2889,11 +3500,20 @@ async def measure_client(args, mode: str, sha: str) -> int:
         viewport, view = queue.pop(0)
         attempts[(viewport, view)] += 1
         args.viewport, args.view, args.attempt = viewport, view, attempts[(viewport, view)]
-        await measure_cell(args, mode, sha)
-        latest = sorted(output_root(mode).glob(f'*-{viewport}-{view.strip("#")}-a{args.attempt}/batch.json'))[-1]
-        report = json.loads(latest.read_text())
+        entry = record.start(f'batch:{viewport}:{view}', sha, None) if smoke else None
+        try:
+            report = await measure_cell(args, mode, sha)
+        except BaseException as error:
+            if smoke:
+                record.finish(entry, 'aborted', {'error': f'{type(error).__name__}: {str(error)[:200]}'},
+                              faults=['crash'])
+            raise
         ledger.record(report)
-        if report.get('discarded'):
+        if smoke:
+            record.finish(entry, 'discarded' if report.get('discarded') else 'complete',
+                          {'directory': report.get('directory'), 'reasons': report.get('reasons')},
+                          faults=report.get('faults'))
+        elif report.get('discarded'):
             queue.insert(0, (viewport, view))
     return 0
 
@@ -2910,6 +3530,10 @@ FIXTURE_STEPS = {
                                 'attribute': 'data-status'})],
     'detach': [dict(FIXTURE_STEP, step='escuchar', selector='#first', end={'kind': 'exists', 'selector': '#replaced'})],
     'missing': [dict(FIXTURE_STEP, step='ausente', selector='#absent', end={'kind': 'exists', 'selector': '#never'})],
+    'scroll': [dict(FIXTURE_STEP, step='primero', selector='#first',
+                    end={'kind': 'attribute_present', 'selector': '#first', 'attribute': 'data-done'}),
+               dict(FIXTURE_STEP, step='segundo', selector='#second',
+                    end={'kind': 'attribute_present', 'selector': '#second', 'attribute': 'data-done'})],
     'present': [dict(FIXTURE_STEP, step='presente', selector='#present',
                      end={'kind': 'attribute_present', 'selector': '#present', 'attribute': 'data-never'})],
     'preview': [{'step': 'escuchar', 'container': '#harness', 'selector': 'button', 'name_prefix': 'Escuchar',
@@ -2919,9 +3543,10 @@ FIXTURE_STEPS = {
 
 
 def fixture_spec(ordinal: int, role: str, ready: dict, page: str, steps: list, query: str = '', *,
-                 after_settle: Callable | None = None) -> RunSpec:
+                 after_settle: Callable | None = None, play_rule: dict | None = None) -> RunSpec:
     return RunSpec(ordinal, role, 'desktop', '#harness', f'{ready["origin"]}/__harness/{page}.html{query}',
-                   ready['origin'], None, harness_steps=steps, harness=True, after_settle=after_settle)
+                   ready['origin'], None, harness_steps=steps, harness=True, after_settle=after_settle,
+                   play_rule=play_rule)
 
 
 def accepted(result: dict, kind: str) -> list:
@@ -2932,17 +3557,31 @@ def timeout_phases(result: dict) -> list:
     return [timeout['phase'] for timeout in result['facts']['timeouts']]
 
 
-def known_focus_fault_only(result: dict) -> bool:
-    """F1 (reported): hasFocus() reads false at document start on Chromium; nothing else may fault."""
-    return result['facts']['environment_faults'] in ([], ['page_unfocused'])
+def no_environment_fault(result: dict) -> bool:
+    """F1 resolved by the preregistered focus rule: a healthy fixture run has no environment fault at all."""
+    return result['facts']['environment_faults'] == []
+
+
+# smoke_gate.preview_ready_state (V2, F4): the provisional native play-control rule and the ordered candidates
+# tried on the native fixture preview page (product-independent) when it does not play on 5 of 5 runs.
+PLAY_RULE_CANDIDATES = (PLAY_CONTROL_RULE,) + tuple(
+    {'dx_px': float(dx), 'y_fraction': 0.5, 'status': 'smoke_candidate'} for dx in (12, 16, 24, 28))
+
+
+def play_rule_choice(trials: list) -> dict:
+    """First rule (in the preregistered order) whose 5 native-control runs all reached 'playing'."""
+    for trial in trials:
+        if trial['runs'] and all(trial['playing']):
+            return {'rule': trial['rule'], 'trials': trials, 'method_change': False}
+    return {'rule': None, 'trials': trials, 'method_change': True}
 
 
 async def fixture_page_checks(mode: str, out_dir: Path, *, binary: str, profile_root: Path | None) -> dict:
     """Run the fixture-page scenarios and evaluate their preregistered expectations (fixture pages only)."""
     fixture = FixtureProcess(out_dir, harness_pages=True)
-    ready = await fixture.start()
     checks, observations, raw = {}, {}, {}
     try:
+        ready = await fixture.start()
         async def sequence(name, specs):
             results = await run_sequence(mode, specs, out_dir, None, binary=binary, profile_root=profile_root)
             raw[name] = results
@@ -2970,7 +3609,7 @@ async def fixture_page_checks(mode: str, out_dir: Path, *, binary: str, profile_
             'ok': busy['outcome'] == Outcome.FAILURE and timeout_phases(busy)[:1] == ['timed']
             and (after_busy['target_id'] != busy['target_id']) == busy['needs_new_target']
             and not after_busy['facts']['setup_faults'] and not after_busy['facts']['timeouts']
-            and known_focus_fault_only(after_busy),
+            and no_environment_fault(after_busy),
             'busy': [busy['outcome'], busy['reason'], timeout_phases(busy)],
             'leave_step_timed_out': busy['needs_new_target'],
             'next': [after_busy['outcome'], after_busy['reason'], after_busy['facts']['environment_faults']]}
@@ -2991,11 +3630,33 @@ async def fixture_page_checks(mode: str, out_dir: Path, *, binary: str, profile_
                                                                FIXTURE_STEPS['sub-threshold'])])
         feedback = sub['metrics'].get('action_feedback', {})
         first_event = accepted(sub, 'input')[0]['timeStamp'] if accepted(sub, 'input') else None
+        mapping = sub['metrics'].get('inp_mapping') or {}
+        groups = (mapping.get('groups_per_interaction') or [None])[0]
+        inp = sub['metrics'].get('inp')
+        # F5 (smoke_gate.sub_threshold): the C11 feedback value exists, its rAF lower bound is not before the start
+        # (V5), and INP is '<16 ms' exactly when no Event Timing group maps to the window, else the group's value.
         checks['sub_threshold_feedback'] = {
             'ok': feedback.get('start') == first_event and sub['metrics'].get('action_feedback_raf') not in (None, INF)
-            and not sub['facts']['product_failures'] and sub['metrics'].get('inp') not in (None, INF),
-            'feedback_raf_ms': sub['metrics'].get('action_feedback_raf'), 'presented': feedback.get('presented')}
-        observations['sub_threshold_inp'] = sub['metrics'].get('inp')
+            and sub['metrics']['action_feedback_raf'] >= 0 and not sub['facts']['product_failures']
+            and no_environment_fault(sub)
+            and ((groups == 0 and inp == CENSORED) or (groups and inp == max(
+                value for value in mapping['latencies'] if value != CENSORED))),
+            'feedback_raf_ms': sub['metrics'].get('action_feedback_raf'), 'presented': feedback.get('presented'),
+            'inp': inp, 'groups': groups}
+        observations['sub_threshold_inp'] = inp
+
+        (scrolled,) = await sequence('scroll', [fixture_spec(13, 'cold', ready, 'scroll', FIXTURE_STEPS['scroll'])])
+        moves = accepted(scrolled, 'scrolled')
+        next_frames = [record for record in accepted(scrolled, 'step_next_frame') if record['index'] == 0]
+        second_input = [record for record in accepted(scrolled, 'input') if record.get('interaction') == 1]
+        # V3: only step 1 is scrolled, after step 0's step_next_frame and before step 1's first input.
+        checks['scroll_after_previous_step_frame'] = {
+            'ok': [step['status'] for step in scrolled['steps']] == ['dispatched', 'dispatched']
+            and [record['index'] for record in moves] == [1] and bool(next_frames) and bool(second_input)
+            and next_frames[0]['t'] <= moves[0]['t'] < second_input[0]['timeStamp']
+            and not scrolled['facts']['product_failures'] and no_environment_fault(scrolled),
+            'scrolled': [(record['index'], record['t']) for record in moves],
+            'steps': [step['status'] for step in scrolled['steps']]}
 
         (detach,) = await sequence('detach', [fixture_spec(7, 'cold', ready, 'detach', FIXTURE_STEPS['detach'])])
         diagnostics = [item for group in detach['metrics'].get('inp_mapping', {}).get('diagnostics', []) for item in group]
@@ -3038,6 +3699,40 @@ async def fixture_page_checks(mode: str, out_dir: Path, *, binary: str, profile_
             name: bool([r for r in accepted(run, 'media') if r['event'] == 'playing'])
             for name, run in zip(('button', 'button_longtask', 'aria', 'native_audio_rule'), runs)}
         observations['native_audio_ready_state'] = runs[3]['metrics'].get('preview', {}).get('secondary', {})
+        native = runs[3]['metrics'].get('preview', {})
+        native_attach = (accepted(runs[3], 'control_attached') or [{}])[0]
+        # V2: a native control attached before its metadata is clicked from control_ready and plays.
+        play_step = next((step for step in runs[3]['steps'] if step.get('ready_record')), {})
+        native_mapping = runs[3]['metrics'].get('inp_mapping') or {}
+        # V2, F6: clicked from control_ready, plays, primary value unsubtracted, probe-side delay <= 16 ms, and the
+        # play gesture keeps its own INP slot (window [ready, flush]).
+        checks['native_control_waits_for_metadata'] = {
+            'ok': native.get('failed_open') is False and native.get('definition') == 'native_unsubtracted'
+            and play_step.get('probe_dispatch_delay_ms') is not None
+            and play_step['probe_dispatch_delay_ms'] <= PREVIEW_GAP_MAX_MS
+            and len(native_mapping.get('latencies') or []) == 2 and no_environment_fault(runs[3])
+            and (native_attach.get('readyState', 0) >= 1
+                 or native.get('secondary', {}).get('ready_record') == 'control_ready'),
+            'attach_ready_state': native_attach.get('readyState'),
+            'ready_record': native.get('secondary', {}).get('ready_record'),
+            'probe_dispatch_delay_ms': play_step.get('probe_dispatch_delay_ms'),
+            'play_inp_groups': (native_mapping.get('groups_per_interaction') or [None, None])[1:],
+            'failures': runs[3]['facts']['product_failures']}
+        observations['native_control_input_events_seen_by_page'] = [
+            len([record for record in accepted(run, 'input') if record.get('interaction') == 1]) for run in runs]
+
+        # smoke_gate.preview_ready_state (V2, F4): the first preregistered rule with 5 of 5 native runs playing.
+        trials = []
+        for number, rule in enumerate(PLAY_RULE_CANDIDATES):
+            specs = [fixture_spec(100 + 5 * number + index, 'cold', ready, 'preview', FIXTURE_STEPS['preview'], '',
+                                  play_rule=rule) for index in range(5)]
+            results = await sequence(f'play_rule_{number}', specs)
+            trials.append({'rule': rule, 'runs': len(results),
+                           'playing': [bool([r for r in accepted(run, 'media') if r['event'] == 'playing'])
+                                       for run in results]})
+            if all(trials[-1]['playing']):
+                break
+        observations['play_control_rule'] = play_rule_choice(trials)
 
         if mode == 'smoke':
             # smoke_gate.mac_environment: minimising the window and switching focus each invalidate the run.
@@ -3047,13 +3742,12 @@ async def fixture_page_checks(mode: str, out_dir: Path, *, binary: str, profile_
 
             async def switch():
                 return await asyncio.to_thread(run_text, ['open', '-a', 'Finder'])
-            for ordinal, (name, action) in enumerate((('minimise', minimise), ('switch_focus', switch)), start=13):
+            for ordinal, (name, action) in enumerate((('minimise', minimise), ('switch_focus', switch)), start=14):
                 (result,) = await sequence(f'visibility_{name}', [
                     fixture_spec(ordinal, 'cold', ready, 'plain', FIXTURE_STEPS['present'], after_settle=action)])
-                # page_unfocused alone does not prove the action was seen (F1: it is set at document start).
+                # F1 resolved: a healthy fixture run has no environment fault, so any fault here is the action's.
                 checks[f'visibility_{name}_invalidates'] = {
-                    'ok': result['outcome'] == Outcome.INVALID
-                    and bool(set(result['facts']['environment_faults']) - {'page_unfocused'}),
+                    'ok': result['outcome'] == Outcome.INVALID and bool(result['facts']['environment_faults']),
                     'outcome': result['outcome'], 'faults': result['facts']['environment_faults']}
 
         every = [run for results in raw.values() for run in results]
@@ -3090,7 +3784,9 @@ def frame_event_phases(results: list) -> list:
     for result in results:
         record = result.get('metrics', {}).get('action_feedback')
         present = set(result.get('trace_candidates_present', []))
-        if not present:
+        # V14f: every run whose interaction phase was traced counts, including one with no candidate at all
+        # (load-only runs have no interaction phase).
+        if not result.get('trace_events') or not result.get('steps'):
             continue
         interactions = []
         if record and record.get('raf') is not None and record.get('screencast') is not None:
@@ -3114,31 +3810,50 @@ def numeric_median(values: list):
     return (middle[0] + middle[1]) / 2
 
 
-def summary_rows(runs: list, frame_event: str | None) -> list:
-    """Per (viewport, view, cold/warm): n valid, failures and percentiles; labelled local, never C10/C11 acceptance."""
+WARM_NOT_EVALUABLE = 'no evaluable por este método: caché caliente no alcanzada'
+
+
+def summary_rows(runs: list, frame_event: str | None, *, warm_evaluable: bool = True) -> list:
+    """Per (viewport, view, cold/warm): n valid, failures and percentiles; labelled local, never C10/C11 acceptance.
+
+    V1: failures count per metric (run_wide_failure, else the metric's own value). V10: when untraced-INP runs
+    exist (instrumentation_overhead consequence), INP rows come from them only and LCP, CLS and C11 rows from the
+    original runs. V9: warm rows are 'no evaluable' when the smoke's warm_cache outcome says so."""
     rows = []
     groups = defaultdict(list)
     for run in runs:
         groups[(run['viewport'], run['view'], run['role'])].append(run)
     for (viewport, view, role), members in sorted(groups.items()):
+        original = [run for run in members if not run.get('untraced_inp')]
+        untraced = [run for run in members if run.get('untraced_inp')]
         row = {'viewport': viewport, 'view': view, 'cache': role, 'label': LOCAL_LABEL,
-               'n_valid': len(percentile_runs(members))}
+               'n_valid': len(percentile_runs(original))}
+        if role == 'warm' and not warm_evaluable:
+            row.update(status=WARM_NOT_EVALUABLE, lcp=WARM_NOT_EVALUABLE, cls=WARM_NOT_EVALUABLE,
+                       inp=WARM_NOT_EVALUABLE if view in INTERACTION_VIEWS else LOAD_ONLY_INP)
+            row['cache_mix_percent'] = warm_share(percentile_runs(original))['mix_percent']
+            rows.append(row)
+            continue
         for metric in ('lcp', 'cls'):
-            row[metric] = summarize(metric_values(members, metric))
+            row[metric] = summarize(metric_values(original, metric))
         if view in INTERACTION_VIEWS:
-            row['inp'] = summarize(metric_values(members, 'inp'))
+            source = untraced if untraced else original
+            row['inp'] = summarize(metric_values(source, 'inp'))
+            row['inp_source'] = 'untraced_interaction_phase' if untraced else 'traced_interaction_phase'
+            row['n_valid_inp'] = len(percentile_runs(source))
         else:
             row['inp'] = LOAD_ONLY_INP
         if view == '#acciones':
-            values = [c11_feedback_value(run, frame_event) if run['outcome'] == Outcome.VALID else INF
-                      for run in percentile_runs(members)]
+            values = [c11_feedback_value(run, frame_event) for run in percentile_runs(original)]
             row['c11_action_feedback'] = summarize(values)
         if view == '#voces':
-            values = [run['metrics'].get('preview', {}).get('value', INF) if run['outcome'] == Outcome.VALID else INF
-                      for run in percentile_runs(members)]
+            values = [INF if run_wide_failure(run) else run['metrics'].get('preview', {}).get('value', INF)
+                      for run in percentile_runs(original)]
             row['c11_preview'] = summarize(values)
+        row['timed_exceptions'] = sum(run.get('timed_exceptions', 0) for run in percentile_runs(members))
+        row['http_errors'] = sum(len(run.get('http_errors') or []) for run in percentile_runs(members))
         if role == 'warm':
-            row['cache_mix_percent'] = warm_share(percentile_runs(members))['mix_percent']
+            row['cache_mix_percent'] = warm_share(percentile_runs(original))['mix_percent']
         rows.append(row)
     return rows
 
@@ -3150,37 +3865,40 @@ def summarize_directory(directory: Path, mode: str) -> dict:
         document = json.loads(path.read_text())
         if mode == 'baseline':
             refuse_smoke_input(document)
+        document = restore_infinity(document)
         document['outcome'] = Outcome(document['outcome'])
-        document['metrics'] = {key: (INF if value == 'Infinity' else value)
-                               for key, value in document.get('metrics', {}).items()}
         runs.append(document)
     fill_ins = load_fill_ins(json.loads(PREREGISTRATION.read_text())) if PREREGISTRATION.exists() else {}
-    return {'mode': mode, 'rows': json_safe(summary_rows(runs, fill_ins.get('frame_event'))),
+    frame_event = (fill_ins.get('frame_event') or {}).get('candidate') if isinstance(fill_ins.get('frame_event'), dict) \
+        else fill_ins.get('frame_event')
+    return {'mode': mode, 'rows': json_safe(summary_rows(runs, frame_event, warm_evaluable=warm_rule_active(fill_ins))),
             'scope': 'NEXO only; no /obs/ row (Q29, QF); local numbers never accept C10/C11'}
 
 
-async def smoke_overhead(args, sha: str) -> dict:
-    """smoke_gate.instrumentation_overhead: #acciones and #voces desktop, warm runs only, 10 per arm, interleaved."""
+async def smoke_overhead(sha: str) -> dict:
+    """smoke_gate.instrumentation_overhead: #acciones and #voces desktop, warm runs only, 10 per arm, interleaved.
+
+    V10: arm values follow the per-metric failure scope (invalid runs excluded, failures +inf, '<16 ms' kept),
+    the consequences come from overhead_consequences() and the preview positions use the smoke preview start."""
     from tests.frontend.browser_support import browser_binary
-    record = SmokeRecord(checked_output('smoke', SMOKE_ROOT / 'smoke-record.json'))
-    entry = record.start('instrumentation_overhead', sha, args.cause)
     out_dir = checked_output('smoke', SMOKE_ROOT / f'overhead-{time.strftime("%Y%m%dT%H%M%S")}')
     out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     fixture = FixtureProcess(out_dir)
-    ready = await fixture.start()
-    positions = json.loads(Path(ready['position_map']).read_text())
     session = BrowserSession('smoke', browser_binary(), out_dir)
     values = {}
-    traced = []
     try:
+        ready = await fixture.start()
+        positions = json.loads(Path(ready['position_map']).read_text())
         for view in ('#acciones', '#voces'):
             arms = ['a'] * 10 + ['b'] * 10 + ['c'] * 10
             random.Random(derive_seed(sha, 'overhead', view, smoke=True)).shuffle(arms)
+            start = derive_seed(sha, 'preview', 'overhead', view, smoke=True) % 50
             per_arm = {arm: {'inp': [], 'raf_feedback': []} for arm in 'abc'}
             for number, arm in enumerate(arms):
                 capture = None
                 if view == '#voces':
-                    capture = positions['positions'][preview_position(2 * number + 1, positions['preview_permutation'])]['capture_id']
+                    position = preview_position(2 * number + 1, positions['preview_permutation'], start)
+                    capture = positions['positions'][position]['capture_id']
                 base = dict(viewport='desktop', view=view, url=ready['origin'] + '/' + view, origin=ready['origin'],
                             token_for_login=ready['tokens'][VIEW_ROLES[view]], capture_id=capture)
                 primer = RunSpec(2 * number, 'cold', primer=True, trace_interactions=False, screencast=False, **base)
@@ -3189,23 +3907,36 @@ async def smoke_overhead(args, sha: str) -> dict:
                     result = await session.execute(spec, fixture)
                     result.update(mode='smoke', arm=arm)
                     write_json_atomic(out_dir / f'{view.strip("#")}-run-{spec.ordinal:05d}.json', json_safe(result))
-                if arm == 'a':
-                    traced.append(result)
-                if result['outcome'] == Outcome.VALID:
-                    per_arm[arm]['inp'].append(result['metrics'].get('inp'))
-                    per_arm[arm]['raf_feedback'].append(result['metrics'].get('action_feedback_raf', INF))
+                if result['outcome'] == Outcome.INVALID:
+                    continue
+                wide = run_wide_failure(result)
+                per_arm[arm]['inp'].append(INF if wide else result['metrics'].get('inp', INF))
+                if view == '#acciones':
+                    per_arm[arm]['raf_feedback'].append(INF if wide else result['metrics'].get('action_feedback_raf', INF))
             values[view] = per_arm
     finally:
         await session.close_browser()
         await fixture.stop()
-    medians = {view: {arm: {metric: numeric_median(series) for metric, series in arms.items()}
-                      for arm, arms in per_view.items()} for view, per_view in values.items()}
-    # smoke_gate.frame_event: arm (a) runs are traced with the screencast, the acceptance-test input.
-    result = {'values': json_safe(values), 'medians': medians,
-              'frame_event': frame_event_choice(frame_event_phases(traced)),
-              'note': 'overhead per metric = median(a) - median(c); a censored median is reported, never imputed'}
-    record.finish(entry, 'complete', result)
-    return result
+    analysis = overhead_consequences(values)
+    return {'directory': str(out_dir), 'values': json_safe(values), 'overhead': json_safe(analysis),
+            'consequences': analysis['consequences'],
+            'note': 'overhead per metric = median(a) - median(c) as an interval; censored medians are [0, 16)'}
+
+
+def smoke_frame_event(root: Path = SMOKE_ROOT) -> dict:
+    """smoke_gate.frame_event (V14f): the acceptance test over every smoke run whose interaction phase was traced
+    (batches and overhead arm (a) and (b) runs alike); analysis only, no browser."""
+    results = []
+    for path in sorted(root.rglob('*run-*.json')):
+        try:
+            document = restore_infinity(json.loads(path.read_text()))
+        except (OSError, ValueError):
+            continue
+        if document.get('mode') != 'smoke' or document.get('outcome') == Outcome.INVALID.value:
+            continue
+        results.append(document)
+    phases = frame_event_phases(results)
+    return {'phases': len(phases), 'choice': frame_event_choice(phases)}
 
 
 # --------------------------------------------------------------------------------------------
@@ -3231,7 +3962,7 @@ def parse_args(argv=None):
         measure.add_argument('--contrast-pairs', type=int, default=10)
     smoke = sub.add_parser('smoke-item', help='smoke items that are not batches (Mac, smoke mode)')
     smoke.add_argument('item', choices=('quiet-baseline', 'cold-focus', 'background', 'lock-read', 'fixture-pages',
-                                        'overhead'))
+                                        'overhead', 'frame-event'))
     smoke.add_argument('--reviewed-sha256', required=True)
     smoke.add_argument('--cause', choices=SMOKE_REPEAT_CAUSES)
     smoke.add_argument('--lock-state', choices=('locked', 'unlocked'), default='unlocked')
@@ -3265,35 +3996,49 @@ def main(argv=None) -> int:
             raise SystemExit('smoke_runs_only_on_the_mac')
         sha = verify_preregistration(PREREGISTRATION, args.reviewed_sha256)
         out_dir = checked_output('smoke', SMOKE_ROOT / 'items')
+        out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         record = SmokeRecord(checked_output('smoke', SMOKE_ROOT / 'smoke-record.json'))
         if args.item == 'quiet-baseline':
             result = asyncio.run(smoke_quiet_baseline(record, sha, args.cause))
-        elif args.item == 'cold-focus':
-            result = asyncio.run(smoke_cold_focus(record, sha, args.cause, out_dir))
-        elif args.item == 'background':
-            result = asyncio.run(smoke_background(record, sha, args.cause, out_dir))
-        elif args.item == 'fixture-pages':
-            from tests.frontend.browser_support import browser_binary
-            entry = record.start('fixture_pages', sha, args.cause)
-            pages_dir = checked_output('smoke', SMOKE_ROOT / f'fixture-pages-{time.strftime("%Y%m%dT%H%M%S")}')
-            pages_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-            result = asyncio.run(fixture_page_checks('smoke', pages_dir, binary=browser_binary(), profile_root=None))
-            record.finish(entry, 'complete', {'ok': result['ok'], 'directory': str(pages_dir)})
-        elif args.item == 'overhead':
-            result = asyncio.run(smoke_overhead(args, sha))
-        else:
+        elif args.item == 'lock-read':
             result = smoke_lock_read(record, sha, args.cause, args.lock_state)
+        elif args.item == 'frame-event':
+            entry = record.start('frame_event', sha, args.cause)
+            result = smoke_frame_event()
+            record.finish(entry, 'complete', json_safe(result))
+        else:
+            async def fixture_pages():
+                from tests.frontend.browser_support import browser_binary
+                pages_dir = checked_output('smoke', SMOKE_ROOT / f'fixture-pages-{time.strftime("%Y%m%dT%H%M%S")}')
+                pages_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+                summary = await fixture_page_checks('smoke', pages_dir, binary=browser_binary(), profile_root=None)
+                return {'ok': summary['ok'], 'directory': str(pages_dir), 'checks': summary['checks'],
+                        'observations': summary['observations']}
+            bodies = {'cold-focus': ('cold_focus', lambda: smoke_cold_focus(out_dir)),
+                      'background': ('background_activity', lambda: smoke_background(out_dir)),
+                      'fixture-pages': ('fixture_pages', fixture_pages),
+                      'overhead': ('instrumentation_overhead', lambda: smoke_overhead(sha))}
+            item, body = bodies[args.item]
+            result = asyncio.run(run_smoke_item(record, item, sha, args.cause, body))
         print(json.dumps(json_safe(result), indent=1))
         return 0
     mode, sha = check_measure_mode(args)
+    if args.command == 'measure-client':
+        return asyncio.run(measure_client(args, mode, sha))
     if mode == 'smoke':
         record = SmokeRecord(checked_output('smoke', SMOKE_ROOT / 'smoke-record.json'))
         entry = record.start(f'batch:{args.viewport}:{args.view}', sha, args.cause)
-    runner = measure_cell if args.command == 'measure-cell' else measure_client
-    status = asyncio.run(runner(args, mode, sha))
-    if mode == 'smoke':
-        record.finish(entry, 'complete')
-    return status
+        try:
+            report = asyncio.run(measure_cell(args, mode, sha))
+        except BaseException as error:
+            record.finish(entry, 'aborted', {'error': f'{type(error).__name__}: {str(error)[:200]}'}, faults=['crash'])
+            raise
+        record.finish(entry, 'discarded' if report.get('discarded') else 'complete',
+                      {'directory': report.get('directory'), 'reasons': report.get('reasons')},
+                      faults=report.get('faults'))
+        return 0
+    asyncio.run(measure_cell(args, mode, sha))
+    return 0
 
 
 if __name__ == '__main__':

@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><title>T046 harness: target below the fold</title></head>
+<body style="margin:0"><main id="harness"><button id="first" type="button" style="width:200px;height:60px">Primero</button>
+<div style="height:2400px"></div>
+<button id="second" type="button" style="width:200px;height:60px">Segundo</button></main>
+<script>
+// Fixture page (V3): the second step's target starts outside the viewport; the injected script brings it into view
+// only after the first step's step_next_frame record and outside every capture window.
+for (const id of ['first', 'second']) document.getElementById(id).addEventListener('click', event => { event.currentTarget.dataset.done = '1'; });
+</script></body></html>

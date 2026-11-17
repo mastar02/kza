@@ -18,7 +18,8 @@ function wav(seconds) {
 document.querySelector('.row button').addEventListener('click', () => {
   const panel = document.querySelector('.nexo-voice-review');
   const audio = document.createElement('audio'); audio.controls = true; audio.preload = 'metadata'; audio.src = URL.createObjectURL(wav(2));
-  audio.style.width = '300px';
+  // width=<px>: the <audio> width (NEXO renders it at 100% of the review panel); default 300 px.
+  audio.style.width = (query.get('width') || '300') + 'px';
   if (query.get('button') === '1') {
     // The native control first, then the light-DOM button named by its trimmed textContent.
     const play = document.createElement('button'); play.type = 'button'; play.textContent = '  Reproducir muestra  '; play.style.cssText = 'width:180px;height:44px';

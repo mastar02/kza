@@ -44,10 +44,10 @@ class FakeClient:
     def on(self, method, handler):
         self.handlers[method].append(handler)
 
-    async def send(self, method, params=None, *, klass):
+    async def send(self, method, params=None, *, klass, phase=None):
         if not probe.method_class_allowed(method, klass):
             raise ValueError(f'no_deadline_class:{method}:{klass}')
-        self.log.append({'method': method, 'params': params, 'class': klass, 'phase': self.phase,
+        self.log.append({'method': method, 'params': params, 'class': klass, 'phase': phase or self.phase,
                          'sent': time.monotonic()})
         answer = self.answers.get(method)
         return answer(params) if callable(answer) else (answer or {})
@@ -62,7 +62,8 @@ class FakeClient:
 def make_run(view='#voces', viewport='desktop', capture='vf_' + 'c' * 64):
     spec = probe.RunSpec(7, 'cold', viewport, view, 'http://127.0.0.1:1/' + view, 'http://127.0.0.1:1', None,
                          capture_id=capture)
-    browser = SimpleNamespace(client=FakeClient(), alive=lambda: True, argv=[])
+    browser = SimpleNamespace(client=FakeClient({'Browser.getWindowForTarget': {'bounds': {'windowState': 'normal'}}}),
+                              alive=lambda: True, argv=[])
     run = probe.Run(spec, browser, FakeClient(), 'target', Path('/nonexistent'), None, None)
     run.config = probe.injection_config(token=run.token, origin=spec.origin, view=view, capture_id=capture)
     run.filter.committed = True
@@ -107,10 +108,32 @@ def test_percentiles_nearest_rank_failures_infinite_and_censored_below_measured(
 
 def test_failures_count_as_infinity_in_metric_values():
     runs = [{'outcome': Outcome.VALID, 'role': 'cold', 'metrics': {'lcp': 100.0}},
-            {'outcome': Outcome.FAILURE, 'role': 'cold', 'metrics': {'lcp': 50.0}},
-            {'outcome': Outcome.POST_WINDOW_HANG, 'role': 'cold', 'metrics': {}},
+            {'outcome': Outcome.FAILURE, 'role': 'cold', 'reason': 'load_not_settled', 'metrics': {'lcp': 50.0}},
+            {'outcome': Outcome.FAILURE, 'role': 'cold', 'reason': 'cdp_timeout:Input.dispatchMouseEvent',
+             'metrics': {'lcp': 60.0}},
+            {'outcome': Outcome.POST_WINDOW_HANG, 'role': 'cold', 'metrics': {'lcp': 70.0}},
             {'outcome': Outcome.INVALID, 'role': 'cold', 'metrics': {'lcp': 1.0}}]
-    assert probe.metric_values(runs, 'lcp') == [100.0, INF, INF]
+    assert probe.metric_values(runs, 'lcp') == [100.0, INF, INF, INF]
+
+
+def test_failure_scope_per_metric_preview_failure_keeps_lcp_finite():
+    """V1: a preview-only failure fails C11 preview, never LCP, CLS or (all steps dispatched) INP."""
+    runs = []
+    for index in range(40):
+        failed = index < 12
+        runs.append({'viewport': 'desktop', 'view': '#voces', 'role': 'cold',
+                     'outcome': Outcome.FAILURE if failed else Outcome.VALID,
+                     'reason': 'preview_failed_open:no_playing' if failed else None,
+                     'facts': {'product_failures': ['preview_failed_open:no_playing'] if failed else []},
+                     'metrics': {'lcp': 800.0 + index, 'cls': 0.0, 'inp': 40.0,
+                                 'preview': {'value': INF if failed else 300.0}}})
+    row = probe.summary_rows(runs, None)[0]
+    assert row['lcp']['p75'] == 829.0 and row['lcp']['failures'] == 0
+    assert row['inp']['failures'] == 0 and row['cls']['failures'] == 0
+    assert row['c11_preview']['failures'] == 12 and row['c11_preview']['p75'] == INF
+    wide = dict(runs[0], reason='load_not_settled', facts={'product_failures': ['load_not_settled']})
+    assert probe.run_wide_failure(wide) and not probe.run_wide_failure(runs[0])
+    assert probe.metric_values([wide], 'lcp') == [INF]
 
 
 def test_warm_ups_primers_and_trace_contrast_enter_no_percentile():
@@ -213,7 +236,7 @@ def test_c11_start_is_capture_listener_timestamp_and_sub_threshold_gives_feedbac
     assert metrics['action_feedback']['start'] == 1000.0
     assert metrics['action_feedback_raf'] == 12.0
     assert metrics['action_feedback']['presented']['DrawFrame'] == 1020.0
-    run = {'metrics': metrics}
+    run = {'outcome': Outcome.VALID, 'metrics': metrics}
     assert probe.c11_feedback_value(run, 'DrawFrame') == 20.0
     assert probe.run_inp(probe.map_inp([], interactions), True) == CENSORED
 
@@ -227,7 +250,8 @@ def test_preview_primary_end_is_playing_on_every_run():
     media = [{'event': 'loadedmetadata', 'timeStamp': 1310.0, 'readyState': 1},
              {'event': 'canplay', 'timeStamp': 1320.0, 'readyState': 4},
              {'event': 'playing', 'timeStamp': 1400.0, 'readyState': 4}]
-    typed = {'control_attached': [{'time': 1300.0, 'readyState': 0, 'target': {}}], 'media': media}
+    typed = {'control_attached': [{'type': 'control_attached', 'time': 1300.0, 'readyState': 0,
+                                   'target': {'kind': 'button'}}], 'media': media}
     metrics = probe.c11_metrics(typed, interactions, steps, None)
     assert metrics['preview']['value'] == 395.0
     assert metrics['preview']['secondary']['canplay'] == 1320.0
@@ -294,11 +318,17 @@ def test_renderer_busy_across_deadline_from_trace():
 
 
 def test_visibility_or_focus_loss_is_invalid_not_failure():
-    focus = [{'visibility': 'visible', 'hasFocus': True}]
-    assert probe.visibility_faults(focus, [], ['normal']) == []
-    assert probe.visibility_faults(focus, [{'event': 'visibilitychange'}], ['normal']) == ['visibility_event']
-    assert probe.visibility_faults([{'visibility': 'visible', 'hasFocus': False}], [], ['normal']) == ['page_unfocused']
-    assert probe.visibility_faults(focus, [], ['minimized']) == ['window_state']
+    start = {'focus': {'visibility': 'visible', 'hasFocus': True, 'time': 1.0}}
+    later = [{'point': 'domcontentloaded', 'visibility': 'visible', 'hasFocus': True, 'time': 50.0}]
+    normal = [{'point': 'navigation', 'state': 'normal'}]
+    assert probe.visibility_faults(start, later, [], normal) == []
+    assert probe.visibility_faults(start, later, [{'event': 'visibilitychange'}], normal) == ['visibility_event']
+    assert probe.visibility_faults(start, [dict(later[0], hasFocus=False)], [], normal) == ['page_unfocused']
+    assert probe.visibility_faults(start, later, [], [{'point': 'flush', 'state': 'minimized'}]) == ['window_state']
+    assert probe.visibility_faults(start, later, [], [{'point': 'flush', 'state': None, 'error': 'CdpTimeout'}]) \
+        == ['window_state']
+    assert probe.visibility_faults(dict(start, focus=dict(start['focus'], visibility='hidden')), later, [], normal) \
+        == ['page_hidden']
     facts = RunFacts(navigate_sent=True, environment_faults=['window_state'], product_failures=['load_not_settled'])
     assert probe.classify(facts)[0] == Outcome.INVALID
 
@@ -447,7 +477,8 @@ def test_load_settle_synthetic_timelines():
 def test_load_not_settled_is_failure_for_every_metric():
     facts = RunFacts(navigate_sent=True, product_failures=['load_not_settled'])
     assert probe.classify(facts) == (Outcome.FAILURE, 'load_not_settled')
-    run = {'outcome': Outcome.FAILURE, 'role': 'cold', 'metrics': {'lcp': 10.0, 'cls': 0.0, 'inp': 8.0}}
+    run = {'outcome': Outcome.FAILURE, 'reason': 'load_not_settled', 'role': 'cold',
+           'metrics': {'lcp': 10.0, 'cls': 0.0, 'inp': 8.0}}
     assert [probe.metric_values([run], name) for name in ('lcp', 'cls', 'inp')] == [[INF], [INF], [INF]]
 
 
@@ -514,8 +545,9 @@ async def test_cdp_deadline_is_absolute_from_send_and_events_never_extend_it():
 def test_frozen_deadline_values_and_classes():
     assert probe.DEADLINE_MS == {'setup': 10000, 'interaction_trace': 10000, 'navigate': 15000, 'load_wait': 15000,
                                  'evaluate': 10000, 'input': 5000, 'wait_feedback': 5000, 'wait_preview': 10000,
-                                 'wait_other': 5000, 'collect': 60000, 'leave': 10000, 'version': 2000}
-    assert probe.HARNESS_ONLY_CLASSES == {'setup', 'collect', 'version'}
+                                 'wait_other': 5000, 'collect': 60000, 'leave': 10000, 'version': 2000,
+                                 'window_state': 10000}
+    assert probe.HARNESS_ONLY_CLASSES == {'setup', 'collect', 'version', 'window_state'}
     assert probe.IMMUTABLE_CLASSES.isdisjoint(probe.HARNESS_ONLY_CLASSES)
 
 
@@ -824,9 +856,12 @@ def test_overhead_median_a_minus_c_with_components_and_consequences():
             'b': {'inp': [40, 40, 48], 'raf_feedback': [12, 14, 16]},
             'c': {'inp': [24, 32, 40], 'raf_feedback': [10, 12, 14]}}
     result = probe.overhead(arms)
-    assert result['inp']['overhead'] == 16 and result['inp']['screencast'] == 8 and result['inp']['tracing'] == 8
-    assert result['raf_feedback']['screencast'] == 8 and result['raf_feedback']['overhead'] == 10
-    assert result['consequences'] == {'screencast_limited_to_contrast': False, 'untraced_inp': False}
+    point = lambda value: {'low': value, 'high': value, 'evaluable': True}
+    assert result['inp']['overhead'] == point(16) and result['inp']['screencast'] == point(8) \
+        and result['inp']['tracing'] == point(8)
+    assert result['raf_feedback']['screencast'] == point(8) and result['raf_feedback']['overhead'] == point(10)
+    assert result['consequences'] == {'screencast_limited_to_contrast': False, 'untraced_inp': False,
+                                      'unevaluable': [], 'method_change': False}
     arms['c']['inp'] = [16, 24, 32]
     assert probe.overhead(arms)['consequences']['untraced_inp'] is True
     assert probe.reconfirmation_arm('c11_action_feedback') == 'b'
@@ -914,7 +949,11 @@ async def test_play_gesture_dispatched_from_control_attached_rect_without_render
         record(run, 'step_next_frame', index=index)
     record(run, 'control_attached', time=500.0, readyState=0,
            target={'kind': 'audio', 'rect': rect, 'point': {'x': 30.0, 'y': 35.0}})
+    # V2: a native control attached at readyState 0 is clicked from its control_ready record (loadedmetadata).
+    record(run, 'control_ready', time=520.0, readyState=1,
+           target={'kind': 'audio', 'rect': rect, 'point': {'x': 31.0, 'y': 36.0}, 'in_viewport': True})
     record(run, 'media', event='playing', timeStamp=600.0, readyState=4)
+    started = time.monotonic()
     await run._interactions(run.config['steps'])
     log = run.page.log
     inputs_sent = [index for index, entry in enumerate(log) if entry['method'].startswith('Input.')]
@@ -922,8 +961,13 @@ async def test_play_gesture_dispatched_from_control_attached_rect_without_render
     escuchar_last, play_first = inputs_sent[8], inputs_sent[9]
     assert all(not log[i]['method'].startswith(('Runtime.', 'DOM.', 'Accessibility.'))
                for i in range(escuchar_last + 1, play_first))
-    assert log[play_first]['params'] == {'type': 'mouseMoved', 'x': 30.0, 'y': 35.0}
+    assert log[play_first]['params'] == {'type': 'mouseMoved', 'x': 31.0, 'y': 36.0}
     assert [step['status'] for step in run.steps] == ['dispatched'] * 4 and not run.facts.product_failures
+    assert run.steps[3]['ready_record'] == 'control_ready'
+    # R01 (V12): consecutive core steps are at least 1 s apart; the play gesture is not spaced.
+    firsts = [log[index]['sent'] for index in inputs_sent[::3]]
+    assert firsts[1] - firsts[0] >= 0.99 and firsts[2] - firsts[1] >= 0.99 and firsts[3] - firsts[2] < 0.5
+    assert time.monotonic() - started >= 1.98
 
 
 async def test_missing_target_is_product_failure_with_infinite_inp_and_cls():
@@ -1031,10 +1075,19 @@ def test_smoke_repeat_needs_recorded_cause(tmp_path):
     smoke.finish(entry, 'complete', {'polls': [1]})
     with pytest.raises(SystemExit, match='smoke_repeat_refused'):
         probe.SmokeRecord(record_path).start('cold_focus', SHA)
+    # V9: an enumerated cause the previous run did not record is refused too.
+    with pytest.raises(SystemExit, match='smoke_repeat_refused'):
+        probe.SmokeRecord(record_path).start('cold_focus', SHA, cause='crash')
+    faulted = probe.SmokeRecord(record_path)
+    faulted.finish(faulted.data['runs'][-1], 'aborted', {'x': 1}, faults=['quiet_machine'])
+    with pytest.raises(SystemExit, match='smoke_repeat_refused'):
+        probe.SmokeRecord(record_path).start('cold_focus', SHA, cause='lock')
     again = probe.SmokeRecord(record_path)
-    again.start('cold_focus', SHA, cause='crash')
+    again.start('cold_focus', SHA, cause='quiet_machine')
+    # An entry left 'started' (the probe itself stopped) records a crash.
+    probe.SmokeRecord(record_path).start('cold_focus', SHA, cause='crash')
     saved = json.loads(record_path.read_text())
-    assert saved['mode'] == 'smoke' and [run['cause'] for run in saved['runs']] == [None, 'crash']
+    assert saved['mode'] == 'smoke' and [run['cause'] for run in saved['runs']] == [None, 'quiet_machine', 'crash']
     assert oct(record_path.stat().st_mode & 0o777) == '0o600'
 
 
@@ -1218,8 +1271,515 @@ def test_overhead_arm_median_and_frame_event_phases():
     assert probe.numeric_median([]) is None
     run = {'metrics': {'action_feedback': {'raf': 100.0, 'screencast': 120.0,
                                            'presented': {'PipelineReporter': 118.0, 'DrawFrame': 90.0}}},
-           'trace_candidates_present': ['DrawFrame', 'PipelineReporter']}
-    phases = probe.frame_event_phases([run, {'metrics': {}, 'trace_candidates_present': []}])
+           'trace_candidates_present': ['DrawFrame', 'PipelineReporter'], 'trace_events': 500,
+           'steps': [{'status': 'dispatched'}]}
+    untraced = {'metrics': {}, 'trace_candidates_present': [], 'trace_events': 0, 'steps': [{'status': 'dispatched'}]}
+    phases = probe.frame_event_phases([run, untraced])
     assert phases == [{'present': {'DrawFrame', 'PipelineReporter'},
                        'interactions': [{'PipelineReporter': True, 'DrawFrame': False}]}]
     assert probe.frame_event_choice(phases)['candidate'] == 'PipelineReporter'
+    # V14f: a traced interaction phase with no candidate at all still counts (candidate absent there).
+    empty = {'metrics': {}, 'trace_candidates_present': [], 'trace_events': 80, 'steps': [{'status': 'dispatched'}]}
+    phases = probe.frame_event_phases([run, empty])
+    assert len(phases) == 2 and probe.frame_event_choice(phases)['method_change'] is True
+
+
+# ------------------------------------------------------------------------------------------
+# Probe review round 1 (V1..V14, F1..F5): preregistered rules applied by the probe
+# ------------------------------------------------------------------------------------------
+
+def focus_doc(has_focus, time_=1.0, visibility='visible'):
+    return {'screen': {'width': 1440, 'height': 900}, 'dpr': 2,
+            'focus': {'point': 'document_start', 'visibility': visibility, 'hasFocus': has_focus, 'time': time_}}
+
+
+def test_focus_rule_document_start_false_needs_focus_event_before_next_point():
+    """F1: hasFocus false at document_start is valid only when a window 'focus' event of the run document arrives
+    before the next sample point and hasFocus is true at every later point."""
+    later = [{'point': 'domcontentloaded', 'visibility': 'visible', 'hasFocus': True, 'time': 40.0},
+             {'point': 'settled', 'visibility': 'visible', 'hasFocus': True, 'time': 900.0}]
+    focus_event = [{'event': 'focus', 'timeStamp': 2.0}]
+    normal = [{'point': 'navigation', 'state': 'normal'}]
+    assert probe.visibility_faults(focus_doc(False), later, focus_event, normal) == []
+    assert probe.visibility_faults(focus_doc(False), later, [], normal) == ['page_unfocused']
+    assert probe.visibility_faults(focus_doc(False), later, [{'event': 'focus', 'timeStamp': 41.0}], normal) \
+        == ['page_unfocused']
+    assert probe.visibility_faults(focus_doc(False), later, focus_event + [{'event': 'blur', 'timeStamp': 3.0}],
+                                   normal) == ['visibility_event']
+    assert probe.visibility_faults(focus_doc(True), later, [], normal) == []
+
+
+async def test_records_after_flush_never_invalidate_and_window_reads_at_timed_points():
+    """V4: a pagehide or blur after the flush (leave step) is outside the timed phase; window-state reads are taken
+    at navigation, load end, every interaction start and end and the flush, and a non-normal one invalidates."""
+    run = make_run(view='#rutinas', capture=None)
+    run.facts.navigate_sent = True
+    record(run, 'document_start', **focus_doc(True))
+    record(run, 'focus', point='flush', visibility='visible', hasFocus=True, time=900.0, t=900.0)
+    record(run, 'viewport', point='flush', innerWidth=1440, innerHeight=900, dpr=2)
+    record(run, 'visibility_event', event='pagehide', timeStamp=5000.0, state='visible', hasFocus=True, time=5000.0,
+           t=5000.0)
+    for point in ('navigation', 'load_end', 'flush'):
+        run._sample_window(point)
+    await run._await_window_reads()
+    assert sorted(item['point'] for item in run.window_reads) == ['flush', 'load_end', 'navigation']
+    assert all(entry['class'] == 'window_state' for entry in run.browser.client.log)
+    result = run.result()
+    assert result['outcome'] == Outcome.VALID, result['facts']
+    late_blur = make_run(view='#rutinas', capture=None)
+    late_blur.facts.navigate_sent = True
+    record(late_blur, 'document_start', **focus_doc(True))
+    record(late_blur, 'focus', point='flush', visibility='visible', hasFocus=True, time=900.0, t=900.0)
+    record(late_blur, 'visibility_event', event='blur', timeStamp=300.0, state='visible', hasFocus=False, t=300.0)
+    assert late_blur.result()['outcome'] == Outcome.INVALID
+    minimised = make_run(view='#rutinas', capture=None)
+    minimised.browser.client.answers = {'Browser.getWindowForTarget': {'bounds': {'windowState': 'minimized'}}}
+    minimised.facts.navigate_sent = True
+    record(minimised, 'document_start', **focus_doc(True))
+    minimised._sample_window('load_end')
+    await minimised._await_window_reads()
+    assert minimised.result()['reason'] == 'window_state'
+
+
+async def test_interactions_sample_window_at_every_start_and_end():
+    run = make_run(view='#acciones', capture=None)
+    rect = {'x': 10, 'y': 20, 'width': 40, 'height': 30}
+    record(run, 'target_ready', index=0, rect=rect, step='accion', in_viewport=True)
+    record(run, 'step_next_frame', index=0)
+    await run._interactions(run.config['steps'])
+    await run._await_window_reads()
+    assert [item['point'] for item in run.window_reads] == ['interaction_start:0', 'interaction_end:0']
+
+
+async def test_play_gesture_waits_for_control_ready_and_fails_open_without_it():
+    """V2: native control at readyState 0 and no loadedmetadata -> failed open (control_not_ready), no click."""
+    run = make_run()
+    rect = {'x': 10, 'y': 20, 'width': 40, 'height': 30}
+    for index in range(3):
+        record(run, 'target_ready', index=index, rect=rect, step=VOICES_STEPS[index]['step'])
+    for index in range(2):
+        record(run, 'step_next_frame', index=index)
+    record(run, 'control_attached', time=500.0, readyState=0,
+           target={'kind': 'audio', 'rect': rect, 'point': {'x': 30.0, 'y': 35.0}})
+    saved = dict(probe.DEADLINE_MS)
+    try:
+        probe.DEADLINE_MS['wait_preview'] = 1500
+        await run._interactions(run.config['steps'])
+    finally:
+        probe.DEADLINE_MS.update(saved)
+    assert run.facts.product_failures == ['preview_failed_open:control_not_ready']
+    assert len([entry for entry in run.page.log if entry['method'].startswith('Input.')]) == 9
+    button = {'kind': 'button', 'rect': rect, 'point': {'x': 1.0, 'y': 2.0}}
+    assert probe.play_ready({'type': 'control_attached', 'target': button, 'readyState': 0}, None)['target'] == button
+    loaded = {'type': 'control_attached', 'target': {'kind': 'audio'}, 'readyState': 1}
+    assert probe.play_ready(loaded, None) is loaded
+    assert probe.play_ready({'type': 'control_attached', 'target': {'kind': 'audio'}, 'readyState': 0}, None) is None
+
+
+def test_preview_value_uses_control_ready_and_gap_from_it():
+    """V2: primary = (ready - start) + (playing - gesture); the gap is gesture - ready, never gesture - attach."""
+    typed = defaultdict(list)
+    typed['control_attached'] = [{'type': 'control_attached', 'time': 500.0, 'readyState': 0,
+                                  'target': {'kind': 'audio'}}]
+    typed['control_ready'] = [{'type': 'control_ready', 'time': 540.0, 'readyState': 1, 'target': {'kind': 'audio'}}]
+    typed['media'] = [{'event': 'playing', 'timeStamp': 700.0, 'readyState': 4}]
+    interactions = [{'first': 10.0}, {'first': 1000.0}, {'first': 2000.0}, {'first': 548.0}]
+    result = probe.c11_metrics(typed, interactions, VOICES_STEPS, None)['preview']
+    assert result['gap'] == 8.0 and result['value'] == (540.0 - 2000.0) + (700.0 - 548.0)
+    assert result['secondary']['metadata_wait'] == 40.0 and result['secondary']['ready_record'] == 'control_ready'
+
+
+async def test_target_outside_viewport_is_never_clicked_and_is_a_harness_fault():
+    """V3: the dispatch point must lie in the viewport; the probe never scrolls and never clicks outside it."""
+    run = make_run(view='#acciones', capture=None)
+    record(run, 'target_ready', index=0, rect={'x': 10, 'y': 2000, 'width': 40, 'height': 30}, step='accion',
+           in_viewport=False)
+    await run._interactions(run.config['steps'])
+    assert not [entry for entry in run.page.log if entry['method'].startswith('Input.')]
+    assert run.facts.environment_faults == ['target_outside_viewport:accion']
+    run.facts.navigate_sent = True
+    record(run, 'document_start', **focus_doc(True))
+    assert run.result()['outcome'] == Outcome.INVALID
+
+
+def test_injected_script_scrolls_only_after_previous_step_frame():
+    """V3: the scroll lives in the step_next_frame callback path and is gated by mayScroll (index > 0, next pending
+    step, no open capture window, previous step's frame done); the MutationObserver path never scrolls step 0."""
+    source = probe.INJECTED_SOURCE
+    may = source[source.index('function mayScroll('):source.index('function bringIntoView(')]
+    assert 'index > 0' in may and 'index === interactions' in may and '!open' in may and 'settledFrame' in may
+    assert 'index < STEPS.length' in may
+    frame = source[source.index("emit('step_next_frame'"):source.index("emit('step_next_frame'") + 200]
+    assert 'settledFrame = true' in frame and 'bringIntoView(index + 1)' in frame
+    assert source.count('scrollIntoView(') == 1
+
+
+def test_raf_lower_bound_never_precedes_the_mutation():
+    """V5: the first-rAF lower bound is performance.now() in the callback and never before the end mutation."""
+    typed = defaultdict(list)
+    typed['step_end'] = [{'index': 0, 'time': 100.0}]
+    typed['step_frame'] = [{'index': 0, 'raf': 95.0, 'frame_time': 87.3}]
+    steps = probe.CORE_SCRIPT['#acciones']
+    result = probe.c11_metrics(typed, [{'first': 90.0}], steps, None)
+    assert result['action_feedback']['raf'] == 100.0 and result['action_feedback_raf'] == 10.0
+    typed['step_frame'] = [{'index': 0, 'raf': 104.0, 'frame_time': 87.3}]
+    assert probe.c11_metrics(typed, [{'first': 90.0}], steps, None)['action_feedback']['raf'] == 104.0
+    assert "raf: now(), frame_time: frame" in probe.INJECTED_SOURCE
+
+
+async def test_tracing_complete_timeout_goes_through_result_without_error():
+    """V6: Tracing.end answered but tracingComplete never arrives -> classified through Run.result()."""
+    run = make_run(view='#rutinas', capture=None)
+    run.facts.navigate_sent = True
+    run.tracing = True
+    record(run, 'document_start', **focus_doc(True))
+    mark = record(run, 'mark', name='kza-probe:start:x:0', time=100.0)
+    mark['t'], mark['_received'] = 100.0, 50.0
+    run.trace_events = [{'name': 'kza-probe:start:x:0', 'ph': 'R', 'ts': 5_000_000, 'pid': 1, 'tid': 2},
+                        {'ph': 'M', 'name': 'thread_name', 'pid': 1, 'tid': 2, 'args': {'name': 'CrRendererMain'}},
+                        {'ph': 'X', 'name': 'RunTask', 'pid': 1, 'tid': 2, 'ts': 4_000_000, 'dur': 90_000_000}]
+    saved = dict(probe.DEADLINE_MS)
+    try:
+        probe.DEADLINE_MS['collect'] = 300
+        run._phase('collect')
+        with pytest.raises(probe.CdpTimeout):
+            await run._collect()
+    finally:
+        probe.DEADLINE_MS.update(saved)
+    run.facts.timeouts.append(Timeout('collect', 'collect', 'Tracing.end'))
+    entry = run.browser.client.log[-1]
+    assert entry['method'] == 'Tracing.tracingComplete' and entry['deadline'] - entry['sent'] == pytest.approx(0.3)
+    # Page time 200 ms at the Tracing.end send: the 90 s renderer task (trace 4000..94000 ms) spans the deadline.
+    for item in run.filter.accepted:
+        item['_received'] = entry['sent'] - 0.2 + item['t'] / 1000
+    run.leave_ok = run.facts.leave_ok = True
+    result = run.result()
+    assert result['facts']['renderer_busy_across_deadline'] is True
+    assert result['outcome'] == Outcome.POST_WINDOW_HANG
+
+
+class Caffeinate:
+    def __init__(self):
+        self.terminated = False
+        self.pid = 4242
+
+    def terminate(self):
+        self.terminated = True
+
+
+async def test_batch_cleans_up_on_fixture_start_error_and_sweeps_browsers():
+    """V7: caffeinate and the fixture start inside try/finally; leftover probe browsers are swept at start and exit."""
+    fakes = BatchFakes()
+    caffeinate = Caffeinate()
+    swept = []
+
+    async def broken():
+        raise RuntimeError('fixture_not_ready')
+    environment = fakes.environment()
+    environment.start_fixture = broken
+    environment.caffeinate = lambda: caffeinate
+    environment.sweep = lambda: swept.append(len(swept)) or []
+    plan = probe.plan_batch(SHA, 'mac-chrome', 'desktop', '#rutinas', 1, pairs=1, contrast_pairs=0)
+    result = await probe.run_batch(plan, environment, idle=1.0, post_batch=1.0)
+    assert caffeinate.terminated and result['discarded'] and result['reasons'] == ['fixture_fault']
+    assert swept == [0, 1] and 'close_browser' in fakes.events
+    rows = [{'pid': 5, 'ppid': 1, 'command': '/A/Google Chrome --user-data-dir=/tmp/kza-t046-profile-ab12 --remote-debugging-port=0'},
+            {'pid': 6, 'ppid': 5, 'command': '/A/Google Chrome Helper --type=renderer --user-data-dir=/tmp/kza-t046-profile-ab12'},
+            {'pid': 7, 'ppid': 1, 'command': '/A/Google Chrome --user-data-dir=/Users/u/Library/Chrome'},
+            {'pid': 8, 'ppid': 1, 'command': '/A/Google Chrome --user-data-dir=/var/x/kza-t046-focus-1 x'}]
+    killed = []
+    assert probe.sweep_probe_browsers(rows, kill=lambda pid, sig: killed.append(pid)) == [5, 8] and killed == [5, 8]
+    assert probe.start_caffeinate.__doc__ and '-w' in __import__('inspect').getsource(probe.start_caffeinate)
+
+
+async def test_browser_close_keeps_profile_while_browser_lives(tmp_path, monkeypatch):
+    """V7: the profile is never deleted while a browser still holds it."""
+    profile = tmp_path / 'kza-t046-profile-x'
+    profile.mkdir()
+    browser = probe.Browser('mac', '/A.app/Contents/MacOS/A', profile, tmp_path / 'log')
+    monkeypatch.setattr(browser, '_find_pid', lambda: 99)
+    monkeypatch.setattr(browser, 'alive', lambda: True)
+    monkeypatch.setattr(probe.os, 'kill', lambda pid, sig: None)
+    browser.close_wait_s = browser.kill_wait_s = 0.05
+    await browser.close()
+    assert profile.exists() and browser.leftover
+
+
+async def test_batch_machine_state_and_caffeinate_assertion_gate_quiet_machine():
+    """V8: AC power, display and lock (when chosen) at start and end, and the caffeinate assertion, gate the batch."""
+    plan = lambda: probe.plan_batch(SHA, 'mac-chrome', 'desktop', '#rutinas', 1, pairs=1, contrast_pairs=0, warm_ups=0)
+    battery = BatchFakes()
+    environment = battery.environment()
+    environment.machine_state = lambda: {'ac_power': False, 'display_asleep': False, 'locked': False}
+    result = await probe.run_batch(plan(), environment, idle=1.0, post_batch=1.0)
+    assert result['discarded'] and result['reasons'] == ['quiet_machine'] and 'fixture_start' not in battery.events
+    no_assertion = BatchFakes()
+    environment = no_assertion.environment()
+    environment.assertion_held = lambda process: False
+    result = await probe.run_batch(plan(), environment, idle=1.0, post_batch=1.0)
+    assert result['discarded'] and 'quiet_machine' in result['reasons']
+    assert probe.machine_faults({'ac_power': True, 'display_asleep': None, 'locked': None}, smoke=True) == []
+    assert probe.machine_faults({'ac_power': True, 'display_asleep': None, 'locked': None}, smoke=False) \
+        == ['display_asleep', 'screen_locked']
+    assert probe.chosen_lock_state({'read1': {'present': True, 'locked': True}}, 'read1') is True
+    assert probe.chosen_lock_state({'read1': {'present': False, 'locked': None}}, 'read1') is False
+    assert probe.chosen_lock_state({'read1': {'error': 'x'}}, 'read1') is None
+    assert probe.chosen_lock_state({'read1': {'present': True, 'locked': True}}, None) is None
+    held = SimpleNamespace(pid=77)
+    assert probe.caffeinate_assertion_held(held, '   pid 77(caffeinate): [0x1] 00:00:01 PreventUserIdleDisplaySleep named')
+    assert not probe.caffeinate_assertion_held(held, '   pid 78(caffeinate): [0x1] PreventUserIdleDisplaySleep')
+
+
+async def test_quiet_check_fails_when_pytest_runs(monkeypatch):
+    """R05 (V12): quiet_check is not ok while any pytest process runs."""
+    monkeypatch.setattr(probe, 'cpu_seconds', lambda: {})
+    monkeypatch.setattr(probe, 'process_rows', lambda: [])
+    saved = probe.asyncio.sleep
+
+    async def fast(_):
+        await saved(0)
+    monkeypatch.setattr(probe.asyncio, 'sleep', fast)
+    counts = iter(['1\n', '0\n'])
+    monkeypatch.setattr(probe, 'run_text', lambda command, **kwargs: next(counts))
+    busy = await probe.quiet_check(1)
+    assert busy['pytest_count'] == 1 and busy['ok'] is False
+    assert (await probe.quiet_check(1))['ok'] is True
+
+
+async def test_smoke_client_never_repeats_a_discarded_batch_and_records_each_cell(monkeypatch, tmp_path):
+    """V9: in smoke mode each cell is one smoke-record entry with its faults; a discarded batch is not re-queued."""
+    monkeypatch.setattr(probe, 'SMOKE_ROOT', tmp_path / 'smoke')
+    monkeypatch.setattr(probe, 'checked_output', lambda mode, path: Path(path))
+    calls = []
+
+    async def fake_cell(args, mode, sha):
+        calls.append((args.viewport, args.view, args.attempt))
+        discarded = len(calls) == 1
+        return {'discarded': discarded, 'reasons': ['warm_share_below_90'] if discarded else [],
+                'faults': [], 'directory': 'd'}
+    monkeypatch.setattr(probe, 'measure_cell', fake_cell)
+    args = SimpleNamespace()
+    await probe.measure_client(args, 'smoke', SHA)
+    assert len(calls) == 12 and all(attempt == 1 for _, _, attempt in calls)
+    saved = json.loads((tmp_path / 'smoke' / 'smoke-record.json').read_text())
+    assert len(saved['runs']) == 12 and saved['runs'][0]['status'] == 'discarded'
+    assert len({run['item'] for run in saved['runs']}) == 12
+    assert probe.batch_faults({'reasons': ['quiet_machine'], 'run_outcomes': [{'reason': 'browser_crashed'}],
+                               'start': {'machine_faults': ['screen_locked']}}) == {'quiet_machine', 'crash', 'lock'}
+
+
+def test_warm_rule_follows_smoke_warm_cache_outcome():
+    """V9: below 90% in the smoke, warm rows are 'no evaluable' and no batch is discarded for the warm share."""
+    runs = [{'role': 'warm', 'outcome': Outcome.VALID, 'cache_sources': {'network': 10}}]
+    assert probe.invalid_batch_reasons(batch(runs, planned=80)) == ['warm_share_below_90']
+    assert probe.invalid_batch_reasons(batch(runs, planned=80, warm_rule_active=False)) == []
+    assert probe.warm_rule_active({}) and not probe.warm_rule_active({'warm_cache': {'reached': False}})
+    rows = probe.summary_rows([{'viewport': 'desktop', 'view': '#hogar', 'role': 'warm', 'outcome': Outcome.VALID,
+                                'metrics': {'lcp': 1.0, 'cls': 0.0, 'inp': 20.0}, 'cache_sources': {'network': 3}}],
+                              None, warm_evaluable=False)
+    assert rows[0]['lcp'] == probe.WARM_NOT_EVALUABLE and rows[0]['inp'] == probe.WARM_NOT_EVALUABLE
+
+
+def test_overhead_is_censor_aware_and_consequences_cover_both_views():
+    """V10: '<16 ms' medians are [0, 16) intervals; +inf medians are 'no evaluable' (method change); INP rows come
+    from untraced runs when they exist."""
+    censored = {arm: {'inp': [CENSORED, CENSORED, 24.0], 'raf_feedback': [5.0, 6.0, 7.0]} for arm in 'abc'}
+    result = probe.overhead(censored)
+    assert result['inp']['medians']['a'] == CENSORED
+    assert result['inp']['tracing'] == {'low': -16.0, 'high': 16.0, 'evaluable': True}
+    assert result['consequences']['untraced_inp'] is False and not result['consequences']['method_change']
+    high = {'a': {'inp': [64.0] * 3}, 'b': {'inp': [64.0] * 3}, 'c': {'inp': [CENSORED] * 3}}
+    assert probe.overhead(high, ('inp',))['inp']['tracing']['low'] == 48.0
+    assert probe.overhead(high, ('inp',))['consequences']['untraced_inp'] is True
+    failing = {'a': {'inp': [INF] * 3}, 'b': {'inp': [40.0] * 3}, 'c': {'inp': [40.0] * 3}}
+    assert probe.overhead(failing, ('inp',))['consequences']['method_change'] is True
+    both = probe.overhead_consequences({'#acciones': {arm: {'inp': [40.0], 'raf_feedback': [10.0]} for arm in 'abc'},
+                                        '#voces': high})
+    assert both['consequences']['untraced_inp'] is True and 'raf_feedback' not in both['views']['#voces']
+    runs = [{'viewport': 'desktop', 'view': '#acciones', 'role': 'cold', 'outcome': Outcome.VALID,
+             'metrics': {'lcp': 1.0, 'cls': 0.0, 'inp': 80.0}},
+            {'viewport': 'desktop', 'view': '#acciones', 'role': 'cold', 'outcome': Outcome.VALID,
+             'untraced_inp': True, 'metrics': {'lcp': 500.0, 'cls': 0.0, 'inp': 24.0}}]
+    row = probe.summary_rows(runs, None)[0]
+    assert row['inp']['p50'] == 24.0 and row['inp_source'] == 'untraced_interaction_phase'
+    assert row['lcp']['p50'] == 1.0 and row['n_valid'] == 1
+
+
+async def test_cdp_error_login_failure_and_unclassified_errors_never_abort_the_batch():
+    """V11: a CDP error reply or another exception is a harness fault of its phase (invalid run)."""
+    run = make_run(view='#rutinas', capture=None)
+
+    async def failing_setup():
+        raise probe.CdpError('Network.enable: {"code": -32000}')
+    run._setup = failing_setup
+    await run._run()
+    assert run.facts.setup_faults[0].startswith('setup_harness_error:CdpError')
+    assert probe.classify(run.facts)[0] == Outcome.INVALID
+    timed = make_run(view='#rutinas', capture=None)
+
+    async def nothing():
+        return None
+
+    async def failing_timed():
+        raise probe.CdpError('Input.dispatchMouseEvent: refused')
+    timed._setup, timed._timed = nothing, failing_timed
+
+    def leave(params):
+        for handler in list(timed.page.handlers['Page.frameNavigated']):
+            handler({'frame': {'url': 'about:blank', 'loaderId': 'blank'}})
+        return {'loaderId': 'blank'}
+    timed.page.answers = {'Page.navigate': leave}
+    await timed._run()
+    assert timed.facts.environment_faults[0].startswith('timed_harness_error:CdpError')
+    assert probe.classify(timed.facts) == (Outcome.INVALID, timed.facts.environment_faults[0])
+    login = make_run(view='#rutinas', capture=None)
+    login.spec.token_for_login = 'token'
+
+    async def refuse(*args, **kwargs):
+        raise RuntimeError('login_failed')
+    import tests.frontend.browser_support as support
+    saved = support.install_login_session
+    support.install_login_session = refuse
+    try:
+        await login._run()
+    finally:
+        support.install_login_session = saved
+    assert login.facts.setup_faults == ['login_failed:login_failed']
+
+
+def test_exceptions_and_http_errors_are_recorded_document_error_fails_every_metric():
+    """V11: Runtime.exceptionThrown and same-origin 4xx/5xx are recorded per run; a 4xx/5xx main document is a
+    run-wide failure (navigation_http_error); other errors fail only the metric that names them."""
+    run = make_run(view='#rutinas', capture=None)
+    run.facts.navigate_sent = True
+    record(run, 'document_start', **focus_doc(True))
+    run.page.phase = 'timed'
+    run._exception({'exceptionDetails': {'text': 'Uncaught', 'url': 'http://127.0.0.1:1/app.js', 'lineNumber': 3,
+                                         'exception': {'description': 'TypeError: x'}}})
+    run.network.response({'requestId': '1', 'type': 'XHR', 'response': {'url': 'http://127.0.0.1:1/api/x', 'status': 503}})
+    result = run.result()
+    assert result['timed_exceptions'] == 1 and result['http_errors'] == [{'path': '/api/x', 'status': 503, 'type': 'XHR'}]
+    assert result['outcome'] == Outcome.VALID
+    document = make_run(view='#rutinas', capture=None)
+    document.facts.navigate_sent = True
+    record(document, 'document_start', **focus_doc(True))
+    document.network.response({'requestId': '2', 'type': 'Document',
+                               'response': {'url': 'http://127.0.0.1:1/', 'status': 500}})
+    failed = document.result()
+    assert failed['outcome'] == Outcome.FAILURE and failed['reason'] == 'navigation_http_error:500'
+    assert failed['run_wide_failure'] is True
+    detached = make_run(view='#rutinas', capture=None)
+    detached._detached({'reason': 'Render process gone.'})
+    assert detached.facts.disconnected and probe.classify(detached.facts)[0] == Outcome.INVALID
+
+
+class SetupFixture:
+    def __init__(self, health=True):
+        self.requests = []
+        self.health = health
+
+    async def request(self, command, deadline_s):
+        self.requests.append(command)
+        if command == 'health':
+            return {'ok': self.health}
+        ordinal = int(command.split()[1])
+        return {'reply': 'position_check', 'ordinal': ordinal, 'ok': True}
+
+
+async def test_setup_runs_health_and_position_check_and_traces_contrast_load():
+    """R02, R03, R06 (V12): setup calls the fixture health check and, on #voces, the position check; a contrast
+    slot traces the load phase from setup; an unhealthy fixture is a setup fault."""
+    run = make_run()
+    run.fixture = SetupFixture()
+    run.spec.trace_load = True
+    run.page.answers = {'Runtime.evaluate': {'result': {'value': True}}}
+    await run._setup()
+    assert run.fixture.requests == ['health', 'position_check 7']
+    assert [entry['method'] for entry in run.browser.client.log if entry['class'] == 'setup'][-1] == 'Tracing.start'
+    unhealthy = make_run(view='#rutinas', capture=None)
+    unhealthy.fixture = SetupFixture(health=False)
+    unhealthy.page.answers = {'Runtime.evaluate': {'result': {'value': True}}}
+    with pytest.raises(probe.SetupFault, match='fixture_not_ready'):
+        await unhealthy._setup()
+    plan = probe.plan_batch(SHA, 'mac-chrome', 'desktop', '#rutinas', 1, pairs=2, contrast_pairs=1, warm_ups=0)
+    ready = {'origin': 'http://o', 'tokens': {'home': 't'}}
+    for slot in plan['slots']:
+        spec = probe.slot_spec(slot, plan, ready, {})
+        assert spec.trace_load is bool(slot['trace_contrast'])
+
+
+async def test_interaction_phase_is_traced_and_screencast_after_settle():
+    """R04 (V12): the interaction-phase Tracing.start (class interaction_trace) and Page.startScreencast are sent
+    after the settle record and before the first input."""
+    run = make_run(view='#acciones', capture=None)
+    run.config = probe.injection_config(token=run.token, origin=run.spec.origin, view='#acciones', capture_id=None)
+    run.filter.committed = False
+    run.filter.time_origin = None
+    page = run.page
+
+    def navigate(params):
+        page.events.append({'method': 'Page.frameNavigated', 'params': {'frame': {'loaderId': 'L'}}})
+        base = {'token': run.token, 'timeOrigin': 5.0}
+        items = [dict(base, type='document_start', t=1, **focus_doc(True)), dict(base, type='settled', t=900, T=900.0),
+                 dict(base, type='target_ready', t=901, index=0, rect={'x': 1, 'y': 1, 'width': 9, 'height': 9},
+                      in_viewport=True, step='accion'),
+                 dict(base, type='step_next_frame', t=950, index=0)]
+        asyncio.get_running_loop().call_soon(lambda: [run.records.offer(json.dumps(item)) for item in items])
+        return {'loaderId': 'L'}
+    page.answers = {'Page.navigate': navigate, 'Runtime.evaluate': {'result': {'value': 1}}}
+    run.facts.navigate_sent = True
+    await run._timed()
+    trace = [entry for entry in run.browser.client.log if entry['method'] == 'Tracing.start']
+    assert trace and trace[0]['class'] == 'interaction_trace'
+    methods = [entry['method'] for entry in page.log]
+    assert methods.index('Page.startScreencast') < methods.index('Input.dispatchMouseEvent')
+    assert trace[0]['sent'] <= page.log[methods.index('Input.dispatchMouseEvent')]['sent']
+
+
+def test_records_before_the_navigate_reply_are_buffered_not_lost():
+    """V14b: document_start and later records that arrive before the Page.navigate reply are kept."""
+    gate = probe.RecordFilter('tok')
+    gate.frame_navigated({'loaderId': 'L1'})
+    start = {'token': 'tok', 'timeOrigin': 7.0, 'type': 'document_start'}
+    settled = {'token': 'tok', 'timeOrigin': 7.0, 'type': 'settled'}
+    assert gate.offer(start) is False and gate.offer(settled) is False and gate.rejected == []
+    gate.navigation_sent('L1')
+    assert [record['type'] for record in gate.accepted] == ['document_start', 'settled']
+    other = probe.RecordFilter('tok')
+    other.frame_navigated({'loaderId': 'OLD'})
+    other.offer(dict(start))
+    other.navigation_sent('L2')
+    assert other.accepted == [] and [item['reason'] for item in other.rejected] == ['before_commit']
+    assert other.offer({'token': 'old', 'timeOrigin': 1.0, 'type': 'settled'}) is False
+    assert other.rejected[-1]['reason'] == 'token'
+
+
+def test_native_play_gesture_window_and_unsubtracted_value():
+    """F6: the native control's input events never reach page listeners: the play gesture's INP window is
+    [ready, flush], a group there maps to it (none -> '<16 ms'), and the C11 preview value is (playing - start)."""
+    run = make_run()
+    run.facts.navigate_sent = True
+    record(run, 'document_start', **focus_doc(True))
+    run.steps = [{'step': step['step'], 'status': 'dispatched'} for step in VOICES_STEPS]
+    run.steps[3].update(ready_record='control_ready', target={'kind': 'audio'}, probe_dispatch_delay_ms=3.0)
+    for index, (first, last) in enumerate([(10, 12), (1010, 1012), (2010, 2012)]):
+        for item in inputs(index, first, last):
+            record(run, 'input', **item)
+    record(run, 'control_attached', time=2040.0, readyState=0, target={'kind': 'audio', 'point': {'x': 1, 'y': 1}})
+    record(run, 'control_ready', time=2060.0, readyState=1, target={'kind': 'audio', 'point': {'x': 1, 'y': 1}})
+    record(run, 'media', event='playing', timeStamp=2100.0, readyState=4)
+    record(run, 'focus', point='flush', visibility='visible', hasFocus=True, time=2500.0, t=2500.0)
+    for interaction, start, duration in ((1, 11, 24.0), (2, 1011, 32.0), (3, 2011, 40.0), (4, 2063.0, 56.0)):
+        record(run, 'perf', entry=event(interaction, 'click', start, duration, target=None))
+    result = run.result()
+    assert result['outcome'] == Outcome.VALID, result['facts']
+    assert result['metrics']['inp'] == 56.0 and result['metrics']['inp_mapping']['groups_per_interaction'] == [1, 1, 1, 1]
+    preview_value = result['metrics']['preview']
+    assert preview_value['definition'] == 'native_unsubtracted' and preview_value['value'] == 2100.0 - 2010.0
+    assert preview_value['gap'] is None and not preview_value['gap_invalid']
+    slow = make_run()
+    slow.facts.navigate_sent = True
+    record(slow, 'document_start', **focus_doc(True))
+    slow.steps = [{'step': 'reproducir', 'status': 'dispatched', 'ready_record': 'control_ready',
+                   'target': {'kind': 'audio'}, 'probe_dispatch_delay_ms': 17.0}]
+    assert 'preview_dispatch_delay_over_16ms' in slow.result()['facts']['environment_faults']
