@@ -571,3 +571,56 @@ def test_each_store_is_written_by_a_clean_child_that_gets_only_k_s_records(x4, x
     assert ids_and_documents(policy["records"]) == ids_and_documents(
         [row for row in before[("data/memory_db", sc.POLICY)]["records"] if row["document"] == sc.LIVE])
 
+
+# --- SC4C-RV-3: D5's two strongest checks on rebuilt stores -------------------------------------------
+
+@pytest.mark.parametrize("old, new", [
+    ("        rows = item['records']\n", "        rows = item['records'][1:]\n"),
+    ("    guard()\n    image = []\n",
+     "    guard()\n    client.create_collection(name='sc4c-extra-collection', embedding_function=None)\n"
+     "    image = []\n"),
+], ids=["one_record_missing", "extra_collection"])
+def test_the_child_s_afterimage_must_be_the_planned_one(x4, x5, tmp_path, monkeypatch, old, new):
+    """A child that writes one record less, or one collection more, than planned is refused before any pin
+    is taken (the later pin-based D5 would accept whatever the child wrote); then a plain abort to H."""
+    world = _post_r1(x4, x5, tmp_path, sc.chroma_state())
+    root = world["root"]
+    monkeypatch.setattr(oc, "CHROMA_REBUILD_CHILD", _replace_once(oc.CHROMA_REBUILD_CHILD, old, new))
+    _refusal("runtime_admission_compaction_payload_changed:chroma",
+             lambda: cw.start(root, x5["archive"], worker=_in_process_worker()))
+    [log] = stage.compaction_logs(root)
+    assert "materialized" not in [event["kind"] for event in log["events"]]
+    monkeypatch.undo()
+    monkeypatch.setattr(compaction, "controller_location", lambda root, members: None)
+    assert compaction.compact_abort(root, log["compaction_id"])["phase"] == "aborted"
+    assert stage.read_admission_head(root) == world["h_head"]
+    assert sorted(os.listdir(root / "slots")) == ["a"]
+
+
+def test_resume_refuses_a_rebuilt_store_changed_after_the_evidence(x4, x5, tmp_path, monkeypatch):
+    """Crash after K's evidence, then one byte of a rebuilt HNSW file changes: resume compares the pins the
+    evidence recorded (not pins taken again from disk) and refuses; abort then returns to H."""
+    world = _post_r1(x4, x5, tmp_path, sc.chroma_state())
+    root = world["root"]
+    original = oc.materialize_compaction_clone
+
+    def crash(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError("synthetic-crash")
+    monkeypatch.setattr(oc, "materialize_compaction_clone", crash)
+    with pytest.raises(RuntimeError, match="synthetic-crash"):
+        cw.start(root, x5["archive"], worker=_in_process_worker())
+    monkeypatch.setattr(oc, "materialize_compaction_clone", original)
+    [log] = stage.compaction_logs(root)
+    store = root / "slots" / "k" / "state" / "data" / "memory_db"
+    [level0] = list(store.rglob("data_level0.bin"))
+    data = bytearray(level0.read_bytes())
+    data[-1] ^= 0xFF
+    level0.write_bytes(bytes(data))
+    _refusal("runtime_admission_compaction_payload_changed:chroma",
+             lambda: compaction.compact_resume(root, log["compaction_id"], worker=_in_process_worker()))
+    assert "materialized" not in [event["kind"] for event in
+                                  stage.read_compaction_log(root, log["compaction_id"])["events"]]
+    assert compaction.compact_abort(root, log["compaction_id"])["phase"] == "aborted"
+    assert stage.read_admission_head(root) == world["h_head"]
+    assert sorted(os.listdir(root / "slots")) == ["a"]
