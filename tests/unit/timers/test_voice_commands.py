@@ -89,7 +89,8 @@ async def test_duplicate_label_needs_input_and_keeps_the_first(manager):
     await say(commands, "poné un timer de 8 minutos para la pasta")
     reply = await say(commands, "poné un timer de 3 minutos para la Pasta")
     assert reply.outcome.status is TaskStatus.NEEDS_INPUT
-    assert reply.response == "Ya hay un temporizador de Pasta. Cancelalo primero o usá otro nombre."
+    # The household classifier lowercases the heard words; the label still matches case-insensitively.
+    assert reply.response == "Ya hay un temporizador de pasta. Cancelalo primero o usá otro nombre."
     assert [(t.name, t.duration_seconds) for t in manager.get_all_timers()] == [("pasta", 480)]
     manager.cancel_timer(manager.get_all_timers()[0].timer_id)
     assert (await say(commands, "poné un timer de 3 minutos para la pasta")).outcome.status is TaskStatus.COMPLETED
