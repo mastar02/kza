@@ -134,8 +134,19 @@ _UNSUPPORTED = re.compile(
     r"|todos\s+los\s+(?:meses|anos)|todas\s+las\s+semanas"
     r"|cada\s+(?:mes|semana|ano|hora|\d+|[a-z]+\s+(?:dias|horas|semanas|minutos|meses))"
     r"|(?:en|dentro\s+de)\s+(?:[a-z0-9]+\s+){1,2}(?:dias|semanas|meses|anos)"
+    r"|(?:en|dentro\s+de)\s+(?:un|una|1)\s+(?:dia|semana|mes|ano)"
+    r"|el\s+dia|ano\s+que\s+viene|proximo\s+ano"
+    r"|(?:fin|final|finales|principio|principios|comienzo)\s+de\s+mes"
     r"|el\s+\d{1,2}(?!\s*(?:minutos?|horas?|[:.]\d)))\b"
 )
+# Date vocabulary that the grammar does not read: left among the reminder words it
+# means a date the parser would otherwise ignore, so the request is refused.
+_DATE_WORDS = frozenset({
+    "dia", "dias", "semana", "semanas", "mes", "meses", "ano", "anos", "finde", "findes",
+    "feriado", "feriados", "navidad", "nochebuena", "hoy", "pasado",
+})
+_CUT_WORDS = {"salvo", "excepto", "menos"}
+_SINGULAR_ONE = {"un", "una", "uno"}
 
 _UNITS = {"cero": 0, "un": 1, "uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5,
           "seis": 6, "siete": 7, "ocho": 8, "nueve": 9}
@@ -672,6 +683,45 @@ def _zone(words: list[str], used: list[bool], aliases: tuple[tuple[str, ...], ..
     return None
 
 
+def _is_number_word(word: str) -> bool:
+    return _number([word], 0) is not None
+
+
+def _leftover_problem(words: list[str], used: list[bool], skip: range) -> str | None:
+    """Time vocabulary left among the reminder words; the detail code or ``None``.
+
+    Words the scanner did not take are reminder content. When one of them is a
+    date or time word, a part of the request was not understood and scheduling
+    the rest would be a guess (user answer Q8), so the request is refused.
+    """
+    n = len(words)
+    for k in range(n):
+        if used[k] or k in skip:
+            continue
+        w = words[k]
+        prev = words[k - 1] if k > 0 else ""
+        nxt = words[k + 1] if k + 1 < n else ""
+        after_time = k > 0 and used[k - 1]
+        if w in _DATE_WORDS or w in _WEEKDAYS_ANY:
+            return "unrecognised_date"
+        if w == "manana" and prev != "la":
+            return "unrecognised_date"
+        if w == "primero" and (prev == "el" or nxt == "de"):
+            return "unrecognised_date"
+        if w == "el" and _is_number_word(nxt) and (k + 2 >= n or words[k + 2] not in _DURATION_UNITS):
+            return "unrecognised_date"
+        if w == "y" and nxt == "pico":
+            return "unrecognised_time"
+        if after_time and w in _CUT_WORDS:
+            return "unrecognised_time"
+        if after_time and w == "y" and (nxt in ("cuarto", "media")
+                                        or (_is_number_word(nxt) and nxt not in _SINGULAR_ONE)):
+            return "unrecognised_time"
+        if after_time and _is_number_word(w) and w not in _SINGULAR_ONE:
+            return "unrecognised_date" if prev in _WEEKDAYS or prev in ("hoy", "manana") else "unrecognised_time"
+    return None
+
+
 def _analyse(original: str, folded: str, start: int, aliases: tuple[tuple[str, ...], ...], *,
              now: datetime, connectors: bool) -> tuple[str, float | None, str | None, str | None, str | None,
                                                        set[ReminderAmbiguity], str | None]:
@@ -692,6 +742,10 @@ def _analyse(original: str, folded: str, start: int, aliases: tuple[tuple[str, .
         a, b = tokens[zone_span[0]][1], tokens[zone_span[1] - 1][2]
         zone = original[a:b]
         removed.append((a, b))
+    if ReminderAmbiguity.UNPARSEABLE not in issues:
+        leftover = _leftover_problem(words, scan.used, range(*zone_span) if zone_span else range(0))
+        if leftover is not None:
+            trigger, recurrence, issues, detail = None, None, {ReminderAmbiguity.UNPARSEABLE}, leftover
     pieces, cursor = [], start
     for a, b in sorted(removed):
         pieces.append(original[cursor:a])

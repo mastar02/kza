@@ -26,6 +26,7 @@ from src.reminders.voice_request import (
 
 MVD = ZoneInfo("America/Montevideo")
 MONDAY_10 = datetime(2026, 11, 16, 10, 0, tzinfo=MVD)          # Monday
+MONDAY_08 = datetime(2026, 11, 16, 8, 0, tzinfo=MVD)            # every clock below is still ahead
 MONDAY_2359 = datetime(2026, 11, 16, 23, 59, tzinfo=MVD)
 TUESDAY_0010 = datetime(2026, 11, 17, 0, 10, tzinfo=MVD)
 DEC_31_22 = datetime(2026, 12, 31, 22, 0, tzinfo=MVD)           # Thursday
@@ -285,6 +286,68 @@ AMBIGUOUS = [
     ("recordame todos los meses a las 8 de la noche x", MONDAY_10, A.UNPARSEABLE, "unsupported_date"),
     ("recordame el fin de semana a las 8 de la noche x", MONDAY_10, A.UNPARSEABLE, "unsupported_date"),
 ]
+
+
+# Words the grammar does not read are never dropped into the text and scheduled
+# for today (review round 1, F1). The clock is Monday 08:00 so every hour named
+# below is still ahead: a guess would come back ok, not PAST_TODAY by luck.
+UNREAD_DATES = [
+    ("recordame para navidad a las 9 de la noche llamar", "unrecognised_date"),
+    ("recordame el finde a las 9 de la noche llamar", "unrecognised_date"),
+    ("recordame a fin de mes a las 9 de la noche llamar", "unsupported_date"),
+    ("recordame a principio de mes a las 9 de la noche llamar", "unsupported_date"),
+    ("recordame la semana del 20 a las 9 de la noche llamar", "unrecognised_date"),
+    ("recordame día por medio a las 9 de la noche llamar", "unrecognised_date"),
+    ("recordame una vez por semana a las 9 de la noche llamar", "unrecognised_date"),
+    ("recordame un día sí y uno no a las 9 de la noche llamar", "unrecognised_date"),
+    ("recordame el día 15 a las 10 de la mañana llamar", "unsupported_date"),
+    ("recordame el día quince a las 10 de la mañana llamar", "unsupported_date"),
+    ("recordame el quince a las 10 de la mañana llamar", "unrecognised_date"),
+    ("recordame el primero a las 10 de la mañana llamar", "unrecognised_date"),
+    ("recordame el primero de mes a las 10 de la mañana llamar", "unrecognised_date"),
+    ("recordame en una semana a las 10 de la mañana llamar", "unsupported_date"),
+    ("recordame dentro de un mes a las 10 de la mañana llamar", "unsupported_date"),
+    ("recordame en un día a las 10 de la mañana llamar", "unsupported_date"),
+    ("recordame el año que viene a las 10 de la mañana llamar", "unsupported_date"),
+    ("recordame el próximo año a las 10 de la mañana llamar", "unsupported_date"),
+    ("recordame el feriado a las 10 de la mañana llamar", "unrecognised_date"),
+    ("recordame mañana o pasado a las 9 de la noche llamar", "unrecognised_date"),
+    ("recordame el martes 17 a las 9 de la noche llamar", "unrecognised_date"),
+    ("recordame mañana 17 a las 9 de la noche llamar", "unrecognised_date"),
+    ("recordame las medialunas de mañana a las 9 de la noche", "unrecognised_date"),
+    ("recordame todos los días hábiles salvo feriados a las 9 de la noche x", "unrecognised_time"),
+    ("recordame todos los días excepto el domingo a las 9 de la noche x", "unrecognised_time"),
+    ("recordame a las 20 y pico sacar la basura", "unrecognised_time"),
+    ("recordame a las 9 de la noche menos cuarto sacar", "unrecognised_time"),
+    ("recordame a las 9 de la noche y cuarto sacar", "unrecognised_time"),
+    ("recordame a las 9 de la noche y 10 sacar", "unrecognised_time"),
+    ("recordame en 1 hora 30 sacar la ropa", "unrecognised_time"),
+    ("recordame en 10 minutos y pico sacar la ropa", "unrecognised_time"),
+]
+
+
+@pytest.mark.parametrize("utterance,detail", UNREAD_DATES)
+def test_unread_time_words_are_refused(utterance, detail):
+    result = parse(utterance, MONDAY_08)
+    assert result.ambiguity is A.UNPARSEABLE, (result.ambiguity, result.text)
+    assert result.issues == (A.UNPARSEABLE,)
+    assert result.trigger_at is None
+    assert result.recurrence is None
+    assert result.detail == detail
+
+
+def test_unread_time_words_are_refused_in_a_deferred_clause():
+    result = extract_time_expression("prendé la luz el finde a las 9 de la noche", MONDAY_08)
+    assert (result.ambiguity, result.detail, result.trigger_at) == (A.UNPARSEABLE, "unrecognised_date", None)
+
+
+def test_period_noun_and_singular_numbers_after_a_time_stay_content():
+    morning = parse("recordame cambiar la alarma de la mañana a las 9 de la noche", MONDAY_08)
+    assert (morning.ok, morning.text) == (True, "cambiar la alarma de la mañana")
+    one = parse("recordame a las 9 de la noche una cosa importante", MONDAY_08)
+    assert (one.ok, one.text) == (True, "una cosa importante")
+    joined = parse("recordame mañana a las 8 de la noche y llamar a Ana", MONDAY_08)
+    assert (joined.ok, joined.text) == (True, "llamar a Ana")
 
 
 @pytest.mark.parametrize("utterance,now,code,detail", AMBIGUOUS)
