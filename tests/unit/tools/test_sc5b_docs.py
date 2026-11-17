@@ -256,6 +256,18 @@ def test_retire_refusals_are_routed_by_code():
     for code in (compaction.RETIRE_PROTECTED_CHANGED, compaction.RETIRE_RESURRECTED, compaction.K_BINDING_CHANGED):
         assert "volver a H con W" in rows[code][1], code
     assert "reinstalar la versión ligada" in rows[compaction.SDK_CHANGED][1]
+    # Review SC5B-R5: compact_retire refuses with more codes than the table routes; the last row is the
+    # default for all of them.
+    last = [line for line in retire.splitlines() if line.startswith("| ")][-1]
+    cells = [cell.strip() for cell in last.split("|")[1:-1]]
+    assert cells[0].startswith("cualquier otro código") and cells[1] == "ninguna", cells
+    assert cells[2] == ("no improvisar: la unidad sigue deshabilitada; guardar la salida y la de "
+                        "`$ST compact status <compaction_id>`; entregarlo a desarrollo, con la decisión escrita "
+                        "cada 48 horas"), cells[2]
+    for code in ("runtime_admission_compaction_phase", "runtime_admission_head_changed",
+                 "runtime_admission_compaction_k_delegated", "runtime_admission_compaction_k_foreign_target",
+                 "runtime_admission_compaction_database_unreadable", "runtime_admission_compaction_retiring_residue"):
+        assert f"`{code}`" in cells[0], code
     # Review SC5B-R2: run_command maps every OSError to io_error, also inside _finish_retire after
     # 'retire_started', where compact_abort refuses runtime_admission_compaction_phase.
     io_row, io_exit = rows["runtime_admission_compaction_io_error"]

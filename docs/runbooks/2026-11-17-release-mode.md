@@ -428,6 +428,7 @@ después de `retire_started`: ése es un retiro cortado (fila RS).
 | `runtime_admission_compaction_h_transient`, `runtime_admission_compaction_k_transient`, `runtime_admission_writer_active`, `runtime_admission_busy`, `runtime_admission_sdk_version_unavailable` | AT | «Rechazos transitorios» |
 | `runtime_admission_compaction_h_changed` | HD | parada terminal HD |
 | `runtime_admission_compaction_head_moved`, `runtime_admission_compaction_k_closure_unreadable` | como HD | parada como HD |
+| cualquier otro código (por ejemplo `runtime_admission_compaction_phase`, `runtime_admission_head_changed`, `runtime_admission_compaction_k_delegated`, `runtime_admission_compaction_k_foreign_target`, `runtime_admission_compaction_database_unreadable`, `runtime_admission_compaction_retiring_residue` o un código del lease) | ninguna | no improvisar: la unidad sigue deshabilitada; guardar la salida y la de `$ST compact status <compaction_id>`; entregarlo a desarrollo, con la decisión escrita cada 48 horas |
 
 Un enlace, punto de montaje o archivo especial dentro de un miembro
 (`runtime_admission_compaction_symlink`, `..._hard_link`, `..._mount`,
