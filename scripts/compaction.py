@@ -170,6 +170,8 @@ CHROMA_POLICY_SUFFIX = "_policy_v1"  # SC4C-RV-5 (1): the exact names the runtim
 CHROMA_COMMAND_NAMES = re.compile(re.escape(CHROMA_COMMAND_INDEX) + r"(__pointer|__[0-9]{14}[0-9a-f]{6})?")
 CHROMA_DROPPED = frozenset({"home_assistant_routines"})  # not copied into K (named drop); K's boot recreates it
 UNLISTED_COLLECTION = "runtime_admission_compaction_unlisted_collection"
+# What the worker inherits; its Chroma rebuild child gets the same (owner_compaction._CHILD_ENVIRONMENT).
+WORKER_ENVIRONMENT = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SQLITE_TMPDIR", "HOME")
 # Review RA4B-1: what a value the selection cannot classify raises (W1 never raises an uncoded error).
 _W1_VALUE_ERRORS = (ValueError, TypeError, AttributeError, KeyError, IndexError)
 
@@ -1648,8 +1650,7 @@ def worker_command(root: Path, compaction_id: str) -> list[str]:
 
 def run_worker(root: Path, compaction_id: str) -> dict:
     """Spawn the worker (G1 capability) and return its JSON line; a refusal is the worker's code."""
-    environment = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
-                                                     "SQLITE_TMPDIR", "HOME") if key in os.environ}
+    environment = {key: os.environ[key] for key in WORKER_ENVIRONMENT if key in os.environ}
     environment["KZA_COMPACTION_WORKER"] = "1"
     # Private whatever the operator shell's umask (0002 for kza): review S1, same class as F5.
     completed = subprocess.run(worker_command(root, compaction_id), capture_output=True, text=True,

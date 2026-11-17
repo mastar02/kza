@@ -575,7 +575,9 @@ CHROMA_REBUILD_CHILD = "\n".join([
     "print(hashlib.sha256(json.dumps(image, sort_keys=True, separators=(',', ':'), ensure_ascii=True,",
     "                                allow_nan=False).encode()).hexdigest())",
 ])
-_CHILD_ENVIRONMENT = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "HOME", "TMPDIR")
+# The worker's own environment (scripts/compaction.WORKER_ENVIRONMENT, a test pins both), SQLite's temp
+# directory included (SC4C-RV-5 (3)).
+_CHILD_ENVIRONMENT = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "HOME", "TMPDIR", "SQLITE_TMPDIR")
 # SC4C-RV-1 (c): one store's rebuild may not take longer than a whole transition's downtime budget
 # (SC-D2 A, 600 s); the child is then killed and the start refuses.
 CHROMA_REBUILD_TIMEOUT = 600.0

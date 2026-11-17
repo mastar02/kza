@@ -84,6 +84,12 @@ def test_the_closed_list_is_the_same_at_plan_and_in_the_worker():
     _refusal(UNLISTED, lambda: oc._snapshot_class("data/memory_db", "user_memories", False))
 
 
+def test_the_rebuild_child_gets_the_worker_s_environment_keys():
+    """SC4C-RV-5 (3): SQLITE_TMPDIR included; the child's list is the worker's, nothing more."""
+    assert set(oc._CHILD_ENVIRONMENT) == set(compaction.WORKER_ENVIRONMENT)
+    assert "SQLITE_TMPDIR" in oc._CHILD_ENVIRONMENT
+
+
 # --- the policy allowlist on snapshot images ---------------------------------------------------------
 
 def _record(identity: str, document: str, revision: int = 1, metadata: dict | None = None) -> dict:
