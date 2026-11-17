@@ -347,6 +347,45 @@ def test_unread_time_words_are_refused(utterance, detail):
     assert result.detail == detail
 
 
+# Partial parses must not shift the time or the day (review F4).
+PARTIAL_TIMES = [
+    ("recordame a las 20 y pico sacar la basura", "unrecognised_time"),
+    ("recordame a las 9 de la noche menos cuarto sacar", "unrecognised_time"),
+    ("recordame en 1 hora 30 sacar la ropa", "unrecognised_time"),
+    ("recordame mañana o pasado a las 9 de la noche x", "unrecognised_date"),
+    ("recordame el martes 17 a las 9 de la noche x", "unrecognised_date"),
+    ("recordame el martes 18 a las 9 de la noche x", "unrecognised_date"),
+    ("recordame mañana 17 a las 9 de la noche x", "unrecognised_date"),
+    ("recordame comprar pan a las 20 y dos litros de leche", "ambiguous_minutes"),
+    ("recordame a las 20 y 5 sacar la basura", "ambiguous_minutes"),
+    ("recordame a las 21 menos 5 llamar", "ambiguous_minutes"),
+    ("recordame todos los días hábiles salvo feriados a las 9 de la noche x", "unrecognised_time"),
+]
+
+
+@pytest.mark.parametrize("utterance,detail", PARTIAL_TIMES)
+def test_partial_times_are_refused(utterance, detail):
+    result = parse(utterance, MONDAY_08)
+    assert (result.ambiguity, result.detail, result.trigger_at, result.recurrence) == (
+        A.UNPARSEABLE, detail, None, None), result.text
+
+
+@pytest.mark.parametrize("utterance,expected,text", [
+    ("recordame a las 20 y 5 que saque la basura", local(2026, 11, 16, 20, 5), "saque la basura"),
+    ("recordame a las 20 y dos, comprar leche", local(2026, 11, 16, 20, 2), "comprar leche"),
+    ("recordame a las 20 y diez sacar la basura", local(2026, 11, 16, 20, 10), "sacar la basura"),
+    ("recordame a las 8 y 5 de la noche sacar la basura", local(2026, 11, 16, 20, 5), "sacar la basura"),
+    ("recordame a las 20 y 5 minutos sacar la basura", local(2026, 11, 16, 20, 5), "sacar la basura"),
+    ("recordame en 1 hora 30 minutos sacar la ropa", MONDAY_08.timestamp() + 5400, "sacar la ropa"),
+    ("recordame en una hora treinta minutos sacar la ropa", MONDAY_08.timestamp() + 5400, "sacar la ropa"),
+    ("recordame en 2 horas 5 minutos sacar la ropa", MONDAY_08.timestamp() + 7500, "sacar la ropa"),
+])
+def test_complete_minutes_are_read(utterance, expected, text):
+    result = parse(utterance, MONDAY_08)
+    assert result.ok, (result.ambiguity, result.detail)
+    assert (result.trigger_at, result.text) == (expected, text)
+
+
 def test_unread_time_words_are_refused_in_a_deferred_clause():
     result = extract_time_expression("prendé la luz el finde a las 9 de la noche", MONDAY_08)
     assert (result.ambiguity, result.detail, result.trigger_at) == (A.UNPARSEABLE, "unrecognised_date", None)

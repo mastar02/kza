@@ -147,6 +147,8 @@ _DATE_WORDS = frozenset({
 })
 _CUT_WORDS = {"salvo", "excepto", "menos"}
 _SINGULAR_ONE = {"un", "una", "uno"}
+# Words that may follow bare "y N" minutes without making N part of the content.
+_LOOSE_FOLLOWERS = {"que", "de", "y", "en", "para", "a"}
 
 _UNITS = {"cero": 0, "un": 1, "uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5,
           "seis": 6, "siete": 7, "ocho": 8, "nueve": 9}
@@ -236,6 +238,7 @@ class _Clock:
     meridiem: str | None
     explicit24: bool
     error: str | None = None
+    loose_end: int | None = None      # index after bare "y/menos N" minutes (N < 10)
 
 
 @dataclass
@@ -284,6 +287,7 @@ def _clock_at(words: list[str], i: int) -> tuple[_Clock, int] | None:
     if words[i] not in ("a", "para"):
         return None
     j = i + 1
+    loose = None
     if j < n and words[j] == "medianoche":
         return _Clock(0, 0, None, True), j + 1
     if _at(words, j, ("eso", "de")):
@@ -315,6 +319,8 @@ def _clock_at(words: list[str], i: int) -> tuple[_Clock, int] | None:
             minute, k = (value if words[k] == "y" else -value), end
             if k < n and words[k] in ("minuto", "minutos"):
                 k += 1
+            elif value < 10:
+                loose = k
         elif (later := _number(words, k)) is not None and (later[0] >= 10 or len(words[k]) == 2):
             minute, k = later
     if _at(words, k, ("en", "punto")):
@@ -337,7 +343,9 @@ def _clock_at(words: list[str], i: int) -> tuple[_Clock, int] | None:
         else:
             hour -= 1
         minute += 60
-    return _Clock(hour % 24 if not error else hour, minute, meridiem, explicit24, error), k
+    if loose is not None and k > loose:
+        loose = None                  # a period or "en punto" followed the minutes
+    return _Clock(hour % 24 if not error else hour, minute, meridiem, explicit24, error, loose), k
 
 
 def _relative_at(words: list[str], i: int) -> tuple[int | str, int] | None:
@@ -376,6 +384,10 @@ def _relative_at(words: list[str], i: int) -> tuple[int | str, int] | None:
             extra, end = _number(words, k + 1)
             if end < n and words[end] in ("minuto", "minutos", "min"):
                 seconds, k = seconds + extra * 60, end + 1
+        elif (extra := _number(words, k)) is not None and extra[1] < n \
+                and words[extra[1]] in ("minuto", "minutos", "min"):
+            # "en 1 hora 30 minutos"; a bare "en 1 hora 30" stays unread and is refused.
+            seconds, k = seconds + extra[0] * 60, extra[1] + 1
     if seconds <= 0:
         return "invalid", k
     return seconds, k
@@ -707,7 +719,8 @@ def _is_number_word(word: str) -> bool:
     return _number([word], 0) is not None
 
 
-def _leftover_problem(words: list[str], used: list[bool], skip: range) -> str | None:
+def _leftover_problem(words: list[str], used: list[bool], skip: range, clocks: list[_Clock] = (),
+                      breaks: frozenset[int] = frozenset()) -> str | None:
     """Time vocabulary left among the reminder words; the detail code or ``None``.
 
     Words the scanner did not take are reminder content. When one of them is a
@@ -715,6 +728,11 @@ def _leftover_problem(words: list[str], used: list[bool], skip: range) -> str | 
     the rest would be a guess (user answer Q8), so the request is refused.
     """
     n = len(words)
+    for clock in clocks:
+        # "a las 20 y dos litros de leche": the number may start the content.
+        k = clock.loose_end
+        if k is not None and k < n and not used[k] and k not in breaks and words[k] not in _LOOSE_FOLLOWERS:
+            return "ambiguous_minutes"
     for k in range(n):
         if used[k] or k in skip:
             continue
@@ -763,7 +781,10 @@ def _analyse(original: str, folded: str, start: int, aliases: tuple[tuple[str, .
         zone = original[a:b]
         removed.append((a, b))
     if ReminderAmbiguity.UNPARSEABLE not in issues:
-        leftover = _leftover_problem(words, scan.used, range(*zone_span) if zone_span else range(0))
+        breaks = frozenset(k for k in range(1, len(tokens))
+                           if re.search(r"[,.;:!?]", folded[tokens[k - 1][2]:tokens[k][1]]))
+        leftover = _leftover_problem(words, scan.used, range(*zone_span) if zone_span else range(0),
+                                     scan.clocks, breaks)
         if leftover is not None:
             trigger, recurrence, issues, detail = None, None, {ReminderAmbiguity.UNPARSEABLE}, leftover
     pieces, cursor = [], start
