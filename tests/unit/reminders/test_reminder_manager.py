@@ -63,6 +63,16 @@ async def test_get_active(manager):
 MVD = ZoneInfo("America/Montevideo")
 
 
+@pytest.fixture
+def foreign_process_tz(monkeypatch):
+    """Run with a process TZ that is not the household's (the server's is Montevideo)."""
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
 def _local(*args) -> datetime:
     """Household wall time (P3-F1), independent of the process's TZ."""
     return datetime(*args, tzinfo=MVD)
@@ -109,7 +119,7 @@ UTC_NEXT_DAY = datetime(2026, 11, 12, 2, 30, tzinfo=UTC)  # 23:30 of the 11th in
 
 
 @pytest.mark.asyncio
-async def test_today_is_the_household_day_across_the_utc_midnight(store):
+async def test_today_is_the_household_day_across_the_utc_midnight(store, foreign_process_tz):
     manager = ReminderManager(store=store, household_clock=HouseholdClock(time_source=UTC_NEXT_DAY.timestamp))
     await manager.create(user_id="u1", text="hoy", trigger_at=_local(2026, 11, 11, 23, 45).timestamp())
     await manager.create(user_id="u1", text="manana", trigger_at=_local(2026, 11, 12, 0, 15).timestamp())
@@ -118,7 +128,7 @@ async def test_today_is_the_household_day_across_the_utc_midnight(store):
 
 
 @pytest.mark.asyncio
-async def test_spoken_and_logged_times_are_household_wall_times(store, caplog):
+async def test_spoken_and_logged_times_are_household_wall_times(store, caplog, foreign_process_tz):
     manager = ReminderManager(store=store, config={"tts_prefix": "Recuerda"},
                               household_clock=HouseholdClock(time_source=UTC_NEXT_DAY.timestamp))
     with caplog.at_level(logging.DEBUG, logger="src.reminders.reminder_manager"):

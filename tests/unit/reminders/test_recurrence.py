@@ -1,6 +1,8 @@
 """Tests for recurrence engine — calculating next trigger dates."""
-import pytest
+import time
 from datetime import UTC, datetime
+
+import pytest
 from zoneinfo import ZoneInfo
 
 from src.reminders.recurrence import next_trigger, parse_recurrence, RecurrenceType
@@ -17,6 +19,16 @@ def local(*args, zone=MVD) -> float:
 
 def wall(epoch: float, zone=MVD) -> datetime:
     return datetime.fromtimestamp(epoch, zone)
+
+
+@pytest.fixture
+def foreign_process_tz(monkeypatch):
+    """Run with a process TZ that is not the household's (the server's is Montevideo)."""
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
 
 
 class TestParseRecurrence:
@@ -104,6 +116,7 @@ class TestNextTrigger:
         assert result.year == 2027
 
 
+@pytest.mark.usefixtures("foreign_process_tz")
 class TestHouseholdCalendar:
     """T031-U1 follow-up: the household zone, not the process's local time, counts days."""
 

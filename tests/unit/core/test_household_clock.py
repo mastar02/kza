@@ -1,5 +1,6 @@
 """P3-F1: household clock (routines.timezone, built once) and room namespace."""
 
+import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -20,11 +21,21 @@ LOCAL_MIDNIGHT = datetime(2026, 11, 12, 3, 0, tzinfo=UTC)
 SETTINGS = Path(__file__).resolve().parents[3] / "config" / "settings.yaml"
 
 
+@pytest.fixture
+def foreign_process_tz(monkeypatch):
+    """Run with a process TZ that is not the household's (the server's is Montevideo)."""
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
 def frozen(at: datetime) -> HouseholdClock:
     return HouseholdClock(SUPPORTED_HOUSEHOLD_TIMEZONE, time_source=lambda: at.timestamp())
 
 
-def test_frozen_clock_across_the_utc_minus_3_midnight():
+def test_frozen_clock_across_the_utc_minus_3_midnight(foreign_process_tz):
     clock = frozen(BEFORE_LOCAL_MIDNIGHT)
     assert clock.now_utc() == BEFORE_LOCAL_MIDNIGHT and clock.now_utc().tzinfo is UTC
     local = clock.now_local()
@@ -52,7 +63,7 @@ def test_epoch_is_storage_form_and_rejects_non_finite_sources():
             HouseholdClock(time_source=lambda bad=bad: bad).epoch()
 
 
-def test_to_epoch_reads_naive_values_as_household_wall_time():
+def test_to_epoch_reads_naive_values_as_household_wall_time(foreign_process_tz):
     clock = HouseholdClock()
     assert clock.to_epoch(datetime(2026, 11, 11, 23, 30)) == BEFORE_LOCAL_MIDNIGHT.timestamp()
     assert clock.to_epoch(datetime(2026, 11, 12, 0, 0)) == LOCAL_MIDNIGHT.timestamp()

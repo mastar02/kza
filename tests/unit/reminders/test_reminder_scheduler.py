@@ -2436,6 +2436,9 @@ async def test_a_household_friday_late_reminder_advances_to_the_household_monday
     current = await store.get_by_id(r.id)
     assert current.state == "active"
     assert datetime.fromtimestamp(current.trigger_at, mvd) == datetime(2026, 11, 16, 23, 30, tzinfo=mvd)
+    # The catch-up walk counts the same household calendar.
+    assert datetime.fromtimestamp(scheduler._next_occurrence(r, friday), mvd) == datetime(
+        2026, 11, 16, 23, 30, tzinfo=mvd)
 
 
 def test_scheduler_takes_one_clock_source(store, mock_deps):
