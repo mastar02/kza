@@ -717,11 +717,16 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
    `compact retire <id>`.
 3. Si un comando falla siempre con el mismo código y no es un problema del
    entorno (espacio, permisos), puede ser un defecto del propio controlador.
-   La salida es un controlador corregido (decisión D4 = A):
-   `$ST install-controller <archivo nuevo>` funciona aunque haya una
-   compactación pendiente o un log inválido, siempre que el archivo sea de
-   época 4 o posterior (desde SC-2) y no menor que la instalada. Después, repetir el paso 2
-   con el `$ST` del controlador nuevo.
+   La salida es un controlador corregido (decisión D4 = A), instalado desde
+   su archivo extraído: `$PY -I -B <tmp>/scripts/stage_runtime.pyc --root
+   /home/kza/releases --offline install-controller <archivo nuevo>` funciona
+   aunque haya una compactación pendiente o un log inválido, siempre que el
+   archivo sea de época 4 o posterior (desde SC-2) y no menor que la
+   instalada. Con un controlador de época 5 instalado, `$ST install-controller`
+   rechaza `runtime_admission_controller_installer_mismatch` sin escribir
+   nada; sólo con el de época 4 (R1) instalado sirve también `$ST
+   install-controller <archivo nuevo>`. Después, repetir el paso 2 con el
+   `$ST` del controlador nuevo.
    Desde SC-1a (época 5, sin release), con una compactación de **estados
    dueños** el controlador corregido tiene que ser una construcción de
    **época 4**: uno de época 5 rechaza el log pendiente en la primera

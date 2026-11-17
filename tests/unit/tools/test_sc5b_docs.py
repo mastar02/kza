@@ -501,3 +501,18 @@ def test_l4_exits_name_their_consequence_and_r_b_stops_again():
     assert ("cerrarlo con R-b (arrancar la unidad una vez; R-b cierra el head y sirve H, así que después detener "
             "y deshabilitar la unidad otra vez antes de repetir `install-controller`, que rechaza mientras H "
             "corre)") in row
+
+
+def test_the_stuck_compaction_exit_installs_from_the_extracted_archive():
+    """Review SC5B-R10: the release-mode runbook links 'Compactación trabada' for log_invalid; at epoch 5
+    the installed $ST refuses installer_mismatch, so step 3 leads with the extracted-archive form."""
+    stuck = _flat(_section(COMPACTION_RUNBOOK.read_text(), "## Compactación trabada"))
+    step3 = stuck.split("3. ", 1)[1].split("4. Log inválido", 1)[0]
+    lead = ("La salida es un controlador corregido (decisión D4 = A), instalado desde su archivo extraído: "
+            "`$PY -I -B <tmp>/scripts/stage_runtime.pyc --root /home/kza/releases --offline install-controller "
+            "<archivo nuevo>` funciona aunque haya una compactación pendiente o un log inválido")
+    assert lead in step3
+    assert ("Con un controlador de época 5 instalado, `$ST install-controller` rechaza "
+            "`runtime_admission_controller_installer_mismatch` sin escribir nada") in step3
+    assert step3.index(lead) < step3.index("`$ST install-controller")
+    assert "«Compactación trabada» del runbook de compactación" in _flat(_text())
