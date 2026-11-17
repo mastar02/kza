@@ -1787,6 +1787,39 @@ Veredicto `changes_needed` (SC4C-RV-1 a RV-5); todo aplicado en la rama
   código; `SQLITE_TMPDIR` para el hijo; `other_files` por almacén en el plan.
 - Mutantes de la ronda en `tools/sc4c_mutants.py` (`REVIEW_1`).
 
+### SC-4c — respuestas del usuario y baja de la `user_memories` heredada (2026-11-17)
+
+Respuestas del 2026-11-16 (`t040-t041/user-decisions-20261110.json`, clave
+`sc4c_questions_20261116`): SC4C-Q1 `home_assistant_routines` se da de baja;
+SC4C-Q2 el listado de solo lectura de producción dio `data/chroma_db`
+{`home_assistant_commands`: 337, `home_assistant_routines`: 0} y
+`data/memory_db` {`user_memories`: 876, `user_memories_policy_v1`: 130};
+SC4C-Q2b la heredada `user_memories` se descarta al actualizar; SC4C-Q3 el
+residuo de heap en los HNSW de `kza-voice` va después, como unidad propia
+con prioridad alta; SC4C-Q4 se mantiene el límite de 600 s y SC-6b lo
+ajusta al medir; SC4C-Q5 (valor por defecto) el plan cuenta `other_files`
+y el runbook pide revisar si no es 0.
+
+- `src/memory/owner_compaction.py` y `scripts/compaction.py`:
+  `CHROMA_DROPPED_IN_STORE = {("data/memory_db", "user_memories")}`, baja
+  con nombre exacto y sólo en el almacén de memoria (el par de
+  `memory.chroma_path`/`memory.long_term_collection`, fijado por un test).
+  El snapshot no la lee, el hijo no la recibe; el plan nombra las bajas por
+  almacén (`dropped_collections`) y el evento `materialized`/la evidencia
+  de K las guardan como `[almacén, colección]`. Un nombre parecido, la
+  misma colección en otro almacén o una `user_memories` registrada como
+  destino siguen rechazando `unlisted_collection`.
+- Tests nuevos en `tests/unit/tools/test_sc4c_chroma_closed_list.py`:
+  transición completa con la colección heredada (canarios en documento y
+  metadata; ningún byte en el estado de K ni en los registros de la
+  compactación; ausente de toda la raíz después del retiro), rechazo del
+  plan con un nombre parecido, otra mayúscula u otro almacén, paridad con
+  `config/settings.yaml`. Mutantes `SC4C_Q2B` en `tools/sc4c_mutants.py`
+  (el corredor ahora usa `taskset -c 24-47`, la casa está ocupada).
+- Pendiente para el operador: el `compact plan` de solo lectura en la
+  ventana de R1 debería mostrar `data/memory_db` con `dropped: 1`
+  (`["user_memories"]`).
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.

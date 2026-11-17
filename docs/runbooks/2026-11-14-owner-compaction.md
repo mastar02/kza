@@ -56,8 +56,12 @@ colección de memoria de política recibe sólo los registros de hechos vivos
 (sin vencer, sin tombstone, sin borrado registrado) cuyo dueño no está
 retirado; el índice de comandos de Home Assistant se copia entero;
 `home_assistant_routines` (texto de rutinas dictadas) no se copia y el
-arranque de K la recrea vacía; cualquier otra colección (por ejemplo la
-heredada `user_memories`) hace rechazar el plan.
+arranque de K la recrea vacía; la colección heredada `user_memories` de
+`data/memory_db` (anterior a la política de memoria, en cuarentena y nunca
+leída) tampoco se copia (SC4C-Q2b): queda en H y se borra para siempre
+cuando el retiro destruye H. Cualquier otra colección (por ejemplo un nombre
+parecido como `user_memories_v0`, o `user_memories` en otro almacén) hace
+rechazar el plan.
 
 ## Qué NO hace (límites, P5 = C)
 
@@ -310,12 +314,16 @@ R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
      borrados pedidos por el usuario que siguen en estados retenidos);
    - `chroma` (SC-4c): por almacén de Chroma de H, cuántas colecciones se
      reconstruyen (`rebuilt`, la memoria de política), se copian enteras
-     (`copied`, el índice de comandos) y no se copian (`dropped`,
-     `home_assistant_routines`), y `other_files`: archivos dentro del
+     (`copied`, el índice de comandos) y no se copian (`dropped`, con sus
+     nombres en `dropped_collections`), y `other_files`: archivos dentro del
      almacén que no son de Chroma (K no los recibe). Lo esperado en
-     producción es `data/chroma_db` con `dropped: 1` y `data/memory_db` con
-     `rebuilt: 1`, los dos con `other_files: 0`; si no es 0, mirar qué se
-     dejó a mano dentro del almacén antes de seguir.
+     producción (listado de solo lectura del 2026-11-16) es `data/chroma_db`
+     con `copied` según el índice de comandos y `dropped: 1`
+     (`["home_assistant_routines"]`), y `data/memory_db` con `rebuilt: 1` y
+     `dropped: 1` (`["user_memories"]`, las 876 memorias heredadas en
+     cuarentena, que K no recibe), los dos con `other_files: 0`. Si
+     `other_files` no es 0, mirar qué se dejó a mano dentro del almacén
+     antes de seguir (SC4C-Q5).
      Después de la transición, «listar mis rutinas» por voz responde vacío
      hasta que se dicte una rutina nueva (las rutinas programadas de
      `routines.db` no cambian);
@@ -738,7 +746,7 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
 | `runtime_admission_compaction_artifact` | `start` o `resume`: el archivo dado no es el del intent (`"archive": "not_the_intent_archive"`, nada escrito: repetir con el archivo del plan, en época 5 `"$NEW_ARCHIVE"`), o el `release.json` de K no es el del intent (el archivo cambió entre lectura y extracción): `$ST compact abort <id>`, después habilitar y arrancar la unidad. |
 | `runtime_admission_compaction_schema_changed` | `start`, época 5 (A1): los `schemas` del binding de K no son los de H. El head sigue en H: `$ST compact abort <id>`, después `systemctl --user enable kza-voice.service` y `systemctl --user start kza-voice.service`. Repetir con el mismo NUEVO rechaza igual. |
 | `runtime_admission_compaction_locator_collision:<tabla>.path` | `start` (trabajador): dos filas de una cola de audio caerían en la misma ruta de K. Se rechaza antes de escribir K; el head sigue en H: `$ST compact abort <id>`, después habilitar y arrancar la unidad. Cada reintento rechaza igual; no hay salida por `resume`. |
-| `runtime_admission_compaction_unlisted_collection` | `plan` o `start` (SC-4c): un almacén de Chroma de H tiene una colección fuera de la lista cerrada (por ejemplo la heredada `user_memories`, o una `*_policy_v1` que H no registró); el informe del plan nombra almacén y colección, nunca registros. El plan no escribió nada: habilitar y arrancar la unidad (sirve H) y pasar a desarrollo; no borrar la colección a mano. Si aparece en `start` (el trabajador, fila S): `$ST compact abort <id>` (sin pérdida antes de V), después habilitar y arrancar la unidad. |
+| `runtime_admission_compaction_unlisted_collection` | `plan` o `start` (SC-4c): un almacén de Chroma de H tiene una colección fuera de la lista cerrada (por ejemplo un nombre parecido a una baja como `user_memories_v0`, `user_memories` fuera de `data/memory_db`, o una `*_policy_v1` que H no registró); el informe del plan nombra almacén y colección, nunca registros. El plan no escribió nada: habilitar y arrancar la unidad (sirve H) y pasar a desarrollo; no borrar la colección a mano. Si aparece en `start` (el trabajador, fila S): `$ST compact abort <id>` (sin pérdida antes de V), después habilitar y arrancar la unidad. |
 | `runtime_admission_compaction_chroma_rebuild_failed` | `start` (trabajador): el proceso hijo que reconstruye un almacén de Chroma de K falló (su salida no se muestra: podría tener contenido). El head sigue en H: `$ST compact abort <id>`, después habilitar y arrancar la unidad; pasar a desarrollo. |
 | `runtime_admission_compaction_chroma_rebuild_timeout` | `start` (trabajador): la reconstrucción de un almacén de Chroma tardó más de 600 s (el presupuesto de bajada entero); el hijo ya fue terminado. El head sigue en H: `$ST compact abort <id>`, después habilitar y arrancar la unidad; pasar a desarrollo (medir el almacén). |
 | `runtime_admission_compaction_deletion_ledger_salt_invalid`, `..._deletion_ledger_subject_invalid` | `start` (trabajador): el registro de borrados de H no sirve para la segunda compuerta de la memoria de Chroma (sal mal formada, hecho sin id). Nada se copió a K todavía: `$ST compact abort <id>`, después habilitar y arrancar la unidad; pasar a desarrollo. |

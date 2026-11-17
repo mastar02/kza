@@ -1194,8 +1194,20 @@ compactación podía pasar del snapshot.
   configuración. (3) `home_assistant_routines` **no se copia** (texto de
   rutinas dictadas, sin camino de borrado): es una baja con nombre en el
   código, fijada por un test; el arranque de K la recrea vacía
-  (`ChromaSync._construct`). (4) Cualquier otra colección, incluida la
-  heredada `user_memories`, rechaza
+  (`ChromaSync._construct`). (3b) La colección heredada `user_memories` de
+  `data/memory_db` (anterior a la política de memoria, en cuarentena y
+  nunca leída: `long_term.get_stats` informa `legacy_policy:
+  "quarantined"`) **tampoco se copia** (respuesta SC4C-Q2b del usuario,
+  2026-11-16; producción tiene 876 registros ahí junto a los 130 de
+  `user_memories_policy_v1`). Es una baja con nombre exacto y sólo en ese
+  almacén (`CHROMA_DROPPED_IN_STORE`, igual en el plan y en el trabajador,
+  fijada además a `memory.chroma_path` y `memory.long_term_collection` de
+  `config/settings.yaml`): el snapshot no la lee, el hijo no la recibe y
+  queda registrada sólo por nombre. Sus bytes siguen en H hasta que el
+  retiro lo destruye; ahí se borran para siempre. (4) Cualquier otra
+  colección, incluidos un nombre parecido (`user_memories_v0`,
+  `User_memories`), `user_memories` en otro almacén o una `user_memories`
+  registrada como destino, rechaza
   `runtime_admission_compaction_unlisted_collection`: en el `plan` (lee los
   nombres de colección de una imagen privada de cada `chroma.sqlite3`, nunca
   un registro; el informe nombra almacén y colección) y otra vez en el
@@ -1235,27 +1247,33 @@ compactación podía pasar del snapshot.
   iguales a los de H (A1).
 - **Registros sin contenido.** `plan` muestra `chroma` con conteos por
   almacén (`rebuilt`, `copied`, `dropped` y `other_files`: archivos dentro
-  del almacén que no son de Chroma y que K no recibe, revisión SC4C-RV-5);
-  el evento `materialized` y la
+  del almacén que no son de Chroma y que K no recibe, revisión SC4C-RV-5;
+  el operador revisa antes de seguir si no es 0, SC4C-Q5) y los nombres de
+  las bajas (`dropped_collections`); el evento `materialized` y la
   evidencia de preparación de K guardan conteos (almacenes, colecciones por
-  clase, registros, excluidos) y los pins (rutas y sha256). El snapshot
+  clase, registros, excluidos), las bajas como `[almacén, colección]` y los
+  pins (rutas y sha256). El snapshot
   conserva la exportación de las colecciones copiadas y de la de política
   (con los registros excluidos) hasta que se retira junto con H; de
-  `home_assistant_routines` sólo guarda el nombre.
+  `home_assistant_routines` y de la heredada `user_memories` sólo guarda el
+  nombre.
 - **Residual.** El texto de `home_assistant_routines` que ya está en H queda
   en H (y en los bytes opacos del snapshot) hasta que el retiro destruye H;
   la transición es lo que lo quita. SC-0 encontró un lector en producción
   (`routine_manager._handle_list` → `list_routines`, el intent de voz
   «listar mis rutinas»): después de la transición esa lista sale vacía hasta
   que se dicte una rutina nueva. El diseño deja a SC-R decidir entre la baja
-  y una reconstrucción desde la tabla protegida `routines`; esta unidad
-  implementa la baja (pregunta abierta SC4C-Q1).
+  y una reconstrucción desde la tabla protegida `routines`; el usuario
+  aceptó la baja (SC4C-Q1, 2026-11-16).
 - **Hallazgo fuera de esta unidad.** El mismo comportamiento de Chroma vale
   para el servicio: los archivos HNSW que escribe `kza-voice` pueden guardar
   fragmentos de su heap (cualquier dato que el proceso tuvo en memoria), y
-  un borrado no los limpia. Queda en `follow_up` y como pregunta abierta
-  SC4C-Q3; la transición no lo empeora (K se escribe desde el hijo limpio y
-  no copia los bytes de Chroma de H).
+  un borrado no los limpia. Decisión del usuario (SC4C-Q3, 2026-11-16):
+  después, como unidad propia con prioridad alta; la transición no lo
+  empeora (K se escribe desde el hijo limpio y no copia los bytes de Chroma
+  de H).
+- **Límite de 600 s por almacén.** El usuario lo aceptó (SC4C-Q4,
+  2026-11-16); SC-6b lo ajusta con la medición de tamaño de producción.
 
 Tests: `tests/unit/tools/test_sc4c_chroma_closed_list.py`.
 
