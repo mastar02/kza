@@ -266,7 +266,9 @@ async def test_labels_never_reach_info_logs(manager, caplog):
         await quiet._announce_warning(timer, 30)
         await quiet._announce_complete(timer)
     assert [r for r in caplog.records if r.levelno >= logging.INFO and "pastilla" in r.getMessage()] == []
-    assert any("Timer created id=" in r.getMessage() for r in caplog.records)
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(m.startswith("[Timer] created id=") for m in messages)
+    assert any(m.startswith("[Timer] cancel_timer ids=") for m in messages)
 
 
 async def test_describe_names_by_label_or_duration(manager):

@@ -228,7 +228,7 @@ class TimerVoiceCommands:
             return _refusal(f"Hay {len(chosen)} temporizadores: {names}. ¿Cuál {verb}? Decímelo completo.",
                             TaskStatus.NEEDS_INPUT)
         done = [t for t in chosen if apply(t.timer_id)]
-        logger.info("[Timer] %s ids=%s", verb, [t.timer_id for t in done])
+        logger.info("[Timer] %s ids=%s", apply.__name__, [t.timer_id for t in done])  # English op name, no label
         if not done:
             return _refusal(NO_ACTIVE, TaskStatus.NEEDS_INPUT)
         return _changed(one(done[0]) if len(done) == 1 else many(len(done)))
