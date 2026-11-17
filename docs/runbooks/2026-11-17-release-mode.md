@@ -93,8 +93,12 @@ Todas estas condiciones, antes de la primera transición:
   ese venv. La única excepción es la salida de `sdk_changed`: reinstalar la
   versión ligada que nombra el rechazo y repetir.
 - **Repetir no daña.** Todo rechazo de W0 (y todo rechazo con código del
-  abort con W, del retiro y del plan) no escribe nada; el retiro sólo agrega
-  el `verified` de siempre. Repetir el mismo comando es seguro.
+  plan, y del abort con W o del retiro antes de su `abort_started` o
+  `retire_started`) no escribe nada; el retiro sólo agrega el `verified` de
+  siempre. Después de esos registros, un rechazo llega con el trabajo a
+  medias: es un corte (fila AB o RS) que sólo el mismo comando o `compact
+  resume` siguen, y de un retiro cortado nunca se vuelve a H. Repetir el
+  mismo comando es seguro.
 - **Nunca `adopt` con un log del modo release pendiente.** Desde `compact
   start` hasta que el log termina, `adopt` y `adopt --dry-run` rechazan
   `runtime_admission_compaction_pending`. Un K' abierto (fila V2, o SS
@@ -432,9 +436,14 @@ Muestra `phase`, `armed_run` (`not armed`, `not consumed` o `consumed`),
 $ST compact retire <compaction_id>
 ```
 
-Rutear un rechazo por su código. Ningún rechazo escribe nada más que el
-`verified` de siempre, salvo un `runtime_admission_compaction_io_error`
-después de `retire_started`: ése es un retiro cortado (fila RS).
+Rutear un rechazo por su código y por la fase (`phases` en `$ST compact
+status <compaction_id>`). Antes de `retire_started`, ningún rechazo escribe
+nada más que el `verified` de siempre. Después de `retire_started`, todo
+rechazo, con cualquier código, llega con el retiro a medias (renombres a
+`compaction/<id>/retiring/`, borrados y sus registros): es un retiro cortado
+(fila RS), que sólo el mismo retiro (con las opciones de su fila RF, si las
+tiene) o `compact resume` siguen, nunca una vuelta a H (el abort rechaza
+`runtime_admission_compaction_phase`).
 
 | Código | Fila | Salida |
 | --- | --- | --- |

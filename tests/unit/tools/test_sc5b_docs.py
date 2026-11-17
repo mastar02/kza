@@ -708,3 +708,30 @@ def test_rereview_safety_sentences_are_pinned_exactly():
     after = _flat(_section(text, "## Después de la aceptación"))
     assert ("si el dry-run se corta, queda ahí, fuera de todo retiro y de todo borrado: comprobarlo con `ls -d "
             "\"${TMPDIR:-/tmp}\"/kza-adopt-dry-run-*` y borrarlo a mano.") in after
+
+
+def test_retire_refusals_after_retire_started_are_a_cut_retire():
+    """Re-review SC5B-RR4: compact_retire logs 'retire_started' and then _finish_retire renames into
+    compaction/<id>/retiring/, unlinks and logs before it can refuse (identity, member_missing, symlink,
+    hard_link, mount, special_file, cross_device, accepted_member_back, retiring_residue): only refusals
+    before 'retire_started' write nothing beyond 'verified'."""
+    text = _text()
+    retire = _flat(_section(text, "### Paso 8: retiro (la aceptación)"))
+    assert ("Antes de `retire_started`, ningún rechazo escribe nada más que el `verified` de siempre. Después de "
+            "`retire_started`, todo rechazo, con cualquier código, llega con el retiro a medias (renombres a "
+            "`compaction/<id>/retiring/`, borrados y sus registros): es un retiro cortado (fila RS), que sólo el "
+            "mismo retiro (con las opciones de su fila RF, si las tiene) o `compact resume` siguen, nunca una "
+            "vuelta a H (el abort rechaza `runtime_admission_compaction_phase`).") in retire
+    assert "Ningún rechazo escribe nada más que el `verified` de siempre, salvo" not in retire
+    rules = _flat(_section(text, "## Reglas que valen en todo el procedimiento"))
+    assert ("- **Repetir no daña.** Todo rechazo de W0 (y todo rechazo con código del plan, y del abort con W o del "
+            "retiro antes de su `abort_started` o `retire_started`) no escribe nada; el retiro sólo agrega el "
+            "`verified` de siempre. Después de esos registros, un rechazo llega con el trabajo a medias: es un corte "
+            "(fila AB o RS) que sólo el mismo comando o `compact resume` siguen, y de un retiro cortado nunca se "
+            "vuelve a H.") in rules
+    assert "del abort con W, del retiro y del plan) no escribe nada" not in rules
+    source = (REPO / "scripts/compaction.py").read_text()
+    body = source.split("def compact_retire(", 1)[1].split("\ndef ", 1)[0]
+    assert body.index('"retire_started", report') < body.index("return _finish_retire(")
+    finish = source.split("def _finish_retire(", 1)[1].split("\ndef ", 1)[0]
+    assert finish.index("_retire_member(") < finish.index('_refuse("runtime_admission_compaction_identity"')
