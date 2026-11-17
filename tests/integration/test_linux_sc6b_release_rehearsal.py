@@ -499,7 +499,7 @@ class World:
         started = time.monotonic()
         planned = self.st(f"plan-{k}-{build}", *arguments)
         self.rec.time(f"plan-{k}", time.monotonic() - started)
-        assert planned.get("mode") == "release" and planned["retire_prepare_leftovers"] is True, planned
+        assert planned["plan_sha256"] and planned["untouched_sha256"], planned
         return planned
 
     def start(self, build: str, k: str, planned: dict) -> str:
@@ -510,6 +510,8 @@ class World:
         self.rec.time(f"start-{k}", time.monotonic() - started)
         compaction_id = result["compaction_id"]
         assert result["next"] == "compact verify " + compaction_id
+        intent = self.log(compaction_id)["intent"]
+        assert intent["mode"] == "release" and intent["retire_prepare_leftovers"] is True, intent
         intent = stage.compaction_log_path(self.root, compaction_id) / "intent.json"
         assert intent == self.root / "admission" / "compaction" / "v1" / compaction_id / "intent.json"
         _code, _parsed, completed = self.run(  # paso 5: the runbook's own read of H's binding
