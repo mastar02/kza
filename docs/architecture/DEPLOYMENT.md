@@ -1232,7 +1232,10 @@ vivo de la captura post-wake»).
   la rechaza sin STT (`gate_rejected:incomplete_capture`, como el timeout
   anterior) mientras el usuario no responda VC-Q2; `dispatch_at_max_utterance:
   true` la despacha y entonces exige la wake word en la transcripción
-  (`gate_rejected:max_utterance_without_wake`). El follow-up arranca con la misma prueba. El `command_duration`
+  (`gate_rejected:max_utterance_without_wake`). El follow-up arranca sólo en la
+  habitación que abrió la conversación (wake, comando aceptado o barge-in) y
+  con >= 240 ms seguidos de voz por nivel; Silero solo no lo abre (no distingue
+  TV de personas) y un golpe aislado tampoco. El `command_duration`
   que estaba fijo en `main.py` pasa a `rooms.endpointing.command_duration_s`
   (endpoint legacy y AudioManager). `enabled: false` restaura el endpoint
   anterior.

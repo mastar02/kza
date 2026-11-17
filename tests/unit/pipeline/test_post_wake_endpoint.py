@@ -35,6 +35,8 @@ from src.pipeline.post_wake_endpoint import (
 SR = 16000
 CHUNK_S = CHUNK_SIZE / SR
 CONFIG = PostWakeConfig()
+# Consecutive level frames that start a follow-up (min_speech_ms of onset).
+ONSET_FRAMES = math.ceil(CONFIG.min_speech_ms / 1000 / (CHUNK_SIZE / 16000) - 1e-9)
 DISPATCH_AT_MAX = replace(CONFIG, dispatch_at_max_utterance=True)
 END_SILENCE_S = CONFIG.end_silence_ms / 1000
 # The close lands on the first whole frame of silence at or past end_silence.
@@ -94,6 +96,8 @@ def _loop(detector, post_wake=CONFIG, follow_up=None, **kwargs):
     rs = RoomStream(room_id="cocina", device_index=0, wake_detector=detector, echo_suppressor=_echo())
     loop = MultiRoomAudioLoop(room_streams={"cocina": rs}, follow_up=follow_up or _follow_up(),
                               wake_preroll_s=1.0, post_wake=post_wake, **kwargs)
+    # The conversation (when one is active) belongs to this room.
+    loop._conversation_room = "cocina"
     return loop, rs
 
 
@@ -440,15 +444,18 @@ def test_stalled_audio_closes_by_wall_clock(monkeypatch, post_wake):
 
 # ---------------------------------------------------------------- follow-up start
 
-def _follow_up_run(speech_rms, post_wake=CONFIG):
+def _follow_up_run(speech_rms, post_wake=CONFIG, *, room="cocina", vad=None, speech_s=1.04, floor=0.0012):
     rng = np.random.default_rng(11)
     loop, rs = _loop(_Detector(fire_at=None), post_wake=post_wake, follow_up=_follow_up(active=True))
+    loop._conversation_room = room
+    if vad is not None:
+        loop._wake_vad_predictors["cocina"] = vad
     process = loop._make_audio_processor(rs)
-    for chunk in _chunks(_segment(rng, 2.0, 0.0012)):
+    for chunk in _chunks(_segment(rng, 2.0, floor)):
         process(chunk[:, None], CHUNK_SIZE, None, None)
     assert not rs.listening
     started_at = None
-    for index, chunk in enumerate(_chunks(_segment(rng, 1.04, speech_rms)), start=1):
+    for index, chunk in enumerate(_chunks(_segment(rng, speech_s, speech_rms)), start=1):
         process(chunk[:, None], CHUNK_SIZE, None, None)
         if rs.listening and started_at is None:
             started_at = index
@@ -457,10 +464,13 @@ def _follow_up_run(speech_rms, post_wake=CONFIG):
 
 def test_follow_up_starts_on_quiet_speech_relative_to_the_floor():
     loop, rs, started_at, rng, process = _follow_up_run(0.0032)
-    assert started_at == 1
+    # min_speech_ms of consecutive onset speech, not a single frame.
+    assert started_at == ONSET_FRAMES
     assert rs.capture_trigger is CaptureTrigger.FOLLOW_UP
-    # The onset keeps a short pre-roll (follow_up_preroll_s) before the trigger chunk.
+    # The onset keeps a short pre-roll (follow_up_preroll_s) before the onset chunks.
     assert rs.wake_sample_index == round(CONFIG.follow_up_preroll_s / CHUNK_S) * CHUNK_SIZE
+    # Every speech frame from the first onset frame on is post-"wake" audio.
+    assert len(rs.audio_buffer) - rs.wake_sample_index == round(1.04 / CHUNK_S) * CHUNK_SIZE
     event = None
     for chunk in _chunks(_segment(rng, 1.2, 0.0012)):
         process(chunk[:, None], CHUNK_SIZE, None, None)
@@ -468,6 +478,33 @@ def test_follow_up_starts_on_quiet_speech_relative_to_the_floor():
         if event is not None:
             break
     assert event is not None and event.capture_trigger == "follow_up" and event.capture_complete is True
+
+
+def test_follow_up_does_not_start_in_another_room():
+    """The follow-up window is global; background speech elsewhere must not open it."""
+    _loop_, rs, started_at, _rng, _process = _follow_up_run(0.006, room="escritorio")
+    assert started_at is None and not rs.listening
+    _loop_, rs, started_at, _rng, _process = _follow_up_run(0.006, room=None)
+    assert started_at is None and not rs.listening
+
+
+def test_follow_up_does_not_start_on_a_single_transient():
+    rng = np.random.default_rng(3)
+    loop, rs = _loop(_Detector(fire_at=None), follow_up=_follow_up(active=True))
+    process = loop._make_audio_processor(rs)
+    for chunk in _chunks(_segment(rng, 2.0, 0.002)):
+        process(chunk[:, None], CHUNK_SIZE, None, None)
+    for _ in range(3):
+        process(_segment(rng, CHUNK_S, 0.05)[:, None], CHUNK_SIZE, None, None)
+        for chunk in _chunks(_segment(rng, 0.4, 0.002)):
+            process(chunk[:, None], CHUNK_SIZE, None, None)
+    assert not rs.listening and loop.endpoint_counts == {}
+
+
+def test_follow_up_does_not_start_on_silero_alone():
+    """TV or a call at the noise floor with Silero 0.8 (probe P4b): no start."""
+    _loop_, rs, started_at, _rng, _process = _follow_up_run(0.0012, vad=lambda _audio: 0.8, speech_s=2.0)
+    assert started_at is None and not rs.listening
 
 
 def test_follow_up_still_requires_human_voice():

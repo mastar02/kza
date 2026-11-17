@@ -1672,8 +1672,10 @@ rooms:
     # silencio sostenido, con voz = nivel >= noise_ratio × piso de ruido medido
     # de la room, o Silero (el predictor por room ya cargado) >= vad_threshold.
     # Sin voz confirmada (>= min_speech_ms; la cola del "Nexa" o un golpe no
-    # alcanzan) en no_speech_timeout_s → se descarta sin STT. El arranque del
-    # follow-up usa la misma prueba (reemplaza rms > 0.02). enabled: false =
+    # alcanzan) en no_speech_timeout_s → se descarta sin STT. El follow-up
+    # (antes rms > 0.02) arranca sólo en la room que abrió la
+    # conversación, con >= min_speech_ms seguidos que pasan la prueba de nivel
+    # (Silero solo no alcanza: no distingue TV de personas). enabled: false =
     # rollback exacto al endpoint legacy.
     post_wake:
       enabled: true
