@@ -320,6 +320,15 @@ lista. En esos casos se espera, además de lo que dice la tabla:
   todas las habitaciones en la lista;
 - `stream reopened` para cada habitación, incluida la Cocina, y después su
   primer audio en el heartbeat;
+- antes del primer refresco, `PortAudio catalog refresh deferred (settling)`:
+  la tarjeta recién enumerada se confirma en un intento posterior, al menos
+  10 s (techo del backoff de reapertura) después de verla por primera vez,
+  para no cortar antes de que udev/ALSA la dejen abrir (revisión
+  T025-U2-RV3-4). Cuenta para F4: enumeración → confirmación (~10–20 s) →
+  corte → reapertura → primer audio (1,5–2 s lo normal), dentro de los
+  180 s. Si la tarjeta todavía no se puede abrir al confirmarla, el refresco
+  es inútil y el siguiente espera 300 s: F4 falla por C20 y se anota con la
+  hora de la enumeración (`dmesg`) y la del corte;
 - si coincide con un comando, una conversación o una respuesta, `PortAudio
   catalog refresh deferred (command|conversation|response)` y el refresco
   apenas termina; `deferred (rate_limit)` si hubo otro refresco hace menos de

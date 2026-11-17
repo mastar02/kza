@@ -433,6 +433,13 @@ class MultiRoomAudioLoop:
         # room_id -> ALSA card seen in sysfs but not listed by PortAudio, as
         # observed by the latest open attempt (written by the native factory).
         self._catalog_missing: dict[str, int] = {}
+        # room_id -> (card, time.monotonic() when an open attempt first saw
+        # that card in sysfs but not in PortAudio). A card that just appeared
+        # may not be openable yet (udev permissions, ALSA readiness) and
+        # PortAudio skips devices it cannot open, so the first refresh waits
+        # until the gap was seen at least the reopen backoff ceiling apart
+        # (T025-U2-RV3-4).
+        self._catalog_gap_seen: dict[str, tuple[int, float]] = {}
         self._catalog_refreshed_at: float | None = None
         self._catalog_refresh_deferred: str | None = None
         # Consecutive catalog resets that left PortAudio uninitialized. The
@@ -1476,8 +1483,12 @@ class MultiRoomAudioLoop:
             card = usb_port_to_alsa_card(rs.mic_usb_port, str(self._microphone_usb_root))
         if card is None:
             self._catalog_missing.pop(rs.room_id, None)
+            self._catalog_gap_seen.pop(rs.room_id, None)
         else:
             self._catalog_missing[rs.room_id] = card
+            seen = self._catalog_gap_seen.get(rs.room_id)
+            if seen is None or seen[0] != card:
+                self._catalog_gap_seen[rs.room_id] = (card, time.monotonic())
 
     def _catalog_refresh_blocker(self) -> str | None:
         """Name the activity a brief all-room capture cut would interrupt.
@@ -1504,8 +1515,10 @@ class MultiRoomAudioLoop:
 
         Called by a room's reopen waiter after a failed open. The refresh is
         admitted only when that room's card is in sysfs but missing from
-        PortAudio, no command, conversation or response is active, and the
-        previous refresh is older than the configured interval.
+        PortAudio, that gap was first seen at least the reopen backoff
+        ceiling ago (``settling``: a card that just enumerated may not be
+        openable yet), no command, conversation or response is active, and
+        the previous refresh is older than the configured interval.
 
         Args:
             rs: Room still waiting for its microphone.
@@ -1523,6 +1536,10 @@ class MultiRoomAudioLoop:
         if card is None:
             return False
         reason = self._catalog_refresh_blocker()
+        seen = self._catalog_gap_seen.get(rs.room_id)
+        if reason is None and (seen is None or seen[0] != card
+                               or time.monotonic() - seen[1] < self._watchdog_backoff_max_s):
+            reason = 'settling'
         last = self._catalog_refreshed_at
         if (reason is None and last is not None
                 and self._microphone_monotonic() - last < self._catalog_refresh_wait_s(rs.room_id)):

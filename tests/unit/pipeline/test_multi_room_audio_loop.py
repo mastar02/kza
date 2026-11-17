@@ -1578,6 +1578,11 @@ class _LateCatalogRig:
     def refreshes(self) -> int:
         return self.sd._terminate.call_count
 
+    def seed_confirmed_gap(self):
+        """La card de la cocina, en sysfs y sin listar, vista hace más que el backoff."""
+        self.loop._catalog_missing["cocina"] = self.COCINA_CARD
+        self.loop._catalog_gap_seen["cocina"] = (self.COCINA_CARD, time.monotonic() - 3600.0)
+
     async def start(self):
         """Living abierta y sana; la cocina esperando su device."""
         await _seed_owned_inputs(self.loop, {"living": self.old_living})
@@ -1682,10 +1687,47 @@ class TestLateMicrophoneCatalogRefresh:
         assert rig.loop._streams["living"] is not rig.old_living
         assert rig.loop._streams["cocina"] in rig.streams
         assert rig.loop._catalog_missing == {}
+        assert rig.loop._catalog_gap_seen == {}
         assert rig.loop._catalog_refreshed_at == 1000.0
+        messages = [r.getMessage() for r in caplog.records]
+        settling = [i for i, m in enumerate(messages) if "refresh deferred (settling)" in m]
+        cut = [i for i, m in enumerate(messages) if "brief capture cut" in m]
+        assert settling and cut and settling[0] < cut[0], "primero confirma la card, después corta"
         assert any("PortAudio does not list ALSA cards {'cocina': 6}" in r.getMessage()
                    and "brief capture cut in ['cocina', 'living']" in r.getMessage()
                    for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_first_refresh_waits_until_the_gap_is_confirmed(self, tmp_path, caplog):
+        """Una card recién enumerada puede no abrirse todavía: se confirma antes de cortar (RV3-4)."""
+        rig = _LateCatalogRig(tmp_path)
+        rig.loop._watchdog_backoff_max_s = 0.05
+        rig.plug_cocina()
+        with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
+        ), caplog.at_level("INFO", logger="src.pipeline.multi_room_audio_loop"):
+            await _seed_owned_inputs(rig.loop, {"living": rig.old_living})
+            rig.living.last_frame_ts = time.monotonic()
+            rig.loop._note_catalog_gap(rig.cocina)  # primer intento que la ve
+            assert rig.loop._catalog_missing == {"cocina": rig.COCINA_CARD}
+            assert rig.loop._request_catalog_refresh(rig.cocina) is False
+            await asyncio.sleep(0.1)
+            # Vuelve a enumerar con otro número: la confirmación empieza de nuevo.
+            card_dir = tmp_path / f"{rig.COCINA_PORT}:1.0" / "sound"
+            (card_dir / f"card{rig.COCINA_CARD}").rmdir()
+            (card_dir / "card7").mkdir()
+            rig.loop._note_catalog_gap(rig.cocina)
+            assert rig.loop._request_catalog_refresh(rig.cocina) is False
+            await asyncio.sleep(0.1)
+            rig.loop._note_catalog_gap(rig.cocina)  # mismo hueco, un backoff después
+            assert rig.loop._request_catalog_refresh(rig.cocina) is True
+            await rig.loop._recovery_task
+            await rig.stop()
+        assert rig.refreshes == 1
+        deferred = [r.getMessage() for r in caplog.records if "refresh deferred" in r.getMessage()]
+        assert deferred == [
+            "[audio-watchdog] cocina: PortAudio catalog refresh deferred (settling); "
+            "ALSA card 6 is present but not listed"]
 
     @pytest.mark.asyncio
     async def test_no_refresh_while_the_card_is_absent_from_sysfs(self, tmp_path):
@@ -1712,7 +1754,7 @@ class TestLateMicrophoneCatalogRefresh:
             await rig.spin(20)
             # Desactivado ni siquiera lee sysfs, y tampoco admite un pedido.
             assert rig.loop._catalog_missing == {}
-            rig.loop._catalog_missing["cocina"] = rig.COCINA_CARD
+            rig.seed_confirmed_gap()
             assert rig.loop._request_catalog_refresh(rig.cocina) is False
             await rig.stop()
         assert rig.refreshes == 0
@@ -1946,7 +1988,7 @@ class TestLateMicrophoneCatalogRefresh:
         """Un wake entre la admisión y el arranque del recovery cancela el corte."""
         rig = _LateCatalogRig(tmp_path)
         rig.plug_cocina()
-        rig.loop._catalog_missing["cocina"] = rig.COCINA_CARD
+        rig.seed_confirmed_gap()
         with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
             "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
         ):
@@ -1965,7 +2007,7 @@ class TestLateMicrophoneCatalogRefresh:
         """Si algo arranca mientras se cierran los streams, no se resetea PortAudio."""
         rig = _LateCatalogRig(tmp_path)
         rig.plug_cocina()
-        rig.loop._catalog_missing["cocina"] = rig.COCINA_CARD
+        rig.seed_confirmed_gap()
         rig.old_living.close.side_effect = lambda **_kw: setattr(rig.living, "listening", True)
         with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
             "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
@@ -2161,7 +2203,7 @@ class TestLateMicrophoneCatalogRefresh:
                                   response_budgets=ResponseBudgets(queue_wait_s=1.0))
         rig = _LateCatalogRig(tmp_path)
         rig.plug_cocina()
-        rig.loop._catalog_missing["cocina"] = rig.COCINA_CARD
+        rig.seed_confirmed_gap()
         rig.loop.attach_response_handler(handler)
         catalog_call = rig.loop._inputs.catalog_call
         held = []
@@ -2194,7 +2236,7 @@ class TestLateMicrophoneCatalogRefresh:
         """Si una respuesta toma la salida justo antes del reset, no se resetea."""
         rig = _LateCatalogRig(tmp_path)
         rig.plug_cocina()
-        rig.loop._catalog_missing["cocina"] = rig.COCINA_CARD
+        rig.seed_confirmed_gap()
         handler = MagicMock()
         handler.is_responding = False
         handler.try_hold_output.return_value = None
@@ -2217,7 +2259,7 @@ class TestLateMicrophoneCatalogRefresh:
         """Una pausa que gana antes del corte no consume la ventana (T025-U2-RV2-4)."""
         rig = _LateCatalogRig(tmp_path)
         rig.plug_cocina()
-        rig.loop._catalog_missing["cocina"] = rig.COCINA_CARD
+        rig.seed_confirmed_gap()
         retire = rig.loop._inputs.retire
 
         async def pause_then_retire(room_id):
