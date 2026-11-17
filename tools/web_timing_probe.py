@@ -1508,10 +1508,28 @@ def smoke_background_branch(record: SmokeRecord) -> str:
 # (R7-1, SmokeRecord.start).
 SMOKE_ORDER = ('quiet_baseline', ('cold_focus', 'background_activity'), 'fixture_pages', 'batches',
                'instrumentation_overhead', 'frame_event')
+# R8-1 (smoke_gate.preview_ready_state rows (a)-(d)): the cells F7 reads its healthy runs from.
+F7_CELLS = ('batch:desktop:#voces', 'batch:mobile:#voces')
+
+
+def f7_repeat_pending(record: SmokeRecord) -> list:
+    """R8-1: the #voces cells with no complete entry whose last entry is discarded with a recorded fault (a cause
+    that can be repeated, run_rules.which_run_counts). Each is repeated with --cause <fault> before the overhead,
+    because no batch cell starts once the overhead has an entry (R7-1); the later stages refuse until then."""
+    pending = []
+    for item in F7_CELLS:
+        runs = record.previous(item)
+        if not runs or any(run.get('status') == 'complete' for run in runs):
+            continue
+        faults = sorted(set(runs[-1].get('faults') or []) & set(SMOKE_REPEAT_CAUSES))
+        if runs[-1].get('status') == 'discarded' and faults:
+            pending.append(f'{item}(repeat --cause {"|".join(faults)})')
+    return pending
 
 
 def smoke_order_missing(record: SmokeRecord, item: str) -> list:
-    """The earlier smoke items that have no deciding entry yet (R6-1, R7-1)."""
+    """The earlier smoke items that have no deciding entry yet (R6-1, R7-1), and the #voces cells that still owe a
+    repeat with a recorded cause (R8-1, f7_repeat_pending)."""
     stage = next(index for index, entry in enumerate(SMOKE_ORDER)
                  if item == entry or (isinstance(entry, tuple) and item in entry))
     missing = []
@@ -1522,6 +1540,7 @@ def smoke_order_missing(record: SmokeRecord, item: str) -> list:
                     runs = record.previous(f'batch:{cell["viewport"]}:{cell["view"]}')
                     if not runs or runs[-1].get('status') not in ('complete', 'discarded'):
                         missing.append(f'batch:{cell["viewport"]}:{cell["view"]}')
+                missing.extend(f7_repeat_pending(record))
             elif deciding_entry(record, name) is None:
                 missing.append(name)
     return missing

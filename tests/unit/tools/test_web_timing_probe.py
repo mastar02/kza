@@ -1973,6 +1973,64 @@ def test_smoke_inputs_come_from_the_deciding_entry_and_no_item_repeats_after_a_l
         probe.SmokeRecord(path).start('batch:mobile:#hogar', SHA)
 
 
+
+def test_a_discarded_voces_cell_with_a_recorded_fault_is_repeated_before_the_overhead(tmp_path):
+    """R8-1 (smoke_order, preview_ready_state row (d)): a #voces cell (desktop or mobile) with no complete entry
+    whose last entry is discarded with a recorded fault holds the overhead and the frame event until it is repeated
+    with that cause; a discarded #voces entry without a fault (no repeat possible) does not hold them, and stays
+    unrepeatable."""
+    path = write_smoke_prerequisites(tmp_path / 'smoke-record.json')
+    data = json.loads(path.read_text())
+    for number, cell in enumerate(probe.batch_plan_views()):
+        item = f'batch:{cell["viewport"]}:{cell["view"]}'
+        entry = {'item': item, 'status': 'complete', 'faults': [], 'started_at': 10.0 + number, 'cause': None}
+        if item == 'batch:desktop:#voces':
+            entry.update(status='discarded', faults=['quiet_machine'],
+                         result={'reasons': ['quiet_machine', 'invalid_runs_over_10_percent']})
+        data['runs'].append(entry)
+    path.write_text(json.dumps(data))
+    record = probe.SmokeRecord(path)
+    pending = ['batch:desktop:#voces(repeat --cause quiet_machine)']
+    assert probe.f7_repeat_pending(record) == pending
+    assert probe.smoke_order_missing(record, 'instrumentation_overhead') == pending
+    assert pending[0] in probe.smoke_order_missing(record, 'frame_event')
+    with pytest.raises(SystemExit, match=r'smoke_order_refused:instrumentation_overhead: first complete '
+                                         r'batch:desktop:#voces\(repeat --cause quiet_machine\)'):
+        probe.check_smoke_order(record, 'instrumentation_overhead')
+    # The batches stage itself is not held: the client repeats the cell with its recorded cause.
+    assert probe.smoke_order_missing(record, 'batches') == []
+    assert probe.smoke_cell_action(record, 'batch:desktop:#voces', None) == ('skip', None)
+    assert probe.smoke_cell_action(record, 'batch:desktop:#voces', 'quiet_machine') == ('run', 'quiet_machine')
+    repeat = record.start('batch:desktop:#voces', SHA, cause='quiet_machine')
+    record.finish(repeat, 'complete', {'reasons': []})
+    record = probe.SmokeRecord(path)
+    assert probe.f7_repeat_pending(record) == []
+    assert probe.smoke_order_missing(record, 'instrumentation_overhead') == []
+    probe.check_smoke_order(record, 'instrumentation_overhead')
+    # The mobile #voces cell holds the overhead the same way (a lock recorded at the batch start).
+    data = json.loads(path.read_text())
+    mobile = next(run for run in data['runs'] if run['item'] == 'batch:mobile:#voces')
+    mobile.update(status='discarded', faults=['lock'])
+    path.write_text(json.dumps(data))
+    assert probe.smoke_order_missing(probe.SmokeRecord(path), 'instrumentation_overhead') == [
+        'batch:mobile:#voces(repeat --cause lock)']
+    # A discarded #voces entry without a recorded fault (invalid share from unmapped environment faults) cannot be
+    # repeated, so it does not hold the overhead: row (d) with no repeat possible is read as preregistered.
+    mobile.update(faults=[], result={'reasons': ['invalid_runs_over_10_percent']})
+    path.write_text(json.dumps(data))
+    record = probe.SmokeRecord(path)
+    assert probe.f7_repeat_pending(record) == []
+    assert probe.smoke_order_missing(record, 'instrumentation_overhead') == []
+    assert probe.smoke_cell_action(record, 'batch:mobile:#voces', 'quiet_machine') == ('skip', None)
+    with pytest.raises(SystemExit, match='smoke_repeat_refused_without_recorded_cause:batch:mobile:#voces'):
+        record.start('batch:mobile:#voces', SHA, cause='quiet_machine')
+    # A discarded non-#voces cell with a recorded fault does not hold the overhead (F7 does not read it).
+    other = next(run for run in data['runs'] if run['item'] == 'batch:desktop:#hogar')
+    other.update(status='discarded', faults=['quiet_machine'])
+    mobile.update(status='complete')
+    path.write_text(json.dumps(data))
+    assert probe.smoke_order_missing(probe.SmokeRecord(path), 'instrumentation_overhead') == []
+
 async def test_baseline_needs_every_batch_fill_in_and_uses_the_frozen_composition(monkeypatch, tmp_path):
     """R6-1, R6-2: baseline refuses without play_control_rule (and the other batch fill-ins); the composition is
     3 warm-ups, 40 pairs and 10 contrast pairs, the smoke's 1/5/2, never a CLI value."""
