@@ -116,12 +116,14 @@ _LEAD = frozenset({"de", "del", "para", "por", "en", "a", "al", "con", "llamado"
 _TRAIL = frozenset({"de", "del", "para", "por", "en", "a", "al", "con", "y", "que", "el", "la", "los", "las"})
 # Courtesy and filler words that never name a timer at the edge of a label or selector ("..., gracias",
 # "cancelá el timer ya", "pausá el timer un momento", "el timer que puse", "de la pasta nomás",
-# "de 5 minutos exactos", "para avisarme", "para dentro de 10 minutos"). Stripped with the connectors above;
+# "de 5 minutos exactos", "para avisarme", "para que me avise", "para dentro de 10 minutos"). Stripped with the connectors above;
 # never a counted noun ("para las 7 gracias" is a clock time, not seven of something).
 _FILLER = frozenset({"gracias", "ya", "ahora", "dale", "nomas", "mas", "exacto", "exactos", "exacta", "exactas",
                      "justo", "justos", "justa", "justas", "momento", "momentito", "dentro", "puse", "pusiste",
                      "pusimos", "puso", "pusieron", "recien", "mismo", "porfa", "porfi", "porfis", "favor", "che",
-                     "bueno", "listo", "ok", "okey", "avisar", "avisarme", "avisame", "avisarnos", "avisanos"})
+                     "bueno", "listo", "ok", "okey", "avisar", "avisarme", "avisame", "avisarnos", "avisanos",
+                     # "para que me avise", "para que nos avises", "para que suene" (T030-U1 RR-4).
+                     "me", "nos", "avise", "avises", "avisen", "suene", "suenes", "suenen"})
 _LEAD_STRIP = _LEAD | _FILLER
 _TRAIL_STRIP = _TRAIL | _FILLER
 # Query and state words that never name a timer ("qué timers hay", "el timer que está corriendo").

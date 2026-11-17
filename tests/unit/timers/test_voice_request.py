@@ -217,6 +217,12 @@ FILLER_CREATE = [
     ("poné un timer de 8 minutos para la pasta, gracias", 480, "pasta"),
     ("poné un timer de 8 minutos para la pasta nomás", 480, "pasta"),
     ("poné un timer de 5 minutos para avisarme de la pasta", 300, "pasta"),
+    # T030-U1 RR-4: a 'para que me avise/suene' clause is not a label either.
+    ("poné un timer de 5 minutos para que me avise", 300, None),
+    ("poné un timer de 5 minutos para que nos avises", 300, None),
+    ("poné un timer de 5 minutos para que suene", 300, None),
+    ("poné un timer de 5 minutos para que me avise de la pasta", 300, "pasta"),
+    ("poné un timer para que me avise en 10 minutos", 600, None),
 ]
 
 
@@ -236,6 +242,7 @@ FILLER_SELECT = [
     ("cancelá el timer de la pasta, gracias", TimerSelector("pasta")),
     ("cancelá el timer de 5 minutos ya", TimerSelector(None, 300)),
     ("cancelá el timer que puse para la pasta", TimerSelector("pasta")),
+    ("cancelá el timer que me puse", TimerSelector()),  # T030-U1 RR-4
 ]
 
 
