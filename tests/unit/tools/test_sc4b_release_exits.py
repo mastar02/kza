@@ -613,6 +613,30 @@ def test_a_later_install_over_a_closed_k_prime_checks_h_binding_too(x4, x5, tmp_
     _back_on_h(world, tmp_path, "h")
 
 
+def test_a_later_install_during_a_cut_retire_skips_the_h_check(x4, x5, tmp_path):
+    """SCRF-2 (rows RS, CI): a retire cut after H's slot is renamed has logged 'retire_started', so its
+    gates passed and H is being destroyed. A later install over the closed K' passes SR-1 on K' and skips
+    the SCR-C-1 H check (admitted, as before SCR-C-1, instead of a raw errno naming H's slot path), and
+    compact resume completes the retire."""
+    world = _world(x4, x5, tmp_path)
+    root = world["root"]
+    assert _v(world, tmp_path, "v").code == 0 and _kinds(world)[-1] == "verified"
+    h_slot = stage.read_binding(root, world["h_binding"])["slot"]
+    current = os.readlink(root / "controller" / "current")
+
+    def cut(path):
+        if not (root / "slots" / h_slot).exists():
+            raise RuntimeError("cut")
+    with pytest.raises(RuntimeError, match="cut"):
+        compaction.compact_retire(root, world["id"], scan=cw.no_units, unlink_hook=cut)
+    assert "retire_started" in _kinds(world) and not (root / "slots" / h_slot).exists()
+    _install(root, x5)  # the same controller: an equal triple repeat, admitted
+    assert os.readlink(root / "controller" / "current") == current
+    assert compaction.compact_resume(root, world["id"])["phase"] == "complete"
+    assert stage.read_binding(root, stage.read_admission_head(root)["binding_id"])["slot"] == "k"
+    assert cw.serve(root, tmp_path, "k-prime").code == 0
+
+
 def test_a_delegation_record_during_the_transition_refuses_every_exit_before_any_event(x4, x5, tmp_path,
                                                                                          monkeypatch):
     """SCR-C-2 (row DL during a pending release-mode log): a record planted under admission/delegations

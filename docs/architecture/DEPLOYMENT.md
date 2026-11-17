@@ -782,7 +782,12 @@ escribir nada en los rechazos:
   ilegible rechaza (`runtime_admission_compaction_log_invalid`). Con el head
   cerrado (o sin head) sólo se admite sin log o con un log del modo release,
   y un log simple pendiente rechaza (`runtime_admission_compaction_pending`):
-  primero se termina con los comandos simples; después, SR-1. Un head abierto
+  primero se termina con los comandos simples; después, SR-1. Con un log
+  del modo release y un head cerrado que no es H (K', filas A0, V3, V4 y SS),
+  además el binding de H recalculado debe ser igual al del log
+  (`runtime_admission_controller_binding_changed`), salvo que el log ya
+  tenga `retire_started`: ahí H se está destruyendo y no se comprueba.
+  Un head abierto
   sólo entra bajo un log pendiente del modo release y sólo si es el H o el K
   autorizado de ese log; entonces el binding de H recalculado debe ser igual
   al del log. Cualquier otro head abierto es desconocido y rechaza
