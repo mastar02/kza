@@ -12,6 +12,11 @@ fuera de Git).
 Estado: **desarrollada y probada en raíces de prueba; nunca se ejecutó sobre
 `/home/kza/releases`.** Esta unidad es la última planificada antes de R1.
 
+Con el controlador en época 5 (modo release, después de R1), el orden
+completo de una transición, con el T0, el rollback y cada salida, está en
+[el runbook del modo release](2026-11-17-release-mode.md) (SC-5b); este
+runbook sigue siendo la referencia de cada paso de la compactación.
+
 ## Qué hace
 
 Toma el head cerrado H y crea un estado nuevo K que es una copia idéntica de H,
@@ -301,11 +306,13 @@ R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
    Época 5: `--archive "$NEW_ARCHIVE"` (el archivo NUEVO), y
    `--retire-prepare-leftovers` queda forzado.
 
-   Anotar `source_binding_id` de la salida (el binding de H) junto al
-   `compaction_id` del paso 3: toda vuelta a H pide `--confirm-h <primeros
-   12+ caracteres>` de ese valor, quizá días después (SS y la decisión de 48
-   horas), y ni `compact status` ni un plan nuevo lo muestran mientras el log
-   siga pendiente (revisión RB-6).
+   Anotar el binding de H (`source_binding_id`) junto al `compaction_id` del
+   paso 3: toda vuelta a H pide `--confirm-h <primeros 12+ caracteres>` de ese
+   valor, quizá días después (SS y la decisión de 48 horas), y ni la salida
+   del plan, ni `compact status`, ni un plan nuevo lo muestran (revisión RB-6;
+   corrección SC-5b: la vista del plan no lo incluye). Después del paso 3 se
+   lee, sin escribir nada, del registro de intención del log:
+   `"$PY" -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_binding_id"])' /home/kza/releases/admission/compaction/v1/<compaction_id>/intent.json`.
 
    Revisar, sin datos personales en la salida:
    - `members`: cada miembro con su clase, prueba y conteos (archivos, bytes);
@@ -520,11 +527,19 @@ R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
   `retire` rechaza con `compaction_identity`. Revisar qué es. Sólo si es
   seguro borrarlo: `compact retire <id> --member <n> --accept-identity-change`
   (queda registrado; sólo un miembro por vez).
-- **Un miembro tiene un enlace simbólico, un enlace duro hacia K, un punto de
-  montaje o un archivo especial**: el borrado rechaza sin seguirlo
-  (`compaction_symlink`, `compaction_hard_link`, `compaction_mount`,
-  `compaction_special_file`, `compaction_cross_device`). Revisar y quitar la
-  causa a mano, después `compact resume <id>`.
+- **Un miembro tiene un enlace simbólico, un punto de montaje o un archivo
+  especial**: el retiro rechaza sin seguirlo (`compaction_symlink`,
+  `compaction_mount`, `compaction_special_file`, `compaction_cross_device`).
+  Revisar y quitar la causa a mano (de un enlace simbólico, el enlace, nunca
+  su destino) y repetir el mismo `compact retire <id>`, no `compact resume
+  <id>`: antes de `retire_started`, `resume` no hace nada (devuelve
+  `"noop": true` con la fase `activated`). El mismo retiro también termina
+  uno ya empezado.
+- **Un miembro tiene un enlace duro** (`compaction_hard_link`: un archivo con
+  más de un nombre, o con el inodo de un archivo de K): no se arregla a
+  mano. Nunca quitar un nombre bajo `slots/<K>/` (son los datos de K' que se
+  aceptan) ni una copia fuera de la raíz; cualquier otro caso se entrega a
+  desarrollo.
 - **Se cortó `retire`**: `compact resume <id>` termina el retiro; cada paso es
   idempotente y deja el mismo resultado. Mientras el retiro no termine, serve
   sale con 78 (`compaction_retire_in_progress`), aun con un `allow-run`
@@ -684,7 +699,9 @@ que sigue vale para cada resultado de la corrida V:
   bajo la raíz, guardar la salida y `compact status`, buscar la copia vieja
   o la edición, y pasarlo a desarrollo con la decisión escrita de 48 horas.
 - **Decisión escrita cada 48 horas.** Para todo período con la unidad
-  deshabilitada (SS, HD, una transición que no terminó): si el servicio no
+  deshabilitada (SS, HD, CI, T0F, una release aceptada rota que espera un
+  hotfix, una transición que no terminó o una parada del hueco posterior a
+  R1; plantilla en el runbook del modo release): si el servicio no
   vuelve dentro de las 48 horas desde que se detuvo (el plazo más corto, el
   audio ambiental), el operador anota una decisión, y otra cada 48 horas: la
   salida que se toma o seguir sin servicio sabiendo que los borrados por plazo
@@ -708,11 +725,16 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
    `compact retire <id>`.
 3. Si un comando falla siempre con el mismo código y no es un problema del
    entorno (espacio, permisos), puede ser un defecto del propio controlador.
-   La salida es un controlador corregido (decisión D4 = A):
-   `$ST install-controller <archivo nuevo>` funciona aunque haya una
-   compactación pendiente o un log inválido, siempre que el archivo sea de
-   época 4 o posterior (desde SC-2) y no menor que la instalada. Después, repetir el paso 2
-   con el `$ST` del controlador nuevo.
+   La salida es un controlador corregido (decisión D4 = A), instalado desde
+   su archivo extraído: `$PY -I -B <tmp>/scripts/stage_runtime.pyc --root
+   /home/kza/releases --offline install-controller <archivo nuevo>` funciona
+   aunque haya una compactación pendiente o un log inválido, siempre que el
+   archivo sea de época 4 o posterior (desde SC-2) y no menor que la
+   instalada. Con un controlador de época 5 instalado, `$ST install-controller`
+   rechaza `runtime_admission_controller_installer_mismatch` sin escribir
+   nada; sólo con el de época 4 (R1) instalado sirve también `$ST
+   install-controller <archivo nuevo>`. Después, repetir el paso 2 con el
+   `$ST` del controlador nuevo.
    Desde SC-1a (época 5, sin release), con una compactación de **estados
    dueños** el controlador corregido tiene que ser una construcción de
    **época 4**: uno de época 5 rechaza el log pendiente en la primera
@@ -763,7 +785,7 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
 | `runtime_admission_compaction_plain_mode_only` | Época 5: `allow-run`, `--discard-k-writes` y la vuelta a H por Q6 son sólo de un log simple; un log del modo release vuelve a H con W (ver «Salidas del modo release después de V»). |
 | `runtime_admission_compaction_release_mode_only` | `--discard-k-changes` en un log simple: no se escribió nada. Es sólo del modo release. |
 | `runtime_admission_compaction_abort_protected_changed` | Época 5, modo release: parada segura SS, con el informe W y su `w_sha256`. Ver «Salidas del modo release después de V». |
-| `runtime_admission_compaction_discard_k_changes_mismatch` | El digest de `--discard-k-changes` no es el del informe W recalculado (o no hay nada que descartar, o falta `--to-h`). Nada se escribió: tomar el digest del último rechazo. |
+| `runtime_admission_compaction_discard_k_changes_mismatch` | El digest de `--discard-k-changes` no es el del informe W recalculado (o no hay nada que descartar, o falta `--to-h`). Nada se escribió: con la clase `restrictive_or_unclear` en el informe del rechazo, tomar el digest del último rechazo; con `equal` o `loss_only` no hay nada que descartar: repetir la vuelta a H sin `--discard-k-changes`. |
 | `runtime_admission_compaction_h_changed` | Época 5, modo release: cambió H (parada terminal HD). Ninguna herramienta termina el log; ver «Salidas del modo release después de V». |
 | `runtime_admission_compaction_sdk_changed` / `_h_transient` / `_k_transient` | Época 5, modo release: transitorios (fila AT). Reinstalar la versión de chromadb ligada que nombra el rechazo, o esperar a que pase el errno/código SQLite nombrado (en K': cerrar el proceso que tiene la base abierta), y repetir. |
 | `runtime_admission_compaction_k_closure_unreadable` / `_head_moved` (modo release, después de V) | Parada como HD: la prueba de cierre de K' no se lee, o el head cerrado no es el sello de V. Sin salida por herramienta; ver «Salidas del modo release después de V». |

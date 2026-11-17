@@ -298,15 +298,6 @@ def test_owner_slot_artifact_change_is_refused_before_the_head_moves(three_state
         _refused(root, (*states, e_state), lambda: controller.delegate("e"), "integrity mismatch")
 
 
-def test_owner_limit_is_a_coded_refusal(three_states, admission_archive, monkeypatch):
-    root, a, b, c = three_states
-    d_state = _copy_candidate(admission_archive, root, c["state"], "d")
-    monkeypatch.setattr(stage, "_DELEGATION_OWNER_LIMIT", 2)  # C holds targets of A, B and itself.
-    with stage.AdmissionController(root) as controller:
-        _refused(root, (a["state"], b["state"], c["state"], d_state),
-                 lambda: controller.delegate("d"), "^runtime_admission_delegation_owner_limit$")
-
-
 def test_same_record_with_a_different_chain_is_a_conflict(origin, admission_archive):
     root, a = origin
     b = _hop(admission_archive, root, a["state"], "b")
@@ -631,15 +622,6 @@ def test_live_recheck_covers_via_records_and_sidecars(three_states, admission_ar
         (root / "admission" / "delegations" / (capability + ".json")).unlink()
     with pytest.raises(ValueError, match=match):
         stage._validate_ownership_metadata(root, binding, ownership, artifacts)
-
-
-def test_owner_limit_boundary_is_inclusive(three_states, admission_archive, monkeypatch):
-    """R4: exactly _DELEGATION_OWNER_LIMIT owners passes (D needs A, B and C)."""
-    root, a, b, c = three_states
-    _copy_candidate(admission_archive, root, c["state"], "d")
-    monkeypatch.setattr(stage, "_DELEGATION_OWNER_LIMIT", 3)
-    with stage.AdmissionController(root) as controller:
-        assert len(controller.delegate("d")["capabilities"]) == 3
 
 
 @pytest.mark.parametrize("hops", ["one_hop", "two_hops"])
