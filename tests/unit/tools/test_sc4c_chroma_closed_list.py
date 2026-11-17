@@ -371,7 +371,6 @@ def test_the_legacy_user_memories_collection_is_dropped_by_name_and_never_reache
     assert len(inputs) == 2 and not any(sc.LEGACY.encode() in raw or sc.LEGACY_META.encode() in raw
                                         for raw in inputs)
     log = stage.read_compaction_log(root, compaction_id)
-    [snapshot] = [event for event in log["events"] if event["kind"] == "snapshot"]
     [materialized] = [event for event in log["events"] if event["kind"] == "materialized"]
     assert materialized["data"]["chroma"] == {
         "stores": 2, "rebuilt": 1, "copied": 3, "dropped": 2, "records": 4, "excluded": 4,
@@ -381,15 +380,15 @@ def test_the_legacy_user_memories_collection_is_dropped_by_name_and_never_reache
     assert set(after) == set(before) - {("data/chroma_db", "home_assistant_routines"),
                                         ("data/memory_db", "user_memories")}
     assert [row["document"] for row in after[("data/memory_db", sc.POLICY)]["records"]] == [sc.LIVE]
-    # Raw bytes: nothing of the legacy collection anywhere in K's state, nor in the compaction's records
-    # (the excluded policy facts keep their identical 'facts' rows, so they are checked in Chroma's bytes).
+    # Raw bytes: nothing of the legacy collection anywhere in K's state, nor under the compaction's directory
+    # (its log and its snapshot); the excluded policy facts keep their identical 'facts' rows, so they are
+    # checked in Chroma's bytes.
     for needle in (sc.LEGACY, sc.LEGACY_META):
         assert _raw_hits(k_state, needle) == set(), needle
         assert _raw_hits(stage.compaction_log_path(root, compaction_id), needle) == set(), needle
     for needle in EXCLUDED:
         assert _raw_hits(k_state / "data" / "chroma_db", needle) == set(), needle
         assert _raw_hits(k_state / "data" / "memory_db", needle) == set(), needle
-    assert not Path(snapshot["data"]["path"]).exists()  # the snapshot (H's opaque store copy) is destroyed
     assert _raw_hits(h_state / "data" / "memory_db", sc.LEGACY)  # H keeps it until H is retired
     assert compaction.compact_verify(root, compaction_id, smoke_seconds=10)["armed"] is True
     phase_file = tmp_path / "phases-v"
