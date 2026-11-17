@@ -409,6 +409,15 @@ def test_routine_content_alone_would_be_a_grammar_command(text):
     ("qué rutina más aburrida", None),
     ("haceme una lista", None),
     ("una canción", None),
+    # Q4-RV-3: a conjugated command verb or a look verb is not the unlisted verb, and a trailing
+    # 'nueva' after a verb that can run a routine (or the unlisted verb) is not a creation.
+    ("activá la rutina nueva", (F.ROUTINE, O.PROPOSE, "R6", None)),
+    ("me ponés una rutina relajante", None),
+    ("quiero que me pongas una rutina relajante", None),
+    ("me ponés la rutina nueva", None),
+    ("quiero ver las rutinas nuevas", None),
+    ("quiero ver una rutina nueva", None),
+    ("me harías la rutina nueva", None),
 ])
 def test_routine_creation_leaves_other_phrases_alone(text, expected):
     intent = classify_household_intent(text)

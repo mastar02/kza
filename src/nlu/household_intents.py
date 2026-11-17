@@ -674,7 +674,8 @@ _ROUTINE_CREATE_FORMS = frozenset({
     "escribas", "escribis", "escribirias",
 })
 # Verbs that also run or change an existing routine ("hacé la rutina", "activá la
-# rutina X"): a creation only with 'un/una/otra' or 'nueva'.
+# rutina X"): a creation only with 'un/una/otra' or a leading 'nueva' ("activá la
+# rutina nueva" runs one).
 _ROUTINE_NEW_ONLY_FORMS = frozenset({
     "hace", "haz", "haga", "hacer", "hagas", "haces", "agrega", "agregue", "agregar", "agregues",
     "agregas", "agregarias", "suma", "sume", "sumar", "sumes", "sumas", "sumarias", "anadi", "anade", "anada",
@@ -683,6 +684,37 @@ _ROUTINE_NEW_ONLY_FORMS = frozenset({
     "agendes", "agendas", "activa", "active", "activar", "actives", "activas", "prepara", "prepare", "preparar",
     "prepares", "preparas", "prepararias", "tener", "automatiza", "automatice", "automatizar",
 })
+
+
+# Words the unlisted-verb slot never stands for: 'que' (only a desire head takes it,
+# "quiero que me armes ..."), verbs that only look or tell ("quiero ver las rutinas
+# nuevas") and the irregular conditional of 'poner'.
+_ROUTINE_SLOT_EXCLUDED = frozenset({
+    "que", "ver", "mostra", "mostrar", "muestra", "muestre", "muestres", "mostras", "mostrarias", "mira", "mire",
+    "mirar", "leer", "deci", "decir", "conta", "contar", "cuenta", "cuente", "saber", "pondria", "pondrias",
+})
+
+
+def _known_command_word(word: str) -> bool:
+    """Whether ``word`` is a known command verb in any person, or a word the slot excludes.
+
+    The lexicon lists imperatives, infinitives and some subjunctives; the voseo
+    and tú presents ('ponés', 'ejecutás'), the tú subjunctive ('pongas',
+    'ejecutes'), plurals ('pongan') and conditionals ('apagarías') are reduced
+    to a listed form, so "me ponés una rutina relajante" is not a creation.
+    """
+    if word in _ROUTINE_SLOT_EXCLUDED:
+        return True
+    stems = {word} | {word[:-len(suffix)] for suffix in _ENCLITICS
+                      if word.endswith(suffix) and len(word) - len(suffix) >= 2}
+    for stem in tuple(stems):
+        if stem.endswith(("s", "n")):
+            stems.add(stem[:-1])
+        if stem.endswith("ias"):
+            stems.add(stem[:-3])
+        elif stem.endswith("ia"):
+            stems.add(stem[:-2])
+    return any(stem in _VERB_FORMS for stem in stems)
 
 
 def _routine_create_form(word: str) -> str | None:
@@ -698,12 +730,14 @@ def _routine_creation(utt: _Utterance) -> HouseholdIntent | None:
     """A request to create a routine (P3F2-R1-Q4), or None.
 
     Shape: [filler] [request head [que]] [me|nos] [creation verb] [determiners]
-    [nueva] rutina|automatización. Without a creation verb, or with a verb that
-    can also run or change a routine, the noun needs 'un/una/otra' or 'nueva'
-    ("una rutina que ...", "quiero una rutina nueva ..."). After a request head
-    or a clitic, an unlisted word that is not a known command verb stands for
-    the verb under that same condition (a conditional such as "¿me ...rías
-    una rutina nueva?").
+    [nueva] rutina|automatización|regla [nueva]. Without a creation verb, or with
+    a verb that can also run or change a routine, the noun needs 'un/una/otra'
+    or a leading 'nueva' ("una rutina que ...", "quiero una nueva rutina ...");
+    a trailing 'nueva' counts only with a creation verb or no verb at all
+    ("rutina nueva que ...", but not "activá la rutina nueva"). After a request
+    head or a clitic, an unlisted word that is not a known command verb in any
+    person (``_known_command_word``) stands for the verb under the same
+    condition (a conditional such as "¿me ...rías una rutina nueva?").
     """
     k = 0
     while utt.at(k) in _ROUTINE_FILLERS:
@@ -717,10 +751,12 @@ def _routine_creation(utt: _Utterance) -> HouseholdIntent | None:
     if clitic:
         k += 1
     form = _routine_create_form(utt.at(k))
+    slot = False
     if form is not None:
         k += 1
-    elif (head is not None or clitic) and utt.at(k) not in _VERB_FORMS \
+    elif (head is not None or clitic) and not _known_command_word(utt.at(k)) \
             and utt.at(k) not in _DETERMINERS | _ADJECTIVES | _ROUTINE_NOUNS:
+        slot = True
         k += 1
     indefinite = False
     for _ in range(2):
@@ -733,7 +769,8 @@ def _routine_creation(utt: _Utterance) -> HouseholdIntent | None:
     if utt.at(k) not in _ROUTINE_NOUNS:
         return None
     if utt.at(k + 1) in _ADJECTIVES:
-        new = True
+        # A trailing 'nueva' marks a creation only without a verb that could run the routine.
+        new = new or (form is None and not slot)
         k += 1
     if form in _ROUTINE_CREATE_FORMS or indefinite or new:
         return HouseholdIntent(HouseholdFamily.ROUTINE, HouseholdOperation.PROPOSE, "R6", _rest(utt, k + 1),
