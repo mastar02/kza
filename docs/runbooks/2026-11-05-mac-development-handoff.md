@@ -1819,6 +1819,12 @@ y el runbook pide revisar si no es 0.
 - Pendiente para el operador: el `compact plan` de solo lectura en la
   ventana de R1 debería mostrar `data/memory_db` con `dropped: 1`
   (`["user_memories"]`).
+- Test inestable corregido (también fallaba en `49e3f8e`, antes de este
+  cambio): las pruebas del lease de RV-1 daban por terminado al hijo cuando
+  su hilo principal ya era zombi pero los otros hilos del SDK seguían
+  saliendo con la tabla de descriptores, y con ella el lease; `abort` (o el
+  cierre del propio `start`) veía `runtime_admission_busy`. El ayudante
+  `_gone` ahora espera también a los hilos; mismas aserciones y plazos.
 
 ## Prompt para la sesión nueva
 
