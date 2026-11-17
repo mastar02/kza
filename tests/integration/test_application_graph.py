@@ -14,7 +14,6 @@ import pytest
 import yaml
 
 from src.application import ApplicationFactories
-from src.core.household_clock import HouseholdClock
 from src.home_assistant.control_policy import ActionOrigin, HomeActor
 from src.home_assistant.home_actions import HomeActionRequest
 from src.main import build_application
@@ -75,6 +74,10 @@ async def test_real_factory_shares_household_output_privacy_and_managers(leaves,
             assert graph.voice_registry.privacy is graph.privacy
             assert orchestrator.dispatcher.response_handler is graph.voice_services.responses
             # P3-F1: one household clock, built once from routines.timezone, and one room namespace.
+            # Imported here: compiled-restore children import this module's fixtures against
+            # older compiled slots that predate src.core.household_clock.
+            from src.core.household_clock import HouseholdClock
+
             clock = graph.household_clock
             assert isinstance(clock, HouseholdClock) and clock.timezone == "America/Montevideo"
             assert orchestrator.dispatcher.household_clock is graph.reminder_manager._household_clock is clock
