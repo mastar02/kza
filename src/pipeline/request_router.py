@@ -48,6 +48,7 @@ from src.core.task_outcome import (
 from src.core.voice_delivery import GenerationState, ResponseResult
 from src.core.observation import Observation
 from src.nlu.llm_router import LLMCommandRouter
+from src.world.household_time import WEEKDAYS
 
 logger = logging.getLogger(__name__)
 
@@ -2376,7 +2377,9 @@ class RequestRouter:
     async def _build_prompt(self, user_text: str) -> str:
         """Reason over the current microphone turn without personal or unscoped cached data."""
         # P3-F1: household wall time, not the process's local time.
-        time_context = self.household_clock.now_local().strftime("%H:%M del %A")
+        # T037-U3-R3: fixed Spanish weekday, never the process locale's %A.
+        now = self.household_clock.now_local()
+        time_context = f"{now:%H:%M} del {WEEKDAYS[now.weekday()]}"
         # Explicit household state queries use the current typed capability path.
         # A raw HA cache and global memory are not authority for a generic prompt.
         return f"""Eres un asistente de hogar inteligente. Responde de forma concisa y natural en español.
