@@ -894,7 +894,12 @@ def test_kill_between_the_switch_and_controller_json_of_a_later_install_then_rep
 
 
 def test_the_epoch4_installer_over_a_pending_owner_compaction_leaves_no_tool_exit(builds, tmp_path):
-    """Review F1: R3-OPS-6b's 'plain log finishes' holds only without owners; pinned as a terminal stop."""
+    """Review F1: R3-OPS-6b's 'plain log finishes' holds only without owners; pinned as a terminal stop.
+
+    SCR-C-2 (SCRF-1): every abort runs the AUTHZ3-1 guard before any event,
+    so each one refuses delegation_frozen first and writes nothing; the stop
+    stays terminal because the epoch-4 records remain.
+    """
     world = _world(builds, tmp_path, hops=("b",))
     root = world["root"]
     with epoch4_in_process():
@@ -907,14 +912,14 @@ def test_the_epoch4_installer_over_a_pending_owner_compaction_leaves_no_tool_exi
     assert compaction.compact_verify(root, compaction_id)["armed"] is True  # it only arms
     served = _serve(root, tmp_path, "owner-log")
     assert served.code == 78 and ("refused " + stage.DELEGATION_FROZEN) in served.serve.events
-    with pytest.raises(compaction.CompactionRefusal, match="runtime_admission_compaction_abort_to_h_before_run"):
-        compaction.compact_abort(root, compaction_id, to_h=True)
-    # The plain abort logs abort_started, then its return to H validates H's binding and refuses; every
-    # later abort resumes there and refuses the same way.
-    for to_h in (False, False, True):
-        with pytest.raises(ValueError, match=stage.DELEGATION_FROZEN):
+    # Before SCR-C-2 abort --to-h refused abort_to_h_before_run and the plain abort logged abort_started
+    # before its return to H refused; now the guard refuses first, in both modes, and logs nothing.
+    witness = cw.witness(root)
+    for to_h in (True, False, False, True):
+        with pytest.raises(compaction.CompactionRefusal, match=stage.DELEGATION_FROZEN):
             compaction.compact_abort(root, compaction_id, to_h=to_h)
-    assert [event["kind"] for event in stage.pending_compaction(root)["events"]].count("abort_started") == 1
+    assert cw.witness(root) == witness
+    assert "abort_started" not in [event["kind"] for event in stage.pending_compaction(root)["events"]]
     with pytest.raises(ValueError, match="runtime_admission_compaction_pending"):
         uninstall()  # L4 takes gate 'normal'
     witness = cw.witness(root)

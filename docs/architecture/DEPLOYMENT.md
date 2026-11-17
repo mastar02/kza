@@ -806,7 +806,12 @@ binding (`runtime_admission_delegation_frozen`), y un head cuya política lista
 destinos delegados no se sirve (`runtime_admission_owners_present`) ni se
 planifica (`runtime_admission_compaction_owners_present`). Un registro que
 aparece después del T0 significa que corrió una copia vieja (fila DL): si el
-head no tiene dueños, borrarlo a mano restituye `serve`. Si además hay dueños
+head no tiene dueños, borrarlo a mano restituye `serve`. `compact abort` (en
+todos los modos) y `compact resume` de un abort comprueban la guarda antes de
+escribir cualquier evento: con un registro presente rechazan
+`runtime_admission_delegation_frozen` sin escribir nada, y la salida de la
+fila DL (borrar el registro y repetir el mismo comando) vale igual con un log
+pendiente. Si además hay dueños
 en el head (fila DO), no borrarlo: la salida es L4 mientras exista y sin log
 pendiente, o trabajo de desarrollo. `uninstall-launcher` (L4) no queda
 bloqueado por la guarda. Es detección, no prevención: una copia vieja todavía
@@ -820,10 +825,10 @@ con el instalador correcto es el mismo triple y deja admitido el plan
 (mientras el log siga pendiente, esa repetición rechaza
 `runtime_admission_compaction_pending`). Un log de compactación de estados
 dueños pendiente **no tiene salida**: `compact verify` sólo arma, `serve`
-sale con 78 (`runtime_admission_delegation_frozen`), `compact abort` registra
-`abort_started` y rechaza con la misma guarda, `compact abort --to-h` rechaza
-(`runtime_admission_compaction_abort_to_h_before_run`, después
-`runtime_admission_delegation_frozen`), L4 rechaza por el log pendiente y un
+sale con 78 (`runtime_admission_delegation_frozen`), `compact abort` y
+`compact abort --to-h` rechazan con la misma guarda antes de registrar nada
+(`runtime_admission_delegation_frozen`; nunca queda `abort_started`), L4
+rechaza por el log pendiente y un
 controlador corregido de época 5 rechaza por los registros. Es una parada
 terminal (trabajo de desarrollo, servicio caído, decisión escrita cada 48
 horas). Precondición del T0: ninguna compactación de dueños pendiente; si
