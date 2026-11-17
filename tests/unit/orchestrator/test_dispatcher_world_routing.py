@@ -587,6 +587,8 @@ async def test_aligned_forecast_observes_date_alignment_but_never_issue_time(dis
     [_entry("2026-08-03T15:00:00+00:00", "sunny", 20), _entry("2026-08-04T15:00:00+00:00", "rainy", 18)],
     # Duplicados del mismo día local que se dirían distinto.
     [_entry("2026-08-05T12:00:00+00:00", "sunny", 20), _entry("2026-08-05T18:00:00+00:00", "rainy", 18)],
+    # Misma condición, distinta temperatura: también es conflicto (R1, review 1).
+    [_entry("2026-08-05T15:00:00+00:00", "rainy", 13), _entry("2026-08-05T18:00:00+00:00", "rainy", 20)],
     [],
 ])
 async def test_unaligned_forecast_is_honest_and_not_completed(dispatcher_with_async_ha, forecast):

@@ -172,6 +172,17 @@ def test_conflicting_duplicates_for_the_day_are_not_spoken():
     assert _say([FOG, RAIN, other, CLOUD], "hoy", TODAY).aligned
 
 
+def test_same_condition_with_different_temperatures_is_a_conflict():
+    # R1 (review 1): la condición sola no alcanza; 13 y 20 grados para el
+    # mismo día local se dirían distinto, así que no se elige ninguno.
+    warmer = {**RAIN, "datetime": "2026-08-05T18:00:00+00:00", "temperature": 20}
+    answer = _say([FOG, RAIN, warmer, CLOUD])
+    assert answer.text == NO_FORECAST
+    assert answer.alignment is ForecastAlignment.CONFLICTING_DAY and not answer.aligned
+    colder = {**RAIN, "datetime": "2026-08-05T18:00:00+00:00", "templow": 4}
+    assert _say([FOG, colder, RAIN]).alignment is ForecastAlignment.CONFLICTING_DAY
+
+
 def test_identical_duplicates_for_the_day_agree():
     same = {**RAIN, "datetime": "2026-08-05T18:00:00-03:00"}
     answer = _say([FOG, RAIN, same])
