@@ -156,6 +156,13 @@ PRECEDENCE = [
     ("apagá la luz en 10 minutos y pausá la música", (F.COMPOUND, O.CLARIFY, "R5")),
     ("apagá la luz y recordame sacar la basura", (F.COMPOUND, O.CLARIFY, "R5")),
     ("prendé la luz y poné una alarma a las 7", (F.COMPOUND, O.CLARIFY, "R5")),
+    # A household noun as the second target of a domotics/object verb is claimed (review F1),
+    # in either word order.
+    ("apagá la luz y el timer", (F.COMPOUND, O.EXECUTE, "R5")),
+    ("apagá el timer y la luz", (F.COMPOUND, O.EXECUTE, "R5")),
+    ("pará la música y el timer", (F.COMPOUND, O.EXECUTE, "R5")),
+    ("prendé la luz y un timer de 5 minutos", (F.COMPOUND, O.CLARIFY, "R5")),
+    ("apagá la tele y el temporizador", (F.COMPOUND, O.CLARIFY, "R5")),
     # Unclaimed: domotics, music, generic cancel, questions, ambient talk.
     ("apagá la luz", None),
     ("prendé la luz del living", None),
@@ -198,6 +205,8 @@ def test_precedence_table(text, expected):
     ("apagá la luz en 10 minutos y pausá la música", "deferred_part"),
     ("apagá la luz y recordame sacar la basura", "deferred_part"),
     ("prendé la luz y la tele", "unparsed_part"),
+    ("prendé la luz y un timer de 5 minutos", "unparsed_part"),
+    ("cerrá la persiana y prendé la luz con el timer", "unparsed_part"),  # an unclaimed part names a timer
     ("apagá la luz y pausá la música y cerrá la persiana y prendé el aire", "too_many_parts"),
 ])
 def test_reason_codes(text, reason):
@@ -230,6 +239,19 @@ def test_compound_parts_in_spoken_order():
     three = classify_household_intent("apagá la luz y después cerrá la persiana y también pausá la música")
     assert [p.segment for p in three.parts] == ["apagá la luz", "cerrá la persiana", "pausá la música"]
     assert three.operation is O.EXECUTE
+
+
+@pytest.mark.parametrize(("text", "segments"), [
+    ("apagá la luz y el timer", ["apagá la luz", "apagá el timer"]),
+    ("apagá el timer y la luz", ["apagá el timer", "apagá la luz"]),
+    ("pará la música y el timer", ["pará la música", "pará el timer"]),
+])
+def test_household_noun_target_is_its_own_claimed_part(text, segments):
+    """Review F1: the household part is never dropped behind a domotics or music part."""
+    intent = classify_household_intent(text)
+    assert [p.segment for p in intent.parts] == segments
+    timer = [p.intent for p in intent.parts if p.intent is not None]
+    assert [_shape(t) for t in timer] == [(F.TIMER, O.STOP, "R1")]
 
 
 def test_compound_limit_comes_from_settings():

@@ -692,10 +692,23 @@ def _room_prep_at(utt: _Utterance, k: int) -> int:
     return 0
 
 
+_R1_CLASSES = frozenset(cls for cls, _ in _R1_OPERATIONS)
+
+
 def _split_targets(utt: _Utterance, verb: _Verb) -> list[_Utterance]:
-    """(c) One domotics verb with two or more targets by deterministic ellipsis."""
-    if _DOMOTICS not in verb.classes or set(utt.folded) & {"lista", "listas"}:
+    """(c) One verb with two or more targets by deterministic ellipsis.
+
+    A domotics verb splits on a second room or device ("apagá la luz del
+    living y de la cocina", "apagá la luz y la tele"). A domotics or object
+    operation verb whose own object is not a household object also splits on
+    a household object noun ("apagá la luz y el timer", "pará la música y el
+    timer"), so the household part is claimed instead of silently dropped.
+    """
+    domotics = _DOMOTICS in verb.classes
+    if not domotics and not verb.classes & _R1_CLASSES:
         return []
+    lists = bool(set(utt.folded) & {"lista", "listas"})
+    own_object = _governed_object(utt, verb.end) is not None
     for c in range(verb.end, len(utt)):
         if utt.at(c) != "y":
             continue
@@ -704,14 +717,21 @@ def _split_targets(utt: _Utterance, verb: _Verb) -> list[_Utterance]:
         j = c + 1
         if utt.at(j) == "tambien":
             j += 1
-        if _room_prep_at(utt, j):
+        if domotics and not lists and _room_prep_at(utt, j):
             first = utt.slice(0, c)
             room_at = next((k for k in range(verb.end, c) if _room_prep_at(utt, k)), c)
             return [first, utt.slice(0, room_at).join(utt.slice(j))]
         k = j + 1 if utt.at(j) in _DETERMINERS else j
-        if utt.at(k) in _ENTITY_WORDS and k > j:
+        if domotics and not lists and utt.at(k) in _ENTITY_WORDS and k > j:
+            return [utt.slice(0, c), utt.slice(0, verb.end).join(utt.slice(j))]
+        if not own_object and _governed_object(utt, j) is not None:
             return [utt.slice(0, c), utt.slice(0, verb.end).join(utt.slice(j))]
     return []
+
+
+def _names_object(utt: _Utterance) -> bool:
+    """A household object noun appears anywhere in the utterance."""
+    return any(word in _OBJECT_NOUNS for word in utt.folded)
 
 
 def _deferred(intent: HouseholdIntent | None, segment: _Utterance) -> bool:
@@ -752,6 +772,9 @@ def _r5(utt: _Utterance, max_parts: int) -> HouseholdIntent | None:
         if _deferred(intent, segment):
             return clarify("deferred_part")
         if intent is not None and intent.operation is HouseholdOperation.CLARIFY:
+            return clarify("unparsed_part")
+        if intent is None and _names_object(segment):
+            # A household object never reaches a domotics producer as an unclaimed part.
             return clarify("unparsed_part")
         if intent is None and parse_command(segment.heard).quality != "full" \
                 and parse_home_command(segment.heard) is None:
