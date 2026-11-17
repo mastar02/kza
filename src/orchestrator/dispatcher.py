@@ -694,6 +694,9 @@ class RequestDispatcher:
         self.home_capabilities = home_capabilities
         self.room_namespace = room_namespace if room_namespace is not None else RoomNamespace(())
         self.household_intents = household_intents if household_intents is not None else HouseholdIntentClassifier()
+        # T037-U3-R1: the dispatch text still carries the wake pre-roll, often
+        # heard as an alias; strip the same wake terms the rest of the NLU does.
+        self._clock_wake_words = tuple(sorted(WAKE_TERMS | set(self.household_intents.settings.wake_words)))
         self.hooks = hooks  # plan #3 OpenClaw — HookRegistry or None
         self._before_handler_warn_ms = before_handler_warn_ms
         # Voice-auth opcional (default OFF): exige speaker enrolado para ejecutar
@@ -895,7 +898,7 @@ class RequestDispatcher:
         # T037-U3: a whole-utterance time/date question is answered from the
         # household clock. It precedes the service_filter shortcut so an
         # upstream turn_on/turn_off guess never turns a question into an action.
-        if parse_clock_query(text_lower) is not None:
+        if parse_clock_query(text_lower, self._clock_wake_words) is not None:
             return PathType.FAST_CLOCK, Priority.HIGH
 
         if service_filter in ("turn_on", "turn_off"):
@@ -1105,7 +1108,7 @@ class RequestDispatcher:
         Returns:
             COMPLETED with an observed software-state read, or FAILED.
         """
-        query = parse_clock_query(text)
+        query = parse_clock_query(text, self._clock_wake_words)
         try:
             if query is None:
                 raise ValueError("not a clock question")

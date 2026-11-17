@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -27,10 +28,16 @@ _HORIZONS = {"hoy": 0, "manana": 1, "pasado manana": 2, "ayer": -1}
 # Spoken prefix for each horizon and whether the answer is in the past.
 _DAY_PREFIX = {0: "Hoy es", 1: "Mañana es", 2: "Pasado mañana es", -1: "Ayer fue"}
 
-# Wake word, interjections and courtesy around the question. Stripped only at
-# the edges, repeatedly, so the remaining text must still be the whole question.
-_LEADING_FILLER = re.compile(r"^(?:nexa|che|hola|oye|ey|bueno|a ver|disculpa|perdon)\b ?")
-_TRAILING_FILLER = re.compile(r" ?\b(?:nexa|che|por favor|porfa|porfavor)$")
+# Wake words used when the caller passes none. The dispatcher passes the
+# grammar's WAKE_TERMS plus the configured rooms.wake_word.words, because the
+# transcript still carries the wake pre-roll and Whisper often hears "nexa" as
+# one of its aliases ("alexa", "nexia", "kaza"...) (review T037-U3-R1).
+DEFAULT_WAKE_WORDS = ("nexa",)
+# Interjections and courtesy around the question. Stripped only at the edges,
+# repeatedly and together with the wake words, so the remaining text must
+# still be the whole question.
+_LEADING_FILLER = re.compile(r"^(?:che|hola|oye|ey|bueno|a ver|disculpa|perdon)\b ?")
+_TRAILING_FILLER = re.compile(r" ?\b(?:che|por favor|porfa|porfavor)$")
 # Request lead-ins: "decime/me decís/sabés ... qué hora es".
 _LEAD = (r"(?:decime|dime|deci|me decis|me dices|me dirias|me podes decir|me podrias decir|me puedes decir"
          r"|podes decirme|podrias decirme|puedes decirme|sabes|sabe|sabes decirme|queria saber|quiero saber)")
@@ -80,26 +87,42 @@ def normalize(text: str) -> str:
     return " ".join(re.sub(r"[^a-z0-9 ]+", " ", plain).split())
 
 
-def _strip_fillers(text: str) -> str:
+def _wake_sequences(wake_words: Iterable[str]) -> tuple[tuple[str, ...], ...]:
+    """Normalized word sequences of the wake words; non-strings and blanks are ignored."""
+    if isinstance(wake_words, str):
+        wake_words = (wake_words,)
+    sequences = {tuple(normalize(word).split()) for word in wake_words if isinstance(word, str)}
+    return tuple(sorted(sequence for sequence in sequences if sequence))
+
+
+def _strip_fillers(text: str, wakes: tuple[tuple[str, ...], ...]) -> str:
     previous = None
     while previous != text:
         previous = text
-        text = _TRAILING_FILLER.sub("", _LEADING_FILLER.sub("", text)).strip()
+        words = _TRAILING_FILLER.sub("", _LEADING_FILLER.sub("", text)).strip().split()
+        for wake in wakes:
+            if tuple(words[:len(wake)]) == wake:
+                words = words[len(wake):]
+            if len(words) >= len(wake) and tuple(words[-len(wake):]) == wake:
+                words = words[:-len(wake)]
+        text = " ".join(words)
     return text
 
 
-def parse_clock_query(text: str) -> ClockQuery | None:
+def parse_clock_query(text: str, wake_words: Iterable[str] = DEFAULT_WAKE_WORDS) -> ClockQuery | None:
     """Recognize a whole-utterance question about the household's time or date.
 
     Args:
         text: Utterance as transcribed (any case, accents, punctuation).
+        wake_words: Wake words (and the aliases the STT hears for them)
+            stripped, like interjections, from both edges of the utterance.
 
     Returns:
         The query, or None when the utterance is anything else.
     """
     if type(text) is not str:
         return None
-    core = _strip_fillers(normalize(text))
+    core = _strip_fillers(normalize(text), _wake_sequences(wake_words))
     if _TIME.fullmatch(core):
         return ClockQuery(ClockQueryKind.TIME)
     match = _DATE.fullmatch(core)

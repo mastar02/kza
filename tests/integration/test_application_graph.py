@@ -319,12 +319,15 @@ async def test_phrase_reaches_actual_main_feature_and_shared_pcm_output(leaves, 
             assert observations["service_calls"] == 0
 
 
-@pytest.mark.parametrize(("utc", "text", "spoken"), [
-    ((2026, 11, 18, 2, 59, 59), "¿Qué hora es?", "Son las 23:59."),
-    ((2026, 11, 18, 3, 0, 0), "Nexa, ¿qué día es hoy?", "Hoy es miércoles 18 de noviembre."),
+@pytest.mark.parametrize(("utc", "text", "spoken", "wake_words"), [
+    ((2026, 11, 18, 2, 59, 59), "¿Qué hora es?", "Son las 23:59.", None),
+    ((2026, 11, 18, 3, 0, 0), "Nexa, ¿qué día es hoy?", "Hoy es miércoles 18 de noviembre.", None),
+    # T037-U3-R1: an alias of the grammar and a configured rooms.wake_word.words entry.
+    ((2026, 11, 18, 2, 59, 59), "Alexa, ¿qué hora es?", "Son las 23:59.", None),
+    ((2026, 11, 18, 3, 0, 0), "Neska, ¿qué día es hoy?", "Hoy es miércoles 18 de noviembre.", ["nexa", "neska"]),
 ])
 async def test_time_and_date_come_from_the_household_clock_through_the_orchestrated_graph(
-        leaves, monkeypatch, tmp_path, utc, text, spoken):
+        leaves, monkeypatch, tmp_path, utc, text, spoken, wake_words):
     """T037-U3: the built graph answers from its one household clock, with no model and no HA call."""
     from datetime import UTC, datetime
 
@@ -334,8 +337,11 @@ async def test_time_and_date_come_from_the_household_clock_through_the_orchestra
     backend = AudioBackend()
     monkeypatch.setattr(output_module, "sd", backend)
     async with offline_home() as (url, observations):
+        config = offline_config(tmp_path, url)
+        if wake_words is not None:
+            config["rooms"]["wake_word"] = {"words": wake_words}
         async with AsyncExitStack() as stack:
-            graph = await build_application(offline_config(tmp_path, url), shutdown=stack, factories=leaves)
+            graph = await build_application(config, shutdown=stack, factories=leaves)
             dispatcher = graph.pipeline._orchestrator.dispatcher
             assert dispatcher.household_clock is graph.household_clock
             moment = datetime(*utc, tzinfo=UTC).timestamp()

@@ -6,10 +6,13 @@ from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import yaml
 
 from src.core.household_clock import HouseholdClock
 from src.core.task_outcome import DispatchState, EffectState, PersistenceState, TaskStatus
 from src.llm.reasoner import FastRouter
+from src.nlu.command_grammar import WAKE_TERMS
+from src.nlu.household_intents import HouseholdIntentClassifier, HouseholdIntentSettings
 from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.dispatcher import PathType, Priority, RequestDispatcher
 from src.orchestrator.priority_queue import PriorityRequestQueue
@@ -21,6 +24,18 @@ from src.world.household_time import (
 # one second later the household is at midnight of Wednesday the 18th.
 BEFORE_MIDNIGHT = datetime(2026, 11, 18, 2, 59, 59, tzinfo=UTC)
 AT_MIDNIGHT = BEFORE_MIDNIGHT + timedelta(seconds=1)
+
+
+# T037-U3-R1: the wake words main configures (rooms.wake_word.words). The
+# transcript keeps the wake pre-roll, which Whisper often hears as an alias.
+with open("config/settings.yaml") as _fh:
+    CONFIGURED_WAKE_WORDS = tuple(yaml.safe_load(_fh)["rooms"]["wake_word"]["words"])
+CLOCK_WAKES = tuple(sorted(WAKE_TERMS | set(CONFIGURED_WAKE_WORDS)))
+
+
+def configured_intents() -> HouseholdIntentClassifier:
+    """The classifier main builds from rooms.wake_word.words."""
+    return HouseholdIntentClassifier(HouseholdIntentSettings.from_config(None, wake_words=CONFIGURED_WAKE_WORDS))
 
 
 def clock_at(moment: datetime) -> HouseholdClock:
@@ -60,6 +75,10 @@ TIME_PHRASES = [
     "¿Qué hora es?", "que hora es", "QUÉ HORA ES", "Nexa, ¿qué hora es?", "¿Qué horas son?",
     "decime la hora", "decime la hora, por favor", "¿me decís la hora?", "¿sabés qué hora es?",
     "¿qué hora es ahora?", "che, ¿qué hora tenés?", "¿me podés decir qué hora es?", "dime la hora",
+    # Wake pre-roll as Whisper hears it (T037-U3-R1).
+    "Alexa, ¿qué hora es?", "alexa que hora es", "nexia, decime la hora", "kaza qué hora es",
+    "nexta, decime la hora", "neska qué hora es", "Nexca, ¿qué horas son?", "¿qué hora es, alexa?",
+    "che nexia, ¿qué hora es?",
 ]
 DATE_PHRASES = [
     ("¿Qué día es hoy?", 0, False), ("qué día es", 0, False), ("¿Qué día es mañana?", 1, False),
@@ -68,6 +87,8 @@ DATE_PHRASES = [
     ("¿A cuánto estamos hoy?", 0, False), ("¿Qué día de la semana es hoy?", 0, False),
     ("¿Qué fecha es hoy?", 0, True), ("¿A qué fecha estamos?", 0, True), ("decime la fecha de hoy", 0, True),
     ("¿qué fecha es mañana?", 1, True), ("Nexa, ¿qué día es hoy?", 0, False),
+    ("kaza qué día es hoy", 0, False), ("Nexia, ¿qué día es hoy?", 0, False), ("Alexa, ¿qué día es mañana?", 1, False),
+    ("neska, ¿qué fecha es hoy?", 0, True), ("¿qué día es hoy, nexta?", 0, False),
 ]
 # Questions with another subject, place or day stay on their existing paths.
 NOT_CLOCK = [
@@ -75,22 +96,52 @@ NOT_CLOCK = [
     "¿qué día es el partido?", "qué día es el 25", "¿qué día juega Peñarol?", "hoy qué día es mañana",
     "la hora", "¿qué hora y qué día es?", "¿cuántas horas faltan?", "hola", "recordame qué hora es",
     "poné un temporizador de una hora", "¿a qué hora sale el sol?", "prendé la luz", "",
+    "alexa, ¿qué hora es en Madrid?", "kaza, ¿a qué hora es el partido?", "nexia", "alexa kaza",
 ]
 
 
 @pytest.mark.parametrize("text", TIME_PHRASES)
 def test_time_phrases_are_time_queries(text):
-    assert parse_clock_query(text) == ClockQuery(ClockQueryKind.TIME)
+    assert parse_clock_query(text, CLOCK_WAKES) == ClockQuery(ClockQueryKind.TIME)
 
 
 @pytest.mark.parametrize(("text", "offset", "with_year"), DATE_PHRASES)
 def test_date_phrases_name_the_day_asked(text, offset, with_year):
-    assert parse_clock_query(text) == ClockQuery(ClockQueryKind.DATE, offset, with_year)
+    assert parse_clock_query(text, CLOCK_WAKES) == ClockQuery(ClockQueryKind.DATE, offset, with_year)
 
 
 @pytest.mark.parametrize("text", NOT_CLOCK)
 def test_other_questions_are_not_clock_queries(text):
-    assert parse_clock_query(text) is None
+    assert parse_clock_query(text, CLOCK_WAKES) is None
+
+
+def test_the_configured_wake_words_include_the_aliases_whisper_hears():
+    assert {"nexa", "alexa", "nexia", "nexta", "kaza"} <= set(CONFIGURED_WAKE_WORDS)
+
+
+@pytest.mark.parametrize("text", TIME_PHRASES + [phrase for phrase, _, _ in DATE_PHRASES])
+def test_dispatcher_built_like_main_routes_every_clock_phrase_to_the_clock(text):
+    """T037-U3-R1: wake aliases must not send a clock question to the cloud reasoner."""
+    d = make_dispatcher(clock_at(BEFORE_MIDNIGHT), household_intents=configured_intents())
+    assert d._classify_request(text.lower()) == (PathType.FAST_CLOCK, Priority.HIGH)
+
+
+@pytest.mark.parametrize("text", ["Alexa, ¿qué hora es?", "nexia qué día es hoy", "kaza qué hora es",
+                                  "nexta, decime la hora", "neska qué hora es"])
+async def test_wake_aliases_are_answered_by_the_clock_not_the_cloud(text):
+    d = make_dispatcher(clock_at(BEFORE_MIDNIGHT), household_intents=configured_intents())
+    result = await d.dispatch(user_id="unknown", text=text, zone_id="zone_living")
+    assert (result.path, result.intent, result.success) == (PathType.FAST_CLOCK, "clock", True)
+    assert result.response in ("Son las 23:59.", "Hoy es martes 17 de noviembre.")
+    assert_no_model_and_no_effect(d)
+
+
+@pytest.mark.parametrize("text", ["Alexa, ¿qué hora es?", "nexia qué día es hoy", "nexta, decime la hora"])
+async def test_grammar_wake_terms_are_stripped_without_configured_words(text):
+    d = make_dispatcher(clock_at(BEFORE_MIDNIGHT))
+    result = await d.dispatch(user_id="unknown", text=text, zone_id="zone_living")
+    assert result.path is PathType.FAST_CLOCK and result.success is True
+    assert_no_model_and_no_effect(d)
 
 
 def test_a_non_string_is_not_a_clock_query():
