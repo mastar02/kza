@@ -580,3 +580,10 @@ async def test_cancel_never_touches_the_request_queue(leaves):
     await leaves.apply_state(dispatcher, "reminder_shared_active:tomar agua;queued_request")
     result = await dispatcher.dispatch(user_id="unknown", text="cancelá el recordatorio de tomar agua")
     assert result.outcome.task_completed and len(dispatcher.queue) == 1
+
+
+async def test_the_claimed_complement_drops_wake_words_and_politeness(leaves):
+    """The classifier's complement, not the raw text, names the reminder ('por favor' is not content)."""
+    result, counted = await _cancel(leaves, "Nexa, cancelá el recordatorio de tomar agua, por favor",
+                                    "reminder_shared_active:tomar agua")
+    assert counted == effects(reminder_transitions=1) and result.outcome.task_completed
