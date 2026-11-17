@@ -147,6 +147,27 @@ async def test_grammar_wake_terms_are_stripped_without_configured_words(text):
     assert_no_model_and_no_effect(d)
 
 
+# T037-U3 re-review RR-1: a wake word is stripped only at the edges. Each phrase
+# is a clock question once the inner wake word is removed, so only the position
+# of that wake word keeps it from being one.
+WAKE_IN_THE_MIDDLE = [
+    ("¿qué nexa hora es?", "¿qué hora es?"),
+    ("qué día alexa es hoy", "qué día es hoy"),
+    ("qué hora kaza son", "qué hora son"),
+    ("qué hora es, alexa, ahora", "qué hora es ahora"),
+    ("decime nexia la hora", "decime la hora"),
+    ("¿qué fecha neska es mañana?", "¿qué fecha es mañana?"),
+]
+
+
+@pytest.mark.parametrize(("text", "without_wake"), WAKE_IN_THE_MIDDLE)
+def test_wake_words_are_stripped_only_at_the_edges(text, without_wake):
+    assert parse_clock_query(without_wake, CLOCK_WAKES) is not None
+    assert parse_clock_query(text, CLOCK_WAKES) is None
+    d = make_dispatcher(clock_at(BEFORE_MIDNIGHT), household_intents=configured_intents())
+    assert d._classify_request(text.lower())[0] is not PathType.FAST_CLOCK
+
+
 def test_a_non_string_is_not_a_clock_query():
     assert parse_clock_query(None) is None
 
