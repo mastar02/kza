@@ -264,3 +264,74 @@ async def test_rioplatense_reminder_query_lists_the_shared_reminders(leaves):
     assert result.response.startswith("Los recordatorios compartidos son")
     assert leaves.effects(before) == ZERO
 
+
+async def test_reminder_with_a_second_clause_asks_for_them_separately(leaves):
+    """Design D1: an R3 second clause is NEEDS_INPUT 'por separado', not the reminder handler."""
+    dispatcher = leaves.dispatcher()
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text="recordame tomar la pastilla a las 8 y apagá la luz",
+                                       service_filter="turn_off")
+    assert (result.path, result.outcome.status.value) == (PathType.FAST_REMINDER, "needs_input")
+    assert result.response == "Decime el recordatorio y la orden por separado."
+    assert leaves.effects(before) == ZERO
+
+
+@pytest.mark.parametrize("text", ["pará el recordatorio", "pausá el recordatorio", "seguí el recordatorio",
+                                  "desactivá el recordatorio"])
+async def test_reminder_stop_pause_resume_disable_ask_what_to_do(leaves, text):
+    """Design D1: only create, cancel and query reach the reminder handler."""
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, "reminder_shared_active:tomar agua")
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text=text)
+    assert (result.path, result.outcome.status.value) == (PathType.FAST_REMINDER, "needs_input")
+    assert result.response == "Con los recordatorios puedo consultarlos o cancelarlos. ¿Cuál querés?"
+    assert leaves.effects(before) == ZERO
+
+
+@pytest.mark.parametrize("text", ["decime los recordatorios", "¿qué recordatorios hay?"])
+async def test_reminder_query_always_lists(leaves, text):
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, "reminder_shared_active:tomar agua")
+    result = await dispatcher.dispatch(user_id="unknown", text=text)
+    assert result.path is PathType.FAST_REMINDER
+    assert result.response.startswith("Los recordatorios compartidos son")
+
+
+async def test_list_query_on_the_plural_lists_every_shared_list(leaves):
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, "shared_list_compras")
+    result = await dispatcher.dispatch(user_id="unknown", text="cuáles son las listas")
+    assert result.path is PathType.FAST_LIST
+    assert result.response == "Las listas compartidas son: compras"
+    single = await dispatcher.dispatch(user_id="unknown", text="qué hay en la lista de compras")
+    assert single.response == "En la lista tienes: pan"
+
+
+async def test_claimed_item_removal_drops_the_article(leaves):
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, "shared_list_compras")
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text="sacá el pan de la lista de compras")
+    assert (result.path, result.response) == (PathType.FAST_LIST, "Quité pan")
+    assert leaves.effects(before)["list_mutations"] == 1
+
+
+@pytest.mark.parametrize(("text", "response"), [
+    ("desactivá la rutina de la noche", "Todavía no controlo rutinas por voz. Podés detenerla o cambiarla desde la web."),
+    ("pará la rutina de la noche", "Todavía no controlo rutinas por voz. Podés detenerla o cambiarla desde la web."),
+    ("ejecutá la rutina buenas noches", "Todavía no manejo rutinas por voz. Podés verlas desde la web."),
+    ("creá una rutina que cuando salga el sol prenda la luz", "Todavía no manejo rutinas por voz. Podés verlas desde la web."),
+])
+async def test_routine_refusal_names_what_the_web_can_do(leaves, text, response):
+    dispatcher = leaves.dispatcher()
+    result = await dispatcher.dispatch(user_id="unknown", text=text)
+    assert (result.path, result.response) == (PathType.FAST_ROUTINE, response)
+
+
+async def test_sync_request_after_a_wake_word_is_still_the_explicit_request(leaves):
+    dispatcher = leaves.dispatcher()
+    result = await dispatcher.dispatch(user_id="unknown", text="nexa, sincroniza los comandos")
+    assert (result.path, result.outcome.status.value) == (PathType.SYNC, "unsupported")
+    assert result.response == "Todavía no puedo sincronizar los comandos por voz en este modo."
+

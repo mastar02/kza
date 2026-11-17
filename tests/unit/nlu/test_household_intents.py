@@ -154,6 +154,11 @@ PRECEDENCE = [
     ("anunciá que la comida está lista", (F.INTERCOM, O.EXECUTE, "R6")),
     ("avisá en la cocina que la comida está lista", (F.INTERCOM, O.EXECUTE, "R6")),
     ("decí en toda la casa que nos vamos", (F.INTERCOM, O.EXECUTE, "R6")),
+    # R4 needs a domotics head verb: an announcement that mentions a deferred light stays intercom.
+    ("anunciá que la luz se apaga en 10 minutos", (F.INTERCOM, O.EXECUTE, "R6")),
+    # An infinitive is not an intercom request.
+    ("avisar en la cocina que la comida está lista", None),
+    ("anunciar en la cocina que la comida está lista", None),
     ("activá el no molestar", (F.NOTIFICATION, O.EXECUTE, "R6")),
     ("desactivá el no molestar", (F.NOTIFICATION, O.DISABLE, "R6")),
     ("solo urgentes esta noche", (F.NOTIFICATION, O.EXECUTE, "R6")),
@@ -166,6 +171,7 @@ PRECEDENCE = [
     ("prendé la luz y apagá la luz", (F.COMPOUND, O.CLARIFY, "R5")),
     ("apagá la luz en 10 minutos y pausá la música", (F.COMPOUND, O.CLARIFY, "R5")),
     ("apagá la luz y recordame sacar la basura", (F.COMPOUND, O.CLARIFY, "R5")),
+    ("abrí la persiana y cerrá la persiana", (F.COMPOUND, O.CLARIFY, "R5")),
     ("prendé la luz y poné una alarma a las 7", (F.COMPOUND, O.CLARIFY, "R5")),
     # A household noun as the second target of a domotics/object verb is claimed (review F1),
     # in either word order.
@@ -203,6 +209,9 @@ PRECEDENCE = [
     ("cuando juega Peñarol", None),
     ("cuándo es el cumpleaños de Ana", None),
     ("qué hora es", None),
+    # A query head needs a query verb ('hay', 'tengo', 'quedan', ...).
+    ("qué lindo timer", None),
+    ("qué rutina más aburrida", None),
     ("para la lista de compras agregá leche", None),
     ("sincroniza los comandos", None),
     ("actualizá la lista de compras", None),
@@ -224,6 +233,7 @@ def test_precedence_table(text, expected):
     ("poné una alarma a las 7", "clock_time"),
     ("poné una alarma", "no_time"),
     ("prendé la luz y apagá la luz", "conflicting_parts"),
+    ("abrí la persiana y cerrá la persiana", "conflicting_parts"),
     ("apagá la luz en 10 minutos y pausá la música", "deferred_part"),
     ("apagá la luz y recordame sacar la basura", "deferred_part"),
     ("prendé la luz y la tele", "unparsed_part"),
@@ -244,6 +254,8 @@ def test_governed_object_and_complement():
     reminder = classify_household_intent("Nexa, recordame que mañana a las ocho viene el plomero")
     assert reminder.complement == "mañana a las ocho viene el plomero"
     assert classify_household_intent("haceme acordar de sacar la basura").complement == "sacar la basura"
+    # A trailing 'por favor' is politeness, never part of the complement.
+    assert classify_household_intent("poné un timer de 3 minutos por favor").complement == "de 3 minutos"
     item = classify_household_intent("agregá pan y leche a la lista de compras")
     assert (item.verb, item.complement) == ("agrega", "pan y leche a la lista de compras")
 

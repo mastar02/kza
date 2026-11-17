@@ -29,6 +29,7 @@ STUBS = {
     "open@0.9": CommandClassification(is_command=True, confidence=0.9, intent="open", entity_hint="cover"),
     "command@0.9": CommandClassification(is_command=True, confidence=0.9, intent="timer"),
     "command@0.3": CommandClassification(is_command=True, confidence=0.3, intent="timer"),
+    "command@1.5": CommandClassification(is_command=True, confidence=1.5, intent="timer"),
     "noise": CommandClassification(is_command=False, confidence=0.1, intent="noise", rejection_reason="noise"),
     "unavailable": CommandClassification(is_command=None, rejection_reason="unavailable"),
     # Defensive shape: a command claim that also reports 'unavailable' is still not a veto pass.
@@ -235,6 +236,16 @@ async def test_unavailable_never_passes_the_veto(leaves):
     result = await house.turn("textual")
     assert result["intent"] == "llm_rejected:household"
     house.orchestrator.process.assert_not_awaited()
+
+
+async def test_veto_confidence_above_one_never_passes(leaves):
+    """Same acceptance test as _try_home_command: a confidence outside [min, 1] is not a pass."""
+    house = Household(leaves, text="poné un timer de 5 minutos", llm="stub:command@1.5")
+    result = await house.turn("textual")
+    assert result["intent"] == "llm_rejected:household"
+    house.orchestrator.process.assert_not_awaited()
+    accepted = Household(leaves, text="poné un timer de 5 minutos", llm="stub:command@0.9")
+    assert (await accepted.turn("textual"))["path"] == "fast_timer"
 
 
 async def test_veto_exception_fails_closed(leaves):
