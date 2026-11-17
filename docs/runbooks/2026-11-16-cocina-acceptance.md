@@ -365,13 +365,13 @@ C19 pide que la pausa autenticada intencional se identifique por política.
   (`src/memory/capture_control.py:175-204`, `:311-347`). Cada cambio sube la
   `revision`.
 - Efecto en el heartbeat: el silencio pausa el lazo de audio
-  (`pause_admission`, `src/pipeline/multi_room_audio_loop.py:850-863`), que
-  cierra las entradas (`begin_pause_inputs`, `:673-690`) y deja de publicar
+  (`pause_admission`, `src/pipeline/multi_room_audio_loop.py:879-892`), que
+  cierra las entradas (`begin_pause_inputs`, `:702-719`) y deja de publicar
   `audio_health.json` (`_publish_audio_health` vuelve sin escribir si
-  `_auxiliary_allowed()` es falso, `:1860-1861`, `:692-694`). En el
+  `_auxiliary_allowed()` es falso, `:2010-2011`, `:721-723`). En el
   muestreador se ve como snapshot viejo: segundos no útiles para todas las
   entradas. Que `last_frame_ts` se actualice antes de `room.accepts()`
-  (`:2058-2061`) no sostiene el heartbeat durante el silencio global, porque
+  (`:2209-2211`) no sostiene el heartbeat durante el silencio global, porque
   las entradas ya están cerradas; esa compuerta corresponde a los límites por
   conversación de cada habitación, que no son una pausa.
 - Fuente de política para la evidencia: la `revision` y la `phase` de
