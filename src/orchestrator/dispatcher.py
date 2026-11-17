@@ -627,6 +627,7 @@ class RequestDispatcher:
         room_namespace: RoomNamespace | None = None,
         household_intents: HouseholdIntentClassifier | None = None,
         timer_manager: NamedTimerManager | None = None,
+        timer_fallback_zone: str | None = None,
     ):
         """
         Args:
@@ -671,6 +672,10 @@ class RequestDispatcher:
             timer_manager: El NamedTimerManager del FeatureManager (T030-U1),
                 la misma instancia que este arranca y detiene. Sin él, los
                 temporizadores se contestan como no disponibles.
+            timer_fallback_zone: Zona donde suena un temporizador pedido sin
+                habitación de origen (la de los avisos compartidos, el living;
+                ``main.timer_fallback_zone``). None: ese temporizador se rechaza
+                en vez de confirmarse sin poder sonar (T030-U1 R1).
         """
         self.chroma = chroma_sync
         self.ha = ha_client
@@ -699,6 +704,7 @@ class RequestDispatcher:
         self.room_namespace = room_namespace if room_namespace is not None else RoomNamespace(())
         self.household_intents = household_intents if household_intents is not None else HouseholdIntentClassifier()
         self.timer_manager = timer_manager
+        self.timer_fallback_zone = timer_fallback_zone
         self._timers = TimerVoiceCommands(timer_manager)
         self.hooks = hooks  # plan #3 OpenClaw — HookRegistry or None
         self._before_handler_warn_ms = before_handler_warn_ms
@@ -1166,11 +1172,11 @@ class RequestDispatcher:
         """Run a claimed timer turn (T030-U1) for the household actor.
 
         The ring zone is the origin room's ``zone_<room>`` (the microphone that
-        heard the turn), else "default" (the configured default output, the
-        living until SCHEMA-V2); never the acoustic speaker or a detected
-        source zone.
+        heard the turn), else ``timer_fallback_zone`` (the shared-notice zone,
+        the living until SCHEMA-V2); never the acoustic speaker or a detected
+        source zone. With neither, a creation is refused.
         """
-        ring_zone = self.room_namespace.to_zone(origin_room) or "default"
+        ring_zone = self.room_namespace.to_zone(origin_room) or self.timer_fallback_zone
         reply = await self._timers.execute(household.operation, household.complement, text=text, zone_id=ring_zone)
         return DispatchResult(PathType.FAST_TIMER, Priority.HIGH, reply.outcome.task_completed, reply.response,
                               intent="timer", outcome=reply.outcome)
@@ -2078,6 +2084,7 @@ class MultiUserOrchestrator:
         room_namespace: RoomNamespace | None = None,
         household_intents: HouseholdIntentClassifier | None = None,
         timer_manager: NamedTimerManager | None = None,
+        timer_fallback_zone: str | None = None,
     ):
         """Initialize the multi-user orchestrator.
 
@@ -2104,6 +2111,8 @@ class MultiUserOrchestrator:
                 compartido con el RequestRouter. Forwarded to RequestDispatcher.
             timer_manager: The FeatureManager's NamedTimerManager (T030-U1).
                 Forwarded to RequestDispatcher.
+            timer_fallback_zone: Ring zone of a timer without an origin room
+                (T030-U1 R1). Forwarded to RequestDispatcher.
         """
         self._hooks = hooks  # plan #3 OpenClaw — exposed for log_hook_stats()
         # Componentes principales
@@ -2186,6 +2195,7 @@ class MultiUserOrchestrator:
             room_namespace=room_namespace,
             household_intents=household_intents,
             timer_manager=timer_manager,
+            timer_fallback_zone=timer_fallback_zone,
         )
 
         self._running = False

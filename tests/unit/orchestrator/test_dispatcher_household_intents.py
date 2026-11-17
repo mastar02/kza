@@ -1,5 +1,7 @@
 """P3-F2 D1-D3: claimed household turns reach their family path with zero foreign effects."""
 
+import asyncio
+
 import pytest
 
 from src.nlu.household_intents import HouseholdIntentClassifier, HouseholdIntentSettings
@@ -419,11 +421,12 @@ async def test_unclaimed_routine_creation_never_reaches_cloud_extraction(leaves,
 
 
 @pytest.mark.parametrize(("room", "ring_zone"), [("hall", "zone_hall"), ("zone_living", "zone_living"),
-                                                 ("patio", "default"), (None, "default")])
+                                                 ("patio", "zone_living"), (None, "zone_living")])
 async def test_timer_rings_in_the_origin_room_for_the_household(leaves, room, ring_zone):
-    """T030-U1: actor 'household' (never the caller's id); ring zone from the mic room only, else the default output."""
+    """T030-U1: actor 'household' (never the caller's id); ring zone from the mic room only, else the
+    shared-notice zone main passes (R1: never 'default', which has no route when zones exist)."""
     from src.core.household_clock import RoomNamespace
-    dispatcher = leaves.dispatcher(room_namespace=RoomNamespace(("living", "hall")))
+    dispatcher = leaves.dispatcher(room_namespace=RoomNamespace(("living", "hall")), timer_fallback_zone="zone_living")
     result = await dispatcher.dispatch(user_id="speaker_ana", text="poné un timer de 5 minutos", zone_id="zone_living",
                                        context_room_id=room)
     assert (result.path, result.intent, result.success) == (PathType.FAST_TIMER, "timer", True)
@@ -446,3 +449,52 @@ async def test_dispatcher_without_a_timer_manager_is_unsupported(leaves):
     result = await dispatcher.dispatch(user_id="unknown", text="poné un timer de 5 minutos")
     assert (result.path, result.success, result.outcome.status.value) == (PathType.FAST_TIMER, False, "unsupported")
     assert leaves.timers.get_all_timers() == []
+
+
+async def test_timer_without_origin_or_fallback_zone_is_refused_not_confirmed(leaves):
+    """T030-U1 R1: no origin room and no shared-notice zone: refuse instead of a timer that never rings."""
+    from src.core.household_clock import RoomNamespace
+    from src.timers.voice_commands import NO_RING_ROUTE
+    dispatcher = leaves.dispatcher(room_namespace=RoomNamespace(("living", "hall")), timer_fallback_zone=None)
+    before = leaves.snapshot()
+    for room in (None, "patio"):
+        result = await dispatcher.dispatch(user_id="unknown", text="poné un timer de 5 minutos", context_room_id=room)
+        assert (result.path, result.success, result.response) == (PathType.FAST_TIMER, False, NO_RING_ROUTE)
+        assert (result.outcome.status.value, result.outcome.persistence.value) == ("unsupported", "not_written")
+    assert leaves.effects(before) == ZERO
+    origin = await dispatcher.dispatch(user_id="unknown", text="poné un timer de 5 minutos", context_room_id="hall")
+    assert origin.success and [t.zone_id for t in leaves.timers.get_all_timers()] == ["zone_hall"]
+
+
+async def test_timer_without_origin_rings_through_the_zone_requiring_delivery(leaves):
+    """T030-U1 R1 (reviewer reproduction): with zone routes, LocalVoiceDelivery refuses 'default'
+    (voice_output_zone_required), so the timer must carry main's fallback and its ring reach aspeak."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from src.core.voice_delivery import LocalVoiceDelivery, VoiceDeliveryError
+    from src.pipeline.voice_services import timer_fallback_zone
+    from src.timers.named_timers import NamedTimerManager, TimerState
+
+    handler = MagicMock()
+    handler.aspeak = AsyncMock(return_value=None)
+    delivery = LocalVoiceDelivery(handler, None, True)
+    with pytest.raises(VoiceDeliveryError, match="voice_output_zone_required"):
+        await delivery.aspeak("x", zone_id="default")
+    config = {"reminders": {"output_zone": "zone_living"}, "tts": {"streaming": {"default_output_zone": None}}}
+    timers = NamedTimerManager(tts_callback=delivery.aspeak)
+    await timers.start()
+    try:
+        dispatcher = leaves.dispatcher(timer_manager=timers, timer_fallback_zone=timer_fallback_zone(config, delivery))
+        result = await dispatcher.dispatch(user_id="unknown", text="poné un timer de 1 segundo")
+        assert result.success and result.response == "Temporizador de 1 segundo en marcha."
+        (timer,) = timers.get_all_timers()
+        assert timer.zone_id == "zone_living"
+        for _ in range(100):
+            if handler.aspeak.await_count:
+                break
+            await asyncio.sleep(0.05)
+        assert handler.aspeak.await_args.args == ("¡Terminó el temporizador de 1 segundo!",)
+        assert handler.aspeak.await_args.kwargs == {"zone_id": "zone_living"}
+        assert timer.state is TimerState.COMPLETED
+    finally:
+        await timers.stop()

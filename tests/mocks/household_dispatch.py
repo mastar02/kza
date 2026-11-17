@@ -60,6 +60,8 @@ class CountedLeaves:
             outcome=TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.NOT_REQUIRED)))
         self.ring = AsyncMock()
         self.timers = NamedTimerManager(tts_callback=self.ring)
+        # What main passes (pipeline.voice_services.timer_fallback_zone with zone routes): the shared-notice zone.
+        self.timer_fallback_zone = "zone_living"
         self.cancels: list[bool] = []
         self.queue: PriorityRequestQueue | None = None
 
@@ -80,7 +82,8 @@ class CountedLeaves:
             chroma_sync=self.chroma, ha_client=self.ha, routine_manager=self.routines, router=self.router,
             llm=None, context_manager=ContextManager(), priority_queue=queue, music_dispatcher=self.music,
             list_manager=self.list_manager, reminder_manager=self.reminder_manager,
-            response_handler=self.responses, **{"timer_manager": self.timers, **kwargs})
+            response_handler=self.responses,
+            **{"timer_manager": self.timers, "timer_fallback_zone": self.timer_fallback_zone, **kwargs})
         self.attach(dispatcher)
         return dispatcher
 

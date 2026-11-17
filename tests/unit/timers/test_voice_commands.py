@@ -12,6 +12,7 @@ from src.timers.named_timers import NamedTimerManager, TimerState
 from src.timers.voice_commands import (
     ALARM_CLARIFY,
     NO_ACTIVE,
+    NO_RING_ROUTE,
     TIMERS_UNAVAILABLE,
     TIMERS_UNSUPPORTED,
     TimerVoiceCommands,
@@ -77,6 +78,38 @@ async def test_nothing_is_confirmed_unless_the_manager_runs(stopped_by):
         assert reply.outcome.persistence is PersistenceState.NOT_WRITTEN
     assert timers.get_all_timers() == []
     await timers.stop()
+
+
+async def test_create_without_a_ring_zone_is_refused_and_other_commands_still_work(manager):
+    """T030-U1 R1: no ring zone (no origin room, no shared-notice zone) never confirms a timer."""
+    commands = TimerVoiceCommands(manager)
+    reply = await say(commands, "poné un temporizador de 5 minutos", zone_id=None)
+    assert (reply.response, reply.outcome.status) == (NO_RING_ROUTE, TaskStatus.UNSUPPORTED)
+    assert reply.outcome.persistence is PersistenceState.NOT_WRITTEN and manager.get_all_timers() == []
+    manager.create_timer("pasta", 600)
+    assert (await say(commands, "cancelá el timer", zone_id=None)).outcome.status is TaskStatus.COMPLETED
+
+
+@pytest.mark.parametrize(("config", "require_zone", "expected"), [
+    ({"reminders": {"output_zone": "zone_living"}, "tts": {"streaming": {"default_output_zone": None}}}, True,
+     "zone_living"),
+    ({"reminders": {"output_zone": None}, "tts": {"streaming": {"default_output_zone": "zone_hall"}}}, True,
+     "zone_hall"),
+    ({"reminders": {"output_zone": None}, "tts": {"streaming": {"default_output_zone": None}}}, True, None),
+    ({}, True, None),
+    ({"reminders": {"output_zone": "zone_living"}}, False, "default"),
+    ({}, False, "default"),
+])
+def test_timer_fallback_zone_is_a_deliverable_route_or_none(config, require_zone, expected):
+    """main's fallback: the shared-notice zone when zones exist, the one local output without zones."""
+    from unittest.mock import MagicMock
+
+    from src.core.voice_delivery import LocalVoiceDelivery
+    from src.pipeline.voice_services import timer_fallback_zone
+    delivery = LocalVoiceDelivery(MagicMock(), config.get("tts", {}).get("streaming", {}).get("default_output_zone"),
+                                  require_zone)
+    assert timer_fallback_zone(config, delivery) == expected
+    assert timer_fallback_zone(config, None) is None
 
 
 async def test_no_manager_is_unsupported():

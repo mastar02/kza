@@ -158,7 +158,8 @@ class Household:
             chroma_sync=leaves.chroma, ha_client=leaves.ha, routine_manager=leaves.routines, router=leaves.router,
             music_dispatcher=leaves.music, list_manager=leaves.list_manager,
             reminder_manager=leaves.reminder_manager, response_handler=self.handler,
-            household_intents=self.classifier, timer_manager=leaves.timers)
+            household_intents=self.classifier, timer_manager=leaves.timers,
+            timer_fallback_zone=leaves.timer_fallback_zone)
         leaves.attach(self.orchestrator.dispatcher)
         self.orchestrator.process = AsyncMock(side_effect=self.orchestrator.process)
         self.veto = None

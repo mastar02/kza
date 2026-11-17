@@ -11,6 +11,9 @@ Rules:
   the caller (the microphone that heard the turn), never a detected source zone.
 * Nothing is confirmed unless the timer manager is running: after a
   ``FeatureManager.start`` failure the reply is a FAILED refusal with no timer.
+* Nothing is confirmed without a ring zone: a turn with no origin room and no
+  configured shared-notice zone is refused (UNSUPPORTED), never a timer that
+  completes in silence.
 * A command picks exactly one timer or none: an unknown or ambiguous name is
   NEEDS_INPUT with zero effects; a duplicate label is NEEDS_INPUT.
 * Timers are volatile until SCHEMA-V2 (T030-U3): a completed change reports
@@ -41,6 +44,7 @@ logger = logging.getLogger(__name__)
 # Spoken replies (Spanish, rioplatense).
 TIMERS_UNSUPPORTED = "Los temporizadores no están disponibles."
 TIMERS_UNAVAILABLE = "Ahora no puedo manejar temporizadores. Probá de nuevo en un rato."
+NO_RING_ROUTE = "No tengo dónde hacer sonar el temporizador: falta configurar la salida de los avisos."
 NO_ACTIVE = "No hay temporizadores activos."
 ALARM_CLARIFY = "¿Para cuándo es la alarma? Decímelo completo, por ejemplo: poné una alarma de 10 minutos."
 _ASK_DURATION = "¿De cuánto tiempo es el temporizador? Decímelo completo, por ejemplo: poné un temporizador de 10 minutos."
@@ -111,7 +115,7 @@ class TimerVoiceCommands:
         self.manager = manager
 
     async def execute(self, operation: HouseholdOperation, complement: str, *, text: str,
-                      zone_id: str) -> TimerVoiceReply:
+                      zone_id: str | None) -> TimerVoiceReply:
         """Run one classified timer command.
 
         Args:
@@ -119,8 +123,9 @@ class TimerVoiceCommands:
                 RESUME, QUERY or CLARIFY).
             complement: Words after the timer/alarm noun.
             text: The whole dispatch text ("cancelá todos los timers").
-            zone_id: Ring zone: the origin room's ``zone_<room>``, or "default"
-                (the configured default output) when the turn has no origin.
+            zone_id: Ring zone: the origin room's ``zone_<room>``, else the
+                caller's fallback (the shared-notice zone), or None when no
+                ring route exists (a creation is then refused).
 
         Returns:
             The reply to speak and its task evidence.
@@ -160,7 +165,10 @@ class TimerVoiceCommands:
     def _active(self, states=_ACTIVE) -> list[NamedTimer]:
         return sorted((t for t in self.manager.get_all_timers() if t.state in states), key=lambda t: t.created_at)
 
-    def _create(self, complement: str, zone_id: str) -> TimerVoiceReply:
+    def _create(self, complement: str, zone_id: str | None) -> TimerVoiceReply:
+        if zone_id is None:
+            logger.warning("[Timer] create refused: no ring zone (no origin room, no shared-notice zone)")
+            return _refusal(NO_RING_ROUTE, TaskStatus.UNSUPPORTED)
         request = parse_timer_request(complement)
         if request.issue is not None:
             logger.info("[Timer] create needs input: %s", request.issue.value)

@@ -349,6 +349,8 @@ async def test_orchestrated_twin_reaches_the_main_timer_and_shared_pcm_output(le
             assert (created["intent"], created["path"], created["success"]) == ("timer", "fast_timer", True)
             assert created["task_completed"] and created["outcome"]["persistence"] == "volatile"
             (timer,) = timers.get_all_timers()
+            # No zone routes in this graph: "default" is the one local output (R1: deliverable, not a null zone).
+            assert features.voice_delivery.require_zone is False
             assert (timer.user_id, timer.zone_id, timer.duration_seconds, timer.name) == ("household", "default", 300, "")
             assert graph.models.tts.texts == ["Temporizador de 5 minutos en marcha."]
             assert graph.models.stt.calls == 1 and len(backend.heard()) > 0
@@ -633,6 +635,51 @@ async def test_committed_settings_announce_a_due_shared_reminder_in_the_living(l
             assert graph.models.tts.texts == ["Oye, recuerda Regar las plantas"]
             assert len(backend.heard()) > 0
             assert [call.args for call in amplifier.select_zone.call_args_list] == [(living_zone,)]
+            assert observations["service_calls"] == 0
+
+
+async def test_committed_settings_ring_a_timer_without_origin_in_the_living(leaves, monkeypatch, tmp_path):
+    """T030-U1 R1: a timer turn with no origin room (room_id '', audio_loop) on the committed zones.
+
+    With a ZoneManager the background delivery refuses 'default' (default_output_zone is null), so
+    main hands the dispatcher the shared-notice zone (reminders.output_zone, the living): the ring
+    must reach the living's amplifier zone instead of completing in silence.
+    """
+    import src.tts.piper_tts as output_module
+
+    committed = yaml.safe_load((Path(__file__).resolve().parents[2] / "config/settings.yaml").read_text(encoding="utf-8"))
+    assert committed["tts"]["streaming"]["default_output_zone"] is None
+    backend = AudioBackend()
+    monkeypatch.setattr(output_module, "sd", backend)
+    amplifier = MagicMock()
+    amplifier.audio_output_device = 7
+    factories = replace(leaves, wake_detector=OfflineWake, amplifier=lambda **_: amplifier)
+    async with offline_home() as (url, observations):
+        config = offline_config(tmp_path, url, rooms=True)
+        config["reminders"] = {**committed["reminders"], "db_path": str(tmp_path / "reminders.db")}
+        config["tts"]["streaming"]["default_output_zone"] = committed["tts"]["streaming"]["default_output_zone"]
+        for index, room_id in enumerate(("living", "hall")):
+            config["rooms"][room_id] = {"name": committed["rooms"][room_id]["name"], "mic_device_index": index,
+                                         "ma1260_zone": committed["rooms"][room_id]["ma1260_zone"]}
+        living_zone = committed["rooms"]["living"]["ma1260_zone"]
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=factories)
+            features = graph.voice_services.features
+            assert features.voice_delivery.require_zone is True
+            assert graph.pipeline._orchestrator.dispatcher.timer_fallback_zone == "zone_living"
+            await features.start()
+            graph.models.stt.text = "poné un timer de 1 segundo"
+            result = await graph.pipeline.process_command(_timer_turn())
+            assert (result["intent"], result["path"], result["success"]) == ("timer", "fast_timer", True)
+            (timer,) = features.timer_manager.get_all_timers()
+            assert timer.zone_id == "zone_living"
+            ring = "¡Terminó el temporizador de 1 segundo!"
+            for _ in range(100):
+                if ring in graph.models.tts.texts:
+                    break
+                await asyncio.sleep(0.05)
+            assert ring in graph.models.tts.texts
+            assert amplifier.select_zone.call_args_list[-1].args == (living_zone,)
             assert observations["service_calls"] == 0
 
 
