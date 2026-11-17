@@ -169,14 +169,17 @@ class _ParsedQuery:
         words: Content words outside the clock and day phrases.
         clock: The spoken clock time, if any.
         day: The spoken day, if any.
-        phrases: The clock and day phrases as spoken tokens ("la una",
-            "las 2 de la tarde", "mañana"), for the literal reading.
+        clock_phrase: The clock phrase as spoken tokens ("la una", "las 2
+            de la tarde"), for the literal reading; empty without a clock.
+        day_phrase: The day phrase from its day word ("mañana", "lunes"
+            for "del lunes"), for the literal reading; empty without a day.
     """
 
     words: tuple[frozenset[str], ...]
     clock: _SpokenClock | None
     day: _SpokenDay | None
-    phrases: tuple[tuple[str, ...], ...]
+    clock_phrase: tuple[str, ...] = ()
+    day_phrase: tuple[str, ...] = ()
 
 
 def _parse_query(query: str) -> _ParsedQuery:
@@ -184,15 +187,13 @@ def _parse_query(query: str) -> _ParsedQuery:
     words = _without_relative_clause(_WORD.findall(_fold(query)))
     clock, clock_span, day, day_span = _spans(words)
     taken = set(clock_span) | set(day_span)
-    phrases = [tuple(words[k] for k in clock_span)] if clock_span else []
-    if day_span:
-        # "del lunes" is said of a text "el lunes" too: the day phrase starts at its day word.
-        day_words = [words[k] for k in day_span]
-        while day_words and day_words[0] in _QUERY_STOPWORDS:
-            day_words.pop(0)
-        phrases.append(tuple(day_words))
+    clock_phrase = tuple(words[k] for k in clock_span)
+    # "del lunes" is said of a text "el lunes" too: the day phrase starts at its day word.
+    day_words = [words[k] for k in day_span]
+    while day_words and day_words[0] in _QUERY_STOPWORDS:
+        day_words.pop(0)
     content = _content([w for k, w in enumerate(words) if k not in taken])
-    return _ParsedQuery(content, clock, day, tuple(phrases))
+    return _ParsedQuery(content, clock, day, clock_phrase, tuple(day_words))
 
 
 def _contains_phrase(text: list[str], phrase: tuple[str, ...]) -> bool:
@@ -390,9 +391,11 @@ class ReminderManager:
         grammar) must equal its next trigger on the household clock. A
         leading "que (te) pedí/puse/hay" clause is not content. The spoken
         clock and day phrases are also read as words of the text, as
-        contiguous words ("la una", "las 2 de la tarde"); when that reading
-        selects other reminders than the time reading, both sets are
-        candidates and KZA asks (T032-U1-RR-P1, review FV-1).
+        contiguous words ("la una", "las 2 de la tarde"), each on its own:
+        a reminder is a candidate when its clock fits as due time or as
+        text, and its day too, mixed or not; when the readings select
+        different reminders, all are candidates and KZA asks
+        (T032-U1-RR-P1, review FV-1, FV2-1).
         Several matches are always ambiguous, even when one reminder's words
         are exactly the reference's: another active reminder that contains
         every spoken word may be the one meant, so KZA asks rather than
@@ -421,39 +424,34 @@ class ReminderManager:
         if not words and clock is None and day is None:
             return CancelResolution(CancelMatch.NO_REFERENCE, candidates=tuple(active))
         today = self._household_clock.local_date()
+        # The time words may be the reminder's own text ("llamar a mamá a las
+        # 3" due at 17:43): read as words they select by text alone (review
+        # T032-U1-RR-F1). When that reading and the time reading select
+        # different reminders, all are candidates and KZA asks which rather
+        # than pick one (user answer T032-U1-RR-P1: "tomar las pastillas de
+        # las 2" with "tomar las 2 pastillas" also active asks). The literal
+        # reading of a time phrase ("la una", "las 2", "mañana", with its
+        # period if one was said) needs it as contiguous words of the text:
+        # a repeated number ("tomar 2 pastillas a las 2") or the stopword
+        # "una" still count, while "de la una" or "de la una de la tarde"
+        # never select a text that only shares "tarde" or no word at all
+        # (review T032-U1-FV-1..3). Clock and day are judged apart: "pagar
+        # la luz a las 5 del miércoles" is said of "pagar la luz a las 5"
+        # due Wednesday at 10 too, so it never cancels "pagar la luz" due
+        # Wednesday at 17 alone (review T032-U1-FV2-1).
         matches = []
         for reminder in active:
-            text_words = _content(_WORD.findall(_fold(reminder.text)))
-            if not _covers(text_words, words):
+            text = _WORD.findall(_fold(reminder.text))
+            if not _covers(_content(text), words):
                 continue
             local = self._household_clock.to_local(reminder.trigger_at)
-            if clock is not None and not clock.matches(local.hour, local.minute):
+            if clock is not None and not (clock.matches(local.hour, local.minute)
+                                          or _contains_phrase(text, query.clock_phrase)):
                 continue
-            if day is not None and not day.matches(local.date(), today):
+            if day is not None and not (day.matches(local.date(), today)
+                                        or _contains_phrase(text, query.day_phrase)):
                 continue
             matches.append(reminder)
-        if clock is not None or day is not None:
-            # The time words may be the reminder's own text ("llamar a mamá a
-            # las 3" due at 17:43): read as words they select by text alone
-            # (review T032-U1-RR-F1). When that reading and the time reading
-            # select different reminders, both are candidates and KZA asks
-            # which rather than pick one (user answer T032-U1-RR-P1: "tomar
-            # las pastillas de las 2" with "tomar las 2 pastillas" also
-            # active asks). The literal reading needs each spoken time phrase
-            # ("la una", "las 2", "mañana", with its period if one was said)
-            # as contiguous words of the text, plus the other content words:
-            # a repeated number ("tomar 2 pastillas a las 2") or the stopword
-            # "una" still count, while "de la una" or "de la una de la tarde"
-            # never select a text that only shares "tarde" or no word at all
-            # (review T032-U1-FV-1..3).
-            timed = {r.id for r in matches}
-            matches = []
-            for reminder in active:
-                text = _WORD.findall(_fold(reminder.text))
-                if reminder.id in timed or (
-                        _covers(_content(text), words)
-                        and all(_contains_phrase(text, phrase) for phrase in query.phrases)):
-                    matches.append(reminder)
         if not matches:
             return CancelResolution(CancelMatch.NOT_FOUND)
         if len(matches) == 1:
