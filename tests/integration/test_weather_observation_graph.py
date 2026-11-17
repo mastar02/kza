@@ -2,7 +2,7 @@
 
 import asyncio
 from contextlib import AsyncExitStack
-from datetime import datetime, timedelta
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 from httpx import ASGITransport, AsyncClient
@@ -16,6 +16,13 @@ from tests.mocks.task_transport import TaskTransport
 
 pytestmark = pytest.mark.asyncio
 WEATHER = 'weather.synthetic'
+# Injected turn clock (T037-U1): 02:30Z on the 5th is 23:30 on the 4th in the
+# household zone (UTC-3), so "mañana" is the 5th even though UTC says the 5th.
+FROZEN = datetime(2026, 8, 5, 2, 30, tzinfo=UTC)
+TODAY = {'datetime': '2026-08-04T15:00:00+00:00', 'condition': 'sunny', 'temperature': 22}
+TOMORROW = {'datetime': '2026-08-05T15:00:00+00:00', 'condition': 'rainy', 'temperature': 25}
+AFTER = {'datetime': '2026-08-06T15:00:00+00:00', 'condition': 'cloudy', 'temperature': 19}
+YESTERDAY = {'datetime': '2026-08-03T15:00:00+00:00', 'condition': 'fog', 'temperature': 11}
 
 
 @pytest.fixture
@@ -93,12 +100,9 @@ async def test_missing_exact_weather_or_lost_observation_cannot_fall_back_to_cac
 
 
 @pytest.mark.parametrize('mode', ['valid', 'empty', 'invalid', 'failed'])
-async def test_forecast_retrieval_is_separate_from_issue_time_and_task_completion(leaves, tmp_path, mode):
+async def test_forecast_retrieval_is_separate_from_issue_time_and_task_completion(leaves, tmp_path, monkeypatch, mode):
     transport = TaskTransport()
-    tomorrow = (datetime.now().date()+timedelta(days=1)).isoformat()+'T12:00:00+00:00'
-    today = datetime.now().date().isoformat()+'T12:00:00+00:00'
-    forecast = [{'datetime': today, 'condition': 'sunny', 'temperature': 22},
-                {'datetime': tomorrow, 'condition': 'sunny', 'temperature': 25}]
+    forecast = [TODAY, TOMORROW]
     if mode == 'empty':
         forecast = []
     elif mode == 'invalid':
@@ -111,18 +115,61 @@ async def test_forecast_retrieval_is_separate_from_issue_time_and_task_completio
         config['home_assistant']['weather_entity'] = WEATHER
         async with AsyncExitStack() as stack:
             graph = await build_application(config, shutdown=stack, factories=leaves)
+            monkeypatch.setattr(graph.home_capabilities, '_clock', lambda: FROZEN)
             graph.models.stt.text = 'qué tiempo hace mañana'
             result = await graph.pipeline.process_command(event())
             assert result['intent'] == 'weather'
             assert result['source_observation']['source'] == 'ha-weather-forecast'
             assert result['task_completed'] == (mode == 'valid')
             if mode in {'valid', 'empty'}:
-                assert result['source_observation']['observed_at'] is not None
-                assert result['source_observation']['unobserved_fields'] == ('issued_at', 'forecast_date_alignment')
+                assert result['source_observation']['observed_at'] == FROZEN.isoformat()
+                assert result['source_observation']['unobserved_fields'] == (
+                    ('issued_at',) if mode == 'valid' else ('issued_at', 'forecast_date_alignment'))
             else:
                 assert result['source_observation']['observed_at'] is None
-            if mode != 'valid':
+            if mode == 'valid':
+                assert result['response'] == 'Mañana: lluvioso, 25 grados.'
+            else:
                 assert result['response'] in (NO_DATA, NO_FORECAST) and not result['success']
+            assert len(transport.forecast_reads) == 1 and transport.sends == []
+
+
+@pytest.mark.parametrize(('forecast', 'spoken', 'invalid'), [
+    pytest.param([AFTER, TOMORROW, YESTERDAY, TODAY], 'Mañana: lluvioso, 25 grados.', False, id='reordered'),
+    pytest.param([YESTERDAY, TODAY, TOMORROW], 'Mañana: lluvioso, 25 grados.', False, id='first-entry-yesterday'),
+    pytest.param([TODAY, AFTER], None, False, id='missing-day'),
+    pytest.param([TODAY, {**TOMORROW, 'datetime': '2026-08-05T00:00:00+00:00'}], None, False, id='utc-midnight-is-yesterday-local'),
+    pytest.param([TODAY, {**AFTER, 'datetime': '2026-08-05T18:00:00+00:00'}, TOMORROW], None, False, id='conflicting-duplicates'),
+    pytest.param([TODAY, {**TOMORROW, 'datetime': '2026-08-05T15:00:00'}], None, True, id='naive-date'),
+    pytest.param([TODAY, {**TOMORROW, 'datetime': 'mañana'}], None, True, id='unparseable-date'),
+])
+async def test_forecast_day_is_selected_by_household_date_through_the_application(
+        leaves, tmp_path, monkeypatch, forecast, spoken, invalid):
+    transport = TaskTransport()
+    transport.forecast_payload = {'service_response': {WEATHER: {'forecast': forecast}}}
+    async with transport.serve() as url:
+        config, _ = configuration(tmp_path, url)
+        config['home_assistant']['weather_entity'] = WEATHER
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=leaves)
+            monkeypatch.setattr(graph.home_capabilities, '_clock', lambda: FROZEN)
+            graph.models.stt.text = 'va a llover mañana'
+            result = await graph.pipeline.process_command(event())
+            assert result['intent'] == 'weather'
+            observation = result['source_observation']
+            assert observation['source'] == 'ha-weather-forecast' and observation['attempted_at'] == FROZEN.isoformat()
+            assert result['task_completed'] is (spoken is not None)
+            if spoken is not None:
+                assert result['response'] == spoken
+                assert observation['unobserved_fields'] == ('issued_at',)
+            else:
+                assert result['response'] == NO_FORECAST and not result['success']
+                assert 'lluvioso' not in result['response']
+                if invalid:
+                    assert observation['reason'] == 'source_invalid' and observation['observed_at'] is None
+                else:
+                    assert observation['unobserved_fields'] == ('issued_at', 'forecast_date_alignment')
+                    assert observation['observed_at'] == FROZEN.isoformat()
             assert len(transport.forecast_reads) == 1 and transport.sends == []
 
 

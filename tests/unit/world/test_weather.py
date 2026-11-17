@@ -53,54 +53,184 @@ def test_includes_humidity_when_present():
     assert "81" in out
 
 
-from src.world.weather import describe_forecast
+from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from src.world.weather import (HOUSEHOLD_TIMEZONE, NO_DATA, NO_FORECAST, ForecastAlignment,
+                               describe_forecast, forecast_target_date)
+
+# T037-U1: el día del pronóstico se elige por FECHA local del hogar, nunca por
+# posición. Hora de Montevideo = UTC-3 sin horario de verano.
+ZONE = ZoneInfo("America/Montevideo")
+TODAY = date(2026, 8, 4)
+TOMORROW = date(2026, 8, 5)
+AFTER = date(2026, 8, 6)
 
 
-FORECAST = [
-    {"datetime": "2026-08-04T00:00:00", "condition": "fog",
-     "templow": 11.8, "temperature": 12.4},
-    {"datetime": "2026-08-05T00:00:00", "condition": "rainy",
-     "templow": 11.7, "temperature": 13.1},
-    {"datetime": "2026-08-06T00:00:00", "condition": "cloudy",
-     "templow": 10.8, "temperature": 12.9},
-]
+def _day(iso: str, condition: str, low: float, high: float) -> dict:
+    return {"datetime": iso, "condition": condition, "templow": low, "temperature": high}
 
 
-def test_forecast_today_uses_first_entry():
-    out = describe_forecast(FORECAST, "hoy")
-    assert "niebla" in out.lower()
-    assert "12" in out
+FOG = _day("2026-08-04T15:00:00+00:00", "fog", 11.8, 12.4)
+RAIN = _day("2026-08-05T15:00:00+00:00", "rainy", 11.7, 13.1)
+CLOUD = _day("2026-08-06T15:00:00+00:00", "cloudy", 10.8, 12.9)
+YESTERDAY = _day("2026-08-03T15:00:00+00:00", "sunny", 5.0, 9.0)
+FORECAST = [FOG, RAIN, CLOUD]
 
 
-def test_forecast_tomorrow_uses_second_entry():
-    out = describe_forecast(FORECAST, "mañana")
-    assert "lluvioso" in out.lower()
-    assert "13" in out
+def _say(forecast, dia="mañana", target=TOMORROW):
+    return describe_forecast(forecast, dia, target, ZONE)
+
+
+def test_forecast_today_is_selected_by_date():
+    answer = _say(FORECAST, "hoy", TODAY)
+    assert answer.aligned and answer.alignment is ForecastAlignment.ALIGNED
+    assert answer.text == "Hoy: con niebla, entre 12 y 12 grados."
+
+
+def test_forecast_tomorrow_is_selected_by_date():
+    answer = _say(FORECAST)
+    assert answer.aligned
+    assert answer.text == "Mañana: lluvioso, entre 12 y 13 grados."
 
 
 def test_forecast_reports_min_and_max():
-    out = describe_forecast(FORECAST, "mañana")
+    out = _say(FORECAST).text
     assert "12" in out  # templow 11.7 -> 12
     assert "13" in out  # temperature 13.1 -> 13
 
 
+@pytest.mark.parametrize("order", [
+    [CLOUD, RAIN, FOG],
+    [RAIN, FOG, CLOUD],
+    [CLOUD, FOG, RAIN],
+])
+def test_reordered_forecast_still_speaks_the_requested_day(order):
+    assert _say(order).text == "Mañana: lluvioso, entre 12 y 13 grados."
+    assert _say(order, "hoy", TODAY).text.startswith("Hoy: con niebla")
+    assert _say(order, "pasado mañana", AFTER).text.startswith("Pasado mañana: nublado")
+
+
+def test_first_entry_yesterday_does_not_shift_the_days():
+    # Por posición, "mañana" sería FOG (hoy) y "hoy" sería YESTERDAY.
+    forecast = [YESTERDAY, FOG, RAIN]
+    assert _say(forecast).text.startswith("Mañana: lluvioso")
+    assert _say(forecast, "hoy", TODAY).text.startswith("Hoy: con niebla")
+
+
 def test_empty_forecast_says_so():
-    out = describe_forecast([], "mañana")
-    assert "no" in out.lower()
-    assert "grados" not in out.lower()
+    answer = _say([])
+    assert answer.text == NO_FORECAST and answer.alignment is ForecastAlignment.NO_ENTRIES
+    assert not answer.aligned
 
 
-def test_forecast_without_requested_day_says_so():
-    out = describe_forecast(FORECAST[:1], "mañana")
-    assert "no" in out.lower()
+@pytest.mark.parametrize("forecast", [[FOG], [FOG, CLOUD], [YESTERDAY, FOG], [CLOUD]])
+def test_forecast_without_requested_day_says_so(forecast):
+    answer = _say(forecast)
+    assert answer.text == NO_FORECAST
+    assert answer.alignment is ForecastAlignment.MISSING_DAY and not answer.aligned
+
+
+def test_unsupported_horizon_has_no_target_and_no_answer():
+    assert forecast_target_date("el sábado", datetime(2026, 8, 4, 15, tzinfo=UTC), ZONE) is None
+    answer = describe_forecast(FORECAST, "el sábado", None, ZONE)
+    assert answer.text == NO_FORECAST and answer.alignment is ForecastAlignment.MISSING_DAY
+
+
+@pytest.mark.parametrize("bad_datetime", [
+    "2026-08-05T15:00:00",            # naive: su día local sería una suposición
+    "2026-08-05",                      # solo fecha: también naive
+    "mañana",                          # no parseable
+    "",
+    "2026-13-45T00:00:00+00:00",       # fecha inválida
+    "0001-01-01T00:00:00+14:00",       # fuera de rango al convertir
+    None,
+    1754406000,                        # epoch numérico, no ISO
+    True,
+])
+def test_unusable_entry_datetime_makes_the_payload_invalid(bad_datetime):
+    broken = {**RAIN, "datetime": bad_datetime}
+    for forecast in ([FOG, broken, CLOUD], [broken], [FOG, CLOUD, broken]):
+        answer = _say(forecast, "hoy", TODAY)
+        assert answer.text == NO_FORECAST
+        assert answer.alignment is ForecastAlignment.INVALID_ENTRIES and not answer.aligned
+
+
+def test_entry_without_datetime_makes_the_payload_invalid():
+    undated = {key: value for key, value in RAIN.items() if key != "datetime"}
+    assert _say([FOG, undated]).alignment is ForecastAlignment.INVALID_ENTRIES
+
+
+def test_conflicting_duplicates_for_the_day_are_not_spoken():
+    other = _day("2026-08-05T18:00:00+00:00", "sunny", 14.0, 20.0)
+    answer = _say([FOG, RAIN, other, CLOUD])
+    assert answer.text == NO_FORECAST
+    assert answer.alignment is ForecastAlignment.CONFLICTING_DAY and not answer.aligned
+    # Las otras fechas siguen respondiendo: el conflicto es solo de ese día.
+    assert _say([FOG, RAIN, other, CLOUD], "hoy", TODAY).aligned
+
+
+def test_identical_duplicates_for_the_day_agree():
+    same = {**RAIN, "datetime": "2026-08-05T18:00:00-03:00"}
+    answer = _say([FOG, RAIN, same])
+    assert answer.aligned and answer.text.startswith("Mañana: lluvioso")
+
+
+def test_utc_midnight_entry_belongs_to_the_previous_local_day():
+    # 00:00Z del 5 son las 21:00 del 4 en Montevideo: es "hoy", no "mañana".
+    utc_midnight = _day("2026-08-05T00:00:00+00:00", "sunny", 8.0, 16.0)
+    assert _say([utc_midnight]).alignment is ForecastAlignment.MISSING_DAY
+    assert _say([utc_midnight], "hoy", TODAY).text == "Hoy: soleado, entre 8 y 16 grados."
+
+
+@pytest.mark.parametrize("iso", ["2026-08-05T03:00:00+00:00", "2026-08-05T00:00:00-03:00",
+                                 "2026-08-05T02:59:59+00:00"])
+def test_local_midnight_boundary(iso):
+    entry = _day(iso, "sunny", 8.0, 16.0)
+    expected = TOMORROW if iso != "2026-08-05T02:59:59+00:00" else TODAY
+    other = TODAY if expected == TOMORROW else TOMORROW
+    assert _say([entry], "x", expected).aligned
+    assert _say([entry], "x", other).alignment is ForecastAlignment.MISSING_DAY
+
+
+@pytest.mark.parametrize(("now", "hoy", "manana", "pasado"), [
+    # 23:30 del 4 en Montevideo aunque en UTC ya sea el 5.
+    (datetime(2026, 8, 5, 2, 30, tzinfo=UTC), TODAY, TOMORROW, AFTER),
+    # Medianoche local exacta: ya es el 5.
+    (datetime(2026, 8, 5, 3, 0, tzinfo=UTC), TOMORROW, AFTER, date(2026, 8, 7)),
+    # 00:30 UTC del 4 son las 21:30 del 3.
+    (datetime(2026, 8, 4, 0, 30, tzinfo=UTC), date(2026, 8, 3), TODAY, TOMORROW),
+])
+def test_target_date_is_the_household_local_date(now, hoy, manana, pasado):
+    assert forecast_target_date("hoy", now, ZONE) == hoy
+    assert forecast_target_date("mañana", now, ZONE) == manana
+    assert forecast_target_date("Manana", now, ZONE) == manana
+    assert forecast_target_date("pasado mañana", now, ZONE) == pasado
+    assert forecast_target_date("pasado manana", now, ZONE) == pasado
+
+
+def test_target_date_refuses_a_naive_clock():
+    with pytest.raises(ValueError):
+        forecast_target_date("mañana", datetime(2026, 8, 5, 2, 30), ZONE)
+
+
+def test_household_timezone_matches_the_shipped_routines_timezone():
+    import yaml
+
+    with open("config/settings.yaml") as fh:
+        configured = yaml.safe_load(fh)["routines"]["timezone"]
+    assert HOUSEHOLD_TIMEZONE == configured
 
 
 def test_forecast_never_mentions_rain_probability():
     # precipitation_probability is absent from this HA integration's payload
     # (verified 2026-08-04). Answering by percentage would invent data.
-    out = describe_forecast(FORECAST, "mañana")
+    out = _say([{**RAIN, "precipitation_probability": 80}]).text
     assert "por ciento de lluvia" not in out.lower()
     assert "probabilidad" not in out.lower()
+    assert "80" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -110,47 +240,43 @@ def test_forecast_never_mentions_rain_probability():
 # que nadie la atrape -> el usuario pregunta y no escucha NADA. El degradado
 # obligatorio es el mismo que el módulo ya usa para vacío/None: NO_FORECAST /
 # NO_DATA, hablado.
-#
-# Mutación que estos tests deben atrapar: volver a
-#   day = forecast[index]; day.get("condition")   (sin isinstance)
-#   round(float(low))                             (sin _as_number)
-#   if not state / attrs = state.get("attributes") or {}   (sin isinstance)
 # ---------------------------------------------------------------------------
-
-import pytest
-
-from src.world.weather import NO_DATA, NO_FORECAST
-
 
 @pytest.mark.parametrize("bad_forecast", [
     None,
     "no soy una lista",
-    {"forecast": []},          # dict: len() funciona, indexar por int no
-    [None, None],              # elementos no-dict en la posición pedida
-    [{}, "mañana soleado"],    # string donde se espera un dict
-    [{}, 42],
-    [{}, ["condition", "sunny"]],
+    {"forecast": []},
+    [None, None],
+    [FOG, "mañana soleado"],
+    [FOG, 42],
+    [FOG, ["condition", "sunny"]],
 ])
 def test_malformed_forecast_degrades_instead_of_raising(bad_forecast):
-    assert describe_forecast(bad_forecast, "mañana") == NO_FORECAST
+    answer = _say(bad_forecast)
+    assert answer.text == NO_FORECAST and not answer.aligned
 
 
 @pytest.mark.parametrize("bad_temps", [
-    {"condition": "rainy", "templow": "unknown", "temperature": "unknown"},
-    {"condition": "rainy", "templow": None, "temperature": "n/a"},
-    {"condition": "rainy", "templow": {}, "temperature": []},
+    {"templow": "unknown", "temperature": "unknown"},
+    {"templow": None, "temperature": "n/a"},
+    {"templow": {}, "temperature": []},
 ])
 def test_non_numeric_forecast_temps_are_omitted_not_raised(bad_temps):
     # La condición sí se conoce, así que la frase se dice igual — solo se cae
     # el tramo de grados. Lo inaceptable sería el ValueError de float().
-    out = describe_forecast([{}, bad_temps], "mañana")
-    assert "lluvioso" in out.lower()
-    assert "grados" not in out.lower()
+    answer = _say([FOG, {**RAIN, **bad_temps}])
+    assert answer.aligned and answer.text == "Mañana: lluvioso."
+
+
+def test_only_max_temperature_is_spoken_alone():
+    assert _say([{**RAIN, "templow": None}]).text == "Mañana: lluvioso, 13 grados."
 
 
 def test_forecast_with_only_bad_temps_and_unknown_condition_says_no_forecast():
-    out = describe_forecast([{}, {"condition": "no-existe", "temperature": "x"}], "mañana")
-    assert out == NO_FORECAST
+    answer = _say([FOG, {**RAIN, "condition": "no-existe", "temperature": "x", "templow": None}])
+    assert answer.text == NO_FORECAST
+    # El día sí quedó alineado; lo que falta es contenido decible.
+    assert answer.alignment is ForecastAlignment.ALIGNED
 
 
 @pytest.mark.parametrize("bad_state", [
@@ -186,19 +312,13 @@ def test_boolean_temperature_is_not_spoken_as_a_number():
     assert out == "Hay soleado."
 
 
-def test_describe_forecast_pasado_manana_uses_index_2():
-    forecast = [
-        {"condition": "sunny", "temperature": 20, "templow": 10},
-        {"condition": "rainy", "temperature": 18, "templow": 9},
-        {"condition": "cloudy", "temperature": 15, "templow": 7},
-    ]
-    out = describe_forecast(forecast, "pasado mañana")
+def test_describe_forecast_pasado_manana_is_selected_by_date():
+    out = _say([CLOUD, FOG, RAIN], "pasado mañana", AFTER).text
     assert out.startswith("Pasado mañana:")
-    assert "nublado" in out and "entre 7 y 15 grados" in out
+    assert "nublado" in out and "entre 11 y 13 grados" in out
 
 
 def test_describe_forecast_pasado_manana_short_forecast_is_honest():
-    # Solo 2 días de pronóstico: índice 2 no existe → NO_FORECAST, no IndexError.
-    forecast = [{"condition": "sunny", "temperature": 20},
-                {"condition": "rainy", "temperature": 18}]
-    assert describe_forecast(forecast, "pasado mañana") == NO_FORECAST
+    # Solo 2 días de pronóstico: la fecha pedida no está -> NO_FORECAST.
+    answer = _say([FOG, RAIN], "pasado mañana", AFTER)
+    assert answer.text == NO_FORECAST and answer.alignment is ForecastAlignment.MISSING_DAY

@@ -1535,9 +1535,15 @@ class RequestDispatcher:
 
         Current conditions use the shared typed reader. Forecasts retain the
         existing bounded query and record retrieval time independently of issue time.
-        Neither branch substitutes another entity or uses an unclocked cache.
+        The forecast day is selected by its date in the household timezone, never
+        by position; 'forecast_date_alignment' is observed only when exactly one
+        entry matched. Neither branch substitutes another entity or uses an
+        unclocked cache.
         """
-        from src.world.weather import NO_DATA, describe_current, describe_forecast
+        from zoneinfo import ZoneInfo
+
+        from src.world.weather import (HOUSEHOLD_TIMEZONE, NO_DATA, NO_FORECAST, ForecastAlignment,
+                                       describe_current, describe_forecast, forecast_target_date)
 
         text_lower = text.lower()
         dia = ("pasado mañana" if "pasado mañana" in text_lower or "pasado manana" in text_lower
@@ -1549,22 +1555,31 @@ class RequestDispatcher:
             ttl_s=STATE_OBSERVATION_TTL_S, attempted_at=attempted)
         try:
             if dia:
+                zone = ZoneInfo(HOUSEHOLD_TIMEZONE)  # zoneinfo caches the instance per key
+                target = forecast_target_date(dia, attempted, zone)
                 payload = await self.ha.call_service_with_response(
                     "weather", "get_forecasts", self.weather_entity,
                     {"type": "daily"}, timeout=WEATHER_FORECAST_TIMEOUT_S)
                 service_response = payload.get("service_response") if type(payload) is dict else None
                 entity = service_response.get(self.weather_entity) if type(service_response) is dict else None
                 forecast = entity.get("forecast") if type(entity) is dict else None
-                if type(forecast) is list and all(type(item) is dict for item in forecast):
+                answer = (describe_forecast(forecast, dia, target, zone)
+                          if type(forecast) is list and all(type(item) is dict for item in forecast) else None)
+                if answer is not None and answer.alignment is not ForecastAlignment.INVALID_ENTRIES:
                     observation = Observation.from_read(source, available=True, observed_at=clock(),
                         ttl_s=STATE_OBSERVATION_TTL_S, attempted_at=attempted,
-                        unobserved_fields=("issued_at", "forecast_date_alignment"))
-                    response = describe_forecast(forecast, dia)
+                        unobserved_fields=("issued_at",) if answer.aligned
+                        else ("issued_at", "forecast_date_alignment"))
+                    response = answer.text
                 else:
                     observation = Observation.from_read(source, available=False, observed_at=None,
                         ttl_s=STATE_OBSERVATION_TTL_S, attempted_at=attempted,
                         reason=ObservationReason.UNAVAILABLE if payload is None else ObservationReason.INVALID)
-                    response = describe_forecast([], dia)
+                    response = NO_FORECAST
+                if answer is None or not answer.aligned:
+                    logger.info("Forecast day not selected (entity=%s, horizon=%s, target=%s, alignment=%s)",
+                                self.weather_entity, dia, target,
+                                answer.alignment if answer is not None else "invalid_payload")
             else:
                 if self.home_capabilities is not None:
                     snapshot = await self.home_capabilities.snapshot()
@@ -1604,7 +1619,6 @@ class RequestDispatcher:
         # al usuario escuchando NADA. El bloque está protegido para reforzar
         # la garantía anti-mudo: si observabilidad falla, se loguea y listo.
         try:
-            from src.world.weather import NO_FORECAST
             if success and response in (NO_DATA, NO_FORECAST):
                 self._stats["weather_no_data"] += 1
                 now = time.monotonic()

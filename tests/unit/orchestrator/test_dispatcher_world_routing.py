@@ -1,10 +1,13 @@
 """Weather routing, and the thermostat collision it must not cause."""
 
-from unittest.mock import AsyncMock, MagicMock
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.core.observation import ObservationReason, ObservationState
+from src.core.task_outcome import TaskStatus
 from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.dispatcher import PathType, Priority, RequestDispatcher
 from src.orchestrator.priority_queue import PriorityRequestQueue
@@ -488,19 +491,41 @@ async def test_configured_weather_entity_is_the_one_queried(dispatcher_with_asyn
     assert d.ha.call_service_with_response.await_args.args[2] == "weather.casa_de_prueba"
 
 
+# T037-U1: el reloj del turno es inyectado (home_capabilities.now), nunca
+# datetime.now(); 02:30Z del 5 son las 23:30 del 4 en Montevideo, así que
+# "mañana" es el 5 aunque en UTC ya sea el 5.
+FROZEN = datetime(2026, 8, 5, 2, 30, tzinfo=UTC)
+
+
+def _entry(iso, condition, high, low=None):
+    entry = {"datetime": iso, "condition": condition, "temperature": high}
+    if low is not None:
+        entry["templow"] = low
+    return entry
+
+
+def _forecast_payload(forecast, entity="weather.forecast_home"):
+    return {"service_response": {entity: {"forecast": forecast}}}
+
+
+def _frozen(d, now=FROZEN):
+    d.home_capabilities = SimpleNamespace(now=lambda: now)
+    return d
+
+
 async def test_forecast_is_read_from_the_configured_entity_key(dispatcher_with_async_ha):
     """El payload de HA viene indexado por entity_id: leer la clave correcta.
 
     Rojo si `_handle_weather` vuelve a indexar por el literal por defecto.
     """
-    d = dispatcher_with_async_ha
+    d = _frozen(dispatcher_with_async_ha)
     d.weather_entity = "weather.casa_de_prueba"
     d.ha.call_service_with_response = AsyncMock(return_value={
         "service_response": {
             "weather.casa_de_prueba": {
-                "forecast": [{}, {"condition": "rainy", "temperature": 13}]
+                "forecast": [_entry("2026-08-05T15:00:00+00:00", "rainy", 13)]
             },
-            "weather.forecast_home": {"forecast": [{}, {"condition": "sunny"}]},
+            "weather.forecast_home": {"forecast": [_entry("2026-08-05T15:00:00+00:00", "sunny", 20)]},
         }
     })
 
@@ -511,16 +536,84 @@ async def test_forecast_is_read_from_the_configured_entity_key(dispatcher_with_a
 
 
 async def test_pasado_manana_requests_day_after_tomorrow(dispatcher_with_async_ha):
-    d = dispatcher_with_async_ha
-    d.ha.call_service_with_response = AsyncMock(return_value={
-        "service_response": {"weather.forecast_home": {"forecast": [
-            {"condition": "sunny", "temperature": 20, "templow": 10},
-            {"condition": "rainy", "temperature": 18, "templow": 9},
-            {"condition": "cloudy", "temperature": 15, "templow": 7},
-        ]}}
-    })
+    d = _frozen(dispatcher_with_async_ha)
+    d.ha.call_service_with_response = AsyncMock(return_value=_forecast_payload([
+        _entry("2026-08-06T15:00:00+00:00", "cloudy", 15, 7),
+        _entry("2026-08-04T15:00:00+00:00", "sunny", 20, 10),
+        _entry("2026-08-05T15:00:00+00:00", "rainy", 18, 9),
+    ]))
     result = await d._handle_weather("qué tiempo hace pasado mañana", Priority.HIGH)
-    assert result.response.startswith("Pasado mañana:")
+    assert result.response == "Pasado mañana: nublado, entre 7 y 15 grados."
+    assert result.outcome.status is TaskStatus.COMPLETED and result.outcome.task_completed
+
+
+@pytest.mark.parametrize(("now", "expected"), [
+    # 23:30 del 4 en Montevideo: mañana es el 5 (por UTC sería el 6).
+    (FROZEN, "Mañana: lluvioso, 18 grados."),
+    # 03:30Z del 5 = 00:30 del 5 local: mañana es el 6.
+    (datetime(2026, 8, 5, 3, 30, tzinfo=UTC), "Mañana: nublado, 15 grados."),
+])
+async def test_forecast_day_uses_the_injected_clock_in_household_time(dispatcher_with_async_ha, now, expected):
+    d = _frozen(dispatcher_with_async_ha, now)
+    d.ha.call_service_with_response = AsyncMock(return_value=_forecast_payload([
+        _entry("2026-08-06T15:00:00+00:00", "cloudy", 15),
+        _entry("2026-08-05T15:00:00+00:00", "rainy", 18),
+        _entry("2026-08-04T15:00:00+00:00", "sunny", 20),
+    ]))
+    result = await d._handle_weather("va a llover mañana", Priority.HIGH)
+    assert result.response == expected
+    assert result.observation.observed_at == now and result.observation.attempted_at == now
+
+
+async def test_aligned_forecast_observes_date_alignment_but_never_issue_time(dispatcher_with_async_ha):
+    d = _frozen(dispatcher_with_async_ha)
+    d.ha.call_service_with_response = AsyncMock(return_value=_forecast_payload([
+        _entry("2026-08-04T15:00:00+00:00", "sunny", 20),
+        _entry("2026-08-05T15:00:00+00:00", "rainy", 18),
+    ]))
+    result = await d._handle_weather("va a llover mañana", Priority.HIGH)
+    assert result.response == "Mañana: lluvioso, 18 grados."
+    assert result.observation.unobserved_fields == ("issued_at",)
+    assert result.observation.state is ObservationState.PARTIAL
+    assert result.outcome.status is TaskStatus.COMPLETED
+    assert d._stats["weather_no_data"] == 0
+    d.ha.call_service_with_response.assert_awaited_once()
+
+
+@pytest.mark.parametrize("forecast", [
+    # Falta el día pedido (por posición, el segundo sería "mañana").
+    [_entry("2026-08-04T15:00:00+00:00", "sunny", 20), _entry("2026-08-06T15:00:00+00:00", "rainy", 18)],
+    # Primer elemento de ayer; el segundo es hoy, no mañana.
+    [_entry("2026-08-03T15:00:00+00:00", "sunny", 20), _entry("2026-08-04T15:00:00+00:00", "rainy", 18)],
+    # Duplicados del mismo día local que se dirían distinto.
+    [_entry("2026-08-05T12:00:00+00:00", "sunny", 20), _entry("2026-08-05T18:00:00+00:00", "rainy", 18)],
+    [],
+])
+async def test_unaligned_forecast_is_honest_and_not_completed(dispatcher_with_async_ha, forecast):
+    d = _frozen(dispatcher_with_async_ha)
+    d.ha.call_service_with_response = AsyncMock(return_value=_forecast_payload(forecast))
+    result = await d._handle_weather("va a llover mañana", Priority.HIGH)
+    assert result.response == NO_FORECAST
+    assert result.outcome.status is TaskStatus.FAILED and not result.outcome.task_completed
+    assert result.observation.unobserved_fields == ("issued_at", "forecast_date_alignment")
+    assert result.observation.observed_at == FROZEN
+    assert d._stats["weather_no_data"] == 1
+    d.ha.call_service_with_response.assert_awaited_once()
+
+
+@pytest.mark.parametrize("bad_datetime", ["2026-08-05T15:00:00", "mañana", None, 1754406000])
+async def test_unusable_forecast_dates_are_an_invalid_observation(dispatcher_with_async_ha, bad_datetime):
+    d = _frozen(dispatcher_with_async_ha)
+    d.ha.call_service_with_response = AsyncMock(return_value=_forecast_payload([
+        _entry("2026-08-04T15:00:00+00:00", "sunny", 20),
+        {"datetime": bad_datetime, "condition": "rainy", "temperature": 18},
+    ]))
+    result = await d._handle_weather("va a llover mañana", Priority.HIGH)
+    assert result.response == NO_FORECAST
+    assert result.outcome.status is TaskStatus.FAILED
+    assert result.observation.state is ObservationState.UNAVAILABLE
+    assert result.observation.reason is ObservationReason.INVALID
+    assert result.observation.observed_at is None
 
 
 async def test_no_data_increments_stat_and_warns(dispatcher_with_async_ha, caplog):
