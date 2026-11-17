@@ -216,7 +216,8 @@ class HouseholdIntentClassifier:
 # Normalization
 # --------------------------------------------------------------------------
 
-_WORD_RE = re.compile(r"\d+(?:[:.]\d{2})?|[^\W\d_]+")
+# A one-digit decimal ("1,5 horas") stays one token, as in src.timers.voice_request.
+_WORD_RE = re.compile(r"\d+(?:[:.]\d{2}|[.,]\d(?!\d))?|[^\W\d_]+")
 _LEAD_WORDS = frozenset({"che", "ey", "oye", "hola", "porfa", "podes", "podrias", "puedes", "podras"})
 
 
@@ -385,7 +386,7 @@ _NUMBER = (r"(?:\d+|un|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|
            r"|dieci(?:seis|siete|ocho|nueve)|veinte|veinti(?:un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve)"
            r"|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|media|medio|cuartos?)")
 _DURATION = re.compile(rf"\b{_NUMBER}(?: y \w+)? (?:de )?(?:segundos?|minutos?|mins?|horas?)\b|\bmedia hora\b"
-                       r"|\bhora y (?:media|cuarto)\b")
+                       r"|\bhora y (?:media|cuarto)\b|\bminuto y medio\b")
 _CLOCK = re.compile(r"\b(?:a|para) (?:las? )?(?:\d{1,2}(?:[:.]\d{2})?|una|dos|tres|cuatro|cinco|seis|siete|ocho"
                     r"|nueve|diez|once|doce|mediodia|medianoche)\b")
 _INTERCOM_TARGET = re.compile(

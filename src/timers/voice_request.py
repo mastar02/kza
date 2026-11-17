@@ -23,6 +23,7 @@ household_conventions.logging).
 import re
 import unicodedata
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import StrEnum
 
 from src.nlu.command_grammar import ROOM_ALIASES
@@ -75,7 +76,9 @@ class TimerSelector:
         return self.label is None and self.duration_s is None
 
 
-_WORD_RE = re.compile(r"\d+(?:[:.]\d{2})?|[^\W\d_]+")
+# A decimal with one digit ("1,5 horas", "2.5 minutos") is one token; "1.30"/"1:30" stay clock-like tokens.
+_WORD_RE = re.compile(r"\d+(?:[:.]\d{2}|[.,]\d(?!\d))?|[^\W\d_]+")
+_DECIMAL_RE = re.compile(r"\d+[.,]\d")
 
 _UNITS = {"un": 1, "uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5, "seis": 6, "siete": 7,
           "ocho": 8, "nueve": 9}
@@ -94,8 +97,11 @@ _HOURS_WORDS = frozenset({"hora", "horas"})
 _MINUTE_WORDS = frozenset({"minuto", "minutos", "min", "mins"})
 _SECOND_WORDS = frozenset({"segundo", "segundos", "seg", "segs"})
 
-_CLOCK_RE = re.compile(r"(?:^| )(?:a|para) (?:las? |el )?(?:\d{1,2}(?:[:.]\d{2})?|una|dos|tres|cuatro|cinco|seis|siete"
-                       r"|ocho|nueve|diez|once|doce|mediodia|medianoche)(?= |$)")
+# A clock time stands alone or is followed by what completes one ("a las 8 y media", "para las 7 de la tarde",
+# "para las 7 para la pasta"); "para las dos pizzas" is a label, not a clock time.
+_CLOCK_RE = re.compile(r"(?:^| )(?:a|para) (?:las? |el )?(?:(?:\d{1,2}(?:[:.]\d{2})?|una|dos|tres|cuatro|cinco|seis"
+                       r"|siete|ocho|nueve|diez|once|doce)(?=$| (?:y|menos|en punto|de la (?:manana|tarde|noche|madrugada)"
+                       r"|del mediodia|hs|h|horas|am|pm|para|que)(?: |$))|mediodia|medianoche)(?= |$)")
 _ARTICLES = frozenset({"el", "la", "los", "las"})
 _ROOMS = frozenset(ROOM_ALIASES)
 
@@ -136,12 +142,14 @@ def _number(w: list[str], i: int) -> tuple[int, int] | None:
         return int(word), i + 1
     if word in _UNITS:
         return _UNITS[word], i + 1
-    if word in _SMALL:
+    if word in _SMALL and word != "veinte":
         return _SMALL[word], i + 1
-    if word in _TENS:
-        if i + 2 < len(w) and w[i + 1] == "y" and w[i + 2] in _UNITS and w[i + 2] not in ("un", "una"):
-            return _TENS[word] + _UNITS[w[i + 2]], i + 3
-        return _TENS[word], i + 1
+    tens = 20 if word == "veinte" else _TENS.get(word)
+    if tens is not None:
+        # "treinta y un minutos", "veinte y cinco minutos" (spoken apart).
+        if i + 2 < len(w) and w[i + 1] == "y" and w[i + 2] in _UNITS:
+            return tens + _UNITS[w[i + 2]], i + 3
+        return tens, i + 1
     return None
 
 
@@ -183,6 +191,8 @@ def _duration_at(w: list[str], i: int) -> tuple[int | str, int] | None:
         return 1800, i + 2
     if _at(w, i, "medio", "minuto"):
         return 30, i + 2
+    if _at(w, i, "minuto", "y", "medio"):
+        return 90, i + 3
     if _at(w, i, "hora", "y", "media"):
         return 5400, i + 3
     if _at(w, i, "hora", "y", "cuarto"):
@@ -194,6 +204,10 @@ def _duration_at(w: list[str], i: int) -> tuple[int | str, int] | None:
             return 900, start + 3
     if _at(w, i, "tres", "cuartos", "de", "hora"):
         return 2700, i + 4
+    if _DECIMAL_RE.fullmatch(w[i]) and i + 1 < n and w[i + 1] in _TIME_UNITS:
+        # "1,5 horas": whole seconds only.
+        exact = Decimal(w[i].replace(",", ".")) * _TIME_UNITS[w[i + 1]]
+        return (int(exact) if exact == exact.to_integral_value() and exact > 0 else "invalid"), i + 2
     found = _number(w, i)
     if found is None:
         return None
@@ -212,13 +226,28 @@ def _duration_at(w: list[str], i: int) -> tuple[int | str, int] | None:
 
 
 def _bare_number(w: list[str], start: int, end: int) -> bool:
-    """A number without a unit ("un timer de 5") among ``w[start:end]``."""
+    """A number without a unit ("un timer de 5") among ``w[start:end]``.
+
+    A number that counts a following noun ("para las dos pizzas") is part of a
+    label, not a duration.
+    """
     for k in range(start, end):
         word = w[k]
-        if word.isdigit() or re.fullmatch(r"\d+[:.]\d{2}", word) or word in _SMALL or word in _TENS \
-                or (word in _UNITS and word not in ("un", "una", "uno")):
-            return True
+        if word.isdigit() or re.fullmatch(r"\d+[:.]\d{2}", word) or _DECIMAL_RE.fullmatch(word) or word in _SMALL \
+                or word in _TENS or (word in _UNITS and word not in ("un", "una", "uno")):
+            if not _counts_a_noun(w, k + 1, end):
+                return True
     return False
+
+
+def _counts_a_noun(w: list[str], k: int, end: int) -> bool:
+    """The word at ``k`` is a counted noun: a content word, not a unit, number or connector."""
+    if k >= end:
+        return False
+    word = w[k]
+    return (word.isalpha() and word not in _TIME_UNITS and word not in _UNITS and word not in _SMALL
+            and word not in _TENS and word not in _LEAD and word not in _TRAIL and word not in _HALF
+            and word not in ("cuarto", "cuartos", "y", "menos"))
 
 
 def _trim(original: list[str], folded: list[str], *, state_words: bool) -> list[str]:

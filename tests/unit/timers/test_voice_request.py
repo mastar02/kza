@@ -61,6 +61,19 @@ CREATE = [
     ("poneme una alarma de diez minutos", 600, None),
     ("alarma de 5 minutos", 300, None),
     ("poné una alarma en 10 minutos", 600, None),
+    # T030-U1 R5: rioplatense forms that were refused.
+    ("poné un timer de treinta y un minutos", 1860, None),
+    ("poné un timer de cuarenta y una minutos", 2460, None),
+    ("poné un timer de veinte y cinco minutos", 1500, None),
+    ("poné un timer de minuto y medio", 90, None),
+    ("poné un timer de 1,5 horas", 5400, None),
+    ("poné un timer de 1.5 horas", 5400, None),
+    ("poné un timer de 2,5 minutos", 150, None),
+    ("poné un timer de diez minutos para las dos pizzas", 600, "dos pizzas"),
+    ("poné un timer de 5 minutos para 2 personas", 300, "2 personas"),
+    ("poné una alarma de minuto y medio", 90, None),
+    ("poné una alarma de treinta y un minutos", 1860, None),
+    ("poné una alarma de 1,5 horas", 5400, None),
 ]
 
 
@@ -97,6 +110,19 @@ NEGATIVE = [
     ("de cinco minutos en la cocina", I.ROOM_TARGET),
     ("de 5 minutos en el living", I.ROOM_TARGET),
     ("en el hall de 5 minutos", I.ROOM_TARGET),
+    # T030-U1 R5: still never guessed.
+    ("de 1,3 segundos", I.UNPARSEABLE),
+    ("de 1,50 horas", I.UNPARSEABLE),
+    ("de 1.30 horas", I.UNPARSEABLE),
+    ("de una hora 15", I.UNPARSEABLE),
+    ("de 5 minutos y 3", I.UNPARSEABLE),
+    ("de cinco para la pasta", I.UNPARSEABLE),
+    ("de 0,0 minutos", I.UNPARSEABLE),
+    ("para las 7 para la pasta", I.CLOCK_TIME),
+    ("para las 7 de la tarde", I.CLOCK_TIME),
+    ("a las dos y media", I.CLOCK_TIME),
+    ("para la una", I.CLOCK_TIME),
+    ("de diez minutos para las dos", I.UNPARSEABLE),
 ]
 
 
