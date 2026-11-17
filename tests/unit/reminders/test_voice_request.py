@@ -193,6 +193,57 @@ def test_success_table(utterance, now, expected, recurrence, text):
         parse_recurrence(result.recurrence)
 
 
+# Boundaries the first table left open (review round 1, F5); each row pins one edge.
+BOUNDARIES = [
+    # (utterance, now, expected trigger or ambiguity code, detail)
+    ("recordame a las 6 de la mañana x", MONDAY_10, A.PAST_TODAY, None),
+    ("recordame a las 5 y 59 de la mañana x", MONDAY_10, local(2026, 11, 17, 5, 59), None),
+    ("recordame mañana a las 8 de la mañana x", datetime(2026, 11, 16, 5, 30, tzinfo=MVD), A.AMBIGUOUS_DAY,
+     "tomorrow_before_dawn"),
+    ("recordame mañana a las 8 de la mañana x", datetime(2026, 11, 16, 5, 59, tzinfo=MVD), A.AMBIGUOUS_DAY,
+     "tomorrow_before_dawn"),
+    ("recordame mañana a las 8 de la mañana x", datetime(2026, 11, 16, 6, 0, tzinfo=MVD), local(2026, 11, 17, 8),
+     None),
+    ("recordame a las 6 de la noche x", MONDAY_10, local(2026, 11, 16, 18), None),
+    ("recordame a las 5 de la noche x", MONDAY_10, A.AMBIGUOUS_MERIDIEM, None),
+    ("recordame mañana a las 12 y media de la noche x", MONDAY_10, A.AMBIGUOUS_DAY, "midnight_with_day"),
+    ("recordame el 3 de setiembre a las 8 de la noche x", MONDAY_10, A.UNPARSEABLE, "unsupported_date"),
+    ("recordame en setiembre a las 8 de la noche x", MONDAY_10, A.UNPARSEABLE, "unsupported_date"),
+    ("recordame en septiembre a las 8 de la noche x", MONDAY_10, A.UNPARSEABLE, "unsupported_date"),
+    ("recordame a las 6 de la madrugada x", datetime(2026, 11, 16, 5, 0, tzinfo=MVD), local(2026, 11, 16, 6), None),
+    ("recordame a las 7 de la madrugada x", datetime(2026, 11, 16, 5, 0, tzinfo=MVD), A.AMBIGUOUS_MERIDIEM, None),
+    ("recordame a las 3 del mediodía x", MONDAY_10, local(2026, 11, 16, 15), None),
+    ("recordame a las 4 del mediodía x", MONDAY_10, A.AMBIGUOUS_MERIDIEM, None),
+    ("recordame a las 21.30 x", MONDAY_10, local(2026, 11, 16, 21, 30), None),
+    ("recordame a las 18 de la noche x", MONDAY_10, local(2026, 11, 16, 18), None),
+    ("recordame a las 17 de la noche x", MONDAY_10, A.UNPARSEABLE, "period_contradicts_hour"),
+]
+
+
+@pytest.mark.parametrize("utterance,now,expected,detail", BOUNDARIES)
+def test_boundaries(utterance, now, expected, detail):
+    result = parse(utterance, now)
+    if isinstance(expected, A):
+        assert (result.ambiguity, result.detail, result.trigger_at) == (expected, detail, None)
+    else:
+        assert result.ok, (result.ambiguity, result.detail)
+        assert result.trigger_at == expected
+        assert result.text == "x"
+
+
+def test_stacked_wake_and_politeness_words():
+    result = parse("Nexa, che, nexa recordame en 5 minutos mirar la olla", wake_words=("nexa",))
+    assert (result.ok, result.text) == (True, "mirar la olla")
+
+
+def test_day_change_across_daylight_saving_keeps_the_wall_time():
+    new_york = ZoneInfo("America/New_York")
+    before = datetime(2027, 3, 13, 10, 0, tzinfo=new_york)          # EST, the day before spring forward
+    result = parse("recordame mañana a las 8 de la mañana x", before)
+    assert result.trigger_at == datetime(2027, 3, 14, 8, 0, tzinfo=new_york).timestamp()
+    assert datetime.fromtimestamp(result.trigger_at, timezone.utc) == datetime(2027, 3, 14, 12, 0, tzinfo=timezone.utc)
+
+
 def test_trigger_is_utc_epoch_of_local_wall_time():
     result = parse("recordame a las 8 de la noche x")
     # 20:00 in Montevideo (UTC-3) is 23:00 UTC.
