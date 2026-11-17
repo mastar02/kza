@@ -347,6 +347,9 @@ ROUTINE_CREATION_REQUESTS = [
     "nexa nueva automatización de luces",
     "creá una rutina que cuando salga el sol prenda la luz",
     "automatizá las luces del living",
+    # A creation verb needs no 'una' ('creá la rutina ...'); 'nueva' may follow the noun.
+    "creá la rutina de la mañana que apague las luces",
+    "rutina nueva que apague las luces",
 ]
 
 
@@ -388,6 +391,7 @@ def test_routine_content_alone_would_be_a_grammar_command(text):
     ("quiero borrar una rutina", None),
     ("quiero ejecutar una nueva rutina", None),
     ("me encanta la rutina de la noche", None),
+    ("salió una nueva rutina de ejercicios", None),
     ("no sé si crear rutina para la noche", None),
     ("pensaba en una nueva rutina para la noche", None),
     ("qué rutina más aburrida", None),
