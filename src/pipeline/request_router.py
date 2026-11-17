@@ -26,8 +26,8 @@ from src.home_assistant.voice_resolver import HomeVoiceResolver
 from src.nlu.home_command import parse_home_command
 from src.nlu.command_gate import AcceptanceDecision, CommandAcceptanceGate, contains_wake_word
 from src.nlu.command_grammar import (
-    PartialCommand, has_unresolved_light_location, non_immediate_action_reason, parse_default_light_target,
-    parse_partial_command,
+    WAKE_TERMS, PartialCommand, has_unresolved_light_location, non_immediate_action_reason,
+    parse_default_light_target, parse_partial_command,
 )
 from src.nlu.household_intents import HouseholdIntent, HouseholdIntentClassifier, HouseholdIntentSettings
 from src.nlu.sensitive_actions import is_sensitive
@@ -48,7 +48,7 @@ from src.core.task_outcome import (
 from src.core.voice_delivery import GenerationState, ResponseResult
 from src.core.observation import Observation
 from src.nlu.llm_router import LLMCommandRouter
-from src.world.household_time import WEEKDAYS
+from src.world.household_time import WEEKDAYS, parse_clock_query
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +345,9 @@ class RequestRouter:
         # P3-F2: claims household turns before any domotics producer.
         self.household_intents = household_intents if household_intents is not None else HouseholdIntentClassifier(
             HouseholdIntentSettings(wake_words=self._wake_words))
+        # T037-U4: the same wake terms the dispatcher strips before recognizing
+        # a clock question, so both agree on which turns are clock turns.
+        self._clock_wake_words = tuple(sorted(WAKE_TERMS | set(self.household_intents.settings.wake_words)))
 
         # Command acceptance gate (consolidates _is_noise_text + STT confidence).
         self.command_gate = command_gate or CommandAcceptanceGate(
@@ -970,18 +973,26 @@ class RequestRouter:
         # P3-F2 S5: the household layer runs before the extended home
         # command, the grammar and the 7B, so a claimed turn never reaches a
         # domotics producer (design F26: never move it after the grammar).
+        tv_signal = textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE
         household = self.household_intents.classify(text)
         if household is not None:
             return await self._process_household_turn(
                 text, household, result, cmd=cmd, audio=audio, room_id=room_id, pipeline_start=pipeline_start,
-                tv_signal=textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE,
+                tv_signal=tv_signal,
             )
 
         if await self._try_home_command(
-            text, result, room_id=room_id, pipeline_start=pipeline_start,
-            extra_gate=textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE,
+            text, result, room_id=room_id, pipeline_start=pipeline_start, extra_gate=tv_signal,
         ):
             return result
+
+        # T037-U4 (user answer T037-U3-Q1): a whole-phrase time/date question
+        # on a clear wake skips the 7B veto, like a short household request, so
+        # the household clock answers it even while :8101 is down. A weak wake
+        # (TV signal or a transcript-based wake engine) keeps the 7B gate below.
+        clock_turn = self._is_clear_wake_clock_question(text, tv_signal=tv_signal)
+        if clock_turn:
+            logger.info("[Clock] clear wake, skipping the 7B veto: %r", text)
 
         # 1a-grammar. Grammar fast-path: la gramática determinística manda en
         # domótica.  Si extrae intent+entity con alta confianza, construimos
@@ -1025,7 +1036,7 @@ class RequestRouter:
         if fast_classification is not None:
             classification = fast_classification
             result["llm_classification"] = classification
-        elif self.llm_command_router is not None:
+        elif self.llm_command_router is not None and not clock_turn:
             t_llm = time.perf_counter()
             classification = await self._classify_command(text, room_id=room_id)
             llm_ms = (time.perf_counter() - t_llm) * 1000
@@ -1261,6 +1272,26 @@ class RequestRouter:
                     room_context=room_context,
                 )
         return on_response
+
+    def _is_clear_wake_clock_question(self, text: str, *, tv_signal: bool) -> bool:
+        """Whether a turn is a clock question that skips the 7B veto (T037-U4).
+
+        Only a whole-phrase time or date question (the dispatcher's own
+        recognizer, with the same wake terms) on a clear wake qualifies. A
+        weak wake as P3-F2 defines it (textual wake, ambient_strict, a wake
+        score below the grammar bonus, or a transcript-based wake engine)
+        keeps the 7B gate.
+
+        Args:
+            text: Accepted transcript of the turn.
+            tv_signal: Textual wake, ambient_strict or a low wake score.
+
+        Returns:
+            True when the turn goes to the dispatcher with no 7B call.
+        """
+        if tv_signal or not self.wake_acoustically_confirmed:
+            return False
+        return parse_clock_query(text, self._clock_wake_words) is not None
 
     async def _household_veto_passes(self, text: str, result: dict, *, room_id: str | None, tv_signal: bool) -> bool:
         """Run the 7B as a veto on a weakly woken claimed turn (P3-F2 S6).
