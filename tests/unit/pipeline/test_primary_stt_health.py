@@ -71,6 +71,10 @@ def _processor(primary, shadow, *, threshold=3, interval=600.0, veto=False, cloc
 async def _drain(cp):
     while cp._health_tasks or cp._shadow_tasks:
         await asyncio.gather(*cp._health_tasks, *cp._shadow_tasks, return_exceptions=True)
+        # gather over finished tasks completes without yielding, and the done
+        # callback that discards them is queued with call_soon: yield once so
+        # it runs, or this loop spins forever (see capture_recorders drain).
+        await asyncio.sleep(0)
 
 
 # ---------------------------------------------------------------- codes
@@ -422,7 +426,7 @@ async def test_commands_after_a_failed_reload_do_not_load_the_model():
         assert snap["codes"][next(c for c in snap["codes"] if c.startswith("ModelReloadError:model_unloaded:"))] == 3
     finally:
         await cp.aclose()
-        stt.close()
+        await stt.aclose()
 
 
 # ---------------------------------------------------------------- skip the primary while it fails (L2)
