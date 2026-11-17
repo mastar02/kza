@@ -59,9 +59,13 @@ retirado; el índice de comandos de Home Assistant se copia entero;
 arranque de K la recrea vacía; la colección heredada `user_memories` de
 `data/memory_db` (anterior a la política de memoria, en cuarentena y nunca
 leída) tampoco se copia (SC4C-Q2b): queda en H y se borra para siempre
-cuando el retiro destruye H. Cualquier otra colección (por ejemplo un nombre
-parecido como `user_memories_v0`, o `user_memories` en otro almacén) hace
-rechazar el plan.
+cuando el retiro destruye H. El snapshot de la compactación
+(`<raíz>/compaction/<id>/snapshot-n`) también guarda una copia opaca de
+`data/memory_db/chroma.sqlite3` y, en producción, de sus archivos HNSW y
+`index_metadata.pickle`, con los bytes de esa colección; `compact retire` y
+`compact abort` borran el snapshot y con él esa copia. Cualquier otra
+colección (por ejemplo un nombre parecido como `user_memories_v0`, o
+`user_memories` en otro almacén) hace rechazar el plan.
 
 ## Qué NO hace (límites, P5 = C)
 

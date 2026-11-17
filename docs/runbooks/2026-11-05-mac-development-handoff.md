@@ -1826,6 +1826,39 @@ y el runbook pide revisar si no es 0.
   cierre del propio `start`) veía `runtime_admission_busy`. El ayudante
   `_gone` ahora espera también a los hilos; mismas aserciones y plazos.
 
+### SC-4c — revisión independiente, ronda 2 (2026-11-17)
+
+Veredicto `changes_needed` (SC4C-RV2-1 a RV2-4) sobre `07b4a5b1`; sin
+cambios de producto.
+
+- RV2-1: el test de la `user_memories` heredada no revisaba el snapshot
+  (sólo el registro de la compactación, `admission/compaction/v1/<id>`), y
+  el test, `87d96f6a` y el informe decían que sí. El snapshot
+  (`<raíz>/compaction/<id>/snapshot-n`) guarda una copia opaca de los
+  archivos del SDK de H y con ella los bytes heredados hasta el retiro o el
+  `abort`. Ahora el test toma la ruta del evento `snapshot` y afirma que los
+  bytes están en su `state/data/memory_db/chroma.sqlite3`, sólo en archivos
+  `sdk_opaque` del manifiesto e idénticos al archivo de H en la misma ruta
+  (nunca en `manifest.json` ni en una exportación) y que fuera de H no hay
+  otro lugar de la raíz con ellos; corre con dos finales, retiro y `abort`
+  después de la activación (H idéntico y sirviendo, snapshot borrado,
+  bytes sólo en H). La primera corrida en el server mostró una vez los
+  bytes heredados también en un `data_level0.bin` de `data/chroma_db` de H
+  y de su copia: residuo de heap del primer run del mundo de prueba
+  (SC4C-Q3); el test lo admite sólo como copia idéntica de H.
+- RV2-2: DEPLOYMENT y el runbook de compactación dicen ahora que el
+  snapshot guarda esa copia opaca (`data/memory_db/chroma.sqlite3` y, en
+  producción, los HNSW e `index_metadata.pickle`) y que `retire` y `abort`
+  la borran.
+- RV2-3: la prueba del lease con el hijo pausado vuelve a afirmar que el
+  hijo vive (`process_started_at(pid) is not None`), no sólo que no se fue.
+- RV2-4: sin acción (comprobaciones del revisor de baja exacta por almacén,
+  crash, `resume` y `abort`).
+- Server, como `yo`, `taskset -c 24-47 nice -n 10`, con `pgrep` < 4:
+  `tests/unit/tools/test_sc4c_chroma_closed_list.py` 26 passed; el test
+  heredado tres veces más (2 passed cada vez); los cuatro mutantes `SC4C_Q2B`
+  que usan ese test, 4/4 muertos.
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.

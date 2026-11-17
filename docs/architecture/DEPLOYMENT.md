@@ -1204,8 +1204,12 @@ compactación podía pasar del snapshot.
   fijada además a `memory.chroma_path` y `memory.long_term_collection` de
   `config/settings.yaml`): el snapshot no la lee, el hijo no la recibe y
   queda registrada sólo por nombre. Sus bytes siguen en H hasta que el
-  retiro lo destruye; ahí se borran para siempre. (4) Cualquier otra
-  colección, incluidos un nombre parecido (`user_memories_v0`,
+  retiro lo destruye; ahí se borran para siempre. El snapshot
+  (`<raíz>/compaction/<id>/snapshot-n`) también guarda una copia opaca de
+  `data/memory_db/chroma.sqlite3` y, en producción, de los archivos HNSW y
+  `index_metadata.pickle` de esa colección, con sus bytes; el retiro y el
+  `abort` borran el snapshot y con él esa copia (revisión SC4C-RV2-2).
+  (4) Cualquier otra colección, incluidos un nombre parecido (`user_memories_v0`,
   `User_memories`), `user_memories` en otro almacén o una `user_memories`
   registrada como destino, rechaza
   `runtime_admission_compaction_unlisted_collection`: en el `plan` (lee los
@@ -1255,11 +1259,18 @@ compactación podía pasar del snapshot.
   pins (rutas y sha256). El snapshot
   conserva la exportación de las colecciones copiadas y de la de política
   (con los registros excluidos) hasta que se retira junto con H; de
-  `home_assistant_routines` y de la heredada `user_memories` sólo guarda el
-  nombre.
+  `home_assistant_routines` y de la heredada `user_memories` no exporta
+  nada y el manifiesto sólo guarda el nombre (sus bytes sí están en la copia
+  opaca de los archivos del SDK de H, ver (3b)).
 - **Residual.** El texto de `home_assistant_routines` que ya está en H queda
   en H (y en los bytes opacos del snapshot) hasta que el retiro destruye H;
-  la transición es lo que lo quita. SC-0 encontró un lector en producción
+  la transición es lo que lo quita. Lo mismo vale para el residuo de heap de
+  SC4C-Q3: un archivo HNSW de `data/chroma_db` de H puede tener texto de
+  memoria (en la ronda 2 de la revisión el test lo mostró una vez en el
+  server, con la `user_memories` heredada) y su copia opaca en el snapshot
+  también, hasta
+  el retiro o el `abort`; K no lo recibe porque cada almacén lo escribe un
+  hijo limpio. SC-0 encontró un lector en producción
   (`routine_manager._handle_list` → `list_routines`, el intent de voz
   «listar mis rutinas»): después de la transición esa lista sale vacía hasta
   que se dicte una rutina nueva. El diseño deja a SC-R decidir entre la baja
