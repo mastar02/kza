@@ -1585,8 +1585,6 @@ class MultiRoomAudioLoop:
                 # A wake or a response may have started since admission.
                 if self._catalog_refresh_blocker() is not None:
                     return
-                self._catalog_refreshed_at = self._microphone_monotonic()
-                self._catalog_refresh_deferred = None
                 await self._recover_streams(list(rooms), catalog_refresh=True)
             else:
                 await self._recover_streams(list(rooms))
@@ -1657,6 +1655,11 @@ class MultiRoomAudioLoop:
                 await self._inputs.retire(room_id)
             if not self._input_epoch_current(epoch):
                 return
+            if catalog_refresh:
+                # Charge the rate limit only once the cut really happened: a
+                # pause that superseded this recovery cut nothing on its behalf.
+                self._catalog_refreshed_at = self._microphone_monotonic()
+                self._catalog_refresh_deferred = None
             if not healthy_other:
                 # A retained open may not yet have constructed its owner when
                 # the first retirement pass ran. No new retry can enter now.

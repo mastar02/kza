@@ -1773,6 +1773,28 @@ class TestLateMicrophoneCatalogRefresh:
         assert any("refresh skipped (command)" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.asyncio
+    async def test_rate_limit_is_charged_only_once_the_rooms_were_cut(self, tmp_path):
+        """Una pausa que gana antes del corte no consume la ventana (T025-U2-RV2-4)."""
+        rig = _LateCatalogRig(tmp_path)
+        rig.plug_cocina()
+        rig.loop._catalog_missing["cocina"] = rig.COCINA_CARD
+        retire = rig.loop._inputs.retire
+
+        async def pause_then_retire(room_id):
+            rig.loop.begin_pause_inputs()
+            await retire(room_id)
+
+        with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
+        ), patch.object(rig.loop._inputs, "retire", side_effect=pause_then_retire):
+            await _seed_owned_inputs(rig.loop, {"living": rig.old_living})
+            assert rig.loop._request_catalog_refresh(rig.cocina) is True
+            await rig.loop._recovery_task
+            await rig.stop()
+        assert rig.refreshes == 0
+        assert rig.loop._catalog_refreshed_at is None
+
+    @pytest.mark.asyncio
     async def test_activity_check_does_not_notify_command_end_listeners(self, tmp_path):
         """El chequeo del refresh no es un consumidor del turno (T025-U2-RV2-5)."""
         rig = _LateCatalogRig(tmp_path)
