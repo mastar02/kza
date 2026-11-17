@@ -284,7 +284,8 @@ class EventLogger:
 
     @staticmethod
     def _metrics(context: dict) -> dict:
-        allowed = {"wake_score", "rms", "compression_ratio", "no_speech_prob", "avg_logprob", "confidence", "latency_ms", "success"}
+        allowed = {"wake_score", "rms", "compression_ratio", "no_speech_prob", "avg_logprob", "confidence", "latency_ms", "success",
+                   "stt_fallback"}
         return {key: value for key, value in context.items() if key in allowed
                 and type(value) in (bool, int, float) and math.isfinite(value)}
 

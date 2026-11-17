@@ -53,6 +53,9 @@ _WAKE_CONTEXT: ContextVar = ContextVar("kza_wake_context", default=None)
 # for other inputs. A capture dispatched at the cap must name the wake word.
 _ENDPOINT_CODE: ContextVar = ContextVar("kza_endpoint_code", default=None)
 _MAX_UTTERANCE_CODE = "close_max_utterance"
+# Which STT produced the transcript of the command being processed
+# (ProcessedCommand.stt_source); carried into the result and ASR outcomes.
+_STT_SOURCE: ContextVar = ContextVar("kza_stt_source", default=None)
 
 
 # Mapeo intent → dominio HA requerido. Usado por el guard previo al NLU
@@ -673,6 +676,7 @@ class RequestRouter:
             if not textual_wake and getattr(audio_or_event, "capture_trigger", None) == "wake" else None
         )
         _ENDPOINT_CODE.set(getattr(audio_or_event, "endpoint_code", None))
+        _STT_SOURCE.set(None)
         wake_rms = (
             float(np.sqrt(np.mean(np.square(audio))))
             if audio is not None and len(audio) else 0.0
@@ -766,6 +770,24 @@ class RequestRouter:
             result.pop("confirmation_question", None)
         return result
 
+    @staticmethod
+    def _note_stt_source(cmd, result: dict) -> None:
+        """Record which STT produced the transcript (result and ASR outcomes)."""
+        source = getattr(cmd, "stt_source", None)
+        source = source if isinstance(source, str) else None
+        _STT_SOURCE.set(source)
+        if source is not None:
+            result["stt_source"] = source
+
+    @staticmethod
+    def _asr_signals(signals: dict | None) -> dict:
+        """Gate signals plus the transcript's STT source, for ASR outcome events."""
+        merged = dict(signals or {})
+        source = _STT_SOURCE.get()
+        if source is not None:
+            merged["stt_source"] = source
+        return merged
+
     def _verify_wake(self, text: str, gate_decision: AcceptanceDecision,
                      room_id: str | None) -> AcceptanceDecision:
         """Capture checks after the gate: max-utterance wake word and wake verification.
@@ -843,6 +865,7 @@ class RequestRouter:
         text = cmd.text
         result["text"] = text
         result["timings"].update(cmd.timings)
+        self._note_stt_source(cmd, result)
 
         if not text.strip():
             # Distinguir "el veto híbrido se comió habla real" de "el STT no
@@ -883,7 +906,7 @@ class RequestRouter:
 
         await alog_asr_outcome(
             self._asr_event_logger, room_id, "accepted", "ok", text,
-            gate_decision.signals or {}, wake_score, wake_rms,
+            self._asr_signals(gate_decision.signals), wake_score, wake_rms,
             sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
         )
         await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
@@ -1287,6 +1310,7 @@ class RequestRouter:
         text = cmd.text
         result["text"] = text
         result["timings"].update(cmd.timings)
+        self._note_stt_source(cmd, result)
 
         if not text.strip():
             # Igual que en el path orchestrated: el veto híbrido no es lo mismo
@@ -1323,7 +1347,7 @@ class RequestRouter:
 
         await alog_asr_outcome(
             self._asr_event_logger, room_id, "accepted", "ok", text,
-            gate_decision.signals or {}, wake_score, wake_rms,
+            self._asr_signals(gate_decision.signals), wake_score, wake_rms,
             sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
         )
         await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
@@ -1769,12 +1793,12 @@ class RequestRouter:
             )
             await alog_asr_outcome(
                 self._asr_event_logger, room_id, "earcon_fired",
-                reason, text, signals or {}, wake_score, wake_rms,
+                reason, text, self._asr_signals(signals), wake_score, wake_rms,
                 sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
             )
         await alog_asr_outcome(
             self._asr_event_logger, room_id, outcome,
-            reason, text, signals or {}, wake_score, wake_rms,
+            reason, text, self._asr_signals(signals), wake_score, wake_rms,
             sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
         )
 

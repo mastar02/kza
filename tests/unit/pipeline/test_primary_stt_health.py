@@ -493,3 +493,74 @@ async def test_capacity_errors_are_not_model_failures():
     snap = health.snapshot()
     assert snap["failures"] == 0 and snap["primary_not_run"] == 1
     assert health.state is SttHealthState.HEALTHY and primary.reloads == 0
+
+
+# ---------------------------------------------------------------- which STT produced the text (VCP-1)
+
+class _AsrEvents:
+    def __init__(self):
+        self.calls = []
+
+    def log(self, entity_id, action, event_type=None, trigger_phrase=None, extra_context=None, **kwargs):
+        self.calls.append((action, dict(extra_context or {})))
+
+
+def _router_with(cmd, events):
+    from src.nlu.command_gate import CommandAcceptanceGate
+    from src.pipeline.request_router import RequestRouter
+    from tests.mocks.responses import response_handler_mock
+    processor = MagicMock()
+    processor.process_command = AsyncMock(return_value=cmd)
+    orch = MagicMock()
+    orch.process = AsyncMock(return_value=MagicMock(
+        intent="domotics", response="ok", success=True, action=None, path=None, timings={},
+        was_queued=False, queue_position=None))
+    return RequestRouter(
+        command_processor=processor, orchestrator=orch, orchestrator_enabled=True,
+        response_handler=response_handler_mock(), audio_manager=MagicMock(), wake_words=("nexa",),
+        command_gate=CommandAcceptanceGate(), wake_acoustically_confirmed=True, asr_event_logger=events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text,action", [("prendé la luz del pasillo", "accepted:ok"), ("", "gate_rejected:empty")])
+async def test_fallback_marker_reaches_the_result_and_the_asr_outcome(text, action):
+    from src.pipeline.command_event import CommandEvent
+    cmd = MagicMock(text=text, user=None, emotion=None, timings={}, stt_confidence=None,
+                    stt_vetoed=False, stt_source="shadow_fallback")
+    events = _AsrEvents()
+    router = _router_with(cmd, events)
+    event = CommandEvent(audio=AUDIO, room_id="pasillo", wake_score=0.9, capture_trigger="wake",
+                         capture_complete=True)
+    result = await router.process_command(event)
+    assert result["stt_source"] == "shadow_fallback"
+    logged = [extra for logged_action, extra in events.calls if logged_action == action]
+    assert logged and all(extra["stt_source"] == "shadow_fallback" and extra["stt_fallback"] is True
+                          for extra in logged)
+
+
+def test_fallback_flag_survives_as_a_metric():
+    from src.analytics.event_logger import EventLogger
+    metrics = EventLogger._metrics({"stt_fallback": True, "stt_source": "shadow_fallback", "rms": 0.1})
+    assert metrics == {"stt_fallback": True, "rms": 0.1}
+
+
+@pytest.mark.asyncio
+async def test_fallback_text_never_gets_the_primary_lineage():
+    from types import SimpleNamespace
+    from src.memory.producer_context import producer_context
+    from tests.integration.test_command_capture_provenance import Registry, selected
+    from tests.mocks.memory_sources import memory_source
+    registry = Registry()
+    health = PrimarySttHealth(PrimarySttHealthConfig(), clock=lambda: 0.0)
+    cp = CommandProcessor(_FlakyPrimary(), speaker_identifier=object(), user_manager=SimpleNamespace(
+        voice_review_managed=True, voice_registry=registry), shadow_stt=_Shadow(), stt_health=health)
+    source = memory_source(now=2_000_000_000.)
+    try:
+        with producer_context("synthetic-room", (source,)):
+            result = await cp.process_command(AUDIO, use_parallel=False, audio_provenance=selected(16000))
+        assert result.stt_source == "shadow_fallback" and result.text == "prende la luz"
+        [(_sources, values)] = registry.calls
+        assert values["transcript_provenance"] is None and values["transcript_span"] is None
+        assert values["transcript_truncated"] is None
+    finally:
+        await cp.aclose()

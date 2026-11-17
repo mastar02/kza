@@ -277,6 +277,7 @@ class CommandProcessor:
             if stt_result is not None:
                 result.stt_confidence = stt_result
                 result.timings["stt"] = stt_result.elapsed_ms
+            if stt_result is not None and result.stt_source == "primary":
                 # This branch actually called primary STT on this full input.
                 # A plain pretranscribed_text never receives inferred lineage.
                 transcript_provenance = audio_provenance
@@ -284,6 +285,8 @@ class CommandProcessor:
                     if type(audio_provenance) is CaptureProvenance and audio.size else None)
                 transcript_truncated = False
             elif pretranscribed_text is None:
+                # No primary transcript (failed, skipped, or the shadow stood
+                # in): the text never receives the primary STT lineage.
                 transcript_provenance = transcript_span = transcript_truncated = None
             if speaker is not None:
                 result.user, result.speaker_confidence, result.timings["speaker_id"] = speaker
