@@ -28,7 +28,9 @@ _MINUTE_WORDS = {"media": 30, "cuarto": 15}
 _CLOCK_DIGITS = re.compile(r"^(\d{1,2})(?:[:.](\d{2}))?$")
 _WORD = re.compile(r"\d{1,2}[:.]\d{2}|\d+|[^\W\d_]+")
 _AM_PERIODS = frozenset({"manana", "madrugada"})
-_PM_PERIODS = frozenset({"tarde", "noche"})
+_PM_PERIODS = frozenset({"tarde", "noche", "mediodia"})
+# "las 12 de la noche" is midnight and "las 2 de la noche" is 02:00, not 14:00.
+_NIGHT_EARLY_HOURS = frozenset({12, 1, 2, 3, 4})
 
 
 def _fold(text: str) -> str:
@@ -65,12 +67,18 @@ class _SpokenClock:
     period: str | None = None
 
     def matches(self, hour: int, minute: int) -> bool:
+        """Whether a household wall time ``hour:minute`` is this spoken time.
+
+        Without a period a 1-12 hour is either half of the day. "de la
+        noche" moves 12 and 1-4 past midnight ("las 12 de la noche" is
+        00:00); "del mediodía" and "de la tarde" keep 12 at noon.
+        """
         if minute != self.minute:
             return False
         if self.hour > 12:
             return hour == self.hour
         base = self.hour % 12
-        if self.period in _AM_PERIODS:
+        if self.period in _AM_PERIODS or (self.period == "noche" and self.hour in _NIGHT_EARLY_HOURS):
             return hour == base
         if self.period in _PM_PERIODS:
             return hour == base + 12
@@ -81,7 +89,8 @@ def _clock_at(words: list[str], i: int) -> tuple[_SpokenClock, int, int] | None:
     """A clock time at token ``i``: the clock and the token span it covers.
 
     Accepted: "10:30" anywhere, and "las 10"/"la una" with an optional
-    "y media"/"y cuarto" and "de la mañana/tarde/noche/madrugada".
+    "y media"/"y cuarto" and "de la mañana/tarde/noche/madrugada" or
+    "del mediodía".
     """
     word = words[i]
     article = i > 0 and words[i - 1] in ("las", "la")
@@ -104,6 +113,9 @@ def _clock_at(words: list[str], i: int) -> tuple[_SpokenClock, int, int] | None:
             and words[end + 2] in _AM_PERIODS | _PM_PERIODS:
         period = words[end + 2]
         end += 3
+    elif words[end:end + 2] == ["del", "mediodia"]:
+        period = "mediodia"
+        end += 2
     return _SpokenClock(hour, minute, period), i - 1 if article else i, end
 
 

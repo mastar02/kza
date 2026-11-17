@@ -259,3 +259,28 @@ async def test_a_bare_number_is_content_not_a_clock_time(store):
     pills = await _shared(manager, "darle 2 pastillas al perro", _local(2026, 11, 11, 8, 0).timestamp())
     found = await manager.resolve(None, "de darle 2 pastillas al perro", shared_only=True)
     assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, pills.id)
+
+
+_NIGHT_AND_NOON = ((11, 12, 0), (11, 14, 0), (11, 22, 0), (12, 0, 0), (12, 2, 0))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("query", "expected"), [
+    ("de tomar la pastilla de las 12 de la noche", {"00:00"}), ("de las doce de la noche", {"00:00"}),
+    ("de las 12 de la madrugada", {"00:00"}), ("de las 12 del mediodía", {"12:00"}),
+    ("de las 12 de la tarde", {"12:00"}), ("de las 12", {"00:00", "12:00"}),
+    ("de las 2 de la noche", {"02:00"}), ("de las 2 de la tarde", {"14:00"}), ("de las 2", {"02:00", "14:00"}),
+    ("de las 10 de la noche", {"22:00"}),
+])
+async def test_midnight_and_small_night_hours_are_past_midnight(store, query, expected):
+    """'las 12 de la noche' is 00:00 and 'las 2 de la noche' 02:00 (review T032-U1-R1)."""
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    by_time = {}
+    for day, hour, minute in _NIGHT_AND_NOON:
+        reminder = await _shared(manager, "tomar la pastilla", _local(2026, 11, day, hour, minute).timestamp())
+        by_time[reminder.id] = f"{hour:02d}:{minute:02d}"
+    resolution = await manager.resolve(None, query, shared_only=True)
+    found = {resolution.reminder.id} if resolution.reminder else {r.id for r in resolution.candidates}
+    assert {by_time[i] for i in found} == expected
+    assert resolution.match is (CancelMatch.UNIQUE if len(expected) == 1 else CancelMatch.AMBIGUOUS)
