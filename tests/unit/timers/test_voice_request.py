@@ -182,6 +182,7 @@ FILLER_CREATE = [
     ("poné un timer para dentro de 10 minutos", 600, None),
     ("poné un timer de 8 minutos para la pasta, gracias", 480, "pasta"),
     ("poné un timer de 8 minutos para la pasta nomás", 480, "pasta"),
+    ("poné un timer de 5 minutos para avisarme de la pasta", 300, "pasta"),
 ]
 
 
@@ -200,6 +201,7 @@ FILLER_SELECT = [
     ("pará el timer de la pasta nomás", TimerSelector("pasta")),
     ("cancelá el timer de la pasta, gracias", TimerSelector("pasta")),
     ("cancelá el timer de 5 minutos ya", TimerSelector(None, 300)),
+    ("cancelá el timer que puse para la pasta", TimerSelector("pasta")),
 ]
 
 
