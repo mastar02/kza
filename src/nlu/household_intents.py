@@ -18,7 +18,8 @@ design.json), evaluated in the order R3, R5, R1, R2, R3a, R4, R6:
 * R5: a compound pre-split (two imperative clauses, one verb with two
   household objects, or one domotics verb with two targets).
 * R1: an object operation (cancel/stop/pause/resume/disable/query) on one
-  household object noun.
+  household object noun; "la alarma"/"el despertador" name the timers here
+  (T030-U1), except the security verbs activá/desactivá/armá/desarmá la alarma.
 * R2: timer creation, and list item additions/removals.
 * R3a: "alarma" with a duration (timer) or a clock time (reminder).
 * R4: a domotics verb with a deferral time expression.
@@ -348,6 +349,14 @@ _OBJECT_NOUNS: dict[str, HouseholdFamily] = {
     "rutina": HouseholdFamily.ROUTINE, "rutinas": HouseholdFamily.ROUTINE,
     "lista": HouseholdFamily.LIST, "listas": HouseholdFamily.LIST,
 }
+# "alarma"/"despertador" as the object of a timer command (T030-U1 R3): an alarm with a duration is a
+# timer (R3a, user answer Q4), so cancel/stop/pause/resume/query of "la alarma" reach the timers. Claimed in
+# R1 only; creation stays in R3a. The security alarm verbs (activá/desactivá/armá/desarmá la alarma) are never
+# claimed (design R3a): they stay on the existing path, where alarm panels are not controllable.
+_ALARM_NOUNS = frozenset({"alarma", "alarmas", "despertador", "despertadores"})
+_SECURITY_ALARM_NOUNS = frozenset({"alarma", "alarmas"})
+_SECURITY_ALARM_VERBS = frozenset({"activa", "active", "activar", "desactiva", "desactive", "desactivar", "arma",
+                                   "arme", "armar", "desarma", "desarme", "desarmar"})
 _DETERMINERS = frozenset({
     "el", "la", "los", "las", "un", "una", "mi", "mis", "ese", "esa", "esos", "esas", "este", "esta", "estos",
     "estas", "del", "al", "todos", "todas", "nuestro", "nuestra", "nuestros", "nuestras", "otro", "otra",
@@ -373,8 +382,10 @@ _REMINDER_HEAD = re.compile(
 )
 
 _NUMBER = (r"(?:\d+|un|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince"
-           r"|veinte|veinticinco|treinta|cuarenta|cincuenta|sesenta|noventa|media|medio|cuarto)")
-_DURATION = re.compile(rf"\b{_NUMBER}(?: y \w+)? (?:de )?(?:segundos?|minutos?|mins?|horas?)\b|\bmedia hora\b")
+           r"|dieci(?:seis|siete|ocho|nueve)|veinte|veinti(?:un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve)"
+           r"|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|media|medio|cuartos?)")
+_DURATION = re.compile(rf"\b{_NUMBER}(?: y \w+)? (?:de )?(?:segundos?|minutos?|mins?|horas?)\b|\bmedia hora\b"
+                       r"|\bhora y (?:media|cuarto)\b")
 _CLOCK = re.compile(r"\b(?:a|para) (?:las? )?(?:\d{1,2}(?:[:.]\d{2})?|una|dos|tres|cuatro|cinco|seis|siete|ocho"
                     r"|nueve|diez|once|doce|mediodia|medianoche)\b")
 _INTERCOM_TARGET = re.compile(
@@ -450,8 +461,14 @@ def _mentions_list(utt: _Utterance) -> bool:
     return any(_object_at(utt, k) is HouseholdFamily.LIST for k in range(len(utt)))
 
 
-def _governed_object(utt: _Utterance, j: int, *, allow_adjective: bool = False) -> tuple[HouseholdFamily, int] | None:
-    """The object noun right after the verb and its determiners, if any."""
+def _r1_object_at(utt: _Utterance, k: int) -> HouseholdFamily | None:
+    """Like :func:`_object_at`, but an alarm noun names the timers (R1 commands and queries only)."""
+    return HouseholdFamily.TIMER if utt.at(k) in _ALARM_NOUNS else _object_at(utt, k)
+
+
+def _governed_object(utt: _Utterance, j: int, *, allow_adjective: bool = False,
+                     alarms: bool = False) -> tuple[HouseholdFamily, int] | None:
+    """The object noun right after the verb and its determiners, if any (``alarms``: alarm nouns too)."""
     k = j
     if utt.at(k) == "me":
         k += 1
@@ -460,7 +477,7 @@ def _governed_object(utt: _Utterance, j: int, *, allow_adjective: bool = False) 
             k += 1
     if allow_adjective and utt.at(k) in _ADJECTIVES:
         k += 1
-    family = _object_at(utt, k)
+    family = _r1_object_at(utt, k) if alarms else _object_at(utt, k)
     return (family, k) if family is not None else None
 
 
@@ -516,10 +533,12 @@ _R1_OPERATIONS = (
 
 
 def _r1_object(utt: _Utterance, verb: _Verb) -> tuple[HouseholdFamily, HouseholdOperation, int] | None:
-    governed = _governed_object(utt, verb.end)
+    governed = _governed_object(utt, verb.end, alarms=True)
     if governed is None:
         return None
     family, k = governed
+    if utt.at(k) in _SECURITY_ALARM_NOUNS and verb.form in _SECURITY_ALARM_VERBS:
+        return None
     for cls, operation in _R1_OPERATIONS:
         if cls not in verb.classes:
             continue
@@ -531,7 +550,7 @@ def _r1_object(utt: _Utterance, verb: _Verb) -> tuple[HouseholdFamily, Household
 
 def _query(utt: _Utterance) -> HouseholdIntent | None:
     head = utt.at(0)
-    nouns = [(k, family) for k in range(len(utt)) if (family := _object_at(utt, k)) is not None]
+    nouns = [(k, family) for k in range(len(utt)) if (family := _r1_object_at(utt, k)) is not None]
     if not nouns:
         return None
     k, family = nouns[0]
@@ -540,11 +559,11 @@ def _query(utt: _Utterance) -> HouseholdIntent | None:
     if head in _QUERY_HEADS and _QUERY_VERBS & set(utt.folded):
         return HouseholdIntent(family, HouseholdOperation.QUERY, "R1", _rest(utt, k + 1), head)
     if head in _HAVE_HEADS:
-        governed = _governed_object(utt, 2 if utt.at(1) in _SOME else 1)
+        governed = _governed_object(utt, 2 if utt.at(1) in _SOME else 1, alarms=True)
         if governed is not None:
             return HouseholdIntent(governed[0], HouseholdOperation.QUERY, "R1", _rest(utt, governed[1] + 1), head)
     if head in _READ_HEADS:
-        governed = _governed_object(utt, 1)
+        governed = _governed_object(utt, 1, alarms=True)
         if governed is not None:
             return HouseholdIntent(governed[0], HouseholdOperation.QUERY, "R1", _rest(utt, governed[1] + 1), head)
     return None

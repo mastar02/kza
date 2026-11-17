@@ -140,6 +140,23 @@ C02_DISPATCHER = tuple(_REMINDER_GRID) + (
            state="timer_running_unnamed;timer_running:pasta", note="an unnamed timer is named by its duration"),
     _timer("C02-ALM-0101", "poné una alarma de 10 minutos", "completed", "volatile", "readback", counts=CREATED,
            seed="C02-ALM-0001", note="Q4: an alarm with a duration is a timer; no alarm_control_panel call"),
+    _timer("C02-ALM-0105", "cancelá la alarma", "completed", "volatile", "readback", counts=CHANGED,
+           state="timer_running_unnamed", seed="C02-ALM-0001",
+           note="R3: the follow-up of 'poné una alarma de N minutos' cancels that timer"),
+    _timer("C02-ALM-0106", "apagá la alarma", "completed", "volatile", "readback", counts=CHANGED, sf="turn_off",
+           state="light_match;timer_running_unnamed", seed="C02-ALM-0001",
+           note="R3: stops the timer; no turn_off, no alarm or switch entity, no vector search"),
+    _timer("C02-ALM-0107", "pará la alarma", "completed", "volatile", "readback", counts=CHANGED,
+           state="timer_running_unnamed", seed="C02-ALM-0001"),
+    _timer("C02-ALM-0108", "pausá la alarma", "completed", "volatile", "readback", counts=CHANGED,
+           state="timer_running_unnamed", note="R3: 'pausá' never reaches FAST_MUSIC"),
+    _timer("C02-ALM-0109", "cancelá el despertador", "completed", "volatile", "readback", counts=CHANGED,
+           state="timer_running_unnamed"),
+    _timer("C02-ALM-0110", "cuánto falta para la alarma", "completed", "not_required", "answer",
+           state="timer_running_unnamed"),
+    _timer("C02-ALM-0111", "apagá la alarma", "needs_input", "not_written", "clarification", sf="turn_off",
+           state="light_match", effect_class="unauthorized_effect",
+           note="R3: no timer: 'No hay temporizadores activos.'; still no home action"),
     _refused("C02-ALM-0102", "poné una alarma a las 7", "reminder", seed="C02-ALM-0002", note=INTERIM_CREATE),
     _timer("C02-ALM-0103", "poné una alarma", "needs_input", "not_written", "clarification", seed="C02-ALM-0004",
            effect_class="wrong_family", note="Q4: neither a duration nor a time: KZA asks"),
@@ -498,3 +515,28 @@ async def test_timer_without_origin_rings_through_the_zone_requiring_delivery(le
         assert timer.state is TimerState.COMPLETED
     finally:
         await timers.stop()
+
+
+@pytest.mark.parametrize("follow_up", ["cancelá la alarma", "apagá la alarma", "pará la alarma",
+                                       "desactivá el despertador"])
+async def test_alarm_created_by_voice_is_stopped_by_voice(leaves, follow_up):
+    """T030-U1 R3: each ALM create pairs with its cancel/stop; nothing reaches home control or search."""
+    dispatcher = leaves.dispatcher()
+    before = leaves.snapshot()
+    created = await dispatcher.dispatch(user_id="unknown", text="poné una alarma de 10 minutos")
+    assert created.success and created.response == "Temporizador de 10 minutos en marcha."
+    stopped = await dispatcher.dispatch(user_id="unknown", text=follow_up, service_filter="turn_off")
+    assert (stopped.path, stopped.success) == (PathType.FAST_TIMER, True)
+    assert stopped.response == "Cancelé el temporizador de 10 minutos."
+    assert leaves.effects(before) == effects(timer_delta=1)
+    assert [t.state.value for t in leaves.timers.get_all_timers()] == ["cancelled"]
+
+
+async def test_security_alarm_verbs_never_reach_the_timers(leaves):
+    """'desactivá la alarma' stays on the existing path (design R3a), even with a running timer."""
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, "timer_running_unnamed")
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text="desactivá la alarma")
+    assert result.path is not PathType.FAST_TIMER
+    assert leaves.effects(before)["timer_transitions"] == 0

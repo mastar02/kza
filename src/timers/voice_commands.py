@@ -59,7 +59,7 @@ _ISSUE_REPLIES = {
                                     "Pedímelo de nuevo sin nombrar la habitación."),
 }
 _ACTIVE = (TimerState.RUNNING, TimerState.PAUSED)
-_EVERY_RE = re.compile(r"\b(?:todos|todas|timers|temporizadores)\b")
+_EVERY_RE = re.compile(r"\b(?:todos|todas|timers|temporizadores|alarmas|despertadores)\b")
 
 
 @dataclass(frozen=True)
