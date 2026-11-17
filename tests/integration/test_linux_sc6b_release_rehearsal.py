@@ -70,7 +70,7 @@ from tests.mocks import launcher_rehearsal as rehearsal
 from tests.mocks import real_systemd
 from tests.mocks import sc4b_states
 from tests.mocks.epoch4 import edited_commit, epoch4_commit, epoch4_in_process
-from tests.unit.tools.test_sc1b_release_plan import _QUEUE, _k_retry
+from tests.unit.tools.test_sc1b_release_plan import _QUEUE as _QUEUE_IN_PROCESS, _k_retry
 
 pytestmark = pytest.mark.skipif(real_systemd.unavailable() is not None,
                                 reason=real_systemd.unavailable() or "available")
@@ -503,6 +503,7 @@ class World:
         return planned
 
     def start(self, build: str, k: str, planned: dict) -> str:
+        h_binding = self.head()["binding_id"]
         started = time.monotonic()
         result = self.st(f"start-{k}-{build}", "compact", "start", k, "--archive",
                          str(self.builds[build]["archive"]), "--plan-sha256", planned["plan_sha256"],
@@ -519,7 +520,7 @@ class World:
                                 'import json,sys; print(json.load(open(sys.argv[1]))["source_binding_id"])',
                                 str(intent)], env=dict(os.environ))
         self.confirm_h = completed.stdout.strip()
-        assert self.confirm_h == self.head()["binding_id"]
+        assert self.confirm_h == h_binding
         return compaction_id
 
     def verify(self, compaction_id: str, n: int = SMOKE) -> dict:
@@ -654,7 +655,22 @@ REVOKE_CREDENTIAL = "\n".join([
     "with closing(sqlite3.connect(state / 'data' / 'auth.db')) as db, db:",
     "    db.execute('DELETE FROM credentials')",
 ])
-BOOT_FAILURE = "import os\nos._exit(3)\n"  # NEW dies at boot, before READY and before its receipt
+BOOT_FAILURE = "import os\nos._exit(3)\n"
+# SC-1b's queued-deletion planting, run on its own thread: the rehearsal child's --exec runs inside its event loop.
+_QUEUE = "\n".join([
+    "import threading",
+    "_failed = []",
+    "def _plant():",
+    "    try:",
+    *["        " + line for line in _QUEUE_IN_PROCESS.splitlines()],
+    "    except BaseException as error:",
+    "        _failed.append(error)",
+    "_worker = threading.Thread(target=_plant)",
+    "_worker.start()",
+    "_worker.join()",
+    "if _failed:",
+    "    raise _failed[0]",
+])  # NEW dies at boot, before READY and before its receipt
 
 
 # --- (1) T0 from the extracted archive, serve R1, R1 -> R2 --------------------------------------------
@@ -1091,7 +1107,12 @@ def _residue_code() -> str:
     return "\n".join([
         "import json, sys",
         f"sys.path.append({str(REPO)!r})",
+        "import types",
         "import yaml",
+        "from src.memory import fact_ledger",
+        "_noop = lambda *args, **kwargs: None",  # as tests/mocks/compaction_world.LEDGER: planting, not the graph
+        "fact_ledger.output_registration = types.SimpleNamespace(before_ledger_open=_noop, ledger_connected=_noop,",
+        "    borrowed_ledger=_noop, ledger_closed=_noop, ledger_close_failed=_noop)",
         "from tools.sc0 import residue",
         "data = state / 'data'",
         "planted = {}",
