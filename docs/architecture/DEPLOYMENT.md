@@ -1191,10 +1191,16 @@ compactación podía pasar del snapshot.
   `__pointer` y las versionadas `home_assistant_commands__<AAAAmmddHHMMSS><6
   hex>`, exactamente los nombres que crea `ChromaSync`) se copian
   enteras: registros, metadata (el puntero conserva `active`) y
-  configuración. (3) `home_assistant_routines` **no se copia** (texto de
-  rutinas dictadas, sin camino de borrado): es una baja con nombre en el
-  código, fijada por un test; el arranque de K la recrea vacía
-  (`ChromaSync._construct`). (3b) La colección heredada `user_memories` de
+  configuración. (3) `home_assistant_routines` de `data/chroma_db` **no se
+  copia** (texto de rutinas dictadas, sin camino de borrado); el arranque de
+  K la recrea vacía (`ChromaSync._construct`). Es una baja con nombre exacto
+  y sólo en ese almacén (respuesta SC4C-Q6 del usuario, 2026-11-17: el par
+  `("data/chroma_db", "home_assistant_routines")` de
+  `CHROMA_DROPPED_IN_STORE`, igual en el plan y en el trabajador y fijado
+  por un test a `vectordb.path` y `vectordb.routines_collection` de
+  `config/settings.yaml`, al valor por defecto de `routines_collection` de
+  `ChromaSync` y a la ruta por defecto de `src/main.py`); el mismo nombre en
+  cualquier otro almacén rechaza como en (4). (3b) La colección heredada `user_memories` de
   `data/memory_db` (anterior a la política de memoria, en cuarentena y
   nunca leída: `long_term.get_stats` informa `legacy_policy:
   "quarantined"`) **tampoco se copia** (respuesta SC4C-Q2b del usuario,
@@ -1210,8 +1216,9 @@ compactación podía pasar del snapshot.
   `index_metadata.pickle` de esa colección, con sus bytes; el retiro y el
   `abort` borran el snapshot y con él esa copia (revisión SC4C-RV2-2).
   (4) Cualquier otra colección, incluidos un nombre parecido (`user_memories_v0`,
-  `User_memories`), `user_memories` en otro almacén o una `user_memories`
-  registrada como destino, rechaza
+  `User_memories`), `user_memories` fuera de `data/memory_db`,
+  `home_assistant_routines` fuera de `data/chroma_db` (SC4C-Q6) o una
+  `user_memories` registrada como destino, rechaza
   `runtime_admission_compaction_unlisted_collection`: en el `plan` (lee los
   nombres de colección de una imagen privada de cada `chroma.sqlite3`, nunca
   un registro; el informe nombra almacén y colección) y otra vez en el

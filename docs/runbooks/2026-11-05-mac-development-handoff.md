@@ -1859,6 +1859,47 @@ cambios de producto.
   heredado tres veces más (2 passed cada vez); los cuatro mutantes `SC4C_Q2B`
   que usan ese test, 4/4 muertos.
 
+### SC-4c — SC4C-Q6: la baja de `home_assistant_routines` sólo en `data/chroma_db` (2026-11-17)
+
+Respuesta del 2026-11-17 (`t040-t041/user-decisions-20261110.json`, clave
+`followups_20261117`): «Sí, limitarlo (Recomendado): data/chroma_db only».
+
+- `src/memory/owner_compaction.py` y `scripts/compaction.py`: desaparece
+  `CHROMA_DROPPED` (la baja por nombre en cualquier almacén);
+  `CHROMA_DROPPED_IN_STORE` tiene los dos pares,
+  `("data/chroma_db", "home_assistant_routines")` y
+  `("data/memory_db", "user_memories")`, y `collection_kind` sólo da
+  `dropped` con almacén y nombre exactos. `home_assistant_routines` en otro
+  almacén (por ejemplo `data/memory_db`) rechaza
+  `runtime_admission_compaction_unlisted_collection` en el `plan` y en el
+  trabajador (clasificador del snapshot y plan del clon). Producción no
+  cambia: la colección está en `data/chroma_db`.
+- Tests en `tests/unit/tools/test_sc4c_chroma_closed_list.py`: la tabla de
+  la lista cerrada agrega nombres parecidos a las rutinas y almacenes
+  parecidos a `data/chroma_db`; el par de rutinas se fija a
+  `vectordb.path`/`vectordb.routines_collection`, al valor por defecto de
+  `ChromaSync` y a la ruta por defecto de `src/main.py` (que no pasa
+  `routines_collection`), y el conjunto de bajas a los dos pares de
+  `config/settings.yaml`; rechazos del plan del clon con la colección en
+  `data/memory_db`, omitida o leída; rechazo del `plan` (casos
+  `routines_other_store`, `routines_look_alike`) y del trabajador (caso
+  `routines_other_store`, fila S y `abort` sin pérdida).
+- Mutantes `SC4C_Q6` en `tools/sc4c_mutants.py` (seis); los mutantes
+  anteriores que nombraban `CHROMA_DROPPED` se reescribieron sobre el
+  clasificador nuevo.
+- Server, como `yo`, `taskset -c 24-47 nice -n 10`, con `pgrep` < 4, clon
+  `/home/yo/projects/runs/sc4c-q6`, registros en
+  `/home/yo/projects/runs/sc4c-q6-out/`, sobre `1bf0129d`:
+  `test_sc4c_chroma_closed_list.py` 30 passed; `test_owner_compaction` y
+  `test_state_snapshot` 34 passed; `test_compaction_units` 273 passed;
+  los siete `test_stage_runtime_compaction*` 216 passed, 5 skipped (los
+  cortes con víctima `snapshot` sin snapshot parcial, como antes);
+  `test_sc1b_release_plan` 15 passed; `test_sc4a_verify_run` y los dos
+  `test_sc4b_*` 108 passed. Mutantes (clon `sc4c-q6-mut`): los seis
+  `SC4C_Q6`, los doce de la baja y del rechazo reescritos o afectados
+  (`SC4C_Q2B` completos y los de rutinas y colección no listada de la
+  lista original), 18/18 muertos (`mutants.json`).
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.
