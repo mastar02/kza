@@ -398,8 +398,9 @@ Muestra `phase`, `armed_run` (`not armed`, `not consumed` o `consumed`),
 $ST compact retire <compaction_id>
 ```
 
-Rutear un rechazo por su código (ningún rechazo escribe nada más que el
-`verified` de siempre):
+Rutear un rechazo por su código. Ningún rechazo escribe nada más que el
+`verified` de siempre, salvo un `runtime_admission_compaction_io_error`
+después de `retire_started`: ése es un retiro cortado (fila RS).
 
 | Código | Fila | Salida |
 | --- | --- | --- |
@@ -410,7 +411,7 @@ Rutear un rechazo por su código (ningún rechazo escribe nada más que el
 | `runtime_admission_compaction_retire_protected_changed` | RX | volver a H con W (el informe W viene en la salida) |
 | `runtime_admission_compaction_retire_resurrected` | RX | volver a H con W |
 | `runtime_admission_compaction_k_binding_changed` | RX | (`privacy_authority_stale`) volver a H con W |
-| `runtime_admission_compaction_io_error` | RX | volver a H con W |
+| `runtime_admission_compaction_io_error` | RS o AT | según la fase: mirar `phases` en `$ST compact status <compaction_id>`. Con `retire_started`, el retiro ya empezó (fila RS) y el abort rechaza `runtime_admission_compaction_phase`: quitar la causa del `errno` y repetir `$ST compact retire <compaction_id>` o `$ST compact resume <compaction_id>`, nunca volver a H. Sin `retire_started`: quitar la causa del `errno` y repetir una vez el mismo retiro, como en la fila AT; si rechaza igual, volver a H con W |
 | `runtime_admission_compaction_not_verified` | V3 | volver a H con W |
 | `runtime_admission_compaction_sdk_changed` | AT | reinstalar la versión ligada que nombra y repetir |
 | `runtime_admission_compaction_h_transient`, `runtime_admission_compaction_k_transient`, `runtime_admission_writer_active`, `runtime_admission_busy`, `runtime_admission_sdk_version_unavailable` | AT | «Rechazos transitorios» |

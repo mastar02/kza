@@ -256,6 +256,20 @@ def test_retire_refusals_are_routed_by_code():
     for code in (compaction.RETIRE_PROTECTED_CHANGED, compaction.RETIRE_RESURRECTED, compaction.K_BINDING_CHANGED):
         assert "volver a H con W" in rows[code][1], code
     assert "reinstalar la versión ligada" in rows[compaction.SDK_CHANGED][1]
+    # Review SC5B-R2: run_command maps every OSError to io_error, also inside _finish_retire after
+    # 'retire_started', where compact_abort refuses runtime_admission_compaction_phase.
+    io_row, io_exit = rows["runtime_admission_compaction_io_error"]
+    assert io_row == "RS o AT", io_row
+    assert ("Con `retire_started`, el retiro ya empezó (fila RS) y el abort rechaza "
+            "`runtime_admission_compaction_phase`: quitar la causa del `errno` y repetir "
+            "`$ST compact retire <compaction_id>` o `$ST compact resume <compaction_id>`, nunca volver a H.") in io_exit
+    assert io_exit.index("Con `retire_started`") < io_exit.index("Sin `retire_started`") < io_exit.index(
+        "volver a H con W")
+    assert "`phases`" in io_exit
+    source = (REPO / "scripts/compaction.py").read_text()
+    assert '"phases": [event["kind"] for event in log["events"]]' in source
+    assert 'if log["terminal"] or _has(log, "retire_started"):\n            _refuse("runtime_admission_compaction_phase")' \
+        in source
 
 
 def test_armed_run_not_consumed_and_the_interrupted_start():
