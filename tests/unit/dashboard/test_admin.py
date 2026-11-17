@@ -278,6 +278,43 @@ def test_alert_ack_unknown_returns_404(fake_alert_manager, _client):
     assert r.status_code == 404
 
 
+@pytest.mark.parametrize("method", ["post_ack", "delete"])
+def test_web_acknowledged_alert_is_not_spoken_again_unless_it_worsens(method, _client):
+    """User answer T036-U1-Q5 (option A) through the real admin routes: after a web
+    acknowledge or dismiss, neither the failed-notice retry nor the re-announce speaks;
+    an escalation still does."""
+    import asyncio
+    from unittest.mock import AsyncMock
+    from src.alerts import AlertCondition, AlertDelivery, AlertManager, AlertPriority, AlertType
+    from src.core.voice_delivery import DeliveryState, GenerationState, ResponseResult
+
+    now = [1000.0]
+    failed = ResponseResult("x", GenerationState.COMPLETE, DeliveryState.FAILED, error="audio_device_lost")
+    ok = ResponseResult("x", GenerationState.COMPLETE, DeliveryState.COMPLETE)
+    tts = AsyncMock(side_effect=[failed, ok, ok])
+    manager = AlertManager(tts_callback=tts, clock=lambda: now[0], reannounce_interval_seconds=600)
+    door = AlertCondition(source="entrada", condition="door_open_unexpected")
+
+    def check(priority=AlertPriority.HIGH, message="Puerta abierta"):
+        return asyncio.run(manager.create_alert(AlertType.SECURITY, priority, message, condition=door))
+
+    alert = check()
+    assert alert.delivery is AlertDelivery.FAILED and tts.await_count == 1
+    c = _client(alert_manager=manager)
+    if method == "post_ack":
+        r = c.post(f"/api/admin/alerts/{alert.alert_id}/ack", headers=_bearer())
+    else:
+        r = c.delete(f"/api/admin/alerts/{alert.alert_id}", headers=_bearer())
+    assert r.status_code == 200 and alert.processed is True
+    assert check() is None
+    now[0] += 600
+    assert check() is None
+    assert tts.await_count == 1 and alert.delivery is AlertDelivery.FAILED
+    assert check(AlertPriority.CRITICAL, "Puerta abierta de noche") is alert
+    assert tts.await_count == 2 and tts.await_args.args[0] == "Alerta crítica: Puerta abierta de noche"
+    assert alert.delivery is AlertDelivery.DELIVERED and alert.processed is False
+
+
 def test_alert_dismiss(fake_alert_manager, _client):
     c = _client(alert_manager=fake_alert_manager)
     r = c.delete("/api/admin/alerts/al_test", headers=_bearer())

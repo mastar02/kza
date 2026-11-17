@@ -186,10 +186,11 @@ El sistema evita alertas duplicadas por **condición**, nunca por el texto:
 - **Escalada**: una lectura más grave actualiza la alerta abierta, la vuelve a
   activar aunque estuviera reconocida y la anuncia si es CRITICAL/HIGH
 - **Re-anuncio**: con `reannounce_interval_seconds` configurado (`null` por
-  defecto: nunca), un episodio con estado ya anunciado se vuelve a decir cada
-  ese intervalo **aunque la alerta esté reconocida**; a diferencia del
-  reintento de voz, el re-anuncio no mira el reconocimiento (pregunta abierta
-  T036-U1-Q5)
+  defecto: nunca), un episodio con estado ya anunciado y sin reconocer se
+  vuelve a decir cada ese intervalo
+- **Alerta reconocida**: una alerta reconocida (o descartada) en la web no se
+  vuelve a decir, ni por el reintento de voz ni por el re-anuncio, salvo que
+  empeore: la escalada la reactiva y la anuncia (respuesta T036-U1-Q5, opción A)
 - **Limpieza**: `clear_cooldowns()` cierra todos los episodios abiertos (sus
   alertas quedan resueltas) y la próxima observación alerta de nuevo
 - **Reintento de voz**: si el aviso falla sin que suene nada (la salida lo

@@ -681,6 +681,44 @@ class TestEscalationAndReannounce:
         assert len(manager.get_history()) == 1 and alert.delivery is AlertDelivery.DELIVERED
 
     @pytest.mark.asyncio
+    async def test_interval_never_reannounces_an_acknowledged_alert(self):
+        """User answer T036-U1-Q5 (option A): acknowledged means not spoken again."""
+        clock = FakeClock()
+        tts = AsyncMock(return_value=_ok())
+        manager = AlertManager(tts_callback=tts, clock=clock, reannounce_interval_seconds=600)
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a", condition=DOOR)
+        assert await manager.mark_processed(alert.alert_id)
+        for _ in range(3):
+            clock.t += 600
+            assert await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a", condition=DOOR) is None
+        assert tts.await_count == 1 and alert.delivery_attempts == 1
+        assert alert.processed is True
+
+    @pytest.mark.asyncio
+    async def test_escalation_after_ack_speaks_and_reannounces_until_acknowledged_again(self):
+        clock = FakeClock()
+        tts = AsyncMock(return_value=_ok())
+        manager = AlertManager(tts_callback=tts, clock=clock, reannounce_interval_seconds=600)
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a", condition=DOOR)
+        await manager.mark_processed(alert.alert_id)
+        clock.t += 600
+        await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "a", condition=DOOR)
+        assert tts.await_count == 1
+        clock.t += 1
+        assert await manager.create_alert(AlertType.SECURITY, AlertPriority.CRITICAL, "b", condition=DOOR) is alert
+        assert tts.await_count == 2 and tts.await_args.args[0] == "Alerta crítica: b"
+        clock.t += 599
+        await manager.create_alert(AlertType.SECURITY, AlertPriority.CRITICAL, "b", condition=DOOR)
+        assert tts.await_count == 2
+        clock.t += 1
+        await manager.create_alert(AlertType.SECURITY, AlertPriority.CRITICAL, "b", condition=DOOR)
+        assert tts.await_count == 3
+        await manager.mark_processed(alert.alert_id)
+        clock.t += 600
+        assert await manager.create_alert(AlertType.SECURITY, AlertPriority.CRITICAL, "b", condition=DOOR) is None
+        assert tts.await_count == 3
+
+    @pytest.mark.asyncio
     async def test_interval_never_reannounces_unspoken_or_momentary(self):
         clock = FakeClock()
         tts = AsyncMock(return_value=_ok())
@@ -1184,17 +1222,55 @@ class TestVoiceRetryOnce:
         assert tts.await_count == 3
 
     @pytest.mark.asyncio
-    async def test_dropped_retry_leaves_the_configured_reannounce_unchanged(self):
+    async def test_acknowledged_failed_notice_is_neither_retried_nor_reannounced(self):
+        """User answer T036-U1-Q5 (option A): the acknowledgement silences both repeats."""
         clock = FakeClock()
-        tts = AsyncMock(side_effect=[OUTPUT_FREE["failed"], _ok()])
+        tts = AsyncMock(side_effect=[OUTPUT_FREE["failed"], _ok(), _ok()])
         manager = AlertManager(tts_callback=tts, clock=clock, reannounce_interval_seconds=600)
         alert = await _check(manager)
         await manager.mark_processed(alert.alert_id)
-        await _check(manager)
+        assert await _check(manager) is None
+        for _ in range(3):
+            clock.t += 600
+            assert await _check(manager) is None
         assert tts.await_count == 1
-        clock.t += 600
-        await _check(manager)
-        assert tts.await_count == 2 and alert.delivery is AlertDelivery.DELIVERED
+        assert (alert.delivery, alert.delivery_attempts) == (AlertDelivery.FAILED, 1)
+
+    @pytest.mark.asyncio
+    async def test_dismissed_alert_drops_its_retry(self):
+        """The web dismiss (mark_processed without timestamp) is an acknowledgement too."""
+        tts = AsyncMock(side_effect=[OUTPUT_FREE["failed"], _ok()])
+        manager = AlertManager(tts_callback=tts)
+        alert = await _check(manager)
+        assert await manager.mark_processed(alert.alert_id, update_timestamp=False)
+        assert await _check(manager) is None
+        assert tts.await_count == 1 and alert.delivery is AlertDelivery.FAILED
+
+    @pytest.mark.asyncio
+    async def test_dropped_retry_is_logged_once(self, caplog):
+        tts = AsyncMock(side_effect=[OUTPUT_FREE["failed"], _ok()])
+        manager = AlertManager(tts_callback=tts)
+        alert = await _check(manager)
+        await manager.mark_processed(alert.alert_id)
+        with caplog.at_level("INFO", logger="src.alerts.alert_manager"):
+            for _ in range(3):
+                await _check(manager)
+        dropped = [r for r in caplog.records if r.getMessage().startswith("Alert voice retry dropped")]
+        assert len(dropped) == 1 and alert.alert_id in dropped[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_escalation_after_acknowledging_a_failed_notice_is_spoken(self):
+        tts = AsyncMock(side_effect=[OUTPUT_FREE["failed"], _ok(), _ok()])
+        manager = AlertManager(tts_callback=tts)
+        alert = await _check(manager, AlertPriority.HIGH, "a")
+        await manager.mark_processed(alert.alert_id)
+        assert await _check(manager, AlertPriority.HIGH, "a") is None
+        assert tts.await_count == 1
+        assert await _check(manager, AlertPriority.CRITICAL, "b") is alert
+        assert tts.await_count == 2 and tts.await_args.args[0] == "Alerta crítica: b"
+        assert alert.delivery is AlertDelivery.DELIVERED and alert.processed is False
+        await _check(manager, AlertPriority.CRITICAL, "b")
+        assert tts.await_count == 2
 
     @pytest.mark.asyncio
     async def test_momentary_event_retries_at_its_next_observation_within_cooldown(self):

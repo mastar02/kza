@@ -246,7 +246,9 @@ class AlertManager:
             tts_callback: Salida de voz; recibe el texto y devuelve su ResponseResult.
                 None significa avisos de voz desactivados (recibo 'muted').
             reannounce_interval_seconds: Re-anunciar un episodio que sigue abierto
-                cada este intervalo. None (default) = un solo aviso por episodio.
+                y sin reconocer cada este intervalo. None (default) = un solo aviso
+                por episodio. Una alerta reconocida no se vuelve a decir salvo que
+                empeore (T036-U1-Q5).
             clock: Reloj monotónico inyectable (segundos) para episodios.
             now: Fábrica de instantes con zona horaria para los timestamps.
         """
@@ -434,13 +436,17 @@ class AlertManager:
             if priority in SPOKEN_PRIORITIES:
                 await self._announce(episode)
             return alert
+        if alert.processed:
+            # User answer T036-U1-Q5 (option A): an acknowledged alert is never spoken
+            # again, neither by the retry nor by the re-announce. Only an escalation
+            # (above) reopens the acknowledgement and speaks.
+            if episode.retry_due:
+                episode.retry_due = False
+                logger.info("Alert voice retry dropped, alert acknowledged (id=%s)", alert.alert_id)
+            logger.debug("Alert not spoken again, acknowledged (id=%s)", alert.alert_id)
+            return None
         if episode.retry_due:
             episode.retry_due = False
-            if alert.processed:
-                # Someone acknowledged it already: the retry only exists so an alert
-                # nobody heard is not lost.
-                logger.info("Alert voice retry dropped, alert acknowledged (id=%s)", alert.alert_id)
-                return None
             logger.info("Alert voice notice retried: %s (id=%s)", alert.alert_type.value, alert.alert_id)
             await self._announce(episode, retry=True)
             return None
@@ -497,7 +503,8 @@ class AlertManager:
         A notice that failed before any audio started is retried once, at the
         episode's next observation; a retry is never retried again (user answer
         T036-U1-Q1). Output that started, a blocked or muted notice, and every
-        other failure are never repeated.
+        other failure are never repeated. Neither the retry nor the re-announce
+        speaks an acknowledged alert; only an escalation does (T036-U1-Q5).
 
         Args:
             episode: The open episode whose alert is spoken.
