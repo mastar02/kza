@@ -636,6 +636,20 @@ async def test_a_day_phrase_is_read_as_text_from_its_day_word(store, day):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("text", "due"), [
+    ("llamar al médico a la una", (11, 12, 45)), ("tomar 2 pastillas a las 2", (11, 9, 0)),
+])
+async def test_the_only_text_with_its_clock_phrase_is_named_by_its_text(store, text, due):
+    """Review T032-U1-FV-2: 'la una' at the end of the only such text names it (RR-F1), not 'not found'."""
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    only = await _shared(manager, text, _local(2026, 11, *due).timestamp())
+    await _shared(manager, "tomar agua", _local(2026, 11, 11, 15, 0).timestamp())
+    found = await manager.resolve(None, f"de {text}", shared_only=True)
+    assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, only.id)
+
+
+@pytest.mark.asyncio
 async def test_time_words_in_no_text_keep_the_time_reading(store):
     """A time no reminder text contains only filters by trigger, as before."""
     clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
