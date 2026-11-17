@@ -675,6 +675,34 @@ def test_a_delegation_record_during_the_transition_refuses_every_exit_before_any
     _back_on_h(world, tmp_path, "h")
 
 
+def test_a_resumed_abort_past_the_return_to_h_refuses_a_delegation_record(x4, x5, tmp_path, monkeypatch):
+    """SCRF-3 (row DL): an abort cut after its return to H ('returned' logged, the head is H) still has
+    K to destroy. A record planted then makes compact resume and every abort refuse delegation_frozen,
+    writing nothing, so K is not destroyed with a record present; row DL's exit then finishes it."""
+    world = _world(x4, x5, tmp_path)
+    root = world["root"]
+    assert _v(world, tmp_path, "v").code == 0 and _kinds(world)[-1] == "verified"
+
+    def cut(*args, **kwargs):
+        raise RuntimeError("cut")
+    with monkeypatch.context() as patch:
+        patch.setattr(compaction, "_destroy_own_staging", cut)
+        with pytest.raises(RuntimeError, match="cut"):
+            _abort(world)
+    assert _kinds(world)[-1] == "returned" and (root / "slots" / "k").exists()
+    assert stage.read_admission_head(root)["binding_id"] == world["h_binding"]
+    record = root / "admission" / "delegations" / ("0" * 64 + ".json")
+    record.parent.mkdir(exist_ok=True)
+    record.write_text("{}")
+    for action in (lambda: compaction.compact_resume(root, world["id"]), lambda: _abort(world),
+                   lambda: compaction.compact_abort(root, world["id"])):
+        _refused_writes_nothing(world, stage.DELEGATION_FROZEN, action)
+    assert _kinds(world)[-1] == "returned" and (root / "slots" / "k").exists()
+    record.unlink()
+    assert compaction.compact_resume(root, world["id"])["phase"] == "aborted"
+    _back_on_h(world, tmp_path, "h")
+
+
 # --- the return to H's own authority checks after V (review RA4B-3, RB-2(b)(c), RB-3) ---------------
 
 def test_the_return_to_h_checks_its_confirmation_the_head_and_k_prime_and_writes_nothing(x4, x5, tmp_path,
