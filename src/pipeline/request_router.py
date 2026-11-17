@@ -35,6 +35,7 @@ from src.memory.transient import TransientCache
 from src.memory.voice_phrase import VERIFICATION_REPLY
 from src.memory.prompt_context import SourcesInvalidated, run_private
 from src.llm.generation_stream import GuardedGeneration
+from src.core.household_clock import HouseholdClock
 from src.core.owned_work import OwnedBlockingWork
 from src.core.task_outcome import (
     CURRENT_REQUEST_ID, DeliveryOutcome, DispatchState, EffectState, PersistenceState, ResponseRequirement,
@@ -239,6 +240,7 @@ class RequestRouter:
         privacy=None,
         voice_attributor=None,
         wake_verifier: WakeVerifier | None = None,
+        household_clock: HouseholdClock | None = None,
     ):
         """
         Initialize RequestRouter with injected dependencies.
@@ -278,12 +280,16 @@ class RequestRouter:
                 None disables hook calls; mandatory home control policy remains active.
             wake_verifier: Second-stage transcript wake check for acoustic
                 wakes (V2 2026-11-17); None disables it.
+            household_clock: Household clock built once in main (P3-F1) for
+                the legacy prompt's current time; None builds a default one,
+                never the process's local time.
         """
         # Core pipeline components
         self.command_processor = command_processor
         self.response_handler = response_handler
         self.audio_manager = audio_manager
         self.room_context_manager = room_context_manager
+        self.household_clock = household_clock if household_clock is not None else HouseholdClock()
 
         # Orchestrator
         self._orchestrator = orchestrator
@@ -2221,9 +2227,8 @@ class RequestRouter:
 
     async def _build_prompt(self, user_text: str) -> str:
         """Reason over the current microphone turn without personal or unscoped cached data."""
-        from datetime import datetime
-
-        time_context = datetime.now().strftime("%H:%M del %A")
+        # P3-F1: household wall time, not the process's local time.
+        time_context = self.household_clock.now_local().strftime("%H:%M del %A")
         # Explicit household state queries use the current typed capability path.
         # A raw HA cache and global memory are not authority for a generic prompt.
         return f"""Eres un asistente de hogar inteligente. Responde de forma concisa y natural en español.

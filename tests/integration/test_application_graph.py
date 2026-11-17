@@ -82,6 +82,7 @@ async def test_real_factory_shares_household_output_privacy_and_managers(leaves,
             assert isinstance(clock, HouseholdClock) and clock.timezone == "America/Montevideo"
             assert orchestrator.dispatcher.household_clock is graph.reminder_manager._household_clock is clock
             assert orchestrator.context_manager.household_clock is clock  # slow-path prompt time
+            assert router.household_clock is clock  # legacy prompt time
             assert orchestrator.dispatcher.room_namespace is graph.room_namespace
             assert graph.room_namespace.rooms == frozenset()
             assert graph.models.stt.loads == graph.models.tts.loads == 0

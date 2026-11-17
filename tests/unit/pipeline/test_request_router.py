@@ -716,6 +716,25 @@ class TestBuildPrompt:
         memory.prompt_context.assert_not_called()
         ha.get_domotics_entities.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_build_prompt_current_time_is_the_household_wall_time(self, monkeypatch):
+        """P3-F1: 'Hora actual' comes from the injected household clock, not the process TZ."""
+        import time as time_module
+        from datetime import UTC, datetime
+        from src.core.household_clock import HouseholdClock
+
+        frozen = datetime(2026, 8, 5, 2, 30, tzinfo=UTC)  # 23:30 of the 4th in Montevideo
+        monkeypatch.setenv("TZ", "Asia/Tokyo")  # 11:30 of the 5th in the process's zone
+        time_module.tzset()
+        try:
+            router = _build_router(household_clock=HouseholdClock(time_source=frozen.timestamp))
+            prompt = await router._build_prompt("que hora es")
+        finally:
+            monkeypatch.undo()
+            time_module.tzset()
+
+        assert f"Hora actual: 23:30 del {datetime(2026, 8, 4).strftime('%A')}\n" in prompt
+
 
 class TestCapturedTranscript:
     """Reusing text requires an exact match with the final captured audio."""

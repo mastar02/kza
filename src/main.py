@@ -1957,6 +1957,7 @@ async def build_application(
         earcon_cfg=_earcon_cfg,
         asr_event_logger=event_logger,
         wake_verifier=wake_verifier,
+        household_clock=household_clock,
     )
 
     shutdown.push_async_callback(request_router.aclose)
