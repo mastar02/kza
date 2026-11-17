@@ -646,3 +646,65 @@ def test_safety_sentences_are_pinned():
     # R15: an accepted release never returns to H.
     assert ("un problema después se resuelve con otra transición (hotfix o rollback), nunca volviendo a H, que ya "
             "no existe.") in _flat(_section(text, "### Paso 9: servir K'"))
+
+
+def test_rereview_safety_sentences_are_pinned_exactly():
+    """Re-review SC5B-RR2: 14 of 15 reviewer mutants of safety sentences survived (RR1 to RR13, RR15);
+    each sentence is pinned whole, so dropping, inverting or loosening it fails."""
+    text = _text()
+    gate = _flat(_section(text, "## Compuerta: cuándo se puede usar"))
+    # RR5: SC4B-Q1, a first transition after day 14 does not run.
+    assert ("Si cae después, no se hace: primero se implementa la salida de la fila PA (testigo de cierre por "
+            "registro de recuperación y `--accept-regressed-source`), que hoy no existe en el código.") in gate
+    # RR6: step 0 with resurrected != 0 stops while H serves.
+    zero = _flat(_section(text, "### Paso 0: residuo de resurrección (sólo lectura, el servicio sigue en H)"))
+    assert "Si no da 0, no seguir: el servicio queda en H y se pasa a desarrollo." in zero
+    # RR7: R-b or adopt on the T0's not_closed refusal, with the dry-run cleanup check of row T0F.
+    t0 = _section(text, "### Paso 3: T0, instalar el controlador del NUEVO (sólo con `T0`)")
+    row = next(line for line in t0.splitlines() if line.startswith("| `runtime_admission_not_closed` |"))
+    assert row == (
+        "| `runtime_admission_not_closed` | head abierto o desconocido | cerrarlo con R-b (arrancar la unidad una vez; "
+        "R-b cierra el head y sirve H, así que después detener y deshabilitar la unidad otra vez antes de repetir "
+        "`install-controller`, que rechaza mientras H corre) o `adopt` (sin log pendiente lo admite; después de "
+        "`adopt --dry-run`, la comprobación de su copia en claro de la fila T0F, punto 2), y repetir |"), row
+    # RR2, RR15: T0F removes only the exact leftover path, before continuing.
+    t0f = _flat(text.split("**Sin vuelta atrás (fila T0F).**", 1)[1].split("### Paso 4", 1)[0])
+    assert ("Si aparece alguna, borrarla a mano (`rm -rf` sobre esa ruta exacta) antes de seguir: está fuera de "
+            "todo retiro y de todo borrado.") in t0f
+    assert all("rm -rf" not in line or line in {"rm -rf", 'rm -rf "$NEW"'} for line in _code_lines(text)), [
+        line for line in _code_lines(text) if "rm -rf" in line]
+    # RR1: an unproven entry under slots/ is never deleted, except an empty slots/.prepare-* by rmdir.
+    plan = _section(text, "### Paso 4: plan (sólo lectura; se puede repetir)")
+    assert ("| `runtime_admission_compaction_release_unproven_copy` | una entrada sin prueba bajo `slots/`: un "
+            "`slots/.prepare-*` vacío se quita con `rmdir` y se repite; cualquier otra no se borra (servicio en H, "
+            "averiguar, regla de 48 horas) |") in plan.splitlines()
+    flat_plan = _flat(plan)
+    # RR4: --accept-owner-only-loss names the loss; it is not a default flag.
+    assert ("Con `unexplained > 0` en `coverage`, `start` exige `--accept-owner-only-loss`: esos datos se "
+            "pierden.") in flat_plan
+    # RR3: other_files in a Chroma store is looked at before continuing; K does not receive it.
+    assert ("Si `other_files` no es 0, mirar qué se dejó a mano dentro del almacén antes de seguir (SC4C-Q5): K "
+            "no lo recibe.") in flat_plan
+    # RR13: an io_error before retire_started is retried once before the return to H.
+    retire = _section(text, "### Paso 8: retiro (la aceptación)")
+    io_row = next(line for line in retire.splitlines() if line.startswith("| `runtime_admission_compaction_io_error` |"))
+    assert io_row.endswith(
+        "Sin `retire_started`: quitar la causa del `errno` y repetir una vez el mismo retiro, como en la fila AT; si "
+        "rechaza igual, volver a H con W |"), io_row
+    # RR9: a cut retire is finished by resume or the same retire, never a return to H.
+    assert ("**Retiro cortado (fila RS)**: `$ST compact resume <compaction_id>` o el mismo `$ST compact retire "
+            "<compaction_id>` lo termina.") in _flat(retire)
+    # RR8, RR10: SS keeps the unit disabled and has no other exit.
+    ss = _flat(_section(text, "### Parada segura SS (`runtime_admission_compaction_abort_protected_changed`)"))
+    assert ("**Dejar la unidad deshabilitada y guardar el informe** (el estado por base dice si una base está "
+            "ilegible).") in ss
+    assert "No hay otra salida de SS: ni el abort simple, ni el retiro, ni `adopt`." in ss
+    assert "salvo" not in ss
+    # RR11: HD keeps the unit disabled as its first step.
+    hd = _flat(_section(text, "### Parada terminal HD (`runtime_admission_compaction_h_changed`)"))
+    assert ("Qué hacer: 1. Dejar la unidad deshabilitada. 2. No cambiar nada bajo `/home/kza/releases` ni en "
+            "`/home/kza/kza/.venv`.") in hd
+    # RR12: after acceptance, a cut dry run's copy is looked for and removed by hand.
+    after = _flat(_section(text, "## Después de la aceptación"))
+    assert ("si el dry-run se corta, queda ahí, fuera de todo retiro y de todo borrado: comprobarlo con `ls -d "
+            "\"${TMPDIR:-/tmp}\"/kza-adopt-dry-run-*` y borrarlo a mano.") in after
