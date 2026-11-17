@@ -337,7 +337,7 @@ class DispatchResult:
     delivery_outcome: DeliveryOutcome | None = None
     response_requirement: ResponseRequirement = ResponseRequirement.REQUIRED
     observation: Observation | None = None
-    # Canonical bare room id of the turn's origin (P3-F1 RoomNamespace.origin_room), or None.
+    # Canonical bare room id of the mic that heard the turn (P3-F1 RoomNamespace.origin_room), or None.
     origin_room: str | None = None
 
     def __post_init__(self) -> None:
@@ -690,7 +690,6 @@ class RequestDispatcher:
         target_entity_id: str | None = None,
         memory_sources: tuple[MemorySource, ...] | None = None,
         context_room_id: str | None = None,
-        origin_room: str | None = None,
     ) -> DispatchResult:
         """
         Procesar una peticion, enrutando al path correcto.
@@ -712,10 +711,11 @@ class RequestDispatcher:
                 sobrescriben el preset del comando matcheado. También
                 portado desde el legacy.
             context_room_id: Habitación del micrófono que capturó el turno.
-            origin_room: ``room_context.room_id`` cuando el router resolvió la
-                habitación. La habitación de origen (``DispatchResult.origin_room``)
-                es esta si está configurada, si no la del micrófono si está
-                configurada, si no None; nunca la zona detectada por audio.
+                Es la única fuente de la habitación de origen
+                (``DispatchResult.origin_room``, P3F1-R3 opción A): esta
+                habitación si está configurada, si no None; nunca la zona
+                detectada por audio, el Bluetooth solo, la última habitación
+                conocida, la habitación nombrada ni ``rooms.fallback_room``.
         """
         start_time = time.perf_counter()
         self._stats["total_requests"] += 1
@@ -730,7 +730,7 @@ class RequestDispatcher:
 
         # Acoustic identity and caller-supplied IDs do not confer personal scope.
         ctx = self.context_manager.get_household(context_room_id if context_room_id is not None else zone_id)
-        origin = self.room_namespace.origin_room(origin_room, context_room_id)
+        origin = self.room_namespace.origin_room(context_room_id)
 
         # 1. Detectar comandos especiales
         special_result = await self._check_special_commands(text_lower, user_id, ctx)
@@ -2023,14 +2023,13 @@ class MultiUserOrchestrator:
         query_slots: dict | None = None, target_entity_id: str | None = None,
         memory_sources: tuple[MemorySource, ...] | None = None,
         context_room_id: str | None = None,
-        origin_room: str | None = None,
     ) -> DispatchResult:
         """Dispatch household voice without deriving account authority from acoustics."""
         return await self.dispatcher.dispatch(
             user_id=user_id or "unknown", text=text, user_name="Hogar", zone_id=zone_id,
             permission_level=0, on_response=on_response, service_filter=service_filter,
             query_slots=query_slots, target_entity_id=target_entity_id, memory_sources=memory_sources,
-            context_room_id=context_room_id, origin_room=origin_room,
+            context_room_id=context_room_id,
         )
 
     async def _identify_speaker(self, audio, *, sources=(), transcript='', room_id=None) -> tuple[str, str]:

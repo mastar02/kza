@@ -11,9 +11,12 @@ P3-F1 (p3/design.json household_conventions.clock and .room_namespace):
   The canonical form is the bare room id (``living``); ``zone_<room>`` is a
   transport form for components that already expect it (router, response
   handler, ``ResponseHandler.cancel``, ``ZoneManager.set_active_zone``).
-* The origin room of a voice turn is ``room_context.room_id`` when resolved,
-  else the microphone's room when configured, else ``None``
-  (:meth:`RoomNamespace.origin_room`). Acoustic zone detection never names it.
+* The origin room of a voice turn is the configured room of the microphone
+  that heard it, else ``None`` (:meth:`RoomNamespace.origin_room`; user answer
+  P3F1-R3 option A, 2026-11-17). Bluetooth confirmation only confirms that
+  room; Bluetooth alone, the last known room, the room named in the command
+  (the target) and ``rooms.fallback_room`` never name it, and neither does
+  acoustic zone detection.
 """
 
 import logging
@@ -165,16 +168,20 @@ class RoomNamespace:
         canonical = self.to_room(room)
         return None if canonical is None else ZONE_PREFIX + canonical
 
-    def origin_room(self, resolved_room: str | None, mic_room: str | None) -> str | None:
-        """Origin room of a turn (design origin_room_of_a_turn).
+    def origin_room(self, mic_room: str | None) -> str | None:
+        """Origin room of a turn: only the microphone that heard it (P3F1-R3 option A).
+
+        A room the room context resolved some other way (Bluetooth alone, the
+        user's last known room, the room named in the command, or
+        ``rooms.fallback_room``) is not an origin; a Bluetooth-confirmed match
+        is the microphone's room itself. Without an origin, shared notices go
+        to ``reminders.output_zone`` (the living) until SCHEMA-V2.
 
         Args:
-            resolved_room: ``room_context.room_id`` when the room was resolved.
-            mic_room: Room of the microphone that captured the turn.
+            mic_room: Room of the microphone that captured the turn, bare or
+                in ``zone_<room>`` form.
 
         Returns:
-            The resolved room when configured, else the microphone's room when
-            configured, else None.
+            The microphone's canonical room when configured, else None.
         """
-        resolved = self.to_room(resolved_room)
-        return resolved if resolved is not None else self.to_room(mic_room)
+        return self.to_room(mic_room)

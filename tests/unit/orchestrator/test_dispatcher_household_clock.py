@@ -1,5 +1,6 @@
 """P3-F1: the dispatcher's injected household clock and origin room."""
 
+import inspect
 import time
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -30,25 +31,31 @@ def forecast(*entries):
         {"datetime": iso, "condition": condition, "temperature": high} for iso, condition, high in entries]}}}
 
 
-@pytest.mark.parametrize(("origin_room", "context_room_id", "zone_id", "expected"), [
-    ("living", "hall", "zone_hall", "living"),       # room_context.room_id wins
-    (None, "hall", "zone_hall", "hall"),              # else the configured mic room
-    ("patio", "zone_cocina", None, "cocina"),         # unconfigured resolved room; mic in transport form
-    (None, None, "zone_living", None),                # never the acoustic/transport zone alone
-    (None, "garage", "zone_living", None),
+@pytest.mark.parametrize(("context_room_id", "zone_id", "expected"), [
+    ("hall", "zone_hall", "hall"),                   # the configured room of the mic that heard
+    ("hall", "zone_living", "hall"),                 # the resolved/transport zone never replaces the mic
+    ("zone_cocina", None, "cocina"),                 # mic in transport form
+    (None, "zone_living", None),                     # never the acoustic/transport zone alone
+    ("garage", "zone_living", None),                 # unconfigured mic: no origin (P3F1-R3 option A)
 ])
-async def test_dispatch_carries_the_normalized_origin_room(origin_room, context_room_id, zone_id, expected):
+async def test_dispatch_carries_the_normalized_origin_room(context_room_id, zone_id, expected):
     d = make_dispatcher(room_namespace=ROOMS)
     result = await d.dispatch(user_id="unknown", text="qué recordatorios hay", zone_id=zone_id,
-                              context_room_id=context_room_id, origin_room=origin_room)
+                              context_room_id=context_room_id)
     assert result.path is PathType.FAST_REMINDER
     assert result.origin_room == expected
     assert result.zone_id == zone_id
 
 
+def test_no_caller_can_name_an_origin_other_than_the_mic():
+    """P3F1-R3 option A: dispatch and process take the mic room only, no resolved origin."""
+    assert "origin_room" not in inspect.signature(RequestDispatcher.dispatch).parameters
+    assert "origin_room" not in inspect.signature(MultiUserOrchestrator.process).parameters
+
+
 async def test_special_commands_carry_the_origin_room_too():
     d = make_dispatcher(room_namespace=ROOMS)
-    result = await d.dispatch(user_id="unknown", text="cancelá eso", context_room_id="hall", origin_room="zone_bano")
+    result = await d.dispatch(user_id="unknown", text="cancelá eso", zone_id="zone_hall", context_room_id="zone_bano")
     assert result.intent == "cancel"
     assert result.origin_room == "bano"
 
@@ -56,8 +63,7 @@ async def test_special_commands_carry_the_origin_room_too():
 async def test_without_a_catalog_no_room_is_an_origin():
     d = make_dispatcher()
     assert d.room_namespace.rooms == frozenset()
-    result = await d.dispatch(user_id="unknown", text="qué recordatorios hay", context_room_id="living",
-                              origin_room="living")
+    result = await d.dispatch(user_id="unknown", text="qué recordatorios hay", context_room_id="living")
     assert result.origin_room is None
 
 
@@ -69,7 +75,7 @@ async def test_orchestrator_injects_the_same_clock_and_namespace_and_forwards_th
     assert orchestrator.context_manager.household_clock is clock
     assert orchestrator.dispatcher.room_namespace is ROOMS
     result = await orchestrator.process(user_id=None, text="qué recordatorios hay", zone_id="zone_hall",
-                                        context_room_id="hall", origin_room="escritorio")
+                                        context_room_id="escritorio")
     assert result.origin_room == "escritorio"
 
 

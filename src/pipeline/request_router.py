@@ -1187,9 +1187,9 @@ class RequestRouter:
             text=text,
             audio=audio if not user_id else None,
             zone_id=zone_id,
+            # The capturing mic's room is also the turn's origin room (P3F1-R3
+            # option A); the dispatcher normalizes it, never the resolved room.
             context_room_id=room_id,
-            # P3-F1 origin room: the resolved room, else the mic's (normalized by the dispatcher).
-            origin_room=room_context.room_id if room_context else None,
             on_response=on_response,
             service_filter=_service_filter,
             query_slots=_query_slots,

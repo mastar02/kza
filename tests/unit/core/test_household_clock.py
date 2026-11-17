@@ -162,20 +162,25 @@ def test_namespace_from_config_skips_reserved_and_non_room_values():
     assert namespace.rooms == frozenset({"living", "hall"})
 
 
-@pytest.mark.parametrize(("resolved", "mic", "expected"), [
-    ("living", "hall", "living"),          # the resolved room wins
-    ("zone_living", None, "living"),       # transport form normalized
-    (None, "hall", "hall"),                # else the configured mic room
-    ("patio", "zone_hall", "hall"),        # an unconfigured resolved room falls back to the mic
-    ("patio", "garage", None),             # nothing configured
-    (None, None, None),
-    ("", "", None),
+@pytest.mark.parametrize(("mic", "expected"), [
+    ("hall", "hall"),                      # the configured room of the mic that heard
+    ("zone_hall", "hall"),                 # transport form normalized
+    ("patio", None),                       # unconfigured mic: no origin, never a fallback room
+    ("zone_patio", None),
+    (None, None),
+    ("", None),
 ])
-def test_origin_room_of_a_turn(resolved, mic, expected):
-    assert RoomNamespace(ROOMS).origin_room(resolved, mic) == expected
+def test_origin_room_is_only_the_mic_that_heard(mic, expected):
+    """P3F1-R3 option A: nothing but the capturing microphone names the origin."""
+    assert RoomNamespace(ROOMS).origin_room(mic) == expected
+
+
+def test_origin_room_takes_no_resolved_room():
+    with pytest.raises(TypeError):
+        RoomNamespace(ROOMS).origin_room("living", "hall")
 
 
 def test_empty_catalog_names_no_origin():
     namespace = RoomNamespace(())
     assert namespace.rooms == frozenset()
-    assert namespace.origin_room("living", "living") is None
+    assert namespace.origin_room("living") is None
