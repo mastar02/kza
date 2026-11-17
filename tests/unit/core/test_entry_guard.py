@@ -441,6 +441,9 @@ NO_SRC_ENTRIES = {
     "tools/sc4b_mutants.py": "rewrites files of a mutation clone and runs pytest as a subprocess; imports no src",
     "tools/sc4c_mutants.py": "rewrites files of a mutation clone and runs pytest as a subprocess; imports no src",
     "tools/sc0/compaction_timing.py": "times stage_runtime (listed above) on a synthetic scratch root through the test rehearsal harness",
+    # T046-U1 web timing probe (2026-11-17): measures NEXO against a fixture, never against production state.
+    "tools/web_timing_fixture.py": "builds a DashboardAPI and its stores only inside a TemporaryDirectory (kza-t046-fixture-*) on 127.0.0.1",
+    "tools/web_timing_probe.py": "drives Chrome over CDP against web_timing_fixture (listed above); opens no KZA store itself",
 }
 
 
