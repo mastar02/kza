@@ -255,10 +255,15 @@ plan** (`plan` rechaza `runtime_admission_not_closed` mientras H corre).
 Mientras la unidad esté `activating`, no correr `enable` ni `disable` (recargan
 el gestor; runbook de R1, W8).
 
-Esta comprobación se saltea **sólo** cuando H es un head de recuperación de
-una release que se sabe que falla (fila PA, más abajo): ese H no llega a
-`READY` con ningún controlador, y su falla parecería un T0F. Ahí SR-1 es la
-única compuerta de la instalación.
+Esta comprobación se saltea **sólo** en dos casos, y en los dos SR-1 es la
+única compuerta de la instalación:
+
+- cuando H es un head de recuperación de una release que se sabe que falla
+  (fila PA, más abajo): ese H no llega a `READY` con ningún controlador, y su
+  falla parecería un T0F;
+- en la fila CI (un controlador corregido con un log del modo release
+  pendiente, más abajo): ahí H no es el head y arrancar la unidad correría la
+  recuperación de `serve` sobre K'.
 
 **Sin vuelta atrás (fila T0F).** Una vez que `current` cambió, no hay regreso
 al controlador de época 4: una copia de época 4 no toma el lease de una raíz
@@ -575,13 +580,22 @@ revisa el informe nuevo y confirma por escrito antes (R5-OPS-1).
 Un defecto fuera de la proyección compartida (por ejemplo en el clasificador
 W1 o en un rechazo) con un log del modo release pendiente: quedan tres copias,
 la unidad deshabilitada y los borrados en pausa. Desarrollo construye el
-controlador corregido con una revisión mayor; se instala como un T0 desde su
-archivo extraído (`"$PY" -I -B <tmp>/scripts/stage_runtime.pyc --root
+controlador corregido con una revisión mayor; se instala desde su archivo
+extraído (`"$PY" -I -B <tmp>/scripts/stage_runtime.pyc --root
 /home/kza/releases --offline install-controller <archivo corregido>`), que
 exige que el binding de H recalculado sea igual al del log
 (`runtime_admission_controller_binding_changed` si no, antes de mover
-`current`, y el log queda como estaba). Después se termina con el mismo
-`$ST`. Mientras se espera, la decisión escrita cada 48 horas.
+`current`, y el log queda como estaba).
+
+**No es un T0 completo: no hay comprobación de que H sirve.** La unidad
+sigue detenida y deshabilitada y no se arranca después de la instalación.
+Con el log pendiente H no es el head: arrancarla correría la recuperación de
+`serve` sobre K' antes de que la compuerta de compactación rechace, movería
+el head (el abort siguiente rechazaría
+`runtime_admission_compaction_abort_recheck_required`) y K' recibiría
+escrituras que nadie revisó. Después se termina el log con el mismo `$ST`
+(ahora el controlador corregido): `$ST compact status <compaction_id>` y la
+salida que corresponda. Mientras se espera, la decisión escrita cada 48 horas.
 
 ## Rollback (sin T0)
 

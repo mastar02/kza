@@ -187,7 +187,11 @@ def test_the_steps_run_in_the_design_order():
         "systemctl --user disable kza-voice.service")
     flat = _flat(t0)
     assert "**detener y deshabilitar otra vez antes del plan**" in flat
-    assert "Esta comprobación se saltea **sólo** cuando H es un head de recuperación" in flat
+    assert "Esta comprobación se saltea **sólo** en dos casos" in flat
+    assert ("- cuando H es un head de recuperación de una release que se sabe que falla (fila PA, más abajo)"
+            in flat)
+    assert ("- en la fila CI (un controlador corregido con un log del modo release pendiente, más abajo): ahí H "
+            "no es el head y arrancar la unidad correría la recuperación de `serve` sobre K'.") in flat
     assert "**Sin vuelta atrás (fila T0F).**" in flat
     decide = _flat(_section(steps, "### Paso 2: ¿hace falta T0? (sólo lectura)"))
     assert 'print("T0" if new > installed else "sin T0" if new < installed or a == b else "conflicto: no seguir")' \
@@ -392,3 +396,16 @@ def test_deployment_points_to_the_runbook_and_drops_the_owner_limit_text():
                  "**`home_assistant_routines` se descarta en cada transición**", "**Colas de borrado de audio.**",
                  "**Raíces con dueños sólo en ensayos.**", "**Residuos aceptados.**"):
         assert item in flat, item
+
+
+def test_the_ci_install_does_not_serve_h():
+    """Review SC5B-R1 (mutant R16): under CI the log is pending and H is not the head; starting the unit
+    runs serve's recovery on K' before the compaction gate refuses, which moves the head."""
+    ci = _section(_text(), "### Controlador corregido con K' abierto (fila CI)")
+    flat = _flat(ci)
+    assert "**No es un T0 completo: no hay comprobación de que H sirve.**" in flat
+    assert "La unidad sigue detenida y deshabilitada y no se arranca después de la instalación." in flat
+    assert "`runtime_admission_compaction_abort_recheck_required`" in flat
+    assert "K' recibiría escrituras que nadie revisó" in flat
+    assert "systemctl" not in ci and "paso 3" not in flat and "como un T0" not in flat
+    assert "H sirve (" not in flat and "se comprueba que H sirve" not in flat
