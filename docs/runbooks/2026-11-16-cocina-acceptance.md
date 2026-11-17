@@ -108,6 +108,19 @@ disponibilidad de KZA.
   tampoco está en sysfs (micrófono desenchufado) no hay refresco. Hasta que
   una release lo instale, un micrófono que enumera después del arranque sigue
   necesitando reiniciar `kza-voice`.
+- Límite conocido del refresco (revisión T025-U2-RV2-1): si `Pa_Initialize`
+  falla durante el refresco, PortAudio queda sin inicializar y **ninguna**
+  habitación puede abrir, tampoco las que estaban sanas. Desde RV2-1 el
+  reinicio separa `terminate` de `initialize` (antes, tras un fallo así,
+  `terminate` fallaba en cada intento y `initialize` no volvía a correr: la
+  casa quedaba sorda hasta reiniciar), y el refresco siguiente no espera los
+  300 s sino un backoff corto: 10 s (techo del backoff de reapertura),
+  duplicándose por fallo seguido hasta 300 s. Mientras dure, la casa está
+  sorda; con el refresco desactivado (intervalo 0) sigue requiriendo
+  reiniciar `kza-voice`. En consola: `PortAudio reinit failed`, luego
+  `PortAudio is not initialized after the catalog reset; ... retrying the
+  refresh in N s` y, en el reintento, `PortAudio terminate failed: ...
+  PortAudio not initialized` antes de reabrir.
 - Consecuencia: la precondición 2 (las cuatro habitaciones `running`) y la 3
   (las cuatro con heartbeat) se vuelven a comprobar en cada ventana, como
   siempre. La captura `closed` de la Cocina quedó explicada y resuelta por el
@@ -287,7 +300,11 @@ lista. En esos casos se espera, además de lo que dice la tabla:
 - si coincide con un comando, una conversación o una respuesta, `PortAudio
   catalog refresh deferred (command|conversation|response)` y el refresco
   apenas termina; `deferred (rate_limit)` si hubo otro refresco hace menos de
-  300 s.
+  300 s;
+- si aparece `PortAudio is not initialized after the catalog reset`, todas
+  las entradas quedan sin audio hasta el reintento (backoff corto, ver
+  «Estado conocido antes de P7»): se anota como fallo de C20 de todas las
+  entradas, con su duración.
 
 El corte breve alcanza a las entradas sanas. No se excluye del cálculo: si
 alguna muestra de una entrada sana sale con `age_s` > 8 s, es un fallo de C20

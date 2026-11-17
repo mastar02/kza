@@ -1595,6 +1595,44 @@ class _LateCatalogRig:
             await asyncio.gather(self.loop._recovery_task, return_exceptions=True)
 
 
+class _RealisticPortAudio:
+    """Semántica de sounddevice 0.5.5 para `_terminate`/`_initialize`.
+
+    `_terminate` falla con 'PortAudio not initialized' si un `_initialize`
+    anterior falló, y el contador `_initialized` sólo cambia cuando la
+    llamada nativa tuvo éxito. Mientras PortAudio no está inicializado,
+    `alsa_card_to_device_index` no resuelve nada (traga el error de
+    `query_devices` y devuelve None).
+    """
+
+    def __init__(self, rig: "_LateCatalogRig", *, init_failures: int = 0):
+        self.rig = rig
+        self.init_failures = init_failures
+        rig.sd._initialized = 1
+        rig.sd._terminate.side_effect = self._terminate
+        rig.sd._initialize.side_effect = self._initialize
+        listed = rig.resolve
+
+        def resolve(port):
+            if rig.sd._initialized > 0:
+                return listed(port)
+            rig.resolutions += 1
+            return None
+        rig.resolve = resolve
+
+    def _terminate(self):
+        if self.rig.sd._initialized <= 0:
+            raise self.rig.sd.PortAudioError("Error terminating PortAudio: PortAudio not initialized")
+        self.rig.sd._initialized -= 1
+
+    def _initialize(self):
+        if self.init_failures:
+            self.init_failures -= 1
+            raise self.rig.sd.PortAudioError("Error initializing PortAudio: Unanticipated host error")
+        self.rig.sd._initialized += 1
+        self.rig.listed = dict(self.rig.present)
+
+
 class TestLateMicrophoneCatalogRefresh:
     """T025-U2: un mic configurado que aparece tarde se abre sin reiniciar.
 
@@ -1771,6 +1809,69 @@ class TestLateMicrophoneCatalogRefresh:
         rig.old_living.close.assert_called_once()
         assert reopened in rig.streams, "la room cortada vuelve aunque no haya refresh"
         assert any("refresh skipped (command)" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_failed_portaudio_initialize_is_retried_without_the_full_interval(self, tmp_path, caplog):
+        """Un Pa_Initialize que falla una vez no deja la casa sorda (T025-U2-RV2-1)."""
+        rig = _LateCatalogRig(tmp_path)
+        pa = _RealisticPortAudio(rig, init_failures=1)
+        rig.plug_cocina()
+        with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
+        ), caplog.at_level("INFO", logger="src.pipeline.multi_room_audio_loop"):
+            await rig.start()
+            await _until(lambda: rig.sd._initialize.call_count == 1)
+            await _until(lambda: rig.loop._recovery_task is None)
+            await _until(lambda: rig.loop._is_awaiting_reopen("living"))
+            await rig.spin(20)
+            # Primer reset: terminate bien, initialize falla → nada puede abrir.
+            assert rig.sd._initialized == 0
+            assert "living" not in rig.loop._streams and "cocina" not in rig.loop._streams
+            assert rig.loop._catalog_missing == {"cocina": rig.COCINA_CARD, "living": rig.LIVING_CARD}
+            assert rig.loop._catalog_reinit_failures == 1
+            # Backoff corto = techo del backoff de reapertura (0.002 s en el rig).
+            rig.clock[0] = 1000.001
+            await rig.spin(20)
+            assert rig.sd._initialize.call_count == 1, "el reintento espera el backoff corto"
+            # Mucho antes de los 300 s: el intento fallido no consume la ventana.
+            rig.clock[0] = 1000.01
+            await _until(lambda: "cocina" in rig.loop._streams and "living" in rig.loop._streams)
+            await _until(lambda: rig.loop._recovery_task is None)
+            await rig.stop()
+        assert pa.init_failures == 0
+        assert rig.sd._initialized == 1
+        # El segundo terminate falla (no inicializado) y aun así se inicializa.
+        assert rig.sd._terminate.call_count == 2
+        assert rig.sd._initialize.call_count == 2
+        assert rig.loop._catalog_reinit_failures == 0
+        assert rig.loop._catalog_missing == {}
+        assert rig.loop._catalog_refreshed_at == 1000.01
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("PortAudio reinit failed" in m for m in messages)
+        assert any("PortAudio terminate failed" in m and "not initialized" in m for m in messages)
+        assert any("not initialized after the catalog reset" in m and "retrying the refresh in" in m
+                   for m in messages)
+
+    def test_failed_initialize_backoff_doubles_up_to_the_interval(self):
+        loop = _make_multi_room_loop(stream_watchdog_catalog_refresh_min_interval_s=300.0)
+        loop._watchdog_backoff_max_s = 10.0
+        waits = []
+        for _ in range(8):
+            loop._note_catalog_reinit(False)
+            waits.append(loop._catalog_refresh_wait_s())
+        assert waits == [10.0, 20.0, 40.0, 80.0, 160.0, 300.0, 300.0, 300.0]
+        loop._note_catalog_reinit(True)
+        assert loop._catalog_refresh_wait_s() == 300.0
+
+    def test_terminate_failure_while_initialized_keeps_the_old_catalog(self):
+        """Si PortAudio sigue inicializado, no se anida otro initialize."""
+        loop = _make_multi_room_loop()
+        fake_sd = MagicMock()
+        fake_sd._initialized = 1
+        fake_sd._terminate.side_effect = RuntimeError("terminate failed")
+        with patch("src.pipeline.multi_room_audio_loop.sd", fake_sd):
+            assert loop._reinit_portaudio() is True
+        fake_sd._initialize.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_rate_limit_is_charged_only_once_the_rooms_were_cut(self, tmp_path):

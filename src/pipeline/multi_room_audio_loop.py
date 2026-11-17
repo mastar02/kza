@@ -416,6 +416,10 @@ class MultiRoomAudioLoop:
         self._catalog_missing: dict[str, int] = {}
         self._catalog_refreshed_at: float | None = None
         self._catalog_refresh_deferred: str | None = None
+        # Consecutive catalog resets that left PortAudio uninitialized. The
+        # house is deaf meanwhile, so the next refresh waits only a short
+        # backoff instead of the full interval.
+        self._catalog_reinit_failures = 0
         self._watchdog_task = None
         self._recovery_task = None
         self._recovery_epoch = 0
@@ -1390,19 +1394,39 @@ class MultiRoomAudioLoop:
         rs.opened_ts = time.monotonic()
         rs.last_frame_ts = 0.0
 
-    def _reinit_portaudio(self) -> None:
+    def _reinit_portaudio(self) -> bool:
         """Force PortAudio to re-scan the device list (sync; fail-open).
 
         PortAudio snapshots devices at Pa_Initialize and never re-scans. After a
         USB re-enumeration the cached indices point to dead devices, so we must
         terminate+initialize to see the new ones. This is GLOBAL: it invalidates
         every open stream, which is why _recover_streams reopens all of them.
+
+        Terminate and initialize fail separately. A failed initialize leaves
+        PortAudio uninitialized, and sounddevice then refuses to terminate it
+        ('PortAudio not initialized'); initialize must still run on the next
+        reset or no microphone could ever open again (T025-U2-RV2-1).
+
+        Returns:
+            True when PortAudio is initialized afterwards; False when it was
+            left uninitialized and no stream can open until a later reset.
         """
         try:
             sd._terminate()
+        except Exception as e:
+            logger.warning(f"[audio-watchdog] PortAudio terminate failed: {e}")
+            initialized = getattr(sd, '_initialized', None)
+            if type(initialized) is int and initialized > 0:
+                # Still initialized with its old catalog: initializing again
+                # would only nest sounddevice's count, and a later terminate
+                # would then never re-scan.
+                return True
+        try:
             sd._initialize()
         except Exception as e:
             logger.warning(f"[audio-watchdog] PortAudio reinit failed: {e}")
+            return False
+        return True
 
     def _note_catalog_gap(self, rs: RoomStream) -> None:
         """Record whether a configured card is in sysfs but not in PortAudio.
@@ -1467,7 +1491,7 @@ class MultiRoomAudioLoop:
         reason = self._catalog_refresh_blocker()
         last = self._catalog_refreshed_at
         if (reason is None and last is not None
-                and self._microphone_monotonic() - last < self._catalog_refresh_interval_s):
+                and self._microphone_monotonic() - last < self._catalog_refresh_wait_s()):
             reason = 'rate_limit'
         if reason is not None:
             if self._catalog_refresh_deferred != reason:
@@ -1478,6 +1502,42 @@ class MultiRoomAudioLoop:
                 )
             return False
         return self._schedule_recovery([rs.room_id], catalog_refresh=True)
+
+    def _catalog_refresh_wait_s(self) -> float:
+        """Minimum time between two catalog refresh cuts.
+
+        Returns:
+            The configured interval, or a short backoff (the reopen backoff
+            ceiling, doubling per consecutive failure, capped at the interval)
+            while the last reset left PortAudio uninitialized: every room is
+            already deaf then, so retrying cuts nothing that works.
+        """
+        interval = self._catalog_refresh_interval_s
+        failures = self._catalog_reinit_failures
+        if failures:
+            return min(self._watchdog_backoff_max_s * 2 ** min(failures - 1, 16), interval)
+        return interval
+
+    def _note_catalog_reinit(self, ready: bool) -> None:
+        """Record whether the last PortAudio reset left it initialized.
+
+        Args:
+            ready: Result of ``_reinit_portaudio``.
+        """
+        if ready:
+            self._catalog_reinit_failures = 0
+            return
+        self._catalog_reinit_failures += 1
+        if self._catalog_refresh_interval_s > 0:
+            logger.error(
+                "[audio-watchdog] PortAudio is not initialized after the catalog reset; "
+                f"no microphone can open; retrying the refresh in {self._catalog_refresh_wait_s():.1f}s"
+            )
+        else:
+            logger.error(
+                "[audio-watchdog] PortAudio is not initialized after the catalog reset; "
+                "no microphone can open and the catalog refresh is disabled"
+            )
 
     def _input_epoch_current(self, epoch: int) -> bool:
         return not self._closed and self._inputs.accepting and epoch == self._recovery_epoch
@@ -1673,7 +1733,10 @@ class MultiRoomAudioLoop:
                         return
                 blocker = self._catalog_refresh_blocker() if catalog_refresh else None
                 if blocker is None:
-                    await self._inputs.catalog_call(self._reinit_portaudio)
+                    outcome: list[bool] = []
+                    await self._inputs.catalog_call(lambda: outcome.append(self._reinit_portaudio()))
+                    if outcome:
+                        self._note_catalog_reinit(outcome[0])
                 else:
                     # Never reset PortAudio under a starting command or a
                     # playing response; the cut already happened, so reopen.
