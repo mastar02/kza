@@ -851,6 +851,22 @@ async def test_a_morning_trigger_at_a_text_clock_has_no_voice_reference(store):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["de tomar las pastillas de las 2", "de tomar las pastillas de las dos"])
+async def test_a_number_without_the_clock_article_is_no_literal_reading(store, query):
+    """Review T032-U1-FV2-4: "tomar 2 pastillas" does not hold "las 2", so only the 14:00 one is named.
+
+    At 92e0d923 (RR-P1) this asked; since review FV-1 the literal reading
+    is the whole clock phrase with its article, as for "comprar una torta".
+    """
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    await _shared(manager, "tomar 2 pastillas", _local(2026, 11, 11, 9, 0).timestamp())
+    timed = await _shared(manager, "tomar las pastillas", _local(2026, 11, 11, 14, 0).timestamp())
+    found = await manager.resolve(None, query, shared_only=True)
+    assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, timed.id)
+
+
+@pytest.mark.asyncio
 async def test_time_words_in_no_text_keep_the_time_reading(store):
     """A time no reminder text contains only filters by trigger, as before."""
     clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
