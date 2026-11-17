@@ -986,6 +986,28 @@ async def test_another_wall_time_is_not_the_text_clock(store, literal, query, du
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("hour", [8, 18])
+async def test_de_manana_with_a_text_that_holds_manana_names_that_text(store, hour):
+    """Review T032-U1-FV3-3, pinned as a known limit of the accepted default T032-U1-Q3.
+
+    "de mañana" is the morning (one day grammar), and a period said
+    without an hour selects nothing, so "mañana" stays a word of the text
+    and "comprar pan mañana" is named alone, even when "comprar pan" is
+    due tomorrow in the morning. Asking here needs a morning reading of a
+    bare period, which no user decision defines; "para mañana" and
+    "pasado mañana" are days and ask.
+    """
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    named = await _shared(manager, "comprar pan mañana", _local(2026, 11, 11, 18, 0).timestamp())
+    tomorrow = await _shared(manager, "comprar pan", _local(2026, 11, 12, hour, 0).timestamp())
+    found = await manager.resolve(None, "de comprar pan de mañana", shared_only=True)
+    assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, named.id)
+    asked = await manager.resolve(None, "de comprar pan para mañana", shared_only=True)
+    assert (asked.match, [r.id for r in asked.candidates]) == (CancelMatch.AMBIGUOUS, [named.id, tomorrow.id])
+
+
+@pytest.mark.asyncio
 async def test_time_words_in_no_text_keep_the_time_reading(store):
     """A time no reminder text contains only filters by trigger, as before."""
     clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
