@@ -531,7 +531,19 @@ def _paused_child(tmp_path: Path, *, death_signal: bool = True, guard: bool = Tr
 
 
 def _gone(pid: int) -> bool:
-    return compaction.process_started_at(pid) is None
+    """The pid has exited and no thread of it is left.
+
+    On Linux a thread-group leader shows as a zombie while its other threads
+    (the SDK's) are still exiting with the shared descriptor table, which
+    holds the inherited lease; only once they are released is it closed.
+    """
+    if compaction.process_started_at(pid) is not None:
+        return False
+    try:
+        tasks = os.listdir(f"/proc/{pid}/task")
+    except FileNotFoundError:  # reaped, or no /proc (macOS)
+        return True
+    return tasks in ([], [str(pid)])
 
 
 def _wait_gone(pid: int, seconds: float) -> bool:
