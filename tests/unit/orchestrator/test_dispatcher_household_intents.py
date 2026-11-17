@@ -252,3 +252,15 @@ async def test_playlist_commands_stay_on_the_music_path(leaves):
     assert result.path is PathType.FAST_MUSIC
     assert leaves.music.process.await_count == 1
     assert leaves.effects(before)["list_mutations"] == 0
+
+
+async def test_rioplatense_reminder_query_lists_the_shared_reminders(leaves):
+    """Review F6: '¿tengo recordatorios?' is a reminder query, answered by the listing."""
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, "reminder_shared_active:tomar agua")
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text="¿tengo recordatorios?")
+    assert result.path is PathType.FAST_REMINDER
+    assert result.response.startswith("Los recordatorios compartidos son")
+    assert leaves.effects(before) == ZERO
+

@@ -275,6 +275,7 @@ _PAUSE = "pause"
 _RESUME = "resume"
 _DISABLE = "disable"
 _CREATE = "create"
+_TIMER_CREATE = "timer_create"
 _ADD = "add"
 _REMOVE = "remove"
 _ROUTINE_EXEC = "routine_exec"
@@ -302,6 +303,8 @@ _forms(_DISABLE, "desactiva", "desactive", "desactivar")
 _forms(_CREATE, "pone", "pon", "ponga", "poner", "crea", "crear", "programa", "programe", "programar", "arranca",
        "arranque", "arrancar", "inicia", "inicie", "iniciar", "activa", "active", "activar", "configura",
        "configure", "configurar", "agenda", "agendar")
+# Rioplatense creation verbs that create only a timer ("haceme/metele/tirame un timer").
+_forms(_TIMER_CREATE, "hace", "haga", "mete", "meta", "tira", "tire")
 _forms(_ADD, "agrega", "agregue", "agregar", "anadi", "anade", "anada", "anadir", "suma", "sume", "sumar", "anota",
        "anote", "anotar")
 _forms(_REMOVE, "quita", "quite", "quitar", "saca", "saque", "sacar", "borra", "borre", "borrar", "elimina",
@@ -363,6 +366,9 @@ _NOTIFICATION = re.compile(r"\bno molestar\b|\bsolo (?:las )?urgen(?:tes|cias)\b
 _MUSIC_WORDS = frozenset({"musica", "cancion", "canciones", "tema", "temas", "playlist", "spotify", "reproduccion",
                           "album", "disco"})
 _QUERY_HEADS = frozenset({"que", "cuales", "cuantos", "cuantas"})
+# "¿tengo recordatorios?", "¿hay algún timer?": the object follows the head.
+_HAVE_HEADS = frozenset({"hay", "tengo", "tenemos"})
+_SOME = frozenset({"algun", "alguna", "algunos", "algunas"})
 _QUERY_VERBS = frozenset({"hay", "tengo", "tenemos", "quedan", "queda", "son", "tiene", "estan", "activos",
                           "activas", "pendientes", "corriendo", "anda", "andan"})
 _READ_HEADS = frozenset({"decime", "dime", "leeme", "lee", "mostrame", "listame", "nombrame", "contame"})
@@ -515,6 +521,10 @@ def _query(utt: _Utterance) -> HouseholdIntent | None:
         return HouseholdIntent(family, HouseholdOperation.QUERY, "R1", _rest(utt, k + 1), head)
     if head in _QUERY_HEADS and _QUERY_VERBS & set(utt.folded):
         return HouseholdIntent(family, HouseholdOperation.QUERY, "R1", _rest(utt, k + 1), head)
+    if head in _HAVE_HEADS:
+        governed = _governed_object(utt, 2 if utt.at(1) in _SOME else 1)
+        if governed is not None:
+            return HouseholdIntent(governed[0], HouseholdOperation.QUERY, "R1", _rest(utt, governed[1] + 1), head)
     if head in _READ_HEADS:
         governed = _governed_object(utt, 1)
         if governed is not None:
@@ -544,15 +554,17 @@ def _list_target_follows(utt: _Utterance) -> bool:
 def _r2(utt: _Utterance) -> HouseholdIntent | None:
     verb = _verb_at(utt, 0)
     if verb is None:
-        if utt.at(0) in ("timer", "temporizador") and utt.at(1) in ("de", "para", "por"):
+        if utt.at(0) in ("timer", "temporizador") and (
+                utt.at(1) in ("de", "para", "por") or _DURATION.match(" ".join(utt.folded[1:]))):
             return HouseholdIntent(HouseholdFamily.TIMER, HouseholdOperation.CREATE, "R2", _rest(utt, 1))
         return None
-    if _CREATE in verb.classes:
+    if _CREATE in verb.classes or _TIMER_CREATE in verb.classes:
         governed = _governed_object(utt, verb.end, allow_adjective=True)
         if governed is not None and governed[0] is HouseholdFamily.TIMER:
             return HouseholdIntent(HouseholdFamily.TIMER, HouseholdOperation.CREATE, "R2",
                                    _rest(utt, governed[1] + 1), verb.form)
-        if governed is not None and governed[0] is HouseholdFamily.LIST and verb.form not in ("pone", "pon", "ponga", "poner"):
+        if governed is not None and governed[0] is HouseholdFamily.LIST and _CREATE in verb.classes \
+                and verb.form not in ("pone", "pon", "ponga", "poner"):
             return HouseholdIntent(HouseholdFamily.LIST, HouseholdOperation.CREATE, "R2",
                                    _rest(utt, governed[1] + 1), verb.form)
     words = set(utt.folded)
