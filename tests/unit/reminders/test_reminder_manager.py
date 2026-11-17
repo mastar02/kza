@@ -250,3 +250,12 @@ async def test_voice_label_is_shared_only(manager):
     private = await manager.create(user_id="ana", text="la clave", trigger_at=time.time() + 60)
     with pytest.raises(PermissionError):
         manager.voice_label(private)
+
+
+@pytest.mark.asyncio
+async def test_a_bare_number_is_content_not_a_clock_time(store):
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    pills = await _shared(manager, "darle 2 pastillas al perro", _local(2026, 11, 11, 8, 0).timestamp())
+    found = await manager.resolve(None, "de darle 2 pastillas al perro", shared_only=True)
+    assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, pills.id)
