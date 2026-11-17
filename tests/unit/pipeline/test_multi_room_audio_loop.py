@@ -2136,6 +2136,60 @@ class TestLateMicrophoneCatalogRefresh:
         assert handler._output_hold is None
 
     @pytest.mark.asyncio
+    async def test_pause_before_the_reset_still_releases_the_output_hold(self, tmp_path, monkeypatch):
+        """Si una pausa gana entre la retención y el reset, la salida se libera igual (T025-U2-RV3-3).
+
+        El reset no corre (``InputGroup.catalog_call`` ya no lo admite), así
+        que sólo el ``finally`` del lazo libera la retención; sin él, toda
+        respuesta o aviso posterior vencería en la cola hasta reiniciar.
+        """
+        from src.core.voice_delivery import ResponseBudgets
+        from src.pipeline.response_handler import ResponseHandler
+        from src.tts import piper_tts
+        from tests.mocks.audio_output import AudioBackend
+
+        monkeypatch.setattr(piper_tts, "sd", AudioBackend())
+        played = []
+        tts = MagicMock()
+        tts.synthesize.return_value = (np.ones(1600, dtype=np.float32), 0.1)
+        tts.sample_rate = 16000
+        del tts.synthesize_stream
+        zones = MagicMock()
+        zones.play_stream_to_zone.side_effect = lambda zone, source, **_kw: (
+            played.append(zone), bool(list(source)))[1]
+        handler = ResponseHandler(tts=tts, zone_manager=zones, streaming_enabled=False,
+                                  response_budgets=ResponseBudgets(queue_wait_s=1.0))
+        rig = _LateCatalogRig(tmp_path)
+        rig.plug_cocina()
+        rig.loop._catalog_missing["cocina"] = rig.COCINA_CARD
+        rig.loop.attach_response_handler(handler)
+        catalog_call = rig.loop._inputs.catalog_call
+        held = []
+        pauses = []
+
+        async def pause_then_catalog_call(function):
+            held.append(handler._output_hold is not None)
+            pauses.append(rig.loop.begin_pause_inputs())
+            await catalog_call(function)
+
+        with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
+        ), patch.object(rig.loop._inputs, "catalog_call", side_effect=pause_then_catalog_call):
+            await _seed_owned_inputs(rig.loop, {"living": rig.old_living})
+            assert rig.loop._request_catalog_refresh(rig.cocina) is True
+            await rig.loop._recovery_task
+            hold_after = handler._output_hold
+            result = await handler.aspeak("Recordatorio: sacar la basura", zone_id="zone_living")
+            await pauses[0]
+            await rig.stop()
+        await handler.aclose()
+        assert held == [True], "la salida estaba retenida al pedir el reset"
+        assert rig.refreshes == 0 and rig.sd._initialize.call_count == 0
+        assert hold_after is None
+        assert result.success
+        assert played == ["zone_living"]
+
+    @pytest.mark.asyncio
     async def test_output_taken_before_the_reset_skips_it(self, tmp_path, caplog):
         """Si una respuesta toma la salida justo antes del reset, no se resetea."""
         rig = _LateCatalogRig(tmp_path)
