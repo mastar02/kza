@@ -516,3 +516,95 @@ def test_the_stuck_compaction_exit_installs_from_the_extracted_archive():
             "`runtime_admission_controller_installer_mismatch` sin escribir nada") in step3
     assert step3.index(lead) < step3.index("`$ST install-controller")
     assert "«Compactación trabada» del runbook de compactación" in _flat(_text())
+
+
+def test_every_retire_exit_cell_is_pinned():
+    """Review SC5B-R4 (mutant R3): the exit cell of each retire row, not only its row letter."""
+    retire = _section(_text(), "### Paso 8: retiro (la aceptación)")
+    rows = {}
+    for line in retire.splitlines():
+        cells = [cell.strip() for cell in line.split("|")[1:-1]]
+        if len(cells) == 3 and cells[0].startswith("`runtime_admission"):
+            rows[cells[0]] = (cells[1], cells[2])
+    retire_cmd = "`$ST compact retire <compaction_id>"
+    expected = {
+        "`runtime_admission_compaction_identity`": (
+            "RF", f"revisar; sólo si es seguro: {retire_cmd} --member <n> --accept-identity-change`"),
+        "`runtime_admission_compaction_member_missing`": (
+            "RF", f"devolverlo a su ruta, o {retire_cmd} --member <n> --accept-missing`"),
+        "`runtime_admission_compaction_owner_only_data`": (
+            "RF", "leer las cuentas (`new_unexplained`); aceptar que esos datos se destruyen con H: "
+                  f"{retire_cmd} --accept-owner-only-loss <coverage_sha256>`; si no, volver a H con W"),
+        "`runtime_admission_compaction_plan_changed`": (
+            "RF", "una entrada nueva en la raíz (`untouched_added`): quitarla o decidir y repetir"),
+        "`runtime_admission_compaction_retire_protected_changed`": (
+            "RX", "volver a H con W (el informe W viene en la salida)"),
+        "`runtime_admission_compaction_retire_resurrected`": ("RX", "volver a H con W"),
+        "`runtime_admission_compaction_k_binding_changed`": ("RX", "(`privacy_authority_stale`) volver a H con W"),
+        "`runtime_admission_compaction_not_verified`": ("V3", "volver a H con W"),
+        "`runtime_admission_compaction_sdk_changed`": ("AT", "reinstalar la versión ligada que nombra y repetir"),
+        "`runtime_admission_compaction_h_transient`, `runtime_admission_compaction_k_transient`, "
+        "`runtime_admission_writer_active`, `runtime_admission_busy`, `runtime_admission_sdk_version_unavailable`": (
+            "AT", "«Rechazos transitorios»"),
+        "`runtime_admission_compaction_h_changed`": ("HD", "parada terminal HD"),
+        "`runtime_admission_compaction_head_moved`, `runtime_admission_compaction_k_closure_unreadable`": (
+            "como HD", "parada como HD"),
+    }
+    for code, row in expected.items():
+        assert rows.get(code) == row, (code, rows.get(code))
+    assert set(rows) == set(expected) | {"`runtime_admission_compaction_io_error`"}, sorted(set(rows) - set(expected))
+
+
+def test_safety_sentences_are_pinned():
+    """Review SC5B-R4: sentences whose loss or inversion could destroy data or bring it back, one pin each
+    (review mutants R1, R2, R4 to R15; R3 and R16 have their own tests)."""
+    text = _text()
+    # R1: taking items out of the quarantine keeps them out of the deletion.
+    assert "**Nunca sacar nada de `compaction/<id>/retiring/`.**" in _flat(_section(text, "### Abort cortado (fila AB)"))
+    ss = _flat(_section(text, "### Parada segura SS (`runtime_admission_compaction_abort_protected_changed`)"))
+    # R2: a lock link in K' is removed, never its target.
+    assert "quitar ese enlace a mano (el enlace, nunca su destino)" in ss
+    # R12: k_writers unverifiable needs the open-file check before the confirmation.
+    assert ("Con `k_writers: unverifiable`, comprobar además que ningún proceso tiene K' abierto (`fuser -v` o "
+            "`lsof +D` sobre `slots/<K>/state`).") in ss
+    # R4: only SS carries --discard-k-changes; the default return to H does not.
+    discards = [line for line in _commands(text) if "--discard-k-changes" in line]
+    assert discards == ["$ST compact abort <compaction_id> --to-h --confirm-h <prefijo> --discard-k-changes "
+                        "<12+ hex del w_sha256 del último rechazo>"], discards
+    back = _section(text, "### Volver a H con W (filas V1, V2, V3, V4 no retirable y RX)")
+    assert _blocks(back)[0].strip() == (
+        "$ST compact abort <compaction_id> --to-h --confirm-h <primeros 12+ caracteres del binding de H>")
+    # R5: SR-1 binding_changed at T0 never repeats with the same NUEVO.
+    t0 = _section(text, "### Paso 3: T0, instalar el controlador del NUEVO (sólo con `T0`)")
+    assert ("| `runtime_admission_controller_binding_changed` | SR-1: el código nuevo calcula otro binding para el "
+            "slot de H | no instalar ese NUEVO; habilitar y arrancar (sirve H) y pasar a desarrollo |") in t0
+    # R6, R7: V is serve's own run; nobody enables, stops or restarts it.
+    verify = _section(text, "### Paso 6: corrida de verificación V")
+    assert "No habilitar la unidad, no detenerla a mano y no usar el panel" in _flat(verify)
+    assert "enable" not in verify and "systemctl --user stop" not in verify
+    assert ("No arrancar la unidad otra vez para «probar»: `serve` rechaza "
+            "`runtime_admission_compaction_verify_consumed`.") in _flat(_section(text, "### Paso 7: estado"))
+    # R8: --accept-owner-only-loss only when the plan asked for it.
+    start = _section(text, "### Paso 5: start")
+    assert "Agregar `--accept-owner-only-loss` sólo si el plan lo pidió" in _flat(start)
+    assert all("--accept-owner-only-loss" not in line for line in _commands(start))
+    # R9: HD keeps everything as evidence.
+    hd = _flat(_section(text, "### Parada terminal HD (`runtime_admission_compaction_h_changed`)"))
+    assert "4. Buscar una copia vieja de `stage_runtime` que haya corrido o una edición a mano, sin borrar nada." in hd
+    # R10: no server reboot during a transition.
+    rules = _flat(_section(text, "## Reglas que valen en todo el procedimiento"))
+    assert "- **No reiniciar el servidor** durante una transición." in rules
+    # R11: the sdk_changed fix reinstalls only the bound version, no upgrade.
+    at = _flat(_section(text, "### Rechazos transitorios (fila AT)"))
+    assert "`\"$PY\" -m pip install --no-deps 'chromadb==<versión ligada>'`" in at
+    assert "-U" not in at and "--upgrade" not in _flat(text) and "pip install -U" not in _flat(text)
+    # R13: a rollback archive is checked against its noted sha256.
+    assert ("con un archivo anterior de served(root) como `NEW_ARCHIVE` (verificado contra su sha256 anotado)"
+            in _flat(_section(text, "## Rollback (sin T0)")))
+    # R14: the DL evidence copy comes before any removal.
+    split = _flat(_section(text, "## Registro de delegación después del T0 (filas DL y DO)"))
+    evidence = "Antes de tocar nada, copiar `admission/delegations/` fuera de la raíz como evidencia."
+    assert evidence in split and split.index(evidence) < split.index("Quitar las entradas")
+    # R15: an accepted release never returns to H.
+    assert ("un problema después se resuelve con otra transición (hotfix o rollback), nunca volviendo a H, que ya "
+            "no existe.") in _flat(_section(text, "### Paso 9: servir K'"))
