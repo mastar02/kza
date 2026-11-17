@@ -25,7 +25,10 @@ from src.home_assistant.voice_actions import VoiceHomeActionExecutor
 from src.home_assistant.voice_resolver import HomeVoiceResolver
 from src.nlu.home_command import parse_home_command
 from src.nlu.command_gate import AcceptanceDecision, CommandAcceptanceGate, contains_wake_word
-from src.nlu.command_grammar import PartialCommand, has_unresolved_light_location, parse_default_light_target, parse_partial_command
+from src.nlu.command_grammar import (
+    PartialCommand, has_unresolved_light_location, non_immediate_action_reason, parse_default_light_target,
+    parse_partial_command,
+)
 from src.nlu.household_intents import HouseholdIntent, HouseholdIntentClassifier, HouseholdIntentSettings
 from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
@@ -803,6 +806,39 @@ class RequestRouter:
             merged["stt_source"] = source
         return merged
 
+    def _legacy_household_drop(self, text: str, gate_decision: AcceptanceDecision) -> AcceptanceDecision:
+        """Legacy path: the non-immediate rule without the household exemption.
+
+        The command gate lets a claimed reminder ("recordame apagar la luz a
+        las once") or routine creation ("creá una rutina para apagar las luces
+        a las once") through its non-immediate rule because the orchestrated
+        household layer claims the turn and answers it. The legacy path has no
+        household layer (its refusal is a later unit, P3F2-R1-Q3), so the
+        reminder's or routine's content would reach the extended home command,
+        the grammar and the vector search as an immediate action (review
+        Q4-RV-1). An accepted turn that carries a non-immediate reason is
+        dropped with that reason, as before the exemption; with the real gate
+        only an exempted (claimed) turn gets here. Never fails the turn on an
+        internal error.
+
+        Args:
+            text: Non-empty transcript of the capture.
+            gate_decision: The decision after the gate and the wake checks.
+
+        Returns:
+            The decision to apply.
+        """
+        if not gate_decision.accept:
+            return gate_decision
+        try:
+            reason = non_immediate_action_reason(text)
+            if reason is None:
+                return gate_decision
+        except Exception as e:  # fail-open like the gate: never drop voice control on an internal bug
+            logger.error(f"[LegacyHouseholdDrop] error (keeping the gate decision): {e}")
+            return gate_decision
+        return AcceptanceDecision(False, reason, gate_decision.signals)
+
     def _verify_wake(self, text: str, gate_decision: AcceptanceDecision,
                      room_id: str | None) -> AcceptanceDecision:
         """Capture checks after the gate: max-utterance wake word and wake verification.
@@ -1452,6 +1488,7 @@ class RequestRouter:
         gate_decision = self._verify_wake(text, self.command_gate.evaluate(
             text, stt_confidence=getattr(cmd, "stt_confidence", None)
         ), room_id)
+        gate_decision = self._legacy_household_drop(text, gate_decision)
         if not gate_decision.accept:
             logger.info(f"Gate reject ({gate_decision.reason}): {text!r}")
             result["intent"] = f"gate_rejected:{gate_decision.reason}"
