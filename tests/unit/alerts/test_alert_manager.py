@@ -1247,6 +1247,15 @@ class TestVoiceRetryOnce:
         assert tts.await_count == 1 and alert.delivery is AlertDelivery.FAILED
 
     @pytest.mark.asyncio
+    async def test_acknowledged_momentary_event_drops_its_retry(self):
+        tts = AsyncMock(side_effect=[OUTPUT_FREE["failed"], _ok()])
+        manager = AlertManager(tts_callback=tts)
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "Acceso denegado")
+        await manager.mark_processed(alert.alert_id)
+        assert await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "Acceso denegado") is None
+        assert tts.await_count == 1 and alert.delivery is AlertDelivery.FAILED
+
+    @pytest.mark.asyncio
     async def test_dropped_retry_is_logged_once(self, caplog):
         tts = AsyncMock(side_effect=[OUTPUT_FREE["failed"], _ok()])
         manager = AlertManager(tts_callback=tts)
