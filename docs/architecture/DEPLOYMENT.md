@@ -943,8 +943,8 @@ escribir.
 
 Queda pendiente (lista `follow_up` de la evidencia): `--accept-regressed-source`
 (R5-1) depende del testigo de cierre por registro de recuperación, que SC-4b
-dejó en su `follow_up` (sólo hace falta después de la aceptación, fila PA);
-hasta entonces un head cerrado por un registro de recuperación no es fuente de
+dejó en su `follow_up` (fila PA; se implementa antes del día 14 de R1,
+SC5B-Q1); hasta entonces un head cerrado por un registro de recuperación no es fuente de
 ninguna transición (`plan` rechaza como antes). Tampoco se exige todavía que
 el código corra desde `controller/current` (revisión RA-6): P7 acepta
 cualquier `controller/<commit>` de la misma época, así que después de un T0
@@ -1179,7 +1179,11 @@ L4 mientras exista; SC4B-Q1), la línea base salada de resurrección de K y el
 reencolado del residuo no protegido (hasta entonces el escaneo del retiro es
 absoluto: un H con residuo hace rechazar el retiro, y el abort vuelve a H sin
 pérdida; SC4B-Q2). La sombra de `adopt --dry-run` bajo `admission/dry-run/`
-es posterior a la aceptación (hoy `adopt` rechaza antes de copiar). El tiempo
+(fila DR) también queda pendiente: con un log del modo release pendiente
+`adopt` rechaza antes de copiar, pero sin log pendiente el dry-run corre
+(después de la aceptación, y también en la salida T0F y en el rechazo
+`runtime_admission_not_closed` del T0) y copia el estado en claro a un
+temporal del sistema; se implementa antes del día 14 de R1 (SC5B-Q2). El tiempo
 del retiro y del abort con W (T_retire, T_abort: binding de K', W0 y W1 con
 imágenes en memoria, escaneo de resurrección, destrucción) no está en la
 fórmula D de SC-D2 ni se midió: queda en la lista de medición de SC-6b
@@ -1374,10 +1378,17 @@ en 0 en el paso 0). Lo que el operador tiene que saber de antemano:
   entonces un head cerrado por recuperación no es fuente de ninguna
   transición y la salida de PA es L4 mientras exista. La sombra de `adopt
   --dry-run` bajo `admission/dry-run/` (fila DR): hoy `adopt --dry-run`, que
-  sólo corre después de la aceptación, copia el estado a un temporal del
-  sistema (`kza-adopt-dry-run-*`), que un corte deja ahí; el runbook dice
-  cómo buscarlo y borrarlo. La línea base salada de resurrección de K y el
-  reencolado (el retiro sigue con escaneo absoluto; por eso el paso 0).
+  corre siempre que no haya un log del modo release pendiente (después de la
+  aceptación, y también en la salida T0F y en el rechazo
+  `runtime_admission_not_closed` del T0, durante la primera transición),
+  copia el estado a un temporal del sistema (`kza-adopt-dry-run-*`), que un
+  corte deja ahí; el runbook dice cómo buscarlo y borrarlo. La línea base
+  salada de resurrección de K y el reencolado (el retiro sigue con escaneo
+  absoluto; por eso el paso 0). **Plazo de PA y DR (SC5B-Q1 y SC5B-Q2,
+  respuesta del usuario del 2026-11-17):** las dos filas se implementan
+  antes de DÍA 0 + 14 × 24 h de R1. La primera transición, dentro de los 14
+  días de L4, se hace con lo que el código hace hoy; sin las dos, ninguna
+  transición después del día 14.
 
 Tests: `tests/unit/tools/test_sc5b_docs.py` (comandos y códigos del runbook
 contra el código, el orden de los pasos y las salidas).

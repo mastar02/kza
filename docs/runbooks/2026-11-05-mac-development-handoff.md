@@ -1653,7 +1653,10 @@ posterior a R1; lo demás queda en `follow_up`.
   salada de resurrección de K con el reencolado del residuo no protegido, la
   sombra de `adopt --dry-run` bajo `admission/dry-run/`, el campo
   `capture_permissions_carried` del recibo y el `smoke_elapsed` exigido en el
-  registro de salida (RA-6 de SC-4a).
+  registro de salida (RA-6 de SC-4a). Corrección de SC-5b (revisión RR3): PA
+  y la sombra del dry-run (fila DR) no son sólo posteriores a la aceptación;
+  sin log pendiente el dry-run corre también en la primera transición, y las
+  dos filas se implementan antes del día 14 de R1 (SC5B-Q1 y SC5B-Q2).
 - Tests: `tests/unit/tools/test_sc4b_w.py` (clases, 16 casos por tabla y
   dirección, ledger, bases faltantes o ilegibles, valor sin clasificar,
   journal caliente, mapeo W0, digest dorado) y
@@ -1925,7 +1928,15 @@ unidad SC-5b. Evidencia: `t040-t041/sc5b-evidence.json` (local).
 - Hoy fallan cerrado y el runbook lo dice: PA sin testigo por registro de
   recuperación ni `--accept-regressed-source` (salida L4 mientras exista) y
   la sombra de `adopt --dry-run` todavía en `$TMPDIR`
-  (`kza-adopt-dry-run-*`).
+  (`kza-adopt-dry-run-*`). El dry-run corre siempre que no haya un log del
+  modo release pendiente: también en T0F y en el `not_closed` del T0, durante
+  la primera transición.
+- **Plazo de PA y DR (SC5B-Q1 y SC5B-Q2, respuesta del usuario del
+  2026-11-17):** las filas PA y DR se implementan antes de DÍA 0 + 14 × 24 h
+  de R1. La primera transición, dentro de los 14 días de L4, se hace con lo
+  de hoy (PA falla cerrado; la copia del dry-run se borra a mano); sin las
+  dos, ninguna transición después del día 14. Está en la compuerta del
+  runbook y en DEPLOYMENT («Pendiente en el código»).
 - Revisión independiente, ronda 1 (2026-11-17): `changes_needed`, 3
   hallazgos medios (SC5B-R1 a R3), 6 bajos (R4 a R9) y 2 informativos (R10,
   R11 sin cambio), cada uno en su commit. CI se instala sin servir H (arrancar

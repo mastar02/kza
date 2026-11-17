@@ -766,3 +766,30 @@ def test_the_compaction_runbook_repeats_retire_for_a_link_refusal():
             "desarrollo.") in flat
     resume = (REPO / "scripts/compaction.py").read_text().split("def compact_resume(", 1)[1].split("\ndef ", 1)[0]
     assert resume.index('if _has(log, "retire_started"):') < resume.index('if _has(log, "activated"):')
+
+
+def test_deployment_and_handoff_state_where_the_dry_run_runs_and_the_day_14_deadline():
+    """Re-review SC5B-RR3: R3 showed that adopt --dry-run also runs during the first transition (no pending
+    log: T0F and the T0's not_closed refusal); DEPLOYMENT still said it runs only after acceptance. The
+    SC5B-Q1/Q2 deadline is in DEPLOYMENT's 'Pendiente en el código' and in the handoff's SC-5b section."""
+    deployment = _flat(DEPLOYMENT.read_text())
+    for stale in ("sólo corre después de la aceptación", "es posterior a la aceptación (hoy `adopt` rechaza antes de copiar)",
+                  "sólo hace falta después de la aceptación, fila PA"):
+        assert stale not in deployment, stale
+    section = _flat(_section(DEPLOYMENT.read_text(), "### Procedimiento del modo release (SC-5b) — runbook, sin release"))
+    pending = section.split("- **Pendiente en el código, fallando cerrado.**", 1)[1]
+    assert ("hoy `adopt --dry-run`, que corre siempre que no haya un log del modo release pendiente (después de la "
+            "aceptación, y también en la salida T0F y en el rechazo `runtime_admission_not_closed` del T0, durante "
+            "la primera transición)") in pending
+    deadline = ("**Plazo de PA y DR (SC5B-Q1 y SC5B-Q2, respuesta del usuario del 2026-11-17):** las dos filas se "
+                "implementan antes de DÍA 0 + 14 × 24 h de R1. La primera transición, dentro de los 14 días de L4, se "
+                "hace con lo que el código hace hoy; sin las dos, ninguna transición después del día 14.")
+    assert deadline in pending
+    assert ("pero sin log pendiente el dry-run corre (después de la aceptación, y también en la salida T0F y en el "
+            "rechazo `runtime_admission_not_closed` del T0) y copia el estado en claro a un temporal del sistema; se "
+            "implementa antes del día 14 de R1 (SC5B-Q2).") in deployment
+    handoff = (REPO / "docs/runbooks/2026-11-05-mac-development-handoff.md").read_text()
+    sc5b = _flat(_section(handoff, "## SC-5b — runbook del modo release (2026-11-17)"))
+    assert ("**Plazo de PA y DR (SC5B-Q1 y SC5B-Q2, respuesta del usuario del 2026-11-17):** las filas PA y DR se "
+            "implementan antes de DÍA 0 + 14 × 24 h de R1.") in sc5b
+    assert "sin las dos, ninguna transición después del día 14." in sc5b
