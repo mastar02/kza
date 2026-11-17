@@ -5,6 +5,7 @@ from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 
+from src.core.household_clock import HouseholdClock
 from src.core.voice_delivery import ResponseBudgets
 from src.pipeline.feature_manager import FeatureManager, build_feature_manager
 from src.pipeline.response_handler import ResponseHandler
@@ -41,11 +42,13 @@ def build_voice_services(config: dict, *, tts, shutdown: AsyncExitStack, zone_ma
                          user_manager=None, ha_client=None, home_actions=None,
                          reminder_store=None, presence_detector=None,
                          reminder_wake_event: asyncio.Event | None = None,
-                         register_output: Callable[[Callable[[], asyncio.Task]], None] | None = None) -> VoiceServices:
+                         register_output: Callable[[Callable[[], asyncio.Task]], None] | None = None,
+                         household_clock: HouseholdClock | None = None) -> VoiceServices:
     """Build the same local delivery graph used by main and register cleanup.
 
     Producers close before the shared output owner, including construction or
-    warmup failures before the application starts listening.
+    warmup failures before the application starts listening. The reminder
+    scheduler receives the application's ``household_clock`` (P3-F1).
     """
     streaming = config.get("tts", {}).get("streaming", {})
     buffering = config.get("llm", {}).get("buffering", {})
@@ -82,6 +85,7 @@ def build_voice_services(config: dict, *, tts, shutdown: AsyncExitStack, zone_ma
         services.reminders = ReminderScheduler(
             reminder_store, features.voice_delivery, presence_detector, ha_client,
             reminder_config, home_actions=home_actions, wake_event=reminder_wake_event,
+            household_clock=household_clock,
         )
         # Q31: a held reminder notice gets a new round when other activity frees the output.
         response.add_output_free_listener(services.reminders.notify_output_available)

@@ -1,11 +1,14 @@
 """Tests for ReminderManager — CRUD and cancellation logic."""
+import logging
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
+from zoneinfo import ZoneInfo
 from tests.mocks.home_control import selected_actions
 import pytest
 import pytest_asyncio
 
+from src.core.household_clock import HouseholdClock
 from src.reminders.reminder_manager import ReminderManager
 from src.reminders.reminder_store import ReminderStore, ReminderScope
 
@@ -57,8 +60,16 @@ async def test_get_active(manager):
     active = await manager.get_active(user_id="u1")
     assert len(active) == 2
 
+MVD = ZoneInfo("America/Montevideo")
+
+
+def _local(*args) -> datetime:
+    """Household wall time (P3-F1), independent of the process's TZ."""
+    return datetime(*args, tzinfo=MVD)
+
+
 def _manager_at(store, local_now: datetime) -> ReminderManager:
-    """Manager whose clock is frozen at a local wall-clock instant."""
+    """Manager whose clock is frozen at a household wall-clock instant."""
     return ReminderManager(store=store, config={}, clock=lambda: local_now.timestamp())
 
 
@@ -66,8 +77,8 @@ def _manager_at(store, local_now: datetime) -> ReminderManager:
 async def test_get_today(store):
     # "now + offset" is only "today" when the injected clock leaves room for
     # the offset before local midnight; the wall clock gave no such guarantee.
-    now = datetime(2026, 11, 11, 12, 0).timestamp()
-    manager = _manager_at(store, datetime.fromtimestamp(now))
+    now = _local(2026, 11, 11, 12, 0).timestamp()
+    manager = _manager_at(store, _local(2026, 11, 11, 12, 0))
     await manager.create(user_id="u1", text="hoy", trigger_at=now + 100)
     await manager.create(user_id="u1", text="manana", trigger_at=now + 90000)
     today = await manager.get_today(user_id="u1")
@@ -78,12 +89,12 @@ async def test_get_today(store):
 @pytest.mark.asyncio
 async def test_get_today_uses_the_injected_clock_at_the_day_boundary(store):
     """Regression: the shard-a run reached get_today at 23:58:20 local."""
-    manager = _manager_at(store, datetime(2026, 11, 11, 23, 58, 20))
-    await manager.create(user_id="u1", text="antes", trigger_at=datetime(2026, 11, 11, 23, 59, 59).timestamp())
-    await manager.create(user_id="u1", text="medianoche", trigger_at=datetime(2026, 11, 12, 0, 0).timestamp())
-    await manager.create(user_id="u1", text="vencido", trigger_at=datetime(2026, 11, 10, 8, 0).timestamp())
+    manager = _manager_at(store, _local(2026, 11, 11, 23, 58, 20))
+    await manager.create(user_id="u1", text="antes", trigger_at=_local(2026, 11, 11, 23, 59, 59).timestamp())
+    await manager.create(user_id="u1", text="medianoche", trigger_at=_local(2026, 11, 12, 0, 0).timestamp())
+    await manager.create(user_id="u1", text="vencido", trigger_at=_local(2026, 11, 10, 8, 0).timestamp())
     assert [r.text for r in await manager.get_today(user_id="u1")] == ["vencido", "antes"]
-    after_midnight = _manager_at(store, datetime(2026, 11, 12, 0, 0, 1))
+    after_midnight = _manager_at(store, _local(2026, 11, 12, 0, 0, 1))
     assert [r.text for r in await after_midnight.get_today(user_id="u1")] == ["vencido", "antes", "medianoche"]
 
 @pytest.mark.asyncio
@@ -91,3 +102,37 @@ async def test_format_for_voice(manager):
     r = await manager.create(user_id="u1", text="tomar agua", trigger_at=time.time() + 3600, scope=ReminderScope.SHARED)
     voice = manager.format_for_voice(r)
     assert "tomar agua" in voice
+
+
+# P3-F1: "today" and spoken times are on the injected household clock.
+UTC_NEXT_DAY = datetime(2026, 11, 12, 2, 30, tzinfo=UTC)  # 23:30 of the 11th in Montevideo
+
+
+@pytest.mark.asyncio
+async def test_today_is_the_household_day_across_the_utc_midnight(store):
+    manager = ReminderManager(store=store, household_clock=HouseholdClock(time_source=UTC_NEXT_DAY.timestamp))
+    await manager.create(user_id="u1", text="hoy", trigger_at=_local(2026, 11, 11, 23, 45).timestamp())
+    await manager.create(user_id="u1", text="manana", trigger_at=_local(2026, 11, 12, 0, 15).timestamp())
+    # On the UTC calendar both would be "the 12th"; the household is still on the 11th.
+    assert [r.text for r in await manager.get_today(user_id="u1")] == ["hoy"]
+
+
+@pytest.mark.asyncio
+async def test_spoken_and_logged_times_are_household_wall_times(store, caplog):
+    manager = ReminderManager(store=store, config={"tts_prefix": "Recuerda"},
+                              household_clock=HouseholdClock(time_source=UTC_NEXT_DAY.timestamp))
+    with caplog.at_level(logging.DEBUG, logger="src.reminders.reminder_manager"):
+        r = await manager.create(user_id="household", text="sacar la basura", trigger_at=UTC_NEXT_DAY.timestamp(),
+                                 scope=ReminderScope.SHARED)
+    assert manager.format_for_voice(r) == "Recuerda sacar la basura a las 23:30"
+    info = [record.getMessage() for record in caplog.records if record.levelno >= logging.INFO]
+    assert len(info) == 1 and r.id in info[0] and "23:30" in info[0]
+    # Household text is never logged above DEBUG (design household_conventions.logging).
+    assert "basura" not in info[0]
+
+
+def test_one_clock_source_only(store):
+    with pytest.raises(ValueError):
+        ReminderManager(store=store, clock=time.time, household_clock=HouseholdClock())
+    clock = HouseholdClock()
+    assert ReminderManager(store=store, household_clock=clock)._household_clock is clock

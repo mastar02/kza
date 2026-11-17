@@ -19,6 +19,7 @@ from src.core.process_lifecycle import StopPhase, StopRequested
 
 if TYPE_CHECKING:
     from src.core.egress import CloudConsentGate
+    from src.core.household_clock import HouseholdClock, RoomNamespace
     from src.core.process_lifecycle import ProcessLifecycle, StopSignal
     from src.monitoring.loop_lag import LoopLagProbe
     from src.core.state_configuration import ConfigurationChanges
@@ -273,6 +274,9 @@ class ApplicationGraph:
     # The run_id is the admission ticket's; VERIFY=<run_id> names it.
     verify_only: bool = field(default=False, repr=False)
     verify_run_id: str | None = field(default=None, repr=False)
+    # P3-F1: the one household clock and room namespace injected into consumers.
+    household_clock: HouseholdClock | None = field(default=None, repr=False)
+    room_namespace: RoomNamespace | None = field(default=None, repr=False)
     _run_entered: bool = field(default=False, init=False, repr=False)
 
     @property

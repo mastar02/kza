@@ -103,6 +103,9 @@ from src.lists.list_store import ListStore
 from src.lists.list_manager import ListManager
 from src.reminders.reminder_store import ReminderStore
 from src.reminders.reminder_manager import ReminderManager
+from src.core.household_clock import (
+    ROOM_SECTION_KEYS, SUPPORTED_HOUSEHOLD_TIMEZONE, HouseholdClock, RoomNamespace,
+)
 from src.dashboard.api import DashboardAPI
 from src.dashboard.authority import DashboardAuthority
 from src.dashboard.home_api import build_home_services, build_microphone_rooms
@@ -1091,6 +1094,10 @@ async def build_application(
         suggestion_erasure.attach_engine(suggestion_engine)
         logger.info("Smart automations habilitado")
 
+    # P3-F1: one household clock for every voice and job consumer, built once
+    # from routines.timezone (the key RoutineScheduler already reads).
+    household_clock = HouseholdClock(config.get("routines", {}).get("timezone", SUPPORTED_HOUSEHOLD_TIMEZONE))
+
     # Lists & Reminders
     lists_config = config.get("lists", {})
     reminders_config = config.get("reminders", {})
@@ -1108,7 +1115,8 @@ async def build_application(
     if destination_registration is not None:
         await destination_registration.register_store(reminder_store, "reminders")
     await reminder_store.initialize()
-    reminder_manager = ReminderManager(store=reminder_store, config=reminders_config, home_actions=home_action_service)
+    reminder_manager = ReminderManager(store=reminder_store, config=reminders_config, home_actions=home_action_service,
+                                       household_clock=household_clock)
     reminder_scheduler = None  # Created after presence_detector is ready
     logger.info("Lists & reminders initialized")
 
@@ -1163,12 +1171,9 @@ async def build_application(
     # Multi-Room Audio System (rooms-based, replaces legacy zones)
     # ----------------------------------------------------------------
     rooms_config = config.get("rooms", {})
-    ROOMS_RESERVED_KEYS = {
-        "enabled", "cross_validation", "fallback_room",
-        "dedup_window_ms", "ma1260", "wake_word", "detection",
-        "telemetry", "barge_in", "stream_watchdog", "ambient_guard", "endpointing",
-        "direction_observation",
-    }
+    ROOMS_RESERVED_KEYS = ROOM_SECTION_KEYS
+    # P3-F1: canonical bare room ids from the catalog; zone_<room> stays a transport form.
+    room_namespace = RoomNamespace.from_rooms_config(rooms_config, ROOMS_RESERVED_KEYS)
 
     if rooms_config.get("enabled", False):
         # Presence detector
@@ -1644,7 +1649,7 @@ async def build_application(
         hooks=hooks, before_handler_warn_ms=self_warn_ms, user_manager=user_manager,
         ha_client=ha_client, home_actions=home_action_service, reminder_store=reminder_store,
         presence_detector=presence_detector, reminder_wake_event=reminder_wake_event,
-        register_output=_register_voice_output,
+        register_output=_register_voice_output, household_clock=household_clock,
     )
     response_handler = voice_services.responses
     reminder_scheduler = voice_services.reminders
@@ -1840,6 +1845,8 @@ async def build_application(
             response_timeout_s=config.get("orchestrator", {}).get("response_timeout_s", 180.0),
             home_actions=home_action_service,
             home_capabilities=home_capabilities,
+            household_clock=household_clock,
+            room_namespace=room_namespace,
             # Plan #2 OpenClaw
             compactor=compactor,
             persister=persister,
@@ -2215,6 +2222,7 @@ async def build_application(
         voice_registry=voice_registry, voice_services=voice_services,
         home_services=home_services, home_capabilities=home_capabilities, list_manager=list_manager,
         reminder_manager=reminder_manager, routine_scheduler=routine_scheduler,
+        household_clock=household_clock, room_namespace=room_namespace,
         dashboard=dashboard, dashboard_authority=dashboard_authority,
         configuration_changes=configuration_changes, consent_gate=consent_gate,
         models=ApplicationModels(stt, tts, chroma, speaker_identifier, emotion_detector),

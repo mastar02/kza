@@ -387,3 +387,46 @@ class TestZoneRoutingFromRoom:
 
         # Should have called detect_source_zone since no room context
         router.audio_manager.detect_source_zone.assert_called_once()
+
+
+# ============================================================
+# Tests: origin room of the turn (P3-F1)
+# ============================================================
+
+def _orchestrated_router(room_mgr=None):
+    from src.orchestrator import PathType
+
+    dispatch_result = MagicMock()
+    dispatch_result.intent = "domotics"
+    dispatch_result.response = "Listo"
+    dispatch_result.success = True
+    dispatch_result.action = None
+    dispatch_result.was_queued = False
+    dispatch_result.timings = {}
+    dispatch_result.path = PathType.FAST_DOMOTICS
+    orchestrator = MagicMock()
+    orchestrator.process = AsyncMock(return_value=dispatch_result)
+    return _make_router(room_context_manager=room_mgr, orchestrator=orchestrator, orchestrator_enabled=True)
+
+
+class TestOriginRoomReachesDispatch:
+    """The resolved room and the mic room travel separately; the dispatcher normalizes them."""
+
+    @pytest.mark.asyncio
+    async def test_resolved_room_and_mic_room_are_forwarded(self):
+        # The mic is not configured, so the room context fell back to the living.
+        room_mgr = MagicMock()
+        room_mgr.resolve_room = MagicMock(return_value=_make_room_context(room_id="living"))
+        router = _orchestrated_router(room_mgr)
+        await router.process_command(CommandEvent(audio=np.zeros(16000, dtype=np.float32), room_id="patio"))
+        kwargs = router._orchestrator.process.await_args.kwargs
+        assert (kwargs["origin_room"], kwargs["context_room_id"], kwargs["zone_id"]) == ("living", "patio", "zone_living")
+
+    @pytest.mark.asyncio
+    async def test_acoustic_zone_is_never_an_origin_room(self):
+        router = _orchestrated_router()
+        router.audio_manager.detect_source_zone = MagicMock(return_value="zone_cocina")
+        await router.process_command(np.zeros(16000, dtype=np.float32))
+        kwargs = router._orchestrator.process.await_args.kwargs
+        assert kwargs["zone_id"] == "zone_cocina"
+        assert kwargs["origin_room"] is None

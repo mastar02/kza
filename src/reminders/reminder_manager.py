@@ -2,10 +2,10 @@
 import logging
 import time
 from collections.abc import Callable
-from datetime import datetime
 from difflib import SequenceMatcher
 
 from src.reminders.reminder_store import ReminderStore, Reminder, ReminderScope
+from src.core.household_clock import HouseholdClock
 from src.core.sqlite_work import AuthorityGuard
 from src.home_assistant.control_policy import ActionOrigin, HomeActor
 from src.home_assistant.home_actions import HomeActionService, request_from_service
@@ -18,17 +18,26 @@ class ReminderManager:
 
     def __init__(self, store: ReminderStore, config: dict | None = None, *,
                  home_actions: HomeActionService | None = None,
-                 clock: Callable[[], float] | None = None):
+                 clock: Callable[[], float] | None = None,
+                 household_clock: HouseholdClock | None = None):
         """Build the manager.
 
         Args:
             store: Durable reminder store.
             config: Reminder section of the settings.
             home_actions: Admission service for reminder home actions.
-            clock: Epoch-seconds clock; "today" is its local calendar day.
+            clock: Epoch-seconds clock for tests, on the supported household
+                timezone. Exclusive with ``household_clock``.
+            household_clock: The application's household clock (P3-F1);
+                "today" and spoken times are on its local calendar.
+
+        Raises:
+            ValueError: Both ``clock`` and ``household_clock`` were given.
         """
+        if clock is not None and household_clock is not None:
+            raise ValueError("Pass either clock or household_clock, not both")
         self._store = store
-        self._clock = clock or time.time
+        self._household_clock = household_clock or HouseholdClock(time_source=clock or time.time)
         self._config = config or {}
         self.home_actions = home_actions if home_actions is not None else HomeActionService(None)
         self._tts_prefix = self._config.get("tts_prefix", "Recuerda")
@@ -62,12 +71,9 @@ class ReminderManager:
             guard=guard,
             scope=scope,
         )
-        logger.info(
-            "Created reminder '%s' for user %s at %s",
-            text,
-            user_id,
-            datetime.fromtimestamp(trigger_at).strftime("%H:%M"),
-        )
+        # Household text never goes above DEBUG (design household_conventions.logging).
+        logger.info("Created reminder %s (scope=%s) at %s", reminder.id, scope.value,
+                    self._household_clock.format_time(trigger_at))
         return reminder
 
     async def cancel_by_id(self, reminder_id: str, *, guard: AuthorityGuard | None = None,
@@ -95,16 +101,15 @@ class ReminderManager:
     async def get_today(self, user_id: str | None, *, shared_only: bool = False,
                         guard: AuthorityGuard | None = None) -> list[Reminder]:
         """Return eligible active jobs before the end of the current day."""
-        now = datetime.fromtimestamp(self._clock())
-        cutoff = now.replace(hour=23, minute=59, second=59, microsecond=999999).timestamp()
+        cutoff = self._household_clock.next_local_midnight()
         active = await self._store.get_active_for_user(user_id, shared_only=shared_only, guard=guard)
-        return [reminder for reminder in active if reminder.trigger_at <= cutoff]
+        return [reminder for reminder in active if reminder.trigger_at < cutoff]
 
     def format_for_voice(self, reminder: Reminder) -> str:
         """Format only explicitly shared material for unauthenticated household speech."""
         if reminder.scope is not ReminderScope.SHARED:
             raise PermissionError("personal_reminder_voice_session_required")
-        trigger_time = datetime.fromtimestamp(reminder.trigger_at).strftime("%H:%M")
+        trigger_time = self._household_clock.format_time(reminder.trigger_at)
         return f"{self._tts_prefix} {reminder.text} a las {trigger_time}"
 
     def _fuzzy_find(

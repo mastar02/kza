@@ -39,10 +39,10 @@ import time
 import unicodedata
 from contextlib import aclosing
 from dataclasses import asdict, dataclass, field, replace
-from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Callable
 
+from src.core.household_clock import HouseholdClock, RoomNamespace
 from src.core.logging import get_logger
 from src.core.observation import Observation, ObservationReason, ObservationSource, ObservationState
 from src.core.voice_delivery import DeliveryState, GenerationState
@@ -337,6 +337,8 @@ class DispatchResult:
     delivery_outcome: DeliveryOutcome | None = None
     response_requirement: ResponseRequirement = ResponseRequirement.REQUIRED
     observation: Observation | None = None
+    # Canonical bare room id of the turn's origin (P3-F1 RoomNamespace.origin_room), or None.
+    origin_room: str | None = None
 
     def __post_init__(self) -> None:
         if self.outcome is None and self.intent in {"simple_query", "conversation"}:
@@ -578,6 +580,8 @@ class RequestDispatcher:
         home_actions: HomeActionService | None = None,
         response_timeout_s: float = 180.0,
         home_capabilities: HomeCapabilityService | None = None,
+        household_clock: HouseholdClock | None = None,
+        room_namespace: RoomNamespace | None = None,
     ):
         """
         Args:
@@ -609,6 +613,12 @@ class RequestDispatcher:
                 `src.world.weather.DEFAULT_ENTITY`), usada por FAST_WEATHER.
                 Se configura en `config/settings.yaml:home_assistant.
                 weather_entity` y llega por MultiUserOrchestrator.
+            household_clock: Reloj del hogar construido una vez en main desde
+                ``routines.timezone`` (P3-F1); fecha local del pronóstico y
+                reloj de respaldo. Sin él, el huso soportado por defecto.
+            room_namespace: Catálogo de habitaciones configuradas (P3-F1) que
+                normaliza la habitación de origen del turno. Sin él, ninguna
+                habitación es de origen.
         """
         self.chroma = chroma_sync
         self.ha = ha_client
@@ -633,6 +643,8 @@ class RequestDispatcher:
         self.response_handler = response_handler
         self.weather_entity = weather_entity
         self.home_capabilities = home_capabilities
+        self.household_clock = household_clock if household_clock is not None else HouseholdClock()
+        self.room_namespace = room_namespace if room_namespace is not None else RoomNamespace(())
         self.hooks = hooks  # plan #3 OpenClaw — HookRegistry or None
         self._before_handler_warn_ms = before_handler_warn_ms
         # Voice-auth opcional (default OFF): exige speaker enrolado para ejecutar
@@ -677,6 +689,7 @@ class RequestDispatcher:
         target_entity_id: str | None = None,
         memory_sources: tuple[MemorySource, ...] | None = None,
         context_room_id: str | None = None,
+        origin_room: str | None = None,
     ) -> DispatchResult:
         """
         Procesar una peticion, enrutando al path correcto.
@@ -697,6 +710,11 @@ class RequestDispatcher:
             query_slots: Slots NLU (brightness_pct, rgb_color, etc.) que
                 sobrescriben el preset del comando matcheado. También
                 portado desde el legacy.
+            context_room_id: Habitación del micrófono que capturó el turno.
+            origin_room: ``room_context.room_id`` cuando el router resolvió la
+                habitación. La habitación de origen (``DispatchResult.origin_room``)
+                es esta si está configurada, si no la del micrófono si está
+                configurada, si no None; nunca la zona detectada por audio.
         """
         start_time = time.perf_counter()
         self._stats["total_requests"] += 1
@@ -711,11 +729,13 @@ class RequestDispatcher:
 
         # Acoustic identity and caller-supplied IDs do not confer personal scope.
         ctx = self.context_manager.get_household(context_room_id if context_room_id is not None else zone_id)
+        origin = self.room_namespace.origin_room(origin_room, context_room_id)
 
         # 1. Detectar comandos especiales
         special_result = await self._check_special_commands(text_lower, user_id, ctx)
         if special_result:
             special_result.timings["total"] = (time.perf_counter() - start_time) * 1000
+            special_result.origin_room = origin
             return special_result
 
         # 2. Detectar intent y prioridad
@@ -783,6 +803,7 @@ class RequestDispatcher:
         result.timings["total"] = (time.perf_counter() - start_time) * 1000
         result.user_id = user_id
         result.zone_id = zone_id
+        result.origin_room = origin
 
         return result
 
@@ -1540,15 +1561,13 @@ class RequestDispatcher:
         entry matched. Neither branch substitutes another entity or uses an
         unclocked cache.
         """
-        from zoneinfo import ZoneInfo
-
-        from src.world.weather import (HOUSEHOLD_TIMEZONE, NO_DATA, NO_FORECAST, ForecastAlignment,
+        from src.world.weather import (NO_DATA, NO_FORECAST, ForecastAlignment,
                                        describe_current, describe_forecast, forecast_target_date)
 
         text_lower = text.lower()
         dia = ("pasado mañana" if "pasado mañana" in text_lower or "pasado manana" in text_lower
                else "mañana" if "mañana" in text_lower or "manana" in text_lower else None)
-        clock = self.home_capabilities.now if self.home_capabilities is not None else lambda: datetime.now(UTC)
+        clock = self.home_capabilities.now if self.home_capabilities is not None else self.household_clock.now_utc
         attempted = clock()
         source = ObservationSource.HA_FORECAST if dia else ObservationSource.HA_STATES
         observation = Observation.from_read(source, available=False, observed_at=None,
@@ -1556,7 +1575,7 @@ class RequestDispatcher:
         alignment: ForecastAlignment | None = None
         try:
             if dia:
-                zone = ZoneInfo(HOUSEHOLD_TIMEZONE)  # zoneinfo caches the instance per key
+                zone = self.household_clock.zone  # built once in the household clock's constructor
                 target = forecast_target_date(dia, attempted, zone)
                 payload = await self.ha.call_service_with_response(
                     "weather", "get_forecasts", self.weather_entity,
@@ -1816,6 +1835,8 @@ class MultiUserOrchestrator:
         memory_manager=None,
         privacy=None,
         home_capabilities: HomeCapabilityService | None = None,
+        household_clock: HouseholdClock | None = None,
+        room_namespace: RoomNamespace | None = None,
     ):
         """Initialize the multi-user orchestrator.
 
@@ -1912,6 +1933,8 @@ class MultiUserOrchestrator:
             weather_entity=weather_entity,
             home_actions=self.home_actions,
             home_capabilities=self.home_capabilities,
+            household_clock=household_clock,
+            room_namespace=room_namespace,
         )
 
         self._running = False
@@ -1995,13 +2018,14 @@ class MultiUserOrchestrator:
         query_slots: dict | None = None, target_entity_id: str | None = None,
         memory_sources: tuple[MemorySource, ...] | None = None,
         context_room_id: str | None = None,
+        origin_room: str | None = None,
     ) -> DispatchResult:
         """Dispatch household voice without deriving account authority from acoustics."""
         return await self.dispatcher.dispatch(
             user_id=user_id or "unknown", text=text, user_name="Hogar", zone_id=zone_id,
             permission_level=0, on_response=on_response, service_filter=service_filter,
             query_slots=query_slots, target_entity_id=target_entity_id, memory_sources=memory_sources,
-            context_room_id=context_room_id,
+            context_room_id=context_room_id, origin_room=origin_room,
         )
 
     async def _identify_speaker(self, audio, *, sources=(), transcript='', room_id=None) -> tuple[str, str]:

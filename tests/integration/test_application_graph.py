@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 from src.application import ApplicationFactories
+from src.core.household_clock import HouseholdClock
 from src.home_assistant.control_policy import ActionOrigin, HomeActor
 from src.home_assistant.home_actions import HomeActionRequest
 from src.main import build_application
@@ -73,6 +74,12 @@ async def test_real_factory_shares_household_output_privacy_and_managers(leaves,
             assert orchestrator.context_manager.source_policy is orchestrator.queue.source_policy is authority
             assert graph.voice_registry.privacy is graph.privacy
             assert orchestrator.dispatcher.response_handler is graph.voice_services.responses
+            # P3-F1: one household clock, built once from routines.timezone, and one room namespace.
+            clock = graph.household_clock
+            assert isinstance(clock, HouseholdClock) and clock.timezone == "America/Montevideo"
+            assert orchestrator.dispatcher.household_clock is graph.reminder_manager._household_clock is clock
+            assert orchestrator.dispatcher.room_namespace is graph.room_namespace
+            assert graph.room_namespace.rooms == frozenset()
             assert graph.models.stt.loads == graph.models.tts.loads == 0
             assert not graph.routine_scheduler._running
             assert not pipeline._running
@@ -81,6 +88,7 @@ async def test_real_factory_shares_household_output_privacy_and_managers(leaves,
             if rooms:
                 reminders = graph.voice_services.reminders
                 assert reminders is graph.dashboard.reminder_scheduler
+                assert reminders._household_clock is clock
                 assert reminders.home_actions is actions
                 assert reminders._store is graph.reminder_manager._store
                 assert reminders._tts is graph.voice_services.features.voice_delivery
@@ -395,6 +403,10 @@ async def test_four_configured_inputs_share_output_privacy_and_native_locks(leav
             graph = await build_application(config, shutdown=stack, factories=factories)
             loop = graph.pipeline.audio_loop
             assert set(loop.room_streams) == set(room_ids)
+            # P3-F1: the namespace is the configured catalog, shared with the dispatcher.
+            assert graph.room_namespace.rooms == frozenset(room_ids)
+            assert graph.pipeline._orchestrator.dispatcher.room_namespace is graph.room_namespace
+            assert graph.room_namespace.to_room("zone_hall") == "hall"
             assert all(stream.capture_channel == 1 for stream in loop.room_streams.values())
             assert all(stream.wake_detector.loads == 0 for stream in loop.room_streams.values())
             assert loop._response_handler is graph.voice_services.responses

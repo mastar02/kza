@@ -11,6 +11,7 @@ from dataclasses import dataclass, replace
 from enum import Enum, StrEnum
 from typing import Any
 
+from src.core.household_clock import HouseholdClock
 from src.core.sqlite_work import AuthorityGuard
 from src.core.voice_delivery import SIGNALS_OUTPUT_FREE, DeliveryState, ResponseResult, ResponseStage
 from src.reminders.recurrence import next_trigger
@@ -301,15 +302,31 @@ class ReminderScheduler:
         ha_client,
         config: dict = None,
         *, home_actions: HomeActionService | None = None, wake_event: asyncio.Event | None = None,
-        clock: Callable[[], float] = time.time,
+        clock: Callable[[], float] | None = None,
+        household_clock: HouseholdClock | None = None,
     ):
+        """Build the scheduler.
+
+        Args:
+            clock: Epoch-seconds clock for tests; the household timezone is
+                then the supported default. Exclusive with ``household_clock``.
+            household_clock: The application's household clock (P3-F1); its
+                zone counts recurring days and its epoch drives due times.
+
+        Raises:
+            ValueError: Both ``clock`` and ``household_clock`` were given, or a
+                notice setting is invalid.
+        """
+        if clock is not None and household_clock is not None:
+            raise ValueError("Pass either clock or household_clock, not both")
         self._store = store
         self._tts = tts
         self._presence_detector = presence_detector
         self._ha_client = ha_client
         self.home_actions = home_actions if home_actions is not None else HomeActionService(ha_client)
         self._config = config or {}
-        self._clock = clock
+        self._household_clock = household_clock or HouseholdClock(time_source=clock or time.time)
+        self._clock = clock or self._household_clock.epoch
         self._running = False
         self._wake_event = wake_event if wake_event is not None else asyncio.Event()
         self._holds: dict[str, DeliveryHold] = {}
@@ -1057,12 +1074,11 @@ class ReminderScheduler:
         logger.info("Recurring reminder %s collapsed missed occurrences into one notice", reminder.id)
         return replace(reminder, trigger_at=latest)
 
-    @staticmethod
-    def _next_occurrence(reminder: Reminder, after: float) -> float | None:
+    def _next_occurrence(self, reminder: Reminder, after: float) -> float | None:
         """The recurring reminder's occurrence after ``after``, or None (one-shot or past recurrence_end)."""
         if not reminder.recurrence:
             return None
-        following = next_trigger(after, reminder.recurrence)
+        following = next_trigger(after, reminder.recurrence, zone=self._household_clock.zone)
         if following <= after:
             raise ValueError("reminder_recurrence_not_advancing")
         if reminder.recurrence_end is not None and following > reminder.recurrence_end:
@@ -1113,7 +1129,7 @@ class ReminderScheduler:
             return
         now, following = self._clock(), reminder.trigger_at
         for _ in range(MAX_CATCH_UP_STEPS):
-            later = next_trigger(following, reminder.recurrence)
+            later = next_trigger(following, reminder.recurrence, zone=self._household_clock.zone)
             if later <= following:
                 raise ValueError("reminder_recurrence_not_advancing")
             following = later

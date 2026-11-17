@@ -1,6 +1,6 @@
 """Recurrence engine — calculates next trigger dates."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 from enum import StrEnum
 
 
@@ -26,10 +26,23 @@ def parse_recurrence(recurrence: str) -> tuple[RecurrenceType, int | None]:
     raise ValueError(f"Invalid recurrence format: {recurrence}")
 
 
-def next_trigger(last_trigger: float, recurrence: str) -> float:
-    """Calculate next trigger time. Returns epoch timestamp."""
+def next_trigger(last_trigger: float, recurrence: str, *, zone: tzinfo) -> float:
+    """Calculate the next trigger on the household calendar.
+
+    Days, weekdays and months are counted in ``zone`` (the household clock's
+    ``ZoneInfo``), never in the process's local time, so the occurrence keeps
+    its household wall time.
+
+    Args:
+        last_trigger: Previous occurrence, UTC epoch seconds.
+        recurrence: Recurrence string accepted by :func:`parse_recurrence`.
+        zone: Household timezone (``HouseholdClock.zone``).
+
+    Returns:
+        The next occurrence as UTC epoch seconds.
+    """
     rec_type, param = parse_recurrence(recurrence)
-    dt = datetime.fromtimestamp(last_trigger)
+    dt = datetime.fromtimestamp(last_trigger, zone)
 
     if rec_type == RecurrenceType.DAILY:
         nxt = dt + timedelta(days=1)

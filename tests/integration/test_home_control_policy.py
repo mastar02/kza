@@ -21,7 +21,8 @@ from src.hooks import HookRegistry, RewriteResult
 from src.orchestrator.dispatcher import MultiUserOrchestrator, RequestDispatcher
 from src.pipeline.command_processor import ProcessedCommand
 from src.pipeline.request_router import RequestRouter
-from src.reminders.recurrence import next_trigger
+from src.core.household_clock import HouseholdClock
+from src.reminders import recurrence
 from src.reminders.reminder_manager import ReminderManager
 from src.reminders.reminder_scheduler import ReminderScheduler
 from src.reminders.reminder_store import ReminderStore, ReminderScope
@@ -65,6 +66,11 @@ class ObservedHA:
 
     async def confirm_entity_state(self, *args, **kwargs):
         return await HomeAssistantClient.confirm_entity_state(self, *args, **kwargs)
+
+
+def next_trigger(last_trigger: float, rule: str) -> float:
+    """Expected next occurrence on the household calendar the scheduler counts on (P3-F1)."""
+    return recurrence.next_trigger(last_trigger, rule, zone=HouseholdClock().zone)
 
 
 def write_selection(path, *, enabled=True, operations=None, maximum=100):
