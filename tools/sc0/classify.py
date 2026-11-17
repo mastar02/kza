@@ -170,8 +170,10 @@ RULES: list[Rule] = [
          "orphan sessions, every transaction", sql="NOT IN (SELECT id FROM credentials)"),
     Rule("src/dashboard/authority.py", "DashboardAuthority._transaction",
          ("INSERT OR REPLACE INTO auth_meta",), "every_txn",
-         "clock_floor, every transaction: changes auth_meta on every boot and close (a credential command "
-         "writes the same row again in its own transaction)", sql="'clock_floor'"),
+         "clock_floor, every transaction: changes auth_meta on every boot and close. The command_action "
+         "branch (credential_command transactions only, so 'user' by reachability) writes the same row with "
+         "the same statement text, and no fragment tells them apart: those writes are classed every_txn "
+         "too, which over-states their reachability (conservative, accepted in SCRF-4)", sql="'clock_floor'"),
     # src/dashboard/credential_commands.py
     Rule("src/dashboard/credential_commands.py", "NativeCredentialCommands._apply_sql",
          ("INSERT INTO credentials", "UPDATE credentials", "DELETE FROM sessions", "DELETE FROM credentials",), "user",
