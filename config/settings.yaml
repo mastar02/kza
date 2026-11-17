@@ -1329,6 +1329,19 @@ rooms:
     # sobre un mic que todavía está despertando — y como el recovery cierra
     # TODOS los streams, se llevaría puestos a los sanos.
     first_frame_grace_s: 180.0
+    # Mic que enumera tarde (T025-U2, Cocina 2026-11-15): PortAudio solo ve
+    # los devices presentes al inicializarse. Si la card de un mic configurado
+    # está en sysfs pero PortAudio no la lista, se refresca el catálogo con un
+    # corte breve de captura en TODAS las rooms y se reabren todas. Como mucho
+    # una vez por este intervalo, y nunca durante un comando, una conversación
+    # o una respuesta hablada. 0 = desactivado.
+    catalog_refresh_min_interval_s: 300.0
+    # Si tras un refresco PortAudio sigue sin listar la MISMA card (device
+    # ocupado, interfaz de captura rota), el siguiente espera el intervalo y
+    # después el doble por cada refresco inútil seguido, hasta este techo
+    # (T025-U2-RV2-3). Vuelve al intervalo si la card sale de sysfs o cambia
+    # de número.
+    catalog_refresh_max_interval_s: 3600.0
     # Snapshot del heartbeat para el poller externo (tools/audio_watchdog_alert.py).
     # Externo a propósito: el modo de falla observado (27h, 7h) es "el proceso
     # vive y no entrega audio", que un watchdog interno no puede reportar.

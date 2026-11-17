@@ -47,6 +47,16 @@ Esta instalación no acepta H6 ni cierra el roadmap. La última suite completa
 mantiene dos fallos conocidos. La observación posterior confirma captura en Hall
 y Escritorio; Living y Cocina siguen sin captura útil. HA conserva `auth_error`.
 
+Observación del 2026-11-17: la Cocina no capturaba porque su micrófono enumeró
+el 2026-11-15, después del arranque de `kza-voice` (2026-11-02), y PortAudio no
+relee su lista de dispositivos. Con autorización del usuario se reinició
+`kza-voice` como `kza` a las 00:00:19; la Cocina volvió a entregar audio a las
+00:00:57 y las cuatro habitaciones quedaron capturando. El refresco automático
+del catálogo (T025-U2, `rooms.stream_watchdog.catalog_refresh_min_interval_s`)
+está desarrollado, sin release; hasta instalarlo, un micrófono que enumera
+después del arranque requiere reiniciar el servicio. Detalle en
+[aceptación de la Cocina](../runbooks/2026-11-16-cocina-acceptance.md).
+
 - Runtime: `/home/kza/releases/current` apunta al subdirectorio `runtime` del
   slot instalado. Se verificaron los 360 archivos del manifiesto, con 324 módulos
   compilados y sin fuentes `.py`.
