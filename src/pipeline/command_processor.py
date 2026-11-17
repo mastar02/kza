@@ -15,6 +15,7 @@ from src.evaluation.provenance import CaptureProvenance, FrameInterval
 from src.memory.producer_context import PRODUCER_CONTEXT, model_admission
 from src.memory.producer_scopes import ProducerScopes
 from src.memory.prompt_context import SourcesInvalidated, run_private
+from src.stt.primary_health import PrimarySttHealth, stt_error_code
 from src.stt.whisper_fast import STTResult
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,17 @@ class ProcessedCommand:
     timings: dict = field(default_factory=dict)
     success: bool = False
     stt_vetoed: bool = False
+    # Which transcript this is: "primary", "shadow_fallback" (primary failed,
+    # V3 2026-11-17), "pretranscribed" or "none".
+    stt_source: str = "primary"
+
+
+class CommandModelFailed(RuntimeError):
+    """A native model call failed; carries only a sanitized code."""
+
+    def __init__(self, code: str):
+        super().__init__("command_model_failed")
+        self.code = code
 
 
 class CommandProcessor:
@@ -45,8 +57,11 @@ class CommandProcessor:
     def __init__(self, stt, speaker_identifier=None, user_manager=None,
                  emotion_detector=None, sample_rate: int = 16000, shadow_stt=None,
                  shadow_veto: bool = False, shadow_veto_timeout_s: float = 0.8,
-                 *, privacy=None, close_timeout_s: float = 1, model_locks=None):
+                 *, privacy=None, close_timeout_s: float = 1, model_locks=None,
+                 stt_health: PrimarySttHealth | None = None):
         self.stt, self.speaker_id = stt, speaker_identifier
+        self._stt_health = stt_health
+        self._health_tasks: set[asyncio.Task] = set()
         self.user_manager, self.emotion_detector = user_manager, emotion_detector
         self.sample_rate, self.shadow_stt = sample_rate, shadow_stt
         self.shadow_veto, self.shadow_veto_timeout_s = shadow_veto, shadow_veto_timeout_s
@@ -86,6 +101,7 @@ class CommandProcessor:
     def _invoke(self, model, function, args, cancelled, guarded):
         result = None
         invalidated = False
+        code = None
 
         def require_live():
             self._require_live()
@@ -100,13 +116,14 @@ class CommandProcessor:
         except SourcesInvalidated:
             invalidated = True
         except Exception as error:
-            logger.warning("Command model operation failed: %s", type(error).__name__)
+            code = stt_error_code(error)
+            logger.warning("Command model operation failed: %s", code)
         finally:
             model = function = args = result = cancelled = require_live = None
         # Raise outside except: native exception chains can retain private input.
         if invalidated:
             raise SourcesInvalidated("command_sources_invalidated")
-        raise RuntimeError("command_model_failed")
+        raise CommandModelFailed(code or "unknown")
 
     async def _native(self, model, function, *args, guarded=False):
         cancelled = threading.Event()
@@ -238,6 +255,7 @@ class CommandProcessor:
                 shadow = self._start_shadow(audio)
             if pretranscribed_text is not None:
                 text = pretranscribed_text
+                result.stt_source = "pretranscribed"
                 result.timings.update(stt=0.0, stt_skipped=1)
                 speaker, emotion = await self._auxiliary(audio, use_parallel)
             elif use_parallel:
@@ -247,9 +265,19 @@ class CommandProcessor:
                 stt_result = await self._primary(audio)
                 text = stt_result.text if stt_result is not None else ""
                 speaker, emotion = await self._auxiliary(audio, False)
+            if pretranscribed_text is None and stt_result is None:
+                # Primary failed: the shadow transcript stands in (V3).
+                stt_result = await self._shadow_fallback(audio, shadow)
+                if stt_result is not None:
+                    text = stt_result.text
+                    result.stt_source = "shadow_fallback"
+                    shadow = None  # never veto the fallback with itself
+                else:
+                    result.stt_source = "none"
             if stt_result is not None:
                 result.stt_confidence = stt_result
                 result.timings["stt"] = stt_result.elapsed_ms
+            if stt_result is not None and result.stt_source == "primary":
                 # This branch actually called primary STT on this full input.
                 # A plain pretranscribed_text never receives inferred lineage.
                 transcript_provenance = audio_provenance
@@ -257,6 +285,8 @@ class CommandProcessor:
                     if type(audio_provenance) is CaptureProvenance and audio.size else None)
                 transcript_truncated = False
             elif pretranscribed_text is None:
+                # No primary transcript (failed, skipped, or the shadow stood
+                # in): the text never receives the primary STT lineage.
                 transcript_provenance = transcript_span = transcript_truncated = None
             if speaker is not None:
                 result.user, result.speaker_confidence, result.timings["speaker_id"] = speaker
@@ -279,7 +309,8 @@ class CommandProcessor:
                 self._current_sources = PRODUCER_CONTEXT.get().sources
             result.timings["total"] = (time.perf_counter() - started) * 1000
             logger.info("[CommandProcessor] Command processed: success=%s", result.success)
-            if self.shadow_stt is not None and not self.shadow_veto and len(self._shadow_tasks) < 8:
+            if (self.shadow_stt is not None and not self.shadow_veto and len(self._shadow_tasks) < 8
+                    and result.stt_source == "primary"):
                 self._track(asyncio.create_task(self._run_shadow(
                     audio, bool(text.strip()), result.timings.get("stt", 0.0))), self._shadow_tasks)
             return result
@@ -312,16 +343,123 @@ class CommandProcessor:
         finally:
             audio = stt = speaker = emotion = None
 
+    def _fallback_available(self) -> bool:
+        """The shadow transcript can stand in for a failed or skipped primary."""
+        return (self.shadow_stt is not None and self._stt_health is not None
+                and self._stt_health.config.fallback_to_shadow)
+
     async def _primary(self, audio):
+        if self._fallback_available() and not self._stt_health.try_primary():
+            # Reloading or degraded: do not queue on the model lock (or take a
+            # blocking-work slot) for a primary that is failing; the shadow
+            # stands in. A periodic probe still tries the primary.
+            audio = None
+            return None
         try:
-            return await self._native(self.stt, self.stt.transcribe_with_confidence, audio, self.sample_rate)
+            result = await self._native(self.stt, self.stt.transcribe_with_confidence, audio, self.sample_rate)
         except SourcesInvalidated:
             raise
-        except Exception:
-            logger.warning("Primary STT unavailable")
+        except CommandModelFailed as error:
+            self._primary_failed(error.code)
+            return None
+        except Exception as error:
+            # Never reached the model (blocking-work capacity, closed owner):
+            # not a model failure, so it neither starts nor extends an episode.
+            code = stt_error_code(error)
+            if self._stt_health is None:
+                logger.warning("Primary STT unavailable: code=%s", code)
+            else:
+                self._stt_health.record_not_run(code)
             return None
         finally:
             audio = None
+        if self._stt_health is not None and self._stt_health.record_success():
+            self._start_health_task(self._stt_health.send_alert(recovered=True))
+        return result
+
+    def _primary_failed(self, code: str) -> None:
+        """Log a sanitized primary failure and start the episode actions."""
+        if self._stt_health is None:
+            logger.warning("Primary STT unavailable: code=%s", code)
+            return
+        actions = self._stt_health.record_failure(code)
+        reload = actions.reload and not self._closed and callable(getattr(self.stt, "reload", None))
+        if actions.alert:
+            # The text states only what will happen: fallback and reload as configured now.
+            self._start_health_task(self._stt_health.send_alert(
+                fallback=self._fallback_available(), reload=reload))
+        if actions.intermittent:
+            self._start_health_task(self._stt_health.send_alert(
+                fallback=self._fallback_available(), intermittent=True))
+        if actions.reload:
+            self._start_health_task(self._reload_primary(), reload=True)
+
+    def _start_health_task(self, coroutine, *, reload: bool = False) -> asyncio.Task | None:
+        """Run an alert or reload off the command path; nothing after close."""
+        if self._closed:
+            coroutine.close()
+            if reload:
+                self._stt_health.reload_finished(False, "closed")
+            return None
+        return self._track(asyncio.create_task(coroutine, context=Context()), self._health_tasks)
+
+    async def _reload_primary(self) -> bool:
+        """Reload the primary STT: free first, then load, under its model lock.
+
+        The model lock is the same one every transcription (and the capture
+        loop's early parser) takes, so no inference runs during the reload and
+        no second copy exists on the GPU. Rate limiting lives in the tracker.
+        """
+        reload = getattr(self.stt, "reload", None)
+        if not callable(reload):
+            self._stt_health.reload_finished(False, "reload_unsupported")
+            return False
+
+        def require_open():
+            self._require_open()
+            if self._paused:
+                raise RuntimeError("command_processor_paused")
+
+        def invoke():
+            with model_admission(self._locks[id(self.stt)], require_open):
+                reload()
+
+        try:
+            require_open()
+            await self._work.run(invoke)
+        except asyncio.CancelledError:
+            self._stt_health.reload_finished(False, "cancelled")
+            raise
+        except Exception as error:
+            self._stt_health.reload_finished(False, stt_error_code(error))
+            return False
+        self._stt_health.reload_finished(True)
+        return True
+
+    async def _shadow_fallback(self, audio, shadow):
+        """Shadow transcript of the same audio after a primary failure, or None."""
+        health = self._stt_health
+        if self.shadow_stt is None or health is None or not health.config.fallback_to_shadow:
+            return None
+        timeout = health.config.fallback_timeout_s
+        task = shadow if shadow is not None else self._start_shadow(audio)
+        if task is None:
+            return None
+        try:
+            r = await asyncio.wait_for(asyncio.shield(task), timeout)
+        except SourcesInvalidated:
+            raise
+        except Exception as error:
+            code = error.code if isinstance(error, CommandModelFailed) else stt_error_code(error)
+            logger.warning("[STT-fallback] code=shadow_unavailable error=%s", code)
+            health.record_fallback(False)
+            return None
+        finally:
+            audio = shadow = None
+        present = bool(r.text.strip())
+        logger.info("[STT-fallback] code=shadow_used shadow_present=%s shadow_ms=%.0f", present, r.elapsed_ms)
+        health.record_fallback(present)
+        return r
 
     async def _speaker(self, audio):
         try:
@@ -526,7 +664,7 @@ class CommandProcessor:
         """Reject admission and retain actual native exit before authority release."""
         self._closed = True
         if self._closing is None:
-            controllers = self._commands | self._shadow_tasks | self._emotion_tasks
+            controllers = self._commands | self._shadow_tasks | self._emotion_tasks | self._health_tasks
             for task in controllers:
                 task.cancel()
             native = self._work.begin_close()

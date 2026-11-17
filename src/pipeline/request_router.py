@@ -24,11 +24,12 @@ from src.home_assistant.operations import compile_effect, finite_number
 from src.home_assistant.voice_actions import VoiceHomeActionExecutor
 from src.home_assistant.voice_resolver import HomeVoiceResolver
 from src.nlu.home_command import parse_home_command
-from src.nlu.command_gate import CommandAcceptanceGate
+from src.nlu.command_gate import AcceptanceDecision, CommandAcceptanceGate, contains_wake_word
 from src.nlu.command_grammar import PartialCommand, has_unresolved_light_location, parse_default_light_target, parse_partial_command
 from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
 from src.pipeline.earcon_gate import should_play_earcon
+from src.pipeline.wake_verification import WakeVerifier
 from src.analytics.asr_quality import alog_asr_outcome
 from src.memory.transient import TransientCache
 from src.memory.voice_phrase import VERIFICATION_REPLY
@@ -44,6 +45,17 @@ from src.core.observation import Observation
 from src.nlu.llm_router import LLMCommandRouter
 
 logger = logging.getLogger(__name__)
+
+# (wake_score, wake_vad) of the acoustic-wake CommandEvent being processed by
+# this task; None for any other input (V2 shadow wake verification).
+_WAKE_CONTEXT: ContextVar = ContextVar("kza_wake_context", default=None)
+# Endpoint code of the CommandEvent being processed (post-wake rule); None
+# for other inputs. A capture dispatched at the cap must name the wake word.
+_ENDPOINT_CODE: ContextVar = ContextVar("kza_endpoint_code", default=None)
+_MAX_UTTERANCE_CODE = "close_max_utterance"
+# Which STT produced the transcript of the command being processed
+# (ProcessedCommand.stt_source); carried into the result and ASR outcomes.
+_STT_SOURCE: ContextVar = ContextVar("kza_stt_source", default=None)
 
 
 # Mapeo intent → dominio HA requerido. Usado por el guard previo al NLU
@@ -149,6 +161,10 @@ class RequestRouter:
     One public method: process_command(audio) -> dict
     """
 
+    # V2 shadow wake verification; class default keeps partially built
+    # routers (tests that bypass __init__) on the previous behaviour.
+    _wake_verifier: WakeVerifier | None = None
+
     # Frases de feedback
     FEEDBACK_GOOD = [
         "buena respuesta", "eso estuvo bien", "correcto", "perfecto",
@@ -222,6 +238,7 @@ class RequestRouter:
         unavailable_precheck_enabled: bool = True,
         privacy=None,
         voice_attributor=None,
+        wake_verifier: WakeVerifier | None = None,
     ):
         """
         Initialize RequestRouter with injected dependencies.
@@ -259,6 +276,8 @@ class RequestRouter:
                 before_ha_action / before_tts_speak hooks fire on each invocation
                 and after-events emit at pipeline checkpoints. Backward-compat:
                 None disables hook calls; mandatory home control policy remains active.
+            wake_verifier: Second-stage transcript wake check for acoustic
+                wakes (V2 2026-11-17); None disables it.
         """
         # Core pipeline components
         self.command_processor = command_processor
@@ -365,6 +384,7 @@ class RequestRouter:
         self._memory_source = ContextVar("memory_source", default=None)
         self._response_sources = ContextVar("response_sources", default=())
         self._turn_outcome = ContextVar("turn_outcome", default=None)
+        self._wake_verifier = wake_verifier
 
         # Last-action tracker para comandos ambiguos (Q6: contextual + pregunta fallback)
         if action_tracker is None:
@@ -651,6 +671,12 @@ class RequestRouter:
 
         wake_score = getattr(audio_or_event, "wake_score", 1.0)
         textual_wake = bool(getattr(audio_or_event, "textual_wake", False))
+        _WAKE_CONTEXT.set(
+            (wake_score, getattr(audio_or_event, "wake_vad", None))
+            if not textual_wake and getattr(audio_or_event, "capture_trigger", None) == "wake" else None
+        )
+        _ENDPOINT_CODE.set(getattr(audio_or_event, "endpoint_code", None))
+        _STT_SOURCE.set(None)
         wake_rms = (
             float(np.sqrt(np.mean(np.square(audio))))
             if audio is not None and len(audio) else 0.0
@@ -744,6 +770,64 @@ class RequestRouter:
             result.pop("confirmation_question", None)
         return result
 
+    @staticmethod
+    def _note_stt_source(cmd, result: dict) -> None:
+        """Record which STT produced the transcript (result and ASR outcomes)."""
+        source = getattr(cmd, "stt_source", None)
+        source = source if isinstance(source, str) else None
+        _STT_SOURCE.set(source)
+        if source is not None:
+            result["stt_source"] = source
+
+    @staticmethod
+    def _asr_signals(signals: dict | None) -> dict:
+        """Gate signals plus the transcript's STT source, for ASR outcome events."""
+        merged = dict(signals or {})
+        source = _STT_SOURCE.get()
+        if source is not None:
+            merged["stt_source"] = source
+        return merged
+
+    def _verify_wake(self, text: str, gate_decision: AcceptanceDecision,
+                     room_id: str | None) -> AcceptanceDecision:
+        """Capture checks after the gate: max-utterance wake word and wake verification.
+
+        A capture dispatched at the post-wake cap (only when
+        ``dispatch_at_max_utterance`` is set) is rejected as
+        ``max_utterance_without_wake`` unless the transcript names a wake word,
+        so long background speech after a false wake goes no further. Then the
+        second-stage wake check of an acoustic wake (shadow by default): shadow
+        mode only records ``would_reject``; enforce mode turns a missing wake
+        word into the gate's ``missing_wake`` rejection. Never fails the
+        command on an internal error.
+
+        Args:
+            text: Non-empty transcript of the capture.
+            gate_decision: The CommandGate decision.
+            room_id: Capturing room.
+
+        Returns:
+            The decision to apply.
+        """
+        if (_ENDPOINT_CODE.get() == _MAX_UTTERANCE_CODE and gate_decision.accept
+                and not contains_wake_word(text, self._wake_words or ("nexa",))):
+            logger.info("[endpoint] code=max_utterance_without_wake room=%s", room_id)
+            return AcceptanceDecision(False, "max_utterance_without_wake", gate_decision.signals)
+        context = _WAKE_CONTEXT.get()
+        if self._wake_verifier is None or context is None:
+            return gate_decision
+        try:
+            wake_score, wake_vad = context
+            check = self._wake_verifier.evaluate(text, room_id=room_id, wake_score=wake_score,
+                                                 wake_vad=wake_vad, gate_accept=gate_decision.accept)
+            self._wake_verifier.schedule_flush()
+        except Exception as error:
+            logger.warning("[wake-verify] check skipped: %s", type(error).__name__)
+            return gate_decision
+        if check is not None and check.reject and gate_decision.accept:
+            return AcceptanceDecision(False, check.reason, gate_decision.signals)
+        return gate_decision
+
     async def _process_command_orchestrated(self, audio: np.ndarray, room_id: str = None,
                                               pretranscribed_text: str | None = None,
                                               ambient_strict: bool = False,
@@ -781,6 +865,7 @@ class RequestRouter:
         text = cmd.text
         result["text"] = text
         result["timings"].update(cmd.timings)
+        self._note_stt_source(cmd, result)
 
         if not text.strip():
             # Distinguir "el veto híbrido se comió habla real" de "el STT no
@@ -804,9 +889,9 @@ class RequestRouter:
         # 1a. Command acceptance gate: corta antes del orchestrator si el texto
         #     es claramente ruido (TV, eco del TTS, repetición) o confianza baja.
         #     Evita que esas muestras vayan al slow path LLM (caro + bloquea queue).
-        gate_decision = self.command_gate.evaluate(
+        gate_decision = self._verify_wake(text, self.command_gate.evaluate(
             text, stt_confidence=getattr(cmd, "stt_confidence", None)
-        )
+        ), room_id)
         if not gate_decision.accept:
             logger.info(f"Gate reject ({gate_decision.reason}): {text!r}")
             result["intent"] = f"gate_rejected:{gate_decision.reason}"
@@ -821,7 +906,7 @@ class RequestRouter:
 
         await alog_asr_outcome(
             self._asr_event_logger, room_id, "accepted", "ok", text,
-            gate_decision.signals or {}, wake_score, wake_rms,
+            self._asr_signals(gate_decision.signals), wake_score, wake_rms,
             sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
         )
         await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
@@ -1225,6 +1310,7 @@ class RequestRouter:
         text = cmd.text
         result["text"] = text
         result["timings"].update(cmd.timings)
+        self._note_stt_source(cmd, result)
 
         if not text.strip():
             # Igual que en el path orchestrated: el veto híbrido no es lo mismo
@@ -1244,9 +1330,9 @@ class RequestRouter:
             return result
 
         # 1a. Command acceptance gate — mismo corto-circuito que el path orchestrated
-        gate_decision = self.command_gate.evaluate(
+        gate_decision = self._verify_wake(text, self.command_gate.evaluate(
             text, stt_confidence=getattr(cmd, "stt_confidence", None)
-        )
+        ), room_id)
         if not gate_decision.accept:
             logger.info(f"Gate reject ({gate_decision.reason}): {text!r}")
             result["intent"] = f"gate_rejected:{gate_decision.reason}"
@@ -1261,7 +1347,7 @@ class RequestRouter:
 
         await alog_asr_outcome(
             self._asr_event_logger, room_id, "accepted", "ok", text,
-            gate_decision.signals or {}, wake_score, wake_rms,
+            self._asr_signals(gate_decision.signals), wake_score, wake_rms,
             sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
         )
         await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
@@ -1707,12 +1793,12 @@ class RequestRouter:
             )
             await alog_asr_outcome(
                 self._asr_event_logger, room_id, "earcon_fired",
-                reason, text, signals or {}, wake_score, wake_rms,
+                reason, text, self._asr_signals(signals), wake_score, wake_rms,
                 sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
             )
         await alog_asr_outcome(
             self._asr_event_logger, room_id, outcome,
-            reason, text, signals or {}, wake_score, wake_rms,
+            reason, text, self._asr_signals(signals), wake_score, wake_rms,
             sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
         )
 

@@ -95,6 +95,9 @@ from src.training.nightly_trainer import NightlyTrainer, NightlyConfig
 from src.rooms.room_context import RoomContextManager, RoomConfig
 from src.presence.presence_detector import PresenceDetector
 from src.pipeline.multi_room_audio_loop import MultiRoomAudioLoop, RoomStream
+from src.pipeline.post_wake_endpoint import PostWakeConfig
+from src.stt.primary_health import PrimarySttHealth, PrimarySttHealthConfig
+from src.pipeline.wake_verification import WakeVerificationConfig, WakeVerificationMode, WakeVerifier
 from src.wakeword.detector import WakeWordDetector
 from src.lists.list_store import ListStore
 from src.lists.list_manager import ListManager
@@ -1498,7 +1501,8 @@ async def build_application(
                 ambient_guard=ambient_guard,
                 wake_clip_writer=wake_clip_writer,
                 sample_rate=16000,
-                command_duration=2.0,
+                command_duration=endpointing_cfg.get("command_duration_s", 2.0),
+                post_wake=PostWakeConfig.from_dict(endpointing_cfg.get("post_wake")),
                 dedup_window_ms=rooms_config.get("dedup_window_ms", 200),
                 min_wake_rms=early_cfg.get("min_wake_rms", 0.0),
                 wake_preroll_s=early_cfg.get("wake_preroll_s", 0.0),
@@ -1594,8 +1598,13 @@ async def build_application(
         wake_word_model=wake_config.get("model", "hey_jarvis"),
         wake_word_threshold=wake_config.get("threshold", 0.5),
         sample_rate=16000,
-        command_duration=2.0,
+        command_duration=(rooms_config.get("endpointing", {}) or {}).get("command_duration_s", 2.0),
     )
+
+    # Salud del STT primario (V3 2026-11-17): código de error saneado,
+    # alerta + recarga segura tras N fallos seguidos, respaldo con el shadow.
+    stt_health = PrimarySttHealth(PrimarySttHealthConfig.from_dict(
+        (config.get("stt", {}) or {}).get("primary_health")))
 
     # Command processor (STT + speaker ID + emotion)
     command_processor = CommandProcessor(
@@ -1608,6 +1617,7 @@ async def build_application(
         shadow_veto=bool((config.get("stt", {}) or {}).get("shadow_veto", False)),
         privacy=privacy_services,
         model_locks=multi_room_loop.native_model_locks if multi_room_loop is not None else None,
+        stt_health=stt_health,
     )
     stt_executors.add_borrower(command_processor.begin_close)
     http_reasoners.add_borrower(command_processor.begin_close)
@@ -1869,6 +1879,19 @@ async def build_application(
     # cuando el engine es whisper (wake-as-STT, el texto SI contiene la wake).
     _wake_engine_gate = rooms_config.get("wake_word", {}).get("engine", "openwakeword")
     _gate_wake_words = _resolved_wake_words if _wake_engine_gate == "whisper" else ()
+    # Verificación del wake en 2 etapas (V2 2026-11-17): para wakes acústicos,
+    # la transcripción (que incluye el pre-roll con "Nexa") debe contener la
+    # wake word — misma regla missing_wake y variantes. SHADOW por defecto:
+    # solo registra would_reject para la revisión de 7 días; enforce después.
+    wake_verifier = None
+    _wake_verify_cfg = WakeVerificationConfig.from_dict(
+        rooms_config.get("wake_word", {}).get("verification"), _resolved_wake_words,
+    )
+    if _wake_engine_gate != "whisper" and _wake_verify_cfg.mode is not WakeVerificationMode.OFF:
+        wake_verifier = WakeVerifier(_wake_verify_cfg)
+        await asyncio.to_thread(wake_verifier.load)
+        shutdown.push_async_callback(wake_verifier.aclose)
+        logger.info("Wake verification: mode=%s", _wake_verify_cfg.mode.value)
     command_gate = CommandAcceptanceGate(
         wake_words=_gate_wake_words,
         enforce_confidence=_gate_cfg.get("enforce_confidence", False),
@@ -1926,6 +1949,7 @@ async def build_application(
         llm_min_command_confidence=nlu_cfg.get("min_command_confidence", 0.6),
         earcon_cfg=_earcon_cfg,
         asr_event_logger=event_logger,
+        wake_verifier=wake_verifier,
     )
 
     shutdown.push_async_callback(request_router.aclose)
@@ -1992,6 +2016,7 @@ async def build_application(
 
     feature_manager = voice_services.features
     alert_manager = feature_manager.alert_manager
+    stt_health.attach_alert_manager(alert_manager)
 
     # ----------------------------------------------------------------
     # Dashboard API + Health Aggregator
@@ -2057,6 +2082,11 @@ async def build_application(
             # Only an index type that defines it (test doubles report nothing).
             command_index_provider=(chroma.index_health
                                     if callable(getattr(type(chroma), "index_health", None)) else None),
+            # Primary STT health + post-wake endpoint counts (codes and counts only).
+            voice_health_provider=lambda: {
+                "stt_primary": stt_health.snapshot(),
+                "endpoint_counts": dict(multi_room_loop.endpoint_counts) if multi_room_loop else {},
+            },
         )
 
         dashboard = DashboardAPI(

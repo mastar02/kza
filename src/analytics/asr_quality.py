@@ -46,12 +46,21 @@ def log_asr_outcome(
               anterior, no en lugar de él).
         reason: sub-motivo (ej: empty, empty_after_norm, high_compression, ok).
         text: transcripción (se trunca a 60 chars).
-        signals: dict de señales STT (compression_ratio, etc.).
+        signals: dict de señales STT (compression_ratio, etc.). ``stt_source``
+            ("primary", "shadow_fallback", "pretranscribed", "none") marca qué
+            STT produjo el texto; se guarda como ``stt_source`` (contexto) y
+            ``stt_fallback`` (métrica booleana que sobrevive al vencimiento del
+            texto), para no mezclar transcripciones del respaldo con las del
+            primario.
         wake_score: score del wake que abrió la captura.
         rms: energía RMS de la captura.
     """
     if event_logger is None:
         return
+    extra = {}
+    source = signals.get("stt_source")
+    if isinstance(source, str):
+        extra = {"stt_source": source, "stt_fallback": source == "shadow_fallback"}
     try:
         event_logger.log(
             entity_id=f"asr_quality:{room_id}",
@@ -63,6 +72,7 @@ def log_asr_outcome(
                 "compression_ratio": signals.get("compression_ratio"),
                 "no_speech_prob": signals.get("no_speech_prob"),
                 "avg_logprob": signals.get("avg_logprob"),
+                **extra,
             },
             **({"sources": sources} if sources else {}),
         )

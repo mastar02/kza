@@ -107,6 +107,14 @@ class CommandEvent:
     # El router NO toma grammar fast-path: el texto ya contiene "nexa" (así
     # matcheó) y un verbo+luz alucinado ejecutaba luces fantasma.
     textual_wake: bool = False
+    # Silero probability of the wake frame and what opened the capture
+    # ("wake", "follow_up", "barge_in", "inline"; None for other producers).
+    # Used by the shadow wake verification (V2 2026-11-17).
+    wake_vad: float | None = None
+    capture_trigger: str | None = None
+    # How the post-wake endpoint closed the capture ("close_silence",
+    # "close_parser_ready", "close_max_utterance"); None for other producers.
+    endpoint_code: str | None = None
     capture_id: str = field(default_factory=lambda: str(uuid4()))
     conversation_id: str | None = None
     captured_at: float | None = None

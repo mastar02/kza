@@ -33,6 +33,9 @@ from src.pipeline.ambient_guard import AmbientGuard, GuardState, classify_outcom
 from src.pipeline.command_event import CapturedTranscript, CommandEvent, TranscriptSource
 from src.wakeword.wake_clip_writer import WakeClipWriter
 from src.pipeline.capture_room import CaptureRoom
+from src.pipeline.post_wake_endpoint import (
+    CaptureTrigger, EndpointDecision, EndpointState, NoiseFloorTracker, PostWakeConfig, frame_rms,
+)
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
 from src.core.capture_opening import CaptureOpening, coherent_opening, current_capture_opening
 from src.evaluation.provenance import CaptureLane
@@ -90,6 +93,11 @@ def compute_wake_vad(audio_chunk, vad_predict) -> float | None:
         return float(vad_predict(np.ascontiguousarray(mono)))
     except Exception:
         return None
+
+
+def _fmt_vad(value: float | None) -> str:
+    """Format a Silero probability for logs ('na' when unavailable)."""
+    return "na" if value is None else f"{value:.2f}"
 
 
 def _resolve_capture_channels(max_input_channels: int) -> int:
@@ -206,6 +214,17 @@ class RoomStream:
     # watchdog distinga "abrió y todavía no entregó" (gracia larga) de
     # "entregaba y dejó de entregar" (timeout corto).
     opened_ts: float = 0.0
+    # Post-wake endpoint (V1 2026-11-17): buffer index of the first sample
+    # after the wake (pre-roll length), what opened the capture, the Silero
+    # probability of the wake frame and the per-capture endpoint state.
+    wake_sample_index: int = 0
+    capture_trigger: CaptureTrigger = CaptureTrigger.UNKNOWN
+    wake_vad: float | None = None
+    endpoint: EndpointState | None = None
+    # Ambient level of this room while not capturing (post-wake rule only).
+    noise_floor: NoiseFloorTracker | None = None
+    # Consecutive level-speech frames seen while a follow-up may start.
+    onset_frames: int = 0
 
 
 class PortAudioReset(Enum):
@@ -236,6 +255,13 @@ class MultiRoomAudioLoop:
     it dispatches a CommandEvent via asyncio.create_task (non-blocking),
     allowing concurrent processing of commands from different rooms.
     """
+
+    # Post-wake rule (V1); the class default keeps partially built loops
+    # (tests that bypass __init__) on the legacy endpoint.
+    _post_wake: PostWakeConfig | None = None
+    # Room whose wake, accepted command or barge-in opened the current
+    # follow-up conversation; follow-ups only start there (post-wake rule).
+    _conversation_room: str | None = None
 
     def __init__(
         self,
@@ -287,6 +313,7 @@ class MultiRoomAudioLoop:
         direction_calibrations: dict | None = None,
         privacy=None,
         close_timeout_s: float = 1,
+        post_wake: PostWakeConfig | None = None,
     ):
         if (
             any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0
@@ -307,6 +334,11 @@ class MultiRoomAudioLoop:
         self.silence_duration_ms = silence_duration_ms
         self.min_speech_ms = min_speech_ms
         self.dedup_window_ms = dedup_window_ms
+        # Post-wake listening rule (V1 2026-11-17). None keeps the legacy
+        # endpoint (absolute RMS, timeout counted from the pre-roll start);
+        # settings.yaml enables it under rooms.endpointing.post_wake.
+        self._post_wake = post_wake
+        self.endpoint_counts: dict[str, int] = {}
 
         self.early_dispatch_enabled = early_dispatch_enabled
         self.early_dispatch_interval_ms = early_dispatch_interval_ms
@@ -586,6 +618,9 @@ class MultiRoomAudioLoop:
         if not rs.listening:
             return None
         complete, audio = self._check_vad_completion(rs)
+        if complete and audio is None and self._post_wake is not None:
+            self._drop_capture(rs)
+            return None
         if not complete or audio is None:
             return None
         if not self._passes_spenergy_gate(rs):
@@ -597,7 +632,26 @@ class MultiRoomAudioLoop:
             capture_complete=rs.capture_complete,
             ambient_strict=self._guard is not None and self._guard.state_for(rs.room_id) is GuardState.STRICT,
             wake_score=rs.wake_score, captured_at=rs.command_start_time,
-            audio_provenance=self._capture_provenance(rs, audio))
+            audio_provenance=self._capture_provenance(rs, audio),
+            wake_vad=rs.wake_vad, capture_trigger=rs.capture_trigger.value,
+            endpoint_code=(rs.endpoint.decision.value
+                           if rs.endpoint is not None and rs.endpoint.decision is not None else None))
+
+    def _drop_capture(self, rs: RoomStream) -> None:
+        """Discard a capture without speech after the wake (no STT).
+
+        An acoustic wake that captured nothing feeds the ambient guard as an
+        empty capture, like the empty transcript it used to produce. The
+        follow-up window opened by the wake stays as it was.
+        """
+        trigger = rs.capture_trigger
+        room_id = rs.room_id
+        self._clear_capture(rs)
+        if self._guard is not None and trigger is CaptureTrigger.WAKE:
+            try:
+                self._guard.on_capture_result(room_id, "empty")
+            except Exception as error:
+                logger.debug("[endpoint] guard update skipped: %s", type(error).__name__)
 
     def _capture_provenance(self, rs: RoomStream, audio):
         if sum(part[0] for part in rs.audio_metadata) != audio.size:
@@ -1170,7 +1224,7 @@ class MultiRoomAudioLoop:
                 logger.info(
                     f"[AmbientGuard] wake rechazado en {room_id} "
                     f"({decision.reason}, state={decision.state.value}, "
-                    f"score={wake_score:.2f}, rms={rms:.4f})"
+                    f"score={wake_score:.2f}, rms={rms:.4f}, vad={_fmt_vad(wake_vad)})"
                 )
                 # Liberar el refractario del detector: el rechazo del guard NO
                 # debe consumir la ventana de 2s. Visto en vivo (2026-06-05,
@@ -2599,6 +2653,10 @@ class MultiRoomAudioLoop:
                             [(len(chunk), None, None) for chunk in rs.preroll], maxlen=self._preroll_maxchunks)
                     rs.preroll.append(audio_chunk)
                     rs.preroll_metadata.append(part)
+                if self._post_wake is not None:
+                    if rs.noise_floor is None:
+                        rs.noise_floor = NoiseFloorTracker(self._post_wake, self.sample_rate, CHUNK_SIZE)
+                    rs.noise_floor.observe(float(np.sqrt(np.mean(audio_chunk ** 2))))
                 room = self._capture_rooms[rs.room_id]
                 room.require_live()
                 backend = getattr(rs.wake_detector, 'whisper', None)
@@ -2629,6 +2687,9 @@ class MultiRoomAudioLoop:
                         rs.capture_complete = False
                         rs.listening = True
                         rs.wake_score = detection[1]
+                        rs.wake_vad = wake_vad
+                        rs.capture_trigger = CaptureTrigger.WAKE
+                        rs.endpoint = None
                         rs.command_start_time = time.time()
                         # Sembrar con el pre-roll (en vez de []) para no perder el
                         # verbo dicho durante la latencia. Backdate command_start_time
@@ -2644,6 +2705,8 @@ class MultiRoomAudioLoop:
                             rs.audio_buffer = []
                             rs.audio_metadata = []
                             rs.inline_provenance = None
+                        # Endpoint timing starts at the wake, not at the pre-roll.
+                        rs.wake_sample_index = len(rs.audio_buffer)
                         # Persistir el clip del trigger para entrenamiento
                         # (fail-open: un writer roto jamás corta la captura).
                         if self._wake_clip_writer is not None and rs.audio_buffer:
@@ -2657,7 +2720,9 @@ class MultiRoomAudioLoop:
                         # abierta con TV era parte de la cascada del 06-04.
                         if self._guard is None or self._guard.follow_up_allowed(rs.room_id):
                             self.follow_up.start_conversation()
-                        logger.info(f"Wake word in {rs.room_id} ({detection[0]}: {detection[1]:.2f})")
+                            self._conversation_room = rs.room_id
+                        logger.info(f"Wake word in {rs.room_id} ({detection[0]}: {detection[1]:.2f}, "
+                                    f"vad={_fmt_vad(wake_vad)})")
 
                         # Peek wake text first to decide if it was truncated.
                         # Si el wake terminó con preposición/artículo/elipsis,
@@ -2679,6 +2744,9 @@ class MultiRoomAudioLoop:
                             inline_audio = pop_fn()
                             if inline_audio is not None and len(inline_audio) > 0:
                                 rs.audio_buffer = list(inline_audio)
+                                rs.wake_sample_index = 0
+                                rs.capture_trigger = CaptureTrigger.INLINE
+                                rs.endpoint = None
                                 inline_opening, inline_channel, rs.inline_provenance = inline_metadata
                                 rs.audio_metadata = [(len(inline_audio), inline_opening, inline_channel)]
                                 if wake_was_truncated:
@@ -2729,20 +2797,83 @@ class MultiRoomAudioLoop:
                 elif self.follow_up.is_active and (
                     self._guard is None or self._guard.follow_up_allowed(rs.room_id)
                 ):
-                    rms = float(np.sqrt(np.mean(audio_chunk ** 2)))
-                    if rms > 0.02 and rs.echo_suppressor.is_human_voice(audio_chunk):
-                        rs.listening = True
-                        rs.capture_generation += 1
-                        rs.command_start_time = time.time()
-                        rs.audio_buffer = []
-                        rs.audio_metadata = []
-                        rs.inline_provenance = None
+                    if self._post_wake is not None:
+                        self._maybe_start_follow_up(rs, audio_chunk, part)
+                    else:
+                        rms = float(np.sqrt(np.mean(audio_chunk ** 2)))
+                        if rms > 0.02 and rs.echo_suppressor.is_human_voice(audio_chunk):
+                            rs.listening = True
+                            rs.capture_generation += 1
+                            rs.command_start_time = time.time()
+                            rs.audio_buffer = []
+                            rs.audio_metadata = []
+                            rs.inline_provenance = None
+                            rs.capture_trigger = CaptureTrigger.FOLLOW_UP
             else:
                 rs.audio_buffer.extend(audio_chunk)
                 rs.audio_metadata.append(part)
                 rs.inline_provenance = None
 
         return process
+
+    def _room_vad(self, rs: RoomStream):
+        """Per-room Silero predictor already loaded for the wake, or None."""
+        return self._wake_vad_predictors.get(rs.room_id) or None
+
+    def _room_floor(self, rs: RoomStream) -> float:
+        """Current noise floor of the room (post-wake rule only)."""
+        if rs.noise_floor is None:
+            rs.noise_floor = NoiseFloorTracker(self._post_wake, self.sample_rate, CHUNK_SIZE)
+        return rs.noise_floor.floor()
+
+    def _maybe_start_follow_up(self, rs: RoomStream, audio_chunk, part) -> None:
+        """Open a follow-up capture on a sustained speech onset in the conversation room.
+
+        Replaces the absolute ``rms > 0.02`` start, unreachable in quiet rooms.
+        Only the room that opened the conversation may start one (the
+        follow-up window is global). The onset needs ``min_speech_ms`` of
+        consecutive frames that pass the level test relative to the room's
+        floor; Silero never starts a follow-up alone (it cannot tell TV from
+        people), it only helps the endpoint once the capture is open. The
+        ambient guard check stays with the caller; the CommandGate still judges
+        the transcript. A short pre-roll keeps the onset syllable.
+        """
+        config = self._post_wake
+        if self._conversation_room != rs.room_id:
+            rs.onset_frames = 0
+            return
+        level = frame_rms(audio_chunk) >= self._room_floor(rs) * config.noise_ratio
+        if not level or not rs.echo_suppressor.is_human_voice(audio_chunk):
+            rs.onset_frames = 0
+            return
+        rs.onset_frames += 1
+        needed = max(1, math.ceil(config.min_speech_ms * self.sample_rate / (1000 * CHUNK_SIZE) - 1e-9))
+        if rs.onset_frames < needed:
+            return
+        onset, rs.onset_frames = rs.onset_frames, 0
+        keep = onset + int(round(config.follow_up_preroll_s * self.sample_rate / CHUNK_SIZE))
+        if rs.preroll:
+            chunks = list(rs.preroll)[-keep:]
+            metadata = list(rs.preroll_metadata or ())[-len(chunks):]
+            if len(metadata) != len(chunks):
+                chunks, metadata = [audio_chunk], [part]
+            rs.preroll.clear()
+            rs.preroll_metadata.clear()
+        else:
+            chunks, metadata = [audio_chunk], [part]
+        rs.listening = True
+        rs.capture_generation += 1
+        rs.audio_buffer = list(np.concatenate(chunks))
+        rs.audio_metadata = metadata
+        rs.inline_provenance = None
+        # The onset chunks themselves count as post-"wake" speech.
+        onset_samples = sum(len(chunk) for chunk in chunks[-onset:])
+        rs.wake_sample_index = len(rs.audio_buffer) - onset_samples
+        rs.command_start_time = time.time() - len(rs.audio_buffer) / self.sample_rate
+        rs.capture_trigger = CaptureTrigger.FOLLOW_UP
+        rs.wake_vad = None
+        rs.endpoint = None
+        logger.info("[endpoint] follow-up capture start room=%s", rs.room_id)
 
     def _adaptive_endpoint_threshold(self, rs: RoomStream) -> int:
         """
@@ -2790,6 +2921,8 @@ class MultiRoomAudioLoop:
     def _check_vad_completion(self, rs: RoomStream) -> tuple[bool, np.ndarray | None]:
         """Check if a room's command capture is complete (VAD or timeout)."""
         rs.capture_complete = False
+        if self._post_wake is not None:
+            return self._check_post_wake_completion(rs)
         elapsed = time.time() - rs.command_start_time
         elapsed_ms = elapsed * 1000
 
@@ -2842,6 +2975,44 @@ class MultiRoomAudioLoop:
 
         return False, None
 
+    def _check_post_wake_completion(self, rs: RoomStream) -> tuple[bool, np.ndarray | None]:
+        """Post-wake rule: listen >= min after the wake, close on speech then silence.
+
+        Every duration is measured in captured samples after the wake (the
+        pre-roll is excluded). A capture without speech is dropped without
+        STT; ``_poll_command`` sees ``(True, None)`` for a drop. A capture
+        that reaches the cap is returned incomplete unless
+        ``dispatch_at_max_utterance`` is set.
+        """
+        config = self._post_wake
+        if rs.endpoint is None:
+            wake_index = min(max(0, rs.wake_sample_index), len(rs.audio_buffer))
+            rs.endpoint = EndpointState(wake_index=wake_index, floor=self._room_floor(rs),
+                                        next_frame=wake_index, trigger=rs.capture_trigger)
+        state = rs.endpoint
+        state.analyze(rs.audio_buffer, config, self._room_vad(rs))
+        wake_wall = rs.command_start_time + state.wake_index / self.sample_rate
+        parser_ready = (self.endpointing_enabled and rs.early_command is not None
+                        and rs.early_command.ready_to_dispatch())
+        decision = state.decide(config, self.sample_rate, parser_ready, time.time() - wake_wall)
+        if not decision.closes:
+            return False, None
+        state.decision = decision
+        self.endpoint_counts[decision.value] = self.endpoint_counts.get(decision.value, 0) + 1
+        summary = state.summary(self.sample_rate)
+        logger.info("[endpoint] room=%s code=%s trigger=%s post_wake_s=%.2f speech_s=%.2f floor=%.4f "
+                    "peak_rms=%.4f vad_max=%s", rs.room_id, decision.value, summary["trigger"],
+                    summary["post_wake_s"], summary["speech_s"], summary["floor"], summary["peak_rms"],
+                    _fmt_vad(summary["vad_max"]))
+        if not decision.dispatches:
+            return True, None
+        # At the cap the capture stays incomplete unless the household chose to
+        # dispatch it (VC-Q2): the router then rejects it before STT, as the
+        # legacy timeout did, so a false wake into a call costs no STT.
+        rs.capture_complete = (decision is not EndpointDecision.CLOSE_MAX
+                               or config.dispatch_at_max_utterance)
+        return True, np.array(rs.audio_buffer, dtype=np.float32)
+
     def _reset_listening(self, rs: RoomStream) -> None:
         """Cierra el estado de captura y cancela el worker early si está activo."""
         rs.listening = False
@@ -2853,6 +3024,11 @@ class MultiRoomAudioLoop:
         rs.transcript = None
         rs.capture_complete = False
         rs.capture_generation += 1
+        rs.wake_sample_index = 0
+        rs.capture_trigger = CaptureTrigger.UNKNOWN
+        rs.wake_vad = None
+        rs.endpoint = None
+        rs.onset_frames = 0
         if rs.early_task is not None:
             task, rs.early_task = rs.early_task, None
             if self._loop is not None and self._loop.is_running():
@@ -3009,6 +3185,7 @@ class MultiRoomAudioLoop:
                 ):
                     try:
                         self.follow_up.start_conversation()
+                        self._conversation_room = event.room_id
                     except Exception as e:
                         logger.debug(f"follow_up post-éxito no-op: {e}")
 
@@ -3046,8 +3223,10 @@ class MultiRoomAudioLoop:
         self._capture_rooms[rs.room_id].require_live()
         self._reset_listening(rs)
         rs.command_start_time = time.time()
+        rs.capture_trigger = CaptureTrigger.BARGE_IN
         try:
             self.follow_up.start_conversation()
+            self._conversation_room = rs.room_id
         except Exception as error:
             logger.debug('Follow-up unavailable after barge-in: %s', type(error).__name__)
         self._capture_rooms[rs.room_id].require_live()
