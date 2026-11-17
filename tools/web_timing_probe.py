@@ -28,6 +28,7 @@ the probe has its own concurrent CDP reader with absolute per-command deadlines.
 
 import argparse
 import asyncio
+import base64
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -89,6 +90,18 @@ VIEW_ROLES = {'#hogar': 'home', '#acciones': 'home', '#rutinas': 'home', '#mis-r
               '#evaluacion': 'evaluator'}
 MOBILE_VIEWS = ('#hogar', '#acciones', '#voces')
 INTERACTION_VIEWS = ('#hogar', '#acciones', '#voces')
+# R6-7 (fixture_backend.not_represented): views whose services the fixture answers with 503; their C10 rows are
+# descriptive only (excluded from C10 acceptance and from before/after claims).
+FIXTURE_UNAVAILABLE_VIEWS = ('#rutinas', '#memoria', '#mis-recuerdos')
+FIXTURE_UNAVAILABLE_NOTE = 'no representado en la fixture: el servicio responde 503'
+# R6-2 (runs.count, smoke_gate.smoke_batches): the batch composition is fixed per mode, never a CLI value.
+BATCH_COMPOSITION = {
+    'baseline': {'warm_ups': 3, 'pairs': 40, 'contrast_pairs': 10},
+    'smoke': {'warm_ups': 1, 'pairs': 5, 'contrast_pairs': 2},
+}
+# R6-3 (metrics.C11_action_feedback): bounded post-feedback wait inside the timed window, before the flush: the
+# later of 100 ms and 6 animation frames after the feedback mutation.
+FEEDBACK_WINDOW = {'ms': 100, 'frames': 6}
 LOAD_ONLY_INP = 'no medido: vista solo de carga'
 
 # instrumentation.cdp_deadlines.values_ms, by deadline class.
@@ -191,7 +204,8 @@ CORE_SCRIPT = {
          'selector': '[data-capture-id="{capture}"] input[type="checkbox"]',
          'end': {'kind': 'checked', 'selector': '#voice-dialog [data-capture-id="{capture}"] input[type="checkbox"]'},
          'wait': 'wait_other'},
-        {'step': 'escuchar', 'container': '#voice-dialog', 'selector': '[data-capture-id="{capture}"] ' + BUTTON,
+        {'step': 'escuchar', 'container': '#voice-dialog',
+         'selector': '[data-capture-id="{capture}"] button,[data-capture-id="{capture}"] [role="button"]',
          'name_prefix': 'Escuchar', 'end': {'kind': 'control_attached'}, 'wait': 'wait_preview', 'c11': 'preview'},
         {'step': 'reproducir', 'play_gesture': True, 'end': {'kind': 'playing'}, 'wait': 'wait_preview'},
     ],
@@ -481,14 +495,27 @@ INJECTED_SOURCE = r"""(() => {
         bringIntoView(index + 1);
       });
     });
+    // R6-3: C11 action feedback keeps the timed window open until the later of feedback_window.ms and
+    // feedback_window.frames animation frames after the mutation, so the trace holds the feedback frame.
+    if (step.c11 === 'action_feedback') {
+      let frames = 0;
+      const tick = () => {
+        frames += 1;
+        if (frames >= CONFIG.feedback_window.frames && now() - time >= CONFIG.feedback_window.ms) emit('feedback_window', {step: step.step, index, frames, mutation: time, time: now()});
+        else requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    }
   }
   let audioTracked = null;
+  const hitAt = point => { try { return describe(document.elementFromPoint(point.x, point.y)); } catch (_) { return null; } };
   function playTarget(audio) {
     const panel = audio.closest(CONFIG.audio.panel) || audio.parentElement;
     const button = lookup(CONFIG.play_target, panel);
-    if (button) { const rect = rectOf(button); return {kind: 'button', rect, name: nameOf(button).slice(0, 80), point: {x: rect.x + rect.width / 2, y: rect.y + rect.height / 2}}; }
+    if (button) { const rect = rectOf(button); const point = {x: rect.x + rect.width / 2, y: rect.y + rect.height / 2}; return {kind: 'button', rect, name: nameOf(button).slice(0, 80), point, hit: hitAt(point)}; }
     const rect = rectOf(audio);
-    return {kind: 'audio', rect, point: {x: rect.x + CONFIG.play_rule.dx_px, y: rect.y + rect.height * CONFIG.play_rule.y_fraction}};
+    const point = {x: rect.x + CONFIG.play_rule.dx_px, y: rect.y + rect.height * CONFIG.play_rule.y_fraction};
+    return {kind: 'audio', rect, point, hit: hitAt(point)};
   }
   function trackAudio() {
     const audio = document.querySelector(CONFIG.audio.selector);
@@ -562,7 +589,7 @@ def injection_config(*, token: str, origin: str, view: str, capture_id: str | No
     return {'token': token, 'origin': origin, 'binding': 'kzaProbeRecord', 'flush': '__kzaProbeFlush_' + token,
             'quiet_ms': QUIET_PERIOD_MS, 'lcp_cap_ms': LCP_CAP_MS, 'duration_threshold': EVENT_DURATION_THRESHOLD_MS,
             'steps': resolved, 'audio': CORE_SCRIPT['audio'], 'play_target': CORE_SCRIPT['play_target'],
-            'play_rule': play_rule or PLAY_CONTROL_RULE, 'harness': harness}
+            'play_rule': play_rule or PLAY_CONTROL_RULE, 'harness': harness, 'feedback_window': FEEDBACK_WINDOW}
 
 
 def injected_source(config: dict) -> str:
@@ -943,7 +970,9 @@ def timed_records(records: list, flush_time: float | None) -> list:
     """V4: only records of the timed phase (page time <= the flush sample) enter the visibility rule."""
     if flush_time is None:
         return list(records)
-    return [record for record in records if record.get('t', record.get('time', 0.0)) <= flush_time]
+    # R6-11(c): by the record's own time (the flush sample's emit t is later than its time).
+    return [record for record in records
+            if record.get('time', record.get('timeStamp', record.get('t', 0.0))) <= flush_time]
 
 
 def visibility_faults(document_start: dict, focus_records: list, events: list, window_reads: list) -> list:
@@ -1113,6 +1142,9 @@ class BatchLedger:
 # Quiet machine (quiet_machine.mac, R5-7, R5-14d).
 # --------------------------------------------------------------------------------------------
 
+# R6-11(a): `python -m pytest` and the bin/pytest (or py.test) console script, read from the ps rows (macOS pgrep
+# has no -c).
+PYTEST = re.compile(r'python[0-9.]*\b.*-m pytest|(^|/)(pytest|py\.test)(\s|$)')
 BUILD_RUNNERS = re.compile(r'(^|/)(xcodebuild|swift-build|clang|cargo|make)(\s|$)')
 NODE_BUILD = re.compile(r'(^|/)(node|npm)\b.*\b(build|test)\b')
 
@@ -1137,7 +1169,7 @@ def process_check(rows: list, own_pid: int, *, cpu: dict | None = None, allowed:
         if row['pid'] in exempt:
             continue
         command = row['command']
-        if re.search(r'python.*-m pytest', command):
+        if PYTEST.search(command):
             violations.append(('pytest', row['pid']))
         elif 'tests/frontend/browser_' in command or 'web_timing_probe' in command:
             violations.append(('browser_harness', row['pid']))
@@ -1172,7 +1204,8 @@ def parse_loadavg(text: str) -> float:
 TRIGGER_PATTERNS = (re.compile(r'^src/dashboard/'), re.compile(r'^src/users/voice'),
                     re.compile(r'^tests/mocks/memory_sources\.py$'), re.compile(r'^tools/web_timing_probe\.py$'))
 IDENTITY_COMPONENTS = ('preregistration_sha256', 'fixture_digest', 'script_id', 'browser_version', 'launch_flags',
-                       'launch_mechanism', 'os_version', 'hardware', 'ui_locale', 'pip_freeze_sha256')
+                       'launch_mechanism', 'os_version', 'hardware', 'ui_locale', 'pip_freeze_sha256',
+                       'audio_output')
 
 
 def before_after(baseline: dict, current_identity: dict, changed_paths: list, *, script_runs: bool = True) -> dict:
@@ -1190,8 +1223,8 @@ def before_after(baseline: dict, current_identity: dict, changed_paths: list, *,
 
 
 def comparable_rows(rows: list) -> list:
-    """Only core-script rows are compared; extra_rows never are (R2-4)."""
-    return [row for row in rows if not row.get('extra')]
+    """Only core-script rows are compared; extra_rows never are (R2-4), nor fixture-503 views (R6-7)."""
+    return [row for row in rows if not row.get('extra') and row.get('view') not in FIXTURE_UNAVAILABLE_VIEWS]
 
 
 def warm_rows_comparable(before_mix: dict, after_mix: dict) -> bool:
@@ -1395,6 +1428,86 @@ def smoke_idle(record: SmokeRecord) -> float:
     if not done:
         raise SystemExit('smoke_quiet_baseline_missing: run `smoke-item quiet-baseline` first')
     return done[-1]['result']['idle']
+
+
+def _last_complete(record: SmokeRecord, item: str) -> dict | None:
+    done = [run for run in record.data['runs'] if run['item'] == item and run['status'] == 'complete']
+    return done[-1] if done else None
+
+
+def smoke_play_rule(record: SmokeRecord) -> dict:
+    """R6-1 (smoke_gate.smoke_order, preview_ready_state): the play-control rule the smoke's own complete
+    fixture_pages item chose; smoke batches and overhead runs refuse to start without it."""
+    entry = _last_complete(record, 'fixture_pages')
+    rule = ((((entry or {}).get('result') or {}).get('observations') or {}).get('play_control_rule') or {}).get('rule')
+    if not rule:
+        raise SystemExit('smoke_play_control_rule_missing: run `smoke-item fixture-pages` first; '
+                         'a fixture_pages item without a chosen rule is a method change')
+    return rule
+
+
+def smoke_background_branch(record: SmokeRecord) -> str:
+    """R6-1 (smoke_gate.smoke_order): the branch of the smoke's own complete background_activity item."""
+    entry = _last_complete(record, 'background_activity')
+    branch = ((entry or {}).get('result') or {}).get('branch')
+    if branch not in ('none', 'netlog'):
+        raise SystemExit('smoke_background_branch_missing: run `smoke-item background` first')
+    return branch
+
+
+# R6-1 (smoke_gate.smoke_order): quiet_baseline; cold_focus and background_activity; fixture_pages; the 12 batches;
+# instrumentation_overhead; frame_event. lock_read items may run at any point. An item refuses to start until every
+# item before it has a complete entry (a batch cell also counts when its entry was discarded: it is recorded and never
+# repeated automatically).
+SMOKE_ORDER = ('quiet_baseline', ('cold_focus', 'background_activity'), 'fixture_pages', 'batches',
+               'instrumentation_overhead', 'frame_event')
+
+
+def smoke_order_missing(record: SmokeRecord, item: str) -> list:
+    """The earlier smoke items that have no complete entry yet (R6-1)."""
+    stage = next(index for index, entry in enumerate(SMOKE_ORDER)
+                 if item == entry or (isinstance(entry, tuple) and item in entry))
+    missing = []
+    for entry in SMOKE_ORDER[:stage]:
+        for name in (entry if isinstance(entry, tuple) else (entry,)):
+            if name == 'batches':
+                for cell in batch_plan_views():
+                    runs = record.previous(f'batch:{cell["viewport"]}:{cell["view"]}')
+                    if not runs or runs[-1].get('status') not in ('complete', 'discarded'):
+                        missing.append(f'batch:{cell["viewport"]}:{cell["view"]}')
+            elif _last_complete(record, name) is None:
+                missing.append(name)
+    return missing
+
+
+def check_smoke_order(record: SmokeRecord, item: str) -> None:
+    missing = smoke_order_missing(record, item)
+    if missing:
+        raise SystemExit(f'smoke_order_refused:{item}: first complete {",".join(missing)}')
+
+
+def cell_settings(mode: str, fill_ins: dict, record: SmokeRecord | None = None) -> dict:
+    """Per-mode inputs of a batch (R6-1, R6-2, R6-9). Smoke: the smoke's own quiet_baseline idle, fixture_pages
+    play rule and background branch, the smoke composition, no warm-share discard. Baseline: the fill-ins (refused
+    when missing) and the frozen composition 3/40/10."""
+    if mode == 'smoke':
+        check_smoke_order(record, 'batches')
+        return {'idle': smoke_idle(record), 'post_batch': None, 'play_control_rule': smoke_play_rule(record),
+                'play_control_rule_source': 'smoke_record:fixture_pages',
+                'background_branch': smoke_background_branch(record), 'composition': dict(BATCH_COMPOSITION['smoke']),
+                'warm_rule': False, 'frame_event': None, 'untraced_inp': False, 'overhead': None}
+    missing = [key for key in ('idle_load', 'post_batch_load', 'play_control_rule', 'background_branch', 'frame_event')
+               if fill_ins.get(key) is None]
+    if missing:
+        raise SystemExit(f'fill_ins_missing:{",".join(missing)}: the smoke fill-ins are not in the frozen file')
+    frame_event = fill_ins.get('frame_event')
+    frame_event = frame_event.get('candidate') if isinstance(frame_event, dict) else frame_event
+    return {'idle': fill_ins['idle_load'], 'post_batch': fill_ins['post_batch_load'],
+            'play_control_rule': fill_ins['play_control_rule'], 'play_control_rule_source': 'fill_ins',
+            'background_branch': fill_ins['background_branch'], 'composition': dict(BATCH_COMPOSITION['baseline']),
+            'warm_rule': warm_rule_active(fill_ins), 'frame_event': frame_event,
+            'untraced_inp': bool((fill_ins.get('overhead') or {}).get('untraced_inp')),
+            'overhead': fill_ins.get('overhead')}
 
 
 def write_json_atomic(path: Path, value) -> None:
@@ -1755,7 +1868,7 @@ def frame_candidates(events: list) -> dict:
             state = (args.get('chrome_frame_reporter') or {}).get('state') or args.get('state')
             key = (event.get('id') or event.get('id2', {}).get('local'), event.get('pid'))
             if event.get('ph') == 'X':
-                if state in (None, 'STATE_PRESENTED_ALL'):
+                if state == 'STATE_PRESENTED_ALL':
                     found[name].append({'begin': event['ts'] / 1000, 'time': (event['ts'] + event.get('dur', 0)) / 1000,
                                         'state': state})
             elif event.get('ph') == 'b':
@@ -1954,13 +2067,32 @@ def chosen_lock_state(reads: dict, choice: str | None) -> bool | None:
     return bool(read.get('present') and read.get('locked'))
 
 
+def parse_audio_output(text: str) -> dict | None:
+    """R6-8: the default CoreAudio output device from `system_profiler SPAudioDataType -json`; None if unreadable."""
+    try:
+        groups = json.loads(text).get('SPAudioDataType') or []
+    except (ValueError, AttributeError):
+        return None
+    for group in groups:
+        for device in group.get('_items') or []:
+            if device.get('coreaudio_default_audio_output_device') == 'spaudio_yes':
+                transport = device.get('coreaudio_device_transport')
+                return {'name': device.get('_name'), 'transport': transport,
+                        'builtin': transport == 'coreaudio_device_type_builtin'}
+    return None
+
+
+def audio_output() -> dict | None:
+    return parse_audio_output(run_text(['system_profiler', 'SPAudioDataType', '-json'], timeout=60))
+
+
 def machine_state(lock_choice: str | None = None) -> dict:
-    """V8: AC power, display awake and lock state, read at batch start and end."""
+    """V8: AC power, display awake and lock state, read at batch start and end; R6-8: default audio output."""
     power = run_text(['pmset', '-g', 'batt']).strip().splitlines()[:1]
     reads = lock_reads()
     return {'power': power, 'ac_power': bool(power) and "'AC Power'" in power[0],
             'display_asleep': display_asleep(), 'lock_reads': reads, 'lock_choice': lock_choice,
-            'locked': chosen_lock_state(reads, lock_choice)}
+            'locked': chosen_lock_state(reads, lock_choice), 'audio_output': audio_output()}
 
 
 def start_caffeinate() -> subprocess.Popen:
@@ -2033,9 +2165,9 @@ async def quiet_check(own_pid: int, allowed: set | None = None) -> dict:
     after = cpu_seconds()
     cpu = {pid: 100 * (after[pid] - before.get(pid, after[pid])) / 10 for pid in after}
     rows = process_rows()
-    pytest_count = run_text(['pgrep', '-fc', 'python.*-m pytest']).strip() or '0'
     violations = process_check(rows, own_pid, cpu=cpu, allowed=allowed)
-    return {'violations': violations, 'pytest_count': int(pytest_count), 'ok': not violations and pytest_count == '0'}
+    pytest_count = sum(1 for kind, _ in violations if kind == 'pytest')
+    return {'violations': violations, 'pytest_count': pytest_count, 'ok': not violations and pytest_count == 0}
 
 
 def loadavg() -> float:
@@ -2297,6 +2429,8 @@ class RunSpec:
     primer: bool = False
     trace_contrast: bool = False
     play_rule: dict | None = None
+    # R6-3: the chosen frame event (fill-in) when known; None in the smoke, where it is being chosen.
+    frame_event: str | None = None
     # Smoke and harness only (smoke_gate.mac_environment): an action after the settle point.
     after_settle: Callable | None = None
 
@@ -2333,6 +2467,8 @@ class Run:
         self.leave_ok = False
         self.browser_version = None
         self.flush_sent = None
+        self.play_click_wall = None
+        self.play_click_frame = None
         # One page client serves a cold run and its warm run: each run reports only its own commands.
         self.page_log_start = len(page.log)
         self.browser_log_start = len(browser.client.log)
@@ -2362,7 +2498,19 @@ class Run:
                 client.handlers[method].remove(handler)
 
     async def _frame(self, params: dict) -> None:
-        self.frames.append({'timestamp': (params.get('metadata') or {}).get('timestamp'), 'received': time.monotonic()})
+        stamp = (params.get('metadata') or {}).get('timestamp')
+        self.frames.append({'timestamp': stamp, 'received': time.monotonic()})
+        # R6-6 (smoke_gate.preview_ready_state): the first screencast frame at or after the play click is kept.
+        if self.play_click_wall is not None and self.play_click_frame is None and stamp and stamp >= self.play_click_wall \
+                and params.get('data'):
+            self.play_click_frame = {'timestamp': stamp, 'jpeg_base64_sha256':
+                                     hashlib.sha256(params['data'].encode()).hexdigest()}
+            try:
+                path = self.out_dir / f'play-click-{self.spec.ordinal:05d}.jpg'
+                path.write_bytes(base64.b64decode(params['data']))
+                self.play_click_frame['path'] = str(path)
+            except (OSError, ValueError):
+                pass
         try:
             await self.page.send('Page.screencastFrameAck', {'sessionId': params['sessionId']}, klass='collect')
         except Exception:  # noqa: BLE001 - an ack failure stops the stream; the cross-check shows it.
@@ -2606,6 +2754,7 @@ class Run:
                 if self._outside_viewport(step, ready['target']):
                     return
                 log_start = len(self.page.log)
+                self.play_click_wall = time.time()
                 await dispatch_click(self.page, ready['target']['point'], mobile)
                 self._sample_window(f'interaction_start:{index}')
                 sent = next((entry['sent'] for entry in self.page.log[log_start:]
@@ -2655,6 +2804,16 @@ class Run:
                 self.facts.product_failures.append(f'{reason}:{step["step"]}')
                 return
             self._sample_window(f'interaction_end:{index}')
+            if step.get('c11') == 'action_feedback':
+                # R6-3: the timed window stays open until the injected script's feedback_window record (the later
+                # of 100 ms and 6 frames after the mutation), bounded by the step's own deadline. A missing record
+                # is noted only: the flush that follows has its own deadline (cdp_deadlines.rule (a)).
+                try:
+                    await self.records.wait(lambda record, i=index: record['type'] == 'feedback_window'
+                                            and record['index'] == i, wait_until)
+                    self.steps[-1]['feedback_window'] = 'closed'
+                except asyncio.TimeoutError:
+                    self.steps[-1]['feedback_window'] = 'missing'
             previous_end = time.monotonic()
 
     async def _flush(self) -> None:
@@ -2765,6 +2924,9 @@ class Run:
             metrics.update(self._c11(typed, inp_interactions, steps))
             if metrics.get('preview', {}).get('gap_invalid'):
                 self.facts.environment_faults.append('preview_gap_over_16ms')
+            if feedback_frame_missing(metrics.get('action_feedback'), spec.frame_event,
+                                      bool(typed['feedback_window']), self._trace_intact()):
+                self.facts.environment_faults.append('feedback_frame_absent_from_trace')
         outcome, reason = classify(self.facts)
         page_log = self.page.log[self.page_log_start:]
         log = page_log + self.browser.client.log[self.browser_log_start:]
@@ -2785,9 +2947,21 @@ class Run:
             'trace_candidates_present': sorted(name for name, values in frame_candidates(self.trace_events).items()
                                                if values),
             'script_identifier': self.script_identifier,
+            'interaction_traced': bool(steps) and spec.trace_interactions,
+            'play_rule': self.config.get('play_rule') if hasattr(self, 'config') else None,
+            'frame_event': spec.frame_event, 'play_click_frame': self.play_click_frame,
         }
         result['run_wide_failure'] = run_wide_failure(result)
         return result
+
+    def _trace_intact(self) -> bool:
+        """R6-3: the trace completed (tracingComplete, no collect timeout) and holds the probe's marks."""
+        if not self.trace_events or not self.trace_complete.is_set():
+            return False
+        if any(timeout.phase == 'collect' for timeout in self.facts.timeouts):
+            return False
+        page_marks = [record for record in self.filter.accepted if record['type'] == 'mark']
+        return trace_offset(trace_marks(self.trace_events), page_marks) is not None
 
     def _renderer_busy(self) -> bool | None:
         timeout = next((t for t in self.facts.timeouts if t.phase == 'collect'), None)
@@ -2896,6 +3070,18 @@ class SetupFault(Exception):
     """A setup-phase harness or fixture fault (invalid run)."""
 
 
+def feedback_frame_missing(record: dict | None, frame_event: str | None, window_closed: bool,
+                           trace_intact: bool) -> bool:
+    """R6-3 (exclusion_rules.invalid_run): the feedback mutation and its rAF are present, the post-feedback window
+    closed and the trace is intact, yet the chosen frame event has no frame after the mutation: a harness fault
+    (invalid run), never a product failure. Not applied while the frame event is unknown (smoke)."""
+    if frame_event is None or not record or not window_closed or not trace_intact:
+        return False
+    if record.get('mutation') is None or record.get('raf') is None:
+        return False
+    return (record.get('presented') or {}).get(frame_event) is None
+
+
 def c11_feedback_value(run: dict, frame_event: str | None) -> float:
     """Final C11 action feedback with the chosen frame event (fill-in from smoke_gate.frame_event)."""
     if run_wide_failure(run):
@@ -2944,6 +3130,11 @@ def machine_faults(state: dict, *, smoke: bool) -> list:
         faults.append('display_asleep')
     if state.get('locked') is True or (state.get('locked') is None and not smoke):
         faults.append('screen_locked')
+    # R6-8: the default output must be the built-in one; the key is absent only in callers that predate it.
+    if 'audio_output' in state:
+        output = state.get('audio_output')
+        if (output is None and not smoke) or (output is not None and output.get('builtin') is not True):
+            faults.append('audio_output_not_builtin')
     return faults
 
 
@@ -3047,7 +3238,8 @@ async def run_batch(plan: dict, environment: BatchEnvironment, *, idle: float | 
     return batch
 
 
-def slot_spec(slot: dict, plan: dict, ready: dict, positions: dict, overhead_consequences: dict | None = None) -> RunSpec:
+def slot_spec(slot: dict, plan: dict, ready: dict, positions: dict, overhead_consequences: dict | None = None, *,
+              play_rule: dict | None = None, frame_event: str | None = None) -> RunSpec:
     """Build the run spec of one slot (preview sample by ordinal, tracing per slot kind)."""
     view, viewport = plan['cell']['view'], plan['cell']['viewport']
     capture = None
@@ -3061,7 +3253,7 @@ def slot_spec(slot: dict, plan: dict, ready: dict, positions: dict, overhead_con
                    ready['tokens'][VIEW_ROLES[view]], trace_load=bool(slot.get('trace_contrast')),
                    trace_interactions=not untraced, screencast=screencast, capture_id=capture,
                    warm_up=bool(slot.get('warm_up')), primer=bool(slot.get('primer')),
-                   trace_contrast=bool(slot.get('trace_contrast')))
+                   trace_contrast=bool(slot.get('trace_contrast')), play_rule=play_rule, frame_event=frame_event)
 
 
 class BrowserSession:
@@ -3183,21 +3375,16 @@ async def measure_cell(args, mode: str, sha: str) -> dict:
     preregistration = json.loads(PREREGISTRATION.read_text())
     fill_ins = apply_fill_ins(load_fill_ins(preregistration))
     smoke = mode == 'smoke'
-    if smoke:
-        # The smoke's own fixed-procedure idle reading (smoke_gate.quiet_baseline) gates its batches.
-        idle, post_batch = smoke_idle(SmokeRecord(SMOKE_ROOT / 'smoke-record.json')), None
-    else:
-        idle, post_batch = fill_ins.get('idle_load'), fill_ins.get('post_batch_load')
-        if idle is None or post_batch is None:
-            raise SystemExit('quiet_baseline_fill_ins_missing: the smoke fill-ins are not in the frozen file')
+    # R6-1, R6-2, R6-9: every per-mode input comes from cell_settings (smoke record or fill-ins), never the CLI.
+    settings = cell_settings(mode, fill_ins, SmokeRecord(SMOKE_ROOT / 'smoke-record.json') if smoke else None)
+    idle, post_batch = settings['idle'], settings['post_batch']
     plan = plan_batch(sha, 'mac-chrome', args.viewport, args.view, args.attempt, smoke=smoke,
-                      pairs=args.pairs, contrast_pairs=args.contrast_pairs, warm_ups=3,
-                      untraced_inp=bool((fill_ins.get('overhead') or {}).get('untraced_inp'))
-                      and args.view in INTERACTION_VIEWS)
+                      **settings['composition'],
+                      untraced_inp=settings['untraced_inp'] and args.view in INTERACTION_VIEWS)
     stamp = time.strftime('%Y%m%dT%H%M%S')
     out_dir = checked_output(mode, output_root(mode) / f'{stamp}-{args.viewport}-{args.view.strip("#")}-a{args.attempt}')
     out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    session = BrowserSession(mode, browser_binary(), out_dir, netlog=fill_ins.get('background_branch') == 'netlog')
+    session = BrowserSession(mode, browser_binary(), out_dir, netlog=settings['background_branch'] == 'netlog')
     fixture = FixtureProcess(out_dir, harness_pages=False)
     state = {}
     environment_facts = mac_environment()
@@ -3205,7 +3392,8 @@ async def measure_cell(args, mode: str, sha: str) -> dict:
                 'launch_flags': list(LAUNCH_FLAGS), 'launch_mechanism': LAUNCH_MECHANISM,
                 'os_version': environment_facts['os_version'], 'hardware': environment_facts['hardware'],
                 'ui_locale_apple_languages_first': environment_facts['apple_languages_first'],
-                'pip_freeze_sha256': pip_freeze_sha256(), 'commit': git('rev-parse', 'HEAD')}
+                'pip_freeze_sha256': pip_freeze_sha256(), 'commit': git('rev-parse', 'HEAD'),
+                'audio_output': audio_output()}
 
     async def start_fixture():
         state['ready'] = await fixture.start()
@@ -3213,8 +3401,8 @@ async def measure_cell(args, mode: str, sha: str) -> dict:
         return state['ready']
 
     async def run_slot(slot):
-        spec = slot_spec(slot, plan, state['ready'], state['positions'], fill_ins.get('overhead'))
-        spec.play_rule = fill_ins.get('play_control_rule')
+        spec = slot_spec(slot, plan, state['ready'], state['positions'], settings['overhead'],
+                         play_rule=settings['play_control_rule'], frame_event=settings['frame_event'])
         result = await session.execute(spec, fixture)
         result['mode'] = mode
         # V14c: every result file names the full method_identity it was produced under.
@@ -3236,9 +3424,10 @@ async def measure_cell(args, mode: str, sha: str) -> dict:
     header = {'mode': mode, 'preregistration_sha256': sha, 'script_id': script_id(), 'plan_seed': plan['seed'],
               'launch_flags': list(LAUNCH_FLAGS), 'launch_mechanism': LAUNCH_MECHANISM,
               'environment': environment_facts, 'method_identity': identity, 'label': LOCAL_LABEL,
-              'pip_freeze_sha256': identity['pip_freeze_sha256']}
+              'pip_freeze_sha256': identity['pip_freeze_sha256'], 'cell_settings': settings,
+              'play_control_rule': settings['play_control_rule'], 'composition': settings['composition']}
     batch = await run_batch(plan, environment, idle=idle, post_batch=post_batch, end_record_only=smoke,
-                            warm_rule=warm_rule_active(fill_ins), smoke=smoke)
+                            warm_rule=settings['warm_rule'], smoke=smoke)
     header['closure'] = recorded_closure(json.loads((out_dir / 'fixture-modules.json').read_text())
                                          if (out_dir / 'fixture-modules.json').exists() else [])
     batch_record = {**header, **{key: value for key, value in batch.items() if key != 'runs'},
@@ -3482,25 +3671,52 @@ def smoke_lock_read(record: SmokeRecord, sha: str, cause: str | None, state: str
     return result
 
 
+def smoke_cell_action(record: SmokeRecord, item: str, cause: str | None) -> tuple:
+    """R6-10 (run_rules.which_run_counts): resume a smoke client. Returns ('skip', None) for a cell whose last entry
+    is complete, or discarded without the given cause among its faults (never repeated automatically); otherwise
+    ('run', cause_to_record): None for a first run, the given cause for a repeat (SmokeRecord.start refuses a cause
+    the previous run did not record)."""
+    previous = record.previous(item)
+    if not previous:
+        return 'run', None
+    last = previous[-1]
+    if last.get('status') == 'complete':
+        return 'skip', None
+    if last.get('status') == 'discarded' and cause not in (last.get('faults') or []):
+        return 'skip', None
+    return 'run', cause
+
+
 async def measure_client(args, mode: str, sha: str) -> int:
     """All cells of the Mac client in the seeded cell order; two consecutive discards stop with a blocker.
 
     V9: in smoke mode every cell is its own smoke record entry and a discarded batch is never repeated
-    automatically (a repeat needs a recorded harness or environment cause, run_rules.which_run_counts)."""
+    automatically (a repeat needs a recorded harness or environment cause, run_rules.which_run_counts). R6-10: a
+    smoke client resumes after a crash: complete cells are skipped and --cause is passed for the repeated cell."""
     cells = [(cell['viewport'], cell['view']) for cell in batch_plan_views()]
     ledger = BatchLedger()
     attempts = Counter()
     smoke = mode == 'smoke'
     record = SmokeRecord(checked_output('smoke', SMOKE_ROOT / 'smoke-record.json')) if smoke else None
+    if smoke:
+        # R6-1: refuse before any entry is written (order, play rule, background branch, idle).
+        cell_settings('smoke', {}, record)
     order = cell_order(sha, 'mac-chrome', 1, cells, smoke=smoke)
     queue = list(order)
     while queue:
         if not ledger.may_start():
             raise SystemExit('blocker: two consecutive discarded batches; record the cause before continuing')
         viewport, view = queue.pop(0)
+        item = f'batch:{viewport}:{view}'
+        entry = None
+        if smoke:
+            action, cause = smoke_cell_action(record, item, getattr(args, 'cause', None))
+            if action == 'skip':
+                continue
+            attempts[(viewport, view)] = len(record.previous(item))
+            entry = record.start(item, sha, cause)
         attempts[(viewport, view)] += 1
         args.viewport, args.view, args.attempt = viewport, view, attempts[(viewport, view)]
-        entry = record.start(f'batch:{viewport}:{view}', sha, None) if smoke else None
         try:
             report = await measure_cell(args, mode, sha)
         except BaseException as error:
@@ -3511,7 +3727,9 @@ async def measure_client(args, mode: str, sha: str) -> int:
         ledger.record(report)
         if smoke:
             record.finish(entry, 'discarded' if report.get('discarded') else 'complete',
-                          {'directory': report.get('directory'), 'reasons': report.get('reasons')},
+                          {'directory': report.get('directory'), 'reasons': report.get('reasons'),
+                           'composition': report.get('composition'),
+                           'play_control_rule': report.get('play_control_rule')},
                           faults=report.get('faults'))
         elif report.get('discarded'):
             queue.insert(0, (viewport, view))
@@ -3568,6 +3786,20 @@ PLAY_RULE_CANDIDATES = (PLAY_CONTROL_RULE,) + tuple(
     {'dx_px': float(dx), 'y_fraction': 0.5, 'status': 'smoke_candidate'} for dx in (12, 16, 24, 28))
 
 
+def dialog_variant_summary(runs: list, rule: dict) -> dict:
+    """R6-6: per run of the dialog variant: playing, attach/ready targets (rect, point, element hit) and the kept
+    screencast frame; 'plays' is True only when every run reached 'playing' after control_ready."""
+    rows = []
+    for run in runs:
+        ready = (accepted(run, 'control_ready') or accepted(run, 'control_attached') or [{}])[0]
+        rows.append({'ordinal': run['ordinal'], 'outcome': run['outcome'], 'reason': run['reason'],
+                     'playing': bool([r for r in accepted(run, 'media') if r['event'] == 'playing']),
+                     'target': ready.get('target'), 'play_click_frame': run.get('play_click_frame'),
+                     'failures': run['facts']['product_failures'],
+                     'environment_faults': run['facts']['environment_faults']})
+    return {'rule': rule, 'runs': rows, 'plays': bool(rows) and all(row['playing'] for row in rows)}
+
+
 def play_rule_choice(trials: list) -> dict:
     """First rule (in the preregistered order) whose 5 native-control runs all reached 'playing'."""
     for trial in trials:
@@ -3604,18 +3836,18 @@ async def fixture_page_checks(mode: str, out_dir: Path, *, binary: str, profile_
 
         busy, after_busy = await sequence('busy_window', [
             fixture_spec(2, 'cold', ready, 'busy-window', FIXTURE_STEPS['busy-window']),
-            fixture_spec(3, 'warm', ready, 'present', [])])
+            fixture_spec(3, 'warm', ready, 'plain', [])])
         checks['timed_window_hang_is_failure'] = {
             'ok': busy['outcome'] == Outcome.FAILURE and timeout_phases(busy)[:1] == ['timed']
             and (after_busy['target_id'] != busy['target_id']) == busy['needs_new_target']
             and not after_busy['facts']['setup_faults'] and not after_busy['facts']['timeouts']
-            and no_environment_fault(after_busy),
+            and no_environment_fault(after_busy) and after_busy['outcome'] == Outcome.VALID,
             'busy': [busy['outcome'], busy['reason'], timeout_phases(busy)],
             'leave_step_timed_out': busy['needs_new_target'],
             'next': [after_busy['outcome'], after_busy['reason'], after_busy['facts']['environment_faults']]}
 
         hung, after_hung = await sequence('busy_after_flush', [
-            fixture_spec(4, 'cold', ready, 'busy-after-flush', []), fixture_spec(5, 'warm', ready, 'present', [])])
+            fixture_spec(4, 'cold', ready, 'busy-after-flush', []), fixture_spec(5, 'warm', ready, 'plain', [])])
         observations['busy_after_flush'] = {
             'outcome': hung['outcome'], 'reason': hung['reason'], 'timeouts': timeout_phases(hung),
             'leave_step_timed_out': hung['needs_new_target'],
@@ -3624,7 +3856,9 @@ async def fixture_page_checks(mode: str, out_dir: Path, *, binary: str, profile_
         checks['hung_page_next_run_has_no_harness_fault'] = {
             'ok': (hung['outcome'] == Outcome.POST_WINDOW_HANG) == hung['needs_new_target']
             and (after_hung['target_id'] != hung['target_id']) == hung['needs_new_target']
-            and not after_hung['facts']['setup_faults'] and not after_hung['facts']['timeouts']}
+            and not after_hung['facts']['setup_faults'] and not after_hung['facts']['timeouts']
+            and no_environment_fault(after_hung) and after_hung['outcome'] == Outcome.VALID,
+            'next': [after_hung['outcome'], after_hung['reason'], after_hung['facts']['environment_faults']]}
 
         (sub,) = await sequence('sub_threshold', [fixture_spec(6, 'cold', ready, 'sub-threshold',
                                                                FIXTURE_STEPS['sub-threshold'])])
@@ -3734,6 +3968,16 @@ async def fixture_page_checks(mode: str, out_dir: Path, *, binary: str, profile_
                 break
         observations['play_control_rule'] = play_rule_choice(trials)
 
+        # R6-6 (smoke_gate.preview_ready_state): the NEXO desktop context of the native control (430 px wide, in the
+        # right column of a showModal() dialog whose scroll container was scrolled), 5 cold runs with the chosen
+        # rule; per run: playing, the element hit at the dispatch point and the screencast frame at the click.
+        chosen = observations['play_control_rule']['rule']
+        if chosen is not None:
+            dialog_runs = await sequence('preview_dialog', [
+                fixture_spec(130 + index, 'cold', ready, 'preview', FIXTURE_STEPS['preview'], '?dialog=1',
+                             play_rule=chosen) for index in range(5)])
+            observations['preview_dialog'] = dialog_variant_summary(dialog_runs, chosen)
+
         if mode == 'smoke':
             # smoke_gate.mac_environment: minimising the window and switching focus each invalidate the run.
             async def minimise():
@@ -3784,9 +4028,12 @@ def frame_event_phases(results: list) -> list:
     for result in results:
         record = result.get('metrics', {}).get('action_feedback')
         present = set(result.get('trace_candidates_present', []))
-        # V14f: every run whose interaction phase was traced counts, including one with no candidate at all
-        # (load-only runs have no interaction phase).
-        if not result.get('trace_events') or not result.get('steps'):
+        # V14f, R6-11(d): every run whose interaction phase was traced counts, including one whose trace has no
+        # event or no candidate at all (absence); load-only and untraced runs have no traced interaction phase.
+        traced = result.get('interaction_traced')
+        if traced is None:
+            traced = bool(result.get('trace_events'))
+        if not traced or not result.get('steps'):
             continue
         interactions = []
         if record and record.get('raf') is not None and record.get('screencast') is not None:
@@ -3828,6 +4075,9 @@ def summary_rows(runs: list, frame_event: str | None, *, warm_evaluable: bool = 
         untraced = [run for run in members if run.get('untraced_inp')]
         row = {'viewport': viewport, 'view': view, 'cache': role, 'label': LOCAL_LABEL,
                'n_valid': len(percentile_runs(original))}
+        if view in FIXTURE_UNAVAILABLE_VIEWS:
+            # R6-7: descriptive only; excluded from C10 acceptance and from before/after claims.
+            row.update(fixture_note=FIXTURE_UNAVAILABLE_NOTE, c10_acceptance='excluido', before_after='excluido')
         if role == 'warm' and not warm_evaluable:
             row.update(status=WARM_NOT_EVALUABLE, lcp=WARM_NOT_EVALUABLE, cls=WARM_NOT_EVALUABLE,
                        inp=WARM_NOT_EVALUABLE if view in INTERACTION_VIEWS else LOAD_ONLY_INP)
@@ -3875,7 +4125,7 @@ def summarize_directory(directory: Path, mode: str) -> dict:
             'scope': 'NEXO only; no /obs/ row (Q29, QF); local numbers never accept C10/C11'}
 
 
-async def smoke_overhead(sha: str) -> dict:
+async def smoke_overhead(sha: str, play_rule: dict) -> dict:
     """smoke_gate.instrumentation_overhead: #acciones and #voces desktop, warm runs only, 10 per arm, interleaved.
 
     V10: arm values follow the per-metric failure scope (invalid runs excluded, failures +inf, '<16 ms' kept),
@@ -3901,8 +4151,10 @@ async def smoke_overhead(sha: str) -> dict:
                     capture = positions['positions'][position]['capture_id']
                 base = dict(viewport='desktop', view=view, url=ready['origin'] + '/' + view, origin=ready['origin'],
                             token_for_login=ready['tokens'][VIEW_ROLES[view]], capture_id=capture)
-                primer = RunSpec(2 * number, 'cold', primer=True, trace_interactions=False, screencast=False, **base)
-                warm = RunSpec(2 * number + 1, 'warm', trace_interactions=arm in 'ab', screencast=arm == 'a', **base)
+                primer = RunSpec(2 * number, 'cold', primer=True, trace_interactions=False, screencast=False,
+                                 play_rule=play_rule, **base)
+                warm = RunSpec(2 * number + 1, 'warm', trace_interactions=arm in 'ab', screencast=arm == 'a',
+                               play_rule=play_rule, **base)
                 for spec in (primer, warm):
                     result = await session.execute(spec, fixture)
                     result.update(mode='smoke', arm=arm)
@@ -3919,7 +4171,7 @@ async def smoke_overhead(sha: str) -> dict:
         await fixture.stop()
     analysis = overhead_consequences(values)
     return {'directory': str(out_dir), 'values': json_safe(values), 'overhead': json_safe(analysis),
-            'consequences': analysis['consequences'],
+            'consequences': analysis['consequences'], 'play_control_rule': play_rule,
             'note': 'overhead per metric = median(a) - median(c) as an interval; censored medians are [0, 16)'}
 
 
@@ -3958,8 +4210,7 @@ def parse_args(argv=None):
         measure.add_argument('--viewport', choices=tuple(VIEWPORTS), default='desktop')
         measure.add_argument('--view', choices=VIEW_HASHES, default='#hogar')
         measure.add_argument('--attempt', type=int, default=1)
-        measure.add_argument('--pairs', type=int, default=40)
-        measure.add_argument('--contrast-pairs', type=int, default=10)
+        # R6-2: no --pairs/--contrast-pairs: the composition is fixed per mode (BATCH_COMPOSITION).
     smoke = sub.add_parser('smoke-item', help='smoke items that are not batches (Mac, smoke mode)')
     smoke.add_argument('item', choices=('quiet-baseline', 'cold-focus', 'background', 'lock-read', 'fixture-pages',
                                         'overhead', 'frame-event'))
@@ -4003,6 +4254,7 @@ def main(argv=None) -> int:
         elif args.item == 'lock-read':
             result = smoke_lock_read(record, sha, args.cause, args.lock_state)
         elif args.item == 'frame-event':
+            check_smoke_order(record, 'frame_event')
             entry = record.start('frame_event', sha, args.cause)
             result = smoke_frame_event()
             record.finish(entry, 'complete', json_safe(result))
@@ -4017,8 +4269,11 @@ def main(argv=None) -> int:
             bodies = {'cold-focus': ('cold_focus', lambda: smoke_cold_focus(out_dir)),
                       'background': ('background_activity', lambda: smoke_background(out_dir)),
                       'fixture-pages': ('fixture_pages', fixture_pages),
-                      'overhead': ('instrumentation_overhead', lambda: smoke_overhead(sha))}
+                      'overhead': ('instrumentation_overhead', lambda: smoke_overhead(sha, smoke_play_rule(record)))}
             item, body = bodies[args.item]
+            check_smoke_order(record, item)
+            if item == 'instrumentation_overhead':
+                smoke_play_rule(record)
             result = asyncio.run(run_smoke_item(record, item, sha, args.cause, body))
         print(json.dumps(json_safe(result), indent=1))
         return 0
@@ -4027,6 +4282,7 @@ def main(argv=None) -> int:
         return asyncio.run(measure_client(args, mode, sha))
     if mode == 'smoke':
         record = SmokeRecord(checked_output('smoke', SMOKE_ROOT / 'smoke-record.json'))
+        cell_settings('smoke', {}, record)
         entry = record.start(f'batch:{args.viewport}:{args.view}', sha, args.cause)
         try:
             report = asyncio.run(measure_cell(args, mode, sha))
@@ -4034,7 +4290,8 @@ def main(argv=None) -> int:
             record.finish(entry, 'aborted', {'error': f'{type(error).__name__}: {str(error)[:200]}'}, faults=['crash'])
             raise
         record.finish(entry, 'discarded' if report.get('discarded') else 'complete',
-                      {'directory': report.get('directory'), 'reasons': report.get('reasons')},
+                      {'directory': report.get('directory'), 'reasons': report.get('reasons'),
+                       'composition': report.get('composition'), 'play_control_rule': report.get('play_control_rule')},
                       faults=report.get('faults'))
         return 0
     asyncio.run(measure_cell(args, mode, sha))

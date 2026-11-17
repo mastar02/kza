@@ -15,11 +15,29 @@ function wav(seconds) {
   for (let i = 0; i < samples; i++) view.setInt16(44 + i * 2, Math.round(Math.sin(i / 8) * 3000), true);
   return new Blob([buffer], {type: 'audio/wav'});
 }
+// dialog=1 (R6-6): the NEXO desktop context of the native control (kza.css .nexo-voice-dialog/.nexo-voice-modal):
+// a showModal() dialog 960 px wide with overflow:auto, two columns with a 24 px gap (the review column is about
+// 430 px wide), the <audio> at 100% of that column, and the dialog's scroll container scrolled by 240 px.
+if (query.get('dialog') === '1') {
+  const voice = document.getElementById('voice-dialog');
+  const dialog = document.createElement('dialog');
+  dialog.id = 'review-dialog';
+  dialog.style.cssText = 'width:960px;max-width:calc(100% - 32px);max-height:calc(100dvh - 32px);overflow:auto;padding:24px;box-sizing:border-box';
+  const intro = document.createElement('div'); intro.style.height = '520px'; intro.textContent = 'Revisar muestras';
+  const modal = document.createElement('div'); modal.style.cssText = 'display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px;margin:24px 0';
+  const left = document.createElement('div'); left.append(voice.querySelector('.row'));
+  const right = document.createElement('div'); right.style.minWidth = '0'; right.append(voice.querySelector('.nexo-voice-review'));
+  const tail = document.createElement('div'); tail.style.height = '480px';
+  modal.append(left, right); dialog.append(intro, modal, tail); voice.append(dialog);
+  dialog.showModal();
+  dialog.scrollTop = 240;
+}
 document.querySelector('.row button').addEventListener('click', () => {
   const panel = document.querySelector('.nexo-voice-review');
   const audio = document.createElement('audio'); audio.controls = true; audio.preload = 'metadata'; audio.src = URL.createObjectURL(wav(2));
   // width=<px>: the <audio> width (NEXO renders it at 100% of the review panel); default 300 px.
-  audio.style.width = (query.get('width') || '300') + 'px';
+  audio.style.width = query.get('dialog') === '1' ? '100%' : (query.get('width') || '300') + 'px';
+  if (query.get('dialog') === '1') audio.style.margin = '12px 0';
   if (query.get('button') === '1') {
     // The native control first, then the light-DOM button named by its trimmed textContent.
     const play = document.createElement('button'); play.type = 'button'; play.textContent = '  Reproducir muestra  '; play.style.cssText = 'width:180px;height:44px';

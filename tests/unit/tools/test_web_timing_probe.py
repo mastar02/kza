@@ -1346,6 +1346,7 @@ async def test_interactions_sample_window_at_every_start_and_end():
     rect = {'x': 10, 'y': 20, 'width': 40, 'height': 30}
     record(run, 'target_ready', index=0, rect=rect, step='accion', in_viewport=True)
     record(run, 'step_next_frame', index=0)
+    record(run, 'feedback_window', index=0, frames=6)
     await run._interactions(run.config['steps'])
     await run._await_window_reads()
     assert [item['point'] for item in run.window_reads] == ['interaction_start:0', 'interaction_end:0']
@@ -1533,16 +1534,23 @@ async def test_batch_machine_state_and_caffeinate_assertion_gate_quiet_machine()
 async def test_quiet_check_fails_when_pytest_runs(monkeypatch):
     """R05 (V12): quiet_check is not ok while any pytest process runs."""
     monkeypatch.setattr(probe, 'cpu_seconds', lambda: {})
-    monkeypatch.setattr(probe, 'process_rows', lambda: [])
+    rows = iter([[{'pid': 50, 'ppid': 2, 'command': '/usr/bin/python3 -m pytest tests/'}],
+                 [{'pid': 51, 'ppid': 2, 'command': '/Users/x/kza/.venv/bin/pytest tests/unit -q'}], []])
+    monkeypatch.setattr(probe, 'process_rows', lambda: next(rows))
     saved = probe.asyncio.sleep
 
     async def fast(_):
         await saved(0)
     monkeypatch.setattr(probe.asyncio, 'sleep', fast)
-    counts = iter(['1\n', '0\n'])
-    monkeypatch.setattr(probe, 'run_text', lambda command, **kwargs: next(counts))
+
+    def no_pgrep(command, **kwargs):
+        # R6-11(a): macOS pgrep has no -c; the count comes from the ps rows only.
+        raise AssertionError(f'unexpected command {command}')
+    monkeypatch.setattr(probe, 'run_text', no_pgrep)
     busy = await probe.quiet_check(1)
     assert busy['pytest_count'] == 1 and busy['ok'] is False
+    console = await probe.quiet_check(1)
+    assert console['pytest_count'] == 1 and console['ok'] is False
     assert (await probe.quiet_check(1))['ok'] is True
 
 
@@ -1558,12 +1566,14 @@ async def test_smoke_client_never_repeats_a_discarded_batch_and_records_each_cel
         return {'discarded': discarded, 'reasons': ['warm_share_below_90'] if discarded else [],
                 'faults': [], 'directory': 'd'}
     monkeypatch.setattr(probe, 'measure_cell', fake_cell)
+    write_smoke_prerequisites(tmp_path / 'smoke' / 'smoke-record.json')
     args = SimpleNamespace()
     await probe.measure_client(args, 'smoke', SHA)
     assert len(calls) == 12 and all(attempt == 1 for _, _, attempt in calls)
     saved = json.loads((tmp_path / 'smoke' / 'smoke-record.json').read_text())
-    assert len(saved['runs']) == 12 and saved['runs'][0]['status'] == 'discarded'
-    assert len({run['item'] for run in saved['runs']}) == 12
+    batches = [run for run in saved['runs'] if run['item'].startswith('batch:')]
+    assert len(batches) == 12 and batches[0]['status'] == 'discarded'
+    assert len({run['item'] for run in batches}) == 12
     assert probe.batch_faults({'reasons': ['quiet_machine'], 'run_outcomes': [{'reason': 'browser_crashed'}],
                                'start': {'machine_faults': ['screen_locked']}}) == {'quiet_machine', 'crash', 'lock'}
 
@@ -1783,3 +1793,460 @@ def test_native_play_gesture_window_and_unsubtracted_value():
     slow.steps = [{'step': 'reproducir', 'status': 'dispatched', 'ready_record': 'control_ready',
                    'target': {'kind': 'audio'}, 'probe_dispatch_delay_ms': 17.0}]
     assert 'preview_dispatch_delay_over_16ms' in slow.result()['facts']['environment_faults']
+
+
+# ------------------------------------------------------------------------------------------
+# Review round 6 (R6-1..R6-11): smoke inputs, composition, feedback window, Run-level checks
+# ------------------------------------------------------------------------------------------
+
+CHOSEN_RULE = {'dx_px': 24.0, 'y_fraction': 0.5, 'status': 'smoke_candidate'}
+
+
+def write_smoke_prerequisites(path, *, rule=CHOSEN_RULE, items=('quiet_baseline', 'cold_focus', 'background_activity',
+                                                                 'fixture_pages')):
+    results = {'quiet_baseline': {'idle': 1.5}, 'cold_focus': {'passed': True},
+               'background_activity': {'branch': 'none'},
+               'fixture_pages': {'observations': {'play_control_rule': {'rule': rule}}}}
+    runs = [{'item': item, 'status': 'complete', 'started_at': float(number), 'result': results[item], 'faults': []}
+            for number, item in enumerate(items)]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({'mode': 'smoke', 'runs': runs}))
+    return path
+
+
+class FakeFixture:
+    def __init__(self, out_dir, **kwargs):
+        positions = out_dir / 'positions.json'
+        positions.write_text(json.dumps({'preview_permutation': list(range(50)),
+                                         'positions': [{'capture_id': f'vf_{index}'} for index in range(50)]}))
+        self.ready = {'origin': 'http://127.0.0.1:1', 'tokens': {'home': 'h', 'operator': 'o', 'evaluator': 'e'},
+                      'position_map': str(positions), 'digest': 'dig', 'started_at': time.time(), 'seed': 1}
+
+    async def start(self):
+        return self.ready
+
+    async def stop(self):
+        pass
+
+
+class FakeSession:
+    specs = []
+
+    def __init__(self, mode, binary, out_dir, profile_root=None, netlog=False):
+        self.netlog = netlog
+
+    async def execute(self, spec, fixture):
+        FakeSession.specs.append(spec)
+        return {'ordinal': spec.ordinal, 'role': spec.role, 'outcome': Outcome.VALID, 'reason': None,
+                'metrics': {'inp': 40.0, 'action_feedback_raf': 10.0}, 'facts': {'product_failures': []},
+                'browser_version': 'Chrome/157', 'document_start': {'language': 'es', 'languages': ['es']}}
+
+    async def close_browser(self):
+        pass
+
+
+def drive_measure_cell(monkeypatch, tmp_path, mode, *, fill_ins=None, view='#voces'):
+    """measure_cell with every Mac side effect faked; run_batch runs the first non-warm-up slot only."""
+    import tests.frontend.browser_support as support
+    prereg = tmp_path / 'prereg.json'
+    prereg.write_text(json.dumps({'fill_ins': fill_ins or {}}))
+    monkeypatch.setattr(probe, 'PREREGISTRATION', prereg)
+    monkeypatch.setattr(probe, 'SMOKE_ROOT', tmp_path / 'smoke')
+    monkeypatch.setattr(probe, 'OUTPUT_ROOT', tmp_path)
+    monkeypatch.setattr(probe, 'HARNESS_ROOT', tmp_path / 'u1' / 'harness')
+    monkeypatch.setattr(probe.sys, 'platform', 'darwin')
+    monkeypatch.setattr(support, 'browser_binary', lambda: 'chrome')
+    monkeypatch.setattr(probe, 'mac_environment', lambda: {'os_version': '26.0', 'hardware': 'Mac16,8',
+                                                           'apple_languages_first': 'es'})
+    monkeypatch.setattr(probe, 'pip_freeze_sha256', lambda: 'f' * 64)
+    monkeypatch.setattr(probe, 'git', lambda *args: 'c' * 40)
+    monkeypatch.setattr(probe, 'audio_output', lambda: {'name': 'Bocinas', 'transport': 'builtin', 'builtin': True})
+    monkeypatch.setattr(probe, 'FixtureProcess', FakeFixture)
+    monkeypatch.setattr(probe, 'BrowserSession', FakeSession)
+    FakeSession.specs = []
+    seen = {}
+
+    async def fake_batch(plan, environment, **kwargs):
+        seen.update(plan=plan, kwargs=kwargs)
+        await environment.start_fixture()
+        slot = next(slot for slot in plan['slots'] if not slot.get('warm_up'))
+        run = await environment.run_slot(slot)
+        return {'cell': plan['cell'], 'attempt': plan['attempt'], 'seed': plan['seed'], 'planned': plan['planned'],
+                'runs': [run], 'discarded': False, 'reasons': []}
+    monkeypatch.setattr(probe, 'run_batch', fake_batch)
+    args = SimpleNamespace(viewport='desktop', view=view, attempt=1)
+    return args, seen
+
+
+async def test_smoke_batches_use_the_play_rule_chosen_by_fixture_pages(monkeypatch, tmp_path):
+    """R6-1: a smoke batch reads play_control_rule from the smoke's own complete fixture_pages entry, refuses to
+    start without it, sends it to the injected script and writes it into the batch header; the overhead runs use
+    the same rule; items follow the preregistered smoke order."""
+    args, seen = drive_measure_cell(monkeypatch, tmp_path, 'smoke')
+    record_path = tmp_path / 'smoke' / 'smoke-record.json'
+    write_smoke_prerequisites(record_path, items=('quiet_baseline', 'cold_focus', 'background_activity'))
+    with pytest.raises(SystemExit, match='smoke_order_refused:batches: first complete fixture_pages'):
+        await probe.measure_cell(args, 'smoke', SHA)
+    write_smoke_prerequisites(record_path, rule=None)
+    with pytest.raises(SystemExit, match='smoke_play_control_rule_missing'):
+        await probe.measure_cell(args, 'smoke', SHA)
+    write_smoke_prerequisites(record_path)
+    report = await probe.measure_cell(args, 'smoke', SHA)
+    (spec,) = FakeSession.specs
+    assert spec.play_rule == CHOSEN_RULE != probe.PLAY_CONTROL_RULE and spec.frame_event is None
+    config = probe.injection_config(token='t', origin='o', view='#voces', capture_id='c', play_rule=spec.play_rule)
+    assert config['play_rule'] == CHOSEN_RULE
+    header = json.loads((Path(report['directory']) / 'batch.json').read_text())
+    assert header['play_control_rule'] == CHOSEN_RULE
+    assert header['cell_settings']['play_control_rule_source'] == 'smoke_record:fixture_pages'
+    # V14c, R6-8: every run result names its method_identity, the audio output included.
+    run_file = json.loads(next(Path(report['directory']).glob('run-*.json')).read_text())
+    assert run_file['method_identity']['audio_output']['builtin'] is True
+    assert run_file['method_identity']['preregistration_sha256'] == SHA
+    record = probe.SmokeRecord(record_path)
+    assert probe.smoke_order_missing(record, 'instrumentation_overhead')[:1] == ['batch:desktop:#hogar']
+    assert 'instrumentation_overhead' in probe.smoke_order_missing(record, 'frame_event')
+    assert probe.smoke_order_missing(record, 'fixture_pages') == []
+    assert probe.smoke_order_missing(probe.SmokeRecord(tmp_path / 'none.json'), 'cold_focus') == ['quiet_baseline']
+
+
+async def test_baseline_needs_every_batch_fill_in_and_uses_the_frozen_composition(monkeypatch, tmp_path):
+    """R6-1, R6-2: baseline refuses without play_control_rule (and the other batch fill-ins); the composition is
+    3 warm-ups, 40 pairs and 10 contrast pairs, the smoke's 1/5/2, never a CLI value."""
+    fill_ins = {'idle_load': 1.0, 'post_batch_load': 2.0, 'background_branch': 'none',
+                'frame_event': {'candidate': 'PipelineReporter'}}
+    args, seen = drive_measure_cell(monkeypatch, tmp_path, 'baseline', fill_ins=fill_ins)
+    with pytest.raises(SystemExit, match='fill_ins_missing:play_control_rule'):
+        await probe.measure_cell(args, 'baseline', SHA)
+    fill_ins['play_control_rule'] = CHOSEN_RULE
+    (tmp_path / 'prereg.json').write_text(json.dumps({'fill_ins': fill_ins}))
+    await probe.measure_cell(args, 'baseline', SHA)
+    plan = seen['plan']
+    assert plan['planned'] == 100 and sum(1 for slot in plan['slots'] if slot.get('warm_up')) == 3
+    assert sum(1 for slot in plan['slots'] if slot.get('trace_contrast')) == 20
+    assert FakeSession.specs[-1].play_rule == CHOSEN_RULE and FakeSession.specs[-1].frame_event == 'PipelineReporter'
+    assert seen['kwargs']['warm_rule'] is True
+    write_smoke_prerequisites(tmp_path / 'smoke' / 'smoke-record.json')
+    await probe.measure_cell(args, 'smoke', SHA)
+    plan = seen['plan']
+    assert plan['planned'] == 14 and sum(1 for slot in plan['slots'] if slot.get('warm_up')) == 1
+    assert sum(1 for slot in plan['slots'] if slot.get('trace_contrast')) == 4
+    # R6-9: no warm-share discard in the smoke.
+    assert seen['kwargs']['warm_rule'] is False and seen['kwargs']['end_record_only'] is True
+    with pytest.raises(SystemExit):
+        probe.parse_args(['measure-cell', '--smoke', '--reviewed-sha256', SHA, '--pairs', '5'])
+    with pytest.raises(SystemExit):
+        probe.parse_args(['measure-client', '--frozen-sha256', SHA, '--contrast-pairs', '3'])
+
+
+async def test_smoke_client_resumes_after_a_crash_with_the_recorded_cause(monkeypatch, tmp_path):
+    """R6-10: complete cells are skipped, the crashed cell is repeated only with --cause, the cause is written."""
+    monkeypatch.setattr(probe, 'SMOKE_ROOT', tmp_path / 'smoke')
+    monkeypatch.setattr(probe, 'checked_output', lambda mode, path: Path(path))
+    path = write_smoke_prerequisites(tmp_path / 'smoke' / 'smoke-record.json')
+    order = probe.cell_order(SHA, 'mac-chrome', 1, [(cell['viewport'], cell['view'])
+                                                    for cell in probe.batch_plan_views()], smoke=True)
+    data = json.loads(path.read_text())
+    for viewport, view in order[:3]:
+        data['runs'].append({'item': f'batch:{viewport}:{view}', 'status': 'complete', 'faults': [], 'started_at': 9.0})
+    data['runs'].append({'item': f'batch:{order[3][0]}:{order[3][1]}', 'status': 'started', 'started_at': 10.0})
+    path.write_text(json.dumps(data))
+    calls = []
+
+    async def fake_cell(args, mode, sha):
+        calls.append((args.viewport, args.view, args.attempt))
+        return {'discarded': False, 'reasons': [], 'faults': [], 'directory': 'd'}
+    monkeypatch.setattr(probe, 'measure_cell', fake_cell)
+    with pytest.raises(SystemExit, match='smoke_repeat_refused'):
+        await probe.measure_client(SimpleNamespace(cause=None), 'smoke', SHA)
+    assert calls == []
+    await probe.measure_client(SimpleNamespace(cause='crash'), 'smoke', SHA)
+    assert [(viewport, view) for viewport, view, _ in calls] == order[3:]
+    assert calls[0][2] == 2 and all(attempt == 1 for _, _, attempt in calls[1:])
+    saved = json.loads(path.read_text())['runs']
+    repeated = [run for run in saved if run['item'] == f'batch:{order[3][0]}:{order[3][1]}']
+    assert repeated[-1]['cause'] == 'crash' and repeated[-1]['status'] == 'complete'
+    assert all(run.get('cause') is None for run in saved if run['item'] == f'batch:{order[4][0]}:{order[4][1]}')
+
+
+async def test_action_feedback_keeps_the_timed_window_open_for_the_feedback_frame():
+    """R6-3: after the feedback step's next frame the probe waits for the injected feedback_window record (the later
+    of 100 ms and 6 frames after the mutation) before the flush."""
+    run = make_run(view='#acciones', capture=None)
+    rect = {'x': 10, 'y': 20, 'width': 40, 'height': 30}
+    record(run, 'target_ready', index=0, rect=rect, step='accion', in_viewport=True)
+    record(run, 'step_next_frame', index=0)
+
+    def close_window():
+        run.records.offer(json.dumps({'token': run.token, 'timeOrigin': 1000.0, 'type': 'feedback_window', 'index': 0,
+                                      'frames': 6, 't': 1.0, 'seq': 99}))
+    asyncio.get_running_loop().call_later(0.4, close_window)
+    started = time.monotonic()
+    await run._interactions(run.config['steps'])
+    assert time.monotonic() - started >= 0.39 and run.steps[0]['feedback_window'] == 'closed'
+    assert run.config['feedback_window'] == {'ms': 100, 'frames': 6}
+    source = probe.INJECTED_SOURCE
+    chain = source[source.index("if (step.c11 === 'action_feedback')"):source.index("emit('feedback_window'") + 40]
+    assert 'CONFIG.feedback_window.frames' in chain and 'now() - time >= CONFIG.feedback_window.ms' in chain
+
+
+async def test_feedback_without_a_chosen_frame_after_the_mutation_is_a_harness_fault():
+    """R6-3: mutation and rAF present, window closed, trace intact, but no chosen-candidate frame after the
+    mutation -> invalid run (harness fault), never a product failure; never applied in the smoke."""
+    assert probe.feedback_frame_missing({'mutation': 10.0, 'raf': 12.0, 'presented': {'PipelineReporter': None}},
+                                        'PipelineReporter', True, True)
+    assert not probe.feedback_frame_missing({'mutation': 10.0, 'raf': 12.0, 'presented': {'PipelineReporter': 30.0}},
+                                            'PipelineReporter', True, True)
+    assert not probe.feedback_frame_missing({'mutation': 10.0, 'raf': 12.0, 'presented': {}}, None, True, True)
+    assert not probe.feedback_frame_missing({'mutation': 10.0, 'raf': 12.0, 'presented': {}}, 'DrawFrame', True, False)
+    for frame_event, expected in (('PipelineReporter', Outcome.INVALID), (None, Outcome.VALID)):
+        run = make_run(view='#acciones', capture=None)
+        run.spec.frame_event = frame_event
+        run.steps = [{'step': 'accion', 'status': 'dispatched'}]
+        run.facts.navigate_sent = True
+        record(run, 'document_start', **focus_doc(True))
+        record(run, 'feedback_window', index=0, frames=6)
+        for item in inputs(0, 10, 12):
+            record(run, 'input', **item)
+        record(run, 'step_end', index=0, time=40.0)
+        record(run, 'step_frame', index=0, raf=50.0, frame_time=45.0)
+        run._trace_intact = lambda: True
+        run._c11 = lambda typed, interactions, steps: {'action_feedback': {
+            'start': 10.0, 'mutation': 40.0, 'raf': 50.0, 'presented': {'PipelineReporter': None}}}
+        result = run.result()
+        assert result['outcome'] == expected, result['reason']
+        if expected == Outcome.INVALID:
+            assert result['reason'] == 'feedback_frame_absent_from_trace'
+
+
+def test_pipeline_reporter_counts_only_presented_all():
+    """R6-3: an 'X' PipelineReporter slice without a state (or another state) is not a presented frame."""
+    events = [{'name': 'PipelineReporter', 'ph': 'X', 'pid': 1, 'ts': 1_000_000, 'dur': 5_000, 'args': {}},
+              {'name': 'PipelineReporter', 'ph': 'X', 'pid': 1, 'ts': 1_010_000, 'dur': 5_000,
+               'args': {'chrome_frame_reporter': {'state': 'STATE_DROPPED'}}},
+              {'name': 'PipelineReporter', 'ph': 'X', 'pid': 1, 'ts': 1_020_000, 'dur': 5_000,
+               'args': {'chrome_frame_reporter': {'state': 'STATE_PRESENTED_ALL'}}}]
+    found = probe.frame_candidates(events)['PipelineReporter']
+    assert [item['time'] for item in found] == [1025.0]
+
+
+async def test_completed_script_with_failed_preview_keeps_lcp_inp_and_cls_finite():
+    """R6-5 (R6M04, V1 in Run.result): every core step dispatched and the preview never plays -> the run is a
+    failure of C11 preview only: LCP, INP and CLS stay finite and enter their percentiles."""
+    run = make_run()
+    run.steps = [{'step': step['step'], 'status': 'dispatched'} for step in VOICES_STEPS]
+    run.facts.product_failures.append('preview_failed_open:no_playing')
+    run.facts.navigate_sent = True
+    record(run, 'document_start', **focus_doc(True))
+    record(run, 'perf', entry={'entryType': 'largest-contentful-paint', 'startTime': 300.0, 'renderTime': 300.0})
+    record(run, 'perf', entry={'entryType': 'layout-shift', 'startTime': 200.0, 'value': 0.01,
+                               'hadRecentInput': False})
+    for index, (first, last) in enumerate([(1000, 1002), (2000, 2002), (3000, 3002), (3010, 3012)]):
+        for item in inputs(index, first, last):
+            record(run, 'input', **item)
+    record(run, 'perf', entry=event(1, 'click', 1001, 48.0))
+    result = run.result()
+    assert result['outcome'] == Outcome.FAILURE and not result['run_wide_failure']
+    assert result['metrics']['inp'] == 48.0 and result['metrics']['cls'] == pytest.approx(0.01)
+    assert result['metrics']['lcp'] == 300.0 and result['metrics']['preview']['value'] == INF
+    for metric, expected in (('lcp', 300.0), ('inp', 48.0)):
+        assert probe.metric_values([result], metric) == [expected]
+
+
+class PipelineClient(FakeClient):
+    """Input events are accepted only inside one send_pipelined call (one gesture = one batch)."""
+
+    def __init__(self, answers=None):
+        super().__init__(answers)
+        self.batches = []
+        self._inside = False
+
+    async def send(self, method, params=None, *, klass, phase=None):
+        if method.startswith('Input.') and not self._inside:
+            raise AssertionError('input event sent outside a pipelined gesture')
+        return await super().send(method, params, klass=klass, phase=phase)
+
+    async def send_pipelined(self, commands, *, klass):
+        self.batches.append([method for method, _ in commands])
+        self._inside = True
+        try:
+            return [await self.send(method, params, klass=klass) for method, params in commands]
+        finally:
+            self._inside = False
+
+
+async def test_every_gesture_is_one_pipelined_batch_and_play_target_outside_viewport_is_never_clicked():
+    """R6-5 (R6M07, F3; R6M09, V3): each click's events go out in one pipelined write (mouse: 3, touch: 2); a play
+    target whose point lies outside the viewport is a harness fault and is never clicked."""
+    run = make_run()
+    run.page = PipelineClient()
+    run.page_log_start = 0
+    rect = {'x': 10, 'y': 20, 'width': 40, 'height': 30}
+    for index in range(3):
+        record(run, 'target_ready', index=index, rect=rect, step=VOICES_STEPS[index]['step'])
+    for index in range(2):
+        record(run, 'step_next_frame', index=index)
+    record(run, 'control_attached', time=500.0, readyState=1,
+           target={'kind': 'audio', 'rect': rect, 'point': {'x': 31.0, 'y': 36.0}, 'in_viewport': True})
+    record(run, 'media', event='playing', timeStamp=600.0, readyState=4)
+    await run._interactions(run.config['steps'])
+    assert run.page.batches == [['Input.dispatchMouseEvent'] * 3] * 4 and not run.facts.product_failures
+    mobile = make_run(viewport='mobile')
+    mobile.page = PipelineClient()
+    await probe.dispatch_click(mobile.page, {'x': 1, 'y': 2}, True)
+    assert mobile.page.batches == [['Input.dispatchTouchEvent'] * 2]
+    outside = make_run()
+    for index in range(3):
+        record(outside, 'target_ready', index=index, rect=rect, step=VOICES_STEPS[index]['step'])
+    for index in range(2):
+        record(outside, 'step_next_frame', index=index)
+    record(outside, 'control_attached', time=500.0, readyState=1,
+           target={'kind': 'audio', 'rect': rect, 'point': {'x': 31.0, 'y': 2000.0}, 'in_viewport': False})
+    await outside._interactions(outside.config['steps'])
+    assert len([entry for entry in outside.page.log if entry['method'].startswith('Input.')]) == 9
+    assert outside.facts.environment_faults == ['target_outside_viewport:reproducir']
+
+
+def test_frame_event_acceptance_needs_the_first_raf_bound_and_counts_empty_traces():
+    """R6-5 (R6M11, R5-6): a candidate frame before the first-rAF lower bound fails even within 16.7 ms of the
+    screencast frame. R6-11(d): a traced interaction phase whose trace has no event at all counts as absence."""
+    early = {'metrics': {'action_feedback': {'raf': 100.0, 'screencast': 105.0,
+                                             'presented': {'PipelineReporter': 95.0}}},
+             'trace_candidates_present': ['PipelineReporter'], 'trace_events': 300, 'interaction_traced': True,
+             'steps': [{'status': 'dispatched'}]}
+    phases = probe.frame_event_phases([early])
+    assert phases[0]['interactions'] == [{'PipelineReporter': False}]
+    assert probe.frame_event_choice(phases)['candidate'] is None
+    empty = {'metrics': {}, 'trace_candidates_present': [], 'trace_events': 0, 'interaction_traced': True,
+             'steps': [{'status': 'dispatched'}]}
+    untraced = dict(empty, interaction_traced=False)
+    assert probe.frame_event_phases([empty, untraced]) == [{'present': set(), 'interactions': []}]
+
+
+async def test_overhead_arms_trace_a_and_b_and_screencast_only_a(monkeypatch, tmp_path):
+    """R6-5 (R6M12, smoke_gate.instrumentation_overhead): arm (a) traced with screencast, (b) traced without, (c)
+    untraced; primers untraced; every run uses the smoke's chosen play rule (R6-1)."""
+    import tests.frontend.browser_support as support
+    monkeypatch.setattr(probe, 'SMOKE_ROOT', tmp_path / 'smoke')
+    monkeypatch.setattr(probe, 'checked_output', lambda mode, path: Path(path))
+    monkeypatch.setattr(support, 'browser_binary', lambda: 'chrome')
+    monkeypatch.setattr(probe, 'FixtureProcess', FakeFixture)
+    monkeypatch.setattr(probe, 'BrowserSession', FakeSession)
+    FakeSession.specs = []
+    result = await probe.smoke_overhead(SHA, CHOSEN_RULE)
+    warm = [spec for spec in FakeSession.specs if spec.role == 'warm']
+    primers = [spec for spec in FakeSession.specs if spec.role == 'cold']
+    assert len(warm) == 60 and len(primers) == 60
+    assert all(not spec.trace_interactions and not spec.screencast for spec in primers)
+    by_arm = defaultdict(set)
+    for path in Path(result['directory']).glob('*-run-*.json'):
+        document = json.loads(path.read_text())
+        if document['role'] == 'warm':
+            spec = next(spec for spec in warm if spec.ordinal == document['ordinal']
+                        and spec.view.strip('#') == path.name.split('-run-')[0])
+            by_arm[document['arm']].add((spec.trace_interactions, spec.screencast))
+    assert by_arm == {'a': {(True, True)}, 'b': {(True, False)}, 'c': {(False, False)}}
+    assert all(spec.play_rule == CHOSEN_RULE for spec in FakeSession.specs)
+    assert result['play_control_rule'] == CHOSEN_RULE
+
+
+async def test_window_reads_are_awaited_before_collection():
+    """R6-5 (R6M17, V4): pending window-state reads finish before the first collection command."""
+    run = make_run(view='#rutinas', capture=None)
+    order = []
+
+    async def slow_read():
+        await asyncio.sleep(0.2)
+        order.append('read')
+        run.window_reads.append({'point': 'flush', 'state': 'normal'})
+    run.window_tasks.append(asyncio.get_running_loop().create_task(slow_read()))
+    original = run.browser.client.send
+
+    async def send(method, params=None, *, klass, phase=None):
+        order.append(method)
+        return await original(method, params, klass=klass, phase=phase)
+    run.browser.client.send = send
+    await run._collect()
+    assert order[0] == 'read' and run.window_reads
+
+
+def test_audio_output_is_recorded_required_builtin_and_part_of_method_identity():
+    """R6-8: the default CoreAudio output is read per batch, must be the built-in one and enters method_identity."""
+    text = json.dumps({'SPAudioDataType': [{'_items': [
+        {'_name': 'AirPods', 'coreaudio_device_transport': 'coreaudio_device_type_bluetooth'},
+        {'_name': 'Bocinas de MacBook Pro', 'coreaudio_default_audio_output_device': 'spaudio_yes',
+         'coreaudio_device_transport': 'coreaudio_device_type_builtin'}]}]})
+    assert probe.parse_audio_output(text) == {'name': 'Bocinas de MacBook Pro',
+                                              'transport': 'coreaudio_device_type_builtin', 'builtin': True}
+    assert probe.parse_audio_output('not json') is None
+    healthy = {'ac_power': True, 'display_asleep': False, 'locked': False}
+    builtin = {'name': 'x', 'transport': 'coreaudio_device_type_builtin', 'builtin': True}
+    bluetooth = {'name': 'y', 'transport': 'coreaudio_device_type_bluetooth', 'builtin': False}
+    assert probe.machine_faults({**healthy, 'audio_output': builtin}, smoke=False) == []
+    assert probe.machine_faults({**healthy, 'audio_output': bluetooth}, smoke=True) == ['audio_output_not_builtin']
+    assert probe.machine_faults({**healthy, 'audio_output': None}, smoke=False) == ['audio_output_not_builtin']
+    assert probe.machine_faults({**healthy, 'audio_output': None}, smoke=True) == []
+    identity = {key: 'same' for key in probe.IDENTITY_COMPONENTS}
+    changed = dict(identity, audio_output='other')
+    decision = probe.before_after({'closure': [], 'identity': identity}, changed, [])
+    assert decision['decision'] == 'rerun_before' and decision['reasons'] == ['identity:audio_output']
+
+
+def test_round6_mechanical_gaps():
+    """R6-11 (b) the Escuchar selector scopes both alternatives by the capture id; (c) the flush focus sample stays
+    in the timed records; (e) every fixture page the checks load exists; R6-7 the fixture-503 views are labelled and
+    never compared."""
+    (escuchar,) = [step for step in VOICES_STEPS if step['step'] == 'escuchar']
+    resolved = probe.injection_config(token='t', origin='o', view='#voces', capture_id='vf_1')['steps'][2]
+    assert resolved['selector'] == '[data-capture-id="vf_1"] button,[data-capture-id="vf_1"] [role="button"]'
+    flush = {'point': 'flush', 'time': 900.0, 't': 900.4, 'hasFocus': True, 'visibility': 'visible'}
+    late = {'event': 'blur', 'timeStamp': 950.0, 't': 950.1}
+    assert probe.timed_records([flush, late], 900.0) == [flush]
+    source = Path(probe.__file__).read_text()
+    pages = set(re.findall(r"fixture_spec\(\d+[^,]*, '(?:cold|warm)', ready, '([a-z-]+)'", source))
+    assert pages and all((REPOSITORY / 'tools' / 'web_timing_pages' / f'{page}.html').exists() for page in pages)
+    rows = probe.summary_rows([{'viewport': 'desktop', 'view': '#rutinas', 'role': 'cold', 'outcome': Outcome.VALID,
+                                'metrics': {'lcp': 1.0, 'cls': 0.0}}], None)
+    assert rows[0]['fixture_note'] == probe.FIXTURE_UNAVAILABLE_NOTE and rows[0]['c10_acceptance'] == 'excluido'
+    assert probe.comparable_rows([{'view': '#rutinas'}, {'view': '#hogar'}]) == [{'view': '#hogar'}]
+
+
+async def test_dialog_variant_and_play_click_records(tmp_path):
+    """R6-6: the dialog fixture variant reproduces the NEXO desktop context; the play target carries the element hit
+    at the dispatch point and the first screencast frame at the click is kept."""
+    page = (REPOSITORY / 'tools' / 'web_timing_pages' / 'preview.html').read_text()
+    assert "query.get('dialog') === '1'" in page and 'showModal()' in page and 'scrollTop = 240' in page
+    assert 'minmax(0,1fr) minmax(0,1fr)' in page and 'overflow:auto' in page
+    assert 'hit: hitAt(point)' in probe.INJECTED_SOURCE
+    run = make_run()
+    run.out_dir = tmp_path
+    run.play_click_wall = 100.0
+    await run._frame({'sessionId': 1, 'metadata': {'timestamp': 99.0}, 'data': 'AAAA'})
+    assert run.play_click_frame is None
+    await run._frame({'sessionId': 2, 'metadata': {'timestamp': 100.02}, 'data': 'AAEC'})
+    assert run.play_click_frame['timestamp'] == 100.02
+    assert (tmp_path / 'play-click-00007.jpg').read_bytes() == b'\x00\x01\x02'
+    runs = [{'ordinal': 1, 'outcome': Outcome.VALID, 'reason': None, 'play_click_frame': None,
+             'facts': {'product_failures': [], 'environment_faults': []},
+             'records': {'accepted': [{'type': 'control_ready', 'target': {'kind': 'audio', 'hit': 'audio'}},
+                                      {'type': 'media', 'event': 'playing'}]}}]
+    summary = probe.dialog_variant_summary(runs, CHOSEN_RULE)
+    assert summary['plays'] is True and summary['runs'][0]['target']['hit'] == 'audio'
+    runs[0]['records']['accepted'].pop()
+    assert probe.dialog_variant_summary(runs, CHOSEN_RULE)['plays'] is False
+
+
+async def test_click_uses_the_latest_reported_target_rectangle():
+    """R6-5 (R6M03): after a scroll or layout change the target is re-reported; the click uses the latest rectangle,
+    never the first (stale, pre-scroll) one."""
+    run = make_run(view='#acciones', capture=None)
+    record(run, 'target_ready', index=0, rect={'x': 10, 'y': 2000, 'width': 40, 'height': 30}, step='accion',
+           in_viewport=False)
+    record(run, 'target_ready', index=0, rect={'x': 100, 'y': 300, 'width': 40, 'height': 30}, step='accion',
+           in_viewport=True)
+    record(run, 'step_next_frame', index=0)
+    record(run, 'feedback_window', index=0, frames=6)
+    await run._interactions(run.config['steps'])
+    first = next(entry for entry in run.page.log if entry['method'].startswith('Input.'))
+    assert first['params'] == {'type': 'mouseMoved', 'x': 120.0, 'y': 315.0}
+    assert run.steps[0]['rect'] == {'x': 100, 'y': 300, 'width': 40, 'height': 30} and not run.facts.environment_faults
