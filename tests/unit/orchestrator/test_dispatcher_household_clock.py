@@ -1,5 +1,6 @@
 """P3-F1: the dispatcher's injected household clock and origin room."""
 
+import time
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -65,6 +66,7 @@ async def test_orchestrator_injects_the_same_clock_and_namespace_and_forwards_th
     orchestrator = MultiUserOrchestrator(chroma_sync=MagicMock(), ha_client=AsyncMock(), routine_manager=MagicMock(),
                                          household_clock=clock, room_namespace=ROOMS)
     assert orchestrator.dispatcher.household_clock is clock
+    assert orchestrator.context_manager.household_clock is clock
     assert orchestrator.dispatcher.room_namespace is ROOMS
     result = await orchestrator.process(user_id=None, text="qué recordatorios hay", zone_id="zone_hall",
                                         context_room_id="hall", origin_room="escritorio")
@@ -103,3 +105,31 @@ async def test_weather_without_capabilities_falls_back_to_the_household_clock():
     result = await d._handle_weather("va a llover mañana", Priority.HIGH)
     assert result.response == "Mañana: lluvioso, 18 grados."
     assert result.observation.attempted_at == FROZEN == result.observation.observed_at
+
+
+@pytest.fixture
+def foreign_process_tz(monkeypatch):
+    """Run with a process TZ that is not the household's (the server's is Montevideo)."""
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+def test_slow_path_prompt_time_is_the_household_wall_time(foreign_process_tz):
+    manager = ContextManager(household_clock=HouseholdClock(time_source=FROZEN.timestamp))
+    manager.get_or_create("u1", "Juan")
+    prompt = manager.build_prompt("u1", "qué hora es")
+    stamp = next(line for line in prompt.splitlines() if line.startswith("Fecha y hora: "))
+    # 02:30Z of the 5th is 23:30 of the 4th in Montevideo (11:30 of the 5th in Tokyo).
+    assert " 04 de " in stamp and stamp.endswith(", 23:30")
+
+
+def test_one_clock_is_shared_when_none_is_injected():
+    orchestrator = MultiUserOrchestrator(chroma_sync=MagicMock(), ha_client=AsyncMock(), routine_manager=MagicMock())
+    assert isinstance(orchestrator.dispatcher.household_clock, HouseholdClock)
+    assert orchestrator.context_manager.household_clock is orchestrator.dispatcher.household_clock
+    dispatcher = RequestDispatcher(chroma_sync=MagicMock(), ha_client=AsyncMock(), routine_manager=MagicMock(),
+                                   router=None, llm=None, priority_queue=PriorityRequestQueue())
+    assert dispatcher.context_manager.household_clock is dispatcher.household_clock

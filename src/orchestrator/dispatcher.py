@@ -614,8 +614,9 @@ class RequestDispatcher:
                 Se configura en `config/settings.yaml:home_assistant.
                 weather_entity` y llega por MultiUserOrchestrator.
             household_clock: Reloj del hogar construido una vez en main desde
-                ``routines.timezone`` (P3-F1); fecha local del pronóstico y
-                reloj de respaldo. Sin él, el huso soportado por defecto.
+                ``routines.timezone`` (P3-F1); fecha local del pronóstico,
+                reloj de respaldo y, si no se inyecta ``context_manager``, la
+                fecha y hora del prompt. Sin él, el huso soportado por defecto.
             room_namespace: Catálogo de habitaciones configuradas (P3-F1) que
                 normaliza la habitación de origen del turno. Sin él, ninguna
                 habitación es de origen.
@@ -630,7 +631,8 @@ class RequestDispatcher:
         if type(response_timeout_s) not in (int, float) or not math.isfinite(response_timeout_s) or response_timeout_s <= 0:
             raise ValueError("Invalid response timeout")
         self.response_timeout_s = response_timeout_s
-        self.context_manager = context_manager or ContextManager()
+        self.household_clock = household_clock if household_clock is not None else HouseholdClock()
+        self.context_manager = context_manager or ContextManager(household_clock=self.household_clock)
         # An injected queue is initially empty/falsy, but is still the worker's
         # queue. Replacing it strands every dispatcher request without a worker.
         self.queue = priority_queue if priority_queue is not None else PriorityRequestQueue()
@@ -643,7 +645,6 @@ class RequestDispatcher:
         self.response_handler = response_handler
         self.weather_entity = weather_entity
         self.home_capabilities = home_capabilities
-        self.household_clock = household_clock if household_clock is not None else HouseholdClock()
         self.room_namespace = room_namespace if room_namespace is not None else RoomNamespace(())
         self.hooks = hooks  # plan #3 OpenClaw — HookRegistry or None
         self._before_handler_warn_ms = before_handler_warn_ms
@@ -1887,6 +1888,9 @@ class MultiUserOrchestrator:
         # Plan #2 OpenClaw — track persister so start/stop can pick the right cleanup
         self._persister = persister
 
+        # P3-F1: one household clock for the slow-path prompt and the dispatcher.
+        household_clock = household_clock if household_clock is not None else HouseholdClock()
+
         # Inicializar subsistemas
         self._context_manager = ContextManager(
             max_history=max_context_history,
@@ -1897,6 +1901,7 @@ class MultiUserOrchestrator:
             keep_recent_turns=keep_recent_turns,
             source_policy=source_policy,
             clock=source_policy.clock if source_policy is not None else None,
+            household_clock=household_clock,
         )
         if privacy is not None:
             privacy.add_borrower(self._context_manager.begin_close)
