@@ -676,6 +676,7 @@ UNCLAIMED_CANCEL_MENTIONS = (
     ("no cancelar el recordatorio de tomar agua", "needs_input"),
     ("no cancelá el recordatorio de tomar agua", "needs_input"),
     ("quiero un recordatorio para cancelar la suscripción", "unsupported"),
+    ("olvidate ya mismo del recordatorio de tomar agua", "needs_input"),
 )
 
 
@@ -863,3 +864,12 @@ async def test_a_superset_on_another_day_is_named_by_the_day_not_sent_to_the_web
     done, counted = await _cancel(leaves, example, dispatcher=dispatcher)
     assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
     assert [r.id for r in await manager.get_active(None, shared_only=True)] == [lemon.id]
+
+
+async def test_olvidate_ya_del_recordatorio_cancels_exactly_that_reminder(leaves):
+    """Review T032-U1-RR-F4: 'ya' between 'olvidate' and 'del' is a filler, not a creation request."""
+    result, counted = await _cancel(leaves, "olvidate ya del recordatorio de tomar agua",
+                                    "reminder_shared_active:tomar agua;reminder_shared_active:sacar la basura")
+    assert counted == effects(reminder_transitions=1) and result.outcome.task_completed
+    assert result.response.startswith("Cancelé el recordatorio tomar agua a las ")
+    assert await _states(leaves) == {"sacar la basura": "active"}

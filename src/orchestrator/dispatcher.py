@@ -134,7 +134,7 @@ _ROUTINE_CREATE_REFUSAL = "Todavía no creo rutinas por voz. Podés crearlas des
 _REMINDER_CHOICES_SPOKEN = 3
 # A cancel verb before "recordatorio" in a turn the classifier did not claim
 # (accent-folded); "un recordatorio para cancelar ..." is a creation instead.
-_UNCLAIMED_CANCEL_RE = re.compile(r"\b(?:cancel|borr|elimin|anul|quit|sac)\w*\b.*\brecordatorios?\b")
+_UNCLAIMED_CANCEL_RE = re.compile(r"\b(?:(?:cancel|borr|elimin|anul|quit|sac)\w*|olvidate)\b.*\brecordatorios?\b")
 _UNCLAIMED_CANCEL_REPLY = "Si querés cancelar un recordatorio, decime: cancelá el recordatorio de, y lo que dice."
 # "cancelá el recordatorio de X y el de Y": two reminders in one turn (review T032-U1-R7).
 _SECOND_REMINDER_RE = re.compile(r"\s+y\s+(?:el|la|los|las)\s+(?:recordatorios?\s+)?de\b")

@@ -482,12 +482,15 @@ def test_normalization_strips_wake_words_politeness_and_accents():
     ("no, cancelá el recordatorio de tomar agua", (F.REMINDER, O.CANCEL, "R1")),
     ("Nexa, no. Borrá el recordatorio de tomar agua", (F.REMINDER, O.CANCEL, "R1")),
     ("cancelá ya el recordatorio de tomar agua", (F.REMINDER, O.CANCEL, "R1")),
+    ("olvidate ya del recordatorio de tomar agua", (F.REMINDER, O.CANCEL, "R1")),
     ("dale, poné un timer de 3 minutos", (F.TIMER, O.CREATE, "R2")),
     # A "no" without a pause is a negation; "ya" before the verb is not a filler.
     ("no cancelar el recordatorio de tomar agua", None),
     ("no cancelá el recordatorio de tomar agua", None),
     ("no cancele el recordatorio de tomar agua", None),
     ("¿ya cancelaron el recordatorio de tomar agua?", None),
+    ("olvidate ya mismo del recordatorio de tomar agua", None),
+    ("olvidate ya de tomar agua", None),  # as "olvidate de tomar agua": no reminder noun
     ("¿cancelaste el recordatorio de tomar agua?", None),
     ("quiero un recordatorio para cancelar la suscripción", None),
     ("no me dejes olvidar sacar la basura", (F.REMINDER, O.CREATE, "R3")),

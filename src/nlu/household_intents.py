@@ -267,7 +267,8 @@ def _normalize(text: str, wake_words: Iterable[str] = ()) -> _Utterance:
 
     Also strips the fillers "bueno"/"dale", a leading "no" followed by a
     pause ("no, cancelá ...") and a "ya" right after a cancel verb
-    ("cancelá ya el recordatorio ..."), so these imperatives are claimed.
+    ("cancelá ya el recordatorio ...", "olvidate ya del ..."), so these
+    imperatives are claimed.
     """
     utt = _tokens(text)
     lowered = (text or "").lower()
@@ -288,9 +289,13 @@ def _normalize(text: str, wake_words: Iterable[str] = ()) -> _Utterance:
         end -= 2
     while end - start >= 1 and utt.folded[end - 1] == "porfa":
         end -= 1
-    head = _verb_at(utt.slice(start, end), 0)
-    if head is not None and _CANCEL in head.classes and start + 1 < end and utt.at(start + 1) == "ya":
-        return utt.slice(start, start + 1).join(utt.slice(start + 2, end))
+    if start + 1 < end and utt.at(start + 1) == "ya":
+        # Checked without the "ya": "olvidate" is a cancel head only before
+        # "de/del" (review T032-U1-RR-F4).
+        without = utt.slice(start, start + 1).join(utt.slice(start + 2, end))
+        head = _verb_at(without, 0)
+        if head is not None and _CANCEL in head.classes:
+            return without
     return utt.slice(start, end)
 
 
