@@ -1518,6 +1518,34 @@ class MultiRoomAudioLoop:
             return False
         return self._schedule_recovery([rs.room_id], catalog_refresh=True)
 
+    def _hold_output(self) -> tuple[object | None, bool]:
+        """Stop voice output from opening a stream while PortAudio is reset.
+
+        A timer, reminder notice or alert speaks on its own schedule and
+        would open an output stream on another thread in the middle of
+        ``Pa_Terminate``/``Pa_Initialize`` (T025-U2-RV2-2). Only output that
+        goes through the attached ResponseHandler is held.
+
+        Returns:
+            ``(token, output_busy)``: the hold token (None when nothing was
+            held) and whether a response owns the output right now, so the
+            reset would cut it.
+        """
+        handler = self._response_handler
+        hold = getattr(handler, 'try_hold_output', None) if handler is not None else None
+        if not callable(hold):
+            return None, False
+        token = hold()
+        return token, token is None
+
+    def _release_output(self, token: object | None) -> None:
+        """Release an output hold from ``_hold_output``; safe from any thread."""
+        if token is None:
+            return
+        release = getattr(self._response_handler, 'release_output_hold', None)
+        if callable(release):
+            release(token)
+
     def _catalog_refresh_wait_s(self, room_id: str | None = None) -> float:
         """Minimum time between two catalog refresh cuts.
 
@@ -1785,9 +1813,25 @@ class MultiRoomAudioLoop:
                     if not self._input_epoch_current(epoch):
                         return
                 blocker = self._catalog_refresh_blocker() if catalog_refresh else None
+                hold = None
+                if blocker is None:
+                    hold, output_busy = self._hold_output()
+                    if output_busy and catalog_refresh:
+                        blocker = 'response'
                 if blocker is None:
                     outcome: list[bool] = []
-                    await self._inputs.catalog_call(lambda: outcome.append(self._reinit_portaudio()))
+
+                    def reset_catalog() -> None:
+                        try:
+                            outcome.append(self._reinit_portaudio())
+                        finally:
+                            self._release_output(hold)
+
+                    try:
+                        await self._inputs.catalog_call(reset_catalog)
+                    finally:
+                        # Also when the reset was not admitted; idempotent.
+                        self._release_output(hold)
                     if outcome:
                         self._note_catalog_reinit(outcome[0])
                         refreshed = catalog_refresh and outcome[0]

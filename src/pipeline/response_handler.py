@@ -133,6 +133,10 @@ class ResponseHandler:
         self._abort_scopes: dict[asyncio.Task, int] = {}
         self._scope_sequence = 0
         self._owner: _Session | None = None
+        # Token of the active output hold (PortAudio catalog reset); while set
+        # no queued session may claim the output. Queued sessions keep waiting
+        # within their own queue budget instead of failing.
+        self._output_hold: object | None = None
         self._pending: list[_Session] = []
         self._active_zone_id = None
         self._earcon_audio, self._earcon_sr = None, 24000
@@ -157,6 +161,39 @@ class ResponseHandler:
         """Whether a response owns generation, synthesis or playback resources."""
         with self._ownership:
             return self._owner is not None
+
+    def try_hold_output(self) -> object | None:
+        """Keep any new response from opening an output stream until released.
+
+        PortAudio is not thread-safe across ``Pa_Terminate``/``Pa_Initialize``
+        and opening a stream. The audio loop holds the output while it resets
+        the shared PortAudio catalog (T025-U2-RV2-2). A response, notice or
+        alert queued meanwhile waits within its queue budget and starts once
+        the hold is released; it is not dropped.
+
+        Returns:
+            An opaque token for ``release_output_hold``, or None when a
+            response owns the output right now or another hold is active.
+        """
+        with self._ownership:
+            if self._owner is not None or self._output_hold is not None:
+                return None
+            token = object()
+            self._output_hold = token
+            return token
+
+    def release_output_hold(self, token: object | None) -> None:
+        """Release a hold from ``try_hold_output``; idempotent and thread-safe.
+
+        Args:
+            token: The token returned by ``try_hold_output``. A stale or None
+                token is ignored.
+        """
+        with self._ownership:
+            if token is None or self._output_hold is not token:
+                return
+            self._output_hold = None
+            self._ownership.notify_all()
 
     def add_output_free_listener(self, callback: Callable[[], None]) -> None:
         """Call ``callback`` each time other activity stops owning the output.
@@ -238,7 +275,8 @@ class ResponseHandler:
                 if session in self._pending:
                     self._pending.remove(session)
                 return False
-            if self._owner is None and self._pending and self._pending[0] is session:
+            if (self._owner is None and self._output_hold is None
+                    and self._pending and self._pending[0] is session):
                 self._pending.pop(0)
                 self._owner = session
                 self._workers[id(session)] = session

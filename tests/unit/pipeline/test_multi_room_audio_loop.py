@@ -1936,6 +1936,81 @@ class TestLateMicrophoneCatalogRefresh:
         fake_sd._initialize.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_a_notice_during_the_portaudio_reset_waits_for_it(self, tmp_path, monkeypatch):
+        """Ninguna salida abre stream durante el reset; el aviso sale después (RV2-2)."""
+        from src.core.voice_delivery import ResponseBudgets
+        from src.pipeline.response_handler import ResponseHandler
+        from src.tts import piper_tts
+        from tests.mocks.audio_output import AudioBackend
+
+        monkeypatch.setattr(piper_tts, "sd", AudioBackend())
+        played = []
+        tts = MagicMock()
+        tts.synthesize.return_value = (np.ones(1600, dtype=np.float32), 0.1)
+        tts.sample_rate = 16000
+        del tts.synthesize_stream
+        zones = MagicMock()
+        zones.play_stream_to_zone.side_effect = lambda zone, source, **_kw: (
+            played.append((zone, rig.sd._initialized)), bool(list(source)))[1]
+        handler = ResponseHandler(tts=tts, zone_manager=zones, streaming_enabled=False,
+                                  response_budgets=ResponseBudgets(queue_wait_s=5.0))
+        rig = _LateCatalogRig(tmp_path)
+        pa = _RealisticPortAudio(rig)
+        rig.plug_cocina()
+        rig.loop.attach_response_handler(handler)
+        aloop = asyncio.get_running_loop()
+        notices = []
+        during_reset = []
+        initialize = pa._initialize
+
+        def initialize_while_a_notice_arrives():
+            # Hilo del catálogo, con PortAudio terminado: llega un aviso.
+            notices.append(asyncio.run_coroutine_threadsafe(
+                handler.aspeak("Recordatorio: sacar la basura", zone_id="zone_living"), aloop))
+            threading.Event().wait(0.2)
+            during_reset.append((list(played), handler._output_hold is not None))
+            initialize()
+        rig.sd._initialize.side_effect = initialize_while_a_notice_arrives
+
+        with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
+        ):
+            await rig.start()
+            await _until(lambda: rig.sd._initialize.call_count == 1)
+            await _until(lambda: rig.loop._recovery_task is None)
+            result = await asyncio.wrap_future(notices[0])
+            await rig.stop()
+        await handler.aclose()
+        assert during_reset == [([], True)], "el aviso no abre salida con PortAudio a medio reiniciar"
+        assert result.success
+        assert played == [("zone_living", 1)]
+        assert "cocina" in rig.loop._streams and "living" in rig.loop._streams
+        assert handler._output_hold is None
+
+    @pytest.mark.asyncio
+    async def test_output_taken_before_the_reset_skips_it(self, tmp_path, caplog):
+        """Si una respuesta toma la salida justo antes del reset, no se resetea."""
+        rig = _LateCatalogRig(tmp_path)
+        rig.plug_cocina()
+        rig.loop._catalog_missing["cocina"] = rig.COCINA_CARD
+        handler = MagicMock()
+        handler.is_responding = False
+        handler.try_hold_output.return_value = None
+        rig.loop.attach_response_handler(handler)
+        with patch("src.pipeline.multi_room_audio_loop.sd", rig.sd), patch(
+            "src.pipeline.multi_room_audio_loop.resolve_mic_usb_port", side_effect=rig.resolve,
+        ), caplog.at_level("WARNING", logger="src.pipeline.multi_room_audio_loop"):
+            await _seed_owned_inputs(rig.loop, {"living": rig.old_living})
+            assert rig.loop._request_catalog_refresh(rig.cocina) is True
+            await rig.loop._recovery_task
+            reopened = rig.loop._streams.get("living")
+            await rig.stop()
+        assert rig.refreshes == 0
+        assert reopened in rig.streams
+        handler.release_output_hold.assert_not_called()
+        assert any("refresh skipped (response)" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
     async def test_rate_limit_is_charged_only_once_the_rooms_were_cut(self, tmp_path):
         """Una pausa que gana antes del corte no consume la ventana (T025-U2-RV2-4)."""
         rig = _LateCatalogRig(tmp_path)

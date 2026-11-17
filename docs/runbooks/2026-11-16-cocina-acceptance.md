@@ -121,6 +121,19 @@ disponibilidad de KZA.
   `PortAudio is not initialized after the catalog reset; ... retrying the
   refresh in N s` y, en el reintento, `PortAudio terminate failed: ...
   PortAudio not initialized` antes de reabrir.
+- Salida de voz durante el reinicio de PortAudio (revisión T025-U2-RV2-2):
+  un temporizador, recordatorio o alerta habla por su cuenta y podía abrir
+  un stream de salida en otro hilo en medio de `Pa_Terminate`/
+  `Pa_Initialize` (PortAudio no es seguro entre hilos ahí): el aviso fallaba
+  (`audio_device_start_failed`) o el proceso caía. Ahora el lazo de audio
+  retiene la salida de `ResponseHandler` mientras reinicia el catálogo, y
+  sólo si en ese momento ninguna respuesta la ocupa; si una la ocupa, no
+  reinicia (`refresh skipped (response)`) y sólo reabre. Un aviso que llega
+  durante el reinicio espera en la cola de voz (`tts.streaming.response_timeouts.queue_wait_s`,
+  30 s) y sale al terminar; no se pierde. Límites: sólo se retiene la
+  salida que pasa por `ResponseHandler`; un reinicio de más de 30 s haría
+  vencer la espera del aviso (`queue` timeout), como cualquier salida
+  ocupada.
 - Tarjeta que PortAudio no lista ni después del refresco (revisión
   T025-U2-RV2-3: dispositivo ocupado, interfaz de captura rota): antes cada
   300 s había un corte de toda la casa, sin fin (~288 por día). Ahora el
