@@ -97,6 +97,25 @@ _UNSUPPORTED_INTENT_MESSAGES: dict[str, str] = {
 _GRAMMAR_BONUS_MIN_WAKE_SCORE = 0.50
 
 
+def _capture_without_own_wake(capture_trigger: str | None) -> bool:
+    """Whether the producer says this capture was not opened by its own wake (T037-U5).
+
+    MultiRoomAudioLoop tags every capture: only ``wake`` was opened by an
+    acoustic wake. A follow-up, barge-in or inline capture (or an
+    ``unknown`` one) carries the score of the last real wake, so that score
+    says nothing about this turn. None means the producer does not say (raw
+    audio, the textual wake channel, the single-room loop's own wake): those
+    keep their own signals as before.
+
+    Args:
+        capture_trigger: ``CommandEvent.capture_trigger``, or None.
+
+    Returns:
+        True when the capture has no wake of its own.
+    """
+    return capture_trigger is not None and capture_trigger != CaptureTrigger.WAKE
+
+
 def _grammar_fastpath_classification(
     text: str,
     confidence_threshold: float = 0.75,
@@ -980,7 +999,14 @@ class RequestRouter:
         # P3-F2 S5: the household layer runs before the extended home
         # command, the grammar and the 7B, so a claimed turn never reaches a
         # domotics producer (design F26: never move it after the grammar).
-        tv_signal = textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE
+        # T037-U5 (user answer T037-U4-Q1): a follow-up, barge-in or inline
+        # capture has no wake of its own, so it counts as a TV signal: household
+        # shortcuts and the extended home command need the 7B veto, and the
+        # grammar fast path below is skipped. While :8101 is down such a turn
+        # fails silently and the user repeats it with the wake word.
+        borrowed_wake = _capture_without_own_wake(capture_trigger)
+        tv_signal = (textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE
+                     or borrowed_wake)
         household = self.household_intents.classify(text)
         if household is not None:
             return await self._process_household_turn(
@@ -1010,11 +1036,13 @@ class RequestRouter:
         # Wake textual: el utterance YA contiene "nexa" (así matcheó). Grammar
         # lo marca full y ejecutaba luces fantasma; el 7B es el gate. El canal
         # textual no está en el presupuesto <300ms.
-        if textual_wake:
+        if textual_wake or borrowed_wake:
+            # T037-U5: a capture without its own wake (follow-up, barge-in,
+            # inline) never bypasses the 7B either, whatever wake score it carries.
             grammar_cls = None
             logger.info(
-                "[GRAMMAR_FASTPATH] skip textual_wake — forcing LLM router: %r",
-                text,
+                "[GRAMMAR_FASTPATH] skip %s — forcing LLM router: %r",
+                "textual_wake" if textual_wake else f"capture_trigger={capture_trigger}", text,
             )
         else:
             grammar_cls = _grammar_fastpath_classification(
@@ -1083,6 +1111,15 @@ class RequestRouter:
             # Si es así, NO le aplicamos el confidence gate del LLM (la
             # gramática ya es señal de alta confianza).
             grammar_backed = False
+            # T037-U5: without its own wake the turn has no signal but the 7B;
+            # while :8101 cannot decide it ends silently (no grammar dispatch,
+            # no confirmation question) and the user repeats it with the wake.
+            if borrowed_wake and classification.rejection_reason == "unavailable":
+                result["intent"] = "llm_rejected:unavailable"
+                result["success"] = False
+                result["response"] = ""
+                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+                return result
             # Fallback: el LLM no pudo decidir (timeout/error → 'unavailable').
             # NO descartar si la gramática tenía señal parcial.
             if classification.rejection_reason == "unavailable":
@@ -1296,7 +1333,8 @@ class RequestRouter:
 
         Args:
             text: Accepted transcript of the turn.
-            tv_signal: Textual wake, ambient_strict or a low wake score.
+            tv_signal: Textual wake, ambient_strict, a low wake score or a
+                capture without its own wake (T037-U5).
             capture_trigger: What opened this capture, or None if unknown.
 
         Returns:
@@ -1313,8 +1351,8 @@ class RequestRouter:
         'unavailable', and a finite confidence within the configured range.
         The model can only stop the turn; it never chooses a family, a part,
         a target or a service. Without a configured LLMCommandRouter a turn
-        with a TV signal (textual wake, ambient_strict, low wake score) fails
-        closed; otherwise it proceeds as an unclaimed turn would without a
+        with a TV signal (textual wake, ambient_strict, low wake score, or a
+        capture without its own wake, T037-U5) fails closed; otherwise it proceeds as an unclaimed turn would without a
         model gate.
         """
         if self.llm_command_router is None:
@@ -1338,9 +1376,10 @@ class RequestRouter:
                                       room_id: str | None, pipeline_start: float, tv_signal: bool) -> dict:
         """Dispatch a claimed household turn (P3-F2 S6).
 
-        A weak wake (TV signal, a transcript-based wake engine, or a turn
-        longer than ``household_intents.unvetoed_max_words``) needs the 7B
-        veto; a rejection ends the turn with no effect. The turn never
+        A weak wake (TV signal, a capture without its own wake such as a
+        follow-up or barge-in (T037-U5), a transcript-based wake engine, or a
+        turn longer than ``household_intents.unvetoed_max_words``) needs the
+        7B veto; a rejection ends the turn with no effect. The turn never
         carries a service_filter, slots or a target from any producer, never
         uses audio_manager.detect_source_zone, and its origin room is only the
         capturing microphone's room (the dispatcher derives it from
