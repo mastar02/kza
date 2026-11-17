@@ -57,7 +57,11 @@ whole snapshot. D5 for rebuilt stores: the child reads its store back and
 its afterimage (exactly the planned collections, each with its planned
 metadata, configuration and records) must hash to the plan's; then the
 store's files are pinned by sha256 and every later D5 (after VACUUM, on
-resume) compares that pin.
+resume) compares that pin. The child never outlives the worker as a writer
+(SC4C-RV-1): it dies with the worker on Linux, exits before each write once
+the worker is gone, holds the worker's admission lease while it lives (so
+abort, resume and plan refuse runtime_admission_busy) and is killed after
+CHROMA_REBUILD_TIMEOUT.
 """
 from __future__ import annotations
 
@@ -488,9 +492,23 @@ def _store_pin(destination: Path, store: str) -> dict:
 # carry fragments of it into K's files. The child's heap holds K's planned records and the SDK only.
 # It builds each collection, re-reads every collection of the store and prints the sha256 of that
 # afterimage; the parent compares it with the plan's (D5 for rebuilt stores, in the session).
+#
+# SC4C-RV-1: the child never outlives the worker as a writer. On Linux the kernel kills it when the
+# worker dies (PR_SET_PDEATHSIG, set before anything else); on every platform it exits before each
+# write once it is no longer the worker's child (guard); and it holds the worker's admission lease
+# (an inherited descriptor of the same flock), so abort, resume and plan refuse runtime_admission_busy
+# while it lives, whatever killed the worker. A rebuild longer than CHROMA_REBUILD_TIMEOUT is killed.
 CHROMA_REBUILD_CHILD = "\n".join([
-    "import hashlib, importlib.metadata, json, sys",
+    "import hashlib, importlib.metadata, json, os, sys",
+    "if sys.platform.startswith('linux'):",
+    "    import ctypes, signal",
+    "    if ctypes.CDLL(None, use_errno=True).prctl(1, int(signal.SIGKILL), 0, 0, 0) != 0:",  # PR_SET_PDEATHSIG
+    "        raise SystemExit(6)",
     "spec = json.loads(sys.stdin.buffer.read())",
+    "def guard():",
+    "    if os.getppid() != spec['parent']:",
+    "        os._exit(5)",
+    "guard()",
     "if importlib.metadata.version('chromadb') != spec['sdk_version']:",
     "    raise SystemExit(3)",
     "import chromadb",
@@ -508,6 +526,7 @@ CHROMA_REBUILD_CHILD = "\n".join([
     "try:",
     "    batch = max(1, min(int(client.get_max_batch_size()), 1000))",
     "    for item in spec['collections']:",
+    "        guard()",
     "        configuration = item['configuration']",
     "        if configuration is not None:",
     "            configuration = load_collection_configuration_from_json(configuration)",
@@ -516,9 +535,11 @@ CHROMA_REBUILD_CHILD = "\n".join([
     "        rows = item['records']",
     "        for start in range(0, len(rows), batch):",
     "            part = rows[start:start + batch]",
+    "            guard()",
     "            collection.add(ids=[row['id'] for row in part], documents=[row['document'] for row in part],",
     "                           metadatas=[row['metadata'] for row in part],",
     "                           embeddings=[row['embedding'] for row in part])",
+    "    guard()",
     "    image = []",
     "    for name in sorted(item.name for item in client.list_collections()):",
     "        collection = client.get_collection(name=name, embedding_function=None)",
@@ -538,6 +559,9 @@ CHROMA_REBUILD_CHILD = "\n".join([
     "                                allow_nan=False).encode()).hexdigest())",
 ])
 _CHILD_ENVIRONMENT = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "HOME", "TMPDIR")
+# SC4C-RV-1 (c): one store's rebuild may not take longer than a whole transition's downtime budget
+# (SC-D2 A, 600 s); the child is then killed and the start refuses.
+CHROMA_REBUILD_TIMEOUT = 600.0
 
 
 def _store_image(wanted: list) -> list[dict]:
@@ -546,34 +570,44 @@ def _store_image(wanted: list) -> list[dict]:
              "records": list(item.records)} for item in sorted(wanted, key=lambda item: item.collection)]
 
 
-def _rebuild_store(path: Path, wanted: list, version: str) -> None:
-    """One store in the child; refuses (content-free) unless it read back exactly the planned image."""
+def _rebuild_store(path: Path, wanted: list, version: str, lease: int) -> None:
+    """One store in the child; refuses (content-free) unless it read back exactly the planned image.
+
+    ``lease`` is the worker's admission lease descriptor: the child inherits
+    it, so the lease stays held until the child is gone (SC4C-RV-1).
+    """
     import subprocess
     import sys
-    spec = {"path": str(path), "sdk_version": version,
+    spec = {"path": str(path), "sdk_version": version, "parent": os.getpid(),
             "collections": [{"collection": item.collection, "metadata": item.metadata,
                              "configuration": item.configuration, "records": list(item.records)}
                             for item in wanted]}
     environment = {key: os.environ[key] for key in _CHILD_ENVIRONMENT if key in os.environ}
-    completed = subprocess.run([sys.executable, "-I", "-B", "-c", CHROMA_REBUILD_CHILD], input=_json(spec),
-                               capture_output=True, env=environment, check=False)
+    try:
+        completed = subprocess.run([sys.executable, "-I", "-B", "-c", CHROMA_REBUILD_CHILD], input=_json(spec),
+                                   capture_output=True, env=environment, check=False, pass_fds=(lease,),
+                                   timeout=CHROMA_REBUILD_TIMEOUT)
+    except subprocess.TimeoutExpired:  # run() has killed and reaped the child
+        raise CompactionCloneError("runtime_admission_compaction_chroma_rebuild_timeout") from None
     _require(completed.returncode != 3, "sdk_changed")
     _require(completed.returncode == 0, "chroma_rebuild_failed")  # stderr is never read back (content)
     lines = completed.stdout.decode("ascii", "replace").split()
     _require(lines[-1:] == [hashlib.sha256(_json(_store_image(wanted))).hexdigest()], "payload_changed:chroma")
 
 
-def rebuild_chroma(plan: CompactionClonePlan, destination: Path, operation) -> dict:
+def rebuild_chroma(plan: CompactionClonePlan, destination: Path, operation, lease: int | None = None) -> dict:
     """SC-4c: every Chroma store of H made anew in K from the plan; returns the stores' file pins.
 
     A store whose collections are all dropped is still created (empty), so
     K's schemas equal H's (A1). Each store is written by its own child
     process (CHROMA_REBUILD_CHILD) inside an extent the copy catalog holds;
     the child's exit is the SDK's close, and only after it the store's
-    files are pinned.
+    files are pinned. ``lease`` is the worker's admission lease descriptor,
+    which each child holds while it lives (SC4C-RV-1).
     """
     if not plan.chroma_stores:
         return {}
+    _require(type(lease) is int and lease >= 0, "lease")
     version = plan.latest.source_binding["sdk_versions"].get("chromadb")
     _require(version is not None and importlib.metadata.version("chromadb") == version, "sdk_changed")
     pins = {}
@@ -583,7 +617,7 @@ def rebuild_chroma(plan: CompactionClonePlan, destination: Path, operation) -> d
         operation.extent(store, family="semantic_index", representation="sdk_work")
         path.mkdir(parents=True, mode=0o700)
         _rebuild_store(path, [item for item in plan.chroma if item.store == store and item.kind != "dropped"],
-                       version)
+                       version, lease)
         pins[store] = _store_pin(destination, store)
     return pins
 
@@ -872,7 +906,7 @@ def materialize_compaction_clone(plan: CompactionClonePlan, destination: Path, *
             payload_cut_proof=_identity_proof(plan, destination), keep_blocked=True)
         ownership, blocked, qualified = _prepared_ownership(destination, journal)
         relocated = _relocate_columns(plan, destination)
-        pins = rebuild_chroma(plan, destination, operation)  # SC-4c, checked in its session
+        pins = rebuild_chroma(plan, destination, operation, getattr(controller, "_descriptor", None))  # SC-4c
         counts = verify_identity(plan, destination, journal, pins)
         if before_vacuum is not None:
             before_vacuum()

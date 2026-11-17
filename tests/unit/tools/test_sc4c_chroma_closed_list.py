@@ -17,10 +17,14 @@ start in release mode, V and retire.
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
+import subprocess
+import sys
 import time
 
 import pytest
@@ -344,3 +348,155 @@ def test_a_crash_after_the_rebuilt_evidence_resumes_through_the_pin(x4, x5, tmp_
     [materialized] = [event for event in stage.read_compaction_log(root, log["compaction_id"])["events"]
                       if event["kind"] == "materialized"]
     assert materialized["data"]["chroma"]["dropped"] == 1 and materialized["data"]["chroma"]["excluded"] == 4
+
+
+# --- SC4C-RV-1: the rebuild child never outlives the worker as a writer -----------------------------
+
+REPO = Path(__file__).resolve().parents[3]
+BUSY = "runtime_admission_busy"
+DEATH_SIGNAL = "if sys.platform.startswith('linux'):"
+GUARD = "    if os.getppid() != spec['parent']:\n        os._exit(5)"
+LOOP = "    for item in spec['collections']:\n"
+# A worker process of its own (so it can be SIGKILLed), running this checkout's materialization with a
+# given child program.
+KILLABLE_WORKER = "\n".join([
+    "import json, sys, time",
+    "from pathlib import Path",
+    "from src.memory import owner_compaction as oc",
+    "oc.CHROMA_REBUILD_CHILD = json.loads(sys.argv[3])",
+    "oc.run_materialization(Path(sys.argv[1]), sys.argv[2], wall=time.time)",
+])
+
+
+def _replace_once(text: str, old: str, new: str) -> str:
+    assert text.count(old) == 1, old
+    return text.replace(old, new)
+
+
+def _paused_child(tmp_path: Path, *, death_signal: bool = True, guard: bool = True) -> str:
+    """The real child, which publishes its pid once its store exists and waits for 'go' before writing."""
+    marker, go = tmp_path / "child-pid", tmp_path / "child-go"
+    code = _replace_once(oc.CHROMA_REBUILD_CHILD, LOOP, "\n".join([
+        f"    open({str(marker) + '.tmp'!r}, 'w').write(str(os.getpid()))",
+        f"    os.replace({str(marker) + '.tmp'!r}, {str(marker)!r})",
+        "    import time as pause_clock",
+        "    pause_until = pause_clock.monotonic() + 300",
+        f"    while not os.path.exists({str(go)!r}) and pause_clock.monotonic() < pause_until:",
+        "        pause_clock.sleep(0.05)",
+        ""]) + LOOP)
+    if not death_signal:
+        code = _replace_once(code, DEATH_SIGNAL, "if False:")
+    if not guard:
+        code = _replace_once(code, GUARD, "    return")
+    return code
+
+
+def _gone(pid: int) -> bool:
+    return compaction.process_started_at(pid) is None
+
+
+def _wait_gone(pid: int, seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while not _gone(pid):
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+def _killing_worker(tmp_path: Path, child: str, seen: dict, *, wait_for_child: float = 0.0):
+    """Run the worker as its own process and SIGKILL it once the rebuild child is inside the first store."""
+    def worker(root_, compaction_id):
+        marker = tmp_path / "child-pid"
+        with open(tmp_path / "worker.err", "wb") as errors:
+            process = subprocess.Popen([sys.executable, "-c", KILLABLE_WORKER, str(root_), compaction_id,
+                                        json.dumps(child)], cwd=REPO, stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.DEVNULL, stderr=errors)
+        try:
+            deadline = time.monotonic() + 300
+            while not marker.exists():
+                assert process.poll() is None, (tmp_path / "worker.err").read_text()[-2000:]
+                assert time.monotonic() < deadline
+                time.sleep(0.05)
+        finally:
+            process.kill()
+            process.wait()
+        seen["child"] = int(marker.read_text())
+        if wait_for_child:
+            seen["gone"] = _wait_gone(seen["child"], wait_for_child)
+    return worker
+
+
+def _collections(store: Path) -> int:
+    with closing(sqlite3.connect(store.as_uri() + "/chroma.sqlite3?mode=ro", uri=True)) as db:
+        return db.execute("SELECT count(*) FROM collections").fetchone()[0]
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PR_SET_PDEATHSIG is Linux only")
+def test_a_sigkilled_worker_takes_its_rebuild_child_with_it_and_abort_leaves_nothing(x4, x5, tmp_path):
+    """SC4C-RV-1 (a): the kernel kills the child with the worker; abort then removes K and nothing reappears."""
+    world = _post_r1(x4, x5, tmp_path, sc.chroma_state())
+    root = world["root"]
+    seen = {}
+    _refusal("runtime_admission_compaction_worker_failed",
+             lambda: cw.start(root, x5["archive"], worker=_killing_worker(tmp_path, _paused_child(tmp_path), seen,
+                                                                          wait_for_child=30.0)))
+    assert seen["gone"] is True  # it never got 'go': only the death signal ended it
+    [log] = stage.compaction_logs(root)
+    assert compaction.compact_abort(root, log["compaction_id"])["phase"] == "aborted"
+    (tmp_path / "child-go").touch()
+    time.sleep(2.0)
+    assert sorted(os.listdir(root / "slots")) == ["a"]
+    assert stage.read_admission_head(root) == world["h_head"]
+
+
+@pytest.mark.parametrize("guard", [True, False], ids=["guard", "lease_only"])
+def test_a_rebuild_child_that_outlives_its_worker_holds_the_lease_until_it_is_gone(x4, x5, tmp_path, guard):
+    """SC4C-RV-1 (b): without the death signal (another platform, a failed prctl) the orphaned child still
+    holds the worker's admission lease, so start, abort, resume and plan refuse busy while it lives; once
+    it is reparented it writes nothing more (guard); either way abort then leaves only H."""
+    world = _post_r1(x4, x5, tmp_path, sc.chroma_state())
+    root = world["root"]
+    seen = {}
+    child = _paused_child(tmp_path, death_signal=False, guard=guard)
+    _refusal(BUSY, lambda: cw.start(root, x5["archive"], worker=_killing_worker(tmp_path, child, seen)))
+    pid = seen["child"]
+    try:
+        assert not _gone(pid)
+        [log] = stage.compaction_logs(root)
+        compaction_id = log["compaction_id"]
+        _refusal(BUSY, lambda: compaction.compact_abort(root, compaction_id))
+        _refusal(BUSY, lambda: compaction.compact_resume(root, compaction_id, worker=_in_process_worker()))
+        _refusal(BUSY, lambda: cw.plan(root, x5["archive"]))
+        store = root / "slots" / "k" / "state" / "data" / "chroma_db"
+        assert _collections(store) == 0
+    finally:
+        (tmp_path / "child-go").touch()
+    assert _wait_gone(pid, 120.0)
+    # The guard stops the orphan before its first write; without it the orphan finishes its store
+    # (what SC4C-RV-1 saw) and only the lease kept abort from racing it.
+    assert _collections(store) == (0 if guard else 3)
+    assert compaction.compact_abort(root, compaction_id)["phase"] == "aborted"
+    assert sorted(os.listdir(root / "slots")) == ["a"]
+    assert stage.read_admission_head(root) == world["h_head"]
+    assert cw.serve(root, tmp_path, "h").code == 0
+
+
+def test_a_rebuild_that_overruns_its_timeout_is_killed_and_refused(tmp_path, monkeypatch):
+    """SC4C-RV-1 (c): the child is killed after CHROMA_REBUILD_TIMEOUT; the refusal is coded."""
+    marker = tmp_path / "pid"
+    monkeypatch.setattr(oc, "CHROMA_REBUILD_CHILD", "\n".join([
+        "import os, time",
+        f"open({str(marker)!r}, 'w').write(str(os.getpid()))",
+        "time.sleep(120)",
+    ]))
+    monkeypatch.setattr(oc, "CHROMA_REBUILD_TIMEOUT", 3.0)
+    lease = os.open(tmp_path / "lease", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        started = time.monotonic()
+        _refusal("runtime_admission_compaction_chroma_rebuild_timeout",
+                 lambda: oc._rebuild_store(tmp_path / "store", [], "0", lease))
+        assert time.monotonic() - started < 60
+    finally:
+        os.close(lease)
+    assert _gone(int(marker.read_text()))
