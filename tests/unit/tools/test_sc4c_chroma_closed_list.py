@@ -55,7 +55,10 @@ def checkout_controller(monkeypatch):
 
 NAMES = ["home_assistant_commands", "home_assistant_commands__pointer", sc.STAGING, "home_assistant_routines",
          "user_memories", "user_memories_policy_v1", "home_assistant_command", "home_assistant_routines_v2",
-         "code_chunks"]
+         "code_chunks", "_policy_v1", "user_memories_policy_v2", "home_assistant_commands__",
+         "home_assistant_commands__pointer2", "home_assistant_commands__backup",
+         "home_assistant_commands__20261116000000abcdeg", "home_assistant_commands__2026111600000abcdef",
+         "home_assistant_commands__20261116000000ABCDEF"]
 
 
 def _worker_kind(name: str, policy: bool) -> str | None:
@@ -73,7 +76,9 @@ def test_the_closed_list_is_the_same_at_plan_and_in_the_worker():
                 sc.STAGING: "copied", "home_assistant_routines": "dropped"}
     for name in NAMES:
         assert compaction.collection_kind(name, policy=False) == _worker_kind(name, False) == expected.get(name)
-        assert compaction.collection_kind(name, policy=True) == _worker_kind(name, True) == "rebuilt"
+        # SC4C-RV-5 (1): a registered semantic_index target is rebuilt only under long_term's name.
+        rebuilt = "rebuilt" if name == "user_memories_policy_v1" else None
+        assert compaction.collection_kind(name, policy=True) == _worker_kind(name, True) == rebuilt
     assert oc._snapshot_class("data/chroma_db", "home_assistant_routines", False) == "omit"
     assert oc._snapshot_class("data/chroma_db", sc.STAGING, False) == "export"
     _refusal(UNLISTED, lambda: oc._snapshot_class("data/memory_db", "user_memories", False))
@@ -160,6 +165,8 @@ def test_the_plan_refuses_an_unlisted_or_unclassified_export():
     for exports, listed in (
             ([_export("data/memory_db", "user_memories", [_record("x", "legacy")])], True),
             ([_export("data/memory_db", sc.POLICY, POLICY_RECORDS)], True),  # a policy name H never registered
+            ([_export("data/memory_db", "user_memories", [_record("x", "legacy")], registered=True)], True),
+            ([_export("data/chroma_db", "home_assistant_commands__backup", [COMMAND])], True),
             ([_export("data/chroma_db", "home_assistant_routines", [_record("r", "routine")])], True),  # read
             ([dict(_export("data/chroma_db", sc.STAGING, []), omitted=True)], True),
             ([_export("data/other_db", sc.STAGING, [])], True),  # not one of the listed stores

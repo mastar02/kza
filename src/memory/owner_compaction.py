@@ -73,6 +73,7 @@ import json
 import math
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import sqlite3
 from types import SimpleNamespace
@@ -100,6 +101,10 @@ FREE_MARGIN = 256 << 20  # P9 (scripts/compaction.FREE_MARGIN)
 
 # SC-4c closed collection list (scripts/compaction.py holds the same list for plan; a test pins both).
 CHROMA_COMMAND_INDEX = "home_assistant_commands"  # with "__pointer" and the "__<version>" staging collections
+# SC4C-RV-5 (1): exactly the names the runtime makes (long_term.index_collection_name; command_index.pointer_name
+# and ChromaSync's staging name, '<base>__' + strftime('%Y%m%d%H%M%S') + token_hex(3)).
+CHROMA_POLICY_SUFFIX = "_policy_v1"
+CHROMA_COMMAND_NAMES = re.compile(re.escape(CHROMA_COMMAND_INDEX) + r"(__pointer|__[0-9]{14}[0-9a-f]{6})?")
 CHROMA_DROPPED = frozenset({"home_assistant_routines"})  # V4R2-C1: not copied; K's boot recreates it empty
 CHROMA_KINDS = ("rebuilt", "copied", "dropped")
 _FACT_LIVE_STATES = ("automatic", "confirmed")
@@ -136,13 +141,15 @@ def collection_kind(name: str, *, policy: bool) -> str:
     """SC-4c: the closed list. 'rebuilt' (policy memory), 'copied' (command index), 'dropped' (routines).
 
     ``policy`` is True only for a collection H registered as its own
-    semantic_index target in that store. Anything else refuses.
+    semantic_index target in that store; it is rebuilt only under the
+    ``<collection>_policy_v1`` name. Anything else refuses.
     """
     if policy:
-        return "rebuilt"
-    if name == CHROMA_COMMAND_INDEX or name.startswith(CHROMA_COMMAND_INDEX + "__"):
+        if name.endswith(CHROMA_POLICY_SUFFIX) and len(name) > len(CHROMA_POLICY_SUFFIX):
+            return "rebuilt"
+    elif CHROMA_COMMAND_NAMES.fullmatch(name):
         return "copied"
-    if name in CHROMA_DROPPED:
+    elif name in CHROMA_DROPPED:
         return "dropped"
     raise CompactionCloneError("runtime_admission_compaction_unlisted_collection")
 

@@ -166,6 +166,8 @@ K_CLOSURE_UNREADABLE = "runtime_admission_compaction_k_closure_unreadable"
 # (src/memory/owner_compaction.py) holds the same list; tests/unit/tools/test_sc4c_chroma_closed_list.py pins both.
 CHROMA_STORE = "chroma.sqlite3"
 CHROMA_COMMAND_INDEX = "home_assistant_commands"  # with "__pointer" and the "__<version>" staging collections
+CHROMA_POLICY_SUFFIX = "_policy_v1"  # SC4C-RV-5 (1): the exact names the runtime makes
+CHROMA_COMMAND_NAMES = re.compile(re.escape(CHROMA_COMMAND_INDEX) + r"(__pointer|__[0-9]{14}[0-9a-f]{6})?")
 CHROMA_DROPPED = frozenset({"home_assistant_routines"})  # not copied into K (named drop); K's boot recreates it
 UNLISTED_COLLECTION = "runtime_admission_compaction_unlisted_collection"
 # Review RA4B-1: what a value the selection cannot classify raises (W1 never raises an uncoded error).
@@ -611,10 +613,11 @@ def _privacy_relative(state: Path) -> str:
 def collection_kind(name: str, *, policy: bool) -> str | None:
     """SC-4c: 'rebuilt' (H's own policy memory collection), 'copied' (command index), 'dropped' (routines), else None."""
     if policy:
-        return "rebuilt"
-    if name == CHROMA_COMMAND_INDEX or name.startswith(CHROMA_COMMAND_INDEX + "__"):
+        if name.endswith(CHROMA_POLICY_SUFFIX) and len(name) > len(CHROMA_POLICY_SUFFIX):
+            return "rebuilt"
+    elif CHROMA_COMMAND_NAMES.fullmatch(name):
         return "copied"
-    if name in CHROMA_DROPPED:
+    elif name in CHROMA_DROPPED:
         return "dropped"
     return None
 
