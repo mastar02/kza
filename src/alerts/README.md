@@ -188,9 +188,15 @@ El sistema evita alertas duplicadas por **condición**, nunca por el texto:
 - **Re-anuncio**: con `reannounce_interval_seconds` configurado (`null` por
   defecto: nunca), un episodio con estado ya anunciado y sin reconocer se
   vuelve a decir cada ese intervalo
-- **Alerta reconocida**: una alerta reconocida (o descartada) en la web no se
-  vuelve a decir, ni por el reintento de voz ni por el re-anuncio, salvo que
-  empeore: la escalada la reactiva y la anuncia (respuesta T036-U1-Q5, opción A)
+- **Alerta reconocida**: mientras el proceso sigue vivo, una alerta reconocida
+  (o descartada) en la web no se vuelve a decir, ni por el reintento de voz ni
+  por el re-anuncio, salvo que empeore: la escalada la reactiva y la anuncia
+  (respuesta T036-U1-Q5, opción A). El reconocimiento cubre sólo su episodio:
+  si la condición se cierra y se reabre (o un evento momentáneo se repite tras
+  `cooldown_seconds`) la alerta nueva se anuncia. Historial, episodios y
+  reconocimientos viven sólo en memoria: tras un reinicio o una release, una
+  condición aún activa se anuncia como episodio nuevo aunque se hubiera
+  reconocido antes
 - **Limpieza**: `clear_cooldowns()` cierra todos los episodios abiertos (sus
   alertas quedan resueltas) y la próxima observación alerta de nuevo
 - **Reintento de voz**: si el aviso falla sin que suene nada (la salida lo
