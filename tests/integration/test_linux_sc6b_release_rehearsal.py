@@ -207,7 +207,7 @@ class Recorder:
         evidence = real_systemd.evidence_directory()
         self.logs = (evidence if evidence is not None else tmp_path) / "logs" / item
         self.logs.mkdir(parents=True, exist_ok=True)
-        self.pairs: list[tuple[str, str]] = [(sys.executable, "$PY"), (str(REPO), "<repo>"),
+        self.pairs: list[tuple[str, str]] = [(sys.executable, "$PY"), (str(REPO) + "/", "<repo>/"),
                                              (str(tmp_path), "<tmp>")]
 
     def label(self, path, name: str) -> None:
@@ -238,7 +238,11 @@ class Recorder:
         return entry
 
     def time(self, name: str, seconds: float) -> None:
-        self.times[name] = round(seconds, 3)
+        key, count = name, 1
+        while key in self.times:
+            count += 1
+            key = f"{name}#{count}"
+        self.times[key] = round(seconds, 3)
 
     def result(self, **values) -> None:
         self.results.update(values)
@@ -277,6 +281,7 @@ class World:
             self.d = real.RealDeployment(builds["x4"]["archive"], tmp_path, systemd, source=source)
         self.root = self.d.root
         rec.label(self.root, "<root>")
+        rec.label(builds["x5"]["archive"].parent, "<builds>")
         self.controller = self.root / "controller" / "current" / "scripts" / "stage_runtime.pyc"
         self.unit = "kza-voice.service"  # the guard maps it to this rehearsal's stand-in
         self.k = 0
@@ -991,11 +996,14 @@ def test_08_a_delegation_record_after_t0_refuses_plan_and_serve_and_l4_works(bui
     world.serve_clean("dl-removed-h-serves")
     record_path.write_text("{}")
     _legacy_slot(world, builds)
+    (world.d.unit_dir / "zz-rehearsal.conf").unlink()  # production has no rehearsal drop-in
+    systemd.reload()
     _code, parsed, _completed = world.run("l4-uninstall-launcher", [
         sys.executable, "-I", "-B", str(world.controller), "--root", str(world.root), "--offline",
         "uninstall-launcher", "--unit-dir", str(world.d.unit_dir), "--user-decision", "sc6b-l4-rehearsal",
         "--phrase", launcher.UNINSTALL_PHRASE, "--legacy-slot", "legacy"])
     rec.result(l4={"mismatches": parsed.get("mismatches"), "record": bool(parsed.get("record"))})
+    assert parsed.get("mismatches") == [], parsed
     assert (world.d.unit_dir / "legacy.conf").is_file() and not (world.d.unit_dir / "managed.conf").exists()
 
 
