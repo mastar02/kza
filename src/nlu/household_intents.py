@@ -643,10 +643,13 @@ def _r4(utt: _Utterance) -> HouseholdIntent | None:
 # routine claims the turn as a routine PROPOSE with reason "new_routine", so the
 # routine's content ("que apague las luces") never reaches the grammar, the
 # extended home command or the 7B service_filter.
-_ROUTINE_NOUNS = frozenset({"rutina", "rutinas", "automatizacion", "automatizaciones"})
+_ROUTINE_NOUNS = frozenset({"rutina", "rutinas", "automatizacion", "automatizaciones", "regla", "reglas"})
 _INDEFINITE = frozenset({"un", "una", "unos", "unas", "otro", "otra"})
-# Fillers before the request ("dale, creá ...", "bueno, quiero ...", "a ver, armame ...").
-_ROUTINE_FILLERS = frozenset({"dale", "bueno", "ahora", "entonces", "yo"})
+# Fillers before the request ("dale, creá ...", "bueno, quiero ...", "a ver, armame ..."), also the
+# hesitations and the leading 'y' speech recognition keeps ("eh, creá ...", "y creá ..."). No 'pues':
+# it is one mishearing from a voice verification word (tests/unit/memory/test_voice_phrase.py).
+_ROUTINE_FILLERS = frozenset({"dale", "bueno", "bue", "ahora", "entonces", "yo", "y", "e", "eh", "ehh", "em", "emm",
+                              "mm", "mmm", "este"})
 # Request heads before the creation verb, longest first ("quiero", "me gustaría",
 # "te pido que", "me podés", "vamos a"). Leading podés/podrías/puedes are already
 # stripped by _normalize.
@@ -661,11 +664,14 @@ _DESIRE_HEADS = frozenset({("quiero",), ("quisiera",), ("queria",), ("querria",)
                            ("preciso",), ("me", "gustaria"), ("nos", "gustaria"), ("me", "encantaria")})
 # Creation verbs (voseo/tú/usted imperative, infinitive, the subjunctive of 'quiero
 # que me armes', and the questions '¿me armás/armarías ...?'): any determiner
-# ("creá la rutina de la mañana").
+# ("creá la rutina de la mañana"). No 'inventar' literal (one mishearing from a
+# voice verification word): after a request head the unlisted-verb slot covers it.
 _ROUTINE_CREATE_FORMS = frozenset({
     "crea", "cree", "crear", "crees", "creas", "crearias", "arma", "arme", "armar", "armes", "armas", "armarias",
     "genera", "genere", "generar", "generes", "generas", "generarias", "defini", "define", "defina", "definir",
-    "definas", "definis", "definirias",
+    "definas", "definis", "definirias", "inventa", "invente", "inventes", "inventas", "inventarias",
+    "disena", "disene", "disenar", "disenes", "disenas", "disenarias", "escribi", "escribe", "escriba", "escribir",
+    "escribas", "escribis", "escribirias",
 })
 # Verbs that also run or change an existing routine ("hacé la rutina", "activá la
 # rutina X"): a creation only with 'un/una/otra' or 'nueva'.

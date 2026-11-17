@@ -350,6 +350,18 @@ ROUTINE_CREATION_REQUESTS = [
     # A creation verb needs no 'una' ('creá la rutina ...'); 'nueva' may follow the noun.
     "creá la rutina de la mañana que apague las luces",
     "rutina nueva que apague las luces",
+    # Q4-RV-2: hesitations and a leading 'y' kept by speech recognition, more creation verbs, 'regla'.
+    "y creá una rutina que apague las luces",
+    "eh creá una rutina que apague las luces",
+    "mmm creá una rutina que apague las luces",
+    "este, armame una rutina que apague las luces",
+    "inventá una rutina que apague las luces",
+    "diseñá una rutina que apague las luces",
+    "escribí una rutina que apague las luces",
+    "inventame la rutina de la noche que apague las luces",
+    "quiero inventar una rutina que apague las luces",
+    "creá una regla que apague las luces",
+    "quiero crear reglas que apaguen las luces",
 ]
 
 
