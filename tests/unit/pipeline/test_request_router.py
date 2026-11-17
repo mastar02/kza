@@ -760,22 +760,31 @@ class TestBuildPrompt:
 
     @pytest.mark.asyncio
     async def test_build_prompt_current_time_is_the_household_wall_time(self, monkeypatch):
-        """P3-F1: 'Hora actual' comes from the injected household clock, not the process TZ."""
+        """P3-F1: 'Hora actual' comes from the injected household clock, not the process TZ.
+
+        T037-U3-R3: the weekday is the fixed Spanish name, not the process
+        locale's ``%A`` (forced to the C locale here, where it is English).
+        """
+        import locale
         import time as time_module
         from datetime import UTC, datetime
         from src.core.household_clock import HouseholdClock
 
-        frozen = datetime(2026, 8, 5, 2, 30, tzinfo=UTC)  # 23:30 of the 4th in Montevideo
+        frozen = datetime(2026, 8, 5, 2, 30, tzinfo=UTC)  # 23:30 of Tuesday the 4th in Montevideo
         monkeypatch.setenv("TZ", "Asia/Tokyo")  # 11:30 of the 5th in the process's zone
         time_module.tzset()
+        previous_locale = locale.setlocale(locale.LC_TIME)
+        locale.setlocale(locale.LC_TIME, "C")
         try:
             router = _build_router(household_clock=HouseholdClock(time_source=frozen.timestamp))
             prompt = await router._build_prompt("que hora es")
         finally:
+            locale.setlocale(locale.LC_TIME, previous_locale)
             monkeypatch.undo()
             time_module.tzset()
 
-        assert f"Hora actual: 23:30 del {datetime(2026, 8, 4).strftime('%A')}\n" in prompt
+        assert "Hora actual: 23:30 del martes\n" in prompt
+        assert "Tuesday" not in prompt
 
 
 class TestCapturedTranscript:

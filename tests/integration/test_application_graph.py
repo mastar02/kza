@@ -473,6 +473,47 @@ async def test_timer_label_never_reaches_timer_or_dispatcher_info_logs(leaves, t
             assert leaked == []
 
 
+@pytest.mark.parametrize(("utc", "text", "spoken", "wake_words"), [
+    ((2026, 11, 18, 2, 59, 59), "¿Qué hora es?", "Son las 23:59.", None),
+    ((2026, 11, 18, 3, 0, 0), "Nexa, ¿qué día es hoy?", "Hoy es miércoles 18 de noviembre.", None),
+    # T037-U3-R1: an alias of the grammar and a configured rooms.wake_word.words entry.
+    ((2026, 11, 18, 2, 59, 59), "Alexa, ¿qué hora es?", "Son las 23:59.", None),
+    ((2026, 11, 18, 3, 0, 0), "Neska, ¿qué día es hoy?", "Hoy es miércoles 18 de noviembre.", ["nexa", "neska"]),
+])
+async def test_time_and_date_come_from_the_household_clock_through_the_orchestrated_graph(
+        leaves, monkeypatch, tmp_path, utc, text, spoken, wake_words):
+    """T037-U3: the built graph answers from its one household clock, with no model and no HA call."""
+    from datetime import UTC, datetime
+
+    from src.llm.reasoner import FastRouter
+    import src.tts.piper_tts as output_module
+
+    backend = AudioBackend()
+    monkeypatch.setattr(output_module, "sd", backend)
+    async with offline_home() as (url, observations):
+        config = offline_config(tmp_path, url)
+        if wake_words is not None:
+            config["rooms"]["wake_word"] = {"words": wake_words}
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=leaves)
+            dispatcher = graph.pipeline._orchestrator.dispatcher
+            assert dispatcher.household_clock is graph.household_clock
+            moment = datetime(*utc, tzinfo=UTC).timestamp()
+            monkeypatch.setattr(graph.household_clock, "_time_source", lambda: moment)
+            spy = MagicMock(spec=FastRouter)
+            spy.complete = AsyncMock(side_effect=AssertionError("7B called"))
+            spy.generate = MagicMock(side_effect=AssertionError("7B called"))
+            dispatcher.router, dispatcher.use_router = spy, True
+            graph.models.stt.text = text
+            result = await graph.pipeline.process_command(CommandEvent(np.full(16000, 0.1, dtype=np.float32), room_id=""))
+            assert (result["intent"], result["path"], result["response"]) == ("clock", "fast_clock", spoken)
+            assert result["success"] and result["task_completed"]
+            assert graph.models.tts.texts == [spoken] and len(backend.heard()) > 0
+            spy.complete.assert_not_called()
+            spy.generate.assert_not_called()
+            assert observations["service_calls"] == 0
+
+
 async def test_late_factory_failure_retires_router_and_prior_resources(leaves, monkeypatch, tmp_path):
     import src.main as module
 
