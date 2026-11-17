@@ -7,6 +7,7 @@ the wake (drop without STT), follow-up start in a quiet room, plus latency
 bounds of every close.
 """
 
+import math
 import sys
 import time
 from dataclasses import replace
@@ -36,6 +37,10 @@ CHUNK_S = CHUNK_SIZE / SR
 CONFIG = PostWakeConfig()
 DISPATCH_AT_MAX = replace(CONFIG, dispatch_at_max_utterance=True)
 END_SILENCE_S = CONFIG.end_silence_ms / 1000
+# The close lands on the first whole frame of silence at or past end_silence.
+END_CLOSE_S = math.ceil(CONFIG.end_silence_ms / 1000 / CHUNK_S - 1e-9) * CHUNK_S
+# Legacy endpoint: close 0.24 s after the end of speech (review probe P2).
+LEGACY_CLOSE_S = 0.24
 
 
 class _Detector:
@@ -284,7 +289,83 @@ def test_wake_vad_reaches_the_event_and_reinforces_nothing_below_threshold():
             break
     assert event is not None and event.wake_vad == pytest.approx(0.42)
     assert event.capture_trigger == "wake"
-    assert index * CHUNK_S == pytest.approx(1.04 + 0.64)
+    assert index * CHUNK_S == pytest.approx(1.04 + END_CLOSE_S)
+
+
+class _SileroHangover:
+    """Silero-like predictor whose probability lingers after speech ends."""
+
+    def __init__(self, frames=4):
+        self.frames = frames
+        self.left = 0
+
+    def __call__(self, audio):
+        level = float(np.sqrt(np.mean(np.square(audio))))
+        if level > 0.01:
+            self.left = self.frames
+            return 0.9
+        self.left -= 1
+        return 0.6 if self.left > 0 else 0.05
+
+
+def _production_post_wake() -> PostWakeConfig:
+    root = Path(__file__).resolve().parents[3]
+    cfg = yaml.safe_load((root / "config" / "settings.yaml").read_text())
+    return PostWakeConfig.from_dict(cfg["rooms"]["endpointing"]["post_wake"])
+
+
+@pytest.mark.parametrize("vad", [None, _SileroHangover])
+def test_production_config_closes_within_one_frame_of_the_legacy_endpoint(vad):
+    """No early_command in production (early_dispatch off): no parser-ready close."""
+    production = _production_post_wake()
+    rng = np.random.default_rng(13)
+    before = np.concatenate([_segment(rng, 3.04, 0.002), _segment(rng, 0.48, 0.03)])
+    pre_chunks = _chunks(before)
+    loop, rs = _loop(_Detector(fire_at=len(pre_chunks) - 1), post_wake=production)
+    if vad is not None:
+        loop._wake_vad_predictors["cocina"] = vad()
+    process = loop._make_audio_processor(rs)
+    for chunk in pre_chunks:
+        process(chunk[:, None], CHUNK_SIZE, None, None)
+    event = None
+    for index, chunk in enumerate(_chunks(np.concatenate([_segment(rng, 1.2, 0.03),
+                                                          _segment(rng, 3.0, 0.002)])), start=1):
+        process(chunk[:, None], CHUNK_SIZE, None, None)
+        assert rs.early_command is None
+        event = loop._poll_command(rs)
+        if event is not None:
+            break
+    assert event is not None and event.capture_complete is True
+    assert loop.endpoint_counts == {"close_silence": 1}
+    after_speech = index * CHUNK_S - 1.2
+    assert after_speech <= LEGACY_CLOSE_S + CHUNK_S + 1e-9
+
+
+def test_speech_found_only_by_silero_waits_for_the_longer_silence():
+    """Below the level ratio, Silero confirms speech; the close then needs both quiet."""
+
+    def silero(audio):
+        return 0.9 if float(np.mean(audio)) > 0.0003 else 0.05
+
+    rng = np.random.default_rng(17)
+    before = np.concatenate([_segment(rng, 3.04, 0.0012), _segment(rng, 0.48, 0.0012) + 0.0005])
+    pre_chunks = _chunks(before)
+    loop, rs = _loop(_Detector(fire_at=len(pre_chunks) - 1))
+    loop._wake_vad_predictors["cocina"] = silero
+    process = loop._make_audio_processor(rs)
+    for chunk in pre_chunks:
+        process(chunk[:, None], CHUNK_SIZE, None, None)
+    speech = _segment(rng, 1.2, 0.0012) + 0.0005
+    assert float(np.sqrt(np.mean(speech ** 2))) < 0.0012 * CONFIG.noise_ratio
+    event = None
+    for index, chunk in enumerate(_chunks(np.concatenate([speech, _segment(rng, 3.0, 0.0012)])), start=1):
+        process(chunk[:, None], CHUNK_SIZE, None, None)
+        event = loop._poll_command(rs)
+        if event is not None:
+            break
+    assert event is not None and event.capture_complete is True
+    vad_close = math.ceil(CONFIG.vad_end_silence_ms / 1000 / CHUNK_S - 1e-9) * CHUNK_S
+    assert index * CHUNK_S == pytest.approx(1.2 + vad_close)
 
 
 def test_legacy_endpoint_reproduces_the_diagnosis():

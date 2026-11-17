@@ -1679,7 +1679,8 @@ rooms:
       min_listen_s: 1.0          # escucha mínima tras el wake
       max_utterance_s: 5.0       # tope de audio tras el wake
       no_speech_timeout_s: 2.5   # sin voz tras el wake → descartar sin STT
-      end_silence_ms: 600        # silencio tras la voz que cierra el comando
+      end_silence_ms: 300        # silencio por nivel (Silero ignorado) que cierra el comando (revisión 1, M1: 600 sumaba +400 ms a cada comando)
+      vad_end_silence_ms: 600    # silencio (nivel y Silero) si la voz sólo se confirmó con Silero
       ready_silence_ms: 150      # cierre rápido si el parser ya tiene comando completo
       min_speech_ms: 240         # voz post-wake mínima (la cola del "Nexa" no cuenta)
       noise_ratio: 1.8           # voz = RMS >= 1.8 × piso de la room

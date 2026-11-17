@@ -1221,8 +1221,10 @@ vivo de la captura post-wake»).
 
 - V1, `rooms.endpointing.post_wake`: los tiempos se miden desde el wake (el
   pre-roll no cuenta); escucha >= 1 s y como mucho 5 s; cierra sólo tras voz
-  después del wake y silencio sostenido (600 ms; 150 ms si el parser ya tiene
-  el comando completo); voz = nivel >= 1,8 × el piso de ruido medido de la
+  después del wake y silencio sostenido: 300 ms por nivel (Silero no cuenta
+  para el silencio porque su probabilidad se arrastra tras la voz), 600 ms si
+  la voz sólo se confirmó con Silero, 150 ms si el parser ya tiene el comando
+  completo (sólo con `early_dispatch`, hoy apagado); voz = nivel >= 1,8 × el piso de ruido medido de la
   habitación, o Silero del wake >= 0,5. Sin voz en 2,5 s descarta sin STT
   (`[endpoint] code=drop_no_speech`, cuenta como captura vacía para el
   AmbientGuard). Al tope de 5 s con voz la captura queda incompleta y el router

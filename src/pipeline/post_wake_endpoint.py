@@ -62,8 +62,12 @@ class PostWakeConfig:
         max_utterance_s: Hard cap of audio after the wake.
         no_speech_timeout_s: Without any speech frame after the wake for this
             long, the capture is dropped without STT.
-        end_silence_ms: Sustained non-speech after confirmed speech that ends
-            the command.
+        end_silence_ms: Sustained level-only silence (RMS below
+            ``noise_ratio`` x floor, Silero ignored) after speech confirmed by
+            level that ends the command. Silero is ignored here because its
+            probability lingers after speech ends and stretched every close.
+        vad_end_silence_ms: Silence (neither level nor Silero) that ends a
+            command whose speech was confirmed only with Silero's help.
         ready_silence_ms: Shorter silence accepted when the streaming parser
             already holds a complete command (keeps the fast close).
         min_speech_ms: Speech after the wake needed to confirm a command
@@ -93,7 +97,8 @@ class PostWakeConfig:
     min_listen_s: float = 1.0
     max_utterance_s: float = 5.0
     no_speech_timeout_s: float = 2.5
-    end_silence_ms: int = 600
+    end_silence_ms: int = 300
+    vad_end_silence_ms: int = 600
     ready_silence_ms: int = 150
     min_speech_ms: int = 240
     noise_ratio: float = 1.8
@@ -112,6 +117,7 @@ class PostWakeConfig:
         if type(self.dispatch_at_max_utterance) is not bool:
             raise ValueError("invalid post_wake.dispatch_at_max_utterance")
         positive = ("min_listen_s", "max_utterance_s", "no_speech_timeout_s", "end_silence_ms",
+                    "vad_end_silence_ms",
                     "ready_silence_ms", "min_speech_ms", "noise_ratio", "noise_floor_min_rms",
                     "noise_floor_default_rms", "noise_window_s", "frame_samples", "stall_margin_s")
         for name in positive:
@@ -242,6 +248,8 @@ class EndpointState:
         speech_samples: Speech samples classified after the wake.
         speech_frames: Speech frames classified after the wake.
         last_speech_end: Buffer index just past the last speech frame.
+        level_speech_samples: Speech samples that passed the level test.
+        last_level_end: Buffer index just past the last level speech frame.
         vad_max: Highest Silero probability evaluated in this capture.
         peak_rms: Highest frame RMS after the wake.
         trigger: What opened the capture.
@@ -255,6 +263,8 @@ class EndpointState:
     speech_samples: int = 0
     speech_frames: int = 0
     last_speech_end: int | None = None
+    level_speech_samples: int = 0
+    last_level_end: int | None = None
     vad_max: float | None = None
     peak_rms: float = 0.0
     decision: EndpointDecision | None = None
@@ -273,6 +283,9 @@ class EndpointState:
                 self.speech_frames += 1
                 self.speech_samples += size
                 self.last_speech_end = start + size
+                if rms >= self.floor * config.noise_ratio:
+                    self.level_speech_samples += size
+                    self.last_level_end = start + size
             self.next_frame = start + size
 
     def decide(self, config: PostWakeConfig, sample_rate: int, parser_ready: bool,
@@ -296,9 +309,16 @@ class EndpointState:
         if parser_ready and self.speech_frames and silence_s is not None \
                 and silence_s * 1000 >= config.ready_silence_ms:
             return EndpointDecision.CLOSE_READY
-        if confirmed and post_s >= config.min_listen_s and silence_s is not None \
-                and silence_s * 1000 >= config.end_silence_ms:
-            return EndpointDecision.CLOSE_SILENCE
+        if confirmed and post_s >= config.min_listen_s:
+            if self.level_speech_samples * 1000 >= config.min_speech_ms * sample_rate:
+                # Level-confirmed speech: level-only silence, Silero hangover ignored.
+                quiet_ms = (self.next_frame - self.last_level_end) * 1000 / sample_rate
+                needed_ms = config.end_silence_ms
+            else:
+                quiet_ms = silence_s * 1000
+                needed_ms = config.vad_end_silence_ms
+            if quiet_ms >= needed_ms:
+                return EndpointDecision.CLOSE_SILENCE
         if post_s >= config.max_utterance_s or wall_since_wake_s >= config.max_utterance_s + config.stall_margin_s:
             return EndpointDecision.CLOSE_MAX if confirmed else EndpointDecision.DROP_NO_SPEECH
         if not self.speech_frames and post_s >= config.no_speech_timeout_s:
