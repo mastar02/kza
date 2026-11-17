@@ -19,7 +19,8 @@ import yaml
 from src.alerts.alert_manager import AlertManager, AlertPriority, AlertType
 from src.pipeline.command_processor import CommandModelFailed, CommandProcessor
 from src.stt.primary_health import (
-    ALERT_MESSAGE, PrimarySttHealth, PrimarySttHealthConfig, SttHealthState, alert_message, stt_error_code,
+    ALERT_MESSAGE, PrimarySttHealth, PrimarySttHealthConfig, SttHealthState, alert_message,
+    intermittent_message, stt_error_code,
 )
 from src.stt.whisper_fast import FastWhisperSTT, ModelReloadError, STTResult
 
@@ -671,3 +672,75 @@ def test_alert_text_variants_are_distinct_and_default_is_unchanged():
     assert len(variants) == 4
     assert ALERT_MESSAGE == ("El reconocimiento de voz principal falló varias veces seguidas. "
                              "Mientras tanto uso el reconocimiento de respaldo y estoy recargando el modelo.")
+
+
+# ---------------------------------------------------------------- intermittent failures and health exposure (VCP-8)
+
+def test_intermittent_failures_raise_one_flag_and_clear_with_a_clean_window():
+    health = PrimarySttHealth(PrimarySttHealthConfig(window_size=12, window_failures=4), clock=lambda: 0.0)
+    flagged = []
+    for _ in range(8):  # 1 failure in 3: never 3 in a row
+        flagged.append(health.record_failure("c").intermittent)
+        health.record_success()
+        health.record_success()
+    assert flagged.count(True) == 1 and flagged.index(True) == 3
+    assert health.state is SttHealthState.HEALTHY and health.snapshot()["intermittent"] is True
+    for _ in range(12):
+        health.record_success()
+    snap = health.snapshot()
+    assert snap["intermittent"] is False and snap["window_failures"] == 0 and snap["intermittent_episodes"] == 1
+    with pytest.raises(ValueError):
+        PrimarySttHealthConfig(window_size=3, window_failures=4)
+
+
+@pytest.mark.asyncio
+async def test_intermittent_primary_raises_one_content_free_alert():
+    class _Every3rd(_FlakyPrimary):
+        def transcribe_with_confidence(self, audio, sr=16000):
+            self.calls += 1
+            if self.calls % 3 == 1:
+                raise RuntimeError(CUDA_ERROR)
+            return STTResult("primary text", 5.0)
+
+    alerts = MagicMock()
+    alerts.create_alert = AsyncMock(return_value=object())
+    primary = _Every3rd()
+    cp, health = _processor(primary, _Shadow(), alerts=alerts)
+    for _ in range(15):
+        await cp.process_command(AUDIO, use_parallel=False)
+        await _drain(cp)
+    assert health.state is SttHealthState.HEALTHY and primary.reloads == 0
+    alerts.create_alert.assert_awaited_once()
+    _type, priority, message, details = alerts.create_alert.await_args.args
+    assert message == intermittent_message(fallback=True) and priority is AlertPriority.MEDIUM
+    assert details["code"] == "primary_intermittent" and details["window_failures"] == 4
+    assert SECRET not in str(details) and SECRET not in message
+
+
+def test_health_aggregator_exposes_the_voice_counters():
+    from src.monitoring.health_aggregator import HealthAggregator, OverallStatus
+    health = PrimarySttHealth(PrimarySttHealthConfig(failure_threshold=2), clock=lambda: 0.0)
+    counts = {"close_silence": 3, "drop_no_speech": 1}
+    aggregator = HealthAggregator(voice_health_provider=lambda: {
+        "stt_primary": health.snapshot(), "endpoint_counts": counts})
+    voice = next(s for s in aggregator.get_system_health().subsystems if s.name == "voice_pipeline")
+    assert voice.status is OverallStatus.HEALTHY and voice.extra["endpoint_counts"] == counts
+    health.record_failure("RuntimeError:cuda:abcdef")
+    health.record_failure("RuntimeError:cuda:abcdef")
+    voice = next(s for s in aggregator.get_system_health().subsystems if s.name == "voice_pipeline")
+    assert voice.status is OverallStatus.DEGRADED
+    assert voice.extra["stt_primary"]["codes"] == {"RuntimeError:cuda:abcdef": 2}
+    assert aggregator.get_system_health().status is not OverallStatus.HEALTHY
+
+    def broken():
+        raise RuntimeError("x")
+    failing = HealthAggregator(voice_health_provider=broken)
+    voice = next(s for s in failing.get_system_health().subsystems if s.name == "voice_pipeline")
+    assert voice.status is OverallStatus.DEGRADED
+
+
+def test_main_wires_the_voice_health_provider():
+    root = Path(__file__).resolve().parents[3]
+    source = (root / "src" / "main.py").read_text()
+    assert '"stt_primary": stt_health.snapshot()' in source
+    assert "voice_health_provider=" in source

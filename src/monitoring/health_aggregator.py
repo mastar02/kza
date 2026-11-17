@@ -74,11 +74,15 @@ class HealthAggregator:
         health_clock=None,
         loop_lag_provider=None,
         command_index_provider=None,
+        voice_health_provider=None,
     ):
         self._health_clock = health_clock or time.time
         self._audio_health_provider = audio_health_provider
         self._loop_lag_provider = loop_lag_provider
         self._command_index_provider = command_index_provider
+        # Voice capture/STT counters (codes and counts only): primary STT
+        # health snapshot and post-wake endpoint outcome counts.
+        self._voice_health_provider = voice_health_provider
         self._ha_client = ha_client
         self._latency_monitor = latency_monitor
         self._priority_queue = priority_queue
@@ -383,6 +387,25 @@ class HealthAggregator:
                                           "sync_latched": state.get("sync_latched")})
         return SubsystemHealth(name="command_index", status=OverallStatus.HEALTHY, detail="Command index active")
 
+    def _check_voice(self) -> SubsystemHealth:
+        """Primary STT health and endpoint counts; degraded during an episode."""
+        try:
+            state = self._voice_health_provider() or {}
+            stt = state.get("stt_primary") or {}
+            endpoint_counts = dict(state.get("endpoint_counts") or {})
+        except Exception as exc:
+            return SubsystemHealth(name="voice_pipeline", status=OverallStatus.DEGRADED,
+                                   detail=f"Voice health unavailable: {type(exc).__name__}")
+        extra = {"stt_primary": stt, "endpoint_counts": endpoint_counts}
+        if stt.get("state") == "degraded":
+            return SubsystemHealth(name="voice_pipeline", status=OverallStatus.DEGRADED,
+                                   detail="Primary STT degraded: shadow fallback in use", extra=extra)
+        if stt.get("intermittent"):
+            return SubsystemHealth(name="voice_pipeline", status=OverallStatus.DEGRADED,
+                                   detail="Primary STT failing intermittently", extra=extra)
+        return SubsystemHealth(name="voice_pipeline", status=OverallStatus.HEALTHY,
+                               detail="Primary STT healthy", extra=extra)
+
     def get_system_health(self) -> SystemHealth:
         """Collect health from all subsystems and compute overall status.
 
@@ -400,6 +423,8 @@ class HealthAggregator:
             subsystems.append(self._check_audio())
         if self._command_index_provider is not None:
             subsystems.append(self._check_command_index())
+        if self._voice_health_provider is not None:
+            subsystems.append(self._check_voice())
 
         # Overall status: worst of all subsystems
         statuses = [s.status for s in subsystems]

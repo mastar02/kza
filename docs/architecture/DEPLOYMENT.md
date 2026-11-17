@@ -1259,7 +1259,15 @@ vivo de la captura post-wake»).
   VRAM se libere de verdad depende de CTranslate2 y no se verificó en la GPU.
   Si la carga falla, el modelo queda ausente y las transcripciones fallan al
   instante sin intentar cargarlo; sólo la siguiente recarga permitida (600 s)
-  vuelve a cargar.
+  vuelve a cargar. Mientras recarga o está degradado, los comandos van directo
+  al respaldo (un comando cada 30 s, y el primero tras una recarga exitosa,
+  prueba el primario). Fallas intermitentes (>= 4 en los últimos 12 intentos,
+  sin 3 seguidas) dan una sola alerta MEDIUM. El panel de salud muestra el
+  subsistema `voice_pipeline` (estado del primario, contadores y códigos
+  saneados, y los conteos de `[endpoint]`), degradado durante un episodio. La
+  transcripción del respaldo queda marcada como `stt_source=shadow_fallback`
+  en el resultado y en los eventos de calidad ASR (`stt_fallback`), sin el
+  linaje del primario.
 
 Sin dependencias ni modelos nuevos; la asignación de GPUs no cambia.
 

@@ -15,6 +15,7 @@ import math
 import re
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Callable
@@ -85,6 +86,12 @@ class PrimarySttHealthConfig:
             skip the primary and use the shadow; one command per interval
             (and the first after a successful reload) still tries the primary
             so the episode can end.
+        window_size: Recent primary attempts considered for intermittent
+            failures.
+        window_failures: Failures within the window that raise one
+            "intermittent" alert even without ``failure_threshold`` in a row
+            (the fallback would otherwise hide them). It clears once the
+            window holds no failure.
     """
 
     failure_threshold: int = 3
@@ -94,10 +101,15 @@ class PrimarySttHealthConfig:
     reload_min_interval_s: float = 600.0
     alert_priority: str = "MEDIUM"
     probe_interval_s: float = 30.0
+    window_size: int = 12
+    window_failures: int = 4
 
     def __post_init__(self) -> None:
         if type(self.failure_threshold) is not int or self.failure_threshold < 1:
             raise ValueError("invalid primary_health.failure_threshold")
+        if (type(self.window_size) is not int or type(self.window_failures) is not int
+                or not 1 <= self.window_failures <= self.window_size):
+            raise ValueError("invalid primary_health window")
         for name in ("fallback_timeout_s", "reload_min_interval_s", "probe_interval_s"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
@@ -117,6 +129,8 @@ class PrimarySttHealthConfig:
             reload_min_interval_s=float(cfg.get("reload_min_interval_s", 600.0)),
             alert_priority=str(cfg.get("alert_priority", "MEDIUM")).upper(),
             probe_interval_s=float(cfg.get("probe_interval_s", 30.0)),
+            window_size=int(cfg.get("window_size", 12)),
+            window_failures=int(cfg.get("window_failures", 4)),
         )
 
 
@@ -126,6 +140,7 @@ class HealthActions:
 
     alert: bool = False
     reload: bool = False
+    intermittent: bool = False
 
 
 _ALERT_START = "El reconocimiento de voz principal falló varias veces seguidas."
@@ -154,6 +169,14 @@ def alert_message(*, fallback: bool, reload: bool) -> str:
 
 ALERT_MESSAGE = alert_message(fallback=True, reload=True)
 RECOVERY_MESSAGE = "El reconocimiento de voz principal volvió a funcionar."
+_INTERMITTENT_START = "El reconocimiento de voz principal está fallando de forma intermitente."
+
+
+def intermittent_message(*, fallback: bool) -> str:
+    """Spanish alert text for intermittent primary failures (content-free)."""
+    tail = ("Cuando falla, uso el reconocimiento de respaldo." if fallback
+            else "Cuando falla, puede que no entienda el comando.")
+    return f"{_INTERMITTENT_START} {tail}"
 
 
 @dataclass
@@ -167,6 +190,7 @@ class _Counters:
     reloads_failed: int = 0
     primary_skipped: int = 0
     primary_not_run: int = 0
+    intermittent_episodes: int = 0
     codes: dict[str, int] = field(default_factory=dict)
 
 
@@ -186,6 +210,8 @@ class PrimarySttHealth:
         self._reloading = False
         self._last_probe_at: float | None = None
         self._probe_after_reload = False
+        self._window: deque[bool] = deque(maxlen=self.config.window_size)
+        self._intermittent = False
         self._counters = _Counters()
 
     def attach_alert_manager(self, alert_manager) -> None:
@@ -216,6 +242,14 @@ class PrimarySttHealth:
             self._last_code = code
             self._counters.failures += 1
             self._counters.codes[code] = self._counters.codes.get(code, 0) + 1
+            self._window.append(True)
+            intermittent = False
+            if (self._state is SttHealthState.HEALTHY and not self._intermittent
+                    and sum(self._window) >= self.config.window_failures
+                    and self._consecutive < self.config.failure_threshold):
+                self._intermittent = True
+                self._counters.intermittent_episodes += 1
+                intermittent = True
             alert = False
             if self._consecutive >= self.config.failure_threshold and self._state is SttHealthState.HEALTHY:
                 self._state = SttHealthState.DEGRADED
@@ -232,7 +266,10 @@ class PrimarySttHealth:
             consecutive = self._consecutive
         logger.warning("[stt-health] code=primary_failure error=%s consecutive=%d state=%s",
                        code, consecutive, self._state.value)
-        return HealthActions(alert=alert, reload=reload)
+        if intermittent:
+            logger.warning("[stt-health] code=primary_intermittent window_failures=%d window=%d",
+                           self.config.window_failures, self.config.window_size)
+        return HealthActions(alert=alert, reload=reload, intermittent=intermittent)
 
     def record_success(self) -> bool:
         """Count one primary success.
@@ -246,6 +283,9 @@ class PrimarySttHealth:
             failures = self._consecutive
             self._consecutive = 0
             self._state = SttHealthState.HEALTHY
+            self._window.append(False)
+            if self._intermittent and not any(self._window):
+                self._intermittent = False
         if recovered:
             logger.info("[stt-health] code=primary_recovered after_failures=%d", failures)
         return recovered
@@ -321,16 +361,19 @@ class PrimarySttHealth:
                 "episodes": c.episodes, "reloads_ok": c.reloads_ok, "reloads_failed": c.reloads_failed,
                 "codes": dict(c.codes), "reloading": self._reloading,
                 "primary_skipped": c.primary_skipped, "primary_not_run": c.primary_not_run,
+                "intermittent": self._intermittent, "intermittent_episodes": c.intermittent_episodes,
+                "window_failures": sum(self._window), "window_size": len(self._window),
             }
 
     async def send_alert(self, recovered: bool = False, *, fallback: bool = True,
-                         reload: bool = True) -> bool:
+                         reload: bool = True, intermittent: bool = False) -> bool:
         """Raise the episode (or recovery) alert through the AlertManager.
 
         Args:
             recovered: Send the LOW recovery alert instead of the episode alert.
             fallback: The shadow transcript stands in while the primary fails.
             reload: A reload of the primary was started with this episode.
+            intermittent: Send the intermittent-failure alert (windowed rate).
 
         Returns:
             True when an alert was created.
@@ -343,11 +386,18 @@ class PrimarySttHealth:
 
         snapshot = self.snapshot()
         priority = AlertPriority.LOW if recovered else AlertPriority[self.config.alert_priority]
-        details = {"source": "stt_primary", "code": "primary_recovered" if recovered else "primary_degraded",
+        code = "primary_recovered" if recovered else "primary_intermittent" if intermittent else "primary_degraded"
+        details = {"source": "stt_primary", "code": code,
                    "last_error": snapshot["last_code"], "consecutive_failures": snapshot["consecutive_failures"]}
-        if not recovered:
+        if intermittent and not recovered:
+            details.update(fallback=bool(fallback), window_failures=snapshot["window_failures"],
+                           window_size=snapshot["window_size"])
+            message = intermittent_message(fallback=fallback)
+        elif not recovered:
             details.update(fallback=bool(fallback), reload_started=bool(reload))
-        message = RECOVERY_MESSAGE if recovered else alert_message(fallback=fallback, reload=reload)
+            message = alert_message(fallback=fallback, reload=reload)
+        else:
+            message = RECOVERY_MESSAGE
         try:
             alert = await manager.create_alert(AlertType.DEVICE, priority, message, details)
         except Exception as error:

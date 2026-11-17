@@ -233,6 +233,11 @@ stt:
     # directo al respaldo (no esperan el lock del modelo); un comando cada
     # probe_interval_s, y el primero tras una recarga exitosa, prueba el primario.
     probe_interval_s: 30
+    # Revisión 1 (VCP-8): fallas intermitentes (>= window_failures en los
+    # últimos window_size intentos, sin 3 seguidas) dan UNA alerta y el panel
+    # de salud (voice_pipeline) queda degradado hasta que la ventana se limpia.
+    window_size: 12
+    window_failures: 4
   model: "./models/whisper-v3-turbo"  # faster-whisper-large-v3-turbo-ct2 (~800MB, 8× más rápido que large-v3)
   device: "cuda:1"
   # 2026-05-07: float16 → int8_float16. FP16 + workspaces cuBLAS de

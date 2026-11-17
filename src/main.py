@@ -2076,6 +2076,11 @@ async def build_application(
             # Only an index type that defines it (test doubles report nothing).
             command_index_provider=(chroma.index_health
                                     if callable(getattr(type(chroma), "index_health", None)) else None),
+            # Primary STT health + post-wake endpoint counts (codes and counts only).
+            voice_health_provider=lambda: {
+                "stt_primary": stt_health.snapshot(),
+                "endpoint_counts": dict(multi_room_loop.endpoint_counts) if multi_room_loop else {},
+            },
         )
 
         dashboard = DashboardAPI(
