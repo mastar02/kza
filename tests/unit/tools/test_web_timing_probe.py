@@ -1899,6 +1899,9 @@ async def test_smoke_batches_use_the_play_rule_chosen_by_fixture_pages(monkeypat
     header = json.loads((Path(report['directory']) / 'batch.json').read_text())
     assert header['play_control_rule'] == CHOSEN_RULE
     assert header['cell_settings']['play_control_rule_source'] == 'smoke_record:fixture_pages'
+    # R7-1: the header names the deciding entries the inputs came from.
+    assert header['cell_settings']['smoke_inputs']['fixture_pages'] == {'started_at': 3.0, 'reviewed_sha256': None}
+    assert header['cell_settings']['smoke_inputs']['quiet_baseline']['started_at'] == 0.0
     # V14c, R6-8: every run result names its method_identity, the audio output included.
     run_file = json.loads(next(Path(report['directory']).glob('run-*.json')).read_text())
     assert run_file['method_identity']['audio_output']['builtin'] is True
@@ -1908,6 +1911,66 @@ async def test_smoke_batches_use_the_play_rule_chosen_by_fixture_pages(monkeypat
     assert 'instrumentation_overhead' in probe.smoke_order_missing(record, 'frame_event')
     assert probe.smoke_order_missing(record, 'fixture_pages') == []
     assert probe.smoke_order_missing(probe.SmokeRecord(tmp_path / 'none.json'), 'cold_focus') == ['quiet_baseline']
+
+
+def test_smoke_inputs_come_from_the_deciding_entry_and_no_item_repeats_after_a_later_stage(tmp_path):
+    """R7-1 (run_rules.which_run_counts, smoke_order): the first complete entry without faults that started before
+    any later-stage entry decides an item; a faulted complete entry never decides; no item starts once a later
+    stage has an entry, so fixture_pages repeated after a batch is refused, and an entry written after a batch is
+    never used."""
+    other = {'x': 1, 'y': 2}
+    path = write_smoke_prerequisites(tmp_path / 'smoke-record.json')
+    data = json.loads(path.read_text())
+    fixture = data['runs'][3]
+    fixture['faults'] = ['quiet_machine']
+    path.write_text(json.dumps(data))
+    record = probe.SmokeRecord(path)
+    # A complete entry with a recorded fault does not decide: the batches wait for a repeat.
+    assert probe.deciding_entry(record, 'fixture_pages') is None
+    assert 'fixture_pages' in probe.smoke_order_missing(record, 'batches')
+    with pytest.raises(SystemExit, match='smoke_play_control_rule_missing'):
+        probe.smoke_play_rule(record)
+    repeat = record.start('fixture_pages', SHA, cause='quiet_machine')
+    record.finish(repeat, 'complete', {'observations': {'play_control_rule': {'rule': other}}})
+    record = probe.SmokeRecord(path)
+    assert probe.smoke_play_rule(record) == other
+    assert probe.smoke_inputs(record)['fixture_pages'] == {'started_at': repeat['started_at'], 'reviewed_sha256': SHA}
+    # The deciding entry is the first fault-free one, not the last complete one.
+    data = json.loads(path.read_text())
+    data['runs'].append(dict(data['runs'][-1], started_at=data['runs'][-1]['started_at'] + 1,
+                             result={'observations': {'play_control_rule': {'rule': CHOSEN_RULE}}}))
+    path.write_text(json.dumps(data))
+    assert probe.smoke_play_rule(probe.SmokeRecord(path)) == other
+    # The idle load comes from the deciding quiet_baseline entry too, never a later or faulted one.
+    data['runs'].append({'item': 'quiet_baseline', 'status': 'complete', 'faults': ['quiet_machine'],
+                         'started_at': 99.0, 'result': {'idle': 9.9}})
+    path.write_text(json.dumps(data))
+    assert probe.smoke_idle(probe.SmokeRecord(path)) == 1.5
+    # Once a batch has an entry, fixture_pages (and any earlier item) never starts again, even with a cause its last
+    # entry recorded (the R7-1 example: caffeinate lost at the end of a complete fixture_pages entry).
+    path = write_smoke_prerequisites(tmp_path / 'later.json')
+    data = json.loads(path.read_text())
+    data['runs'][3]['faults'] = ['quiet_machine']
+    batch_time = 9.0
+    data['runs'].append({'item': 'batch:desktop:#voces', 'status': 'complete', 'faults': [], 'started_at': batch_time})
+    path.write_text(json.dumps(data))
+    for item, cause in (('fixture_pages', 'quiet_machine'), ('quiet_baseline', None), ('cold_focus', None)):
+        with pytest.raises(SystemExit, match=f'smoke_repeat_refused_after_later_stage:{item}:.*batch:desktop:#voces'):
+            probe.SmokeRecord(path).start(item, SHA, cause=cause)
+    probe.SmokeRecord(path).start('lock_read_unlocked', SHA)
+    # An entry written after a batch entry (outside the probe) is never used.
+    data = json.loads(path.read_text())
+    data['runs'].append({'item': 'fixture_pages', 'status': 'complete', 'faults': [], 'started_at': batch_time + 1,
+                         'result': {'observations': {'play_control_rule': {'rule': CHOSEN_RULE}}}})
+    path.write_text(json.dumps(data))
+    with pytest.raises(SystemExit, match='smoke_play_control_rule_missing'):
+        probe.smoke_play_rule(probe.SmokeRecord(path))
+    # A batch cell does not start once the overhead has an entry.
+    data['runs'].append({'item': 'instrumentation_overhead', 'status': 'complete', 'faults': [],
+                         'started_at': batch_time + 2})
+    path.write_text(json.dumps(data))
+    with pytest.raises(SystemExit, match='smoke_repeat_refused_after_later_stage:batch:mobile:#hogar'):
+        probe.SmokeRecord(path).start('batch:mobile:#hogar', SHA)
 
 
 async def test_baseline_needs_every_batch_fill_in_and_uses_the_frozen_composition(monkeypatch, tmp_path):

@@ -1403,6 +1403,11 @@ class SmokeRecord:
         return [run for run in self.data['runs'] if run['item'] in (item, 'all') or item == 'all']
 
     def start(self, item: str, reviewed_sha256: str, cause: str | None = None) -> dict:
+        # R7-1 (smoke_gate.smoke_order): no item starts, first run or repeat, once an item of a later stage has an
+        # entry, so the inputs a later stage used never change after it ran.
+        later = smoke_later_entries(self, item)
+        if later:
+            raise SystemExit(f'smoke_repeat_refused_after_later_stage:{item}:{",".join(later)}')
         previous = self.previous(item)
         if previous:
             last = previous[-1]
@@ -1422,23 +1427,64 @@ class SmokeRecord:
         write_json_atomic(self.path, self.data)
 
 
+def smoke_stage(item: str) -> int | None:
+    """The index of an item's stage in SMOKE_ORDER (every batch cell is in the 'batches' stage); None for the
+    lock reads, which may run at any point."""
+    name = 'batches' if item.startswith('batch:') else item
+    return next((index for index, entry in enumerate(SMOKE_ORDER)
+                 if name == entry or (isinstance(entry, tuple) and name in entry)), None)
+
+
+def _later_stage_runs(record: SmokeRecord, item: str) -> list:
+    stage = smoke_stage(item)
+    if stage is None:
+        return []
+    return [run for run in record.data['runs'] if (smoke_stage(run['item']) or 0) > stage]
+
+
+def smoke_later_entries(record: SmokeRecord, item: str) -> list:
+    """R7-1: the recorded items of a stage after the item's stage (none for a lock read)."""
+    return sorted({run['item'] for run in _later_stage_runs(record, item)})
+
+
+def deciding_entry(record: SmokeRecord, item: str) -> dict | None:
+    """R7-1 (smoke_gate.run_rules.which_run_counts): the entry that decides an item is its first complete entry
+    without recorded faults that started before any entry of a later stage. A complete entry with a recorded
+    fault never decides (it is repeated with --cause <fault>); a later complete entry never replaces the deciding
+    one (SmokeRecord.start refuses a repeat of a fault-free entry and any start after a later stage)."""
+    cutoff = min((run['started_at'] for run in _later_stage_runs(record, item) if run.get('started_at') is not None),
+                 default=None)
+    for run in record.data['runs']:
+        if run['item'] != item or run.get('status') != 'complete' or run.get('faults'):
+            continue
+        if cutoff is not None and (run.get('started_at') is None or run['started_at'] >= cutoff):
+            continue
+        return run
+    return None
+
+
 def smoke_idle(record: SmokeRecord) -> float:
-    """The smoke's idle load from its own complete quiet_baseline item (smoke_gate.quiet_baseline)."""
-    done = [run for run in record.data['runs'] if run['item'] == 'quiet_baseline' and run['status'] == 'complete']
-    if not done:
+    """The smoke's idle load from its deciding quiet_baseline entry (smoke_gate.quiet_baseline, R7-1)."""
+    entry = deciding_entry(record, 'quiet_baseline')
+    if entry is None:
         raise SystemExit('smoke_quiet_baseline_missing: run `smoke-item quiet-baseline` first')
-    return done[-1]['result']['idle']
+    return entry['result']['idle']
 
 
-def _last_complete(record: SmokeRecord, item: str) -> dict | None:
-    done = [run for run in record.data['runs'] if run['item'] == item and run['status'] == 'complete']
-    return done[-1] if done else None
+def smoke_inputs(record: SmokeRecord) -> dict:
+    """R7-1: the deciding entries smoke batches and overhead runs take their inputs from, by started_at (written
+    into every smoke batch header and the overhead result)."""
+    inputs = {}
+    for item in ('quiet_baseline', 'background_activity', 'fixture_pages'):
+        entry = deciding_entry(record, item) or {}
+        inputs[item] = {'started_at': entry.get('started_at'), 'reviewed_sha256': entry.get('reviewed_sha256')}
+    return inputs
 
 
 def smoke_play_rule(record: SmokeRecord) -> dict:
-    """R6-1 (smoke_gate.smoke_order, preview_ready_state): the play-control rule the smoke's own complete
-    fixture_pages item chose; smoke batches and overhead runs refuse to start without it."""
-    entry = _last_complete(record, 'fixture_pages')
+    """R6-1, R7-1 (smoke_gate.smoke_order, preview_ready_state): the play-control rule the smoke's deciding
+    fixture_pages entry chose; smoke batches and overhead runs refuse to start without it."""
+    entry = deciding_entry(record, 'fixture_pages')
     rule = ((((entry or {}).get('result') or {}).get('observations') or {}).get('play_control_rule') or {}).get('rule')
     if not rule:
         raise SystemExit('smoke_play_control_rule_missing: run `smoke-item fixture-pages` first; '
@@ -1447,8 +1493,8 @@ def smoke_play_rule(record: SmokeRecord) -> dict:
 
 
 def smoke_background_branch(record: SmokeRecord) -> str:
-    """R6-1 (smoke_gate.smoke_order): the branch of the smoke's own complete background_activity item."""
-    entry = _last_complete(record, 'background_activity')
+    """R6-1, R7-1 (smoke_gate.smoke_order): the branch of the smoke's deciding background_activity entry."""
+    entry = deciding_entry(record, 'background_activity')
     branch = ((entry or {}).get('result') or {}).get('branch')
     if branch not in ('none', 'netlog'):
         raise SystemExit('smoke_background_branch_missing: run `smoke-item background` first')
@@ -1457,14 +1503,15 @@ def smoke_background_branch(record: SmokeRecord) -> str:
 
 # R6-1 (smoke_gate.smoke_order): quiet_baseline; cold_focus and background_activity; fixture_pages; the 12 batches;
 # instrumentation_overhead; frame_event. lock_read items may run at any point. An item refuses to start until every
-# item before it has a complete entry (a batch cell also counts when its entry was discarded: it is recorded and never
-# repeated automatically).
+# item before it has a deciding entry (deciding_entry; a batch cell also counts when its last entry is complete or
+# discarded: it is recorded and never repeated automatically), and no item starts once a later stage has an entry
+# (R7-1, SmokeRecord.start).
 SMOKE_ORDER = ('quiet_baseline', ('cold_focus', 'background_activity'), 'fixture_pages', 'batches',
                'instrumentation_overhead', 'frame_event')
 
 
 def smoke_order_missing(record: SmokeRecord, item: str) -> list:
-    """The earlier smoke items that have no complete entry yet (R6-1)."""
+    """The earlier smoke items that have no deciding entry yet (R6-1, R7-1)."""
     stage = next(index for index, entry in enumerate(SMOKE_ORDER)
                  if item == entry or (isinstance(entry, tuple) and item in entry))
     missing = []
@@ -1475,7 +1522,7 @@ def smoke_order_missing(record: SmokeRecord, item: str) -> list:
                     runs = record.previous(f'batch:{cell["viewport"]}:{cell["view"]}')
                     if not runs or runs[-1].get('status') not in ('complete', 'discarded'):
                         missing.append(f'batch:{cell["viewport"]}:{cell["view"]}')
-            elif _last_complete(record, name) is None:
+            elif deciding_entry(record, name) is None:
                 missing.append(name)
     return missing
 
@@ -1493,7 +1540,7 @@ def cell_settings(mode: str, fill_ins: dict, record: SmokeRecord | None = None) 
     if mode == 'smoke':
         check_smoke_order(record, 'batches')
         return {'idle': smoke_idle(record), 'post_batch': None, 'play_control_rule': smoke_play_rule(record),
-                'play_control_rule_source': 'smoke_record:fixture_pages',
+                'play_control_rule_source': 'smoke_record:fixture_pages', 'smoke_inputs': smoke_inputs(record),
                 'background_branch': smoke_background_branch(record), 'composition': dict(BATCH_COMPOSITION['smoke']),
                 'warm_rule': False, 'frame_event': None, 'untraced_inp': False, 'overhead': None}
     missing = [key for key in ('idle_load', 'post_batch_load', 'play_control_rule', 'background_branch', 'frame_event')
@@ -4266,10 +4313,15 @@ def main(argv=None) -> int:
                 summary = await fixture_page_checks('smoke', pages_dir, binary=browser_binary(), profile_root=None)
                 return {'ok': summary['ok'], 'directory': str(pages_dir), 'checks': summary['checks'],
                         'observations': summary['observations']}
+            async def overhead():
+                # R7-1: the overhead result names the deciding entries its inputs came from.
+                result = await smoke_overhead(sha, smoke_play_rule(record))
+                result['smoke_inputs'] = smoke_inputs(record)
+                return result
             bodies = {'cold-focus': ('cold_focus', lambda: smoke_cold_focus(out_dir)),
                       'background': ('background_activity', lambda: smoke_background(out_dir)),
                       'fixture-pages': ('fixture_pages', fixture_pages),
-                      'overhead': ('instrumentation_overhead', lambda: smoke_overhead(sha, smoke_play_rule(record)))}
+                      'overhead': ('instrumentation_overhead', overhead)}
             item, body = bodies[args.item]
             check_smoke_order(record, item)
             if item == 'instrumentation_overhead':
