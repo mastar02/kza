@@ -19,7 +19,7 @@ import yaml
 from src.alerts.alert_manager import AlertManager, AlertPriority, AlertType
 from src.pipeline.command_processor import CommandModelFailed, CommandProcessor
 from src.stt.primary_health import (
-    ALERT_MESSAGE, PrimarySttHealth, PrimarySttHealthConfig, SttHealthState, stt_error_code,
+    ALERT_MESSAGE, PrimarySttHealth, PrimarySttHealthConfig, SttHealthState, alert_message, stt_error_code,
 )
 from src.stt.whisper_fast import FastWhisperSTT, ModelReloadError, STTResult
 
@@ -640,3 +640,34 @@ async def test_a_reload_requested_after_close_does_not_stay_in_flight():
     cp._primary_failed("RuntimeError:cuda:abcdef")
     snap = health.snapshot()
     assert snap["reloading"] is False and snap["reloads_failed"] == 1
+
+
+# ---------------------------------------------------------------- alert text follows the state (VCP-7)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fallback_on,reload_supported", [(True, True), (False, False), (True, False), (False, True)])
+async def test_alert_text_states_only_what_will_happen(fallback_on, reload_supported):
+    primary = _FlakyPrimary()
+    if not reload_supported:
+        primary.reload = None
+    alerts = MagicMock()
+    alerts.create_alert = AsyncMock(return_value=object())
+    health = PrimarySttHealth(PrimarySttHealthConfig(failure_threshold=1, fallback_to_shadow=fallback_on),
+                              alert_manager=alerts, clock=lambda: 0.0)
+    cp = CommandProcessor(stt=primary, shadow_stt=_Shadow(), stt_health=health)
+    await cp.process_command(AUDIO, use_parallel=False)
+    await _drain(cp)
+    _type, _priority, message, details = alerts.create_alert.await_args.args
+    assert message == alert_message(fallback=fallback_on, reload=reload_supported)
+    assert details["fallback"] is fallback_on and details["reload_started"] is reload_supported
+    assert ("respaldo y estoy recargando" in message) == (fallback_on and reload_supported)
+    assert ("recargando" in message) == reload_supported
+    assert ("uso el reconocimiento de respaldo" in message) == fallback_on
+    assert SECRET not in message and "RuntimeError" not in message
+
+
+def test_alert_text_variants_are_distinct_and_default_is_unchanged():
+    variants = {alert_message(fallback=f, reload=r) for f in (True, False) for r in (True, False)}
+    assert len(variants) == 4
+    assert ALERT_MESSAGE == ("El reconocimiento de voz principal falló varias veces seguidas. "
+                             "Mientras tanto uso el reconocimiento de respaldo y estoy recargando el modelo.")

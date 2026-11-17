@@ -383,8 +383,11 @@ class CommandProcessor:
             logger.warning("Primary STT unavailable: code=%s", code)
             return
         actions = self._stt_health.record_failure(code)
+        reload = actions.reload and not self._closed and callable(getattr(self.stt, "reload", None))
         if actions.alert:
-            self._start_health_task(self._stt_health.send_alert())
+            # The text states only what will happen: fallback and reload as configured now.
+            self._start_health_task(self._stt_health.send_alert(
+                fallback=self._fallback_available(), reload=reload))
         if actions.reload:
             self._start_health_task(self._reload_primary(), reload=True)
 

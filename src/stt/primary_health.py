@@ -128,8 +128,31 @@ class HealthActions:
     reload: bool = False
 
 
-ALERT_MESSAGE = ("El reconocimiento de voz principal falló varias veces seguidas. "
-                 "Mientras tanto uso el reconocimiento de respaldo y estoy recargando el modelo.")
+_ALERT_START = "El reconocimiento de voz principal falló varias veces seguidas."
+_ALERT_STATE = {
+    (True, True): "Mientras tanto uso el reconocimiento de respaldo y estoy recargando el modelo.",
+    (True, False): ("Mientras tanto uso el reconocimiento de respaldo; "
+                    "la recarga automática no está disponible ahora."),
+    (False, True): "Estoy recargando el modelo; mientras tanto puede que no entienda los comandos de voz.",
+    (False, False): ("No hay respaldo ni recarga automática: puede que no entienda los "
+                     "comandos de voz hasta que alguien lo revise."),
+}
+
+
+def alert_message(*, fallback: bool, reload: bool) -> str:
+    """Spanish episode alert text that states only what will actually happen.
+
+    Args:
+        fallback: The shadow transcript will stand in for the primary.
+        reload: A reload of the primary model was started now.
+
+    Returns:
+        Content-free alert text (no codes, no transcript).
+    """
+    return f"{_ALERT_START} {_ALERT_STATE[(bool(fallback), bool(reload))]}"
+
+
+ALERT_MESSAGE = alert_message(fallback=True, reload=True)
 RECOVERY_MESSAGE = "El reconocimiento de voz principal volvió a funcionar."
 
 
@@ -300,8 +323,14 @@ class PrimarySttHealth:
                 "primary_skipped": c.primary_skipped, "primary_not_run": c.primary_not_run,
             }
 
-    async def send_alert(self, recovered: bool = False) -> bool:
+    async def send_alert(self, recovered: bool = False, *, fallback: bool = True,
+                         reload: bool = True) -> bool:
         """Raise the episode (or recovery) alert through the AlertManager.
+
+        Args:
+            recovered: Send the LOW recovery alert instead of the episode alert.
+            fallback: The shadow transcript stands in while the primary fails.
+            reload: A reload of the primary was started with this episode.
 
         Returns:
             True when an alert was created.
@@ -316,9 +345,11 @@ class PrimarySttHealth:
         priority = AlertPriority.LOW if recovered else AlertPriority[self.config.alert_priority]
         details = {"source": "stt_primary", "code": "primary_recovered" if recovered else "primary_degraded",
                    "last_error": snapshot["last_code"], "consecutive_failures": snapshot["consecutive_failures"]}
+        if not recovered:
+            details.update(fallback=bool(fallback), reload_started=bool(reload))
+        message = RECOVERY_MESSAGE if recovered else alert_message(fallback=fallback, reload=reload)
         try:
-            alert = await manager.create_alert(AlertType.DEVICE, priority,
-                                               RECOVERY_MESSAGE if recovered else ALERT_MESSAGE, details)
+            alert = await manager.create_alert(AlertType.DEVICE, priority, message, details)
         except Exception as error:
             logger.warning("[stt-health] code=alert_failed error=%s", type(error).__name__)
             return False
