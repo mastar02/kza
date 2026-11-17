@@ -349,6 +349,11 @@ DELEGATION_FROZEN = "runtime_admission_delegation_frozen"
 OWNERS_PRESENT = "runtime_admission_owners_present"
 COMPACTION_OWNERS_PRESENT = "runtime_admission_compaction_owners_present"
 TRANSITION_REQUIRES_RELEASE_MODE = "runtime_admission_transition_requires_release_mode"
+# Row PA (sc-release-design v4 mechanism.closed_witness.regressed_source, R5-1): a recovery record
+# with operator-confirmed regressions is a source witness only with its bound sha256.
+RECOVERY_REGRESSED_SOURCE = "runtime_admission_recovery_regressed_source"
+# Row DR (mechanism.dry_run_shadow): adopt --dry-run's private copy lives only here, under the lease.
+DRY_RUN_SHADOW_UNSAFE = "runtime_admission_dry_run_shadow_unsafe"
 
 _ADMISSION_VALIDATION_LOCK = threading.RLock()
 
@@ -3637,11 +3642,119 @@ def _require_root_lease(root: Path) -> None:
         raise ValueError("runtime_admission_controller_lease_required") from None
 
 
-def verify_closed_binding(root: Path, binding_id: str) -> dict:
+# The transition worker's bound regressed source (row PA): run_materialization binds its log's
+# intent.source_recovery_sha256 here for its reads of H (snapshot, copy catalog, journal derivation).
+_REGRESSED_SOURCE = threading.local()
+
+
+@contextmanager
+def regressed_source_bound(sha256: str | None):
+    """Bind one log's ``intent.source_recovery_sha256`` for this thread (None binds nothing).
+
+    Only the compaction worker enters it, under its log's gate, with the
+    intent's value: closed_witness then admits that exact recovery record, and
+    only it, for H's reads deep in src (R5-1). Every other caller passes the
+    sha256 explicitly or admits no regressed record.
+    """
+    if sha256 is not None and not _hex64(sha256):
+        raise ValueError(RECOVERY_REGRESSED_SOURCE)
+    previous = getattr(_REGRESSED_SOURCE, "sha256", None)
+    _REGRESSED_SOURCE.sha256 = sha256
+    try:
+        yield
+    finally:
+        _REGRESSED_SOURCE.sha256 = previous
+
+
+def recovery_witness_head(root: Path, head: dict) -> dict | None:
+    """The closed head whose recovery record witnesses ``head``'s binding, or None (row PA).
+
+    The head itself when it has a recovery record; for the head an abort
+    returned to H with (its manual companion of kind 'compaction_return', same
+    binding, an earlier generation), the H it names, repeatedly; otherwise None.
+    """
+    root = Path(root)
+    while not os.path.lexists(recovery_record_path(root, head)):
+        if not os.path.lexists(_manual_head_path(root, head)) or _read_manual_head(root, head)["kind"] \
+                != "compaction_return":
+            return None
+        returned = _read_compaction_return(root, head)["h_head"]
+        if returned["binding_id"] != head["binding_id"] or returned["generation"] >= head["generation"]:
+            raise ValueError("runtime_admission_manual_companion_changed")
+        head = returned
+    return head
+
+
+def closed_witness(root: Path, binding_id: str, *, head: dict | None = None,
+                   regressed_source_sha256: str | None = None) -> dict:
+    """The proof that a closed head's binding was closed (sc-release-design v4 mechanism.closed_witness).
+
+    When ``head`` (default: the current head) is closed with this binding and
+    has a recovery record (its own, or through an abort's return to H,
+    recovery_witness_head), that record is the witness, even if an older
+    closure proved the same binding (a regression can restore an older closed
+    state exactly; R5-1 still needs the operator's bound sha256 for it). It is
+    the immutable record adopt_recovered_state wrote: its 'recovery' companion
+    verified with the record (_read_manual_head), new_binding_id equal to the
+    binding, and checks.regressed empty with no resurrected count (no ledger or
+    append-only regression, no resurrected family, no state changed after
+    close, no missing ledger): ``{"kind": "recovery", "record_sha256",
+    "record"}``. A record with confirmed regressions is a witness only when
+    ``regressed_source_sha256`` (or the worker's bound one) is its sha256,
+    else RECOVERY_REGRESSED_SOURCE (R5-1). In every other case (a closure
+    head, a historical binding) it is ``{"kind": "closure", "proof": ...}``,
+    admission/closures/<binding_id>.json read and checked exactly as before,
+    and a missing proof raises as before. compaction_verified and the
+    delegation grants stay closure-only.
+    """
+    root = Path(root)
+    witness_head = read_admission_head(root) if head is None else head
+    recovered = None
+    if (type(witness_head) is dict and witness_head.get("status") == "closed"
+            and witness_head.get("binding_id") == binding_id):
+        recovered = recovery_witness_head(root, witness_head)
+    if recovered is None:
+        return {"kind": "closure", "proof": _closure_proof(root, binding_id)}
+    manual = _read_manual_head(root, recovered)
+    record = _read_recovery_record(root, recovered)
+    if (manual["kind"] != "recovery" or record["new_binding_id"] != binding_id
+            or _digest(read_binding(root, binding_id)) != binding_id):
+        raise ValueError("runtime_admission_manual_close_proof")
+    checks = record["checks"]
+    regressed, resurrected = checks.get("regressed"), checks.get("resurrected")
+    if (type(regressed) is not list or any(type(item) is not str for item in regressed)
+            or type(resurrected) is not dict
+            or any(type(value) is not int or value < 0 for value in resurrected.values())):
+        raise ValueError("runtime_admission_recovery_record_schema")
+    sha256 = _digest(record)
+    if regressed or any(resurrected.values()):
+        bound = (regressed_source_sha256 if regressed_source_sha256 is not None
+                 else getattr(_REGRESSED_SOURCE, "sha256", None))
+        if bound != sha256:
+            raise ValueError(RECOVERY_REGRESSED_SOURCE)
+    return {"kind": "recovery", "record_sha256": sha256, "record": record}
+
+
+def recovery_record_of(root: Path, head: dict) -> dict | None:
+    """The recovery record that witnesses a closed head (recovery_witness_head), or None."""
+    recovered = recovery_witness_head(root, head)
+    return None if recovered is None else _read_recovery_record(root, recovered)
+
+
+def recovery_record_sha256(root: Path, head: dict) -> str | None:
+    """The sha256 of that record (what --accept-regressed-source names), or None."""
+    record = recovery_record_of(root, head)
+    return None if record is None else _digest(record)
+
+
+def verify_closed_binding(root: Path, binding_id: str, *, regressed_source_sha256: str | None = None) -> dict:
     """Verify a closed source while the caller owns exclusive root admission.
 
     Historical bindings are permitted only while their physical roots, schemas,
-    protected decisions and actual closure witness still match exactly.
+    protected decisions and actual closure witness still match exactly. The
+    witness is closed_witness's (row PA): a closure proof whose manual head is
+    a 'closure', or the current head's clean recovery record; a regressed one
+    only with ``regressed_source_sha256`` (R5-1).
     """
     root = _safe_directory(Path(root).resolve(strict=True))
     _require_root_lease(root)
@@ -3655,13 +3768,14 @@ def verify_closed_binding(root: Path, binding_id: str) -> dict:
     if marker != {"schema_version": 1, "admission_root": str(root),
                   "binding_id": binding_id, "state_root": binding["state_root"]}:
         raise ValueError("runtime_admission_marker_mismatch")
-    _closure_proof(root, binding_id)
+    witness = closed_witness(root, binding_id, regressed_source_sha256=regressed_source_sha256)
     validate_target_ownership(root, binding)
     _verify_manual_head(root, head, read_binding(root, head["binding_id"]))
-    closed_head = _manual_closed_head(_closure_proof(root, binding_id))
-    record = _verify_manual_head(root, closed_head, binding)
-    if record["kind"] != "closure":
-        raise ValueError("runtime_admission_manual_close_proof")
+    if witness["kind"] == "closure":
+        closed_head = _manual_closed_head(witness["proof"])
+        record = _verify_manual_head(root, closed_head, binding)
+        if record["kind"] != "closure":
+            raise ValueError("runtime_admission_manual_close_proof")
     return binding
 
 
@@ -4644,6 +4758,34 @@ def _probe_candidate(root: Path, name: str, binding: dict, *, timeout: float) ->
         raise ValueError("runtime_admission_candidate_rejected: binding_mismatch")
 
 
+def dry_run_directory(root: Path) -> Path:
+    """<root>/admission/dry-run/: the only place adopt --dry-run copies the state to (row DR)."""
+    return Path(root) / "admission" / "dry-run"
+
+
+def remove_dry_run_shadows(root: Path) -> None:
+    """Remove everything under <root>/admission/dry-run/ (sc-release-design v4 mechanism.dry_run_shadow).
+
+    AdmissionController.__enter__ calls it right after the flock, before any
+    other check, at every gate: the lease proves no dry run is running, so
+    what is there is a killed dry run's plaintext copy. Nothing is followed:
+    a directory goes with rmtree (links inside it are unlinked, not followed),
+    anything else is unlinked. A symlinked admission/ refuses DRY_RUN_SHADOW_UNSAFE.
+    """
+    admission = Path(root) / "admission"
+    if os.path.islink(admission):
+        raise ValueError(DRY_RUN_SHADOW_UNSAFE)
+    path = dry_run_directory(root)
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(info.st_mode):
+        shutil.rmtree(path)
+    else:
+        os.unlink(path)
+
+
 class AdmissionController:
     """Own one admission root until each managed child is actually reaped.
 
@@ -4677,6 +4819,8 @@ class AdmissionController:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise ValueError("runtime_admission_busy") from None
+            # Row DR: holding the lease proves no dry run is running; a killed one's shadow goes first.
+            remove_dry_run_shadows(self.root)
             head = read_admission_head(self.root)
             if head is not None and head["status"] != "closed" and not self.allow_open_head:
                 raise ValueError("runtime_admission_not_closed")

@@ -160,6 +160,11 @@ K_TRANSIENT = "runtime_admission_compaction_k_transient"
 K_TRANSIENT_ERRNOS = W0_TRANSIENT_ERRNOS - {errno.EIO}
 K_TRANSIENT_SQLITE = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_NOMEM,
                                 sqlite3.SQLITE_INTERRUPT})
+# Row PA (sc-release-design v4 closed_witness.regressed_source, R5-1): H closed by a recovery record with
+# confirmed regressions is a source only through `compact plan|start --accept-regressed-source <12+ hex>`.
+REGRESSED_SOURCE_REQUIRED = "runtime_admission_compaction_regressed_source_required"
+REGRESSED_SOURCE_MISMATCH = "runtime_admission_compaction_regressed_source_mismatch"
+REGRESSED_SOURCE_PREFIX = re.compile("[0-9a-f]{12,64}")
 # Review RB-3: K' head's closure proof unreadable after V (storage damage, a manual edit): an HD-like stop.
 K_CLOSURE_UNREADABLE = "runtime_admission_compaction_k_closure_unreadable"
 # SC-4c closed collection list (sc-release-design v4 start.chroma_allowlist, PA-8, V4R2-C1). The worker
@@ -1335,8 +1340,39 @@ def advisory(root: Path, *, owners: int) -> dict:
 
 # --- the plan ----------------------------------------------------------------------------------------
 
+def _regressed_source(root: Path, head: dict, prefix: str | None, *, release: bool) -> str | None:
+    """--accept-regressed-source (row PA, R5-1): the full sha256 of H's regressed recovery record, or None.
+
+    Without the flag, a head closed by a recovery record with confirmed
+    regressions refuses REGRESSED_SOURCE_REQUIRED, naming the record's sha256
+    and its regressed families (content-free). With it: release mode only; the
+    prefix (12 to 64 hex) must start the sha256 of the current head's
+    recovery record (its own, or that of the H an abort returned to), and
+    that record must list regressions; else
+    REGRESSED_SOURCE_MISMATCH. The value binds the full sha256 into the plan
+    digest and the intent (intent.source_recovery_sha256).
+    """
+    record = stage.recovery_record_of(root, head)  # its own, or that of the H an abort returned to
+    sha256, families, regressed = None, [], False
+    if record is not None:
+        sha256, checks = stage._digest(record), record["checks"]
+        families, resurrected = checks.get("regressed"), checks.get("resurrected")
+        regressed = bool(families) or (type(resurrected) is dict and any(resurrected.values()))
+    if prefix is None:
+        if regressed:
+            _refuse(REGRESSED_SOURCE_REQUIRED, {"recovery_record_sha256": sha256, "regressed": families})
+        return None
+    if not release:
+        _refuse(stage.TRANSITION_REQUIRES_RELEASE_MODE)
+    if (type(prefix) is not str or REGRESSED_SOURCE_PREFIX.fullmatch(prefix) is None or sha256 is None
+            or not regressed or not sha256.startswith(prefix)):
+        _refuse(REGRESSED_SOURCE_MISMATCH, {"recovery_record_sha256": sha256})
+    return sha256
+
+
 def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftovers: bool, manager_scan,
-                wall, compaction_id: str | None = None, named_units: tuple[str, ...] = ()) -> dict:
+                wall, compaction_id: str | None = None, named_units: tuple[str, ...] = (),
+                accept_regressed_source: str | None = None) -> dict:
     """Every read-only check of P1-P14 and the retirement set; the value whose digest the operator acks."""
     stage._slot_name(k_slot)
     release = release_mode()  # SC-1b: the only mode for new logs at epoch >= 5
@@ -1353,7 +1389,13 @@ def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftov
         stage.require_no_owners(stage.read_binding(root, head["binding_id"]), stage.COMPACTION_OWNERS_PRESENT)
     except ValueError as error:
         _refuse(str(error))
-    source = stage.verify_closed_binding(root, head["binding_id"])  # P1, P2
+    regressed_source = _regressed_source(root, head, accept_regressed_source, release=release)
+    try:  # P1, P2: closed_witness (row PA): a closure, a clean recovery record or the bound regressed one
+        source = stage.verify_closed_binding(root, head["binding_id"], regressed_source_sha256=regressed_source)
+    except ValueError as error:
+        if str(error) == stage.RECOVERY_REGRESSED_SOURCE:
+            _refuse(REGRESSED_SOURCE_REQUIRED, {"recovery_record_sha256": stage.recovery_record_sha256(root, head)})
+        raise
     if stage.head_aborted(root, head):
         _refuse("runtime_admission_adoption_aborted_head")
     owners = owner_selection(root, source)  # P3
@@ -1436,6 +1478,8 @@ def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftov
              "decisions": list(DECISIONS)}
     if release:
         value["mode"] = RELEASE_MODE  # P6'(e): the digest and the intent bind it with the archive fields
+    if regressed_source is not None:
+        value["source_recovery_sha256"] = regressed_source  # R5-1: the plan digest and the intent bind it
     return value
 
 
@@ -1508,16 +1552,23 @@ def _default_scan(manager=None, named: tuple[str, ...] = ()):
 
 
 def compact_plan(root, k_slot: str, archive, *, retire_prepare_leftovers: bool = False, scan=None,
-                 wall=time.time, units: tuple[str, ...] = ()) -> dict:
-    """``compact plan``: read-only; returns the plan, its digest and the untouched-list digest."""
+                 wall=time.time, units: tuple[str, ...] = (), accept_regressed_source: str | None = None) -> dict:
+    """``compact plan``: read-only; returns the plan, its digest and the untouched-list digest.
+
+    ``accept_regressed_source`` (row PA): the 12+ hex prefix of the head's
+    recovery record sha256, when adopt closed it with confirmed regressions.
+    """
     root = checked_root(root)
     with stage.authority_memo(), stage.AdmissionController(root):  # SC-0b O1: content-addressed
         if stage.pending_compaction(root) is not None:
             _refuse("runtime_admission_compaction_pending")
         value = _plan_value(root, k_slot, Path(archive), retire_prepare_leftovers=retire_prepare_leftovers,
                             manager_scan=scan or _default_scan(named=tuple(units)), wall=wall,
-                            named_units=tuple(units))
-    return {**_plan_view(value), "plan_sha256": plan_digest(value)}
+                            named_units=tuple(units), accept_regressed_source=accept_regressed_source)
+    view = {**_plan_view(value), "plan_sha256": plan_digest(value)}
+    if "source_recovery_sha256" in value:
+        view["source_recovery_sha256"] = value["source_recovery_sha256"]
+    return view
 
 
 def _plan_view(value: dict) -> dict:
@@ -1537,8 +1588,11 @@ def _plan_view(value: dict) -> dict:
 def compact_start(root, k_slot: str, archive, *, plan_sha256: str, acknowledge_untouched: str,
                   destroy_rollback_states: bool, accept_owner_only_loss: bool = False,
                   retire_prepare_leftovers: bool = False, scan=None, worker=None, wall=time.time,
-                  units: tuple[str, ...] = ()) -> dict:
-    """``compact start``: P11/P12 acknowledgements, the intent, then C2a-C5 (resumable)."""
+                  units: tuple[str, ...] = (), accept_regressed_source: str | None = None) -> dict:
+    """``compact start``: P11/P12 acknowledgements, the intent, then C2a-C5 (resumable).
+
+    ``accept_regressed_source`` is the plan's (row PA); the plan digest binds it.
+    """
     root = checked_root(root)
     if not destroy_rollback_states:
         _refuse("runtime_admission_compaction_not_acknowledged")
@@ -1547,7 +1601,7 @@ def compact_start(root, k_slot: str, archive, *, plan_sha256: str, acknowledge_u
             _refuse("runtime_admission_compaction_pending")
         value = _plan_value(root, k_slot, Path(archive), retire_prepare_leftovers=retire_prepare_leftovers,
                             manager_scan=scan or _default_scan(named=tuple(units)), wall=wall,
-                            named_units=tuple(units))
+                            named_units=tuple(units), accept_regressed_source=accept_regressed_source)
         if plan_digest(value) != plan_sha256:
             _refuse("runtime_admission_compaction_plan_changed")
         if value["untouched_sha256"] != acknowledge_untouched:
@@ -1698,7 +1752,8 @@ def _authorize(root: Path, log: dict, wall) -> dict:
     head = stage.read_admission_head(root)
     if head != intent["head"]:
         _refuse("runtime_admission_head_changed")
-    source = stage.verify_closed_binding(root, intent["source_binding_id"])
+    source = stage.verify_closed_binding(root, intent["source_binding_id"],
+                                         regressed_source_sha256=intent.get("source_recovery_sha256"))
     source_manual = stage._verify_manual_head(root, head, source)
     candidate = stage._binding_snapshot(root, intent["k_slot"])
     validation = stage._target_ownership_validation(root, candidate)
@@ -2448,15 +2503,22 @@ def _file_stats(path: Path):
 
 # --- abort --------------------------------------------------------------------------------------------
 
+def _h_witness(root: Path, intent: dict) -> dict:
+    """H's closed_witness after start (row PA): H is the intent's head, not the current one, and its
+    regressed recovery record is admitted only with this log's intent.source_recovery_sha256."""
+    return stage.closed_witness(root, intent["source_binding_id"], head=intent["head"],
+                                regressed_source_sha256=intent.get("source_recovery_sha256"))
+
+
 def _h_intact(root: Path, intent: dict) -> dict:
-    """Predicate (5) without a closed-head requirement: H's binding, marker and closure still hold."""
+    """Predicate (5) without a closed-head requirement: H's binding, marker and witness still hold."""
     binding = stage.read_binding(root, intent["source_binding_id"])
     if stage._binding_snapshot(root, binding["slot"]) != binding:
         _refuse("runtime_admission_compaction_h_changed")
     marker = stage._read_json(Path(binding["state_root"]) / stage._MARKER)
     if marker.get("binding_id") != intent["source_binding_id"]:
         _refuse("runtime_admission_compaction_h_changed")
-    stage._closure_proof(root, intent["source_binding_id"])
+    _h_witness(root, intent)
     return binding
 
 
@@ -2599,7 +2661,7 @@ def _w0_h(root: Path, intent: dict) -> dict:
     marker = stage._read_json(Path(binding["state_root"]) / stage._MARKER)
     if marker.get("binding_id") != intent["source_binding_id"]:
         raise ValueError("runtime_admission_marker_mismatch")
-    stage._closure_proof(root, intent["source_binding_id"])
+    _h_witness(root, intent)
     return binding
 
 
@@ -3239,6 +3301,8 @@ def add_commands(commands) -> None:
     plan.add_argument("--retire-prepare-leftovers", action="store_true")
     plan.add_argument("--unit", action="append", default=[],
                       help="A user unit that is kza's besides kza-voice, kza-llm-fast and kza-code-index")
+    plan.add_argument("--accept-regressed-source", metavar="RECOVERY_RECORD_SHA256_PREFIX",
+                      help="Row PA: the head was closed by adopt with confirmed regressions (12+ hex)")
     start = sub.add_parser("start")
     start.add_argument("k_slot")
     start.add_argument("--archive", type=Path, required=True)
@@ -3248,6 +3312,7 @@ def add_commands(commands) -> None:
     start.add_argument("--accept-owner-only-loss", action="store_true")
     start.add_argument("--retire-prepare-leftovers", action="store_true")
     start.add_argument("--unit", action="append", default=[])
+    start.add_argument("--accept-regressed-source", metavar="RECOVERY_RECORD_SHA256_PREFIX")
     for name in ("verify", "retire", "resume", "abort", "allow-run", "status"):
         parser = sub.add_parser(name)
         parser.add_argument("compaction_id", nargs="?" if name == "status" else None)
@@ -3281,14 +3346,16 @@ def run_command(args, *, scan=None, worker=None) -> int:
         if command == "plan":
             result = compact_plan(args.root, args.k_slot, args.archive,
                                   retire_prepare_leftovers=args.retire_prepare_leftovers, scan=scan,
-                                  units=tuple(getattr(args, "unit", ()) or ()))
+                                  units=tuple(getattr(args, "unit", ()) or ()),
+                                  accept_regressed_source=getattr(args, "accept_regressed_source", None))
         elif command == "start":
             result = compact_start(args.root, args.k_slot, args.archive, plan_sha256=args.plan_sha256,
                                    acknowledge_untouched=args.acknowledge_untouched,
                                    destroy_rollback_states=args.destroy_rollback_states,
                                    accept_owner_only_loss=args.accept_owner_only_loss,
                                    retire_prepare_leftovers=args.retire_prepare_leftovers, scan=scan, worker=worker,
-                                   units=tuple(getattr(args, "unit", ()) or ()))
+                                   units=tuple(getattr(args, "unit", ()) or ()),
+                                   accept_regressed_source=getattr(args, "accept_regressed_source", None))
         elif command == "verify":
             result = compact_verify(args.root, args.compaction_id, smoke_seconds=args.smoke_seconds)
         elif command == "retire":

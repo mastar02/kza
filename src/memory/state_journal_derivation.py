@@ -89,15 +89,21 @@ def _snapshot_projection(snapshot, database):
 
 
 def _source(stage, root, snapshot, privacy_relative, *, latest):
-    from src.memory.state_snapshot import verify_snapshot
+    from src.memory.state_snapshot import source_witness, verify_snapshot
 
     manifest = verify_snapshot(snapshot)
     binding = stage.read_binding(root, snapshot.source_binding_id)
     _require(binding == snapshot.source_binding == manifest["source_binding"], "source_binding")
-    proof = stage._closure_proof(root, snapshot.source_binding_id)
-    receipt = stage._read_json(root / "admission" / "receipts" /
-                               (proof["running_head"]["run_id"] + ".json"))
-    _require(manifest["source_closure"] == {"proof": proof, "receipt": receipt}, "source_closure")
+    # Row PA: the snapshot's recorded closed_witness must be the source's witness now. A manifest
+    # written before 'source_witness' (a pending log from an older controller) carries 'source_closure'.
+    witness = source_witness(stage, root, snapshot.source_binding_id)
+    if "source_witness" in manifest:
+        _require(manifest["source_witness"] == witness, "source_closure")
+    else:
+        _require(witness["kind"] == "closure" and manifest.get("source_closure") == {
+            "proof": witness["proof"], "receipt": witness["receipt"]}, "source_closure")
+    closure = ({"proof": witness["proof"], "receipt": witness["receipt"]} if witness["kind"] == "closure"
+               else {"recovery": {"record_sha256": witness["record_sha256"], "record": witness["record"]}})
     if latest:
         head = stage.read_admission_head(root)
         _require(head is not None and head["status"] == "closed"
@@ -128,7 +134,7 @@ def _source(stage, root, snapshot, privacy_relative, *, latest):
              "source_ownership")
     return {"snapshot": snapshot, "manifest": manifest, "binding": binding,
             "database": database, "targets": sorted(targets, key=lambda item: item["id"]),
-            "policy": policy, "closure": {"proof": proof, "receipt": receipt},
+            "policy": policy, "closure": closure,
             "delegations": list(stage._delegation_records(root, Path(binding["state_root"])))}
 
 
