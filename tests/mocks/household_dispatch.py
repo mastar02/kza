@@ -113,6 +113,20 @@ class CountedLeaves:
             elif name.startswith("reminder_shared_active:"):
                 await self.reminder_manager.create("household", name.split(":", 1)[1], time.time() + 3600,
                                                    scope=ReminderScope.SHARED)
+            elif name.startswith("reminder_shared_today:"):
+                # Before the household midnight, so "de hoy" names it at any time of day.
+                clock = self.reminder_manager._household_clock
+                await self.reminder_manager.create("household", name.split(":", 1)[1],
+                                                   min(time.time() + 60, clock.next_local_midnight() - 1),
+                                                   scope=ReminderScope.SHARED)
+            elif name.startswith("reminder_shared_fired:"):
+                fired = await self.reminder_manager.create("household", name.split(":", 1)[1], time.time() - 60,
+                                                           scope=ReminderScope.SHARED)
+                assert await self.reminder_store.mark_fired(fired.id)
+            elif name.startswith("reminder_private_active:"):
+                # A personal reminder of an acoustic label ("ana"): never visible to household voice.
+                await self.reminder_manager.create("ana", name.split(":", 1)[1], time.time() + 3600,
+                                                   scope=ReminderScope.PRIVATE)
             elif name == "light_match":
                 self.chroma.asearch_command.return_value = LIGHT_MATCH
             elif name.startswith(("timer_running:", "timer_paused:")):

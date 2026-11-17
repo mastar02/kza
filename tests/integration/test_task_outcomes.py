@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import AsyncExitStack
 import json
+import sqlite3
 import time
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -212,6 +213,56 @@ async def test_named_reminder_cancellation_cannot_cancel_an_unrelated_queued_req
             assert not queued.is_cancelled
             stored = await graph.reminder_manager._store.get_by_id(reminder.id)
             assert stored.state == "cancelled"
+
+
+async def test_voice_cancel_of_a_persisted_shared_reminder_is_one_store_transition_and_survives_rebuild(
+        leaves, tmp_path):
+    """T032-U1 journey: a voseo cancel through the real graph, after and before a rebuild."""
+    factories, _ = leaves
+    async with offline_home() as (url, observed):
+        config = offline_config(tmp_path, url)
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=factories)
+            water = await graph.reminder_manager.create("household", "tomar agua", time.time() + 3600,
+                                                        scope=ReminderScope.SHARED)
+            trash = await graph.reminder_manager.create("household", "sacar la basura", time.time() + 7200,
+                                                        scope=ReminderScope.SHARED)
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=factories)
+            store = graph.reminder_manager._store
+            store_cancel = AsyncMock(side_effect=store.cancel)
+            store.cancel = store_cancel
+            queue = graph.pipeline._orchestrator.queue
+            source = graph.privacy.source_for_capture(str(uuid4()), time.time(), "")
+            from src.orchestrator.priority_queue import Priority
+            queued = queue.enqueue("unknown", "synthetic queued request", Priority.LOW, memory_sources=(source,))
+            original_queue_cancel = queue.cancel_user_request
+            queue_cancels = []
+
+            def counted_queue_cancel(*args, **kwargs):
+                queue_cancels.append(args)
+                return original_queue_cancel(*args, **kwargs)
+            queue.cancel_user_request = counted_queue_cancel
+            search = AsyncMock(side_effect=graph.models.chroma.asearch_command)
+            graph.models.chroma.asearch_command = search
+            graph.models.stt.text = "borrá el recordatorio de tomar agua"
+            result = await graph.pipeline.process_command(event())
+            assert (result["path"], result["intent"]) == ("fast_reminder", "reminder")
+            assert result["task_completed"] and result["outcome"]["persistence"] == "committed"
+            assert result["response"].startswith("Cancelé el recordatorio tomar agua a las ")
+            assert store_cancel.await_count == 1 and queue_cancels == [] and not queued.is_cancelled
+            search.assert_not_awaited()
+            assert observed["service_calls"] == 0
+            # Repeating the request never reports a second cancellation and never reaches the store write.
+            again = await graph.pipeline.process_command(event())
+            assert not again["task_completed"] and again["outcome"]["status"] == "needs_input"
+            assert store_cancel.await_count == 1 and queue_cancels == []
+        async with AsyncExitStack() as stack:
+            restored = await build_application(config, shutdown=stack, factories=factories)
+            assert (await restored.reminder_manager._store.get_by_id(water.id)).state == "cancelled"
+            assert [r.id for r in await restored.reminder_manager.get_active(None, shared_only=True)] == [trash.id]
+            with sqlite3.connect(config["reminders"]["db_path"]) as db:
+                assert db.execute("SELECT COUNT(*) FROM reminders").fetchone()[0] == 2
 
 
 async def test_timer_recognition_and_duplicate_name_are_not_operation_completion(leaves, tmp_path):

@@ -73,6 +73,7 @@ from src.orchestrator.priority_queue import (
     Request,
     PriorityRequestQueue
 )
+from src.reminders.reminder_manager import CancelMatch, CancelResolution
 from src.timers.named_timers import NamedTimerManager
 from src.timers.voice_commands import TimerVoiceCommands
 from src.world.weather import DEFAULT_ENTITY as DEFAULT_WEATHER_ENTITY
@@ -131,6 +132,21 @@ _OBJECT_NOUN_RE = re.compile(r"\b(?:recordatorios?|t[ií]mers?|temporizador(?:es
 
 # P3F2-R1-Q4: a request to create a routine is refused honestly until T033.
 _ROUTINE_CREATE_REFUSAL = "Todavía no creo rutinas por voz. Podés crearlas desde la web."
+# Candidates a reminder clarification names aloud (T032-U1).
+_REMINDER_CHOICES_SPOKEN = 3
+# A cancel verb before "recordatorio" in a turn the classifier did not claim
+# (accent-folded); "un recordatorio para cancelar ..." is a creation instead.
+_UNCLAIMED_CANCEL_RE = re.compile(r"\b(?:(?:cancel|borr|elimin|anul|quit|sac)\w*|olvidate)\b.*\brecordatorios?\b")
+_UNCLAIMED_CANCEL_REPLY = "Si querés cancelar un recordatorio, decime: cancelá el recordatorio de, y lo que dice."
+# "cancelá el recordatorio de X y el de Y": two reminders in one turn (review T032-U1-R7).
+_SECOND_REMINDER_RE = re.compile(r"\s+y\s+(?:el|la|los|las)\s+(?:recordatorios?\s+)?de\b")
+_ONE_AT_A_TIME = "Por voz cancelo de a un recordatorio. "
+# T032-U1-Q1 = A: a reminder whose words and time are all inside another's is
+# never cancelled by voice; the reply says where it can be removed.
+_VOICE_INDISTINCT = "Por voz no los puedo distinguir; podés borrar el que querés desde la web."
+# The only active reminder can always be named; this is a last resort (review T032-U1-RR-F1).
+_VOICE_UNNAMEABLE = "Por voz no lo puedo nombrar; podés borrarlo desde la web."
+_OTHER_FROM_WEB = "Si es otro, borralo desde la web."
 
 # P3-F2 decision on F10: the orchestrated path has no sync or enrollment
 # consumer, so only the explicit whole requests are recognised (the same
@@ -1135,7 +1151,8 @@ class RequestDispatcher:
                 return self._household_refusal(PathType.FAST_REMINDER, "reminder",
                                                "Con los recordatorios puedo consultarlos o cancelarlos. ¿Cuál querés?",
                                                TaskStatus.NEEDS_INPUT)
-            return await self._fast_reminder_path(text, user_id, zone_id, operation=operation)
+            return await self._fast_reminder_path(text, user_id, zone_id, operation=operation,
+                                                  reference=household.complement)
         if family is HouseholdFamily.LIST:
             if operation in (HouseholdOperation.STOP, HouseholdOperation.PAUSE, HouseholdOperation.RESUME,
                              HouseholdOperation.DISABLE):
@@ -1742,7 +1759,8 @@ class RequestDispatcher:
                 intent="list", outcome=TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.UNCERTAIN))
 
     async def _fast_reminder_path(self, text: str, user_id: str, zone_id: str = None,
-                                  operation: HouseholdOperation | None = None) -> DispatchResult:
+                                  operation: HouseholdOperation | None = None,
+                                  reference: str | None = None) -> DispatchResult:
         """Do not claim creation or cancellation without an operation receipt.
 
         Args:
@@ -1750,11 +1768,14 @@ class RequestDispatcher:
                 decides the branch, so a reminder whose content mentions a
                 query or a cancellation is still a creation. None keeps the
                 keyword routing.
+            reference: Words after the governed noun of a claimed cancel
+                ("de tomar agua"); None derives them from ``text``.
         """
         if not self.reminder_manager:
             return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, "Recordatorios no configurados",
                                   intent="reminder", outcome=TaskOutcome(TaskStatus.UNSUPPORTED))
         text_lower = text.lower()
+        folded = _strip_accents(text_lower)
         outcome = TaskOutcome(TaskStatus.COMPLETED)
         pending_today = any(w in text_lower for w in ["qué tengo pendiente", "que tengo pendiente"])
         listing = any(w in text_lower for w in ["qué recordatorios", "que recordatorios", "mis recordatorios"])
@@ -1762,15 +1783,14 @@ class RequestDispatcher:
             listing = not pending_today
         elif operation is not None:
             listing = pending_today = False
-        # Voseo/accented cancellation and unique matching belong to T032-U1;
-        # until then only today's literal form reaches cancel_by_text.
-        cancelling = "cancela" in text_lower and "recordatorio" in text_lower and operation in (
-            None, HouseholdOperation.CANCEL)
+        # T032-U1: only a claimed cancel (any accented/voseo verb, P3-F2 R1)
+        # resolves and cancels. An unclaimed turn that mentions cancelling a
+        # reminder ("¿cancelaste el recordatorio ...?", "no cancelar el
+        # recordatorio ...") is a question or a negation: it never cancels.
+        cancelling = operation is HouseholdOperation.CANCEL
+        cancel_mention = operation is None and _UNCLAIMED_CANCEL_RE.search(folded) is not None
         try:
-            if operation is HouseholdOperation.CANCEL and not cancelling:
-                response = "Todavía no puedo cancelar ese recordatorio por voz. Podés hacerlo desde la web."
-                outcome = TaskOutcome(TaskStatus.UNSUPPORTED, persistence=PersistenceState.NOT_WRITTEN)
-            elif listing:
+            if listing:
                 active = await self.reminder_manager.get_active(None, shared_only=True)
                 response = ("Los recordatorios compartidos son: " + ". ".join(self.reminder_manager.format_for_voice(r) for r in active[:5])
                             if active else "No hay recordatorios compartidos activos")
@@ -1779,13 +1799,13 @@ class RequestDispatcher:
                 response = ("Pendiente hoy: " + ". ".join(self.reminder_manager.format_for_voice(r) for r in today)
                             if today else "No tienes nada pendiente hoy")
             elif cancelling:
-                match = re.search(r'recordatorio\s+(?:de\s+)?(.+)', text_lower)
-                search_text = match.group(1).strip() if match else text_lower
-                cancelled = await self.reminder_manager.cancel_by_text(None, search_text, shared_only=True)
-                response = "Recordatorio cancelado" if cancelled else "No encontré ese recordatorio"
-                outcome = (TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
-                           effect=EffectState.OBSERVED, observation_scope="software_state") if cancelled else
-                           TaskOutcome(TaskStatus.NEEDS_INPUT, persistence=PersistenceState.NOT_WRITTEN))
+                if reference is None:
+                    match = re.search(r"recordatorios?\b(.*)", folded)
+                    reference = match.group(1) if match else ""
+                response, outcome = await self._cancel_reminder_by_voice(folded, reference)
+            elif cancel_mention:
+                response = _UNCLAIMED_CANCEL_REPLY
+                outcome = TaskOutcome(TaskStatus.NEEDS_INPUT, persistence=PersistenceState.NOT_WRITTEN)
             else:
                 response = "Todavía no puedo crear ese recordatorio por voz. Necesito interpretar y confirmar la fecha y la hora."
                 outcome = TaskOutcome(TaskStatus.UNSUPPORTED, persistence=PersistenceState.NOT_WRITTEN)
@@ -1795,6 +1815,112 @@ class RequestDispatcher:
             logger.warning("Reminder command unavailable; no completion receipt")
             return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, "Hubo un error con el recordatorio",
                 intent="reminder", outcome=TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.UNCERTAIN))
+
+    async def _cancel_example(self, candidates: tuple, *, with_time: bool) -> tuple[str | None, bool]:
+        """A full cancel command the resolver maps back to one candidate.
+
+        There is no pending clarification, so a short answer ("el de las
+        8") would not be routed back here: the reply proposes the whole
+        command, with the time when the text alone is not enough. Only a
+        command that, said back, selects exactly one reminder is proposed
+        (T032-U1-Q1 = A: one whose words are all inside another's at the
+        same time is never reachable by voice).
+
+        Returns:
+            The command for the first candidate that has one (None when no
+            candidate can be told apart by voice), whether every candidate
+            has one, and whether the command names the day.
+        """
+        references = await self.reminder_manager.voice_references(None, candidates, with_time=with_time,
+                                                                   shared_only=True)
+        named = next((r for r in candidates if r.id in references), None)
+        if named is None:
+            return None, False, False
+        reference = references[named.id]
+        with_day = with_time and reference.endswith(f" {self.reminder_manager.spoken_day_reference(named)}")
+        return f"cancelá el recordatorio de {reference}", len(references) == len(candidates), with_day
+
+    def _reminder_choices(self, candidates: tuple) -> str:
+        """At most three shared candidates in trigger order ("2: A y B").
+
+        Candidates with the same text and time are told apart by their day
+        ("tomar agua a las 17:00 de hoy y tomar agua a las 17:00 del jueves").
+        """
+        spoken = candidates[:_REMINDER_CHOICES_SPOKEN]
+        labels = [self.reminder_manager.voice_label(r) for r in spoken]
+        if len(set(labels)) < len(labels):
+            dated = [f"{label} {self.reminder_manager.spoken_day_reference(r)}" for label, r in zip(labels, spoken)]
+            if len(set(dated)) > len(set(labels)):
+                labels = dated
+        if len(candidates) == 1:
+            return f"uno: {labels[0]}"
+        joined = ", ".join(labels[:-1]) + " y " + labels[-1]
+        if len(candidates) > _REMINDER_CHOICES_SPOKEN:
+            return f"{len(candidates)}, por ejemplo: {joined}"
+        return f"{len(candidates)}: {joined}"
+
+    async def _cancel_reminder_by_voice(self, folded: str, reference: str) -> tuple[str, TaskOutcome]:
+        """Cancel exactly one shared reminder named by voice (T032-U1).
+
+        Unique match or nothing: no reference, no match, several matches or a
+        reminder that stopped being active answer NEEDS_INPUT with zero
+        effects. Only shared reminders are read, so a private reminder's text
+        is never spoken; the queue is never touched. Success is reported only
+        when the store committed the transition.
+
+        Args:
+            folded: Accent-folded lowercase utterance.
+            reference: Words naming the reminder (may be empty).
+
+        Returns:
+            The spoken response and the task outcome.
+        """
+        needs_input = TaskOutcome(TaskStatus.NEEDS_INPUT, persistence=PersistenceState.NOT_WRITTEN)
+        second = _SECOND_REMINDER_RE.search(reference or "")
+        if second is not None:
+            first = re.sub(r"^\s*(?:de|del)\s+", "", reference[:second.start()]).strip()
+            example = f" Decime uno por vez, por ejemplo: cancelá el recordatorio de {first}." if first else ""
+            return f"{_ONE_AT_A_TIME.strip()}{example}", needs_input
+        resolution: CancelResolution = await self.reminder_manager.resolve(None, reference, shared_only=True)
+        logger.info("[Reminder] voice cancel resolution=%s candidates=%d", resolution.match.value,
+                    len(resolution.candidates))
+        if resolution.match is CancelMatch.NONE_ACTIVE:
+            return "No hay recordatorios compartidos activos para cancelar.", needs_input
+        if resolution.match is CancelMatch.NO_REFERENCE:
+            lead = _ONE_AT_A_TIME if re.search(r"\brecordatorios\b", folded) else ""
+            several = len(resolution.candidates) > 1
+            example, all_reachable, _ = await self._cancel_example(resolution.candidates, with_time=several)
+            if example is None and not several:
+                example, all_reachable, _ = await self._cancel_example(resolution.candidates, with_time=True)
+            choices = f"{lead}Hay {self._reminder_choices(resolution.candidates)}."
+            if example is None:
+                return f"{choices} {_VOICE_INDISTINCT if several else _VOICE_UNNAMEABLE}", needs_input
+            ask = "Para cancelar uno, decímelo entero, por ejemplo" if several else "Para cancelarlo, decime"
+            tail = "" if all_reachable else f" {_OTHER_FROM_WEB}"
+            return f"{choices} {ask}: {example}.{tail}", needs_input
+        if resolution.match is CancelMatch.NOT_FOUND:
+            return ("No encontré un recordatorio activo con eso. Podés preguntarme qué recordatorios hay.",
+                    needs_input)
+        if resolution.match is CancelMatch.AMBIGUOUS:
+            # Duplicates only when text and trigger are the same: the same text
+            # and HH:MM on another day is told apart by its day (review RR-F2).
+            if len({(r.text, r.trigger_at) for r in resolution.candidates}) == 1:
+                label = self.reminder_manager.voice_label(resolution.candidates[0])
+                return (f"Hay {len(resolution.candidates)} recordatorios iguales: {label}. "
+                        "Podés borrar el que sobra desde la web."), needs_input
+            example, all_reachable, with_day = await self._cancel_example(resolution.candidates, with_time=True)
+            choices = f"Encontré {self._reminder_choices(resolution.candidates)}."
+            if example is None:
+                return f"{choices} {_VOICE_INDISTINCT}", needs_input
+            tail = "" if all_reachable else f" {_OTHER_FROM_WEB}"
+            ask = "Repetímelo con la hora y el día" if with_day else "Repetímelo con la hora"
+            return f"{choices} {ask}, por ejemplo: {example}.{tail}", needs_input
+        reminder = resolution.reminder
+        if not await self.reminder_manager.cancel_resolved(reminder, shared_only=True):
+            return "Ese recordatorio ya no estaba activo. No cancelé nada.", needs_input
+        return (f"Cancelé el recordatorio {self.reminder_manager.voice_label(reminder)}.",
+                TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
+                            effect=EffectState.OBSERVED, observation_scope="software_state"))
 
     async def _handle_weather(self, text: str, priority: Priority) -> DispatchResult:
         """Answer from an exact, current HA observation or report missing data.

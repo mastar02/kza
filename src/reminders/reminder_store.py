@@ -432,9 +432,13 @@ class ReminderStore:
 
     async def cancel(self, reminder_id: str, *, guard: AuthorityGuard | None = None,
                      shared_only: bool = False) -> bool:
-        """Commit cancellation only under original authority and current scope."""
+        """Commit cancellation only under original authority and current scope.
+
+        Only an active reminder transitions; a fired or already cancelled one
+        returns False, so no caller reports a cancellation that did not happen.
+        """
         def operation(db):
-            return db.execute("UPDATE reminders SET state = ? WHERE id = ? "
+            return db.execute("UPDATE reminders SET state = ? WHERE id = ? AND state = 'active' "
                 "AND (? = 0 OR scope = 'shared')",
                 (ReminderState.CANCELLED.value, reminder_id, shared_only)).rowcount > 0
         return await self._work.write(operation, guard=guard)
