@@ -629,6 +629,39 @@ async def test_no_data_increments_stat_and_warns(dispatcher_with_async_ha, caplo
     assert any("weather_entity" in r.message for r in caplog.records)
 
 
+@pytest.mark.parametrize(("forecast", "alignment"), [
+    ([_entry("2026-08-04T15:00:00+00:00", "sunny", 20)], "missing_day"),
+    ([_entry("2026-08-05T15:00:00+00:00", "rainy", 13), _entry("2026-08-05T18:00:00+00:00", "rainy", 20)],
+     "conflicting_day"),
+    ([_entry("2026-08-05T15:00:00", "rainy", 13)], "invalid_entries"),
+])
+async def test_unaligned_forecast_warning_names_the_alignment_not_the_entity(
+    dispatcher_with_async_ha, caplog, forecast, alignment
+):
+    """R2, review 1: la entidad respondió; culpar a weather_entity despista."""
+    d = _frozen(dispatcher_with_async_ha)
+    d.ha.call_service_with_response = AsyncMock(return_value=_forecast_payload(forecast))
+    with caplog.at_level("WARNING"):
+        result = await d._handle_weather("va a llover mañana", Priority.HIGH)
+    assert result.response == NO_FORECAST
+    warnings = [r.getMessage() for r in caplog.records if "answered honestly with no data" in r.getMessage()]
+    assert len(warnings) == 1
+    assert f"alignment={alignment}" in warnings[0]
+    assert "datetime convention" in warnings[0]
+    assert "weather_entity exists" not in warnings[0]
+
+
+async def test_forecast_without_a_payload_still_points_at_the_entity(dispatcher_with_async_ha, caplog):
+    d = _frozen(dispatcher_with_async_ha)
+    d.ha.call_service_with_response = AsyncMock(return_value={"service_response": {}})
+    with caplog.at_level("WARNING"):
+        result = await d._handle_weather("va a llover mañana", Priority.HIGH)
+    assert result.response == NO_FORECAST
+    warnings = [r.getMessage() for r in caplog.records if "answered honestly with no data" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "alignment=None" in warnings[0] and "weather_entity exists" in warnings[0]
+
+
 async def test_data_present_does_not_touch_the_no_data_stat(dispatcher_with_async_ha):
     d = dispatcher_with_async_ha
     d.ha.get_state_snapshot = AsyncMock(return_value=weather_snapshot({

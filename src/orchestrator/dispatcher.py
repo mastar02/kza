@@ -1553,6 +1553,7 @@ class RequestDispatcher:
         source = ObservationSource.HA_FORECAST if dia else ObservationSource.HA_STATES
         observation = Observation.from_read(source, available=False, observed_at=None,
             ttl_s=STATE_OBSERVATION_TTL_S, attempted_at=attempted)
+        alignment: ForecastAlignment | None = None
         try:
             if dia:
                 zone = ZoneInfo(HOUSEHOLD_TIMEZONE)  # zoneinfo caches the instance per key
@@ -1565,6 +1566,7 @@ class RequestDispatcher:
                 forecast = entity.get("forecast") if type(entity) is dict else None
                 answer = (describe_forecast(forecast, dia, target, zone)
                           if type(forecast) is list and all(type(item) is dict for item in forecast) else None)
+                alignment = answer.alignment if answer is not None else None
                 if answer is not None and answer.alignment is not ForecastAlignment.INVALID_ENTRIES:
                     observation = Observation.from_read(source, available=True, observed_at=clock(),
                         ttl_s=STATE_OBSERVATION_TTL_S, attempted_at=attempted,
@@ -1624,12 +1626,21 @@ class RequestDispatcher:
                 now = time.monotonic()
                 if now - self._last_weather_nodata_warn > _WEATHER_NODATA_WARN_INTERVAL_S:
                     self._last_weather_nodata_warn = now
+                    # Si la entidad respondió con entradas pero ninguna quedó
+                    # alineada al día local pedido, la config no es la sospechosa.
+                    hint = (
+                        "the entity answered but no single entry matched the requested "
+                        "local day — if chronic, check the entries' datetime convention "
+                        "and the forecast horizon"
+                        if alignment in (ForecastAlignment.MISSING_DAY, ForecastAlignment.CONFLICTING_DAY,
+                                         ForecastAlignment.INVALID_ENTRIES)
+                        else "if chronic, check that home_assistant.weather_entity exists "
+                        "in HA and that the integration serves the requested horizon"
+                    )
                     logger.warning(
                         "FAST_WEATHER answered honestly with no data "
-                        "(entity=%s, dia=%s, count=%d) — if chronic, check that "
-                        "home_assistant.weather_entity exists in HA and that "
-                        "the integration serves the requested horizon",
-                        self.weather_entity, dia, self._stats["weather_no_data"],
+                        "(entity=%s, dia=%s, alignment=%s, count=%d) — %s",
+                        self.weather_entity, dia, alignment, self._stats["weather_no_data"], hint,
                     )
         except Exception as obs_exc:  # noqa: BLE001 - no silenciar por observabilidad
             logger.error(
