@@ -1657,6 +1657,10 @@ class TestLateMicrophoneCatalogRefresh:
         ):
             await rig.start()
             await rig.spin(20)
+            # Desactivado ni siquiera lee sysfs, y tampoco admite un pedido.
+            assert rig.loop._catalog_missing == {}
+            rig.loop._catalog_missing["cocina"] = rig.COCINA_CARD
+            assert rig.loop._request_catalog_refresh(rig.cocina) is False
             await rig.stop()
         assert rig.refreshes == 0
         assert rig.loop._streams.get("living") is rig.old_living
