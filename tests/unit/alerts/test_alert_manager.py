@@ -974,3 +974,225 @@ class TestHistoryEvictionKeepsOpenEpisodes:
         assert reopened is not None and reopened is not first
         assert manager.get_active_alerts() == [reopened]
         assert tts.await_count == 3
+
+
+# ==================== T036-U1-Q1: one retry of an output-free failure ====================
+
+from src.core.voice_delivery import ResponseStage
+
+
+def _result(delivery: DeliveryState, **kwargs) -> ResponseResult:
+    return ResponseResult("x", GenerationState.COMPLETE, delivery, **kwargs)
+
+
+OUTPUT_FREE = {
+    "failed": _result(DeliveryState.FAILED, error="audio_device_lost"),
+    "empty": _result(DeliveryState.EMPTY, speech_handled=False),
+    "cancelled_before_audio": _result(DeliveryState.CANCELLED),
+    "queue_timeout": _result(DeliveryState.TIMED_OUT, timeout_stage=ResponseStage.QUEUE),
+}
+
+NEVER_RETRIED = {
+    "failed_after_output_started": _result(DeliveryState.FAILED, error="e", output_started=True),
+    "cancelled_after_a_segment": _result(DeliveryState.CANCELLED, spoken_segments=1),
+    "cancelled_after_output_started": _result(DeliveryState.CANCELLED, output_started=True),
+    "queue_timeout_after_output_started": _result(DeliveryState.TIMED_OUT, timeout_stage=ResponseStage.QUEUE,
+                                                  output_started=True),
+    "blocked": _result(DeliveryState.BLOCKED, error="policy"),
+    "delivery_timeout": _result(DeliveryState.TIMED_OUT, timeout_stage=ResponseStage.DELIVERY),
+    "generation_timeout": _result(DeliveryState.TIMED_OUT, timeout_stage=ResponseStage.GENERATION),
+    "timeout_without_stage": _result(DeliveryState.TIMED_OUT),
+    "complete_with_error": _result(DeliveryState.COMPLETE, error="late_error"),
+    "false_return": False,
+}
+
+
+async def _check(manager, priority=AlertPriority.HIGH, message="a", condition=DOOR, alert_type=AlertType.SECURITY):
+    return await manager.create_alert(alert_type, priority, message, condition=condition)
+
+
+class TestVoiceRetryOnce:
+    """User answer T036-U1-Q1: retry once at the next check only when no audio started."""
+
+    @pytest.mark.asyncio
+    async def test_output_free_failure_is_retried_once_at_the_next_check(self):
+        tts = AsyncMock(side_effect=[OUTPUT_FREE["failed"], _ok()])
+        manager = AlertManager(tts_callback=tts)
+        alert = await _check(manager)
+        assert tts.await_count == 1
+        assert (alert.delivery, alert.delivery_reason) == (AlertDelivery.FAILED, "audio_device_lost")
+        assert alert.delivery_attempts == 1
+        assert await _check(manager) is None
+        assert tts.await_count == 2
+        assert tts.await_args.args[0] == "Alerta importante: a"
+        assert (alert.delivery, alert.delivery_reason) == (AlertDelivery.DELIVERED, None)
+        assert alert.delivery_attempts == 2
+        for _ in range(3):
+            assert await _check(manager) is None
+        assert tts.await_count == 2
+        assert len(manager.get_history()) == 1
+
+    @pytest.mark.parametrize("name", sorted(OUTPUT_FREE))
+    @pytest.mark.asyncio
+    async def test_every_output_free_result_is_retried(self, name):
+        tts = AsyncMock(side_effect=[OUTPUT_FREE[name], _ok()])
+        manager = AlertManager(tts_callback=tts)
+        alert = await _check(manager)
+        assert alert.delivery is AlertDelivery.FAILED
+        await _check(manager)
+        assert tts.await_count == 2 and alert.delivery is AlertDelivery.DELIVERED
+
+    @pytest.mark.parametrize("name", sorted(OUTPUT_FREE))
+    @pytest.mark.asyncio
+    async def test_a_failed_retry_is_never_retried_again(self, name):
+        tts = AsyncMock(return_value=OUTPUT_FREE[name])
+        manager = AlertManager(tts_callback=tts)
+        alert = await _check(manager)
+        await _check(manager)
+        assert tts.await_count == 2
+        for _ in range(3):
+            await _check(manager)
+        assert tts.await_count == 2
+        assert alert.delivery is AlertDelivery.FAILED and alert.delivery_attempts == 2
+
+    @pytest.mark.parametrize("name", sorted(NEVER_RETRIED))
+    @pytest.mark.asyncio
+    async def test_output_started_blocked_or_unverifiable_is_never_repeated(self, name):
+        tts = AsyncMock(return_value=NEVER_RETRIED[name])
+        manager = AlertManager(tts_callback=tts)
+        alert = await _check(manager)
+        assert alert.delivery in (AlertDelivery.FAILED, AlertDelivery.BLOCKED)
+        for _ in range(3):
+            assert await _check(manager) is None
+        assert tts.await_count == 1 and alert.delivery_attempts == 1
+
+    @pytest.mark.parametrize("error", [VoiceDeliveryError("voice_output_zone_required"), RuntimeError("x")])
+    @pytest.mark.asyncio
+    async def test_raised_output_error_is_never_repeated(self, error):
+        tts = AsyncMock(side_effect=error)
+        manager = AlertManager(tts_callback=tts)
+        alert = await _check(manager)
+        assert alert.delivery is AlertDelivery.FAILED
+        await _check(manager)
+        assert tts.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_cancelled_notice_is_never_repeated(self):
+        tts = AsyncMock(side_effect=[asyncio.CancelledError(), _ok()])
+        manager = AlertManager(tts_callback=tts)
+        with pytest.raises(asyncio.CancelledError):
+            await _check(manager)
+        await _check(manager)
+        assert tts.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_muted_notice_is_never_repeated(self):
+        manager = AlertManager(tts_callback=None)
+        alert = await _check(manager)
+        tts = AsyncMock(return_value=_ok())
+        manager.tts_callback = tts
+        await _check(manager)
+        assert tts.await_count == 0
+        assert alert.delivery is AlertDelivery.MUTED and alert.delivery_attempts == 0
+
+    @pytest.mark.asyncio
+    async def test_delivered_notice_is_never_repeated(self):
+        tts = AsyncMock(return_value=_ok())
+        manager = AlertManager(tts_callback=tts)
+        alert = await _check(manager)
+        await _check(manager)
+        assert tts.await_count == 1 and alert.delivery_attempts == 1
+
+    @pytest.mark.asyncio
+    async def test_retry_is_dropped_once_the_alert_is_acknowledged(self):
+        tts = AsyncMock(side_effect=[OUTPUT_FREE["failed"], _ok()])
+        manager = AlertManager(tts_callback=tts)
+        alert = await _check(manager)
+        assert await manager.mark_processed(alert.alert_id)
+        assert await _check(manager) is None
+        await _check(manager)
+        assert tts.await_count == 1
+        assert alert.delivery is AlertDelivery.FAILED
+
+    @pytest.mark.asyncio
+    async def test_resolved_condition_drops_the_retry(self):
+        tts = AsyncMock(side_effect=[OUTPUT_FREE["failed"], _ok(), _ok()])
+        manager = AlertManager(tts_callback=tts)
+        first = await _check(manager)
+        await manager.resolve_condition(AlertType.SECURITY, DOOR)
+        second = await _check(manager)
+        assert second is not first and second.delivery_attempts == 1
+        await _check(manager)
+        assert tts.await_count == 2 and first.delivery_attempts == 1
+
+    @pytest.mark.asyncio
+    async def test_retry_speaks_the_current_text_of_the_open_alert(self):
+        tts = AsyncMock(side_effect=[OUTPUT_FREE["failed"], _ok()])
+        manager = AlertManager(tts_callback=tts)
+        alert = await _check(manager, AlertPriority.CRITICAL, "Puerta abierta")
+        await _check(manager, AlertPriority.HIGH, "otro texto")
+        assert tts.await_args.args[0] == "Alerta crítica: Puerta abierta"
+        assert alert.message == "Puerta abierta"
+
+    @pytest.mark.asyncio
+    async def test_escalation_supersedes_a_pending_retry(self):
+        tts = AsyncMock(side_effect=[OUTPUT_FREE["failed"], _ok(), _ok()])
+        manager = AlertManager(tts_callback=tts)
+        alert = await _check(manager, AlertPriority.HIGH, "a")
+        assert await _check(manager, AlertPriority.CRITICAL, "b") is alert
+        assert tts.await_count == 2 and tts.await_args.args[0] == "Alerta crítica: b"
+        await _check(manager, AlertPriority.CRITICAL, "b")
+        assert tts.await_count == 2 and alert.delivery is AlertDelivery.DELIVERED
+
+    @pytest.mark.asyncio
+    async def test_failed_escalation_notice_gets_its_own_single_retry(self):
+        tts = AsyncMock(side_effect=[_ok(), OUTPUT_FREE["failed"], _ok(), _ok()])
+        manager = AlertManager(tts_callback=tts)
+        alert = await _check(manager, AlertPriority.HIGH, "a")
+        await _check(manager, AlertPriority.CRITICAL, "b")
+        assert alert.delivery is AlertDelivery.FAILED
+        await _check(manager, AlertPriority.CRITICAL, "b")
+        assert tts.await_count == 3 and tts.await_args.args[0] == "Alerta crítica: b"
+        await _check(manager, AlertPriority.CRITICAL, "b")
+        assert tts.await_count == 3 and alert.delivery_attempts == 3
+
+    @pytest.mark.asyncio
+    async def test_retry_does_not_wait_for_the_reannounce_interval(self):
+        clock = FakeClock()
+        tts = AsyncMock(side_effect=[OUTPUT_FREE["failed"], _ok(), _ok()])
+        manager = AlertManager(tts_callback=tts, clock=clock, reannounce_interval_seconds=600)
+        await _check(manager)
+        clock.t += 60
+        await _check(manager)
+        assert tts.await_count == 2
+        clock.t += 599
+        await _check(manager)
+        assert tts.await_count == 2
+        clock.t += 1
+        await _check(manager)
+        assert tts.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_momentary_event_retries_at_its_next_observation_within_cooldown(self):
+        tts = AsyncMock(side_effect=[OUTPUT_FREE["failed"], _ok()])
+        manager = AlertManager(tts_callback=tts)
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "Acceso denegado")
+        assert await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "Acceso denegado") is None
+        assert tts.await_count == 2 and alert.delivery is AlertDelivery.DELIVERED
+
+    @pytest.mark.asyncio
+    async def test_unspoken_priority_never_retries(self):
+        tts = AsyncMock(return_value=OUTPUT_FREE["failed"])
+        manager = AlertManager(tts_callback=tts)
+        cond = AlertCondition("s1", "battery_low")
+        alert = await _check(manager, AlertPriority.MEDIUM, "a", cond, AlertType.DEVICE)
+        await _check(manager, AlertPriority.MEDIUM, "a", cond, AlertType.DEVICE)
+        assert tts.await_count == 0 and alert.delivery is AlertDelivery.NOT_SPOKEN
+
+    @pytest.mark.asyncio
+    async def test_attempts_in_to_dict(self):
+        manager = AlertManager(tts_callback=AsyncMock(side_effect=[OUTPUT_FREE["failed"], _ok()]))
+        alert = await _check(manager)
+        assert alert.to_dict()["delivery_attempts"] == 1
+        await _check(manager)
+        assert alert.to_dict()["delivery_attempts"] == 2

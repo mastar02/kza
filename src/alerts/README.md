@@ -187,6 +187,13 @@ El sistema evita alertas duplicadas por **condición**, nunca por el texto:
   activar aunque estuviera reconocida y la anuncia si es CRITICAL/HIGH
 - **Limpieza**: `clear_cooldowns()` cierra todos los episodios abiertos (sus
   alertas quedan resueltas) y la próxima observación alerta de nuevo
+- **Reintento de voz**: si el aviso falla sin que suene nada (la salida lo
+  confirma con `output_started` en falso y sin segmentos dichos), se reintenta
+  **una sola vez** en la siguiente observación del episodio abierto, salvo que
+  la alerta ya esté reconocida. Si la salida empezó a sonar, fue bloqueada por
+  política, está silenciada (`voice_notifications: false`), lanzó una excepción
+  o no devolvió comprobante, no se repite. `delivery_attempts` cuenta los
+  intentos de voz de la alerta
 
 ```python
 door = AlertCondition(source="entrada", condition="door_open_unexpected")

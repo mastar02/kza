@@ -8,6 +8,7 @@ Proporciona:
 - Latch por episodio: una alerta al abrirse la condición; otra sólo después de
   cerrarla (resolve_condition) o, si se configura, tras un intervalo explícito
 - Recibo de entrega de voz en la alerta (delivered/failed/blocked/muted)
+- Un único reintento del aviso en el siguiente chequeo si falló sin sonar nada
 - Registro de handlers por tipo de alerta
 - Historial de alertas con límite configurable y timestamps con zona horaria
 - Resumen de alertas pendientes y activas
@@ -50,7 +51,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from src.core.logging import get_logger
-from src.core.voice_delivery import DeliveryState, ResponseResult, VoiceDeliveryError
+from src.core.voice_delivery import DeliveryState, ResponseResult, ResponseStage, VoiceDeliveryError
 
 logger = get_logger(__name__)
 
@@ -131,6 +132,7 @@ class Alert:
     delivery: AlertDelivery = AlertDelivery.NOT_SPOKEN
     delivery_reason: str | None = None
     delivery_at: datetime | None = None
+    delivery_attempts: int = 0
 
     def to_dict(self) -> dict:
         """Convertir alerta a diccionario"""
@@ -150,6 +152,7 @@ class Alert:
             "delivery": self.delivery.value,
             "delivery_reason": self.delivery_reason,
             "delivery_at": self.delivery_at.isoformat() if self.delivery_at else None,
+            "delivery_attempts": self.delivery_attempts,
         }
 
 
@@ -161,6 +164,36 @@ class _Episode:
     latched: bool
     opened_at: float
     announced_at: float | None = None
+    # The last notice failed without any audio and is retried once at the next check.
+    retry_due: bool = False
+
+
+# Failed delivery states that can prove no audio was produced (with output_started
+# False and no spoken segment). BLOCKED is a refusal by policy and is never retried.
+_OUTPUT_FREE_STATES = frozenset({DeliveryState.FAILED, DeliveryState.EMPTY, DeliveryState.CANCELLED})
+
+
+def _failed_without_output(result: Any) -> bool:
+    """Whether a voice result proves the notice failed before any audio started.
+
+    Mirrors the reminder notice mapping (T034): only a typed ResponseResult can
+    prove it. Output started (a PCM chunk or a spoken segment), a blocked notice,
+    a timeout after the queue stage, an exception or a receipt-less return are
+    never treated as output-free, so they are never spoken again.
+
+    Args:
+        result: What the voice output returned.
+
+    Returns:
+        True when the notice may be retried without risking a repeated sound.
+    """
+    if not isinstance(result, ResponseResult) or result.success:
+        return False
+    if result.output_started or result.spoken_segments > 0:
+        return False
+    if result.delivery is DeliveryState.TIMED_OUT:
+        return result.timeout_stage is ResponseStage.QUEUE
+    return result.delivery in _OUTPUT_FREE_STATES
 
 
 def _delivery_outcome(result: Any) -> tuple[AlertDelivery, str | None]:
@@ -305,7 +338,7 @@ class AlertManager:
 
         Returns:
             La alerta si se abrió un episodio o se escaló; None si el episodio ya
-            estaba abierto (deduplicada).
+            estaba abierto (deduplicada, aunque reintente o re-anuncie su aviso).
         """
         cond = condition or AlertCondition(source="message", condition=message, latched=False)
         key = cond.key(alert_type)
@@ -401,6 +434,16 @@ class AlertManager:
             if priority in SPOKEN_PRIORITIES:
                 await self._announce(episode)
             return alert
+        if episode.retry_due:
+            episode.retry_due = False
+            if alert.processed:
+                # Someone acknowledged it already: the retry only exists so an alert
+                # nobody heard is not lost.
+                logger.info("Alert voice retry dropped, alert acknowledged (id=%s)", alert.alert_id)
+                return None
+            logger.info("Alert voice notice retried: %s (id=%s)", alert.alert_type.value, alert.alert_id)
+            await self._announce(episode, retry=True)
+            return None
         if (
             episode.latched
             and self.reannounce_interval_seconds is not None
@@ -448,18 +491,38 @@ class AlertManager:
                     f"Error executing alert handler: {e} (type={alert.alert_type.value}, id={alert.alert_id})"
                 )
 
-    async def _announce(self, episode: _Episode) -> None:
-        """Speak the episode's alert once and record its delivery receipt."""
-        episode.announced_at = self._clock()
-        await self._notify_voice(episode.alert)
+    async def _announce(self, episode: _Episode, *, retry: bool = False) -> None:
+        """Speak the episode's alert and record its delivery receipt.
 
-    async def _notify_voice(self, alert: Alert) -> None:
-        """Speak the alert and record the output's receipt on it, never swallowing a failure."""
+        A notice that failed before any audio started is retried once, at the
+        episode's next observation; a retry is never retried again (user answer
+        T036-U1-Q1). Output that started, a blocked or muted notice, and every
+        other failure are never repeated.
+
+        Args:
+            episode: The open episode whose alert is spoken.
+            retry: This notice is the single retry of an output-free failure.
+        """
+        episode.announced_at = self._clock()
+        episode.retry_due = False
+        output_free = await self._notify_voice(episode.alert)
+        episode.retry_due = output_free and not retry
+        if episode.retry_due:
+            logger.info("Alert voice notice failed before any audio; one retry at the next check (id=%s)",
+                        episode.alert.alert_id)
+
+    async def _notify_voice(self, alert: Alert) -> bool:
+        """Speak the alert and record the output's receipt on it, never swallowing a failure.
+
+        Returns:
+            True when the notice failed before any audio started (retryable).
+        """
         callback = self.tts_callback
         if callback is None:
             self._record_delivery(alert, AlertDelivery.MUTED, "voice_notifications_disabled")
-            return
+            return False
         message = self._format_voice_message(alert)
+        alert.delivery_attempts += 1
         self._record_delivery(alert, AlertDelivery.PENDING, None)
         try:
             if inspect.iscoroutinefunction(callback):
@@ -473,11 +536,12 @@ class AlertManager:
             raise
         except VoiceDeliveryError as error:
             self._record_delivery(alert, AlertDelivery.FAILED, str(error) or "voice_delivery_failed")
-            return
+            return False
         except Exception as error:
             self._record_delivery(alert, AlertDelivery.FAILED, type(error).__name__)
-            return
+            return False
         self._record_delivery(alert, *_delivery_outcome(result))
+        return _failed_without_output(result)
 
     def _record_delivery(self, alert: Alert, delivery: AlertDelivery, reason: str | None) -> None:
         """Store the voice receipt on the alert and log anything not delivered."""
