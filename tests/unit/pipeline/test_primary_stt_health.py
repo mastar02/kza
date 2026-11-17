@@ -124,6 +124,18 @@ def test_tracker_episode_alert_once_reload_rate_limited_and_recovery():
     assert snap["codes"] == {"c": 5}
 
 
+def test_no_second_reload_while_one_is_still_running_past_the_interval():
+    now = [0.0]
+    health = PrimarySttHealth(PrimarySttHealthConfig(failure_threshold=1, reload_min_interval_s=600),
+                              clock=lambda: now[0])
+    assert health.record_failure("c").reload
+    now[0] = 700.0  # the interval passed but the reload has not finished
+    assert not health.record_failure("c").reload
+    assert health.snapshot()["reloading"] is True
+    health.reload_finished(False, "x")
+    assert health.record_failure("c").reload
+
+
 # ---------------------------------------------------------------- fault injection
 
 @pytest.mark.asyncio
@@ -139,6 +151,9 @@ async def test_failed_primary_uses_the_shadow_transcript(veto, caplog):
     assert result.stt_confidence.elapsed_ms == 9.0
     assert result.stt_vetoed is False
     assert shadow.calls == 1  # the parallel veto shadow is reused, never a second run
+    # The fallback is never compared with (or vetoed by) itself.
+    assert "stt_shadow" not in result.timings
+    assert not any("[STT-shadow]" in r.getMessage() for r in caplog.records)
     assert health.consecutive_failures == 1 and health.snapshot()["fallbacks_used"] == 1
     # Privacy: codes only, never the exception text or a transcript.
     assert SECRET not in caplog.text and "invalid argument" not in caplog.text

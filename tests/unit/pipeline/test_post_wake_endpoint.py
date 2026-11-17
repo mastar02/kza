@@ -442,6 +442,23 @@ def test_stalled_audio_closes_by_wall_clock(monkeypatch, post_wake):
     assert event is not None and event.capture_complete is post_wake.dispatch_at_max_utterance
 
 
+def test_stall_guard_is_timed_from_the_wake_not_the_preroll_start(monkeypatch):
+    """command_start_time is backdated to the 0.96 s pre-roll; the guard must add it back."""
+    rng = np.random.default_rng(23)
+    loop, rs = _loop(_Detector(fire_at=None))
+    rs.listening = True
+    rs.command_start_time = 1000.0
+    rs.capture_trigger = CaptureTrigger.WAKE
+    rs.audio_buffer = list(_segment(rng, 0.96, 0.002)) + list(_segment(rng, 0.4, 0.05))
+    rs.wake_sample_index = int(0.96 * SR)
+    stall = CONFIG.max_utterance_s + CONFIG.stall_margin_s
+    monkeypatch.setattr(time, "time", lambda: 1000.0 + 0.96 + stall - 0.01)
+    assert loop._poll_command(rs) is None and rs.listening
+    monkeypatch.setattr(time, "time", lambda: 1000.0 + 0.96 + stall + 0.01)
+    assert loop._poll_command(rs) is not None
+    assert loop.endpoint_counts == {"close_max_utterance": 1}
+
+
 # ---------------------------------------------------------------- follow-up start
 
 def _follow_up_run(speech_rms, post_wake=CONFIG, *, room="cocina", vad=None, speech_s=1.04, floor=0.0012):
