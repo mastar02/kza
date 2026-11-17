@@ -1044,33 +1044,20 @@ def test_delegate_output_carries_the_advisory(x_archive, tmp_path):
     assert advice["available"] is True and advice["owners"] == 1 and advice["compaction_recommended"] is False
 
 
-class _FailingAdvisory:
-    @staticmethod
-    def advisory(*_args, **_kwargs):
-        raise RuntimeError("advisory_unavailable " + "x" * 200)
-
-
 @pytest.mark.usefixtures("legacy_managed_transitions")
-@pytest.mark.parametrize("advisory", ["computed", "fails"])
-def test_legacy_cli_delegate_prints_the_grant_with_its_advisory(x_archive, tmp_path, monkeypatch, capsys, advisory):
-    """SC-2 review RV3-3: the CLI branch after the SC-2 guard, in process (legacy test roots only).
-
-    A subprocess cannot set LEGACY_MANAGED_TRANSITIONS, so stage_runtime.main()
-    runs here with a patched argv; the advisory is wired in and its failure
-    never fails the delegation. SC-5b removes the branch with the 8-owner limit.
-    """
+def test_the_delegate_cli_refuses_even_under_legacy_transitions(x_archive, tmp_path, monkeypatch, capsys):
+    """SC-5b removed the CLI's legacy grant branch (and the 8-owner limit): the parser entry only
+    prints the SC-2 code and exits 78, also in a legacy test root, and writes no record. Legacy
+    worlds grant in process (compaction_world.delegate), never through the CLI."""
     world = cw.world(x_archive, tmp_path, hops=())
     root = world["root"]
     stage.prepare_slot(x_archive, root, "b", world["states"]["a"]["state"])
-    if advisory == "fails":
-        monkeypatch.setattr(stage, "_compaction_module", lambda: _FailingAdvisory)
+    witness = cw.witness(root)
     monkeypatch.setattr(sys, "argv", ["stage_runtime.py", "--root", str(root), "--offline", "delegate", "b"])
-    stage.main()
-    printed = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert printed["slot"] == "b" and printed["owners_after_grant"] == 1
-    assert len(list((root / "admission" / "delegations").glob("*.json"))) == 1
-    advice = printed["compaction_advisory"]
-    if advisory == "computed":
-        assert advice["available"] is True and advice["owners"] == 1 and advice["compaction_recommended"] is False
-    else:
-        assert advice == {"available": False, "code": ("advisory_unavailable " + "x" * 200)[:120]}
+    with pytest.raises(SystemExit) as exited:
+        stage.main()
+    assert exited.value.code == 78
+    assert json.loads(capsys.readouterr().out.strip().splitlines()[-1]) == {"refused": stage.DELEGATION_RETIRED}
+    assert not (root / "admission" / "delegations").exists() and cw.witness(root) == witness
+    assert not hasattr(stage, "_DELEGATION_OWNER_LIMIT")
+    assert "runtime_admission_delegation_owner_limit" not in (cw.REPO / "scripts" / "stage_runtime.py").read_text()

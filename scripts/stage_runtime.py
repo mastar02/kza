@@ -2598,9 +2598,6 @@ _RECORD_KEYS = frozenset({"schema_version", "destination_state", "destination_id
 _CHAIN_KEYS = frozenset({"schema_version", "record_sha256", "destination_state", "destination_identity",
                          "grantor", "chains"})
 _HOP_KEYS = frozenset({"binding_id", "close_sha256", "closure", "state_root", "state_identity", "via"})
-# Every distinct owner state is re-snapshotted in full by every validation; past
-# this many owners a grant is refused until compaction is decided (U3b-0b D1).
-_DELEGATION_OWNER_LIMIT = 8
 
 
 def _hex64(value: object) -> bool:
@@ -3897,9 +3894,6 @@ def _authorize_target_delegation(root: Path, destination_state: Path, source_bin
     for identity in set(policy["delegated_targets"]) - set(target_ids):
         if not any(type(record.get("targets")) is dict and identity in record["targets"] for record in existing):
             raise ValueError("runtime_admission_delegation_incomplete")
-    if len({owner for owner, _ in grants} | {record.get("source_binding") for record in existing}) \
-            > _DELEGATION_OWNER_LIMIT:
-        raise ValueError("runtime_admission_delegation_owner_limit")
     delegated = set(policy["delegated_targets"]) | set(target_ids)
     owned = set(destination_targets) - delegated
     for identity in owned:
@@ -5136,18 +5130,10 @@ def main() -> None:
         manifest = prepare_slot(args.archive, args.root, args.name, args.state_source)
         print(json.dumps({"slot": args.name, "commit": manifest["git_commit"]}))
     elif args.command == "delegate":
-        if not LEGACY_MANAGED_TRANSITIONS:
-            # SC-2: kept as a parser entry so the operator gets the code, not an argparse error.
-            print(json.dumps({"refused": DELEGATION_RETIRED}, sort_keys=True))
-            raise SystemExit(78)
-        result = delegate_slot(args.root, args.name)
-        # U3b-0c (design v3 advisory_Q1, v5 G3): content-free; it warns and never blocks.
-        try:
-            result["compaction_advisory"] = _compaction_module().advisory(args.root.resolve(),
-                                                                          owners=result["owners_after_grant"])
-        except Exception as error:  # noqa: BLE001 - the advisory never fails a delegation
-            result["compaction_advisory"] = {"available": False, "code": str(error)[:120]}
-        print(json.dumps({"slot": args.name, **result}))
+        # SC-2 retired the grant; SC-5b removed the CLI's legacy grant branch: the parser entry stays so
+        # the operator gets the code, not an argparse error, and nothing is read or written.
+        print(json.dumps({"refused": DELEGATION_RETIRED}, sort_keys=True))
+        raise SystemExit(78)
     else:
         previous = activate_slot(args.root, args.name, probe_timeout=args.probe_timeout)
         print(json.dumps({"slot": args.name, "previous": previous}))
