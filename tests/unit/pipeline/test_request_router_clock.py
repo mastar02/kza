@@ -78,10 +78,10 @@ def house_at_moment(leaves: CountedLeaves, text: str, llm: str, engine: str = "o
     return house
 
 
-async def turn(house: Household, wake: str) -> dict:
-    """One captured turn in the living room, opened as ``wake`` says."""
+async def turn(house: Household, wake: str, **event) -> dict:
+    """One captured turn in the living room, opened as ``wake`` says (``event`` overrides fields)."""
     return await house.router.process_command(
-        CommandEvent(audio=np.full(16000, .1, dtype=np.float32), room_id="living", **CAPTURES[wake]))
+        CommandEvent(audio=np.full(16000, .1, dtype=np.float32), room_id="living", **{**CAPTURES[wake], **event}))
 
 
 def assert_clock_answer(house: Household, result: dict, spoken: str, before, *, veto_calls: int) -> None:
@@ -175,3 +175,20 @@ async def test_a_capture_without_its_own_wake_keeps_the_7b_gate(leaves, text, ca
     assert result["success"] is False and result["response"] == ""
     house.orchestrator.process.assert_not_awaited()
     assert house.effects(before) == effects(llm_8101_calls=1)
+
+
+@pytest.mark.parametrize(("wake_score", "vetoed"), [(0.4999, True), (0.50, False)])
+async def test_the_wake_score_boundary_decides_whether_the_7b_is_asked(leaves, wake_score, vetoed):
+    """T037-U4-R2: below the grammar bonus (0.50) the 7B is asked and vetoes; at 0.50 the clock answers alone."""
+    house = house_at_moment(leaves, "¿Qué hora es?", "stub:noise")
+    before = leaves.snapshot()
+    result = await turn(house, "acoustic", wake_score=wake_score)
+    if vetoed:
+        assert house.veto.classify.await_count == 1
+        assert result["intent"] == "llm_rejected:noise"
+        assert result["success"] is False and result["response"] == ""
+        house.orchestrator.process.assert_not_awaited()
+        assert house.effects(before) == effects(llm_8101_calls=1)
+    else:
+        house.veto.classify.assert_not_awaited()
+        assert_clock_answer(house, result, "Son las 23:59.", before, veto_calls=0)
