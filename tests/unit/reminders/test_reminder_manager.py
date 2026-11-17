@@ -553,8 +553,10 @@ async def test_a_clock_word_that_is_text_of_one_and_time_of_another_asks(store):
     assert not await manager.cancel_by_text(None, "de llamar a mamá a las 3", shared_only=True)
     assert {r.id for r in await manager.get_active(None, shared_only=True)} == {plain.id, call.id}
     # The clarification proposes a reference that selects each one alone.
+    # Review FV2-3: "de las 3 de la tarde" is said of the text "a las 3"
+    # too, so the plain one is named on the 24-hour clock.
     references = await manager.voice_references(None, asked.candidates, with_time=True, shared_only=True)
-    assert references == {plain.id: "llamar a mamá de las 3 de la tarde",
+    assert references == {plain.id: "llamar a mamá de las 15",
                           call.id: "llamar a mamá de las 5:43 de la tarde"}
     for reminder in (plain, call):
         found = await manager.resolve(None, f"de {references[reminder.id]}", shared_only=True)
@@ -602,11 +604,13 @@ async def test_a_time_of_only_stopwords_is_never_read_as_text(store, query):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("literal", "literal_due", "other", "other_due", "references"), [
     # "una" is a stopword: before review FV-1 the literal reading was skipped.
+    # Review FV2-3: "de la 1 de la tarde" is said of the text "a la una" too,
+    # so the one due at 13:00 is named on the 24-hour clock.
     ("llamar al médico a la una", (11, 12, 45), "llamar al médico", (11, 13, 0),
-     ("llamar al médico de las 12:45 del mediodía", "llamar al médico de la 1 de la tarde")),
+     ("llamar al médico de las 12:45 del mediodía", "llamar al médico de las 13")),
     # "2" is already a content word: before review FV-1 the literal reading was skipped.
     ("tomar 2 pastillas a las 2", (11, 9, 0), "tomar 2 pastillas", (11, 14, 0),
-     ("tomar 2 pastillas de las 9 de la mañana", "tomar 2 pastillas de las 2 de la tarde")),
+     ("tomar 2 pastillas de las 9 de la mañana", "tomar 2 pastillas de las 14")),
 ])
 async def test_a_clock_phrase_that_adds_no_new_word_still_asks(store, literal, literal_due, other, other_due,
                                                                references):
@@ -765,6 +769,85 @@ async def test_another_hour_said_as_word_or_digit_is_not_the_text(store, query):
     timed = await _shared(manager, "tomar pastillas", _local(2026, 11, 11, 15, 0).timestamp())
     found = await manager.resolve(None, query, shared_only=True)
     assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, timed.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("literal", "literal_due", "other", "other_due", "query", "references"), [
+    ("tomar pastillas a las 2", (11, 9, 0), "tomar pastillas", (11, 14, 0),
+     "de tomar pastillas a las 2 de la tarde",
+     ("tomar pastillas de las 9 de la mañana", "tomar pastillas de las 14")),
+    ("llamar a las 8", (11, 10, 0), "llamar", (11, 20, 0), "de llamar a las 8 de la noche",
+     ("llamar de las 10 de la mañana", "llamar de las 20")),
+])
+async def test_a_period_said_with_the_text_clock_asks(store, literal, literal_due, other, other_due, query,
+                                                      references):
+    """Review T032-U1-FV2-3: the text's own clock said with a period is still its text.
+
+    Before, the period had to be in the text too, so these cancelled the
+    reminder due at that time. The one due at that time is then named on
+    the 24-hour clock, which no text's "a las 2" is said as.
+    """
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    named = await _shared(manager, literal, _local(2026, 11, *literal_due).timestamp())
+    timed = await _shared(manager, other, _local(2026, 11, *other_due).timestamp())
+    asked = await manager.resolve(None, query, shared_only=True)
+    assert (asked.match, [r.id for r in asked.candidates]) == (CancelMatch.AMBIGUOUS, [named.id, timed.id])
+    assert not await manager.cancel_by_text(None, query, shared_only=True)
+    found = await manager.voice_references(None, asked.candidates, with_time=True, shared_only=True)
+    assert found == dict(zip((named.id, timed.id), references))
+    for reminder in (named, timed):
+        again = await manager.resolve(None, f"de {found[reminder.id]}", shared_only=True)
+        assert (again.match, again.reminder.id) == (CancelMatch.UNIQUE, reminder.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("literal", "other", "query"), [
+    # The text's clock has another period.
+    ("tomar pastillas a las 2 de la mañana", "tomar pastillas", "de tomar pastillas a las 2 de la tarde"),
+    # The text names another period apart from its clock.
+    ("tomar pastillas a las 2 por la noche", "tomar pastillas", "de tomar pastillas a las 2 de la tarde"),
+    # "las 2" before a content word is a number, not a clock (review R2).
+    ("tomar las 2 pastillas", "tomar las pastillas", "de tomar las pastillas de las 2 de la tarde"),
+    # Another minute is another clock.
+    ("tomar pastillas a las 2 y media", "tomar pastillas", "de tomar pastillas a las 2 de la tarde"),
+])
+async def test_a_period_is_read_into_no_text_that_names_another(store, literal, other, query):
+    """Review T032-U1-FV2-3: only a text clock without a period of its own takes the spoken one."""
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    await _shared(manager, literal, _local(2026, 11, 11, 9, 0).timestamp())
+    timed = await _shared(manager, other, _local(2026, 11, 11, 14, 0).timestamp())
+    found = await manager.resolve(None, query, shared_only=True)
+    assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, timed.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["de almorzar a las 12 del mediodía", "de almorzar a las doce del mediodía"])
+async def test_del_mediodia_said_with_the_text_clock_asks(store, query):
+    """Review T032-U1-FV2-3: "del mediodía" (two words) is dropped like "de la tarde" (three)."""
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    named = await _shared(manager, "almorzar a las 12", _local(2026, 11, 11, 11, 30).timestamp())
+    timed = await _shared(manager, "almorzar", _local(2026, 11, 11, 12, 0).timestamp())
+    asked = await manager.resolve(None, query, shared_only=True)
+    assert (asked.match, [r.id for r in asked.candidates]) == (CancelMatch.AMBIGUOUS, [named.id, timed.id])
+
+
+@pytest.mark.asyncio
+async def test_a_morning_trigger_at_a_text_clock_has_no_voice_reference(store):
+    """Review T032-U1-FV2-3 limit: "las 9 de la mañana" is the text "a las 9" too, and 9 has no 24-hour form.
+
+    The clarification names the other one; this one is cancelled from the web.
+    """
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    named = await _shared(manager, "tomar pastillas a las 9", _local(2026, 11, 11, 20, 0).timestamp())
+    timed = await _shared(manager, "tomar pastillas", _local(2026, 11, 11, 9, 0).timestamp())
+    asked = await manager.resolve(None, "de tomar pastillas a las 9 de la mañana", shared_only=True)
+    assert (asked.match, [r.id for r in asked.candidates]) == (CancelMatch.AMBIGUOUS, [timed.id, named.id])
+    assert await manager.voice_references(None, asked.candidates, with_time=True, shared_only=True) == {
+        named.id: "tomar pastillas de las 8 de la noche"}
 
 
 @pytest.mark.asyncio

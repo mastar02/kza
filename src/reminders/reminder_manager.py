@@ -171,6 +171,8 @@ class _ParsedQuery:
         day: The spoken day, if any.
         clock_phrase: The clock phrase as spoken tokens ("la una", "las 2
             de la tarde"), for the literal reading; empty without a clock.
+        clock_unperiodized: The clock phrase without its period ("las 2"
+            for "las 2 de la tarde"); empty without a spoken period.
         day_phrase: The day phrase from its day word ("mañana", "lunes"
             for "del lunes"), for the literal reading; empty without a day.
     """
@@ -180,6 +182,7 @@ class _ParsedQuery:
     day: _SpokenDay | None
     clock_phrase: tuple[str, ...] = ()
     day_phrase: tuple[str, ...] = ()
+    clock_unperiodized: tuple[str, ...] = ()
 
 
 def _parse_query(query: str) -> _ParsedQuery:
@@ -193,7 +196,10 @@ def _parse_query(query: str) -> _ParsedQuery:
     while day_words and day_words[0] in _QUERY_STOPWORDS:
         day_words.pop(0)
     content = _content([w for k, w in enumerate(words) if k not in taken])
-    return _ParsedQuery(content, clock, day, clock_phrase, tuple(day_words))
+    unperiodized = ()
+    if clock is not None and clock.period is not None:
+        unperiodized = clock_phrase[:-2] if clock_phrase[-2:] == ("del", "mediodia") else clock_phrase[:-3]
+    return _ParsedQuery(content, clock, day, clock_phrase, tuple(day_words), unperiodized)
 
 
 def _hour_of(word: str) -> int | None:
@@ -222,6 +228,32 @@ def _phrase_at(text: list[str], k: int, phrase: tuple[str, ...]) -> bool:
 def _contains_phrase(text: list[str], phrase: tuple[str, ...]) -> bool:
     """The folded text tokens hold ``phrase`` as contiguous tokens."""
     return len(phrase) > 0 and any(_phrase_at(text, k, phrase) for k in range(len(text) - len(phrase) + 1))
+
+
+def _text_periods(text: list[str]) -> set[str]:
+    """Periods of the day a folded text names ("de la tarde", "por la noche", "mediodía")."""
+    return {word for k, word in enumerate(text)
+            if word == "mediodia" or (word in _AM_PERIODS | _PM_PERIODS and k > 0 and text[k - 1] == "la")}
+
+
+def _holds_clock_without_period(text: list[str], phrase: tuple[str, ...], period: str) -> bool:
+    """The text holds ``phrase`` as a clock time of its own with no period, and names no other period.
+
+    "tomar pastillas a las 2" is said "tomar pastillas a las 2 de la
+    tarde" too (review FV2-3); "tomar las 2 pastillas" holds no clock
+    (a number before a content word) and "... a las 2 de la mañana" or
+    "... por la noche" name another period.
+    """
+    if not phrase or _text_periods(text) - {period}:
+        return False
+    hour_at = 1 if phrase[0] in ("la", "las") else 0
+    for k in range(len(text) - len(phrase) + 1):
+        if not _phrase_at(text, k, phrase):
+            continue
+        found = _clock_at(text, k + hour_at)
+        if found is not None and found[0].period is None and found[2] == k + len(phrase):
+            return True
+    return False
 
 
 def _spans(words: list[str]) -> tuple[_SpokenClock | None, range, _SpokenDay | None, range]:
@@ -460,7 +492,10 @@ class ReminderManager:
         # (review T032-U1-FV-1..3). Clock and day are judged apart: "pagar
         # la luz a las 5 del miércoles" is said of "pagar la luz a las 5"
         # due Wednesday at 10 too, so it never cancels "pagar la luz" due
-        # Wednesday at 17 alone (review T032-U1-FV2-1).
+        # Wednesday at 17 alone (review T032-U1-FV2-1). A period said with
+        # the clock is read into a text whose own clock has none ("tomar
+        # pastillas a las 2" for "... a las 2 de la tarde") unless the text
+        # names another period (review T032-U1-FV2-3).
         matches = []
         for reminder in active:
             text = _WORD.findall(_fold(reminder.text))
@@ -468,7 +503,9 @@ class ReminderManager:
                 continue
             local = self._household_clock.to_local(reminder.trigger_at)
             if clock is not None and not (clock.matches(local.hour, local.minute)
-                                          or _contains_phrase(text, query.clock_phrase)):
+                                          or _contains_phrase(text, query.clock_phrase)
+                                          or _holds_clock_without_period(text, query.clock_unperiodized,
+                                                                         clock.period)):
                 continue
             if day is not None and not (day.matches(local.date(), today)
                                         or _contains_phrase(text, query.day_phrase)):
@@ -521,7 +558,9 @@ class ReminderManager:
         as a time or day ("llamar a mamá a las 3" -> "llamar a mamá"). With
         ``with_time`` each carries the spoken time, and then the time and
         day ("de las 5 de la tarde de hoy") for reminders the time alone
-        does not tell apart (review T032-U1-RR-F2).
+        does not tell apart (review T032-U1-RR-F2). An afternoon or night
+        trigger is last tried on the 24-hour clock ("de las 14"), which no
+        text's "a las 2" is said as (review T032-U1-FV2-3).
         """
         bases = [reminder.text]
         content = _without_time_words(reminder.text)
@@ -531,8 +570,14 @@ class ReminderManager:
             return bases
         spoken_time = self.spoken_time_reference(reminder)
         spoken_day = self.spoken_day_reference(reminder)
-        return ([f"{base} de {spoken_time}" for base in bases]
-                + [f"{base} de {spoken_time} {spoken_day}" for base in bases])
+        attempts = ([f"{base} de {spoken_time}" for base in bases]
+                    + [f"{base} de {spoken_time} {spoken_day}" for base in bases])
+        local = self._household_clock.to_local(reminder.trigger_at)
+        if local.hour > 12:
+            clock = f"las {local.hour}:{local.minute:02d}" if local.minute else f"las {local.hour}"
+            attempts += ([f"{base} de {clock}" for base in bases]
+                         + [f"{base} de {clock} {spoken_day}" for base in bases])
+        return attempts
 
     async def cancel_resolved(self, reminder: Reminder, *, shared_only: bool = False,
                               guard: AuthorityGuard | None = None) -> bool:
