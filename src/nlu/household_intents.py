@@ -31,6 +31,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Iterable, Mapping
+from functools import lru_cache
 from dataclasses import dataclass
 from enum import Enum
 
@@ -172,8 +173,18 @@ class HouseholdIntentSettings:
         )
 
 
+# Recent utterances a classifier remembers: one turn is classified by the
+# command gate, the router and the dispatcher in a row (review F7).
+_MEMO_SIZE = 8
+
+
 class HouseholdIntentClassifier:
     """The one classifier instance shared by the router and the dispatcher.
+
+    Classification is pure, so the instance memoizes the last few utterances:
+    the command gate, the router and the dispatcher classify the same turn
+    and only the first call pays for it. Results are frozen and nothing is
+    logged or persisted.
 
     Args:
         settings: Household intent settings; defaults when None.
@@ -181,6 +192,7 @@ class HouseholdIntentClassifier:
 
     def __init__(self, settings: HouseholdIntentSettings | None = None) -> None:
         self._settings = settings if settings is not None else HouseholdIntentSettings()
+        self._memo = lru_cache(maxsize=_MEMO_SIZE)(self._classify)
 
     @property
     def settings(self) -> HouseholdIntentSettings:
@@ -189,6 +201,9 @@ class HouseholdIntentClassifier:
 
     def classify(self, text: str) -> HouseholdIntent | None:
         """Classify one utterance (see :func:`classify_household_intent`)."""
+        return self._memo(text if isinstance(text, str) else "")
+
+    def _classify(self, text: str) -> HouseholdIntent | None:
         return classify_household_intent(text, wake_words=self._settings.wake_words,
                                          max_compound_parts=self._settings.compound_max_parts)
 
@@ -781,18 +796,19 @@ def _names_object(utt: _Utterance) -> bool:
 
 def _deferred(intent: HouseholdIntent | None, segment: _Utterance) -> bool:
     if intent is None:
+        verb = _verb_at(segment, 0)
+        if verb is not None and _DOMOTICS in verb.classes:
+            return False  # R4 already ran on this part and found no deferral
         return non_immediate_action_reason(segment.heard) == "non_immediate:deferred"
     return (intent.family is HouseholdFamily.DEFERRED_ACTION
             or (intent.family is HouseholdFamily.REMINDER and intent.operation is HouseholdOperation.CREATE))
 
 
-def _conflicting(segments: list[_Utterance], intents: list[HouseholdIntent | None]) -> bool:
+def _conflicting(parses: list) -> bool:
+    """Two unclaimed parts ask for opposite operations on the same domain and room."""
     seen: dict[tuple[str | None, str | None], set[str]] = {}
-    for segment, intent in zip(segments, intents):
-        if intent is not None:
-            continue
-        parsed = parse_command(segment.heard)
-        if parsed.intent is None:
+    for parsed in parses:
+        if parsed is None or parsed.intent is None:
             continue
         seen.setdefault((parsed.domain, parsed.room), set()).add(parsed.intent)
     return any(pair <= operations for operations in seen.values() for pair in _OPPOSITES)
@@ -813,6 +829,7 @@ def _r5(utt: _Utterance, max_parts: int) -> HouseholdIntent | None:
     if len(segments) > max_parts:
         return clarify("too_many_parts")
     intents = [_classify_single(segment) for segment in segments]
+    parses = []  # grammar parse of each unclaimed part, computed once (review F7)
     for segment, intent in zip(segments, intents):
         if _deferred(intent, segment):
             return clarify("deferred_part")
@@ -821,10 +838,11 @@ def _r5(utt: _Utterance, max_parts: int) -> HouseholdIntent | None:
         if intent is None and _names_object(segment):
             # A household object never reaches a domotics producer as an unclaimed part.
             return clarify("unparsed_part")
-        if intent is None and parse_command(segment.heard).quality != "full" \
-                and parse_home_command(segment.heard) is None:
+        parsed = parse_command(segment.heard) if intent is None else None
+        if parsed is not None and parsed.quality != "full" and parse_home_command(segment.heard) is None:
             return clarify("unparsed_part")
-    if _conflicting(segments, intents):
+        parses.append(parsed)
+    if _conflicting(parses):
         return clarify("conflicting_parts")
     parts = tuple(HouseholdPart(segment.heard, intent) for segment, intent in zip(segments, intents))
     return HouseholdIntent(HouseholdFamily.COMPOUND, HouseholdOperation.EXECUTE, "R5", utt.heard, verb.form,

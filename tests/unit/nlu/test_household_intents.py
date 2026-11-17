@@ -420,6 +420,48 @@ def test_microbenchmark_under_one_millisecond():
     assert statistics.mean(samples) < 0.001
 
 
+COMPOUNDS = ("apagá la luz del escritorio y de la cocina", "apagá la luz y pausá la música",
+             "encendé las luces del living y de la cocina y del baño", "pará la música y el timer")
+
+
+@pytest.mark.parametrize("text", COMPOUNDS)
+def test_compound_per_call_under_one_millisecond(text):
+    """Review F7: the corpus average hid the compound cost; each compound call is bounded on its own."""
+    classify_household_intent(text)
+    samples = []
+    for _ in range(50):
+        started = time.perf_counter()
+        classify_household_intent(text)
+        samples.append(time.perf_counter() - started)
+    assert statistics.median(samples) < 0.001
+
+
+def test_one_turn_is_classified_once_for_the_gate_router_and_dispatcher():
+    """Review F7: the shared instance memoizes, so a turn's three classifications cost one."""
+    for text in COMPOUNDS:
+        classifier = HouseholdIntentClassifier()
+        first = classifier.classify(text)
+        assert classifier.classify(text) is first and classifier.classify(text) is first
+        assert first == classify_household_intent(text)
+    turns = []
+    for _ in range(20):
+        for text in COMPOUNDS:
+            classifier = HouseholdIntentClassifier()
+            started = time.perf_counter()
+            for _caller in ("gate", "router", "dispatcher"):
+                classifier.classify(text)
+            turns.append(time.perf_counter() - started)
+    assert statistics.median(turns) < 0.001
+
+
+def test_memo_is_bounded_and_keeps_settings():
+    classifier = HouseholdIntentClassifier(HouseholdIntentSettings(compound_max_parts=2))
+    for n in range(20):
+        classifier.classify(f"poné un timer de {n} minutos")
+    assert classifier._memo.cache_info().currsize <= 8
+    assert classifier.classify("apagá la luz y cerrá la persiana y pausá la música").reason == "too_many_parts"
+
+
 # --------------------------------------------------------------------------
 # C02 classifier-layer entries (design seed_entries; every counter is zero:
 # the classifier is pure).

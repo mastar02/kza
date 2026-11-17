@@ -138,16 +138,23 @@ ENTITY_TERMS: dict[str, list[str]] = {
 }
 
 
+# Compiled once (P3-F2 review F7): extract_entity runs several times per
+# grammar parse, and escaping every term on every call dominated its cost.
+_ENTITY_PATTERNS: tuple[tuple[int, str, re.Pattern[str]], ...] = tuple(
+    (len(term), domain, re.compile(rf"\b{re.escape(term)}\b"))
+    for domain, terms in ENTITY_TERMS.items()
+    for term in terms
+)
+
+
 def extract_entity(text: str) -> str | None:
     """Devuelve el dominio HA (light/climate/cover/fan/media_player) o None."""
     t = _norm(text)
     # Preferir matches multi-palabra primero.
     candidates: list[tuple[int, str]] = []
-    for domain, terms in ENTITY_TERMS.items():
-        for term in terms:
-            pat = rf"\b{re.escape(term)}\b"
-            if re.search(pat, t):
-                candidates.append((len(term), domain))
+    for length, domain, pattern in _ENTITY_PATTERNS:
+        if pattern.search(t):
+            candidates.append((length, domain))
     if not candidates:
         return None
     # El término más largo gana (ej: "aire acondicionado" > "aire").
