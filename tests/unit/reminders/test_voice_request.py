@@ -505,6 +505,34 @@ def test_period_words_inside_the_content_are_not_a_day():
     assert result.trigger_at == local(2026, 11, 16, 21)
 
 
+@pytest.mark.parametrize("utterance,now,expected", [
+    ("recordame a las 9 de la noche de mañana llamar", MONDAY_10, local(2026, 11, 17, 21)),
+    ("recordame a las 8 de la mañana de mañana llamar", MONDAY_08, local(2026, 11, 17, 8)),
+    ("recordame a las 9 de la noche de pasado mañana llamar", MONDAY_10, local(2026, 11, 18, 21)),
+    ("recordame a las 9 de la noche de hoy llamar", MONDAY_10, local(2026, 11, 16, 21)),
+])
+def test_de_manana_after_a_period_is_the_day(utterance, now, expected):
+    """Review F2: after a clock with its own period, "de mañana" means tomorrow."""
+    result = parse(utterance, now)
+    assert result.ok, (result.ambiguity, result.detail, result.text)
+    assert result.trigger_at == expected
+    assert result.text == "llamar"
+
+
+def test_de_manana_after_a_period_keeps_the_before_dawn_rule():
+    early = datetime(2026, 11, 16, 5, 0, tzinfo=MVD)
+    result = parse("recordame a las 8 de la mañana de mañana llamar", early)
+    assert (result.ambiguity, result.detail) == (A.AMBIGUOUS_DAY, "tomorrow_before_dawn")
+
+
+def test_de_manana_in_a_deferred_clause():
+    later = extract_time_expression("subí la persiana a las 8 de la mañana de mañana", MONDAY_10)
+    assert (later.ok, later.trigger_at, later.clause) == (True, local(2026, 11, 17, 8), "subí la persiana")
+    # "de mañana" before the clock is not attached to a time phrase: refused, not dropped.
+    before = extract_time_expression("subí la persiana del dormitorio de mañana a las 8 de la mañana", MONDAY_08)
+    assert (before.ambiguity, before.detail, before.trigger_at) == (A.UNPARSEABLE, "unrecognised_date", None)
+
+
 def test_tonight_counts_as_today_against_other_day_words():
     assert parse("recordame mañana esta noche a las 9 x").ambiguity is A.AMBIGUOUS_DAY
     assert parse("recordame todos los días esta noche a las 9 x").ambiguity is A.AMBIGUOUS_DAY

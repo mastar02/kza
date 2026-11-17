@@ -418,13 +418,20 @@ def _period_at(words: list[str], i: int) -> tuple[str, bool, int] | None:
     return None
 
 
-def _day_at(words: list[str], i: int) -> tuple[str, int, str | None, int] | None:
-    """Day word at ``i``: (kind, value, modifier, next index)."""
+def _day_at(words: list[str], i: int, *, joined: bool = False) -> tuple[str, int, str | None, int] | None:
+    """Day word at ``i``: (kind, value, modifier, next index).
+
+    ``joined`` means the word follows "de" right after a time phrase already
+    taken ("a las 9 de la noche de mañana"), so "mañana" is the day, not a
+    period of the day.
+    """
     n = len(words)
+    if i >= n:
+        return None
     w = words[i]
     if _at(words, i, ("pasado", "manana")):
         return "offset", 2, None, i + 2
-    if w == "manana" and (i == 0 or words[i - 1] not in ("la", "esta", "de", "pasado")):
+    if w == "manana" and (joined or i == 0 or words[i - 1] not in ("la", "esta", "de", "pasado")):
         return "offset", 1, None, i + 1
     if w == "hoy":
         return "today", 0, None, i + 1
@@ -482,6 +489,8 @@ def _scan(words: list[str]) -> _Scan:
         return end
 
     def period(i: int) -> int | None:
+        if words[i] == "de" and i > 0 and scan.used[i - 1]:
+            return None          # "de mañana" after a taken time is a day word
         found = _period_at(words, i)
         if found is None:
             return None
@@ -492,6 +501,13 @@ def _scan(words: list[str]) -> _Scan:
         return end
 
     def day(i: int) -> int | None:
+        if words[i] in ("de", "del") and i > 0 and scan.used[i - 1]:
+            found = _day_at(words, i + 1, joined=True)
+            if found is not None:
+                kind, value, modifier, end = found
+                scan.days.append((kind, value, modifier))
+                return end
+            return None
         found = _day_at(words, i)
         if found is None:
             return None
