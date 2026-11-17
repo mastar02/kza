@@ -1714,6 +1714,192 @@ las dos; `user-decisions-20261110.json`, clave `sc4b_questions_20261116`):
   ventana; si no da 0, implementar antes la línea base salada de K y el
   reencolado.
 
+## SC-4c — lista cerrada de colecciones de Chroma en la compactación (2026-11-16)
+
+Quinta unidad del modo release (diseño `t040-t041/sc-release-design-v4.json`,
+unidad SC-4c: `mechanism.start.chroma_allowlist`, PRIV-3, PA-8, V4R2-C1).
+Rama `sc4c` desde `batch-c` (e6d3239), sin push; la suite batch, la
+revisión independiente (SC-R) y el merge los hace la sesión coordinadora.
+Sin release. Evidencia: `t040-t041/sc4c-evidence.json` (`follow_up`,
+pruebas, mutantes, pregunta abierta). Prioridad del usuario: sólo lo que
+necesita la primera actualización posterior a R1.
+
+- Hallazgo de partida: la copia idéntica de 0c rechazaba el snapshot de
+  cualquier H con `data/chroma_db` (`state_snapshot_unregistered_sdk_root`):
+  sólo `data/memory_db` era almacén SDK registrado. Producción tiene los dos.
+- `src/memory/state_snapshot.py`: `snapshot_closed_state(...,
+  chroma_collections=...)` trata todo almacén de Chroma de H como raíz SDK,
+  lista sus colecciones en una copia aislada, clasifica cada nombre antes
+  de exportar nada y no lee la colección dada de baja (sólo su nombre).
+  Sin el argumento, el comportamiento anterior no cambia
+  (`collection_records` compartido con `_export_indexes`).
+- `src/memory/owner_compaction.py`: `collection_kind` (lista cerrada),
+  `policy_allowlist` (lo que `get()` devolvería en t_clone, dueño no
+  retirado, registro de borrados como segunda compuerta, revisión exacta),
+  `chroma_plan` en el plan del clon (`plan_sha256` incluye resúmenes sin
+  contenido), `_clone_state` (sin los bytes de Chroma de H),
+  `rebuild_chroma` (cada almacén lo escribe un proceso hijo `-I -B` sin
+  `src` que recibe sólo lo que K conserva y devuelve el sha256 de lo que
+  lee de vuelta; el extent queda en el catálogo de copias; pin sha256 de
+  los archivos) y D5 con esos pins antes y después del VACUUM y en
+  `resume` (evidencia `chroma.pins`). El hijo existe porque en el server un
+  `data_level0.bin` escrito desde el trabajador tuvo el texto de un hecho
+  vencido (heap del proceso en la capacidad sin usar del índice HNSW).
+- `scripts/compaction.py`: `chroma_collections` en `plan`/`start` (nombres
+  de colección desde imágenes privadas de cada `chroma.sqlite3`, destinos
+  `semantic_index` de H); `unlisted_collection` con almacén y colección en
+  el informe; `chroma` en la vista del plan. La lista está duplicada a
+  propósito (el controlador no importa `src`): una prueba fija que las dos
+  coinciden.
+- Tests: `tests/unit/tools/test_sc4c_chroma_closed_list.py` (paridad de la
+  lista, canarios de la lista permitida, rechazos del plan del clon, la
+  primera transición posterior a R1 con almacenes reales hasta el retiro,
+  `user_memories` en el plan y en el trabajador, D5 de un almacén
+  reconstruido, crash después de la evidencia y `resume`); estados en
+  `tests/mocks/sc4c_chroma.py`. Mutantes: `tools/sc4c_mutants.py` (7).
+  Resultados del server en la evidencia.
+- Pregunta abierta SC4C-Q1 (diseño: «si SC-0 encuentra un lector, SC-R
+  decide»): SC-0 encontró que «listar mis rutinas» lee
+  `home_assistant_routines`. Esta unidad implementa la baja; ver la
+  evidencia para la recomendación. SC4C-Q2: qué hacer si producción tiene
+  la colección heredada `user_memories` (el plan rechaza). SC4C-Q3: el
+  mismo residuo de heap en los HNSW que escribe `kza-voice` (anterior a
+  esta unidad).
+
+### SC-4c — revisión independiente, ronda 1 (2026-11-16)
+
+Veredicto `changes_needed` (SC4C-RV-1 a RV-5); todo aplicado en la rama
+`sc4c` (commits por hallazgo, sin push), evidencia en
+`t040-t041/sc4c-evidence.json`, clave `review_round_1`.
+
+- RV-1 (medio): el hijo de reconstrucción sobrevivía a un SIGKILL del
+  trabajador y recreaba el almacén de K después del `abort`. Ahora muere
+  con el trabajador en Linux (`PR_SET_PDEATHSIG`), sale antes de cada
+  escritura si quedó huérfano, hereda el lease de admisión (todo rechaza
+  `runtime_admission_busy` mientras vive) y tiene timeout de 600 s. Tests
+  con un trabajador real matado con SIGKILL a mitad de la reconstrucción.
+- RV-2 (medio): un test espía fija el hijo limpio (argv, entorno, lease,
+  timeout, stdin sólo con lo planeado; el propio hijo informa que no cargó
+  nada del repositorio). RV-3 (bajo): tests del hash de la imagen del hijo
+  (inyección de fallas) y de los pins de la evidencia en `resume`.
+- RV-5: nombres exactos en la lista cerrada (`<colección>_policy_v1`,
+  `__pointer`, staging versionado); error del registro de borrados con
+  código; `SQLITE_TMPDIR` para el hijo; `other_files` por almacén en el plan.
+- Mutantes de la ronda en `tools/sc4c_mutants.py` (`REVIEW_1`).
+
+### SC-4c — respuestas del usuario y baja de la `user_memories` heredada (2026-11-17)
+
+Respuestas del 2026-11-16 (`t040-t041/user-decisions-20261110.json`, clave
+`sc4c_questions_20261116`): SC4C-Q1 `home_assistant_routines` se da de baja;
+SC4C-Q2 el listado de solo lectura de producción dio `data/chroma_db`
+{`home_assistant_commands`: 337, `home_assistant_routines`: 0} y
+`data/memory_db` {`user_memories`: 876, `user_memories_policy_v1`: 130};
+SC4C-Q2b la heredada `user_memories` se descarta al actualizar; SC4C-Q3 el
+residuo de heap en los HNSW de `kza-voice` va después, como unidad propia
+con prioridad alta; SC4C-Q4 se mantiene el límite de 600 s y SC-6b lo
+ajusta al medir; SC4C-Q5 (valor por defecto) el plan cuenta `other_files`
+y el runbook pide revisar si no es 0.
+
+- `src/memory/owner_compaction.py` y `scripts/compaction.py`:
+  `CHROMA_DROPPED_IN_STORE = {("data/memory_db", "user_memories")}`, baja
+  con nombre exacto y sólo en el almacén de memoria (el par de
+  `memory.chroma_path`/`memory.long_term_collection`, fijado por un test).
+  El snapshot no la lee, el hijo no la recibe; el plan nombra las bajas por
+  almacén (`dropped_collections`) y el evento `materialized`/la evidencia
+  de K las guardan como `[almacén, colección]`. Un nombre parecido, la
+  misma colección en otro almacén o una `user_memories` registrada como
+  destino siguen rechazando `unlisted_collection`.
+- Tests nuevos en `tests/unit/tools/test_sc4c_chroma_closed_list.py`:
+  transición completa con la colección heredada (canarios en documento y
+  metadata; ningún byte en el estado de K ni en los registros de la
+  compactación; ausente de toda la raíz después del retiro), rechazo del
+  plan con un nombre parecido, otra mayúscula u otro almacén, paridad con
+  `config/settings.yaml`. Mutantes `SC4C_Q2B` en `tools/sc4c_mutants.py`
+  (el corredor ahora usa `taskset -c 24-47`, la casa está ocupada).
+- Pendiente para el operador: el `compact plan` de solo lectura en la
+  ventana de R1 debería mostrar `data/memory_db` con `dropped: 1`
+  (`["user_memories"]`).
+- Test inestable corregido (también fallaba en `49e3f8e`, antes de este
+  cambio): las pruebas del lease de RV-1 daban por terminado al hijo cuando
+  su hilo principal ya era zombi pero los otros hilos del SDK seguían
+  saliendo con la tabla de descriptores, y con ella el lease; `abort` (o el
+  cierre del propio `start`) veía `runtime_admission_busy`. El ayudante
+  `_gone` ahora espera también a los hilos; mismas aserciones y plazos.
+
+### SC-4c — revisión independiente, ronda 2 (2026-11-17)
+
+Veredicto `changes_needed` (SC4C-RV2-1 a RV2-4) sobre `07b4a5b1`; sin
+cambios de producto.
+
+- RV2-1: el test de la `user_memories` heredada no revisaba el snapshot
+  (sólo el registro de la compactación, `admission/compaction/v1/<id>`), y
+  el test, `87d96f6a` y el informe decían que sí. El snapshot
+  (`<raíz>/compaction/<id>/snapshot-n`) guarda una copia opaca de los
+  archivos del SDK de H y con ella los bytes heredados hasta el retiro o el
+  `abort`. Ahora el test toma la ruta del evento `snapshot` y afirma que los
+  bytes están en su `state/data/memory_db/chroma.sqlite3`, sólo en archivos
+  `sdk_opaque` del manifiesto e idénticos al archivo de H en la misma ruta
+  (nunca en `manifest.json` ni en una exportación) y que fuera de H no hay
+  otro lugar de la raíz con ellos; corre con dos finales, retiro y `abort`
+  después de la activación (H idéntico y sirviendo, snapshot borrado,
+  bytes sólo en H). La primera corrida en el server mostró una vez los
+  bytes heredados también en un `data_level0.bin` de `data/chroma_db` de H
+  y de su copia: residuo de heap del primer run del mundo de prueba
+  (SC4C-Q3); el test lo admite sólo como copia idéntica de H.
+- RV2-2: DEPLOYMENT y el runbook de compactación dicen ahora que el
+  snapshot guarda esa copia opaca (`data/memory_db/chroma.sqlite3` y, en
+  producción, los HNSW e `index_metadata.pickle`) y que `retire` y `abort`
+  la borran.
+- RV2-3: la prueba del lease con el hijo pausado vuelve a afirmar que el
+  hijo vive (`process_started_at(pid) is not None`), no sólo que no se fue.
+- RV2-4: sin acción (comprobaciones del revisor de baja exacta por almacén,
+  crash, `resume` y `abort`).
+- Server, como `yo`, `taskset -c 24-47 nice -n 10`, con `pgrep` < 4:
+  `tests/unit/tools/test_sc4c_chroma_closed_list.py` 26 passed; el test
+  heredado tres veces más (2 passed cada vez); los cuatro mutantes `SC4C_Q2B`
+  que usan ese test, 4/4 muertos.
+
+### SC-4c — SC4C-Q6: la baja de `home_assistant_routines` sólo en `data/chroma_db` (2026-11-17)
+
+Respuesta del 2026-11-17 (`t040-t041/user-decisions-20261110.json`, clave
+`followups_20261117`): «Sí, limitarlo (Recomendado): data/chroma_db only».
+
+- `src/memory/owner_compaction.py` y `scripts/compaction.py`: desaparece
+  `CHROMA_DROPPED` (la baja por nombre en cualquier almacén);
+  `CHROMA_DROPPED_IN_STORE` tiene los dos pares,
+  `("data/chroma_db", "home_assistant_routines")` y
+  `("data/memory_db", "user_memories")`, y `collection_kind` sólo da
+  `dropped` con almacén y nombre exactos. `home_assistant_routines` en otro
+  almacén (por ejemplo `data/memory_db`) rechaza
+  `runtime_admission_compaction_unlisted_collection` en el `plan` y en el
+  trabajador (clasificador del snapshot y plan del clon). Producción no
+  cambia: la colección está en `data/chroma_db`.
+- Tests en `tests/unit/tools/test_sc4c_chroma_closed_list.py`: la tabla de
+  la lista cerrada agrega nombres parecidos a las rutinas y almacenes
+  parecidos a `data/chroma_db`; el par de rutinas se fija a
+  `vectordb.path`/`vectordb.routines_collection`, al valor por defecto de
+  `ChromaSync` y a la ruta por defecto de `src/main.py` (que no pasa
+  `routines_collection`), y el conjunto de bajas a los dos pares de
+  `config/settings.yaml`; rechazos del plan del clon con la colección en
+  `data/memory_db`, omitida o leída; rechazo del `plan` (casos
+  `routines_other_store`, `routines_look_alike`) y del trabajador (caso
+  `routines_other_store`, fila S y `abort` sin pérdida).
+- Mutantes `SC4C_Q6` en `tools/sc4c_mutants.py` (seis); los mutantes
+  anteriores que nombraban `CHROMA_DROPPED` se reescribieron sobre el
+  clasificador nuevo.
+- Server, como `yo`, `taskset -c 24-47 nice -n 10`, con `pgrep` < 4, clon
+  `/home/yo/projects/runs/sc4c-q6`, registros en
+  `/home/yo/projects/runs/sc4c-q6-out/`, sobre `1bf0129d`:
+  `test_sc4c_chroma_closed_list.py` 30 passed; `test_owner_compaction` y
+  `test_state_snapshot` 34 passed; `test_compaction_units` 273 passed;
+  los siete `test_stage_runtime_compaction*` 216 passed, 5 skipped (los
+  cortes con víctima `snapshot` sin snapshot parcial, como antes);
+  `test_sc1b_release_plan` 15 passed; `test_sc4a_verify_run` y los dos
+  `test_sc4b_*` 108 passed. Mutantes (clon `sc4c-q6-mut`): los seis
+  `SC4C_Q6`, los doce de la baja y del rechazo reescritos o afectados
+  (`SC4C_Q2B` completos y los de rutinas y colección no listada de la
+  lista original), 18/18 muertos (`mutants.json`).
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.

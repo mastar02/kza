@@ -704,8 +704,9 @@ Estado al 2026-11-16: implementado en la rama `sc1a-controller-epoch5`
 (diseño `sc-release-design-v4`, unidad SC-1a, aceptado). No hay release:
 producción y R1 siguen en época 4. Es la primera pieza del modo release
 posterior a R1; plan/start en modo release (SC-1b) está en la sección
-siguiente, la corrida de verificación (SC-4a) y las salidas (SC-4b) en las
-suyas; faltan SC-4c, SC-R, SC-6b y SC-5b, así que esta sección no habilita
+siguiente, la corrida de verificación (SC-4a), las salidas (SC-4b) y la
+lista cerrada de Chroma (SC-4c) en las suyas; faltan SC-R, SC-6b y SC-5b,
+así que esta sección no habilita
 ninguna transición gestionada (ver «Sin
 transiciones gestionadas después de R1 hasta el modo release»). Evidencia:
 `data/autonomous-roadmap-20261102/t040-t041/sc1a-evidence.json` (local,
@@ -1161,6 +1162,138 @@ fórmula D de SC-D2 ni se midió: queda en la lista de medición de SC-6b
 
 Tests: `tests/unit/tools/test_sc4b_w.py`,
 `tests/unit/tools/test_sc4b_release_exits.py`.
+
+### Lista cerrada de colecciones de Chroma en la compactación (SC-4c) — desarrollada, sin release
+
+SC-4c implementa `mechanism.start.chroma_allowlist` del diseño v4 (PRIV-3,
+PA-8, V4R2-C1). Vale para toda compactación (modo release y modo simple),
+porque corre en el trabajador del controlador. Antes, la copia era idéntica
+también para Chroma, y un `data/chroma_db` (el índice de comandos y las
+rutinas, que no es destino `semantic_index` registrado) hacía rechazar el
+snapshot con `state_snapshot_unregistered_sdk_root`: en producción ninguna
+compactación podía pasar del snapshot.
+
+- **Qué recibe K.** Cada almacén de Chroma de H (cada directorio con un
+  `chroma.sqlite3`) se reconstruye en K con el SDK público desde la
+  exportación del snapshot; nunca se copian sus bytes, así que lo que queda
+  afuera no sobrevive en páginas libres ni en los archivos del índice HNSW.
+  (1) La colección de memoria de política (la que H registró como destino
+  `semantic_index` y sólo con nombre `<colección>_policy_v1`) recibe sólo los registros de
+  hechos que `get()` devolvería en t_clone (estado `automatic` o
+  `confirmed`, sin vencer, sin conversación fuente con tombstone) cuyo dueño
+  no está en `retired_users`, con el registro de borrados como segunda
+  compuerta, y sólo si el registro indexa esa revisión exacta (documento
+  igual al contenido, metadata `{fact_policy: 1, revision}`). Quedan afuera,
+  por ejemplo, un hecho vencido que el barrido todavía no limpió, un hecho de
+  un dueño retirado cuya poda no corrió y un id huérfano. Las filas de
+  `facts` siguen idénticas (lo que vence lo vence K en su corrida). (2) Las
+  colecciones del índice de comandos (`home_assistant_commands`, su
+  `__pointer` y las versionadas `home_assistant_commands__<AAAAmmddHHMMSS><6
+  hex>`, exactamente los nombres que crea `ChromaSync`) se copian
+  enteras: registros, metadata (el puntero conserva `active`) y
+  configuración. (3) `home_assistant_routines` de `data/chroma_db` **no se
+  copia** (texto de rutinas dictadas, sin camino de borrado); el arranque de
+  K la recrea vacía (`ChromaSync._construct`). Es una baja con nombre exacto
+  y sólo en ese almacén (respuesta SC4C-Q6 del usuario, 2026-11-17: el par
+  `("data/chroma_db", "home_assistant_routines")` de
+  `CHROMA_DROPPED_IN_STORE`, igual en el plan y en el trabajador y fijado
+  por un test a `vectordb.path` y `vectordb.routines_collection` de
+  `config/settings.yaml`, al valor por defecto de `routines_collection` de
+  `ChromaSync` y a la ruta por defecto de `src/main.py`); el mismo nombre en
+  cualquier otro almacén rechaza como en (4). (3b) La colección heredada `user_memories` de
+  `data/memory_db` (anterior a la política de memoria, en cuarentena y
+  nunca leída: `long_term.get_stats` informa `legacy_policy:
+  "quarantined"`) **tampoco se copia** (respuesta SC4C-Q2b del usuario,
+  2026-11-16; producción tiene 876 registros ahí junto a los 130 de
+  `user_memories_policy_v1`). Es una baja con nombre exacto y sólo en ese
+  almacén (`CHROMA_DROPPED_IN_STORE`, igual en el plan y en el trabajador,
+  fijada además a `memory.chroma_path` y `memory.long_term_collection` de
+  `config/settings.yaml`): el snapshot no la lee, el hijo no la recibe y
+  queda registrada sólo por nombre. Sus bytes siguen en H hasta que el
+  retiro lo destruye; ahí se borran para siempre. El snapshot
+  (`<raíz>/compaction/<id>/snapshot-n`) también guarda una copia opaca de
+  `data/memory_db/chroma.sqlite3` y, en producción, de los archivos HNSW y
+  `index_metadata.pickle` de esa colección, con sus bytes; el retiro y el
+  `abort` borran el snapshot y con él esa copia (revisión SC4C-RV2-2).
+  (4) Cualquier otra colección, incluidos un nombre parecido (`user_memories_v0`,
+  `User_memories`), `user_memories` fuera de `data/memory_db`,
+  `home_assistant_routines` fuera de `data/chroma_db` (SC4C-Q6) o una
+  `user_memories` registrada como destino, rechaza
+  `runtime_admission_compaction_unlisted_collection`: en el `plan` (lee los
+  nombres de colección de una imagen privada de cada `chroma.sqlite3`, nunca
+  un registro; el informe nombra almacén y colección) y otra vez en el
+  trabajador (en el snapshot, antes de exportar nada, y en el plan del
+  clon). Un rechazo del trabajador es la fila S: `compact abort <id>` (sin
+  pérdida, antes de V) y la unidad vuelve a servir H.
+- **Proceso hijo limpio.** Cada almacén lo escribe un intérprete nuevo
+  (`python -I -B`, sin importar `src`) que recibe por stdin sólo lo que K
+  conserva. Motivo, medido en el server: Chroma guarda buffers del índice
+  HNSW cuya capacidad sin usar puede tener contenido anterior del heap del
+  proceso; escrito desde el trabajador (cuyo heap tiene todo el snapshot de
+  H), un `data_level0.bin` de K llegó a tener el texto de un hecho vencido.
+  Un fallo del hijo rechaza `runtime_admission_compaction_chroma_rebuild_failed`
+  sin devolver su stderr.
+- **El hijo no sobrevive al trabajador como escritor (revisión SC4C-RV-1).**
+  La revisión mostró en el server que, si el trabajador moría con SIGKILL
+  (el OOM killer, un `kill -9`) durante la reconstrucción, el hijo seguía y
+  volvía a crear el almacén de K, con los hechos, después de que `abort`
+  lo había borrado. Ahora: (a) en Linux el hijo pide `PR_SET_PDEATHSIG`
+  (SIGKILL) antes de leer nada, así el kernel lo mata con el trabajador; en
+  toda plataforma, antes de cada escritura sale si su padre ya no es el
+  trabajador; (b) hereda el descriptor del lease de admisión del
+  trabajador, así que mientras vive el lock sigue tomado y `abort`,
+  `resume`, `plan` y cualquier otra entrada rechazan `runtime_admission_busy`
+  (lo impone el kernel; no hace falta registrar su pid ni su hora de
+  arranque); (c) una reconstrucción de un almacén que tarda más que
+  `CHROMA_REBUILD_TIMEOUT` (600 s, el presupuesto de bajada entero de
+  SC-D2 A) mata al hijo y rechaza
+  `runtime_admission_compaction_chroma_rebuild_timeout`.
+- **D5 para almacenes reconstruidos.** El hijo vuelve a leer su almacén y
+  el sha256 de esa imagen (exactamente las colecciones planeadas, cada una
+  con su metadata, configuración y registros) tiene que coincidir con la del
+  plan; después se fija el sha256 de cada archivo del almacén y cada D5
+  posterior (antes y después del VACUUM, y en `resume`) compara ese pin
+  exacto (`payload_changed:chroma`). Un almacén cuyas colecciones se dan
+  todas de baja se crea igual, vacío, para que los `schemas` de K sigan
+  iguales a los de H (A1).
+- **Registros sin contenido.** `plan` muestra `chroma` con conteos por
+  almacén (`rebuilt`, `copied`, `dropped` y `other_files`: archivos dentro
+  del almacén que no son de Chroma y que K no recibe, revisión SC4C-RV-5;
+  el operador revisa antes de seguir si no es 0, SC4C-Q5) y los nombres de
+  las bajas (`dropped_collections`); el evento `materialized` y la
+  evidencia de preparación de K guardan conteos (almacenes, colecciones por
+  clase, registros, excluidos), las bajas como `[almacén, colección]` y los
+  pins (rutas y sha256). El snapshot
+  conserva la exportación de las colecciones copiadas y de la de política
+  (con los registros excluidos) hasta que se retira junto con H; de
+  `home_assistant_routines` y de la heredada `user_memories` no exporta
+  nada y el manifiesto sólo guarda el nombre (sus bytes sí están en la copia
+  opaca de los archivos del SDK de H, ver (3b)).
+- **Residual.** El texto de `home_assistant_routines` que ya está en H queda
+  en H (y en los bytes opacos del snapshot) hasta que el retiro destruye H;
+  la transición es lo que lo quita. Lo mismo vale para el residuo de heap de
+  SC4C-Q3: un archivo HNSW de `data/chroma_db` de H puede tener texto de
+  memoria (en la ronda 2 de la revisión el test lo mostró una vez en el
+  server, con la `user_memories` heredada) y su copia opaca en el snapshot
+  también, hasta
+  el retiro o el `abort`; K no lo recibe porque cada almacén lo escribe un
+  hijo limpio. SC-0 encontró un lector en producción
+  (`routine_manager._handle_list` → `list_routines`, el intent de voz
+  «listar mis rutinas»): después de la transición esa lista sale vacía hasta
+  que se dicte una rutina nueva. El diseño deja a SC-R decidir entre la baja
+  y una reconstrucción desde la tabla protegida `routines`; el usuario
+  aceptó la baja (SC4C-Q1, 2026-11-16).
+- **Hallazgo fuera de esta unidad.** El mismo comportamiento de Chroma vale
+  para el servicio: los archivos HNSW que escribe `kza-voice` pueden guardar
+  fragmentos de su heap (cualquier dato que el proceso tuvo en memoria), y
+  un borrado no los limpia. Decisión del usuario (SC4C-Q3, 2026-11-16):
+  después, como unidad propia con prioridad alta; la transición no lo
+  empeora (K se escribe desde el hijo limpio y no copia los bytes de Chroma
+  de H).
+- **Límite de 600 s por almacén.** El usuario lo aceptó (SC4C-Q4,
+  2026-11-16); SC-6b lo ajusta con la medición de tamaño de producción.
+
+Tests: `tests/unit/tools/test_sc4c_chroma_closed_list.py`.
 
 ### Sin transiciones gestionadas después de R1 hasta el modo release
 
@@ -1765,8 +1898,10 @@ Límites que siguen valiendo (decisiones P5 = C y Q4):
 
 - Sólo `unlink`: no se sobrescribe ni se corre `fstrim`. Los bloques liberados
   quedan en el disco hasta que se reutilicen; es un borrado lógico.
-- VACUUM sólo sobre K. Las páginas libres de `chroma.sqlite3` de K pueden
-  conservar residuos (opaco al SDK).
+- VACUUM sólo sobre K. Desde SC-4c los almacenes de Chroma de K se
+  reconstruyen con el SDK desde la lista cerrada (no se copian sus bytes),
+  así que no traen páginas libres de H; lo que K' escriba después en Chroma
+  sigue siendo opaco al SDK.
 - No toca nada fuera de `/home/kza/releases` (`/home/kza/kza`, respaldos
   externos, snapshots del disco) ni nada dentro de la raíz sin prueba
   positiva: `backups/` (salvo los snapshots que el controlador catalogó; los

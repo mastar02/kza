@@ -50,6 +50,25 @@ gestionada limpia de K (la corrida de verificación, que deja K'), destruye con
 Así, lo que una persona pidió borrar (una conversación, un recuerdo, su voz)
 deja de existir también en los slots anteriores (P2).
 
+Chroma es la única excepción a la copia idéntica (SC-4c, lista cerrada de
+colecciones): cada almacén de Chroma de H se reconstruye en K con el SDK. La
+colección de memoria de política recibe sólo los registros de hechos vivos
+(sin vencer, sin tombstone, sin borrado registrado) cuyo dueño no está
+retirado; el índice de comandos de Home Assistant se copia entero;
+`home_assistant_routines` de `data/chroma_db` (texto de rutinas dictadas)
+no se copia y el arranque de K la recrea vacía (SC4C-Q6: sólo en ese
+almacén, el de `vectordb.path`); la colección heredada `user_memories` de
+`data/memory_db` (anterior a la política de memoria, en cuarentena y nunca
+leída) tampoco se copia (SC4C-Q2b): queda en H y se borra para siempre
+cuando el retiro destruye H. El snapshot de la compactación
+(`<raíz>/compaction/<id>/snapshot-n`) también guarda una copia opaca de
+`data/memory_db/chroma.sqlite3` y, en producción, de sus archivos HNSW y
+`index_metadata.pickle`, con los bytes de esa colección; `compact retire` y
+`compact abort` borran el snapshot y con él esa copia. Cualquier otra
+colección (por ejemplo un nombre parecido como `user_memories_v0`,
+`user_memories` en otro almacén o `home_assistant_routines` fuera de
+`data/chroma_db`) hace rechazar el plan.
+
 ## Qué NO hace (límites, P5 = C)
 
 - **Sólo `unlink`.** No sobrescribe, no trunca, no corre `fstrim`. Los bloques
@@ -59,8 +78,9 @@ deja de existir también en los slots anteriores (P2).
 - **VACUUM sólo en K** (decisión P5_vacuum_new_state). Las bases SQLite de K
   pasan por `secure_delete=ON` y `VACUUM`, así que las filas que H ya había
   borrado no quedan en páginas libres de K. `chroma.sqlite3` no se vacía (es
-  opaco al SDK): sus páginas libres pueden conservar residuos; es un límite
-  documentado.
+  opaco al SDK), pero desde SC-4c los almacenes de Chroma de K se crean de
+  nuevo desde la lista cerrada, sin bytes de H; lo que K' escriba después en
+  Chroma sigue siendo opaco.
 - **Nada fuera de la raíz gestionada** (Q4): `/home/kza/kza`, los respaldos
   externos, snapshots del disco y cualquier copia fuera de
   `/home/kza/releases` quedan intactos.
@@ -298,6 +318,21 @@ R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
      compactación. Ese reconocimiento cubre **sólo** los conteos del plan;
    - `advisory`: si la compactación está recomendada y por qué (6 dueños o
      borrados pedidos por el usuario que siguen en estados retenidos);
+   - `chroma` (SC-4c): por almacén de Chroma de H, cuántas colecciones se
+     reconstruyen (`rebuilt`, la memoria de política), se copian enteras
+     (`copied`, el índice de comandos) y no se copian (`dropped`, con sus
+     nombres en `dropped_collections`), y `other_files`: archivos dentro del
+     almacén que no son de Chroma (K no los recibe). Lo esperado en
+     producción (listado de solo lectura del 2026-11-16) es `data/chroma_db`
+     con `copied` según el índice de comandos y `dropped: 1`
+     (`["home_assistant_routines"]`), y `data/memory_db` con `rebuilt: 1` y
+     `dropped: 1` (`["user_memories"]`, las 876 memorias heredadas en
+     cuarentena, que K no recibe), los dos con `other_files: 0`. Si
+     `other_files` no es 0, mirar qué se dejó a mano dentro del almacén
+     antes de seguir (SC4C-Q5).
+     Después de la transición, «listar mis rutinas» por voz responde vacío
+     hasta que se dicte una rutina nueva (las rutinas programadas de
+     `routines.db` no cambian);
    - `plan_sha256` y `untouched_sha256`.
 
 3. Iniciar (escribe la intención, crea K, lo materializa, lo autoriza y lo
@@ -717,6 +752,12 @@ la corrida de verificación armada, las corridas de un `allow-run` vigente e
 | `runtime_admission_compaction_artifact` | `start` o `resume`: el archivo dado no es el del intent (`"archive": "not_the_intent_archive"`, nada escrito: repetir con el archivo del plan, en época 5 `"$NEW_ARCHIVE"`), o el `release.json` de K no es el del intent (el archivo cambió entre lectura y extracción): `$ST compact abort <id>`, después habilitar y arrancar la unidad. |
 | `runtime_admission_compaction_schema_changed` | `start`, época 5 (A1): los `schemas` del binding de K no son los de H. El head sigue en H: `$ST compact abort <id>`, después `systemctl --user enable kza-voice.service` y `systemctl --user start kza-voice.service`. Repetir con el mismo NUEVO rechaza igual. |
 | `runtime_admission_compaction_locator_collision:<tabla>.path` | `start` (trabajador): dos filas de una cola de audio caerían en la misma ruta de K. Se rechaza antes de escribir K; el head sigue en H: `$ST compact abort <id>`, después habilitar y arrancar la unidad. Cada reintento rechaza igual; no hay salida por `resume`. |
+| `runtime_admission_compaction_unlisted_collection` | `plan` o `start` (SC-4c): un almacén de Chroma de H tiene una colección fuera de la lista cerrada (por ejemplo un nombre parecido a una baja como `user_memories_v0`, `user_memories` fuera de `data/memory_db`, `home_assistant_routines` fuera de `data/chroma_db` (SC4C-Q6), o una `*_policy_v1` que H no registró); el informe del plan nombra almacén y colección, nunca registros. El plan no escribió nada: habilitar y arrancar la unidad (sirve H) y pasar a desarrollo; no borrar la colección a mano. Si aparece en `start` (el trabajador, fila S): `$ST compact abort <id>` (sin pérdida antes de V), después habilitar y arrancar la unidad. |
+| `runtime_admission_compaction_chroma_rebuild_failed` | `start` (trabajador): el proceso hijo que reconstruye un almacén de Chroma de K falló (su salida no se muestra: podría tener contenido). El head sigue en H: `$ST compact abort <id>`, después habilitar y arrancar la unidad; pasar a desarrollo. |
+| `runtime_admission_compaction_chroma_rebuild_timeout` | `start` (trabajador): la reconstrucción de un almacén de Chroma tardó más de 600 s (el presupuesto de bajada entero); el hijo ya fue terminado. El head sigue en H: `$ST compact abort <id>`, después habilitar y arrancar la unidad; pasar a desarrollo (medir el almacén). |
+| `runtime_admission_compaction_deletion_ledger_salt_invalid`, `..._deletion_ledger_subject_invalid` | `start` (trabajador): el registro de borrados de H no sirve para la segunda compuerta de la memoria de Chroma (sal mal formada, hecho sin id). Nada se copió a K todavía: `$ST compact abort <id>`, después habilitar y arrancar la unidad; pasar a desarrollo. |
+| `runtime_admission_busy` justo después de que murió el trabajador | Un hijo de reconstrucción de Chroma todavía tiene el lease (SC4C-RV-1). En Linux muere con el trabajador en milisegundos; si no, sale antes de su siguiente escritura. Esperar unos segundos y repetir el mismo comando; no matar nada a mano ni borrar K. |
+| `runtime_admission_compaction_payload_changed:chroma` | `start` (trabajador, D5): un almacén de Chroma reconstruido en K no coincide con lo planeado o cambió después de su comprobación. El head sigue en H: `$ST compact abort <id>`, después habilitar y arrancar la unidad. Con `resume` se acepta sólo si la evidencia de K ya dice `materialized` y el pin coincide. |
 | `runtime_admission_compaction_release_exit_unavailable` | Sólo con la compuerta de release SC4A-N13 cerrada (`RELEASE_EXITS_AVAILABLE = False`; SC-4b la dejó abierta): un log del modo release no se arma. Nada se escribió: `$ST compact abort <id>` (sin pérdida), después habilitar y arrancar la unidad. |
 | `runtime_admission_compaction_release_smoke_seconds` | Época 5: `compact verify` de un log del modo release sin `--smoke-seconds` o con más de 60. Nada se escribió: repetir con N de 10 a 60 (paso 4). |
 | `runtime_admission_compaction_plain_mode_only` | Época 5: `allow-run`, `--discard-k-writes` y la vuelta a H por Q6 son sólo de un log simple; un log del modo release vuelve a H con W (ver «Salidas del modo release después de V»). |

@@ -471,7 +471,7 @@ def _identity_world(tmp_path, k_rows):
                 "databases": {"data/x.db": {"schema": schema, "tables": {"t": {"rows": rows}}}}}
     plan = SimpleNamespace(latest=SimpleNamespace(manifest=manifest, snapshot_root=tmp_path / "snapshot"),
                            privacy_relative="data/privacy.db", destination=destination, source_roots=(),
-                           evidence_map={})
+                           evidence_map={}, chroma_stores=())  # SC-4c: no Chroma store in this state
     return plan, destination, SimpleNamespace(registered_target_ids=(), target_id_map={})
 
 

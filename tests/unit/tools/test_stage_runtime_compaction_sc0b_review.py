@@ -102,9 +102,9 @@ def test_d5_refuses_each_rewritten_check_in_each_pass(x_archive, tmp_path, monke
     steps = []
     verify, vacuum = oc.verify_identity, oc.vacuum_compacted_state
 
-    def counted(plan, destination, journal):
+    def counted(plan, destination, journal, *pins):  # SC-4c: D5 also takes the rebuilt stores' pins
         steps.append("d5")
-        return verify(plan, destination, journal)
+        return verify(plan, destination, journal, *pins)
 
     def vacuumed(*args):
         steps.append("vacuum")

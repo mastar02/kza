@@ -11,7 +11,8 @@ retires every other proven copy under the root:
 * ``compact plan <K> --archive <H archive>``: read-only. Preconditions
   P1-P14, the positive-proof retirement set (v3), the untouched list and its
   digest, content-free coverage counts (members against H), capacity, the
-  advisory, and the plan digest.
+  advisory, H's Chroma collections against the closed list (SC-4c), and the
+  plan digest.
 * ``compact start <K> ...``: the intent, then C2a (K's runtime from H's
   archive), C2b/C3 in the compaction worker (snapshot, identity clone, D4
   VACUUM on K only, D5 exact check), A1 authorize and A2 activate.
@@ -37,7 +38,7 @@ import json
 import logging
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import sqlite3
@@ -161,6 +162,24 @@ K_TRANSIENT_SQLITE = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED, sqli
                                 sqlite3.SQLITE_INTERRUPT})
 # Review RB-3: K' head's closure proof unreadable after V (storage damage, a manual edit): an HD-like stop.
 K_CLOSURE_UNREADABLE = "runtime_admission_compaction_k_closure_unreadable"
+# SC-4c closed collection list (sc-release-design v4 start.chroma_allowlist, PA-8, V4R2-C1). The worker
+# (src/memory/owner_compaction.py) holds the same list; tests/unit/tools/test_sc4c_chroma_closed_list.py pins both.
+CHROMA_STORE = "chroma.sqlite3"
+CHROMA_COMMAND_INDEX = "home_assistant_commands"  # with "__pointer" and the "__<version>" staging collections
+CHROMA_POLICY_SUFFIX = "_policy_v1"  # SC4C-RV-5 (1): the exact names the runtime makes
+CHROMA_COMMAND_NAMES = re.compile(re.escape(CHROMA_COMMAND_INDEX) + r"(__pointer|__[0-9]{14}[0-9a-f]{6})?")
+# The named drops, by exact name in their own store only (not copied into K): the command store's routines
+# (K's boot recreates them; SC4C-Q6) and the quarantined pre-policy memory collection (SC4C-Q2b).
+CHROMA_DROPPED_IN_STORE = frozenset({("data/chroma_db", "home_assistant_routines"),
+                                     ("data/memory_db", "user_memories")})
+UNLISTED_COLLECTION = "runtime_admission_compaction_unlisted_collection"
+# SC4C-RV-5 (4): a store's own files (the pinned SDK's layout); any other file inside a store directory is
+# not carried into K (the store is rebuilt), so the plan counts it per store ('other_files').
+CHROMA_STORE_FILES = re.compile(r"chroma\.sqlite3(-wal|-shm|-journal)?|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+                                r"[0-9a-f]{4}-[0-9a-f]{12}/(header|data_level0|length|link_lists)\.bin|"
+                                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/index_metadata\.pickle")
+# What the worker inherits; its Chroma rebuild child gets the same (owner_compaction._CHILD_ENVIRONMENT).
+WORKER_ENVIRONMENT = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SQLITE_TMPDIR", "HOME")
 # Review RA4B-1: what a value the selection cannot classify raises (W1 never raises an uncoded error).
 _W1_VALUE_ERRORS = (ValueError, TypeError, AttributeError, KeyError, IndexError)
 
@@ -599,6 +618,79 @@ def _privacy_relative(state: Path) -> str:
     if len(found) != 1:
         _refuse("runtime_admission_compaction_journal_ambiguous")
     return found[0]
+
+
+def collection_kind(name: str, *, policy: bool, store: str) -> str | None:
+    """SC-4c: 'rebuilt' (H's own policy memory collection), 'copied' (command index), 'dropped' (the named
+    drops: routines only in ``store`` data/chroma_db, the legacy memory collection only in data/memory_db),
+    else None."""
+    if policy:
+        if name.endswith(CHROMA_POLICY_SUFFIX) and len(name) > len(CHROMA_POLICY_SUFFIX):
+            return "rebuilt"
+    elif CHROMA_COMMAND_NAMES.fullmatch(name):
+        return "copied"
+    elif (store, name) in CHROMA_DROPPED_IN_STORE:
+        return "dropped"
+    return None
+
+
+def chroma_collections(state: Path, privacy_relative: str) -> dict:
+    """SC-4c at plan: every collection of every Chroma store of H against the closed list.
+
+    Reads private images of H's chroma.sqlite3 (collection names only, never
+    a record) and H's semantic_index targets; an unlisted collection (a
+    look-alike of a dropped name, or a dropped name outside its own store,
+    among them) or a store with no collection table refuses with
+    compaction_unlisted_collection. Returns content-free counts, the dropped
+    collections by name only (``dropped_collections``, SC4C-Q2b), and the
+    files inside each store that are not Chroma's own and so are not carried
+    into K (``other_files``, SC4C-RV-5 (4)).
+    """
+    policy = set()
+    with stage._database_image(state / privacy_relative) as db:
+        for (encoded,) in db.execute("SELECT descriptor FROM erasure_targets WHERE participant='semantic_index'"):
+            descriptor = json.loads(encoded)
+            path = descriptor.get("path") if type(descriptor) is dict else None
+            if type(path) is str and Path(path).is_relative_to(state):
+                policy.add((Path(path).relative_to(state).as_posix(), descriptor.get("collection")))
+    stores, unlisted = {}, []
+    for relative, path in _databases(state).items():
+        if PurePosixPath(relative).name != CHROMA_STORE:
+            continue
+        store = PurePosixPath(relative).parent.as_posix()
+        with stage._database_image(path) as db:
+            tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            names = sorted(row[0] for row in db.execute("SELECT name FROM collections")) \
+                if "collections" in tables else None
+        if names is None:
+            unlisted.append([store, None])
+            continue
+        counts = {"rebuilt": 0, "copied": 0, "dropped": 0, "other_files": _other_store_files(path.parent),
+                  "dropped_collections": []}
+        for name in names:
+            kind = collection_kind(name, policy=(store, name) in policy, store=store)
+            if kind is None:
+                unlisted.append([store, name])
+            else:
+                counts[kind] += 1
+                if kind == "dropped":
+                    counts["dropped_collections"].append(name)
+        stores[store] = counts
+    if unlisted:
+        _refuse(UNLISTED_COLLECTION, {"collections": unlisted})
+    return {"stores": stores}
+
+
+def _other_store_files(store: Path) -> int:
+    """How many entries under one Chroma store are not the SDK's own files (links and special files count)."""
+    count = 0
+    for directory, names, files in os.walk(store, followlinks=False):
+        for name in files + [name for name in names if os.path.islink(os.path.join(directory, name))]:
+            path = Path(directory) / name
+            relative = path.relative_to(store).as_posix()
+            if path.is_symlink() or not path.is_file() or not CHROMA_STORE_FILES.fullmatch(relative):
+                count += 1
+    return count
 
 
 def owner_selection(root: Path, head_binding: dict) -> list[dict]:
@@ -1317,6 +1409,7 @@ def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftov
         elif record.get("preparation") not in {"prepared", "failed", "unknown"}:
             _refuse("runtime_admission_compaction_copy_in_progress")
     privacy = _privacy_relative(state)
+    chroma = chroma_collections(state, privacy)  # SC-4c: the closed collection list
     room = capacity(root, source, privacy)  # P9
     now = _now(wall)
     covered = coverage(members, state, now=now)  # P10
@@ -1339,7 +1432,7 @@ def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftov
                                             "temp_need_bytes")},
              "units": scanned, "advisory": advice, "has_env": _lexists(state / ".env"),
              "retire_prepare_leftovers": retire_prepare_leftovers, "named_units": sorted(set(named_units)),
-             "abandoned_copies": sorted(abandoned),
+             "abandoned_copies": sorted(abandoned), "chroma": chroma,
              "decisions": list(DECISIONS)}
     if release:
         value["mode"] = RELEASE_MODE  # P6'(e): the digest and the intent bind it with the archive fields
@@ -1435,7 +1528,8 @@ def _plan_view(value: dict) -> dict:
             "untouched": value["untouched"], "untouched_sha256": value["untouched_sha256"],
             "abandoned_copies": value.get("abandoned_copies", []),
             "coverage": value["coverage"], "coverage_members": value["coverage_members"],
-            "capacity": value["capacity"], "units": value["units"], "advisory": value["advisory"]}
+            "capacity": value["capacity"], "units": value["units"], "advisory": value["advisory"],
+            "chroma": value["chroma"]}
 
 
 # --- start: intent, K's runtime, worker, authorize, activate -----------------------------------------
@@ -1585,8 +1679,7 @@ def worker_command(root: Path, compaction_id: str) -> list[str]:
 
 def run_worker(root: Path, compaction_id: str) -> dict:
     """Spawn the worker (G1 capability) and return its JSON line; a refusal is the worker's code."""
-    environment = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
-                                                     "SQLITE_TMPDIR", "HOME") if key in os.environ}
+    environment = {key: os.environ[key] for key in WORKER_ENVIRONMENT if key in os.environ}
     environment["KZA_COMPACTION_WORKER"] = "1"
     # Private whatever the operator shell's umask (0002 for kza): review S1, same class as F5.
     completed = subprocess.run(worker_command(root, compaction_id), capture_output=True, text=True,

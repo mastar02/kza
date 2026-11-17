@@ -31,18 +31,58 @@ change:
 
 Any other absolute locator of H or an owner inside a database refuses
 (compaction_absolute_locator). Refusal codes are content-free.
+
+Chroma (SC-4c, sc-release-design v4 start.chroma_allowlist, PRIV-3, PA-8,
+V4R2-C1) is the one exception to identity: a closed collection list. Every
+Chroma store of H is rebuilt in K through the public SDK from the
+snapshot's export (never a byte copy, so nothing left out survives in free
+pages or index files):
+
+* the policy memory collection (a registered semantic_index target,
+  ``<collection>_policy_v1``) gets only the records of facts get() would
+  return at t_clone (live, unexpired, no tombstoned source) whose owner is
+  not in retired_users, with the deletion ledger as a second gate;
+* the command-index collections (home_assistant_commands, its pointer and
+  its versioned staging collections) are copied whole;
+* home_assistant_routines of the command store (data/chroma_db, settings
+  vectordb.path, where ChromaSync makes it) is not copied (a named drop:
+  dictated routine text with no erasure path; K's boot recreates it empty;
+  SC4C-Q6: by exact name in that store only, like the legacy collection);
+* the legacy 'user_memories' collection of the memory store (data/memory_db,
+  where LongTermMemory made it before the memory policy; quarantined, never
+  read) is not copied either (SC4C-Q2b, a named drop by exact name in that
+  store only: never read by the snapshot, recorded by name only);
+* any other collection, a look-alike of a dropped name or a dropped name in
+  another store included, refuses (compaction_unlisted_collection), at
+  plan (scripts/compaction.py) and here, in the snapshot and in the plan.
+
+Each store is written by a fresh child interpreter that gets only what K
+keeps (CHROMA_REBUILD_CHILD): Chroma persists index buffers whose unused
+capacity can hold earlier heap contents, and this worker's heap holds H's
+whole snapshot. D5 for rebuilt stores: the child reads its store back and
+its afterimage (exactly the planned collections, each with its planned
+metadata, configuration and records) must hash to the plan's; then the
+store's files are pinned by sha256 and every later D5 (after VACUUM, on
+resume) compares that pin. The child never outlives the worker as a writer
+(SC4C-RV-1): it dies with the worker on Linux, exits before each write once
+the worker is gone, holds the worker's admission lease while it lives (so
+abort, resume and plan refuse runtime_admission_busy) and is killed after
+CHROMA_REBUILD_TIMEOUT.
 """
 from __future__ import annotations
 
 from contextlib import closing
 from dataclasses import dataclass, field
 import hashlib
+import importlib.metadata
 import json
 import math
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import sqlite3
+from types import SimpleNamespace
 from typing import Mapping
 
 from src.memory.state_snapshot import ClosedStateSnapshot, read_blob, verify_snapshot
@@ -64,6 +104,22 @@ DERIVATION_FILES = frozenset({".kza-target-ownership.json", ".kza-payload-prepar
                               ".kza-state-binding.json"})
 SQLITE_SIDE_SUFFIXES = ("-wal", "-shm", "-journal")
 FREE_MARGIN = 256 << 20  # P9 (scripts/compaction.FREE_MARGIN)
+
+# SC-4c closed collection list (scripts/compaction.py holds the same list for plan; a test pins both).
+CHROMA_COMMAND_INDEX = "home_assistant_commands"  # with "__pointer" and the "__<version>" staging collections
+# SC4C-RV-5 (1): exactly the names the runtime makes (long_term.index_collection_name; command_index.pointer_name
+# and ChromaSync's staging name, '<base>__' + strftime('%Y%m%d%H%M%S') + token_hex(3)).
+CHROMA_POLICY_SUFFIX = "_policy_v1"
+CHROMA_COMMAND_NAMES = re.compile(re.escape(CHROMA_COMMAND_INDEX) + r"(__pointer|__[0-9]{14}[0-9a-f]{6})?")
+# The named drops, each by exact name and only in its own store (never read, recorded by name only):
+# V4R2-C1 and SC4C-Q6: the routines of the command store (settings vectordb.path / ChromaSync's
+# routines_collection), not copied, K's boot recreates it empty; SC4C-Q2b: the pre-policy memory collection
+# (settings memory.chroma_path / long_term_collection), quarantined and never read.
+CHROMA_DROPPED_IN_STORE = frozenset({("data/chroma_db", "home_assistant_routines"),
+                                     ("data/memory_db", "user_memories")})
+CHROMA_KINDS = ("rebuilt", "copied", "dropped")
+_FACT_LIVE_STATES = ("automatic", "confirmed")
+_FACT_LEDGER_KINDS = ("fact_deleted", "fact_pruned_retired_owner")
 
 
 class CompactionCloneError(ValueError):
@@ -92,6 +148,54 @@ def _quote(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def collection_kind(name: str, *, policy: bool, store: str) -> str:
+    """SC-4c: the closed list. 'rebuilt' (policy memory), 'copied' (command index), 'dropped' (named drops).
+
+    Args:
+        name: The collection's name.
+        policy: True only for a collection H registered as its own
+            semantic_index target in that store; it is rebuilt only under
+            the ``<collection>_policy_v1`` name.
+        store: The store's path relative to the state root (each drop of
+            CHROMA_DROPPED_IN_STORE holds only in its own store).
+
+    Returns:
+        The collection's kind. Anything else refuses.
+    """
+    if policy:
+        if name.endswith(CHROMA_POLICY_SUFFIX) and len(name) > len(CHROMA_POLICY_SUFFIX):
+            return "rebuilt"
+    elif CHROMA_COMMAND_NAMES.fullmatch(name):
+        return "copied"
+    elif (store, name) in CHROMA_DROPPED_IN_STORE:
+        return "dropped"
+    raise CompactionCloneError("runtime_admission_compaction_unlisted_collection")
+
+
+def _snapshot_class(relative: str, name: str, registered: bool) -> str:
+    """The snapshot's classifier (state_snapshot._export_stores): a dropped collection is never read."""
+    return "omit" if collection_kind(name, policy=registered, store=relative) == "dropped" else "export"
+
+
+@dataclass(frozen=True)
+class ChromaCollectionPlan:
+    """One collection of one of H's Chroma stores, as K gets it (records empty when dropped)."""
+
+    store: str
+    collection: str
+    kind: str
+    metadata: dict | None = field(repr=False)
+    configuration: dict | None = field(repr=False)
+    records: tuple = field(repr=False)
+    excluded: int
+
+    def summary(self) -> dict:
+        """Content-free: names, counts and the digest of K's records."""
+        return {"store": self.store, "collection": self.collection, "kind": self.kind,
+                "records": len(self.records), "excluded": self.excluded,
+                "records_sha256": _digest([self.metadata, self.configuration, list(self.records)])}
+
+
 @dataclass(frozen=True)
 class CompactionClonePlan:
     """Read-only plan of the identity clone of H's closed snapshot into K's state."""
@@ -104,6 +208,8 @@ class CompactionClonePlan:
     target_relocations: Mapping[str, dict]
     evidence_map: Mapping[str, str]
     plan_sha256: str
+    chroma_stores: tuple[str, ...] = ()
+    chroma: tuple[ChromaCollectionPlan, ...] = field(default=(), repr=False)
 
 
 def _under(path: str, root: str) -> bool:
@@ -258,6 +364,94 @@ def _check_evidence(snapshot, privacy_relative, relocations, evidence_map, desti
                          == EventDependency.from_dict(entry), "event_lineage_changed")
 
 
+def _rows(database: dict, name: str) -> list[dict]:
+    table = database["tables"].get(name)
+    return table["rows"] if type(table) is dict else []
+
+
+def policy_allowlist(snapshot: ClosedStateSnapshot, now: float) -> dict:
+    """fact id -> (revision, content) of every fact get() would return at ``now`` with a non-retired owner.
+
+    get() (fact_ledger.FactLedger._eligible): state automatic or confirmed,
+    not expired, no source conversation tombstoned. Owner (fact_owners)
+    not in any retired_users table of H. Second gate: no fact deletion of
+    that id in the database's deletion ledger (salted digest). A ledger the
+    digest cannot use (a malformed salt, an empty fact id) refuses with its
+    code (SC4C-RV-5 (2)).
+    """
+    from src.memory.deletion_ledger import DeletionLedgerError
+    try:
+        return _policy_allowlist(snapshot, now)
+    except DeletionLedgerError as error:
+        raise CompactionCloneError("runtime_admission_compaction_" + str(error)) from None
+
+
+def _policy_allowlist(snapshot: ClosedStateSnapshot, now: float) -> dict:
+    from src.memory.deletion_ledger import subject_digest
+    retired = {row["user_id"] for database in snapshot.manifest["databases"].values()
+               for row in _rows(database, "retired_users")}
+    allowed = {}
+    for _relative, database in sorted(snapshot.manifest["databases"].items()):
+        facts = _rows(database, "facts")
+        if not facts:
+            continue
+        tombstoned = {row["conversation_id"] for row in _rows(database, "conversation_tombstones")}
+        conversations = {}
+        for row in _rows(database, "fact_sources"):
+            conversations.setdefault(row["fact_id"], set()).add(row["conversation_id"])
+        owners = {row["fact_id"]: row["person_id"] for row in _rows(database, "fact_owners")}
+        salts = [row["salt"] for row in _rows(database, "deletion_ledger_salt_v1") if type(row["salt"]) is str]
+        recorded = {row["subject_sha256"] for row in _rows(database, "deletion_ledger_v1")
+                    if row["kind"] in _FACT_LEDGER_KINDS}
+        for fact in facts:
+            identity, expires = fact["id"], fact["expires_at"]
+            if (fact["state"] not in _FACT_LIVE_STATES or type(fact["content"]) is not str
+                    or type(fact["revision"]) is not int
+                    or expires is not None and not (type(expires) in (int, float) and expires > now)
+                    or conversations.get(identity, set()) & tombstoned
+                    or owners.get(identity) in retired
+                    or any(subject_digest(salt, identity) in recorded for salt in salts)):
+                continue
+            allowed[identity] = (fact["revision"], fact["content"])
+    return allowed
+
+
+def _policy_record(record: dict, allowed: dict) -> bool:
+    """A record of the policy collection K keeps: its fact is allowed and it indexes that exact revision."""
+    fact = allowed.get(record["id"])
+    return (fact is not None and record["document"] == fact[1]
+            and record["metadata"] == {"fact_policy": 1, "revision": fact[0]})
+
+
+def chroma_plan(snapshot: ClosedStateSnapshot, now: float) -> tuple[tuple[str, ...], tuple[ChromaCollectionPlan, ...]]:
+    """SC-4c: H's Chroma stores and, per collection, what K gets (refuses an unlisted collection)."""
+    listed = snapshot.manifest.get("sdk_collections")
+    _require(type(listed) is dict and listed.get("schema_version") == 1 and type(listed.get("stores")) is list,
+             "unlisted_collection")
+    stores = tuple(listed["stores"])
+    allowed = None
+    plans = []
+    for export in snapshot.manifest["index_exports"]:
+        _require(export["relative_path"] in stores, "unlisted_collection")
+        kind = collection_kind(export["collection"], policy=export["registered"] is True,
+                               store=export["relative_path"])
+        _require(export["omitted"] is (kind == "dropped"), "unlisted_collection")
+        records = tuple(export["records"])
+        excluded = 0
+        if kind == "dropped":
+            records, excluded = (), 0
+        elif kind == "rebuilt":
+            if allowed is None:
+                allowed = policy_allowlist(snapshot, now)
+            kept = tuple(record for record in records if _policy_record(record, allowed))
+            records, excluded = kept, len(records) - len(kept)
+        plans.append(ChromaCollectionPlan(export["relative_path"], export["collection"], kind,
+                                          export["metadata"], export["configuration"], records, excluded))
+    plans.sort(key=lambda item: (item.store, item.collection))
+    _require(len({(item.store, item.collection) for item in plans}) == len(plans), "unlisted_collection")
+    return stores, tuple(plans)
+
+
 def plan_compaction_clone(latest: ClosedStateSnapshot, *, now: float, destination: Path, privacy_relative: str,
                           source_roots: tuple[str, ...]) -> CompactionClonePlan:
     """Deterministic, read-only plan of the identity clone (no SDK, no destination I/O)."""
@@ -275,11 +469,13 @@ def plan_compaction_clone(latest: ClosedStateSnapshot, *, now: float, destinatio
     relocations = target_relocations(latest, privacy_relative, roots, destination)
     evidence_map = _evidence_map(latest, privacy_relative, relocations)
     _check_evidence(latest, privacy_relative, relocations, evidence_map, destination)
+    stores, chroma = chroma_plan(latest, now)
     value = {"latest": latest.manifest_sha256, "now": now, "destination": str(destination),
              "privacy_relative": privacy_relative, "source_roots": list(roots),
-             "target_relocations": relocations, "evidence_map": evidence_map, "mode": "compaction_identity"}
+             "target_relocations": relocations, "evidence_map": evidence_map, "mode": "compaction_identity",
+             "chroma_stores": list(stores), "chroma": [item.summary() for item in chroma]}
     return CompactionClonePlan(latest, float(now), destination, privacy_relative, roots, relocations,
-                               evidence_map, _digest(value))
+                               evidence_map, _digest(value), stores, chroma)
 
 
 def _identity_proof(plan: CompactionClonePlan, destination: Path) -> dict:
@@ -293,6 +489,188 @@ def _identity_proof(plan: CompactionClonePlan, destination: Path) -> dict:
             "destination_root": str(destination),
             "destination_identity": {"device": info.st_dev, "inode": info.st_ino},
             "removed_rows": [], "removed_files": []}
+
+
+def _in_store(relative: str, stores: tuple[str, ...]) -> bool:
+    return any(PurePosixPath(relative).is_relative_to(store) for store in stores)
+
+
+def _clone_state(plan: CompactionClonePlan, destination: Path) -> None:
+    """payload_derivation._clone_latest without H's Chroma stores (SC-4c: rebuilt, never byte-copied)."""
+    from src.memory.payload_derivation import _clone_latest
+    if not plan.chroma_stores:
+        _clone_latest(plan, destination)
+        return
+    files = {key: record for key, record in plan.latest.manifest["files"].items()
+             if not (key.startswith("state/") and _in_store(key.removeprefix("state/"), plan.chroma_stores))}
+    # The same verified reads (each file's size and sha256 against its record), over the filtered list.
+    view = SimpleNamespace(manifest={"files": files}, snapshot_root=plan.latest.snapshot_root)
+    _clone_latest(SimpleNamespace(latest=view), destination)
+
+
+def _store_pin(destination: Path, store: str) -> dict:
+    """relative path -> sha256 of every file of one rebuilt store (no link, no special file)."""
+    root = destination / store
+    _require(root.is_dir() and not root.is_symlink() and root.resolve() == root, "payload_changed:chroma")
+    pin = {}
+    for path in sorted(root.rglob("*")):
+        _require(not path.is_symlink(), "payload_changed:symlink")
+        if path.is_dir():
+            continue
+        _require(path.is_file(), "payload_changed:chroma")
+        pin[path.relative_to(destination).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return pin
+
+
+# SC-4c: the rebuild runs in a fresh interpreter that imports no src and gets only what K keeps (stdin).
+# Chroma persists HNSW buffers whose unused capacity can hold whatever its allocator handed out, so a
+# store written by this worker (whose heap holds H's snapshot: excluded records, expired facts) could
+# carry fragments of it into K's files. The child's heap holds K's planned records and the SDK only.
+# It builds each collection, re-reads every collection of the store and prints the sha256 of that
+# afterimage; the parent compares it with the plan's (D5 for rebuilt stores, in the session).
+#
+# SC4C-RV-1: the child never outlives the worker as a writer. On Linux the kernel kills it when the
+# worker dies (PR_SET_PDEATHSIG, set before anything else); on every platform it exits before each
+# write once it is no longer the worker's child (guard); and it holds the worker's admission lease
+# (an inherited descriptor of the same flock), so abort, resume and plan refuse runtime_admission_busy
+# while it lives, whatever killed the worker. A rebuild longer than CHROMA_REBUILD_TIMEOUT is killed.
+CHROMA_REBUILD_CHILD = "\n".join([
+    "import hashlib, importlib.metadata, json, os, sys",
+    "if sys.platform.startswith('linux'):",
+    "    import ctypes, signal",
+    "    if ctypes.CDLL(None, use_errno=True).prctl(1, int(signal.SIGKILL), 0, 0, 0) != 0:",  # PR_SET_PDEATHSIG
+    "        raise SystemExit(6)",
+    "spec = json.loads(sys.stdin.buffer.read())",
+    "def guard():",
+    "    if os.getppid() != spec['parent']:",
+    "        os._exit(5)",
+    "guard()",
+    "if importlib.metadata.version('chromadb') != spec['sdk_version']:",
+    "    raise SystemExit(3)",
+    "import chromadb",
+    "from chromadb.config import Settings",
+    "from chromadb.api.collection_configuration import load_collection_configuration_from_json",
+    "def plain(value):",
+    "    if hasattr(value, 'tolist'):",
+    "        value = value.tolist()",
+    "    if type(value) is list:",
+    "        return [plain(item) for item in value]",
+    "    if type(value) is dict:",
+    "        return {key: plain(item) for key, item in value.items()}",
+    "    return value",
+    "client = chromadb.PersistentClient(path=spec['path'], settings=Settings(anonymized_telemetry=False))",
+    "try:",
+    "    batch = max(1, min(int(client.get_max_batch_size()), 1000))",
+    "    for item in spec['collections']:",
+    "        guard()",
+    "        configuration = item['configuration']",
+    "        if configuration is not None:",
+    "            configuration = load_collection_configuration_from_json(configuration)",
+    "        collection = client.create_collection(name=item['collection'], metadata=item['metadata'] or None,",
+    "                                              configuration=configuration, embedding_function=None)",
+    "        rows = item['records']",
+    "        for start in range(0, len(rows), batch):",
+    "            part = rows[start:start + batch]",
+    "            guard()",
+    "            collection.add(ids=[row['id'] for row in part], documents=[row['document'] for row in part],",
+    "                           metadatas=[row['metadata'] for row in part],",
+    "                           embeddings=[row['embedding'] for row in part])",
+    "    guard()",
+    "    image = []",
+    "    for name in sorted(item.name for item in client.list_collections()):",
+    "        collection = client.get_collection(name=name, embedding_function=None)",
+    "        payload = collection.get(include=['documents', 'metadatas', 'embeddings'])",
+    "        ids = list(payload['ids'])",
+    "        if collection.count() != len(ids) or len(set(ids)) != len(ids):",
+    "            raise SystemExit(4)",
+    "        arrays = [plain(payload[key]) if ids else [] for key in ('documents', 'metadatas', 'embeddings')]",
+    "        records = sorted(({'id': identity, 'document': arrays[0][index], 'metadata': arrays[1][index],",
+    "                           'embedding': arrays[2][index]} for index, identity in enumerate(ids)),",
+    "                         key=lambda row: row['id'])",
+    "        image.append({'collection': name, 'metadata': plain(collection.metadata),",
+    "                      'configuration': plain(collection.configuration_json), 'records': records})",
+    "finally:",
+    "    client.close()",
+    "print(hashlib.sha256(json.dumps(image, sort_keys=True, separators=(',', ':'), ensure_ascii=True,",
+    "                                allow_nan=False).encode()).hexdigest())",
+])
+# The worker's own environment (scripts/compaction.WORKER_ENVIRONMENT, a test pins both), SQLite's temp
+# directory included (SC4C-RV-5 (3)).
+_CHILD_ENVIRONMENT = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "HOME", "TMPDIR", "SQLITE_TMPDIR")
+# SC4C-RV-1 (c): one store's rebuild may not take longer than a whole transition's downtime budget
+# (SC-D2 A, 600 s); the child is then killed and the start refuses.
+CHROMA_REBUILD_TIMEOUT = 600.0
+
+
+def _store_image(wanted: list) -> list[dict]:
+    """What the child must read back from one store: exactly its planned collections, sorted by name."""
+    return [{"collection": item.collection, "metadata": item.metadata, "configuration": item.configuration,
+             "records": list(item.records)} for item in sorted(wanted, key=lambda item: item.collection)]
+
+
+def _rebuild_store(path: Path, wanted: list, version: str, lease: int) -> None:
+    """One store in the child; refuses (content-free) unless it read back exactly the planned image.
+
+    ``lease`` is the worker's admission lease descriptor: the child inherits
+    it, so the lease stays held until the child is gone (SC4C-RV-1).
+    """
+    import subprocess
+    import sys
+    spec = {"path": str(path), "sdk_version": version, "parent": os.getpid(),
+            "collections": [{"collection": item.collection, "metadata": item.metadata,
+                             "configuration": item.configuration, "records": list(item.records)}
+                            for item in wanted]}
+    environment = {key: os.environ[key] for key in _CHILD_ENVIRONMENT if key in os.environ}
+    try:
+        completed = subprocess.run([sys.executable, "-I", "-B", "-c", CHROMA_REBUILD_CHILD], input=_json(spec),
+                                   capture_output=True, env=environment, check=False, pass_fds=(lease,),
+                                   timeout=CHROMA_REBUILD_TIMEOUT)
+    except subprocess.TimeoutExpired:  # run() has killed and reaped the child
+        raise CompactionCloneError("runtime_admission_compaction_chroma_rebuild_timeout") from None
+    _require(completed.returncode != 3, "sdk_changed")
+    _require(completed.returncode == 0, "chroma_rebuild_failed")  # stderr is never read back (content)
+    lines = completed.stdout.decode("ascii", "replace").split()
+    _require(lines[-1:] == [hashlib.sha256(_json(_store_image(wanted))).hexdigest()], "payload_changed:chroma")
+
+
+def rebuild_chroma(plan: CompactionClonePlan, destination: Path, operation, lease: int | None = None) -> dict:
+    """SC-4c: every Chroma store of H made anew in K from the plan; returns the stores' file pins.
+
+    A store whose collections are all dropped is still created (empty), so
+    K's schemas equal H's (A1). Each store is written by its own child
+    process (CHROMA_REBUILD_CHILD) inside an extent the copy catalog holds;
+    the child's exit is the SDK's close, and only after it the store's
+    files are pinned. ``lease`` is the worker's admission lease descriptor,
+    which each child holds while it lives (SC4C-RV-1).
+    """
+    if not plan.chroma_stores:
+        return {}
+    _require(type(lease) is int and lease >= 0, "lease")
+    version = plan.latest.source_binding["sdk_versions"].get("chromadb")
+    _require(version is not None and importlib.metadata.version("chromadb") == version, "sdk_changed")
+    pins = {}
+    for store in plan.chroma_stores:
+        path = destination / store
+        _require(not path.exists() and not path.is_symlink(), "destination_database")
+        operation.extent(store, family="semantic_index", representation="sdk_work")
+        path.mkdir(parents=True, mode=0o700)
+        _rebuild_store(path, [item for item in plan.chroma if item.store == store and item.kind != "dropped"],
+                       version, lease)
+        pins[store] = _store_pin(destination, store)
+    return pins
+
+
+def _chroma_summary(plan: CompactionClonePlan) -> dict:
+    """Content-free counts of the closed list's outcome, with the dropped collections by name only."""
+    counts = {"stores": len(plan.chroma_stores), **{kind: 0 for kind in CHROMA_KINDS},
+              "records": 0, "excluded": 0, "dropped_collections": []}
+    for item in plan.chroma:
+        counts[item.kind] += 1
+        counts["records"] += len(item.records)
+        counts["excluded"] += item.excluded
+        if item.kind == "dropped":
+            counts["dropped_collections"].append([item.store, item.collection])
+    return counts
 
 
 def _relocate_columns(plan: CompactionClonePlan, destination: Path) -> dict:
@@ -385,7 +763,7 @@ def _expected_digests(plan: CompactionClonePlan, rows: list[dict], columns: tupl
     return digests
 
 
-def verify_identity(plan: CompactionClonePlan, destination: Path, journal) -> dict:
+def verify_identity(plan: CompactionClonePlan, destination: Path, journal, chroma_pins: dict | None = None) -> dict:
     """D5: K equals H exactly except the relocated columns and the rebuilt scheduling tables.
 
     Per database and table, row sets compare as typed projections (BLOBs by
@@ -393,17 +771,23 @@ def verify_identity(plan: CompactionClonePlan, destination: Path, journal) -> di
     O4); per file, relative path and sha256; SDK-opaque stores byte for
     byte (stricter than record ids). Extra files in K beyond the derivation
     records and SQLite side files refuse. Returns content-free counts.
+    SC-4c: H's Chroma stores are rebuilt, not cloned: each must match the
+    file pin rebuild_chroma took after the child's afterimage check, exactly.
     """
     from src.memory.payload_derivation import _privacy_schema_added
     from src.memory.state_journal_derivation import _token
     counts = {"databases": 0, "tables": 0, "rows": 0, "files": 0}
     manifest = plan.latest.manifest
     expected_files = set()
+    stores = plan.chroma_stores
+    _require(set(chroma_pins or {}) == set(stores), "payload_changed:chroma")
+    for store in stores:
+        _require(_store_pin(destination, store) == chroma_pins[store], "payload_changed:chroma")
     for key, record in sorted(manifest["files"].items()):
         if not key.startswith("state/"):
             continue
         relative = key.removeprefix("state/")
-        if relative in DERIVATION_FILES:
+        if relative in DERIVATION_FILES or _in_store(relative, stores):
             continue
         expected_files.add(relative)
         if record["kind"] == "sqlite_backup":
@@ -467,6 +851,8 @@ def verify_identity(plan: CompactionClonePlan, destination: Path, journal) -> di
         if path.is_dir():
             continue
         relative = path.relative_to(destination).as_posix()
+        if _in_store(relative, stores):
+            continue  # pinned exactly above
         if relative not in expected_files and relative.endswith(".lock") and relative[:-5] in manifest["databases"]:
             # The journal qualification's own writer lease (an empty 0600 file) beside a database.
             _require(path.stat().st_size == 0, "payload_changed:extra_file")
@@ -517,6 +903,7 @@ class CompactionClone:
     counts: dict
     vacuumed: tuple[str, ...]
     preparation_record: Path
+    chroma: dict = field(default_factory=dict)
 
 
 def materialize_compaction_clone(plan: CompactionClonePlan, destination: Path, *, controller, scope: Path,
@@ -531,7 +918,7 @@ def materialize_compaction_clone(plan: CompactionClonePlan, destination: Path, *
     ``before_vacuum`` is a test hook (crash injection mid-phase).
     """
     from src.memory.copy_catalog import reserve_copy
-    from src.memory.payload_derivation import _atomic_file, _clone_latest, _prepared_ownership
+    from src.memory.payload_derivation import _atomic_file, _prepared_ownership
     from src.memory.state_journal_derivation import _source, qualify_and_register_derived_journal
     _require(type(plan) is CompactionClonePlan and Path(destination) == plan.destination, "destination_mismatch")
     checked = plan_compaction_clone(plan.latest, now=plan.now, destination=plan.destination,
@@ -549,7 +936,7 @@ def materialize_compaction_clone(plan: CompactionClonePlan, destination: Path, *
     try:
         operation.create_root()
         operation.extent(".", family="managed_payload", representation="derived_state")
-        _clone_latest(plan, destination)  # every latest state file except the marker (K24)
+        _clone_state(plan, destination)  # every latest state file except the marker (K24) and Chroma (SC-4c)
         record = destination / ".kza-payload-preparation.json"
         _atomic_file(record, _json({"schema_version": 1, "plan_sha256": plan.plan_sha256, "phase": "preparing",
                                     "serving": False, "mode": "compaction_identity"}) + b"\n")
@@ -559,15 +946,17 @@ def materialize_compaction_clone(plan: CompactionClonePlan, destination: Path, *
             payload_cut_proof=_identity_proof(plan, destination), keep_blocked=True)
         ownership, blocked, qualified = _prepared_ownership(destination, journal)
         relocated = _relocate_columns(plan, destination)
-        counts = verify_identity(plan, destination, journal)
+        pins = rebuild_chroma(plan, destination, operation, getattr(controller, "_descriptor", None))  # SC-4c
+        counts = verify_identity(plan, destination, journal, pins)
         if before_vacuum is not None:
             before_vacuum()
         vacuumed = tuple(vacuum_compacted_state(plan, destination, scope))
-        counts = verify_identity(plan, destination, journal)  # D5 again after VACUUM (v4 F3)
+        counts = verify_identity(plan, destination, journal, pins)  # D5 again after VACUUM (v4 F3)
         _require(ownership.read_bytes() == blocked, "preparation_changed")
         evidence = {"schema_version": 1, "plan_sha256": plan.plan_sha256, "phase": "materialized",
                     "serving": False, "mode": "compaction_identity", "journal": journal.to_dict(),
                     "relocated": relocated, "counts": counts, "vacuumed": list(vacuumed),
+                    "chroma": {"pins": pins, "counts": _chroma_summary(plan)},
                     "retained_copy_cleanup_ack": False}
         _atomic_file(record, _json(evidence) + b"\n")
         operation.prepared(record)
@@ -580,7 +969,7 @@ def materialize_compaction_clone(plan: CompactionClonePlan, destination: Path, *
             raise BaseExceptionGroup("compaction preparation and catalog failure", [error, catalog_error]) from None
         raise
     return CompactionClone(destination, plan.plan_sha256, dict(plan.evidence_map), dict(journal.target_id_map),
-                           journal.history_sha256, counts, vacuumed, record)
+                           journal.history_sha256, counts, vacuumed, record, _chroma_summary(plan))
 
 
 # --- the worker's phases C2b (snapshot) and C3 (materialize, D4, D5) --------------------------------
@@ -684,7 +1073,8 @@ def run_materialization(root: Path, compaction_id: str, *, wall, before_vacuum=N
             k_state = Path(intent["k_state_root"])
             snapshot = snapshot_closed_state(
                 controller, intent["source_binding_id"], path,
-                before_manifest=lambda size, files: _check_free_files(files, k_state, size))
+                before_manifest=lambda size, files: _check_free_files(files, k_state, size),
+                chroma_collections=_snapshot_class)
             log = stage.append_compaction_event(root, log, "snapshot", {
                 "n": n, "path": str(path), "identity": stage._identity(path),
                 "manifest_sha256": snapshot.manifest_sha256}, at=wall())
@@ -708,7 +1098,7 @@ def run_materialization(root: Path, compaction_id: str, *, wall, before_vacuum=N
                                              before_vacuum=before_vacuum)
         data = {"plan_sha256": clone.plan_sha256, "evidence_map": clone.evidence_map,
                 "history_sha256": clone.history_sha256, "counts": clone.counts, "vacuumed": list(clone.vacuumed),
-                "state_identity": stage._identity(destination)}
+                "chroma": clone.chroma, "state_identity": stage._identity(destination)}
         stage.append_compaction_event(root, log, "materialized", data, at=wall())
         return {"phase": "materialized", **{key: data[key] for key in ("counts", "vacuumed")}}
 
@@ -736,9 +1126,11 @@ def _finish_interrupted(root: Path, log: dict, plan: CompactionClonePlan, destin
                                        journal["pending_counts"], journal["event_target_id_map"],
                                        journal["event_dependency_target_map"])
     _require(sorted(policy["owned_targets"]) == sorted(receipt.registered_target_ids), "resume_abort_required")
-    counts = verify_identity(plan, destination, receipt)
+    chroma = evidence.get("chroma")
+    _require(type(chroma) is dict and type(chroma.get("pins")) is dict, "resume_abort_required")
+    counts = verify_identity(plan, destination, receipt, chroma["pins"])
     data = {"plan_sha256": plan.plan_sha256, "evidence_map": dict(plan.evidence_map),
             "history_sha256": receipt.history_sha256, "counts": counts, "vacuumed": evidence["vacuumed"],
-            "state_identity": stage._identity(destination)}
+            "chroma": _chroma_summary(plan), "state_identity": stage._identity(destination)}
     stage.append_compaction_event(root, log, "materialized", data, at=wall())
     return {"phase": "materialized", "counts": counts, "vacuumed": evidence["vacuumed"], "resumed": True}
