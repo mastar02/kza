@@ -5,9 +5,11 @@ import time
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from enum import StrEnum
 
 from src.reminders.reminder_store import ReminderStore, Reminder, ReminderScope
+from src.reminders.voice_request import spoken_day_at
 from src.core.household_clock import HouseholdClock
 from src.core.sqlite_work import AuthorityGuard
 from src.home_assistant.control_policy import ActionOrigin, HomeActor
@@ -31,6 +33,14 @@ _AM_PERIODS = frozenset({"manana", "madrugada"})
 _PM_PERIODS = frozenset({"tarde", "noche", "mediodia"})
 # "las 12 de la noche" is midnight and "las 2 de la noche" is 02:00, not 14:00.
 _NIGHT_EARLY_HOURS = frozenset({12, 1, 2, 3, 4})
+# A leading relative clause names how the reminder was made, not what it says:
+# "que (te) pedí", "que puse", "que hay" (review T032-U1-R6).
+_RELATIVE_PRONOUNS = frozenset({"te", "le", "les", "me", "nos", "se"})
+_RELATIVE_VERBS = frozenset({
+    "puse", "pusiste", "puso", "pusimos", "pedi", "pediste", "pidio", "pedimos", "anote", "anotaste", "anoto",
+    "anotamos", "agende", "agendaste", "agendo", "agendamos", "programe", "programaste", "guarde", "guardaste",
+    "tenia", "tenias", "teniamos", "tengo", "tenemos", "hay", "habia",
+})
 
 
 def _fold(text: str) -> str:
@@ -118,20 +128,61 @@ def _clock_at(words: list[str], i: int) -> tuple[_SpokenClock, int, int] | None:
         period = "mediodia"
         end += 2
     bare = end == i + 1 and (digits is None or digits.group(2) is None)
-    if bare and words[end:end + 1] and words[end] not in _QUERY_STOPWORDS:
+    if bare and words[end:end + 1] and words[end] not in _QUERY_STOPWORDS and spoken_day_at(words, end) is None:
         return None
     return _SpokenClock(hour, minute, period), i - 1 if article else i, end
 
 
-def _parse_query(query: str) -> tuple[tuple[frozenset[str], ...], _SpokenClock | None]:
-    """Content words and an optional clock time of a spoken cancel complement."""
-    words = _WORD.findall(_fold(query))
+@dataclass(frozen=True)
+class _SpokenDay:
+    """Day named in a cancel request ("de hoy", "del lunes")."""
+
+    kind: str
+    value: int
+
+    def matches(self, day: date, today: date) -> bool:
+        """Whether a reminder's household trigger date is this day.
+
+        A weekday matches any date on that weekday ("el lunes que viene"
+        and "este lunes" alike); more than one such reminder asks.
+        """
+        if self.kind == "weekday":
+            return day.weekday() == self.value
+        return day == today + timedelta(days=self.value)
+
+
+def _without_relative_clause(words: list[str]) -> list[str]:
+    """Drop a leading "que (te) pedí/puse/hay" ("que te pedí de tomar agua")."""
+    if words[:1] != ["que"]:
+        return words
+    j = 2 if words[1:2] and words[1] in _RELATIVE_PRONOUNS else 1
+    return words[j + 1:] if words[j:j + 1] and words[j] in _RELATIVE_VERBS else words
+
+
+def _parse_query(query: str) -> tuple[tuple[frozenset[str], ...], _SpokenClock | None, _SpokenDay | None]:
+    """Content words, an optional clock time and day of a spoken cancel complement."""
+    words = _without_relative_clause(_WORD.findall(_fold(query)))
+    clock, taken = None, set()
     for i in range(len(words)):
         found = _clock_at(words, i)
         if found is not None:
             clock, start, end = found
-            return _content(words[:start] + words[end:]), clock
-    return _content(words), None
+            taken = set(range(start, end))
+            break
+    # "de las 9 de la noche de mañana": "mañana" right after the time is the day.
+    clock_end = max(taken) + 1 if taken else None
+    day = None
+    for i in range(len(words)):
+        if i in taken:
+            continue
+        joined = clock_end is not None and i == clock_end + 1 and words[clock_end] == "de"
+        found = spoken_day_at(words, i, joined=joined)
+        if found is not None and not taken & set(range(i, found[2])):
+            kind, value, end = found
+            day = _SpokenDay(kind, value)
+            taken |= set(range(i, end))
+            break
+    return _content([w for k, w in enumerate(words) if k not in taken]), clock, day
 
 
 class CancelMatch(StrEnum):
@@ -256,7 +307,9 @@ class ReminderManager:
         Scope is applied by the store before any text is compared. Every
         content word of the reference (accents, articles and plurals ignored)
         must be a word of the reminder's text; a spoken clock time ("de las
-        6 de la tarde") must equal its next trigger on the household clock.
+        6 de la tarde") and day ("de hoy", "del lunes", the T031 day
+        grammar) must equal its next trigger on the household clock. A
+        leading "que (te) pedí/puse/hay" clause is not content.
         Among several matches, the single one whose words are exactly the
         reference's wins; otherwise the reference is ambiguous. There is no
         similarity threshold: a misheard word finds nothing rather than a
@@ -274,18 +327,20 @@ class ReminderManager:
         active = await self._store.get_active_for_user(user_id, shared_only=shared_only, guard=guard)
         if not active:
             return CancelResolution(CancelMatch.NONE_ACTIVE)
-        words, clock = _parse_query(reference)
-        if not words and clock is None:
+        words, clock, day = _parse_query(reference)
+        if not words and clock is None and day is None:
             return CancelResolution(CancelMatch.NO_REFERENCE, candidates=tuple(active))
+        today = self._household_clock.local_date()
         matches = []
         for reminder in active:
             text_words = _content(_WORD.findall(_fold(reminder.text)))
             if not _covers(text_words, words):
                 continue
-            if clock is not None:
-                local = self._household_clock.to_local(reminder.trigger_at)
-                if not clock.matches(local.hour, local.minute):
-                    continue
+            local = self._household_clock.to_local(reminder.trigger_at)
+            if clock is not None and not clock.matches(local.hour, local.minute):
+                continue
+            if day is not None and not day.matches(local.date(), today):
+                continue
             matches.append((reminder, text_words))
         if not matches:
             return CancelResolution(CancelMatch.NOT_FOUND)

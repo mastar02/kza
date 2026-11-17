@@ -348,3 +348,47 @@ async def test_an_impossible_clock_time_is_a_word_of_the_reminder(store, number)
     await _shared(manager, "pagar la cuota", _local(2026, 11, 11, 9, 0).timestamp())
     found = await manager.resolve(None, f"de pagar la cuota de las {number}", shared_only=True)
     assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, quota.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("query", "expected"), [
+    ("de tomar agua de hoy", {11}), ("de tomar agua mañana", {12}), ("de tomar agua de pasado mañana", {13}),
+    ("de tomar agua del lunes", {16}), ("de tomar agua de las 9 de hoy", {11}),
+    ("de las 9 de la mañana de mañana", {12}), ("de las 9 mañana", {12}), ("de tomar agua de las 9 hoy", {11}),
+    ("de tomar agua", {11, 12, 13, 16}),
+    # T031 reads "de mañana" as the morning, not tomorrow: it stays a word and finds nothing.
+    ("de tomar agua de mañana", set()),
+])
+async def test_a_spoken_day_selects_by_the_household_date(store, query, expected):
+    """'de hoy', 'mañana', 'del lunes' use the T031 day grammar (review T032-U1-R6)."""
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)  # a Wednesday
+    manager = ReminderManager(store=store, household_clock=clock)
+    by_day = {}
+    for day in (11, 12, 13, 16):
+        reminder = await _shared(manager, "tomar agua", _local(2026, 11, day, 9, 0).timestamp())
+        by_day[reminder.id] = day
+    resolution = await manager.resolve(None, query, shared_only=True)
+    found = {resolution.reminder.id} if resolution.reminder else {r.id for r in resolution.candidates}
+    assert {by_day[i] for i in found} == expected
+    assert resolution.match is {0: CancelMatch.NOT_FOUND, 1: CancelMatch.UNIQUE}.get(len(expected),
+                                                                                       CancelMatch.AMBIGUOUS)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", [
+    "que te pedí de tomar agua", "que puse de tomar agua", "que me pediste de tomar agua", "que hay de tomar agua",
+    "que tenía de tomar agua", "que anoté de tomar agua", "que agendé de tomar agua",
+])
+async def test_a_leading_relative_clause_is_not_content(manager, query):
+    """'que te pedí', 'que puse' say how the reminder was made, not what it says (review T032-U1-R6)."""
+    water = await _shared(manager, "tomar agua")
+    await _shared(manager, "sacar la basura")
+    found = await manager.resolve(None, query, shared_only=True)
+    assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, water.id)
+
+
+@pytest.mark.asyncio
+async def test_a_relative_clause_verb_inside_the_text_is_still_content(manager):
+    """Only a leading clause is dropped: 'pedí' later in the reference is a word to match."""
+    await _shared(manager, "tomar agua")
+    assert (await manager.resolve(None, "de tomar agua que pedí", shared_only=True)).match is CancelMatch.NOT_FOUND

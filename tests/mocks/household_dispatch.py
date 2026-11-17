@@ -104,6 +104,12 @@ class CountedLeaves:
             elif name.startswith("reminder_shared_active:"):
                 await self.reminder_manager.create("household", name.split(":", 1)[1], time.time() + 3600,
                                                    scope=ReminderScope.SHARED)
+            elif name.startswith("reminder_shared_today:"):
+                # Before the household midnight, so "de hoy" names it at any time of day.
+                clock = self.reminder_manager._household_clock
+                await self.reminder_manager.create("household", name.split(":", 1)[1],
+                                                   min(time.time() + 60, clock.next_local_midnight() - 1),
+                                                   scope=ReminderScope.SHARED)
             elif name.startswith("reminder_shared_fired:"):
                 fired = await self.reminder_manager.create("household", name.split(":", 1)[1], time.time() - 60,
                                                            scope=ReminderScope.SHARED)
