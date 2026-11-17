@@ -41,7 +41,9 @@ _TRAILING_FILLER = re.compile(r" ?\b(?:che|por favor|porfa|porfavor)$")
 # Request lead-ins: "decime/me decís/sabés ... qué hora es".
 _LEAD = (r"(?:decime|dime|deci|me decis|me dices|me dirias|me podes decir|me podrias decir|me puedes decir"
          r"|podes decirme|podrias decirme|puedes decirme|sabes|sabe|sabes decirme|queria saber|quiero saber)")
-_NOW = r"(?: ahora(?: mismo)?)?"
+# Harmless here-and-now adverbs after the time question (review T037-U3-R2):
+# "¿qué hora es hoy?", "¿qué hora es en este momento?", "¿qué hora es ahora mismo?".
+_NOW = r"(?: (?:ahora(?: mismo)?|en este momento|hoy))?"
 _TIME = re.compile(
     rf"(?:{_LEAD} )?(?:ahora )?que horas? (?:es|son|tenes|tenemos){_NOW}"
     rf"|{_LEAD} la hora(?: que es)?{_NOW}"

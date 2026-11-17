@@ -79,6 +79,8 @@ TIME_PHRASES = [
     "Alexa, ¿qué hora es?", "alexa que hora es", "nexia, decime la hora", "kaza qué hora es",
     "nexta, decime la hora", "neska qué hora es", "Nexca, ¿qué horas son?", "¿qué hora es, alexa?",
     "che nexia, ¿qué hora es?",
+    # Here-and-now adverbs after the question (T037-U3-R2).
+    "¿qué hora es hoy?", "¿Qué hora es en este momento?", "qué hora es ahora mismo", "¿qué horas son hoy?",
 ]
 DATE_PHRASES = [
     ("¿Qué día es hoy?", 0, False), ("qué día es", 0, False), ("¿Qué día es mañana?", 1, False),
@@ -97,6 +99,7 @@ NOT_CLOCK = [
     "la hora", "¿qué hora y qué día es?", "¿cuántas horas faltan?", "hola", "recordame qué hora es",
     "poné un temporizador de una hora", "¿a qué hora sale el sol?", "prendé la luz", "",
     "alexa, ¿qué hora es en Madrid?", "kaza, ¿a qué hora es el partido?", "nexia", "alexa kaza",
+    "¿qué hora es en este momento en Madrid?", "¿qué hora es hoy el partido?", "qué hora es mañana",
 ]
 
 
