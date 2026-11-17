@@ -231,6 +231,29 @@ def test_boundaries(utterance, now, expected, detail):
         assert result.text == "x"
 
 
+MONDAY_23 = datetime(2026, 11, 16, 23, 0, tzinfo=MVD)
+
+
+@pytest.mark.parametrize("utterance,now,expected", [
+    # Review F7: said in the evening, a day word with a small hour reads two ways
+    # (tonight's small hours or the next night's), like midnight with a day word.
+    ("recordame mañana a las 2 de la madrugada x", MONDAY_23, A.AMBIGUOUS_DAY),
+    ("recordame el martes a la 1 de la madrugada x", MONDAY_23, A.AMBIGUOUS_DAY),
+    ("recordame pasado mañana a las 5 y media de la mañana x", MONDAY_23, A.AMBIGUOUS_DAY),
+    ("recordame mañana a las 2 de la madrugada x", datetime(2026, 11, 16, 18, 0, tzinfo=MVD), A.AMBIGUOUS_DAY),
+    ("recordame mañana a las 2 de la madrugada x", datetime(2026, 11, 16, 17, 59, tzinfo=MVD),
+     local(2026, 11, 17, 2)),
+    ("recordame mañana a las 6 de la mañana x", MONDAY_23, local(2026, 11, 17, 6)),
+    ("recordame a las 2 de la madrugada x", MONDAY_23, local(2026, 11, 17, 2)),
+])
+def test_small_hours_with_a_day_word_in_the_evening(utterance, now, expected):
+    result = parse(utterance, now)
+    if isinstance(expected, A):
+        assert (result.ambiguity, result.detail, result.trigger_at) == (expected, "small_hours_with_day", None)
+    else:
+        assert (result.ok, result.trigger_at) == (True, expected), (result.ambiguity, result.detail)
+
+
 def test_stacked_wake_and_politeness_words():
     result = parse("Nexa, che, nexa recordame en 5 minutos mirar la olla", wake_words=("nexa",))
     assert (result.ok, result.text) == (True, "mirar la olla")

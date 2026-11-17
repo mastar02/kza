@@ -196,6 +196,9 @@ _PERIOD_HOURS = {
     "tarde": {12: 12, **{x: x + 12 for x in range(1, 10)}},
     "noche": {12: 0, **{x: x + 12 for x in range(6, 12)}},
 }
+# From this local hour on, a day word with an hour from 00:00 to 05:59 can mean
+# tonight's small hours or the next night's, so it is asked (review F7, T031-Q1).
+_EVENING_FROM_HOUR = 18
 # Hour ranges accepted for a 24-hour value (13-23) next to a period word.
 _H24_RANGES = {"pm": range(12, 24), "tarde": range(12, 22), "noche": range(18, 24),
                "mediodia": range(12, 16)}
@@ -644,6 +647,8 @@ def _resolve(scan: _Scan, now: datetime) -> tuple[float | None, str | None, set[
             return None, None, {ReminderAmbiguity.AMBIGUOUS_DAY}, "midnight_with_day"
         if relative_day and now.hour < 6:
             return None, None, {ReminderAmbiguity.AMBIGUOUS_DAY}, "tomorrow_before_dawn"
+        if small_hours and now.hour >= _EVENING_FROM_HOUR:
+            return None, None, {ReminderAmbiguity.AMBIGUOUS_DAY}, "small_hours_with_day"
         target = at(offset)
     else:
         target = at(0)
