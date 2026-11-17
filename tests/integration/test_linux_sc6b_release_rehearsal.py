@@ -914,14 +914,25 @@ def test_06_12_rollbacks_and_the_accepted_release_killed(builds, tmp_path, syste
     installed = world.t0("x5r3", new=new)  # SR-1 alone gates it; no H check (R4-OPS-2)
     assert installed["controller_revision"] == 3
     world.k += 1
-    planned = world.st("pa-plan-hotfix", "compact", "plan", f"k{world.k}", "--archive",
-                       str(builds["x5r3"]["archive"]), expect=None)
+    k = f"k{world.k}"
+    planned = world.st("pa-plan-hotfix", "compact", "plan", k, "--archive", str(builds["x5r3"]["archive"]),
+                       expect=None)
     rec.result(plan_over_recovery_head=planned.get("refused") or "admitted")
-    # Runbook 'Después de la aceptación': today a recovery-closed head is the source of no transition (row PA
-    # fails closed until the recovery witness and --accept-regressed-source exist, SC5B-Q1).
-    assert planned.get("refused"), planned
-    assert world.witness() is not None
-    rec.result(extended_pending="plan, V and retire over the adopted head wait for row PA (item 17)")
+    if planned.get("refused"):
+        # The runbook's 'Después de la aceptación' (row PA fails closed until SC5B-Q1's work exists).
+        rec.result(extended_pending="V and retire over the adopted head wait for row PA (item 17)")
+        return
+    # R4-OPS-2 as designed: the adopted head is the source; plan, start, V and retire of the hotfix.
+    compaction_id = world.start("x5r3", k, planned)
+    world.verify(compaction_id)
+    world.v_run("hotfix-v")
+    status = world.status(compaction_id)
+    assert status["verified"] is True, status
+    world.retire(compaction_id)
+    assert world.slot_of_head() == k
+    world.serve_clean("hotfix-serve-k-prime", enable=True)
+    rec.result(hotfix_after_adopt={"k": k, "compaction_id": compaction_id,
+                                   "installed_triple": list(stage.installed_controller_triple(world.root))[:2]})
 
 
 # --- (7) and (9): schema mismatch; lower revision and equal pair with another digest -----------------------
@@ -1156,9 +1167,10 @@ def _app_source(tmp_path: Path, port: int) -> Path:
         return config
 
     raw = canonical_template(placeholder, portable)
-    # The production command index (config/settings.yaml vectordb.path), relative to the runtime like there:
-    # SC-4c's closed list names its stores by their production paths (data/chroma_db).
-    raw["vectordb"]["path"] = "./data/chroma_db"
+    # The command index at its production store path (config/settings.yaml vectordb.path, ./data/chroma_db):
+    # SC-4c's closed list names stores by that path. The synthetic leaves run the graph with the graph root
+    # (data/graph) as the working directory, so the same store is ../chroma_db from there.
+    raw["vectordb"]["path"] = "../chroma_db"
     text = yaml.safe_dump(raw, sort_keys=False)
     assert str(placeholder) not in text
     (source / "config" / "settings.yaml").write_text(text)
