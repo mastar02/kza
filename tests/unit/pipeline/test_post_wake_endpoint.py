@@ -527,6 +527,28 @@ def test_follow_up_does_not_start_in_another_room():
     assert started_at is None and not rs.listening
 
 
+def test_a_wake_makes_its_room_the_conversation_room():
+    """Only the wake (not the test helper) may hand the follow-up window to a room."""
+    rng = np.random.default_rng(31)
+    before = np.concatenate([_segment(rng, 3.04, 0.0012), _segment(rng, 0.48, 0.0035)])
+    pre_chunks = _chunks(before)
+    loop, rs = _loop(_Detector(fire_at=len(pre_chunks) - 1), follow_up=_follow_up(active=True))
+    loop._conversation_room = None
+    process = loop._make_audio_processor(rs)
+    for chunk in pre_chunks:
+        process(chunk[:, None], CHUNK_SIZE, None, None)
+    assert rs.listening and loop._conversation_room == "cocina"
+    loop.follow_up.start_conversation.assert_called_once_with()
+    # The wake capture drops (silence); the follow-up then starts in this room.
+    for chunk in _chunks(_segment(rng, 3.0, 0.0012)):
+        process(chunk[:, None], CHUNK_SIZE, None, None)
+        loop._poll_command(rs)
+    assert not rs.listening
+    for chunk in _chunks(_segment(rng, 0.4, 0.0035)):
+        process(chunk[:, None], CHUNK_SIZE, None, None)
+    assert rs.listening and rs.capture_trigger is CaptureTrigger.FOLLOW_UP
+
+
 def test_follow_up_does_not_start_on_a_single_transient():
     rng = np.random.default_rng(3)
     loop, rs = _loop(_Detector(fire_at=None), follow_up=_follow_up(active=True))
