@@ -33,6 +33,7 @@ from src.nlu.household_intents import HouseholdIntent, HouseholdIntentClassifier
 from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
 from src.pipeline.earcon_gate import should_play_earcon
+from src.pipeline.post_wake_endpoint import CaptureTrigger
 from src.pipeline.wake_verification import WakeVerifier
 from src.analytics.asr_quality import alog_asr_outcome
 from src.memory.transient import TransientCache
@@ -749,6 +750,7 @@ class RequestRouter:
                         ambient_strict=ambient_strict,
                         wake_score=wake_score, wake_rms=wake_rms,
                         textual_wake=textual_wake,
+                        capture_trigger=getattr(audio_or_event, "capture_trigger", None),
                         **review_options,
                     )
                 else:
@@ -889,9 +891,14 @@ class RequestRouter:
                                               wake_score: float = 1.0,
                                               wake_rms: float = 0.0,
                                               textual_wake: bool = False,
+                                              capture_trigger: str | None = None,
                                               audio_provenance=None, transcript_provenance=None,
                                               transcript_span=None, transcript_truncated=None) -> dict:
-        """Process command with multi-user orchestrator."""
+        """Process command with multi-user orchestrator.
+
+        ``capture_trigger`` is what opened this capture (``CommandEvent``);
+        None for producers that do not say.
+        """
         self._response_zone.set(f"zone_{room_id}" if room_id else None)
         result = {
             "text": "",
@@ -989,8 +996,9 @@ class RequestRouter:
         # T037-U4 (user answer T037-U3-Q1): a whole-phrase time/date question
         # on a clear wake skips the 7B veto, like a short household request, so
         # the household clock answers it even while :8101 is down. A weak wake
-        # (TV signal or a transcript-based wake engine) keeps the 7B gate below.
-        clock_turn = self._is_clear_wake_clock_question(text, tv_signal=tv_signal)
+        # (TV signal or a transcript-based wake engine) or a capture not opened
+        # by its own wake (T037-U4-R1) keeps the 7B gate below.
+        clock_turn = self._is_clear_wake_clock_question(text, tv_signal=tv_signal, capture_trigger=capture_trigger)
         if clock_turn:
             logger.info("[Clock] clear wake, skipping the 7B veto: %r", text)
 
@@ -1273,23 +1281,28 @@ class RequestRouter:
                 )
         return on_response
 
-    def _is_clear_wake_clock_question(self, text: str, *, tv_signal: bool) -> bool:
+    def _is_clear_wake_clock_question(self, text: str, *, tv_signal: bool, capture_trigger: str | None) -> bool:
         """Whether a turn is a clock question that skips the 7B veto (T037-U4).
 
         Only a whole-phrase time or date question (the dispatcher's own
         recognizer, with the same wake terms) on a clear wake qualifies. A
         weak wake as P3-F2 defines it (textual wake, ambient_strict, a wake
         score below the grammar bonus, or a transcript-based wake engine)
-        keeps the 7B gate.
+        keeps the 7B gate. The wake is decided per capture (T037-U4-R1): only
+        a capture opened by its own acoustic wake counts. A follow-up or
+        barge-in capture carries the score of the last real wake, so it keeps
+        the gate, and so does a producer that does not say what opened the
+        capture (None: the single-room loop, raw audio).
 
         Args:
             text: Accepted transcript of the turn.
             tv_signal: Textual wake, ambient_strict or a low wake score.
+            capture_trigger: What opened this capture, or None if unknown.
 
         Returns:
             True when the turn goes to the dispatcher with no 7B call.
         """
-        if tv_signal or not self.wake_acoustically_confirmed:
+        if tv_signal or not self.wake_acoustically_confirmed or capture_trigger != CaptureTrigger.WAKE:
             return False
         return parse_clock_query(text, self._clock_wake_words) is not None
 

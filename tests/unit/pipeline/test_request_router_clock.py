@@ -5,6 +5,9 @@ wake (not a textual wake, not ambient_strict, not a low wake score, not a
 transcript-based wake engine) is answered by the household clock with no
 :8101 call, like a short household request, so it works while :8101 is down.
 A weak wake still needs the 7B, which fails closed when it is unavailable.
+T037-U4-R1: the wake is decided per capture. A follow-up or barge-in capture
+has no wake of its own and carries the score of the last real wake, so it
+keeps the 7B gate, as does a producer that does not say what opened it.
 """
 
 import sys
@@ -17,11 +20,13 @@ sys.modules.setdefault("pyaudio", MagicMock())
 sys.modules.setdefault("torch", MagicMock())
 sys.modules.setdefault("torch.cuda", MagicMock())
 
+import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 
 from src.core.household_clock import HouseholdClock  # noqa: E402
 from src.nlu.household_intents import HouseholdIntentSettings  # noqa: E402
 from src.nlu.llm_router import CommandClassification  # noqa: E402
+from src.pipeline.command_event import CommandEvent  # noqa: E402
 from tests.mocks.c02_matrix import effects  # noqa: E402
 from tests.mocks.household_dispatch import CountedLeaves  # noqa: E402
 from tests.unit.pipeline.test_request_router_household import Household  # noqa: E402
@@ -43,6 +48,19 @@ ANSWERED = [
 TV_PHRASES = ["¿Qué hora es?", "¿Qué día es hoy?", "decime la hora", "¿A cuánto estamos hoy?"]
 WEAK_WAKES = [("textual", "openwakeword"), ("ambient_strict", "openwakeword"), ("low_score", "openwakeword"),
               ("acoustic", "whisper")]
+# How each capture reaches the router. Every weak wake is opened by an acoustic
+# wake, so its own signal is the only reason it keeps the 7B gate.
+CAPTURES = {
+    "acoustic": {"capture_trigger": "wake"},
+    "textual": {"textual_wake": True, "capture_trigger": "wake"},
+    "ambient_strict": {"ambient_strict": True, "capture_trigger": "wake"},
+    "low_score": {"wake_score": 0.42, "capture_trigger": "wake"},
+    # MultiRoomAudioLoop keeps the last real wake's score on captures it opens without a wake.
+    "follow_up": {"capture_trigger": "follow_up", "wake_score": 0.9},
+    "barge_in": {"capture_trigger": "barge_in", "wake_score": 0.9},
+    # The single-room audio loop and raw producers set no trigger.
+    "untagged": {"wake_score": 0.9},
+}
 
 
 @pytest.fixture
@@ -58,6 +76,12 @@ def house_at_moment(leaves: CountedLeaves, text: str, llm: str, engine: str = "o
     house = Household(leaves, text=text, llm=llm, engine=engine, settings=settings)
     house.orchestrator.dispatcher.household_clock = HouseholdClock(time_source=lambda: MOMENT)
     return house
+
+
+async def turn(house: Household, wake: str) -> dict:
+    """One captured turn in the living room, opened as ``wake`` says."""
+    return await house.router.process_command(
+        CommandEvent(audio=np.full(16000, .1, dtype=np.float32), room_id="living", **CAPTURES[wake]))
 
 
 def assert_clock_answer(house: Household, result: dict, spoken: str, before, *, veto_calls: int) -> None:
@@ -77,7 +101,7 @@ async def test_clear_wake_clock_question_is_answered_with_no_7b_call(leaves, tex
     if llm == "down":
         house.veto.classify.side_effect = ConnectionRefusedError(":8101 down")
     before = leaves.snapshot()
-    result = await house.turn("acoustic")
+    result = await turn(house, "acoustic")
     house.veto.classify.assert_not_awaited()
     assert "llm_router" not in result["timings"]
     assert_clock_answer(house, result, spoken, before, veto_calls=0)
@@ -89,7 +113,7 @@ async def test_weak_wake_clock_question_is_vetoed_by_the_7b(leaves, text, wake, 
     """A TV-like clock question on a weak wake asks the 7B, and its rejection ends the turn silently."""
     house = house_at_moment(leaves, text, "stub:noise", engine=engine)
     before = leaves.snapshot()
-    result = await house.turn(wake)
+    result = await turn(house, wake)
     assert house.veto.classify.await_count == 1
     assert result["intent"] == "llm_rejected:noise"
     assert result["success"] is False and result["response"] == ""
@@ -101,7 +125,7 @@ async def test_weak_wake_clock_question_is_vetoed_by_the_7b(leaves, text, wake, 
 async def test_weak_wake_clock_question_fails_closed_while_8101_is_unavailable(leaves, wake, engine):
     house = house_at_moment(leaves, "¿Qué hora es?", "stub:unavailable", engine=engine)
     before = leaves.snapshot()
-    result = await house.turn(wake)
+    result = await turn(house, wake)
     assert result["intent"] == "llm_rejected:unavailable"
     house.orchestrator.process.assert_not_awaited()
     assert house.effects(before) == effects(llm_8101_calls=1)
@@ -113,14 +137,14 @@ async def test_weak_wake_clock_question_the_7b_accepts_is_answered_by_the_clock(
     house = house_at_moment(leaves, "¿Qué hora es?", "stub:noise", engine=engine)
     house.veto.classify.return_value = CLOCK_PASS
     before = leaves.snapshot()
-    result = await house.turn(wake)
+    result = await turn(house, wake)
     assert_clock_answer(house, result, "Son las 23:59.", before, veto_calls=1)
 
 
 @pytest.mark.parametrize("text", ["¿A qué hora es el partido?", "¿Qué hora es en Madrid?", "¿Qué día es Navidad?"])
 async def test_a_question_with_another_subject_keeps_the_7b_gate_on_a_clear_wake(leaves, text):
     house = house_at_moment(leaves, text, "stub:noise")
-    result = await house.turn("acoustic")
+    result = await turn(house, "acoustic")
     assert house.veto.classify.await_count == 1
     assert result["intent"] == "llm_rejected:noise"
     house.orchestrator.process.assert_not_awaited()
@@ -133,7 +157,21 @@ async def test_router_strips_the_same_wake_terms_as_the_dispatcher(leaves):
     assert house.router._clock_wake_words == house.orchestrator.dispatcher._clock_wake_words
     assert "neska" in house.router._clock_wake_words and "alexa" in house.router._clock_wake_words
     before = leaves.snapshot()
-    result = await house.turn("acoustic")
+    result = await turn(house, "acoustic")
     house.veto.classify.assert_not_awaited()
     assert_clock_answer(house, result, "Hoy es martes 17 de noviembre.", before, veto_calls=0)
 
+
+
+@pytest.mark.parametrize("capture", ["follow_up", "barge_in", "untagged"])
+@pytest.mark.parametrize("text", TV_PHRASES)
+async def test_a_capture_without_its_own_wake_keeps_the_7b_gate(leaves, text, capture):
+    """T037-U4-R1: a TV in the follow-up window is not answered, even with the last wake's 0.9 score."""
+    house = house_at_moment(leaves, text, "stub:unavailable")
+    before = leaves.snapshot()
+    result = await turn(house, capture)
+    assert house.veto.classify.await_count == 1
+    assert result["intent"] == "llm_rejected:unavailable"
+    assert result["success"] is False and result["response"] == ""
+    house.orchestrator.process.assert_not_awaited()
+    assert house.effects(before) == effects(llm_8101_calls=1)
