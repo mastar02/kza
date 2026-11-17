@@ -1344,6 +1344,19 @@ rooms:
     # 2026-05-08: agregadas neska/nexca (variantes con consonante extra, no
     # son palabras comunes en español rioplatense → riesgo bajo de FP).
     words: ["nexa", "alexa", "nexia", "nexta", "kaza", "neska", "nexca"]
+    # Verificación del wake en 2 etapas (V2 2026-11-17, decisión del usuario:
+    # "Sí, en sombra 7 días"). Con engine acústico, la transcripción del comando
+    # (incluye el pre-roll con la wake word) debe contener alguna de `words`
+    # — la misma regla missing_wake del gate. mode: shadow = solo registra
+    # would_reject (código, room, score, vad del frame del wake); enforce =
+    # rechaza como gate_rejected:missing_wake; off = nada. Los contadores para
+    # la revisión de 7 días quedan en status_path (JSON 0600, sin texto).
+    verification:
+      mode: shadow
+      status_path: "./data/wake_verification.json"
+      max_events: 2000
+      keep_days: 14
+      flush_interval_s: 60.0
     model: "/home/kza/kza/models/wakeword/nexa.onnx"            # usado cuando engine=openwakeword
     # 2026-06-02: 0.3 → 0.40. A 0.3 el ambiente rozaba el umbral (activaciones
     # amontonadas en 0.30-0.40 → ~46% de los disparos eran espurios). 0.40 poda

@@ -1161,7 +1161,7 @@ class MultiRoomAudioLoop:
                 logger.info(
                     f"[AmbientGuard] wake rechazado en {room_id} "
                     f"({decision.reason}, state={decision.state.value}, "
-                    f"score={wake_score:.2f}, rms={rms:.4f})"
+                    f"score={wake_score:.2f}, rms={rms:.4f}, vad={_fmt_vad(wake_vad)})"
                 )
                 # Liberar el refractario del detector: el rechazo del guard NO
                 # debe consumir la ventana de 2s. Visto en vivo (2026-06-05,
@@ -2319,7 +2319,8 @@ class MultiRoomAudioLoop:
                         # abierta con TV era parte de la cascada del 06-04.
                         if self._guard is None or self._guard.follow_up_allowed(rs.room_id):
                             self.follow_up.start_conversation()
-                        logger.info(f"Wake word in {rs.room_id} ({detection[0]}: {detection[1]:.2f})")
+                        logger.info(f"Wake word in {rs.room_id} ({detection[0]}: {detection[1]:.2f}, "
+                                    f"vad={_fmt_vad(wake_vad)})")
 
                         # Peek wake text first to decide if it was truncated.
                         # Si el wake terminó con preposición/artículo/elipsis,

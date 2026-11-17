@@ -96,6 +96,7 @@ from src.rooms.room_context import RoomContextManager, RoomConfig
 from src.presence.presence_detector import PresenceDetector
 from src.pipeline.multi_room_audio_loop import MultiRoomAudioLoop, RoomStream
 from src.pipeline.post_wake_endpoint import PostWakeConfig
+from src.pipeline.wake_verification import WakeVerificationConfig, WakeVerificationMode, WakeVerifier
 from src.wakeword.detector import WakeWordDetector
 from src.lists.list_store import ListStore
 from src.lists.list_manager import ListManager
@@ -1865,6 +1866,19 @@ async def build_application(
     # cuando el engine es whisper (wake-as-STT, el texto SI contiene la wake).
     _wake_engine_gate = rooms_config.get("wake_word", {}).get("engine", "openwakeword")
     _gate_wake_words = _resolved_wake_words if _wake_engine_gate == "whisper" else ()
+    # Verificación del wake en 2 etapas (V2 2026-11-17): para wakes acústicos,
+    # la transcripción (que incluye el pre-roll con "Nexa") debe contener la
+    # wake word — misma regla missing_wake y variantes. SHADOW por defecto:
+    # solo registra would_reject para la revisión de 7 días; enforce después.
+    wake_verifier = None
+    _wake_verify_cfg = WakeVerificationConfig.from_dict(
+        rooms_config.get("wake_word", {}).get("verification"), _resolved_wake_words,
+    )
+    if _wake_engine_gate != "whisper" and _wake_verify_cfg.mode is not WakeVerificationMode.OFF:
+        wake_verifier = WakeVerifier(_wake_verify_cfg)
+        await asyncio.to_thread(wake_verifier.load)
+        shutdown.push_async_callback(wake_verifier.aclose)
+        logger.info("Wake verification: mode=%s", _wake_verify_cfg.mode.value)
     command_gate = CommandAcceptanceGate(
         wake_words=_gate_wake_words,
         enforce_confidence=_gate_cfg.get("enforce_confidence", False),
@@ -1922,6 +1936,7 @@ async def build_application(
         llm_min_command_confidence=nlu_cfg.get("min_command_confidence", 0.6),
         earcon_cfg=_earcon_cfg,
         asr_event_logger=event_logger,
+        wake_verifier=wake_verifier,
     )
 
     shutdown.push_async_callback(request_router.aclose)

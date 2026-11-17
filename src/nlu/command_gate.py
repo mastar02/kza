@@ -63,6 +63,28 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", norm).strip()
 
 
+def normalize_wake_words(words: Iterable[str]) -> tuple[str, ...]:
+    """Lowercase, stripped, non-empty wake words (the gate's own form)."""
+    return tuple(w.lower().strip() for w in words if w and w.strip())
+
+
+def contains_wake_word(text: str, wake_words: Iterable[str]) -> bool:
+    """The missing_wake rule: any wake word inside the normalised transcript.
+
+    Shared by the gate (whisper engine) and the shadow wake verification of
+    acoustic wakes, so both apply the exact same rule and name variants.
+
+    Args:
+        text: Raw transcript.
+        wake_words: Wake words in the gate's normalised form.
+
+    Returns:
+        True when one of the words occurs in the normalised text.
+    """
+    norm = _normalize(text or "")
+    return any(w in norm for w in wake_words)
+
+
 def _prompt_sentences(prompt: str | None) -> tuple[str, ...]:
     """Oraciones normalizadas del initial_prompt con ≥4 palabras.
 
@@ -123,9 +145,7 @@ class CommandAcceptanceGate:
                 regurgita sobre audio ininteligible) se rechazan con reason
                 'prompt_echo'. None = regla inactiva.
         """
-        self._wake_words = tuple(
-            w.lower().strip() for w in wake_words if w and w.strip()
-        )
+        self._wake_words = normalize_wake_words(wake_words)
         self._enforce_confidence = enforce_confidence
         self._max_no_speech_prob = max_no_speech_prob
         self._min_avg_logprob = min_avg_logprob
@@ -179,7 +199,7 @@ class CommandAcceptanceGate:
                 ).find_longest_match(0, len(norm), 0, len(sentence))
                 if m.size / len(norm) >= _PROMPT_ECHO_RATIO:
                     return "prompt_echo"
-        if self._wake_words and not any(w in norm for w in self._wake_words):
+        if self._wake_words and not contains_wake_word(text, self._wake_words):
             return f"missing_wake:{self._wake_words[0]!r}"
         return None
 
