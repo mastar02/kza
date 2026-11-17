@@ -177,7 +177,7 @@ def _snapshot(exports: list[dict], *, stores=("data/chroma_db", "data/memory_db"
     facts = [_fact("f-live", "live"), _fact("f-confirmed", "confirmed", state="confirmed", expires=None),
              _fact("f-overdue", "overdue", expires=NOW - 1), _fact("f-retired", "retired owner", state="confirmed",
              expires=None), _fact("f-tombstoned", "tombstoned source"), _fact("f-ledger", "ledger recorded"),
-             _fact("f-proposed", "proposed", state="proposed"), _fact("f-deleted", None, state="deleted"),
+             _fact("f-pruned", "pruned ledger"), _fact("f-proposed", "proposed", state="proposed"), _fact("f-deleted", None, state="deleted"),
              _fact("f-stale", "stale", revision=3), _fact("f-extra", "extra metadata")]
     privacy = {"tables": {
         "facts": {"rows": facts},
@@ -185,10 +185,14 @@ def _snapshot(exports: list[dict], *, stores=("data/chroma_db", "data/memory_db"
         "conversation_tombstones": {"rows": [{"conversation_id": "conv-f-tombstoned", "deleted_at": NOW - 9,
                                               "deleted_by": "x"}]},
         "fact_owners": {"rows": [{"fact_id": "f-retired", "person_id": sc.PERSON},
-                                 {"fact_id": "f-confirmed", "person_id": "user_" + "b" * 32}]},
+                                 {"fact_id": "f-confirmed", "person_id": "user_" + "b" * 32},
+                                 # SCR-P-2: a live owner (not in retired_users); only the ledger excludes it
+                                 {"fact_id": "f-pruned", "person_id": "user_" + "c" * 32}]},
         "deletion_ledger_salt_v1": {"rows": [{"id": 1, "salt": SALT}]},
         "deletion_ledger_v1": {"rows": [{"seq": 1, "kind": "fact_deleted",
-                                         "subject_sha256": subject_digest(SALT, "f-ledger")}]}}}
+                                         "subject_sha256": subject_digest(SALT, "f-ledger")},
+                                        {"seq": 2, "kind": "fact_pruned_retired_owner",
+                                         "subject_sha256": subject_digest(SALT, "f-pruned")}]}}}
     auth = {"tables": {"retired_users": {"rows": [{"user_id": sc.PERSON, "retired_at": NOW - 9}]}}}
     manifest = {"databases": {"data/privacy.db": privacy, "data/auth.db": auth}, "index_exports": exports}
     if listed:
@@ -205,14 +209,16 @@ def _export(store: str, name: str, records: list[dict], *, registered: bool = Fa
 COMMAND = {"id": "light.x_0", "document": "cmd", "embedding": [0.5, 0.25], "metadata": {"entity_id": "light.x"}}
 POLICY_RECORDS = [_record("f-live", "live"), _record("f-confirmed", "confirmed"), _record("f-overdue", "overdue"),
                   _record("f-retired", "retired owner"), _record("f-tombstoned", "tombstoned source"),
-                  _record("f-ledger", "ledger recorded"), _record("f-proposed", "proposed"),
+                  _record("f-ledger", "ledger recorded"), _record("f-pruned", "pruned ledger"),
+                  _record("f-proposed", "proposed"),
                   _record("f-deleted", "deleted residue"), _record("f-stale", "stale", revision=2),
                   _record("f-orphan", "orphan"),
                   _record("f-extra", "extra metadata", metadata={"fact_policy": 1, "revision": 1, "x": 1})]
 
 
 def test_the_policy_collection_keeps_only_facts_get_returns_with_a_live_owner():
-    """Canaries: overdue fact, retired-owner fact not pruned, orphan id; and every other exclusion."""
+    """Canaries: overdue fact, retired-owner fact not pruned, orphan id; and every other exclusion,
+    including a live-owner fact the ledger records as fact_pruned_retired_owner (SCR-P-2)."""
     snapshot = _snapshot([_export("data/memory_db", sc.POLICY, POLICY_RECORDS, registered=True),
                           _export("data/chroma_db", sc.STAGING, [COMMAND])])
     assert set(oc.policy_allowlist(snapshot, NOW)) == {"f-live", "f-confirmed", "f-stale", "f-extra"}
