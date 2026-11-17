@@ -597,6 +597,45 @@ async def test_a_time_of_only_stopwords_is_never_read_as_text(store, query):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("literal", "literal_due", "other", "other_due", "references"), [
+    # "una" is a stopword: before review FV-1 the literal reading was skipped.
+    ("llamar al médico a la una", (11, 12, 45), "llamar al médico", (11, 13, 0),
+     ("llamar al médico de las 12:45 del mediodía", "llamar al médico de la 1 de la tarde")),
+    # "2" is already a content word: before review FV-1 the literal reading was skipped.
+    ("tomar 2 pastillas a las 2", (11, 9, 0), "tomar 2 pastillas", (11, 14, 0),
+     ("tomar 2 pastillas de las 9 de la mañana", "tomar 2 pastillas de las 2 de la tarde")),
+])
+async def test_a_clock_phrase_that_adds_no_new_word_still_asks(store, literal, literal_due, other, other_due,
+                                                               references):
+    """Review T032-U1-FV-1: the whole text of one reminder never cancels another one due at its clock word."""
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    named = await _shared(manager, literal, _local(2026, 11, *literal_due).timestamp())
+    timed = await _shared(manager, other, _local(2026, 11, *other_due).timestamp())
+    asked = await manager.resolve(None, f"de {literal}", shared_only=True)
+    assert (asked.match, [r.id for r in asked.candidates]) == (CancelMatch.AMBIGUOUS, [named.id, timed.id])
+    assert not await manager.cancel_by_text(None, f"de {literal}", shared_only=True)
+    assert {r.id for r in await manager.get_active(None, shared_only=True)} == {named.id, timed.id}
+    found = await manager.voice_references(None, asked.candidates, with_time=True, shared_only=True)
+    assert found == dict(zip((named.id, timed.id), references))
+    for reminder in (named, timed):
+        again = await manager.resolve(None, f"de {found[reminder.id]}", shared_only=True)
+        assert (again.match, again.reminder.id) == (CancelMatch.UNIQUE, reminder.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("day", ["el lunes", "del lunes"])
+async def test_a_day_phrase_is_read_as_text_from_its_day_word(store, day):
+    """Review T032-U1-FV-1: 'del lunes' is said of a text 'el lunes' too, so both readings ask."""
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    named = await _shared(manager, "regar las plantas el lunes", _local(2026, 11, 12, 9, 0).timestamp())
+    monday = await _shared(manager, "regar las plantas", _local(2026, 11, 16, 9, 0).timestamp())
+    asked = await manager.resolve(None, f"de regar las plantas {day}", shared_only=True)
+    assert (asked.match, [r.id for r in asked.candidates]) == (CancelMatch.AMBIGUOUS, [named.id, monday.id])
+
+
+@pytest.mark.asyncio
 async def test_time_words_in_no_text_keep_the_time_reading(store):
     """A time no reminder text contains only filters by trigger, as before."""
     clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)

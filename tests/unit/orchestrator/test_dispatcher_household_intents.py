@@ -793,6 +793,43 @@ async def test_a_clock_word_of_one_text_and_another_due_time_asks_which(leaves):
     assert await manager.get_active(None, shared_only=True) == []
 
 
+@pytest.mark.parametrize(("literal", "literal_due", "other", "other_due", "response"), [
+    ("llamar al médico a la una", (12, 45), "llamar al médico", (13, 0),
+     "Encontré 2: llamar al médico a la una a las 12:45 y llamar al médico a las 13:00. Repetímelo con la hora, "
+     "por ejemplo: cancelá el recordatorio de llamar al médico de las 12:45 del mediodía."),
+    ("tomar 2 pastillas a las 2", (9, 0), "tomar 2 pastillas", (14, 0),
+     "Encontré 2: tomar 2 pastillas a las 2 a las 09:00 y tomar 2 pastillas a las 14:00. Repetímelo con la hora, "
+     "por ejemplo: cancelá el recordatorio de tomar 2 pastillas de las 9 de la mañana."),
+])
+async def test_the_whole_text_with_its_clock_phrase_never_cancels_another_reminder(
+        leaves, literal, literal_due, other, other_due, response):
+    """Review T032-U1-FV-1: before it, these cancelled the reminder due at the text's clock word.
+
+    "una" is a stopword and "2" is already a content word, so the literal
+    reading was skipped; now KZA asks, cancels nothing, and the proposed
+    command cancels exactly the named one.
+    """
+    from datetime import datetime, timedelta
+    dispatcher = leaves.dispatcher()
+    manager = leaves.reminder_manager
+    clock = manager._household_clock
+    tomorrow = clock.now_local().date() + timedelta(days=1)
+
+    def at(hour: int, minute: int) -> float:
+        return clock.to_epoch(datetime(tomorrow.year, tomorrow.month, tomorrow.day, hour, minute))
+    named = await manager.create("household", literal, at(*literal_due), scope=ReminderScope.SHARED)
+    timed = await manager.create("household", other, at(*other_due), scope=ReminderScope.SHARED)
+    asked, counted = await _cancel(leaves, f"cancelá el recordatorio de {literal}", dispatcher=dispatcher)
+    assert counted == ZERO and asked.outcome.status.value == "needs_input"
+    assert asked.response == response
+    assert {r.id for r in await manager.get_active(None, shared_only=True)} == {named.id, timed.id}
+    example = response.split("por ejemplo: ", 1)[1].removesuffix(".")
+    done, counted = await _cancel(leaves, example, dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
+    assert [r.id for r in await manager.get_active(None, shared_only=True)] == [timed.id]
+    assert (await leaves.reminder_store.get_by_id(named.id)).state == "cancelled"
+
+
 @pytest.mark.parametrize(("text", "response"), [
     ("cancelá el recordatorio de tomar agua y el de sacar la basura",
      "Por voz cancelo de a un recordatorio. Decime uno por vez, por ejemplo: cancelá el recordatorio de tomar agua."),

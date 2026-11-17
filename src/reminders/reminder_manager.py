@@ -161,41 +161,74 @@ def _without_relative_clause(words: list[str]) -> list[str]:
     return words[j + 1:] if words[j:j + 1] and words[j] in _RELATIVE_VERBS else words
 
 
-def _parse_query(query: str) -> tuple[tuple[frozenset[str], ...], _SpokenClock | None, _SpokenDay | None]:
+@dataclass(frozen=True)
+class _ParsedQuery:
+    """A spoken cancel complement split into content words and time phrases.
+
+    Attributes:
+        words: Content words outside the clock and day phrases.
+        clock: The spoken clock time, if any.
+        day: The spoken day, if any.
+        phrases: The clock and day phrases as spoken tokens ("la una",
+            "las 2 de la tarde", "mañana"), for the literal reading.
+    """
+
+    words: tuple[frozenset[str], ...]
+    clock: _SpokenClock | None
+    day: _SpokenDay | None
+    phrases: tuple[tuple[str, ...], ...]
+
+
+def _parse_query(query: str) -> _ParsedQuery:
     """Content words, an optional clock time and day of a spoken cancel complement."""
     words = _without_relative_clause(_WORD.findall(_fold(query)))
-    taken, clock, day = _time_spans(words)
-    return _content([w for k, w in enumerate(words) if k not in taken]), clock, day
+    clock, clock_span, day, day_span = _spans(words)
+    taken = set(clock_span) | set(day_span)
+    phrases = [tuple(words[k] for k in clock_span)] if clock_span else []
+    if day_span:
+        # "del lunes" is said of a text "el lunes" too: the day phrase starts at its day word.
+        day_words = [words[k] for k in day_span]
+        while day_words and day_words[0] in _QUERY_STOPWORDS:
+            day_words.pop(0)
+        phrases.append(tuple(day_words))
+    content = _content([w for k, w in enumerate(words) if k not in taken])
+    return _ParsedQuery(content, clock, day, tuple(phrases))
 
 
-def _literal_words(query: str) -> tuple[frozenset[str], ...]:
-    """Content words of a complement with its clock and day words kept as words."""
-    return _content(_without_relative_clause(_WORD.findall(_fold(query))))
+def _contains_phrase(text: list[str], phrase: tuple[str, ...]) -> bool:
+    """The folded text tokens hold ``phrase`` as contiguous tokens."""
+    size = len(phrase)
+    return size > 0 and any(tuple(text[k:k + size]) == phrase for k in range(len(text) - size + 1))
 
 
-def _time_spans(words: list[str]) -> tuple[set[int], _SpokenClock | None, _SpokenDay | None]:
-    """Indexes of the first clock time and day phrase, and what they name."""
-    clock, taken = None, set()
+def _spans(words: list[str]) -> tuple[_SpokenClock | None, range, _SpokenDay | None, range]:
+    """The first clock time and day phrase, each with the token span it covers."""
+    clock, clock_span = None, range(0)
     for i in range(len(words)):
         found = _clock_at(words, i)
         if found is not None:
             clock, start, end = found
-            taken = set(range(start, end))
+            clock_span = range(start, end)
             break
     # "de las 9 de la noche de mañana": "mañana" right after the time is the day.
-    clock_end = max(taken) + 1 if taken else None
-    day = None
+    clock_end = clock_span.stop if clock_span else None
+    day, day_span = None, range(0)
     for i in range(len(words)):
-        if i in taken:
+        if i in clock_span:
             continue
         joined = clock_end is not None and i == clock_end + 1 and words[clock_end] == "de"
         found = spoken_day_at(words, i, joined=joined)
-        if found is not None and not taken & set(range(i, found[2])):
+        if found is not None and not set(clock_span) & set(range(i, found[2])):
             kind, value, end = found
-            day = _SpokenDay(kind, value)
-            taken |= set(range(i, end))
+            day, day_span = _SpokenDay(kind, value), range(i, end)
             break
-    return taken, clock, day
+    return clock, clock_span, day, day_span
+
+
+def _time_spans(words: list[str]) -> tuple[set[int], _SpokenClock | None, _SpokenDay | None]:
+    """Indexes of the first clock time and day phrase, and what they name."""
+    clock, clock_span, day, day_span = _spans(words)
+    return set(clock_span) | set(day_span), clock, day
 
 
 def _without_time_words(text: str) -> str | None:
@@ -355,10 +388,11 @@ class ReminderManager:
         must be a word of the reminder's text; a spoken clock time ("de las
         6 de la tarde") and day ("de hoy", "del lunes", the T031 day
         grammar) must equal its next trigger on the household clock. A
-        leading "que (te) pedí/puse/hay" clause is not content. Spoken
-        clock and day words are also read as words of the text; when that
-        reading selects other reminders than the time reading, both sets
-        are candidates and KZA asks (T032-U1-RR-P1).
+        leading "que (te) pedí/puse/hay" clause is not content. The spoken
+        clock and day phrases are also read as words of the text, as
+        contiguous words ("la una", "las 2 de la tarde"); when that reading
+        selects other reminders than the time reading, both sets are
+        candidates and KZA asks (T032-U1-RR-P1, review FV-1).
         Several matches are always ambiguous, even when one reminder's words
         are exactly the reference's: another active reminder that contains
         every spoken word may be the one meant, so KZA asks rather than
@@ -382,7 +416,8 @@ class ReminderManager:
         """Resolve a reference among already scoped active reminders (see :meth:`resolve`)."""
         if not active:
             return CancelResolution(CancelMatch.NONE_ACTIVE)
-        words, clock, day = _parse_query(reference)
+        query = _parse_query(reference)
+        words, clock, day = query.words, query.clock, query.day
         if not words and clock is None and day is None:
             return CancelResolution(CancelMatch.NO_REFERENCE, candidates=tuple(active))
         today = self._household_clock.local_date()
@@ -404,13 +439,21 @@ class ReminderManager:
             # select different reminders, both are candidates and KZA asks
             # which rather than pick one (user answer T032-U1-RR-P1: "tomar
             # las pastillas de las 2" with "tomar las 2 pastillas" also
-            # active asks). A time spoken only with stopwords ("de la una")
-            # adds no word to match and has no literal reading.
-            literal = _literal_words(reference)
-            if set(literal) - set(words):
-                timed = {r.id for r in matches}
-                matches = [r for r in active
-                           if r.id in timed or _covers(_content(_WORD.findall(_fold(r.text))), literal)]
+            # active asks). The literal reading needs each spoken time phrase
+            # ("la una", "las 2", "mañana", with its period if one was said)
+            # as contiguous words of the text, plus the other content words:
+            # a repeated number ("tomar 2 pastillas a las 2") or the stopword
+            # "una" still count, while "de la una" or "de la una de la tarde"
+            # never select a text that only shares "tarde" or no word at all
+            # (review T032-U1-FV-1..3).
+            timed = {r.id for r in matches}
+            matches = []
+            for reminder in active:
+                text = _WORD.findall(_fold(reminder.text))
+                if reminder.id in timed or (
+                        _covers(_content(text), words)
+                        and all(_contains_phrase(text, phrase) for phrase in query.phrases)):
+                    matches.append(reminder)
         if not matches:
             return CancelResolution(CancelMatch.NOT_FOUND)
         if len(matches) == 1:
