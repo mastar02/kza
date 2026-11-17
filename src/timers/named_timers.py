@@ -13,7 +13,7 @@ import asyncio
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Callable
 from enum import StrEnum
@@ -21,8 +21,31 @@ import uuid
 
 from src.core.voice_delivery import invoke_voice_callback
 from src.core.task_outcome import EffectState, PersistenceState, TaskOutcome, TaskStatus
+from src.timers.voice_request import format_duration
 
 logger = logging.getLogger(__name__)
+
+# T030-U1-Q4 (user answer 2026-11-17): one "le queda 1 minuto" warning, and none
+# for timers of 2 minutes or less (they ring soon enough on their own).
+TIME_LEFT_WARNING_S = 60
+NO_WARNING_UP_TO_S = 120
+
+
+def warning_thresholds(
+    duration_seconds: float, intervals: list[int] | tuple[int, ...] = (TIME_LEFT_WARNING_S,)
+) -> list[int]:
+    """Seconds-left marks at which a timer of this duration speaks a warning.
+
+    Args:
+        duration_seconds: Total duration of the timer.
+        intervals: Warning marks for a timer long enough to get any.
+
+    Returns:
+        A new list: empty for 2 minutes or less, else ``intervals``.
+    """
+    if duration_seconds <= NO_WARNING_UP_TO_S:
+        return []
+    return list(intervals)
 
 
 class TimerState(StrEnum):
@@ -49,7 +72,7 @@ class NamedTimer:
     completed_at: datetime | None = None
 
     # Configuración
-    announce_at: list[int] = field(default_factory=lambda: [60, 30, 10])  # Anunciar a X segundos
+    announce_at: list[int] | None = None  # Seconds-left warnings; None -> warning_thresholds(duration)
     repeat: bool = False               # ¿Repetir automáticamente?
 
     def __post_init__(self):
@@ -57,6 +80,8 @@ class NamedTimer:
             self.remaining_seconds = self.duration_seconds
         if self.started_at is None:
             self.started_at = datetime.now()
+        if self.announce_at is None:
+            self.announce_at = warning_thresholds(self.duration_seconds)
 
     @property
     def elapsed_seconds(self) -> float:
@@ -90,6 +115,17 @@ class NamedTimer:
             return f"{hours} horas y {minutes} minutos"
 
 
+def _spoken_name(timer) -> str:
+    """Label of a timer for voice, or its duration when it has none."""
+    name = getattr(timer, "name", "")
+    return name if name else format_duration(timer.duration_seconds)
+
+
+def _describe(timer) -> str:
+    """'de pasta' / 'de 5 minutos' (same wording as the voice commands)."""
+    return f"de {_spoken_name(timer)}"
+
+
 class NamedTimerManager:
     """
     Gestor de timers con nombre.
@@ -118,7 +154,7 @@ class NamedTimerManager:
     ):
         self.tts = tts_callback
         self.max_timers = max_timers
-        self.default_announce = default_announce_intervals or [60, 30, 10, 5]
+        self.default_announce = list(default_announce_intervals or [TIME_LEFT_WARNING_S])
 
         # Timers activos
         self._timers: dict[str, NamedTimer] = {}
@@ -130,6 +166,15 @@ class NamedTimerManager:
         # Callbacks
         self._on_timer_complete: Callable[[NamedTimer], None] | None = None
         self._on_timer_warning: Callable[[NamedTimer, int], None] | None = None
+
+    @property
+    def running(self) -> bool:
+        """Whether timers are ticking: started, not stopped, and the update task alive.
+
+        Voice commands confirm nothing while this is False (a FeatureManager
+        start failure stops the manager, T030-U1).
+        """
+        return self._running and self._update_task is not None and not self._update_task.done()
 
     async def start(self):
         """Iniciar el manager de timers"""
@@ -317,13 +362,14 @@ class NamedTimerManager:
             created_at=datetime.now(),
             zone_id=zone_id,
             user_id=user_id,
-            announce_at=self.default_announce
+            announce_at=warning_thresholds(duration, self.default_announce)
         )
 
         self._timers[timer.timer_id] = timer
 
         response = f"Timer {name} configurado para {timer.format_remaining()}"
-        logger.info(f"Timer creado: {name} = {duration}s")
+        # Labels are household content: never above DEBUG (design household_conventions.logging).
+        logger.info("Timer created id=%s duration_s=%d", timer.timer_id, duration)
 
         return {"handled": True, "response": response, "timer": timer}
 
@@ -518,17 +564,19 @@ class NamedTimerManager:
         return None
 
     def _find_timer_by_name(self, name: str) -> NamedTimer | None:
-        """Buscar timer por nombre (fuzzy)"""
+        """Buscar timer por nombre (fuzzy); un timer sin nombre nunca coincide."""
         name_lower = name.lower()
+        if not name_lower:
+            return None
 
         # Búsqueda exacta
         for timer in self._timers.values():
-            if timer.name.lower() == name_lower:
+            if timer.name and timer.name.lower() == name_lower:
                 return timer
 
         # Búsqueda parcial
         for timer in self._timers.values():
-            if name_lower in timer.name.lower() or timer.name.lower() in name_lower:
+            if timer.name and (name_lower in timer.name.lower() or timer.name.lower() in name_lower):
                 return timer
 
         return None
@@ -536,14 +584,14 @@ class NamedTimerManager:
     # ==================== Anuncios ====================
 
     async def _announce_warning(self, timer: NamedTimer, seconds_left: int):
-        """Anunciar advertencia de tiempo"""
-        if seconds_left >= 60:
-            time_str = f"{seconds_left // 60} minutos"
-        else:
-            time_str = f"{seconds_left} segundos"
+        """Announce the time left, naming the timer like its ring does.
 
-        message = f"Quedan {time_str} para {timer.name}"
-        logger.info(f"Timer warning: {message}")
+        "Al temporizador de pasta le queda 1 minuto." / "Al temporizador de
+        5 minutos le quedan 30 segundos." (T030-U1 R4).
+        """
+        verb = "queda" if seconds_left in (1, 60, 3600) else "quedan"
+        message = f"Al temporizador {_describe(timer)} le {verb} {format_duration(seconds_left)}."
+        logger.info("Timer warning id=%s seconds_left=%d", getattr(timer, "timer_id", None), seconds_left)
 
         if self._on_timer_warning:
             self._on_timer_warning(timer, seconds_left)
@@ -553,8 +601,8 @@ class NamedTimerManager:
 
     async def _announce_complete(self, timer: NamedTimer):
         """Anunciar timer completado"""
-        message = f"¡Timer {timer.name} completado!"
-        logger.info(f"Timer complete: {timer.name}")
+        message = f"¡Terminó el temporizador {_describe(timer)}!"
+        logger.info("Timer complete id=%s", timer.timer_id)
 
         if self.tts:
             # Anunciar 3 veces para asegurar que se escuche
@@ -579,7 +627,7 @@ class NamedTimerManager:
             created_at=datetime.now(),
             zone_id=zone_id,
             user_id=user_id,
-            announce_at=self.default_announce
+            announce_at=warning_thresholds(duration_seconds, self.default_announce)
         )
         self._timers[timer.timer_id] = timer
         return timer
@@ -597,11 +645,33 @@ class NamedTimerManager:
         return [t for t in self._timers.values() if t.state == TimerState.RUNNING]
 
     def cancel_timer(self, timer_id: str) -> bool:
-        """Cancelar timer por ID"""
-        if timer_id in self._timers:
-            self._timers[timer_id].state = TimerState.CANCELLED
-            return True
-        return False
+        """Cancel a running or paused timer by id.
+
+        Returns:
+            True only when the timer existed and changed to CANCELLED.
+        """
+        timer = self._timers.get(timer_id)
+        if timer is None or timer.state not in (TimerState.RUNNING, TimerState.PAUSED):
+            return False
+        timer.state = TimerState.CANCELLED
+        return True
+
+    def pause_timer(self, timer_id: str) -> bool:
+        """Pause a running timer by id; True only when it changed to PAUSED."""
+        timer = self._timers.get(timer_id)
+        if timer is None or timer.state is not TimerState.RUNNING:
+            return False
+        timer.state = TimerState.PAUSED
+        return True
+
+    def resume_timer(self, timer_id: str) -> bool:
+        """Resume a paused timer by id; True only when it changed to RUNNING."""
+        timer = self._timers.get(timer_id)
+        if timer is None or timer.state is not TimerState.PAUSED:
+            return False
+        timer.state = TimerState.RUNNING
+        timer.started_at = datetime.now()
+        return True
 
     def cleanup_completed(self, max_age_hours: int = 24):
         """Limpiar timers completados/cancelados antiguos"""
@@ -629,7 +699,9 @@ class NamedTimerManager:
     def get_status(self) -> dict:
         """Obtener estado del manager"""
         return {
-            "running": self._running,
+            "running": self.running,
+            # Timers do not survive a restart until SCHEMA-V2 (T030-U3).
+            "persistence": PersistenceState.VOLATILE.value,
             "total_timers": len(self._timers),
             "active": sum(1 for t in self._timers.values() if t.state == TimerState.RUNNING),
             "paused": sum(1 for t in self._timers.values() if t.state == TimerState.PAUSED),

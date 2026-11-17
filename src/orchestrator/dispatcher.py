@@ -73,6 +73,8 @@ from src.orchestrator.priority_queue import (
     Request,
     PriorityRequestQueue
 )
+from src.timers.named_timers import NamedTimerManager
+from src.timers.voice_commands import TimerVoiceCommands
 from src.world.weather import DEFAULT_ENTITY as DEFAULT_WEATHER_ENTITY
 
 logger = get_logger(__name__)
@@ -350,7 +352,7 @@ class PathType(StrEnum):
     FAST_LIST = "fast_list"                # List CRUD
     FAST_REMINDER = "fast_reminder"        # Reminder CRUD
     FAST_WEATHER = "fast_weather"           # Clima desde HA, sin red externa
-    FAST_TIMER = "fast_timer"              # Temporizadores (P3-F2; handler en T030-U1)
+    FAST_TIMER = "fast_timer"              # Temporizadores (P3-F2 claim; T030-U1 handler)
     FAST_HOUSEHOLD = "fast_household"      # Familias del hogar sin handler todavía (P3-F2)
 
 
@@ -624,6 +626,8 @@ class RequestDispatcher:
         household_clock: HouseholdClock | None = None,
         room_namespace: RoomNamespace | None = None,
         household_intents: HouseholdIntentClassifier | None = None,
+        timer_manager: NamedTimerManager | None = None,
+        timer_fallback_zone: str | None = None,
     ):
         """
         Args:
@@ -665,6 +669,13 @@ class RequestDispatcher:
             household_intents: Clasificador de intenciones del hogar (P3-F2),
                 la misma instancia que usa el RequestRouter. Sin él, uno con
                 la configuración por defecto.
+            timer_manager: El NamedTimerManager del FeatureManager (T030-U1),
+                la misma instancia que este arranca y detiene. Sin él, los
+                temporizadores se contestan como no disponibles.
+            timer_fallback_zone: Zona donde suena un temporizador pedido sin
+                habitación de origen (la de los avisos compartidos, el living;
+                ``main.timer_fallback_zone``). None: ese temporizador se rechaza
+                en vez de confirmarse sin poder sonar (T030-U1 R1).
         """
         self.chroma = chroma_sync
         self.ha = ha_client
@@ -692,6 +703,9 @@ class RequestDispatcher:
         self.home_capabilities = home_capabilities
         self.room_namespace = room_namespace if room_namespace is not None else RoomNamespace(())
         self.household_intents = household_intents if household_intents is not None else HouseholdIntentClassifier()
+        self.timer_manager = timer_manager
+        self.timer_fallback_zone = timer_fallback_zone
+        self._timers = TimerVoiceCommands(timer_manager)
         self.hooks = hooks  # plan #3 OpenClaw — HookRegistry or None
         self._before_handler_warn_ms = before_handler_warn_ms
         # Voice-auth opcional (default OFF): exige speaker enrolado para ejecutar
@@ -784,7 +798,8 @@ class RequestDispatcher:
         household = self.household_intents.classify(text)
         if household is not None:
             logger.info("[Household] dispatch %s", household.summary())
-            result = await self._dispatch_household(household, text, user_id=user_id, zone_id=zone_id)
+            result = await self._dispatch_household(household, text, user_id=user_id, zone_id=zone_id,
+                                                    origin_room=origin)
             self._stats["fast_path"] += 1
             self._stats["by_path"][result.path] += 1
             result.timings["total"] = (time.perf_counter() - start_time) * 1000
@@ -1087,7 +1102,7 @@ class RequestDispatcher:
         )
 
     async def _dispatch_household(self, household: HouseholdIntent, text: str, *, user_id: str,
-                                  zone_id: str | None) -> DispatchResult:
+                                  zone_id: str | None, origin_room: str | None = None) -> DispatchResult:
         """Send a claimed household turn to its family path (P3-F2 D1).
 
         Families without a handler yet answer honestly (UNSUPPORTED or
@@ -1098,6 +1113,8 @@ class RequestDispatcher:
             text: Dispatch text.
             user_id: Caller id (never an account authority).
             zone_id: Reply zone.
+            origin_room: Room of the microphone that heard the turn (P3F1-R3),
+                or None. A timer rings there; without it, at the default output.
         """
         family, operation = household.family, household.operation
         if family is HouseholdFamily.COMPOUND:
@@ -1105,8 +1122,7 @@ class RequestDispatcher:
             return self._household_refusal(PathType.FAST_HOUSEHOLD, "compound", "Decímelo de a una cosa.",
                                            TaskStatus.NEEDS_INPUT)
         if family is HouseholdFamily.TIMER:
-            return self._household_refusal(PathType.FAST_TIMER, "timer",
-                                           "Todavía no manejo temporizadores ni alarmas por voz.", TaskStatus.UNSUPPORTED)
+            return await self._fast_timer_path(household, text, origin_room)
         if family is HouseholdFamily.REMINDER:
             if household.reason == "second_clause":
                 return self._household_refusal(PathType.FAST_REMINDER, "reminder",
@@ -1150,6 +1166,20 @@ class RequestDispatcher:
         return self._household_refusal(PathType.FAST_HOUSEHOLD, "deferred_action",
                                        "Todavía no programo acciones de la casa por voz; podés crear una rutina en la web.",
                                        TaskStatus.UNSUPPORTED)
+
+    async def _fast_timer_path(self, household: HouseholdIntent, text: str,
+                               origin_room: str | None) -> DispatchResult:
+        """Run a claimed timer turn (T030-U1) for the household actor.
+
+        The ring zone is the origin room's ``zone_<room>`` (the microphone that
+        heard the turn), else ``timer_fallback_zone`` (the shared-notice zone,
+        the living until SCHEMA-V2); never the acoustic speaker or a detected
+        source zone. With neither, a creation is refused.
+        """
+        ring_zone = self.room_namespace.to_zone(origin_room) or self.timer_fallback_zone
+        reply = await self._timers.execute(household.operation, household.complement, text=text, zone_id=ring_zone)
+        return DispatchResult(PathType.FAST_TIMER, Priority.HIGH, reply.outcome.task_completed, reply.response,
+                              intent="timer", outcome=reply.outcome)
 
     async def _fast_path(
         self,
@@ -2053,6 +2083,8 @@ class MultiUserOrchestrator:
         household_clock: HouseholdClock | None = None,
         room_namespace: RoomNamespace | None = None,
         household_intents: HouseholdIntentClassifier | None = None,
+        timer_manager: NamedTimerManager | None = None,
+        timer_fallback_zone: str | None = None,
     ):
         """Initialize the multi-user orchestrator.
 
@@ -2077,6 +2109,10 @@ class MultiUserOrchestrator:
                 para siempre — indistinguible de un sensor caído.
             household_intents: Clasificador de intenciones del hogar (P3-F2),
                 compartido con el RequestRouter. Forwarded to RequestDispatcher.
+            timer_manager: The FeatureManager's NamedTimerManager (T030-U1).
+                Forwarded to RequestDispatcher.
+            timer_fallback_zone: Ring zone of a timer without an origin room
+                (T030-U1 R1). Forwarded to RequestDispatcher.
         """
         self._hooks = hooks  # plan #3 OpenClaw — exposed for log_hook_stats()
         # Componentes principales
@@ -2158,6 +2194,8 @@ class MultiUserOrchestrator:
             household_clock=household_clock,
             room_namespace=room_namespace,
             household_intents=household_intents,
+            timer_manager=timer_manager,
+            timer_fallback_zone=timer_fallback_zone,
         )
 
         self._running = False

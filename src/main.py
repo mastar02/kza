@@ -59,7 +59,7 @@ from src.pipeline.voice_pipeline import VoicePipeline
 from src.pipeline.audio_loop import AudioLoop
 from src.pipeline.audio_manager import AudioManager
 from src.pipeline.command_processor import CommandProcessor
-from src.pipeline.voice_services import build_voice_services
+from src.pipeline.voice_services import build_voice_services, timer_fallback_zone
 from src.pipeline.request_router import RequestRouter
 from src.memory.services import build_memory_services
 from src.memory.privacy_services import build_privacy_services
@@ -1858,6 +1858,10 @@ async def build_application(
             household_clock=household_clock,
             room_namespace=room_namespace,
             household_intents=household_intents,
+            # T030-U1: the one timer manager the FeatureManager starts and stops.
+            timer_manager=voice_services.features.timer_manager,
+            # T030-U1 R1: ring zone of a timer without an origin room (shared-notice zone).
+            timer_fallback_zone=timer_fallback_zone(config, getattr(voice_services.features, "voice_delivery", None)),
             # Plan #2 OpenClaw
             compactor=compactor,
             persister=persister,

@@ -72,12 +72,21 @@ C02_ROUTER = (
     _r("C02-ACT-0007", "apagá la luz en 10 minutos", "deferred_action", "no_turn", None, None, None, "none",
        wake="textual", llm="stub:unavailable", seed="C02-ACT-0007",
        note="gated before the 7B (the seed counted one veto call); zero effects either way"),
-    _r("C02-TIM-0201", "poné un temporizador de 5 minutos", "timer", "unsupported", "fast_timer", "unsupported",
-       "not_written", "refusal", llm="stub:turn_on@0.95", counts=SPOKEN_ONE,
-       note="strong acoustic wake, 6 words: no 7B call, no vector search"),
-    _r("C02-TIM-0202", "poné un temporizador de 5 minutos", "timer", "unsupported", "fast_timer", "unsupported",
-       "not_written", "refusal", wake="low_score", llm="stub:command@0.9",
-       counts=effects(llm_8101_calls=1, spoken_utterances=1)),
+    _r("C02-TIM-0201", "poné un temporizador de 5 minutos", "timer", "completed", "fast_timer", "completed",
+       "volatile", "readback", llm="stub:turn_on@0.95", counts=effects(timer_delta=1, spoken_utterances=1),
+       note="T030-U1: strong acoustic wake, 6 words: no 7B call, no vector search; the timer is created"),
+    _r("C02-TIM-0202", "poné un temporizador de 5 minutos", "timer", "completed", "fast_timer", "completed",
+       "volatile", "readback", wake="low_score", llm="stub:command@0.9",
+       counts=effects(timer_delta=1, llm_8101_calls=1, spoken_utterances=1),
+       note="T030-U1: TV signal, the 7B veto accepts, then the timer is created"),
+    _r("C02-TIM-0204", "pausá el timer de la pasta", "timer", "completed", "fast_timer", "completed", "volatile",
+       "readback", llm="stub:unavailable", state="timer_running:pasta",
+       counts=effects(timer_transitions=1, spoken_utterances=1),
+       note="T030-U1: 7B unavailable on a strong acoustic wake: no veto call, the pause still runs"),
+    _r("C02-TIM-0205", "poné un temporizador de 5 minutos", "timer", "failed", "fast_timer", "failed",
+       "not_written", "refusal", state="feature_manager_start_failed", counts=SPOKEN_ONE,
+       effect_class="false_confirmation", seed="C02-TIM-0005",
+       note="T030-U1: manager not running: the refusal is spoken, no confirmation, no timer"),
     _r("C02-TIM-0203", "poné un temporizador de 5 minutos", "timer", "no_turn", None, None, None, "none",
        wake="low_score", llm="stub:command@0.3", counts=effects(llm_8101_calls=1), effect_class="stale_audio",
        note="veto below llm_min_command_confidence rejects"),
@@ -149,7 +158,8 @@ class Household:
             chroma_sync=leaves.chroma, ha_client=leaves.ha, routine_manager=leaves.routines, router=leaves.router,
             music_dispatcher=leaves.music, list_manager=leaves.list_manager,
             reminder_manager=leaves.reminder_manager, response_handler=self.handler,
-            household_intents=self.classifier)
+            household_intents=self.classifier, timer_manager=leaves.timers,
+            timer_fallback_zone=leaves.timer_fallback_zone)
         leaves.attach(self.orchestrator.dispatcher)
         self.orchestrator.process = AsyncMock(side_effect=self.orchestrator.process)
         self.veto = None

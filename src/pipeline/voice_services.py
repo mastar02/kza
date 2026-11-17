@@ -37,6 +37,46 @@ class VoiceServices:
             self.reminder_task = None
 
 
+def shared_output_zone(config: dict) -> str | None:
+    """Fixed zone for shared notices that have no origin room.
+
+    ``reminders.output_zone`` (user decision 2026-11-16: the living until
+    SCHEMA-V2), else ``tts.streaming.default_output_zone``.
+
+    Args:
+        config: Central configuration.
+
+    Returns:
+        The configured zone id, or None when neither is set.
+    """
+    zone = config.get("reminders", {}).get("output_zone")
+    if zone is not None:
+        return zone
+    return config.get("tts", {}).get("streaming", {}).get("default_output_zone")
+
+
+def timer_fallback_zone(config: dict, voice_delivery) -> str | None:
+    """Ring zone of a voice timer whose turn has no origin room (T030-U1 R1).
+
+    With zone routes (a ZoneManager, so the delivery requires a zone) it is
+    the shared-notice zone of :func:`shared_output_zone`, the same one shared
+    reminders use; without zone routes it is "default", the one local output.
+
+    Args:
+        config: Central configuration.
+        voice_delivery: The feature manager's ``LocalVoiceDelivery``, or None.
+
+    Returns:
+        A zone id the timer's ring can be delivered to, or None when there is
+        none (the timer is then refused instead of confirmed).
+    """
+    if voice_delivery is None:
+        return None
+    if not getattr(voice_delivery, "require_zone", False):
+        return "default"
+    return shared_output_zone(config)
+
+
 def build_voice_services(config: dict, *, tts, shutdown: AsyncExitStack, zone_manager=None,
                          llm=None, hooks=None, before_handler_warn_ms: float = 5.0,
                          user_manager=None, ha_client=None, home_actions=None,
@@ -80,8 +120,7 @@ def build_voice_services(config: dict, *, tts, shutdown: AsyncExitStack, zone_ma
     services = VoiceServices(response, features)
     if config.get("rooms", {}).get("enabled", False) and reminder_store is not None:
         reminder_config = dict(config.get("reminders", {}))
-        if reminder_config.get("output_zone") is None:
-            reminder_config["output_zone"] = streaming.get("default_output_zone")
+        reminder_config["output_zone"] = shared_output_zone(config)
         services.reminders = ReminderScheduler(
             reminder_store, features.voice_delivery, presence_detector, ha_client,
             reminder_config, home_actions=home_actions, wake_event=reminder_wake_event,
