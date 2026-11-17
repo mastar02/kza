@@ -583,6 +583,126 @@ def test_each_change_to_h_after_v_is_hd_and_nothing_is_written(x4, x5, tmp_path)
     _back_on_h(world, tmp_path, "h")
 
 
+# --- SC-R follow-ups: a later install over a closed K' (SCR-C-1), DL during the transition (SCR-C-2) ---
+
+def test_a_later_install_over_a_closed_k_prime_checks_h_binding_too(x4, x5, tmp_path, monkeypatch):
+    """SCR-C-1 (row CI): after a verified V the head is K', closed. A controller whose binding output
+    differs only on H's slot passes SR-1 on K' but is refused controller_binding_changed before current
+    moves, writing nothing; without it the install is admitted and abort --to-h returns to H."""
+    world = _world(x4, x5, tmp_path)
+    root = world["root"]
+    assert _v(world, tmp_path, "v").code == 0 and _kinds(world)[-1] == "verified"
+    assert stage.read_admission_head(root)["binding_id"] != world["h_binding"]
+    h_slot = stage.read_binding(root, world["h_binding"])["slot"]
+    current = os.readlink(root / "controller" / "current")
+    snapshot = stage._binding_snapshot
+
+    def changed_on_h(root_, name, **options):
+        value = snapshot(root_, name, **options)
+        if name == h_slot:  # the new projection differs only on rows H holds and K' does not
+            value = dict(value, authority=dict(value["authority"], digest="0" * 64))
+        return value
+
+    with monkeypatch.context() as patch:
+        patch.setattr(stage, "_binding_snapshot", changed_on_h)
+        _refused_writes_nothing(world, launcher.CONTROLLER_BINDING_CHANGED, lambda: _install(root, x5))
+    assert os.readlink(root / "controller" / "current") == current
+    _install(root, x5)  # the same controller, H unchanged: an equal triple repeat is admitted
+    assert _status(world)["phase"] == "verified"
+    assert _abort(world)["phase"] == "aborted"
+    _back_on_h(world, tmp_path, "h")
+
+
+def test_a_later_install_during_a_cut_retire_skips_the_h_check(x4, x5, tmp_path):
+    """SCRF-2 (rows RS, CI): a retire cut after H's slot is renamed has logged 'retire_started', so its
+    gates passed and H is being destroyed. A later install over the closed K' passes SR-1 on K' and skips
+    the SCR-C-1 H check (admitted, as before SCR-C-1, instead of a raw errno naming H's slot path), and
+    compact resume completes the retire."""
+    world = _world(x4, x5, tmp_path)
+    root = world["root"]
+    assert _v(world, tmp_path, "v").code == 0 and _kinds(world)[-1] == "verified"
+    h_slot = stage.read_binding(root, world["h_binding"])["slot"]
+    current = os.readlink(root / "controller" / "current")
+
+    def cut(path):
+        if not (root / "slots" / h_slot).exists():
+            raise RuntimeError("cut")
+    with pytest.raises(RuntimeError, match="cut"):
+        compaction.compact_retire(root, world["id"], scan=cw.no_units, unlink_hook=cut)
+    assert "retire_started" in _kinds(world) and not (root / "slots" / h_slot).exists()
+    _install(root, x5)  # the same controller: an equal triple repeat, admitted
+    assert os.readlink(root / "controller" / "current") == current
+    assert compaction.compact_resume(root, world["id"])["phase"] == "complete"
+    assert stage.read_binding(root, stage.read_admission_head(root)["binding_id"])["slot"] == "k"
+    assert cw.serve(root, tmp_path, "k-prime").code == 0
+
+
+def test_a_delegation_record_during_the_transition_refuses_every_exit_before_any_event(x4, x5, tmp_path,
+                                                                                         monkeypatch):
+    """SCR-C-2 (row DL during a pending release-mode log): a record planted under admission/delegations
+    after V refuses abort --to-h (with and without the discard), the plain abort and retire with
+    delegation_frozen, writing nothing (no 'abort_started'). An abort cut after 'abort_started' and
+    resumed with a record present refuses the same way. Row DL's exit (remove the record by hand) then
+    returns to H."""
+    world = _world(x4, x5, tmp_path)
+    root = world["root"]
+    assert _v(world, tmp_path, "v").code == 0 and _kinds(world)[-1] == "verified"
+    record = root / "admission" / "delegations" / ("0" * 64 + ".json")
+    record.parent.mkdir(exist_ok=True)
+    record.write_text("{}")
+    for action in (lambda: _abort(world), lambda: _abort(world, discard_k_changes="0" * 12),
+                   lambda: compaction.compact_abort(root, world["id"]), lambda: _retire(world)):
+        _refused_writes_nothing(world, stage.DELEGATION_FROZEN, action)
+    assert _kinds(world)[-1] == "verified" and _status(world)["phase"] == "verified"
+    record.unlink()
+    original = stage.compaction_return_to_h
+
+    def cut(*args, **kwargs):
+        raise RuntimeError("cut")
+
+    monkeypatch.setattr(stage, "compaction_return_to_h", cut)
+    with pytest.raises(RuntimeError, match="cut"):
+        _abort(world)
+    monkeypatch.setattr(stage, "compaction_return_to_h", original)
+    assert _kinds(world)[-1] == "abort_started"
+    record.write_text("{}")
+    for action in (lambda: compaction.compact_resume(root, world["id"]), lambda: _abort(world),
+                   lambda: compaction.compact_abort(root, world["id"])):
+        _refused_writes_nothing(world, stage.DELEGATION_FROZEN, action)
+    assert _kinds(world)[-1] == "abort_started"
+    record.unlink()
+    assert compaction.compact_resume(root, world["id"])["phase"] == "aborted"
+    _back_on_h(world, tmp_path, "h")
+
+
+def test_a_resumed_abort_past_the_return_to_h_refuses_a_delegation_record(x4, x5, tmp_path, monkeypatch):
+    """SCRF-3 (row DL): an abort cut after its return to H ('returned' logged, the head is H) still has
+    K to destroy. A record planted then makes compact resume and every abort refuse delegation_frozen,
+    writing nothing, so K is not destroyed with a record present; row DL's exit then finishes it."""
+    world = _world(x4, x5, tmp_path)
+    root = world["root"]
+    assert _v(world, tmp_path, "v").code == 0 and _kinds(world)[-1] == "verified"
+
+    def cut(*args, **kwargs):
+        raise RuntimeError("cut")
+    with monkeypatch.context() as patch:
+        patch.setattr(compaction, "_destroy_own_staging", cut)
+        with pytest.raises(RuntimeError, match="cut"):
+            _abort(world)
+    assert _kinds(world)[-1] == "returned" and (root / "slots" / "k").exists()
+    assert stage.read_admission_head(root)["binding_id"] == world["h_binding"]
+    record = root / "admission" / "delegations" / ("0" * 64 + ".json")
+    record.parent.mkdir(exist_ok=True)
+    record.write_text("{}")
+    for action in (lambda: compaction.compact_resume(root, world["id"]), lambda: _abort(world),
+                   lambda: compaction.compact_abort(root, world["id"])):
+        _refused_writes_nothing(world, stage.DELEGATION_FROZEN, action)
+    assert _kinds(world)[-1] == "returned" and (root / "slots" / "k").exists()
+    record.unlink()
+    assert compaction.compact_resume(root, world["id"])["phase"] == "aborted"
+    _back_on_h(world, tmp_path, "h")
+
+
 # --- the return to H's own authority checks after V (review RA4B-3, RB-2(b)(c), RB-3) ---------------
 
 def test_the_return_to_h_checks_its_confirmation_the_head_and_k_prime_and_writes_nothing(x4, x5, tmp_path,

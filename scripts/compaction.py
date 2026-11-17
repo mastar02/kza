@@ -2894,6 +2894,20 @@ def _w_checks(root: Path, log: dict, *, confirm_h: str | None, discard_k_changes
     return record
 
 
+def _no_delegation_records(root: Path) -> None:
+    """AUTHZ3-1 before any abort event (SCR-C-2): a delegation record refuses and nothing is written.
+
+    The return to H refuses runtime_admission_delegation_frozen anyway (its
+    ownership validation reads no record at epoch >= 5); checked first, the
+    refusal leaves the log uncommitted to the abort, so row DL's exit (remove
+    the record, then run the same command again) applies unchanged.
+    """
+    try:
+        stage.require_no_delegation_records(root)
+    except ValueError as error:
+        _refuse(str(error))
+
+
 def compact_abort(root, compaction_id: str, *, to_h: bool = False, discard_k_writes: bool = False,
                   confirm_h: str | None = None, member: int | None = None, accept_missing: bool = False,
                   discard_k_changes: str | None = None, wall=time.time) -> dict:
@@ -2912,6 +2926,7 @@ def compact_abort(root, compaction_id: str, *, to_h: bool = False, discard_k_wri
         log = _log(root, compaction_id)
         if log["terminal"] or _has(log, "retire_started"):
             _refuse("runtime_admission_compaction_phase")
+        _no_delegation_records(root)  # SCR-C-2: before 'abort_started' or any other abort event
         release = release_log(log)
         if discard_k_writes:
             _require_plain_mode(log)  # no --discard-k-writes in release mode (w_abort_predicate.command)
@@ -3114,6 +3129,7 @@ def compact_resume(root, compaction_id: str, *, archive=None, worker=None, scan=
         return {"compaction_id": compaction_id, "phase": log["events"][-1]["kind"], "noop": True}
     if _has(log, "abort_started"):
         with stage.AdmissionController(root, gate="compaction:" + compaction_id, allow_open_head=True):
+            _no_delegation_records(root)  # SCR-C-2: the resumed abort writes nothing either
             return _finish_abort(root, _log(root, compaction_id), wall)
     if _has(log, "retire_started"):
         with stage.AdmissionController(root, gate="compaction:" + compaction_id):

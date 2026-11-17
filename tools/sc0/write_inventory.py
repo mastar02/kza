@@ -32,7 +32,11 @@ sit outside any scanned call (DDL constants run through a helper, such as the
 schema-marker INSERTs and the ALTER TABLE migrations of ambient/store.py's
 ``_MIGRATIONS``); they are listed with ``call: "ddl_constant"``.
 Output: JSON list of {file, line, function, call, verb, table, projection,
-dynamic}. Reachability is classified separately (tools/sc0/classify.py).
+dynamic, sql}; ``sql`` is the statement's own text (whitespace-normalized, from
+its verb to the next ';'), which classify.py uses only to tell apart two
+statements of one function with the same verb and table (SCR-P-1: rules are
+keyed by function, verb and table, never by line). Reachability is
+classified separately (tools/sc0/classify.py).
 
 Usage: python tools/sc0/write_inventory.py [--repo PATH] > inventory.json
 """
@@ -125,6 +129,12 @@ def _constants(tree: ast.Module) -> dict:
     return found
 
 
+def _statement(sql: str, start: int) -> str:
+    """The statement that starts at ``start``: whitespace-normalized, up to the next ';' (bounded)."""
+    end = sql.find(";", start)
+    return re.sub(r"\s+", " ", sql[start:end if end >= 0 else len(sql)]).strip()[:300]
+
+
 def _text(node, constants) -> str:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
@@ -167,7 +177,7 @@ class Visitor(ast.NodeVisitor):
                                       "function": ".".join(self.stack) or "<module>",
                                       "call": name, "verb": verb, "table": table,
                                       "projection": self.projected.get(table, "unresolved"),
-                                      "dynamic": dynamic})
+                                      "dynamic": dynamic, "sql": _statement(sql, match.start())})
         self.generic_visit(node)
 
 
@@ -200,7 +210,8 @@ def scan(repo: Path) -> list[dict]:
                     rows.append({"file": relative, "line": number, "function": _enclosing(tree, number),
                                  "call": "ddl_constant",
                                  "verb": re.sub(r"\s+", " ", match.group(1).upper()),
-                                 "table": table, "projection": projected[table], "dynamic": False})
+                                 "table": table, "projection": projected[table], "dynamic": False,
+                                 "sql": _statement(line, match.start())})
     return sorted(rows, key=lambda row: (row["file"], row["line"], row["table"]))
 
 

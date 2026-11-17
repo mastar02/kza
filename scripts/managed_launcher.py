@@ -2443,7 +2443,13 @@ def _later_install_checks(root: Path, manifest: dict, *, probe_timeout: float) -
     is the log's source binding (H) or the K binding the log authorized
     (review F4); then H's binding, recomputed by this code, must equal the
     log's source binding (R3-OPS-2); K's authorized binding rests on the
-    projection invariant. Any other open head is an unknown head: close it with
+    projection invariant. A closed head other than H under a pending
+    release-mode log (A0, V3, V4, SS) passes SR-1 and the same H check
+    (SCR-C-1), so a controller whose binding output differs only on H is
+    refused before current moves instead of stopping every later W0 at HD.
+    Once 'retire_started' is logged the retire gates have passed and H is
+    being destroyed (no abort returns to it), so the H check is skipped
+    there (SCRF-2). Any other open head is an unknown head: close it with
     R-b or adopt first (runtime_admission_not_closed, R4-OPS-2).
     """
     head = stage.read_admission_head(root)
@@ -2459,6 +2465,11 @@ def _later_install_checks(root: Path, manifest: dict, *, probe_timeout: float) -
             raise LauncherRefusal("runtime_admission_compaction_pending")
         if closed:
             _sr1(root, head, manifest, probe_timeout=probe_timeout)
+            if release and head["binding_id"] != pending["intent"]["source_binding_id"] \
+                    and not stage.compaction_events(pending, "retire_started"):
+                # SCR-C-1: a closed K' (A0, V3, V4, SS): H must still check too, as for an open head.
+                # SCRF-2: not during a retire, where H's slot may already be renamed or destroyed.
+                _binding_equality(root, stage.read_binding(root, pending["intent"]["source_binding_id"]))
         return
     if not release:
         raise LauncherRefusal("runtime_admission_not_closed")
