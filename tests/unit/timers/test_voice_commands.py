@@ -187,6 +187,36 @@ async def test_one_named_timer_changes_and_the_other_does_not(manager, text, sta
     assert "pasta" in reply.response
 
 
+async def test_courtesy_word_is_neither_a_label_nor_a_duplicate(manager):
+    """T030-U1 R2: '..., gracias' twice gives two unnamed timers, read back by duration."""
+    commands = TimerVoiceCommands(manager)
+    for _ in range(2):
+        reply = await say(commands, "poné un timer de 5 minutos, gracias")
+        assert (reply.outcome.status, reply.response) == (TaskStatus.COMPLETED, "Temporizador de 5 minutos en marcha.")
+    assert [(t.name, t.duration_seconds) for t in manager.get_all_timers()] == [("", 300), ("", 300)]
+
+
+@pytest.mark.parametrize(("text", "state"), [
+    ("cancelá el timer ya", TimerState.CANCELLED),
+    ("pausá el timer un momento", TimerState.PAUSED),
+    ("cancelá el timer que puse", TimerState.CANCELLED),
+])
+async def test_filler_selector_picks_the_only_timer(manager, text, state):
+    """T030-U1 R2: a filler word is not a timer name; the only timer is the one meant."""
+    manager.create_timer("pasta", 600)
+    reply = await say(TimerVoiceCommands(manager), text)
+    assert reply.outcome.status is TaskStatus.COMPLETED and "pasta" in reply.response
+    assert states(manager) == {"pasta": state}
+
+
+async def test_filler_after_a_label_still_picks_that_timer(manager):
+    manager.create_timer("pasta", 600)
+    manager.create_timer("salsa", 600)
+    reply = await say(TimerVoiceCommands(manager), "pará el timer de la pasta nomás")
+    assert reply.response == "Cancelé el temporizador de pasta."
+    assert states(manager) == {"pasta": TimerState.CANCELLED, "salsa": TimerState.RUNNING}
+
+
 async def test_resume_a_paused_timer(manager):
     timer = manager.create_timer("pasta", 600)
     manager.pause_timer(timer.timer_id)

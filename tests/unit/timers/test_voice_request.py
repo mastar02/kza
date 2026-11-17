@@ -142,6 +142,47 @@ def test_selector_names_a_timer_by_label_or_duration(text, selector):
     assert parse_timer_selector(intent.complement).empty is (selector == TimerSelector())
 
 
+# T030-U1 R2 (reviewer probes): courtesy and filler words never become a label.
+FILLER_CREATE = [
+    ("poné un timer de 5 minutos, gracias", 300, None),
+    ("poné un timer de 5 minutos ya", 300, None),
+    ("poné un timer de 5 minutos ahora", 300, None),
+    ("poné un timer de 5 minutos más", 300, None),
+    ("poné un timer de 5 minutos dale", 300, None),
+    ("poné un timer de 5 minutos nomás", 300, None),
+    ("poné un timer de 5 minutos exactos", 300, None),
+    ("poné un timer de 5 minutos para avisarme", 300, None),
+    ("poné un timer para dentro de 10 minutos", 600, None),
+    ("poné un timer de 8 minutos para la pasta, gracias", 480, "pasta"),
+    ("poné un timer de 8 minutos para la pasta nomás", 480, "pasta"),
+]
+
+
+@pytest.mark.parametrize(("text", "seconds", "label"), FILLER_CREATE)
+def test_courtesy_and_filler_words_are_not_labels(text, seconds, label):
+    intent = classify_household_intent(text)
+    assert (intent.family, intent.operation) == (HouseholdFamily.TIMER, HouseholdOperation.CREATE)
+    assert parse_timer_request(intent.complement) == TimerRequest(seconds, label)
+
+
+FILLER_SELECT = [
+    ("cancelá el timer ya", TimerSelector()),
+    ("pausá el timer un momento", TimerSelector()),
+    ("cancelá el timer que puse", TimerSelector()),
+    ("cancelá el timer que puse recién", TimerSelector()),
+    ("pará el timer de la pasta nomás", TimerSelector("pasta")),
+    ("cancelá el timer de la pasta, gracias", TimerSelector("pasta")),
+    ("cancelá el timer de 5 minutos ya", TimerSelector(None, 300)),
+]
+
+
+@pytest.mark.parametrize(("text", "selector"), FILLER_SELECT)
+def test_courtesy_and_filler_words_are_not_selectors(text, selector):
+    intent = classify_household_intent(text)
+    assert intent.family is HouseholdFamily.TIMER
+    assert parse_timer_selector(intent.complement) == selector
+
+
 @pytest.mark.parametrize(("seconds", "spoken"), [
     (1, "1 segundo"), (30, "30 segundos"), (60, "1 minuto"), (90, "1 minuto y 30 segundos"), (300, "5 minutos"),
     (3600, "1 hora"), (5400, "1 hora y 30 minutos"), (7200, "2 horas"), (3661, "1 hora, 1 minuto y 1 segundo"),

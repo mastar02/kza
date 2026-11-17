@@ -103,6 +103,15 @@ _ROOMS = frozenset(ROOM_ALIASES)
 _LEAD = frozenset({"de", "del", "para", "por", "en", "a", "al", "con", "llamado", "llamada", "que", "se", "llame",
                    "nombre", "el", "la", "los", "las", "un", "una", "mi"})
 _TRAIL = frozenset({"de", "del", "para", "por", "en", "a", "al", "con", "y", "que", "el", "la", "los", "las"})
+# Courtesy and filler words that never name a timer at the edge of a label or selector ("..., gracias",
+# "cancelá el timer ya", "pausá el timer un momento", "el timer que puse", "de la pasta nomás",
+# "de 5 minutos exactos", "para avisarme", "para dentro de 10 minutos"). Stripped with the connectors above.
+_FILLER = frozenset({"gracias", "ya", "ahora", "dale", "nomas", "mas", "exacto", "exactos", "exacta", "exactas",
+                     "justo", "justos", "justa", "justas", "momento", "momentito", "dentro", "puse", "pusiste",
+                     "pusimos", "puso", "pusieron", "recien", "mismo", "porfa", "porfi", "porfis", "favor", "che",
+                     "bueno", "listo", "ok", "okey", "avisar", "avisarme", "avisame", "avisarnos", "avisanos"})
+_LEAD_STRIP = _LEAD | _FILLER
+_TRAIL_STRIP = _TRAIL | _FILLER
 # Query and state words that never name a timer ("qué timers hay", "el timer que está corriendo").
 _STATE_WORDS = frozenset({"hay", "tengo", "tenemos", "quedan", "queda", "son", "tiene", "tienen", "estan", "esta",
                           "activos", "activas", "activo", "activa", "pendientes", "corriendo", "anda", "andan",
@@ -213,11 +222,11 @@ def _bare_number(w: list[str], start: int, end: int) -> bool:
 
 
 def _trim(original: list[str], folded: list[str], *, state_words: bool) -> list[str]:
-    """Strip connector words around one piece of a label; optionally drop query/state words."""
+    """Strip connector, courtesy and filler words around one piece of a label; optionally drop query/state words."""
     keep = [(o, f) for o, f in zip(original, folded) if not (state_words and f in _STATE_WORDS)]
-    while keep and keep[0][1] in _LEAD:
+    while keep and keep[0][1] in _LEAD_STRIP:
         keep.pop(0)
-    while keep and keep[-1][1] in _TRAIL:
+    while keep and keep[-1][1] in _TRAIL_STRIP:
         keep.pop()
     return [o for o, _ in keep]
 
