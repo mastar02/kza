@@ -289,6 +289,31 @@ async def test_cancel_all(manager):
     assert (empty.outcome.status, empty.response) == (TaskStatus.NEEDS_INPUT, NO_ACTIVE)
 
 
+@pytest.mark.parametrize("text", ["cancelá los timers", "cancelá los temporizadores", "cancelá las alarmas"])
+async def test_plural_noun_cancels_every_timer(manager, text):
+    """T030-U1 R6 (reviewer mutant V11): the plural names every timer, without 'todos'."""
+    manager.create_timer("pasta", 600)
+    manager.create_timer("", 300)
+    reply = await say(TimerVoiceCommands(manager), text)
+    assert (reply.outcome.status, reply.response) == (TaskStatus.COMPLETED, "Cancelé 2 temporizadores.")
+    assert {t.state for t in manager.get_all_timers()} == {TimerState.CANCELLED}
+
+
+async def test_unnamed_timer_keeps_its_original_duration_as_name_after_time_passes(manager):
+    """T030-U1 R6 (reviewer mutant V19): named by duration_seconds, never by what is left."""
+    timer = manager.create_timer("", 300)
+    timer.remaining_seconds = 120  # three minutes went by (the frozen manager never ticks on its own)
+    paused = await say(TimerVoiceCommands(manager), "pausá el timer")
+    assert paused.response == "Pausé el temporizador de 5 minutos; le quedan 2 minutos."
+    resumed = await say(TimerVoiceCommands(manager), "seguí el timer de 5 minutos")
+    assert resumed.response == "Sigue el temporizador de 5 minutos; faltan 2 minutos."
+    query = await say(TimerVoiceCommands(manager), "¿cuánto le falta al timer?")
+    assert query.response == "Al temporizador de 5 minutos, faltan 2 minutos."
+    cancelled = await say(TimerVoiceCommands(manager), "cancelá el timer")
+    assert cancelled.response == "Cancelé el temporizador de 5 minutos."
+    assert timer.state is TimerState.CANCELLED
+
+
 async def test_query_lists_active_timers_and_is_read_only(manager):
     commands = TimerVoiceCommands(manager)
     none = await say(commands, "qué timers hay")
