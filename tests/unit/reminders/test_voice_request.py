@@ -252,7 +252,7 @@ def test_trigger_is_utc_epoch_of_local_wall_time():
 
 
 def test_clock_timezone_is_honoured():
-    utc_now = MONDAY_10.astimezone(timezone.utc)
+    utc_now = MONDAY_10.astimezone(ZoneInfo("UTC"))
     madrid = MONDAY_10.astimezone(ZoneInfo("Europe/Madrid"))
     assert parse("recordame a las 8 de la noche x", utc_now).trigger_at == datetime(
         2026, 11, 16, 20, tzinfo=timezone.utc).timestamp()
@@ -760,6 +760,47 @@ def test_naive_clock_is_rejected():
         VoiceRequestParser(lambda: datetime(2026, 11, 16, 10, 0)).parse_reminder("recordame en 5 minutos x")
     with pytest.raises(ValueError, match="aware_clock_required"):
         VoiceRequestParser(lambda: datetime(2026, 11, 16, 10, 0)).parse_deferred("apagá la luz en 5 minutos")
+
+
+@pytest.mark.parametrize("clock", [
+    MONDAY_10.astimezone(timezone.utc),                       # UTC instead of the household zone
+    MONDAY_10.astimezone(timezone(timedelta(hours=-3))),      # fixed offset ("astimezone()" style)
+])
+def test_clock_outside_a_zoneinfo_is_rejected(clock):
+    """Review F6: a UTC or fixed-offset clock puts the local day on the wrong calendar."""
+    with pytest.raises(ValueError, match="household_zone_required"):
+        parse_reminder_request("recordame mañana a las 8 de la mañana x", clock)
+    with pytest.raises(ValueError, match="household_zone_required"):
+        extract_time_expression("apagá la luz a las 8 de la noche", clock)
+    with pytest.raises(ValueError, match="household_zone_required"):
+        VoiceRequestParser(lambda: clock).parse_reminder("recordame en 5 minutos x")
+    with pytest.raises(ValueError, match="household_zone_required"):
+        VoiceRequestParser(lambda: clock).parse_deferred("apagá la luz en 5 minutos")
+
+
+NEW_YORK = ZoneInfo("America/New_York")
+
+
+@pytest.mark.parametrize("utterance,now,detail", [
+    # 2027-03-14 02:00-02:59 does not exist in New York (spring forward).
+    ("recordame mañana a las 2 y media de la madrugada x", datetime(2027, 3, 13, 10, 0, tzinfo=NEW_YORK), "dst_gap"),
+    ("recordame a las 2 y media de la madrugada x", datetime(2027, 3, 13, 22, 0, tzinfo=NEW_YORK), "dst_gap"),
+    ("recordame todos los días a las 2 y media de la madrugada x", datetime(2027, 3, 13, 22, 0, tzinfo=NEW_YORK),
+     "dst_gap"),
+    # 2027-11-07 01:00-01:59 happens twice (fall back).
+    ("recordame mañana a la 1 y media de la madrugada x", datetime(2027, 11, 6, 10, 0, tzinfo=NEW_YORK), "dst_fold"),
+    ("recordame a la una y media de la madrugada x", datetime(2027, 11, 6, 22, 0, tzinfo=NEW_YORK), "dst_fold"),
+])
+def test_wall_time_skipped_or_repeated_by_dst_is_refused(utterance, now, detail):
+    result = parse(utterance, now)
+    assert (result.ambiguity, result.detail, result.trigger_at, result.recurrence) == (A.UNPARSEABLE, detail, None, None)
+
+
+def test_wall_time_next_to_a_dst_change_is_kept():
+    result = parse("recordame mañana a las 3 de la madrugada x", datetime(2027, 3, 13, 10, 0, tzinfo=NEW_YORK))
+    assert result.trigger_at == datetime(2027, 3, 14, 3, 0, tzinfo=NEW_YORK).timestamp()
+    relative = parse("recordame en 2 horas x", datetime(2027, 3, 14, 1, 30, tzinfo=NEW_YORK))
+    assert relative.trigger_at == datetime(2027, 3, 14, 1, 30, tzinfo=NEW_YORK).timestamp() + 7200
 
 
 def test_parser_reads_the_injected_clock_on_every_call():

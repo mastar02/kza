@@ -15,8 +15,10 @@ Rules (user answers Q7/Q8, p3/design.json precedence_contract R3/R4):
   09:00.
 * A successful result always has ``trigger_at`` strictly after the injected
   clock's ``now``.
-* Times are resolved on the household's local calendar (the aware clock's
-  timezone, America/Montevideo in production) and returned as UTC epochs.
+* Times are resolved on the household's local calendar (the clock's
+  ``zoneinfo.ZoneInfo``, America/Montevideo in production) and returned as UTC
+  epochs. A fixed-offset or UTC clock is rejected, and a wall time that does
+  not exist or occurs twice on a daylight-saving change is refused.
 * The raw complement after the reminder verb is kept unmodified so a later unit
   (T031-U5) can parse a home action from it; :func:`extract_time_expression`
   applies the same time grammar to a domotics clause without a reminder verb
@@ -28,9 +30,10 @@ import re
 import unicodedata
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from enum import StrEnum
 from functools import lru_cache
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -614,6 +617,12 @@ def _resolve(scan: _Scan, now: datetime) -> tuple[float | None, str | None, set[
     def at(days: int) -> datetime:
         return datetime.combine(today + timedelta(days=days), time(hour, clock.minute), tzinfo=now.tzinfo)
 
+    def finish(target: datetime, rec: str | None) -> tuple[float | None, str | None, set[ReminderAmbiguity], str | None]:
+        wall = _wall_time_problem(target)
+        if wall is not None:
+            return None, None, {ReminderAmbiguity.UNPARSEABLE}, wall
+        return target.timestamp(), rec, issues, None
+
     if recurrence:
         if recurrence == "daily":
             candidates = (0, 1)
@@ -623,7 +632,7 @@ def _resolve(scan: _Scan, now: datetime) -> tuple[float | None, str | None, set[
             first = (int(recurrence.split(":")[1]) - 1 - today.weekday()) % 7
             candidates = (first, first + 7)
         target = next(c for c in map(at, candidates) if c.timestamp() > now.timestamp())
-        return target.timestamp(), recurrence, issues, None
+        return finish(target, recurrence)
 
     offset = next(iter(offsets)) if offsets else 0
     small_hours = hour < 6
@@ -642,7 +651,7 @@ def _resolve(scan: _Scan, now: datetime) -> tuple[float | None, str | None, set[
             target = at(1)
     if target.timestamp() <= now.timestamp():
         return None, None, {ReminderAmbiguity.PAST_TODAY}, None
-    return target.timestamp(), None, issues, None
+    return finish(target, None)
 
 
 def _clean(text: str, *, connectors: bool) -> str:
@@ -673,8 +682,25 @@ def _ordered(issues: set[ReminderAmbiguity]) -> tuple[ReminderAmbiguity, ...]:
 
 
 def _require_aware(now: datetime) -> None:
+    """Require the household clock: an aware datetime in a ``ZoneInfo`` zone.
+
+    A fixed offset (``astimezone()``) or ``timezone.utc`` would put the local
+    date, the before-dawn rule and daylight-saving changes on the wrong clock.
+    """
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("aware_clock_required")
+    if not isinstance(now.tzinfo, ZoneInfo):
+        raise ValueError("household_zone_required")
+
+
+def _wall_time_problem(local: datetime) -> str | None:
+    """Detail code when a local wall time is skipped or repeated by a DST change."""
+    back = local.astimezone(timezone.utc).astimezone(local.tzinfo)
+    if back.replace(tzinfo=None) != local.replace(tzinfo=None):
+        return "dst_gap"
+    if local.replace(fold=0).utcoffset() != local.replace(fold=1).utcoffset():
+        return "dst_fold"
+    return None
 
 
 def _fold_aliases(aliases: Iterable[str]) -> tuple[tuple[str, ...], ...]:
@@ -829,7 +855,7 @@ def parse_reminder_request(text: str, now: datetime, *, zone_aliases: Iterable[s
         a reminder verb (recordame, acordame, haceme acordar, avisame, ...).
 
     Raises:
-        ValueError: If ``now`` is naive.
+        ValueError: If ``now`` is naive or its zone is not a ``ZoneInfo``.
     """
     _require_aware(now)
     return _parse_reminder(text, now, _fold_aliases(zone_aliases),
@@ -868,7 +894,7 @@ def extract_time_expression(text: str, now: datetime) -> DeferredClause:
         ambiguity code; ``MISSING_TIME`` when the clause has no time.
 
     Raises:
-        ValueError: If ``now`` is naive.
+        ValueError: If ``now`` is naive or its zone is not a ``ZoneInfo``.
     """
     _require_aware(now)
     folded = _fold(text)
@@ -891,8 +917,9 @@ class VoiceRequestParser:
         """Build the parser.
 
         Args:
-            clock: Returns the aware current time on the household clock
-                (``routines.timezone``).
+            clock: Returns the current time on the household clock, aware
+                in the ``ZoneInfo`` of ``routines.timezone``; any other
+                clock raises ``ValueError`` on parse.
             zone_aliases: Configured room aliases a zone phrase may name.
             wake_words: Configured wake words to strip from the head.
         """
