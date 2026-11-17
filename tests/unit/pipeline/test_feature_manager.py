@@ -11,6 +11,7 @@ Tests ensure that:
 
 import asyncio
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock
 
 # Mock system-level modules BEFORE any imports
@@ -21,9 +22,12 @@ sys.modules.setdefault('torch', MagicMock())
 sys.modules.setdefault('torch.cuda', MagicMock())
 
 import pytest
+import yaml
 
 from src.alerts import AlertManager, AlertPriority, AlertScheduler, AlertType, CheckType
 from src.pipeline.feature_manager import ALERTS_NONE, ALERTS_UNAVAILABLE, FeatureManager, build_feature_manager
+
+SETTINGS_PATH = Path(__file__).resolve().parents[3] / "config" / "settings.yaml"
 
 
 # ============================================================
@@ -599,6 +603,16 @@ class TestBuildFeatureManagerAlerts:
 
     def test_reannounce_interval_default_is_one_notice_per_episode(self):
         features, _ = self._build({})
+        assert features.alert_manager.reannounce_interval_seconds is None
+
+    def test_real_settings_keep_one_notice_per_episode(self):
+        """Review R3: the shipped config/settings.yaml honours Q20 (one notice per episode)."""
+        settings = yaml.safe_load(SETTINGS_PATH.read_text(encoding="utf-8"))
+        general = settings["alerts"]["general"]
+        assert "reannounce_interval_seconds" in general
+        assert general["reannounce_interval_seconds"] is None
+        features, _ = self._build(settings["alerts"])
+        assert features.alert_manager is not None
         assert features.alert_manager.reannounce_interval_seconds is None
 
     def test_reannounce_interval_from_config(self):
