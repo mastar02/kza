@@ -323,6 +323,15 @@ def test_safe_stop_follows_sc_d8_a_with_a_written_confirmation():
     assert ss.index("Confirmación SC-D8 A") < ss.index("--discard-k-changes <12+ hex del w_sha256 del último rechazo>")
     assert "**Si no puede confirmarlo, el servicio sigue apagado**" in flat
     assert "No hay otra salida de SS" in flat and "tres copias" in flat
+    # Review SC5B-R8: _w_checks refuses DISCARD_MISMATCH whenever the class is equal or loss_only
+    # (SC4B-N6), so 'take the latest digest' alone would loop.
+    assert ("con `equal` o `loss_only` no queda nada que descartar y `--discard-k-changes` rechaza siempre: "
+            "sacarlo y correr la vuelta a H sin él, `$ST compact abort <compaction_id> --to-h --confirm-h "
+            "<prefijo>`.") in flat
+    assert "con `equal` o `loss_only` no hay nada que descartar: repetir la vuelta a H sin `--discard-k-changes`" \
+        in _flat(COMPACTION_RUNBOOK.read_text())
+    assert "_refuse(DISCARD_MISMATCH, {\"w\": report, \"w_sha256\": digest})  # nothing to discard" in \
+        (REPO / "scripts/compaction.py").read_text()
 
 
 def test_hd_is_terminal_with_no_tool_and_no_l4_exit():

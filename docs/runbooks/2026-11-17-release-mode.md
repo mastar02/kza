@@ -548,8 +548,13 @@ Procedimiento SC-D8 A:
    Recalcula W, exige el mismo digest, registra digest y cuentas en
    `abort_started`, destruye K' y vuelve a H. Después habilitar y arrancar
    la unidad. Un digest distinto rechaza
-   `runtime_admission_compaction_discard_k_changes_mismatch` sin escribir:
-   tomar el digest del último rechazo. Si el borrado de K rechaza
+   `runtime_admission_compaction_discard_k_changes_mismatch` sin escribir.
+   Mirar la clase del informe W de ese rechazo: con `restrictive_or_unclear`,
+   tomar el digest del último rechazo (si no es el que la persona revisó,
+   revisar el informe nuevo y confirmar por escrito otra vez); con `equal` o
+   `loss_only` no queda nada que descartar y `--discard-k-changes` rechaza
+   siempre: sacarlo y correr la vuelta a H sin él, `$ST compact abort
+   <compaction_id> --to-h --confirm-h <prefijo>`. Si el borrado de K rechaza
    `runtime_admission_compaction_symlink` (un enlace de lock en K'), quitar
    ese enlace a mano (el enlace, nunca su destino) y `$ST compact resume
    <compaction_id>`.
