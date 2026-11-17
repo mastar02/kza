@@ -719,12 +719,21 @@ def _split_targets(utt: _Utterance, verb: _Verb) -> list[_Utterance]:
     operation verb whose own object is not a household object also splits on
     a household object noun ("apagá la luz y el timer", "pará la música y el
     timer"), so the household part is claimed instead of silently dropped.
+    Every qualifying 'y' splits, so the compound part limit sees every target.
     """
     domotics = _DOMOTICS in verb.classes
     if not domotics and not verb.classes & _R1_CLASSES:
         return []
     lists = _mentions_list(utt)
     own_object = _governed_object(utt, verb.end) is not None
+    segments: list[_Utterance] = []
+    head: _Utterance | None = None  # words carried into the current segment by ellipsis
+    start = 0
+
+    def current(end: int | None) -> _Utterance:
+        words = utt.slice(start, end)
+        return head.join(words) if head is not None else words
+
     for c in range(verb.end, len(utt)):
         if utt.at(c) != "y":
             continue
@@ -733,16 +742,24 @@ def _split_targets(utt: _Utterance, verb: _Verb) -> list[_Utterance]:
         j = c + 1
         if utt.at(j) == "tambien":
             j += 1
-        if domotics and not lists and _room_prep_at(utt, j):
-            first = utt.slice(0, c)
-            room_at = next((k for k in range(verb.end, c) if _room_prep_at(utt, k)), c)
-            return [first, utt.slice(0, room_at).join(utt.slice(j))]
         k = j + 1 if utt.at(j) in _DETERMINERS else j
-        if domotics and not lists and utt.at(k) in _ENTITY_WORDS and k > j:
-            return [utt.slice(0, c), utt.slice(0, verb.end).join(utt.slice(j))]
-        if not own_object and _governed_object(utt, j) is not None:
-            return [utt.slice(0, c), utt.slice(0, verb.end).join(utt.slice(j))]
-    return []
+        if domotics and not lists and _room_prep_at(utt, j):
+            previous = current(c)
+            room_at = next((r for r in range(verb.end, len(previous)) if _room_prep_at(previous, r)),
+                           len(previous))
+            segments.append(previous)
+            head = previous.slice(0, room_at)
+        elif (domotics and not lists and utt.at(k) in _ENTITY_WORDS and k > j) \
+                or (not own_object and _governed_object(utt, j) is not None):
+            segments.append(current(c))
+            head = utt.slice(0, verb.end)
+        else:
+            continue
+        start = j
+    if not segments:
+        return []
+    segments.append(current(None))
+    return segments
 
 
 def _names_object(utt: _Utterance) -> bool:

@@ -163,6 +163,9 @@ PRECEDENCE = [
     ("pará la música y el timer", (F.COMPOUND, O.EXECUTE, "R5")),
     ("prendé la luz y un timer de 5 minutos", (F.COMPOUND, O.CLARIFY, "R5")),
     ("apagá la tele y el temporizador", (F.COMPOUND, O.CLARIFY, "R5")),
+    # Every 'y' of a target ellipsis splits (review F4): four rooms exceed compound_max_parts.
+    ("encendé las luces del living y de la cocina y del baño y del cuarto", (F.COMPOUND, O.CLARIFY, "R5")),
+    ("encendé las luces del living y de la cocina y del baño", (F.COMPOUND, O.EXECUTE, "R5")),
     # Unclaimed: domotics, music, generic cancel, questions, ambient talk.
     ("apagá la luz", None),
     ("prendé la luz del living", None),
@@ -215,6 +218,7 @@ def test_precedence_table(text, expected):
     ("prendé la luz y la tele", "unparsed_part"),
     ("prendé la luz y un timer de 5 minutos", "unparsed_part"),
     ("cerrá la persiana y prendé la luz con el timer", "unparsed_part"),  # an unclaimed part names a timer
+    ("encendé las luces del living y de la cocina y del baño y del cuarto", "too_many_parts"),
     ("apagá la luz y pausá la música y cerrá la persiana y prendé el aire", "too_many_parts"),
 ])
 def test_reason_codes(text, reason):
@@ -244,6 +248,12 @@ def test_compound_parts_in_spoken_order():
     assert [_shape(p.intent) for p in objects.parts] == [(F.TIMER, O.CANCEL, "R1"), (F.REMINDER, O.CANCEL, "R1")]
     rooms = classify_household_intent("apagá la luz del escritorio y de la cocina")
     assert [p.segment for p in rooms.parts] == ["apagá la luz del escritorio", "apagá la luz de la cocina"]
+    rooms3 = classify_household_intent("encendé las luces del living y de la cocina y del baño")
+    assert [p.segment for p in rooms3.parts] == ["encendé las luces del living", "encendé las luces de la cocina",
+                                                 "encendé las luces del baño"]
+    four = "encendé las luces del living y de la cocina y del baño y del cuarto"
+    assert classify_household_intent(four, max_compound_parts=4).operation is O.EXECUTE
+    assert len(classify_household_intent(four, max_compound_parts=4).parts) == 4
     three = classify_household_intent("apagá la luz y después cerrá la persiana y también pausá la música")
     assert [p.segment for p in three.parts] == ["apagá la luz", "cerrá la persiana", "pausá la música"]
     assert three.operation is O.EXECUTE
