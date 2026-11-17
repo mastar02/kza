@@ -676,7 +676,8 @@ class BatchFakes:
         self.readings = 0
 
     async def quiet(self):
-        return {'ok': self.start_ok}
+        return {'quiet': self.start_ok, 'covariates': {'machine_state': 'shared', 'gating': False,
+                                                       'counts_by_class': {'chrome': 0 if self.start_ok else 1}}}
 
     def loadavg(self):
         self.readings += 1
@@ -719,14 +720,17 @@ async def test_batch_load_readings_order_thresholds_and_warm_after_failed_cold()
     warm = next(run for run in result['runs'] if run['ordinal'] == cold_failed + 1)
     assert warm['outcome'] == Outcome.VALID
     assert not result['discarded']
+    # quiet_machine.shared: a load above the old thresholds is recorded at both points and never discards.
     high = BatchFakes(end_load=1.31)
-    assert (await probe.run_batch(probe.plan_batch(SHA, 'm', 'desktop', '#hogar', 1, pairs=1, contrast_pairs=0,
-                                                   warm_ups=0), high.environment(), idle=0.2, post_batch=0.3))['reasons'] \
-        == ['quiet_machine']
+    recorded = await probe.run_batch(probe.plan_batch(SHA, 'm', 'desktop', '#hogar', 1, pairs=1, contrast_pairs=0,
+                                                      warm_ups=0), high.environment(), idle=0.2, post_batch=0.3)
+    assert recorded['reasons'] == [] and recorded['end']['covariates']['load_1m'] == 1.31
+    assert recorded['end']['covariates']['reference_load'] == 0.3
     early = BatchFakes()
     early.loadavg = lambda: 1.21
-    stopped = await probe.run_batch(plan, early.environment(), idle=0.2, post_batch=0.3)
-    assert stopped['discarded'] and 'fixture_start' not in early.events
+    ran = await probe.run_batch(plan, early.environment(), idle=0.2, post_batch=0.3)
+    assert not ran['discarded'] and 'fixture_start' in early.events
+    assert ran['start']['covariates']['load_1m'] == 1.21 and ran['start']['covariates']['reference_load'] == 0.2
 
 
 async def test_warm_slot_without_load_is_invalid_and_replaced_by_primer_pair():
@@ -750,10 +754,11 @@ def test_two_consecutive_discarded_batches_stop_the_probe():
     assert not ledger.may_start()
 
 
-def test_load_thresholds():
-    assert probe.load_reading_ok(1.2, 0.2) and not probe.load_reading_ok(1.21, 0.2)
-    assert not probe.load_reading_ok(0.1, None)
+def test_load_readings_are_parsed_and_have_no_threshold():
+    """quiet_machine.shared: the load averages are covariates; no load threshold exists any more."""
+    assert not hasattr(probe, 'load_reading_ok')
     assert probe.parse_loadavg('{ 1.52 1.40 1.33 }') == 1.52
+    assert probe.parse_loadavgs('{ 1.52 1.40 1.33 }') == {'1m': 1.52, '5m': 1.40, '15m': 1.33}
 
 
 def test_process_check_exempts_own_ancestry_but_not_other_agents():
@@ -825,7 +830,7 @@ def test_no_performance_observer_in_product_frontend_outside_vendor():
 
 IDENTITY = {'preregistration_sha256': SHA, 'fixture_digest': 'd', 'script_id': 's', 'browser_version': 'Chrome/157',
             'launch_flags': list(probe.LAUNCH_FLAGS), 'launch_mechanism': 'open -na', 'os_version': '26.6.1',
-            'hardware': 'Mac16,8', 'ui_locale': 'es-UY', 'pip_freeze_sha256': 'p'}
+            'hardware': 'Mac16,8', 'ui_locale': 'es-UY', 'pip_freeze_sha256': 'p', 'machine_state': 'shared'}
 
 
 def test_before_after_closure_identity_and_extra_rows():
@@ -837,7 +842,8 @@ def test_before_after_closure_identity_and_extra_rows():
                  'tools/web_timing_probe.py'):
         decision = probe.before_after(baseline, dict(IDENTITY), [path])
         assert decision['decision'] == 'rerun_before', path
-    for key in ('browser_version', 'os_version', 'launch_flags', 'hardware', 'ui_locale', 'pip_freeze_sha256'):
+    for key in ('browser_version', 'os_version', 'launch_flags', 'hardware', 'ui_locale', 'pip_freeze_sha256',
+                'machine_state'):
         decision = probe.before_after(baseline, dict(IDENTITY, **{key: 'other'}), [])
         assert decision['decision'] == 'rerun_before' and decision['identity'][key] == 'other'
     assert probe.before_after(baseline, dict(IDENTITY), [], script_runs=False) == {'decision': 'new_script_id',
@@ -1532,7 +1538,8 @@ async def test_batch_machine_state_and_caffeinate_assertion_gate_quiet_machine()
 
 
 async def test_quiet_check_fails_when_pytest_runs(monkeypatch):
-    """R05 (V12): quiet_check is not ok while any pytest process runs."""
+    """R05 (V12): quiet_check records a pytest process (python -m pytest or the console script) as a covariate;
+    quiet_machine.shared: 'quiet' is False then, and no caller gates on it."""
     monkeypatch.setattr(probe, 'cpu_seconds', lambda: {})
     rows = iter([[{'pid': 50, 'ppid': 2, 'command': '/usr/bin/python3 -m pytest tests/'}],
                  [{'pid': 51, 'ppid': 2, 'command': '/Users/x/kza/.venv/bin/pytest tests/unit -q'}], []])
@@ -1548,10 +1555,12 @@ async def test_quiet_check_fails_when_pytest_runs(monkeypatch):
         raise AssertionError(f'unexpected command {command}')
     monkeypatch.setattr(probe, 'run_text', no_pgrep)
     busy = await probe.quiet_check(1)
-    assert busy['pytest_count'] == 1 and busy['ok'] is False
+    assert busy['pytest_count'] == 1 and busy['quiet'] is False
+    assert busy['covariates']['counts_by_class']['pytest'] == 1 and busy['covariates']['gating'] is False
     console = await probe.quiet_check(1)
-    assert console['pytest_count'] == 1 and console['ok'] is False
-    assert (await probe.quiet_check(1))['ok'] is True
+    assert console['pytest_count'] == 1 and console['quiet'] is False
+    assert console['covariates']['counts_by_class']['pytest'] == 1
+    assert (await probe.quiet_check(1))['quiet'] is True and 'ok' not in busy
 
 
 async def test_smoke_client_never_repeats_a_discarded_batch_and_records_each_cell(monkeypatch, tmp_path):
@@ -1807,7 +1816,7 @@ def write_smoke_prerequisites(path, *, rule=CHOSEN_RULE, items=('quiet_baseline'
     results = {'quiet_baseline': {'idle': 1.5}, 'cold_focus': {'passed': True},
                'background_activity': {'branch': 'none'},
                'fixture_pages': {'observations': {'play_control_rule': {'rule': rule}}}}
-    runs = [{'item': item, 'status': 'complete', 'started_at': float(number), 'result': results[item], 'faults': []}
+    runs = [{'machine_state': 'shared', 'item': item, 'status': 'complete', 'started_at': float(number), 'result': results[item], 'faults': []}
             for number, item in enumerate(items)]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({'mode': 'smoke', 'runs': runs}))
@@ -1942,7 +1951,7 @@ def test_smoke_inputs_come_from_the_deciding_entry_and_no_item_repeats_after_a_l
     path.write_text(json.dumps(data))
     assert probe.smoke_play_rule(probe.SmokeRecord(path)) == other
     # The idle load comes from the deciding quiet_baseline entry too, never a later or faulted one.
-    data['runs'].append({'item': 'quiet_baseline', 'status': 'complete', 'faults': ['quiet_machine'],
+    data['runs'].append({'machine_state': 'shared', 'item': 'quiet_baseline', 'status': 'complete', 'faults': ['quiet_machine'],
                          'started_at': 99.0, 'result': {'idle': 9.9}})
     path.write_text(json.dumps(data))
     assert probe.smoke_idle(probe.SmokeRecord(path)) == 1.5
@@ -1952,7 +1961,7 @@ def test_smoke_inputs_come_from_the_deciding_entry_and_no_item_repeats_after_a_l
     data = json.loads(path.read_text())
     data['runs'][3]['faults'] = ['quiet_machine']
     batch_time = 9.0
-    data['runs'].append({'item': 'batch:desktop:#voces', 'status': 'complete', 'faults': [], 'started_at': batch_time})
+    data['runs'].append({'machine_state': 'shared', 'item': 'batch:desktop:#voces', 'status': 'complete', 'faults': [], 'started_at': batch_time})
     path.write_text(json.dumps(data))
     for item, cause in (('fixture_pages', 'quiet_machine'), ('quiet_baseline', None), ('cold_focus', None)):
         with pytest.raises(SystemExit, match=f'smoke_repeat_refused_after_later_stage:{item}:.*batch:desktop:#voces'):
@@ -1960,13 +1969,13 @@ def test_smoke_inputs_come_from_the_deciding_entry_and_no_item_repeats_after_a_l
     probe.SmokeRecord(path).start('lock_read_unlocked', SHA)
     # An entry written after a batch entry (outside the probe) is never used.
     data = json.loads(path.read_text())
-    data['runs'].append({'item': 'fixture_pages', 'status': 'complete', 'faults': [], 'started_at': batch_time + 1,
+    data['runs'].append({'machine_state': 'shared', 'item': 'fixture_pages', 'status': 'complete', 'faults': [], 'started_at': batch_time + 1,
                          'result': {'observations': {'play_control_rule': {'rule': CHOSEN_RULE}}}})
     path.write_text(json.dumps(data))
     with pytest.raises(SystemExit, match='smoke_play_control_rule_missing'):
         probe.smoke_play_rule(probe.SmokeRecord(path))
     # A batch cell does not start once the overhead has an entry.
-    data['runs'].append({'item': 'instrumentation_overhead', 'status': 'complete', 'faults': [],
+    data['runs'].append({'machine_state': 'shared', 'item': 'instrumentation_overhead', 'status': 'complete', 'faults': [],
                          'started_at': batch_time + 2})
     path.write_text(json.dumps(data))
     with pytest.raises(SystemExit, match='smoke_repeat_refused_after_later_stage:batch:mobile:#hogar'):
@@ -1983,7 +1992,7 @@ def test_a_discarded_voces_cell_with_a_recorded_fault_is_repeated_before_the_ove
     data = json.loads(path.read_text())
     for number, cell in enumerate(probe.batch_plan_views()):
         item = f'batch:{cell["viewport"]}:{cell["view"]}'
-        entry = {'item': item, 'status': 'complete', 'faults': [], 'started_at': 10.0 + number, 'cause': None}
+        entry = {'machine_state': 'shared', 'item': item, 'status': 'complete', 'faults': [], 'started_at': 10.0 + number, 'cause': None}
         if item == 'batch:desktop:#voces':
             entry.update(status='discarded', faults=['quiet_machine'],
                          result={'reasons': ['quiet_machine', 'invalid_runs_over_10_percent']})
@@ -2053,7 +2062,8 @@ async def test_baseline_needs_every_batch_fill_in_and_uses_the_frozen_compositio
     assert plan['planned'] == 14 and sum(1 for slot in plan['slots'] if slot.get('warm_up')) == 1
     assert sum(1 for slot in plan['slots'] if slot.get('trace_contrast')) == 4
     # R6-9: no warm-share discard in the smoke.
-    assert seen['kwargs']['warm_rule'] is False and seen['kwargs']['end_record_only'] is True
+    # quiet_machine.shared: no end-reading threshold in either mode, so no end_record_only switch exists.
+    assert seen['kwargs']['warm_rule'] is False and 'end_record_only' not in seen['kwargs']
     with pytest.raises(SystemExit):
         probe.parse_args(['measure-cell', '--smoke', '--reviewed-sha256', SHA, '--pairs', '5'])
     with pytest.raises(SystemExit):
@@ -2069,8 +2079,8 @@ async def test_smoke_client_resumes_after_a_crash_with_the_recorded_cause(monkey
                                                     for cell in probe.batch_plan_views()], smoke=True)
     data = json.loads(path.read_text())
     for viewport, view in order[:3]:
-        data['runs'].append({'item': f'batch:{viewport}:{view}', 'status': 'complete', 'faults': [], 'started_at': 9.0})
-    data['runs'].append({'item': f'batch:{order[3][0]}:{order[3][1]}', 'status': 'started', 'started_at': 10.0})
+        data['runs'].append({'machine_state': 'shared', 'item': f'batch:{viewport}:{view}', 'status': 'complete', 'faults': [], 'started_at': 9.0})
+    data['runs'].append({'machine_state': 'shared', 'item': f'batch:{order[3][0]}:{order[3][1]}', 'status': 'started', 'started_at': 10.0})
     path.write_text(json.dumps(data))
     calls = []
 
@@ -2371,3 +2381,125 @@ async def test_click_uses_the_latest_reported_target_rectangle():
     first = next(entry for entry in run.page.log if entry['method'].startswith('Input.'))
     assert first['params'] == {'type': 'mouseMoved', 'x': 120.0, 'y': 315.0}
     assert run.steps[0]['rect'] == {'x': 100, 'y': 300, 'width': 40, 'height': 30} and not run.facts.environment_faults
+
+
+# ------------------------------------------------------------------------------------------
+# Shared-machine amendment (quiet_machine.shared, user decision 2026-11-17)
+# ------------------------------------------------------------------------------------------
+
+async def test_shared_machine_records_covariates_and_never_gates(tmp_path, monkeypatch):
+    """quiet_machine.shared: foreign processes (the user's Chrome, other projects' pytest and builds, agent workers)
+    and any load are covariates written into every header with own-versus-foreign counts; they never abort, discard
+    or invalidate. The validity gates (AC power, display, lock, caffeinate) still discard. machine_state 'shared'
+    is part of method_identity; shared results are never summarised with or compared to another machine state;
+    the shared smoke starts with the quiet_baseline repeat --cause quiet_machine and only shared entries decide."""
+    rows = [{'pid': 1, 'ppid': 0, 'command': '/sbin/launchd'},
+            {'pid': 11, 'ppid': 1, 'command': '/bin/zsh'},
+            {'pid': 12, 'ppid': 11, 'command': 'python -m tools.web_timing_probe smoke-item quiet-baseline'},
+            {'pid': 30, 'ppid': 1, 'command': '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'},
+            {'pid': 31, 'ppid': 30, 'command': '/A/Google Chrome Helper (Renderer) --type=renderer'},
+            {'pid': 40, 'ppid': 1, 'command': '/opt/x/.venv/bin/python -m pytest tests'},
+            {'pid': 41, 'ppid': 1, 'command': '/usr/local/bin/node /x/npm test'},
+            {'pid': 50, 'ppid': 1, 'command': '/usr/local/bin/codex'},
+            {'pid': 51, 'ppid': 50, 'command': '/bin/zsh -c make'}]
+    sweep = probe.sweep_probe_browsers
+    covariates = probe.machine_covariates(rows, 12, cpu={12: 3.0, 40: 80.0, 30: 15.0})
+    assert covariates['machine_state'] == 'shared' and covariates['gating'] is False
+    counts = covariates['counts_by_class']
+    assert counts['chrome'] == 1 and counts['pytest'] == 1 and counts['build_or_test'] == 1
+    assert counts['agent_worker'] == 1 and counts['cpu_over_10_percent'] == 2 and counts['uvicorn'] == 0
+    assert covariates['own'] == {'processes': 3, 'cpu_percent': 3.0}
+    assert covariates['foreign'] == {'processes': 6, 'cpu_percent': 95.0}
+    # Batches: a busy machine and loads far above the old thresholds are recorded, never discard.
+    busy = BatchFakes(start_ok=False, end_load=9.0)
+    environment = busy.environment()
+    environment.loadavgs = lambda: {'1m': 9.0, '5m': 8.0, '15m': 7.0}
+    plan = lambda: probe.plan_batch(SHA, 'mac-chrome', 'desktop', '#rutinas', 1, pairs=1, contrast_pairs=0,
+                                    warm_ups=0)
+    result = await probe.run_batch(plan(), environment, idle=0.2, post_batch=0.3)
+    assert not result['discarded'] and result['reasons'] == [] and 'fixture_start' in busy.events
+    assert result['machine_state'] == 'shared'
+    for point, reference in (('start', 0.2), ('end', 0.3)):
+        recorded = result[point]['covariates']
+        assert recorded['quiet_rule_would_hold'] is False and recorded['reference_load'] == reference
+        assert recorded['load_averages'] == {'1m': 9.0, '5m': 8.0, '15m': 7.0} and recorded['gating'] is False
+        assert recorded['counts_by_class'] == {'chrome': 1}
+    assert result['end']['covariates']['load_1m'] == 9.0
+    unplugged = BatchFakes(start_ok=False)
+    environment = unplugged.environment()
+    environment.machine_state = lambda: {'ac_power': False, 'display_asleep': False, 'locked': False}
+    gated = await probe.run_batch(plan(), environment, idle=0.2, post_batch=0.3)
+    assert gated['discarded'] and gated['reasons'] == ['quiet_machine'] and 'fixture_start' not in unplugged.events
+    # Smoke item start: foreign processes and load are recorded only; AC power still gates.
+    async def foreign(own_pid, allowed=None):
+        return {'violations': [('chrome', 30)], 'pytest_count': 0, 'quiet': False,
+                'covariates': probe.machine_covariates(rows, 12)}
+    monkeypatch.setattr(probe, 'quiet_check', foreign)
+    monkeypatch.setattr(probe, 'sweep_probe_browsers', lambda rows=None, kill=None: [])
+    monkeypatch.setattr(probe, 'loadavg', lambda: 9.0)
+    monkeypatch.setattr(probe, 'loadavgs', lambda: {'1m': 9.0, '5m': 8.0, '15m': 7.0})
+    state = {'ac_power': True, 'display_asleep': False, 'locked': None}
+    monkeypatch.setattr(probe, 'machine_state', lambda lock_choice=None: dict(state))
+    start = await probe.smoke_item_quiet_start(0.2)
+    assert start['ok'] is True and start['covariates']['counts_by_class']['chrome'] == 1
+    assert start['covariates']['load_1m'] == 9.0 and start['machine_state'] == 'shared'
+    state['ac_power'] = False
+    assert (await probe.smoke_item_quiet_start(0.2))['ok'] is False
+    # The shared smoke starts with the quiet_baseline repeat --cause quiet_machine after the aborted quiet entry.
+    path = tmp_path / 'smoke-record.json'
+    path.write_text(json.dumps({'mode': 'smoke', 'runs': [
+        {'item': 'quiet_baseline', 'status': 'aborted', 'faults': ['quiet_machine'], 'started_at': 1.0,
+         'cause': None, 'repeat_of': [], 'reviewed_sha256': 'e' * 64,
+         'result': {'check': {'ok': False}, 'readings': []}}]}))
+    record = probe.SmokeRecord(path)
+    with pytest.raises(SystemExit, match='smoke_repeat_refused_without_recorded_cause:quiet_baseline'):
+        await probe.smoke_quiet_baseline(record, SHA, None, check=lambda: foreign(12), read_load=lambda: 1.0,
+                                         read_loads=dict, sleep=lambda seconds: asyncio.sleep(0))
+    loads = iter([3.0, 9.0, 1.0, 4.0, 2.0])
+    baseline = await probe.smoke_quiet_baseline(record, SHA, 'quiet_machine', check=lambda: foreign(12),
+                                                read_load=lambda: next(loads), read_loads=dict,
+                                                sleep=lambda seconds: asyncio.sleep(0))
+    assert baseline['idle'] == 3.0 and len(baseline['covariates']) == 5
+    assert all(item['quiet_rule_would_hold'] is False for item in baseline['covariates'])
+    saved = json.loads(path.read_text())['runs']
+    assert [run['status'] for run in saved] == ['aborted', 'complete']
+    assert saved[1]['cause'] == 'quiet_machine' and saved[1]['machine_state'] == 'shared'
+    assert 'machine_state' not in saved[0] and probe.smoke_idle(probe.SmokeRecord(path)) == 3.0
+    # Only an entry recorded under the shared state decides.
+    quiet = write_smoke_prerequisites(tmp_path / 'quiet.json')
+    data = json.loads(quiet.read_text())
+    for run in data['runs']:
+        run.pop('machine_state')
+    quiet.write_text(json.dumps(data))
+    assert probe.deciding_entry(probe.SmokeRecord(quiet), 'quiet_baseline') is None
+    assert probe.deciding_entry(probe.SmokeRecord(write_smoke_prerequisites(tmp_path / 'shared.json')),
+                                'quiet_baseline')['result'] == {'idle': 1.5}
+    # Summaries refuse files of another machine state and label shared rows; before/after never mixes states.
+    directory = tmp_path / 'batch'
+    directory.mkdir()
+    run = {'mode': 'smoke', 'viewport': 'desktop', 'view': '#hogar', 'role': 'cold', 'outcome': 'valid',
+           'metrics': {'lcp': 1.0, 'cls': 0.0}, 'method_identity': {'machine_state': 'shared'}}
+    (directory / 'run-00000.json').write_text(json.dumps(run))
+    monkeypatch.setattr(probe, 'PREREGISTRATION', tmp_path / 'absent.json')
+    summary = probe.summarize_directory(directory, 'smoke')
+    assert summary['machine_state'] == 'shared' and summary['rows'][0]['machine_state'] == 'shared'
+    for other in ({'machine_state': 'quiet'}, {}):
+        (directory / 'run-00001.json').write_text(json.dumps(dict(run, method_identity=other)))
+        with pytest.raises(SystemExit, match='machine_state_refused'):
+            probe.summarize_directory(directory, 'smoke')
+    assert 'machine_state' in probe.IDENTITY_COMPONENTS
+    identity = {key: 'same' for key in probe.IDENTITY_COMPONENTS}
+    decision = probe.before_after({'closure': [], 'identity': dict(identity, machine_state=None)},
+                                  dict(identity, machine_state='shared'), [])
+    assert decision['decision'] == 'rerun_before' and decision['reasons'] == ['identity:machine_state']
+    # The frame-event acceptance reads shared smoke runs only.
+    monkeypatch.setattr(probe, 'frame_event_phases', lambda results: [{'count': len(results)}])
+    monkeypatch.setattr(probe, 'frame_event_choice', lambda phases: phases[0])
+    root = tmp_path / 'smoke'
+    root.mkdir()
+    (root / 'a-run-00001.json').write_text(json.dumps({'mode': 'smoke', 'outcome': 'valid', 'machine_state': 'shared'}))
+    (root / 'b-run-00002.json').write_text(json.dumps({'mode': 'smoke', 'outcome': 'valid'}))
+    assert probe.smoke_frame_event(root)['choice'] == {'count': 1}
+    # The probe-own sweep never touches the user's Chrome.
+    killed = []
+    assert sweep(rows, kill=lambda pid, sig: killed.append(pid)) == [] and killed == []

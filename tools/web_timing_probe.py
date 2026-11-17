@@ -62,6 +62,12 @@ OUTPUT_ROOT = ROADMAP / 't046'
 SMOKE_ROOT = OUTPUT_ROOT / 'smoke'
 HARNESS_ROOT = OUTPUT_ROOT / 'u1' / 'harness'
 LOCAL_LABEL = 'Chrome {version}, Mac, con ventana, backend de fixture local, sin iPhone'
+# Shared-machine amendment (quiet_machine.shared, 2026-11-17, user decision t046_shared_machine_20261117): the Mac
+# client runs on a shared Mac. The process, CPU and load readings are covariates written into every header, never a
+# gate; results carry machine_state 'shared' in method_identity and are never compared with a result of another
+# machine state (a quiet-machine result or one that names no machine state).
+MACHINE_STATE = 'shared'
+MACHINE_STATE_LABEL = 'máquina compartida: carga ajena registrada como covariable, sin umbral'
 MODES = ('baseline', 'smoke', 'harness')
 
 # --------------------------------------------------------------------------------------------
@@ -1188,13 +1194,35 @@ def process_check(rows: list, own_pid: int, *, cpu: dict | None = None, allowed:
     return violations
 
 
-def load_reading_ok(reading: float, reference: float | None) -> bool:
-    """Batch start <= idle + 1.0; batch end <= post_batch + 1.0 (R5-7)."""
-    return reference is not None and reading <= reference + 1.0
+PROCESS_CLASSES = ('pytest', 'browser_harness', 'chrome', 'build_or_test', 'uvicorn', 'agent_worker',
+                   'cpu_over_10_percent')
+
+
+def machine_covariates(rows: list, own_pid: int, *, cpu: dict | None = None, allowed: set | None = None) -> dict:
+    """quiet_machine.shared: the process check as a covariate. Counts by class (process_check classes, the user's
+    Chrome is 'chrome'), and own-versus-foreign process counts and CPU: own is the probe's ancestry plus the allowed
+    pids (its Chrome and fixture where running), foreign is every other process. Recorded only, never a gate."""
+    parents = {row['pid']: row['ppid'] for row in rows}
+    own = ancestry(own_pid, parents) | (allowed or set())
+    violations = process_check(rows, own_pid, cpu=cpu, allowed=allowed)
+    counts = Counter(kind for kind, _ in violations)
+    cpu = cpu or {}
+    present = {row['pid'] for row in rows}
+    return {'machine_state': MACHINE_STATE, 'gating': False,
+            'counts_by_class': {kind: counts.get(kind, 0) for kind in PROCESS_CLASSES},
+            'own': {'processes': len(own & present), 'cpu_percent': round(sum(cpu.get(pid, 0.0) for pid in own), 1)},
+            'foreign': {'processes': len(present - own),
+                        'cpu_percent': round(sum(value for pid, value in cpu.items() if pid not in own), 1)}}
 
 
 def parse_loadavg(text: str) -> float:
     return float(text.strip().strip('{}').split()[0])
+
+
+def parse_loadavgs(text: str) -> dict:
+    """The 1-, 5- and 15-minute load averages of `sysctl -n vm.loadavg` (covariates, quiet_machine.shared)."""
+    values = [float(value) for value in text.strip().strip('{}').split()[:3]]
+    return dict(zip(('1m', '5m', '15m'), values))
 
 
 # --------------------------------------------------------------------------------------------
@@ -1205,7 +1233,7 @@ TRIGGER_PATTERNS = (re.compile(r'^src/dashboard/'), re.compile(r'^src/users/voic
                     re.compile(r'^tests/mocks/memory_sources\.py$'), re.compile(r'^tools/web_timing_probe\.py$'))
 IDENTITY_COMPONENTS = ('preregistration_sha256', 'fixture_digest', 'script_id', 'browser_version', 'launch_flags',
                        'launch_mechanism', 'os_version', 'hardware', 'ui_locale', 'pip_freeze_sha256',
-                       'audio_output')
+                       'audio_output', 'machine_state')
 
 
 def before_after(baseline: dict, current_identity: dict, changed_paths: list, *, script_runs: bool = True) -> dict:
@@ -1388,6 +1416,21 @@ def refuse_smoke_input(document: dict) -> None:
         raise SystemExit('smoke_result_refused_in_baseline_mode')
 
 
+def document_machine_state(document: dict) -> str | None:
+    """The machine state a result file names (method_identity, else the top level); None for a file that names
+    none, which was produced under the quiet-machine rule."""
+    return (document.get('method_identity') or {}).get('machine_state') or document.get('machine_state')
+
+
+def refuse_other_machine_state(document: dict) -> None:
+    """quiet_machine.shared: shared results are never summarised with, or compared to, a result of another
+    machine state."""
+    state = document_machine_state(document)
+    if state != MACHINE_STATE:
+        raise SystemExit(f'machine_state_refused:{state}: {MACHINE_STATE} results are never compared with '
+                         'quiet-machine results')
+
+
 SMOKE_REPEAT_CAUSES = ('crash', 'disconnect', 'lock', 'quiet_machine', 'fixture_fault')
 
 
@@ -1417,7 +1460,8 @@ class SmokeRecord:
             if cause not in SMOKE_REPEAT_CAUSES or cause not in recorded:
                 raise SystemExit(f'smoke_repeat_refused_without_recorded_cause:{item}:{cause}:recorded={sorted(recorded)}')
         entry = {'item': item, 'reviewed_sha256': reviewed_sha256, 'started_at': time.time(),
-                 'repeat_of': [run['started_at'] for run in previous], 'cause': cause, 'status': 'started'}
+                 'repeat_of': [run['started_at'] for run in previous], 'cause': cause, 'status': 'started',
+                 'machine_state': MACHINE_STATE}
         self.data['runs'].append(entry)
         write_json_atomic(self.path, self.data)
         return entry
@@ -1451,11 +1495,15 @@ def deciding_entry(record: SmokeRecord, item: str) -> dict | None:
     """R7-1 (smoke_gate.run_rules.which_run_counts): the entry that decides an item is its first complete entry
     without recorded faults that started before any entry of a later stage. A complete entry with a recorded
     fault never decides (it is repeated with --cause <fault>); a later complete entry never replaces the deciding
-    one (SmokeRecord.start refuses a repeat of a fault-free entry and any start after a later stage)."""
+    one (SmokeRecord.start refuses a repeat of a fault-free entry and any start after a later stage).
+    quiet_machine.shared: only an entry recorded under the current machine state decides (an entry that names no
+    machine state was made under the quiet-machine rule)."""
     cutoff = min((run['started_at'] for run in _later_stage_runs(record, item) if run.get('started_at') is not None),
                  default=None)
     for run in record.data['runs']:
         if run['item'] != item or run.get('status') != 'complete' or run.get('faults'):
+            continue
+        if run.get('machine_state') != MACHINE_STATE:
             continue
         if cutoff is not None and (run.get('started_at') is None or run['started_at'] >= cutoff):
             continue
@@ -2225,7 +2273,8 @@ def cpu_seconds() -> dict:
 
 
 async def quiet_check(own_pid: int, allowed: set | None = None) -> dict:
-    """Process check with a 10 s CPU sample (quiet_machine.mac)."""
+    """Process check with a 10 s CPU sample (quiet_machine.mac), recorded as a covariate (quiet_machine.shared):
+    'quiet' says whether the old quiet-machine rule would have held; no caller gates on it."""
     before = cpu_seconds()
     await asyncio.sleep(10)
     after = cpu_seconds()
@@ -2233,11 +2282,16 @@ async def quiet_check(own_pid: int, allowed: set | None = None) -> dict:
     rows = process_rows()
     violations = process_check(rows, own_pid, cpu=cpu, allowed=allowed)
     pytest_count = sum(1 for kind, _ in violations if kind == 'pytest')
-    return {'violations': violations, 'pytest_count': pytest_count, 'ok': not violations and pytest_count == 0}
+    return {'violations': violations, 'pytest_count': pytest_count, 'quiet': not violations and pytest_count == 0,
+            'covariates': machine_covariates(rows, own_pid, cpu=cpu, allowed=allowed)}
 
 
 def loadavg() -> float:
     return parse_loadavg(run_text(['sysctl', '-n', 'vm.loadavg']))
+
+
+def loadavgs() -> dict:
+    return parse_loadavgs(run_text(['sysctl', '-n', 'vm.loadavg']))
 
 
 # --------------------------------------------------------------------------------------------
@@ -3179,6 +3233,7 @@ class BatchEnvironment:
     machine_state: Callable = lambda: {'ac_power': True, 'display_asleep': False, 'locked': False}
     assertion_held: Callable = lambda caffeinate: True
     sweep: Callable = lambda: []
+    loadavgs: Callable = lambda: {}
     events: list = field(default_factory=list)
 
 
@@ -3204,12 +3259,24 @@ def machine_faults(state: dict, *, smoke: bool) -> list:
     return faults
 
 
+def check_covariates(check: dict, load: float | None, load_averages: dict | None, reference: float | None) -> dict:
+    """quiet_machine.shared: one check point's covariates (process counts by class, own versus foreign, the load
+    averages and the smoke's reference load), recorded only: no threshold, never a gate."""
+    return {**(check.get('covariates') or {'machine_state': MACHINE_STATE, 'gating': False}),
+            'quiet_rule_would_hold': check.get('quiet'), 'load_1m': load, 'load_averages': load_averages or {},
+            'reference_load': reference}
+
+
 async def run_batch(plan: dict, environment: BatchEnvironment, *, idle: float | None, post_batch: float | None,
-                    browser_version: Callable[[], str | None] = lambda: None, end_record_only: bool = False,
+                    browser_version: Callable[[], str | None] = lambda: None,
                     warm_rule: bool = True, smoke: bool = False) -> dict:
     """One batch: start checks before the fixture and Chrome, runs with appended replacements, end checks 60 s
     after Chrome and the fixture exit (R4-11, R5-7). Never reads a load average while the probe's Chrome runs.
-    V7: caffeinate and the fixture start inside try/finally, leftover probe browsers are swept at start and exit."""
+    V7: caffeinate and the fixture start inside try/finally, leftover probe browsers are swept at start and exit.
+    quiet_machine.shared: the process check and the load readings are taken at the same points and written into
+    the header as covariates (idle and post_batch as their recorded references); they never abort, discard or
+    invalidate. quiet_start_ok and quiet_end_ok hold the validity gates only (machine_faults: AC power, display,
+    lock, audio output; and the caffeinate assertion)."""
     events = environment.events
     events.append('sweep_start')
     swept_start = environment.sweep()
@@ -3217,12 +3284,15 @@ async def run_batch(plan: dict, environment: BatchEnvironment, *, idle: float | 
     start_quiet = await environment.quiet_check()
     events.append('load_start')
     start_load = environment.loadavg()
+    start_loads = environment.loadavgs()
     start_machine = environment.machine_state()
     start_faults = machine_faults(start_machine, smoke=smoke)
     batch = {'cell': plan['cell'], 'attempt': plan['attempt'], 'seed': plan['seed'], 'planned': plan['planned'],
+             'machine_state': MACHINE_STATE,
              'runs': [], 'start': {'quiet': start_quiet, 'load': start_load, 'idle': idle, 'machine': start_machine,
-                                   'machine_faults': start_faults, 'swept': swept_start},
-             'quiet_start_ok': bool(start_quiet.get('ok')) and load_reading_ok(start_load, idle) and not start_faults,
+                                   'machine_faults': start_faults, 'swept': swept_start,
+                                   'covariates': check_covariates(start_quiet, start_load, start_loads, idle)},
+             'quiet_start_ok': not start_faults,
              'started_at': time.time(), 'warm_rule_active': warm_rule}
     if not batch['quiet_start_ok']:
         batch.update(discarded=True, reasons=['quiet_machine'], ended_at=time.time())
@@ -3284,15 +3354,16 @@ async def run_batch(plan: dict, environment: BatchEnvironment, *, idle: float | 
     await environment.sleep(60)
     events.append('load_end')
     end_load = environment.loadavg()
+    end_loads = environment.loadavgs()
     end_quiet = await environment.quiet_check()
     events.append('quiet_end')
     end_machine = environment.machine_state()
     end_faults = machine_faults(end_machine, smoke=smoke)
     batch['end'] = {'quiet': end_quiet, 'load': end_load, 'post_batch': post_batch, 'machine': end_machine,
-                    'machine_faults': end_faults}
-    # In the smoke, post_batch is being measured (smoke_gate.quiet_baseline): the end reading is recorded only.
-    batch['quiet_end_ok'] = bool(end_quiet.get('ok')) and not end_faults and (
-        end_record_only or load_reading_ok(end_load, post_batch))
+                    'machine_faults': end_faults,
+                    'covariates': check_covariates(end_quiet, end_load, end_loads, post_batch)}
+    # quiet_machine.shared: the end load reading and the process check are recorded only (no post_batch threshold).
+    batch['quiet_end_ok'] = not end_faults
     after = environment.served_state()
     batch['tree_dirty'] = batch['served'].get('dirty') or after.get('dirty')
     batch['commit_changed'] = after.get('commit') != batch['served'].get('commit')
@@ -3459,7 +3530,7 @@ async def measure_cell(args, mode: str, sha: str) -> dict:
                 'os_version': environment_facts['os_version'], 'hardware': environment_facts['hardware'],
                 'ui_locale_apple_languages_first': environment_facts['apple_languages_first'],
                 'pip_freeze_sha256': pip_freeze_sha256(), 'commit': git('rev-parse', 'HEAD'),
-                'audio_output': audio_output()}
+                'audio_output': audio_output(), 'machine_state': MACHINE_STATE}
 
     async def start_fixture():
         state['ready'] = await fixture.start()
@@ -3486,13 +3557,15 @@ async def measure_cell(args, mode: str, sha: str) -> dict:
                                    run_slot=run_slot, close_browser=session.close_browser,
                                    caffeinate=start_caffeinate, served_state=served_state,
                                    machine_state=lambda: machine_state(lock_choice),
-                                   assertion_held=caffeinate_assertion_wait, sweep=sweep_probe_browsers)
+                                   assertion_held=caffeinate_assertion_wait, sweep=sweep_probe_browsers,
+                                   loadavgs=loadavgs)
     header = {'mode': mode, 'preregistration_sha256': sha, 'script_id': script_id(), 'plan_seed': plan['seed'],
               'launch_flags': list(LAUNCH_FLAGS), 'launch_mechanism': LAUNCH_MECHANISM,
               'environment': environment_facts, 'method_identity': identity, 'label': LOCAL_LABEL,
+              'machine_state': MACHINE_STATE, 'machine_state_label': MACHINE_STATE_LABEL,
               'pip_freeze_sha256': identity['pip_freeze_sha256'], 'cell_settings': settings,
               'play_control_rule': settings['play_control_rule'], 'composition': settings['composition']}
-    batch = await run_batch(plan, environment, idle=idle, post_batch=post_batch, end_record_only=smoke,
+    batch = await run_batch(plan, environment, idle=idle, post_batch=post_batch,
                             warm_rule=settings['warm_rule'], smoke=smoke)
     header['closure'] = recorded_closure(json.loads((out_dir / 'fixture-modules.json').read_text())
                                          if (out_dir / 'fixture-modules.json').exists() else [])
@@ -3613,34 +3686,40 @@ async def harness_dry_run(args) -> int:
 # Smoke items that are not batches (smoke_gate.quiet_baseline, cold_focus, background_activity, lock read).
 # --------------------------------------------------------------------------------------------
 
-async def smoke_quiet_baseline(record: SmokeRecord, sha: str, cause: str | None) -> dict:
-    """R5-7: idle = median of 5 readings 60 s apart with the process check passing and no probe Chrome."""
+async def smoke_quiet_baseline(record: SmokeRecord, sha: str, cause: str | None, *, check=None, read_load=None,
+                               read_loads=None, sleep=None) -> dict:
+    """R5-7 under quiet_machine.shared: idle = median of 5 one-minute readings 60 s apart, no probe Chrome running;
+    before each reading the process check is taken and recorded with it as a covariate. It never aborts the item:
+    idle is the smoke's recorded reference load, not a threshold."""
+    check = check or (lambda: quiet_check(os.getpid()))
+    read_load, read_loads, sleep = read_load or loadavg, read_loads or loadavgs, sleep or asyncio.sleep
     entry = record.start('quiet_baseline', sha, cause)
-    readings = []
+    readings, covariates = [], []
     sweep_probe_browsers()
     for number in range(5):
-        check = await quiet_check(os.getpid())
-        if not check['ok']:
-            record.finish(entry, 'aborted', {'check': check, 'readings': readings}, faults=['quiet_machine'])
-            raise SystemExit('quiet_baseline_process_check_failed')
-        readings.append(loadavg())
+        result = await check()
+        load = read_load()
+        readings.append(load)
+        covariates.append(check_covariates(result, load, read_loads(), None))
         if number < 4:
-            await asyncio.sleep(60)
-    result = {'readings': readings, 'idle': statistics.median(readings)}
+            await sleep(60)
+    result = {'readings': readings, 'idle': statistics.median(readings), 'covariates': covariates,
+              'machine_state': MACHINE_STATE, 'idle_use': 'recorded reference only, no threshold'}
     record.finish(entry, 'complete', result)
     return result
 
 
 async def smoke_item_quiet_start(idle: float | None) -> dict:
-    """V8: the batch-start quiet_machine checks for a smoke item that is not a batch (sweep, process check, load
-    reading against the smoke idle, AC power, display; lock recorded)."""
+    """V8: the batch-start checks for a smoke item that is not a batch (sweep, AC power, display; lock recorded).
+    quiet_machine.shared: the process check and the load reading are recorded as covariates, never a gate."""
     swept = sweep_probe_browsers()
     check = await quiet_check(os.getpid())
     load = loadavg()
     machine = machine_state()
     faults = machine_faults(machine, smoke=True)
-    return {'ok': bool(check.get('ok')) and load_reading_ok(load, idle) and not faults, 'quiet': check,
-            'load': load, 'idle': idle, 'machine': machine, 'machine_faults': faults, 'swept': swept}
+    return {'ok': not faults, 'quiet': check, 'load': load, 'idle': idle, 'machine': machine,
+            'machine_faults': faults, 'swept': swept, 'machine_state': MACHINE_STATE,
+            'covariates': check_covariates(check, load, loadavgs(), idle)}
 
 
 async def run_smoke_item(record: SmokeRecord, item: str, sha: str, cause: str | None, body: Callable) -> dict:
@@ -4140,7 +4219,7 @@ def summary_rows(runs: list, frame_event: str | None, *, warm_evaluable: bool = 
         original = [run for run in members if not run.get('untraced_inp')]
         untraced = [run for run in members if run.get('untraced_inp')]
         row = {'viewport': viewport, 'view': view, 'cache': role, 'label': LOCAL_LABEL,
-               'n_valid': len(percentile_runs(original))}
+               'machine_state': MACHINE_STATE, 'n_valid': len(percentile_runs(original))}
         if view in FIXTURE_UNAVAILABLE_VIEWS:
             # R6-7: descriptive only; excluded from C10 acceptance and from before/after claims.
             row.update(fixture_note=FIXTURE_UNAVAILABLE_NOTE, c10_acceptance='excluido', before_after='excluido')
@@ -4181,6 +4260,7 @@ def summarize_directory(directory: Path, mode: str) -> dict:
         document = json.loads(path.read_text())
         if mode == 'baseline':
             refuse_smoke_input(document)
+        refuse_other_machine_state(document)
         document = restore_infinity(document)
         document['outcome'] = Outcome(document['outcome'])
         runs.append(document)
@@ -4188,6 +4268,7 @@ def summarize_directory(directory: Path, mode: str) -> dict:
     frame_event = (fill_ins.get('frame_event') or {}).get('candidate') if isinstance(fill_ins.get('frame_event'), dict) \
         else fill_ins.get('frame_event')
     return {'mode': mode, 'rows': json_safe(summary_rows(runs, frame_event, warm_evaluable=warm_rule_active(fill_ins))),
+            'machine_state': MACHINE_STATE, 'machine_state_label': MACHINE_STATE_LABEL,
             'scope': 'NEXO only; no /obs/ row (Q29, QF); local numbers never accept C10/C11'}
 
 
@@ -4223,7 +4304,7 @@ async def smoke_overhead(sha: str, play_rule: dict) -> dict:
                                play_rule=play_rule, **base)
                 for spec in (primer, warm):
                     result = await session.execute(spec, fixture)
-                    result.update(mode='smoke', arm=arm)
+                    result.update(mode='smoke', arm=arm, machine_state=MACHINE_STATE)
                     write_json_atomic(out_dir / f'{view.strip("#")}-run-{spec.ordinal:05d}.json', json_safe(result))
                 if result['outcome'] == Outcome.INVALID:
                     continue
@@ -4237,7 +4318,7 @@ async def smoke_overhead(sha: str, play_rule: dict) -> dict:
         await fixture.stop()
     analysis = overhead_consequences(values)
     return {'directory': str(out_dir), 'values': json_safe(values), 'overhead': json_safe(analysis),
-            'consequences': analysis['consequences'], 'play_control_rule': play_rule,
+            'consequences': analysis['consequences'], 'play_control_rule': play_rule, 'machine_state': MACHINE_STATE,
             'note': 'overhead per metric = median(a) - median(c) as an interval; censored medians are [0, 16)'}
 
 
@@ -4251,6 +4332,8 @@ def smoke_frame_event(root: Path = SMOKE_ROOT) -> dict:
         except (OSError, ValueError):
             continue
         if document.get('mode') != 'smoke' or document.get('outcome') == Outcome.INVALID.value:
+            continue
+        if document_machine_state(document) != MACHINE_STATE:
             continue
         results.append(document)
     phases = frame_event_phases(results)
