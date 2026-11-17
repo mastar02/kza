@@ -411,6 +411,21 @@ def _verb_at(utt: _Utterance, i: int, *, strict: bool = False) -> _Verb | None:
     return None
 
 
+def _is_playlist(utt: _Utterance, k: int) -> bool:
+    """'lista(s) de reproducción/canciones/música' at token ``k`` is music, not a household list."""
+    return utt.at(k) in ("lista", "listas") and utt.at(k + 1) == "de" and utt.at(k + 2) in _MUSIC_WORDS
+
+
+def _object_at(utt: _Utterance, k: int) -> HouseholdFamily | None:
+    """The household object family named at token ``k`` (a playlist is not one)."""
+    return None if _is_playlist(utt, k) else _OBJECT_NOUNS.get(utt.at(k))
+
+
+def _mentions_list(utt: _Utterance) -> bool:
+    """A household list (not a playlist) is named anywhere in the utterance."""
+    return any(_object_at(utt, k) is HouseholdFamily.LIST for k in range(len(utt)))
+
+
 def _governed_object(utt: _Utterance, j: int, *, allow_adjective: bool = False) -> tuple[HouseholdFamily, int] | None:
     """The object noun right after the verb and its determiners, if any."""
     k = j
@@ -421,7 +436,7 @@ def _governed_object(utt: _Utterance, j: int, *, allow_adjective: bool = False) 
             k += 1
     if allow_adjective and utt.at(k) in _ADJECTIVES:
         k += 1
-    family = _OBJECT_NOUNS.get(utt.at(k))
+    family = _object_at(utt, k)
     return (family, k) if family is not None else None
 
 
@@ -492,7 +507,7 @@ def _r1_object(utt: _Utterance, verb: _Verb) -> tuple[HouseholdFamily, Household
 
 def _query(utt: _Utterance) -> HouseholdIntent | None:
     head = utt.at(0)
-    nouns = [(k, _OBJECT_NOUNS[w]) for k, w in enumerate(utt.folded) if w in _OBJECT_NOUNS]
+    nouns = [(k, family) for k in range(len(utt)) if (family := _object_at(utt, k)) is not None]
     if not nouns:
         return None
     k, family = nouns[0]
@@ -520,7 +535,8 @@ def _r1(utt: _Utterance) -> HouseholdIntent | None:
 def _list_target_follows(utt: _Utterance) -> bool:
     """'... a/en la lista' (an item goes into a list), not 'poné la lista'."""
     for k in range(len(utt) - 1):
-        if utt.at(k) in ("a", "en") and utt.at(k + 1) in ("la", "mi", "nuestra") and utt.at(k + 2) in ("lista", "listas"):
+        if utt.at(k) in ("a", "en") and utt.at(k + 1) in ("la", "mi", "nuestra") \
+                and _object_at(utt, k + 2) is HouseholdFamily.LIST:
             return True
     return False
 
@@ -540,7 +556,7 @@ def _r2(utt: _Utterance) -> HouseholdIntent | None:
             return HouseholdIntent(HouseholdFamily.LIST, HouseholdOperation.CREATE, "R2",
                                    _rest(utt, governed[1] + 1), verb.form)
     words = set(utt.folded)
-    if not words & {"lista", "listas"}:
+    if not _mentions_list(utt):
         return None
     if _ADD in verb.classes:
         return HouseholdIntent(HouseholdFamily.LIST, HouseholdOperation.ADD_ITEM, "R2", _rest(utt, verb.end), verb.form)
@@ -707,7 +723,7 @@ def _split_targets(utt: _Utterance, verb: _Verb) -> list[_Utterance]:
     domotics = _DOMOTICS in verb.classes
     if not domotics and not verb.classes & _R1_CLASSES:
         return []
-    lists = bool(set(utt.folded) & {"lista", "listas"})
+    lists = _mentions_list(utt)
     own_object = _governed_object(utt, verb.end) is not None
     for c in range(verb.end, len(utt)):
         if utt.at(c) != "y":
@@ -731,7 +747,7 @@ def _split_targets(utt: _Utterance, verb: _Verb) -> list[_Utterance]:
 
 def _names_object(utt: _Utterance) -> bool:
     """A household object noun appears anywhere in the utterance."""
-    return any(word in _OBJECT_NOUNS for word in utt.folded)
+    return any(_object_at(utt, k) is not None for k in range(len(utt)))
 
 
 def _deferred(intent: HouseholdIntent | None, segment: _Utterance) -> bool:

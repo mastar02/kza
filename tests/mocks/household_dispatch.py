@@ -41,7 +41,8 @@ class CountedLeaves:
         self.chroma.search_command = MagicMock(return_value=None)
         self.ha = AsyncMock()
         self.music = MagicMock()
-        self.music.process = AsyncMock(return_value=SimpleNamespace(success=True, response="ok", details={}))
+        self.music.process = AsyncMock(return_value=SimpleNamespace(success=True, response="ok", details={},
+                                                                    intent=SimpleNamespace(value="pause")))
         self.router = MagicMock()
         self.router.complete = AsyncMock(return_value="hola")
         self.router.generate = MagicMock(return_value=["hola"])

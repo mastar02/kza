@@ -241,3 +241,14 @@ def test_bare_cuando_is_not_a_routine(leaves):
     assert dispatcher._classify_request("cuando juega peñarol")[0] is not PathType.FAST_ROUTINE
     assert dispatcher._classify_request("crea una rutina para la noche")[0] is PathType.FAST_ROUTINE
     assert dispatcher._classify_request("automatiza las luces")[0] is PathType.FAST_ROUTINE
+
+
+async def test_playlist_commands_stay_on_the_music_path(leaves):
+    """Review F2: 'pausá la lista de reproducción' is music, not a list refusal."""
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, "shared_list_compras")
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text="pausá la lista de reproducción")
+    assert result.path is PathType.FAST_MUSIC
+    assert leaves.music.process.await_count == 1
+    assert leaves.effects(before)["list_mutations"] == 0
