@@ -794,12 +794,15 @@ async def test_a_clock_word_of_one_text_and_another_due_time_asks_which(leaves):
 
 
 @pytest.mark.parametrize(("literal", "literal_due", "other", "other_due", "response"), [
+    # Review FV3-2: the one due at the text's clock has no voice reference.
     ("llamar al médico a la una", (12, 45), "llamar al médico", (13, 0),
      "Encontré 2: llamar al médico a la una a las 12:45 y llamar al médico a las 13:00. Repetímelo con la hora, "
-     "por ejemplo: cancelá el recordatorio de llamar al médico de las 12:45 del mediodía."),
+     "por ejemplo: cancelá el recordatorio de llamar al médico de las 12:45 del mediodía. "
+     "Si es otro, borralo desde la web."),
     ("tomar 2 pastillas a las 2", (9, 0), "tomar 2 pastillas", (14, 0),
      "Encontré 2: tomar 2 pastillas a las 2 a las 09:00 y tomar 2 pastillas a las 14:00. Repetímelo con la hora, "
-     "por ejemplo: cancelá el recordatorio de tomar 2 pastillas de las 9 de la mañana."),
+     "por ejemplo: cancelá el recordatorio de tomar 2 pastillas de las 9 de la mañana. "
+     "Si es otro, borralo desde la web."),
 ])
 async def test_the_whole_text_with_its_clock_phrase_never_cancels_another_reminder(
         leaves, literal, literal_due, other, other_due, response):
@@ -823,7 +826,7 @@ async def test_the_whole_text_with_its_clock_phrase_never_cancels_another_remind
     assert counted == ZERO and asked.outcome.status.value == "needs_input"
     assert asked.response == response
     assert {r.id for r in await manager.get_active(None, shared_only=True)} == {named.id, timed.id}
-    example = response.split("por ejemplo: ", 1)[1].removesuffix(".")
+    example = response.split("por ejemplo: ", 1)[1].split(". ", 1)[0].removesuffix(".")
     done, counted = await _cancel(leaves, example, dispatcher=dispatcher)
     assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
     assert [r.id for r in await manager.get_active(None, shared_only=True)] == [timed.id]
@@ -853,17 +856,18 @@ async def test_the_text_clock_with_the_due_day_never_cancels_another_reminder(le
     asked, counted = await _cancel(leaves, f"cancelá el recordatorio de pagar la luz a las 5 {day}",
                                    dispatcher=dispatcher)
     assert counted == ZERO and asked.outcome.status.value == "needs_input"
+    # Review FV3-2: "pagar la luz" at 17:00 is not nameable next to the text
+    # "a las 5" ("de las 17" is that clock too), so the reply adds the web.
     example = "cancelá el recordatorio de pagar la luz de las 10 de la mañana"
     assert asked.response == ("Encontré 2: pagar la luz a las 5 a las 10:00 y pagar la luz a las 17:00. "
-                              f"Repetímelo con la hora, por ejemplo: {example}.")
+                              f"Repetímelo con la hora, por ejemplo: {example}. Si es otro, borralo desde la web.")
     assert {r.id for r in await manager.get_active(None, shared_only=True)} == {named.id, timed.id}
     references = await manager.voice_references(None, (named, timed), with_time=True, shared_only=True)
-    assert f"cancelá el recordatorio de {references[named.id]}" == example
-    done, counted = await _cancel(leaves, f"cancelá el recordatorio de {references[timed.id]}",
-                                  dispatcher=dispatcher)
-    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
-    assert [r.id for r in await manager.get_active(None, shared_only=True)] == [named.id]
+    assert {rid: f"cancelá el recordatorio de {ref}" for rid, ref in references.items()} == {named.id: example}
     done, counted = await _cancel(leaves, example, dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
+    assert [r.id for r in await manager.get_active(None, shared_only=True)] == [timed.id]
+    done, counted = await _cancel(leaves, "cancelá el recordatorio de pagar la luz", dispatcher=dispatcher)
     assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
     assert await manager.get_active(None, shared_only=True) == []
 
@@ -892,11 +896,13 @@ async def test_the_text_clock_said_another_way_never_cancels_another_reminder(le
     asked, counted = await _cancel(leaves, f"cancelá el recordatorio de {spoken}", dispatcher=dispatcher)
     assert counted == ZERO and asked.outcome.status.value == "needs_input"
     example = "cancelá el recordatorio de tomar pastillas de las 9 de la mañana"
+    # Review FV3-2: "de las 8:30 de la noche" (or "de las 20:30") is the text
+    # "8:30" too, so the 20:30 one has no voice reference.
     assert asked.response == (f"Encontré 2: {literal} a las 09:00 y tomar pastillas a las 20:30. "
-                              f"Repetímelo con la hora, por ejemplo: {example}.")
+                              f"Repetímelo con la hora, por ejemplo: {example}. Si es otro, borralo desde la web.")
     assert {r.id for r in await manager.get_active(None, shared_only=True)} == {named.id, timed.id}
     references = await manager.voice_references(None, (named, timed), with_time=True, shared_only=True)
-    assert f"cancelá el recordatorio de {references[named.id]}" == example
+    assert {rid: f"cancelá el recordatorio de {ref}" for rid, ref in references.items()} == {named.id: example}
     for reminder in (timed, named):
         if reminder.id not in references:
             continue
@@ -906,6 +912,41 @@ async def test_the_text_clock_said_another_way_never_cancels_another_reminder(le
         assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
         assert {r.id for r in await manager.get_active(None, shared_only=True)} == still
         assert (await leaves.reminder_store.get_by_id(reminder.id)).state == "cancelled"
+
+
+async def test_a_24_hour_text_clock_said_on_the_12_hour_clock_never_cancels_another_reminder(leaves):
+    """Review T032-U1-FV3-2: before it, this cancelled "tomar pastillas" due at 20:00.
+
+    "las 20" in the text was compared as a token, so "las 8 de la noche"
+    never read it. Now KZA asks, cancels nothing, and the proposed command
+    cancels exactly its reminder; the other one is sent to the web, and
+    is the only "tomar pastillas" left after that.
+    """
+    from datetime import datetime, timedelta
+    dispatcher = leaves.dispatcher()
+    manager = leaves.reminder_manager
+    clock = manager._household_clock
+    tomorrow = clock.now_local().date() + timedelta(days=1)
+
+    def at(hour: int) -> float:
+        return clock.to_epoch(datetime(tomorrow.year, tomorrow.month, tomorrow.day, hour))
+    named = await manager.create("household", "tomar pastillas a las 20", at(9), scope=ReminderScope.SHARED)
+    timed = await manager.create("household", "tomar pastillas", at(20), scope=ReminderScope.SHARED)
+    asked, counted = await _cancel(leaves, "cancelá el recordatorio de tomar pastillas a las 8 de la noche",
+                                   dispatcher=dispatcher)
+    assert counted == ZERO and asked.outcome.status.value == "needs_input"
+    example = "cancelá el recordatorio de tomar pastillas de las 9 de la mañana"
+    assert asked.response == ("Encontré 2: tomar pastillas a las 20 a las 09:00 y tomar pastillas a las 20:00. "
+                              f"Repetímelo con la hora, por ejemplo: {example}. Si es otro, borralo desde la web.")
+    assert {r.id for r in await manager.get_active(None, shared_only=True)} == {named.id, timed.id}
+    done, counted = await _cancel(leaves, example, dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
+    assert [r.id for r in await manager.get_active(None, shared_only=True)] == [timed.id]
+    assert (await leaves.reminder_store.get_by_id(named.id)).state == "cancelled"
+    done, counted = await _cancel(leaves, "cancelá el recordatorio de tomar pastillas a las 8 de la noche",
+                                  dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
+    assert await manager.get_active(None, shared_only=True) == []
 
 
 @pytest.mark.parametrize(("text", "response"), [

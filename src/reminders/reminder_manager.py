@@ -78,23 +78,26 @@ class _SpokenClock:
     minute: int = 0
     period: str | None = None
 
-    def matches(self, hour: int, minute: int) -> bool:
-        """Whether a household wall time ``hour:minute`` is this spoken time.
+    def wall_times(self) -> frozenset[tuple[int, int]]:
+        """The household wall times ``(hour, minute)`` this clock can mean.
 
         Without a period a 1-12 hour is either half of the day. "de la
         noche" moves 12 and 1-4 past midnight ("las 12 de la noche" is
-        00:00); "del mediodía" and "de la tarde" keep 12 at noon.
+        00:00); "del mediodía" and "de la tarde" keep 12 at noon. An hour
+        past 12 is that hour ("las 20" is "las 8 de la noche").
         """
-        if minute != self.minute:
-            return False
         if self.hour > 12:
-            return hour == self.hour
+            return frozenset({(self.hour, self.minute)})
         base = self.hour % 12
         if self.period in _AM_PERIODS or (self.period == "noche" and self.hour in _NIGHT_EARLY_HOURS):
-            return hour == base
+            return frozenset({(base, self.minute)})
         if self.period in _PM_PERIODS:
-            return hour == base + 12
-        return hour in (base, base + 12)
+            return frozenset({(base + 12, self.minute)})
+        return frozenset({(base, self.minute), (base + 12, self.minute)})
+
+    def matches(self, hour: int, minute: int) -> bool:
+        """Whether a household wall time ``hour:minute`` is this spoken time (see :meth:`wall_times`)."""
+        return (hour, minute) in self.wall_times()
 
 
 def _clock_at(words: list[str], i: int) -> tuple[_SpokenClock, int, int] | None:
@@ -231,26 +234,30 @@ def _text_periods(text: list[str]) -> set[str]:
 
 
 def _holds_same_clock(text: list[str], clock: _SpokenClock) -> bool:
-    """A clock time of the text is the spoken clock, however its digits or minutes are written.
+    """A clock time of the text can be the spoken clock, however either is written.
 
     Each clock of the text is read with the query's own grammar, so
     "8:30", "8.30", "08:30" and "8 y media" are one clock (review
-    T032-U1-FV3-1). Hour and minute must agree; a text clock with a
-    period of its own needs the same period said, or none, and one
-    without takes the spoken period unless the text names another
-    ("tomar pastillas a las 2" is said "... a las 2 de la tarde" too,
-    review FV2-3; "... a las 2 por la noche" is not).
+    T032-U1-FV3-1), and both sides are compared as the wall times they
+    can mean, so "las 20" is "las 8 de la noche" and "las 2" is "las 14"
+    (review T032-U1-FV3-2). A text clock without a period of its own
+    takes the periods the text names elsewhere ("tomar pastillas a las 2
+    por la noche" is 02:00, not "las 2 de la tarde"); with none it is
+    either half of the day ("tomar pastillas a las 2" is said "... a las
+    2 de la tarde" too, review FV2-3).
     """
+    wanted = clock.wall_times()
     periods = _text_periods(text)
     for i in range(len(text)):
         found = _clock_at(text, i)
         if found is None:
             continue
         own = found[0]
-        if (own.hour, own.minute) != (clock.hour, clock.minute):
-            continue
-        if clock.period is None or own.period == clock.period \
-                or (own.period is None and not periods - {clock.period}):
+        if own.period is None and periods:
+            means = frozenset().union(*(_SpokenClock(own.hour, own.minute, p).wall_times() for p in periods))
+        else:
+            means = own.wall_times()
+        if means & wanted:
             return True
     return False
 
@@ -496,7 +503,8 @@ class ReminderManager:
         # pastillas a las 2" for "... a las 2 de la tarde") unless the text
         # names another period (review T032-U1-FV2-3). The text's clock is read
         # as a clock, so "8:30", "8.30", "08:30" and "8 y media" are one
-        # (review T032-U1-FV3-1).
+        # (review T032-U1-FV3-1), and compared by the wall times each side can
+        # mean, so "las 20" is "las 8 de la noche" (review T032-U1-FV3-2).
         matches = []
         for reminder in active:
             text = _WORD.findall(_fold(reminder.text))
@@ -558,9 +566,12 @@ class ReminderManager:
         as a time or day ("llamar a mamá a las 3" -> "llamar a mamá"). With
         ``with_time`` each carries the spoken time, and then the time and
         day ("de las 5 de la tarde de hoy") for reminders the time alone
-        does not tell apart (review T032-U1-RR-F2). An afternoon or night
-        trigger is last tried on the 24-hour clock ("de las 14"), which no
-        text's "a las 2" is said as (review T032-U1-FV2-3).
+        does not tell apart (review T032-U1-RR-F2). There is no 24-hour
+        attempt: "de las 14" means the same wall time as "de las 2 de la
+        tarde", so it selects no fewer reminders (review T032-U1-FV3-2). A
+        trigger at another text's clock ("tomar pastillas" at 14:00 next to
+        "tomar pastillas a las 2") then has no reference, and the reply
+        sends it to the web.
         """
         bases = [reminder.text]
         content = _without_time_words(reminder.text)
@@ -570,14 +581,8 @@ class ReminderManager:
             return bases
         spoken_time = self.spoken_time_reference(reminder)
         spoken_day = self.spoken_day_reference(reminder)
-        attempts = ([f"{base} de {spoken_time}" for base in bases]
-                    + [f"{base} de {spoken_time} {spoken_day}" for base in bases])
-        local = self._household_clock.to_local(reminder.trigger_at)
-        if local.hour > 12:
-            clock = f"las {local.hour}:{local.minute:02d}" if local.minute else f"las {local.hour}"
-            attempts += ([f"{base} de {clock}" for base in bases]
-                         + [f"{base} de {clock} {spoken_day}" for base in bases])
-        return attempts
+        return ([f"{base} de {spoken_time}" for base in bases]
+                + [f"{base} de {spoken_time} {spoken_day}" for base in bases])
 
     async def cancel_resolved(self, reminder: Reminder, *, shared_only: bool = False,
                               guard: AuthorityGuard | None = None) -> bool:
