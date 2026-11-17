@@ -342,13 +342,19 @@ def test_the_first_post_r1_transition_rebuilds_chroma_from_the_closed_list(x4, x
     assert cw.serve(root, tmp_path, "k-prime").code == 0
 
 
+@pytest.mark.parametrize("ending", ["retire", "abort"])
 def test_the_legacy_user_memories_collection_is_dropped_by_name_and_never_reaches_k(x4, x5, tmp_path,
-                                                                                     monkeypatch):
+                                                                                     monkeypatch, ending):
     """SC4C-Q2b: production's quarantined pre-policy collection (data/memory_db 'user_memories') is a named
-    drop: the plan names it, the snapshot never reads it, the rebuild child never gets it, the worker records
-    it by name only, and none of its text reaches K's bytes; H keeps it until retire destroys H."""
+    drop: the plan names it, the snapshot's SDK export never reads it, the rebuild child never gets it, the
+    worker records it by name only, and none of its text reaches K's bytes. Its bytes stay in H and, until
+    retire or abort destroys the snapshot, in the snapshot's opaque copy of H's memory_db SDK files
+    (SC4C-RV2-1); after retire none is left under the managed root, after abort none outside H."""
     world = _post_r1(x4, x5, tmp_path, sc.chroma_state(legacy=True))
     root, h_state = world["root"], world["h"]["state"]
+    managed = root.resolve()
+    h_relative = h_state.resolve().relative_to(managed).as_posix() + "/"
+    h_tree = cw.tree(h_state)
     before = _stores(h_state, tmp_path / "h-copy")
     assert len(before[("data/memory_db", "user_memories")]["records"]) == 2
     assert _raw_hits(h_state / "data" / "memory_db", sc.LEGACY) and _raw_hits(h_state / "data" / "memory_db",
@@ -380,16 +386,42 @@ def test_the_legacy_user_memories_collection_is_dropped_by_name_and_never_reache
     assert set(after) == set(before) - {("data/chroma_db", "home_assistant_routines"),
                                         ("data/memory_db", "user_memories")}
     assert [row["document"] for row in after[("data/memory_db", sc.POLICY)]["records"]] == [sc.LIVE]
-    # Raw bytes: nothing of the legacy collection anywhere in K's state, nor under the compaction's directory
-    # (its log and its snapshot); the excluded policy facts keep their identical 'facts' rows, so they are
-    # checked in Chroma's bytes.
+    # Raw bytes: nothing of the legacy collection anywhere in K's state or in the compaction's log. The
+    # snapshot (read from its 'snapshot' event) keeps an opaque copy of H's SDK files, so it holds the legacy
+    # bytes (SC4C-RV2-1): always in memory_db's chroma.sqlite3, and sometimes in an HNSW file of chroma_db,
+    # where H's first run left them as heap residue (SC4C-Q3). Each hit is a file the manifest records as
+    # sdk_opaque with the bytes of H's file at the same path; the manifest, the exports and every other file
+    # have none. Outside H, that copy is the only place under the managed root that has them.
+    [snapshot_event] = [event for event in log["events"] if event["kind"] == "snapshot"]
+    snapshot = Path(snapshot_event["data"]["path"])
+    snapshot_relative = snapshot.resolve().relative_to(managed).as_posix() + "/"
+    manifest = json.loads((snapshot / "manifest.json").read_text())
+    opaque = {relative for relative, record in manifest["files"].items() if record["kind"] == "sdk_opaque"}
     for needle in (sc.LEGACY, sc.LEGACY_META):
         assert _raw_hits(k_state, needle) == set(), needle
         assert _raw_hits(stage.compaction_log_path(root, compaction_id), needle) == set(), needle
+        in_snapshot = _raw_hits(snapshot, needle)
+        assert "state/data/memory_db/chroma.sqlite3" in in_snapshot, (needle, in_snapshot)
+        assert in_snapshot <= opaque and "manifest.json" not in in_snapshot, (needle, in_snapshot)
+        for relative in in_snapshot:
+            assert (snapshot / relative).read_bytes() == (h_state / relative.removeprefix("state/")).read_bytes()
+        assert {path for path in _raw_hits(managed, needle) if not path.startswith(h_relative)} == {
+            snapshot_relative + path for path in in_snapshot}, needle
+    # The excluded policy facts keep their identical 'facts' rows, so they are checked in Chroma's bytes.
     for needle in EXCLUDED:
         assert _raw_hits(k_state / "data" / "chroma_db", needle) == set(), needle
         assert _raw_hits(k_state / "data" / "memory_db", needle) == set(), needle
     assert _raw_hits(h_state / "data" / "memory_db", sc.LEGACY)  # H keeps it until H is retired
+    if ending == "abort":
+        # Abort after activation: H is byte-identical and serves, the snapshot is destroyed, and H is the
+        # only place under the managed root left with the legacy bytes.
+        assert compaction.compact_abort(root, compaction_id)["phase"] == "aborted"
+        assert cw.tree(h_state) == h_tree and not snapshot.exists()
+        for needle in (sc.LEGACY, sc.LEGACY_META):
+            hits = _raw_hits(managed, needle)
+            assert hits and all(path.startswith(h_relative) for path in hits), (needle, hits)
+        assert cw.serve(root, tmp_path, "h").code == 0
+        return
     assert compaction.compact_verify(root, compaction_id, smoke_seconds=10)["armed"] is True
     phase_file = tmp_path / "phases-v"
     origin = time.monotonic()
@@ -398,7 +430,7 @@ def test_the_legacy_user_memories_collection_is_dropped_by_name_and_never_reache
                                  clock=lambda: origin + (time.monotonic() - origin) * 20.0)
     assert result.code == 0
     assert compaction.compact_retire(root, compaction_id, scan=cw.no_units)["phase"] == "complete"
-    assert not h_state.exists()
+    assert not h_state.exists() and not snapshot.exists()
     for needle in (sc.LEGACY, sc.LEGACY_META):
         assert _raw_hits(root, needle) == set(), needle  # deleted for good once H is retired
     assert cw.serve(root, tmp_path, "k-prime").code == 0
