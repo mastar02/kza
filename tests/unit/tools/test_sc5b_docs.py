@@ -483,7 +483,7 @@ def test_a_link_refusal_at_retire_repeats_the_retire_not_resume():
     """Review SC5B-R6: _pre_retire raises symlink/hard_link/identity before 'retire_started', where
     compact_resume with 'activated' logged returns a no-op."""
     retire = _flat(_section(_text(), "### Paso 8: retiro (la aceptación)"))
-    assert ("quitar la causa a mano (de un enlace, el enlace, nunca su destino) y repetir el mismo "
+    assert ("quitar la causa a mano (de un enlace simbólico, el enlace, nunca su destino) y repetir el mismo "
             "`$ST compact retire <compaction_id>`, no `compact resume`") in retire
     assert "antes de `retire_started`, `resume` no hace nada" in retire
     source = (REPO / "scripts/compaction.py").read_text()
@@ -735,3 +735,18 @@ def test_retire_refusals_after_retire_started_are_a_cut_retire():
     assert body.index('"retire_started", report') < body.index("return _finish_retire(")
     finish = source.split("def _finish_retire(", 1)[1].split("\ndef ", 1)[0]
     assert finish.index("_retire_member(") < finish.index('_refuse("runtime_admission_compaction_identity"')
+
+
+def test_a_hard_link_refusal_never_removes_a_k_name():
+    """Re-review SC5B-RR6: _pre_retire and _unlink_tree refuse hard_link when st_nlink != 1 or the inode
+    is one of K's; 'the link, never its target' fits symlinks only, and removing the K'-side name
+    destroys accepted data."""
+    retire = _flat(_section(_text(), "### Paso 8: retiro (la aceptación)"))
+    assert ("Un enlace duro (`runtime_admission_compaction_hard_link`: un archivo de un miembro con más de un "
+            "nombre, o con el inodo de un archivo de K) no se arregla a mano: nunca quitar un nombre bajo "
+            "`slots/<K>/` (son los datos de K' que se aceptan) ni una copia fuera de la raíz, y cualquier otro "
+            "caso se entrega a desarrollo, con la unidad deshabilitada y la decisión escrita cada 48 horas.") in retire
+    links = retire.split("Un enlace simbólico, punto de montaje", 1)[1].split("Un enlace duro", 1)[0]
+    assert "hard_link" not in links
+    source = (REPO / "scripts/compaction.py").read_text()
+    assert source.count("info.st_nlink != 1 or (info.st_dev, info.st_ino) in k_inodes") == 2

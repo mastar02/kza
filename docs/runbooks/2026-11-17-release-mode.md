@@ -463,13 +463,19 @@ tiene) o `compact resume` siguen, nunca una vuelta a H (el abort rechaza
 | `runtime_admission_compaction_head_moved`, `runtime_admission_compaction_k_closure_unreadable` | como HD | parada como HD |
 | cualquier otro código (por ejemplo `runtime_admission_compaction_phase`, `runtime_admission_head_changed`, `runtime_admission_compaction_k_delegated`, `runtime_admission_compaction_k_foreign_target`, `runtime_admission_compaction_database_unreadable`, `runtime_admission_compaction_retiring_residue` o un código del lease) | ninguna | no improvisar: la unidad sigue deshabilitada; guardar la salida y la de `$ST compact status <compaction_id>`; entregarlo a desarrollo, con la decisión escrita cada 48 horas |
 
-Un enlace, punto de montaje o archivo especial dentro de un miembro
-(`runtime_admission_compaction_symlink`, `..._hard_link`, `..._mount`,
+Un enlace simbólico, punto de montaje o archivo especial dentro de un
+miembro (`runtime_admission_compaction_symlink`, `..._mount`,
 `..._special_file`, `..._cross_device`): quitar la causa a mano (de un
-enlace, el enlace, nunca su destino) y repetir el mismo `$ST compact retire
+enlace simbólico, el enlace, nunca su destino) y repetir el mismo `$ST compact retire
 <compaction_id>`, no `compact resume`: antes de `retire_started`, `resume`
 no hace nada (devuelve `"noop": true` con la fase `activated`). El mismo
-retiro también termina uno ya empezado. **Retiro cortado (fila RS)**: `$ST
+retiro también termina uno ya empezado. Un enlace duro
+(`runtime_admission_compaction_hard_link`: un archivo de un miembro con más
+de un nombre, o con el inodo de un archivo de K) no se arregla a mano:
+nunca quitar un nombre bajo `slots/<K>/` (son los datos de K' que se
+aceptan) ni una copia fuera de la raíz, y cualquier otro caso se entrega a
+desarrollo, con la unidad deshabilitada y la decisión escrita cada 48
+horas. **Retiro cortado (fila RS)**: `$ST
 compact resume <compaction_id>` o el mismo `$ST compact retire
 <compaction_id>` lo termina.
 
