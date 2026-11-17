@@ -6,8 +6,10 @@ them. Like the T037-U4 clock rule, only a capture opened by its own wake
 (``capture_trigger == "wake"``) with no other TV signal skips the 7B for the
 household shortcuts (timer, list, reminder claims), the extended home command
 and the domotics grammar fast path. While :8101 is down such a turn fails
-silently and the user repeats it with the wake word. Own-wake turns and
-producers that do not tag their captures keep today's behavior.
+silently and the user repeats it with the wake word; with no LLMCommandRouter
+configured it fails closed (T037-U5-R1). Own-wake turns and producers that do
+not tag their captures keep today's behavior. A light location the rooms cannot
+resolve asks "¿En qué ambiente…?" whatever accepted the turn (T037-U5-R1).
 """
 
 import sys
@@ -219,6 +221,108 @@ async def test_partial_grammar_on_own_wake_still_asks_while_8101_is_unavailable(
     result = await turn(house, capture)
     assert result["needs_confirmation"] is True and result["response"]
     house.orchestrator.process.assert_not_awaited()
+
+
+# --- Unresolved light location (T037-U5-R1) --------------------------------------
+
+# "quincho" is no configured room: base asked "¿En qué ambiente…?" on a follow-up
+# or barge-in; a vector search must never guess the light instead.
+UNRESOLVED_LIGHT = ["prendé la luz del quincho", "prendé las luces del quincho"]
+ASK_ROOM = "¿En qué ambiente querés controlar la luz?"
+
+
+def assert_asks_room_no_effect(house: Household, result: dict, before, llm_8101_calls: int) -> None:
+    assert result["intent"] == "unresolved_target" and result["response"] == ASK_ROOM
+    assert result["action"] is None
+    house.orchestrator.process.assert_not_awaited()
+    assert house.effects(before) == effects(llm_8101_calls=llm_8101_calls, spoken_utterances=1)
+
+
+@pytest.mark.parametrize("capture", ["follow_up", "barge_in"])
+@pytest.mark.parametrize("text", UNRESOLVED_LIGHT)
+async def test_unresolved_light_without_own_wake_the_7b_accepts_asks(leaves, text, capture):
+    """The reviewer's probe: the 7B accepts, the room is unknown, so the turn asks and HA is never called."""
+    house = await house_for(leaves, text, "stub:turn_on@0.95", "light_match")
+    before = leaves.snapshot()
+    result = await turn(house, capture)
+    assert_asks_room_no_effect(house, result, before, llm_8101_calls=1)
+
+
+@pytest.mark.parametrize("capture", list(BORROWED))
+@pytest.mark.parametrize("text", [*UNRESOLVED_LIGHT, "apagá la luz del living"])
+async def test_without_own_wake_and_no_7b_configured_fails_closed(leaves, text, capture):
+    """No LLMCommandRouter: nothing can veto a capture without its own wake, so nothing happens at all."""
+    house = await house_for(leaves, text, "absent", "light_match")
+    before = leaves.snapshot()
+    result = await turn(house, capture)
+    assert result["intent"] == "llm_rejected:no_router"
+    assert result["success"] is False and result["response"] == "" and result["action"] is None
+    house.orchestrator.process.assert_not_awaited()
+    house.handler.aspeak.assert_not_awaited()
+    assert house.effects(before) == effects()
+
+
+@pytest.mark.parametrize("capture", list(OWN))
+@pytest.mark.parametrize("llm", ["absent", "stub:unavailable"])
+@pytest.mark.parametrize("text", UNRESOLVED_LIGHT)
+async def test_unresolved_light_on_own_wake_still_asks_with_no_7b_call(leaves, text, llm, capture):
+    """Unchanged from base: the grammar fast path asks on its own wake."""
+    house = await house_for(leaves, text, llm, "light_match")
+    before = leaves.snapshot()
+    result = await turn(house, capture)
+    assert "llm_router" not in result["timings"]
+    assert_asks_room_no_effect(house, result, before, llm_8101_calls=0)
+
+
+@pytest.mark.parametrize("llm", ["absent", "stub:turn_on@0.95"])
+@pytest.mark.parametrize("text", UNRESOLVED_LIGHT)
+async def test_unresolved_light_without_grammar_fast_path_asks(leaves, text, llm):
+    """A transcript wake engine gets no grammar bonus (0.7 < 0.75): the 7B or no model accepts, the turn still asks."""
+    house = Household(leaves, text=text, llm=llm, engine="whisper")
+    await leaves.apply_state(house.orchestrator.dispatcher, "light_match")
+    before = leaves.snapshot()
+    result = await turn(house, "wake")
+    assert_asks_room_no_effect(house, result, before, llm_8101_calls=0 if llm == "absent" else 1)
+
+
+@pytest.mark.parametrize("llm", ["absent", "stub:turn_on@0.95"])
+@pytest.mark.parametrize("text", UNRESOLVED_LIGHT)
+async def test_unresolved_light_on_the_textual_wake_asks(leaves, text, llm):
+    """The textual wake channel skips the grammar too; it had the same gap before T037-U5."""
+    house = await house_for(leaves, text, llm, "light_match")
+    before = leaves.snapshot()
+    result = await house.turn("textual")
+    assert_asks_room_no_effect(house, result, before, llm_8101_calls=0 if llm == "absent" else 1)
+
+
+@pytest.mark.parametrize("capture", ["follow_up", "barge_in"])
+async def test_resolved_light_without_own_wake_the_7b_accepts_still_runs(leaves, capture):
+    """The guard only stops a location the rooms cannot resolve: a known room still runs."""
+    house = await house_for(leaves, "prendé la luz del living", "stub:turn_on@0.95", "light_match")
+    before = leaves.snapshot()
+    result = await turn(house, capture)
+    assert result["success"] is True and result["path"] == "fast_domotics"
+    assert house.effects(before) == effects(ha_service_calls=1, vector_searches=1, llm_8101_calls=1)
+
+
+@pytest.mark.parametrize(("hint", "intent", "text", "expected"), [
+    ("light", "turn_on", "dale nomás", True),
+    ("luz del quincho", "turn_on", "dale nomás", True),
+    ("Lámpara del quincho", "turn_off", "dale nomás", True),
+    ("LUCES", "set_brightness", "dale nomás", True),
+    ("luz del quincho", None, "dale nomás", False),
+    ("cover", "open", "dale nomás", False),
+    ("persiana del luzón", "open", "dale nomás", False),
+    (None, None, "prendé la luz del quincho", True),
+    (None, None, "¿por qué parpadea la luz del quincho?", False),
+    (None, None, "la luz del quincho", False),
+    (None, None, "subí la persiana del quincho", False),
+])
+def test_dispatch_targets_light(hint, intent, text, expected):
+    from src.nlu.llm_router import CommandClassification
+    cls = None if intent is None and hint is None else CommandClassification(
+        is_command=True, confidence=0.9, intent=intent, entity_hint=hint)
+    assert router_module._dispatch_targets_light(text, cls) is expected
 
 
 # --- Extended home command -----------------------------------------------------

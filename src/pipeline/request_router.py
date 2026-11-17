@@ -12,6 +12,7 @@ import asyncio
 import inspect
 from contextvars import ContextVar
 import logging
+import re
 import threading
 import time
 import unicodedata
@@ -114,6 +115,36 @@ def _capture_without_own_wake(capture_trigger: str | None) -> bool:
         True when the capture has no wake of its own.
     """
     return capture_trigger is not None and capture_trigger != CaptureTrigger.WAKE
+
+
+_LIGHT_WORDS = frozenset({"light", "luz", "luces", "lampara", "lamparas"})
+
+
+def _dispatch_targets_light(text: str, classification) -> bool:
+    """Whether a turn about to reach the dispatcher acts on a light (T037-U5-R1).
+
+    The unresolved-light-location guard holds whichever producer accepted the
+    turn: the grammar fast path (entity_hint ``light``), the 7B (its
+    entity_hint is a domain such as ``light`` or free text such as ``luz del
+    quincho``), or neither (no LLMCommandRouter configured, the textual wake
+    channel). The text's own grammar parse also counts when it finds an action
+    on a light; a question that only mentions a light, with no action verb,
+    does not.
+
+    Args:
+        text: Accepted transcript of the turn.
+        classification: The accepted grammar or 7B classification, or None.
+
+    Returns:
+        True when the turn acts on a light.
+    """
+    hint = getattr(classification, "entity_hint", None)
+    if getattr(classification, "intent", None) is not None and isinstance(hint, str):
+        folded = unicodedata.normalize("NFKD", hint.lower()).encode("ascii", "ignore").decode()
+        if _LIGHT_WORDS.intersection(re.findall(r"[a-z]+", folded)):
+            return True
+    parsed = parse_partial_command(text)
+    return parsed.intent is not None and parsed.entity == "light"
 
 
 def _grammar_fastpath_classification(
@@ -1002,8 +1033,9 @@ class RequestRouter:
         # T037-U5 (user answer T037-U4-Q1): a follow-up, barge-in or inline
         # capture has no wake of its own, so it counts as a TV signal: household
         # shortcuts and the extended home command need the 7B veto, and the
-        # grammar fast path below is skipped. While :8101 is down such a turn
-        # fails silently and the user repeats it with the wake word.
+        # grammar fast path below is skipped. While :8101 is down, or with no
+        # LLMCommandRouter configured (T037-U5-R1), such a turn fails silently
+        # and the user repeats it with the wake word.
         borrowed_wake = _capture_without_own_wake(capture_trigger)
         tv_signal = (textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE
                      or borrowed_wake)
@@ -1196,6 +1228,16 @@ class RequestRouter:
             # Resultado válido — guardar para que el caller registre en history
             # tras dispatch exitoso (line ~480, post-orchestrator).
             result["llm_classification"] = classification
+        elif borrowed_wake:
+            # T037-U5-R1: with no LLMCommandRouter configured nothing can veto
+            # a capture without its own wake, so it fails closed (as a weakly
+            # woken household claim does) and the user repeats it with the wake.
+            logger.info("[LLMRouter] not configured — capture_trigger=%s fails closed: %r", capture_trigger, text)
+            result["intent"] = "llm_rejected:no_router"
+            result["success"] = False
+            result["response"] = ""
+            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+            return result
 
         # 1b. Confidence gate — low-confidence sensitive commands pide
         #     confirmación antes de dispatchar al orchestrator.
@@ -1264,9 +1306,11 @@ class RequestRouter:
         # Target selection is deterministic after either the acoustic grammar
         # or the textual channel's LLM gate has accepted the command.
         default_target = parse_default_light_target(text)
+        # T037-U5-R1: a light location the rooms cannot resolve asks, whatever
+        # accepted the turn (grammar, 7B, or no model at all); a vector search
+        # never guesses the light.
         if (
-            fast_classification is not None
-            and fast_classification.entity_hint == "light"
+            _dispatch_targets_light(text, result.get("llm_classification"))
             and has_unresolved_light_location(text)
         ):
             result["intent"] = "unresolved_target"
