@@ -15,7 +15,8 @@ from unittest.mock import AsyncMock, MagicMock
 from src.core.voice_delivery import (
     SIGNALS_OUTPUT_FREE, DeliveryState, GenerationState, ResponseResult, ResponseStage, VoiceDeliveryError,
 )
-from src.reminders.recurrence import next_trigger
+from src.core.household_clock import HouseholdClock
+from src.reminders import recurrence
 from src.reminders.reminder_scheduler import (
     DEFAULT_LATE_ACTION_GRACE_S, DEFAULT_NOTICE_FALLBACK_MAX_ROUNDS, DEFAULT_NOTICE_FALLBACK_ROUND_S,
     NoticeDismissal, ReminderScheduler, grouped_request_id, notice_body, notice_contended, notice_request_id,
@@ -28,6 +29,11 @@ from tests.mocks.responses import delivered, voice_output
 ROOT = Path(__file__).resolve().parents[3]
 ACTION = {"domain": "light", "service": "turn_on", "entity_id": "light.patio"}
 DAY = 86400
+
+
+def next_trigger(last_trigger: float, rule: str) -> float:
+    """Expected next occurrence on the household calendar the scheduler counts on (P3-F1)."""
+    return recurrence.next_trigger(last_trigger, rule, zone=HouseholdClock().zone)
 
 
 class FakeClock:
@@ -2408,3 +2414,34 @@ async def test_a_newly_due_occurrence_is_not_held_by_a_conversation(build, store
     mock_deps["tts"].aspeak.assert_awaited_with("Oye, recuerda regar", zone_id="living")
     assert mock_deps["tts"].aspeak.await_count == 2
     assert (await store.get_by_id(r.id)).trigger_at == next_trigger(following, "daily")
+
+
+# P3-F1: the scheduler counts recurring days on the injected household clock.
+async def test_a_household_friday_late_reminder_advances_to_the_household_monday(store, mock_deps):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    mvd = ZoneInfo("America/Montevideo")
+    friday = datetime(2026, 11, 13, 23, 30, tzinfo=mvd).timestamp()  # already Saturday in UTC
+    household = HouseholdClock(time_source=lambda: friday + 10)
+    scheduler = ReminderScheduler(
+        store=store, tts=mock_deps["tts"], presence_detector=mock_deps["presence_detector"],
+        ha_client=mock_deps["ha_client"], config={"output_zone": "living", "notice_retry_min_gap_s": 1},
+        household_clock=household,
+    )
+    assert scheduler._clock() == friday + 10
+    r = await store.create(user_id="household", text="pastilla", trigger_at=friday, recurrence="weekdays",
+                           scope=ReminderScope.SHARED)
+    assert await scheduler._fire_reminder(r)
+    current = await store.get_by_id(r.id)
+    assert current.state == "active"
+    assert datetime.fromtimestamp(current.trigger_at, mvd) == datetime(2026, 11, 16, 23, 30, tzinfo=mvd)
+    # The catch-up walk counts the same household calendar.
+    assert datetime.fromtimestamp(scheduler._next_occurrence(r, friday), mvd) == datetime(
+        2026, 11, 16, 23, 30, tzinfo=mvd)
+
+
+def test_scheduler_takes_one_clock_source(store, mock_deps):
+    with pytest.raises(ValueError):
+        ReminderScheduler(store, mock_deps["tts"], mock_deps["presence_detector"], mock_deps["ha_client"],
+                          {"output_zone": "living"}, clock=time.time, household_clock=HouseholdClock())

@@ -382,6 +382,48 @@ class TestProcessCommandLegacy:
         assert result["text"] == ""
         assert result["success"] is False
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("text, reason", [
+        ("creá una rutina para apagar las luces a las once", "deferred"),
+        ("automatizá apagar las luces a las once", "deferred"),
+        ("creá una rutina, apagá las luces a las once", "deferred"),
+        ("programá una rutina que apague las luces a las once", "deferred"),
+        ("armame una rutina que apague las luces a las once", "deferred"),
+        ("recordame apagar la luz a las once", "reminder_request"),
+        ("recordame apagar la luz", "reminder_request"),
+    ])
+    async def test_claimed_household_turn_keeps_the_silent_drop(self, text, reason):
+        """Q4-RV-1: no household layer answers a claimed routine creation or
+        reminder here (P3F2-R1-Q3 is its own unit), so the gate's exemption
+        for them does not apply: the turn is dropped as non-immediate and its
+        content never reaches the home command, the vector search or HA."""
+        cp = MagicMock()
+        cp.process_command = AsyncMock(return_value=_make_cmd_result(text="nexa " + text))
+        chroma = MagicMock()
+        chroma.search_command.return_value = {
+            "domain": "light", "service": "turn_off", "entity_id": "light.living_room",
+            "description": "Luz apagada", "similarity": 0.92, "data": None,
+        }
+        ha = MagicMock()
+        ha.call_service_ws = AsyncMock(return_value=True)
+        ha.get_domotics_entities = AsyncMock(return_value=[])
+        router = _build_router(
+            command_processor=cp, chroma_sync=chroma, ha_client=ha,
+            home_actions=selected_actions(ha, ("light.living_room",)), orchestrator_enabled=False,
+        )
+        assert router.household_intents.classify("nexa " + text) is not None
+        router._try_home_command = AsyncMock(side_effect=AssertionError("home command reached"))
+
+        result = await router.process_command(np.zeros(16000, dtype=np.float32))
+
+        assert result["intent"] == f"gate_rejected:non_immediate:{reason}"
+        assert (result["success"], result["response"], result["action"]) == (False, "", None)
+        router._try_home_command.assert_not_awaited()
+        chroma.search_command.assert_not_called()
+        ha.call_service_once.assert_not_awaited()
+        ha.call_service_ws.assert_not_awaited()
+        router.response_handler.aspeak.assert_not_awaited()
+
 
 @pytest.mark.asyncio
 class TestFeedbackDetection:
@@ -715,6 +757,25 @@ class TestBuildPrompt:
         assert "User likes warm lights" not in prompt
         memory.prompt_context.assert_not_called()
         ha.get_domotics_entities.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_build_prompt_current_time_is_the_household_wall_time(self, monkeypatch):
+        """P3-F1: 'Hora actual' comes from the injected household clock, not the process TZ."""
+        import time as time_module
+        from datetime import UTC, datetime
+        from src.core.household_clock import HouseholdClock
+
+        frozen = datetime(2026, 8, 5, 2, 30, tzinfo=UTC)  # 23:30 of the 4th in Montevideo
+        monkeypatch.setenv("TZ", "Asia/Tokyo")  # 11:30 of the 5th in the process's zone
+        time_module.tzset()
+        try:
+            router = _build_router(household_clock=HouseholdClock(time_source=frozen.timestamp))
+            prompt = await router._build_prompt("que hora es")
+        finally:
+            monkeypatch.undo()
+            time_module.tzset()
+
+        assert f"Hora actual: 23:30 del {datetime(2026, 8, 4).strftime('%A')}\n" in prompt
 
 
 class TestCapturedTranscript:

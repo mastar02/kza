@@ -25,7 +25,11 @@ from src.home_assistant.voice_actions import VoiceHomeActionExecutor
 from src.home_assistant.voice_resolver import HomeVoiceResolver
 from src.nlu.home_command import parse_home_command
 from src.nlu.command_gate import AcceptanceDecision, CommandAcceptanceGate, contains_wake_word
-from src.nlu.command_grammar import PartialCommand, has_unresolved_light_location, parse_default_light_target, parse_partial_command
+from src.nlu.command_grammar import (
+    PartialCommand, has_unresolved_light_location, non_immediate_action_reason, parse_default_light_target,
+    parse_partial_command,
+)
+from src.nlu.household_intents import HouseholdIntent, HouseholdIntentClassifier, HouseholdIntentSettings
 from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
 from src.pipeline.earcon_gate import should_play_earcon
@@ -35,6 +39,7 @@ from src.memory.transient import TransientCache
 from src.memory.voice_phrase import VERIFICATION_REPLY
 from src.memory.prompt_context import SourcesInvalidated, run_private
 from src.llm.generation_stream import GuardedGeneration
+from src.core.household_clock import HouseholdClock
 from src.core.owned_work import OwnedBlockingWork
 from src.core.task_outcome import (
     CURRENT_REQUEST_ID, DeliveryOutcome, DispatchState, EffectState, PersistenceState, ResponseRequirement,
@@ -239,6 +244,8 @@ class RequestRouter:
         privacy=None,
         voice_attributor=None,
         wake_verifier: WakeVerifier | None = None,
+        household_clock: HouseholdClock | None = None,
+        household_intents: HouseholdIntentClassifier | None = None,
     ):
         """
         Initialize RequestRouter with injected dependencies.
@@ -278,12 +285,19 @@ class RequestRouter:
                 None disables hook calls; mandatory home control policy remains active.
             wake_verifier: Second-stage transcript wake check for acoustic
                 wakes (V2 2026-11-17); None disables it.
+            household_clock: Household clock built once in main (P3-F1) for
+                the legacy prompt's current time; None builds a default one,
+                never the process's local time.
+            household_intents: Household intent classifier (P3-F2), the same
+                instance the dispatcher uses; None builds one with the default
+                settings and this router's wake words.
         """
         # Core pipeline components
         self.command_processor = command_processor
         self.response_handler = response_handler
         self.audio_manager = audio_manager
         self.room_context_manager = room_context_manager
+        self.household_clock = household_clock if household_clock is not None else HouseholdClock()
 
         # Orchestrator
         self._orchestrator = orchestrator
@@ -327,9 +341,13 @@ class RequestRouter:
         else:
             self._wake_words = _default_wakes
 
+        # P3-F2: claims household turns before any domotics producer.
+        self.household_intents = household_intents if household_intents is not None else HouseholdIntentClassifier(
+            HouseholdIntentSettings(wake_words=self._wake_words))
+
         # Command acceptance gate (consolidates _is_noise_text + STT confidence).
         self.command_gate = command_gate or CommandAcceptanceGate(
-            wake_words=self._wake_words
+            wake_words=self._wake_words, household_intents=self.household_intents,
         )
 
         # LLM-based command validator. Si está configurado, intercepta el
@@ -788,6 +806,39 @@ class RequestRouter:
             merged["stt_source"] = source
         return merged
 
+    def _legacy_household_drop(self, text: str, gate_decision: AcceptanceDecision) -> AcceptanceDecision:
+        """Legacy path: the non-immediate rule without the household exemption.
+
+        The command gate lets a claimed reminder ("recordame apagar la luz a
+        las once") or routine creation ("creá una rutina para apagar las luces
+        a las once") through its non-immediate rule because the orchestrated
+        household layer claims the turn and answers it. The legacy path has no
+        household layer (its refusal is a later unit, P3F2-R1-Q3), so the
+        reminder's or routine's content would reach the extended home command,
+        the grammar and the vector search as an immediate action (review
+        Q4-RV-1). An accepted turn that carries a non-immediate reason is
+        dropped with that reason, as before the exemption; with the real gate
+        only an exempted (claimed) turn gets here. Never fails the turn on an
+        internal error.
+
+        Args:
+            text: Non-empty transcript of the capture.
+            gate_decision: The decision after the gate and the wake checks.
+
+        Returns:
+            The decision to apply.
+        """
+        if not gate_decision.accept:
+            return gate_decision
+        try:
+            reason = non_immediate_action_reason(text)
+            if reason is None:
+                return gate_decision
+        except Exception as e:  # fail-open like the gate: never drop voice control on an internal bug
+            logger.error(f"[LegacyHouseholdDrop] error (keeping the gate decision): {e}")
+            return gate_decision
+        return AcceptanceDecision(False, reason, gate_decision.signals)
+
     def _verify_wake(self, text: str, gate_decision: AcceptanceDecision,
                      room_id: str | None) -> AcceptanceDecision:
         """Capture checks after the gate: max-utterance wake word and wake verification.
@@ -914,6 +965,16 @@ class RequestRouter:
         if await self._try_memory_proposal(text, result):
             result["latency_ms"] = (time.perf_counter()-pipeline_start)*1000
             return result
+
+        # P3-F2 S5: the household layer runs before the extended home
+        # command, the grammar and the 7B, so a claimed turn never reaches a
+        # domotics producer (design F26: never move it after the grammar).
+        household = self.household_intents.classify(text)
+        if household is not None:
+            return await self._process_household_turn(
+                text, household, result, cmd=cmd, audio=audio, room_id=room_id, pipeline_start=pipeline_start,
+                tv_signal=textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE,
+            )
 
         if await self._try_home_command(
             text, result, room_id=room_id, pipeline_start=pipeline_start,
@@ -1123,13 +1184,7 @@ class RequestRouter:
 
         # 5. Process with orchestrator
         self._response_zone.set(zone_id)
-        async def on_response(dispatch_result):
-            if dispatch_result.was_queued and dispatch_result.queue_position and not self.response_handler.is_responding:
-                await self._speak_response(
-                    dispatch_result.response,
-                    zone_id=zone_id,
-                    room_context=room_context,
-                )
+        on_response = self._queued_reply(zone_id, room_context)
 
         # Propagar intent + slots del LLMRouter al orchestrator. Migración del
         # patrón ya existente en el path legacy (líneas 962-968 abajo). Sin
@@ -1181,6 +1236,8 @@ class RequestRouter:
             text=text,
             audio=audio if not user_id else None,
             zone_id=zone_id,
+            # The capturing mic's room is also the turn's origin room (P3F1-R3
+            # option A); the dispatcher normalizes it, never the resolved room.
             context_room_id=room_id,
             on_response=on_response,
             service_filter=_service_filter,
@@ -1188,7 +1245,105 @@ class RequestRouter:
             **({"target_entity_id": target_entity_id} if target_entity_id else {}),
             memory_sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
         )
+        return await self._finish_orchestrated_turn(
+            dispatch_result, result, text=text, zone_id=zone_id, room_context=room_context, emotion=emotion,
+            pipeline_start=pipeline_start,
+        )
 
+    def _queued_reply(self, zone_id: str | None, room_context):
+        """Callback that speaks a queued slow-path reply in the turn's zone."""
+        async def on_response(dispatch_result):
+            if dispatch_result.was_queued and dispatch_result.queue_position and not self.response_handler.is_responding:
+                await self._speak_response(
+                    dispatch_result.response,
+                    zone_id=zone_id,
+                    room_context=room_context,
+                )
+        return on_response
+
+    async def _household_veto_passes(self, text: str, result: dict, *, room_id: str | None, tv_signal: bool) -> bool:
+        """Run the 7B as a veto on a weakly woken claimed turn (P3-F2 S6).
+
+        Same acceptance test as the extended home command: is_command, not
+        'unavailable', and a finite confidence within the configured range.
+        The model can only stop the turn; it never chooses a family, a part,
+        a target or a service. Without a configured LLMCommandRouter a turn
+        with a TV signal (textual wake, ambient_strict, low wake score) fails
+        closed; otherwise it proceeds as an unclaimed turn would without a
+        model gate.
+        """
+        if self.llm_command_router is None:
+            return not tv_signal
+        classification = None
+        started = time.perf_counter()
+        try:
+            classification = await self._classify_command(text, room_id=room_id)
+        except Exception:
+            logger.exception("[Household] Veto unavailable")
+        result["timings"]["llm_router"] = (time.perf_counter() - started) * 1000
+        confidence = getattr(classification, "confidence", None)
+        return (
+            getattr(classification, "is_command", None) is True
+            and getattr(classification, "rejection_reason", None) != "unavailable"
+            and finite_number(confidence)
+            and self.llm_min_command_confidence <= confidence <= 1
+        )
+
+    async def _process_household_turn(self, text: str, household: HouseholdIntent, result: dict, *, cmd, audio,
+                                      room_id: str | None, pipeline_start: float, tv_signal: bool) -> dict:
+        """Dispatch a claimed household turn (P3-F2 S6).
+
+        A weak wake (TV signal, a transcript-based wake engine, or a turn
+        longer than ``household_intents.unvetoed_max_words``) needs the 7B
+        veto; a rejection ends the turn with no effect. The turn never
+        carries a service_filter, slots or a target from any producer, never
+        uses audio_manager.detect_source_zone, and its origin room is only the
+        capturing microphone's room (the dispatcher derives it from
+        ``context_room_id``, P3F1-R3 option A).
+        """
+        result["household"] = household.summary()
+        logger.info("[Household] claimed %s", household.summary())
+        weak_wake = (
+            tv_signal
+            or not self.wake_acoustically_confirmed
+            or len(text.split()) > self.household_intents.settings.unvetoed_max_words
+        )
+        if weak_wake and not await self._household_veto_passes(text, result, room_id=room_id, tv_signal=tv_signal):
+            logger.info("[Household] vetoed %s", household.summary())
+            result["intent"] = "llm_rejected:household"
+            result["success"] = False
+            result["response"] = ""
+            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+            return result
+
+        # The reply zone follows the room context as for any turn; the audio
+        # source-zone detector is never consulted for a household object.
+        room_context = None
+        if self.room_context_manager and room_id:
+            room_context = self.room_context_manager.resolve_room(mic_zone_id=room_id, user_id=None)
+        zone_id = f"zone_{room_context.room_id}" if room_context else None
+        if zone_id:
+            self.response_handler.set_active_zone(zone_id)
+            self._response_zone.set(zone_id)
+        dispatch_result = await self._orchestrator.process(
+            user_id=None,
+            text=text,
+            audio=audio,
+            zone_id=zone_id,
+            context_room_id=room_id,
+            on_response=self._queued_reply(zone_id, room_context),
+            service_filter=None,
+            query_slots=None,
+            memory_sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
+        )
+        return await self._finish_orchestrated_turn(
+            dispatch_result, result, text=text, zone_id=zone_id, room_context=room_context, emotion=cmd.emotion,
+            pipeline_start=pipeline_start,
+        )
+
+    async def _finish_orchestrated_turn(self, dispatch_result, result: dict, *, text: str, zone_id: str | None,
+                                        room_context, emotion, pipeline_start: float) -> dict:
+        """Record the dispatch outcome, speak the reply and log the turn."""
         if isinstance(getattr(dispatch_result, "memory_sources", None), tuple):
             self._response_sources.set(dispatch_result.memory_sources)
         if dispatch_result.intent in {"conversation", "cancelled"} and not self._current_source_available():
@@ -1333,6 +1488,7 @@ class RequestRouter:
         gate_decision = self._verify_wake(text, self.command_gate.evaluate(
             text, stt_confidence=getattr(cmd, "stt_confidence", None)
         ), room_id)
+        gate_decision = self._legacy_household_drop(text, gate_decision)
         if not gate_decision.accept:
             logger.info(f"Gate reject ({gate_decision.reason}): {text!r}")
             result["intent"] = f"gate_rejected:{gate_decision.reason}"
@@ -2219,9 +2375,8 @@ class RequestRouter:
 
     async def _build_prompt(self, user_text: str) -> str:
         """Reason over the current microphone turn without personal or unscoped cached data."""
-        from datetime import datetime
-
-        time_context = datetime.now().strftime("%H:%M del %A")
+        # P3-F1: household wall time, not the process's local time.
+        time_context = self.household_clock.now_local().strftime("%H:%M del %A")
         # Explicit household state queries use the current typed capability path.
         # A raw HA cache and global memory are not authority for a generic prompt.
         return f"""Eres un asistente de hogar inteligente. Responde de forma concisa y natural en español.

@@ -59,7 +59,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from src.world.weather import (HOUSEHOLD_TIMEZONE, NO_DATA, NO_FORECAST, ForecastAlignment,
+from src.core.household_clock import SUPPORTED_HOUSEHOLD_TIMEZONE
+from src.world.weather import (NO_DATA, NO_FORECAST, ForecastAlignment,
                                describe_forecast, forecast_target_date)
 
 # T037-U1: el día del pronóstico se elige por FECHA local del hogar, nunca por
@@ -235,7 +236,7 @@ def test_household_timezone_matches_the_shipped_routines_timezone():
     settings = Path(__file__).resolve().parents[3] / "config" / "settings.yaml"
     with settings.open() as fh:
         configured = yaml.safe_load(fh)["routines"]["timezone"]
-    assert HOUSEHOLD_TIMEZONE == configured
+    assert SUPPORTED_HOUSEHOLD_TIMEZONE == configured == ZONE.key
 
 
 def test_forecast_never_mentions_rain_probability():

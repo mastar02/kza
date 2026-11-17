@@ -46,9 +46,9 @@ from functools import partial
 
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
 from dataclasses import dataclass, field
-from datetime import datetime
 from uuid import uuid4
 
+from src.core.household_clock import HouseholdClock
 from src.core.logging import get_logger
 from src.memory.fact_ledger import FactLedger, MemoryOrigin, MemorySource, sources_authorized
 from src.memory.prompt_context import PromptContext, merge_sources
@@ -347,6 +347,7 @@ class ContextManager:
         source_policy: FactLedger | None = None,
         clock: Callable[[], float] | None = None,
         io_worker: Callable | None = None,
+        household_clock: HouseholdClock | None = None,
     ):
         """
         Args:
@@ -358,6 +359,9 @@ class ContextManager:
             persister: ContextPersister instance; si None, sin persistencia cross-sesión
             compaction_threshold: turnos al alcanzar los cuales dispara compactación
             keep_recent_turns: turnos literal preservados al final tras compactar
+            household_clock: Reloj del hogar (P3-F1) para la fecha y hora del
+                prompt; el de main se comparte con el dispatcher. Sin él se
+                construye uno propio, nunca la hora local del proceso.
         """
         self.max_history = max_history
         self.inactive_timeout = inactive_timeout
@@ -371,6 +375,7 @@ class ContextManager:
         self.keep_recent_turns = keep_recent_turns
         self.source_policy = source_policy
         self._clock = clock
+        self.household_clock = household_clock if household_clock is not None else HouseholdClock()
         self._io_worker = io_worker
         self.retention_notify = None
         self._io_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='context-io') if io_worker is None else None
@@ -879,8 +884,8 @@ Mantén respuestas breves pero informativas. Usa el contexto de la conversación
             if include_home_state:
                 parts.append(f"\nEstado actual del hogar:\n{include_home_state}")
 
-            # Contexto temporal
-            now = datetime.now()
+            # Contexto temporal: calendario del hogar, no la zona del proceso (P3-F1)
+            now = self.household_clock.now_local()
             parts.append(f"\nFecha y hora: {now.strftime('%A %d de %B, %H:%M')}")
             parts.append(f"Usuario: {ctx.user_name}")
             if ctx.zone_id:

@@ -103,12 +103,16 @@ from src.lists.list_store import ListStore
 from src.lists.list_manager import ListManager
 from src.reminders.reminder_store import ReminderStore
 from src.reminders.reminder_manager import ReminderManager
+from src.core.household_clock import (
+    ROOM_SECTION_KEYS, SUPPORTED_HOUSEHOLD_TIMEZONE, HouseholdClock, RoomNamespace,
+)
 from src.dashboard.api import DashboardAPI
 from src.dashboard.authority import DashboardAuthority
 from src.dashboard.home_api import build_home_services, build_microphone_rooms
 from src.dashboard.live_erasure import build_live_services
 from src.monitoring.health_aggregator import HealthAggregator
 from src.nlu.command_gate import CommandAcceptanceGate
+from src.nlu.household_intents import HouseholdIntentClassifier, HouseholdIntentSettings
 
 if TYPE_CHECKING:
     from src.hooks.registry import HookRegistry
@@ -283,7 +287,7 @@ def _preflight_vram(threshold_mib: int = 1500) -> None:
 
 async def _initialize_routines(
     config: dict, *, ha_client, home_actions: HomeActionService, shutdown: AsyncExitStack,
-    start: bool = True,
+    start: bool = True, household_clock: HouseholdClock | None = None,
 ) -> RoutineScheduler | None:
     """Build persistent routines with shared Casa services and owned cleanup.
 
@@ -294,6 +298,8 @@ async def _initialize_routines(
         shutdown: Application lifecycle stack that outlives web admission.
         start: Start immediately for existing callers. The application factory
             defers this until all construction and warmup have succeeded.
+        household_clock: The application's household clock (P3-F1); when
+            given, its timezone and ``now_utc`` are the scheduler's zone and clock.
 
     Returns:
         An initialized scheduler, or None when routines are unavailable. Other
@@ -305,9 +311,11 @@ async def _initialize_routines(
         routines_config = config.get("routines", {})
         scheduler = await build_routine_scheduler(
             db_path=routines_config.get("db_path", "./data/routines.db"),
-            timezone=routines_config.get("timezone", "America/Montevideo"),
+            timezone=(household_clock.timezone if household_clock is not None
+                      else routines_config.get("timezone", "America/Montevideo")),
             ha_client=ha_client,
             home_actions=home_actions,
+            clock=household_clock.now_utc if household_clock is not None else None,
         )
         cleanup.push_async_callback(scheduler.store.close)
         cleanup.push_async_callback(scheduler.stop)
@@ -1091,6 +1099,10 @@ async def build_application(
         suggestion_erasure.attach_engine(suggestion_engine)
         logger.info("Smart automations habilitado")
 
+    # P3-F1: one household clock for every voice and job consumer, built once
+    # from routines.timezone (the key RoutineScheduler already reads).
+    household_clock = HouseholdClock(config.get("routines", {}).get("timezone", SUPPORTED_HOUSEHOLD_TIMEZONE))
+
     # Lists & Reminders
     lists_config = config.get("lists", {})
     reminders_config = config.get("reminders", {})
@@ -1108,7 +1120,8 @@ async def build_application(
     if destination_registration is not None:
         await destination_registration.register_store(reminder_store, "reminders")
     await reminder_store.initialize()
-    reminder_manager = ReminderManager(store=reminder_store, config=reminders_config, home_actions=home_action_service)
+    reminder_manager = ReminderManager(store=reminder_store, config=reminders_config, home_actions=home_action_service,
+                                       household_clock=household_clock)
     reminder_scheduler = None  # Created after presence_detector is ready
     logger.info("Lists & reminders initialized")
 
@@ -1163,12 +1176,14 @@ async def build_application(
     # Multi-Room Audio System (rooms-based, replaces legacy zones)
     # ----------------------------------------------------------------
     rooms_config = config.get("rooms", {})
-    ROOMS_RESERVED_KEYS = {
-        "enabled", "cross_validation", "fallback_room",
-        "dedup_window_ms", "ma1260", "wake_word", "detection",
-        "telemetry", "barge_in", "stream_watchdog", "ambient_guard", "endpointing",
-        "direction_observation",
-    }
+    ROOMS_RESERVED_KEYS = ROOM_SECTION_KEYS
+    # P3-F1: canonical bare room ids from the catalog; zone_<room> stays a transport form.
+    room_namespace = RoomNamespace.from_rooms_config(rooms_config, ROOMS_RESERVED_KEYS)
+    # P3-F2: one household intent classifier for the router and the dispatcher.
+    household_intents = HouseholdIntentClassifier(HouseholdIntentSettings.from_config(
+        config.get("household_intents"),
+        wake_words=rooms_config.get("wake_word", {}).get("words", wake_config.get("words", ["nexa"])),
+    ))
 
     if rooms_config.get("enabled", False):
         # Presence detector
@@ -1644,7 +1659,7 @@ async def build_application(
         hooks=hooks, before_handler_warn_ms=self_warn_ms, user_manager=user_manager,
         ha_client=ha_client, home_actions=home_action_service, reminder_store=reminder_store,
         presence_detector=presence_detector, reminder_wake_event=reminder_wake_event,
-        register_output=_register_voice_output,
+        register_output=_register_voice_output, household_clock=household_clock,
     )
     response_handler = voice_services.responses
     reminder_scheduler = voice_services.reminders
@@ -1840,6 +1855,9 @@ async def build_application(
             response_timeout_s=config.get("orchestrator", {}).get("response_timeout_s", 180.0),
             home_actions=home_action_service,
             home_capabilities=home_capabilities,
+            household_clock=household_clock,
+            room_namespace=room_namespace,
+            household_intents=household_intents,
             # Plan #2 OpenClaw
             compactor=compactor,
             persister=persister,
@@ -1903,6 +1921,7 @@ async def build_application(
         # wake_engine=="whisper" (nunca corre con openwakeword) y usarla acá
         # era UnboundLocalError al boot (review 2026-07-05).
         initial_prompt=config.get("stt", {}).get("initial_prompt"),
+        household_intents=household_intents,
     )
     home_voice_resolver = HomeVoiceResolver(
         home_action_service, room_context_manager.get_all_rooms() if room_context_manager else {},
@@ -1950,6 +1969,8 @@ async def build_application(
         earcon_cfg=_earcon_cfg,
         asr_event_logger=event_logger,
         wake_verifier=wake_verifier,
+        household_clock=household_clock,
+        household_intents=household_intents,
     )
 
     shutdown.push_async_callback(request_router.aclose)
@@ -2032,6 +2053,7 @@ async def build_application(
     )
     routine_scheduler = await _initialize_routines(
         config, ha_client=ha_client, home_actions=home_action_service, shutdown=shutdown, start=False,
+        household_clock=household_clock,
     )
 
     if dashboard_authority is not None:
@@ -2215,6 +2237,7 @@ async def build_application(
         voice_registry=voice_registry, voice_services=voice_services,
         home_services=home_services, home_capabilities=home_capabilities, list_manager=list_manager,
         reminder_manager=reminder_manager, routine_scheduler=routine_scheduler,
+        household_clock=household_clock, room_namespace=room_namespace,
         dashboard=dashboard, dashboard_authority=dashboard_authority,
         configuration_changes=configuration_changes, consent_gate=consent_gate,
         models=ApplicationModels(stt, tts, chroma, speaker_identifier, emotion_detector),

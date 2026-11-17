@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from src.nlu.household_intents import HouseholdIntentClassifier
     from src.stt.whisper_fast import STTResult
 
 logger = logging.getLogger(__name__)
@@ -121,6 +122,7 @@ class CommandAcceptanceGate:
         enforce_compression_ratio: bool = False,
         max_compression_ratio: float = 2.2,
         initial_prompt: str | None = None,
+        household_intents: HouseholdIntentClassifier | None = None,
     ):
         """Configure the gate.
 
@@ -144,6 +146,11 @@ class CommandAcceptanceGate:
                 provee, transcripciones que son eco del prompt (Whisper lo
                 regurgita sobre audio ininteligible) se rechazan con reason
                 'prompt_echo'. None = regla inactiva.
+            household_intents: Household intent classifier shared with the
+                router (P3-F2). A reminder request it claims is not an
+                immediate action, so the non-immediate action rule does not
+                drop it (the other hard rules still apply). None builds one
+                with the default settings.
         """
         self._wake_words = normalize_wake_words(wake_words)
         self._enforce_confidence = enforce_confidence
@@ -152,6 +159,10 @@ class CommandAcceptanceGate:
         self._enforce_compression_ratio = enforce_compression_ratio
         self._max_compression_ratio = max_compression_ratio
         self._prompt_sentences = _prompt_sentences(initial_prompt)
+        if household_intents is None:
+            from src.nlu.household_intents import HouseholdIntentClassifier
+            household_intents = HouseholdIntentClassifier()
+        self._household_intents = household_intents
 
     def evaluate(self, text: str, stt_confidence: "STTResult | None" = None) -> AcceptanceDecision:
         """Evaluate a capture. Fail-open: on internal error, accept."""
@@ -161,6 +172,25 @@ class CommandAcceptanceGate:
             logger.error(f"CommandAcceptanceGate error (fail-open accept): {e}")
             return AcceptanceDecision(True, "gate_error", {"error": str(e)})
 
+    def _claimed_reminder(self, text: str) -> bool:
+        """A reminder or routine creation request is not an action.
+
+        In "recordame apagar la luz a las 11" and "armame una rutina que
+        apague las luces a las 11" the action words are the reminder's or the
+        routine's content: the household layer (router S5) claims the turn and
+        no domotics producer sees it, so the non-immediate rule must not drop
+        it before an honest reply (P3-F2, user answer P3F2-R1-Q4). Other claimed
+        families keep the rule: a deferred home action ("apagá la luz en 10
+        minutos") and "no molestar" stay rejected here (P3F2-R1-Q1/Q5).
+        """
+        from src.nlu.household_intents import HouseholdFamily
+
+        claimed = self._household_intents.classify(text)
+        if claimed is None:
+            return False
+        return claimed.family is HouseholdFamily.REMINDER or (
+            claimed.family is HouseholdFamily.ROUTINE and claimed.reason == "new_routine")
+
     def _hard_reason(self, text: str) -> str | None:
         """Return the first matching hard rule name, or None. Migrated from _is_noise_text."""
         if not text:
@@ -168,7 +198,7 @@ class CommandAcceptanceGate:
         from src.nlu.command_grammar import non_immediate_action_reason
 
         action_block = non_immediate_action_reason(text)
-        if action_block:
+        if action_block and not self._claimed_reminder(text):
             return action_block
         norm = _normalize(text)
         if not norm:

@@ -387,3 +387,84 @@ class TestZoneRoutingFromRoom:
 
         # Should have called detect_source_zone since no room context
         router.audio_manager.detect_source_zone.assert_called_once()
+
+
+# ============================================================
+# Tests: origin room of the turn (P3-F1)
+# ============================================================
+
+def _orchestrated_router(room_mgr=None):
+    from src.orchestrator import PathType
+
+    dispatch_result = MagicMock()
+    dispatch_result.intent = "domotics"
+    dispatch_result.response = "Listo"
+    dispatch_result.success = True
+    dispatch_result.action = None
+    dispatch_result.was_queued = False
+    dispatch_result.timings = {}
+    dispatch_result.path = PathType.FAST_DOMOTICS
+    orchestrator = MagicMock()
+    orchestrator.process = AsyncMock(return_value=dispatch_result)
+    return _make_router(room_context_manager=room_mgr, orchestrator=orchestrator, orchestrator_enabled=True)
+
+
+class TestOriginRoomReachesDispatch:
+    """Only the mic that heard reaches dispatch as the origin (P3F1-R3 option A)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("mic", "resolved", "source"), [
+        ("patio", "living", ContextSource.MICROPHONE),   # unconfigured mic fell back to the living
+        ("hall", "cocina", ContextSource.BLUETOOTH),     # Bluetooth alone
+        ("hall", "cocina", ContextSource.MANUAL),        # the room named in the command (the target)
+        ("hall", "hall", ContextSource.BOTH),            # the Bluetooth-confirmed mic room
+    ])
+    async def test_only_the_mic_room_is_forwarded(self, mic, resolved, source):
+        room_context = _make_room_context(room_id=resolved)
+        room_context.source = source
+        room_mgr = MagicMock()
+        room_mgr.resolve_room = MagicMock(return_value=room_context)
+        router = _orchestrated_router(room_mgr)
+        await router.process_command(CommandEvent(audio=np.zeros(16000, dtype=np.float32), room_id=mic))
+        kwargs = router._orchestrator.process.await_args.kwargs
+        assert "origin_room" not in kwargs
+        assert (kwargs["context_room_id"], kwargs["zone_id"]) == (mic, f"zone_{resolved}")
+
+    @pytest.mark.asyncio
+    async def test_acoustic_zone_is_never_an_origin_room(self):
+        router = _orchestrated_router()
+        router.audio_manager.detect_source_zone = MagicMock(return_value="zone_cocina")
+        await router.process_command(np.zeros(16000, dtype=np.float32))
+        kwargs = router._orchestrator.process.await_args.kwargs
+        assert kwargs["zone_id"] == "zone_cocina"
+        assert kwargs["context_room_id"] is None
+        assert "origin_room" not in kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("mic", "expected_zone", "expected_origin"), [
+        ("patio", "zone_living", None),     # fallback room speaks there but names no origin
+        ("hall", "zone_hall", "hall"),
+    ])
+    async def test_real_room_context_and_dispatcher_name_only_the_mic(self, mic, expected_zone, expected_origin):
+        from src.core.household_clock import HouseholdClock, RoomNamespace
+        from src.orchestrator.dispatcher import MultiUserOrchestrator
+        from src.rooms.room_context import RoomConfig, RoomContextManager
+
+        room_mgr = RoomContextManager(fallback_room="living")
+        for room in ("living", "hall"):
+            room_mgr.add_room(RoomConfig(room_id=room, name=room.title(), display_name=f"el {room}"))
+        orchestrator = MultiUserOrchestrator(
+            chroma_sync=MagicMock(), ha_client=AsyncMock(), routine_manager=MagicMock(),
+            household_clock=HouseholdClock(), room_namespace=RoomNamespace(("living", "hall")))
+        results = []
+
+        async def process(**kwargs):
+            results.append(await orchestrator.process(**kwargs))
+            return results[-1]
+
+        router = _make_router(room_context_manager=room_mgr, orchestrator=MagicMock(), orchestrator_enabled=True)
+        router._orchestrator.process = AsyncMock(side_effect=process)
+        router.command_processor.process_command = AsyncMock(return_value=_make_cmd_result("nexa qué recordatorios hay"))
+        await router.process_command(CommandEvent(audio=np.zeros(16000, dtype=np.float32), room_id=mic))
+        assert len(results) == 1
+        assert (results[0].zone_id, results[0].origin_room) == (expected_zone, expected_origin)

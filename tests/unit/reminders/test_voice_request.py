@@ -903,7 +903,7 @@ def test_module_is_pure_stdlib():
 @pytest.mark.parametrize("recurrence", sorted({r for *_, r, _ in SUCCESS if r}))
 def test_recurrence_strings_feed_next_trigger(recurrence):
     parse_recurrence(recurrence)
-    assert next_trigger(MONDAY_10.timestamp(), recurrence) > MONDAY_10.timestamp()
+    assert next_trigger(MONDAY_10.timestamp(), recurrence, zone=MVD) > MONDAY_10.timestamp()
 
 
 PROPERTY_PHRASES = [

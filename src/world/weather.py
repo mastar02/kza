@@ -88,11 +88,9 @@ def describe_current(state: dict | None) -> str:
 NO_FORECAST = "No tengo el pronóstico ahora mismo."
 _DIA_INDEX = {"hoy": 0, "mañana": 1, "manana": 1, "pasado mañana": 2, "pasado manana": 2}
 
-# Zona horaria del hogar para alinear el pronóstico por fecha local. Es el
-# mismo valor que `routines.timezone` en config/settings.yaml (único admitido
-# hoy por RoutineScheduler); un test falla si divergen. Interino hasta que
-# P3-F1 inyecte el reloj del hogar construido desde esa clave.
-HOUSEHOLD_TIMEZONE = "America/Montevideo"
+# La zona horaria del hogar para alinear el pronóstico por fecha local llega
+# inyectada: HouseholdClock.zone (src/core/household_clock.py, P3-F1), construido
+# una vez en main desde `routines.timezone`.
 
 
 class ForecastAlignment(StrEnum):

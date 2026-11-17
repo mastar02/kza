@@ -39,10 +39,10 @@ import time
 import unicodedata
 from contextlib import aclosing
 from dataclasses import asdict, dataclass, field, replace
-from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Callable
 
+from src.core.household_clock import HouseholdClock, RoomNamespace
 from src.core.logging import get_logger
 from src.core.observation import Observation, ObservationReason, ObservationSource, ObservationState
 from src.core.voice_delivery import DeliveryState, GenerationState
@@ -57,6 +57,15 @@ from src.llm.generation_stream import GenerationStream, GuardedGeneration
 from src.llm.error_classifier import is_consent_withdrawn
 from src.memory.fact_ledger import MemorySource
 from src.memory.producer_scopes import ProducerScopes, current_producer_scope
+from src.nlu.command_grammar import WAKE_TERMS
+from src.nlu.household_intents import (
+    LIST_CLEAR_VERBS,
+    LIST_DELETE_VERBS,
+    HouseholdFamily,
+    HouseholdIntent,
+    HouseholdIntentClassifier,
+    HouseholdOperation,
+)
 from src.orchestrator.cancellation import CancellationReason
 from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.priority_queue import (
@@ -111,6 +120,36 @@ _BOUNDARY_RE = {
     kw: re.compile(rf"\b{re.escape(kw)}(?:e?(?:{_ENCLITICS}))?\b")
     for kw in _BOUNDARY_KEYWORDS
 }
+
+
+# P3-F2 D2: the same word-boundary rule the household classifier uses, so
+# "listado", "realista" or "rutinario" no longer suppress the generic cancel
+# or the pending confirmation (design F11, C02-CAN-0007).
+_OBJECT_NOUN_RE = re.compile(r"\b(?:recordatorios?|t[ií]mers?|temporizador(?:es)?|listas?|rutinas?)\b")
+
+# P3F2-R1-Q4: a request to create a routine is refused honestly until T033.
+_ROUTINE_CREATE_REFUSAL = "Todavía no creo rutinas por voz. Podés crearlas desde la web."
+
+# P3-F2 decision on F10: the orchestrated path has no sync or enrollment
+# consumer, so only the explicit whole requests are recognised (the same
+# phrases as the legacy path) and they are answered honestly as unsupported;
+# a phrase that merely contains "actualiza" or "registrar" is not one.
+_SYNC_PHRASES = frozenset({
+    "sincroniza los comandos", "sincronizar los comandos",
+    "actualiza los comandos", "actualizar los comandos",
+})
+_ENROLLMENT_TRIGGERS = (
+    "agregar persona", "agregar usuario", "nueva persona", "nuevo usuario", "registrar persona",
+    "registrar usuario", "anadir persona", "add user", "add person",
+)
+
+
+def _plain_words(text_lower: str) -> str:
+    """Accent-free words of an utterance without a leading wake word."""
+    words = "".join(c if c.isalnum() else " " for c in _strip_accents(text_lower)).split()
+    while words and words[0] in WAKE_TERMS:
+        words.pop(0)
+    return " ".join(words)
 
 
 def _kw_match(keyword: str, text_lower: str) -> bool:
@@ -311,6 +350,8 @@ class PathType(StrEnum):
     FAST_LIST = "fast_list"                # List CRUD
     FAST_REMINDER = "fast_reminder"        # Reminder CRUD
     FAST_WEATHER = "fast_weather"           # Clima desde HA, sin red externa
+    FAST_TIMER = "fast_timer"              # Temporizadores (P3-F2; handler en T030-U1)
+    FAST_HOUSEHOLD = "fast_household"      # Familias del hogar sin handler todavía (P3-F2)
 
 
 @dataclass
@@ -337,6 +378,8 @@ class DispatchResult:
     delivery_outcome: DeliveryOutcome | None = None
     response_requirement: ResponseRequirement = ResponseRequirement.REQUIRED
     observation: Observation | None = None
+    # Canonical bare room id of the mic that heard the turn (P3-F1 RoomNamespace.origin_room), or None.
+    origin_room: str | None = None
 
     def __post_init__(self) -> None:
         if self.outcome is None and self.intent in {"simple_query", "conversation"}:
@@ -578,6 +621,9 @@ class RequestDispatcher:
         home_actions: HomeActionService | None = None,
         response_timeout_s: float = 180.0,
         home_capabilities: HomeCapabilityService | None = None,
+        household_clock: HouseholdClock | None = None,
+        room_namespace: RoomNamespace | None = None,
+        household_intents: HouseholdIntentClassifier | None = None,
     ):
         """
         Args:
@@ -609,6 +655,16 @@ class RequestDispatcher:
                 `src.world.weather.DEFAULT_ENTITY`), usada por FAST_WEATHER.
                 Se configura en `config/settings.yaml:home_assistant.
                 weather_entity` y llega por MultiUserOrchestrator.
+            household_clock: Reloj del hogar construido una vez en main desde
+                ``routines.timezone`` (P3-F1); fecha local del pronóstico,
+                reloj de respaldo y, si no se inyecta ``context_manager``, la
+                fecha y hora del prompt. Sin él, el huso soportado por defecto.
+            room_namespace: Catálogo de habitaciones configuradas (P3-F1) que
+                normaliza la habitación de origen del turno. Sin él, ninguna
+                habitación es de origen.
+            household_intents: Clasificador de intenciones del hogar (P3-F2),
+                la misma instancia que usa el RequestRouter. Sin él, uno con
+                la configuración por defecto.
         """
         self.chroma = chroma_sync
         self.ha = ha_client
@@ -620,7 +676,8 @@ class RequestDispatcher:
         if type(response_timeout_s) not in (int, float) or not math.isfinite(response_timeout_s) or response_timeout_s <= 0:
             raise ValueError("Invalid response timeout")
         self.response_timeout_s = response_timeout_s
-        self.context_manager = context_manager or ContextManager()
+        self.household_clock = household_clock if household_clock is not None else HouseholdClock()
+        self.context_manager = context_manager or ContextManager(household_clock=self.household_clock)
         # An injected queue is initially empty/falsy, but is still the worker's
         # queue. Replacing it strands every dispatcher request without a worker.
         self.queue = priority_queue if priority_queue is not None else PriorityRequestQueue()
@@ -633,6 +690,8 @@ class RequestDispatcher:
         self.response_handler = response_handler
         self.weather_entity = weather_entity
         self.home_capabilities = home_capabilities
+        self.room_namespace = room_namespace if room_namespace is not None else RoomNamespace(())
+        self.household_intents = household_intents if household_intents is not None else HouseholdIntentClassifier()
         self.hooks = hooks  # plan #3 OpenClaw — HookRegistry or None
         self._before_handler_warn_ms = before_handler_warn_ms
         # Voice-auth opcional (default OFF): exige speaker enrolado para ejecutar
@@ -697,6 +756,12 @@ class RequestDispatcher:
             query_slots: Slots NLU (brightness_pct, rgb_color, etc.) que
                 sobrescriben el preset del comando matcheado. También
                 portado desde el legacy.
+            context_room_id: Habitación del micrófono que capturó el turno.
+                Es la única fuente de la habitación de origen
+                (``DispatchResult.origin_room``, P3F1-R3 opción A): esta
+                habitación si está configurada, si no None; nunca la zona
+                detectada por audio, el Bluetooth solo, la última habitación
+                conocida, la habitación nombrada ni ``rooms.fallback_room``.
         """
         start_time = time.perf_counter()
         self._stats["total_requests"] += 1
@@ -711,11 +776,28 @@ class RequestDispatcher:
 
         # Acoustic identity and caller-supplied IDs do not confer personal scope.
         ctx = self.context_manager.get_household(context_room_id if context_room_id is not None else zone_id)
+        origin = self.room_namespace.origin_room(context_room_id)
+
+        # 0. P3-F2 D1: a claimed household turn goes straight to its family
+        # path. Special commands, _classify_request and the caller's
+        # service_filter/query_slots/target never apply to it.
+        household = self.household_intents.classify(text)
+        if household is not None:
+            logger.info("[Household] dispatch %s", household.summary())
+            result = await self._dispatch_household(household, text, user_id=user_id, zone_id=zone_id)
+            self._stats["fast_path"] += 1
+            self._stats["by_path"][result.path] += 1
+            result.timings["total"] = (time.perf_counter() - start_time) * 1000
+            result.user_id = user_id
+            result.zone_id = zone_id
+            result.origin_room = origin
+            return result
 
         # 1. Detectar comandos especiales
         special_result = await self._check_special_commands(text_lower, user_id, ctx)
         if special_result:
             special_result.timings["total"] = (time.perf_counter() - start_time) * 1000
+            special_result.origin_room = origin
             return special_result
 
         # 2. Detectar intent y prioridad
@@ -783,6 +865,7 @@ class RequestDispatcher:
         result.timings["total"] = (time.perf_counter() - start_time) * 1000
         result.user_id = user_id
         result.zone_id = zone_id
+        result.origin_room = origin
 
         return result
 
@@ -878,8 +961,9 @@ class RequestDispatcher:
             if _kw_match(keyword, text_lower):
                 return PathType.FAST_DOMOTICS, Priority.HIGH
 
-        # Detectar rutinas
-        if any(word in text_lower for word in ["rutina", "automatiza", "cuando"]):
+        # Detectar rutinas. Sin "cuando" suelto (T033-U1/P3-F2): "cuándo
+        # juega Peñarol" es una pregunta, no una rutina.
+        if any(word in text_lower for word in ["rutina", "automatiza"]):
             return PathType.FAST_ROUTINE, Priority.MEDIUM
 
         # Si tenemos router, preguntas simples van por fast path
@@ -910,8 +994,7 @@ class RequestDispatcher:
     ) -> DispatchResult | None:
         """Verificar comandos especiales"""
 
-        object_request = any(_kw_match(noun, text_lower) for noun in
-                             ("recordatorio", "timer", "temporizador", "lista", "rutina"))
+        object_request = _OBJECT_NOUN_RE.search(text_lower) is not None
         # Named-object cancellation must not complete an unrelated queued turn.
         # Confirmacion pendiente - check BEFORE cancel keywords
         # so "no cancela" is treated as rejection, not as a cancel command
@@ -969,29 +1052,104 @@ class RequestDispatcher:
                                         observation_scope="software_state" if cancelled else None),
                 )
 
-        # Comando de sincronizacion
-        for keyword in self.SYNC_KEYWORDS:
-            if keyword in text_lower:
-                return DispatchResult(
-                    path=PathType.SYNC,
-                    priority=Priority.MEDIUM,
-                    success=True,
-                    response="Sincronizando comandos...",
-                    intent="sync", outcome=TaskOutcome(TaskStatus.RECEIVED),
-                )
+        # Sync and enrollment have no orchestrated consumer (design F10): only
+        # the explicit requests are recognised, and never confirmed.
+        plain = _plain_words(text_lower)
+        if plain in _SYNC_PHRASES:
+            return DispatchResult(
+                path=PathType.SYNC,
+                priority=Priority.MEDIUM,
+                success=False,
+                response="Todavía no puedo sincronizar los comandos por voz en este modo.",
+                intent="sync", outcome=TaskOutcome(TaskStatus.UNSUPPORTED, persistence=PersistenceState.NOT_WRITTEN,
+                                                   dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED),
+            )
 
-        # Comando de enrollment
-        for keyword in self.ENROLLMENT_KEYWORDS:
-            if keyword in text_lower:
-                return DispatchResult(
-                    path=PathType.ENROLLMENT,
-                    priority=Priority.MEDIUM,
-                    success=True,
-                    response="Iniciando registro de usuario...",
-                    intent="enrollment", outcome=TaskOutcome(TaskStatus.RECEIVED),
-                )
+        if any(trigger in plain for trigger in _ENROLLMENT_TRIGGERS):
+            return DispatchResult(
+                path=PathType.ENROLLMENT,
+                priority=Priority.MEDIUM,
+                success=False,
+                response="Todavía no puedo registrar personas por voz en este modo.",
+                intent="enrollment", outcome=TaskOutcome(TaskStatus.UNSUPPORTED, persistence=PersistenceState.NOT_WRITTEN,
+                                                         dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED),
+            )
 
         return None
+
+    @staticmethod
+    def _household_refusal(path: PathType, intent: str, response: str, status: TaskStatus) -> DispatchResult:
+        """An honest answer with zero effects for a claimed household turn."""
+        return DispatchResult(
+            path=path, priority=Priority.HIGH, success=False, response=response, intent=intent,
+            outcome=TaskOutcome(status, persistence=PersistenceState.NOT_WRITTEN, dispatch=DispatchState.NOT_SENT,
+                                effect=EffectState.NOT_OBSERVED),
+        )
+
+    async def _dispatch_household(self, household: HouseholdIntent, text: str, *, user_id: str,
+                                  zone_id: str | None) -> DispatchResult:
+        """Send a claimed household turn to its family path (P3-F2 D1).
+
+        Families without a handler yet answer honestly (UNSUPPORTED or
+        NEEDS_INPUT) with zero effects.
+
+        Args:
+            household: The classification of ``text``.
+            text: Dispatch text.
+            user_id: Caller id (never an account authority).
+            zone_id: Reply zone.
+        """
+        family, operation = household.family, household.operation
+        if family is HouseholdFamily.COMPOUND:
+            # Interim gate (household_intents.compound_execute: false) until T037-U6.
+            return self._household_refusal(PathType.FAST_HOUSEHOLD, "compound", "Decímelo de a una cosa.",
+                                           TaskStatus.NEEDS_INPUT)
+        if family is HouseholdFamily.TIMER:
+            return self._household_refusal(PathType.FAST_TIMER, "timer",
+                                           "Todavía no manejo temporizadores ni alarmas por voz.", TaskStatus.UNSUPPORTED)
+        if family is HouseholdFamily.REMINDER:
+            if household.reason == "second_clause":
+                return self._household_refusal(PathType.FAST_REMINDER, "reminder",
+                                               "Decime el recordatorio y la orden por separado.", TaskStatus.NEEDS_INPUT)
+            if household.reason == "other_person":
+                return self._household_refusal(PathType.FAST_REMINDER, "reminder",
+                                               "Todavía no puedo crear recordatorios para otra persona.",
+                                               TaskStatus.UNSUPPORTED)
+            if operation not in (HouseholdOperation.CREATE, HouseholdOperation.CANCEL, HouseholdOperation.QUERY):
+                return self._household_refusal(PathType.FAST_REMINDER, "reminder",
+                                               "Con los recordatorios puedo consultarlos o cancelarlos. ¿Cuál querés?",
+                                               TaskStatus.NEEDS_INPUT)
+            return await self._fast_reminder_path(text, user_id, zone_id, operation=operation)
+        if family is HouseholdFamily.LIST:
+            if operation in (HouseholdOperation.STOP, HouseholdOperation.PAUSE, HouseholdOperation.RESUME,
+                             HouseholdOperation.DISABLE):
+                return self._household_refusal(PathType.FAST_LIST, "list",
+                                               "Eso no se puede hacer con una lista. Puedo agregar, quitar, vaciar o borrar.",
+                                               TaskStatus.NEEDS_INPUT)
+            if operation is HouseholdOperation.CANCEL and household.verb not in LIST_DELETE_VERBS | LIST_CLEAR_VERBS:
+                return self._household_refusal(PathType.FAST_LIST, "list", "¿Querés borrar la lista o vaciarla?",
+                                               TaskStatus.NEEDS_INPUT)
+            return await self._fast_list_path(text, user_id, zone_id, household=household)
+        if family is HouseholdFamily.ROUTINE:
+            # T033 has not landed: no routine runs, stops or changes by voice yet.
+            if operation in (HouseholdOperation.STOP, HouseholdOperation.DISABLE, HouseholdOperation.CANCEL):
+                response = "Todavía no controlo rutinas por voz. Podés detenerla o cambiarla desde la web."
+            elif household.reason == "new_routine":
+                response = _ROUTINE_CREATE_REFUSAL
+            else:
+                response = "Todavía no manejo rutinas por voz. Podés verlas desde la web."
+            return self._household_refusal(PathType.FAST_ROUTINE, "routine", response, TaskStatus.UNSUPPORTED)
+        if family is HouseholdFamily.INTERCOM:
+            return self._household_refusal(PathType.FAST_HOUSEHOLD, "intercom",
+                                           "Todavía no hago anuncios por voz.", TaskStatus.UNSUPPORTED)
+        if family is HouseholdFamily.NOTIFICATION:
+            return self._household_refusal(PathType.FAST_HOUSEHOLD, "notification_config",
+                                           "Todavía no cambio el modo no molestar por voz. Podés hacerlo desde la web.",
+                                           TaskStatus.UNSUPPORTED)
+        # DEFERRED_ACTION: interim refusal until T031-U5 (reminders with home actions).
+        return self._household_refusal(PathType.FAST_HOUSEHOLD, "deferred_action",
+                                       "Todavía no programo acciones de la casa por voz; podés crear una rutina en la web.",
+                                       TaskStatus.UNSUPPORTED)
 
     async def _fast_path(
         self,
@@ -1154,6 +1312,14 @@ class RequestDispatcher:
                 logger.warning(f"Router fallo, pasando a slow path: {e}")
 
         if path == PathType.FAST_ROUTINE:
+            # P3-F2 review F5 (user answer Q15: routine proposals are extracted
+            # only locally): an unclaimed creation phrase never reaches
+            # RoutineManager._handle_create, which sends the request and the
+            # HA entity list to the cloud reasoner.
+            detected = self.routines.detect_intent(text)
+            if isinstance(detected, dict) and detected.get("intent") == "create":
+                return self._household_refusal(PathType.FAST_ROUTINE, "routine", _ROUTINE_CREATE_REFUSAL,
+                                               TaskStatus.UNSUPPORTED)
             # Procesar rutina
             t0 = time.perf_counter()
             routine_result = await self.routines.handle(text)
@@ -1414,8 +1580,54 @@ class RequestDispatcher:
             timings=timings
         )
 
-    async def _fast_list_path(self, text: str, user_id: str | None, zone_id: str = None) -> DispatchResult:
-        """Apply household scope before reading names or mutating any list."""
+    @staticmethod
+    def _list_branch(text_lower: str, household: HouseholdIntent | None) -> str:
+        """Which list operation a turn asks for.
+
+        A claimed turn (P3-F2) is decided by its classified operation and head
+        verb, so voseo and accents ("borrá/eliminá/vaciá la lista") reach the
+        same handler branches as today's tú forms (user answer Q30).
+        """
+        if household is None:
+            if any(w in text_lower for w in ["qué hay", "que hay", "dime la lista", "lee la lista"]):
+                return "query"
+            if any(w in text_lower for w in ["vacía", "vacia", "limpia"]):
+                return "clear"
+            if any(w in text_lower for w in ["borra la lista", "elimina la lista"]):
+                return "delete"
+            if any(w in text_lower for w in ["crea una lista", "nueva lista"]):
+                return "create"
+            if any(w in text_lower for w in ["quita", "quitale", "elimina", "tacha"]):
+                return "remove"
+            if any(w in text_lower for w in ["agrega", "agregale", "añade", "pon"]):
+                return "add"
+            return "all"
+        operation = household.operation
+        if operation is HouseholdOperation.QUERY:
+            return "all" if re.search(r"\blistas\b", text_lower) else "query"
+        if operation is HouseholdOperation.CANCEL:
+            return "clear" if household.verb in LIST_CLEAR_VERBS else "delete"
+        return {HouseholdOperation.CREATE: "create", HouseholdOperation.REMOVE_ITEM: "remove",
+                HouseholdOperation.ADD_ITEM: "add"}.get(operation, "all")
+
+    @staticmethod
+    def _item_from_complement(complement: str, removing: bool) -> str | None:
+        """The item named after a claimed add/remove verb, without the list phrase."""
+        item = re.sub(r"\s*\b(?:a|en|de|del)\s+(?:la\s+|las\s+|mi\s+|mis\s+|nuestra\s+)?listas?\b.*$", "", complement)
+        if removing:
+            item = re.sub(r"^(?:el|la|los|las)\s+", "", item)
+        item = item.strip()
+        return item or None
+
+    async def _fast_list_path(self, text: str, user_id: str | None, zone_id: str = None,
+                              household: HouseholdIntent | None = None) -> DispatchResult:
+        """Apply household scope before reading names or mutating any list.
+
+        Args:
+            household: The P3-F2 classification when the turn was claimed; its
+                operation and head verb choose the branch and its complement
+                names the item. None keeps the keyword routing.
+        """
         if not self.list_manager:
             return DispatchResult(PathType.FAST_LIST, Priority.HIGH, False, "Listas no configuradas",
                 intent="list", outcome=TaskOutcome(TaskStatus.UNSUPPORTED))
@@ -1425,8 +1637,9 @@ class RequestDispatcher:
         outcome = TaskOutcome(TaskStatus.NEEDS_INPUT, persistence=PersistenceState.NOT_WRITTEN)
         committed = TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
                                 effect=EffectState.OBSERVED, observation_scope="software_state")
+        branch = self._list_branch(text_lower, household)
         try:
-            if any(w in text_lower for w in ["qué hay", "que hay", "dime la lista", "lee la lista"]):
+            if branch == "query":
                 name = self._extract_list_name(text_lower)
                 if isinstance(self.list_manager, ListManager):
                     selected = await self.list_manager.get_list(user_id, name, shared_only=True)
@@ -1439,18 +1652,18 @@ class RequestDispatcher:
                     items = await self.list_manager.get_items(user_id, name, shared_only=True)
                 response = "En la lista tienes: " + ", ".join(i.text for i in items) if items else "La lista compartida está vacía"
                 outcome = TaskOutcome(TaskStatus.COMPLETED)
-            elif any(w in text_lower for w in ["vacía", "vacia", "limpia"]):
+            elif branch == "clear":
                 cleared = await self.list_manager.clear_list(user_id, self._extract_list_name(text_lower), shared_only=True)
                 response = "Listo, vacié la lista" if cleared is True else "No encontré esa lista compartida"
                 if cleared is True:
                     outcome = committed
-            elif any(w in text_lower for w in ["borra la lista", "elimina la lista"]):
+            elif branch == "delete":
                 name = self._extract_list_name(text_lower)
                 removed = bool(name) and await self.list_manager.delete_list(user_id, name, shared_only=True)
                 response = f"Borré la lista {name}" if removed else "No encontré esa lista compartida"
                 if removed:
                     outcome = committed
-            elif any(w in text_lower for w in ["crea una lista", "nueva lista"]):
+            elif branch == "create":
                 name = self._extract_list_name(text_lower)
                 if not re.search(r'\blista\s+compartida\b', text_lower):
                     response = "Indicá que querés crear una lista compartida del hogar."
@@ -1460,8 +1673,9 @@ class RequestDispatcher:
                     outcome = committed if created is not None else TaskOutcome(TaskStatus.FAILED)
                 else:
                     response = "No entendí el nombre de la lista"
-            elif any(w in text_lower for w in ["quita", "quitale", "elimina", "tacha"]):
-                item = self._extract_item_text(text_lower, removing=True)
+            elif branch == "remove":
+                item = (self._item_from_complement(household.complement, removing=True) if household is not None
+                        else self._extract_item_text(text_lower, removing=True))
                 name = self._extract_list_name(text_lower)
                 if item and isinstance(self.list_manager, ListManager):
                     mutation = await self.list_manager.remove_item_with_outcome(user_id, item, name, shared_only=True)
@@ -1472,8 +1686,9 @@ class RequestDispatcher:
                     if removed:
                         outcome = committed
                 response = f"Quité {item}" if removed else "No encontré ese artículo en la lista compartida"
-            elif any(w in text_lower for w in ["agrega", "agregale", "añade", "pon"]):
-                item = self._extract_item_text(text_lower, removing=False)
+            elif branch == "add":
+                item = (self._item_from_complement(household.complement, removing=False) if household is not None
+                        else self._extract_item_text(text_lower, removing=False))
                 name = self._extract_list_name(text_lower)
                 if item:
                     if isinstance(self.list_manager, ListManager):
@@ -1496,23 +1711,44 @@ class RequestDispatcher:
             return DispatchResult(PathType.FAST_LIST, Priority.HIGH, False, "Hubo un error con la lista",
                 intent="list", outcome=TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.UNCERTAIN))
 
-    async def _fast_reminder_path(self, text: str, user_id: str, zone_id: str = None) -> DispatchResult:
-        """Do not claim creation or cancellation without an operation receipt."""
+    async def _fast_reminder_path(self, text: str, user_id: str, zone_id: str = None,
+                                  operation: HouseholdOperation | None = None) -> DispatchResult:
+        """Do not claim creation or cancellation without an operation receipt.
+
+        Args:
+            operation: The P3-F2 classified operation of a claimed turn. It
+                decides the branch, so a reminder whose content mentions a
+                query or a cancellation is still a creation. None keeps the
+                keyword routing.
+        """
         if not self.reminder_manager:
             return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, "Recordatorios no configurados",
                                   intent="reminder", outcome=TaskOutcome(TaskStatus.UNSUPPORTED))
         text_lower = text.lower()
         outcome = TaskOutcome(TaskStatus.COMPLETED)
+        pending_today = any(w in text_lower for w in ["qué tengo pendiente", "que tengo pendiente"])
+        listing = any(w in text_lower for w in ["qué recordatorios", "que recordatorios", "mis recordatorios"])
+        if operation is HouseholdOperation.QUERY:
+            listing = not pending_today
+        elif operation is not None:
+            listing = pending_today = False
+        # Voseo/accented cancellation and unique matching belong to T032-U1;
+        # until then only today's literal form reaches cancel_by_text.
+        cancelling = "cancela" in text_lower and "recordatorio" in text_lower and operation in (
+            None, HouseholdOperation.CANCEL)
         try:
-            if any(w in text_lower for w in ["qué recordatorios", "que recordatorios", "mis recordatorios"]):
+            if operation is HouseholdOperation.CANCEL and not cancelling:
+                response = "Todavía no puedo cancelar ese recordatorio por voz. Podés hacerlo desde la web."
+                outcome = TaskOutcome(TaskStatus.UNSUPPORTED, persistence=PersistenceState.NOT_WRITTEN)
+            elif listing:
                 active = await self.reminder_manager.get_active(None, shared_only=True)
                 response = ("Los recordatorios compartidos son: " + ". ".join(self.reminder_manager.format_for_voice(r) for r in active[:5])
                             if active else "No hay recordatorios compartidos activos")
-            elif any(w in text_lower for w in ["qué tengo pendiente", "que tengo pendiente"]):
+            elif pending_today:
                 today = await self.reminder_manager.get_today(None, shared_only=True)
                 response = ("Pendiente hoy: " + ". ".join(self.reminder_manager.format_for_voice(r) for r in today)
                             if today else "No tienes nada pendiente hoy")
-            elif "cancela" in text_lower and "recordatorio" in text_lower:
+            elif cancelling:
                 match = re.search(r'recordatorio\s+(?:de\s+)?(.+)', text_lower)
                 search_text = match.group(1).strip() if match else text_lower
                 cancelled = await self.reminder_manager.cancel_by_text(None, search_text, shared_only=True)
@@ -1540,15 +1776,13 @@ class RequestDispatcher:
         entry matched. Neither branch substitutes another entity or uses an
         unclocked cache.
         """
-        from zoneinfo import ZoneInfo
-
-        from src.world.weather import (HOUSEHOLD_TIMEZONE, NO_DATA, NO_FORECAST, ForecastAlignment,
+        from src.world.weather import (NO_DATA, NO_FORECAST, ForecastAlignment,
                                        describe_current, describe_forecast, forecast_target_date)
 
         text_lower = text.lower()
         dia = ("pasado mañana" if "pasado mañana" in text_lower or "pasado manana" in text_lower
                else "mañana" if "mañana" in text_lower or "manana" in text_lower else None)
-        clock = self.home_capabilities.now if self.home_capabilities is not None else lambda: datetime.now(UTC)
+        clock = self.home_capabilities.now if self.home_capabilities is not None else self.household_clock.now_utc
         attempted = clock()
         source = ObservationSource.HA_FORECAST if dia else ObservationSource.HA_STATES
         observation = Observation.from_read(source, available=False, observed_at=None,
@@ -1556,7 +1790,7 @@ class RequestDispatcher:
         alignment: ForecastAlignment | None = None
         try:
             if dia:
-                zone = ZoneInfo(HOUSEHOLD_TIMEZONE)  # zoneinfo caches the instance per key
+                zone = self.household_clock.zone  # built once in the household clock's constructor
                 target = forecast_target_date(dia, attempted, zone)
                 payload = await self.ha.call_service_with_response(
                     "weather", "get_forecasts", self.weather_entity,
@@ -1816,6 +2050,9 @@ class MultiUserOrchestrator:
         memory_manager=None,
         privacy=None,
         home_capabilities: HomeCapabilityService | None = None,
+        household_clock: HouseholdClock | None = None,
+        room_namespace: RoomNamespace | None = None,
+        household_intents: HouseholdIntentClassifier | None = None,
     ):
         """Initialize the multi-user orchestrator.
 
@@ -1838,6 +2075,8 @@ class MultiUserOrchestrator:
                 defecto y, si la entidad de HA se llamaba distinto, el
                 asistente contestaba "No tengo el dato del clima ahora mismo"
                 para siempre — indistinguible de un sensor caído.
+            household_intents: Clasificador de intenciones del hogar (P3-F2),
+                compartido con el RequestRouter. Forwarded to RequestDispatcher.
         """
         self._hooks = hooks  # plan #3 OpenClaw — exposed for log_hook_stats()
         # Componentes principales
@@ -1866,6 +2105,9 @@ class MultiUserOrchestrator:
         # Plan #2 OpenClaw — track persister so start/stop can pick the right cleanup
         self._persister = persister
 
+        # P3-F1: one household clock for the slow-path prompt and the dispatcher.
+        household_clock = household_clock if household_clock is not None else HouseholdClock()
+
         # Inicializar subsistemas
         self._context_manager = ContextManager(
             max_history=max_context_history,
@@ -1876,6 +2118,7 @@ class MultiUserOrchestrator:
             keep_recent_turns=keep_recent_turns,
             source_policy=source_policy,
             clock=source_policy.clock if source_policy is not None else None,
+            household_clock=household_clock,
         )
         if privacy is not None:
             privacy.add_borrower(self._context_manager.begin_close)
@@ -1912,6 +2155,9 @@ class MultiUserOrchestrator:
             weather_entity=weather_entity,
             home_actions=self.home_actions,
             home_capabilities=self.home_capabilities,
+            household_clock=household_clock,
+            room_namespace=room_namespace,
+            household_intents=household_intents,
         )
 
         self._running = False

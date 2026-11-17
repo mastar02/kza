@@ -734,6 +734,20 @@ routines:
   db_path: "./data/routines.db"
   timezone: "America/Montevideo"
 
+# Capa de precedencia de intenciones del hogar (P3-F2): temporizadores,
+# recordatorios, listas, rutinas, anuncios, no molestar, acciones diferidas y
+# comandos compuestos se reconocen antes de la domótica (gramática, 7B y
+# service_filter). Un turno reconocido nunca produce otro efecto.
+household_intents:
+  # Turnos reconocidos de más palabras pasan por el veto del 7B (:8101) aunque
+  # el wake acústico sea fuerte; mismo límite que el bonus de wake de la gramática.
+  unvetoed_max_words: 6
+  # Más partes que esto vuelven no admisible un comando compuesto.
+  compound_max_parts: 3
+  # Ejecutar compuestos parte por parte llega con T037-U6; hasta entonces false
+  # ("Decímelo de a una cosa", sin efectos). true se rechaza al arrancar.
+  compound_execute: false
+
 # Contexto Persistente por Usuario
 # Guarda historial de conversación por persona detectada
 context_persistence:
