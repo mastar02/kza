@@ -366,6 +366,10 @@ class AlertManager:
             alert.priority = priority
             alert.message = message
             alert.details = details or {}
+            # The acknowledgement covered a less severe reading: the escalated alert
+            # is active again (web list and summary) until acknowledged anew.
+            alert.processed = False
+            alert.processed_at = None
             logger.info("Alert escalated: %s (id=%s, priority=%s)",
                         alert.alert_type.value, alert.alert_id, priority.name)
             await self._execute_handlers(alert)

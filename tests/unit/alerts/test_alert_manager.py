@@ -589,6 +589,47 @@ class TestEscalationAndReannounce:
         assert len(manager.get_history()) == 1
 
     @pytest.mark.asyncio
+    async def test_escalation_after_ack_makes_the_alert_active_again(self):
+        """Review R1: battery 19% acked, then 8% is spoken and back in the active list."""
+        tts = AsyncMock(return_value=_ok())
+        manager = AlertManager(tts_callback=tts)
+        cond = AlertCondition("sensor_puerta", "battery_low")
+        alert = await manager.create_alert(
+            AlertType.DEVICE, AlertPriority.MEDIUM, "Batería baja en sensor puerta: 19%", condition=cond)
+        assert await manager.mark_processed(alert.alert_id)
+        assert manager.get_active_alerts() == [] and alert.processed_at is not None
+        escalated = await manager.create_alert(
+            AlertType.DEVICE, AlertPriority.HIGH, "Batería baja en sensor puerta: 8%", condition=cond)
+        assert escalated is alert
+        assert tts.await_args.args[0] == "Alerta importante: Batería baja en sensor puerta: 8%"
+        assert alert.processed is False and alert.processed_at is None
+        assert manager.get_active_alerts() == [alert]
+        assert manager.get_stats()["pending_alerts"] == 1
+
+    @pytest.mark.asyncio
+    async def test_escalation_to_unspoken_priority_reactivates_acked_alert(self):
+        """Any rise in priority reopens the acknowledgement, spoken or not."""
+        manager = AlertManager(tts_callback=AsyncMock(return_value=_ok()))
+        cond = AlertCondition("s1", "c")
+        alert = await manager.create_alert(AlertType.DEVICE, AlertPriority.LOW, "a", condition=cond)
+        await manager.mark_processed(alert.alert_id)
+        assert await manager.create_alert(AlertType.DEVICE, AlertPriority.MEDIUM, "b", condition=cond) is alert
+        assert manager.get_active_alerts() == [alert] and alert.processed_at is None
+
+    @pytest.mark.asyncio
+    async def test_repeat_or_lower_reading_keeps_the_ack(self):
+        """Only an escalation reopens an acknowledged alert."""
+        manager = AlertManager(tts_callback=AsyncMock(return_value=_ok()))
+        cond = AlertCondition("s1", "c")
+        alert = await manager.create_alert(AlertType.DEVICE, AlertPriority.HIGH, "a", condition=cond)
+        await manager.mark_processed(alert.alert_id)
+        acked_at = alert.processed_at
+        assert await manager.create_alert(AlertType.DEVICE, AlertPriority.HIGH, "a", condition=cond) is None
+        assert await manager.create_alert(AlertType.DEVICE, AlertPriority.LOW, "a", condition=cond) is None
+        assert alert.processed is True and alert.processed_at == acked_at
+        assert manager.get_active_alerts() == []
+
+    @pytest.mark.asyncio
     async def test_escalation_to_unspoken_priority_is_not_announced(self):
         tts = AsyncMock(return_value=_ok())
         manager = AlertManager(tts_callback=tts)
