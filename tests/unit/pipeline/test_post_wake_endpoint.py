@@ -213,6 +213,28 @@ def test_endpoint_state_drops_unconfirmed_speech_at_the_no_speech_timeout():
         assert state.decide(CONFIG, SR, False, 0.0) is EndpointDecision.DROP_NO_SPEECH
 
 
+@pytest.mark.parametrize("trigger", [CaptureTrigger.FOLLOW_UP, CaptureTrigger.BARGE_IN, CaptureTrigger.INLINE])
+def test_only_a_dropped_wake_feeds_the_ambient_guard(trigger):
+    """A follow-up (or other) capture without confirmed speech is dropped silently."""
+    guard = MagicMock()
+    guard.state_for.return_value = None
+    loop, rs = _loop(_Detector(fire_at=None), ambient_guard=guard)
+    rs.listening = True
+    rs.command_start_time = time.time()
+    rs.capture_trigger = trigger
+    rng = np.random.default_rng(29)
+    rs.audio_buffer = list(_segment(rng, CHUNK_S, 0.05))  # one transient frame, then quiet
+    event = None
+    for _ in range(int(CONFIG.max_utterance_s / CHUNK_S) + 2):
+        rs.audio_buffer.extend(_segment(rng, CHUNK_S, 0.0005))
+        event = loop._poll_command(rs)
+        if not rs.listening:
+            break
+    assert event is None and not rs.listening
+    assert loop.endpoint_counts == {"drop_no_speech": 1}
+    guard.on_capture_result.assert_not_called()
+
+
 def test_short_speech_waits_for_the_minimum_listen():
     out = _run(floor=0.003, nexa_rms=0.05, pause_s=0.0, command_s=0.32, command_rms=0.03)
     assert out["event"] is not None
