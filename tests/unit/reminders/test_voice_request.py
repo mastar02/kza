@@ -114,7 +114,10 @@ SUCCESS = [
     ("recordame a las 00:30 apagar", MONDAY_10, local(2026, 11, 17, 0, 30), None, "apagar"),
     # Small hours mean the coming night.
     ("recordame a las 3 de la madrugada x", MONDAY_10, local(2026, 11, 17, 3), None, "x"),
-    ("recordame hoy a las 2 de la mañana x", MONDAY_10, local(2026, 11, 17, 2), None, "x"),
+    ("recordame esta noche a las 12 apagar", MONDAY_10, local(2026, 11, 17, 0), None, "apagar"),
+    ("recordame esta noche a las 12 y media apagar", MONDAY_10, local(2026, 11, 17, 0, 30), None, "apagar"),
+    ("recordame hoy a las 3 de la madrugada x", datetime(2026, 11, 16, 2, 0, tzinfo=MVD), local(2026, 11, 16, 3),
+     None, "x"),
     ("recordame a las 3 de la madrugada x", TUESDAY_0010, local(2026, 11, 17, 3), None, "x"),
     ("recordame mañana a las 3 de la madrugada x", MONDAY_10, local(2026, 11, 17, 3), None, "x"),
     # 23:59, midnight crossing and month/year ends.
@@ -246,6 +249,14 @@ AMBIGUOUS = [
     ("recordame a las 8 de la mañana pagar", MONDAY_2359, A.PAST_TODAY, None),
     ("recordame a las 23:59 pagar", MONDAY_2359, A.PAST_TODAY, None),
     ("recordame esta noche a las 9 pagar", datetime(2026, 11, 16, 22, 0, tzinfo=MVD), A.PAST_TODAY, None),
+    # An explicit "hoy" keeps today even for the small hours (review F3).
+    ("recordame hoy a las 3 de la madrugada tomar la pastilla", MONDAY_10, A.PAST_TODAY, None),
+    ("recordame hoy a las 5 de la mañana x", MONDAY_10, A.PAST_TODAY, None),
+    ("recordame hoy a las 2 de la mañana x", MONDAY_10, A.PAST_TODAY, None),
+    ("recordame esta mañana a las 3 de la madrugada x", MONDAY_10, A.PAST_TODAY, None),
+    # Pinned: at 23:00 "hoy a las 2 de la madrugada" is today's 02:00, already
+    # past, so KZA asks (open question T031-Q1 offers the other reading).
+    ("recordame hoy a las 2 de la madrugada x", datetime(2026, 11, 16, 23, 0, tzinfo=MVD), A.PAST_TODAY, None),
     # AMBIGUOUS_DAY
     ("recordame el lunes a las 9 de la noche pagar", MONDAY_10, A.AMBIGUOUS_DAY, None),
     ("recordame lunes a las 9 de la noche pagar", MONDAY_10, A.AMBIGUOUS_DAY, None),

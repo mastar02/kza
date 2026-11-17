@@ -497,7 +497,8 @@ def _scan(words: list[str]) -> _Scan:
         name, today, end = found
         scan.periods.append(name)
         if today:
-            scan.days.append(("today", 0, None))
+            # "esta noche" runs past midnight; "esta mañana/tarde" is today only.
+            scan.days.append(("tonight" if name == "noche" else "today", 0, None))
         return end
 
     def day(i: int) -> int | None:
@@ -614,6 +615,9 @@ def _resolve(scan: _Scan, now: datetime) -> tuple[float | None, str | None, set[
 
     offset = next(iter(offsets)) if offsets else 0
     small_hours = hour < 6
+    # Small hours roll to the coming night only without a day word or with
+    # "esta noche"; an explicit "hoy" (or "esta mañana/tarde") keeps today.
+    said_today = any(kind == "today" for kind, _, _ in scan.days)
     if offset > 0:
         if hour == 0:
             return None, None, {ReminderAmbiguity.AMBIGUOUS_DAY}, "midnight_with_day"
@@ -622,7 +626,7 @@ def _resolve(scan: _Scan, now: datetime) -> tuple[float | None, str | None, set[
         target = at(offset)
     else:
         target = at(0)
-        if small_hours and target.timestamp() <= now.timestamp():
+        if small_hours and not said_today and target.timestamp() <= now.timestamp():
             target = at(1)
     if target.timestamp() <= now.timestamp():
         return None, None, {ReminderAmbiguity.PAST_TODAY}, None
