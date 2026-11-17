@@ -1738,10 +1738,13 @@ necesita la primera actualización posterior a R1.
   retirado, registro de borrados como segunda compuerta, revisión exacta),
   `chroma_plan` en el plan del clon (`plan_sha256` incluye resúmenes sin
   contenido), `_clone_state` (sin los bytes de Chroma de H),
-  `rebuild_chroma` (una sesión SDK por almacén bajo el catálogo de copias,
-  comprobación dentro de la sesión, pin sha256 de los archivos) y D5 con
-  esos pins antes y después del VACUUM y en `resume` (evidencia
-  `chroma.pins`).
+  `rebuild_chroma` (cada almacén lo escribe un proceso hijo `-I -B` sin
+  `src` que recibe sólo lo que K conserva y devuelve el sha256 de lo que
+  lee de vuelta; el extent queda en el catálogo de copias; pin sha256 de
+  los archivos) y D5 con esos pins antes y después del VACUUM y en
+  `resume` (evidencia `chroma.pins`). El hijo existe porque en el server un
+  `data_level0.bin` escrito desde el trabajador tuvo el texto de un hecho
+  vencido (heap del proceso en la capacidad sin usar del índice HNSW).
 - `scripts/compaction.py`: `chroma_collections` en `plan`/`start` (nombres
   de colección desde imágenes privadas de cada `chroma.sqlite3`, destinos
   `semantic_index` de H); `unlisted_collection` con almacén y colección en
@@ -1758,7 +1761,10 @@ necesita la primera actualización posterior a R1.
 - Pregunta abierta SC4C-Q1 (diseño: «si SC-0 encuentra un lector, SC-R
   decide»): SC-0 encontró que «listar mis rutinas» lee
   `home_assistant_routines`. Esta unidad implementa la baja; ver la
-  evidencia para la recomendación.
+  evidencia para la recomendación. SC4C-Q2: qué hacer si producción tiene
+  la colección heredada `user_memories` (el plan rechaza). SC4C-Q3: el
+  mismo residuo de heap en los HNSW que escribe `kza-voice` (anterior a
+  esta unidad).
 
 ## Prompt para la sesión nueva
 

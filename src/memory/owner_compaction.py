@@ -50,10 +50,14 @@ pages or index files):
   (compaction_unlisted_collection), at plan (scripts/compaction.py) and
   here, in the snapshot and in the plan.
 
-D5 for rebuilt stores: inside the rebuild session every store must list
-exactly its planned collections, each with its planned metadata,
-configuration and records; then the store's files are pinned by sha256
-and every later D5 (after VACUUM, on resume) compares that pin.
+Each store is written by a fresh child interpreter that gets only what K
+keeps (CHROMA_REBUILD_CHILD): Chroma persists index buffers whose unused
+capacity can hold earlier heap contents, and this worker's heap holds H's
+whole snapshot. D5 for rebuilt stores: the child reads its store back and
+its afterimage (exactly the planned collections, each with its planned
+metadata, configuration and records) must hash to the plan's; then the
+store's files are pinned by sha256 and every later D5 (after VACUUM, on
+resume) compares that pin.
 """
 from __future__ import annotations
 
@@ -478,67 +482,108 @@ def _store_pin(destination: Path, store: str) -> dict:
     return pin
 
 
-def _build_store(client, wanted: list) -> None:
-    """Create each planned collection with its metadata and configuration, then add its records."""
-    from chromadb.api.collection_configuration import load_collection_configuration_from_json
-    batch = max(1, min(int(client.get_max_batch_size()), 1000))
-    for item in wanted:
-        configuration = (None if item.configuration is None
-                         else load_collection_configuration_from_json(item.configuration))
-        collection = client.create_collection(name=item.collection, metadata=item.metadata or None,
-                                              configuration=configuration, embedding_function=None)
-        for start in range(0, len(item.records), batch):
-            rows = item.records[start:start + batch]
-            collection.add(ids=[row["id"] for row in rows], documents=[row["document"] for row in rows],
-                           metadatas=[row["metadata"] for row in rows],
-                           embeddings=[row["embedding"] for row in rows])
+# SC-4c: the rebuild runs in a fresh interpreter that imports no src and gets only what K keeps (stdin).
+# Chroma persists HNSW buffers whose unused capacity can hold whatever its allocator handed out, so a
+# store written by this worker (whose heap holds H's snapshot: excluded records, expired facts) could
+# carry fragments of it into K's files. The child's heap holds K's planned records and the SDK only.
+# It builds each collection, re-reads every collection of the store and prints the sha256 of that
+# afterimage; the parent compares it with the plan's (D5 for rebuilt stores, in the session).
+CHROMA_REBUILD_CHILD = "\n".join([
+    "import hashlib, importlib.metadata, json, sys",
+    "spec = json.loads(sys.stdin.buffer.read())",
+    "if importlib.metadata.version('chromadb') != spec['sdk_version']:",
+    "    raise SystemExit(3)",
+    "import chromadb",
+    "from chromadb.config import Settings",
+    "from chromadb.api.collection_configuration import load_collection_configuration_from_json",
+    "def plain(value):",
+    "    if hasattr(value, 'tolist'):",
+    "        value = value.tolist()",
+    "    if type(value) is list:",
+    "        return [plain(item) for item in value]",
+    "    if type(value) is dict:",
+    "        return {key: plain(item) for key, item in value.items()}",
+    "    return value",
+    "client = chromadb.PersistentClient(path=spec['path'], settings=Settings(anonymized_telemetry=False))",
+    "try:",
+    "    batch = max(1, min(int(client.get_max_batch_size()), 1000))",
+    "    for item in spec['collections']:",
+    "        configuration = item['configuration']",
+    "        if configuration is not None:",
+    "            configuration = load_collection_configuration_from_json(configuration)",
+    "        collection = client.create_collection(name=item['collection'], metadata=item['metadata'] or None,",
+    "                                              configuration=configuration, embedding_function=None)",
+    "        rows = item['records']",
+    "        for start in range(0, len(rows), batch):",
+    "            part = rows[start:start + batch]",
+    "            collection.add(ids=[row['id'] for row in part], documents=[row['document'] for row in part],",
+    "                           metadatas=[row['metadata'] for row in part],",
+    "                           embeddings=[row['embedding'] for row in part])",
+    "    image = []",
+    "    for name in sorted(item.name for item in client.list_collections()):",
+    "        collection = client.get_collection(name=name, embedding_function=None)",
+    "        payload = collection.get(include=['documents', 'metadatas', 'embeddings'])",
+    "        ids = list(payload['ids'])",
+    "        if collection.count() != len(ids) or len(set(ids)) != len(ids):",
+    "            raise SystemExit(4)",
+    "        arrays = [plain(payload[key]) if ids else [] for key in ('documents', 'metadatas', 'embeddings')]",
+    "        records = sorted(({'id': identity, 'document': arrays[0][index], 'metadata': arrays[1][index],",
+    "                           'embedding': arrays[2][index]} for index, identity in enumerate(ids)),",
+    "                         key=lambda row: row['id'])",
+    "        image.append({'collection': name, 'metadata': plain(collection.metadata),",
+    "                      'configuration': plain(collection.configuration_json), 'records': records})",
+    "finally:",
+    "    client.close()",
+    "print(hashlib.sha256(json.dumps(image, sort_keys=True, separators=(',', ':'), ensure_ascii=True,",
+    "                                allow_nan=False).encode()).hexdigest())",
+])
+_CHILD_ENVIRONMENT = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "HOME", "TMPDIR")
 
 
-def _check_store(client, wanted: list) -> None:
-    """D5 for a rebuilt store, in the rebuild session: exactly the planned collections and images."""
-    from src.memory.state_snapshot import _sdk_json, collection_records
-    _require(sorted(item.name for item in client.list_collections()) == sorted(item.collection for item in wanted),
-             "payload_changed:chroma")
-    for item in wanted:
-        collection = client.get_collection(name=item.collection, embedding_function=None)
-        _require(_sdk_json(collection.metadata) == item.metadata
-                 and _sdk_json(collection.configuration_json) == item.configuration
-                 and collection_records(collection) == list(item.records), "payload_changed:chroma")
+def _store_image(wanted: list) -> list[dict]:
+    """What the child must read back from one store: exactly its planned collections, sorted by name."""
+    return [{"collection": item.collection, "metadata": item.metadata, "configuration": item.configuration,
+             "records": list(item.records)} for item in sorted(wanted, key=lambda item: item.collection)]
+
+
+def _rebuild_store(path: Path, wanted: list, version: str) -> None:
+    """One store in the child; refuses (content-free) unless it read back exactly the planned image."""
+    import subprocess
+    import sys
+    spec = {"path": str(path), "sdk_version": version,
+            "collections": [{"collection": item.collection, "metadata": item.metadata,
+                             "configuration": item.configuration, "records": list(item.records)}
+                            for item in wanted]}
+    environment = {key: os.environ[key] for key in _CHILD_ENVIRONMENT if key in os.environ}
+    completed = subprocess.run([sys.executable, "-I", "-B", "-c", CHROMA_REBUILD_CHILD], input=_json(spec),
+                               capture_output=True, env=environment, check=False)
+    _require(completed.returncode != 3, "sdk_changed")
+    _require(completed.returncode == 0, "chroma_rebuild_failed")  # stderr is never read back (content)
+    lines = completed.stdout.decode("ascii", "replace").split()
+    _require(lines[-1:] == [hashlib.sha256(_json(_store_image(wanted))).hexdigest()], "payload_changed:chroma")
 
 
 def rebuild_chroma(plan: CompactionClonePlan, destination: Path, operation) -> dict:
     """SC-4c: every Chroma store of H made anew in K from the plan; returns the stores' file pins.
 
     A store whose collections are all dropped is still created (empty), so
-    K's schemas equal H's (A1). Each store is one SDK session under the copy
-    catalog (sdk_enter / close), checked before it closes (_check_store).
+    K's schemas equal H's (A1). Each store is written by its own child
+    process (CHROMA_REBUILD_CHILD) inside an extent the copy catalog holds;
+    the child's exit is the SDK's close, and only after it the store's
+    files are pinned.
     """
     if not plan.chroma_stores:
         return {}
     version = plan.latest.source_binding["sdk_versions"].get("chromadb")
     _require(version is not None and importlib.metadata.version("chromadb") == version, "sdk_changed")
-    import chromadb
-    from chromadb.config import Settings
     pins = {}
     for store in plan.chroma_stores:
         path = destination / store
         _require(not path.exists() and not path.is_symlink(), "destination_database")
+        operation.extent(store, family="semantic_index", representation="sdk_work")
         path.mkdir(parents=True, mode=0o700)
-        wanted = [item for item in plan.chroma if item.store == store and item.kind != "dropped"]
-        entry = operation.sdk_enter(operation.extent(store, family="semantic_index", representation="sdk_work"),
-                                    sdk_version=version)
-        try:
-            client = entry.construct(chromadb.PersistentClient, path=str(path),
-                                     settings=Settings(anonymized_telemetry=False))
-            _build_store(client, wanted)
-            _check_store(client, wanted)
-        except BaseException as original:
-            try:
-                entry.close()
-            except BaseException as cleanup:
-                raise BaseExceptionGroup("compaction Chroma rebuild and close failed", [original, cleanup]) from None
-            raise
-        entry.close()
+        _rebuild_store(path, [item for item in plan.chroma if item.store == store and item.kind != "dropped"],
+                       version)
         pins[store] = _store_pin(destination, store)
     return pins
 
@@ -653,7 +698,7 @@ def verify_identity(plan: CompactionClonePlan, destination: Path, journal, chrom
     byte (stricter than record ids). Extra files in K beyond the derivation
     records and SQLite side files refuse. Returns content-free counts.
     SC-4c: H's Chroma stores are rebuilt, not cloned: each must match the
-    file pin rebuild_chroma took after its in-session check, exactly.
+    file pin rebuild_chroma took after the child's afterimage check, exactly.
     """
     from src.memory.payload_derivation import _privacy_schema_added
     from src.memory.state_journal_derivation import _token

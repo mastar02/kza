@@ -1201,10 +1201,18 @@ compactación podía pasar del snapshot.
   trabajador (en el snapshot, antes de exportar nada, y en el plan del
   clon). Un rechazo del trabajador es la fila S: `compact abort <id>` (sin
   pérdida, antes de V) y la unidad vuelve a servir H.
-- **D5 para almacenes reconstruidos.** Dentro de la sesión del SDK que
-  reconstruye cada almacén se comprueba que liste exactamente las
-  colecciones planeadas, cada una con su metadata, configuración y registros
-  exactos; después se fija el sha256 de cada archivo del almacén y cada D5
+- **Proceso hijo limpio.** Cada almacén lo escribe un intérprete nuevo
+  (`python -I -B`, sin importar `src`) que recibe por stdin sólo lo que K
+  conserva. Motivo, medido en el server: Chroma guarda buffers del índice
+  HNSW cuya capacidad sin usar puede tener contenido anterior del heap del
+  proceso; escrito desde el trabajador (cuyo heap tiene todo el snapshot de
+  H), un `data_level0.bin` de K llegó a tener el texto de un hecho vencido.
+  Un fallo del hijo rechaza `runtime_admission_compaction_chroma_rebuild_failed`
+  sin devolver su stderr.
+- **D5 para almacenes reconstruidos.** El hijo vuelve a leer su almacén y
+  el sha256 de esa imagen (exactamente las colecciones planeadas, cada una
+  con su metadata, configuración y registros) tiene que coincidir con la del
+  plan; después se fija el sha256 de cada archivo del almacén y cada D5
   posterior (antes y después del VACUUM, y en `resume`) compara ese pin
   exacto (`payload_changed:chroma`). Un almacén cuyas colecciones se dan
   todas de baja se crea igual, vacío, para que los `schemas` de K sigan
@@ -1224,6 +1232,12 @@ compactación podía pasar del snapshot.
   que se dicte una rutina nueva. El diseño deja a SC-R decidir entre la baja
   y una reconstrucción desde la tabla protegida `routines`; esta unidad
   implementa la baja (pregunta abierta SC4C-Q1).
+- **Hallazgo fuera de esta unidad.** El mismo comportamiento de Chroma vale
+  para el servicio: los archivos HNSW que escribe `kza-voice` pueden guardar
+  fragmentos de su heap (cualquier dato que el proceso tuvo en memoria), y
+  un borrado no los limpia. Queda en `follow_up` y como pregunta abierta
+  SC4C-Q3; la transición no lo empeora (K se escribe desde el hijo limpio y
+  no copia los bytes de Chroma de H).
 
 Tests: `tests/unit/tools/test_sc4c_chroma_closed_list.py`.
 
