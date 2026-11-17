@@ -1950,6 +1950,18 @@ unidad SC-5b. Evidencia: `t040-t041/sc5b-evidence.json` (local).
   mutantes de la revisión sobrevivían al test de docs; ahora 32 de 32
   muertos (los 16, uno más de CI, 14 de los arreglos y un control). Detalle
   en la evidencia (`review_round_1`).
+- Revisión independiente, ronda 2 (2026-11-17): `changes_needed`, 2
+  hallazgos medios (SC5B-RR1, RR2), 3 bajos (RR3 a RR5) y 1 informativo
+  (RR6), cada uno en su commit. Con V muerta después de `READY` y K'
+  abierto, el retiro rechaza `runtime_admission_not_closed` sin escribir:
+  fila V2, volver a H con W (el retiro primero vale sólo con K' cerrado);
+  frases de seguridad fijadas enteras; DEPLOYMENT y handoff con dónde corre
+  el dry-run y el plazo del día 14; un rechazo del retiro después de
+  `retire_started` es un retiro cortado; el runbook de compactación repite
+  `compact retire` ante un enlace; un enlace duro nunca quita un nombre bajo
+  `slots/<K>/`. Mutantes: 34 de 34 muertos (los 15 de la revisión, 5 de la
+  compuerta, un control y 13 de los arreglos). Detalle en la evidencia
+  (`review_round_2`).
 
 ## Prompt para la sesión nueva
 
