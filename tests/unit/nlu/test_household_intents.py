@@ -500,6 +500,18 @@ def test_fillers_a_paused_no_and_ya_after_a_cancel_verb(text, expected):
         assert intent.complement == "de tomar agua"
 
 
+@pytest.mark.parametrize("text", [
+    "poné ya un timer de 3 minutos", "apagá ya la luz", "pausá ya la música",
+])
+def test_ya_after_a_verb_that_is_not_a_cancel_is_left_as_before(text):
+    """Review T032-U1-RR-F3 (RR08): 'ya' is dropped only after a cancel verb.
+
+    These are unclaimed at base 1541909a; stripping 'ya' after any verb
+    would claim them and widen precedence.
+    """
+    assert classify_household_intent(text) is None
+
+
 def test_unaccented_para_is_a_clause_head_only_when_spoken_as_a_verb():
     """'pará' heads a clause inside a turn; the preposition 'para' does not."""
     assert classify_household_intent("apagá la luz y pará la música").family is F.COMPOUND

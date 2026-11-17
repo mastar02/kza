@@ -579,3 +579,42 @@ async def test_a_superset_on_another_day_leaves_both_nameable(store):
     lemon = await _shared(manager, "tomar agua con limón", _local(2026, 11, 12, 9, 0).timestamp())
     assert await manager.voice_references(None, (plain, lemon), with_time=True, shared_only=True) == {
         plain.id: "tomar agua de las 9 de la mañana de hoy", lemon.id: "tomar agua con limón de las 9 de la mañana"}
+
+
+# ---------------------------------------------------------------------------
+# Review T032-U1-RR-F3: pins for reviewer mutants RR10 and RR02
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_reference_that_selects_another_reminder_is_never_proposed(store):
+    """'llamar mañana de las 5 de la tarde' selects B ('llamar' tomorrow), so it is not A's command."""
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 6, 0).timestamp)  # a Wednesday
+    manager = ReminderManager(store=store, household_clock=clock)
+    a = await _shared(manager, "llamar mañana", _local(2026, 11, 11, 17, 0).timestamp())
+    b = await _shared(manager, "llamar", _local(2026, 11, 12, 17, 0).timestamp())
+    taken = await manager.resolve(None, "de llamar mañana de las 5 de la tarde", shared_only=True)
+    assert (taken.match, taken.reminder.id) == (CancelMatch.UNIQUE, b.id)
+    references = await manager.voice_references(None, (a, b), with_time=True, shared_only=True)
+    assert references == {a.id: "llamar de las 5 de la tarde de hoy", b.id: "llamar de las 5 de la tarde del jueves"}
+    for reminder in (a, b):
+        found = await manager.resolve(None, f"de {references[reminder.id]}", shared_only=True)
+        assert (found.match, found.reminder.id) == (CancelMatch.UNIQUE, reminder.id)
+    # With another 'llamar' today at 17:00 nothing names A alone: no reference at all.
+    await _shared(manager, "llamar", _local(2026, 11, 11, 17, 0).timestamp() + 30)
+    assert await manager.voice_references(None, (a,), with_time=True, shared_only=True) == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("query", "expected"), [
+    ("de tomar agua de las 5 de la noche", "17:00"), ("de tomar agua de las 4 de la noche", "04:00"),
+])
+async def test_only_12_and_1_to_4_de_la_noche_are_past_midnight(store, query, expected):
+    """'las 5 de la noche' is 17:00: the past-midnight range of 'de la noche' stays 12 and 1-4."""
+    clock = HouseholdClock(time_source=_local(2026, 11, 11, 0, 30).timestamp)
+    manager = ReminderManager(store=store, household_clock=clock)
+    by_time = {}
+    for hour in (4, 5, 16, 17):
+        reminder = await _shared(manager, "tomar agua", _local(2026, 11, 11, hour, 0).timestamp())
+        by_time[reminder.id] = f"{hour:02d}:00"
+    found = await manager.resolve(None, query, shared_only=True)
+    assert found.match is CancelMatch.UNIQUE and by_time[found.reminder.id] == expected
