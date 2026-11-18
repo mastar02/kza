@@ -1602,6 +1602,27 @@ async def test_each_ambiguity_asks_for_the_whole_request_and_writes_nothing(leav
     assert leaves.effects(before) == ZERO
 
 
+@pytest.mark.parametrize("text", [
+    "recordame a las 9 de la noche que mañana viene el plomero",
+    "recordame a las 10 de la noche que el martes hay reunión",
+    "recordame a las 10 de la noche que pasado mañana viene la abuela",
+    "recordame a las 10 de la noche llevar mañana el auto al taller",
+    "recordame mañana a las 8 de la noche que el informe es para el martes",
+])
+async def test_a_day_word_inside_the_reminder_text_asks_and_writes_nothing(leaves, text):
+    """Review T031-U2-RV1 (user answer T032-U1-RR-P1, 'Pregunta cuál'): never a row for a guessed day."""
+    dispatcher = leaves.dispatcher()
+    _frozen_leaves(leaves, dispatcher, _monday_10())
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text=text)
+    assert (result.path, result.success, result.response) == (
+        PathType.FAST_REMINDER, False,
+        f"No sé para qué día es. Decímelo completo nombrando el día, hoy, mañana o el martes, por ejemplo: {EXAMPLE}.")
+    assert (result.outcome.status.value, result.outcome.persistence.value) == ("needs_input", "not_written")
+    assert leaves.effects(before) == ZERO
+    assert _rows(leaves.reminders_db) == []
+
+
 async def test_every_ambiguity_code_has_its_question():
     from src.orchestrator.dispatcher import _REMINDER_QUESTIONS
     from src.reminders.voice_request import ReminderAmbiguity

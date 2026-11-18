@@ -263,6 +263,7 @@ class _Scan:
     clocks: list[_Clock] = field(default_factory=list)
     periods: list[str] = field(default_factory=list)
     days: list[tuple[str, int, str | None]] = field(default_factory=list)
+    day_spans: list[tuple[int, int]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     vague: bool = False
 
@@ -558,6 +559,8 @@ def _scan(words: list[str]) -> _Scan:
                 i += 1
                 continue
             scan.take(i, end)
+            if matcher is day:
+                scan.day_spans.append((i, end))
             i = end
     n = len(words)
     for k in range(n):
@@ -723,6 +726,35 @@ def _clean(text: str, *, connectors: bool) -> str:
     return text.strip(edge)
 
 
+def _day_in_text(words: list[str], scan: _Scan) -> bool:
+    """A day word that may belong to the reminder text instead of naming its day (review T031-U2-RV1).
+
+    With a time already said, a day word after the "que" that opens the
+    reminder text ("a las 9 de la noche que mañana viene el plomero") or
+    between two words of the text ("a las 10 de la noche llevar mañana el
+    auto") can be the reminder's day or part of what to remember, so it is
+    asked (user answer T032-U1-RR-P1, "Pregunta cuál"). A day next to the
+    time ("sacar la basura mañana a las 8", "mañana a las 8 ... que ...") or
+    at the end of the text stays the day.
+    """
+    if not scan.day_spans:
+        return False
+    used, n = scan.used, len(words)
+    free = [k for k in range(n) if not used[k]]
+    if free:
+        q = free[0]
+        if words[q] == "de" and q + 1 < n and not used[q + 1]:
+            q += 1                      # "de que ..."
+        if words[q] == "que" and any(end <= q for _, end in scan.spans) \
+                and any(first > q for first, _ in scan.day_spans):
+            return True
+    for first, end in scan.day_spans:
+        if first > 0 and not used[first - 1] and end < n and not used[end] \
+                and any(other_end < first for _, other_end in scan.spans):
+            return True
+    return False
+
+
 def _ordered(issues: set[ReminderAmbiguity]) -> tuple[ReminderAmbiguity, ...]:
     return tuple(code for code in _PRIORITY if code in issues)
 
@@ -841,7 +873,12 @@ def _leftover_problem(words: list[str], used: list[bool], skip: range, clocks: l
 def _analyse(original: str, folded: str, start: int, aliases: tuple[tuple[str, ...], ...], *,
              now: datetime, connectors: bool) -> tuple[str, float | None, str | None, str | None, str | None,
                                                        set[ReminderAmbiguity], str | None]:
-    """Shared core: (text, trigger_at, recurrence, zone, time_phrase, issues, detail)."""
+    """Shared core: (text, trigger_at, recurrence, zone, time_phrase, issues, detail).
+
+    ``connectors`` marks a reminder request: its leading connectors are
+    dropped from the text and a day word that may be part of the text is
+    asked (:func:`_day_in_text`).
+    """
     tokens = [(m.group(0), m.start(), m.end()) for m in _TOKEN.finditer(folded, start)]
     words = [t[0] for t in tokens]
     if _UNSUPPORTED.search(folded, start):
@@ -865,6 +902,9 @@ def _analyse(original: str, folded: str, start: int, aliases: tuple[tuple[str, .
                                      scan.clocks, breaks)
         if leftover is not None:
             trigger, recurrence, issues, detail = None, None, {ReminderAmbiguity.UNPARSEABLE}, leftover
+        elif connectors and ReminderAmbiguity.AMBIGUOUS_DAY not in issues and _day_in_text(words, scan):
+            issues.add(ReminderAmbiguity.AMBIGUOUS_DAY)
+            detail = detail or "day_in_text"
     pieces, cursor = [], start
     for a, b in sorted(removed):
         pieces.append(original[cursor:a])

@@ -704,6 +704,56 @@ def test_read_back_text_has_no_time_words(utterance, expected, text, time_phrase
     assert (result.trigger_at, result.text, result.time_phrase) == (expected, text, time_phrase)
 
 
+@pytest.mark.parametrize("utterance", [
+    # Review T031-U2-RV1 (user answer T032-U1-RR-P1, "Pregunta cuál"): with a time already said, a day word
+    # after the "que" that opens the text, or between two words of the text, may be what to remember.
+    "recordame a las 9 de la noche que mañana viene el plomero",
+    "recordame a las 10 de la noche que el martes hay reunión",
+    "recordame a las 10 de la noche que pasado mañana viene la abuela",
+    "recordame a las 10 de la noche llevar mañana el auto al taller",
+    "recordame mañana a las 8 de la noche que el informe es para el martes",
+    "recordame a las 9 de la noche de que mañana viene el plomero",
+    "recordame a las 9 de la noche que hoy viene el plomero",
+    "recordame a las 10 de la noche que el lunes que viene hay reunión",
+])
+def test_a_day_word_inside_the_text_after_a_time_is_asked(utterance):
+    result = parse(utterance)
+    assert (result.ambiguity, result.detail, result.trigger_at, result.recurrence) == (
+        A.AMBIGUOUS_DAY, "day_in_text", None, None)
+
+
+@pytest.mark.parametrize("utterance,expected,text", [
+    # A day next to the time, before it, or closing the text is the reminder's day (review T031-U2-RV1).
+    ("recordame sacar la basura mañana a las 8 de la noche", local(2026, 11, 17, 20), "sacar la basura"),
+    ("recordame mañana a las 8 de la noche que viene el plomero", local(2026, 11, 17, 20), "viene el plomero"),
+    ("recordame que mañana a las 8 de la noche viene el plomero", local(2026, 11, 17, 20), "viene el plomero"),
+    ("recordame a las 9 de la noche de mañana llamar", local(2026, 11, 17, 21), "llamar"),
+    ("recordame llamar a las 9 de la noche mañana a Juan", local(2026, 11, 17, 21), "llamar a Juan"),
+    ("recordame la reunión del martes a las 8 de la noche", local(2026, 11, 17, 20), "la reunión"),
+    ("recordame mañana llevar el auto al taller a las 10 de la mañana", local(2026, 11, 17, 10),
+     "llevar el auto al taller"),
+])
+def test_a_day_word_next_to_the_time_is_the_day(utterance, expected, text):
+    result = parse(utterance)
+    assert result.ok, (result.ambiguity, result.detail)
+    assert (result.trigger_at, result.text) == (expected, text)
+
+
+@pytest.mark.parametrize("utterance", [
+    "recordame hoy a las 10 de la noche que mañana viene el plomero",
+    "recordame todos los días a las 9 de la noche regar mañana las plantas",
+])
+def test_a_day_word_already_ambiguous_keeps_its_own_reading(utterance):
+    result = parse(utterance)
+    assert (result.ambiguity, result.detail) == (A.AMBIGUOUS_DAY, None)
+
+
+def test_a_day_word_inside_a_deferred_clause_is_its_day():
+    """The day-in-text question is for reminder text only; a deferred home action has no text to remember."""
+    later = extract_time_expression("a las 10 de la noche bajá mañana la persiana", MONDAY_10)
+    assert (later.ok, later.trigger_at, later.clause) == (True, local(2026, 11, 17, 22), "bajá la persiana")
+
+
 @pytest.mark.parametrize("utterance,detail", [
     # A time was said but not as one point in time: refused, not "¿a qué hora?" (MISSING_TIME).
     ("recordame antes de las 9 de la noche llamar", "unsupported_time_range"),
