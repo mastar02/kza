@@ -163,7 +163,7 @@ def _legacy_slot_root(tmp_path: Path) -> tuple[Path, Path, Path]:
     root = tmp_path / "releases"
     runtime, state = root / "slots" / "legacy" / "runtime", root / "slots" / "legacy" / "state"
     runtime.mkdir(parents=True)
-    (runtime / "release.json").write_text(json.dumps({"git_commit": "63ea8d3" + "0" * 33, "files": {}}))
+    (runtime / "release.json").write_text(json.dumps({"git_commit": "e9669ec" + "0" * 33, "files": {}}))
     frozen = root / "slots" / "frozen" / "state"
     for name in ("config", "data"):
         (frozen / name).mkdir(parents=True)
@@ -196,10 +196,10 @@ def test_the_link_check_resolves_every_link_of_the_rollback_target(tmp_path, cas
         os.rename(frozen / "data", frozen / "data-moved")
         os.symlink("gone", frozen / "data")
     if case == "intact":
-        assert launcher._verify_legacy_slot(root, "legacy", ("63ea8d3",))[1] == state
+        assert launcher._verify_legacy_slot(root, "legacy", ("e9669ec",))[1] == state
         return
     with pytest.raises(launcher.LauncherRefusal, match="^runtime_admission_uninstall_legacy_state$"):
-        launcher._verify_legacy_slot(root, "legacy", ("63ea8d3",))
+        launcher._verify_legacy_slot(root, "legacy", ("e9669ec",))
 
 
 def test_link_check_only_l4_refuses_with_legacy_state_and_changes_nothing(world):
@@ -267,7 +267,7 @@ def test_a_malformed_retirement_directory_refuses_l4(tmp_path, name, value):
     directory.mkdir(parents=True)
     (directory / name).write_text(json.dumps(value))
     with pytest.raises(launcher.LauncherRefusal, match="^runtime_admission_uninstall_legacy_retirement_invalid$"):
-        launcher._verify_legacy_slot(root, "legacy", ("63ea8d3",))
+        launcher._verify_legacy_slot(root, "legacy", ("e9669ec",))
 
 
 # --- T-A17: retire the fixture's b0866e8 state through Q5 -------------------------------------------
@@ -900,3 +900,78 @@ def test_a_later_run_accepts_what_an_older_version_left_group_writable(tmp_path,
         assert new and all(mode == (0o700 if (world.root / name).is_dir() else 0o600) for name, mode in new.items())
     finally:
         os.umask(previous)
+
+
+# --- R1E: the e9669ec container and production's superseded 63ea8d3 container (batch_g "R1 base") ----
+
+C63 = fixture.C63_SLOT
+
+
+def superseded_container(world: World) -> Path:
+    """Production since 2026-10-29 15:50: the 63ea8d3 container 'current' left, with the same five links
+    into the b0866e8 state and the checkout's models, and a runtime of its own."""
+    slot = world.root / "slots" / C63
+    (slot / "runtime").mkdir(parents=True)
+    (slot / "runtime" / "release.json").write_text(json.dumps({"git_commit": "63ea8d3" + "0" * 33, "files": {}}))
+    (slot / "state").mkdir()
+    for name in ("config", "data", ".env", "logs"):
+        os.symlink(Path("..") / ".." / LEGACY / "state" / name, slot / "state" / name)
+    os.symlink(Path("..") / ".." / ".." / ".." / "kza" / "models", slot / "state" / "models")
+    return slot
+
+
+def superseded_backups(world: World) -> Path:
+    """The 14:48 publication's backup of the same ten databases (backups/<63ea8d3 slot>), as in production."""
+    source, copy = world.root / "backups" / CONTAINER, world.root / "backups" / C63
+    shutil.copytree(source, copy, symlinks=True)
+    return copy
+
+
+@pytest.mark.parametrize("role", ["LEGACY_STATE_COMMIT", "LEGACY_CONTAINER_COMMIT"])
+def test_r1e_q5_names_each_slot_by_its_own_role(world, monkeypatch, role):
+    """Q5's name checks read the state commit for the frozen slot and the container commit for C."""
+    adopted(world)
+    assert dry(world)["eligible"] is True
+    monkeypatch.setattr(launcher, role, "63ea8d3")
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_legacy_retire_slot$"):
+        dry(world)
+    assert not launcher.legacy_retirement_directory(world.root).exists()
+
+
+def test_r1e_l4_refuses_the_superseded_63ea8d3_container(world):
+    adopted(world)
+    install_record(world)
+    superseded_container(world)
+    units = unit_dir_files(world)
+    with pytest.raises(launcher.LauncherRefusal, match="^runtime_admission_uninstall_legacy_commit$"):
+        uninstall(world, C63)
+    assert unit_dir_files(world) == units and world.units.reloads == 0
+
+
+def test_r1e_the_superseded_container_links_stop_q5_as_found(world):
+    """Pinned as found (R1E open question): Q5 with C=e9669ec reads the 63ea8d3 container's links into the
+    frozen state as live references and refuses before any deletion; deciding that slot's fate comes first."""
+    adopted(world)
+    superseded_container(world)
+    before = tree_manifest(world.root / "slots" / LEGACY)
+    with pytest.raises(commands.CommandRefusal,
+                       match="^runtime_admission_legacy_retire_referenced:link:slots/" + C63 + "$"):
+        dry(world)
+    assert tree_manifest(world.root / "slots" / LEGACY) == before
+    assert not launcher.legacy_retirement_directory(world.root).exists()
+
+
+def test_r1e_q5_retires_the_e9669ec_backup_set_and_keeps_the_63ea8d3_set(world):
+    """With C=e9669ec the retired ten are backups/<e9669ec slot>/databases; the 14:48 set of the same ten
+    databases under backups/<63ea8d3 slot> is a kept exclusion (twenty copies exist: R1E open question)."""
+    adopted(world)
+    other = superseded_backups(world)
+    kept = tree_manifest(other)
+    plan = dry(world)
+    assert len(plan["backups"]["databases"]) == 10
+    result = retire(world, confirm=plan["plan_sha256"])
+    assert not os.path.lexists(backup_databases(world)) and tree_manifest(other) == kept
+    intent = json.loads((launcher.legacy_retirement_directory(world.root) / result["intent"]).read_text())
+    assert os.fspath(other) in intent["plan"]["excluded"]["backups_kept"]
+    assert intent["plan"]["backup_target"] == os.fspath(backup_databases(world))
+    assert result["ineligible_slots"] == sorted([CONTAINER, LEGACY])

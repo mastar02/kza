@@ -134,7 +134,7 @@ class SourceLayout:
     """Where the production state lives; every path is absolute.
 
     Attributes:
-        container: The 63ea8d3 slot state, a directory of the five links.
+        container: The e9669ec container slot state, a directory of the five links.
         legacy_state: The b0866e8 slot state the config/data/.env links resolve into.
         models_root: Where the models link resolves (/home/kza/kza/models).
         legacy_checkout: The 2026-10-28 original (/home/kza/kza).

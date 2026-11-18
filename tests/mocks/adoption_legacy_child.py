@@ -2,7 +2,7 @@
 
 Run as ``python -I -B adoption_legacy_child.py <b0866e8 tree> <container> <logs> <legacy events DDL>``.
 The working directory becomes ``<container>``: the production unit's shape,
-where WorkingDirectory is the 63ea8d3 container whose config/data/.env links
+where WorkingDirectory is the e9669ec container whose config/data/.env links
 resolve into the b0866e8 slot state and whose models link resolves into the
 legacy checkout. Only the b0866e8 tree is importable: every store, schema,
 target registration, fact deletion and conversation erasure below is b0866e8
