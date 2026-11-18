@@ -231,6 +231,9 @@ _TRAIL_WORDS = frozenset({"porfa"})
 # A leading "no" is stripped only when punctuation follows it ("no, cancelá ..."):
 # "no cancelar el recordatorio" is a negation (review T032-U1-R3).
 _PAUSE_AFTER = re.compile(r"\s*[,;:.!]")
+# The pause before a paused trailing word (``paused_trails``: "..., dale"). A colon is left out: it usually
+# opens quoted speech, where the word belongs to the text ("decirle a Juan: dale", review BH-R2).
+_PAUSE_BEFORE_TRAIL = re.compile(r"\s*[,;.!]")
 # Lead words (wake words, fillers, "por favor", a paused "no") stripped at most.
 _MAX_LEADS = 6
 
@@ -279,7 +282,8 @@ def _filler_bounds(utt: _Utterance, text: str, wake_words: Iterable[str], extra_
     """Token range of ``utt`` (the tokens of ``text``) without its lead and trail fillers.
 
     A word of ``paused_trails`` is a trailing filler only after a pause
-    (punctuation before it: "..., dale").
+    (",", ";", "." or "!" before it: "..., dale"); a colon is not one
+    ("decirle a Juan: dale" keeps it).
     """
     lowered = (text or "").lower()
     spans = [m.span() for m in _WORD_RE.finditer(lowered)]
@@ -302,7 +306,7 @@ def _filler_bounds(utt: _Utterance, text: str, wake_words: Iterable[str], extra_
         elif utt.folded[end - 1] in trails:
             end -= 1
         elif utt.folded[end - 1] in paused_trails and end - start >= 2 \
-                and _PAUSE_AFTER.match(lowered, spans[end - 2][1]):
+                and _PAUSE_BEFORE_TRAIL.match(lowered, spans[end - 2][1]):
             end -= 1
         else:
             break
@@ -321,8 +325,9 @@ def filler_span(text: str, wake_words: Iterable[str] = (), *, paused_trails: fro
         text: The utterance as heard.
         wake_words: Configured wake words, besides ``WAKE_TERMS``.
         paused_trails: Trailing words (accent-folded) dropped only after a
-            pause ("tomar agua a las 5, dale"); without the pause they stay,
-            as they may end a free text ("decirle que dale").
+            pause ("tomar agua a las 5, dale"); without the pause, or after
+            a colon, they stay, as they may end a free text ("decirle que
+            dale", "decirle a Juan: dale").
 
     Returns:
         ``(start, end)`` offsets into ``text``; ``(0, len(text))`` when

@@ -740,6 +740,10 @@ def test_filler_span_keeps_exactly_the_words_strip_fillers_keeps(text):
     ("recordame a las 5 decirle que dale, porfa", "recordame a las 5 decirle que dale"),
     ("recordame decirle que dale, dale", "recordame decirle que dale"),
     ("no recordame tomar agua, dale", "no recordame tomar agua"),
+    # A colon usually opens quoted speech: the 'dale' after it is the text (review BH-R2).
+    ("recordame a las 5 decirle a Juan: dale", "recordame a las 5 decirle a Juan: dale"),
+    ("recordame a las 5 decirle a Juan: dale, porfa", "recordame a las 5 decirle a Juan: dale"),
+    ("recordame a las 5 decirle a Juan: dale, dale", "recordame a las 5 decirle a Juan: dale"),
     ("dale, dale", ""),
 ])
 def test_filler_span_drops_a_trailing_dale_only_after_a_pause(text, heard):

@@ -2243,6 +2243,9 @@ async def test_the_security_alarm_without_a_clock_time_stays_unclaimed(leaves):
      "Anotado: decirle a Juan que dale, hoy a las 21:00."),
     ("recordame regar las plantas a las 9 de la noche dale", ("regar las plantas dale", (2026, 11, 16, 21, 0)),
      "Anotado: regar las plantas dale, hoy a las 21:00."),
+    # A colon usually opens quoted speech: the 'dale' after it is kept (review BH-R2).
+    ("recordame a las 5 de la tarde decirle a Juan: dale", ("decirle a Juan: dale", (2026, 11, 16, 17, 0)),
+     "Anotado: decirle a Juan: dale, hoy a las 17:00."),
 ])
 async def test_voice_creation_ignores_the_shared_fillers(leaves, text, row, response):
     from datetime import datetime
