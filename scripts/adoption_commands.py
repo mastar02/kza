@@ -21,9 +21,11 @@ the window around it:
 * ``adoption-abort`` (W-abort-2, P6=A) and ``adoption-abort --prepared-slot``
   (W-abort-1). Both first run the rollback-target check (U3b-0e5).
 * ``retire-legacy-state`` (Q5, P7=B, U3b-0e5): from DAY 0 + 14 x 24 h after
-  the first clean managed close, deletes the frozen b0866e8 state and its ten
-  2026-10-29 SQLite backups and makes the e9669ec container and b0866e8
-  slots ineligible for L4, from an immutable intent.
+  the first clean managed close, deletes the frozen b0866e8 state, the three
+  2026-10-28 report files beside it, both 2026-10-29 sets of ten SQLite
+  backups and production's superseded 63ea8d3 and 2c5adb4 slots (R1E-2), and
+  makes the e9669ec container, b0866e8 and both superseded slots ineligible
+  for L4, from an immutable intent.
 
 Every command refuses as root, as a user other than the root's owner, on a
 root that is not the managed layout, and when run twice. Outputs are
@@ -1974,16 +1976,31 @@ _DAY_SECONDS = 86400
 # backup_databases) took from the b0866e8 state, under <root>/backups/<container slot>/databases.
 # The path is fixed by that tool's layout and the adoption record's container slot, never argv.
 LEGACY_BACKUP_DATABASES = 10
+# R1E-2 (user decisions r1e_questions_20261118). R1E-Q1: the 14:48 publication took the same ten
+# databases from the b0866e8 state into backups/<63ea8d3 slot>/databases; Q5 retires both sets.
+# R1E-Q2/Q4/Q5: production's two other legacy slots are retired in the same step, each by its exact
+# name and the full commit of its runtime's release.json: the superseded 63ea8d3 container (only links
+# into the b0866e8 state and the checkout's models, plus its runtime) and the 2026-10-28 2c5adb4 slot
+# (a runtime and an older state copy). An absent one is recorded as absent; a present one must have
+# exactly that shape or Q5 refuses before any deletion.
+LEGACY_SUPERSEDED_CONTAINER = ("release_20261029T174830709997Z_63ea8d3", "63ea8d319b50506cc37ba73df1e41c87a41054cf")
+LEGACY_OLDER_SLOT = ("release_20261028T144002Z_2c5adb4", "2c5adb4f3825e94bff86ef5ccff4e1391a1bc012")
+# R1E-Q3: the three 2026-10-28 report files beside the b0866e8 slot's runtime and state (key names and
+# value classes checked read-only on 2026-11-18: release ids, commits, paths under /home/kza, unit
+# states, counts; no personal data). Exempt by exact name, regular files only, retired with the state.
+LEGACY_SLOT_REPORTS = ("activation-report.json", "live-report.json", "prepare-report.json")
 _BACKUP_SUFFIXES = (".db", ".sqlite3")
 _SQLITE_MAGIC = b"SQLite format 3\x00"
 # F10: the decision id is format-checked like every operator command; the plan and record also name
 # the recorded user authorization they act on.
 LEGACY_RETIRE_AUTHORIZATION = ("user-decisions-20261110.json u3b_0e_adoption.P7_legacy_copy_retention=B;"
-                               " u3b_0e5_retirement Q1=A Q2=A Q3=A")
+                               " u3b_0e5_retirement Q1=A Q2=A Q3=A;"
+                               " r1e_questions_20261118 R1E-Q1 R1E-Q2/Q4/Q5 R1E-Q3")
 LEGACY_RETIRE_PLAN_KEYS = frozenset({"kind", "decision_id", "container_slot", "legacy_slot", "target",
                                      "ineligible_slots", "adoption_record", "adoption_record_sha256",
                                      "first_clean_close", "eligible_from", "census", "excluded", "p_answer",
-                                     "backup_target", "backups", "authorization"})
+                                     "backup_target", "backups", "authorization", "targets", "slot_reports",
+                                     "superseded_backup_target", "superseded_backups", "superseded_slots"})
 def _historical_admission() -> frozenset:
     """admission/ subdirectories that only record history by name (the adoption layout, the pre-managed unit
     properties, the Q5 records); the reference scan reads every other admission record."""
@@ -2087,6 +2104,75 @@ def _legacy_census(target: Path) -> dict:
 def legacy_backup_target(root: Path, container: str) -> Path:
     """<root>/backups/<container slot>/databases: where the 2026-10-29 publication put its SQLite snapshots."""
     return root / "backups" / container / "databases"
+
+
+def legacy_superseded_slots() -> tuple[tuple[str, str], ...]:
+    """(slot name, full commit) of production's superseded legacy slots Q5 retires (R1E-2)."""
+    return (LEGACY_SUPERSEDED_CONTAINER, LEGACY_OLDER_SLOT)
+
+
+def legacy_targets(root: Path, scope: dict) -> list[Path]:
+    """Every Q5 removal target in deletion order; fixed by the scope and the constants, never argv."""
+    legacy = root / "slots" / scope["legacy"]
+    return ([scope["target"]] + [legacy / name for name in LEGACY_SLOT_REPORTS]
+            + [scope["backup"], scope["superseded_backup"]]
+            + [root / "slots" / name for name, _commit in legacy_superseded_slots()])
+
+
+def _superseded_census(root: Path, name: str, commit: str, *, links_only: bool) -> dict:
+    """A superseded legacy slot (R1E-2): absent, or exactly runtime/ and state/ with the reviewed release.
+
+    Refuses runtime_admission_legacy_retire_superseded when the slot is a link or not a directory, holds
+    anything beside runtime and state, its runtime's release.json is not a regular file naming exactly
+    ``commit``, ``links_only`` and its state holds anything but links, or the tree holds a special file.
+    """
+    code = "runtime_admission_legacy_retire_superseded"
+    slot = root / "slots" / name
+    try:
+        info = os.lstat(slot)
+    except FileNotFoundError:
+        return {"exists": False}
+    if not stat.S_ISDIR(info.st_mode) or os.path.realpath(slot) != os.fspath(slot):
+        _refuse(code, {"problems": [name]})
+    if sorted(os.listdir(slot)) != ["runtime", "state"]:
+        _refuse(code, {"problems": [name]})
+    runtime, state = slot / "runtime", slot / "state"
+    if not stat.S_ISDIR(os.lstat(runtime).st_mode) or not stat.S_ISDIR(os.lstat(state).st_mode):
+        _refuse(code, {"problems": [name]})
+    try:
+        descriptor = os.open(runtime / "release.json", os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        _refuse(code, {"problems": [name]})
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            _refuse(code, {"problems": [name]})
+        try:
+            release = json.loads(stream.read(1 << 20))
+        except ValueError:
+            _refuse(code, {"problems": [name]})
+    if type(release) is not dict or release.get("git_commit") != commit:
+        _refuse(code, {"problems": [name]})
+    if links_only and any(not entry.is_symlink() for entry in os.scandir(state)):
+        _refuse(code, {"problems": [name]})
+    census = _legacy_census(slot)
+    if census["other"]:
+        _refuse(code, {"problems": [name]})
+    return dict(census, commit=commit)
+
+
+def _reports_census(slot: Path) -> dict:
+    """The R1E-Q3 report files present beside the b0866e8 state: names and bytes only (never read)."""
+    names, size = [], 0
+    for name in LEGACY_SLOT_REPORTS:
+        try:
+            info = os.lstat(slot / name)
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            _refuse("runtime_admission_legacy_retire_slot_unexpected")
+        names.append(name)
+        size += info.st_size
+    return {"names": names, "bytes": size}
 
 
 def _backup_census(target: Path, legacy_data: Path | None) -> dict:
@@ -2261,9 +2347,11 @@ def _legacy_scope(root: Path, container_slot: str) -> dict:
     # The container's config link names this target (lexically; it still does once the target is gone).
     if os.path.realpath(root / "slots" / container / "state" / "config") != os.fspath(target / "config"):
         _refuse("runtime_admission_legacy_retire_layout")
-    unexpected = sorted(set(os.listdir(root / "slots" / legacy)) - {"runtime", "state"})
-    if unexpected:
+    unexpected = sorted(set(os.listdir(root / "slots" / legacy)) - {"runtime", "state", *LEGACY_SLOT_REPORTS})
+    if unexpected or any(os.path.lexists(root / "slots" / legacy / name) and not stat.S_ISREG(
+            os.lstat(root / "slots" / legacy / name).st_mode) for name in LEGACY_SLOT_REPORTS):
         _refuse("runtime_admission_legacy_retire_slot_unexpected")
+    superseded = [name for name, _commit in legacy_superseded_slots()]
     head = stage.read_admission_head(root)
     if head is None or stage.head_aborted(root, head):
         _refuse("runtime_admission_legacy_retire_adoption")
@@ -2271,6 +2359,7 @@ def _legacy_scope(root: Path, container_slot: str) -> dict:
     head_slot = binding["slot"]
     checkout = Path(layout["legacy_checkout"])
     backup = legacy_backup_target(root, container)
+    superseded_backup = legacy_backup_target(root, LEGACY_SUPERSEDED_CONTAINER[0])
     excluded = {"models_root": layout["models_root"], "venv": os.fspath(checkout / ".venv"),
                 "legacy_checkout": os.fspath(checkout),
                 "r1_slot": os.fspath(root / "slots" / record["slot"]),
@@ -2281,40 +2370,50 @@ def _legacy_scope(root: Path, container_slot: str) -> dict:
     # release.conf, config and .env the 2026-10-29 publication kept beside its databases.
     # R2-1: on every path, and so on a resume whose census is skipped after a partial delete,
     # backups/ and backups/<C> must be their own real paths; a link there would move the target.
-    for directory in (root / "backups", backup.parent):
+    sets = (backup, superseded_backup)
+    for directory in (root / "backups", backup.parent, superseded_backup.parent):
         if os.path.lexists(directory) and os.path.realpath(directory) != os.fspath(directory):
             _refuse("runtime_admission_legacy_retire_backups_set")
     kept = []
-    for directory in (root / "backups", backup.parent):
+    for directory in (root / "backups", backup.parent, superseded_backup.parent):
         if os.path.isdir(directory) and not os.path.islink(directory):
             kept += [os.fspath(directory / name) for name in sorted(os.listdir(directory))
-                     if directory / name not in (backup.parent, backup)]
-    targets = [os.fspath(target), os.fspath(backup)]
+                     if directory / name not in [item.parent for item in sets] + list(sets)]
+    targets = [os.fspath(item) for item in legacy_targets(root, {"target": target, "legacy": legacy, "backup": backup,
+                                                                 "superseded_backup": superseded_backup})]
     checks = [(key, value) for key, value in excluded.items()] + [("backups_kept", value) for value in kept]
     for key, value in checks:
         real = os.path.realpath(value)
         if any(_under(real, [item]) or _under(item, [real]) for item in targets):
             _refuse("runtime_admission_legacy_retire_excluded:" + key)
     excluded["backups_kept"] = kept
-    if head_slot in (legacy, container):
+    if head_slot in (legacy, container, *superseded):
         _refuse("runtime_admission_legacy_retire_excluded:head_slot")
     return {"adoption_record": name, "record": record, "target": target, "legacy": legacy,
             "container": container, "head": head, "head_state": Path(binding["state_root"]),
-            "excluded": excluded, "backup": backup}
+            "excluded": excluded, "backup": backup, "superseded_backup": superseded_backup}
 
 
-def _legacy_plan(root: Path, scope: dict, decision_id: str, close: dict, census: dict, backups: dict) -> dict:
+def _ineligible(scope: dict) -> list[str]:
+    return sorted([scope["container"], scope["legacy"]] + [name for name, _commit in legacy_superseded_slots()])
+
+
+def _legacy_plan(root: Path, scope: dict, decision_id: str, close: dict, census: dict, backups: dict,
+                 superseded: dict) -> dict:
     return {"kind": "legacy_state_retirement", "decision_id": decision_id,
             "container_slot": scope["container"], "legacy_slot": scope["legacy"],
             "target": os.fspath(scope["target"]),
-            "ineligible_slots": sorted([scope["container"], scope["legacy"]]),
+            "targets": [os.fspath(item) for item in legacy_targets(root, scope)],
+            "ineligible_slots": _ineligible(scope),
             "adoption_record": scope["adoption_record"],
             "adoption_record_sha256": _sha256(stage.adoption_directory(root) / scope["adoption_record"]),
             "first_clean_close": close,
             "eligible_from": close["ended_at"] + LEGACY_STATE_RETIREMENT_DAYS * _DAY_SECONDS,
             "census": census, "excluded": scope["excluded"], "p_answer": "P7=B",
             "backup_target": os.fspath(scope["backup"]), "backups": backups,
-            "authorization": LEGACY_RETIRE_AUTHORIZATION}
+            "superseded_backup_target": os.fspath(scope["superseded_backup"]),
+            "superseded_backups": superseded["backups"], "superseded_slots": superseded["slots"],
+            "slot_reports": superseded["reports"], "authorization": LEGACY_RETIRE_AUTHORIZATION}
 
 
 def _legacy_entries(root: Path) -> tuple[list[tuple[str, dict]], list[tuple[str, dict]]]:
@@ -2335,20 +2434,26 @@ def retire_legacy_state(root, *, decision_id: str, container_slot: str, manager,
                         dry_run: bool = False, wall=time.time) -> dict:
     """Q5 (P7=B): delete the frozen b0866e8 state 14 x 24 h after the first clean managed close.
 
-    Two fixed targets, never a path given on the command line: the
-    ``slots/<b0866e8 slot>/state`` the committed adoption record names, and
-    the ten SQLite snapshots the 2026-10-29 publication took from it,
+    Fixed targets, never a path given on the command line (legacy_targets):
+    the ``slots/<b0866e8 slot>/state`` the committed adoption record names,
+    the three 2026-10-28 report files beside it (R1E-Q3), the ten SQLite
+    snapshots the 2026-10-29 15:50 publication took from it,
     ``backups/<container slot>/databases`` (user decisions u3b_0e5_retirement
-    Q1=A, Q2=A; the container is e9669ec since batch_g "R1 base"). The backup
-    set must be exactly the reviewed one. The e9669ec container (links only)
-    stays and both slots leave L4 for good: the
-    immutable intent, written before the first unlink, already makes
-    uninstall-launcher and adoption-abort refuse
+    Q1=A, Q2=A; the container is e9669ec since batch_g "R1 base"), the ten
+    the 14:48 publication took, ``backups/<63ea8d3 slot>/databases``
+    (R1E-Q1), and the superseded 63ea8d3 and 2c5adb4 slots (R1E-Q2/Q4/Q5).
+    Each backup set must be exactly the reviewed one, each superseded slot
+    exactly its reviewed shape (an absent one is recorded as absent). The
+    e9669ec container (links only) and the b0866e8 runtime stay; the
+    container, the b0866e8 slot and both superseded slots leave L4 for
+    good: the immutable intent, written before the first unlink, already
+    makes uninstall-launcher and adoption-abort refuse
     (runtime_admission_uninstall_legacy_retired). Never in scope, each a
     checked exclusion: the models root and .venv of /home/kza/kza,
-    /home/kza/kza itself, every other backup (and the release.conf, config
-    and .env beside the retired databases), the adopted (R1) slot, the
-    head's slot and state, 'current' and the controller.
+    /home/kza/kza itself, every other backup (the 2c5adb4 backup of
+    /home/kza/kza, and the release.conf, config and .env beside the retired
+    databases), the adopted (R1) slot, the head's slot and state, 'current'
+    and the controller.
 
     ``dry_run`` reads only and prints the plan and its plan_sha256; the run
     itself needs ``confirm`` equal to it, kza-voice inactive and the root
@@ -2357,8 +2462,9 @@ def retire_legacy_state(root, *, decision_id: str, container_slot: str, manager,
     an L4 (uninstall-launcher) record; before DAY 0 + 14 x 24 h; anything
     that still points into the legacy slots or the backup set (links,
     admission records, user units, logrotate, the served config and .env);
-    a mount crossing; an entry in the legacy slot other than runtime and
-    state; a scan error (a directory vanishing mid-walk). The removal never
+    a mount crossing; an entry in the legacy slot other than runtime, state
+    and the three report files (regular files); a superseded slot of any
+    other shape; a scan error (a directory vanishing mid-walk). The removal never
     follows a link and never crosses a mount (make_writable_then_remove). A
     re-run after a crash completes from the intent with the same decision
     and plan_sha256. Q3=A: afterwards there is no unmanaged rollback.
@@ -2395,7 +2501,8 @@ def _legacy_checks(root: Path, container_slot: str, manager) -> tuple[dict, dict
         if used:  # the frozen state served production again: its data needs a new user decision
             _refuse("runtime_admission_legacy_retire_l4_used", {"problems": used})
         roots = [os.fspath(root / "slots" / scope["legacy"]), os.fspath(root / "slots" / scope["container"]),
-                 os.fspath(scope["backup"])]
+                 os.fspath(scope["backup"]), os.fspath(scope["superseded_backup"])] + [
+                     os.fspath(root / "slots" / name) for name, _commit in legacy_superseded_slots()]
         problems = legacy_references(root, roots=roots, skip=[Path(item) for item in roots],
                                      head_state=scope["head_state"], manager=manager)
     except OSError:  # e.g. a directory of the live state vanished during the dry run's walk
@@ -2421,7 +2528,8 @@ def _legacy_retire_body(root: Path, decision_id: str, container_slot: str, manag
         plan = intent["plan"]
         if (confirm is None or plan["decision_id"] != decision_id or plan["container_slot"] != scope["container"]
                 or intent["plan_sha256"] != confirm or plan["target"] != os.fspath(scope["target"])
-                or plan["backup_target"] != os.fspath(scope["backup"]) or plan["first_clean_close"] != close):
+                or plan["backup_target"] != os.fspath(scope["backup"]) or plan["first_clean_close"] != close
+                or plan["targets"] != [os.fspath(item) for item in legacy_targets(root, scope)]):
             _refuse("runtime_admission_legacy_retire_intent_mismatch")
         plan_sha256 = confirm
     else:
@@ -2429,9 +2537,15 @@ def _legacy_retire_body(root: Path, decision_id: str, container_slot: str, manag
             census = _legacy_census(scope["target"])
             data = scope["target"] / "data" if census.get("exists") else None
             backups = _backup_census(scope["backup"], data)
+            superseded = {
+                "backups": _backup_census(scope["superseded_backup"], data)
+                if os.path.lexists(scope["superseded_backup"]) else {"exists": False},
+                "slots": {name: _superseded_census(root, name, commit, links_only=name == LEGACY_SUPERSEDED_CONTAINER[0])
+                          for name, commit in legacy_superseded_slots()},
+                "reports": _reports_census(root / "slots" / scope["legacy"])}
         except OSError:
             _refuse("runtime_admission_legacy_retire_scan")
-        plan = _legacy_plan(root, scope, decision_id, close, census, backups)
+        plan = _legacy_plan(root, scope, decision_id, close, census, backups, superseded)
         plan_sha256 = stage._digest(plan)
         eligible = now >= plan["eligible_from"]
         if confirm is None:
@@ -2439,7 +2553,9 @@ def _legacy_retire_body(root: Path, decision_id: str, container_slot: str, manag
                     "eligible_from": launcher._now_stamp(plan["eligible_from"]),
                     "first_clean_close": launcher._now_stamp(close["ended_at"]),
                     "target_slot": scope["legacy"], "ineligible_slots": plan["ineligible_slots"],
-                    "census": plan["census"], "backups": plan["backups"]}
+                    "census": plan["census"], "backups": plan["backups"],
+                    "superseded_backups": plan["superseded_backups"], "superseded_slots": plan["superseded_slots"],
+                    "slot_reports": plan["slot_reports"]}
         if not plan["census"].get("exists"):
             _refuse("runtime_admission_legacy_retire_target")
         if not eligible:
@@ -2454,11 +2570,14 @@ def _legacy_retire_body(root: Path, decision_id: str, container_slot: str, manag
     if now < plan["eligible_from"]:  # a clock moved back after the intent: still never early
         _refuse("runtime_admission_legacy_retire_too_early",
                 {"eligible_from": launcher._now_stamp(plan["eligible_from"])})
-    removed = []
-    for target in (scope["target"], scope["backup"]):
+    removed, fsynced = [], []
+    for target in legacy_targets(root, scope):
         if os.path.lexists(target):
             stage.make_writable_then_remove(target)  # never follows a link, never crosses a mount
-        launcher._fsync_path(target.parent)
+        if os.path.isdir(target.parent):
+            launcher._fsync_path(target.parent)
+            if os.fspath(target.parent) not in fsynced:
+                fsynced.append(os.fspath(target.parent))
         if os.path.lexists(target):
             _refuse("runtime_admission_legacy_retire_absence")
         removed.append({"target": os.fspath(target), "absence": "enoent"})
@@ -2468,9 +2587,10 @@ def _legacy_retire_body(root: Path, decision_id: str, container_slot: str, manag
         "schema_version": 1, "kind": "legacy_state_retired", "plan_sha256": plan_sha256,
         "decision_id": decision_id, "authorization": plan["authorization"], "intent": intent_name,
         "ineligible_slots": plan["ineligible_slots"], "target": plan["target"], "census": plan["census"],
-        "backup_target": plan["backup_target"], "backups": plan["backups"], "absence": "enoent",
-        "removed": removed, "fsynced": [os.fspath(scope["target"].parent), os.fspath(scope["backup"].parent)],
-        "retired_at": stamp}, immutable=True)
+        "backup_target": plan["backup_target"], "backups": plan["backups"],
+        "superseded_backup_target": plan["superseded_backup_target"], "superseded_backups": plan["superseded_backups"],
+        "superseded_slots": plan["superseded_slots"], "slot_reports": plan["slot_reports"], "absence": "enoent",
+        "removed": removed, "fsynced": fsynced, "retired_at": stamp}, immutable=True)
     return {"record": launcher.LEGACY_RETIREMENT_DIRECTORY + "/" + name, "intent": intent_name,
             "plan_sha256": plan_sha256, "decision_id": decision_id, "retired_slot_state": plan["legacy_slot"],
             "ineligible_slots": plan["ineligible_slots"], "census": plan["census"],
@@ -2505,8 +2625,9 @@ def add_commands(commands) -> None:
     group.add_argument("--unit-dir", type=Path)
     group.add_argument("--prepared-slot")
     legacy = commands.add_parser("retire-legacy-state",
-                                 help="Q5 (P7=B): delete the frozen b0866e8 state and its 2026-10-29 backups "
-                                      "from DAY 0 + 14 x 24 h (recorded decision)")
+                                 help="Q5 (P7=B): delete the frozen b0866e8 state, its 2026-10-29 backups and "
+                                      "the superseded 63ea8d3 and 2c5adb4 slots from DAY 0 + 14 x 24 h "
+                                      "(recorded decisions)")
     legacy.add_argument("--decision", required=True, help="The recorded P7 decision id")
     legacy.add_argument("--container-slot", required=True)
     mode = legacy.add_mutually_exclusive_group(required=True)

@@ -179,16 +179,23 @@ def test_the_scheduling_gate_states_what_is_done_and_leaves_scheduling_to_the_us
         assert claim not in gate.lower(), claim
 
 
-def test_r1e_the_container_is_e9669ec_and_day14_names_what_stays_open():
+def test_r1e_the_container_is_e9669ec_and_day14_retires_production_s_legacy_entries():
     """R1E (batch_g_questions_20261118 "R1 base"): both C= lines name the slot 'current' serves since
-    2026-10-29 15:50; the runbook says how 63ea8d3 is refused and what still stops day 14."""
+    2026-10-29 15:50. R1E-2 (r1e_questions_20261118): L4 serves only e9669ec, and day 14 retires the
+    frozen state with its three report files, both backup sets and the 63ea8d3 and 2c5adb4 slots."""
     text = r1_runbook.runbook_text()
     assert re.findall(r"(?m)^C=(\S+)$", text) == ["release_20261029T185008966364Z_e9669ec"] * 2
     flat = " ".join(text.split())
     for needle in ("runtime_admission_adoption_container_commit", "runtime_admission_uninstall_legacy_commit",
-                   "runtime_admission_legacy_retire_slot_unexpected",
-                   "`runtime_admission_legacy_retire_referenced:link:slots/release_20261029T174830709997Z_63ea8d3`",
-                   "`backups/release_20261029T174830709997Z_63ea8d3/databases`",
-                   "`backups/release_20261029T185008966364Z_e9669ec/databases`"):
+                   "runtime_admission_legacy_retire_slot_unexpected", "runtime_admission_legacy_retire_superseded",
+                   "runtime_admission_uninstall_legacy_retired", "R1E-Q1", "R1E-Q2/Q4/Q5", "R1E-Q3",
+                   "`activation-report.json`", "`live-report.json`", "`prepare-report.json`",
+                   "`backups/release_20261029T174830709997Z_63ea8d3/databases/`", "`backups/$C/databases/`",
+                   "el slot `release_20261029T174830709997Z_63ea8d3` entero",
+                   "slot `release_20261028T144002Z_2c5adb4` entero", "veinte copias",
+                   "L4 sólo sirve el contenedor de e9669ec", "`release_unproven_copy`",
+                   "$R/slots/release_20261028T144002Z_2c5adb4 # todos: No such file or directory"):
         assert needle in flat, needle
-    assert "L4 hacia 63ea8d3" not in flat and "contenedor de 63ea8d3" not in flat
+    for stale in ("L4 hacia 63ea8d3", "contenedor de 63ea8d3", "Falta que el usuario confirme",
+                  "hacen falta además dos decisiones del usuario", "los dos slots con"):
+        assert stale not in flat, stale

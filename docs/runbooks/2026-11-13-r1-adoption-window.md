@@ -14,9 +14,9 @@ autoriza la ventana.
   revisados y ensayados (T-A17):
   - la comprobación de enlaces del destino de rollback (`_verify_legacy_slot`
     rechaza un enlace del contenedor roto o colgante);
-  - el retiro Q5 del estado b0866e8 (registro inmutable que saca el
-    contenedor de e9669ec y b0866e8 de L4; excluye `/home/kza/kza/models`, `/home/kza/kza/.venv` y el
-    slot R1).
+  - el retiro Q5 del estado b0866e8 (registro inmutable que saca de L4 el
+    contenedor de e9669ec, b0866e8 y los slots de 63ea8d3 y 2c5adb4; excluye
+    `/home/kza/kza/models`, `/home/kza/kza/.venv` y el slot R1).
 - Estado (2026-11-15): esta compuerta está cumplida. Los dos están
   implementados en U3b-0e5 (`retire-legacy-state` y `_verify_legacy_slot`),
   revisados y ensayados:
@@ -49,8 +49,9 @@ autoriza la ventana.
   (la aplicación con sus modelos, que los ensayos no cargan).
 - **Paso del día 14**: el borrado Q5 corre desde DÍA 0 + 14 × 24 h (DÍA 0 = el
   sello de cierre de W9, el `ended_at` de esa corrida; Q1 = A). Borra el estado
-  de b0866e8 y sus diez copias SQLite del 2026-10-29 en `backups/$C/databases`
-  (Q2 = A; alcance y decisiones pendientes en «Día 14»). Responsable: el
+  de b0866e8 con sus tres informes, sus veinte copias SQLite del 2026-10-29
+  (Q2 = A y R1E-Q1) y los slots de 63ea8d3 y 2c5adb4 (R1E-Q2/Q4/Q5); alcance
+  en «Día 14». Responsable: el
   usuario, como operador de `kza`; la autorización ya está registrada (P7 = B,
   `u3b_0e5_retirement`). En W10 se anota en el handoff la fecha exacta y el
   responsable. Hasta ese momento sólo vale L4 hacia el contenedor de e9669ec
@@ -117,8 +118,10 @@ la publicación de carga de voces). Así lo decidió el usuario el 2026-11-18
 (`batch_g_questions_20261118`, «R1 base»), en reemplazo de la premisa de P5
 (63ea8d3). El contenedor anterior,
 `release_20261029T174830709997Z_63ea8d3`, sigue en `slots/` con los
-mismos cinco enlaces. No es destino de L4: `uninstall-launcher` lo rechaza con
-`runtime_admission_uninstall_legacy_commit`. Si `$C` no es la release de
+mismos cinco enlaces hasta el día 14, que lo retira. L4 sólo sirve el
+contenedor de e9669ec (decisión R1E-Q2/Q4/Q5 del 2026-11-18):
+`uninstall-launcher` rechaza el de 63ea8d3, el runtime propio de b0866e8 y el
+slot de 2c5adb4 con `runtime_admission_uninstall_legacy_commit`. Si `$C` no es la release de
 e9669ec, la corrida de prueba y W2 rechazan
 `runtime_admission_adoption_container_commit` antes de escribir nada.
 
@@ -457,31 +460,44 @@ intérprete del ensayo).
   responsable (el usuario, como operador de `kza`). Anotar también los dos
   arranques hasta READY de W8/W9 y la salida de `completion-status`.
 
-## Día 14: retiro Q5 del estado de b0866e8 y sus copias del 2026-10-29
+## Día 14: retiro Q5 del estado de b0866e8, sus copias y los slots superados
 
 Desde DÍA 0 + 14 × 24 h exactas («día 14», decisión Q1 = A), nunca antes: el
 comando lo rechaza (`runtime_admission_legacy_retire_too_early`, con
-`eligible_from`). Borra el estado del slot de b0866e8 y las diez bases de
-`backups/$C/databases/` (Q2 = A). Después no hay rollback no gestionado y
-`/home/kza/kza` no es un destino (Q3 = A).
+`eligible_from`). Después no hay rollback no gestionado y `/home/kza/kza` no
+es un destino (Q3 = A).
 
-Alcance con `$C` = e9669ec (R1E, 2026-11-18): las diez bases que borra son las
-de `backups/release_20261029T185008966364Z_e9669ec/databases`, tomadas a las
-15:50. Las diez de la publicación de las 14:48 son copias del mismo estado y
-están en `backups/release_20261029T174830709997Z_63ea8d3/databases`. Quedan
-como exclusión comprobada y este paso no las borra. Falta que el usuario
-confirme si Q2 = A cubre también ese segundo conjunto.
+Alcance (decisiones Q2 = A y `r1e_questions_20261118`, R1E-2), en este orden y
+en un solo paso, desde una intención inmutable:
 
-Antes de este paso hacen falta además dos decisiones del usuario. Sin ellas
-la corrida de prueba (paso 2) rechaza sin borrar nada, así que no hay que
-borrar nada a mano:
+1. `slots/release_20261028T145442Z_b0866e8/state`, el estado congelado;
+2. los tres informes del 2026-10-28 junto a él, en
+   `slots/release_20261028T145442Z_b0866e8/`: `activation-report.json`,
+   `live-report.json` y `prepare-report.json` (R1E-Q3: revisados sólo
+   leyendo el 2026-11-18, sin datos personales). Sólo esos tres nombres y
+   sólo como archivos regulares; cualquier otra entrada junto a `runtime/` y
+   `state/` rechaza `runtime_admission_legacy_retire_slot_unexpected`;
+3. las diez bases de `backups/$C/databases/` (15:50) y las diez de
+   `backups/release_20261029T174830709997Z_63ea8d3/databases/` (14:48): las
+   veinte copias del mismo estado (R1E-Q1). Cada conjunto tiene que ser el
+   revisado (diez SQLite con nombres del `data/` congelado);
+4. el slot `release_20261029T174830709997Z_63ea8d3` entero (su runtime y los
+   cinco enlaces de su `state/` al estado de b0866e8 y a los modelos), y el
+   slot `release_20261028T144002Z_2c5adb4` entero (un runtime y una copia más
+   vieja del estado) (R1E-Q2/Q4/Q5). Cada uno se reconoce por su nombre
+   exacto y el commit completo de su `runtime/release.json`; el de 63ea8d3 no
+   puede tener en `state/` nada que no sea un enlace. Otra forma rechaza
+   `runtime_admission_legacy_retire_superseded` (con el slot en `problems`);
+   si uno ya no está, el plan lo anota como ausente.
 
-- el slot de 63ea8d3 conserva sus enlaces al estado de b0866e8, y el retiro
-  rechaza
-  `runtime_admission_legacy_retire_referenced:link:slots/release_20261029T174830709997Z_63ea8d3`;
-- el slot de b0866e8 tiene `activation-report.json`, `live-report.json` y
-  `prepare-report.json` junto a `runtime/` y `state/`, y el retiro rechaza
-  `runtime_admission_legacy_retire_slot_unexpected`.
+Quedan: el `runtime/` de b0866e8, el contenedor de e9669ec (sólo enlaces), los
+`release.conf`, `config` y `.env` junto a cada conjunto de bases, y
+`backups/release_20261028T144002Z_2c5adb4` (el respaldo de `/home/kza/kza`
+del 2026-10-28). El registro nombra en `ineligible_slots` los cuatro slots
+(e9669ec, b0866e8, 63ea8d3 y 2c5adb4): L4 los rechaza a todos con
+`runtime_admission_uninstall_legacy_retired`. Con los slots de 63ea8d3 y
+2c5adb4 retirados, el primer plan del modo release (R2) ya no los rechaza
+como copias sin prueba (`release_unproven_copy`).
 
 El día 14 se corre en una sesión nueva de `kza`, no en la de la ventana: el
 `$ST` de «Extraer R1 verificado» ya no existe y su `mktemp -d` no se
@@ -542,13 +558,17 @@ postergaría; si esa respuesta cambiara, no ejecutarlo.
    ```bash
    $ST retire-legacy-state --decision <id P7> --container-slot $C --dry-run
    ```
-   Tiene que decir `"eligible": true` y listar diez nombres en
-   `backups.databases`. Anotar `plan_sha256`.
+   Tiene que decir `"eligible": true`, listar diez nombres en
+   `backups.databases` y diez en `superseded_backups.databases`, los tres
+   informes en `slot_reports.names` y los dos slots en `superseded_slots`
+   (`"exists": true`, con el commit). Anotar `plan_sha256`.
    - `referenced:<qué>`: `problems` lista todo lo que todavía apunta a los
-     slots de b0866e8 o e9669ec o a esas bases. Corregirlo antes de seguir. No
-     borrar a mano.
-   - `backups_set`: el respaldo no es el conjunto revisado (diez SQLite de ese
+     slots de b0866e8, e9669ec, 63ea8d3 o 2c5adb4 o a esas bases. Corregirlo
+     antes de seguir. No borrar a mano.
+   - `backups_set`: un respaldo no es el conjunto revisado (diez SQLite de ese
      estado). Parar y avisar.
+   - `slot_unexpected` o `superseded`: un slot no tiene la forma revisada.
+     Parar y avisar; no borrar a mano.
    - `scan`: un directorio del estado vivo desapareció durante el recorrido.
      Repetir, o correrla con el servicio detenido.
 3. Retiro:
@@ -563,12 +583,17 @@ postergaría; si esa respuesta cambiara, no ejecutarlo.
    - Comprobar sólo leyendo. No probar L4 con `uninstall-launcher`: si el retiro
      no hubiera ocurrido, ese comando cambiaría la unidad a L4.
      ```bash
-     ls /home/kza/releases/admission/legacy-retirement/      # intent-<plan>.json y retired-<plan>.json
-     ls -d /home/kza/releases/slots/release_20261028T145442Z_b0866e8/state \
-           /home/kza/releases/backups/$C/databases           # ambos: No such file or directory
-     ls /home/kza/releases/backups/$C                        # quedan release.conf, config y .env
+     R=/home/kza/releases
+     ls $R/admission/legacy-retirement/                     # intent-<plan>.json y retired-<plan>.json
+     ls -d $R/slots/release_20261028T145442Z_b0866e8/state \
+           $R/backups/$C/databases \
+           $R/backups/release_20261029T174830709997Z_63ea8d3/databases \
+           $R/slots/release_20261029T174830709997Z_63ea8d3 \
+           $R/slots/release_20261028T144002Z_2c5adb4      # todos: No such file or directory
+     ls $R/slots/release_20261028T145442Z_b0866e8           # queda sólo runtime
+     ls $R/backups/$C $R/backups/release_20261029T174830709997Z_63ea8d3   # release.conf, config y .env
      ```
-     Con ese registro, `uninstall-launcher` rechaza los dos slots con
+     Con ese registro, `uninstall-launcher` rechaza los cuatro slots con
      `runtime_admission_uninstall_legacy_retired` (ensayado en T-A17).
 4. Si se corta (corte de luz, SIGKILL), repetir el mismo comando con el mismo
    id y el mismo `--confirm`: termina desde

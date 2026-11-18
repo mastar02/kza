@@ -2133,7 +2133,7 @@ def _container_release(world: World, value) -> None:
 
 def test_r1e_the_legacy_commits_are_the_state_slot_and_the_e9669ec_container():
     assert launcher.LEGACY_STATE_COMMIT == "b0866e8" and launcher.LEGACY_CONTAINER_COMMIT == "e9669ec"
-    assert launcher.LEGACY_COMMITS == ("b0866e8", "e9669ec")
+    assert launcher.LEGACY_COMMITS == ("e9669ec",)  # R1E-2: L4 and the aborts serve only the container
     assert launcher.LEGACY_CONTAINER_RELEASE == "e9669ec1edb101ca6b190ef8df09314e1ac63562"
     assert launcher.LEGACY_CONTAINER_RELEASE.startswith(launcher.LEGACY_CONTAINER_COMMIT)
     assert CONTAINER == "release_20261029T185008966364Z_e9669ec"
@@ -2183,12 +2183,13 @@ def test_r1e_commit_refuses_a_container_release_changed_after_prepare(world):
 
 @pytest.mark.parametrize("commit, code", [
     ("e9669ec" + "0" * 33, None),
-    ("b0866e8" + "0" * 33, None),
+    ("b0866e8" + "0" * 33, "runtime_admission_uninstall_legacy_commit"),  # R1E-2: L4 targets only e9669ec
     (SUPERSEDED, "runtime_admission_uninstall_legacy_commit"),
     ("2c5adb4" + "0" * 33, "runtime_admission_uninstall_legacy_commit"),
 ])
 def test_r1e_l4_and_the_aborts_roll_back_only_to_the_listed_legacy_commits(world, commit, code):
-    """The rollback target (L4, both aborts): b0866e8 and e9669ec; the superseded 63ea8d3 refuses."""
+    """The rollback target (L4, both aborts): only e9669ec (user decision R1E-Q2/Q4/Q5); b0866e8's own
+    runtime and the superseded 63ea8d3 refuse."""
     _container_release(world, {"git_commit": commit, "files": {}})
     if code is None:
         assert launcher._verify_legacy_slot(world.root, CONTAINER, launcher.LEGACY_COMMITS)[2] == commit
