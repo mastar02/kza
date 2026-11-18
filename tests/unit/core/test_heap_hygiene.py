@@ -22,7 +22,7 @@ import sys
 import pytest
 
 from scripts import managed_launcher as launcher
-from scripts import stage_runtime  # noqa: F401 -- binds the launcher's stage (child_environment)
+from scripts import stage_runtime  # also binds the launcher's stage (child_environment)
 from src.core import entry_guard
 from src.core import heap_hygiene as hh
 
@@ -115,6 +115,14 @@ def test_the_launcher_gives_the_child_the_hygiene_tunables_and_keeps_the_unit_s_
     assert _launcher_tunables({"PATH": "/bin"}) == HYGIENE
     for inherited in ("glibc.malloc.perturb=0", "glibc.malloc.arena_max=2:glibc.malloc.tcache_count=7", ""):
         assert _launcher_tunables({hh.GLIBC_TUNABLES_ENV: inherited}) == hh.with_heap_hygiene(inherited)
+
+
+def test_the_admission_controller_merges_the_same_tunables_as_the_launcher():
+    """SC4CQ3-R1: AdmissionController.run (run_slot) spawns ticketed children too."""
+    assert stage_runtime.HEAP_HYGIENE_TUNABLES == hh.HEAP_HYGIENE_TUNABLES
+    assert stage_runtime.GLIBC_TUNABLES_ENV == hh.GLIBC_TUNABLES_ENV
+    for inherited in (None, "", "glibc.malloc.perturb=0", "glibc.malloc.arena_max=2:glibc.malloc.tcache_count=7"):
+        assert stage_runtime.with_heap_hygiene(inherited) == hh.with_heap_hygiene(inherited)
 
 
 def test_the_ticket_literal_is_the_entry_guard_s():

@@ -1346,7 +1346,9 @@ cada byte que Chroma recibe de `malloc` es el patrón o cero (un mapeo nuevo),
 nunca contenido anterior, y lo que escribe al inicializar un índice no tiene
 residuo. Las variables las lee el cargador al hacer `exec`, por eso las pone
 el padre: `managed_launcher.child_environment` (conserva los otros
-tunables de la unidad y reemplaza los del mismo nombre) y el hijo limpio de
+tunables de la unidad y reemplaza los del mismo nombre),
+`AdmissionController.run` (`run_slot`, el mismo valor; lo usan los ensayos y
+arneses compilados que arrancan un hijo con ticket) y el hijo limpio de
 la compactación (`owner_compaction._rebuild_store`, así la capacidad sin usar
 de K tampoco guarda texto de un hecho vivo en la reconstrucción y borrado
 después). Fallo cerrado: `src.main`, con ticket y en glibc, comprueba su

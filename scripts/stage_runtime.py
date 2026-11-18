@@ -413,6 +413,23 @@ PRIVATE_FILE_MODE = 0o600
 # and their -wal/-shm, intermediate directories, plain files) is 0600/0700 (review F5).
 # A file another reader needs keeps its own explicit fchmod (audio_health.json 0644).
 MANAGED_CHILD_UMASK = 0o077
+# SC4C-Q3: glibc tunables of every ticketed child (read by the loader at exec): malloc
+# returns only the perturb pattern, never earlier heap contents, so a Chroma index the
+# child initializes writes no residue; src.main refuses a ticketed start (exit 78) when
+# they are not in effect. Same literal as src.core.heap_hygiene.HEAP_HYGIENE_TUNABLES and
+# managed_launcher.HEAP_HYGIENE_TUNABLES (a test pins all three).
+GLIBC_TUNABLES_ENV = "GLIBC_TUNABLES"
+HEAP_HYGIENE_TUNABLES = (("glibc.malloc.perturb", "165"), ("glibc.malloc.tcache_count", "0"))
+
+
+def with_heap_hygiene(value: str | None) -> str:
+    """A ``GLIBC_TUNABLES`` value: the inherited others in order, then HEAP_HYGIENE_TUNABLES.
+
+    An inherited entry with the name of a hygiene tunable is dropped.
+    """
+    names = {name for name, _ in HEAP_HYGIENE_TUNABLES}
+    kept = [item for item in (value or "").split(":") if item and item.split("=", 1)[0] not in names]
+    return ":".join([*kept, *(f"{name}={setting}" for name, setting in HEAP_HYGIENE_TUNABLES)])
 
 
 def private_directories(path: Path) -> None:
@@ -5057,6 +5074,7 @@ class AdmissionController:
 
         The process inherits the caller's process group. A timeout kills and
         reaps this direct child but records UNKNOWN regardless of its exit code.
+        Its GLIBC_TUNABLES end with HEAP_HYGIENE_TUNABLES (SC4C-Q3), like serve's.
         """
         self._require_lease()
         if not isinstance(timeout, (int, float)) or timeout <= 0:
@@ -5067,6 +5085,8 @@ class AdmissionController:
         run_id = running["run_id"]
         child_env = os.environ.copy() if env is None else dict(env)
         child_env["KZA_RUNTIME_ADMISSION"] = _canonical_json(ticket).decode()
+        # SC4C-Q3: the same tunables as serve's child_environment (a ticketed src.main refuses without).
+        child_env[GLIBC_TUNABLES_ENV] = with_heap_hygiene(child_env.get(GLIBC_TUNABLES_ENV))
         command = list(argv) if argv is not None else [sys.executable, "-B", "-m", "src.main"]
         process = None
         try:
