@@ -29,10 +29,10 @@ compiled CLI run as a subprocess:
   ``--exec`` is a NEW that changes K' at boot), except in (14), where it is
   the real compiled application (tools/sc0/sc0_child.py: the real managed
   entry with synthetic leaves, no models, no microphone). Its synthetic
-  memory leaf records a test-only embedding function in the memory
-  collection, which SC-4c's isolated Chroma rebuild child cannot load, so
-  (14) stops at start's refusal and takes row S back to H; the real app's V
-  over the same residue is the compiled CR-7 R1-H run (SCR-P-3).
+  memory leaf keeps Chroma's default embedding configuration, as
+  production's collection does, and supplies the vectors itself
+  (tests/mocks/restore_application_graph.SuppliedEmbeddings), so SC-4c's
+  isolated Chroma rebuild child rebuilds that store.
 
 Each item writes ``sc6b-<item>.json`` (commands with the paths replaced by
 ``<root>``/``<tmp>``/``$PY``, exit codes, refusal codes, results, the
@@ -1170,8 +1170,7 @@ def _app_source(tmp_path: Path, port: int) -> Path:
 
 def test_14_a_correct_new_over_h_with_residue_is_retired(builds, tmp_path, systemd, record):
     rec = record("14", "Correct NEW over an H with residue, the real compiled application as H's and NEW's "
-                       "child: plan (SC-4c closed list) and start; V and retire when the Chroma rebuild runs, "
-                       "else row S back to H")
+                       "child: plan (SC-4c closed list), start (the memory store rebuilt), V and retire")
 
     port = _free_port()  # the dashboard port is a literal of the state's settings (copied into K)
 
@@ -1184,15 +1183,19 @@ def test_14_a_correct_new_over_h_with_residue_is_retired(builds, tmp_path, syste
     world = World(builds, tmp_path, systemd, rec, source=_app_source(tmp_path, port), first_child=first)
     h_state = world.root / "slots" / "s" / "state"
     graph = h_state / "data" / "graph"
-    rec.result(residue_counts={
+    counts = {
         "retired_users": len(_sql(graph / "dashboard-auth.db", "SELECT 1 FROM retired_users")),
         "recorders": sorted(row[0] for row in _sql(graph / "privacy.db",
                                                    "SELECT state FROM capture_browser_recorders")),
         "reminder_sending": len(_sql(graph / "reminders.db",
                                      "SELECT 1 FROM reminder_home_actions WHERE status='sending'")),
-        "routine_running": len(_sql(graph / "routines.db", "SELECT 1 FROM routine_runs WHERE status='running'"))})
+        "routine_running": len(_sql(graph / "routines.db", "SELECT 1 FROM routine_runs WHERE status='running'"))}
+    rec.result(residue_counts=counts)
+    # retired_owner_facts and retired_user_credential_session retire one user each; recorders_crash_running
+    # leaves an active, a reserved and an unknown recorder; one 'sending' action; one interrupted run.
+    assert counts == {"retired_users": 2, "recorders": ["active", "reserved", "unknown"], "reminder_sending": 1,
+                      "routine_running": 1}, counts
     _first_t0_app(world)
-    h_binding = world.head()["binding_id"]
     world.st("residue-paso0-completion-status", "completion-status")
     world.stop_and_disable("residue-paso1")
     world.k += 1
@@ -1200,34 +1203,23 @@ def test_14_a_correct_new_over_h_with_residue_is_retired(builds, tmp_path, syste
     stores = planned["chroma"]["stores"]
     rec.result(plan_chroma=stores)
     assert stores["data/chroma_db"]["dropped_collections"] == ["home_assistant_routines"]
-    started = world.st("start-k1-x5", "compact", "start", "k1", "--archive", str(builds["x5"]["archive"]),
-                       "--plan-sha256", planned["plan_sha256"], "--acknowledge-untouched",
-                       planned["untouched_sha256"], "--destroy-rollback-states", expect=None)
-    if started.get("refused"):
-        # The synthetic memory leaf (tests/mocks/restore_application_graph.MemorySDK) records its test-only
-        # embedding function in the memory collection's configuration; SC-4c's isolated rebuild child cannot
-        # load it (production's collection carries Chroma's default one). Row S, with the real app's H: the
-        # plain abort returns to H without loss and H serves again.
-        assert started["refused"] == "runtime_admission_compaction_chroma_rebuild_failed", started
-        [pending] = [item for item in world.st("row-s-status", "compact", "status")["compactions"]
-                     if item.get("phase") not in ("complete", "aborted")]
-        aborted = world.st("row-s-plain-abort", "compact", "abort", pending["compaction_id"])
-        rec.result(start_refused=started["refused"], row_s={"phase_before": pending.get("phase"),
-                                                            "abort": aborted.get("phase")})
-        assert aborted["phase"] == "aborted"
-        assert world.head()["binding_id"] == h_binding and not (world.root / "slots" / "k1").exists()
-        world.serve_clean("row-s-h-serves-real-app", enable=True, app=True)
-        rec.result(v_and_retire="not reached: the rebuild refusal above (harness limit); the real app's V over "
-                                "this residue is SCR-P-3's compiled CR-7 R1-H run")
-        return
-    compaction_id = started["compaction_id"]
+    assert stores["data/graph/chroma"]["rebuilt"] == 1  # the memory store: SC-4c's isolated rebuild child
+    compaction_id = world.start("x5", "k1", planned)
     world.verify(compaction_id)
     world.v_run("residue-v", app=True)
     status = world.status(compaction_id)
-    assert status["verified"] is True and status["verify_branch_reached"] == "yes", status
-    world.retire(compaction_id)
+    assert status["verified"] is True and status["armed_run"] == "consumed", status
+    assert status["verify_branch_reached"] == "yes", status
+    head = world.head()  # V's own receipt closed K' (its closure proof reads and checks that receipt)
+    assert head["status"] == "closed" and world.slot_of_head() == "k1"
+    proof = stage._closure_proof(world.root, head["binding_id"])
+    retired = world.retire(compaction_id)
+    [begun] = [event for event in world.log(compaction_id)["events"] if event["kind"] == "retire_started"]
+    assert begun["data"]["w"]["class"] == compaction.W_EQUAL
+    assert world.kinds(compaction_id)[-1] == "complete" and not h_state.exists()  # H and its residue destroyed
     world.serve_clean("residue-serve-k-prime", enable=True, app=True)
-    rec.result(retired={"k": "k1", "compaction_id": compaction_id})
+    rec.result(retired={"k": "k1", "compaction_id": compaction_id, "destroyed": retired.get("destroyed"),
+                        "receipt_sha256": proof["receipt_sha256"], "w_class": begun["data"]["w"]["class"]})
 
 
 def _first_t0_app(world: World) -> None:

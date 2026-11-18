@@ -61,6 +61,43 @@ async def local_models():
         yield str(server.make_url("")).rstrip("/"), requests
 
 
+class SuppliedEmbeddings:
+    """A memory collection that keeps Chroma's default embedding configuration, as production's does.
+
+    The vectors are this leaf's (SyntheticEmbedding): documents on add, upsert
+    and update and query texts become explicit embeddings, so the default
+    model is never loaded, and the persisted configuration names Chroma's own
+    function, which SC-4c's isolated rebuild child loads (SC-6b review F2).
+    """
+
+    def __init__(self, collection):
+        self.collection = collection
+        self.embed = SyntheticEmbedding()
+
+    def _vectors(self, kwargs: dict) -> dict:
+        if kwargs.get("documents") is not None and kwargs.get("embeddings") is None:
+            kwargs["embeddings"] = self.embed(list(kwargs["documents"]))
+        return kwargs
+
+    def add(self, **kwargs):
+        return self.collection.add(**self._vectors(kwargs))
+
+    def upsert(self, **kwargs):
+        return self.collection.upsert(**self._vectors(kwargs))
+
+    def update(self, **kwargs):
+        return self.collection.update(**self._vectors(kwargs))
+
+    def query(self, **kwargs):
+        texts = kwargs.pop("query_texts", None)
+        if texts is not None and kwargs.get("query_embeddings") is None:
+            kwargs["query_embeddings"] = self.embed(list(texts))
+        return self.collection.query(**kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self.collection, name)
+
+
 class MemorySDK:
     """Retain the installed SDK, replacing only its default embedding leaf."""
 
@@ -68,9 +105,9 @@ class MemorySDK:
         self.sdk, self.closed = sdk, False
 
     def get_or_create_collection(self, *args, **kwargs):
-        if "embedding_function" not in kwargs:
-            kwargs["embedding_function"] = SyntheticEmbedding()
-        return self.sdk.get_or_create_collection(*args, **kwargs)
+        if "embedding_function" in kwargs:
+            return self.sdk.get_or_create_collection(*args, **kwargs)
+        return SuppliedEmbeddings(self.sdk.get_or_create_collection(*args, **kwargs))
 
     def __getattr__(self, name):
         return getattr(self.sdk, name)
