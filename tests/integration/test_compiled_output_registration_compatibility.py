@@ -135,6 +135,11 @@ def _graph_phase(controller: object, prepared: dict, branch: str, mode: str,
         return {"result": result, "terminal": record}
     except BaseException as error:
         record.update(error_kind=type(error).__name__, containment_only=not record["actual_wait_returned"])
+        # Batch F (2026-11-17): a graph-current child exited 1 once under a shared server and its stderr was lost
+        # with the temp dir; keep its tail in the failure itself (diagnostics only, nothing is relaxed).
+        stderr_log = evidence / (mode + "-stderr.log")
+        if stderr_log.exists():
+            error.add_note(f"{mode} child stderr tail:\n" + stderr_log.read_text(errors="replace")[-4000:])
         raise
     finally:
         compiled.write_json(evidence / (mode + "-parent-receipt.json"), record)
