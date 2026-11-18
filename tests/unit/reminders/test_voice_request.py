@@ -21,6 +21,7 @@ from src.reminders.voice_request import (
     VoiceReminderRequest,
     VoiceRequestParser,
     extract_time_expression,
+    forbidden_home_order,
     parse_reminder_request,
 )
 
@@ -1025,3 +1026,32 @@ def test_microbenchmark_under_one_millisecond_per_parse():
             parser.parse_reminder(phrase)
         best = min(best, (time_module.perf_counter() - started) / len(phrases))
     assert best < 0.001, f"{best * 1000:.3f} ms per parse"
+
+
+@pytest.mark.parametrize(("text", "kind"), [
+    # Review T031-U2-RV4: home orders voice control never executes (locks, doors, gates, the alarm panel).
+    ("cerrar la puerta con llave", "lock"),
+    ("cerrá la puerta de calle", "lock"),
+    ("abrir el portón", "lock"),
+    ("Abrí el Portón del garaje", "lock"),
+    ("trabar la reja", "lock"),
+    ("destrabar la cerradura", "lock"),
+    ("pasar la llave", "lock"),
+    ("echarle llave a la puerta", "lock"),
+    ("activar la alarma", "alarm"),
+    ("desactivar la alarma", "alarm"),
+    ("armar la alarma de la casa", "alarm"),
+    ("desarmá la alarma", "alarm"),
+    ("conectar la alarma", "alarm"),
+    ("prender la alarma", "alarm"),
+    ("pintar la puerta", None),
+    ("llamar al cerrajero", None),
+    ("abrir la carta del banco", None),
+    ("comprar la llave inglesa", None),
+    ("revisar la alarma", None),
+    ("alarma", None),
+    ("cambiar la alarma de la mañana", None),
+    ("pagar en abril", None),
+])
+def test_forbidden_home_order(text, kind):
+    assert forbidden_home_order(text) == kind

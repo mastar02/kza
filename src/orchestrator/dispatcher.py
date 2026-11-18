@@ -83,6 +83,7 @@ from src.reminders.voice_request import (
     ReminderAmbiguity,
     VoiceReminderRequest,
     VoiceRequestParser,
+    forbidden_home_order,
     period_hours,
 )
 from src.world.weather import DEFAULT_ENTITY as DEFAULT_WEATHER_ENTITY
@@ -181,8 +182,9 @@ _REMINDER_DETAIL_QUESTIONS = {
 _REMINDER_ROOM_QUESTION = ("Por ahora no elijo en qué habitación suena un recordatorio. Decímelo de nuevo sin "
                            "nombrar la habitación.")
 _REMINDER_HEAD_QUESTION = "No entendí el recordatorio. Decímelo completo, por ejemplo: {example}."
-# The reminder text is a home command: it is only announced, never executed (T031-U2 text-only; T031-U5 adds
-# actions; user answer Q9d asks KZA to say aloud what it will not do).
+# The reminder text is a home command (a grammar intent, or a lock, door, gate or alarm order voice control never
+# executes, review T031-U2-RV4): it is only announced, never executed (T031-U2 text-only; T031-U5 adds actions;
+# user answer Q9d asks KZA to say aloud what it will not do).
 _REMINDER_NOTICE_ONLY = " Es solo un aviso: eso no lo hago yo."
 _REMINDER_CREATE_UNCERTAIN = ("No pude confirmar si el recordatorio quedó guardado. Preguntame qué recordatorios "
                               "hay antes de pedirlo de nuevo.")
@@ -2173,7 +2175,7 @@ class RequestDispatcher:
                                   intent="reminder", outcome=TaskOutcome(TaskStatus.UNCERTAIN,
                                                                          persistence=PersistenceState.UNCERTAIN))
         response = f"Anotado: {reminder.text}, {self.reminder_manager.spoken_schedule(reminder)}."
-        if parse_command(reminder.text).intent is not None:
+        if parse_command(reminder.text).intent is not None or forbidden_home_order(reminder.text) is not None:
             response += _REMINDER_NOTICE_ONLY
         logger.info("[Reminder] voice create committed id=%s recurrence=%s alarm=%s", reminder.id,
                     reminder.recurrence, alarm)

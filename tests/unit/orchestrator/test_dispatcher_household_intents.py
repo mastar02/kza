@@ -1662,6 +1662,18 @@ async def test_every_ambiguity_code_has_its_question():
      "Anotado: apagar la luz del living, hoy a las 23:00. Es solo un aviso: eso no lo hago yo."),
     ("recordame poner música a las 9 de la noche", ("poner música", (2026, 11, 16, 21, 0), None),
      "Anotado: poner música, hoy a las 21:00. Es solo un aviso: eso no lo hago yo."),
+    # Review T031-U2-RV4: locks, doors, gates and the alarm panel are never controllable; Q9d says so aloud.
+    ("recordame cerrar la puerta con llave a las 11 de la noche",
+     ("cerrar la puerta con llave", (2026, 11, 16, 23, 0), None),
+     "Anotado: cerrar la puerta con llave, hoy a las 23:00. Es solo un aviso: eso no lo hago yo."),
+    ("recordame activar la alarma a las 11 de la noche", ("activar la alarma", (2026, 11, 16, 23, 0), None),
+     "Anotado: activar la alarma, hoy a las 23:00. Es solo un aviso: eso no lo hago yo."),
+    ("recordame desactivar la alarma a las 7 de la tarde", ("desactivar la alarma", (2026, 11, 16, 19, 0), None),
+     "Anotado: desactivar la alarma, hoy a las 19:00. Es solo un aviso: eso no lo hago yo."),
+    ("recordame abrir el portón a las 8 de la noche", ("abrir el portón", (2026, 11, 16, 20, 0), None),
+     "Anotado: abrir el portón, hoy a las 20:00. Es solo un aviso: eso no lo hago yo."),
+    ("recordame pintar la puerta a las 8 de la noche", ("pintar la puerta", (2026, 11, 16, 20, 0), None),
+     "Anotado: pintar la puerta, hoy a las 20:00."),
 ])
 @pytest.mark.parametrize("speaker", ["unknown", "ana"])
 async def test_voice_creation_commits_one_shared_household_row(leaves, text, row, response, speaker):
