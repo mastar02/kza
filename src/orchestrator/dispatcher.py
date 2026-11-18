@@ -2184,6 +2184,23 @@ class RequestDispatcher:
         return await executor.execute_with_feedback(command, request_id=request_id or CURRENT_REQUEST_ID.get())
 
 
+def has_domotics_action_verb(text: str) -> bool:
+    """Whether the text carries a verb the dispatcher routes to FAST_DOMOTICS.
+
+    The same keyword match ``RequestDispatcher._classify_request`` applies, so
+    an action the grammar does not name ('bajá la luz', 'cambiá la luz') still
+    counts as one (T037-U5-FV1).
+
+    Args:
+        text: Transcript of the turn.
+
+    Returns:
+        True when a domotics keyword matches the lowercased text.
+    """
+    text_lower = text.lower()
+    return any(_kw_match(keyword, text_lower) for keyword in RequestDispatcher.DOMOTICS_KEYWORDS)
+
+
 class MultiUserOrchestrator:
     """
     Orquestador completo para multiples usuarios.

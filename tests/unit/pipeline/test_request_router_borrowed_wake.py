@@ -328,6 +328,31 @@ async def test_resolved_light_without_own_wake_the_7b_accepts_still_runs(leaves,
     assert house.effects(before) == effects(ha_service_calls=1, vector_searches=1, llm_8101_calls=1)
 
 
+# 'bajá' and 'cambiá' are verbs the dispatcher routes to FAST_DOMOTICS, but the
+# grammar names no intent for them: only the 7B or the verb says it is an action.
+VERB_ONLY_LIGHT = ["bajá la luz del quincho", "cambiá la luz del quincho"]
+# What the reviewer's probe had the 7B return (T037-U5-FV1): a room-only hint, or no intent.
+ACCEPTS_UNNAMED_LIGHT = {
+    "set_brightness:quincho": dict(intent="set_brightness", entity_hint="quincho"),
+    "toggle:quincho": dict(intent="toggle", entity_hint="quincho"),
+    "intent_none": dict(intent=None, entity_hint=None),
+}
+
+
+@pytest.mark.parametrize("accepted", list(ACCEPTS_UNNAMED_LIGHT))
+@pytest.mark.parametrize("capture", ["follow_up", "barge_in", "wake"])
+@pytest.mark.parametrize("text", VERB_ONLY_LIGHT)
+async def test_unresolved_light_the_grammar_names_no_intent_for_asks(leaves, text, capture, accepted):
+    """The 7B accepts, its hint names no light and the grammar finds no intent: the turn still asks."""
+    from src.nlu.llm_router import CommandClassification
+    house = await house_for(leaves, text, "stub:turn_on@0.95", "light_match")
+    house.veto.classify.return_value = CommandClassification(
+        is_command=True, confidence=0.95, **ACCEPTS_UNNAMED_LIGHT[accepted])
+    before = leaves.snapshot()
+    result = await turn(house, capture)
+    assert_asks_room_no_effect(house, result, before, llm_8101_calls=1)
+
+
 @pytest.mark.parametrize(("hint", "intent", "text", "expected"), [
     ("light", "turn_on", "dale nomás", True),
     ("luz del quincho", "turn_on", "dale nomás", True),
@@ -340,6 +365,15 @@ async def test_resolved_light_without_own_wake_the_7b_accepts_still_runs(leaves,
     (None, None, "¿por qué parpadea la luz del quincho?", False),
     (None, None, "la luz del quincho", False),
     (None, None, "subí la persiana del quincho", False),
+    # T037-U5-FV1: the text names a light and the 7B accepted an action, or a dispatcher verb says so.
+    ("quincho", "set_brightness", "bajá la luz del quincho", True),
+    ("quincho", "toggle", "cambiá la luz del quincho", True),
+    ("quincho", "turn_on", "la luz del quincho", True),
+    (None, None, "bajá la luz del quincho", True),
+    (None, None, "cambiá las luces del quincho", True),
+    ("quincho", None, "la luz del quincho", False),
+    ("quincho", "set_brightness", "bajá la persiana del quincho", False),
+    (None, None, "bajá la persiana del quincho", False),
 ])
 def test_dispatch_targets_light(hint, intent, text, expected):
     from src.nlu.llm_router import CommandClassification

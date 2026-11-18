@@ -33,6 +33,7 @@ from src.nlu.command_grammar import (
 from src.nlu.household_intents import HouseholdIntent, HouseholdIntentClassifier, HouseholdIntentSettings
 from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
+from src.orchestrator.dispatcher import has_domotics_action_verb
 from src.pipeline.earcon_gate import should_play_earcon
 from src.pipeline.post_wake_endpoint import CaptureTrigger
 from src.pipeline.wake_verification import WakeVerifier
@@ -132,9 +133,12 @@ def _dispatch_targets_light(text: str, classification) -> bool:
     turn: the grammar fast path (entity_hint ``light``), the 7B (its
     entity_hint is a domain such as ``light`` or free text such as ``luz del
     quincho``), or neither (no LLMCommandRouter configured, the textual wake
-    channel). The text's own grammar parse also counts when it finds an action
-    on a light; a question that only mentions a light, with no action verb,
-    does not.
+    channel). The text's own grammar parse also counts when it names a light
+    and either finds an action on it, or the accepted classification carries
+    an intent, or the text has a verb the dispatcher routes to FAST_DOMOTICS
+    ('bajá la luz del quincho', 'cambiá la luz del quincho': the grammar has
+    no intent for those verbs, T037-U5-FV1). A question that only mentions a
+    light, with no action verb, does not.
 
     Args:
         text: Accepted transcript of the turn.
@@ -144,12 +148,15 @@ def _dispatch_targets_light(text: str, classification) -> bool:
         True when the turn acts on a light.
     """
     hint = getattr(classification, "entity_hint", None)
-    if getattr(classification, "intent", None) is not None and isinstance(hint, str):
+    accepted_intent = getattr(classification, "intent", None) is not None
+    if accepted_intent and isinstance(hint, str):
         folded = unicodedata.normalize("NFKD", hint.lower()).encode("ascii", "ignore").decode()
         if _LIGHT_WORDS.intersection(re.findall(r"[a-z]+", folded)):
             return True
     parsed = parse_partial_command(text)
-    return parsed.intent is not None and parsed.entity == "light"
+    if parsed.entity != "light":
+        return False
+    return parsed.intent is not None or accepted_intent or has_domotics_action_verb(text)
 
 
 def _grammar_fastpath_classification(
