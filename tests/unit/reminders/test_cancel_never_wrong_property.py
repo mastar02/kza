@@ -18,6 +18,14 @@ the time phrases said around the base never do. Nexa never guesses by the
 spoken time: exactly one candidate -> it is cancelled; more -> it asks,
 listing them by number; none -> nothing is found.
 
+Oracle change (2026-11-18, verification T032-NUM-FV-1): the decision says
+only that exactly one similar reminder is cancelled directly; it does not
+say that a word no reminder holds is ignored. A phrase whose base holds such
+a *foreign* word ("llamar a mamá" with only "llamar a papá") never cancels:
+the candidates (the reminders holding the other words) are listed by number,
+even a single one. The grids above never held a foreign word, so a separate
+axis (FOREIGN_FORMS) says every base of the main grid with one.
+
 Expected: a cancel only when the candidate set is exactly that one reminder
 (a wrong cancel is a counterexample); one candidate is cancelled directly
 (asking is a counterexample unless the base holds a number, which the
@@ -242,8 +250,17 @@ def has_number(base: str) -> bool:
     return any(w.isdigit() or w in NUMBER_WORDS for w in TOKEN.findall(fold(base)))
 
 
+def foreign_words(texts: list[str], base: str) -> frozenset[str]:
+    """Base content words no reminder text holds (review T032-NUM-FV-1): they never let a cancel through."""
+    return words(base) - frozenset().union(*(words(text) for text in texts))
+
+
 def oracle(specs, phrase) -> set[int]:
     return candidates([s.text for s in specs], phrase.base)
+
+
+def foreign(specs, phrase) -> frozenset[str]:
+    return foreign_words([s.text for s in specs], phrase.base)
 
 
 def reminder_sets() -> list[tuple[str, tuple[Spec, ...]]]:
@@ -409,23 +426,29 @@ class Tally:
 
 def _judge(tally: Tally, kind: str, specs, phrase, cancelled: set[int], asked: bool, said: str, *,
            listed: set[int] | None = None, shape: str | None = None, describe=None) -> None:
-    """Count one case; a wrong cancel, a needless question or an unlisted candidate is a counterexample."""
+    """Count one case; a wrong cancel, a needless question or an unlisted candidate is a counterexample.
+
+    A base holding a foreign word (review T032-NUM-FV-1) never cancels: its
+    candidates are asked and listed, even a single one.
+    """
     expected = oracle(specs, phrase)
+    unknown = foreign(specs, phrase)
     shape = (" ".join(phrase.shape) or "base") if shape is None else shape
     describe = describe or _describe
     tally.counts["cases"] += 1
     tally.counts[f"oracle_{min(len(expected), 2)}"] += 1
     repro = {"said": said, "reminders": describe(specs), "candidates": sorted(expected)}
     if cancelled:
-        if len(cancelled) == 1 and expected == cancelled:
+        if len(cancelled) == 1 and expected == cancelled and not unknown:
             tally.counts["correct_cancel"] += 1
             return
         (wrong,) = sorted(cancelled)[:1]
-        reason = "cancelled with another candidate" if wrong in expected else "cancelled a non-candidate"
+        reason = ("cancelled despite a word no reminder holds" if unknown and wrong in expected
+                  else "cancelled with another candidate" if wrong in expected else "cancelled a non-candidate")
         others = sorted(specs[i].feature for i in expected - {wrong})
         tally.counterexample((reason, kind, shape, f"cancelled {specs[wrong].feature}", "also " + ",".join(others)),
                              {**repro, "got": f"cancelled {sorted(cancelled)}"})
-    elif len(expected) == 1 and not (asked and has_number(phrase.base)):
+    elif len(expected) == 1 and not unknown and not (asked and has_number(phrase.base)):
         tally.counterexample(("one candidate not cancelled", kind, shape),
                              {**repro, "got": "asked" if asked else "not found"})
     elif expected and not asked:
@@ -435,14 +458,18 @@ def _judge(tally: Tally, kind: str, specs, phrase, cancelled: set[int], asked: b
         tally.counterexample(("listed set is not the candidate set", kind, shape),
                              {**repro, "got": f"listed {sorted(listed)}"})
     else:
-        tally.counts["over_ask_number_base" if len(expected) == 1 else "correct_no_cancel"] += 1
+        if unknown and expected:
+            tally.counts["foreign_word_listed_one" if len(expected) == 1 else "foreign_word_listed"] += 1
+        elif unknown:
+            tally.counts["foreign_word_not_found"] += 1
+        tally.counts["over_ask_number_base" if len(expected) == 1 and not unknown else "correct_no_cancel"] += 1
 
 
 GRID = reminder_sets()
 
 
 def test_the_oracle_reads_the_user_decisions():
-    """The oracle is not vacuous: no time phrase narrows, a distinct word does, an unknown word is ignored."""
+    """The oracle is not vacuous: no time phrase narrows, a distinct word does, an unknown word never cancels."""
     two = Spec(BASE, TEXT_CLOCKS[0], None, at(1, 9)), Spec(BASE, None, None, at(1, 14))
     said = Phrase("de tomar pastillas", BASE).with_clock("a", TEXT_CLOCKS[0], "text")
     assert oracle(two, said) == {0, 1}  # the text's own clock, said as such, never narrows
@@ -454,6 +481,15 @@ def test_the_oracle_reads_the_user_decisions():
     assert oracle(pink, Phrase(f"de {BASE}", BASE)) == {0, 1}
     assert oracle(pink, Phrase("de tomar pastillas azules", "tomar pastillas azules")) == {0, 1}
     assert oracle(pink, Phrase("de comprar pan", "comprar pan")) == set()
+    # Review T032-NUM-FV-1: the foreign word lists the one reminder holding the others; it never cancels it.
+    azules = Phrase("de tomar pastillas rosadas azules", "tomar pastillas rosadas azules")
+    assert oracle(pink, azules) == {0} and foreign(pink, azules) == {"azules"}
+    assert not foreign(pink, Phrase(f"de {SUPER}", SUPER))
+    tally = Tally()
+    _judge(tally, "probe", pink, azules, {0}, False, azules.spoken)
+    _judge(tally, "probe", pink, azules, set(), True, azules.spoken, listed={0})
+    assert tally.counts["counterexamples"] == 1 and tally.counts["foreign_word_listed_one"] == 1
+    assert next(iter(tally.classes))[0] == "cancelled despite a word no reminder holds"
     assert has_number("tomar 10 gotas") and has_number("tomar veinte gotas") and not has_number(SUPER)
     assert len(GRID) > 600
 
@@ -461,7 +497,7 @@ def test_the_oracle_reads_the_user_decisions():
 def _cancelled(resolution) -> tuple[set[int], bool, set[int]]:
     """Cancelled index, whether it asked, and the indices it would list."""
     cancelled = {int(resolution.reminder.id[1:])} if resolution.match is CancelMatch.UNIQUE else set()
-    asked = resolution.match in (CancelMatch.AMBIGUOUS, CancelMatch.NO_REFERENCE)
+    asked = resolution.match in (CancelMatch.AMBIGUOUS, CancelMatch.NO_REFERENCE, CancelMatch.PARTIAL)
     return cancelled, asked, {int(r.id[1:]) for r in resolution.candidates}
 
 
@@ -500,6 +536,49 @@ async def test_minimal_repro_asks_which(name, specs, phrase):
     resolution = await _manager(_Store(_reminders(specs))).resolve(None, phrase.spoken, shared_only=True)
     assert resolution.match is CancelMatch.AMBIGUOUS, (phrase.spoken, _describe(specs), resolution.reminder)
     assert {r.id for r in resolution.candidates} == {"r0", "r1"}
+
+
+# Review T032-NUM-FV-1 axis: every base of the main grid said with a content word no reminder holds,
+# bare and with each single time tail. Appended to the base ("tomar pastillas rosadas verdes" leaves one
+# candidate), replacing its last word or its verb, or with no known word at all.
+FOREIGN_FORMS = (
+    ("appended", lambda base: f"{base} verdes"),
+    ("replaced", lambda base: f"{base.rsplit(' ', 1)[0]} grageas"),
+    ("other verb", lambda base: f"comprar {base.split(' ', 1)[1]}"),
+    ("all foreign", lambda base: "comprar grageas"),
+)
+
+
+def foreign_phrases_for(specs: tuple[Spec, ...]) -> list[Phrase]:
+    out: dict[str, Phrase] = {}
+    for phrase in phrases_for(specs):
+        if len(phrase.shape) > 1 or any(not part.startswith("tail-") for part in phrase.shape):
+            continue
+        head = f"de {phrase.base}"
+        assert phrase.spoken.startswith(head), phrase
+        for name, form in FOREIGN_FORMS:
+            base = form(phrase.base)
+            spoken = f"de {base}{phrase.spoken[len(head):]}"
+            out.setdefault(spoken, Phrase(spoken, base, phrase.clocks, phrase.days,
+                                          phrase.shape + (f"foreign:{name}",)))
+    return list(out.values())
+
+
+async def test_a_foreign_word_never_cancels_and_lists_the_reminders_holding_the_other_words():
+    """Review T032-NUM-FV-1: the oracle above never generated a word no reminder holds."""
+    tally = Tally()
+    for kind, specs in GRID:
+        manager = _manager(_Store(_reminders(specs)))
+        for phrase in foreign_phrases_for(specs):
+            assert foreign(specs, phrase), phrase
+            cancelled, asked, listed = _cancelled(await manager.resolve(None, phrase.spoken, shared_only=True))
+            _judge(tally, kind, specs, phrase, cancelled, asked, phrase.spoken, listed=listed)
+    data = tally.report("foreign-manager")
+    assert tally.counts["correct_cancel"] == 0, tally.message(data)
+    assert tally.counts["foreign_word_listed_one"] > 1000 and tally.counts["foreign_word_listed"] > 1000, (
+        tally.message(data))
+    assert tally.counts["foreign_word_not_found"] > 100, tally.message(data)
+    assert tally.counts["counterexamples"] == 0, tally.message(data)
 
 
 VERBS = ("cancelá el", "borrá el", "eliminá el", "sacá el", "quitá el", "anulá el", "cancela el", "olvidate del",
@@ -591,6 +670,28 @@ async def _dispatch_round(tmp_path, sample, describe, judge, report: str) -> Tal
 async def test_dispatcher_sample_cancels_only_the_single_candidate_or_the_numbered_one(tmp_path):
     tally = await _dispatch_round(tmp_path, _dispatch_sample(), _describe, _judge, "dispatcher")
     assert tally.counts["cases"] > 300 and tally.counts["correct_cancel"] > 30, tally.message(tally.data)
+    assert tally.counts["numbered_answers"] > 200, tally.message(tally.data)
+    assert tally.counts["counterexamples"] == 0, tally.message(tally.data)
+
+
+FOREIGN_SAMPLE_STRIDE = 97
+
+
+def _foreign_dispatch_sample() -> list[tuple[str, tuple[Spec, ...], Phrase]]:
+    cases, k = [], 0
+    for kind, specs in GRID:
+        for phrase in foreign_phrases_for(specs):
+            if k % FOREIGN_SAMPLE_STRIDE == 0:
+                cases.append((kind, specs, phrase))
+            k += 1
+    return cases
+
+
+async def test_foreign_word_dispatcher_sample_cancels_only_the_numbered_one(tmp_path):
+    """Review T032-NUM-FV-1 end to end: zero effects on the cancel turn, then the number cancels the listed one."""
+    tally = await _dispatch_round(tmp_path, _foreign_dispatch_sample(), _describe, _judge, "foreign-dispatcher")
+    assert tally.counts["cases"] > 300 and tally.counts["correct_cancel"] == 0, tally.message(tally.data)
+    assert tally.counts["foreign_word_listed_one"] > 30, tally.message(tally.data)
     assert tally.counts["numbered_answers"] > 200, tally.message(tally.data)
     assert tally.counts["counterexamples"] == 0, tally.message(tally.data)
 

@@ -577,6 +577,50 @@ async def test_an_exact_text_with_a_similar_one_asks_and_alone_cancels_directly(
     assert (await leaves.reminder_store.get_by_id(lemon.id)).state == "cancelled"
 
 
+@pytest.mark.parametrize(("said", "meant", "others"), [
+    ("cancelá el recordatorio de llamar a mamá", "llamar a papá", ()),
+    ("cancelá el recordatorio de comprar leche", "comprar pan", ("regar las plantas",)),
+])
+async def test_a_word_no_reminder_holds_lists_the_similar_one_and_only_the_number_cancels_it(
+        leaves, said, meant, others):
+    """Review T032-NUM-FV-1: an unknown word never cancels the reminder sharing the other words.
+
+    At 538ef6a1 'llamar a mamá' cancelled 'llamar a papá' and 'comprar leche'
+    cancelled 'comprar pan' directly. Now the similar one is listed for a
+    numbered confirmation with zero effects, and 'el uno' cancels it.
+    """
+    dispatcher = leaves.dispatcher()
+    manager = leaves.reminder_manager
+    similar = await manager.create("household", meant, _minute_start(1), scope=ReminderScope.SHARED)
+    for n, text in enumerate(others, start=2):
+        await manager.create("household", text, _minute_start(n), scope=ReminderScope.SHARED)
+    asked, counted = await _cancel(leaves, said, "queued_request", dispatcher=dispatcher)
+    assert counted == ZERO
+    assert (asked.success, asked.outcome.status.value, asked.outcome.persistence.value) == (
+        False, "needs_input", "not_written")
+    assert asked.response == (f"Encontré uno parecido, no igual. 1: {manager.voice_label(similar)}; "
+                              "¿lo cancelo? Decime: el uno.")
+    assert set(await _states(leaves)) == {meant, *others} and len(leaves.queue) == 1
+    done, counted = await _cancel(leaves, "el uno", dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
+    assert done.response == f"Cancelé el recordatorio {manager.voice_label(similar)}."
+    assert set(await _states(leaves)) == set(others) and len(leaves.queue) == 1
+
+
+async def test_a_word_no_reminder_holds_lists_every_reminder_holding_the_other_words(leaves):
+    """Review T032-NUM-FV-1: several reminders hold the known words; none is said to match."""
+    dispatcher = leaves.dispatcher()
+    asked, counted = await _cancel(leaves, "cancelá el recordatorio de tomar agua tibia", TWO_SIMILAR,
+                                   dispatcher=dispatcher)
+    assert counted == ZERO and asked.outcome.status.value == "needs_input"
+    assert asked.response.startswith("Encontré 2 parecidos, ninguno igual. 1: tomar agua fría a las ")
+    assert "; 2: tomar agua con gas a las " in asked.response and asked.response.endswith("¿cuál? Decime el número.")
+    assert set(await _states(leaves)) == {"tomar agua fría", "tomar agua con gas"}
+    done, counted = await _cancel(leaves, "el dos", dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
+    assert await _states(leaves) == {"tomar agua fría": "active"}
+
+
 async def test_identical_duplicates_are_listed_and_either_number_cancels_one(leaves):
     dispatcher = leaves.dispatcher()
     trigger = _minute_start(1)

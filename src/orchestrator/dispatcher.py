@@ -1847,7 +1847,7 @@ class RequestDispatcher:
                 intent="reminder", outcome=TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.UNCERTAIN))
 
     def _open_reminder_choice(self, candidates: tuple, choice_key: tuple[str, str | None] | None, *,
-                              similar: bool = False) -> str:
+                              similar: bool = False, inexact: bool = False) -> str:
         """Number at most three candidates aloud and wait for the answer (T032-U1).
 
         The candidates are spoken in trigger order with their due time ("1:
@@ -1859,7 +1859,8 @@ class RequestDispatcher:
         Args:
             candidates: Shared reminders in trigger order.
             choice_key: Speaker id and room the choice waits on; None opens none.
-            similar: Count them as "parecidos" (several matched the words).
+            similar: Count them as "parecidos" (they matched the words).
+            inexact: Say that none holds every spoken word ("uno parecido, no igual").
 
         Returns:
             The count and the numbered list ("2. 1: ...; 2: ...; ¿cuál? Decime el número.").
@@ -1875,7 +1876,10 @@ class RequestDispatcher:
             self._reminder_choices = {key: choice for key, choice in self._reminder_choices.items()
                                       if choice.deadline > now}
             self._reminder_choices[choice_key] = _ReminderChoice(listed, now + self.reminder_manager.choice_window_s)
-        count = "uno" if len(candidates) == 1 else f"{len(candidates)}{' parecidos' if similar else ''}"
+        if len(candidates) == 1:
+            count = f"uno{' parecido' if similar else ''}{', no igual' if inexact else ''}"
+        else:
+            count = f"{len(candidates)}{' parecidos' if similar else ''}{', ninguno igual' if inexact else ''}"
         if len(candidates) > len(listed):
             count += f"; te digo los {len(listed)} más próximos"
         numbered = "; ".join(f"{n}: {label}" for n, label in enumerate(labels, start=1))
@@ -1888,8 +1892,10 @@ class RequestDispatcher:
                                         ) -> tuple[str, TaskOutcome]:
         """Cancel exactly one shared reminder named by voice (T032-U1).
 
-        One candidate is cancelled; several, or no reference, are listed
-        numbered and the answer is routed back (:meth:`_answer_reminder_choice`);
+        One candidate holding every spoken word is cancelled; several, a
+        spoken word no reminder holds (even with one candidate, review
+        T032-NUM-FV-1) or no reference are listed numbered and the answer is
+        routed back (:meth:`_answer_reminder_choice`);
         no match or a reminder that stopped being active answer NEEDS_INPUT
         with zero effects. Only shared reminders are read, so a private
         reminder's text is never spoken; the queue is never touched. Success
@@ -1922,6 +1928,9 @@ class RequestDispatcher:
             return f"{lead}Hay {self._open_reminder_choice(resolution.candidates, choice_key)}", needs_input
         if resolution.match is CancelMatch.AMBIGUOUS:
             return f"Encontré {self._open_reminder_choice(resolution.candidates, choice_key, similar=True)}", needs_input
+        if resolution.match is CancelMatch.PARTIAL:
+            choice = self._open_reminder_choice(resolution.candidates, choice_key, similar=True, inexact=True)
+            return f"Encontré {choice}", needs_input
         return await self._cancel_listed_reminder(resolution.reminder)
 
     async def _cancel_listed_reminder(self, reminder) -> tuple[str, TaskOutcome]:

@@ -179,15 +179,34 @@ async def test_resolve_needs_every_known_content_word(manager):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("query", ["tomar aguja", "tomar awa", "toma agua", "agua mineral"])
-async def test_a_word_no_reminder_holds_never_narrows(manager, query):
-    """User decision t032_design_20261118: an unknown word is ignored, so the one similar reminder is the candidate.
+async def test_a_word_no_reminder_holds_lists_the_similar_one_and_never_cancels_it(manager, query):
+    """Review T032-NUM-FV-1: an unknown word is not ignored into a cancel.
 
-    Before it, these found nothing; the old SequenceMatcher >= 0.4 picked
-    any neighbouring reminder. The reply speaks the cancelled text back.
+    The one reminder holding the other words is listed for a numbered
+    confirmation (``PARTIAL``), so a misheard word still finds it but never
+    cancels it alone.
     """
     water = await _shared(manager, "tomar agua")
-    await _shared(manager, "sacar la basura")
-    assert await _ids(manager, query) == (CancelMatch.UNIQUE, [water.id])
+    trash = await _shared(manager, "sacar la basura", time.time() + 7200)
+    assert await _ids(manager, query) == (CancelMatch.PARTIAL, [water.id])
+    assert await manager.cancel_by_text(None, query, shared_only=True) is False
+    assert [r.id for r in await manager.get_active(None, shared_only=True)] == [water.id, trash.id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("query", "texts"), [
+    ("de llamar a mamá", ("llamar a papá",)),
+    ("de comprar leche", ("comprar pan", "regar las plantas")),
+    ("de sacar al perro", ("sacar la basura",)),
+    ("de pagar el agua", ("pagar la luz",)),
+    ("de tomar pastillas", ("tomar agua",)),
+])
+async def test_a_word_no_reminder_holds_never_cancels_the_reminder_sharing_the_other_words(manager, query, texts):
+    """Review T032-NUM-FV-1 probes: each of these cancelled the other reminder directly at 538ef6a1."""
+    created = [await _shared(manager, text, time.time() + 3600 * (n + 1)) for n, text in enumerate(texts)]
+    assert await _ids(manager, query) == (CancelMatch.PARTIAL, [created[0].id])
+    assert await manager.cancel_by_text(None, query, shared_only=True) is False
+    assert {r.id for r in await manager.get_active(None, shared_only=True)} == {r.id for r in created}
 
 
 @pytest.mark.asyncio
@@ -202,7 +221,7 @@ async def test_a_reference_of_only_unknown_words_finds_nothing(manager, query):
 async def test_an_unknown_word_never_hides_a_second_similar_reminder(manager):
     cold = await _shared(manager, "tomar agua fría")
     gas = await _shared(manager, "tomar agua con gas", time.time() + 7200)
-    assert await _ids(manager, "de tomar agua tibia") == (CancelMatch.AMBIGUOUS, [cold.id, gas.id])
+    assert await _ids(manager, "de tomar agua tibia") == (CancelMatch.PARTIAL, [cold.id, gas.id])
 
 
 @pytest.mark.asyncio

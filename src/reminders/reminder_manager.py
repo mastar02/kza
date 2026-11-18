@@ -115,6 +115,7 @@ class CancelMatch(StrEnum):
     NO_REFERENCE = "no_reference"
     NOT_FOUND = "not_found"
     AMBIGUOUS = "ambiguous"
+    PARTIAL = "partial"
 
 
 @dataclass(frozen=True)
@@ -126,7 +127,8 @@ class CancelResolution:
         reminder: The single match, only for ``CancelMatch.UNIQUE``.
         candidates: Every eligible candidate for a clarification (all active
             ones for ``NO_REFERENCE``, every reminder sharing the base words
-            for ``AMBIGUOUS``), in trigger order.
+            for ``AMBIGUOUS``, every reminder holding the known words for
+            ``PARTIAL``), in trigger order.
     """
 
     match: CancelMatch
@@ -234,13 +236,17 @@ class ReminderManager:
         User decision t032_design_20261118: the candidates are every active
         reminder in scope whose text holds the reference's base content
         words (accents, articles and plurals ignored). Time words (clocks,
-        days, periods, spans, any token with a digit) and every word that no
-        active reminder's text holds never narrow: a spoken time is never
-        guessed, and an unknown word is no reason to cancel nothing. Exactly
-        one candidate is ``UNIQUE``; more are ``AMBIGUOUS`` and KZA lists
-        them numbered, so an exact text match is cancelled only when no other
-        active reminder shares its base words. A reference with no base word
-        at all ("cancelá el recordatorio", "el de las 5") is
+        days, periods, spans, any token with a digit) never narrow: a spoken
+        time is never guessed. Exactly one candidate holding every base word
+        is ``UNIQUE``; more are ``AMBIGUOUS`` and KZA lists them numbered, so
+        an exact text match is cancelled only when no other active reminder
+        shares its base words. A base word that no active reminder's text
+        holds ("llamar a mamá" with only "llamar a papá") is never ignored
+        into a cancel: the reminders holding the other words are
+        ``PARTIAL`` and KZA lists them numbered, even a single one, so a
+        misheard word costs one confirmation and never cancels a different
+        reminder (verification T032-NUM-FV-1). A reference with no base
+        word at all ("cancelá el recordatorio", "el de las 5") is
         ``NO_REFERENCE``; one whose words are all unknown is ``NOT_FOUND``.
         A leading "que (te) pedí/puse/hay" clause is not content.
 
@@ -269,6 +275,8 @@ class ReminderManager:
         candidates = tuple(reminder for reminder, words in texts if known and _covers(words, known))
         if not candidates:
             return CancelResolution(CancelMatch.NOT_FOUND)
+        if len(known) < len(spoken):
+            return CancelResolution(CancelMatch.PARTIAL, candidates=candidates)
         if len(candidates) == 1:
             return CancelResolution(CancelMatch.UNIQUE, candidates[0])
         return CancelResolution(CancelMatch.AMBIGUOUS, candidates=candidates)
