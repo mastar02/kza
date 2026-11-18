@@ -805,7 +805,8 @@ def test_deployment_and_handoff_state_where_the_dry_run_runs_and_the_day_14_dead
     """Re-review SC5B-RR3: R3 showed that adopt --dry-run also runs during the first transition (no pending
     log: T0F and the T0's not_closed refusal). The SC5B-Q1/Q2 deadline is in DEPLOYMENT's SC-5b section and
     in the handoff's SC-5b section. Since SC-PA-DR, DEPLOYMENT states rows PA and DR as implemented (the
-    'Pendiente en el código' item keeps only K's baseline) and has their own section."""
+    'Pendiente en el código' item keeps only K's baseline) and has their own section; so does the handoff's
+    SC-5b section (review SCPADR-R3)."""
     deployment = _flat(DEPLOYMENT.read_text())
     for stale in ("sólo corre después de la aceptación", "es posterior a la aceptación (hoy `adopt` rechaza antes de copiar)",
                   "sólo hace falta después de la aceptación, fila PA", "kza-adopt-dry-run",
@@ -834,5 +835,12 @@ def test_deployment_and_handoff_state_where_the_dry_run_runs_and_the_day_14_dead
     handoff = (REPO / "docs/runbooks/2026-11-05-mac-development-handoff.md").read_text()
     sc5b = _flat(_section(handoff, "## SC-5b — runbook del modo release (2026-11-17)"))
     assert ("**Plazo de PA y DR (SC5B-Q1 y SC5B-Q2, respuesta del usuario del 2026-11-17):** las filas PA y DR se "
-            "implementan antes de DÍA 0 + 14 × 24 h de R1.") in sc5b
-    assert "sin las dos, ninguna transición después del día 14." in sc5b
+            "implementan antes de DÍA 0 + 14 × 24 h de R1; ya están en el código (SC-PA-DR), y para una transición "
+            "después del día 14 tienen que estar en el controlador instalado, revisadas (SC-R) y ensayadas (SC-6b); "
+            "sin las dos, ninguna transición después del día 14.") in sc5b
+    # Review SCPADR-R3: since SC-PA-DR the handoff no longer says the rows fail closed or are still to be done.
+    assert ("Las dos filas están implementadas desde la unidad SC-PA-DR (DEPLOYMENT, «Filas PA y DR (SC-PA-DR)»; "
+            "el runbook ya las describe)") in sc5b
+    for stale in ("Hoy fallan cerrado", "la copia del dry-run se borra a mano", "kza-adopt-dry-run",
+                  "se hace con lo de hoy", "«Pendiente en el código»"):
+        assert stale not in sc5b, stale
