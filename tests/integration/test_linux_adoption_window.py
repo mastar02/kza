@@ -21,11 +21,12 @@ in-process 0e2/0e3/0e5 tests only simulated is real here:
   models and devices a rehearsal must not touch.
 
 The legacy fixture is production-shaped (tests/mocks/adoption_legacy, written
-by b0866e8's own code): the 63ea8d3 container (its runtime is the compiled
-63ea8d3 artifact), hooks.enabled true, audit.db with text, the legacy events
-table with markers, metrics files, LoRA adapters, the three unresolved
-literal targets, a hot -journal, the symlink container and the 2026-10-29
-backups. The legacy service itself is never started (it would load models):
+by b0866e8's own code): the e9669ec container (its runtime is the compiled
+e9669ec artifact, the release production serves since 2026-10-29), hooks.enabled
+true, audit.db with text, the legacy events table with markers, metrics
+files, LoRA adapters, the three unresolved literal targets, a hot -journal,
+the symlink container and both 2026-10-29 backup sets (14:48 and 15:50, as in
+production). The legacy service itself is never started (it would load models):
 W1's stop is a real ``systemctl stop`` of an inactive unit.
 
 Skipped only off Linux, without a running user manager, or as root or the
@@ -110,7 +111,7 @@ CLEANUPS: list[dict] = []
 
 @pytest.fixture(scope="module")
 def built(tmp_path_factory):
-    """R1 (HEAD plus this working tree) and the 63ea8d3 legacy artifact, both by scripts/build_runtime.py."""
+    """R1 (HEAD plus this working tree) and the e9669ec legacy artifact, both by scripts/build_runtime.py."""
     if not fixture.available():
         pytest.fail("the legacy commits are missing from this clone")
     base = tmp_path_factory.mktemp("0e4-artifacts")
@@ -124,9 +125,9 @@ def built(tmp_path_factory):
     manifest = build_runtime(clone, archive, revision)
     assert manifest["controller_epoch"] == 4
     r1_seconds = time.monotonic() - started
-    legacy = base / "63ea8d3.tar.gz"
-    legacy_manifest = build_runtime(clone, legacy, "63ea8d3")
-    assert legacy_manifest["git_commit"].startswith("63ea8d3")
+    legacy = base / "e9669ec.tar.gz"
+    legacy_manifest = build_runtime(clone, legacy, launcher.LEGACY_CONTAINER_COMMIT)
+    assert legacy_manifest["git_commit"] == "e9669ec1edb101ca6b190ef8df09314e1ac63562"
     extracted = base / "r1"
     with tarfile.open(archive) as bundle:
         bundle.extractall(extracted, filter="data")
@@ -348,6 +349,8 @@ class Window:
         for relative in databases[:commands.LEGACY_BACKUP_DATABASES]:
             (backup / "databases" / relative).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(data / relative, backup / "databases" / relative)
+        # R1E: production also keeps the 14:48 publication's set of the same ten (backups/<63ea8d3 slot>).
+        shutil.copytree(backup, self.root / "backups" / fixture.C63_SLOT, symlinks=True)
 
     def llm_env(self, lora: str = "--verbose") -> None:
         (self.units_dir / "llm-fast.env").write_text(f"MODEL_DIR={self.models}\nLORA_ARGS=\"{lora}\"\n")
@@ -803,10 +806,12 @@ def test_the_window_in_runbook_order_under_real_systemd(tmp_path, tree, built, s
     assert {path.name: path.read_bytes() for path in systemd.dropin_dir(w.voice).iterdir()} == unit_files
     due = 14 * DAY + 3600
     # Day 14 runs in a new session from the installed controller, as the runbook defines $ST (RR-1).
+    superseded_backups = tree_manifest(w.root / "backups" / fixture.C63_SLOT)
     code, dry, refused = w.stage("retire-legacy-state", "--decision", P7, "--container-slot", CONTAINER,
                                  "--dry-run", pyc=w.controller, wall_offset=due, step="q5_dry_run")
     assert code == 0 and dry["eligible"] is True, (dry, refused)
     assert len(dry["backups"]["databases"]) == 10
+    assert dry["ineligible_slots"] == sorted([CONTAINER, LEGACY])
     code, q5, refused = w.stage("retire-legacy-state", "--decision", P7, "--container-slot", CONTAINER,
                                 "--confirm", dry["plan_sha256"], pyc=w.controller, wall_offset=due,
                                 step="q5_confirm")
@@ -819,10 +824,27 @@ def test_the_window_in_runbook_order_under_real_systemd(tmp_path, tree, built, s
         assert code == 78 and refused["refused"] == "runtime_admission_uninstall_legacy_retired", refused
         assert refused["problems"] == [q5["record"]]
     assert {path.name: path.read_bytes() for path in systemd.dropin_dir(w.voice).iterdir()} == unit_files
+    # R1E: Q5 took backups/<e9669ec slot>/databases only; the 63ea8d3 set stays byte-identical. A superseded
+    # 63ea8d3 container (production's third legacy slot) is no L4 target: refused on its commit.
+    assert not (w.root / "backups" / CONTAINER / "databases").exists()
+    assert tree_manifest(w.root / "backups" / fixture.C63_SLOT) == superseded_backups
+    superseded = w.root / "slots" / fixture.C63_SLOT
+    (superseded / "state").mkdir(parents=True)
+    (superseded / "runtime").mkdir()
+    (superseded / "runtime" / "release.json").write_text(json.dumps({"git_commit": "63ea8d3" + "0" * 33,
+                                                                      "files": {}}))
+    for name in ("config", "data", ".env", "logs"):
+        os.symlink(Path("..") / ".." / LEGACY / "state" / name, superseded / "state" / name)
+    code, _out, refused = w.launcher_cli("uninstall-launcher", "--unit-dir", str(systemd.dropin_dir(w.voice)),
+                                         "--user-decision", L4, "--phrase", launcher.UNINSTALL_PHRASE,
+                                         "--legacy-slot", fixture.C63_SLOT)
+    assert code == 78 and refused["refused"] == "runtime_admission_uninstall_legacy_commit", refused
+    assert {path.name: path.read_bytes() for path in systemd.dropin_dir(w.voice).iterdir()} == unit_files
     shown, _seconds = w.start_managed()  # the managed service is unaffected
     assert shown["ActiveState"] == "active", (shown, w.managed_console()[-4000:])
     assert w.stop_managed()[0].returncode == 0 and w.head()["status"] == "closed"
-    evidence["q5"] = {"record": q5["record"], "databases": len(dry["backups"]["databases"])}
+    evidence["q5"] = {"record": q5["record"], "databases": len(dry["backups"]["databases"]),
+                      "superseded_backups_kept": True, "superseded_l4": "runtime_admission_uninstall_legacy_commit"}
 
     # T-A5 / T-C8 (restore after a crash): each restore over the adopted state is refused by automatic R-b
     # under real systemd; the operator's read-only 'adopt --dry-run' names the family.

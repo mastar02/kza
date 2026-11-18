@@ -22,8 +22,8 @@ the window around it:
   (W-abort-1). Both first run the rollback-target check (U3b-0e5).
 * ``retire-legacy-state`` (Q5, P7=B, U3b-0e5): from DAY 0 + 14 x 24 h after
   the first clean managed close, deletes the frozen b0866e8 state and its ten
-  2026-10-29 SQLite backups and makes the 63ea8d3 and b0866e8 slots
-  ineligible for L4, from an immutable intent.
+  2026-10-29 SQLite backups and makes the e9669ec container and b0866e8
+  slots ineligible for L4, from an immutable intent.
 
 Every command refuses as root, as a user other than the root's owner, on a
 root that is not the managed layout, and when run twice. Outputs are
@@ -229,12 +229,23 @@ def layout_record(layout) -> dict:
 
 
 def current_link(root: Path, container_slot: str) -> str:
-    """The raw readlink of 'current'; it must resolve to the container slot's runtime."""
+    """The raw readlink of 'current'; it must resolve to the container slot's runtime.
+
+    That runtime must be the legacy container release (launcher.LEGACY_CONTAINER_COMMIT,
+    e9669ec since 2026-10-29): the slot L4 and the aborts roll back to. Any other release
+    there, an unreadable one included, refuses with runtime_admission_adoption_container_commit.
+    """
     current = root / "current"
     if not os.path.islink(current):
         _refuse("runtime_admission_adoption_current")
     if os.path.realpath(current) != os.fspath(root / "slots" / container_slot / "runtime"):
         _refuse("runtime_admission_adoption_current")
+    try:
+        commit = json.loads((root / "slots" / container_slot / "runtime" / "release.json").read_text())["git_commit"]
+    except (OSError, ValueError, TypeError, KeyError):
+        commit = None
+    if type(commit) is not str or not commit.startswith(launcher.LEGACY_CONTAINER_COMMIT):
+        _refuse("runtime_admission_adoption_container_commit")
     return os.readlink(current)
 
 
@@ -1741,7 +1752,7 @@ def rollback_target(root: Path, container_slot: str) -> None:
 
 
 def _current_slot(root: Path) -> str:
-    """The slot whose runtime 'current' resolves to (before W4: the 63ea8d3 container slot)."""
+    """The slot whose runtime 'current' resolves to (before W4: the e9669ec container slot)."""
     current = os.path.realpath(root / "current")
     slots = os.fspath(root / "slots")
     if os.path.dirname(os.path.dirname(current)) != slots or os.path.basename(current) != "runtime":
@@ -1750,12 +1761,18 @@ def _current_slot(root: Path) -> str:
 
 
 def _legacy_release(root: Path, slot: str) -> bool:
-    """Whether ``slot``'s runtime is one of the legacy commits (an unreadable release counts as legacy)."""
+    """Whether ``slot``'s runtime is not a managed release, so the rollback-target check must run.
+
+    Fail-closed: only a release.json with an integer controller_epoch (every R1 and later
+    build_runtime artifact) counts as managed. A legacy release of any commit, listed in
+    launcher.LEGACY_COMMITS or not, and an unreadable release are legacy; rollback_target then
+    refuses whatever it cannot roll back to (an unlisted commit with legacy_commit).
+    """
     try:
-        commit = json.loads((root / "slots" / slot / "runtime" / "release.json").read_text()).get("git_commit", "")
+        epoch = json.loads((root / "slots" / slot / "runtime" / "release.json").read_text()).get("controller_epoch")
     except (OSError, ValueError, AttributeError):
         return True
-    return type(commit) is not str or any(commit.startswith(prefix) for prefix in launcher.LEGACY_COMMITS)
+    return type(epoch) is not int
 
 
 def _require_inactive(manager) -> dict:
@@ -2231,8 +2248,8 @@ def _legacy_scope(root: Path, container_slot: str) -> dict:
     target = Path(layout["legacy_state"])
     legacy = target.parent.name
     if (target.name != "state" or target.parent.parent != root / "slots" or legacy == container
-            or not legacy.endswith("_" + launcher.LEGACY_COMMITS[0])
-            or not container.endswith("_" + launcher.LEGACY_COMMITS[1])
+            or not legacy.endswith("_" + launcher.LEGACY_STATE_COMMIT)
+            or not container.endswith("_" + launcher.LEGACY_CONTAINER_COMMIT)
             or Path(layout["container"]) != root / "slots" / container / "state"):
         _refuse("runtime_admission_legacy_retire_slot")
     if os.path.realpath(root / "slots" / legacy) != os.fspath(root / "slots" / legacy):
@@ -2317,9 +2334,10 @@ def retire_legacy_state(root, *, decision_id: str, container_slot: str, manager,
     Two fixed targets, never a path given on the command line: the
     ``slots/<b0866e8 slot>/state`` the committed adoption record names, and
     the ten SQLite snapshots the 2026-10-29 publication took from it,
-    ``backups/<63ea8d3 slot>/databases`` (user decisions u3b_0e5_retirement
-    Q1=A, Q2=A). The backup set must be exactly the reviewed one. The 63ea8d3
-    container (links only) stays and both slots leave L4 for good: the
+    ``backups/<container slot>/databases`` (user decisions u3b_0e5_retirement
+    Q1=A, Q2=A; the container is e9669ec since batch_g "R1 base"). The backup
+    set must be exactly the reviewed one. The e9669ec container (links only)
+    stays and both slots leave L4 for good: the
     immutable intent, written before the first unlink, already makes
     uninstall-launcher and adoption-abort refuse
     (runtime_admission_uninstall_legacy_retired). Never in scope, each a

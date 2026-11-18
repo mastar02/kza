@@ -14,8 +14,8 @@ autoriza la ventana.
   revisados y ensayados (T-A17):
   - la comprobación de enlaces del destino de rollback (`_verify_legacy_slot`
     rechaza un enlace del contenedor roto o colgante);
-  - el retiro Q5 del estado b0866e8 (registro inmutable que saca 63ea8d3 y
-    b0866e8 de L4; excluye `/home/kza/kza/models`, `/home/kza/kza/.venv` y el
+  - el retiro Q5 del estado b0866e8 (registro inmutable que saca el
+    contenedor de e9669ec y b0866e8 de L4; excluye `/home/kza/kza/models`, `/home/kza/kza/.venv` y el
     slot R1).
 - Estado (2026-11-15): esta compuerta está cumplida. Los dos están
   implementados en U3b-0e5 (`retire-legacy-state` y `_verify_legacy_slot`),
@@ -66,11 +66,12 @@ autoriza la ventana.
   (la aplicación con sus modelos, que los ensayos no cargan).
 - **Paso del día 14**: el borrado Q5 corre desde DÍA 0 + 14 × 24 h (DÍA 0 = el
   sello de cierre de W9, el `ended_at` de esa corrida; Q1 = A). Borra el estado
-  de b0866e8 y sus diez copias SQLite del 2026-10-29 (Q2 = A). Responsable: el
+  de b0866e8 y sus diez copias SQLite del 2026-10-29 en `backups/$C/databases`
+  (Q2 = A; alcance y decisiones pendientes en «Día 14»). Responsable: el
   usuario, como operador de `kza`; la autorización ya está registrada (P7 = B,
   `u3b_0e5_retirement`). En W10 se anota en el handoff la fecha exacta y el
-  responsable. Hasta ese momento sólo vale L4 hacia 63ea8d3 (decisión
-  registrada y frase); después no hay rollback no gestionado y `/home/kza/kza`
+  responsable. Hasta ese momento sólo vale L4 hacia el contenedor de e9669ec
+  (decisión registrada y frase); después no hay rollback no gestionado y `/home/kza/kza`
   no es un destino (Q3 = A).
 
 R1 se construye desde un árbol que ya contiene U3b-0c (decisión
@@ -129,8 +130,18 @@ y `{"refused": <código>}` en estos casos:
 
 ```bash
 PY=/home/kza/kza/.venv/bin/python
-C=release_20261029T174830709997Z_63ea8d3
+C=release_20261029T185008966364Z_e9669ec
 ```
+
+`$C` es el contenedor que sirve `current` desde el 2026-10-29 15:50 (e9669ec,
+la publicación de carga de voces). Así lo decidió el usuario el 2026-11-18
+(`batch_g_questions_20261118`, «R1 base»), en reemplazo de la premisa de P5
+(63ea8d3). El contenedor anterior,
+`release_20261029T174830709997Z_63ea8d3`, sigue en `slots/` con los
+mismos cinco enlaces. No es destino de L4: `uninstall-launcher` lo rechaza con
+`runtime_admission_uninstall_legacy_commit`. Si `$C` no es la release de
+e9669ec, la corrida de prueba y W2 rechazan
+`runtime_admission_adoption_container_commit` antes de escribir nada.
 
 `$R1` (el árbol extraído, con U3b-0c y SC-2, época 4) y `$ST` se definen
 recién en «Extraer R1 verificado», en un directorio nuevo, justo después de
@@ -475,6 +486,24 @@ comando lo rechaza (`runtime_admission_legacy_retire_too_early`, con
 `backups/$C/databases/` (Q2 = A). Después no hay rollback no gestionado y
 `/home/kza/kza` no es un destino (Q3 = A).
 
+Alcance con `$C` = e9669ec (R1E, 2026-11-18): las diez bases que borra son las
+de `backups/release_20261029T185008966364Z_e9669ec/databases`, tomadas a las
+15:50. Las diez de la publicación de las 14:48 son copias del mismo estado y
+están en `backups/release_20261029T174830709997Z_63ea8d3/databases`. Quedan
+como exclusión comprobada y este paso no las borra. Falta que el usuario
+confirme si Q2 = A cubre también ese segundo conjunto.
+
+Antes de este paso hacen falta además dos decisiones del usuario. Sin ellas
+la corrida de prueba (paso 2) rechaza sin borrar nada, así que no hay que
+borrar nada a mano:
+
+- el slot de 63ea8d3 conserva sus enlaces al estado de b0866e8, y el retiro
+  rechaza
+  `runtime_admission_legacy_retire_referenced:link:slots/release_20261029T174830709997Z_63ea8d3`;
+- el slot de b0866e8 tiene `activation-report.json`, `live-report.json` y
+  `prepare-report.json` junto a `runtime/` y `state/`, y el retiro rechaza
+  `runtime_admission_legacy_retire_slot_unexpected`.
+
 El día 14 se corre en una sesión nueva de `kza`, no en la de la ventana: el
 `$ST` extraído en «Extraer R1 verificado» no sobrevive a la sesión de la
 ventana (W7 y W-abort-2 todavía lo usan dentro de ella) y su `mktemp -d` no
@@ -484,7 +513,7 @@ controlador instalado, al empezar:
 
 ```bash
 PY=/home/kza/kza/.venv/bin/python
-C=release_20261029T174830709997Z_63ea8d3
+C=release_20261029T185008966364Z_e9669ec
 ST="$PY -I -B /home/kza/releases/controller/current/scripts/stage_runtime.pyc --root /home/kza/releases --offline"
 ```
 
@@ -535,7 +564,7 @@ postergaría; si esa respuesta cambiara, no ejecutarlo.
    Tiene que decir `"eligible": true` y listar diez nombres en
    `backups.databases`. Anotar `plan_sha256`.
    - `referenced:<qué>`: `problems` lista todo lo que todavía apunta a los
-     slots de b0866e8 o 63ea8d3 o a esas bases. Corregirlo antes de seguir. No
+     slots de b0866e8 o e9669ec o a esas bases. Corregirlo antes de seguir. No
      borrar a mano.
    - `backups_set`: el respaldo no es el conjunto revisado (diez SQLite de ese
      estado). Parar y avisar.
@@ -618,7 +647,7 @@ postergaría; si esa respuesta cambiara, no ejecutarlo.
   desde que existe una intención Q5 rechaza `legacy_retired`. Usarlo bloquea
   el retiro (`l4_used`) hasta una decisión nueva del usuario.
 - Los dos aborts y L4 comprueban primero los enlaces del contenedor de
-  63ea8d3: si alguno cuelga, rechazan `runtime_admission_uninstall_legacy_state`
+  e9669ec: si alguno cuelga, rechazan `runtime_admission_uninstall_legacy_state`
   sin cambiar nada.
 - **Después de que W8 empezó**: la activación de W8 deja un head `selection`
   aunque todavía no haya ticket, y `adoption-abort` rechaza

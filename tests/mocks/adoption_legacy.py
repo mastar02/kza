@@ -1,7 +1,7 @@
 """A production-shaped legacy layout written by b0866e8's own code (U3b-0e2 tests).
 
 ``b0866e8_tree`` extracts src/ and config/ of b0866e8 from this repository
-(``git archive``); ``build_legacy`` lays out the 63ea8d3 container, the
+(``git archive``); ``build_legacy`` lays out the e9669ec container, the
 b0866e8 slot state, the legacy checkout's models and the legacy metrics
 directory under one root (every link relative), then runs
 tests/mocks/adoption_legacy_child.py with b0866e8's code only. Afterwards it
@@ -29,7 +29,8 @@ LEGACY = "b0866e8"
 PRE_SLOT = "30da279"  # 2026-10-26: the erasure journal's first registrations, run from the checkout
 OLD_EVENTS = "8558ff1^"  # the last commit whose EventLogger created the pre-policy events table
 B_SLOT = "release_20261028T145442Z_b0866e8"
-C_SLOT = "release_20261029T174830709997Z_63ea8d3"
+C_SLOT = "release_20261029T185008966364Z_e9669ec"  # the container 'current' serves since 2026-10-29 15:50
+C63_SLOT = "release_20261029T174830709997Z_63ea8d3"  # the superseded container: the same five links, no data
 UNCOMMITTED = "KZA-UNCOMMITTED-LIST"
 
 

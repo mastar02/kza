@@ -115,7 +115,13 @@ _CHILD_ENV_DROPPED = frozenset({"PYTHONPATH", "CONFIG_PATH", "PYTHONHOME", "NOTI
                                 WATCHDOG_INTERVAL_ENV, CONTROL_FD_ENV})
 _PROBE_ENVIRONMENT = ("LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SQLITE_TMPDIR")
 UNINSTALL_PHRASE = "revivir datos borrados"
-LEGACY_COMMITS = ("b0866e8", "63ea8d3")
+# The legacy runtimes L4 (uninstall-launcher) and the aborts may serve again, by role: the frozen state
+# slot's own release and the container 'current' serves at the window. Since 2026-10-29 that container is
+# e9669ec (voice-loading publication; user decision batch_g_questions_20261118 "R1 base", which supersedes
+# P5's 63ea8d3). Any other commit refuses, the superseded 63ea8d3 container included.
+LEGACY_STATE_COMMIT = "b0866e8"
+LEGACY_CONTAINER_COMMIT = "e9669ec"
+LEGACY_COMMITS = (LEGACY_STATE_COMMIT, LEGACY_CONTAINER_COMMIT)
 # Q5 retirement of the frozen b0866e8 state (U3b-0e5, P7=B): admission/legacy-retirement/
 # intent-<plan>.json before the deletion, retired-<plan>.json after it. Both name the slots
 # that leave L4 eligibility; uninstall-launcher and adoption-abort refuse them.
@@ -2945,7 +2951,7 @@ def verify_legacy_links(runtime: Path, state: Path) -> None:
     """The rollback-target link check (design v3 7, review N4a).
 
     Every link directly inside the legacy slot's runtime and state (the
-    63ea8d3 container is five of them) must resolve, through every hop, to
+    e9669ec container is five of them) must resolve, through every hop, to
     an existing target; config and data must resolve to directories. A
     dangling, looping or missing target refuses with
     runtime_admission_uninstall_legacy_state, so L4 never renders a

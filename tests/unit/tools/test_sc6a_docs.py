@@ -81,7 +81,7 @@ def test_day14_defines_its_commands_from_the_installed_controller():
     completion-status do; DEPLOYMENT's «Cómo se corre» does the same."""
     text = r1_runbook.runbook_text()
     assert r1_runbook.day14_block(text).splitlines() == [
-        r1_runbook.RUNBOOK_PY, "C=release_20261029T174830709997Z_63ea8d3", CONTROLLER_ST]
+        r1_runbook.RUNBOOK_PY, "C=release_20261029T185008966364Z_e9669ec", CONTROLLER_ST]
     section = text.split(r1_runbook.DAY14_HEADING, 1)[1].split("\n## ", 1)[0]
     assert section.index(CONTROLLER_ST) < section.index("\n0. ") < section.index("$ST retire-legacy-state")
     flat = " ".join(section.split())
@@ -210,3 +210,18 @@ def test_the_scheduling_gate_states_what_is_done_and_leaves_scheduling_to_the_us
     assert "Sin integrar ni subir" not in r5v1 and "integrada en `recovery/production-2026-10-25` con el merge `c6462e5`" in r5v1
     for claim in ("ventana programada", "ventana autorizada", "la ventana está programada"):
         assert claim not in gate.lower(), claim
+
+
+def test_r1e_the_container_is_e9669ec_and_day14_names_what_stays_open():
+    """R1E (batch_g_questions_20261118 "R1 base"): both C= lines name the slot 'current' serves since
+    2026-10-29 15:50; the runbook says how 63ea8d3 is refused and what still stops day 14."""
+    text = r1_runbook.runbook_text()
+    assert re.findall(r"(?m)^C=(\S+)$", text) == ["release_20261029T185008966364Z_e9669ec"] * 2
+    flat = " ".join(text.split())
+    for needle in ("runtime_admission_adoption_container_commit", "runtime_admission_uninstall_legacy_commit",
+                   "runtime_admission_legacy_retire_slot_unexpected",
+                   "`runtime_admission_legacy_retire_referenced:link:slots/release_20261029T174830709997Z_63ea8d3`",
+                   "`backups/release_20261029T174830709997Z_63ea8d3/databases`",
+                   "`backups/release_20261029T185008966364Z_e9669ec/databases`"):
+        assert needle in flat, needle
+    assert "L4 hacia 63ea8d3" not in flat and "contenedor de 63ea8d3" not in flat
