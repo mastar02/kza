@@ -16,6 +16,7 @@ from src.nlu.household_intents import (
     HouseholdOperation,
     classify_household_intent,
     starts_with_reminder_request,
+    strip_fillers,
 )
 from src.reminders.voice_request import parse_reminder_request
 from tests.mocks.c02_matrix import CLASSIFIER, C02Entry, effects
@@ -604,6 +605,69 @@ def test_fillers_a_paused_no_and_ya_after_a_cancel_verb(text, expected):
     assert _shape(intent) == expected
     if expected is not None and expected[1] is O.CANCEL:
         assert intent.complement == "de tomar agua"
+
+
+@pytest.mark.parametrize("text", [
+    "hola, cancelá el recordatorio de tomar agua", "porfa cancelá el recordatorio de tomar agua",
+    "dale, cancelá el recordatorio de tomar agua", "cancelá el recordatorio de tomar agua, porfa, por favor",
+    "cancelá el recordatorio de tomar agua por favor porfa", "cancelá el recordatorio de tomar agua porfa por favor",
+    "por favor, cancelá el recordatorio de tomar agua",
+])
+def test_trailing_fillers_in_any_order(text):
+    """Review BFR-1: a trailing 'porfa' or 'por favor', in any order, is not part of the complement."""
+    intent = classify_household_intent(text)
+    assert _shape(intent) == (F.REMINDER, O.CANCEL, "R1")
+    assert intent.complement == "de tomar agua"
+
+
+@pytest.mark.parametrize(("text", "complement"), [
+    ("cancelá el recordatorio de decirle que dale", "de decirle que dale"),
+    ("cancelá el recordatorio de decirle que, dale", "de decirle que dale"),
+    ("cancelá el recordatorio de llamar a Dale", "de llamar a dale"),
+    ("cancelá el recordatorio de tomar agua, dale", "de tomar agua dale"),
+    ("cancelá el recordatorio de tomar agua dale", "de tomar agua dale"),
+    ("cancelá el recordatorio de tomar agua, dale, porfa", "de tomar agua dale"),
+    ("cancelá el recordatorio de tomar agua, por favor, dale", "de tomar agua por favor dale"),
+])
+def test_a_trailing_dale_stays_in_the_complement(text, complement):
+    """Review BFR1-R1: a trailing 'dale' may end the reminder's name, so the classifier keeps it.
+
+    Dropping it turned 'decirle que dale' into 'decirle que', which cancelled
+    'decirle que no' directly instead of asking (T032-NUM-FV-1).
+    """
+    intent = classify_household_intent(text)
+    assert _shape(intent) == (F.REMINDER, O.CANCEL, "R1")
+    assert intent.complement == complement
+
+
+@pytest.mark.parametrize(("text", "kept"), [
+    ("Nexa, bueno, el segundo, porfa", ("el", "segundo")), ("bue, el segundo", ("el", "segundo")),
+    ("hola, el segundo", ("el", "segundo")), ("porfa el segundo", ("el", "segundo")),
+    ("no, el segundo", ("el", "segundo")), ("Nexa, no. El segundo", ("el", "segundo")),
+    ("no el segundo", ("no", "el", "segundo")), ("el segundo, no", ("el", "segundo", "no")),
+    ("che oye ey podés el segundo por favor", ("el", "segundo")), ("el segundo porfa por favor porfa", ("el", "segundo")),
+    # Review BFR1-R1: a trailing 'dale' may be part of a name and is kept.
+    ("el segundo, dale", ("el", "segundo", "dale")), ("decirle que dale", ("decirle", "que", "dale")),
+    ("el segundo porfa por favor dale", ("el", "segundo", "porfa", "por", "favor", "dale")),
+    ("dale", ()), ("", ()), ("el número dos", ("el", "numero", "dos")),
+    # At most six lead words are dropped.
+    ("dale dale dale dale dale dale el segundo", ("el", "segundo")),
+    ("dale dale dale dale dale dale dale el segundo", ("dale", "el", "segundo")),
+])
+def test_strip_fillers_is_the_shared_filler_rule(text, kept):
+    """Review BFR-1: the fillers the classifier ignores, as folded tokens."""
+    assert strip_fillers(text) == kept
+
+
+def test_strip_fillers_takes_configured_wake_words_and_extra_leads():
+    assert strip_fillers("jarvis, el segundo") == ("jarvis", "el", "segundo")
+    assert strip_fillers("Jarvis, el segundo", ["Jarvis"]) == ("el", "segundo")
+    assert strip_fillers("sí, borrá el segundo", extra_leads=frozenset({"si", "borra"})) == ("el", "segundo")
+    assert strip_fillers("sí, borrá el segundo") == ("si", "borra", "el", "segundo")
+    # Review BFR1-R1: a caller with a closed vocabulary drops further trailing words, in any order.
+    assert strip_fillers("el segundo, dale, porfa", extra_trails=frozenset({"dale"})) == ("el", "segundo")
+    assert strip_fillers("el segundo porfa dale", extra_trails=frozenset({"dale"})) == ("el", "segundo")
+    assert strip_fillers("el segundo, dale, porfa") == ("el", "segundo", "dale")
 
 
 @pytest.mark.parametrize("text", [

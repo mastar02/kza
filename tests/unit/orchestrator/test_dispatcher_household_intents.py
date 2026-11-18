@@ -1251,6 +1251,120 @@ def test_the_hour_answer_grammar_after_the_hour_question(text, answer):
         assert _reminder_choice_answer(text) is None
 
 
+# Review BFR-1: the fillers around an answer are the household classifier's (strip_fillers).
+BFR1_FILLED = ("no, {}", "bue, {}", "hola, {}", "porfa {}", "bueno, {}", "dale, {}", "Nexa, no. {}",
+               "{}, por favor, porfa", "por favor, {}", "oye, {} porfa")
+
+
+@pytest.mark.parametrize("filled", BFR1_FILLED)
+def test_the_answer_and_the_classifier_ignore_the_same_fillers(filled):
+    """'no, el segundo', 'el segundo, dale': the fillers the classifier drops before a request answer the choice."""
+    from src.nlu.household_intents import classify_household_intent
+    from src.orchestrator.dispatcher import _reminder_choice_answer
+    parsed = _reminder_choice_answer(filled.format("el segundo"))
+    assert (parsed.form.value, parsed.value) == ("ordinal", 2)
+    hour = _reminder_choice_answer(filled.format("el de las 2"), hours=True)
+    assert (hour.form.value, hour.value) == ("hour", 2)
+    intent = classify_household_intent(filled.format("cancelá el recordatorio de tomar agua"))
+    assert (intent.rule, intent.complement) == ("R1", "de tomar agua")
+
+
+@pytest.mark.parametrize(("filled", "complement"), [
+    ("{}, dale", "de tomar agua dale"), ("{} dale", "de tomar agua dale"),
+    ("{}, por favor, dale", "de tomar agua por favor dale"), ("{}, dale, porfa", "de tomar agua dale"),
+])
+def test_a_trailing_dale_ends_an_answer_but_not_a_reminder_name(filled, complement):
+    """Review BFR1-R1: 'el segundo, dale' answers; the classifier keeps a trailing 'dale' (it may be a name)."""
+    from src.nlu.household_intents import classify_household_intent
+    from src.orchestrator.dispatcher import _reminder_choice_answer
+    parsed = _reminder_choice_answer(filled.format("el segundo"))
+    assert (parsed.form.value, parsed.value) == ("ordinal", 2)
+    hour = _reminder_choice_answer(filled.format("el de las 2"), hours=True)
+    assert (hour.form.value, hour.value) == ("hour", 2)
+    intent = classify_household_intent(filled.format("cancelá el recordatorio de tomar agua"))
+    assert (intent.rule, intent.complement) == ("R1", complement)
+
+
+@pytest.mark.parametrize("text", ["no el segundo", "el segundo, no", "no, no lo sé", "hola", "dale", "no",
+                                  "che, el primero de la lista", "el segundo y el tercero"])
+def test_a_filler_never_makes_another_turn_an_answer(text):
+    """A 'no' without a pause stays a negation (user default T032-U1-Q4); fillers alone answer nothing."""
+    from src.orchestrator.dispatcher import _reminder_choice_answer
+    assert _reminder_choice_answer(text) is None
+    assert _reminder_choice_answer(text, hours=True) is None
+
+
+@pytest.mark.parametrize(("answer", "kept"), [
+    ("no, el segundo", "tomar agua fría"), ("el segundo, dale", "tomar agua fría"),
+    ("bue, el primero", "tomar agua con gas"), ("hola, la segunda", "tomar agua fría"),
+    ("porfa el primero", "tomar agua con gas"),
+])
+async def test_a_filled_answer_cancels_the_listed_reminder(leaves, answer, kept):
+    dispatcher = await _asked(leaves)
+    assert dispatcher.awaits_reminder_choice("unknown", None, answer)
+    result, counted = await _cancel(leaves, answer, dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1) and result.outcome.task_completed
+    assert await _states(leaves) == {kept: "active"}
+
+
+@pytest.mark.parametrize(("follow_up", "cancelled"), [
+    ("no, el de las 2", "tomar agua tibia"), ("no, el segundo", "tomar agua con gas"),
+    ("el de las 2, dale", "tomar agua tibia"), ("bue, el de las 9", "tomar agua fría"),
+])
+async def test_a_filled_answer_to_the_hour_question_cancels_exactly_one(leaves, follow_up, cancelled):
+    """Review BFR-1: 'no, el de las 2' after '¿El segundo o el de las 2?' answers by hour."""
+    dispatcher, _ = await _listed_at(leaves)
+    asked, counted = await _cancel(leaves, "dos", dispatcher=dispatcher)
+    assert counted == ZERO and asked.response == "¿El segundo o el de las 2?"
+    assert not dispatcher.awaits_reminder_choice("unknown", None, "no el de las 2")
+    done, counted = await _cancel(leaves, follow_up, dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1)
+    assert done.response.startswith(f"Cancelé el recordatorio {cancelled} a las ")
+    assert set(await _states(leaves)) == {text for text, _ in THREE_WATERS} - {cancelled}
+
+
+async def test_a_configured_wake_word_before_the_answer_is_ignored(leaves):
+    classifier = HouseholdIntentClassifier(HouseholdIntentSettings.from_config({}, wake_words=["Jarvis"]))
+    dispatcher = await _asked(leaves, leaves.dispatcher(household_intents=classifier))
+    assert dispatcher.awaits_reminder_choice("unknown", None, "Jarvis, el segundo")
+    result, counted = await _cancel(leaves, "Jarvis, el segundo", dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1)
+    assert await _states(leaves) == {"tomar agua fría": "active"}
+    # Without the configured wake word the same turn is not an answer.
+    from src.orchestrator.dispatcher import _reminder_choice_answer
+    assert _reminder_choice_answer("Jarvis, el segundo") is None
+
+
+@pytest.mark.parametrize(("said", "meant"), [
+    ("cancelá el recordatorio de decirle que dale", "decirle que no"),
+    ("cancelá el recordatorio de decirle que, dale", "decirle que no"),
+    ("cancelá el recordatorio de llamar a Dale", "llamar a juan"),
+    ("cancelá el recordatorio de pagarle a dale", "pagarle a juan"),
+])
+async def test_a_trailing_dale_in_the_name_never_cancels_another_reminder(leaves, said, meant):
+    """Review BFR1-R1: 'decirle que dale' never cancels 'decirle que no' directly (T032-NUM-FV-1).
+
+    At 03967c7d the trailing 'dale' was dropped as a filler, the reference
+    became 'decirle que' and 'decirle que no' was cancelled with no question.
+    Now it is listed for a numbered confirmation with zero effects, and a
+    filled answer ('el primero, dale') cancels it.
+    """
+    dispatcher = leaves.dispatcher()
+    manager = leaves.reminder_manager
+    similar = await manager.create("household", meant, _minute_start(1), scope=ReminderScope.SHARED)
+    asked, counted = await _cancel(leaves, said, "queued_request", dispatcher=dispatcher)
+    assert counted == ZERO
+    assert (asked.success, asked.outcome.status.value, asked.outcome.persistence.value) == (
+        False, "needs_input", "not_written")
+    assert asked.response == (f"Encontré uno parecido, no igual. 1: {manager.voice_label(similar)}; "
+                              "¿lo cancelo? Decime: el primero.")
+    assert set(await _states(leaves)) == {meant} and len(leaves.queue) == 1
+    done, counted = await _cancel(leaves, "el primero, dale", dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
+    assert done.response == f"Cancelé el recordatorio {manager.voice_label(similar)}."
+    assert await _states(leaves) == {}
+
+
 # ---------------------------------------------------------------------------
 # User answer T032-U1-Q3 (t032_num_fv4_20261118): an ordinal always answers; a
 # bare number only when no other listed reminder is due at that hour (12-hour

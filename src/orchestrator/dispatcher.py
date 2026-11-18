@@ -66,6 +66,7 @@ from src.nlu.household_intents import (
     HouseholdIntent,
     HouseholdIntentClassifier,
     HouseholdOperation,
+    strip_fillers,
 )
 from src.orchestrator.cancellation import CancellationReason
 from src.orchestrator.context_manager import ContextManager
@@ -201,8 +202,11 @@ _ALARM_NOUN_RE = re.compile(r"\b(?:alarmas?|despertador(?:es)?)\b")
 _CHOICE_ORDINALS = {"primero": 1, "primera": 1, "primer": 1, "segundo": 2, "segunda": 2, "tercero": 3,
                     "tercera": 3, "tercer": 3, "cuarto": 4, "cuarta": 4, "quinto": 5, "quinta": 5}
 _CHOICE_CARDINALS = {"uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5}
-_CHOICE_LEADS = frozenset({"bueno", "dale", "oye", "ey", "che", "si", "cancela", "cancelame", "borra", "elimina",
-                           "saca", "quita", "anula"})
+# Lead words of a choice answer besides the shared fillers of strip_fillers (review BFR-1).
+_CHOICE_LEADS = frozenset({"si", "cancela", "cancelame", "borra", "elimina", "saca", "quita", "anula"})
+# A trailing "dale" is a filler only in a choice answer, a closed vocabulary; the classifier keeps it, as
+# it may end a reminder's name ("decirle que dale", review BFR1-R1).
+_CHOICE_TRAILS = frozenset({"dale"})
 # T032-U1-Q3: the hour of "el de las 2" (12-hour reading) and the 24-hour hours a period allows.
 _CHOICE_HOUR_WORDS = {**_CHOICE_CARDINALS, "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10, "once": 11,
                       "doce": 12}
@@ -249,24 +253,22 @@ def _choice_hour(words: list[str]) -> _ChoiceAnswer | None:
     return _ChoiceAnswer(_ChoiceForm.HOUR, hour, period)
 
 
-def _reminder_choice_answer(text: str, *, hours: bool = False) -> _ChoiceAnswer | None:
+def _reminder_choice_answer(text: str, *, hours: bool = False,
+                            wake_words: tuple[str, ...] = ()) -> _ChoiceAnswer | None:
     """The answer a turn gives to a numbered reminder choice, or None when the turn is anything else.
 
-    Wake words, fillers, a cancel verb and "por favor" around it are ignored
-    ("Nexa, cancelá el primero, por favor"). An ordinal or "el número N" is
-    always the listed number; a bare number ("dos", "el 2") may also be a
+    The household classifier's fillers (:func:`strip_fillers`: wake words,
+    "bueno", "bue", "dale", "hola", "porfa", a "no" followed by a pause,
+    "por favor", review BFR-1), a cancel verb and a trailing "dale" (only
+    here, review BFR1-R1) around it are ignored ("Nexa, cancelá el primero,
+    por favor", "no, el segundo", "el segundo, dale"). An ordinal or "el
+    número N" is always the listed number; a bare number ("dos", "el 2") may also be a
     due hour (user answer T032-U1-Q3). A time ("el de las 2") is an answer
     only when ``hours`` is set, after Nexa asked "¿El segundo o el de las
     2?"; otherwise the choice is by the listed number only (user decision
     t032_design_20261118).
     """
-    words = re.findall(r"[^\W_]+", _strip_accents((text or "").lower()))
-    while words and (words[0] in WAKE_TERMS or words[0] in _CHOICE_LEADS):
-        words.pop(0)
-    if words[-2:] == ["por", "favor"]:
-        del words[-2:]
-    elif words[-1:] == ["porfa"]:
-        words.pop()
+    words = list(strip_fillers(text, wake_words, extra_leads=_CHOICE_LEADS, extra_trails=_CHOICE_TRAILS))
     if hours and (hour := _choice_hour(words)) is not None:
         return hour
     if words[:1] in (["el"], ["la"]):
@@ -1010,7 +1012,8 @@ class RequestDispatcher:
         # of the same speaker id in the same room; any other turn drops it.
         choice_key = (user_id, context_room_id if context_room_id is not None else zone_id)
         choice = self._reminder_choices.pop(choice_key, None)
-        answer = _reminder_choice_answer(text, hours=choice.hours) if choice is not None else None
+        answer = None if choice is None else _reminder_choice_answer(
+            text, hours=choice.hours, wake_words=self.household_intents.settings.wake_words)
 
         # 0. P3-F2 D1: a claimed household turn goes straight to its family
         # path. Special commands, _classify_request and the caller's
@@ -2416,7 +2419,8 @@ class RequestDispatcher:
         answer is told that nothing was cancelled.
         """
         choice = self._reminder_choices.get((user_id, context_room_id))
-        return choice is not None and _reminder_choice_answer(text, hours=choice.hours) is not None
+        return choice is not None and _reminder_choice_answer(
+            text, hours=choice.hours, wake_words=self.household_intents.settings.wake_words) is not None
 
     def drop_reminder_choice(self, user_id: str, context_room_id: str | None) -> bool:
         """Drop the numbered reminder choice open for this speaker id and room (review T032-NUM-FV-2).
