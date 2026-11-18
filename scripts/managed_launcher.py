@@ -115,13 +115,16 @@ _CHILD_ENV_DROPPED = frozenset({"PYTHONPATH", "CONFIG_PATH", "PYTHONHOME", "NOTI
                                 WATCHDOG_INTERVAL_ENV, CONTROL_FD_ENV})
 _PROBE_ENVIRONMENT = ("LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SQLITE_TMPDIR")
 UNINSTALL_PHRASE = "revivir datos borrados"
-# The legacy runtimes L4 (uninstall-launcher) and the aborts may serve again, by role: the frozen state
-# slot's own release and the container 'current' serves at the window. Since 2026-10-29 that container is
-# e9669ec (voice-loading publication; user decision batch_g_questions_20261118 "R1 base", which supersedes
-# P5's 63ea8d3). Any other commit refuses, the superseded 63ea8d3 container included.
+# The legacy roles by commit: the frozen state slot (b0866e8) and the container 'current' serves at the
+# window. Since 2026-10-29 that container is e9669ec (voice-loading publication; user decision
+# batch_g_questions_20261118 "R1 base", which supersedes P5's 63ea8d3).
 LEGACY_STATE_COMMIT = "b0866e8"
 LEGACY_CONTAINER_COMMIT = "e9669ec"
-LEGACY_COMMITS = (LEGACY_STATE_COMMIT, LEGACY_CONTAINER_COMMIT)
+# The only legacy runtime L4 (uninstall-launcher) and the aborts may serve again: the e9669ec container
+# (user decision r1e_questions_20261118 R1E-Q2/Q4/Q5, "L4 targets only e9669ec"). Any other commit
+# refuses with runtime_admission_uninstall_legacy_commit: the b0866e8 slot's own runtime and the
+# superseded 63ea8d3 container included.
+LEGACY_COMMITS = (LEGACY_CONTAINER_COMMIT,)
 # The adoption (dry run, W2, W4's re-check) requires exactly this release in the container: the full
 # commit, not the 7-hex prefix L4 and the aborts match (review R1E-RV3).
 LEGACY_CONTAINER_RELEASE = "e9669ec1edb101ca6b190ef8df09314e1ac63562"
