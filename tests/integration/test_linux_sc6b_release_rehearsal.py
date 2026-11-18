@@ -1437,14 +1437,37 @@ def test_16_a_new_ignoring_the_verify_flag_is_stopped_at_ready_and_aborted(build
 # --- (17) accepted release dying with a regressed R-b: adopt, hotfix with the flag, retire, one more -------
 
 DELETE_PA_TOMBSTONE = cw.sql(("DELETE FROM conversation_tombstones WHERE conversation_id = 'conv-pa'", ()))
-# A fact the owner deleted (the row turns 'deleted' with its ledger entry, as the production delete does),
-# and the dying release that brings it back (a resurrected_fact family at R-b).
-FACT_DELETED = "\n".join([
-    cw.sql(("INSERT INTO facts(id, content, category, confidence, state, extracted_at, revision)"
-            " VALUES ('fact-sc6b', NULL, 'other', 1.0, 'deleted', 1.0, 1)", ())),
-    cw.ledger_append("fact_deleted", "fact-sc6b"),
-])
-FACT_RESURRECTED = cw.sql(("UPDATE facts SET state = 'confirmed' WHERE id = 'fact-sc6b'", ()))
+
+
+def _fact_deleted(stale: Path) -> str:
+    """Child code: a synthetic fact stored through the production ledger, a stale copy of privacy.db taken
+    outside the state (a backup a restore could later use), then the fact deleted through the review boundary
+    (state 'deleted', content and sources scrubbed, a fact_deleted ledger entry)."""
+    return "\n".join([
+        cw._LEDGER_OPEN,
+        "import time, uuid",
+        "from src.memory.fact_ledger import MemoryOrigin, MemoryReviewer, MemorySource",
+        "now = time.time()",
+        "source = MemorySource(str(uuid.uuid4()), str(uuid.uuid4()), now - 60, now + 3600, MemoryOrigin.VOICE)",
+        "fact = ledger.store('sc6b synthetic fact', 'fact', 0.9, (source,))",
+        "with closing(sqlite3.connect(state / 'data' / 'privacy.db')) as live, "
+        f"closing(sqlite3.connect({str(stale)!r})) as copy:",
+        "    live.backup(copy)",
+        "ledger.delete_fact(fact.id, MemoryReviewer('fixture:operator'))",
+        "ledger.close()",
+    ])
+
+
+def _fact_restored(stale: Path) -> str:
+    """Child code: the dying release restores the fact rows from the stale copy (a resurrected_fact family)."""
+    return "\n".join([
+        "import sqlite3",
+        "from contextlib import closing",
+        "with closing(sqlite3.connect(state / 'data' / 'privacy.db')) as db, db:",
+        f"    db.execute('ATTACH DATABASE ? AS stale', ({str(stale)!r},))",
+        "    db.execute('INSERT OR REPLACE INTO facts SELECT * FROM stale.facts')",
+        "    db.execute('INSERT OR IGNORE INTO fact_sources SELECT * FROM stale.fact_sources')",
+    ])
 
 
 def _accepted_release_dies(world: World, name: str, execute: str, code: str) -> dict:
@@ -1576,7 +1599,8 @@ def test_17_an_accepted_release_dying_with_a_regressed_r_b_is_adopted_hotfixed_a
 
 def test_17b_a_resurrected_family_in_the_regressed_source_exits_by_abort_to_h(builds, tmp_path, systemd, record):
     """User answer scpadr_q1_20261118 (the documented limit, runbook «Después de la aceptación»): k1 deletes
-    a fact and closes; dying under the production restart it brings the fact back, and the restart's R-b
+    a fact and closes; dying under the production restart it restores the fact's rows from a stale copy of
+    privacy.db, and the restart's R-b
     refuses runtime_admission_recovery_resurrection. adopt confirms resurrected_fact; the hotfix plans, starts
     and passes V with --accept-regressed-source, but retire refuses
     runtime_admission_compaction_retire_resurrected (K's baseline is follow-up) and abort --to-h returns
@@ -1587,8 +1611,9 @@ def test_17b_a_resurrected_family_in_the_regressed_source_exits_by_abort_to_h(bu
     world = World(builds, tmp_path, systemd, rec)
     _first_t0(world)
     world.transition("x5", name="r1-to-r2")  # k1 accepted: R2 serves
-    world.serve_clean("accepted-deletes-a-fact", execute=FACT_DELETED)
-    _accepted_release_dies(world, "accepted-dies", FACT_RESURRECTED, "runtime_admission_recovery_resurrection")
+    stale = tmp_path / "stale-privacy.db"
+    world.serve_clean("accepted-deletes-a-fact", execute=_fact_deleted(stale))
+    _accepted_release_dies(world, "accepted-dies", _fact_restored(stale), "runtime_admission_recovery_resurrection")
     families, sha256, adopted = _confirmed_adopt(world, tmp_path)
     assert families == ["resurrected_fact"], families
     _hotfix_t0_without_the_h_check(world, "x5r2")
