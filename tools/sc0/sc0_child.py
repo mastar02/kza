@@ -41,6 +41,9 @@ parser.add_argument("--dashboard-port", type=int, required=True)
 parser.add_argument("--trace-file", required=True)
 parser.add_argument("--ambient", choices=("idle", "real"), default="idle")
 parser.add_argument("--probe-none-until-ready", action="store_true")
+# SC-6b: a store at its production path, relative to the slot's state (dotted.key=relative), e.g.
+# vectordb.path=data/chroma_db; the settings keep the ${KZA_SLOT_BIND_*} placeholder of that key.
+parser.add_argument("--state-store", action="append", default=[])
 ARGS = parser.parse_args()
 T0 = time.monotonic()
 
@@ -237,6 +240,13 @@ def resolve_configuration(root: Path, home_url: str, model_url: str) -> dict:
     path = root.parents[1] / "config/settings.yaml"
     raw = yaml.safe_load(path.read_text())
     generated = configuration(root, home_url, model_url)
+    for item in ARGS.state_store:
+        dotted, relative = item.split("=", 1)
+        *parents, leaf = dotted.split(".")
+        owner = generated
+        for key in parents:
+            owner = owner[key]
+        owner[leaf] = str(root.parents[1] / relative)
     for location, value in _leaves(raw):
         if type(value) is str and value.startswith("${KZA_SLOT_BIND_"):
             assert value == "${" + _variable(location) + "}"

@@ -375,7 +375,10 @@ class World:
         self.trace = self.tmp / f"sql-trace-{len(list(self.tmp.glob('sql-trace-*')))}.jsonl"
         command = [sys.executable, "-I", "-B", str(SC0_CHILD), "--repo", str(REPO), "--phase-file",
                    str(self.d.phase_file), "--graph-root", "data/graph", "--dashboard-port", str(self.app_port),
-                   "--trace-file", str(self.trace), "--ambient", "real", *flags]
+                   "--trace-file", str(self.trace), "--ambient", "real",
+                   # The command index at its production store (vectordb.path ./data/chroma_db): SC-4c's
+                   # closed list names stores by that path; the synthetic graph would put it at data/graph/index.
+                   "--state-store", "vectordb.path=data/chroma_db", *flags]
         self.d.child(command, restart=restart, extra=self._environment_lines())
 
     def _environment_lines(self) -> str:
@@ -1167,10 +1170,6 @@ def _app_source(tmp_path: Path, port: int) -> Path:
         return config
 
     raw = canonical_template(placeholder, portable)
-    # The command index at its production store path (config/settings.yaml vectordb.path, ./data/chroma_db):
-    # SC-4c's closed list names stores by that path. The synthetic leaves run the graph with the graph root
-    # (data/graph) as the working directory, so the same store is ../chroma_db from there.
-    raw["vectordb"]["path"] = "../chroma_db"
     text = yaml.safe_dump(raw, sort_keys=False)
     assert str(placeholder) not in text
     (source / "config" / "settings.yaml").write_text(text)
