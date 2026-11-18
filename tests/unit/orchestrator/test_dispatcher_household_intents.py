@@ -226,6 +226,20 @@ C02_DISPATCHER = tuple(_REMINDER_GRID) + (
        conditions={"state": "reminder_shared_active:alarma;reminder_private_active:alarma privada;"
                             "timer_running_unnamed"},
        unit="T031-U2", note="T030-U1-Q8: lists the shared alarms only"),
+    # User answer T031-U2-Q1: apagá/pará/desactivá an alarm with a clock time is that reminder's cancel.
+    _refused("C02-ALM-0209", "apagá la alarma de las 7", "reminder", status="needs_input", spoken="clarification",
+             state="reminder_shared_active:alarma;timer_running_unnamed;queued_request", effect_class="wrong_family",
+             unit="T031-U2-Q1",
+             note="user answer T031-U2-Q1: listed by number before anything is cancelled (the spoken time never "
+                  "picks one); the running timer and the queue are untouched"),
+    _refused("C02-ALM-0210", "pará la alarma de las 7", "reminder", status="needs_input", spoken="clarification",
+             state="timer_running_unnamed", effect_class="wrong_family", unit="T031-U2-Q1",
+             note="no alarm reminder: 'No hay alarmas con hora guardadas'; the running timer is never stopped in "
+                  "its place"),
+    _refused("C02-ALM-0219", "desactivá la alarma de las 7", "reminder", sf="turn_off", status="needs_input",
+             spoken="clarification", state="light_match;reminder_shared_active:alarma", unit="T031-U2-Q1",
+             note="user answer T031-U2-Q1: the alarm reminder is listed; no HA send, no alarm panel, no vector "
+                  "search, even with a caller's turn_off"),
     _timer("C02-ALM-0214", "poné una alarma de 19 horas", "completed", "volatile", "readback", counts=CREATED,
            effect_class="wrong_family", note="review T031-U2-RV2: without the article 'N horas' is a duration"),
     _timer("C02-ALM-0103", "poné una alarma", "needs_input", "not_written", "clarification", seed="C02-ALM-0004",
@@ -2071,3 +2085,114 @@ async def test_an_alarm_without_a_clock_time_still_reaches_the_timers(leaves):
     result = await dispatcher.dispatch(user_id="unknown", text="cancelá la alarma")
     assert result.path is PathType.FAST_TIMER
     assert leaves.effects(before) == effects(timer_transitions=1)
+
+
+# ---------------------------------------------------------------------------
+# User answer T031-U2-Q1 (batch_g_questions_20261118): "apagá/pará/desactivá la
+# alarma de las 7" is the cancel of the alarm set for that clock time, through
+# the same numbered list as "cancelá la alarma de las 7" (T032-U1 rules).
+# ---------------------------------------------------------------------------
+
+CLOCK_ALARM_OFF = ["apagá la alarma de las 7", "pará la alarma de las 7", "desactivá la alarma de las 7",
+                   "Nexa, apagame el despertador de las 7", "detené la alarma de las 7", "para la alarma de las 7"]
+
+
+@pytest.mark.parametrize("text", CLOCK_ALARM_OFF)
+async def test_turning_off_a_clock_alarm_lists_the_alarms_and_the_answer_cancels_only_that_one(leaves, text):
+    """Two alarms: numbered, nothing cancelled, the running timer untouched; the ordinal cancels exactly one."""
+    dispatcher = leaves.dispatcher()
+    _frozen_leaves(leaves, dispatcher, _monday_10())
+    await leaves.apply_state(dispatcher, "timer_running_unnamed;queued_request")
+    for create in ("poné una alarma a las 7 de la tarde", "poné un despertador mañana a las 7 de la mañana",
+                   "recordame sacar la basura a las 7 de la tarde"):
+        assert (await dispatcher.dispatch(user_id="unknown", text=create)).success
+    before = leaves.snapshot()
+    asked = await dispatcher.dispatch(user_id="unknown", text=text, service_filter="turn_off")
+    assert (asked.path, asked.success) == (PathType.FAST_REMINDER, False)
+    assert asked.response == ("Hay 2. 1: alarma a las 19:00; 2: despertador a las 07:00; ¿cuál? Decime el primero "
+                              "o el segundo.")
+    assert (asked.outcome.status.value, asked.outcome.persistence.value) == ("needs_input", "not_written")
+    assert leaves.effects(before) == ZERO
+    answered = await dispatcher.dispatch(user_id="unknown", text="el segundo")
+    assert answered.response == "Cancelé el recordatorio despertador a las 07:00."
+    assert leaves.effects(before) == effects(reminder_transitions=1)
+    remaining = sorted(r.text for r in await leaves.reminder_manager.get_active(None, shared_only=True))
+    assert remaining == ["alarma", "sacar la basura"]
+    assert [t.state.value for t in leaves.timers.get_all_timers()] == ["running"]
+    assert len(leaves.queue) == 1
+
+
+@pytest.mark.parametrize("text", ["apagá la alarma de las 7", "desactivá el despertador de las 7"])
+async def test_turning_off_the_only_clock_alarm_still_asks_before_cancelling(leaves, text):
+    """A spoken time never picks a reminder (t032_design_20261118): even one alarm is listed and confirmed."""
+    dispatcher = leaves.dispatcher()
+    _frozen_leaves(leaves, dispatcher, _monday_10())
+    assert (await dispatcher.dispatch(user_id="unknown", text="poné una alarma mañana a las 7 de la mañana")).success
+    before = leaves.snapshot()
+    asked = await dispatcher.dispatch(user_id="unknown", text=text)
+    assert asked.response == "Hay uno. 1: alarma a las 07:00; ¿lo cancelo? Decime: el primero."
+    assert leaves.effects(before) == ZERO
+    done = await dispatcher.dispatch(user_id="unknown", text="no, el primero, dale")
+    assert done.response == "Cancelé el recordatorio alarma a las 07:00."
+    assert leaves.effects(before) == effects(reminder_transitions=1)
+
+
+async def test_turning_off_a_clock_alarm_is_never_narrowed_by_the_spoken_time(leaves):
+    """Alarms at 07:00, 09:00 and 14:00: all listed for 'de las 7'; a bare 'dos' that is also the 14:00 hour asks."""
+    dispatcher = leaves.dispatcher()
+    manager = leaves.reminder_manager
+    for noun, hour in (("alarma", 7), ("despertador", 9), ("alarma", 14)):
+        await manager.create("household", noun, _tomorrow_at(leaves, hour), scope=ReminderScope.SHARED)
+    before = leaves.snapshot()
+    asked = await dispatcher.dispatch(user_id="unknown", text="apagá la alarma de las 7")
+    assert asked.response == ("Hay 3. 1: alarma a las 07:00; 2: despertador a las 09:00; 3: alarma a las 14:00; "
+                              "¿cuál? Decime el primero, el segundo o el tercero.")
+    clash = await dispatcher.dispatch(user_id="unknown", text="dos")
+    assert clash.response == "¿El segundo o el de las 2?"
+    assert leaves.effects(before) == ZERO
+    done = await dispatcher.dispatch(user_id="unknown", text="el de las 2")
+    assert done.response == "Cancelé el recordatorio alarma a las 14:00."
+    assert leaves.effects(before) == effects(reminder_transitions=1)
+    assert sorted((r.text, manager.voice_label(r)) for r in await manager.get_active(None, shared_only=True)) == [
+        ("alarma", "alarma a las 07:00"), ("despertador", "despertador a las 09:00")]
+
+
+@pytest.mark.parametrize("text", ["apagá la alarma de las 7", "pará la alarma de las 7",
+                                  "desactivá la alarma de las 7"])
+async def test_turning_off_a_clock_alarm_without_one_never_stops_the_timer(leaves, text):
+    """Before T031-U2-Q1 'apagá/pará la alarma de las 7' stopped the running timer instead."""
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, "timer_running_unnamed")
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text=text)
+    assert (result.path, result.response) == (PathType.FAST_REMINDER, "No hay alarmas con hora guardadas. "
+                                                                      "No cancelé nada.")
+    assert result.outcome.status.value == "needs_input" and leaves.effects(before) == ZERO
+    assert [t.state.value for t in leaves.timers.get_all_timers()] == ["running"]
+
+
+@pytest.mark.parametrize(("text", "transitions"), [
+    ("apagá la alarma", 1), ("pará la alarma", 1), ("desactivá el despertador", 1),
+    ("apagá la alarma de 5 minutos", 1), ("pará el despertador de 5 minutos", 1),
+])
+async def test_an_alarm_without_a_clock_time_is_still_stopped_on_the_timers(leaves, text, transitions):
+    """T030-U1: no clock time (or a duration) keeps the timer stop, even with an alarm reminder active."""
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, "reminder_shared_active:alarma;timer_running_unnamed")
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text=text)
+    assert (result.path, result.success) == (PathType.FAST_TIMER, True)
+    assert leaves.effects(before) == effects(timer_transitions=transitions)
+    assert [r.text for r in await leaves.reminder_manager.get_active(None, shared_only=True)] == ["alarma"]
+
+
+async def test_the_security_alarm_without_a_clock_time_stays_unclaimed(leaves):
+    """'desactivá la alarma' alone never reaches the timers or the reminders (design R3a)."""
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, "reminder_shared_active:alarma;timer_running_unnamed")
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text="desactivá la alarma")
+    assert result.path not in (PathType.FAST_TIMER, PathType.FAST_REMINDER)
+    counted = leaves.effects(before)
+    assert (counted["timer_transitions"], counted["reminder_transitions"]) == (0, 0)
+

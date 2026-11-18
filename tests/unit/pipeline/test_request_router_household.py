@@ -106,6 +106,16 @@ C02_ROUTER = (
        counts=SPOKEN_ONE, effect_class="wrong_family", unit="T031-U2",
        note="user answer T030-U1-Q8 (A): the alarm with a clock time is the reminder's, listed by number; the "
             "timer and the queue are untouched"),
+    _r("C02-ALM-0302", "apagá la alarma de las 7", "reminder", "needs_input", "fast_reminder", "needs_input",
+       "not_written", "clarification", state="reminder_shared_active:alarma;timer_running_unnamed;queued_request",
+       counts=SPOKEN_ONE, effect_class="wrong_family", unit="T031-U2-Q1",
+       note="user answer T031-U2-Q1: turning off the alarm set for 7 is its cancel, listed by number; the timer "
+            "is no longer stopped in its place and the queue is untouched"),
+    _r("C02-ALM-0303", "desactivá la alarma de las 7", "reminder", "needs_input", "fast_reminder", "needs_input",
+       "not_written", "clarification", llm="stub:turn_off@0.95", state="reminder_shared_active:alarma;light_match",
+       counts=SPOKEN_ONE, unit="T031-U2-Q1",
+       note="user answer T031-U2-Q1: a clock time names the alarm reminder, not the alarm panel; 6 words on a "
+            "strong acoustic wake: no 7B call, no grammar, no HA send"),
     _r("C02-LST-0201", "agregá leche a la lista de compras", "list", "no_turn", None, None, None, "none",
        engine="whisper", llm="stub:noise", state="shared_list_compras", counts=effects(llm_8101_calls=1),
        effect_class="stale_audio", note="transcript-based wake engine: every claimed turn needs the veto"),
@@ -474,3 +484,4 @@ async def test_the_hour_question_and_its_answer_go_through_the_router(leaves):
         "Cancelé el recordatorio tomar agua fría a las ")
     states = {r.text: r.state.value for r in await leaves.reminder_manager.get_active(None, shared_only=True)}
     assert states == {"tomar agua con gas": "active"}
+
