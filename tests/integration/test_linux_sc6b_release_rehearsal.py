@@ -1616,6 +1616,14 @@ def test_17b_a_resurrected_family_in_the_regressed_source_exits_by_abort_to_h(bu
     _accepted_release_dies(world, "accepted-dies", _fact_restored(stale), "runtime_admission_recovery_resurrection")
     families, sha256, adopted = _confirmed_adopt(world, tmp_path)
     assert families == ["resurrected_fact"], families
+    # Lossless for the adopted H itself: no step from here to the end of the abort may write H's state (the
+    # hotfix T0, plan, start, V on K, the refused retire, abort --to-h), and nothing is started on it.
+    h_state = Path(stage.read_binding(world.root, adopted["binding_id"])["state_root"])
+
+    def h_tree() -> dict:
+        return {key: value for key, value in cw.tree(h_state).items() if not key.endswith(".lock")}
+
+    h_before = h_tree()
     _hotfix_t0_without_the_h_check(world, "x5r2")
     k, compaction_id = _accepting_transition_to_v(world, "x5r2", families, sha256)
     refused = world.refused("paso8-retire-refused", compaction.RETIRE_RESURRECTED, "compact", "retire",
@@ -1625,8 +1633,13 @@ def test_17b_a_resurrected_family_in_the_regressed_source_exits_by_abort_to_h(bu
     world.abort_to_h(compaction_id)
     [started] = [event for event in world.log(compaction_id)["events"] if event["kind"] == "abort_started"]
     head = world.head()
+    h_after = h_tree()
+    h_changed = sorted(key for key in set(h_before) | set(h_after) if h_before.get(key) != h_after.get(key))
     rec.result(abort={"w_class": started["data"]["w"]["class"], "head": head["status"],
-                      "head_is_the_adopted_h": head["binding_id"] == adopted["binding_id"]})
+                      "head_is_the_adopted_h": head["binding_id"] == adopted["binding_id"],
+                      "h_state_entries": len(h_before), "h_state_changed": h_changed})
+    assert len(h_before) > 0
+    assert h_changed == [], h_changed  # paths only: the witness itself holds the state's bytes
     assert started["data"]["w"]["class"] == compaction.W_EQUAL
     assert head["status"] == "closed" and head["binding_id"] == adopted["binding_id"]
     assert world.log(compaction_id)["terminal"] and world.kinds(compaction_id)[-1] == "aborted"
