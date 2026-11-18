@@ -21,6 +21,7 @@ from src.reminders.voice_request import (
     VoiceReminderRequest,
     VoiceRequestParser,
     extract_time_expression,
+    forbidden_home_order,
     parse_reminder_request,
 )
 
@@ -513,6 +514,7 @@ VERBS = [
     "recuérdale", "acordame", "acuérdame", "haceme acordar", "hacenos acordar", "avisame", "avísame",
     "avisanos", "avisale", "avisales", "no me dejes olvidar", "me podés recordar", "podrías recordarme",
     "podés avisarme", "me recordás", "me avisás",
+    "acordate de", "acuérdate de",                # review T031-U2-RV7
 ]
 
 
@@ -526,6 +528,7 @@ def test_reminder_verbs(verb):
 
 @pytest.mark.parametrize("utterance", [
     "acordate que mañana viene Juan",          # memory proposal (U3b), not a reminder
+    "acordate de que mañana viene Juan",       # review T031-U2-RV7: 'de que' is still not a reminder head
     "recordá que me gusta el café",
     "apagá la luz en 10 minutos",
     "poné un temporizador de 5 minutos",
@@ -680,11 +683,79 @@ def test_tonight_counts_as_today_against_other_day_words():
     ("recordame en 30 segunditos mirar", MONDAY_10.timestamp() + 30, "mirar", "en 30 segunditos"),
     ("recordame comprar más o menos dos kilos a las 9 de la noche", local(2026, 11, 16, 21),
      "comprar más o menos dos kilos", "a las 9 de la noche"),
+    # T031-U2: "para" before a day word belongs to the day ("pagar la luz para mañana" read back without "para").
+    ("recordame pagar la luz para mañana a las 8 de la noche", local(2026, 11, 17, 20), "pagar la luz",
+     "para mañana a las 8 de la noche"),
+    ("recordame para mañana a las 8 de la noche pagar la luz", local(2026, 11, 17, 20), "pagar la luz",
+     "para mañana a las 8 de la noche"),
+    ("recordame pagar la luz para el miércoles a las 8 de la noche", local(2026, 11, 18, 20), "pagar la luz",
+     "para el miércoles a las 8 de la noche"),
+    ("recordame pagar la luz para pasado mañana a las 8 de la noche", local(2026, 11, 18, 20), "pagar la luz",
+     "para pasado mañana a las 8 de la noche"),
+    ("recordame pagar la luz para hoy a las 8 de la noche", local(2026, 11, 16, 20), "pagar la luz",
+     "para hoy a las 8 de la noche"),
+    ("recordame para el lunes que viene a las 9 de la mañana sacar turno", local(2026, 11, 23, 9), "sacar turno",
+     "para el lunes que viene a las 9 de la mañana"),
+    ("recordame comprar algo para la cena a las 8 de la noche", local(2026, 11, 16, 20),
+     "comprar algo para la cena", "a las 8 de la noche"),
+    ("recordame el regalo para mamá a las 8 de la noche", local(2026, 11, 16, 20), "el regalo para mamá",
+     "a las 8 de la noche"),
 ])
 def test_read_back_text_has_no_time_words(utterance, expected, text, time_phrase):
     result = parse(utterance)
     assert result.ok, (result.ambiguity, result.detail)
     assert (result.trigger_at, result.text, result.time_phrase) == (expected, text, time_phrase)
+
+
+@pytest.mark.parametrize("utterance", [
+    # Review T031-U2-RV1 (user answer T032-U1-RR-P1, "Pregunta cuál"): with a time already said, a day word
+    # after the "que" that opens the text, or between two words of the text, may be what to remember.
+    "recordame a las 9 de la noche que mañana viene el plomero",
+    "recordame a las 10 de la noche que el martes hay reunión",
+    "recordame a las 10 de la noche que pasado mañana viene la abuela",
+    "recordame a las 10 de la noche llevar mañana el auto al taller",
+    "recordame mañana a las 8 de la noche que el informe es para el martes",
+    "recordame a las 9 de la noche de que mañana viene el plomero",
+    "recordame mañana a las 8 de la noche de que el informe es para el martes",
+    "recordame a las 9 de la noche que hoy viene el plomero",
+    "recordame a las 10 de la noche que el lunes que viene hay reunión",
+])
+def test_a_day_word_inside_the_text_after_a_time_is_asked(utterance):
+    result = parse(utterance)
+    assert (result.ambiguity, result.detail, result.trigger_at, result.recurrence) == (
+        A.AMBIGUOUS_DAY, "day_in_text", None, None)
+
+
+@pytest.mark.parametrize("utterance,expected,text", [
+    # A day next to the time, before it, or closing the text is the reminder's day (review T031-U2-RV1).
+    ("recordame sacar la basura mañana a las 8 de la noche", local(2026, 11, 17, 20), "sacar la basura"),
+    ("recordame mañana a las 8 de la noche que viene el plomero", local(2026, 11, 17, 20), "viene el plomero"),
+    ("recordame que mañana a las 8 de la noche viene el plomero", local(2026, 11, 17, 20), "viene el plomero"),
+    ("recordame a las 9 de la noche de mañana llamar", local(2026, 11, 17, 21), "llamar"),
+    ("recordame llamar a las 9 de la noche mañana a Juan", local(2026, 11, 17, 21), "llamar a Juan"),
+    ("recordame la reunión del martes a las 8 de la noche", local(2026, 11, 17, 20), "la reunión"),
+    ("recordame mañana llevar el auto al taller a las 10 de la mañana", local(2026, 11, 17, 10),
+     "llevar el auto al taller"),
+])
+def test_a_day_word_next_to_the_time_is_the_day(utterance, expected, text):
+    result = parse(utterance)
+    assert result.ok, (result.ambiguity, result.detail)
+    assert (result.trigger_at, result.text) == (expected, text)
+
+
+@pytest.mark.parametrize("utterance", [
+    "recordame hoy a las 10 de la noche que mañana viene el plomero",
+    "recordame todos los días a las 9 de la noche regar mañana las plantas",
+])
+def test_a_day_word_already_ambiguous_keeps_its_own_reading(utterance):
+    result = parse(utterance)
+    assert (result.ambiguity, result.detail) == (A.AMBIGUOUS_DAY, None)
+
+
+def test_a_day_word_inside_a_deferred_clause_is_its_day():
+    """The day-in-text question is for reminder text only; a deferred home action has no text to remember."""
+    later = extract_time_expression("a las 10 de la noche bajá mañana la persiana", MONDAY_10)
+    assert (later.ok, later.trigger_at, later.clause) == (True, local(2026, 11, 17, 22), "bajá la persiana")
 
 
 @pytest.mark.parametrize("utterance,detail", [
@@ -958,3 +1029,62 @@ def test_microbenchmark_under_one_millisecond_per_parse():
             parser.parse_reminder(phrase)
         best = min(best, (time_module.perf_counter() - started) / len(phrases))
     assert best < 0.001, f"{best * 1000:.3f} ms per parse"
+
+
+@pytest.mark.parametrize(("text", "kind"), [
+    # Review T031-U2-RV4: home orders voice control never executes (locks, doors, gates, the alarm panel).
+    ("cerrar la puerta con llave", "lock"),
+    ("cerrá la puerta de calle", "lock"),
+    ("abrir el portón", "lock"),
+    ("Abrí el Portón del garaje", "lock"),
+    ("trabar la reja", "lock"),
+    ("destrabar la cerradura", "lock"),
+    ("pasar la llave", "lock"),
+    ("echarle llave a la puerta", "lock"),
+    ("activar la alarma", "alarm"),
+    ("desactivar la alarma", "alarm"),
+    ("armar la alarma de la casa", "alarm"),
+    ("desarmá la alarma", "alarm"),
+    ("conectar la alarma", "alarm"),
+    ("prender la alarma", "alarm"),
+    ("pintar la puerta", None),
+    ("llamar al cerrajero", None),
+    ("abrir la carta del banco", None),
+    ("comprar la llave inglesa", None),
+    ("revisar la alarma", None),
+    ("alarma", None),
+    ("cambiar la alarma de la mañana", None),
+    ("pagar en abril", None),
+])
+def test_forbidden_home_order(text, kind):
+    assert forbidden_home_order(text) == kind
+
+
+@pytest.mark.parametrize("utterance,expected,text", [
+    # Review T031-U2-RV7: "cuando sean las H" names the clock time.
+    ("avisame cuando sean las 9 de la noche que hay que salir", local(2026, 11, 16, 21), "hay que salir"),
+    ("avisame cuando sea la una de la tarde que llame a mamá", local(2026, 11, 16, 13), "llame a mamá"),
+    ("acordate de sacar la basura cuando sean las 8 de la noche", local(2026, 11, 16, 20), "sacar la basura"),
+])
+def test_cuando_sean_las_is_a_clock_time(utterance, expected, text):
+    result = parse(utterance)
+    assert result.ok, (result.ambiguity, result.detail)
+    assert (result.trigger_at, result.text) == (expected, text)
+
+
+@pytest.mark.parametrize("utterance", [
+    "avisame cuando sean las 9 de la noche",
+    "recordame nada a las 9 de la noche",
+    "recordame algo a las 9 de la noche",
+    "recordame eso a las 9 de la noche",
+    "Recordame NADA MÁS a las 9 de la noche",
+])
+def test_a_text_that_names_nothing_is_missing_text(utterance):
+    """Review T031-U2-RV7: a time with nothing to remember asks what, never saves 'nada'."""
+    result = parse(utterance)
+    assert (result.ambiguity, result.trigger_at) == (A.MISSING_TEXT, None)
+
+
+def test_a_filler_word_inside_a_real_text_is_kept():
+    result = parse("recordame nada más que pagar la luz a las 9 de la noche")
+    assert (result.ok, result.text) == (True, "nada más que pagar la luz")

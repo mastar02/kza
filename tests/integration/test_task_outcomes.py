@@ -87,8 +87,14 @@ async def test_missing_or_unsupported_object_never_counts_as_completed(leaves, t
             result = await graph.pipeline.process_command(event())
             assert result["handled"] and not result["task_completed"] and not result["success"]
             assert result["response_completed"]
+            if text == "recuérdame tomar agua":
+                # T031-U2 (deliberate update): creation by voice exists now, and a request without a time
+                # asks for it (NEEDS_INPUT, was the interim UNSUPPORTED); nothing is written.
+                assert result["outcome"]["status"] == "needs_input"
+                assert result["outcome"]["persistence"] == "not_written"
             assert await graph.list_manager.get_all_lists("unknown") == []
             assert await graph.reminder_manager.get_active("unknown") == []
+            assert await graph.reminder_manager.get_active(None, shared_only=True) == []
 
 
 @pytest.mark.parametrize("orchestrated", [False, True])
@@ -349,8 +355,9 @@ async def test_stale_lookup_cannot_prove_a_committed_deletion(leaves, tmp_path, 
 
 
 @pytest.mark.parametrize(("text", "path", "intent", "status"), [
-    ("recordame apagar la luz", "fast_reminder", "reminder", "unsupported"),
-    ("Nexa, recordame prender la luz del living", "fast_reminder", "reminder", "unsupported"),
+    # T031-U2 (deliberate): creation exists; without a time it asks (NEEDS_INPUT, was the interim UNSUPPORTED).
+    ("recordame apagar la luz", "fast_reminder", "reminder", "needs_input"),
+    ("Nexa, recordame prender la luz del living", "fast_reminder", "reminder", "needs_input"),
     # T030-U1: the graph is built but the FeatureManager was never started, so no timer is confirmed.
     ("poné un temporizador de 5 minutos", "fast_timer", "timer", "failed"),
     ("cancelá el timer y el recordatorio", "fast_household", "compound", "needs_input"),

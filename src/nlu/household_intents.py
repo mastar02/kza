@@ -19,7 +19,9 @@ design.json), evaluated in the order R3, R5, R1, R2, R3a, R4, R6:
   household objects, or one domotics verb with two targets).
 * R1: an object operation (cancel/stop/pause/resume/disable/query) on one
   household object noun; "la alarma"/"el despertador" name the timers here
-  (T030-U1), except the security verbs activá/desactivá/armá/desarmá la alarma.
+  (T030-U1), except the security verbs activá/desactivá/armá/desarmá la alarma;
+  a cancel or query of an alarm with a clock time ("cancelá la alarma de las 7")
+  names the reminders (user answer T030-U1-Q8).
 * R2: timer creation, and list item additions/removals.
 * R3a: "alarma" with a duration (timer) or a clock time (reminder).
 * R4: a domotics verb with a deferral time expression.
@@ -107,7 +109,7 @@ class HouseholdIntent:
         reason: Code for clarifications and refusals (``other_person``,
             ``second_clause``, ``too_many_parts``, ``conflicting_parts``,
             ``deferred_part``, ``unparsed_part``, ``duration``, ``clock_time``,
-            ``no_time``, ``new_routine``), or None.
+            ``no_time``, ``new_routine``, ``clock_alarm``), or None.
         parts: COMPOUND only: the parts in spoken order.
     """
 
@@ -377,6 +379,20 @@ _OBJECT_NOUNS: dict[str, HouseholdFamily] = {
 # claimed (design R3a): they stay on the existing path, where alarm panels are not controllable.
 _ALARM_NOUNS = frozenset({"alarma", "alarmas", "despertador", "despertadores"})
 _SECURITY_ALARM_NOUNS = frozenset({"alarma", "alarmas"})
+# User answer T030-U1-Q8 (A, 2026-11-17): an alarm named with a clock time ("la alarma de las 7") was created as
+# a reminder (R3a, T031-U2), so its cancel and its query reach the reminders; without a clock time an alarm stays
+# a timer. "de las 7 minutos" is a duration, not a clock time; "de las 10 horas" is a clock time (review
+# T031-U2-RV2: an article before the hour names the hour of the day).
+_ALARM_HOUR = (r"(?:\d{1,2}(?:[:.]\d{2})?|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece"
+               r"|catorce|quince|dieciseis|diecisiete|dieciocho|diecinueve|veinte|veintiuna|veintiuno|veintidos"
+               r"|veintitres)")
+# A day alone ("la alarma de mañana", "de hoy", "del martes") also names an alarm set for a clock time: a timer
+# has no day (review T031-U2-RV3), so it reaches the reminders' numbered alarm list too.
+_ALARM_CLOCK = re.compile(
+    rf"\b(?:de|a|para) (?:la|las) {_ALARM_HOUR}\b(?! (?:segundos?|minutos?|mins?)\b)"
+    r"|\b(?:del|al|de la|a la|para el|para la) (?:mediodia|medianoche)\b"
+    r"|\b(?:de|para) (?:hoy|pasado manana|manana)\b"
+    r"|\b(?:del|de este|para el) (?:proximo )?(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b")
 _SECURITY_ALARM_VERBS = frozenset({"activa", "active", "activar", "desactiva", "desactive", "desactivar", "arma",
                                    "arme", "armar", "desarma", "desarme", "desarmar"})
 _DETERMINERS = frozenset({
@@ -398,6 +414,7 @@ _REMINDER_HEAD = re.compile(
     r"|(?:me|nos) (?:podes|podrias|puedes) (?:recordar|avisar)"
     r"|(?:me|nos) (?:recordas|avisas)"
     r"|recorda(?:me|nos|melo)|recuerda(?:me|nos|melo)|acorda(?:me|nos)|acuerda(?:me|nos)|avisa(?:me|nos)"
+    r"|acordate de(?! que\b)|acuerdate de(?! que\b)"
     r"|recordar(?:me|nos)|avisar(?:me|nos)"
     r"|(?P<other>recorda(?:le|les)|recuerda(?:le|les)|avisa(?:le|les)|recordar(?:le|les)|avisar(?:le|les)"
     r"|(?:le|les) (?:podes|podrias|puedes) (?:recordar|avisar)))\b"
@@ -408,8 +425,14 @@ _NUMBER = (r"(?:\d+|un|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|
            r"|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|media|medio|cuartos?)")
 _DURATION = re.compile(rf"\b{_NUMBER}(?: y \w+)? (?:de )?(?:segundos?|minutos?|mins?|horas?)\b|\bmedia hora\b"
                        r"|\bhora y (?:media|cuarto)\b|\bminuto y medio\b")
-_CLOCK = re.compile(r"\b(?:a|para) (?:las? )?(?:\d{1,2}(?:[:.]\d{2})?|una|dos|tres|cuatro|cinco|seis|siete|ocho"
-                    r"|nueve|diez|once|doce|mediodia|medianoche)\b")
+_CLOCK = re.compile(r"\b(?:a|para|cuando sean?) (?:las? )?(?:\d{1,2}(?:[:.]\d{2})?|una|dos|tres|cuatro|cinco"
+                    r"|seis|siete|ocho|nueve|diez|once|doce|mediodia|medianoche)\b|\bal mediodia\b")
+# Review T031-U2-RV2: "a las 19 horas", "para las 8 hs" and "de las 7 horas de la mañana" name an hour of the
+# day (the article before the number), not a duration; R3a reads them before its duration check. "de 19 horas"
+# (no article) stays a duration. Likewise "a las 20 y 5 minutos" is 20:05, not a 5-minute timer (review
+# T031-U2-RV5: the form the minutes question suggests).
+_ARTICLE_CLOCK_UNIT = re.compile(rf"\b(?:a|para|de) (?:la|las) {_ALARM_HOUR} "
+                                 rf"(?:h|hs|hrs|horas?|y {_NUMBER} (?:minutos?|mins?))\b")
 _INTERCOM_TARGET = re.compile(
     r"\b(?:en|a|por) (?:el |la |los |las |toda la |todas las )?(?:casa|todos|parlantes|"
     + "|".join(re.escape(alias) for alias in sorted(ROOM_ALIASES)) + r")\b")
@@ -486,6 +509,25 @@ def _mentions_list(utt: _Utterance) -> bool:
 def _r1_object_at(utt: _Utterance, k: int) -> HouseholdFamily | None:
     """Like :func:`_object_at`, but an alarm noun names the timers (R1 commands and queries only)."""
     return HouseholdFamily.TIMER if utt.at(k) in _ALARM_NOUNS else _object_at(utt, k)
+
+
+def _clock_alarm(utt: _Utterance, k: int) -> bool:
+    """The alarm noun at token ``k`` is named with a clock time or a day after it (user answer T030-U1-Q8)."""
+    return utt.at(k) in _ALARM_NOUNS and _ALARM_CLOCK.search(" ".join(utt.folded[k + 1:])) is not None
+
+
+def _r1_intent(utt: _Utterance, k: int, family: HouseholdFamily, operation: HouseholdOperation,
+               verb: str) -> HouseholdIntent:
+    """An R1 intent on the object at token ``k``.
+
+    A cancel or query of an alarm with a clock time is the reminders' with
+    the reason ``clock_alarm`` (user answer T030-U1-Q8); any other alarm
+    operation stays with ``family``.
+    """
+    if operation in (HouseholdOperation.CANCEL, HouseholdOperation.QUERY) and _clock_alarm(utt, k):
+        return HouseholdIntent(HouseholdFamily.REMINDER, operation, "R1", _rest(utt, k + 1), verb,
+                               reason="clock_alarm")
+    return HouseholdIntent(family, operation, "R1", _rest(utt, k + 1), verb)
 
 
 def _governed_object(utt: _Utterance, j: int, *, allow_adjective: bool = False,
@@ -577,17 +619,21 @@ def _query(utt: _Utterance) -> HouseholdIntent | None:
         return None
     k, family = nouns[0]
     if head == "cuanto" and family is HouseholdFamily.TIMER and {"falta", "queda"} & set(utt.folded[:5]):
-        return HouseholdIntent(family, HouseholdOperation.QUERY, "R1", _rest(utt, k + 1), head)
+        return _r1_intent(utt, k, family, HouseholdOperation.QUERY, head)
     if head in _QUERY_HEADS and _QUERY_VERBS & set(utt.folded):
-        return HouseholdIntent(family, HouseholdOperation.QUERY, "R1", _rest(utt, k + 1), head)
+        return _r1_intent(utt, k, family, HouseholdOperation.QUERY, head)
+    if head == "a" and utt.at(1) == "que" and utt.at(2) == "hora" and utt.at(k) in _ALARM_NOUNS:
+        # "¿a qué hora suena la alarma?": answered from the timers and the alarms set for a clock time,
+        # never by the cloud model, which cannot see either (review T031-U2-RV3).
+        return _r1_intent(utt, k, family, HouseholdOperation.QUERY, head)
     if head in _HAVE_HEADS:
         governed = _governed_object(utt, 2 if utt.at(1) in _SOME else 1, alarms=True)
         if governed is not None:
-            return HouseholdIntent(governed[0], HouseholdOperation.QUERY, "R1", _rest(utt, governed[1] + 1), head)
+            return _r1_intent(utt, governed[1], governed[0], HouseholdOperation.QUERY, head)
     if head in _READ_HEADS:
         governed = _governed_object(utt, 1, alarms=True)
         if governed is not None:
-            return HouseholdIntent(governed[0], HouseholdOperation.QUERY, "R1", _rest(utt, governed[1] + 1), head)
+            return _r1_intent(utt, governed[1], governed[0], HouseholdOperation.QUERY, head)
     return None
 
 
@@ -597,7 +643,7 @@ def _r1(utt: _Utterance) -> HouseholdIntent | None:
         found = _r1_object(utt, verb)
         if found is not None:
             family, operation, k = found
-            return HouseholdIntent(family, operation, "R1", _rest(utt, k + 1), verb.form)
+            return _r1_intent(utt, k, family, operation, verb.form)
     return _query(utt)
 
 
@@ -661,6 +707,9 @@ def _r3a(utt: _Utterance) -> HouseholdIntent | None:
         verb = found.form
     rest = " ".join(utt.folded[k + 1:])
     complement = _rest(utt, k + 1)
+    if _ARTICLE_CLOCK_UNIT.search(rest):
+        return HouseholdIntent(HouseholdFamily.REMINDER, HouseholdOperation.CREATE, "R3a", complement, verb,
+                               reason="clock_time")
     if _DURATION.search(rest):
         return HouseholdIntent(HouseholdFamily.TIMER, HouseholdOperation.CREATE, "R3a", complement, verb,
                                reason="duration")

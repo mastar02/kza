@@ -126,6 +126,8 @@ _VERB = re.compile(
     r"|(?:me|nos)\s+(?:recordas|avisas)"
     r"|recorda(?:me|nos|le|les)|recuerda(?:me|nos|le|les)"
     r"|acorda(?:me|nos)|acuerda(?:me|nos)"
+    # "acordate de sacar la basura ..." (review T031-U2-RV7); "acordate (de) que ..." stays a memory request.
+    r"|acordate\s+de(?!\s+que\b)|acuerdate\s+de(?!\s+que\b)"
     r"|avisa(?:me|nos|le|les))\b"
 )
 _LEAD = re.compile(r"[\s¿¡,.;:!?\"']*(?:(?:che|ey|oye|hola|por\s+favor|porfa)\b[\s,.;:!?]*)*")
@@ -149,6 +151,8 @@ _DATE_WORDS = frozenset({
     "feriado", "feriados", "navidad", "nochebuena", "hoy", "pasado",
 })
 _CUT_WORDS = {"salvo", "excepto", "menos"}
+# A reminder text that names nothing to remember ("recordame nada a las 9") is asked (review T031-U2-RV7).
+_FILLER_TEXTS = frozenset({"nada", "nada mas", "algo", "eso", "esto", "una cosa", "lo que sea", "cualquier cosa"})
 _SINGULAR_ONE = {"un", "una", "uno"}
 # Words that may follow bare "y N" minutes without making N part of the content.
 _LOOSE_FOLLOWERS = {"que", "de", "y", "en", "para", "a"}
@@ -263,6 +267,7 @@ class _Scan:
     clocks: list[_Clock] = field(default_factory=list)
     periods: list[str] = field(default_factory=list)
     days: list[tuple[str, int, str | None]] = field(default_factory=list)
+    day_spans: list[tuple[int, int]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     vague: bool = False
 
@@ -295,9 +300,12 @@ def _clock_at(words: list[str], i: int) -> tuple[_Clock, int] | None:
     n = len(words)
     if _at(words, i, ("al", "mediodia")):
         return _Clock(12, 0, "mediodia", True), i + 2
-    if words[i] not in ("a", "para"):
+    if words[i] in ("a", "para"):
+        j = i + 1
+    elif _at(words, i, ("cuando", "sean")) or _at(words, i, ("cuando", "sea")):
+        j = i + 2                     # "avisame cuando sean las 9 de la noche" (review T031-U2-RV7)
+    else:
         return None
-    j = i + 1
     loose = None
     if j < n and words[j] == "medianoche":
         return _Clock(0, 0, None, True), j + 1
@@ -525,6 +533,14 @@ def _scan(words: list[str]) -> _Scan:
         return end
 
     def day(i: int) -> int | None:
+        if words[i] == "para":
+            # "para mañana", "para el martes": the "para" belongs to the day, not the text (T031-U2).
+            found = _day_at(words, i + 1)
+            if found is None:
+                return None
+            kind, value, modifier, end = found
+            scan.days.append((kind, value, modifier))
+            return end
         if words[i] in ("de", "del") and i > 0 and scan.used[i - 1]:
             found = _day_at(words, i + 1, joined=True)
             if found is not None:
@@ -550,6 +566,8 @@ def _scan(words: list[str]) -> _Scan:
                 i += 1
                 continue
             scan.take(i, end)
+            if matcher is day:
+                scan.day_spans.append((i, end))
             i = end
     n = len(words)
     for k in range(n):
@@ -715,6 +733,35 @@ def _clean(text: str, *, connectors: bool) -> str:
     return text.strip(edge)
 
 
+def _day_in_text(words: list[str], scan: _Scan) -> bool:
+    """A day word that may belong to the reminder text instead of naming its day (review T031-U2-RV1).
+
+    With a time already said, a day word after the "que" that opens the
+    reminder text ("a las 9 de la noche que mañana viene el plomero") or
+    between two words of the text ("a las 10 de la noche llevar mañana el
+    auto") can be the reminder's day or part of what to remember, so it is
+    asked (user answer T032-U1-RR-P1, "Pregunta cuál"). A day next to the
+    time ("sacar la basura mañana a las 8", "mañana a las 8 ... que ...") or
+    at the end of the text stays the day.
+    """
+    if not scan.day_spans:
+        return False
+    used, n = scan.used, len(words)
+    free = [k for k in range(n) if not used[k]]
+    if free:
+        q = free[0]
+        if words[q] == "de" and q + 1 < n and not used[q + 1]:
+            q += 1                      # "de que ..."
+        if words[q] == "que" and any(end <= q for _, end in scan.spans) \
+                and any(first > q for first, _ in scan.day_spans):
+            return True
+    for first, end in scan.day_spans:
+        if first > 0 and not used[first - 1] and end < n and not used[end] \
+                and any(other_end < first for _, other_end in scan.spans):
+            return True
+    return False
+
+
 def _ordered(issues: set[ReminderAmbiguity]) -> tuple[ReminderAmbiguity, ...]:
     return tuple(code for code in _PRIORITY if code in issues)
 
@@ -833,7 +880,12 @@ def _leftover_problem(words: list[str], used: list[bool], skip: range, clocks: l
 def _analyse(original: str, folded: str, start: int, aliases: tuple[tuple[str, ...], ...], *,
              now: datetime, connectors: bool) -> tuple[str, float | None, str | None, str | None, str | None,
                                                        set[ReminderAmbiguity], str | None]:
-    """Shared core: (text, trigger_at, recurrence, zone, time_phrase, issues, detail)."""
+    """Shared core: (text, trigger_at, recurrence, zone, time_phrase, issues, detail).
+
+    ``connectors`` marks a reminder request: its leading connectors are
+    dropped from the text and a day word that may be part of the text is
+    asked (:func:`_day_in_text`).
+    """
     tokens = [(m.group(0), m.start(), m.end()) for m in _TOKEN.finditer(folded, start)]
     words = [t[0] for t in tokens]
     if _UNSUPPORTED.search(folded, start):
@@ -857,13 +909,16 @@ def _analyse(original: str, folded: str, start: int, aliases: tuple[tuple[str, .
                                      scan.clocks, breaks)
         if leftover is not None:
             trigger, recurrence, issues, detail = None, None, {ReminderAmbiguity.UNPARSEABLE}, leftover
+        elif connectors and ReminderAmbiguity.AMBIGUOUS_DAY not in issues and _day_in_text(words, scan):
+            issues.add(ReminderAmbiguity.AMBIGUOUS_DAY)
+            detail = detail or "day_in_text"
     pieces, cursor = [], start
     for a, b in sorted(removed):
         pieces.append(original[cursor:a])
         cursor = b
     pieces.append(original[cursor:])
     text = _clean(" ".join(pieces), connectors=connectors)
-    if not text:
+    if not text or (connectors and _fold(text) in _FILLER_TEXTS):
         issues.add(ReminderAmbiguity.MISSING_TEXT)
     if issues:
         trigger, recurrence = None, None
@@ -951,6 +1006,40 @@ def extract_time_expression(text: str, now: datetime) -> DeferredClause:
         ambiguity=ordered[0] if ordered else None, time_phrase=time_phrase,
         issues=ordered, detail=detail,
     )
+
+
+# Home orders voice control never executes (design voice_reminder_actions: locks and alarm panels are not
+# controllable at all), named in a reminder text (review T031-U2-RV4). Accent-free, lowercase.
+_LOCK_ORDER = re.compile(
+    r"\b(?:cerr(?:a|ar|e|en|ala|alo|arla|arlo)|cierr(?:a|e|en|ala|alo)|abr(?:i|ir|a|an|ila|ilo|irla|irlo)"
+    r"|(?:des)?trab(?:a|ar|e|en|ala|alo|arla|arlo)|(?:des)?bloque(?:a|ar|e|en))\b(?:\s+\S+){0,4}?"
+    r"\s+(?:puertas?|porton(?:es)?|cerraduras?|cerrojos?|candados?|rejas?|garag(?:e|es)|garaj(?:e|es)|llave)\b"
+    r"|\b(?:ech|pas)(?:a|ar|e|ale|arle)\s+(?:la\s+)?llave\b")
+_ALARM_ORDER = re.compile(
+    r"\b(?:(?:des)?activ|(?:des)?arm|(?:des)?conect)(?:a|ar|e|en|ala|arla)\b(?:\s+\S+){0,3}?\s+alarmas?\b"
+    r"|\b(?:encend|prend)(?:e|er|ela|erla)\b(?:\s+\S+){0,3}?\s+alarmas?\b")
+
+
+def forbidden_home_order(text: str) -> str | None:
+    """The kind of home order in ``text`` that voice control never executes, or ``None``.
+
+    Locks, doors and gates ("cerrar la puerta con llave", "abrir el portón")
+    and the alarm panel ("activar la alarma") are not controllable by voice at
+    all. A reminder that names one is only announced, and its read-back says
+    so (user answer Q9d, review T031-U2-RV4); T031-U5 refuses them as actions.
+
+    Args:
+        text: Reminder text or a spoken clause.
+
+    Returns:
+        ``"lock"`` or ``"alarm"``, or ``None`` when no such order is named.
+    """
+    folded = _fold(text)
+    if _LOCK_ORDER.search(folded):
+        return "lock"
+    if _ALARM_ORDER.search(folded):
+        return "alarm"
+    return None
 
 
 class VoiceRequestParser:

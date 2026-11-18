@@ -49,6 +49,7 @@ from src.core.voice_delivery import DeliveryState, GenerationState
 from src.core.task_outcome import (
     CURRENT_REQUEST_ID, DeliveryOutcome, DispatchState, EffectState, PersistenceState, ResponseRequirement, TaskOutcome, TaskStatus, TurnOutcome,
 )
+from src.home_assistant.control_policy import HomeActor
 from src.home_assistant.home_actions import HomeActionResult, HomeActionService
 from src.home_assistant.capability_service import HomeCapabilityService
 from src.home_assistant.ha_client import HAStatesSnapshot, STATE_OBSERVATION_TTL_S
@@ -57,7 +58,7 @@ from src.llm.generation_stream import GenerationStream, GuardedGeneration
 from src.llm.error_classifier import is_consent_withdrawn
 from src.memory.fact_ledger import MemorySource
 from src.memory.producer_scopes import ProducerScopes, current_producer_scope
-from src.nlu.command_grammar import WAKE_TERMS
+from src.nlu.command_grammar import ROOM_ALIASES, WAKE_TERMS, parse_command
 from src.nlu.household_intents import (
     LIST_CLEAR_VERBS,
     LIST_DELETE_VERBS,
@@ -74,10 +75,17 @@ from src.orchestrator.priority_queue import (
     PriorityRequestQueue
 )
 from src.reminders.reminder_manager import CancelMatch, CancelResolution
+from src.reminders.reminder_store import ReminderScope
 from src.timers.named_timers import NamedTimerManager
 from src.timers.voice_commands import TimerVoiceCommands
 from src.world.household_time import CLOCK_UNAVAILABLE, describe_clock, parse_clock_query
-from src.reminders.voice_request import period_hours
+from src.reminders.voice_request import (
+    ReminderAmbiguity,
+    VoiceReminderRequest,
+    VoiceRequestParser,
+    forbidden_home_order,
+    period_hours,
+)
 from src.world.weather import DEFAULT_ENTITY as DEFAULT_WEATHER_ENTITY
 
 logger = get_logger(__name__)
@@ -143,6 +151,51 @@ _UNCLAIMED_CANCEL_REPLY = "Si querés cancelar un recordatorio, decime: cancelá
 # "cancelá el recordatorio de X y el de Y": two reminders in one turn (review T032-U1-R7).
 _SECOND_REMINDER_RE = re.compile(r"\s+y\s+(?:el|la|los|las)\s+(?:recordatorios?\s+)?de\b")
 _ONE_AT_A_TIME = "Por voz cancelo de a un recordatorio. "
+# T031-U2: every clarification of a voice reminder asks for the whole request again (user answers Q7 single
+# turn, Q8 always ask); nothing is kept pending and nothing is written.
+_REMINDER_EXAMPLE = "recordame sacar la basura mañana a las 8 de la noche"
+_ALARM_EXAMPLE = "poné una alarma mañana a las 7 de la mañana"
+# Minutes said as minutes, a form both the reminder parser and R3a read as a clock time (review T031-U2-RV5).
+_REMINDER_MINUTES_EXAMPLE = "recordame a las 8 y 5 minutos de la noche sacar la basura"
+_ALARM_MINUTES_EXAMPLE = "poné una alarma a las 7 y 15 minutos de la mañana"
+_REMINDER_QUESTIONS = {
+    ReminderAmbiguity.MISSING_TEXT: "¿Qué querés que te recuerde? Decímelo completo, por ejemplo: {example}.",
+    ReminderAmbiguity.MISSING_TIME: "¿Para cuándo? Decímelo completo, con el día y la hora, por ejemplo: {example}.",
+    ReminderAmbiguity.AMBIGUOUS_DAY: ("No sé para qué día es. Decímelo completo nombrando el día, hoy, mañana o "
+                                      "el martes, por ejemplo: {example}."),
+    ReminderAmbiguity.AMBIGUOUS_MERIDIEM: ("¿Es de la mañana, de la tarde o de la noche? Decímelo completo con la "
+                                           "hora, por ejemplo: {example}."),
+    ReminderAmbiguity.PAST_TODAY: ("Esa hora de hoy ya pasó. Si es para mañana, decímelo completo con el día, "
+                                   "por ejemplo: {example}."),
+    ReminderAmbiguity.UNPARSEABLE: ("No entendí bien la fecha o la hora. Decímelo completo con un día y una hora "
+                                    "exacta, por ejemplo: {example}."),
+}
+# UNPARSEABLE details that have a more precise question (src.reminders.voice_request detail codes).
+_REMINDER_DETAIL_QUESTIONS = {
+    "unsupported_date": ("Por ahora programo recordatorios para hoy, mañana, pasado mañana, un día de la semana, "
+                         "todos los días o de lunes a viernes; no por fecha ni por mes. Decímelo completo así, "
+                         "por ejemplo: {example}."),
+    "ambiguous_minutes": ("No sé si ese número es parte de la hora o de lo que hay que recordar. Decímelo completo "
+                          "diciendo los minutos, por ejemplo: {minutes_example}."),
+    "multiple_times": "Escuché más de una hora. Decímelo completo con una sola, por ejemplo: {example}.",
+    "conflicting_times": "Escuché más de una hora. Decímelo completo con una sola, por ejemplo: {example}.",
+    "dst_gap": "Esa hora no existe ese día por el cambio de horario. Decímelo completo con otra hora.",
+    "dst_fold": "Esa hora se repite ese día por el cambio de horario. Decímelo completo con otra hora.",
+}
+_REMINDER_ROOM_QUESTION = ("Por ahora no elijo en qué habitación suena un recordatorio. Decímelo de nuevo sin "
+                           "nombrar la habitación.")
+_REMINDER_HEAD_QUESTION = "No entendí el recordatorio. Decímelo completo, por ejemplo: {example}."
+# The reminder text is a home command (a grammar intent, or a lock, door, gate or alarm order voice control never
+# executes, review T031-U2-RV4): it is only announced, never executed (T031-U2 text-only; T031-U5 adds actions;
+# user answer Q9d asks KZA to say aloud what it will not do).
+_REMINDER_NOTICE_ONLY = " Es solo un aviso: eso no lo hago yo."
+_REMINDER_CREATE_UNCERTAIN = ("No pude confirmar si el recordatorio quedó guardado. Preguntame qué recordatorios "
+                              "hay antes de pedirlo de nuevo.")
+_REMINDER_UNCLAIMED_CREATE = f"Para crear un recordatorio decímelo así, por ejemplo: {_REMINDER_EXAMPLE}."
+# A shared reminder an "alarma"/"despertador" with a clock time created (R3a): its text starts with the noun.
+_ALARM_TEXT_RE = re.compile(r"(?:alarmas?|despertador(?:es)?)\b")
+# A turn that names an alarm (review T031-U2-RV3), on accent-stripped lowercase text.
+_ALARM_NOUN_RE = re.compile(r"\b(?:alarmas?|despertador(?:es)?)\b")
 # The answer to a numbered reminder choice ("el primero", "la segunda", "el 2",
 # "uno"): one ordinal or number word, after an optional article and "número".
 _CHOICE_ORDINALS = {"primero": 1, "primera": 1, "primer": 1, "segundo": 2, "segunda": 2, "tercero": 3,
@@ -372,6 +425,11 @@ _NON_LIGHT_DOMAIN_NOUNS: dict[str, str] = {
 _CLIMATE_DOMAIN_NOUNS = frozenset(
     noun for noun, domain in _NON_LIGHT_DOMAIN_NOUNS.items() if domain == "climate"
 )
+
+
+def _alarm_noun(text: str) -> str:
+    """The alarm noun a turn used: "despertador" when said, else "alarma" (T031-U2)."""
+    return "despertador" if re.search(r"\bdespertador", _strip_accents(text.lower())) else "alarma"
 
 
 def _strip_accents(text: str) -> str:
@@ -852,6 +910,11 @@ class RequestDispatcher:
         # T037-U3-R1: the dispatch text still carries the wake pre-roll, often
         # heard as an alias; strip the same wake terms the rest of the NLU does.
         self._clock_wake_words = tuple(sorted(WAKE_TERMS | set(self.household_intents.settings.wake_words)))
+        # T031-U2: voice reminders are read on the household clock; a spoken room alias is found (and, until
+        # T031-U3 resolves it, asked again) rather than left in the reminder text.
+        self._reminder_requests = VoiceRequestParser(lambda: self.household_clock.now_local(),
+                                                     zone_aliases=tuple(ROOM_ALIASES),
+                                                     wake_words=self._clock_wake_words)
         self.hooks = hooks  # plan #3 OpenClaw — HookRegistry or None
         self._before_handler_warn_ms = before_handler_warn_ms
         # Voice-auth opcional (default OFF): exige speaker enrolado para ejecutar
@@ -1341,6 +1404,10 @@ class RequestDispatcher:
                 return self._household_refusal(PathType.FAST_REMINDER, "reminder",
                                                "Con los recordatorios puedo consultarlos o cancelarlos. ¿Cuál querés?",
                                                TaskStatus.NEEDS_INPUT)
+            if operation is HouseholdOperation.CREATE:
+                return await self._create_reminder_by_voice(household, text)
+            if household.reason == "clock_alarm":
+                return await self._clock_alarm_path(household, text, choice_key)
             return await self._fast_reminder_path(text, user_id, zone_id, operation=operation,
                                                   reference=household.complement, choice_key=choice_key)
         if family is HouseholdFamily.LIST:
@@ -1385,8 +1452,59 @@ class RequestDispatcher:
         """
         ring_zone = self.room_namespace.to_zone(origin_room) or self.timer_fallback_zone
         reply = await self._timers.execute(household.operation, household.complement, text=text, zone_id=ring_zone)
-        return DispatchResult(PathType.FAST_TIMER, Priority.HIGH, reply.outcome.task_completed, reply.response,
+        response = reply.response
+        if _ALARM_NOUN_RE.search(_strip_accents(text.lower())) and (
+                reply.no_match or household.operation is HouseholdOperation.QUERY):
+            response += await self._alarm_reminders_note(household.operation)
+        return DispatchResult(PathType.FAST_TIMER, Priority.HIGH, reply.outcome.task_completed, response,
                               intent="timer", outcome=reply.outcome)
+
+    async def _shared_alarm_reminders(self) -> tuple:
+        """The active shared reminders an "alarma"/"despertador" with a clock time created (R3a)."""
+        active = await self.reminder_manager.get_active(None, shared_only=True)
+        return tuple(r for r in active if _ALARM_TEXT_RE.match(_strip_accents(r.text.lower())))
+
+    async def _alarm_reminders_note(self, operation: HouseholdOperation) -> str:
+        """What a timer reply about an alarm adds on the alarms set for a clock time (review T031-U2-RV3).
+
+        An alarm with a clock time is a shared reminder (R3a), so a turn about
+        "la alarma" that the timers answer must not leave the impression that no
+        alarm exists. Nothing is cancelled from here: a command gets the words
+        that list the alarms by number (T030-U1-Q8, never picked by the time).
+
+        Returns:
+            " Hay 1 alarma: ..." with how to cancel it, or "" without alarm
+            reminders or when they cannot be read.
+        """
+        if not self.reminder_manager:
+            return ""
+        try:
+            alarms = await self._shared_alarm_reminders()
+        except Exception:
+            logger.warning("[Reminder] alarm reminders unreadable for a timer reply; not mentioned")
+            return ""
+        if not alarms:
+            return ""
+        times = [self.reminder_manager.spoken_schedule(r) for r in alarms[:3]]
+        listed = times[0] if len(times) == 1 else ", ".join(times[:-1]) + " y " + times[-1]
+        note = f" Hay 1 alarma: {listed}" if len(alarms) == 1 else f" Hay {len(alarms)} alarmas: {listed}"
+        logger.info("[Reminder] timer reply on an alarm mentions %d alarm reminders", len(alarms))
+        if operation is HouseholdOperation.QUERY:
+            return note + "."
+        hint = self._alarm_cancel_words(alarms[0])
+        if len(alarms) == 1:
+            return f"{note}; para cancelarla decí: cancelá la alarma {hint}."
+        return f"{note}; para cancelar una decí, por ejemplo: cancelá la alarma {hint}."
+
+    def _alarm_cancel_words(self, reminder) -> str:
+        """The clock words that name an alarm reminder in a cancel ("de las 7", "de la 1 y 30")."""
+        local = self.household_clock.to_local(reminder.trigger_at)
+        if (local.hour, local.minute) == (0, 0):
+            return "de la medianoche"
+        if (local.hour, local.minute) == (12, 0):
+            return "del mediodía"
+        words = "de la 1" if local.hour == 1 else f"de las {local.hour}"
+        return f"{words} y {local.minute}" if local.minute else words
 
     async def _fast_path(
         self,
@@ -1954,7 +2072,9 @@ class RequestDispatcher:
                                   operation: HouseholdOperation | None = None,
                                   reference: str | None = None,
                                   choice_key: tuple[str, str | None] | None = None) -> DispatchResult:
-        """Do not claim creation or cancellation without an operation receipt.
+        """Answer a reminder query or cancel; never claim a cancellation without its receipt.
+
+        A claimed creation goes to :meth:`_create_reminder_by_voice` instead.
 
         Args:
             operation: The P3-F2 classified operation of a claimed turn. It
@@ -2002,14 +2122,122 @@ class RequestDispatcher:
                 response = _UNCLAIMED_CANCEL_REPLY
                 outcome = TaskOutcome(TaskStatus.NEEDS_INPUT, persistence=PersistenceState.NOT_WRITTEN)
             else:
-                response = "Todavía no puedo crear ese recordatorio por voz. Necesito interpretar y confirmar la fecha y la hora."
-                outcome = TaskOutcome(TaskStatus.UNSUPPORTED, persistence=PersistenceState.NOT_WRITTEN)
+                # An unclaimed turn (no reminder verb at its head) is never read as a creation (T031-U2).
+                response = _REMINDER_UNCLAIMED_CREATE
+                outcome = TaskOutcome(TaskStatus.NEEDS_INPUT, persistence=PersistenceState.NOT_WRITTEN)
             return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, outcome.task_completed,
                                   response, intent="reminder", outcome=outcome)
         except Exception:
             logger.warning("Reminder command unavailable; no completion receipt")
             return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, "Hubo un error con el recordatorio",
                 intent="reminder", outcome=TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.UNCERTAIN))
+
+    async def _create_reminder_by_voice(self, household: HouseholdIntent, text: str) -> DispatchResult:
+        """Create one shared household reminder from a claimed turn (T031-U2).
+
+        The request is read by the T031-U1 parser on the household clock.
+        Anything it cannot schedule without guessing (missing text or time,
+        a day or a meridiem that reads two ways, a time already passed,
+        an unread date) and a spoken room (until T031-U3) answer NEEDS_INPUT
+        with a question that asks for the whole request again, and nothing is
+        written (single turn, user answers Q7/Q8). An "alarma"/"despertador"
+        with a clock time (R3a) is a reminder whose text starts with that noun.
+
+        The row is always ``user_id='household'``, scope shared and without
+        home actions (T031-U5 adds them), whatever acoustic label spoke.
+        Success is reported only from the store's committed insert; an
+        exception from the store is UNCERTAIN (the row may exist), and the
+        reply asks to check before repeating it.
+
+        Args:
+            household: The claimed REMINDER CREATE (rule R3 or R3a).
+            text: Dispatch text.
+        """
+        if not self.reminder_manager:
+            return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, "Recordatorios no configurados",
+                                  intent="reminder", outcome=TaskOutcome(TaskStatus.UNSUPPORTED))
+        alarm = household.rule == "R3a"
+        example = _ALARM_EXAMPLE if alarm else _REMINDER_EXAMPLE
+        minutes_example = _ALARM_MINUTES_EXAMPLE if alarm else _REMINDER_MINUTES_EXAMPLE
+        spoken = f"recordame {_alarm_noun(text)} {household.complement}" if alarm else text
+        try:
+            request = self._reminder_requests.parse_reminder(spoken)
+        except ValueError:
+            logger.warning("[Reminder] voice create refused: household clock unusable; nothing written")
+            return self._household_refusal(PathType.FAST_REMINDER, "reminder",
+                                           "No pude leer el reloj de la casa. No guardé nada.", TaskStatus.FAILED)
+        question = self._reminder_question(request, example, minutes_example)
+        if question is not None:
+            return self._household_refusal(PathType.FAST_REMINDER, "reminder", question, TaskStatus.NEEDS_INPUT)
+        try:
+            reminder = await self.reminder_manager.create(
+                HomeActor.household().subject, request.text, request.trigger_at, recurrence=request.recurrence,
+                ha_actions=None, scope=ReminderScope.SHARED)
+        except Exception:
+            logger.warning("[Reminder] voice create unconfirmed; no completion receipt")
+            return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, _REMINDER_CREATE_UNCERTAIN,
+                                  intent="reminder", outcome=TaskOutcome(TaskStatus.UNCERTAIN,
+                                                                         persistence=PersistenceState.UNCERTAIN))
+        response = f"Anotado: {reminder.text}, {self.reminder_manager.spoken_schedule(reminder)}."
+        if parse_command(reminder.text).intent is not None or forbidden_home_order(reminder.text) is not None:
+            response += _REMINDER_NOTICE_ONLY
+        logger.info("[Reminder] voice create committed id=%s recurrence=%s alarm=%s", reminder.id,
+                    reminder.recurrence, alarm)
+        return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, True, response, intent="reminder",
+                              outcome=TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
+                                                  effect=EffectState.OBSERVED, observation_scope="software_state"))
+
+    async def _clock_alarm_path(self, household: HouseholdIntent, text: str,
+                                choice_key: tuple[str, str | None] | None) -> DispatchResult:
+        """Cancel or list the alarms set for a clock time (user answer T030-U1-Q8, T031-U2).
+
+        An "alarma"/"despertador" with a clock time is a shared reminder whose
+        text starts with that noun (R3a). The spoken time never picks one
+        (user decision t032_design_20261118) and here it is the only thing
+        that names it, so a cancel always lists the alarms by number with
+        their times, even a single one, and cancels only the one the answer
+        names (T032-U1 numbered choice). A query lists them with their day
+        and time. Only shared reminders are read; timers are never touched.
+        """
+        if not self.reminder_manager:
+            return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, "Recordatorios no configurados",
+                                  intent="reminder", outcome=TaskOutcome(TaskStatus.UNSUPPORTED))
+        try:
+            alarms = await self._shared_alarm_reminders()
+            if household.operation is HouseholdOperation.CANCEL:
+                response = ("Hay " + self._open_reminder_choice(alarms, choice_key) if alarms
+                            else "No hay alarmas con hora guardadas. No cancelé nada.")
+                outcome = TaskOutcome(TaskStatus.NEEDS_INPUT, persistence=PersistenceState.NOT_WRITTEN)
+            else:
+                response = ("Alarmas guardadas: " + ". ".join(
+                    f"{r.text}, {self.reminder_manager.spoken_schedule(r)}" for r in alarms[:5]) + "."
+                            if alarms else "No hay alarmas con hora guardadas.")
+                outcome = TaskOutcome(TaskStatus.COMPLETED)
+        except Exception:
+            logger.warning("Reminder command unavailable; no completion receipt")
+            return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, "Hubo un error con el recordatorio",
+                intent="reminder", outcome=TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.UNCERTAIN))
+        logger.info("[Reminder] clock alarm %s: %d alarms", household.operation.value, len(alarms))
+        return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, outcome.task_completed, response,
+                              intent="reminder", outcome=outcome)
+
+    @staticmethod
+    def _reminder_question(request: VoiceReminderRequest | None, example: str,
+                           minutes_example: str = _REMINDER_MINUTES_EXAMPLE) -> str | None:
+        """The question that asks again for a voice reminder, or None when it can be created as heard."""
+        if request is None:
+            logger.info("[Reminder] voice create needs input: no reminder verb read")
+            return _REMINDER_HEAD_QUESTION.format(example=example)
+        if request.ambiguity is not None:
+            logger.info("[Reminder] voice create needs input: %s detail=%s", request.ambiguity.value, request.detail)
+            if request.ambiguity is ReminderAmbiguity.UNPARSEABLE and request.detail in _REMINDER_DETAIL_QUESTIONS:
+                return _REMINDER_DETAIL_QUESTIONS[request.detail].format(example=example,
+                                                                         minutes_example=minutes_example)
+            return _REMINDER_QUESTIONS[request.ambiguity].format(example=example)
+        if request.zone_phrase is not None:
+            logger.info("[Reminder] voice create needs input: room named")
+            return _REMINDER_ROOM_QUESTION
+        return None
 
     def _open_reminder_choice(self, candidates: tuple, choice_key: tuple[str, str | None] | None, *,
                               similar: bool = False, inexact: bool = False) -> str:

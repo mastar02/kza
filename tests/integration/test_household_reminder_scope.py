@@ -235,6 +235,72 @@ async def test_actual_factory_private_jobs_stay_silent_and_shared_jobs_deliver_o
                 ('confirmed', None)]
 
 
+async def test_actual_factory_voice_reminder_journey_create_list_restart_fire_once(tmp_path, monkeypatch):
+    """T031-U2: a reminder created by voice is a shared household row that survives a restart and fires once."""
+    import src.tts.piper_tts as output_module
+    import src.vectordb.chroma_sync as index_module
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(index_module, 'SentenceTransformer', lambda *a, **kw: OfflineEncoder())
+    backend = AudioBackend()
+    monkeypatch.setattr(output_module, 'sd', backend)
+    stt, tts, amp = OfflineSTT(), OfflineTTS(), MagicMock()
+    amp.audio_output_device = 7
+    factories = ApplicationFactories(stt=lambda _: stt, tts=lambda _: tts, preflight=lambda: None,
+        wake_detector=OfflineWake, amplifier=lambda **kw: amp)
+    transport = TaskTransport()
+    async with transport.serve() as url:
+        config, _ = configuration(tmp_path, url)
+        config['rooms'].update(enabled=True, living={'name': 'Living', 'mic_device_index': 0,
+            'capture_channel': 1, 'ma1260_zone': 1})
+        config['presence'] = {'enabled': False}
+        config['tts']['streaming']['default_output_zone'] = 'living'
+        config['reminders']['output_zone'] = 'living'
+        config['orchestrator']['enabled'] = True
+
+        async def command(graph, phrase):
+            stt.text = phrase
+            return await graph.pipeline.process_command(CommandEvent(
+                np.full(16000, .1, dtype=np.float32), room_id='living'))
+
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=factories)
+            await graph.pipeline.request_router._orchestrator.start()
+            asked = await command(graph, 'Nexa recordame regar las plantas')
+            assert asked['outcome']['status'] == 'needs_input' and not asked['task_completed']
+            created = await command(graph, 'Nexa recordame en 3 segundos regar las plantas')
+            assert created['task_completed'] and created['outcome']['persistence'] == 'committed'
+            assert created['response'].startswith('Anotado: regar las plantas, hoy a las ')
+            listed = await command(graph, 'Nexa qué recordatorios tengo')
+            assert 'regar las plantas' in listed['response']
+            rows = await graph.reminder_manager.get_active(None, shared_only=True)
+            assert [(r.user_id, r.scope, r.text, r.ha_actions, r.recurrence) for r in rows] == [
+                ('household', ReminderScope.SHARED, 'regar las plantas', None, None)]
+            created_id = rows[0].id
+        # Restart the real factory on the same stores: the row is there and fires exactly once.
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=factories)
+            store = graph.reminder_manager._store
+            assert (await store.get_by_id(created_id)).state is ReminderState.ACTIVE
+            before = len(tts.texts)
+            graph.voice_services.start_reminders()
+            try:
+                async with asyncio.timeout(15):
+                    while (await store.get_by_id(created_id)).state is not ReminderState.FIRED:
+                        await asyncio.sleep(.01)
+                await asyncio.sleep(.2)
+            finally:
+                await graph.voice_services.stop_reminders()
+            spoken = ' '.join(tts.texts[before:])
+            assert spoken.count('regar las plantas') == 1
+            fired = await store.get_by_id(created_id)
+            assert fired.fire_count == 1 and fired.scope is ReminderScope.SHARED
+            assert transport.sends == []
+            notices = await store._work.read(lambda db: [tuple(row) for row in db.execute(
+                "SELECT status FROM reminder_home_actions WHERE request_id LIKE 'notice:%'").fetchall()])
+            assert notices == [('confirmed',)]
+
+
 async def test_actual_factory_restart_after_three_days_gives_one_late_notice_and_no_home_actions(tmp_path, monkeypatch):
     """T034-U1: a restart after an outage announces each overdue shared reminder once, never its actions."""
     import src.tts.piper_tts as output_module
