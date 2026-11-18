@@ -16,6 +16,7 @@ from src.nlu.household_intents import (
     HouseholdOperation,
     classify_household_intent,
     starts_with_reminder_request,
+    strip_fillers,
 )
 from src.reminders.voice_request import parse_reminder_request
 from tests.mocks.c02_matrix import CLASSIFIER, C02Entry, effects
@@ -526,6 +527,43 @@ def test_fillers_a_paused_no_and_ya_after_a_cancel_verb(text, expected):
     assert _shape(intent) == expected
     if expected is not None and expected[1] is O.CANCEL:
         assert intent.complement == "de tomar agua"
+
+
+@pytest.mark.parametrize("text", [
+    "cancelá el recordatorio de tomar agua, dale", "cancelá el recordatorio de tomar agua dale",
+    "hola, cancelá el recordatorio de tomar agua", "porfa cancelá el recordatorio de tomar agua",
+    "cancelá el recordatorio de tomar agua, por favor, dale", "cancelá el recordatorio de tomar agua, dale, porfa",
+    "cancelá el recordatorio de tomar agua por favor porfa", "cancelá el recordatorio de tomar agua porfa por favor",
+    "por favor, cancelá el recordatorio de tomar agua",
+])
+def test_trailing_fillers_in_any_order(text):
+    """Review BFR-1: a trailing 'dale', 'porfa' or 'por favor', in any order, is not part of the complement."""
+    intent = classify_household_intent(text)
+    assert _shape(intent) == (F.REMINDER, O.CANCEL, "R1")
+    assert intent.complement == "de tomar agua"
+
+
+@pytest.mark.parametrize(("text", "kept"), [
+    ("Nexa, bueno, el segundo, dale", ("el", "segundo")), ("bue, el segundo", ("el", "segundo")),
+    ("hola, el segundo", ("el", "segundo")), ("porfa el segundo", ("el", "segundo")),
+    ("no, el segundo", ("el", "segundo")), ("Nexa, no. El segundo", ("el", "segundo")),
+    ("no el segundo", ("no", "el", "segundo")), ("el segundo, no", ("el", "segundo", "no")),
+    ("che oye ey podés el segundo por favor", ("el", "segundo")), ("el segundo porfa por favor dale", ("el", "segundo")),
+    ("dale", ()), ("", ()), ("el número dos", ("el", "numero", "dos")),
+    # At most six lead words are dropped.
+    ("dale dale dale dale dale dale el segundo", ("el", "segundo")),
+    ("dale dale dale dale dale dale dale el segundo", ("dale", "el", "segundo")),
+])
+def test_strip_fillers_is_the_shared_filler_rule(text, kept):
+    """Review BFR-1: the fillers the classifier ignores, as folded tokens."""
+    assert strip_fillers(text) == kept
+
+
+def test_strip_fillers_takes_configured_wake_words_and_extra_leads():
+    assert strip_fillers("jarvis, el segundo") == ("jarvis", "el", "segundo")
+    assert strip_fillers("Jarvis, el segundo", ["Jarvis"]) == ("el", "segundo")
+    assert strip_fillers("sí, borrá el segundo", extra_leads=frozenset({"si", "borra"})) == ("el", "segundo")
+    assert strip_fillers("sí, borrá el segundo") == ("si", "borra", "el", "segundo")
 
 
 @pytest.mark.parametrize("text", [
