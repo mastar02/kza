@@ -680,6 +680,23 @@ def test_tonight_counts_as_today_against_other_day_words():
     ("recordame en 30 segunditos mirar", MONDAY_10.timestamp() + 30, "mirar", "en 30 segunditos"),
     ("recordame comprar más o menos dos kilos a las 9 de la noche", local(2026, 11, 16, 21),
      "comprar más o menos dos kilos", "a las 9 de la noche"),
+    # T031-U2: "para" before a day word belongs to the day ("pagar la luz para mañana" read back without "para").
+    ("recordame pagar la luz para mañana a las 8 de la noche", local(2026, 11, 17, 20), "pagar la luz",
+     "para mañana a las 8 de la noche"),
+    ("recordame para mañana a las 8 de la noche pagar la luz", local(2026, 11, 17, 20), "pagar la luz",
+     "para mañana a las 8 de la noche"),
+    ("recordame pagar la luz para el miércoles a las 8 de la noche", local(2026, 11, 18, 20), "pagar la luz",
+     "para el miércoles a las 8 de la noche"),
+    ("recordame pagar la luz para pasado mañana a las 8 de la noche", local(2026, 11, 18, 20), "pagar la luz",
+     "para pasado mañana a las 8 de la noche"),
+    ("recordame pagar la luz para hoy a las 8 de la noche", local(2026, 11, 16, 20), "pagar la luz",
+     "para hoy a las 8 de la noche"),
+    ("recordame para el lunes que viene a las 9 de la mañana sacar turno", local(2026, 11, 23, 9), "sacar turno",
+     "para el lunes que viene a las 9 de la mañana"),
+    ("recordame comprar algo para la cena a las 8 de la noche", local(2026, 11, 16, 20),
+     "comprar algo para la cena", "a las 8 de la noche"),
+    ("recordame el regalo para mamá a las 8 de la noche", local(2026, 11, 16, 20), "el regalo para mamá",
+     "a las 8 de la noche"),
 ])
 def test_read_back_text_has_no_time_words(utterance, expected, text, time_phrase):
     result = parse(utterance)

@@ -525,6 +525,14 @@ def _scan(words: list[str]) -> _Scan:
         return end
 
     def day(i: int) -> int | None:
+        if words[i] == "para":
+            # "para mañana", "para el martes": the "para" belongs to the day, not the text (T031-U2).
+            found = _day_at(words, i + 1)
+            if found is None:
+                return None
+            kind, value, modifier, end = found
+            scan.days.append((kind, value, modifier))
+            return end
         if words[i] in ("de", "del") and i > 0 and scan.used[i - 1]:
             found = _day_at(words, i + 1, joined=True)
             if found is not None:
