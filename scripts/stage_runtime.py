@@ -4429,7 +4429,10 @@ def _validate_compaction_capability(root: Path, head: dict, source: dict, candid
         if pending["intent"].get("source_binding_id") != head["binding_id"] \
                 or pending["intent"].get("k_slot") != candidate["slot"]:
             return False
-        if verify_closed_binding(root, head["binding_id"]) != source:
+        # Row PA, R5-1: H's witness here is the pending log's own bound record (activate runs in the
+        # controller process, outside the worker's regressed_source_bound).
+        if verify_closed_binding(root, head["binding_id"],
+                                 regressed_source_sha256=pending["intent"].get("source_recovery_sha256")) != source:
             return False
         if not _compaction_authority_equivalent(root, source, candidate, record["evidence_map"],
                                                 compaction_source_roots(pending["intent"], source)):

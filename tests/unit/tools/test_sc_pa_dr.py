@@ -6,8 +6,9 @@ it with an immutable recovery record. A clean record is a closed witness, so a
 rollback or hotfix transition starts from that head (CR-2, PA-4). A record with
 operator-confirmed regressions is a witness only for the H of a log planned with
 ``--accept-regressed-source <12+ hex of its sha256>``: the plan digest and the
-intent bind the full sha256, and plan P1/P2, A1, W0/_h_intact, the snapshot (its
-recorded source_witness), the copy catalog and the journal derivation admit it
+intent bind the full sha256, and plan P1/P2, A1, A2's activate (its compaction
+capability), W0/_h_intact, the snapshot (its recorded source_witness), the copy
+catalog and the journal derivation admit it
 only with that value; never K', never another record.
 
 DR (mechanism.dry_run_shadow): adopt --dry-run copies the state only under the
@@ -41,7 +42,7 @@ from src.memory import state_journal_derivation as derivation
 from src.memory.state_snapshot import ClosedStateSnapshot, _json as snapshot_json, snapshot_closed_state
 from tests.mocks import compaction_world as cw
 from tests.mocks import launcher_rehearsal as rehearsal
-from tests.unit.tools.test_sc1b_release_plan import _post_r1_world, _refusal, clone, x4, x5  # noqa: F401
+from tests.unit.tools.test_sc1b_release_plan import _QUEUE, _post_r1_world, _refusal, clone, x4, x5  # noqa: F401
 from tests.unit.tools.test_sc4b_release_exits import SMOKE, _scaled, _tombstone, _world
 
 REPO = Path(__file__).resolve().parents[3]
@@ -100,9 +101,13 @@ def _retire(root: Path, compaction_id: str) -> dict:
     return compaction.compact_retire(root, compaction_id, scan=cw.no_units)
 
 
-def _accepted(x4: dict, x5: dict, tmp_path: Path) -> dict:
-    """The first transition V'd and retired: NEW (X5) serves K' (the accepted release)."""
-    world = _world(x4, x5, tmp_path)
+def _accepted(x4: dict, x5: dict, tmp_path: Path, *first: str) -> dict:
+    """The first transition V'd and retired: NEW (X5) serves K' (the accepted release).
+
+    ``first`` runs in H's first run (e.g. _QUEUE: queued audio rows whose paths K relocates, so a later
+    K's authority differs from its H's and activate takes its compaction-capability branch).
+    """
+    world = _world(x4, x5, tmp_path, *first)
     root = world["root"]
     assert _run_v(root, tmp_path, "v").code == 0
     assert _retire(root, world["id"])["phase"] == "complete"
@@ -233,6 +238,32 @@ def test_a_regressed_recovery_head_is_a_source_only_through_its_bound_sha256(x4,
              lambda: cw.plan(root, x5["archive"], "k4", accept_regressed_source=sha256[:12]))
     compaction_id = _transition(root, x5, tmp_path, "k4")
     assert _retire(root, compaction_id)["phase"] == "complete"
+
+
+def test_a_regressed_source_activates_a_k_whose_authority_differs_through_the_logs_bound_sha256(
+        x4, x5, tmp_path, monkeypatch):
+    """Row PA, R5-1, review SCPADR-R1: with queued audio rows K's authority differs from H's (relocated
+    queue paths), so A2's activate checks the compaction capability in the controller process, outside the
+    worker's regressed_source_bound. H's witness there is the pending log's own bound record: the
+    capability holds, K activates, V, retire, and K'' serves (it refused privacy_authority_stale)."""
+    world = _accepted(x4, x5, tmp_path, _QUEUE)
+    root = world["root"]
+    regressed = _regressed_head(world, tmp_path)
+    sha256, h_head = regressed["sha256"], regressed["head"]
+    checked = []
+    capability = stage._validate_compaction_capability
+
+    def recorded(root_, head, source, candidate):
+        result = capability(root_, head, source, candidate)
+        checked.append((head["binding_id"], candidate["slot"], result))
+        return result
+    monkeypatch.setattr(stage, "_validate_compaction_capability", recorded)
+    compaction_id = _transition(root, x5, tmp_path, "k2", accept_regressed_source=sha256[:12])
+    assert checked == [(h_head["binding_id"], "k2", True)]
+    assert stage.read_compaction_log(root, compaction_id)["intent"]["source_recovery_sha256"] == sha256
+    assert _retire(root, compaction_id)["phase"] == "complete"
+    assert stage.read_binding(root, _head(root)["binding_id"])["slot"] == "k2"
+    assert cw.serve(root, tmp_path, "k2-serves").code == 0
 
 
 def test_a_recovery_record_witnesses_only_the_head_it_closed(x4, x5, tmp_path):

@@ -1408,8 +1408,8 @@ local y fuera de Git). Nada instalado.
   igual al binding del head y `checks.regressed` vacío (sin regresión del
   ledger ni de familias append-only, sin `resurrected_*`, sin
   `state_changed_after_close`, sin ledger faltante). Lo usan
-  `verify_closed_binding` (plan P1/P2, A1, el worker, el catálogo de
-  copias), `_h_intact` y W0 (H después del start: el head de la intención,
+  `verify_closed_binding` (plan P1/P2, A1, la activación de K en A2, el
+  worker, el catálogo de copias), `_h_intact` y W0 (H después del start: el head de la intención,
   también a través del registro de vuelta de un abort a H), el snapshot
   (registra `source_witness`: `closure` con prueba y recibo, o `recovery`
   con el registro y su sha256) y la derivación del journal (exige que el
@@ -1423,9 +1423,13 @@ local y fuera de Git). Nada instalado.
   sha256 y las familias); un prefijo corto, ajeno o sobre un head limpio
   rechaza `runtime_admission_compaction_regressed_source_mismatch`; la marca
   es sólo del modo release. El digest del plan y la intención ligan el
-  sha256 completo (`intent.source_recovery_sha256`); el plan, A1 y W0 lo
-  pasan explícito, y el worker lo liga desde la intención
-  (`regressed_source_bound`) para el snapshot, el catálogo y la derivación.
+  sha256 completo (`intent.source_recovery_sha256`); el plan, A1, W0 y la
+  activación de K en A2 lo pasan explícito (la rama de compactación de
+  `activate`, que corre en el proceso del controlador cuando la autoridad
+  de K difiere de la de H, p. ej. con rutas de cola de audio reubicadas, lo
+  toma de la intención del log pendiente), y el worker lo liga desde la
+  intención (`regressed_source_bound`) para el snapshot, el catálogo y la
+  derivación.
 - **Sombra del dry-run.** `adopt --dry-run` copia el estado sólo bajo la
   concesión, en `<raíz>/admission/dry-run/<id aleatorio>/` (0700, mismo
   sistema de archivos que el estado), nunca en `$TMPDIR`, y la borra al
@@ -1438,7 +1442,8 @@ local y fuera de Git). Nada instalado.
 
 Tests: `tests/unit/tools/test_sc_pa_dr.py` (rollback desde un head de
 recuperación limpio; fuente regresada con plan, start, vuelta a H con W,
-otra transición y retiro; la transición siguiente sin la marca; la
+otra transición y retiro; la activación de K con filas de audio en cola,
+cuya autoridad difiere de la de H; la transición siguiente sin la marca; la
 derivación con un testigo cambiado; el dry-run cortado a mitad de la copia
 con `SIGKILL`, sin nada en `$TMPDIR`, borrado por la concesión siguiente
 aunque después rechace) y `tests/unit/tools/test_sc5b_docs.py`.
