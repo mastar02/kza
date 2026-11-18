@@ -1388,9 +1388,11 @@ def test_15_a_killed_adopt_dry_run_leaves_its_shadow_under_the_root_until_the_ne
             "modes": {"dry-run": oct(stat.S_IMODE(os.lstat(directory).st_mode)),
                       "shadow": oct(stat.S_IMODE(os.lstat(shadow).st_mode))},
             "files_copied": copied, "tmpdir_entries": sorted(path.name for path in tmpdir.iterdir()),
+            "file_modes": sorted({oct(stat.S_IMODE(os.lstat(shadow / "state" / name).st_mode)) for name in copied}),
             "head_unchanged": world.head() == killed}
     rec.result(killed_dry_run=left)
     assert left["shadow_name_is_32_hex"] and left["modes"] == {"dry-run": "0o700", "shadow": "0o700"}, left
+    assert left["file_modes"] == ["0o600"], left
     assert len(copied) == 2 and left["tmpdir_entries"] == [] and left["head_unchanged"], left
     # The kill wrote nothing else under the root: only the shadow is new.
     after = world.witness()
