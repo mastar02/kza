@@ -5,8 +5,9 @@ import time
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from enum import StrEnum
+from functools import lru_cache
 
 from src.reminders.reminder_store import ReminderStore, Reminder, ReminderScope
 from src.reminders.voice_request import spoken_day_at
@@ -33,6 +34,23 @@ _AM_PERIODS = frozenset({"manana", "madrugada"})
 _PM_PERIODS = frozenset({"tarde", "noche", "mediodia"})
 # "las 12 de la noche" is midnight and "las 2 de la noche" is 02:00, not 14:00.
 _NIGHT_EARLY_HOURS = frozenset({12, 1, 2, 3, 4})
+# T032-U1 fail-safe: temporal words that are never plain content words of a spoken cancel.
+# A clock, day or period phrase reads them; any one no phrase reads is text or any time.
+_PERIOD_WORDS = frozenset({"manana", "tarde", "noche", "madrugada"})
+_PERIOD_LEADS = frozenset({"a", "por", "en", "de", "para", "hasta", "desde", "toda"})
+_MINUTE_NUMBER_WORDS = frozenset({
+    "trece", "catorce", "quince", "dieciseis", "diecisiete", "dieciocho", "diecinueve", "veinte", "veintiun",
+    "veintiuno", "veintiuna", "veintidos", "veintitres", "veinticuatro", "veinticinco", "veintiseis",
+    "veintisiete", "veintiocho", "veintinueve", "treinta", "cuarenta", "cincuenta",
+})
+_TIME_VOCABULARY = frozenset({
+    "manana", "mananas", "tarde", "tardes", "noche", "noches", "madrugada", "madrugadas", "mediodia",
+    "medianoche", "hoy", "pasado", "proximo", "proxima", "lunes", "martes", "miercoles", "jueves", "viernes",
+    "sabado", "sabados", "domingo", "domingos", "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+    "agosto", "septiembre", "setiembre", "octubre", "noviembre", "diciembre",
+})
+# Connecting words that join temporal words into one unread run ("las 2 y 10 de la tarde").
+_TIME_GLUE = frozenset({"y", "de", "del", "la", "las", "a", "al", "el", "en", "hs", "horas", "hora", "por", "para"})
 # Weekday names a clarification speaks ("del miércoles"), Monday first.
 _SPOKEN_WEEKDAYS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
 # A leading relative clause names how the reminder was made, not what it says:
@@ -100,6 +118,29 @@ class _SpokenClock:
         return (hour, minute) in self.wall_times()
 
 
+def _in_period(period: str, hour: int) -> bool:
+    """Whether a household hour lies in a period said without a clock ("a la tarde").
+
+    Assistant default T032-U1-FS1 (over-asking acceptable): madrugada
+    00-05, mañana 00-11 (the morning of accepted default Q3), tarde
+    12-20, noche 20-05. The windows overlap (20:xx is tarde and noche),
+    so a doubt asks. A clock with its period keeps its own wall times
+    (accepted default Q2: "las 5 de la noche" is 17:00).
+    """
+    if period == "madrugada":
+        return hour < 6
+    if period == "manana":
+        return hour < 12
+    if period == "tarde":
+        return 12 <= hour <= 20
+    return period == "noche" and (hour >= 20 or hour < 6)
+
+
+def _periods_overlap(first: str, second: str) -> bool:
+    """Two periods of the day share an hour ("madrugada" and "noche")."""
+    return any(_in_period(first, hour) and _in_period(second, hour) for hour in range(24))
+
+
 def _clock_at(words: list[str], i: int) -> tuple[_SpokenClock, int, int] | None:
     """A clock time at token ``i``: the clock and the token span it covers.
 
@@ -156,6 +197,195 @@ class _SpokenDay:
         return day == today + timedelta(days=self.value)
 
 
+@dataclass(frozen=True)
+class _SpokenPeriod:
+    """Period of the day said without a clock ("a la tarde", "de noche", "esta noche").
+
+    Attributes:
+        name: "manana", "tarde", "noche" or "madrugada" (folded).
+        today: Said with "esta" ("esta tarde"): the period of today.
+    """
+
+    name: str
+    today: bool = False
+
+    def matches(self, when: datetime, today: date) -> bool:
+        """Whether a household trigger time lies in this period (see :func:`_in_period`)."""
+        return _in_period(self.name, when.hour) and (not self.today or when.date() == today)
+
+    @property
+    def words(self) -> frozenset[str]:
+        """The words a text holds when it says this period ("esta" and "tarde" for "esta tarde")."""
+        return frozenset({self.name, "esta"} if self.today else {self.name})
+
+
+def _is_number(word: str) -> bool:
+    """A number token: digits or a number word up to the minutes ("2", "dos", "veinte")."""
+    return word.isdecimal() or word in _HOUR_WORDS or word in _MINUTE_NUMBER_WORDS
+
+
+def _impossible_time(word: str, prev: str) -> bool:
+    """Digits no time can be: "8:75", or "las 25" (no hour, and a date is "el/del 25")."""
+    clock = _CLOCK_DIGITS.match(word)
+    if clock is not None and clock.group(2) is not None:
+        return int(clock.group(1)) > 23 or int(clock.group(2)) > 59
+    return word.isdecimal() and prev in ("la", "las") and int(word) > 23
+
+
+def _is_time_word(words: list[str], k: int) -> bool:
+    """Token ``k`` belongs to the temporal vocabulary (T032-U1 fail-safe).
+
+    Digits, number words, periods of the day, "mediodía"/"medianoche",
+    day words ("hoy", weekdays, "pasado", "próximo") and month names;
+    with their context only, "una" after "la(s)", "y/menos cuarto/media",
+    "menos" after a number, "en punto" and "que viene".
+    """
+    word = words[k]
+    prev = words[k - 1] if k > 0 else ""
+    if any(c.isdigit() for c in word):
+        return not _impossible_time(word, prev)
+    if word in _TIME_VOCABULARY:
+        return True
+    if word == "una":
+        return prev in ("la", "las")
+    if word in _HOUR_WORDS or word in _MINUTE_NUMBER_WORDS:
+        return True
+    if word in ("cuarto", "media"):
+        return prev in ("y", "menos")
+    if word == "menos":
+        return _is_number(prev)
+    if word == "punto":
+        return prev == "en"
+    return word == "viene" and prev == "que"
+
+
+@dataclass(frozen=True)
+class _Run:
+    """Temporal words no clock, day or period phrase reads ("las 2 y 10", "del 20", "mediodía").
+
+    Attributes:
+        span: The token span, without connecting words at its ends; a
+            clock, day or period phrase inside it is not read on its own.
+        number: The run is a single number, not after "el"/"del" ("tomar
+            10 gotas", "tomar las 2 pastillas"): in a reminder text it is a
+            number of the text (reviews R2, FV2-4), compared only as words.
+    """
+
+    span: range
+    number: bool
+
+
+@dataclass(frozen=True)
+class _Reading:
+    """Every time phrase of folded tokens, each with the token span it covers.
+
+    Attributes:
+        clocks: Clock phrases outside any unread run.
+        days: Day phrases outside any unread run.
+        periods: Periods said without a clock, outside any unread run
+            (a bare "de (la) mañana" is the morning, accepted default
+            T032-U1-Q3).
+        runs: Unread temporal words (T032-U1 fail-safe).
+    """
+
+    clocks: tuple[tuple[_SpokenClock, range], ...]
+    days: tuple[tuple[_SpokenDay, range], ...]
+    periods: tuple[tuple[_SpokenPeriod, range], ...]
+    runs: tuple[_Run, ...]
+
+    @property
+    def taken(self) -> set[int]:
+        """Indexes of the tokens inside any time phrase or unread run."""
+        spans = ([span for _, span in self.clocks] + [span for _, span in self.days]
+                 + [span for _, span in self.periods] + [run.span for run in self.runs])
+        return {k for span in spans for k in span}
+
+    @property
+    def unread_time(self) -> bool:
+        """Some unread run can be any time (not only a single number)."""
+        return any(not run.number for run in self.runs)
+
+
+def _read(words: list[str]) -> _Reading:
+    """Every clock time, day phrase, period and unread temporal word, left to right.
+
+    Each later phrase is read like the first (review T032-U1-PROP-1/2):
+    in "tomar pastillas a la una de las 2" both clocks are clocks, so each
+    can be the due time or words of the text, and neither becomes a plain
+    content word. A period said without a clock ("a la tarde", "de noche",
+    "esta noche", the bare "de mañana" of accepted default T032-U1-Q3) is
+    a period; right after a clock and "de", "mañana" is the day ("de las 9
+    de la noche de mañana").
+
+    Fail-safe (T032-U1): any temporal word no phrase reads ("las 2 y 10",
+    "las 3 menos cuarto", "del mediodía", "del 20", "el 20 de noviembre")
+    joins its neighbouring time words, through connecting words, into an
+    unread run; a phrase inside a run is not read on its own, since the
+    run may name another time ("las 2" of "las 2 y 10").
+    """
+    n = len(words)
+    clocks, clock_tokens, i = [], set(), 0
+    while i < n:
+        found = _clock_at(words, i)
+        if found is None:
+            i += 1
+            continue
+        clock, start, end = found
+        clocks.append((clock, range(start, end)))
+        clock_tokens.update(range(start, end))
+        i = end
+    clock_ends = {span.stop for _, span in clocks}
+    days, i = [], 0
+    while i < n:
+        joined = i - 1 in clock_ends and words[i - 1] == "de"
+        found = None if i in clock_tokens else spoken_day_at(words, i, joined=joined)
+        if found is None or clock_tokens & set(range(i, found[2])):
+            i += 1
+            continue
+        kind, value, end = found
+        days.append((_SpokenDay(kind, value), range(i, end)))
+        i = end
+    taken = clock_tokens | {k for _, span in days for k in span}
+    periods = []
+    for k, word in enumerate(words):
+        if word not in _PERIOD_WORDS or k in taken or k == 0 or k - 1 in taken:
+            continue
+        prev = words[k - 1]
+        if prev == "la":
+            start = k - 2 if k >= 2 and words[k - 2] in _PERIOD_LEADS and k - 2 not in taken else k - 1
+            period = _SpokenPeriod(word)
+        elif prev in ("esta", "de"):
+            start, period = k - 1, _SpokenPeriod(word, today=prev == "esta")
+        else:
+            continue
+        periods.append((period, range(start, k + 1)))
+        taken.update(range(start, k + 1))
+    seeds = {k for k in range(n) if k not in taken and _is_time_word(words, k)}
+    timeish = [k in taken or k in seeds or words[k] in _TIME_GLUE for k in range(n)]
+    runs, k = [], 0
+    while k < n:
+        if not timeish[k]:
+            k += 1
+            continue
+        end = k
+        while end < n and timeish[end]:
+            end += 1
+        if seeds & set(range(k, end)):
+            first, last = k, end
+            while first < last and first not in taken and first not in seeds:
+                first += 1
+            while last > first and last - 1 not in taken and last - 1 not in seeds:
+                last -= 1
+            number = last - first == 1 and _is_number(words[first]) and (first == 0 or words[first - 1] not in ("el", "del"))
+            runs.append(_Run(range(first, last), number))
+        k = end
+    in_runs = {k for run in runs for k in run.span}
+    return _Reading(tuple((c, s) for c, s in clocks if not in_runs & set(s)),
+                    tuple((d, s) for d, s in days if not in_runs & set(s)),
+                    tuple((p, s) for p, s in periods if not in_runs & set(s)),
+                    tuple(runs))
+
+
 def _without_relative_clause(words: list[str]) -> list[str]:
     """Drop a leading "que (te) pedí/puse/hay" ("que te pedí de tomar agua")."""
     if words[:1] != ["que"]:
@@ -169,35 +399,40 @@ class _ParsedQuery:
     """A spoken cancel complement split into content words and time phrases.
 
     Attributes:
-        words: Content words outside the clock, day and morning phrases.
+        words: Content words outside the time phrases and unread runs.
         clocks: Every spoken clock time, each with its phrase as spoken
             tokens ("la una", "las 2 de la tarde") for the literal reading.
         days: Every spoken day, each with its phrase from its day word
             ("mañana", "lunes" for "del lunes") for the literal reading.
-        morning: A bare "de (la) mañana" without a clock was said: the
-            morning (accepted default T032-U1-Q3) or the text's word.
+        periods: Every period said without a clock ("a la tarde", the
+            bare "de mañana" of accepted default T032-U1-Q3).
+        runs: Unread temporal words as spoken tokens ("las 2 y 10"): text
+            or any time (T032-U1 fail-safe).
     """
 
     words: tuple[frozenset[str], ...]
     clocks: tuple[tuple[_SpokenClock, tuple[str, ...]], ...] = ()
     days: tuple[tuple[_SpokenDay, tuple[str, ...]], ...] = ()
-    morning: bool = False
+    periods: tuple[_SpokenPeriod, ...] = ()
+    runs: tuple[tuple[str, ...], ...] = ()
 
 
 def _parse_query(query: str) -> _ParsedQuery:
-    """Content words and every clock time, day and bare morning of a spoken cancel complement."""
+    """Content words, every clock time, day and period, and the unread time words of a spoken cancel complement."""
     words = _without_relative_clause(_WORD.findall(_fold(query)))
-    spans = _spans(words)
+    reading = _read(words)
     days = []
-    for day, span in spans.days:
+    for day, span in reading.days:
         # "del lunes" is said of a text "el lunes" too: the day phrase starts at its day word.
         day_words = [words[k] for k in span]
         while day_words and day_words[0] in _QUERY_STOPWORDS:
             day_words.pop(0)
         days.append((day, tuple(day_words)))
-    clocks = tuple((clock, tuple(words[k] for k in span)) for clock, span in spans.clocks)
-    content = _content([w for k, w in enumerate(words) if k not in spans.taken])
-    return _ParsedQuery(content, clocks, tuple(days), bool(spans.mornings))
+    clocks = tuple((clock, tuple(words[k] for k in span)) for clock, span in reading.clocks)
+    runs = tuple(tuple(words[k] for k in run.span) for run in reading.runs)
+    taken = reading.taken
+    content = _content([w for k, w in enumerate(words) if k not in taken])
+    return _ParsedQuery(content, clocks, tuple(days), tuple(p for p, _ in reading.periods), runs)
 
 
 def _hour_of(word: str) -> int | None:
@@ -234,26 +469,23 @@ def _text_periods(text: list[str]) -> set[str]:
             if word == "mediodia" or (word in _AM_PERIODS | _PM_PERIODS and k > 0 and text[k - 1] == "la")}
 
 
-def _holds_same_clock(text: list[str], clock: _SpokenClock) -> bool:
+def _holds_same_clock(text: list[str], reading: _Reading, clock: _SpokenClock) -> bool:
     """A clock time of the text can be the spoken clock, however either is written.
 
-    Each clock of the text is read with the query's own grammar, so
-    "8:30", "8.30", "08:30" and "8 y media" are one clock (review
-    T032-U1-FV3-1), and both sides are compared as the wall times they
-    can mean, so "las 20" is "las 8 de la noche" and "las 2" is "las 14"
-    (review T032-U1-FV3-2). A text clock without a period of its own
-    takes the periods the text names elsewhere ("tomar pastillas a las 2
-    por la noche" is 02:00, not "las 2 de la tarde"); with none it is
-    either half of the day ("tomar pastillas a las 2" is said "... a las
-    2 de la tarde" too, review FV2-3).
+    Each read clock of the text (not one inside an unread run) is read
+    with the query's own grammar, so "8:30", "8.30", "08:30" and "8 y
+    media" are one clock (review T032-U1-FV3-1), and both sides are
+    compared as the wall times they can mean, so "las 20" is "las 8 de
+    la noche" and "las 2" is "las 14" (review T032-U1-FV3-2). A text
+    clock without a period of its own takes the periods the text names
+    elsewhere ("tomar pastillas a las 2 por la noche" is 02:00, not "las
+    2 de la tarde"); with none it is either half of the day ("tomar
+    pastillas a las 2" is said "... a las 2 de la tarde" too, review
+    FV2-3).
     """
     wanted = clock.wall_times()
     periods = _text_periods(text)
-    for i in range(len(text)):
-        found = _clock_at(text, i)
-        if found is None:
-            continue
-        own = found[0]
+    for own, _ in reading.clocks:
         if own.period is None and periods:
             means = frozenset().union(*(_SpokenClock(own.hour, own.minute, p).wall_times() for p in periods))
         else:
@@ -263,84 +495,33 @@ def _holds_same_clock(text: list[str], clock: _SpokenClock) -> bool:
     return False
 
 
-@dataclass(frozen=True)
-class _Spans:
-    """Every time phrase of folded tokens, each with the token span it covers."""
-
-    clocks: tuple[tuple[_SpokenClock, range], ...]
-    days: tuple[tuple[_SpokenDay, range], ...]
-    mornings: tuple[range, ...]
-
-    @property
-    def taken(self) -> set[int]:
-        """Indexes of the tokens inside any time phrase."""
-        spans = [span for _, span in self.clocks] + [span for _, span in self.days] + list(self.mornings)
-        return {k for span in spans for k in span}
+def _holds_same_day(reading: _Reading, day: _SpokenDay) -> bool:
+    """A read day of the text is the spoken day ("el lunes próximo" = "el próximo lunes")."""
+    return any(own == day for own, _ in reading.days)
 
 
-def _spans(words: list[str]) -> _Spans:
-    """Every clock time, day phrase and bare "de (la) mañana", left to right.
-
-    Each later phrase is read like the first (review T032-U1-PROP-1/2):
-    in "tomar pastillas a la una de las 2" both clocks are clocks, so each
-    can be the due time or words of the text, and neither becomes a plain
-    content word. A bare "de mañana" or "de la mañana" without a clock is
-    the morning (accepted default T032-U1-Q3); right after a clock and
-    "de" it is the day ("de las 9 de la noche de mañana").
-    """
-    clocks, clock_tokens, i = [], set(), 0
-    while i < len(words):
-        found = _clock_at(words, i)
-        if found is None:
-            i += 1
-            continue
-        clock, start, end = found
-        clocks.append((clock, range(start, end)))
-        clock_tokens.update(range(start, end))
-        i = end
-    # "de las 9 de la noche de mañana": "mañana" right after a time is the day.
-    clock_ends = {span.stop for _, span in clocks}
-    days, i = [], 0
-    while i < len(words):
-        joined = i - 1 in clock_ends and words[i - 1] == "de"
-        found = None if i in clock_tokens else spoken_day_at(words, i, joined=joined)
-        if found is None or clock_tokens & set(range(i, found[2])):
-            i += 1
-            continue
-        kind, value, end = found
-        days.append((_SpokenDay(kind, value), range(i, end)))
-        i = end
-    taken = clock_tokens | {k for _, span in days for k in span}
-    mornings = []
-    for k, word in enumerate(words):
-        if word != "manana" or k in taken:
-            continue
-        if k >= 1 and words[k - 1] == "de":
-            mornings.append(range(k - 1, k + 1))
-        elif k >= 2 and words[k - 2:k] == ["de", "la"]:
-            mornings.append(range(k - 2, k + 1))
-    return _Spans(tuple(clocks), tuple(days), tuple(mornings))
-
-
-def _time_spans(words: list[str]) -> set[int]:
-    """Indexes of every clock time and day phrase (not the bare morning)."""
-    spans = _spans(words)
-    return {k for _, span in spans.clocks for k in span} | {k for _, span in spans.days for k in span}
+def _holds_same_period(reading: _Reading, period: _SpokenPeriod) -> bool:
+    """A period the text says without a clock shares an hour with the spoken one."""
+    return any(not own.today and _periods_overlap(own.name, period.name) for own, _ in reading.periods)
 
 
 def _without_time_words(text: str) -> str | None:
-    """A reminder text without the clock and day words the resolver would read as times.
+    """A reminder text without the words the resolver would read as a time.
 
     "llamar a mamá a las 3" -> "llamar a mamá"; "llevar el auto al taller
-    mañana" -> "llevar el auto al taller". Articles and prepositions left
-    hanging at a cut are dropped. None when nothing is read as a time or
-    the folded and spoken tokens do not line up.
+    mañana" -> "llevar el auto al taller"; "tomar pastillas a las 2 y 10"
+    -> "tomar pastillas". Clock, day and period phrases go, and so do
+    unread time words, except a single number ("tomar 10 gotas", "tomar
+    las 2 pastillas"). Articles and prepositions left hanging at a cut are
+    dropped. None when nothing is read as a time or the folded and spoken
+    tokens do not line up.
     """
     spoken = _WORD.findall(unicodedata.normalize("NFC", text.lower()))
     folded = ["de"] + [_fold(word) for word in spoken]
     if folded[1:] != _WORD.findall(_fold(text)):
         return None
-    taken = _time_spans(folded)
+    reading = _read(folded)
+    taken = reading.taken - {k for run in reading.runs if run.number for k in run.span}
     if not taken:
         return None
     runs, run = [], []
@@ -359,6 +540,61 @@ def _without_time_words(text: str) -> str | None:
             run = run[:-1]
         kept.extend(word for word, _ in run)
     return " ".join(kept) or None
+
+
+@lru_cache(maxsize=4096)
+def _text_reading(text: str) -> tuple[tuple[str, ...], _Reading]:
+    """Folded tokens of a reminder text and their time reading."""
+    words = _WORD.findall(_fold(text))
+    return tuple(words), _read(words)
+
+
+def _reads_as(query: _ParsedQuery, text: list[str], reading: _Reading, local: datetime, today: date) -> bool:
+    """The reminder fits the reference with every unread time word read as text.
+
+    Every content word is a word of the text and every unread run is
+    contiguous words of it. Each clock, day and period phrase is the
+    trigger (clock by wall times, day by household date, period by its
+    hours, "esta tarde" today) or words of the text: the contiguous
+    phrase, the same clock or day as a read one of the text, the period
+    word (or a period of the text sharing an hour). A text's clock or
+    day inside an unread run of the text is only read as words.
+    """
+    if not _covers(_content(text), query.words):
+        return False
+    if not all(_contains_phrase(text, run) for run in query.runs):
+        return False
+    if not all(clock.matches(local.hour, local.minute) or _contains_phrase(text, phrase)
+               or _holds_same_clock(text, reading, clock) for clock, phrase in query.clocks):
+        return False
+    if not all(day.matches(local.date(), today) or _contains_phrase(text, phrase) or _holds_same_day(reading, day)
+               for day, phrase in query.days):
+        return False
+    return all(period.matches(local, today) or period.words <= set(text)
+               or (not period.today and _holds_same_period(reading, period)) for period in query.periods)
+
+
+def _may_mean(query: _ParsedQuery, text: list[str], reading: _Reading, local: datetime, today: date) -> bool:
+    """Some reading of the reference could mean this reminder (the fail-safe's wider set).
+
+    As :func:`_reads_as`, except that an unread run of the reference fits
+    any reminder whose text holds the content words (its words may be any
+    time), every phrase fits a text that has unread time words of its own
+    (they may be that time), and a period fits a text naming its word or
+    any period sharing an hour with it.
+    """
+    if not _covers(_content(text), query.words):
+        return False
+    if reading.unread_time:
+        return True
+    if not all(clock.matches(local.hour, local.minute) or _contains_phrase(text, phrase)
+               or _holds_same_clock(text, reading, clock) for clock, phrase in query.clocks):
+        return False
+    if not all(day.matches(local.date(), today) or _contains_phrase(text, phrase) or _holds_same_day(reading, day)
+               for day, phrase in query.days):
+        return False
+    return all(period.matches(local, today) or period.name in text or _holds_same_period(reading, period)
+               for period in query.periods)
 
 
 class CancelMatch(StrEnum):
@@ -493,7 +729,13 @@ class ReminderManager:
         a reminder is a candidate when its clock fits as due time or as
         text, and its day too, mixed or not; when the readings select
         different reminders, all are candidates and KZA asks
-        (T032-U1-RR-P1, review FV-1, FV2-1, PROP-1..3).
+        (T032-U1-RR-P1, review FV-1, FV2-1, PROP-1..3). A period said
+        without a clock ("a la tarde", "por la noche") is read like "de
+        mañana", by the hours of assistant default T032-U1-FS1. Fail-safe:
+        a temporal word no phrase reads, in the reference ("de las 2 y 10",
+        "del mediodía", "del 20") or in a text ("a las 3 menos cuarto"),
+        may be text or any time, so a reminder is cancelled only when it is
+        the single one any reading could mean.
         Several matches are always ambiguous, even when one reminder's words
         are exactly the reference's: another active reminder that contains
         every spoken word may be the one meant, so KZA asks rather than
@@ -518,7 +760,7 @@ class ReminderManager:
         if not active:
             return CancelResolution(CancelMatch.NONE_ACTIVE)
         query = _parse_query(reference)
-        if not query.words and not query.clocks and not query.days and not query.morning:
+        if not (query.words or query.clocks or query.days or query.periods or query.runs):
             return CancelResolution(CancelMatch.NO_REFERENCE, candidates=tuple(active))
         today = self._household_clock.local_date()
         # The time words may be the reminder's own text ("llamar a mamá a las
@@ -546,29 +788,34 @@ class ReminderManager:
         # only the first: "tomar pastillas a la una de las 2" fits "... a las
         # 2" due at 13:00 and "... a la una" due at 14:00 alike, so it asks
         # (review T032-U1-PROP-1/2). A bare "de mañana" is the morning
-        # (accepted default T032-U1-Q3): any trigger before noon, the half
-        # "de la mañana" and "de la madrugada" name, or the text's own word
-        # "mañana" (review T032-U1-PROP-3).
-        matches = []
+        # (accepted default T032-U1-Q3): any trigger before noon, or the
+        # text's own word "mañana" (review T032-U1-PROP-3); "a la tarde",
+        # "por la noche", "de noche", "esta noche" are periods the same way,
+        # by the windows of assistant default T032-U1-FS1 (_in_period).
+        #
+        # Fail-safe (T032-U1, round failsafe_1): a temporal word that no
+        # phrase reads, in the reference ("de las 2 y 10", "del mediodía",
+        # "del 20") or in a text ("tomar pastillas a las 3 menos cuarto"),
+        # may name text or any time. A reminder is cancelled only when it is
+        # the single one that fits with every such word read as text
+        # (_reads_as) and also the single one that any reading could mean
+        # (_may_mean); otherwise KZA asks among every reminder some reading
+        # could mean (Q1, RR-P1), and finds nothing only when none could.
+        strict, possible = [], []
         for reminder in active:
-            text = _WORD.findall(_fold(reminder.text))
-            if not _covers(_content(text), query.words):
-                continue
+            text, reading = _text_reading(reminder.text)
+            text = list(text)
             local = self._household_clock.to_local(reminder.trigger_at)
-            if not all(clock.matches(local.hour, local.minute) or _contains_phrase(text, phrase)
-                       or _holds_same_clock(text, clock) for clock, phrase in query.clocks):
-                continue
-            if not all(day.matches(local.date(), today) or _contains_phrase(text, phrase)
-                       for day, phrase in query.days):
-                continue
-            if query.morning and not (local.hour < 12 or "manana" in text):
-                continue
-            matches.append(reminder)
-        if not matches:
+            fits = _reads_as(query, text, reading, local, today)
+            if fits:
+                strict.append(reminder)
+            if fits or _may_mean(query, text, reading, local, today):
+                possible.append(reminder)
+        if not possible:
             return CancelResolution(CancelMatch.NOT_FOUND)
-        if len(matches) == 1:
-            return CancelResolution(CancelMatch.UNIQUE, matches[0])
-        return CancelResolution(CancelMatch.AMBIGUOUS, candidates=tuple(matches))
+        if strict and len(possible) == 1:
+            return CancelResolution(CancelMatch.UNIQUE, strict[0])
+        return CancelResolution(CancelMatch.AMBIGUOUS, candidates=tuple(possible))
 
     async def voice_references(self, user_id: str | None, candidates: tuple[Reminder, ...], *, with_time: bool,
                                shared_only: bool = False,
@@ -634,9 +881,10 @@ class ReminderManager:
             return bases
         spoken_time = self.spoken_time_reference(reminder)
         spoken_day = self.spoken_day_reference(reminder)
-        own = _spans(["de"] + _WORD.findall(_fold(reminder.text)))
-        timed = bases[::-1] if own.clocks else bases
-        dated = bases[::-1] if own.clocks or own.days else bases
+        own = _read(["de"] + _WORD.findall(_fold(reminder.text)))
+        clocked = bool(own.clocks) or own.unread_time
+        timed = bases[::-1] if clocked else bases
+        dated = bases[::-1] if clocked or own.days or own.periods else bases
         return ([f"{base} de {spoken_time}" for base in timed]
                 + [f"{base} de {spoken_time} {spoken_day}" for base in dated])
 

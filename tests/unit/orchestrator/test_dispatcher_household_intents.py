@@ -742,7 +742,13 @@ async def test_the_claimed_complement_drops_wake_words_and_politeness(leaves):
 
 
 async def test_a_number_in_the_reminder_text_never_cancels_another_reminder(leaves):
-    """Review T032-U1-R2: 'las 2 pastillas' is content, not 14:00."""
+    """Review T032-U1-R2: 'las 2 pastillas' never cancels 'tomar las pastillas' at 14:00.
+
+    T032-U1 fail-safe (round failsafe_1): the spoken "2" is a temporal word
+    no clock reads, so it may be the text or 14:00. Before, the literal
+    reminder was cancelled at once; now KZA asks which, cancels nothing,
+    and the proposed command (with the time) cancels exactly the literal one.
+    """
     from datetime import datetime, timedelta
     dispatcher = leaves.dispatcher()
     clock = leaves.reminder_manager._household_clock
@@ -754,7 +760,13 @@ async def test_a_number_in_the_reminder_text_never_cancels_another_reminder(leav
                                                    scope=ReminderScope.SHARED)
     other = await leaves.reminder_manager.create("household", "tomar las pastillas", at(14),
                                                  scope=ReminderScope.SHARED)
-    result, counted = await _cancel(leaves, "cancelá el recordatorio de tomar las 2 pastillas", dispatcher=dispatcher)
+    asked, counted = await _cancel(leaves, "cancelá el recordatorio de tomar las 2 pastillas", dispatcher=dispatcher)
+    assert counted == ZERO and asked.outcome.status.value == "needs_input"
+    example = "cancelá el recordatorio de tomar las 2 pastillas de las 9 de la mañana"
+    assert asked.response == ("Encontré 2: tomar las 2 pastillas a las 09:00 y tomar las pastillas a las 14:00. "
+                              f"Repetímelo con la hora, por ejemplo: {example}.")
+    assert {r.id for r in await leaves.reminder_manager.get_active(None, shared_only=True)} == {literal.id, other.id}
+    result, counted = await _cancel(leaves, example, dispatcher=dispatcher)
     assert counted == effects(reminder_transitions=1)
     assert result.response.startswith("Cancelé el recordatorio tomar las 2 pastillas a las 09:00")
     assert [r.id for r in await leaves.reminder_manager.get_active(None, shared_only=True)] == [other.id]
