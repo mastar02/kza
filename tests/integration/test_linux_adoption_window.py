@@ -93,8 +93,10 @@ REPO = Path(__file__).resolve().parents[2]
 WRAPPER = REPO / "tests" / "mocks" / "compiled_stage.py"
 TEMPLATE = REPO / "systemd" / "kza-voice.service.d" / "managed.conf.template"
 CONTAINER, LEGACY = fixture.C_SLOT, fixture.B_SLOT
-OLDER_SLOT = commands.LEGACY_OLDER_SLOT[0]  # production's 2026-10-28 slot (runtime + an older state copy)
-B_REPORTS = commands.LEGACY_SLOT_REPORTS  # beside the b0866e8 state
+OLDER_SLOT = "release_20261028T144002Z_2c5adb4"  # production's 2026-10-28 slot (runtime + an older state copy)
+B_REPORTS = ("activation-report.json", "live-report.json", "prepare-report.json")  # beside the b0866e8 state
+C63_COMMIT = "63ea8d319b50506cc37ba73df1e41c87a41054cf"  # the reviewed release commits (R1E-2)
+OLDER_COMMIT = "2c5adb4f3825e94bff86ef5ccff4e1391a1bc012"
 P1 = "u3b-0e-P1-D-rehearsal-0e4"
 WINDOW = "r1-window-rehearsal-0e4"
 P7 = "u3b-0e5-P7-B-rehearsal-0e4"
@@ -357,7 +359,7 @@ class Window:
         superseded = self.root / "slots" / fixture.C63_SLOT
         (superseded / "runtime").mkdir(parents=True)
         (superseded / "runtime" / "release.json").write_text(json.dumps(
-            {"git_commit": commands.LEGACY_SUPERSEDED_CONTAINER[1], "files": {}}))
+            {"git_commit": C63_COMMIT, "files": {}}))
         (superseded / "state").mkdir()
         for name in ("config", "data", ".env", "logs"):
             os.symlink(Path("..") / ".." / LEGACY / "state" / name, superseded / "state" / name)
@@ -368,7 +370,7 @@ class Window:
         older = self.root / "slots" / OLDER_SLOT
         for name in ("runtime", "state"):
             (older / name).mkdir(parents=True, mode=0o700)
-        (older / "runtime" / "release.json").write_text(json.dumps({"git_commit": commands.LEGACY_OLDER_SLOT[1],
+        (older / "runtime" / "release.json").write_text(json.dumps({"git_commit": OLDER_COMMIT,
                                                                      "files": {}}))
         for name in ("config", "data", ".env"):
             os.symlink(Path("..") / "state" / name, older / "runtime" / name)

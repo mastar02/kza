@@ -309,8 +309,8 @@ def test_t_a17_q5_retires_only_the_frozen_state_and_l4_refuses_with_the_record(w
         world.root / "backups" / C63 / "databases", world.root / "slots" / C63, world.root / "slots" / OLDER]]
     assert record["superseded_backups"]["databases"] == record["backups"]["databases"]
     assert record["slot_reports"] == {"names": list(REPORTS), "bytes": 3 * len(REPORT_BYTES)}
-    assert record["superseded_slots"][C63]["commit"] == commands.LEGACY_SUPERSEDED_CONTAINER[1]
-    assert record["superseded_slots"][OLDER]["commit"] == commands.LEGACY_OLDER_SLOT[1]
+    assert record["superseded_slots"][C63]["commit"] == C63_COMMIT
+    assert record["superseded_slots"][OLDER]["commit"] == OLDER_COMMIT
     assert record["superseded_slots"][C63]["files"] == 1 and record["superseded_slots"][C63]["links"] == 8
     assert record["superseded_slots"][OLDER]["files"] > 1
     assert record["backups"]["databases"] == plan["backups"]["databases"]
@@ -951,8 +951,11 @@ def test_a_later_run_accepts_what_an_older_version_left_group_writable(tmp_path,
 # --- R1E: the e9669ec container and production's other legacy entries (batch_g "R1 base", R1E-2) ----
 
 C63 = fixture.C63_SLOT
-OLDER = commands.LEGACY_OLDER_SLOT[0]
-REPORTS = commands.LEGACY_SLOT_REPORTS
+# The reviewed names and full commits, pinned here independently of scripts/adoption_commands.py.
+OLDER = "release_20261028T144002Z_2c5adb4"
+C63_COMMIT = "63ea8d319b50506cc37ba73df1e41c87a41054cf"
+OLDER_COMMIT = "2c5adb4f3825e94bff86ef5ccff4e1391a1bc012"
+REPORTS = ("activation-report.json", "live-report.json", "prepare-report.json")
 REPORT_BYTES = b'{"release_id": "x"}\n'
 INELIGIBLE = sorted([CONTAINER, LEGACY, C63, OLDER])
 
@@ -963,7 +966,7 @@ def superseded_container(world: World) -> Path:
     slot = world.root / "slots" / C63
     (slot / "runtime").mkdir(parents=True)
     (slot / "runtime" / "release.json").write_text(json.dumps(
-        {"git_commit": commands.LEGACY_SUPERSEDED_CONTAINER[1], "files": {}}))
+        {"git_commit": C63_COMMIT, "files": {}}))
     (slot / "state").mkdir()
     for name in ("config", "data", ".env", "logs"):
         os.symlink(Path("..") / ".." / LEGACY / "state" / name, slot / "state" / name)
@@ -980,7 +983,7 @@ def older_slot(world: World) -> Path:
     runtime, state = slot / "runtime", slot / "state"
     (runtime / "src").mkdir(parents=True)
     (runtime / "src" / "main.pyc").write_bytes(b"pyc")
-    (runtime / "release.json").write_text(json.dumps({"git_commit": commands.LEGACY_OLDER_SLOT[1], "files": {}}))
+    (runtime / "release.json").write_text(json.dumps({"git_commit": OLDER_COMMIT, "files": {}}))
     for name in ("config", "data", ".env"):
         os.symlink(Path("..") / "state" / name, runtime / name)
     for name in ("config", "data", "logs"):
@@ -1157,7 +1160,7 @@ def test_r1e2_a_superseded_slot_of_any_other_shape_refuses_before_any_deletion(w
     name = C63 if which == "c63" else OLDER
     slot = world.root / "slots" / name
     release = slot / "runtime" / "release.json"
-    commit = (commands.LEGACY_SUPERSEDED_CONTAINER if which == "c63" else commands.LEGACY_OLDER_SLOT)[1]
+    commit = C63_COMMIT if which == "c63" else OLDER_COMMIT
     if case == "slot_link":
         os.rename(slot, world.base / "slot-aside")
         os.symlink(world.base / "slot-aside", slot)
