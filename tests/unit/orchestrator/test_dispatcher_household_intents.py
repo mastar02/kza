@@ -2281,3 +2281,13 @@ async def test_a_filled_creation_question_asks_without_the_fillers(leaves):
     assert result.response == f"¿Qué querés que te recuerde? Decímelo completo, por ejemplo: {EXAMPLE}."
     assert (result.outcome.status.value, result.outcome.persistence.value) == ("needs_input", "not_written")
     assert leaves.effects(before) == ZERO
+
+
+async def test_a_configured_wake_word_before_the_filled_request_is_ignored(leaves):
+    """The creation strips the configured wake words with the other fillers, as the classifier that claimed it."""
+    classifier = HouseholdIntentClassifier(HouseholdIntentSettings.from_config({}, wake_words=["Jarvis"]))
+    dispatcher = leaves.dispatcher(household_intents=classifier)
+    _frozen_leaves(leaves, dispatcher, _monday_10())
+    result = await dispatcher.dispatch(user_id="unknown", text="Jarvis, bueno, recordame tomar agua a las 5 de la tarde")
+    assert (result.success, result.response) == (True, "Anotado: tomar agua, hoy a las 17:00.")
+    assert [row[2] for row in _rows(leaves.reminders_db)] == ["tomar agua"]
