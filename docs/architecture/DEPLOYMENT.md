@@ -38,10 +38,15 @@ instrucciones operativas.
 
 ## Release operativa instalada — 2026-10-29
 
-Está activo `release_20261029T174830709997Z_63ea8d3`, construido desde
-`63ea8d319b50506cc37ba73df1e41c87a41054cf`. La actualización del 29 de octubre
-ordena las muestras de Usuarios / Voces por fecha descendente y verifica la
-paginación. El operador publicó el artefacto compilado solicitado por el usuario;
+Está activo `release_20261029T185008966364Z_e9669ec`, construido desde
+`e9669ec1edb101ca6b190ef8df09314e1ac63562` y publicado el 2026-10-29 a las 15:50
+(-03) con `tools/publish_voice_loading.py` (registro
+`/home/kza/releases/deployments/voice-loading-e9669ec.json`). Mejora la carga de
+muestras de Voces sobre `release_20261029T174830709997Z_63ea8d3`, publicado
+ese mismo día a las 14:48, que ordena las muestras de Usuarios / Voces por fecha
+descendente y verifica la paginación. Ese slot anterior sigue en `slots/` con los
+mismos cinco enlaces; desde R1E (2026-11-18) no es destino de L4 (ver «Volver a
+b0866e8 o e9669ec»). El operador publicó el artefacto compilado solicitado por el usuario;
 `yo` conserva acceso de diagnóstico, sin shell operativa en `kza`.
 Esta instalación no acepta H6 ni cierra el roadmap. La última suite completa
 mantiene dos fallos conocidos. La observación posterior confirma captura en Hall
@@ -58,8 +63,9 @@ después del arranque requiere reiniciar el servicio. Detalle en
 [aceptación de la Cocina](../runbooks/2026-11-16-cocina-acceptance.md).
 
 - Runtime: `/home/kza/releases/current` apunta al subdirectorio `runtime` del
-  slot instalado. Se verificaron los 360 archivos del manifiesto, con 324 módulos
-  compilados y sin fuentes `.py`.
+  slot instalado. El 2026-11-18, sólo leyendo, se verificaron los 362 archivos de
+  su manifiesto (326 módulos compilados, sin fuentes `.py`); respecto de 63ea8d3
+  cambian sólo dos assets JS del dashboard y `.pyc` de `tools/`, ningún `src/*.pyc`.
 - Estado: `state`, hermano de `runtime`, es un contenedor privado cuyos enlaces
   conservan las rutas canónicas de configuración, datos, entorno, modelos y logs
   del slot `release_20261028T145442Z_b0866e8`. No se movieron ni reemplazaron datos:
@@ -76,8 +82,10 @@ después del arranque requiere reiniciar el servicio. Detalle en
 - Actualización: sólo cambió `WorkingDirectory` en el drop-in existente; el
   selector de código continúa siendo `PYTHONPATH=/home/kza/releases/current`.
   Se reinició únicamente voz. El proxy y la rotación de consola conservaron su
-  ejecución. Diez bases SQLite tienen respaldo consistente en
-  `releases/backups/release_20261029T174830709997Z_63ea8d3/`.
+  ejecución. Cada publicación del 2026-10-29 dejó un respaldo consistente de las
+  mismas diez bases SQLite del estado de b0866e8:
+  `releases/backups/release_20261029T174830709997Z_63ea8d3/` (14:48) y
+  `releases/backups/release_20261029T185008966364Z_e9669ec/` (15:50).
 - Prueba de Hall: el parámetro RAM `PP_MIN_NN=0.51` fue repuesto y verificado tras
   el arranque, con los demás parámetros estáticos iguales. La configuración
   persistente sigue en `0.4`; la mejora subjetiva continúa pendiente de comparar.
@@ -93,7 +101,7 @@ después del arranque requiere reiniciar el servicio. Detalle en
   `memory.js` heredados y el dashboard raíz `/index.html` (`dashboard.js`,
   `style.css`); Rutinas y Memoria quedan en NEXO. **La release instalada
   todavía sirve esos archivos** y los conserva hasta que una release los
-  sustituya. Ojo: la release instalada (slot activo 63ea8d3) no tiene
+  sustituya. Ojo: la release instalada (slot activo e9669ec) no tiene
   `legacy.html`; allí las vistas heredadas son `/home/` mismo (`home/index.html`
   con `home.js`, `home.css`, `routines.js`, `memory.js`) y la grilla raíz
   (`/index.html`, `dashboard.js`, `style.css`). En desarrollo, con
@@ -134,14 +142,15 @@ Ver [prueba de aislamiento y límites](../runbooks/2026-10-28-journald-usb-flood
 
 ## Construcción del artefacto
 
-Está preparada, aún sin instalar, la mejora de carga de muestras de Voces desde
-`e9669ec1edb101ca6b190ef8df09314e1ac63562`. Cambia únicamente dos assets de la
+La mejora de carga de muestras de Voces desde
+`e9669ec1edb101ca6b190ef8df09314e1ac63562` está instalada desde el 2026-10-29
+15:50 (ver «Release operativa instalada»). Cambia únicamente dos assets de la
 aplicación: hace visible el reproductor al seleccionar una muestra, muestra el
 progreso y conserva el audio seleccionado al repetir la selección. El diagnóstico
 por HTTPS desde el servidor midió 5–11 ms para ocho muestras; no reproduce la red
 ni Chrome en Windows del usuario. Ver la
 [evidencia y límites](../research/2026-10-29-voice-loading.json) y el
-[comando de publicación](../runbooks/2026-10-28-compiled-runtime.md#mejora-de-carga-de-muestras--preparada-2026-10-29).
+[comando de publicación](../runbooks/2026-10-28-compiled-runtime.md#mejora-de-carga-de-muestras--instalada-2026-10-29).
 
 La release liga el dashboard a `127.0.0.1:9500` detrás del proxy del proyecto.
 Todo endpoint HTTP/WS privado requiere `KZA_DASHBOARD_TOKEN`,
@@ -197,7 +206,7 @@ más antiguo de HEAD con ambos compañeros, derivado con git
 `KZA_SLOT_ROLLBACK_REVISION` sólo acepta revisiones con ese par.
 
 Consecuencia operativa: en cuanto exista un head gestionado, volver al slot de
-producción actual b0866e8 (o a 63ea8d3) queda rechazado; sólo una activación no
+producción b0866e8 (o a 63ea8d3 o e9669ec) queda rechazado; sólo una activación no
 gestionada, sin head ni autoridad, los acepta todavía. El rollback posterior
 debe apuntar a una release que incluya el par.
 
@@ -266,7 +275,7 @@ autocontenidas y la delegación a estados dueños se apaga. Desde SC-2
   todavía concede (`delegate` escribe `admission/delegations/` y mueve el
   head) y activa otro slot, que pasa a ser el head que corre `serve` (revisión
   AUTHZ3-1, con las copias de b0c322d~1 y a76fa97). Las releases legadas de
-  producción (b0866e8, 63ea8d3) no tienen `delegate`, pero tampoco comprueban
+  producción (b0866e8, 63ea8d3, e9669ec) no tienen `delegate`, pero tampoco comprueban
   la época. Por eso no se corre ningún `stage_runtime` que no sea
   `controller/current`, y SC-6a (PS-13) lista y borra o renombra todo
   archivo, árbol extraído y checkout construido desde ese rango, bajo `yo` y
@@ -688,9 +697,9 @@ La base de privacidad no es un destino de borrado. Ningún participante la nombr
 - la `privacy.db` de cada slot gestionado anterior, sea dueño o no;
 - los snapshots y estados derivados que registra el catálogo de copias (`admission/copies`, con `acknowledges_retained_copy_cleanup = false`);
 - copias que no son miembros del linaje gestionado, aunque algunas estén dentro de `/home/kza/releases`:
-  - el estado de producción anterior a la adopción, el del slot `release_20261028T145442Z_b0866e8`, al que enlaza el contenedor del slot 63ea8d3. Queda congelado como imagen de rollback (L4) y en él ya no corre la retención: audio ambiente, transcripciones, texto de eventos y recuerdos vencidos siguen ahí. Contiene además `data/audit.db` (si la auditoría estuvo activa) y la tabla heredada `events` de `data/events.db`, con transcripciones y texto personal, que no se llevaron al estado gestionado. Se retira desde DÍA 0 + 14 × 24 h, contado desde el primer cierre limpio gestionado (decisiones P7 = B y Q1 = A; plazo y responsable en «Retiro del estado congelado de b0866e8 (Q5, P7)»);
+  - el estado de producción anterior a la adopción, el del slot `release_20261028T145442Z_b0866e8`, al que enlazan los contenedores de los slots e9669ec (el que sirve hoy) y 63ea8d3. Queda congelado como imagen de rollback (L4) y en él ya no corre la retención: audio ambiente, transcripciones, texto de eventos y recuerdos vencidos siguen ahí. Contiene además `data/audit.db` (si la auditoría estuvo activa) y la tabla heredada `events` de `data/events.db`, con transcripciones y texto personal, que no se llevaron al estado gestionado. Se retira desde DÍA 0 + 14 × 24 h, contado desde el primer cierre limpio gestionado (decisiones P7 = B y Q1 = A; plazo y responsable en «Retiro del estado congelado de b0866e8 (Q5, P7)»);
   - el original anterior al 2026-10-28 en `/home/kza/kza` (`config`, `data`, `.env`). Está congelado y sin retención desde esa fecha, así que guarda más datos vencidos que la imagen anterior;
-  - las diez bases SQLite que el 2026-10-29 se copiaron de ese estado (`backups/release_20261029T174830709997Z_63ea8d3/databases/`). Se retiran en el mismo paso y con el mismo registro (Q2 = A);
+  - las veinte copias SQLite que el 2026-10-29 se tomaron de ese estado, diez por publicación. Las de `backups/release_20261029T185008966364Z_e9669ec/databases/` se retiran en el mismo paso y con el mismo registro (Q2 = A). Las de `backups/release_20261029T174830709997Z_63ea8d3/databases/` quedan como exclusión comprobada hasta que el usuario decida si Q2 = A también las cubre;
   - los demás respaldos de `/home/kza/releases/backups/`: `release.conf`, `config` y `.env` del respaldo del 2026-10-29, y el respaldo de `/home/kza/kza` (`release_20261028T144002Z_2c5adb4`). El retiro Q5 no los toca;
   - las métricas anteriores en `/home/kza/logs/` y los logs y la consola anteriores, que pueden contener texto. Los que viven dentro del estado de b0866e8 se van con él; los demás quedan;
   - cualquier snapshot del disco, y los respaldos que contengan los adaptadores LoRA retirados en la ventana por decisión P1 = D.
@@ -701,7 +710,7 @@ Al adoptar (U3b-0e), el registro de borrados se siembra con las marcas que ya ha
 
 Desde R1 (con U3b-0d4a), la comprobación de resurrección mira cada almacén mapeado por separado y detecta conversaciones, recuerdos y perfiles de voz restaurados. Para conversaciones, los almacenes mapeados son `utterances`, `capture_conversations`, `events_policy_v1`, `wake_clips_v1`, `conversation_turns_v1`, la metadata de Chroma, los JSON de contextos y los JSON/JSONL de colectores (`CONVERSATION_SOURCES` en `scripts/managed_launcher.py`). No detecta una conversación restaurada sólo en lo que `CONVERSATION_NOT_SCANNED` lista con su motivo: el audio de clips y de ambiente (se ve sólo por su fila), la procedencia de voz y de hechos, las sugerencias, los streams, el catálogo de diagnósticos y la cuarentena heredada; eso queda para U3b-0d4b. Los borrados de conversaciones siguen mostrándose «pendiente» hasta U3b-0d4b, porque tres inventarios todavía no tienen limpiador (P8 = A).
 
-Rollback no gestionado: hasta DÍA 0 + 14 × 24 h, contado desde el primer cierre limpio gestionado, sólo a 63ea8d3 con decisión registrada y la frase 'revivir datos borrados'. Después del retiro no hay rollback no gestionado: sólo se avanza con una release gestionada, y `/home/kza/kza` no es un destino de rollback (Q3 = A).
+Rollback no gestionado: hasta DÍA 0 + 14 × 24 h, contado desde el primer cierre limpio gestionado, sólo al contenedor de e9669ec con decisión registrada y la frase 'revivir datos borrados'. Después del retiro no hay rollback no gestionado: sólo se avanza con una release gestionada, y `/home/kza/kza` no es un destino de rollback (Q3 = A).
 
 Consecuencia: si una persona pide «olvidá mi voz» u «olvidá esto», su perfil de voz o su recuerdo desaparece del estado activo, pero sigue en cada slot anterior y en cada copia hasta que esa copia se destruya. Con la compactación (U3b-0c, desarrollada y no ejecutada; ver «Compactación de estados dueños (U3b-0c)»), esas copias se destruyen al compactar. Mientras tanto pueden ser hasta 5 slots anteriores si se compacta al llegar a 6 dueños. Desde SC-2 no se crean dueños nuevos; el modo release (pendiente) retirará el estado anterior en cada transición. El borrado de la compactación es sólo unlink: no sobrescribe. Las copias fuera de la raíz no las alcanza ningún mecanismo actual.
 
@@ -899,9 +908,12 @@ Además, en el modo release `--retire-prepare-leftovers` queda forzado, y
 cualquier entrada intacta bajo `slots/` rechaza
 (`runtime_admission_compaction_release_unproven_copy`, con las rutas y sin
 contenido), salvo los dos slots heredados que nombra el registro de adopción
-confirmado (el contenedor de 63ea8d3 y el slot de b0866e8; con dos registros
+confirmado (el contenedor de e9669ec y el slot de b0866e8; con dos registros
 confirmados, o uno cuyo nombre no es el digest de su head, no se exime
-nada). Un plan rechazado no escribe nada (fila P): arreglar la causa y
+nada). En producción hay dos slots legados más, `release_20261029T174830709997Z_63ea8d3`
+(sólo enlaces) y `release_20261028T144002Z_2c5adb4` (una copia completa
+anterior). El primer plan del modo release los rechaza hasta que una decisión
+registrada los retire o los exima (R1E, 2026-11-18; pendiente). Un plan rechazado no escribe nada (fila P): arreglar la causa y
 repetir, o habilitar y arrancar la unidad, que sirve H. Qué hacer con cada
 ruta rechazada: un `slots/.prepare-*` vacío (un `start` cortado entre crear
 el directorio de staging y escribir su registro) se quita con `rmdir` y se
@@ -1461,7 +1473,7 @@ tiene que caer dentro de los 14 días de L4 y el paso 0 del runbook tiene que
 dar `resurrected` en 0; si no se cumple alguna, esa parte se implementa
 antes. Una release gestionada copiará entero el head,
 verificará la copia con una corrida corta y retirará el estado anterior; nada
-de eso está disponible hoy. Mientras tanto, el único rollback es L4 a 63ea8d3
+de eso está disponible hoy. Mientras tanto, el único rollback es L4 al contenedor de e9669ec
 durante sus 14 días (con la frase 'revivir datos borrados'); a partir del día
 14 (retiro Q5) tampoco queda ese rollback.
 
@@ -1874,7 +1886,7 @@ de `/home/kza/kza/.venv` (controlador e hijo) y el directorio de modelos.
 El retiro Q5 del estado de b0866e8 los excluye y rechaza si su destino los
 contiene o está dentro de ellos (ver «Retiro del estado congelado de b0866e8»).
 
-Volver a b0866e8 o 63ea8d3 (L4 = A):
+Volver a b0866e8 o e9669ec (L4 = A):
 
 ```
 stage_runtime --root /home/kza/releases --offline uninstall-launcher \
@@ -1883,9 +1895,13 @@ stage_runtime --root /home/kza/releases --offline uninstall-launcher \
 ```
 
 - Requiere la unidad detenida y verifica el commit y el manifiesto del slot
-  legacy.
+  legacy. Sólo valen b0866e8 y e9669ec (`LEGACY_STATE_COMMIT` y
+  `LEGACY_CONTAINER_COMMIT` en `scripts/managed_launcher.py`). Cualquier otro
+  commit, incluido el contenedor anterior de 63ea8d3, rechaza
+  `runtime_admission_uninstall_legacy_commit` (R1E, decisión
+  `batch_g_questions_20261118`, «R1 base»).
 - Comprobación de enlaces (U3b-0e5): cada enlace directo del `runtime` y del
-  `state` del slot legacy (en 63ea8d3, los cinco del contenedor) tiene que
+  `state` del slot legacy (en e9669ec, los cinco del contenedor) tiene que
   resolver, salto por salto, a algo que existe, y `config` y `data` a
   directorios. Un enlace colgante, en bucle o faltante rechaza con
   `runtime_admission_uninstall_legacy_state` antes de tocar el directorio de
@@ -1959,7 +1975,7 @@ registradas):
 - DÍA 0 es el primer cierre limpio gestionado: el sello de cierre de W9 (el
   `ended_at` del registro de salida de esa corrida).
 - «Día 14» quiere decir DÍA 0 + 14 × 24 h, no un día de calendario. Hasta ese
-  momento vale L4 hacia 63ea8d3, con decisión registrada y la frase.
+  momento vale L4 hacia el contenedor de e9669ec, con decisión registrada y la frase.
 - Desde DÍA 0 + 14 × 24 h el operador corre el retiro. El comando rechaza
   `runtime_admission_legacy_retire_too_early` un segundo antes y
   `runtime_admission_legacy_retire_no_clean_close` si todavía no hubo un cierre
@@ -1972,11 +1988,12 @@ comandos:
 
 - `slots/release_20261028T145442Z_b0866e8/state`, tomado del registro de
   adopción;
-- las diez bases SQLite que la publicación del 2026-10-29 copió de ese estado:
-  `backups/release_20261029T174830709997Z_63ea8d3/databases/` (el nombre del
-  respaldo es el del slot 63ea8d3 del registro; ver `backup_databases` en
-  `tools/publish_voice_order.py`). El conjunto tiene que ser exactamente el
-  revisado:
+- las diez bases SQLite que la publicación de e9669ec (2026-10-29 15:50) copió
+  de ese estado: `backups/release_20261029T185008966364Z_e9669ec/databases/`
+  (el nombre del respaldo es el del contenedor del registro de adopción; ver
+  `backup_databases` en `tools/publish_voice_order.py`, que
+  `tools/publish_voice_loading.py` reutiliza). El conjunto tiene que ser
+  exactamente el revisado:
   - diez archivos regulares `.db` o `.sqlite3`, con cabecera SQLite;
   - cada uno con el mismo nombre relativo que una base del `data/` del estado
     congelado;
@@ -1988,8 +2005,12 @@ comandos:
 
 Qué queda:
 
-- el contenedor de 63ea8d3 (sólo enlaces, que quedan colgando) y el runtime de
+- el contenedor de e9669ec (sólo enlaces, que quedan colgando) y el runtime de
   b0866e8;
+- las otras diez copias del mismo estado, de la publicación de las 14:48:
+  `backups/release_20261029T174830709997Z_63ea8d3/databases/`. Son una
+  exclusión comprobada (`backups_kept`); retirarlas también ensancha Q2 = A y
+  requiere confirmación del usuario;
 - `release.conf`, `config` y `.env` del mismo respaldo del 2026-10-29;
 - los demás respaldos de `backups/`;
 - `/home/kza/kza`, con sus modelos y su `.venv`.
@@ -2000,6 +2021,19 @@ dentro de alguno (también a través de un enlace), rechaza
 `legacy_checkout`, `backups_kept`, `r1_slot`, `head_slot`, `controller`,
 `current` o `head_state`.
 
+Pendiente antes del día 14 (R1E, 2026-11-18). En producción hoy la corrida de
+prueba rechaza sin borrar nada, por dos hechos que el ensayo T-A17 no tiene y
+que necesitan una decisión del usuario:
+
+- el contenedor anterior `release_20261029T174830709997Z_63ea8d3` conserva sus
+  cinco enlaces, cuatro de ellos al estado de b0866e8. El retiro los lee como
+  referencias vivas y rechaza
+  `runtime_admission_legacy_retire_referenced:link:slots/release_20261029T174830709997Z_63ea8d3`
+  (fijado tal cual en `test_r1e_the_superseded_container_links_stop_q5_as_found`);
+- el slot de b0866e8 tiene `activation-report.json`, `live-report.json` y
+  `prepare-report.json` junto a `runtime/` y `state/`, y el retiro rechaza
+  `runtime_admission_legacy_retire_slot_unexpected`.
+
 Cómo se corre (bajo `kza`, nunca como root), en una sesión nueva y con el
 controlador instalado, como W4 (el `$ST` extraído de la ventana ya no existe;
 re-revisión RR-1):
@@ -2007,9 +2041,9 @@ re-revisión RR-1):
 ```bash
 PY=/home/kza/kza/.venv/bin/python
 ST="$PY -I -B /home/kza/releases/controller/current/scripts/stage_runtime.pyc --root /home/kza/releases --offline"
-$ST retire-legacy-state --decision <id P7> --container-slot release_20261029T174830709997Z_63ea8d3 --dry-run
+$ST retire-legacy-state --decision <id P7> --container-slot release_20261029T185008966364Z_e9669ec --dry-run
 systemctl --user stop kza-voice.service
-$ST retire-legacy-state --decision <id P7> --container-slot release_20261029T174830709997Z_63ea8d3 --confirm <plan_sha256>
+$ST retire-legacy-state --decision <id P7> --container-slot release_20261029T185008966364Z_e9669ec --confirm <plan_sha256>
 systemctl --user start kza-voice.service
 ```
 
@@ -2028,7 +2062,7 @@ systemctl --user start kza-voice.service
   congelado, y sus datos de ese período necesitan una decisión nueva del
   usuario.
 - Rechaza `runtime_admission_legacy_retire_referenced:<qué>` si algo todavía
-  apunta a los slots de b0866e8 o 63ea8d3 o a las bases del respaldo:
+  apunta a los slots de b0866e8 o e9669ec o a las bases del respaldo:
   - un enlace bajo la raíz (`current` y `controller/current` incluidos);
   - un registro de `admission/` fuera de los históricos (`adoption/`,
     `launcher/` y los propios del retiro);
@@ -2054,7 +2088,7 @@ systemctl --user start kza-voice.service
 Después del retiro **no hay rollback no gestionado** (decisión Q3 = A):
 
 - el estado de b0866e8 y sus copias SQLite del 2026-10-29 ya no existen, y los
-  enlaces del slot 63ea8d3 cuelgan;
+  enlaces de los slots e9669ec y 63ea8d3 cuelgan;
 - `uninstall-launcher` rechaza los dos slots con
   `runtime_admission_uninstall_legacy_retired` y el nombre del registro;
 - **`/home/kza/kza` no es un destino de rollback.** No es un slot, ninguna
@@ -2129,7 +2163,7 @@ Límites que siguen valiendo (decisiones P5 = C y Q4):
   positiva: `backups/` (salvo los snapshots que el controlador catalogó; los
   respaldos del 2026-10-29 y el resto quedan intactos), `logs/`,
   `deployments/`, `dashboard-proxy/`, `controller/`, archivos de release, el
-  contenedor de enlaces de 63ea8d3, el slot de b0866e8 (lo retira Q5), slots
+  contenedor de enlaces de e9669ec, el slot de b0866e8 (lo retira Q5), slots
   con entradas hechas a mano y restos `.prepare-*` sin registro. Una copia
   del catálogo fuera de la raíz impide compactar mientras exista; borrarla o
   no es decisión del usuario.

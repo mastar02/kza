@@ -592,7 +592,7 @@ dashboard raíz (`/index.html`, `dashboard.js`, `style.css`), el enlace
 "Micrófonos y diagnóstico" y `#additional-tools`. Con `dashboard.home.enabled`
 falso, `/` responde 404 con una página que nombra esa opción. Evidencia en
 `data/autonomous-roadmap-20261102/t040-t041/u4-evidence.json`. La release
-instalada (slot activo 63ea8d3) no tiene `legacy.html`: sus vistas heredadas son
+instalada (slot activo e9669ec desde el 2026-10-29 15:50) no tiene `legacy.html`: sus vistas heredadas son
 `/home/` y la grilla raíz `/index.html`, y las conserva hasta la próxima release.
 Revisión independiente: `u4-independent-review.json` (accept_with_changes). Abierto:
 F3, los controles de una entidad se deshabilitan un instante porque la observación
@@ -761,7 +761,7 @@ U3b-0e: adopción del estado de producción como primer estado gestionado.
   - los LoRA se retiran en la ventana;
   - `audit.db` y la tabla `events` vieja no se llevan, y la auditoría queda apagada en R1;
   - los borrados a medias quedan anotados como pendientes;
-  - la vuelta atrás es a 63ea8d3; sin frase solo antes de la primera corrida gestionada;
+  - la vuelta atrás es al runtime que sirve hoy (63ea8d3 según P5; desde R1E, 2026-11-18, el contenedor de e9669ec); sin frase solo antes de la primera corrida gestionada;
   - la copia vieja se retira 14 días después del primer cierre limpio;
   - los limpiadores faltantes van después de R1 (0d4b).
 - Orden: 0d4a → 0e1 → 0e2 → 0e3 → 0e4 (Linux) → 0e5 (Q5 + chequeo del destino de vuelta, antes de agendar R1).
@@ -884,7 +884,7 @@ Siguiente:
 - Medir el tiempo de compactación una vez sobre una copia del estado de producción antes de la primera corrida real (recomendado por la revisión), y en la ventana de R1 leer `units.templates_scanned` y `units.tolerated_unresolved` del `compact plan` real.
 
 `U3b-0e5` (rama `u3b-0e5`, sobre la cabeza de 0e3): preparación de P7.
-- `retire-legacy-state` (Q5) borra el estado congelado de b0866e8 y sus diez copias SQLite del 2026-10-29 (`backups/<63ea8d3>/databases`, Q2 = A), y saca 63ea8d3 y b0866e8 de L4 con un registro inmutable. Se escribe una intención antes del primer borrado, para que un corte se complete repitiendo el comando. Rechaza si L4 se usó desde la adopción.
+- `retire-legacy-state` (Q5) borra el estado congelado de b0866e8 y sus diez copias SQLite del 2026-10-29 (`backups/<contenedor>/databases`, Q2 = A; desde R1E el contenedor es e9669ec), y saca el contenedor y b0866e8 de L4 con un registro inmutable. Se escribe una intención antes del primer borrado, para que un corte se complete repitiendo el comando. Rechaza si L4 se usó desde la adopción.
 - `_verify_legacy_slot` resuelve cada enlace del destino de rollback. La usan `uninstall-launcher` y los dos `adoption-abort`.
 - DEPLOYMENT: hueco de privacidad acotado a los almacenes mapeados (0d4a F1), sección del retiro Q5 y la época 2 del controlador (0e3 F14).
 - **Plazo P7, con responsable**: DÍA 0 es el sello de cierre de W9. L4 vale hasta DÍA 0 + 14 × 24 h, y desde ese momento corre el retiro (Q1 = A: «día 14» son 14 × 24 h). Responsable: el usuario, como operador de `kza`, con la autorización ya registrada (P7 = B y `u3b_0e5_retirement`). Fecha exacta: se anota aquí en W10 (todavía no hay ventana). Después no hay rollback no gestionado, y `/home/kza/kza` no es un destino de rollback (Q3 = A).
@@ -1968,6 +1968,35 @@ unidad SC-5b. Evidencia: `t040-t041/sc5b-evidence.json` (local).
   `slots/<K>/`. Mutantes: 34 de 34 muertos (los 15 de la revisión, 5 de la
   compuerta, un control y 13 de los arreglos). Detalle en la evidencia
   (`review_round_2`).
+
+## R1E — R1 adopta el contenedor de e9669ec (2026-11-18)
+
+Decisión del usuario `batch_g_questions_20261118`, «R1 base»: producción
+sirve `release_20261029T185008966364Z_e9669ec` desde el 2026-10-29
+15:50, no `release_20261029T174830709997Z_63ea8d3`. R1 se adapta a e9669ec y
+reemplaza la premisa de P5.
+
+- Código (rama `r1e` desde 357dcb5, unida a la línea de recovery):
+  - `LEGACY_STATE_COMMIT = "b0866e8"` y `LEGACY_CONTAINER_COMMIT = "e9669ec"`.
+    L4 y los dos aborts rechazan cualquier otro commit, también 63ea8d3
+    (`runtime_admission_uninstall_legacy_commit`).
+  - La corrida de prueba, W2 y W4 rechazan un contenedor que no sea la release
+    de e9669ec (`runtime_admission_adoption_container_commit`).
+  - W-abort-1 corre la comprobación del destino de rollback sobre todo
+    `current` no gestionado, en vez de saltarla si el commit no estaba en la
+    lista.
+- Runbook de R1 y DEPLOYMENT: `C` es el slot de e9669ec (ventana y día 14) y
+  el alcance del día 14 quedó escrito.
+- Pendiente de decisión del usuario, antes del día 14 (sin ella el retiro Q5
+  rechaza sin borrar nada):
+  - si Q2 = A cubre también las diez copias de las 14:48 en
+    `backups/release_20261029T174830709997Z_63ea8d3/databases`;
+  - qué hacer con el slot de 63ea8d3, cuyos enlaces bloquean Q5;
+  - qué hacer con los tres `*-report.json` del slot de b0866e8.
+- Antes de R2 hay que decidir también los slots 63ea8d3 y 2c5adb4: el primer
+  plan del modo release los rechaza (`release_unproven_copy`).
+- Evidencia: `data/autonomous-roadmap-20261102/r1e/` (recon y
+  `evidence.json`).
 
 ## Prompt para la sesión nueva
 
