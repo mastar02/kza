@@ -381,11 +381,13 @@ _ALARM_NOUNS = frozenset({"alarma", "alarmas", "despertador", "despertadores"})
 _SECURITY_ALARM_NOUNS = frozenset({"alarma", "alarmas"})
 # User answer T030-U1-Q8 (A, 2026-11-17): an alarm named with a clock time ("la alarma de las 7") was created as
 # a reminder (R3a, T031-U2), so its cancel and its query reach the reminders; without a clock time an alarm stays
-# a timer. "de las 7 minutos" is a duration, not a clock time.
+# a timer. "de las 7 minutos" is a duration, not a clock time; "de las 10 horas" is a clock time (review
+# T031-U2-RV2: an article before the hour names the hour of the day).
+_ALARM_HOUR = (r"(?:\d{1,2}(?:[:.]\d{2})?|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece"
+               r"|catorce|quince|dieciseis|diecisiete|dieciocho|diecinueve|veinte|veintiuna|veintiuno|veintidos"
+               r"|veintitres)")
 _ALARM_CLOCK = re.compile(
-    r"\b(?:de|a|para) (?:la|las) (?:\d{1,2}(?:[:.]\d{2})?|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once"
-    r"|doce|trece|catorce|quince|dieciseis|diecisiete|dieciocho|diecinueve|veinte|veintiuna|veintiuno|veintidos"
-    r"|veintitres)\b(?! (?:segundos?|minutos?|mins?|horas?)\b)"
+    rf"\b(?:de|a|para) (?:la|las) {_ALARM_HOUR}\b(?! (?:segundos?|minutos?|mins?)\b)"
     r"|\b(?:del|al|de la|a la|para el|para la) (?:mediodia|medianoche)\b")
 _SECURITY_ALARM_VERBS = frozenset({"activa", "active", "activar", "desactiva", "desactive", "desactivar", "arma",
                                    "arme", "armar", "desarma", "desarme", "desarmar"})
@@ -420,6 +422,10 @@ _DURATION = re.compile(rf"\b{_NUMBER}(?: y \w+)? (?:de )?(?:segundos?|minutos?|m
                        r"|\bhora y (?:media|cuarto)\b|\bminuto y medio\b")
 _CLOCK = re.compile(r"\b(?:a|para) (?:las? )?(?:\d{1,2}(?:[:.]\d{2})?|una|dos|tres|cuatro|cinco|seis|siete|ocho"
                     r"|nueve|diez|once|doce|mediodia|medianoche)\b")
+# Review T031-U2-RV2: "a las 19 horas", "para las 8 hs" and "de las 7 horas de la mañana" name an hour of the
+# day (the article before the number), not a duration; R3a reads them before its duration check. "de 19 horas"
+# (no article) stays a duration.
+_ARTICLE_CLOCK_UNIT = re.compile(rf"\b(?:a|para|de) (?:la|las) {_ALARM_HOUR} (?:h|hs|hrs|horas?)\b")
 _INTERCOM_TARGET = re.compile(
     r"\b(?:en|a|por) (?:el |la |los |las |toda la |todas las )?(?:casa|todos|parlantes|"
     + "|".join(re.escape(alias) for alias in sorted(ROOM_ALIASES)) + r")\b")
@@ -690,6 +696,9 @@ def _r3a(utt: _Utterance) -> HouseholdIntent | None:
         verb = found.form
     rest = " ".join(utt.folded[k + 1:])
     complement = _rest(utt, k + 1)
+    if _ARTICLE_CLOCK_UNIT.search(rest):
+        return HouseholdIntent(HouseholdFamily.REMINDER, HouseholdOperation.CREATE, "R3a", complement, verb,
+                               reason="clock_time")
     if _DURATION.search(rest):
         return HouseholdIntent(HouseholdFamily.TIMER, HouseholdOperation.CREATE, "R3a", complement, verb,
                                reason="duration")

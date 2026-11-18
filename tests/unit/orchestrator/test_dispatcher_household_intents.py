@@ -189,6 +189,8 @@ C02_DISPATCHER = tuple(_REMINDER_GRID) + (
            "wrong_family", "R3a: an alarm with a clock time is a shared reminder, never a timer"),
           ("C02-ALM-0204", "poné un despertador mañana a las 7 de la mañana", "household_clock_tomorrow_at_1000",
            None, "wrong_family", "R3a with 'despertador'"),
+          ("C02-ALM-0213", "poné una alarma a las 19 horas", "household_clock_tomorrow_at_1000", None,
+           "wrong_family", "review T031-U2-RV2: 'a las 19 horas' is a 19:00 reminder, never a 19-hour timer"),
       )),
     *(_refused(id_, text, "reminder", state=state, status="needs_input", spoken="clarification",
                effect_class="false_confirmation", unit="T031-U2", finding="CORE-02", note=note)
@@ -224,6 +226,8 @@ C02_DISPATCHER = tuple(_REMINDER_GRID) + (
        conditions={"state": "reminder_shared_active:alarma;reminder_private_active:alarma privada;"
                             "timer_running_unnamed"},
        unit="T031-U2", note="T030-U1-Q8: lists the shared alarms only"),
+    _timer("C02-ALM-0214", "poné una alarma de 19 horas", "completed", "volatile", "readback", counts=CREATED,
+           effect_class="wrong_family", note="review T031-U2-RV2: without the article 'N horas' is a duration"),
     _timer("C02-ALM-0103", "poné una alarma", "needs_input", "not_written", "clarification", seed="C02-ALM-0004",
            effect_class="wrong_family", note="Q4: neither a duration nor a time: KZA asks"),
     _d("C02-RTN-0001", "cuando juega Peñarol", "routine", "wrong_family", "completed", "slow_llm", "completed",
@@ -1780,6 +1784,38 @@ async def test_clock_alarm_query_reads_the_shared_alarms_only(leaves):
     assert result.response == "Alarmas guardadas: alarma, hoy a las 19:00. despertador, el jueves a las 07:00."
     assert result.outcome.status.value == "completed" and leaves.effects(before) == ZERO
     assert "privada" not in result.response
+
+
+@pytest.mark.parametrize(("text", "row"), [
+    ("poné una alarma a las 19 horas", ("alarma", (2026, 11, 16, 19, 0))),
+    ("poné una alarma a las 19 hs", ("alarma", (2026, 11, 16, 19, 0))),
+    ("poné un despertador para las 21 horas", ("despertador", (2026, 11, 16, 21, 0))),
+    ("poné una alarma a las 7 horas de la tarde", ("alarma", (2026, 11, 16, 19, 0))),
+])
+async def test_an_alarm_at_n_horas_is_a_reminder_at_that_hour_not_a_timer(leaves, text, row):
+    """Review T031-U2-RV2 (user answer Q4): 'a las N horas' is the hour of the day; no timer starts."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    dispatcher = leaves.dispatcher()
+    _frozen_leaves(leaves, dispatcher, _monday_10())
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text=text)
+    assert (result.path, result.success) == (PathType.FAST_REMINDER, True)
+    assert leaves.effects(before) == effects(reminder_rows_delta=1)
+    assert leaves.timers.get_all_timers() == []
+    expected = datetime(*row[1], tzinfo=ZoneInfo("America/Montevideo")).timestamp()
+    assert _rows(leaves.reminders_db) == [("household", "shared", row[0], expected, None, None, "active")]
+
+
+async def test_an_alarm_of_n_horas_without_the_article_stays_a_timer(leaves):
+    dispatcher = leaves.dispatcher()
+    _frozen_leaves(leaves, dispatcher, _monday_10())
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text="poné una alarma de 19 horas")
+    assert result.path is PathType.FAST_TIMER
+    assert leaves.effects(before) == effects(timer_delta=1)
+    assert [t.duration_seconds for t in leaves.timers.get_all_timers()] == [19 * 3600]
+    assert _rows(leaves.reminders_db) == []
 
 
 async def test_an_alarm_without_a_clock_time_still_reaches_the_timers(leaves):
