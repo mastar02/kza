@@ -2352,7 +2352,6 @@ def _legacy_scope(root: Path, container_slot: str) -> dict:
     if unexpected or any(os.path.lexists(root / "slots" / legacy / name) and not stat.S_ISREG(
             os.lstat(root / "slots" / legacy / name).st_mode) for name in LEGACY_SLOT_REPORTS):
         _refuse("runtime_admission_legacy_retire_slot_unexpected")
-    superseded = [name for name, _commit in legacy_superseded_slots()]
     head = stage.read_admission_head(root)
     if head is None or stage.head_aborted(root, head):
         _refuse("runtime_admission_legacy_retire_adoption")
@@ -2388,7 +2387,7 @@ def _legacy_scope(root: Path, container_slot: str) -> dict:
         if any(_under(real, [item]) or _under(item, [real]) for item in targets):
             _refuse("runtime_admission_legacy_retire_excluded:" + key)
     excluded["backups_kept"] = kept
-    if head_slot in (legacy, container, *superseded):
+    if head_slot in (legacy, container):  # a superseded slot is a target: the overlap check above refuses it
         _refuse("runtime_admission_legacy_retire_excluded:head_slot")
     return {"adoption_record": name, "record": record, "target": target, "legacy": legacy,
             "container": container, "head": head, "head_state": Path(binding["state_root"]),

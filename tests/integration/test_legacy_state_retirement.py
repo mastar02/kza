@@ -613,9 +613,10 @@ def test_a_crash_mid_deletion_completes_from_the_intent_and_l4_stays_refused(wor
     assert refused.value.problems == [result["record"]]
 
 
-@pytest.mark.parametrize("linked", ["backups", "container"])
+@pytest.mark.parametrize("linked", ["backups", "container", "superseded"])
 def test_a_resume_refuses_a_backup_path_turned_into_a_link_after_the_crash(world, monkeypatch, linked):
-    """R2-1: the resume skips the census (a partial delete), so backups/ and backups/<C> are rechecked."""
+    """R2-1: the resume skips the census (a partial delete), so backups/, backups/<C> and (R1E-2)
+    backups/<63ea8d3 slot> are rechecked."""
     adopted(world)
     install_record(world)
     plan = dry(world)["plan_sha256"]
@@ -633,7 +634,7 @@ def test_a_resume_refuses_a_backup_path_turned_into_a_link_after_the_crash(world
     assert removed == [legacy_state(world)] + [world.root / "slots" / LEGACY / name for name in REPORTS]
     assert backup_databases(world).is_dir()
     # Between the crash and the resume, a link moves the backup target elsewhere.
-    moved = world.root / "backups" if linked == "backups" else world.root / "backups" / CONTAINER
+    moved = world.root / "backups" / {"backups": "", "container": CONTAINER, "superseded": C63}[linked]
     elsewhere = world.base / ("elsewhere-" + linked)
     os.rename(moved, elsewhere)
     moved.symlink_to(elsewhere)
@@ -646,6 +647,7 @@ def test_a_resume_refuses_a_backup_path_turned_into_a_link_after_the_crash(world
     os.rename(elsewhere, moved)
     result = retire(world, confirm=plan)
     assert result["resumed"] is True and not os.path.lexists(backup_databases(world))
+    assert not os.path.lexists(world.root / "backups" / C63 / "databases")
 
 
 def test_a_resume_with_the_clock_moved_back_is_still_never_early(world, monkeypatch):
