@@ -437,6 +437,8 @@ def test_the_run_refuses_outside_its_preconditions(world, case, code):
     ("unit", "unit:kza-legacy-tool.service"),
     ("unit_environment", "unit:kza-legacy-tool.service"),
     ("logrotate", "logrotate"),
+    ("logrotate_quoted", "logrotate"),
+    ("logrotate_single_quoted", "logrotate"),
     ("config", "config:observability.legacy_path"),
     ("env", "env:LEGACY_DATA"),
     ("admission", "admission:history"),
@@ -462,6 +464,11 @@ def test_anything_pointing_at_the_copies_refuses(world, case, problem):
             "Environment": "DATA=" + os.fspath(legacy_state(world) / "data"), "WorkingDirectory": "/"}
     elif case == "logrotate":
         (world.root / launcher.LOGROTATE_NAME).write_text(container_logs + "/console.log {\n  copytruncate\n}\n")
+    elif case == "logrotate_quoted":  # review R1E-RV4: production's stanza, as written on 2026-10-28
+        (world.root / launcher.LOGROTATE_NAME).write_text(production_logrotate(world))
+    elif case == "logrotate_single_quoted":
+        (world.root / launcher.LOGROTATE_NAME).write_text(
+            "'" + os.fspath(legacy_state(world) / "logs" / "console.log") + "' {\n  copytruncate\n}\n")
     elif case == "config":
         settings = r1_state / "config" / "settings.yaml"
         os.chmod(settings, 0o600)
@@ -477,6 +484,31 @@ def test_anything_pointing_at_the_copies_refuses(world, case, problem):
         dry(world)
     assert problem in refused.value.report["problems"]
     assert legacy_state(world).is_dir() and not launcher.legacy_retirement_directory(world.root).exists()
+
+
+def production_logrotate(world: World) -> str:
+    """Production's console-logrotate.conf (read-only recon 2026-11-18): one stanza whose path, the
+    b0866e8 state's console log, is double-quoted."""
+    console = os.fspath(legacy_state(world) / "logs" / "console.log")
+    return (f'"{console}" {{\n    hourly\n    rotate 24\n    maxage 1\n    missingok\n    notifempty\n'
+            "    copytruncate\n    compress\n    delaycompress\n    dateext\n    dateformat -%Y%m%d%H\n}\n")
+
+
+def test_q5_reads_a_quoted_logrotate_path_only_when_it_points_at_the_copies(world):
+    """Review R1E-RV4: the quotes are stripped before the path test, so production's stanza refuses and
+    nothing changes; a quoted managed stanza (outside the copies) and a commented one do not."""
+    adopted(world)
+    conf = world.root / launcher.LOGROTATE_NAME
+    managed = launcher.render_console_logrotate(os.fspath(world.root / "logs" / "console.log"))
+    quoted_managed = '"' + os.fspath(world.root / "logs" / "console.log") + '" {\n    copytruncate\n}\n'
+    conf.write_text(managed + quoted_managed + "# " + production_logrotate(world).splitlines()[0] + "\n")
+    assert dry(world)["eligible"] is True
+    conf.write_text(managed + production_logrotate(world))
+    before = tree_manifest(world.root / "slots" / LEGACY)
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_legacy_retire_referenced:logrotate$"):
+        dry(world)
+    assert tree_manifest(world.root / "slots" / LEGACY) == before
+    assert not launcher.legacy_retirement_directory(world.root).exists()
 
 
 _EMBEDDED = "exec /usr/bin/tool $TOOL_ARGS"
@@ -946,6 +978,38 @@ def test_r1e_l4_refuses_the_superseded_63ea8d3_container(world):
     with pytest.raises(launcher.LauncherRefusal, match="^runtime_admission_uninstall_legacy_commit$"):
         uninstall(world, C63)
     assert unit_dir_files(world) == units and world.units.reloads == 0
+
+
+def state_slot_runtime(world: World) -> Path:
+    """The b0866e8 slot's own runtime (production has one beside its state): release b0866e8 and the
+    config/data/.env links into its state."""
+    runtime = world.root / "slots" / LEGACY / "runtime"
+    runtime.mkdir(mode=0o700)
+    (runtime / "release.json").write_text(json.dumps({"git_commit": "b0866e8" + "0" * 33, "files": {}}))
+    for name in ("config", "data", ".env"):
+        os.symlink(Path("..") / "state" / name, runtime / name)
+    return runtime
+
+
+@pytest.mark.parametrize("role", ["state", "container"])
+def test_r1e_l4_through_uninstall_launcher_serves_both_listed_legacy_roles(world, role):
+    """Review R1E-RV5: L4 with uninstall_launcher's own default list renders legacy.conf for the b0866e8
+    slot's runtime as well as for the e9669ec container (DEPLOYMENT: L4 accepts both)."""
+    adopted(world)
+    install_record(world)
+    state_slot_runtime(world)
+    slot = LEGACY if role == "state" else CONTAINER
+    current, head = os.readlink(world.root / "current"), world.head()
+    result = uninstall(world, slot)
+    legacy = (world.unit_dir / "legacy.conf").read_text()
+    runtime, state = world.root / "slots" / slot / "runtime", world.root / "slots" / slot / "state"
+    assert "Environment=PYTHONPATH=" + os.fspath(runtime) in legacy.splitlines()
+    assert "WorkingDirectory=" + os.fspath(state) in legacy.splitlines()
+    assert not (world.unit_dir / "managed.conf").exists() and (world.unit_dir / "managed.conf.disabled").exists()
+    record = json.loads((world.root / "admission" / "launcher" / result["record"]).read_text())
+    assert record["legacy_slot"] == slot
+    assert record["legacy_commit"] == ("b0866e8" + "0" * 33 if role == "state" else launcher.LEGACY_CONTAINER_RELEASE)
+    assert os.readlink(world.root / "current") == current and world.head() == head
 
 
 def test_r1e_the_superseded_container_links_stop_q5_as_found(world):
