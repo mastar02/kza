@@ -59,7 +59,9 @@ pages or index files):
 Each store is written by a fresh child interpreter that gets only what K
 keeps (CHROMA_REBUILD_CHILD): Chroma persists index buffers whose unused
 capacity can hold earlier heap contents, and this worker's heap holds H's
-whole snapshot. D5 for rebuilt stores: the child reads its store back and
+whole snapshot. The child also runs with the SC4C-Q3 glibc tunables
+(src.core.heap_hygiene), so its own earlier heap contents are not written
+either. D5 for rebuilt stores: the child reads its store back and
 its afterimage (exactly the planned collections, each with its planned
 metadata, configuration and records) must hash to the plan's; then the
 store's files are pinned by sha256 and every later D5 (after VACUUM, on
@@ -85,6 +87,7 @@ import sqlite3
 from types import SimpleNamespace
 from typing import Mapping
 
+from src.core.heap_hygiene import GLIBC_TUNABLES_ENV, with_heap_hygiene
 from src.memory.state_snapshot import ClosedStateSnapshot, read_blob, verify_snapshot
 
 # Tables the journal derivation deletes and rebuilds on K (state_journal_derivation._SCHEDULING).
@@ -621,6 +624,9 @@ def _rebuild_store(path: Path, wanted: list, version: str, lease: int) -> None:
                              "configuration": item.configuration, "records": list(item.records)}
                             for item in wanted]}
     environment = {key: os.environ[key] for key in _CHILD_ENVIRONMENT if key in os.environ}
+    # SC4C-Q3: no earlier heap contents in the index buffers the child writes (its unused capacity
+    # would otherwise keep text the child held, e.g. of a fact live at the rebuild and deleted later).
+    environment[GLIBC_TUNABLES_ENV] = with_heap_hygiene(None)
     try:
         completed = subprocess.run([sys.executable, "-I", "-B", "-c", CHROMA_REBUILD_CHILD], input=_json(spec),
                                    capture_output=True, env=environment, check=False, pass_fds=(lease,),

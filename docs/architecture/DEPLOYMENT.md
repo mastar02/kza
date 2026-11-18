@@ -1250,8 +1250,8 @@ compactación podía pasar del snapshot.
   clon). Un rechazo del trabajador es la fila S: `compact abort <id>` (sin
   pérdida, antes de V) y la unidad vuelve a servir H.
 - **Proceso hijo limpio.** Cada almacén lo escribe un intérprete nuevo
-  (`python -I -B`, sin importar `src`) que recibe por stdin sólo lo que K
-  conserva. Motivo, medido en el server: Chroma guarda buffers del índice
+  (`python -I -B`, sin importar `src`, con los tunables de glibc de SC4C-Q3)
+  que recibe por stdin sólo lo que K conserva. Motivo, medido en el server: Chroma guarda buffers del índice
   HNSW cuya capacidad sin usar puede tener contenido anterior del heap del
   proceso; escrito desde el trabajador (cuyo heap tiene todo el snapshot de
   H), un `data_level0.bin` de K llegó a tener el texto de un hecho vencido.
@@ -1307,17 +1307,78 @@ compactación podía pasar del snapshot.
   que se dicte una rutina nueva. El diseño deja a SC-R decidir entre la baja
   y una reconstrucción desde la tabla protegida `routines`; el usuario
   aceptó la baja (SC4C-Q1, 2026-11-16).
-- **Hallazgo fuera de esta unidad.** El mismo comportamiento de Chroma vale
-  para el servicio: los archivos HNSW que escribe `kza-voice` pueden guardar
-  fragmentos de su heap (cualquier dato que el proceso tuvo en memoria), y
-  un borrado no los limpia. Decisión del usuario (SC4C-Q3, 2026-11-16):
-  después, como unidad propia con prioridad alta; la transición no lo
-  empeora (K se escribe desde el hijo limpio y no copia los bytes de Chroma
-  de H).
+- **Residuo de heap en el servicio (SC4C-Q3, corregido).** El mismo
+  comportamiento de Chroma valía para el servicio: los archivos HNSW que
+  escribe `kza-voice` podían guardar fragmentos de su heap (cualquier dato
+  que el proceso tuvo en memoria), y un borrado no los limpia. Decisión del
+  usuario (SC4C-Q3, 2026-11-16): unidad propia con prioridad alta. Ver la
+  sección siguiente.
 - **Límite de 600 s por almacén.** El usuario lo aceptó (SC4C-Q4,
   2026-11-16); SC-6b lo ajusta con la medición de tamaño de producción.
 
 Tests: `tests/unit/tools/test_sc4c_chroma_closed_list.py`.
+
+### Residuo de heap en los índices de Chroma (SC4C-Q3)
+
+**Mecanismo (medido en el server, glibc 2.39, Chroma 1.5.5).** Al
+inicializar un índice HNSW persistente, Chroma (`chroma-core/hnswlib`) pide
+con `malloc` los buffers del índice (`data_level0`: capacidad × tamaño de
+elemento; `length`: un float por lugar; capacidad inicial 100) y los escribe
+enteros a `data_level0.bin` y `length.bin` antes de que exista ningún
+elemento. Después sólo escribe los lugares de los elementos, así que la
+capacidad sin usar queda con lo que esa memoria tenía antes; borrar sólo
+marca el lugar. Y el escritor local vuelve a inicializar el índice, en el
+proceso que abre la colección (alcanza un `count()`), cada vez que el
+segmento no tiene un mapa de ids persistido y no vacío: menos de
+`sync_threshold` (1000) operaciones desde su última persistencia, o ninguna
+fila viva. Producción está en ese caso (SC4C-Q2: 337 y 130 registros): cada
+arranque de `kza-voice`, cada lote de borrado del índice de memoria (que
+abre su propio cliente) y cada colección nueva de ChromaSync reescribían
+esos dos archivos con memoria del proceso. Con un canario sembrado en el
+heap, una apertura con `count()` dejó el canario en todo `data_level0.bin`
+(dimensión 1024, la de BGE-M3); `length.bin` llevaba direcciones del heap.
+
+**Corrección.** El hijo administrado (`src.main` bajo el launcher) corre
+con `GLIBC_TUNABLES=glibc.malloc.perturb=165:glibc.malloc.tcache_count=0`:
+glibc llena cada bloque que entrega con 0x5A (y cada bloque liberado con
+0xA5), y sin la caché por hilo, que devuelve bloques sin ese llenado. Así
+cada byte que Chroma recibe de `malloc` es el patrón o cero (un mapeo nuevo),
+nunca contenido anterior, y lo que escribe al inicializar un índice no tiene
+residuo. Las variables las lee el cargador al hacer `exec`, por eso las pone
+el padre: `managed_launcher.child_environment` (conserva los otros
+tunables de la unidad y reemplaza los del mismo nombre) y el hijo limpio de
+la compactación (`owner_compaction._rebuild_store`, así la capacidad sin usar
+de K tampoco guarda texto de un hecho vivo en la reconstrucción y borrado
+después). Fallo cerrado: `src.main`, con ticket y en glibc, comprueba su
+propio `malloc` (`src/core/heap_hygiene.py`, dos pedidos por tamaño: el
+segundo reutiliza el bloque liberado) y sale con 78, antes de armarse y de
+abrir ningún almacén, con `runtime_admission_heap_hygiene_inactive` si el
+patrón no está (un launcher que perdió la variable, un asignador interpuesto
+que la ignora).
+
+**Alcance y límites.** (1) Vale para el modo administrado. Una ejecución sin
+ticket (desarrollo, la unidad heredada) no se rechaza ni se corrige. (2) Mac
+(libmalloc) no tiene esta garantía; es sólo desarrollo. (3) Los archivos que
+ya existen: los índices no persistidos se reescriben limpios en la próxima
+apertura del servicio administrado; la capacidad sin usar de un índice ya
+persistido (>= 1000 operaciones) conserva su residuo hasta que se
+reconstruye. La transición del modo release lo resuelve: K se escribe desde
+el hijo limpio (ahora también con el patrón) y H, con su residuo, se destruye
+en el retiro (hasta entonces sigue en H y en la copia opaca del snapshot,
+sección anterior). (4) Los procesos que `kza-voice` lance heredan las
+variables (llenado de memoria también en ellos). (5) Las copias privadas que
+abre el trabajador de compactación para exportar se borran al terminar; su
+residuo de sistema de archivos es el límite general ya documentado.
+
+**Costo medido** (server, núcleos 24-47, el mismo script con y sin las
+variables, mediana de 10 corridas alternadas; evidencia
+`data/autonomous-roadmap-20261102/sc4c-q3/evidence.json`): ver la evidencia;
+la consulta de Chroma (1200 × 1024) no cambia de forma medible y el costo
+por trama de audio de 30 ms queda en microsegundos, lejos del objetivo de
+300 ms.
+
+Tests: `tests/unit/core/test_heap_hygiene.py` y la prueba del hijo limpio en
+`tests/unit/tools/test_sc4c_chroma_closed_list.py`.
 
 ### Procedimiento del modo release (SC-5b) — runbook, sin release
 
