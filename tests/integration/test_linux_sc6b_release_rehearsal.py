@@ -28,7 +28,11 @@ compiled CLI run as a subprocess:
 - the child is the rehearsal child (tests/mocks/launcher_child.py, its
   ``--exec`` is a NEW that changes K' at boot), except in (14), where it is
   the real compiled application (tools/sc0/sc0_child.py: the real managed
-  entry with synthetic leaves, no models, no microphone).
+  entry with synthetic leaves, no models, no microphone). Its synthetic
+  memory leaf records a test-only embedding function in the memory
+  collection, which SC-4c's isolated Chroma rebuild child cannot load, so
+  (14) stops at start's refusal and takes row S back to H; the real app's V
+  over the same residue is the compiled CR-7 R1-H run (SCR-P-3).
 
 Each item writes ``sc6b-<item>.json`` (commands with the paths replaced by
 ``<root>``/``<tmp>``/``$PY``, exit codes, refusal codes, results, the
@@ -1177,8 +1181,9 @@ def _app_source(tmp_path: Path, port: int) -> Path:
 
 
 def test_14_a_correct_new_over_h_with_residue_is_retired(builds, tmp_path, systemd, record):
-    rec = record("14", "Correct NEW (the real compiled application) over an H with residue: V reaches its "
-                       "receipt and retire completes")
+    rec = record("14", "Correct NEW over an H with residue, the real compiled application as H's and NEW's "
+                       "child: plan (SC-4c closed list) and start; V and retire when the Chroma rebuild runs, "
+                       "else row S back to H")
 
     port = _free_port()  # the dashboard port is a literal of the state's settings (copied into K)
 
