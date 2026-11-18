@@ -1995,6 +1995,13 @@ reemplaza la premisa de P5.
   - qué hacer con los tres `*-report.json` del slot de b0866e8.
 - Antes de R2 hay que decidir también los slots 63ea8d3 y 2c5adb4: el primer
   plan del modo release los rechaza (`release_unproven_copy`).
+- R1 reconstruido desde `695708ac40a101ccbeadd008ff3fd2fe01c4ed5b` (época 4):
+  dos veces en el server y una en la Mac, idénticas, sha256
+  `d6e5a21aea71dd576fc4afa34821eed2a93c013c439ef4b37334d6856b7e1dba`, en
+  `/home/yo/projects/releases-r1/r1-695708a.tar.gz` con `SHA256SUMS-695708a`.
+  El archivo de 357dcb5 y su `SHA256SUMS` quedan intactos. Falta re-fijar el
+  runbook de R1 a 695708a, después de la revisión independiente de R1E. Hasta
+  entonces no se programa la ventana.
 - Evidencia: `data/autonomous-roadmap-20261102/r1e/` (recon y
   `evidence.json`).
 

@@ -57,6 +57,16 @@ autoriza la ventana.
   revisiones del lado de desarrollo previas a la ventana están hechas. La suite batch completa sobre 51fbc43 pasó en la Mac y en el server (`u3b/full-51fbc43/RESULT.md`), y el visto bueno visual del panel
   de R1-B2 sigue con el usuario. Si algo de lo que queda cambia código, R1
   se vuelve a construir y a fijar.
+- R1E (2026-11-18, decisión `batch_g_questions_20261118`, «R1 base»): adoptar
+  el contenedor de e9669ec cambia código de ejecución. R1 se reconstruyó
+  desde `695708ac40a101ccbeadd008ff3fd2fe01c4ed5b` (rama `r1e` sobre 357dcb5,
+  época 4), dos veces en el server y una en la Mac, con resultado idéntico:
+  sha256 `d6e5a21aea71dd576fc4afa34821eed2a93c013c439ef4b37334d6856b7e1dba`,
+  en `/home/yo/projects/releases-r1/r1-695708a.tar.gz` (con
+  `SHA256SUMS-695708a`). El archivo de «Archivo R1 fijado» (357dcb5) es
+  anterior a R1E: con `C` en e9669ec, L4, los aborts y Q5 lo rechazarían.
+  **No programar la ventana** hasta re-fijar ese bloque a 695708a, después
+  de la revisión independiente de R1E.
 - Después quedan los pasos del operador. Este runbook no autoriza ni programa
   la ventana: la programa el usuario, como operador de `kza`. Antes, el
   usuario registra la autorización de la ventana y los ids P1=D y L4 («Antes
