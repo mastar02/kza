@@ -386,9 +386,13 @@ _SECURITY_ALARM_NOUNS = frozenset({"alarma", "alarmas"})
 _ALARM_HOUR = (r"(?:\d{1,2}(?:[:.]\d{2})?|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece"
                r"|catorce|quince|dieciseis|diecisiete|dieciocho|diecinueve|veinte|veintiuna|veintiuno|veintidos"
                r"|veintitres)")
+# A day alone ("la alarma de mañana", "de hoy", "del martes") also names an alarm set for a clock time: a timer
+# has no day (review T031-U2-RV3), so it reaches the reminders' numbered alarm list too.
 _ALARM_CLOCK = re.compile(
     rf"\b(?:de|a|para) (?:la|las) {_ALARM_HOUR}\b(?! (?:segundos?|minutos?|mins?)\b)"
-    r"|\b(?:del|al|de la|a la|para el|para la) (?:mediodia|medianoche)\b")
+    r"|\b(?:del|al|de la|a la|para el|para la) (?:mediodia|medianoche)\b"
+    r"|\b(?:de|para) (?:hoy|pasado manana|manana)\b"
+    r"|\b(?:del|de este|para el) (?:proximo )?(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b")
 _SECURITY_ALARM_VERBS = frozenset({"activa", "active", "activar", "desactiva", "desactive", "desactivar", "arma",
                                    "arme", "armar", "desarma", "desarme", "desarmar"})
 _DETERMINERS = frozenset({
@@ -505,7 +509,7 @@ def _r1_object_at(utt: _Utterance, k: int) -> HouseholdFamily | None:
 
 
 def _clock_alarm(utt: _Utterance, k: int) -> bool:
-    """The alarm noun at token ``k`` is named with a clock time after it (user answer T030-U1-Q8)."""
+    """The alarm noun at token ``k`` is named with a clock time or a day after it (user answer T030-U1-Q8)."""
     return utt.at(k) in _ALARM_NOUNS and _ALARM_CLOCK.search(" ".join(utt.folded[k + 1:])) is not None
 
 
@@ -614,6 +618,10 @@ def _query(utt: _Utterance) -> HouseholdIntent | None:
     if head == "cuanto" and family is HouseholdFamily.TIMER and {"falta", "queda"} & set(utt.folded[:5]):
         return _r1_intent(utt, k, family, HouseholdOperation.QUERY, head)
     if head in _QUERY_HEADS and _QUERY_VERBS & set(utt.folded):
+        return _r1_intent(utt, k, family, HouseholdOperation.QUERY, head)
+    if head == "a" and utt.at(1) == "que" and utt.at(2) == "hora" and utt.at(k) in _ALARM_NOUNS:
+        # "¿a qué hora suena la alarma?": answered from the timers and the alarms set for a clock time,
+        # never by the cloud model, which cannot see either (review T031-U2-RV3).
         return _r1_intent(utt, k, family, HouseholdOperation.QUERY, head)
     if head in _HAVE_HEADS:
         governed = _governed_object(utt, 2 if utt.at(1) in _SOME else 1, alarms=True)

@@ -382,3 +382,25 @@ async def test_describe_names_by_label_or_duration(manager):
 async def test_other_operations_need_input(manager):
     reply = await TimerVoiceCommands(manager).execute(HouseholdOperation.EXECUTE, "", text="x", zone_id="default")
     assert reply.outcome.status is TaskStatus.NEEDS_INPUT and manager.get_all_timers() == []
+
+
+@pytest.mark.parametrize(("setup", "text"), [
+    ((), "cancelá el timer"),
+    ((), "qué timers hay"),
+    (("poné un timer de pasta de 5 minutos",), "cancelá el timer de fideos"),
+    (("poné un timer de pasta de 5 minutos",), "seguí el timer"),
+    (("poné un timer de pasta de 5 minutos",), "cuánto falta para el timer de 10 minutos"),
+])
+async def test_no_matching_timer_is_flagged_for_the_caller(manager, setup, text):
+    """Review T031-U2-RV3: the dispatcher adds the alarm reminders only when no timer matched."""
+    commands = TimerVoiceCommands(manager)
+    for create in setup:
+        await say(commands, create)
+    assert (await say(commands, text)).no_match
+
+
+@pytest.mark.parametrize("text", ["cancelá el timer", "qué timers hay", "poné un timer de 5 minutos"])
+async def test_a_matching_timer_or_a_creation_is_not_flagged(manager, text):
+    commands = TimerVoiceCommands(manager)
+    await say(commands, "poné un temporizador de 3 minutos")
+    assert not (await say(commands, text)).no_match

@@ -1818,6 +1818,85 @@ async def test_an_alarm_of_n_horas_without_the_article_stays_a_timer(leaves):
     assert _rows(leaves.reminders_db) == []
 
 
+ALARM_NOTE_CANCEL = (" Hay 1 alarma: mañana a las 07:00; para cancelarla decí: cancelá la alarma de las 7.")
+
+
+@pytest.mark.parametrize(("text", "response"), [
+    ("cancelá la alarma", "No hay temporizadores activos." + ALARM_NOTE_CANCEL),
+    ("cancelá el despertador", "No hay temporizadores activos." + ALARM_NOTE_CANCEL),
+    ("apagá la alarma", "No hay temporizadores activos." + ALARM_NOTE_CANCEL),
+    ("cancelá la alarma de la pasta", "No hay temporizadores activos." + ALARM_NOTE_CANCEL),
+    ("¿qué alarmas hay?", "No hay temporizadores activos. Hay 1 alarma: mañana a las 07:00."),
+    ("¿hay alguna alarma?", "No hay temporizadores activos. Hay 1 alarma: mañana a las 07:00."),
+    ("¿a qué hora suena la alarma?", "No hay temporizadores activos. Hay 1 alarma: mañana a las 07:00."),
+])
+async def test_a_timer_reply_on_an_alarm_tells_the_alarm_reminders_and_cancels_nothing(leaves, text, response):
+    """Review T031-U2-RV3: after 'poné una alarma mañana a las 7', 'no timers' alone would hide the alarm."""
+    dispatcher = leaves.dispatcher()
+    _frozen_leaves(leaves, dispatcher, _monday_10())
+    assert (await dispatcher.dispatch(user_id="unknown", text="poné una alarma mañana a las 7 de la mañana")).success
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text=text)
+    assert (result.path, result.response) == (PathType.FAST_TIMER, response)
+    assert leaves.effects(before) == ZERO
+    assert [r.text for r in await leaves.reminder_manager.get_active(None, shared_only=True)] == ["alarma"]
+
+
+async def test_an_alarm_query_with_timers_running_also_tells_the_alarm_reminders(leaves):
+    dispatcher = leaves.dispatcher()
+    _frozen_leaves(leaves, dispatcher, _monday_10())
+    await dispatcher.dispatch(user_id="unknown", text="poné una alarma mañana a las 7 de la mañana")
+    await dispatcher.dispatch(user_id="unknown", text="poné un despertador para el jueves a las 6 y media de la mañana")
+    await leaves.apply_state(dispatcher, "timer_running_unnamed")
+    result = await dispatcher.dispatch(user_id="unknown", text="qué alarmas hay")
+    assert result.path is PathType.FAST_TIMER
+    assert result.response.endswith(" Hay 2 alarmas: mañana a las 07:00 y el jueves a las 06:30.")
+    assert result.response.startswith("Al temporizador de ")
+
+
+async def test_a_timer_reply_on_an_alarm_with_two_alarms_gives_one_example(leaves):
+    dispatcher = leaves.dispatcher()
+    _frozen_leaves(leaves, dispatcher, _monday_10())
+    await dispatcher.dispatch(user_id="unknown", text="poné una alarma a las 13 y 30")
+    await dispatcher.dispatch(user_id="unknown", text="poné un despertador mañana a la 1 de la tarde")
+    result = await dispatcher.dispatch(user_id="unknown", text="cancelá la alarma")
+    assert result.response == ("No hay temporizadores activos. Hay 2 alarmas: hoy a las 13:30 y mañana a las 13:00; "
+                               "para cancelar una decí, por ejemplo: cancelá la alarma de las 13 y 30.")
+    assert result.outcome.status.value == "needs_input"
+
+
+async def test_a_timer_reply_on_a_timer_or_a_found_alarm_timer_adds_nothing(leaves):
+    dispatcher = leaves.dispatcher()
+    _frozen_leaves(leaves, dispatcher, _monday_10())
+    await dispatcher.dispatch(user_id="unknown", text="poné una alarma mañana a las 7 de la mañana")
+    assert (await dispatcher.dispatch(user_id="unknown", text="cancelá el timer")).response == (
+        "No hay temporizadores activos.")
+    await leaves.apply_state(dispatcher, "timer_running_unnamed")
+    cancelled = await dispatcher.dispatch(user_id="unknown", text="cancelá la alarma")
+    assert "alarma:" not in cancelled.response and cancelled.response.startswith("Cancelé el temporizador")
+
+
+async def test_unreadable_alarm_reminders_leave_the_timer_reply_as_is(leaves, monkeypatch):
+    from unittest.mock import AsyncMock
+    dispatcher = leaves.dispatcher()
+    monkeypatch.setattr(leaves.reminder_manager, "get_active", AsyncMock(side_effect=sqlite3.OperationalError("x")))
+    result = await dispatcher.dispatch(user_id="unknown", text="cancelá la alarma")
+    assert (result.path, result.response) == (PathType.FAST_TIMER, "No hay temporizadores activos.")
+
+
+@pytest.mark.parametrize("text", ["cancelá la alarma de mañana", "borrá el despertador de mañana"])
+async def test_a_day_only_alarm_cancel_lists_the_alarm_reminders_by_number(leaves, text):
+    """Review T031-U2-RV3: 'la alarma de mañana' names an alarm set for a clock time: numbered, never cancelled."""
+    dispatcher = leaves.dispatcher()
+    _frozen_leaves(leaves, dispatcher, _monday_10())
+    await dispatcher.dispatch(user_id="unknown", text="poné una alarma mañana a las 7 de la mañana")
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text=text)
+    assert result.path is PathType.FAST_REMINDER
+    assert result.response == "Hay uno. 1: alarma a las 07:00; ¿lo cancelo? Decime: el primero."
+    assert result.outcome.status.value == "needs_input" and leaves.effects(before) == ZERO
+
+
 async def test_an_alarm_without_a_clock_time_still_reaches_the_timers(leaves):
     """T030-U1-Q8 (A): without a clock time the alarm stays a timer, even with an alarm reminder active."""
     dispatcher = leaves.dispatcher()

@@ -69,10 +69,13 @@ class TimerVoiceReply:
     Attributes:
         response: Spanish text to speak.
         outcome: Task evidence (never COMPLETED without an observed change or answer).
+        no_match: No timer matched the command (none active, none in the needed state, or none with
+            the named label or duration), so the caller may say what else exists (review T031-U2-RV3).
     """
 
     response: str
     outcome: TaskOutcome
+    no_match: bool = False
 
 
 def describe(timer: NamedTimer) -> str:
@@ -84,9 +87,10 @@ def _fold(text: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", text.lower()) if unicodedata.category(c) != "Mn")
 
 
-def _refusal(response: str, status: TaskStatus) -> TimerVoiceReply:
+def _refusal(response: str, status: TaskStatus, *, no_match: bool = False) -> TimerVoiceReply:
     return TimerVoiceReply(response, TaskOutcome(status, persistence=PersistenceState.NOT_WRITTEN,
-                                                 dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED))
+                                                 dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED),
+                           no_match=no_match)
 
 
 def _changed(response: str) -> TimerVoiceReply:
@@ -208,13 +212,13 @@ class TimerVoiceCommands:
             named = f"de {selector.label}"
         else:
             named = f"de {format_duration(selector.duration_s)}"
-        return _refusal(f"No encontré un temporizador {named}.", TaskStatus.NEEDS_INPUT)
+        return _refusal(f"No encontré un temporizador {named}.", TaskStatus.NEEDS_INPUT, no_match=True)
 
     def _query(self, selector: TimerSelector) -> TimerVoiceReply:
         active = self._active()
         if selector.empty:
             if not active:
-                return TimerVoiceReply(NO_ACTIVE, TaskOutcome(TaskStatus.COMPLETED))
+                return TimerVoiceReply(NO_ACTIVE, TaskOutcome(TaskStatus.COMPLETED), no_match=True)
             return TimerVoiceReply(_listing(active), TaskOutcome(TaskStatus.COMPLETED))
         chosen = self._select(selector, active)
         if not chosen:
@@ -226,8 +230,8 @@ class TimerVoiceCommands:
         if not candidates:
             if self._active():
                 return _refusal("No hay temporizadores " + ("corriendo." if states == (TimerState.RUNNING,)
-                                                            else "en pausa."), TaskStatus.NEEDS_INPUT)
-            return _refusal(NO_ACTIVE, TaskStatus.NEEDS_INPUT)
+                                                            else "en pausa."), TaskStatus.NEEDS_INPUT, no_match=True)
+            return _refusal(NO_ACTIVE, TaskStatus.NEEDS_INPUT, no_match=True)
         chosen = self._select(selector, candidates)
         if not chosen:
             return self._not_found(selector)
@@ -238,5 +242,5 @@ class TimerVoiceCommands:
         done = [t for t in chosen if apply(t.timer_id)]
         logger.info("[Timer] %s ids=%s", apply.__name__, [t.timer_id for t in done])  # English op name, no label
         if not done:
-            return _refusal(NO_ACTIVE, TaskStatus.NEEDS_INPUT)
+            return _refusal(NO_ACTIVE, TaskStatus.NEEDS_INPUT, no_match=True)
         return _changed(one(done[0]) if len(done) == 1 else many(len(done)))

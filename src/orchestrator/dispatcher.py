@@ -189,6 +189,8 @@ _REMINDER_CREATE_UNCERTAIN = ("No pude confirmar si el recordatorio quedó guard
 _REMINDER_UNCLAIMED_CREATE = f"Para crear un recordatorio decímelo así, por ejemplo: {_REMINDER_EXAMPLE}."
 # A shared reminder an "alarma"/"despertador" with a clock time created (R3a): its text starts with the noun.
 _ALARM_TEXT_RE = re.compile(r"(?:alarmas?|despertador(?:es)?)\b")
+# A turn that names an alarm (review T031-U2-RV3), on accent-stripped lowercase text.
+_ALARM_NOUN_RE = re.compile(r"\b(?:alarmas?|despertador(?:es)?)\b")
 # The answer to a numbered reminder choice ("el primero", "la segunda", "el 2",
 # "uno"): one ordinal or number word, after an optional article and "número".
 _CHOICE_ORDINALS = {"primero": 1, "primera": 1, "primer": 1, "segundo": 2, "segunda": 2, "tercero": 3,
@@ -1445,8 +1447,59 @@ class RequestDispatcher:
         """
         ring_zone = self.room_namespace.to_zone(origin_room) or self.timer_fallback_zone
         reply = await self._timers.execute(household.operation, household.complement, text=text, zone_id=ring_zone)
-        return DispatchResult(PathType.FAST_TIMER, Priority.HIGH, reply.outcome.task_completed, reply.response,
+        response = reply.response
+        if _ALARM_NOUN_RE.search(_strip_accents(text.lower())) and (
+                reply.no_match or household.operation is HouseholdOperation.QUERY):
+            response += await self._alarm_reminders_note(household.operation)
+        return DispatchResult(PathType.FAST_TIMER, Priority.HIGH, reply.outcome.task_completed, response,
                               intent="timer", outcome=reply.outcome)
+
+    async def _shared_alarm_reminders(self) -> tuple:
+        """The active shared reminders an "alarma"/"despertador" with a clock time created (R3a)."""
+        active = await self.reminder_manager.get_active(None, shared_only=True)
+        return tuple(r for r in active if _ALARM_TEXT_RE.match(_strip_accents(r.text.lower())))
+
+    async def _alarm_reminders_note(self, operation: HouseholdOperation) -> str:
+        """What a timer reply about an alarm adds on the alarms set for a clock time (review T031-U2-RV3).
+
+        An alarm with a clock time is a shared reminder (R3a), so a turn about
+        "la alarma" that the timers answer must not leave the impression that no
+        alarm exists. Nothing is cancelled from here: a command gets the words
+        that list the alarms by number (T030-U1-Q8, never picked by the time).
+
+        Returns:
+            " Hay 1 alarma: ..." with how to cancel it, or "" without alarm
+            reminders or when they cannot be read.
+        """
+        if not self.reminder_manager:
+            return ""
+        try:
+            alarms = await self._shared_alarm_reminders()
+        except Exception:
+            logger.warning("[Reminder] alarm reminders unreadable for a timer reply; not mentioned")
+            return ""
+        if not alarms:
+            return ""
+        times = [self.reminder_manager.spoken_schedule(r) for r in alarms[:3]]
+        listed = times[0] if len(times) == 1 else ", ".join(times[:-1]) + " y " + times[-1]
+        note = f" Hay 1 alarma: {listed}" if len(alarms) == 1 else f" Hay {len(alarms)} alarmas: {listed}"
+        logger.info("[Reminder] timer reply on an alarm mentions %d alarm reminders", len(alarms))
+        if operation is HouseholdOperation.QUERY:
+            return note + "."
+        hint = self._alarm_cancel_words(alarms[0])
+        if len(alarms) == 1:
+            return f"{note}; para cancelarla decí: cancelá la alarma {hint}."
+        return f"{note}; para cancelar una decí, por ejemplo: cancelá la alarma {hint}."
+
+    def _alarm_cancel_words(self, reminder) -> str:
+        """The clock words that name an alarm reminder in a cancel ("de las 7", "de la 1 y 30")."""
+        local = self.household_clock.to_local(reminder.trigger_at)
+        if (local.hour, local.minute) == (0, 0):
+            return "de la medianoche"
+        if (local.hour, local.minute) == (12, 0):
+            return "del mediodía"
+        words = "de la 1" if local.hour == 1 else f"de las {local.hour}"
+        return f"{words} y {local.minute}" if local.minute else words
 
     async def _fast_path(
         self,
@@ -2144,8 +2197,7 @@ class RequestDispatcher:
             return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, "Recordatorios no configurados",
                                   intent="reminder", outcome=TaskOutcome(TaskStatus.UNSUPPORTED))
         try:
-            active = await self.reminder_manager.get_active(None, shared_only=True)
-            alarms = tuple(r for r in active if _ALARM_TEXT_RE.match(_strip_accents(r.text.lower())))
+            alarms = await self._shared_alarm_reminders()
             if household.operation is HouseholdOperation.CANCEL:
                 response = ("Hay " + self._open_reminder_choice(alarms, choice_key) if alarms
                             else "No hay alarmas con hora guardadas. No cancelé nada.")
