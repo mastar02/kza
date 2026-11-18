@@ -175,6 +175,7 @@ PRECEDENCE = [
     ("decime la alarma de las 8 y media", (F.REMINDER, O.QUERY, "R1")),
     ("cuánto falta para la alarma de las 7", (F.REMINDER, O.QUERY, "R1")),
     ("cancelá la alarma de 7 minutos", (F.TIMER, O.CANCEL, "R1")),
+    ("cancelá la alarma de 7", (F.TIMER, O.CANCEL, "R1")),  # no article: not a clock time
     ("cancelá la alarma de las 7 minutos", (F.TIMER, O.CANCEL, "R1")),
     ("cancelá la alarma de la pasta", (F.TIMER, O.CANCEL, "R1")),
     ("cancelá la alarma de la lasaña", (F.TIMER, O.CANCEL, "R1")),
