@@ -12,6 +12,7 @@ planting that did not happen.
 """
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -191,6 +192,52 @@ def test_the_probe_is_true_only_under_the_hygiene_tunables(tunables, active):
 def test_the_probe_is_true_under_what_the_launcher_sets():
     completed = _python(PROBE, str(REPO), tunables=_launcher_tunables({hh.GLIBC_TUNABLES_ENV: "glibc.malloc.perturb=0"}))
     assert json.loads(completed.stdout) is True
+
+
+class _FakeAllocator:
+    """libc stand-in: fresh blocks come filled with the pattern; a freed block may come back as is."""
+
+    def __init__(self, *, reuse_unfilled: bool = False, fail: bool = False):
+        self._blocks, self._freed, self.calls = {}, {}, []
+        self.reuse_unfilled, self.fail = reuse_unfilled, fail
+        self.malloc, self.free = self._Function(self._malloc), self._Function(self._free)
+
+    class _Function:
+        def __init__(self, function):
+            self._function, self.restype, self.argtypes = function, None, None
+
+        def __call__(self, *args):
+            return self._function(*args)
+
+    def _malloc(self, size):
+        self.calls.append(size)
+        if self.fail:
+            return None
+        if self.reuse_unfilled and size in self._freed:
+            block = self._freed.pop(size)
+            ctypes.memmove(block, b"\x01" * 16, 16)  # the cache's link and key words
+        else:
+            block = ctypes.create_string_buffer(bytes([0x5A]) * size, size)
+        address = ctypes.addressof(block)
+        self._blocks[address] = (size, block)
+        return address
+
+    def _free(self, address):
+        size, block = self._blocks.pop(address)
+        self._freed[size] = block
+
+
+@pytest.mark.parametrize("allocator, active", [
+    (_FakeAllocator(), True),
+    (_FakeAllocator(reuse_unfilled=True), False),  # only the second request of a size shows the cache
+    (_FakeAllocator(fail=True), False),
+], ids=["filled", "cached_chunk_unfilled", "malloc_failed"])
+def test_the_probe_asks_twice_per_size_and_needs_every_byte_filled(monkeypatch, allocator, active):
+    monkeypatch.setattr(hh, "_glibc", lambda: True)
+    monkeypatch.setattr(hh.ctypes, "CDLL", lambda name: allocator)
+    assert hh.heap_hygiene_active() is active
+    if active:
+        assert allocator.calls == [size for size in hh._PROBE_SIZES for _ in range(2)]
 
 
 def test_outside_glibc_the_probe_says_unknown(monkeypatch):
