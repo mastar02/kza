@@ -1327,3 +1327,23 @@ def test_r1e2_a_resume_refuses_an_intent_whose_targets_differ(world, monkeypatch
         retire(world, confirm=plan)
     monkeypatch.undo()
     assert (world.root / "slots" / OLDER).is_dir() and retire(world, confirm=plan)["resumed"] is True
+
+
+def test_r1e2_after_day_14_r2_s_first_release_plan_finds_no_unproven_copy(world):
+    """R1E-Q5: R2's first release-mode plan (compaction plan.other) exempts only the committed adoption
+    record's container and legacy-state slots. On production's layout the 63ea8d3 and 2c5adb4 slots are
+    unproven copies before day 14 (release_unproven_copy); after the real Q5 retirement nothing is."""
+    from scripts import compaction
+
+    adopted(world)
+    install_record(world)
+    state_slot_runtime(world)
+
+    def unproven() -> list[str]:
+        _members, untouched = compaction.retirement_set(world.root, k_slot="k-r2", retire_prepare_leftovers=False)
+        return compaction._unproven_copies(world.root, untouched)
+    assert compaction._legacy_slot_names(world.root) == {CONTAINER, LEGACY}
+    assert unproven() == sorted(["slots/" + C63, "slots/" + OLDER])
+    confirm(world)
+    assert unproven() == []
+    assert sorted(os.listdir(world.root / "slots")) == sorted(["r1", CONTAINER, LEGACY])
