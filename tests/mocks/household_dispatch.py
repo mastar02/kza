@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -103,6 +104,16 @@ class CountedLeaves:
                                          context_key=context.user_id)
             elif name.startswith("reminder_shared_active:"):
                 await self.reminder_manager.create("household", name.split(":", 1)[1], time.time() + 3600,
+                                                   scope=ReminderScope.SHARED)
+            elif name.startswith("reminder_shared_at_"):
+                # "reminder_shared_at_HHMM:<text>": tomorrow at HH:MM on the household clock, so a bare number
+                # answer and the listed due hours are fixed (T032-U1-Q3), whatever the time of day of the run.
+                head, text = name.split(":", 1)
+                hhmm = head.removeprefix("reminder_shared_at_")
+                clock = self.reminder_manager._household_clock
+                tomorrow = clock.now_local().date() + timedelta(days=1)
+                due = datetime(tomorrow.year, tomorrow.month, tomorrow.day, int(hhmm[:2]), int(hhmm[2:]))
+                await self.reminder_manager.create("household", text, clock.to_epoch(due),
                                                    scope=ReminderScope.SHARED)
             elif name.startswith("reminder_shared_today:"):
                 # Before the household midnight, so "de hoy" names it at any time of day.

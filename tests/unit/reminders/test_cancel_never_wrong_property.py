@@ -34,6 +34,15 @@ asks, every candidate is listed. Through the dispatcher, the numbered
 answer cancels exactly the listed reminder of that number, and it is a
 candidate.
 
+Oracle change (2026-11-18, user answer T032-U1-Q3, key t032_num_fv4_20261118
+in t040-t041/user-decisions-20261110.json): an ordinal answer ("el
+segundo") always names the listed number; a bare number ("dos", "el 2",
+"Nexa, el dos") does so only when no other listed reminder is due at that
+hour (12-hour reading, 14:00 -> 2). On such a clash the expected reply is
+"¿El segundo o el de las 2?" with zero effects, and the ordinal said next
+cancels exactly the listed one. The grids, samples, answer forms and floors
+are unchanged.
+
 Set ``T032_PROP_REPORT`` to a path prefix to write the counts and classes
 as JSON.
 """
@@ -589,6 +598,15 @@ ORDINAL = {1: ("primero", "primera"), 2: ("segundo", "segunda"), 3: ("tercero", 
 CARDINAL = {1: "uno", 2: "dos", 3: "tres"}
 ANSWERS = (lambda k: f"el {ORDINAL[k][0]}", lambda k: f"la {ORDINAL[k][1]}", lambda k: f"el {k}",
            lambda k: CARDINAL[k], lambda k: f"Nexa, el {CARDINAL[k]}", lambda k: f"cancelá el {ORDINAL[k][0]}")
+# The ANSWERS forms that say a bare number, which may also be a due hour (user answer T032-U1-Q3).
+BARE_ANSWERS = frozenset({2, 3, 4})
+
+
+def _hour_question(number: int, named_by: dict[int, set[int]], specs) -> str | None:
+    """The question a bare number must get: another listed reminder is due at that hour (12-hour reading)."""
+    clash = any(number == (specs[i].due.hour % 12 or 12)
+                for listed, named in named_by.items() if listed != number for i in named)
+    return f"¿El {ORDINAL[number][0]} o el {'de la una' if number == 1 else f'de las {number}'}?" if clash else None
 # Every phrase shape above, sampled with a fixed stride, plus fixed shapes from earlier review rounds.
 SAMPLE_STRIDE = 151
 
@@ -654,6 +672,18 @@ async def _dispatch_round(tmp_path, sample, describe, judge, report: str) -> Tal
                 again = await dispatcher.dispatch(user_id="unknown", text=answer)
                 chosen = {index[i] for i in before - await active()}
                 tally.counts["numbered_answers"] += 1
+                question = _hour_question(number, named_by, specs) if n % len(ANSWERS) in BARE_ANSWERS else None
+                if question is not None:
+                    tally.counts["hour_questions"] += 1
+                    if chosen or again.response != question:
+                        tally.counterexample(("bare number at a listed due hour", kind, answer),
+                                             {"said": f"{said} / {answer}", "reminders": describe(specs),
+                                              "got": f"{again.response!r} cancelled {sorted(chosen)}",
+                                              "expected": question})
+                    answer = f"{answer} / el {ORDINAL[number][0]}"
+                    before = await active()
+                    again = await dispatcher.dispatch(user_id="unknown", text=f"el {ORDINAL[number][0]}")
+                    chosen = {index[i] for i in before - await active()}
                 if len(chosen) != 1 or not chosen <= named_by[number]:
                     tally.counterexample(("numbered answer", kind, answer),
                                          {"said": f"{said} / {answer}", "reminders": describe(specs),
@@ -671,6 +701,7 @@ async def test_dispatcher_sample_cancels_only_the_single_candidate_or_the_number
     tally = await _dispatch_round(tmp_path, _dispatch_sample(), _describe, _judge, "dispatcher")
     assert tally.counts["cases"] > 300 and tally.counts["correct_cancel"] > 30, tally.message(tally.data)
     assert tally.counts["numbered_answers"] > 200, tally.message(tally.data)
+    assert tally.counts["hour_questions"] > 10, tally.message(tally.data)  # T032-U1-Q3 exercised
     assert tally.counts["counterexamples"] == 0, tally.message(tally.data)
 
 
@@ -693,6 +724,7 @@ async def test_foreign_word_dispatcher_sample_cancels_only_the_numbered_one(tmp_
     assert tally.counts["cases"] > 300 and tally.counts["correct_cancel"] == 0, tally.message(tally.data)
     assert tally.counts["foreign_word_listed_one"] > 30, tally.message(tally.data)
     assert tally.counts["numbered_answers"] > 200, tally.message(tally.data)
+    assert tally.counts["hour_questions"] > 10, tally.message(tally.data)  # T032-U1-Q3 exercised
     assert tally.counts["counterexamples"] == 0, tally.message(tally.data)
 
 
@@ -1147,4 +1179,5 @@ async def test_extended_dispatcher_sample_cancels_only_the_single_candidate_or_t
     tally = await _dispatch_round(tmp_path, _ext_dispatch_sample(), _ext_describe, _ext_judge, "ext-dispatcher")
     assert tally.counts["cases"] > 300 and tally.counts["correct_cancel"] == 0, tally.message(tally.data)
     assert tally.counts["numbered_answers"] > 200, tally.message(tally.data)
+    assert tally.counts["hour_questions"] > 10, tally.message(tally.data)  # T032-U1-Q3 exercised
     assert tally.counts["counterexamples"] == 0, tally.message(tally.data)

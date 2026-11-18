@@ -141,19 +141,66 @@ _SECOND_REMINDER_RE = re.compile(r"\s+y\s+(?:el|la|los|las)\s+(?:recordatorios?\
 _ONE_AT_A_TIME = "Por voz cancelo de a un recordatorio. "
 # The answer to a numbered reminder choice ("el primero", "la segunda", "el 2",
 # "uno"): one ordinal or number word, after an optional article and "número".
-_CHOICE_NUMBERS = {"primero": 1, "primera": 1, "primer": 1, "uno": 1, "una": 1, "segundo": 2, "segunda": 2,
-                   "dos": 2, "tercero": 3, "tercera": 3, "tercer": 3, "tres": 3, "cuarto": 4, "cuarta": 4,
-                   "cuatro": 4, "quinto": 5, "quinta": 5, "cinco": 5}
+_CHOICE_ORDINALS = {"primero": 1, "primera": 1, "primer": 1, "segundo": 2, "segunda": 2, "tercero": 3,
+                    "tercera": 3, "tercer": 3, "cuarto": 4, "cuarta": 4, "quinto": 5, "quinta": 5}
+_CHOICE_CARDINALS = {"uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5}
 _CHOICE_LEADS = frozenset({"bueno", "dale", "oye", "ey", "che", "si", "cancela", "cancelame", "borra", "elimina",
                            "saca", "quita", "anula"})
+# T032-U1-Q3: the hour of "el de las 2" (12-hour reading) and the 24-hour hours a period allows.
+_CHOICE_HOUR_WORDS = {**_CHOICE_CARDINALS, "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10, "once": 11,
+                      "doce": 12}
+_CHOICE_PERIODS = frozenset({"manana", "tarde", "noche", "madrugada"})
+_SPOKEN_ORDINALS = ("primero", "segundo", "tercero", "cuarto", "quinto")
 
 
-def _reminder_choice_number(text: str) -> int | None:
-    """The number a reminder choice answer names, or None when the turn is anything else.
+class _ChoiceForm(StrEnum):
+    """How an answer to a numbered reminder choice names its reminder (user answer T032-U1-Q3)."""
+
+    ORDINAL = "ordinal"  # "el primero", "la segunda", "el número dos": never an hour, always accepted
+    NUMBER = "number"    # "dos", "el 2", "el dos": may also mean the reminder due at 2
+    HOUR = "hour"        # "el de las 2": only after Nexa offered it ("¿El segundo o el de las 2?")
+
+
+@dataclass(frozen=True)
+class _ChoiceAnswer:
+    """A parsed answer to a numbered reminder choice.
+
+    Attributes:
+        form: Ordinal, bare number or due hour.
+        value: The listed number, or the 12-hour clock hour for ``HOUR``.
+        period: "manana", "tarde", "noche" or "madrugada" said after the hour, else None.
+    """
+
+    form: _ChoiceForm
+    value: int
+    period: str | None = None
+
+
+def _choice_hour(words: list[str]) -> _ChoiceAnswer | None:
+    """'(el) de las 2 (de la tarde)' / '(el) de la una' as an hour answer, else None."""
+    if words[:1] in (["el"], ["la"]):
+        words = words[1:]
+    period = None
+    if len(words) == 6 and words[3:5] == ["de", "la"] and words[5] in _CHOICE_PERIODS:
+        period, words = words[5], words[:3]
+    if len(words) != 3 or words[0] != "de":
+        return None
+    hour = int(words[2]) if words[2].isdecimal() else _CHOICE_HOUR_WORDS.get(words[2])
+    if hour is None or not 1 <= hour <= 12 or words[1] != ("la" if hour == 1 else "las"):
+        return None
+    return _ChoiceAnswer(_ChoiceForm.HOUR, hour, period)
+
+
+def _reminder_choice_answer(text: str, *, hours: bool = False) -> _ChoiceAnswer | None:
+    """The answer a turn gives to a numbered reminder choice, or None when the turn is anything else.
 
     Wake words, fillers, a cancel verb and "por favor" around it are ignored
-    ("Nexa, cancelá el primero, por favor"). A time ("el de las 2") is never an answer: the
-    choice is by the listed number only (user decision t032_design_20261118).
+    ("Nexa, cancelá el primero, por favor"). An ordinal or "el número N" is
+    always the listed number; a bare number ("dos", "el 2") may also be a
+    due hour (user answer T032-U1-Q3). A time ("el de las 2") is an answer
+    only when ``hours`` is set, after Nexa asked "¿El segundo o el de las
+    2?"; otherwise the choice is by the listed number only (user decision
+    t032_design_20261118).
     """
     words = re.findall(r"[^\W_]+", _strip_accents((text or "").lower()))
     while words and (words[0] in WAKE_TERMS or words[0] in _CHOICE_LEADS):
@@ -162,15 +209,42 @@ def _reminder_choice_number(text: str) -> int | None:
         del words[-2:]
     elif words[-1:] == ["porfa"]:
         words.pop()
+    if hours and (hour := _choice_hour(words)) is not None:
+        return hour
     if words[:1] in (["el"], ["la"]):
         words.pop(0)
-    if words[:1] in (["numero"], ["opcion"]):
+    explicit = words[:1] in (["numero"], ["opcion"])
+    if explicit:
         words.pop(0)
     if len(words) != 1:
         return None
-    if words[0].isdecimal():
-        return int(words[0]) if 0 < int(words[0]) < 100 else None
-    return _CHOICE_NUMBERS.get(words[0])
+    word = words[0]
+    if word.isdecimal():
+        number = int(word) if 0 < int(word) < 100 else None
+    elif word in _CHOICE_ORDINALS:
+        return _ChoiceAnswer(_ChoiceForm.ORDINAL, _CHOICE_ORDINALS[word])
+    else:
+        number = _CHOICE_CARDINALS.get(word)
+    if number is None:
+        return None
+    return _ChoiceAnswer(_ChoiceForm.ORDINAL if explicit else _ChoiceForm.NUMBER, number)
+
+
+def _choice_hours(hour: int, period: str | None) -> frozenset[int]:
+    """The 24-hour hours '<hour> (de la <period>)' can mean; 12 reads as 0 and 12."""
+    base = hour % 12
+    return frozenset({"manana": {base}, "madrugada": {base}, "tarde": {base + 12}}.get(period, {base, base + 12}))
+
+
+def _of_hour(hour: int) -> str:
+    """'de la una' / 'de las 2'."""
+    return "de la una" if hour == 1 else f"de las {hour}"
+
+
+def _ordinal_invite(indexes) -> str:
+    """'el primero', 'el primero o el segundo', 'el primero, el segundo o el tercero' (0-based indexes)."""
+    named = [f"el {_SPOKEN_ORDINALS[i]}" for i in indexes]
+    return named[0] if len(named) == 1 else f"{', '.join(named[:-1])} o {named[-1]}"
 
 
 @dataclass(frozen=True)
@@ -180,10 +254,12 @@ class _ReminderChoice:
     Attributes:
         listed: The reminders as spoken, the first one being number 1.
         deadline: ``time.monotonic()`` after which the answer cancels nothing.
+        hours: Nexa asked "¿El segundo o el de las 2?", so "el de las N" answers too (T032-U1-Q3).
     """
 
     listed: tuple
     deadline: float
+    hours: bool = False
 
 # P3-F2 decision on F10: the orchestrated path has no sync or enrollment
 # consumer, so only the explicit whole requests are recognised (the same
@@ -842,15 +918,15 @@ class RequestDispatcher:
         # of the same speaker id in the same room; any other turn drops it.
         choice_key = (user_id, context_room_id if context_room_id is not None else zone_id)
         choice = self._reminder_choices.pop(choice_key, None)
-        number = _reminder_choice_number(text) if choice is not None else None
+        answer = _reminder_choice_answer(text, hours=choice.hours) if choice is not None else None
 
         # 0. P3-F2 D1: a claimed household turn goes straight to its family
         # path. Special commands, _classify_request and the caller's
         # service_filter/query_slots/target never apply to it.
-        household = self.household_intents.classify(text) if number is None else None
-        if household is not None or number is not None:
-            if number is not None:
-                result = await self._answer_reminder_choice(choice, number)
+        household = self.household_intents.classify(text) if answer is None else None
+        if household is not None or answer is not None:
+            if answer is not None:
+                result = await self._answer_reminder_choice(choice, answer, choice_key)
             else:
                 logger.info("[Household] dispatch %s", household.summary())
                 result = await self._dispatch_household(household, text, user_id=user_id, zone_id=zone_id,
@@ -1863,7 +1939,8 @@ class RequestDispatcher:
             inexact: Say that none holds every spoken word ("uno parecido, no igual").
 
         Returns:
-            The count and the numbered list ("2. 1: ...; 2: ...; ¿cuál? Decime el número.").
+            The count and the numbered list ("2. 1: ...; 2: ...; ¿cuál? Decime el primero o el
+            segundo."). The question invites ordinals, which never read as a due hour (T032-U1-Q3).
         """
         listed = candidates[:_REMINDER_CHOICES_SPOKEN]
         labels = [self.reminder_manager.voice_label(r) for r in listed]
@@ -1883,7 +1960,8 @@ class RequestDispatcher:
         if len(candidates) > len(listed):
             count += f"; te digo los {len(listed)} más próximos"
         numbered = "; ".join(f"{n}: {label}" for n, label in enumerate(labels, start=1))
-        question = "¿cuál? Decime el número." if len(listed) > 1 else "¿lo cancelo? Decime: el uno."
+        question = (f"¿cuál? Decime {_ordinal_invite(range(len(listed)))}." if len(listed) > 1
+                    else "¿lo cancelo? Decime: el primero.")
         other = " Si es otro, nombralo con más palabras." if len(candidates) > len(listed) else ""
         return f"{count}. {numbered}; {question}{other}"
 
@@ -1942,28 +2020,76 @@ class RequestDispatcher:
                 TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
                             effect=EffectState.OBSERVED, observation_scope="software_state"))
 
-    async def _answer_reminder_choice(self, choice: _ReminderChoice, number: int) -> DispatchResult:
-        """Resolve a numbered answer by the listed index only (T032-U1).
+    async def _answer_reminder_choice(self, choice: _ReminderChoice, answer: _ChoiceAnswer,
+                                      choice_key: tuple[str, str | None]) -> DispatchResult:
+        """Resolve an answer to a numbered choice by the listed index (T032-U1).
 
         An answer after ``reminders.voice_choice_window_s`` or with a number
-        that was not listed cancels nothing.
+        that was not listed cancels nothing. A bare number that is also the
+        12-hour due hour of another listed reminder asks "¿El segundo o el de
+        las 2?" and cancels nothing (user answer T032-U1-Q3).
         """
         needs_input = TaskOutcome(TaskStatus.NEEDS_INPUT, persistence=PersistenceState.NOT_WRITTEN)
         try:
             if self._monotonic() > choice.deadline:
                 response, outcome = ("Pasó el tiempo para elegir. No cancelé nada; pedímelo de nuevo.",
                                      needs_input)
-            elif not 1 <= number <= len(choice.listed):
-                response, outcome = f"No nombré un {number}. No cancelé nada.", needs_input
             else:
-                response, outcome = await self._cancel_listed_reminder(choice.listed[number - 1])
+                response, chosen = self._read_reminder_choice(choice, answer, choice_key)
+                if chosen is not None:
+                    response, outcome = await self._cancel_listed_reminder(chosen)
+                else:
+                    outcome = needs_input
         except Exception:
             logger.warning("Reminder choice unavailable; no completion receipt")
             return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, "Hubo un error con el recordatorio",
                 intent="reminder", outcome=TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.UNCERTAIN))
-        logger.info("[Reminder] voice choice answered status=%s", outcome.status.value)
+        logger.info("[Reminder] voice choice answered form=%s status=%s", answer.form.value, outcome.status.value)
         return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, outcome.task_completed, response,
                               intent="reminder", outcome=outcome)
+
+    def _read_reminder_choice(self, choice: _ReminderChoice, answer: _ChoiceAnswer,
+                              choice_key: tuple[str, str | None]) -> tuple[str, object | None]:
+        """The listed reminder an answer names, or the question to ask instead (user answer T032-U1-Q3).
+
+        An ordinal ("el segundo", "el número dos") is always the listed
+        number. A bare number ("dos", "el 2") is the listed number only when
+        no other listed reminder is due at that hour (12-hour reading,
+        14:00 -> 2); otherwise Nexa asks "¿El segundo o el de las 2?" and
+        keeps the choice open, now also for "el de las 2".
+
+        Returns:
+            ``("", reminder)`` to cancel it, or ``(question, None)`` with zero effects.
+        """
+        listed = choice.listed
+        if answer.form is _ChoiceForm.HOUR:
+            due = _choice_hours(answer.value, answer.period)
+            matches = [i for i, reminder in enumerate(listed) if self.reminder_manager.due_hour(reminder) in due]
+            if len(matches) == 1:
+                return "", listed[matches[0]]
+            if not matches:
+                return f"No nombré uno {_of_hour(answer.value)}. No cancelé nada.", None
+            self._reopen_reminder_choice(choice, choice_key)
+            return f"Hay más de uno {_of_hour(answer.value)}: decime {_ordinal_invite(matches)}.", None
+        number = answer.value
+        at_hour = [] if answer.form is _ChoiceForm.ORDINAL else [
+            i for i, reminder in enumerate(listed) if (self.reminder_manager.due_hour(reminder) % 12 or 12) == number]
+        if 1 <= number <= len(listed):
+            if any(i != number - 1 for i in at_hour):
+                self._reopen_reminder_choice(choice, choice_key)
+                return f"¿El {_SPOKEN_ORDINALS[number - 1]} o el {_of_hour(number)}?", None
+            return "", listed[number - 1]
+        if not at_hour:
+            return f"No nombré un {number}. No cancelé nada.", None
+        self._reopen_reminder_choice(choice, choice_key)
+        if len(at_hour) == 1:
+            return f"No nombré un {number}. Si querés el {_of_hour(number)}, decime {_ordinal_invite(at_hour)}.", None
+        return f"No nombré un {number}. Hay más de uno {_of_hour(number)}: decime {_ordinal_invite(at_hour)}.", None
+
+    def _reopen_reminder_choice(self, choice: _ReminderChoice, choice_key: tuple[str, str | None]) -> None:
+        """Keep the same listed reminders open for the answer to a hour-or-number question (T032-U1-Q3)."""
+        deadline = self._monotonic() + self.reminder_manager.choice_window_s
+        self._reminder_choices[choice_key] = _ReminderChoice(choice.listed, deadline, hours=True)
 
     def awaits_reminder_choice(self, user_id: str, context_room_id: str | None, text: str) -> bool:
         """Whether ``text`` answers a numbered reminder choice open for this speaker id and room.
@@ -1972,7 +2098,8 @@ class RequestDispatcher:
         to the command producers; an expired choice still counts, so the
         answer is told that nothing was cancelled.
         """
-        return (user_id, context_room_id) in self._reminder_choices and _reminder_choice_number(text) is not None
+        choice = self._reminder_choices.get((user_id, context_room_id))
+        return choice is not None and _reminder_choice_answer(text, hours=choice.hours) is not None
 
     def drop_reminder_choice(self, user_id: str, context_room_id: str | None) -> bool:
         """Drop the numbered reminder choice open for this speaker id and room (review T032-NUM-FV-2).

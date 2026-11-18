@@ -324,6 +324,10 @@ class ReminderManager:
             return "de pasado mañana"
         return f"del {_SPOKEN_WEEKDAYS[day.weekday()]}"
 
+    def due_hour(self, reminder: Reminder) -> int:
+        """Household-clock hour (0-23) of the next trigger, to tell a listed number from a due hour (T032-U1-Q3)."""
+        return self._household_clock.to_local(reminder.trigger_at).hour
+
     def voice_label(self, reminder: Reminder) -> str:
         """Short spoken name of a shared reminder: its text and next time."""
         if reminder.scope is not ReminderScope.SHARED:
