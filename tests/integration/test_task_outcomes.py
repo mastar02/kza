@@ -87,8 +87,14 @@ async def test_missing_or_unsupported_object_never_counts_as_completed(leaves, t
             result = await graph.pipeline.process_command(event())
             assert result["handled"] and not result["task_completed"] and not result["success"]
             assert result["response_completed"]
+            if text == "recuérdame tomar agua":
+                # T031-U2 (deliberate update): creation by voice exists now, and a request without a time
+                # asks for it (NEEDS_INPUT, was the interim UNSUPPORTED); nothing is written.
+                assert result["outcome"]["status"] == "needs_input"
+                assert result["outcome"]["persistence"] == "not_written"
             assert await graph.list_manager.get_all_lists("unknown") == []
             assert await graph.reminder_manager.get_active("unknown") == []
+            assert await graph.reminder_manager.get_active(None, shared_only=True) == []
 
 
 @pytest.mark.parametrize("orchestrated", [False, True])

@@ -48,19 +48,20 @@ def _r(id_, text, family, outcome, path, status, persistence, spoken, *, wake="a
 
 
 SPOKEN_ONE = effects(spoken_utterances=1)
-INTERIM = "interim until T031-U2: honest UNSUPPORTED instead of the seed's needs_input clarification"
+ASKS = ("T031-U2 closes the interim UNSUPPORTED: a request without a time asks for the whole request again "
+        "(NEEDS_INPUT, the seed's clarification)")
 
 C02_ROUTER = (
-    _r("C02-REM-0001", "recordame apagar la luz", "reminder", "unsupported", "fast_reminder", "unsupported",
-       "not_written", "refusal", counts=SPOKEN_ONE, note=INTERIM + "; CORE-02 closed: no grammar turn_off"),
-    _r("C02-REM-0004", "recordame abrir la persiana mañana", "reminder", "unsupported", "fast_reminder",
-       "unsupported", "not_written", "refusal", llm="stub:open@0.9", counts=SPOKEN_ONE, note=INTERIM),
+    _r("C02-REM-0001", "recordame apagar la luz", "reminder", "needs_input", "fast_reminder", "needs_input",
+       "not_written", "clarification", counts=SPOKEN_ONE, note=ASKS + "; CORE-02 closed: no grammar turn_off"),
+    _r("C02-REM-0004", "recordame abrir la persiana mañana", "reminder", "needs_input", "fast_reminder",
+       "needs_input", "not_written", "clarification", llm="stub:open@0.9", counts=SPOKEN_ONE, note=ASKS),
     _r("C02-REM-0008", "recordale a Ana apagar la luz", "reminder", "unsupported", "fast_reminder", "unsupported",
        "not_written", "refusal", llm="stub:turn_off@0.95", counts=SPOKEN_ONE),
-    _r("C02-REM-0013", "recordame apagar la luz", "reminder", "unsupported", "fast_reminder", "unsupported",
-       "not_written", "refusal", wake="textual", llm="stub:turn_off@0.95",
+    _r("C02-REM-0013", "recordame apagar la luz", "reminder", "needs_input", "fast_reminder", "needs_input",
+       "not_written", "clarification", wake="textual", llm="stub:turn_off@0.95",
        counts=effects(llm_8101_calls=1, spoken_utterances=1),
-       note="7B veto accepts; service_filter still forced to None; " + INTERIM),
+       note="7B veto accepts; service_filter still forced to None; " + ASKS),
     _r("C02-TIM-0006", "poné un temporizador de 5 minutos", "timer", "no_turn", None, None, None, "none",
        wake="ambient_strict", llm="stub:noise", counts=effects(llm_8101_calls=1), effect_class="stale_audio"),
     _r("C02-QRY-0002", "¿qué recordatorios hay?", "query", "no_turn", None, None, None, "none", wake="textual",
@@ -94,10 +95,17 @@ C02_ROUTER = (
     _r("C02-REM-0201", "recordame apagar la luz del living a las once de la noche", "reminder", "no_turn", None,
        None, None, "none", llm="stub:unavailable", counts=effects(llm_8101_calls=1),
        note="12 words > unvetoed_max_words: the veto fails closed while :8101 is down"),
-    _r("C02-REM-0202", "recordame apagar la luz del living a las once de la noche", "reminder", "unsupported",
-       "fast_reminder", "unsupported", "not_written", "refusal", llm="stub:turn_off@0.95",
-       counts=effects(llm_8101_calls=1, spoken_utterances=1),
-       note="the reminder exemption lets the gate pass it; the veto accepts; zero HA sends; " + INTERIM),
+    _r("C02-REM-0202", "recordame apagar la luz del living a las once de la noche", "reminder", "completed",
+       "fast_reminder", "completed", "committed", "readback", llm="stub:turn_off@0.95",
+       state="household_clock_tomorrow_at_1000",
+       counts=effects(llm_8101_calls=1, reminder_rows_delta=1, spoken_utterances=1), unit="T031-U2",
+       note="the reminder exemption lets the gate pass it; the veto accepts; zero HA sends; T031-U2 stores a "
+            "text-only shared reminder and says it is only a notice (home actions are T031-U5)"),
+    _r("C02-ALM-0301", "cancelá la alarma de las 7", "reminder", "needs_input", "fast_reminder", "needs_input",
+       "not_written", "clarification", state="reminder_shared_active:alarma;timer_running_unnamed;queued_request",
+       counts=SPOKEN_ONE, effect_class="wrong_family", unit="T031-U2",
+       note="user answer T030-U1-Q8 (A): the alarm with a clock time is the reminder's, listed by number; the "
+            "timer and the queue are untouched"),
     _r("C02-LST-0201", "agregá leche a la lista de compras", "list", "no_turn", None, None, None, "none",
        engine="whisper", llm="stub:noise", state="shared_list_compras", counts=effects(llm_8101_calls=1),
        effect_class="stale_audio", note="transcript-based wake engine: every claimed turn needs the veto"),

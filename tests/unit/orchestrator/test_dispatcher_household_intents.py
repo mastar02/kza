@@ -25,6 +25,8 @@ def _d(id_, text, family, effect_class, outcome, path, status, persistence, spok
 
 def _refused(id_, text, family, path="fast_reminder", *, sf=None, state=None, effect_class="unauthorized_effect",
              status="unsupported", spoken="refusal", **kw):
+    if kw.get("note") == CREATE_ASKS:
+        status, spoken = "needs_input", "clarification"
     conditions = {k: v for k, v in (("service_filter", sf), ("state", state)) if v}
     return _d(id_, text, family, effect_class, status, path, status, "not_written", spoken,
               conditions=conditions, **kw)
@@ -41,15 +43,15 @@ def _timer(id_, text, outcome, persistence, spoken, *, counts=ZERO, state=None, 
 CREATED = effects(timer_delta=1)
 CHANGED = effects(timer_transitions=1)
 
-INTERIM_CREATE = ("interim: reminder creation by voice lands with T031-U2; until then the existing honest "
-                  "'Todavía no puedo crear ese recordatorio por voz' (UNSUPPORTED) instead of the seed's "
-                  "needs_input clarification; every counter as the seed")
+CREATE_ASKS = ("T031-U2 closes the P3-F2 interim UNSUPPORTED: creation exists, and a request it cannot schedule "
+               "without a guess asks for the whole request again (NEEDS_INPUT, the seed's clarification); "
+               "every counter as the seed")
 
 # 'recordame/recuérdame' x {apagar la luz, poner música, agregar X a la lista, abrir la persiana}
 # x service_filter {turn_on, turn_off}: zero HA sends, music calls or list mutations.
 _REMINDER_GRID = [
     _refused(f"C02-REM-{101 + i:04d}", f"{verb} {complement}", "reminder", sf=sf, state="shared_list_compras",
-             finding="CORE-02", note=INTERIM_CREATE)
+             finding="CORE-02", note=CREATE_ASKS)
     for i, (verb, complement, sf) in enumerate(
         (verb, complement, sf)
         for verb in ("recordame", "recuérdame")
@@ -59,19 +61,19 @@ _REMINDER_GRID = [
 ]
 
 C02_DISPATCHER = tuple(_REMINDER_GRID) + (
-    _refused("C02-REM-0002", "recordame poner música a las ocho", "reminder", seed="C02-REM-0002", note=INTERIM_CREATE),
+    _refused("C02-REM-0002", "recordame poner música a las ocho", "reminder", seed="C02-REM-0002", note=CREATE_ASKS),
     _refused("C02-REM-0003", "recordame agregar leche a la lista de compras", "reminder",
-             state="shared_list_compras", seed="C02-REM-0002", note=INTERIM_CREATE),
+             state="shared_list_compras", seed="C02-REM-0002", note=CREATE_ASKS),
     _refused("C02-REM-0006", "recordame actualizar la lista", "reminder", effect_class="false_confirmation",
-             state="shared_list_compras", finding="F10", note=INTERIM_CREATE),
+             state="shared_list_compras", finding="F10", note=CREATE_ASKS),
     _refused("C02-REM-0007", "recordame registrar el gasto del super", "reminder",
-             effect_class="false_confirmation", finding="F10", note=INTERIM_CREATE),
-    _refused("C02-REM-0117", "haceme acordar de apagar la luz", "reminder", sf="turn_off", note=INTERIM_CREATE),
-    _refused("C02-REM-0118", "acordame de cerrar la persiana", "reminder", sf="turn_off", note=INTERIM_CREATE),
-    _refused("C02-REM-0119", "avisame cuando termine el lavarropas", "reminder", note=INTERIM_CREATE),
-    _refused("C02-REM-0120", "no me dejes olvidar sacar la basura", "reminder", note=INTERIM_CREATE),
+             effect_class="false_confirmation", finding="F10", note=CREATE_ASKS),
+    _refused("C02-REM-0117", "haceme acordar de apagar la luz", "reminder", sf="turn_off", note=CREATE_ASKS),
+    _refused("C02-REM-0118", "acordame de cerrar la persiana", "reminder", sf="turn_off", note=CREATE_ASKS),
+    _refused("C02-REM-0119", "avisame cuando termine el lavarropas", "reminder", note=CREATE_ASKS),
+    _refused("C02-REM-0120", "no me dejes olvidar sacar la basura", "reminder", note=CREATE_ASKS),
     _refused("C02-REM-0121", "nexa recordame prender la luz del living", "reminder", sf="turn_on",
-             note=INTERIM_CREATE),
+             note=CREATE_ASKS),
     _refused("C02-REM-0122", "recordame cancelar el turno del médico", "reminder", state="queued_request",
              note="the cancel verb is reminder content: the queued request is not cancelled"),
     _refused("C02-REM-0123", "recordame tomar la pastilla a las 8 y apagá la luz", "reminder", sf="turn_off",
@@ -164,7 +166,62 @@ C02_DISPATCHER = tuple(_REMINDER_GRID) + (
     _timer("C02-ALM-0111", "apagá la alarma", "needs_input", "not_written", "clarification", sf="turn_off",
            state="light_match", effect_class="unauthorized_effect",
            note="R3: no timer: 'No hay temporizadores activos.'; still no home action"),
-    _refused("C02-ALM-0102", "poné una alarma a las 7", "reminder", seed="C02-ALM-0002", note=INTERIM_CREATE),
+    _refused("C02-ALM-0102", "poné una alarma a las 7", "reminder", seed="C02-ALM-0002", note=CREATE_ASKS),
+    # T031-U2: voice reminder creation (text only), and user answer T030-U1-Q8 for an alarm with a clock time.
+    *(_d(id_, text, "reminder", effect_class, "completed", "fast_reminder", "completed", "committed", "readback",
+         counts=effects(reminder_rows_delta=1), conditions={k: v for k, v in (("state", state), ("service_filter", sf))
+                                                            if v},
+         unit="T031-U2", finding="CORE-02", note=note)
+      for id_, text, state, sf, effect_class, note in (
+          ("C02-REM-0301", "recordame en 10 minutos sacar la pasta", "queued_request", None, "false_confirmation",
+           "a shared household row from the COMMITTED insert; the queue is untouched"),
+          ("C02-REM-0302", "recordame regar las plantas todos los días a las 7 de la mañana", None, None,
+           "false_confirmation", "recurring: daily"),
+          ("C02-REM-0303", "recordame apagar la luz del living en 20 minutos", "light_match", "turn_off",
+           "unauthorized_effect", "text only (home actions are T031-U5): no HA send, no vector search"),
+          ("C02-REM-0304", "recordame sacar la basura mañana a las 8 de la noche",
+           "household_clock_tomorrow_at_1000", None, "false_confirmation", "one-off on the household calendar"),
+          ("C02-REM-0305", "recordame poner música a las 9 de la noche", "household_clock_tomorrow_at_1000", None,
+           "unauthorized_effect", "a music complement stays reminder text and never plays"),
+          ("C02-ALM-0203", "poné una alarma a las 7 de la tarde", "household_clock_tomorrow_at_1000", None,
+           "wrong_family", "R3a: an alarm with a clock time is a shared reminder, never a timer"),
+          ("C02-ALM-0204", "poné un despertador mañana a las 7 de la mañana", "household_clock_tomorrow_at_1000",
+           None, "wrong_family", "R3a with 'despertador'"),
+      )),
+    *(_refused(id_, text, "reminder", state=state, status="needs_input", spoken="clarification",
+               effect_class="false_confirmation", unit="T031-U2", finding="CORE-02", note=note)
+      for id_, text, state, note in (
+          ("C02-REM-0010", "recordame tomar la pastilla a las 8", None, "seed C02-REM-0010: ambiguous meridiem"),
+          ("C02-REM-0311", "recordame mañana a las 9 de la mañana", "household_clock_tomorrow_at_1000",
+           "missing text"),
+          ("C02-REM-0312", "recordame a las 9 de la mañana llamar al médico", "household_clock_tomorrow_at_1000",
+           "past today: asked, never moved to tomorrow (T031-Q1 e)"),
+          ("C02-REM-0313", "recordame el 5 de diciembre pagar la luz", None, "a date is not read: asked"),
+          ("C02-REM-0314", "recordame a las 20 y 5 sacar la basura", "household_clock_tomorrow_at_1000",
+           "single-digit minutes followed by text (user answer T031-Q2: ask)"),
+          ("C02-REM-0315", "recordame en la cocina apagar el horno en 10 minutos", None,
+           "a spoken room is asked again until T031-U3 resolves it"),
+          ("C02-REM-0316", "poneme el despertador a las 7", None, "R3a: ambiguous meridiem"),
+      )),
+    _refused("C02-ALM-0205", "cancelá la alarma de las 7", "reminder", status="needs_input", spoken="clarification",
+             state="reminder_shared_active:alarma;timer_running_unnamed;queued_request", effect_class="wrong_family",
+             unit="T031-U2",
+             note="user answer T030-U1-Q8 (A): the alarm with a clock time is the reminder's; listed by number "
+                  "(the spoken time never picks one), nothing cancelled, the timer and the queue untouched"),
+    _refused("C02-ALM-0206", "cancelá la alarma de las 7", "reminder", status="needs_input", spoken="clarification",
+             state="timer_running_unnamed", effect_class="wrong_family", unit="T031-U2",
+             note="T030-U1-Q8: no alarm reminder: 'No hay alarmas con hora guardadas'; the running timer is "
+                  "never cancelled in its place"),
+    _d("C02-ALM-0207", "el primero", "reminder", "unauthorized_effect", "completed", "fast_reminder", "completed",
+       "committed", "readback", counts=effects(reminder_transitions=1),
+       conditions={"state": "reminder_shared_active:alarma;reminder_shared_active:tomar agua;timer_running_unnamed;"
+                            "reminder_choice_open:cancelá la alarma de las 7"},
+       unit="T031-U2", note="T030-U1-Q8: the numbered answer cancels the listed alarm only; timer untouched"),
+    _d("C02-ALM-0208", "qué alarmas hay a las 7", "reminder", "privacy_disclosure", "completed", "fast_reminder",
+       "completed", "not_required", "answer",
+       conditions={"state": "reminder_shared_active:alarma;reminder_private_active:alarma privada;"
+                            "timer_running_unnamed"},
+       unit="T031-U2", note="T030-U1-Q8: lists the shared alarms only"),
     _timer("C02-ALM-0103", "poné una alarma", "needs_input", "not_written", "clarification", seed="C02-ALM-0004",
            effect_class="wrong_family", note="Q4: neither a duration nor a time: KZA asks"),
     _d("C02-RTN-0001", "cuando juega Peñarol", "routine", "wrong_family", "completed", "slow_llm", "completed",
@@ -370,14 +427,25 @@ async def test_claimed_turn_carries_origin_and_zone(leaves):
 
 
 async def test_reminder_creation_text_never_reaches_query_or_cancel_branches(leaves):
-    """The classified operation, not keywords inside the content, picks the reminder branch."""
+    """The classified operation, not keywords inside the content, picks the reminder branch.
+
+    T031-U2 changed the expectation deliberately: without a time the creation asks for it (NEEDS_INPUT, was the
+    interim UNSUPPORTED); with a time it creates a reminder whose text holds the words, and the active reminder
+    named in it is never cancelled.
+    """
     dispatcher = leaves.dispatcher()
     await leaves.apply_state(dispatcher, "reminder_shared_active:tomar agua")
     before = leaves.snapshot()
     for text in ("recordame cancelar el recordatorio de tomar agua", "recordame ver qué recordatorios hay"):
         result = await dispatcher.dispatch(user_id="unknown", text=text)
-        assert result.path is PathType.FAST_REMINDER and result.outcome.status.value == "unsupported"
+        assert result.path is PathType.FAST_REMINDER and result.outcome.status.value == "needs_input"
     assert leaves.effects(before) == ZERO
+    result = await dispatcher.dispatch(user_id="unknown", text="recordame en 10 minutos cancelar el recordatorio "
+                                                               "de tomar agua")
+    assert result.outcome.status.value == "completed"
+    assert leaves.effects(before) == effects(reminder_rows_delta=1)
+    texts = sorted(r.text for r in await leaves.reminder_manager.get_active(None, shared_only=True))
+    assert texts == ["cancelar el recordatorio de tomar agua", "tomar agua"]
 
 
 async def test_orchestrator_forwards_the_shared_classifier(tmp_path):
@@ -1455,3 +1523,247 @@ async def test_olvidate_ya_del_recordatorio_cancels_exactly_that_reminder(leaves
     assert counted == effects(reminder_transitions=1) and result.outcome.task_completed
     assert result.response.startswith("Cancelé el recordatorio tomar agua a las ")
     assert await _states(leaves) == {"sacar la basura": "active"}
+
+
+# --------------------------------------------------------------------------
+# T031-U2: voice reminder creation (text only) on the P3-F2 reminder family.
+# --------------------------------------------------------------------------
+
+def _frozen_leaves(leaves, dispatcher, local_now):
+    """Freeze the household clock of ``dispatcher`` and of the reminder manager at ``local_now``."""
+    from src.core.household_clock import HouseholdClock
+    clock = HouseholdClock(time_source=lambda: local_now.timestamp())
+    dispatcher.household_clock = clock
+    leaves.reminder_manager._household_clock = clock
+    return clock
+
+
+def _monday_10():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return datetime(2026, 11, 16, 10, 0, tzinfo=ZoneInfo("America/Montevideo"))
+
+
+def _rows(db):
+    with sqlite3.connect(db) as conn:
+        return [tuple(r) for r in conn.execute(
+            "SELECT user_id, scope, text, trigger_at, recurrence, ha_actions, state FROM reminders")]
+
+
+EXAMPLE = "recordame sacar la basura mañana a las 8 de la noche"
+ALARM_EXAMPLE = "poné una alarma mañana a las 7 de la mañana"
+
+
+@pytest.mark.parametrize(("text", "response"), [
+    ("recordame mañana a las 9 de la mañana",
+     f"¿Qué querés que te recuerde? Decímelo completo, por ejemplo: {EXAMPLE}."),
+    ("recuérdame tomar agua", f"¿Para cuándo? Decímelo completo, con el día y la hora, por ejemplo: {EXAMPLE}."),
+    ("recordame sacar turno en un rato",
+     f"¿Para cuándo? Decímelo completo, con el día y la hora, por ejemplo: {EXAMPLE}."),
+    ("recordame el lunes a las 9 de la mañana sacar turno",
+     "No sé para qué día es. Decímelo completo nombrando el día, hoy, mañana o el martes, por ejemplo: "
+     f"{EXAMPLE}."),
+    ("recordame tomar la pastilla a las 8",
+     f"¿Es de la mañana, de la tarde o de la noche? Decímelo completo con la hora, por ejemplo: {EXAMPLE}."),
+    ("recordame a las 9 de la mañana llamar al médico",
+     f"Esa hora de hoy ya pasó. Si es para mañana, decímelo completo con el día, por ejemplo: {EXAMPLE}."),
+    ("recordame a las 25 llamar",
+     f"No entendí bien la fecha o la hora. Decímelo completo con un día y una hora exacta, por ejemplo: {EXAMPLE}."),
+    ("recordame el 5 de diciembre pagar la luz",
+     "Por ahora programo recordatorios para hoy, mañana, pasado mañana, un día de la semana, todos los días o de "
+     f"lunes a viernes; no por fecha ni por mes. Decímelo completo así, por ejemplo: {EXAMPLE}."),
+    ("recordame a las 20 y 5 sacar la basura",
+     "No sé si ese número es parte de la hora o de lo que hay que recordar. Decímelo completo con una coma "
+     "después de la hora o diciendo minutos, por ejemplo: a las 20 y 5 minutos."),
+    ("recordame a las 8 de la noche y a las 9 de la noche llamar",
+     f"Escuché más de una hora. Decímelo completo con una sola, por ejemplo: {EXAMPLE}."),
+    ("recordame en 10 minutos llamar a las 8 de la noche",
+     f"Escuché más de una hora. Decímelo completo con una sola, por ejemplo: {EXAMPLE}."),
+    ("recordame en la cocina apagar el horno en 10 minutos",
+     "Por ahora no elijo en qué habitación suena un recordatorio. Decímelo de nuevo sin nombrar la habitación."),
+    ("recordarme sacar la basura a las 8 de la noche",
+     f"No entendí el recordatorio. Decímelo completo, por ejemplo: {EXAMPLE}."),
+    ("poné una alarma a las 7",
+     f"¿Es de la mañana, de la tarde o de la noche? Decímelo completo con la hora, por ejemplo: {ALARM_EXAMPLE}."),
+    ("poné un despertador a las 9 de la mañana",
+     f"Esa hora de hoy ya pasó. Si es para mañana, decímelo completo con el día, por ejemplo: {ALARM_EXAMPLE}."),
+])
+async def test_each_ambiguity_asks_for_the_whole_request_and_writes_nothing(leaves, text, response):
+    """Single turn, always ask (user answers Q7/Q8): a precise question, NEEDS_INPUT, zero rows."""
+    dispatcher = leaves.dispatcher()
+    _frozen_leaves(leaves, dispatcher, _monday_10())
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text=text)
+    assert (result.path, result.success, result.response) == (PathType.FAST_REMINDER, False, response)
+    assert (result.outcome.status.value, result.outcome.persistence.value) == ("needs_input", "not_written")
+    assert leaves.effects(before) == ZERO
+
+
+async def test_every_ambiguity_code_has_its_question():
+    from src.orchestrator.dispatcher import _REMINDER_QUESTIONS
+    from src.reminders.voice_request import ReminderAmbiguity
+    assert set(_REMINDER_QUESTIONS) == set(ReminderAmbiguity)
+
+
+@pytest.mark.parametrize(("text", "row", "response"), [
+    ("recordame sacar la basura mañana a las 8 de la noche", ("sacar la basura", (2026, 11, 17, 20, 0), None),
+     "Anotado: sacar la basura, mañana a las 20:00."),
+    ("Nexa, recuérdame pasado mañana a las 3 de la tarde ir al banco", ("ir al banco", (2026, 11, 18, 15, 0), None),
+     "Anotado: ir al banco, pasado mañana a las 15:00."),
+    ("acordame de pagar la luz para el jueves a las 9 de la mañana", ("pagar la luz", (2026, 11, 19, 9, 0), None),
+     "Anotado: pagar la luz, el jueves a las 09:00."),
+    ("recordame en 20 minutos sacar la pizza", ("sacar la pizza", (2026, 11, 16, 10, 20), None),
+     "Anotado: sacar la pizza, hoy a las 10:20."),
+    ("avisame a las 21 que llame a mamá", ("llame a mamá", (2026, 11, 16, 21, 0), None),
+     "Anotado: llame a mamá, hoy a las 21:00."),
+    ("recordame regar las plantas todos los días a las 7 de la mañana",
+     ("regar las plantas", (2026, 11, 17, 7, 0), "daily"), "Anotado: regar las plantas, todos los días a las 07:00."),
+    ("recordame sacar la basura de lunes a viernes a las 20", ("sacar la basura", (2026, 11, 16, 20, 0), "weekdays"),
+     "Anotado: sacar la basura, de lunes a viernes a las 20:00."),
+    ("recordame llamar a la abuela todos los sábados a las 10 de la mañana",
+     ("llamar a la abuela", (2026, 11, 21, 10, 0), "weekly:6"),
+     "Anotado: llamar a la abuela, todos los sábados a las 10:00."),
+    ("poné una alarma a las 7 de la tarde", ("alarma", (2026, 11, 16, 19, 0), None),
+     "Anotado: alarma, hoy a las 19:00."),
+    ("poné un despertador mañana a las 6 y media de la mañana", ("despertador", (2026, 11, 17, 6, 30), None),
+     "Anotado: despertador, mañana a las 06:30."),
+    ("programá la alarma para las 19 para ir al médico", ("alarma para ir al médico", (2026, 11, 16, 19, 0), None),
+     "Anotado: alarma para ir al médico, hoy a las 19:00."),
+    ("recordame apagar la luz del living a las 11 de la noche",
+     ("apagar la luz del living", (2026, 11, 16, 23, 0), None),
+     "Anotado: apagar la luz del living, hoy a las 23:00. Es solo un aviso: eso no lo hago yo."),
+    ("recordame poner música a las 9 de la noche", ("poner música", (2026, 11, 16, 21, 0), None),
+     "Anotado: poner música, hoy a las 21:00. Es solo un aviso: eso no lo hago yo."),
+])
+@pytest.mark.parametrize("speaker", ["unknown", "ana"])
+async def test_voice_creation_commits_one_shared_household_row(leaves, text, row, response, speaker):
+    """T031-U2: user_id 'household', scope shared, no home actions, whatever label spoke; success from the commit."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    dispatcher = leaves.dispatcher()
+    _frozen_leaves(leaves, dispatcher, _monday_10())
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id=speaker, text=text, service_filter="turn_off")
+    assert (result.path, result.success, result.response) == (PathType.FAST_REMINDER, True, response)
+    outcome = result.outcome
+    assert (outcome.status.value, outcome.persistence.value, outcome.effect.value) == (
+        "completed", "committed", "observed")
+    assert outcome.task_completed
+    assert leaves.effects(before) == effects(reminder_rows_delta=1)
+    expected = datetime(*row[1], tzinfo=ZoneInfo("America/Montevideo")).timestamp()
+    assert _rows(leaves.reminders_db) == [("household", "shared", row[0], expected, row[2], None, "active")]
+
+
+async def test_a_store_failure_is_uncertain_and_never_confirmed(leaves, monkeypatch):
+    """Success only from the committed insert; an exception from the store is UNCERTAIN (the row may exist)."""
+    from unittest.mock import AsyncMock
+    dispatcher = leaves.dispatcher()
+    monkeypatch.setattr(leaves.reminder_store, "create", AsyncMock(side_effect=sqlite3.OperationalError("locked")))
+    result = await dispatcher.dispatch(user_id="unknown", text="recordame en 10 minutos sacar la pasta")
+    assert (result.path, result.success) == (PathType.FAST_REMINDER, False)
+    assert result.response == ("No pude confirmar si el recordatorio quedó guardado. Preguntame qué recordatorios "
+                               "hay antes de pedirlo de nuevo.")
+    assert (result.outcome.status.value, result.outcome.persistence.value) == ("uncertain", "uncertain")
+    assert not result.outcome.task_completed
+    leaves.reminder_store.create.assert_awaited_once()
+
+
+async def test_an_unreadable_household_clock_writes_nothing(leaves):
+    from src.core.household_clock import HouseholdClock
+    dispatcher = leaves.dispatcher()
+    dispatcher.household_clock = HouseholdClock(time_source=lambda: float("nan"))
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text="recordame en 10 minutos sacar la pasta")
+    assert (result.path, result.response) == (PathType.FAST_REMINDER, "No pude leer el reloj de la casa. No guardé nada.")
+    assert (result.outcome.status.value, result.outcome.persistence.value) == ("failed", "not_written")
+    assert leaves.effects(before) == ZERO
+
+
+async def test_voice_creation_never_stores_home_actions(leaves, monkeypatch):
+    """T031-U2 is text only: ReminderManager.create is called with ha_actions=None, the household and shared."""
+    from unittest.mock import AsyncMock
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, "light_match")
+    create = AsyncMock(wraps=leaves.reminder_manager.create)
+    monkeypatch.setattr(leaves.reminder_manager, "create", create)
+    result = await dispatcher.dispatch(user_id="ana", text="recordame apagar la luz del living en 10 minutos",
+                                       service_filter="turn_off", target_entity_id="light.living")
+    assert result.outcome.status.value == "completed"
+    args, kwargs = create.await_args
+    assert args[:2] == ("household", "apagar la luz del living")
+    assert kwargs["ha_actions"] is None and kwargs["scope"] is ReminderScope.SHARED
+    assert leaves.home.await_count == 0 and leaves.chroma.asearch_command.await_count == 0
+
+
+async def test_unclaimed_reminder_words_ask_how_to_create_one(leaves):
+    """No reminder verb at the head: never read as a creation; the reply says how to ask for one."""
+    dispatcher = leaves.dispatcher()
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text="creá un recordatorio para mañana a las 8 de la noche")
+    assert (result.path, result.success) == (PathType.FAST_REMINDER, False)
+    assert result.response == f"Para crear un recordatorio decímelo así, por ejemplo: {EXAMPLE}."
+    assert (result.outcome.status.value, result.outcome.persistence.value) == ("needs_input", "not_written")
+    assert leaves.effects(before) == ZERO
+
+
+async def test_a_created_reminder_is_listed_and_cancelled_by_voice(leaves):
+    """Create -> query -> cancel on the same shared row (T031-U2 with T032-U1)."""
+    dispatcher = leaves.dispatcher()
+    _frozen_leaves(leaves, dispatcher, _monday_10())
+    created = await dispatcher.dispatch(user_id="unknown", text="recordame sacar la basura mañana a las 8 de la noche")
+    assert created.success
+    listed = await dispatcher.dispatch(user_id="unknown", text="¿qué recordatorios hay?")
+    assert "sacar la basura a las 20:00" in listed.response
+    before = leaves.snapshot()
+    cancelled = await dispatcher.dispatch(user_id="unknown", text="cancelá el recordatorio de sacar la basura")
+    assert cancelled.response == "Cancelé el recordatorio sacar la basura a las 20:00."
+    assert leaves.effects(before) == effects(reminder_transitions=1)
+
+
+async def test_clock_alarm_cancel_lists_the_alarms_and_the_answer_cancels_only_that_one(leaves):
+    """T030-U1-Q8 (A): 'cancelá la alarma de las 7' never cancels the timer nor guesses by the spoken time."""
+    dispatcher = leaves.dispatcher()
+    _frozen_leaves(leaves, dispatcher, _monday_10())
+    await leaves.apply_state(dispatcher, "timer_running_unnamed")
+    for text in ("poné una alarma a las 7 de la tarde", "poné un despertador mañana a las 7 de la mañana",
+                 "recordame sacar la basura a las 7 de la tarde"):
+        assert (await dispatcher.dispatch(user_id="unknown", text=text)).success
+    before = leaves.snapshot()
+    asked = await dispatcher.dispatch(user_id="unknown", text="cancelá la alarma de las 7")
+    assert asked.response == ("Hay 2. 1: alarma a las 19:00; 2: despertador a las 07:00; ¿cuál? Decime el primero "
+                              "o el segundo.")
+    assert asked.outcome.status.value == "needs_input" and leaves.effects(before) == ZERO
+    answered = await dispatcher.dispatch(user_id="unknown", text="el segundo")
+    assert answered.response == "Cancelé el recordatorio despertador a las 07:00."
+    assert leaves.effects(before) == effects(reminder_transitions=1)
+    remaining = sorted(r.text for r in await leaves.reminder_manager.get_active(None, shared_only=True))
+    assert remaining == ["alarma", "sacar la basura"]
+    assert [t.state.value for t in leaves.timers.get_all_timers()] == ["running"]
+
+
+async def test_clock_alarm_query_reads_the_shared_alarms_only(leaves):
+    dispatcher = leaves.dispatcher()
+    _frozen_leaves(leaves, dispatcher, _monday_10())
+    await leaves.apply_state(dispatcher, "timer_running_unnamed")
+    assert (await dispatcher.dispatch(user_id="unknown", text="¿hay alguna alarma a las 7?")).response == (
+        "No hay alarmas con hora guardadas.")
+    await leaves.apply_state(dispatcher, "reminder_private_active:alarma privada")
+    await dispatcher.dispatch(user_id="unknown", text="poné una alarma a las 7 de la tarde")
+    await dispatcher.dispatch(user_id="unknown", text="poné un despertador para el miércoles a las 7 de la mañana")
+    await dispatcher.dispatch(user_id="unknown", text="recordame sacar la basura a las 8 de la noche")
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="ana", text="qué alarmas hay a las 7")
+    assert result.response == ("Alarmas guardadas: alarma, hoy a las 19:00. despertador, el miércoles a las "
+                               "07:00.")
+    assert result.outcome.status.value == "completed" and leaves.effects(before) == ZERO
+    assert "privada" not in result.response
+
+
+async def test_an_alarm_without_a_clock_time_still_reaches_the_timers(leaves):
+    """T030-U1-Q8 (A): without a clock time the alarm stays a timer, even with an alarm reminder active."""
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, "reminder_shared_active:alarma;timer_running_unnamed")
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text="cancelá la alarma")
+    assert result.path is PathType.FAST_TIMER
+    assert leaves.effects(before) == effects(timer_transitions=1)

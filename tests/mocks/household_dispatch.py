@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+from src.core.household_clock import HouseholdClock
 from src.core.task_outcome import PersistenceState, TaskOutcome, TaskStatus
 from src.lists.list_manager import ListManager
 from src.lists.list_store import ListStore
@@ -148,6 +149,18 @@ class CountedLeaves:
                 # The open choice's window has passed (reminders.voice_choice_window_s).
                 monotonic, window = dispatcher._monotonic, self.reminder_manager.choice_window_s
                 dispatcher._monotonic = lambda: monotonic() + window + 1
+            elif name.startswith("household_clock_tomorrow_at_"):
+                # T031-U2: the household clock of the dispatcher and of the reminder manager frozen at HH:MM of
+                # tomorrow's household date, so spoken days and times are fixed whatever the time of the run
+                # and every trigger they produce is still in the future.
+                hhmm = name.removeprefix("household_clock_tomorrow_at_")
+                real = self.reminder_manager._household_clock
+                tomorrow = real.now_local().date() + timedelta(days=1)
+                frozen = real.to_epoch(datetime(tomorrow.year, tomorrow.month, tomorrow.day, int(hhmm[:2]),
+                                                int(hhmm[2:])))
+                clock = HouseholdClock(time_source=lambda: frozen)
+                dispatcher.household_clock = clock
+                self.reminder_manager._household_clock = clock
             elif name == "light_match":
                 self.chroma.asearch_command.return_value = LIGHT_MATCH
             elif name.startswith(("timer_running:", "timer_paused:")):

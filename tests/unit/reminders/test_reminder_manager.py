@@ -368,3 +368,38 @@ def test_the_voice_choice_window_must_be_a_positive_number(store, window):
 def test_the_voice_choice_window_defaults_and_reads_the_settings(store):
     assert ReminderManager(store=store).choice_window_s == 30.0
     assert ReminderManager(store=store, config={"voice_choice_window_s": 12}).choice_window_s == 12.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("days", "hour", "minute", "recurrence", "spoken"), [
+    (0, 20, 0, None, "hoy a las 20:00"),
+    (1, 7, 5, None, "mañana a las 07:05"),
+    (2, 9, 0, None, "pasado mañana a las 09:00"),
+    (3, 9, 0, None, "el sábado a las 09:00"),
+    (6, 9, 0, None, "el martes a las 09:00"),
+    (7, 9, 0, None, "el miércoles 18 a las 09:00"),
+    (1, 8, 0, "daily", "todos los días a las 08:00"),
+    (1, 20, 0, "weekdays", "de lunes a viernes a las 20:00"),
+    (3, 10, 0, "weekly:6", "todos los sábados a las 10:00"),
+    (5, 10, 0, "weekly:1", "todos los lunes a las 10:00"),
+    (6, 10, 0, "weekly:7", "todos los domingos a las 10:00"),
+    (1, 8, 0, "monthly:12", "mañana a las 08:00 y se repite"),
+])
+async def test_spoken_schedule_reads_back_the_household_day_and_time(store, foreign_process_tz, days, hour, minute,
+                                                                     recurrence, spoken):
+    """T031-U2: the voice read-back of a new reminder, on the household calendar (Wednesday 11 at 06:00)."""
+    manager = _manager_at(store, _local(2026, 11, 11, 6, 0))
+    reminder = await manager.create(user_id="household", text="x", recurrence=recurrence,
+                                    trigger_at=_local(2026, 11, 11 + days, hour, minute).timestamp(),
+                                    scope=ReminderScope.SHARED)
+    assert manager.spoken_schedule(reminder) == spoken
+
+
+@pytest.mark.asyncio
+async def test_spoken_schedule_counts_days_on_the_household_calendar(store, foreign_process_tz):
+    """At 23:30 local (02:30 UTC of the next day), 00:15 is "mañana", never "hoy"."""
+    manager = ReminderManager(store=store, household_clock=HouseholdClock(time_source=UTC_NEXT_DAY.timestamp))
+    reminder = await _shared(manager, "x", _local(2026, 11, 12, 0, 15).timestamp())
+    assert manager.spoken_schedule(reminder) == "mañana a las 00:15"
+    today = await _shared(manager, "y", _local(2026, 11, 11, 23, 45).timestamp())
+    assert manager.spoken_schedule(today) == "hoy a las 23:45"

@@ -55,6 +55,8 @@ _RELATIVE_VERBS = frozenset({
 })
 # Weekday names a clarification speaks ("del miércoles"), Monday first.
 _SPOKEN_WEEKDAYS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+# A weekly recurrence read back ("todos los sábados"), Monday first (weekly:1 .. weekly:7).
+_SPOKEN_WEEKDAYS_PLURAL = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábados", "domingos")
 
 
 def _fold(text: str) -> str:
@@ -323,6 +325,38 @@ class ReminderManager:
         if offset == 2:
             return "de pasado mañana"
         return f"del {_SPOKEN_WEEKDAYS[day.weekday()]}"
+
+    def spoken_schedule(self, reminder: Reminder) -> str:
+        """When a reminder is due, as a voice read-back on the household calendar (T031-U2).
+
+        One-off: "hoy", "mañana", "pasado mañana", "el <weekday>" within the
+        week or "el <weekday> <day>" further away, then "a las HH:MM".
+        Recurring: "todos los días", "de lunes a viernes" or "todos los
+        <weekday>s" with the time; any other recurrence keeps the first day
+        and says that it repeats.
+        """
+        local = self._household_clock.to_local(reminder.trigger_at)
+        at = f"a las {self._household_clock.format_time(reminder.trigger_at)}"
+        if reminder.recurrence == "daily":
+            return f"todos los días {at}"
+        if reminder.recurrence == "weekdays":
+            return f"de lunes a viernes {at}"
+        weekly = re.fullmatch(r"weekly:([1-7])", reminder.recurrence or "")
+        if weekly is not None:
+            return f"todos los {_SPOKEN_WEEKDAYS_PLURAL[int(weekly.group(1)) - 1]} {at}"
+        offset = (local.date() - self._household_clock.local_date()).days
+        if offset == 0:
+            day = "hoy"
+        elif offset == 1:
+            day = "mañana"
+        elif offset == 2:
+            day = "pasado mañana"
+        elif 2 < offset < 7:
+            day = f"el {_SPOKEN_WEEKDAYS[local.weekday()]}"
+        else:
+            day = f"el {_SPOKEN_WEEKDAYS[local.weekday()]} {local.day}"
+        repeats = " y se repite" if reminder.recurrence else ""
+        return f"{day} {at}{repeats}"
 
     def due_hour(self, reminder: Reminder) -> int:
         """Household-clock hour (0-23) of the next trigger, to tell a listed number from a due hour (T032-U1-Q3)."""
