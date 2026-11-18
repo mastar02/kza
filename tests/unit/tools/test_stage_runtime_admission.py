@@ -131,6 +131,51 @@ def test_signal_with_zero_exit_is_unknown(admission_root, monkeypatch):
     _assert_unknown(admission_root)
 
 
+_TUNABLES_CHILD = "\n".join([
+    "import ctypes, json, os, sys",
+    "observed = {'tunables': os.environ.get('GLIBC_TUNABLES')}",
+    "if sys.argv[2] == 'glibc':",
+    "    libc = ctypes.CDLL(None)",
+    "    libc.malloc.restype, libc.malloc.argtypes = ctypes.c_void_p, [ctypes.c_size_t]",
+    "    libc.free.restype, libc.free.argtypes = None, [ctypes.c_void_p]",
+    "    filled = []",
+    "    for size in (24, 400, 1000, 4096, 65536):",
+    "        for _ in range(2):",
+    "            pointer = libc.malloc(size)",
+    "            filled.append(ctypes.string_at(pointer, size) == b'\\x5a' * size)",
+    "            libc.free(pointer)",
+    "    observed['filled'] = all(filled)",
+    "open(sys.argv[1], 'w').write(json.dumps(observed))",
+])
+
+
+@pytest.mark.parametrize("inherited", [None, "glibc.malloc.arena_max=2:glibc.malloc.perturb=0"],
+                         ids=["none", "unit_tunables"])
+@pytest.mark.parametrize("explicit_env", [False, True], ids=["os_environ", "env_argument"])
+def test_the_admitted_child_gets_the_heap_hygiene_tunables(admission_root, tmp_path, monkeypatch,
+                                                           inherited, explicit_env):
+    """SC4CQ3-R1: run_slot's ticketed child gets serve's tunables, from os.environ or from env."""
+    glibc = bool(os.confstr("CS_GNU_LIBC_VERSION")) if "CS_GNU_LIBC_VERSION" in os.confstr_names else False
+    if inherited is None:
+        monkeypatch.delenv("GLIBC_TUNABLES", raising=False)
+    else:
+        monkeypatch.setenv("GLIBC_TUNABLES", inherited)
+    env = dict(os.environ) if explicit_env else None
+    if explicit_env:
+        monkeypatch.setenv("GLIBC_TUNABLES", "glibc.malloc.perturb=1")  # only env= reaches the child
+    observed = tmp_path / "child-tunables.json"
+    with pytest.raises(ValueError, match="runtime_admission_close_receipt_missing"):
+        stage.run_slot(admission_root, "candidate",
+                       _command(_TUNABLES_CHILD, observed, "glibc" if glibc else "other"), timeout=30, env=env)
+    seen = json.loads(observed.read_text())
+    expected = ("glibc.malloc.arena_max=2:" if inherited else "") + \
+        "glibc.malloc.perturb=165:glibc.malloc.tcache_count=0"
+    assert seen["tunables"] == expected
+    if glibc:
+        assert seen["filled"] is True
+    _assert_unknown(admission_root)
+
+
 def test_live_child_holds_root_admission_exclusively(admission_root, tmp_path):
     ready, release = tmp_path / "ready", tmp_path / "release"
     child = "\n".join([

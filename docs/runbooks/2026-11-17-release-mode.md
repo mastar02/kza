@@ -127,6 +127,11 @@ Todas estas condiciones, antes de la primera transición:
 2. En el mismo commit, agregar el par `(época, revisión): digest` a
    `RELEASED_CONTROLLERS`; desde ahí un cambio de la clausura sin subir la
    revisión falla en los tests antes que en `install-controller`.
+   Desde SC4C-Q3 el `src.main` de un slot sale con 78
+   (`runtime_admission_heap_hygiene_inactive`) si el controlador que lo
+   arranca no le pone los tunables de glibc: un slot de Q3 nunca se sirve con
+   un controlador anterior a Q3 (lo impide el T0 de este punto; ver DEPLOYMENT,
+   «Residuo de heap en los índices de Chroma (SC4C-Q3)», límite 7).
 3. **Un arreglo después de un rollback se construye sobre la línea del
    controlador instalado** (R5-3): su triple tiene que ser igual o mayor que
    el instalado. Nunca subir sólo la revisión de un arreglo hecho desde la

@@ -34,6 +34,7 @@ import pytest
 
 from scripts import compaction
 from scripts import stage_runtime as stage
+from src.core import heap_hygiene
 from src.memory import owner_compaction as oc
 from src.memory.deletion_ledger import subject_digest
 from src.memory.state_snapshot import ClosedStateSnapshot
@@ -742,6 +743,21 @@ MODULES_PROBE = "\n".join([
     "    if name == 'src' or name.startswith('src.')",
     "    or str(getattr(module, '__file__', None) or '').startswith({owned!r}))) + '\\n')",
     "probe_sys.stderr.write('SC4C-FLAGS ' + json.dumps([probe_sys.flags.isolated, probe_sys.flags.dont_write_bytecode]) + '\\n')",
+    # SC4C-Q3: the child's own malloc returns only the perturb pattern (null outside glibc).
+    "import ctypes as probe_ctypes, os as probe_os",
+    "try:",
+    "    probe_heap = True if probe_os.confstr('CS_GNU_LIBC_VERSION') else None",
+    "except (ValueError, OSError):",
+    "    probe_heap = None",
+    "if probe_heap:",
+    "    probe_libc = probe_ctypes.CDLL(None)",
+    "    probe_libc.malloc.restype, probe_libc.malloc.argtypes = probe_ctypes.c_void_p, [probe_ctypes.c_size_t]",
+    "    probe_libc.free.restype, probe_libc.free.argtypes = None, [probe_ctypes.c_void_p]",
+    "    for probe_size in (24, 400, 4096, 24, 400, 4096):",
+    "        probe_pointer = probe_libc.malloc(probe_size)",
+    "        probe_heap = probe_heap and probe_ctypes.string_at(probe_pointer, probe_size) == bytes([0x5A]) * probe_size",
+    "        probe_libc.free(probe_pointer)",
+    "probe_sys.stderr.write('SC4C-HEAP ' + json.dumps(probe_heap) + '\\n')",
 ])
 
 
@@ -781,11 +797,13 @@ def test_each_store_is_written_by_a_clean_child_that_gets_only_k_s_records(x4, x
                                                          str(k_state / "data" / "memory_db")]
     for call in calls:
         assert call["argv"] == [sys.executable, "-I", "-B", "-c", oc.CHROMA_REBUILD_CHILD]
-        assert set(call["kwargs"]["env"]) <= set(oc._CHILD_ENVIRONMENT)
+        assert set(call["kwargs"]["env"]) <= {*oc._CHILD_ENVIRONMENT, heap_hygiene.GLIBC_TUNABLES_ENV}
+        assert call["kwargs"]["env"][heap_hygiene.GLIBC_TUNABLES_ENV] == heap_hygiene.with_heap_hygiene(None)
         assert call["kwargs"]["capture_output"] is True and call["kwargs"]["timeout"] == oc.CHROMA_REBUILD_TIMEOUT
         assert call["lease"] is True  # the worker's admission lease, nothing else
         assert call["spec"]["parent"] == os.getpid()
         assert "SC4C-MODULES []" in call["stderr"] and "SC4C-FLAGS [1, 1]" in call["stderr"]
+        assert f"SC4C-HEAP {json.dumps(True if heap_hygiene._glibc() else None)}" in call["stderr"]  # SC4C-Q3
         for needle in EXCLUDED:
             assert needle.encode() not in call["raw"], needle
     commands, memory = (call["spec"]["collections"] for call in calls)

@@ -24,6 +24,7 @@ import pytest
 
 from scripts import managed_launcher as launcher
 from scripts import stage_runtime as stage
+from src.core import heap_hygiene
 from tests.mocks.runtime_tree import writable_runtime
 from tests.mocks import fake_systemd
 from tests.mocks import launcher_rehearsal as rehearsal
@@ -183,6 +184,8 @@ def test_tc1_clean_lifecycle_restart_and_delegation(artifacts, tmp_path, deploym
     assert head["status"] == "closed"
     phases = dict(deployment.phases())
     assert phases["stop_received"] == "ready" and phases["mask"] == "empty" and phases["env"] == "clean"
+    # SC4C-Q3: the controller's spawn gives the child the glibc tunables (null off glibc).
+    assert phases["heap"] == ("true" if heap_hygiene._glibc() else "null")
     assert stage._closure_proof(deployment.root, head["binding_id"])["child_pid"] == int(phases["pid"])
     # NotifyAccess=main: every relayed line came from the controller; the child had no NOTIFY_SOCKET.
     assert unit.notifications.count("READY=1") == 1 and "STOPPING=1" in unit.notifications

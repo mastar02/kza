@@ -48,6 +48,11 @@ from src.core.process_lifecycle import StopRequested, arm_process_entry  # noqa:
 
 LIFECYCLE = arm_process_entry()
 
+try:  # SC4C-Q3: the slot's own probe of this child's malloc (an older slot has none)
+    from src.core.heap_hygiene import heap_hygiene_active  # noqa: E402
+except ImportError:
+    heap_hygiene_active = None
+
 
 def phase(name: str, value: object = "") -> None:
     with open(ARGS.phase_file, "a") as out:
@@ -73,6 +78,7 @@ async def main() -> None:
                                  if key in {"NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID", "KZA_NOTIFY_FD",
                                             "KZA_CONTROL_FD", "KZA_WATCHDOG_INTERVAL_USEC",
                                             "KZA_RUNTIME_RELEASE_VERIFY"})) or "clean")
+    phase("heap", "absent" if heap_hygiene_active is None else json.dumps(heap_hygiene_active()))
     phase("pythonpath", os.environ.get("PYTHONPATH", ""))
     phase("config_path", os.environ.get("CONFIG_PATH", ""))
     scenario = ARGS.scenario

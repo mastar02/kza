@@ -1250,8 +1250,8 @@ compactación podía pasar del snapshot.
   clon). Un rechazo del trabajador es la fila S: `compact abort <id>` (sin
   pérdida, antes de V) y la unidad vuelve a servir H.
 - **Proceso hijo limpio.** Cada almacén lo escribe un intérprete nuevo
-  (`python -I -B`, sin importar `src`) que recibe por stdin sólo lo que K
-  conserva. Motivo, medido en el server: Chroma guarda buffers del índice
+  (`python -I -B`, sin importar `src`, con los tunables de glibc de SC4C-Q3)
+  que recibe por stdin sólo lo que K conserva. Motivo, medido en el server: Chroma guarda buffers del índice
   HNSW cuya capacidad sin usar puede tener contenido anterior del heap del
   proceso; escrito desde el trabajador (cuyo heap tiene todo el snapshot de
   H), un `data_level0.bin` de K llegó a tener el texto de un hecho vencido.
@@ -1307,17 +1307,131 @@ compactación podía pasar del snapshot.
   que se dicte una rutina nueva. El diseño deja a SC-R decidir entre la baja
   y una reconstrucción desde la tabla protegida `routines`; el usuario
   aceptó la baja (SC4C-Q1, 2026-11-16).
-- **Hallazgo fuera de esta unidad.** El mismo comportamiento de Chroma vale
-  para el servicio: los archivos HNSW que escribe `kza-voice` pueden guardar
-  fragmentos de su heap (cualquier dato que el proceso tuvo en memoria), y
-  un borrado no los limpia. Decisión del usuario (SC4C-Q3, 2026-11-16):
-  después, como unidad propia con prioridad alta; la transición no lo
-  empeora (K se escribe desde el hijo limpio y no copia los bytes de Chroma
-  de H).
+- **Residuo de heap en el servicio (SC4C-Q3, corregido).** El mismo
+  comportamiento de Chroma valía para el servicio: los archivos HNSW que
+  escribe `kza-voice` podían guardar fragmentos de su heap (cualquier dato
+  que el proceso tuvo en memoria), y un borrado no los limpia. Decisión del
+  usuario (SC4C-Q3, 2026-11-16): unidad propia con prioridad alta. Ver la
+  sección siguiente.
 - **Límite de 600 s por almacén.** El usuario lo aceptó (SC4C-Q4,
   2026-11-16); SC-6b lo ajusta con la medición de tamaño de producción.
 
 Tests: `tests/unit/tools/test_sc4c_chroma_closed_list.py`.
+
+### Residuo de heap en los índices de Chroma (SC4C-Q3)
+
+**Mecanismo (medido en el server, glibc 2.39, Chroma 1.5.5).** Al
+inicializar un índice HNSW persistente, Chroma (`chroma-core/hnswlib`) pide
+con `malloc` los buffers del índice (`data_level0`: capacidad × tamaño de
+elemento; `length`: un float por lugar; capacidad inicial 100) y los escribe
+enteros a `data_level0.bin` y `length.bin` antes de que exista ningún
+elemento. Después sólo escribe los lugares de los elementos, así que la
+capacidad sin usar queda con lo que esa memoria tenía antes; borrar sólo
+marca el lugar. Y el escritor local vuelve a inicializar el índice, en el
+proceso que abre la colección (alcanza un `count()`), cada vez que el
+segmento no tiene un mapa de ids persistido y no vacío: menos de
+`sync_threshold` (1000) operaciones desde su última persistencia, o ninguna
+fila viva. Producción está en ese caso (SC4C-Q2: 337 y 130 registros): cada
+arranque de `kza-voice`, cada lote de borrado del índice de memoria (que
+abre su propio cliente) y cada colección nueva de ChromaSync reescribían
+esos dos archivos con memoria del proceso. Con un canario sembrado en el
+heap, una apertura con `count()` dejó el canario en todo `data_level0.bin`
+(dimensión 1024, la de BGE-M3); `length.bin` llevaba direcciones del heap.
+
+**Corrección.** El hijo administrado (`src.main` bajo el launcher) corre
+con `GLIBC_TUNABLES=glibc.malloc.perturb=165:glibc.malloc.tcache_count=0`:
+glibc llena cada bloque que entrega con 0x5A (y cada bloque liberado con
+0xA5), y sin la caché por hilo, que devuelve bloques sin ese llenado. Así
+lo que Chroma recibe de `malloc` nunca tiene contenido anterior: un bloque
+pedido viene con el patrón (o en cero, un mapeo nuevo); la parte nueva de un
+`realloc` que crece en el lugar puede traer el relleno de liberación 0xA5 y
+palabras de enlace de bloques libres (direcciones del heap), pero no datos
+del proceso. Lo que escribe al inicializar un índice no tiene residuo. Las variables las lee el cargador al hacer `exec`, por eso las pone
+el padre: `managed_launcher.child_environment` (conserva los otros
+tunables de la unidad y reemplaza los del mismo nombre),
+`AdmissionController.run` (`run_slot`, el mismo valor; lo usan los ensayos y
+arneses compilados que arrancan un hijo con ticket) y el hijo limpio de
+la compactación (`owner_compaction._rebuild_store`, así la capacidad sin usar
+de K tampoco guarda texto de un hecho vivo en la reconstrucción y borrado
+después). Fallo cerrado: `src.main`, con ticket y en glibc, comprueba su
+propio `malloc` (`src/core/heap_hygiene.py`, dos pedidos por tamaño: el
+segundo reutiliza el bloque liberado) y sale con 78, antes de armarse y de
+abrir ningún almacén, con `runtime_admission_heap_hygiene_inactive` si el
+patrón no está (un launcher que perdió la variable, un asignador interpuesto
+que la ignora).
+
+**Alcance y límites.** (1) Vale para el modo administrado. Una ejecución sin
+ticket (desarrollo, la unidad heredada) no se rechaza ni se corrige. (2) Mac
+(libmalloc) no tiene esta garantía; es sólo desarrollo. (3) Los archivos que
+ya existen: los índices no persistidos se reescriben limpios en la próxima
+apertura del servicio administrado; la capacidad sin usar de un índice ya
+persistido (>= 1000 operaciones) conserva su residuo hasta que se
+reconstruye. La transición del modo release lo resuelve: K se escribe desde
+el hijo limpio (ahora también con el patrón) y H, con su residuo, se destruye
+en el retiro (hasta entonces sigue en H y en la copia opaca del snapshot,
+sección anterior). (4) Los procesos que `kza-voice` lance heredan las
+variables (llenado de memoria también en ellos, con su costo en RSS: ver
+«Costo en memoria»). (5) Las copias privadas que
+abre el trabajador de compactación para exportar se borran al terminar; su
+residuo de sistema de archivos es el límite general ya documentado. (6) Q3
+no cambia que el vector de un registro borrado siga en `data_level0.bin`
+hasta la compactación (borrar sólo marca el lugar): eso es la compactación
+(SC-4c), no residuo de heap. (7) Controlador anterior a Q3 con un slot de
+Q3: `src.main` rechaza (78) si su padre no le puso los tunables, y ni
+`LAUNCHER_CONTRACT` ni `CONTROLLER_REVISION` subieron, así que ese caso no
+tiene un rechazo propio en `check_slot`; falla al arrancar el hijo. Hoy no
+pasa: no hay ningún controlador administrado publicado (`RELEASED_CONTROLLERS`
+vacío; producción corre la unidad heredada) y el primero ya trae Q3. Después,
+el triple lo cierra: Q3 cambia la clausura del controlador
+(`managed_launcher`, `stage_runtime`), así que con la misma revisión `plan`
+rechaza `runtime_admission_compaction_controller_revision_conflict`, y con la
+revisión subida hace falta el T0 que instala el controlador nuevo antes de
+servir el slot. Subir `LAUNCHER_CONTRACT` no serviría: el controlador sólo
+exige un mínimo (un controlador viejo aceptaría el 4) y uno nuevo dejaría de
+servir los slots anteriores a Q3, rollbacks incluidos. Regla que sigue: si
+esto se integra después de publicar un controlador, subir
+`CONTROLLER_REVISION` (cambia la clausura de un controlador publicado).
+
+**Revisión independiente (2026-11-18, glibc 2.39).** Con `tcache_count=0`
+todo `free` pasa por el llenado (fast bins y bloques normales) y los bloques
+mapeados se desmapean, así que lo liberado se borra al liberarse, y toda
+salida de `_int_malloc` llena los bytes pedidos. Los buffers de hnswlib vienen
+de glibc (el asignador de objetos chicos de Python no le entrega memoria). Una
+prueba aparte (150 y 300 registros, `sync_threshold` 20, borrados, canarios
+liberados en 13 tamaños) no encontró canario en ningún archivo del índice, y
+los índices persistidos tenían capacidad igual a los registros en uso: un
+cambio de tamaño no deja cola sin usar.
+
+**Costo medido** (server, núcleos 24-47, el mismo script con y sin las
+variables, mediana de 10 corridas alternadas; evidencia
+`data/autonomous-roadmap-20261102/sc4c-q3/evidence.json`, con el server
+cargado por otras corridas): consulta de Chroma (1200 × 1024) p50 0,885 →
+0,960 ms y p95 1,19 → 1,13 ms; 3000 tramas de audio de 30 ms con numpy
+81,7 → 98,5 ms (unos 5,6 µs más por trama); `upsert` de Chroma 15,4 →
+23,3 ms en esa ronda (14,5 → 14,3 ms en la primera, 6 corridas: sin
+conclusión); importaciones, JSON, SQLite y torch en CPU sin diferencia fuera
+del ruido. Lejos del objetivo de 300 ms.
+
+**Costo en memoria.** Con `perturb`, glibc llena cada bloque que entrega
+(también los de `calloc` y los mapeados), así que toca cada página: un
+buffer pedido y no usado pasa a ser memoria residente. Medido en el server
+(revisión SC4CQ3-R2, 5 corridas alternadas por caso, mediana de `maxrss`):
+un proceso que sólo pide dos buffers de 256 MiB sin tocarlos (`np.zeros`, que
+usa `calloc`, y `np.empty`, `malloc`) pasa de 25,5 a 538,5 MiB y de 0,06 a
+0,30 s; `import src.main` (el arranque sin modelos) 474,9 → 475,5 MiB y
+3,45 → 3,50 s; el script de costo de arriba 298,2 → 298,2 MiB. El riesgo está
+en las reservas grandes que no se llenan enseguida: buffers de torch,
+ctranslate2 y numpy, la capacidad de los índices, y cada proceso que
+`kza-voice` lance (hereda las variables). La memoria de GPU no cambia.
+`kza-voice` no tiene `MemoryMax` (ni la unidad heredada
+`systemd/kza-voice.service` ni el drop-in administrado), así que el riesgo es
+presión de memoria en el host, no un OOM kill del servicio. La carga real de
+modelos (GPU, cuda:1) no se pudo medir sin tocar producción: en la ventana
+de SC-6b se miden juntos la latencia, el RSS máximo y el tiempo de arranque
+con carga de modelos del servicio real, con y sin las variables.
+
+Tests: `tests/unit/core/test_heap_hygiene.py` y la prueba del hijo limpio en
+`tests/unit/tools/test_sc4c_chroma_closed_list.py`.
 
 ### Procedimiento del modo release (SC-5b) — runbook, sin release
 

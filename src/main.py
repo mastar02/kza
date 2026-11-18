@@ -5,6 +5,10 @@ Entry point principal
 """
 # ruff: noqa: E402 -- the managed entry is armed before the (~5 s of) imports below.
 if __name__ == "__main__":
+    # SC4C-Q3: the managed child refuses (exit 78, before arming, like G1)
+    # when glibc's malloc could hand Chroma earlier heap contents to write.
+    from src.core.heap_hygiene import refuse_unprotected_managed_entry
+    refuse_unprotected_managed_entry()
     # U3b-0d1: unblock SIGTERM/SIGINT and record an early stop before any
     # heavy import; process_lifecycle is stdlib-only.
     from src.core.process_lifecycle import arm_process_entry

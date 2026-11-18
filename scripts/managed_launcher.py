@@ -114,6 +114,12 @@ _CHILD_ENV_DROPPED = frozenset({"PYTHONPATH", "CONFIG_PATH", "PYTHONHOME", "NOTI
                                 "WATCHDOG_USEC", "WATCHDOG_PID", NOTIFY_FD_ENV,
                                 WATCHDOG_INTERVAL_ENV, CONTROL_FD_ENV})
 _PROBE_ENVIRONMENT = ("LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SQLITE_TMPDIR")
+# SC4C-Q3: glibc tunables of the child (read by the loader at exec): every malloc'd byte is the
+# perturb pattern, never earlier heap contents, so a Chroma index the child initializes writes no
+# residue. Same literal as src.core.heap_hygiene.HEAP_HYGIENE_TUNABLES (a test pins both); the
+# child refuses (exit 78) when they are not in effect.
+GLIBC_TUNABLES_ENV = "GLIBC_TUNABLES"
+HEAP_HYGIENE_TUNABLES = (("glibc.malloc.perturb", "165"), ("glibc.malloc.tcache_count", "0"))
 UNINSTALL_PHRASE = "revivir datos borrados"
 LEGACY_COMMITS = ("b0866e8", "63ea8d3")
 # Q5 retirement of the frozen b0866e8 state (U3b-0e5, P7=B): admission/legacy-retirement/
@@ -1673,12 +1679,18 @@ def child_environment(environ: dict, runtime: Path, ticket: dict, notify_fd: int
     the slot runtime; CONFIG_PATH is relative to that runtime (its config
     link resolves to the slot state). ``release_verify`` (SC-4a) adds
     KZA_RUNTIME_RELEASE_VERIFY=1 after the filter that drops every
-    KZA_RUNTIME_* variable, so the unit can never inject it.
+    KZA_RUNTIME_* variable, so the unit can never inject it. GLIBC_TUNABLES
+    keeps the unit's other tunables and ends with HEAP_HYGIENE_TUNABLES
+    (SC4C-Q3), which replace any same-named one.
     """
     child = {key: value for key, value in environ.items()
              if key not in _CHILD_ENV_DROPPED and not key.startswith("KZA_RUNTIME_")}
     if release_verify is True:
         child[RELEASE_VERIFY_ENV] = "1"
+    names = {name for name, _ in HEAP_HYGIENE_TUNABLES}
+    kept = [item for item in environ.get(GLIBC_TUNABLES_ENV, "").split(":")
+            if item and item.split("=", 1)[0] not in names]
+    child[GLIBC_TUNABLES_ENV] = ":".join([*kept, *(f"{name}={value}" for name, value in HEAP_HYGIENE_TUNABLES)])
     child["PYTHONPATH"] = str(runtime)
     child["CONFIG_PATH"] = "config/settings.yaml"
     child[TICKET_ENV] = stage._canonical_json(ticket).decode()
