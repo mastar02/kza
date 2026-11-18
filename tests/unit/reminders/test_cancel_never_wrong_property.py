@@ -1,4 +1,4 @@
-"""Generated property: a spoken reminder cancel never cancels a reminder another reading could mean.
+"""Generated property: a spoken reminder cancel never cancels a reminder unless it is the only candidate.
 
 Independent verification of T032-U1. A deterministic grid (no randomness,
 no new dependency) of 2-3 shared reminders that share a base text, where a
@@ -7,19 +7,24 @@ due times are chosen so that a text clock coincides with another
 reminder's due time. Cancel phrases are built from each reminder's text
 and/or its due time in every format, with and without a period of the day.
 
-The oracle is written from the user decisions, not from the implementation:
-a reminder is *consistent* with a phrase when some plausible reading selects
-it, each clock or day phrase read either as the due time or as words of the
-text (clocks compared by the wall times they can mean; user answer
-T032-U1-RR-P1), or when the reminder's text holds every spoken word (user
-answer T032-U1-Q1). Accepted defaults: "12 de la noche" is 00:00, 1-4 "de
-la noche" is early morning, a bare "de mañana" is the morning (Q2, Q3).
+The oracle is written from the user decisions, not from the implementation.
+Oracle change (2026-11-18, user decision t032_design_20261118 in
+t040-t041/user-decisions-20261110.json, "Elegir por número"): the earlier
+oracle read each clock or day phrase as a due time or as words of a text
+(T032-U1-Q1, RR-P1); it is replaced, and every grid is kept. A reminder is
+now a *candidate* for a phrase when its text holds the phrase's base content
+words, where only words that some active reminder's text holds narrow and
+the time phrases said around the base never do. Nexa never guesses by the
+spoken time: exactly one candidate -> it is cancelled; more -> it asks,
+listing them by number; none -> nothing is found.
 
-Expected: exactly one consistent reminder -> it may be cancelled (asking is
-acceptable and counted as over-ask); more than one -> ask, cancel nothing.
-Any cancelled reminder that is not the single consistent one is a
-counterexample. Every follow-up reference the implementation proposes must
-be consistent with exactly its own reminder.
+Expected: a cancel only when the candidate set is exactly that one reminder
+(a wrong cancel is a counterexample); one candidate is cancelled directly
+(asking is a counterexample unless the base holds a number, which the
+implementation reads as a possible clock and never narrows by); when it
+asks, every candidate is listed. Through the dispatcher, the numbered
+answer cancels exactly the listed reminder of that number, and it is a
+candidate.
 
 Set ``T032_PROP_REPORT`` to a path prefix to write the counts and classes
 as JSON.
@@ -217,24 +222,28 @@ def at(days: int, hour: int, minute: int = 0) -> datetime:
     return datetime(day.year, day.month, day.day, hour, minute, tzinfo=MVD)
 
 
-def consistent(spec: Spec, phrase: Phrase) -> bool:
-    """Some plausible reading of the phrase selects this reminder (independent of the implementation)."""
-    text_words = words(spec.text)
-    if words(phrase.spoken) <= text_words:  # Q1: the text holds every spoken word
-        return True
-    if not words(phrase.base) <= text_words:
-        return False
-    due_hm = (spec.due.hour, spec.due.minute)
-    for clock in phrase.clocks:
-        as_due = due_hm in clock.walls
-        as_text = (spec.clock is not None and bool(spec.clock.walls & clock.walls)) or words(clock.text) <= text_words
-        if not (as_due or as_text):
-            return False
-    for day in phrase.days:
-        as_due = spec.due.hour < 12 if day.morning else spec.due.date() in day.dates
-        if not (as_due or words(day.text) <= text_words):
-            return False
-    return True
+def candidates(texts: list[str], base: str) -> set[int]:
+    """The reminders a cancel naming ``base`` may mean (user decision t032_design_20261118).
+
+    Written from the decision, not from the implementation: only the base's
+    content words narrow, and only those some reminder's text holds; the
+    time phrases said around the base never do. No known word: no candidate.
+    """
+    vocabulary = frozenset().union(*(words(text) for text in texts))
+    known = words(base) & vocabulary
+    return {i for i, text in enumerate(texts) if known <= words(text)} if known else set()
+
+
+NUMBER_WORDS = frozenset(HOUR_WORDS.values()) | {"veinte"}
+
+
+def has_number(base: str) -> bool:
+    """The base holds a number, which the implementation may read as a clock and never narrows by."""
+    return any(w.isdigit() or w in NUMBER_WORDS for w in TOKEN.findall(fold(base)))
+
+
+def oracle(specs, phrase) -> set[int]:
+    return candidates([s.text for s in specs], phrase.base)
 
 
 def reminder_sets() -> list[tuple[str, tuple[Spec, ...]]]:
@@ -370,6 +379,7 @@ class Tally:
         self.counts: Counter = Counter()
         self.classes: dict[tuple, dict] = {}
         self.class_counts: Counter = Counter()
+        self.data: dict = {}
 
     def counterexample(self, key: tuple, repro: dict) -> None:
         self.counts["counterexamples"] += 1
@@ -393,62 +403,75 @@ class Tally:
         lines = [json.dumps(data["counts"])]
         for item in data["classes"][:40]:
             lines.append(f"[{item['count']}] {item['class']}: said {item['said']!r} with {item['reminders']} -> "
-                         f"{item['got']}; consistent {item['consistent']}")
+                         f"{item['got']}; candidates {item['candidates']}")
         return "\n".join(lines)
 
 
-def _judge(tally: Tally, kind: str, specs, phrase: Phrase, cancelled: set[int], asked: bool, said: str) -> None:
-    oracle = {i for i, s in enumerate(specs) if consistent(s, phrase)}
+def _judge(tally: Tally, kind: str, specs, phrase, cancelled: set[int], asked: bool, said: str, *,
+           listed: set[int] | None = None, shape: str | None = None, describe=None) -> None:
+    """Count one case; a wrong cancel, a needless question or an unlisted candidate is a counterexample."""
+    expected = oracle(specs, phrase)
+    shape = (" ".join(phrase.shape) or "base") if shape is None else shape
+    describe = describe or _describe
     tally.counts["cases"] += 1
-    tally.counts[f"oracle_{min(len(oracle), 2)}"] += 1
+    tally.counts[f"oracle_{min(len(expected), 2)}"] += 1
+    repro = {"said": said, "reminders": describe(specs), "candidates": sorted(expected)}
     if cancelled:
-        if len(cancelled) == 1 and oracle == cancelled:
+        if len(cancelled) == 1 and expected == cancelled:
             tally.counts["correct_cancel"] += 1
             return
         (wrong,) = sorted(cancelled)[:1]
-        reason = "cancelled with another reading open" if wrong in oracle else "cancelled an inconsistent reminder"
-        others = sorted(specs[i].feature for i in oracle - {wrong})
-        key = (reason, kind, " ".join(phrase.shape) or "base", f"cancelled {specs[wrong].feature}",
-               "also " + ",".join(others))
-        tally.counterexample(key, {"said": said, "reminders": _describe(specs),
-                                   "got": f"cancelled {sorted(cancelled)}", "consistent": sorted(oracle)})
-    elif len(oracle) == 1:
-        tally.counts["over_ask" if asked else "miss_not_found"] += 1
+        reason = "cancelled with another candidate" if wrong in expected else "cancelled a non-candidate"
+        others = sorted(specs[i].feature for i in expected - {wrong})
+        tally.counterexample((reason, kind, shape, f"cancelled {specs[wrong].feature}", "also " + ",".join(others)),
+                             {**repro, "got": f"cancelled {sorted(cancelled)}"})
+    elif len(expected) == 1 and not (asked and has_number(phrase.base)):
+        tally.counterexample(("one candidate not cancelled", kind, shape),
+                             {**repro, "got": "asked" if asked else "not found"})
+    elif expected and not asked:
+        tally.counterexample(("candidates not asked", kind, shape), {**repro, "got": "not found"})
+    elif asked and listed is not None and (not expected <= listed
+                                           or (listed - expected and not has_number(phrase.base))):
+        tally.counterexample(("listed set is not the candidate set", kind, shape),
+                             {**repro, "got": f"listed {sorted(listed)}"})
     else:
-        tally.counts["correct_no_cancel"] += 1
+        tally.counts["over_ask_number_base" if len(expected) == 1 else "correct_no_cancel"] += 1
 
 
 GRID = reminder_sets()
 
 
 def test_the_oracle_reads_the_user_decisions():
-    """The oracle is not vacuous: the RR-P1, FV3-1/2, Q1 and FV3-3 shapes come out as the decisions say."""
+    """The oracle is not vacuous: no time phrase narrows, a distinct word does, an unknown word is ignored."""
     two = Spec(BASE, TEXT_CLOCKS[0], None, at(1, 9)), Spec(BASE, None, None, at(1, 14))
-    said = Phrase("de tomar pastillas de las 2", BASE, (clock_forms(14, 0)[0],))
-    assert [consistent(s, said) for s in two] == [True, True]
-    said = Phrase("de tomar pastillas de las 2 de la tarde", BASE, (Clock("las 2 de la tarde", walls(2, 0, "tarde"), ""),))
-    assert [consistent(s, said) for s in two] == [True, True]
-    said = Phrase("de tomar pastillas de las 9 de la mañana", BASE, (Clock("las 9 de la mañana", walls(9, 0, "mañana"), ""),))
-    assert [consistent(s, said) for s in two] == [True, False]
-    night = Spec(BASE, TEXT_CLOCKS[8], None, at(1, 9)), Spec(BASE, None, None, at(1, 20))  # "a las 20"
-    said = Phrase("de tomar pastillas de las 8 de la noche", BASE, (Clock("las 8 de la noche", walls(8, 0, "noche"), ""),))
-    assert [consistent(s, said) for s in night] == [True, True]
+    said = Phrase("de tomar pastillas", BASE).with_clock("a", TEXT_CLOCKS[0], "text")
+    assert oracle(two, said) == {0, 1}  # the text's own clock, said as such, never narrows
+    assert oracle(two, said.with_clock("de", clock_forms(9, 0)[0], "tail")) == {0, 1}  # nor its due time
     bread = Spec(BASE, None, "mañana", at(0, 18)), Spec(BASE, None, None, at(1, 8))
-    assert [consistent(s, Phrase("de tomar pastillas de mañana", BASE, days=(MORNING,))) for s in bread] == [True, True]
-    assert [consistent(s, Phrase("de tomar pastillas", BASE)) for s in bread] == [True, True]
-    assert not consistent(Spec(BASE, None, None, at(1, 9)), Phrase("de tomar pastillas de la una", BASE,
-                                                                     (Clock("la una", walls(1, 0), ""),)))
+    assert oracle(bread, Phrase("de tomar pastillas", BASE).with_day(MORNING, "tail")) == {0, 1}
+    pink = Spec(SUPER, None, None, at(1, 14)), Spec(BASE, TEXT_CLOCKS[0], None, at(1, 9))
+    assert oracle(pink, Phrase(f"de {SUPER}", SUPER)) == {0}
+    assert oracle(pink, Phrase(f"de {BASE}", BASE)) == {0, 1}
+    assert oracle(pink, Phrase("de tomar pastillas azules", "tomar pastillas azules")) == {0, 1}
+    assert oracle(pink, Phrase("de comprar pan", "comprar pan")) == set()
+    assert has_number("tomar 10 gotas") and has_number("tomar veinte gotas") and not has_number(SUPER)
     assert len(GRID) > 600
 
 
-async def test_reminder_manager_never_cancels_a_reminder_another_reading_could_mean():
+def _cancelled(resolution) -> tuple[set[int], bool, set[int]]:
+    """Cancelled index, whether it asked, and the indices it would list."""
+    cancelled = {int(resolution.reminder.id[1:])} if resolution.match is CancelMatch.UNIQUE else set()
+    asked = resolution.match in (CancelMatch.AMBIGUOUS, CancelMatch.NO_REFERENCE)
+    return cancelled, asked, {int(r.id[1:]) for r in resolution.candidates}
+
+
+async def test_reminder_manager_cancels_only_the_single_candidate():
     tally = Tally()
     for kind, specs in GRID:
         manager = _manager(_Store(_reminders(specs)))
         for phrase in phrases_for(specs):
-            resolution = await manager.resolve(None, phrase.spoken, shared_only=True)
-            cancelled = {int(resolution.reminder.id[1:])} if resolution.match is CancelMatch.UNIQUE else set()
-            _judge(tally, kind, specs, phrase, cancelled, resolution.match is CancelMatch.AMBIGUOUS, phrase.spoken)
+            cancelled, asked, listed = _cancelled(await manager.resolve(None, phrase.spoken, shared_only=True))
+            _judge(tally, kind, specs, phrase, cancelled, asked, phrase.spoken, listed=listed)
     data = tally.report("manager")
     assert tally.counts["correct_cancel"] > 1000 and tally.counts["correct_no_cancel"] > 1000, tally.message(data)
     assert tally.counts["counterexamples"] == 0, tally.message(data)
@@ -463,7 +486,7 @@ MINIMAL_REPROS = (
     ("crossed days", (Spec(BASE, None, "el lunes", at(1, 9)), Spec(BASE, None, "mañana", at(4, 9))),
      Phrase("de tomar pastillas", BASE).with_day(TEXT_DAYS["el lunes"][0], "text")
      .with_day(TEXT_DAYS["mañana"][0], "tail")),
-    # Review FV3-3 (pinned known limit): a bare "de mañana" is the morning (Q3) or a text word.
+    # Review FV3-3: a bare "de mañana" is never read as a time nor as the text's word.
     ("de mañana, day word", (Spec(BASE, None, "mañana", at(0, 18)), Spec(BASE, None, None, at(1, 8))),
      Phrase("de tomar pastillas", BASE).with_day(MORNING, "tail")),
     ("de mañana, clock period", (Spec(BASE, TEXT_CLOCKS[16], None, at(1, 9, 45)), Spec(BASE, None, None, at(1, 8))),
@@ -473,80 +496,20 @@ MINIMAL_REPROS = (
 
 @pytest.mark.parametrize(("name", "specs", "phrase"), MINIMAL_REPROS, ids=[r[0] for r in MINIMAL_REPROS])
 async def test_minimal_repro_asks_which(name, specs, phrase):
-    assert [consistent(s, phrase) for s in specs] == [True, True]
+    assert oracle(specs, phrase) == {0, 1}
     resolution = await _manager(_Store(_reminders(specs))).resolve(None, phrase.spoken, shared_only=True)
     assert resolution.match is CancelMatch.AMBIGUOUS, (phrase.spoken, _describe(specs), resolution.reminder)
-
-
-_TIME = (r"(?P<art>las?) (?P<h>\d{1,2})(?::(?P<m>\d{2}))? "
-         r"(?P<per>de la mañana|de la tarde|de la noche|de la madrugada|del mediodía)")
-_DAY = r"(?P<day>de hoy|de pasado mañana|del (?:" + "|".join(WEEKDAYS) + "))"
-_TAIL = re.compile(rf"(?: de (?P<time>{_TIME}))?(?: {_DAY})?")
-
-
-def parse_reference(reference: str, specs: tuple[Spec, ...]) -> Phrase | None:
-    """A proposed reference ("<text or base> [de <time>] [<day>]") as the oracle's phrase."""
-    split = next(((spec, body, found) for spec in specs for body in (spec.text, spec.base)
-                  if reference.startswith(body) and (found := _TAIL.fullmatch(reference[len(body):]))), None)
-    if split is None:
-        return None
-    spec, body, found = split
-    phrase = Phrase(f"de {spec.base}", spec.base)
-    if body == spec.text:
-        if spec.clock is not None:
-            phrase = phrase.with_clock("a", spec.clock, "text")
-        if spec.day is not None:
-            phrase = phrase.with_day(TEXT_DAYS[spec.day][0], "text")
-    if found.group("time"):
-        period = found.group("per").split()[-1]
-        clock = Clock(found.group("time"), walls(int(found.group("h")), int(found.group("m") or 0), period), "proposal")
-        phrase = phrase.with_clock("de", clock, "tail")
-    if found.group("day"):
-        text = found.group("day")
-        if text == "de hoy":
-            day = Day(text, frozenset({TODAY}))
-        elif text == "de pasado mañana":
-            day = Day(text, frozenset({TODAY + timedelta(2)}))
-        else:
-            day = Day(text, weekday_dates(WEEKDAYS.index(text.split()[-1])))
-        phrase = phrase.with_day(day, "tail")
-    if phrase.spoken != f"de {reference}":
-        return None
-    return phrase
-
-
-async def test_every_proposed_reference_names_exactly_its_own_reminder():
-    tally = Tally()
-    for kind, specs in GRID:
-        reminders = _reminders(specs)
-        manager = _manager(_Store(reminders))
-        for with_time in (False, True):
-            references = await manager.voice_references(None, tuple(reminders), with_time=with_time, shared_only=True)
-            for rid, reference in references.items():
-                own = int(rid[1:])
-                tally.counts["references"] += 1
-                phrase = parse_reference(reference, specs)
-                if phrase is None:
-                    tally.counterexample(("unparsed proposal", kind), {"said": reference, "reminders": _describe(specs),
-                                                                       "got": rid, "consistent": []})
-                    continue
-                oracle = {i for i, s in enumerate(specs) if consistent(s, phrase)}
-                if oracle != {own}:
-                    key = ("proposed reference has another reading", kind, " ".join(phrase.shape) or "base",
-                           f"names {specs[own].feature}",
-                           "also " + ",".join(sorted(specs[i].feature for i in oracle - {own})))
-                    tally.counterexample(key, {"said": f"de {reference}", "reminders": _describe(specs),
-                                               "got": f"proposed for {rid}", "consistent": sorted(oracle)})
-                resolution = await manager.resolve(None, f"de {reference}", shared_only=True)
-                assert resolution.match is CancelMatch.UNIQUE and resolution.reminder.id == rid, reference
-    data = tally.report("references")
-    assert tally.counts["references"] > 500, tally.message(data)
-    assert tally.counts["counterexamples"] == 0, tally.message(data)
+    assert {r.id for r in resolution.candidates} == {"r0", "r1"}
 
 
 VERBS = ("cancelá el", "borrá el", "eliminá el", "sacá el", "quitá el", "anulá el", "cancela el", "olvidate del",
          "cancelame el")
-_PROPOSAL = re.compile(r"por ejemplo: cancelá el recordatorio de (.+?)\.(?:\s|$)")
+# The numbered list of an asking reply ("1: tomar pastillas a las 14:00; 2: ...; ¿cuál?").
+_LISTED = re.compile(r"(\d): (.+?)(?=; \d: |; ¿)")
+ORDINAL = {1: ("primero", "primera"), 2: ("segundo", "segunda"), 3: ("tercero", "tercera")}
+CARDINAL = {1: "uno", 2: "dos", 3: "tres"}
+ANSWERS = (lambda k: f"el {ORDINAL[k][0]}", lambda k: f"la {ORDINAL[k][1]}", lambda k: f"el {k}",
+           lambda k: CARDINAL[k], lambda k: f"Nexa, el {CARDINAL[k]}", lambda k: f"cancelá el {ORDINAL[k][0]}")
 # Every phrase shape above, sampled with a fixed stride, plus fixed shapes from earlier review rounds.
 SAMPLE_STRIDE = 151
 
@@ -576,7 +539,8 @@ def _dispatch_sample() -> list[tuple[str, tuple[Spec, ...], Phrase]]:
     return cases + list(fixed)
 
 
-async def test_dispatcher_sample_never_cancels_a_reminder_another_reading_could_mean(tmp_path):
+async def _dispatch_round(tmp_path, sample, describe, judge, report: str) -> Tally:
+    """Say each sampled cancel through the dispatcher, then answer a listed number; judge both turns."""
     leaves = CountedLeaves(tmp_path)
     await leaves.start()
     leaves.reminder_manager = _manager(leaves.reminder_store)
@@ -584,7 +548,7 @@ async def test_dispatcher_sample_never_cancels_a_reminder_another_reading_could_
     manager = leaves.reminder_manager
     tally = Tally()
     try:
-        for n, (kind, specs, phrase) in enumerate(_dispatch_sample()):
+        for n, (kind, specs, phrase) in enumerate(sample):
             created = [await manager.create("household", s.text, s.due.timestamp(), scope=ReminderScope.SHARED)
                        for s in specs]
             index = {r.id: i for i, r in enumerate(created)}
@@ -599,51 +563,50 @@ async def test_dispatcher_sample_never_cancels_a_reminder_another_reading_could_
             gone = {index[i] for i in before - await active()}
             asked = result.response.startswith(("Encontré ", "Hay "))
             tally.counts["claimed" if result.path.value == "fast_reminder" else "unclaimed"] += 1
-            _judge(tally, kind, specs, phrase, gone, asked, said)
-            proposal = _PROPOSAL.search(result.response) if not gone else None
-            if proposal is not None:
-                tally.counts["proposals"] += 1
-                follow = parse_reference(proposal.group(1), specs)
+            listed = dict(_LISTED.findall(result.response)) if asked else {}
+            labels = {i: {manager.voice_label(r), f"{manager.voice_label(r)} {manager.spoken_day_reference(r)}"}
+                      for i, r in enumerate(created)}
+            named_by = {int(k): {i for i, own in labels.items() if label in own} for k, label in listed.items()}
+            judge(tally, kind, specs, phrase, gone, asked, said, listed=set().union(*named_by.values()))
+            if named_by:
+                number = n % len(named_by) + 1
+                answer = ANSWERS[n % len(ANSWERS)](number)
                 before = await active()
-                again = await dispatcher.dispatch(user_id="unknown", text=f"cancelá el recordatorio de {proposal.group(1)}")
-                named = {index[i] for i in before - await active()}
-                if follow is None:
-                    tally.counterexample(("unparsed proposal", kind), {"said": proposal.group(1),
-                                                                       "reminders": _describe(specs),
-                                                                       "got": again.response, "consistent": []})
-                else:
-                    oracle = {i for i, s in enumerate(specs) if consistent(s, follow)}
-                    if len(named) != 1 or oracle != named:
-                        key = ("proposed command", kind, " ".join(follow.shape),
-                               f"cancelled {sorted(specs[i].feature for i in named)}",
-                               "consistent " + ",".join(sorted(specs[i].feature for i in oracle)))
-                        tally.counterexample(key, {"said": proposal.group(1), "reminders": _describe(specs),
-                                                   "got": f"cancelled {sorted(named)}", "consistent": sorted(oracle)})
+                again = await dispatcher.dispatch(user_id="unknown", text=answer)
+                chosen = {index[i] for i in before - await active()}
+                tally.counts["numbered_answers"] += 1
+                if len(chosen) != 1 or not chosen <= named_by[number]:
+                    tally.counterexample(("numbered answer", kind, answer),
+                                         {"said": f"{said} / {answer}", "reminders": describe(specs),
+                                          "got": f"{again.response!r} cancelled {sorted(chosen)}",
+                                          "candidates": sorted(oracle(specs, phrase))})
             for reminder_id in await active():
                 assert await leaves.reminder_store.cancel(reminder_id, shared_only=True)
     finally:
         await leaves.close()
-    data = tally.report("dispatcher")
-    assert tally.counts["cases"] > 300 and tally.counts["correct_cancel"] > 30, tally.message(data)
-    assert tally.counts["counterexamples"] == 0, tally.message(data)
+    tally.data = tally.report(report)
+    return tally
+
+
+async def test_dispatcher_sample_cancels_only_the_single_candidate_or_the_numbered_one(tmp_path):
+    tally = await _dispatch_round(tmp_path, _dispatch_sample(), _describe, _judge, "dispatcher")
+    assert tally.counts["cases"] > 300 and tally.counts["correct_cancel"] > 30, tally.message(tally.data)
+    assert tally.counts["numbered_answers"] > 200, tally.message(tally.data)
+    assert tally.counts["counterexamples"] == 0, tally.message(tally.data)
 
 
 # ---------------------------------------------------------------------------
 # Extended grid (T032-U1 recheck of 94bfab16, fail-safe round failsafe_1).
 #
-# The recheck's grid of formats the grid above does not generate, brought in
-# with its oracle: clocks the cancel grammar does not read ("las 2 y 10", "las
-# 2 10", "las 3 menos cuarto", "las 2 menos 10", "las 2 en punto", "las 14 hs",
-# "mediodía", "medianoche"), word hours with a period, periods said without a
-# clock ("a la tarde", "por la noche", "de la noche", "esta noche"), weekday
-# variants ("el próximo lunes", "el lunes que viene", "este lunes"), dates
-# ("del 20", "el 20 de noviembre"), the day said before the clock and a leading
-# relative clause. Each time phrase is read as the due time or as words of the
-# text (RR-P1), a text holding every spoken word is consistent (Q1), and
-# periods use the assistant default T032-U1-FS1 windows (madrugada 00-05,
-# mañana 00-11, tarde 12-20, noche 20-05); the recheck's own noche window
-# (19-04) is aligned to that default. The resolver may ask when one reminder is
-# consistent (counted as over_ask) but never cancel any other.
+# The recheck's grid of formats the grid above does not generate: clocks the
+# earlier cancel grammar did not read ("las 2 y 10", "las 2 10", "las 3 menos
+# cuarto", "las 2 menos 10", "las 2 en punto", "las 14 hs", "mediodía",
+# "medianoche"), word hours with a period, periods said without a clock ("a
+# la tarde", "por la noche", "de la noche", "esta noche"), weekday variants
+# ("el próximo lunes", "el lunes que viene", "este lunes"), dates ("del 20",
+# "el 20 de noviembre"), the day said before the clock and a leading relative
+# clause. Judged by the same oracle (user decision t032_design_20261118): none
+# of these time phrases narrows the candidates.
 # ---------------------------------------------------------------------------
 
 EXT_PERIOD_HOURS = {"mañana": frozenset(range(0, 12)), "madrugada": frozenset(range(0, 6)),
@@ -700,70 +663,6 @@ class ExtPhrase:
 
     def plus(self, prep: str, t: ExtT) -> "ExtPhrase":
         return ExtPhrase(self.base, self.items + ((prep, t),), self.prefix)
-
-
-def _ext_same(a: ExtT, b: ExtT) -> bool:
-    """A text phrase and a spoken phrase mean the same time (clocks by walls, weekdays by weekday)."""
-    if a.kind == b.kind == "clock":
-        return bool(a.walls & b.walls)
-    if a.kind == b.kind == "day":
-        return a.family.startswith("wd") and b.family.startswith("wd") and bool(a.dates & b.dates)
-    if a.kind == b.kind == "period":
-        return bool(a.hours & b.hours)
-    return False
-
-
-# Clock forms the first grid says with a period ("las 2 de la tarde" is one clock, review FV2-3).
-EXT_CLOCK_TAKES_PERIOD = frozenset({"H", "word", "H:MM", "H.MM", "0H:MM", "y media", "y cuarto", "24h", "H:00",
-                                    "24h:00"})
-
-
-def _ext_items(items: tuple) -> list:
-    """The phrase's items, a clock directly followed by "de la <period>" read as one clock with that period.
-
-    The first grid's oracle reads "las 2 de la tarde" as one clock with
-    the wall times of :func:`walls` (14:00; Q2: "las 5 de la noche" is
-    17:00), so a text "tomar pastillas a las 2" holds it (review FV2-3);
-    the extended grid builds the same words from a clock and a period
-    item, so they are read the same way here ("las 45" is no clock).
-    """
-    out = []
-    for prep, t in items:
-        if out and t.kind == "period" and t.text.startswith("de la ") and out[-1][1].kind == "clock" \
-                and out[-1][1].family in EXT_CLOCK_TAKES_PERIOD and max(out[-1][1].walls)[0] <= 23:
-            clock, period = out[-1][1], t.text.split()[-1]
-            if clock.family.startswith("24h"):
-                meant = frozenset().union(*(walls(h, m, period) for h, m in clock.walls))
-            else:
-                h, m = min(clock.walls)
-                meant = walls(h % 12 or 12, m, period)
-            out[-1] = (out[-1][0], ExtT(f"{clock.text} {t.text}", "clock", meant, family=f"{clock.family}+period"))
-            continue
-        out.append((prep, t))
-    return out
-
-
-def ext_consistent(spec: ExtSpec, phrase: ExtPhrase) -> bool:
-    """The same oracle as :func:`consistent`, read on the extended phrases."""
-    tw = words(spec.text)
-    if words(phrase.core) <= tw:
-        return True
-    if not words(phrase.base) <= tw:
-        return False
-    due_hm, due_d = (spec.due.hour, spec.due.minute), spec.due.date()
-    for _, t in _ext_items(phrase.items):
-        if t.kind == "clock":
-            as_due = due_hm in t.walls
-        elif t.kind == "day":
-            as_due = due_d in t.dates
-        elif t.kind == "period":
-            as_due = spec.due.hour in t.hours
-        else:  # "dp": a day with a period ("esta noche")
-            as_due = due_d in t.dates and spec.due.hour in t.hours
-        as_text = any(_ext_same(own, t) for _, own in spec.items) or words(t.text) <= tw
-        if not (as_due or as_text):
-            return False
-    return True
 
 
 def ext_new_clock_forms(h24: int, minute: int) -> list[ExtT]:
@@ -1028,122 +927,49 @@ def _ext_class_of(phrase: ExtPhrase, specs: tuple[ExtSpec, ...]) -> str:
     return "other"
 
 
-def _ext_judge(tally: Tally, kind: str, specs, phrase: ExtPhrase, cancelled: set[int], asked: bool,
-               said: str) -> None:
-    oracle = {i for i, s in enumerate(specs) if ext_consistent(s, phrase)}
-    tally.counts["cases"] += 1
-    tally.counts[f"oracle_{min(len(oracle), 2)}"] += 1
-    if cancelled:
-        if len(cancelled) == 1 and oracle == cancelled:
-            tally.counts["correct_cancel"] += 1
-            return
-        (wrong,) = sorted(cancelled)[:1]
-        reason = "cancelled with another reading open" if wrong in oracle else "cancelled an inconsistent reminder"
-        key = (_ext_class_of(phrase, specs), reason, kind, phrase.shape or "base",
-               f"cancelled {specs[wrong].feature}", "also " + ",".join(sorted(specs[i].feature for i in oracle - {wrong})))
-        tally.counterexample(key, {"said": said, "reminders": _ext_describe(specs),
-                                   "got": f"cancelled {sorted(cancelled)}", "consistent": sorted(oracle)})
-    elif len(oracle) == 1:
-        tally.counts["over_ask" if asked else "miss_not_found"] += 1
-    else:
-        tally.counts["correct_no_cancel"] += 1
+def _ext_judge(tally: Tally, kind: str, specs, phrase: ExtPhrase, cancelled: set[int], asked: bool, said: str,
+               listed: set[int] | None = None) -> None:
+    _judge(tally, f"{_ext_class_of(phrase, specs)} | {kind}", specs, phrase, cancelled, asked, said, listed=listed,
+           shape=phrase.shape or "base", describe=_ext_describe)
 
 
 EXT_GRID = ext_reminder_sets()
 
 
 def test_the_extended_oracle_reads_the_user_decisions():
-    """The extended oracle is not vacuous: unread minutes, periods and weekday variants come out as decided."""
+    """The extended oracle is not vacuous: unread minutes, periods and weekdays never narrow, a number base does."""
     two = (ExtSpec("tomar 10 gotas", (), at(1, 14)), ExtSpec("tomar 10 gotas", (), at(1, 14, 10)))
     said = ExtPhrase("tomar 10 gotas").plus("de", ExtT("las 2 y 10", "clock", walls(2, 10), family="y N"))
-    assert [ext_consistent(s, said) for s in two] == [False, True]
+    assert oracle(two, said) == {0, 1}
     noon = (ExtSpec(BASE, (("al", ExtT("mediodía", "clock", frozenset({(12, 0)}), family="mediodía")),), at(1, 9)),
             ExtSpec(BASE, (), at(1, 12)))
-    said = ExtPhrase(BASE).plus("de", ExtT("las 12", "clock", walls(12, 0), family="H"))
-    assert [ext_consistent(s, said) for s in noon] == [True, True]
+    assert oracle(noon, ExtPhrase(BASE).plus("al", noon[0].items[0][1])) == {0, 1}
     evening = (ExtSpec(BASE, (), at(1, 15)), ExtSpec(BASE, (), at(1, 19)), ExtSpec(BASE, (), at(1, 21)))
-    assert [ext_consistent(s, ExtPhrase(BASE).plus("", ext_period_forms("tarde")[0])) for s in evening] == [
-        True, True, False]
-    assert [ext_consistent(s, ExtPhrase(BASE).plus("", ext_period_forms("noche")[0])) for s in evening] == [
-        False, False, True]
-    two_pm = (ExtSpec(BASE, (("a", ExtT("las 2 hs", "clock", walls(2, 0), family="H hs")),), at(1, 9, 45)),
-              ExtSpec(BASE, (), at(1, 17)))
-    said = ExtPhrase(BASE).plus("de", ExtT("las 2:00", "clock", walls(2, 0), family="H:00"))
-    assert [ext_consistent(s, said.plus("", ext_period_forms("tarde")[2])) for s in two_pm] == [True, False]
-    assert [ext_consistent(s, said.plus("", ext_period_forms("tarde")[1])) for s in two_pm] == [False, False]
+    assert oracle(evening, ExtPhrase(BASE).plus("", ext_period_forms("tarde")[0])) == {0, 1, 2}
     monday = (ExtSpec(BASE, (("", ext_weekday_forms(0)[3]),), at(1, 9)), ExtSpec(BASE, (), at(4, 9)))
-    assert [ext_consistent(s, ExtPhrase(BASE).plus("", ext_weekday_forms(0)[0])) for s in monday] == [True, True]
+    assert oracle(monday, ExtPhrase(BASE).plus("", ext_weekday_forms(0)[0])) == {0, 1}
+    ten = (ExtSpec(f"{BASE} 10", (), at(1, 14)), ExtSpec(BASE, (), at(1, 14, 10)))
+    assert oracle(ten, ExtPhrase(f"{BASE} 10")) == {0} and has_number(f"{BASE} 10")
+    assert oracle(ten, ExtPhrase(BASE, (), "que puse").plus("", ext_period_forms("tarde")[0])) == {0, 1}
     assert len(EXT_GRID) > 300
 
 
-async def test_extended_grid_never_cancels_a_reminder_another_reading_could_mean():
+async def test_extended_grid_cancels_only_the_single_candidate():
+    """Every set of the extended grid shares its base words, so under the user decision none is cancelled.
+
+    The earlier floor of correct cancels (the time read as a due time) has
+    no case left under the oracle change; it is replaced by: no case cancels,
+    and the only single candidates are bases holding a number (asked).
+    """
     tally = Tally()
     for kind, specs in EXT_GRID:
         manager = _manager(_Store(_ext_reminders(specs)))
         for phrase in ext_phrases_for(specs):
-            resolution = await manager.resolve(None, phrase.spoken, shared_only=True)
-            cancelled = {int(resolution.reminder.id[1:])} if resolution.match is CancelMatch.UNIQUE else set()
-            _ext_judge(tally, kind, specs, phrase, cancelled, resolution.match is CancelMatch.AMBIGUOUS,
-                       phrase.spoken)
+            cancelled, asked, listed = _cancelled(await manager.resolve(None, phrase.spoken, shared_only=True))
+            _ext_judge(tally, kind, specs, phrase, cancelled, asked, phrase.spoken, listed)
     data = tally.report("ext-manager")
-    # Exact unambiguous matches keep resolving; over-asking is acceptable and reported.
-    assert tally.counts["correct_cancel"] > 10000 and tally.counts["correct_no_cancel"] > 10000, tally.message(data)
-    assert tally.counts["counterexamples"] == 0, tally.message(data)
-
-
-def parse_ext_reference(reference: str, specs: tuple[ExtSpec, ...]) -> ExtPhrase | None:
-    """A proposed reference ("<text or base> [de <time>] [<day>]") as the extended oracle's phrase."""
-    split = next(((spec, body, found) for spec in specs for body in (spec.text, spec.base)
-                  if reference.startswith(body) and (found := _TAIL.fullmatch(reference[len(body):]))), None)
-    if split is None:
-        return None
-    spec, body, found = split
-    phrase = ExtPhrase(spec.base, spec.items if body == spec.text else ())
-    if found.group("time"):
-        period = found.group("per").split()[-1]
-        clock = walls(int(found.group("h")), int(found.group("m") or 0), period)
-        phrase = phrase.plus("de", ExtT(found.group("time"), "clock", clock, family="proposal"))
-    if found.group("day"):
-        text = found.group("day")
-        if text == "de hoy":
-            day = ExtT(text, "day", dates=frozenset({TODAY}), family="de hoy")
-        elif text == "de pasado mañana":
-            day = ExtT(text, "day", dates=frozenset({TODAY + timedelta(2)}), family="pasado mañana")
-        else:
-            day = ExtT(text, "day", dates=weekday_dates(WEEKDAYS.index(text.split()[-1])), family="wd:del X")
-        phrase = phrase.plus("", day)
-    if phrase.core != f"de {reference}":
-        return None
-    return phrase
-
-
-async def test_every_extended_proposed_reference_names_exactly_its_own_reminder():
-    tally = Tally()
-    for kind, specs in EXT_GRID:
-        reminders = _ext_reminders(specs)
-        manager = _manager(_Store(reminders))
-        for with_time in (False, True):
-            references = await manager.voice_references(None, tuple(reminders), with_time=with_time, shared_only=True)
-            for rid, reference in references.items():
-                own = int(rid[1:])
-                tally.counts["references"] += 1
-                phrase = parse_ext_reference(reference, specs)
-                if phrase is None:
-                    tally.counterexample(("unparsed proposal", kind), {"said": reference,
-                                                                       "reminders": _ext_describe(specs),
-                                                                       "got": rid, "consistent": []})
-                    continue
-                oracle = {i for i, s in enumerate(specs) if ext_consistent(s, phrase)}
-                if oracle != {own}:
-                    key = ("proposed reference has another reading", kind, phrase.shape or "base",
-                           f"names {specs[own].feature}",
-                           "also " + ",".join(sorted(specs[i].feature for i in oracle - {own})))
-                    tally.counterexample(key, {"said": f"de {reference}", "reminders": _ext_describe(specs),
-                                               "got": f"proposed for {rid}", "consistent": sorted(oracle)})
-                resolution = await manager.resolve(None, f"de {reference}", shared_only=True)
-                assert resolution.match is CancelMatch.UNIQUE and resolution.reminder.id == rid, reference
-    data = tally.report("ext-references")
-    assert tally.counts["references"] > 300, tally.message(data)
+    assert tally.counts["correct_cancel"] == 0 and tally.counts["correct_no_cancel"] > 10000, tally.message(data)
+    assert tally.counts["over_ask_number_base"] == tally.counts["oracle_1"] > 0, tally.message(data)
     assert tally.counts["counterexamples"] == 0, tally.message(data)
 
 
@@ -1216,46 +1042,8 @@ def _ext_dispatch_sample() -> list[tuple[str, tuple[ExtSpec, ...], ExtPhrase]]:
     return cases
 
 
-async def test_extended_dispatcher_sample_never_cancels_a_reminder_another_reading_could_mean(tmp_path):
-    leaves = CountedLeaves(tmp_path)
-    await leaves.start()
-    leaves.reminder_manager = _manager(leaves.reminder_store)
-    dispatcher = leaves.dispatcher()
-    manager = leaves.reminder_manager
-    tally = Tally()
-    try:
-        for n, (kind, specs, phrase) in enumerate(_ext_dispatch_sample()):
-            created = [await manager.create("household", s.text, s.due.timestamp(), scope=ReminderScope.SHARED)
-                       for s in specs]
-            index = {r.id: i for i, r in enumerate(created)}
-
-            async def active() -> set[str]:
-                return {r.id for r in await manager.get_active(None, shared_only=True)} & index.keys()
-
-            prefix = "Nexa, " if n % 3 == 0 else ""
-            said = f"{prefix}{VERBS[n % len(VERBS)]} recordatorio {phrase.spoken}{'.' if n % 2 else ''}"
-            before = await active()
-            result = await dispatcher.dispatch(user_id="unknown", text=said)
-            gone = {index[i] for i in before - await active()}
-            tally.counts["claimed" if result.path.value == "fast_reminder" else "unclaimed"] += 1
-            _ext_judge(tally, kind, specs, phrase, gone, result.response.startswith(("Encontré ", "Hay ")), said)
-            proposal = _PROPOSAL.search(result.response) if not gone else None
-            if proposal is not None:
-                tally.counts["proposals"] += 1
-                follow = parse_ext_reference(proposal.group(1), specs)
-                before = await active()
-                await dispatcher.dispatch(user_id="unknown", text=f"cancelá el recordatorio de {proposal.group(1)}")
-                named = {index[i] for i in before - await active()}
-                oracle = None if follow is None else {i for i, s in enumerate(specs) if ext_consistent(s, follow)}
-                if follow is None or len(named) != 1 or oracle != named:
-                    key = ("proposed command", kind, phrase.shape or "base",
-                           f"cancelled {sorted(specs[i].feature for i in named)}", f"consistent {oracle}")
-                    tally.counterexample(key, {"said": proposal.group(1), "reminders": _ext_describe(specs),
-                                               "got": f"cancelled {sorted(named)}", "consistent": sorted(oracle or ())})
-            for reminder_id in await active():
-                assert await leaves.reminder_store.cancel(reminder_id, shared_only=True)
-    finally:
-        await leaves.close()
-    data = tally.report("ext-dispatcher")
-    assert tally.counts["cases"] > 300 and tally.counts["correct_cancel"] > 30, tally.message(data)
-    assert tally.counts["counterexamples"] == 0, tally.message(data)
+async def test_extended_dispatcher_sample_cancels_only_the_single_candidate_or_the_numbered_one(tmp_path):
+    tally = await _dispatch_round(tmp_path, _ext_dispatch_sample(), _ext_describe, _ext_judge, "ext-dispatcher")
+    assert tally.counts["cases"] > 300 and tally.counts["correct_cancel"] == 0, tally.message(tally.data)
+    assert tally.counts["numbered_answers"] > 200, tally.message(tally.data)
+    assert tally.counts["counterexamples"] == 0, tally.message(tally.data)

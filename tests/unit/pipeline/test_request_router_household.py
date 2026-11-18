@@ -140,6 +140,17 @@ C02_ROUTER = (
        "needs_input", "not_written", "clarification",
        state="reminder_private_active:la clave;reminder_shared_active:tomar agua", counts=SPOKEN_ONE,
        effect_class="privacy_disclosure", unit="T032-U1", note="T032-U1: private text is never read or spoken by household voice"),
+    _r("C02-CAN-0303", "el primero", "reminder", "completed", "fast_reminder", "completed", "committed", "readback",
+       state="reminder_shared_active:tomar agua fría;reminder_shared_active:tomar agua con gas;queued_request;"
+             "reminder_choice_open@living:cancelá el recordatorio de tomar agua",
+       counts=effects(reminder_transitions=1, spoken_utterances=1), unit="T032-U1",
+       note="T032-U1 numbered_choice_round: the answer is routed back to the choice open in the mic's room, on the "
+            "household path (no producer, no service_filter)"),
+    _r("C02-CAN-0304", "el primero", "reminder", "no_turn", None, None, None, "none", wake="textual",
+       llm="stub:noise", state="reminder_shared_active:tomar agua fría;reminder_shared_active:tomar agua con gas;"
+                               "reminder_choice_open@living:cancelá el recordatorio de tomar agua",
+       counts=effects(llm_8101_calls=1), effect_class="stale_audio", unit="T032-U1",
+       note="T032-U1 numbered_choice_round: a weakly woken answer takes the household 7B veto; rejected, zero effects"),
 )
 
 WAKES = {

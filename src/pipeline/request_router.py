@@ -969,8 +969,10 @@ class RequestRouter:
         # P3-F2 S5: the household layer runs before the extended home
         # command, the grammar and the 7B, so a claimed turn never reaches a
         # domotics producer (design F26: never move it after the grammar).
+        # T032-U1: the answer to a numbered reminder choice ("el primero")
+        # goes back to it on the same household path, never to a producer.
         household = self.household_intents.classify(text)
-        if household is not None:
+        if household is not None or self._answers_reminder_choice(text, room_id):
             return await self._process_household_turn(
                 text, household, result, cmd=cmd, audio=audio, room_id=room_id, pipeline_start=pipeline_start,
                 tv_signal=textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE,
@@ -1289,8 +1291,13 @@ class RequestRouter:
             and self.llm_min_command_confidence <= confidence <= 1
         )
 
-    async def _process_household_turn(self, text: str, household: HouseholdIntent, result: dict, *, cmd, audio,
-                                      room_id: str | None, pipeline_start: float, tv_signal: bool) -> dict:
+    def _answers_reminder_choice(self, text: str, room_id: str | None) -> bool:
+        """The turn answers a numbered reminder choice open in its room (T032-U1)."""
+        awaits = getattr(self._orchestrator, "awaits_reminder_choice", None)
+        return callable(awaits) and awaits(text, room_id) is True
+
+    async def _process_household_turn(self, text: str, household: HouseholdIntent | None, result: dict, *, cmd,
+                                      audio, room_id: str | None, pipeline_start: float, tv_signal: bool) -> dict:
         """Dispatch a claimed household turn (P3-F2 S6).
 
         A weak wake (TV signal, a transcript-based wake engine, or a turn
@@ -1299,17 +1306,20 @@ class RequestRouter:
         carries a service_filter, slots or a target from any producer, never
         uses audio_manager.detect_source_zone, and its origin room is only the
         capturing microphone's room (the dispatcher derives it from
-        ``context_room_id``, P3F1-R3 option A).
+        ``context_room_id``, P3F1-R3 option A). ``household`` is None for
+        the answer to a numbered reminder choice (T032-U1), which takes the
+        same veto.
         """
-        result["household"] = household.summary()
-        logger.info("[Household] claimed %s", household.summary())
+        summary = household.summary() if household is not None else "reminder_choice"
+        result["household"] = summary
+        logger.info("[Household] claimed %s", summary)
         weak_wake = (
             tv_signal
             or not self.wake_acoustically_confirmed
             or len(text.split()) > self.household_intents.settings.unvetoed_max_words
         )
         if weak_wake and not await self._household_veto_passes(text, result, room_id=room_id, tv_signal=tv_signal):
-            logger.info("[Household] vetoed %s", household.summary())
+            logger.info("[Household] vetoed %s", summary)
             result["intent"] = "llm_rejected:household"
             result["success"] = False
             result["response"] = ""

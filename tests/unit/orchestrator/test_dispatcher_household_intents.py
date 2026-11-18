@@ -7,6 +7,7 @@ import pytest
 
 from src.nlu.household_intents import HouseholdIntentClassifier, HouseholdIntentSettings
 from src.orchestrator.dispatcher import MultiUserOrchestrator, PathType
+from src.reminders.reminder_manager import ReminderManager
 from src.reminders.reminder_store import ReminderScope
 from tests.mocks.c02_matrix import C02Entry, effects
 from tests.mocks.household_dispatch import CountedLeaves
@@ -185,7 +186,8 @@ C02_CANCEL = tuple(
     _d("C02-CAN-0003", "cancelá el recordatorio", "reminder", "unauthorized_effect", "needs_input", "fast_reminder",
        "needs_input", "not_written", "clarification",
        conditions={"state": "reminder_shared_active:tomar agua;reminder_shared_active:sacar la basura"},
-       unit="T032-U1", finding="CORE-03", seed="C02-CAN-0003", note="no object named: asks which, lists both"),
+       unit="T032-U1", finding="CORE-03", seed="C02-CAN-0003",
+       note="no object named: lists both by number with their times and waits for the number"),
     _d("C02-CAN-0004", "cancelá el recordatorio de agua", "reminder", "false_confirmation", "needs_input",
        "fast_reminder", "needs_input", "not_written", "clarification",
        conditions={"state": "reminder_shared_fired:tomar agua"}, unit="T032-U1", seed="C02-CAN-0004",
@@ -202,19 +204,41 @@ C02_CANCEL = tuple(
     _d("C02-CAN-0253", "cancelá el recordatorio de tomar agua de hoy", "reminder", "unauthorized_effect",
        "completed", "fast_reminder", "completed", "committed", "readback", counts=effects(reminder_transitions=1),
        conditions={"state": "reminder_shared_today:tomar agua;reminder_shared_active:sacar la basura;queued_request"},
-       unit="T032-U1", finding="CORE-03", note="'de hoy' is the household date (T031 day grammar)"),
+       unit="T032-U1", finding="CORE-03",
+       note="'de hoy' never narrows (user decision t032_design_20261118); the only 'tomar agua' is cancelled"),
     _d("C02-CAN-0005", "cancelá el recordatorio de la clave", "reminder", "privacy_disclosure", "needs_input",
        "fast_reminder", "needs_input", "not_written", "clarification",
        conditions={"state": "reminder_private_active:la clave", "speaker_label": "ana"}, actor="acoustic_label",
        unit="T032-U1", seed="C02-CAN-0005", note="private text never read nor spoken; the label adds no scope"),
 ) + tuple(
-    # User answer T032-U1-Q1 = A: another active reminder holds every spoken word, so ask and cancel nothing.
+    # User decision t032_design_20261118: another active reminder shares the base words, so the exact match is
+    # listed with it by number and nothing is cancelled until the number is said.
     _d(f"C02-CAN-{261 + i:04d}", f"{verb} recordatorio de tomar agua", "reminder", "unauthorized_effect",
        "needs_input", "fast_reminder", "needs_input", "not_written", "clarification",
        conditions={"state": "reminder_shared_active:tomar agua;reminder_shared_active:tomar agua con gas;"
                             "queued_request"},
-       unit="T032-U1", finding="CORE-03", note="superset: 'tomar agua con gas' holds every spoken word")
+       unit="T032-U1", finding="CORE-03", note="superset: 'tomar agua con gas' shares the base words")
     for i, verb in enumerate(CANCEL_VERBS)
+) + tuple(
+    # T032-U1 numbered_choice_round: the answer resolves by the listed index only, for the same speaker id and
+    # room within reminders.voice_choice_window_s; 1 = 'tomar agua fría' (the earlier trigger).
+    _d(f"C02-CAN-{271 + i:04d}", answer, "reminder", "unauthorized_effect", status, "fast_reminder", status,
+       persistence, spoken, counts=counts,
+       conditions={"state": "reminder_shared_active:tomar agua fría;reminder_shared_active:tomar agua con gas;"
+                            "queued_request;reminder_choice_open:cancelá el recordatorio de tomar agua" + extra},
+       unit="T032-U1", finding="CORE-03", note=note)
+    for i, (answer, extra, status, persistence, spoken, counts, note) in enumerate((
+        ("el primero", "", "completed", "committed", "readback", effects(reminder_transitions=1),
+         "numbered answer: cancels the first listed only"),
+        ("la segunda", "", "completed", "committed", "readback", effects(reminder_transitions=1),
+         "numbered answer: cancels the second listed only"),
+        ("el 2", "", "completed", "committed", "readback", effects(reminder_transitions=1), "digit answer"),
+        ("uno", "", "completed", "committed", "readback", effects(reminder_transitions=1), "cardinal answer"),
+        ("el tercero", "", "needs_input", "not_written", "clarification", ZERO,
+         "a number that was not listed cancels nothing"),
+        ("el primero", ";reminder_choice_expired", "needs_input", "not_written", "clarification", ZERO,
+         "after the window the answer cancels nothing"),
+    ))
 )
 
 C02_DISPATCHER = C02_DISPATCHER + C02_CANCEL
@@ -450,12 +474,12 @@ async def test_unclaimed_routine_creation_never_reaches_cloud_extraction(leaves,
 # T032-U1: what the reminder cancel says, and the store transition behind it
 # ---------------------------------------------------------------------------
 
-async def _cancel(leaves, text, state=None, *, user_id="unknown", dispatcher=None):
+async def _cancel(leaves, text, state=None, *, user_id="unknown", dispatcher=None, room=None):
     dispatcher = dispatcher or leaves.dispatcher()
     await leaves.apply_state(dispatcher, state)
     before = leaves.snapshot()
     leaves.cancels.clear()
-    result = await dispatcher.dispatch(user_id=user_id, text=text)
+    result = await dispatcher.dispatch(user_id=user_id, text=text, context_room_id=room)
     return result, leaves.effects(before)
 
 
@@ -482,69 +506,33 @@ async def test_accents_articles_and_plural_do_not_hide_the_reminder(leaves):
     assert result.response.startswith("Cancelé el recordatorio Pastilla del Abuelo")
 
 
-async def test_no_object_asks_which_and_lists_the_shared_candidates(leaves):
+async def test_no_object_asks_which_and_lists_the_shared_candidates_by_number(leaves):
     result, counted = await _cancel(leaves, "cancelá el recordatorio",
                                     "reminder_shared_active:tomar agua;reminder_shared_active:sacar la basura;"
                                     "reminder_private_active:la clave")
     assert counted == ZERO
     assert result.outcome.status.value == "needs_input"
-    assert result.response.startswith("Hay 2: tomar agua a las ")
-    assert " y sacar la basura a las " in result.response and "clave" not in result.response
-    assert ". Para cancelar uno, decímelo entero, por ejemplo: cancelá el recordatorio de tomar agua de las " \
-        in result.response
+    assert result.response.startswith("Hay 2. 1: tomar agua a las ")
+    assert "; 2: sacar la basura a las " in result.response and "clave" not in result.response
+    assert result.response.endswith("; ¿cuál? Decime el número.")
 
 
 async def test_plural_without_object_never_cancels_them_all(leaves):
     result, counted = await _cancel(leaves, "eliminá todos los recordatorios", "reminder_shared_active:tomar agua")
     assert counted == ZERO and result.outcome.status.value == "needs_input"
-    assert result.response.startswith("Por voz cancelo de a un recordatorio. Hay uno: tomar agua a las ")
-    assert result.response.endswith(". Para cancelarlo, decime: cancelá el recordatorio de tomar agua.")
+    assert result.response.startswith("Por voz cancelo de a un recordatorio. Hay uno. 1: tomar agua a las ")
+    assert result.response.endswith("; ¿lo cancelo? Decime: el uno.")
 
 
-async def test_more_than_three_candidates_speak_three(leaves):
+async def test_more_than_three_candidates_list_the_three_next(leaves):
     state = ";".join(f"reminder_shared_active:regar {name}" for name in ("helecho", "cactus", "potus", "ficus"))
     result, counted = await _cancel(leaves, "cancelá el recordatorio de regar", state)
     assert counted == ZERO and result.outcome.status.value == "needs_input"
-    assert result.response.startswith("Encontré 4, por ejemplo: regar helecho a las ")
-    assert ". Repetímelo con la hora, por ejemplo: cancelá el recordatorio de regar helecho de las " \
-        in result.response
-    assert result.response.count(" a las ") == 3
+    assert result.response.startswith("Encontré 4 parecidos; te digo los 3 más próximos. 1: regar helecho a las ")
+    assert "; 2: regar cactus a las " in result.response and "; 3: regar potus a las " in result.response
+    assert "ficus" not in result.response
+    assert result.response.endswith("; ¿cuál? Decime el número. Si es otro, nombralo con más palabras.")
 
-
-async def test_two_matches_ask_with_the_time_and_the_time_resolves_them(leaves):
-    dispatcher = leaves.dispatcher()
-    early = await leaves.reminder_manager.create("household", "tomar agua", time.time() + 3600,
-                                                 scope=ReminderScope.SHARED)
-    late = await leaves.reminder_manager.create("household", "tomar agua", time.time() + 4 * 3600,
-                                                scope=ReminderScope.SHARED)
-    clock = leaves.reminder_manager._household_clock
-    asked, counted = await _cancel(leaves, "cancelá el recordatorio de tomar agua", dispatcher=dispatcher)
-    assert counted == ZERO and asked.outcome.status.value == "needs_input"
-    example = f"cancelá el recordatorio de tomar agua de {leaves.reminder_manager.spoken_time_reference(early)}"
-    assert asked.response == (f"Encontré 2: tomar agua a las {clock.format_time(early.trigger_at)} y tomar agua "
-                              f"a las {clock.format_time(late.trigger_at)}. Repetímelo con la hora, por ejemplo: "
-                              f"{example}.")
-    # Review T032-U1-R7: the proposed command, said as is, cancels exactly that reminder.
-    done, counted = await _cancel(leaves, example, dispatcher=dispatcher)
-    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
-    assert [r.id for r in await leaves.reminder_manager.get_active(None, shared_only=True)] == [late.id]
-    again, counted = await _cancel(leaves, f"cancelá el recordatorio de tomar agua de las "
-                                           f"{clock.format_time(late.trigger_at)}", dispatcher=dispatcher)
-    assert counted == effects(reminder_transitions=1) and again.outcome.task_completed
-
-
-async def test_identical_duplicates_point_to_the_web(leaves):
-    trigger = time.time() + 3600
-    for _ in range(2):
-        await leaves.reminder_manager.create("household", "tomar agua", trigger, scope=ReminderScope.SHARED)
-    result, counted = await _cancel(leaves, "cancelá el recordatorio de tomar agua")
-    assert counted == ZERO and result.outcome.status.value == "needs_input"
-    assert result.response.startswith("Hay 2 recordatorios iguales: tomar agua a las ")
-    assert result.response.endswith("Podés borrar el que sobra desde la web.")
-
-
-# User answer T032-U1-Q1 = A: when another active reminder contains every spoken
-# word, ask which; never cancel the wrong one.
 
 def _minute_start(hours_ahead: int) -> float:
     return (int(time.time()) // 60 + 1) * 60 + hours_ahead * 3600
@@ -557,71 +545,64 @@ async def _two_shared(leaves, first: str, second: str, first_at: float, second_a
     return one, two
 
 
-async def test_a_superset_at_the_same_time_asks_and_proposes_the_nameable_one(leaves):
+async def test_two_similar_reminders_are_listed_with_their_times_and_the_number_picks_one(leaves):
+    """User decision t032_design_20261118: list the similar ones with their times; the answer is the number."""
     dispatcher = leaves.dispatcher()
-    manager, base = leaves.reminder_manager, _minute_start(1)
-    plain, lemon = await _two_shared(leaves, "tomar agua", "tomar agua con limón", base, base + 30)
-    hm = manager._household_clock.format_time(base)
+    early, late = await _two_shared(leaves, "tomar agua", "tomar agua", _minute_start(1), _minute_start(4))
+    clock = leaves.reminder_manager._household_clock
+    asked, counted = await _cancel(leaves, "cancelá el recordatorio de tomar agua", dispatcher=dispatcher)
+    assert counted == ZERO and asked.outcome.status.value == "needs_input"
+    assert asked.response == (f"Encontré 2 parecidos. 1: tomar agua a las {clock.format_time(early.trigger_at)}; "
+                              f"2: tomar agua a las {clock.format_time(late.trigger_at)}; ¿cuál? Decime el número.")
+    done, counted = await _cancel(leaves, "el segundo", dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
+    assert done.response == f"Cancelé el recordatorio tomar agua a las {clock.format_time(late.trigger_at)}."
+    assert [r.id for r in await leaves.reminder_manager.get_active(None, shared_only=True)] == [early.id]
+
+
+async def test_an_exact_text_with_a_similar_one_asks_and_alone_cancels_directly(leaves):
+    """An exact match cancels only when no other active reminder shares its base words."""
+    dispatcher = leaves.dispatcher()
+    plain, lemon = await _two_shared(leaves, "tomar agua", "tomar agua con limón", _minute_start(1), _minute_start(2))
     asked, counted = await _cancel(leaves, "cancelá el recordatorio de tomar agua", "queued_request",
                                    dispatcher=dispatcher)
-    assert counted == ZERO and asked.outcome.status.value == "needs_input" and len(leaves.queue) == 1
-    example = f"cancelá el recordatorio de tomar agua con limón de {manager.spoken_time_reference(lemon)}"
-    assert asked.response == (f"Encontré 2: tomar agua a las {hm} y tomar agua con limón a las {hm}. "
-                              f"Repetímelo con la hora, por ejemplo: {example}. Si es otro, borralo desde la web.")
-    again, counted = await _cancel(leaves, f"cancelá el recordatorio de tomar agua de "
-                                           f"{manager.spoken_time_reference(plain)}", dispatcher=dispatcher)
-    assert counted == ZERO and again.outcome.status.value == "needs_input"
-    assert await _states(leaves) == {"tomar agua": "active", "tomar agua con limón": "active"}
-    done, counted = await _cancel(leaves, example, dispatcher=dispatcher)
+    assert counted == ZERO and asked.response.startswith("Encontré 2 parecidos. 1: tomar agua a las ")
+    assert "; 2: tomar agua con limón a las " in asked.response and len(leaves.queue) == 1
+    done, counted = await _cancel(leaves, "cancelá el recordatorio de tomar agua con limón", dispatcher=dispatcher)
     assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
-    assert [r.id for r in await manager.get_active(None, shared_only=True)] == [plain.id]
     last, counted = await _cancel(leaves, "cancelá el recordatorio de tomar agua", dispatcher=dispatcher)
     assert counted == effects(reminder_transitions=1) and last.outcome.task_completed
-    assert await manager.get_active(None, shared_only=True) == []
+    assert await leaves.reminder_manager.get_active(None, shared_only=True) == []
+    assert (await leaves.reminder_store.get_by_id(plain.id)).state == "cancelled"
+    assert (await leaves.reminder_store.get_by_id(lemon.id)).state == "cancelled"
 
 
-async def test_a_superset_at_another_time_asks_and_the_time_names_the_exact_one(leaves):
+async def test_identical_duplicates_are_listed_and_either_number_cancels_one(leaves):
     dispatcher = leaves.dispatcher()
-    manager = leaves.reminder_manager
-    plain, lemon = await _two_shared(leaves, "tomar agua", "tomar agua con limón", _minute_start(1),
-                                     _minute_start(4))
-    clock = manager._household_clock
-    asked, counted = await _cancel(leaves, "borrá el recordatorio de tomar agua", dispatcher=dispatcher)
-    assert counted == ZERO and asked.outcome.status.value == "needs_input"
-    example = f"cancelá el recordatorio de tomar agua de {manager.spoken_time_reference(plain)}"
-    assert asked.response == (f"Encontré 2: tomar agua a las {clock.format_time(plain.trigger_at)} y tomar agua "
-                              f"con limón a las {clock.format_time(lemon.trigger_at)}. Repetímelo con la hora, "
-                              f"por ejemplo: {example}.")
-    done, counted = await _cancel(leaves, example, dispatcher=dispatcher)
+    trigger = _minute_start(1)
+    await _two_shared(leaves, "tomar agua", "tomar agua", trigger, trigger)
+    asked, counted = await _cancel(leaves, "cancelá el recordatorio de tomar agua", dispatcher=dispatcher)
+    assert counted == ZERO and asked.response.startswith("Encontré 2 parecidos. 1: tomar agua a las ")
+    done, counted = await _cancel(leaves, "el primero", dispatcher=dispatcher)
     assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
-    assert [r.id for r in await manager.get_active(None, shared_only=True)] == [lemon.id]
+    assert len(await leaves.reminder_manager.get_active(None, shared_only=True)) == 1
 
 
-async def test_no_object_with_a_superset_proposes_the_nameable_one(leaves):
-    manager, base = leaves.reminder_manager, _minute_start(1)
-    _, lemon = await _two_shared(leaves, "tomar agua", "tomar agua con limón", base, base + 30)
-    hm = manager._household_clock.format_time(base)
-    result, counted = await _cancel(leaves, "cancelá el recordatorio")
-    assert counted == ZERO and result.outcome.status.value == "needs_input"
-    assert result.response == (f"Hay 2: tomar agua a las {hm} y tomar agua con limón a las {hm}. Para cancelar "
-                               f"uno, decímelo entero, por ejemplo: cancelá el recordatorio de tomar agua con limón "
-                               f"de {manager.spoken_time_reference(lemon)}. Si es otro, borralo desde la web.")
-
-
-async def test_reminders_voice_cannot_tell_apart_point_to_the_web(leaves):
+async def test_the_same_text_and_time_on_two_days_are_told_apart_by_the_day(leaves):
+    """Review T032-U1-RR-F2: the same label is listed with its household day."""
     dispatcher = leaves.dispatcher()
     manager, base = leaves.reminder_manager, _minute_start(1)
-    await _two_shared(leaves, "tomar agua", "tomar el agua", base, base + 30)
+    first, second = await _two_shared(leaves, "tomar agua", "tomar agua", base, base + 86400)
     hm = manager._household_clock.format_time(base)
-    choices = f"tomar agua a las {hm} y tomar el agua a las {hm}"
-    web = "Por voz no los puedo distinguir; podés borrar el que querés desde la web."
-    named, counted = await _cancel(leaves, "cancelá el recordatorio de tomar agua", dispatcher=dispatcher)
-    assert counted == ZERO and named.outcome.status.value == "needs_input"
-    assert named.response == f"Encontré 2: {choices}. {web}"
-    bare, counted = await _cancel(leaves, "cancelá el recordatorio", dispatcher=dispatcher)
-    assert counted == ZERO and bare.outcome.status.value == "needs_input"
-    assert bare.response == f"Hay 2: {choices}. {web}"
-    assert await _states(leaves) == {"tomar agua": "active", "tomar el agua": "active"}
+    assert manager._household_clock.format_time(second.trigger_at) == hm  # America/Montevideo has no DST
+    d1, d2 = manager.spoken_day_reference(first), manager.spoken_day_reference(second)
+    asked, counted = await _cancel(leaves, "cancelá el recordatorio de tomar agua", dispatcher=dispatcher)
+    assert counted == ZERO
+    assert asked.response == (f"Encontré 2 parecidos. 1: tomar agua a las {hm} {d1}; 2: tomar agua a las {hm} {d2}; "
+                              "¿cuál? Decime el número.")
+    done, counted = await _cancel(leaves, "la segunda", dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1) and done.response == f"Cancelé el recordatorio tomar agua a las {hm}."
+    assert [r.id for r in await manager.get_active(None, shared_only=True)] == [first.id]
 
 
 @pytest.mark.parametrize(("state", "text", "response"), [
@@ -741,224 +722,45 @@ async def test_the_claimed_complement_drops_wake_words_and_politeness(leaves):
     assert counted == effects(reminder_transitions=1) and result.outcome.task_completed
 
 
-async def test_a_number_in_the_reminder_text_never_cancels_another_reminder(leaves):
-    """Review T032-U1-R2: 'las 2 pastillas' never cancels 'tomar las pastillas' at 14:00.
-
-    T032-U1 fail-safe (round failsafe_1): the spoken "2" is a temporal word
-    no clock reads, so it may be the text or 14:00. Before, the literal
-    reminder was cancelled at once; now KZA asks which, cancels nothing,
-    and the proposed command (with the time) cancels exactly the literal one.
-    """
+def _tomorrow_at(leaves, hour: int, minute: int = 0) -> float:
     from datetime import datetime, timedelta
-    dispatcher = leaves.dispatcher()
     clock = leaves.reminder_manager._household_clock
     tomorrow = clock.now_local().date() + timedelta(days=1)
-
-    def at(hour: int) -> float:
-        return clock.to_epoch(datetime(tomorrow.year, tomorrow.month, tomorrow.day, hour))
-    literal = await leaves.reminder_manager.create("household", "tomar las 2 pastillas", at(9),
-                                                   scope=ReminderScope.SHARED)
-    other = await leaves.reminder_manager.create("household", "tomar las pastillas", at(14),
-                                                 scope=ReminderScope.SHARED)
-    asked, counted = await _cancel(leaves, "cancelá el recordatorio de tomar las 2 pastillas", dispatcher=dispatcher)
-    assert counted == ZERO and asked.outcome.status.value == "needs_input"
-    example = "cancelá el recordatorio de tomar las 2 pastillas de las 9 de la mañana"
-    assert asked.response == ("Encontré 2: tomar las 2 pastillas a las 09:00 y tomar las pastillas a las 14:00. "
-                              f"Repetímelo con la hora, por ejemplo: {example}.")
-    assert {r.id for r in await leaves.reminder_manager.get_active(None, shared_only=True)} == {literal.id, other.id}
-    result, counted = await _cancel(leaves, example, dispatcher=dispatcher)
-    assert counted == effects(reminder_transitions=1)
-    assert result.response.startswith("Cancelé el recordatorio tomar las 2 pastillas a las 09:00")
-    assert [r.id for r in await leaves.reminder_manager.get_active(None, shared_only=True)] == [other.id]
-    assert (await leaves.reminder_store.get_by_id(literal.id)).state == "cancelled"
+    return clock.to_epoch(datetime(tomorrow.year, tomorrow.month, tomorrow.day, hour, minute))
 
 
-async def test_a_clock_word_of_one_text_and_another_due_time_asks_which(leaves):
-    """User decision T032-U1-RR-P1 (2026-11-17): before it, 'de las 2' cancelled the 14:00 reminder.
-
-    "2" is also a word of "tomar las 2 pastillas", so KZA asks which,
-    cancels nothing, and the proposed command cancels exactly one.
-    """
-    from datetime import datetime, timedelta
-    dispatcher = leaves.dispatcher()
-    manager = leaves.reminder_manager
-    clock = manager._household_clock
-    tomorrow = clock.now_local().date() + timedelta(days=1)
-
-    def at(hour: int) -> float:
-        return clock.to_epoch(datetime(tomorrow.year, tomorrow.month, tomorrow.day, hour))
-    literal = await manager.create("household", "tomar las 2 pastillas", at(9), scope=ReminderScope.SHARED)
-    other = await manager.create("household", "tomar las pastillas", at(14), scope=ReminderScope.SHARED)
-    asked, counted = await _cancel(leaves, "cancelá el recordatorio de tomar las pastillas de las 2",
-                                   dispatcher=dispatcher)
-    assert counted == ZERO and asked.outcome.status.value == "needs_input"
-    example = "cancelá el recordatorio de tomar las 2 pastillas de las 9 de la mañana"
-    assert asked.response == ("Encontré 2: tomar las 2 pastillas a las 09:00 y tomar las pastillas a las 14:00. "
-                              f"Repetímelo con la hora, por ejemplo: {example}.")
-    assert {r.id for r in await manager.get_active(None, shared_only=True)} == {literal.id, other.id}
-    done, counted = await _cancel(leaves, "cancelá el recordatorio de tomar las pastillas de las 2 de la tarde",
-                                  dispatcher=dispatcher)
-    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
-    assert [r.id for r in await manager.get_active(None, shared_only=True)] == [literal.id]
-    done, counted = await _cancel(leaves, example, dispatcher=dispatcher)
-    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
-    assert await manager.get_active(None, shared_only=True) == []
-
-
-@pytest.mark.parametrize(("literal", "literal_due", "other", "other_due", "response"), [
-    # Review FV3-2: the one due at the text's clock has no voice reference.
-    ("llamar al médico a la una", (12, 45), "llamar al médico", (13, 0),
-     "Encontré 2: llamar al médico a la una a las 12:45 y llamar al médico a las 13:00. Repetímelo con la hora, "
-     "por ejemplo: cancelá el recordatorio de llamar al médico de las 12:45 del mediodía. "
-     "Si es otro, borralo desde la web."),
-    ("tomar 2 pastillas a las 2", (9, 0), "tomar 2 pastillas", (14, 0),
-     "Encontré 2: tomar 2 pastillas a las 2 a las 09:00 y tomar 2 pastillas a las 14:00. Repetímelo con la hora, "
-     "por ejemplo: cancelá el recordatorio de tomar 2 pastillas de las 9 de la mañana. "
-     "Si es otro, borralo desde la web."),
+@pytest.mark.parametrize(("literal", "literal_due", "other", "other_due", "said"), [
+    # Reviews R2, RR-P1, FV-1, FV2-1, FV3-1, FV3-2 and the fail-safe round: each of these once cancelled one
+    # reminder by reading a time; now no time narrows, so both are listed and the number picks one.
+    ("tomar las 2 pastillas", (9, 0), "tomar las pastillas", (14, 0), "tomar las 2 pastillas"),
+    ("tomar las 2 pastillas", (9, 0), "tomar las pastillas", (14, 0), "tomar las pastillas de las 2"),
+    ("tomar las 2 pastillas", (9, 0), "tomar las pastillas", (14, 0), "tomar las pastillas de las 2 de la tarde"),
+    ("llamar al médico a la una", (12, 45), "llamar al médico", (13, 0), "llamar al médico a la una"),
+    ("tomar 2 pastillas a las 2", (9, 0), "tomar 2 pastillas", (14, 0), "tomar 2 pastillas a las 2"),
+    ("pagar la luz a las 5", (10, 0), "pagar la luz", (17, 0), "pagar la luz a las 5 del miércoles"),
+    ("tomar pastillas a las 8:30", (9, 0), "tomar pastillas", (20, 30), "tomar pastillas a las 8 y media"),
+    ("tomar pastillas a las 20", (9, 0), "tomar pastillas", (20, 0), "tomar pastillas a las 8 de la noche"),
+    ("tomar pastillas a la hora de la cena", (9, 0), "tomar pastillas", (21, 0),
+     "tomar pastillas a la hora de la cena"),
+    ("tomar pastillas el lunes que viene", (9, 0), "tomar pastillas", (10, 0), "tomar pastillas el próximo lunes"),
 ])
-async def test_the_whole_text_with_its_clock_phrase_never_cancels_another_reminder(
-        leaves, literal, literal_due, other, other_due, response):
-    """Review T032-U1-FV-1: before it, these cancelled the reminder due at the text's clock word.
-
-    "una" is a stopword and "2" is already a content word, so the literal
-    reading was skipped; now KZA asks, cancels nothing, and the proposed
-    command cancels exactly the named one.
-    """
-    from datetime import datetime, timedelta
+async def test_a_spoken_time_never_picks_one_of_two_similar_reminders(leaves, literal, literal_due, other,
+                                                                      other_due, said):
+    """User decision t032_design_20261118: Nexa never guesses by the spoken time; the listed number decides."""
     dispatcher = leaves.dispatcher()
     manager = leaves.reminder_manager
     clock = manager._household_clock
-    tomorrow = clock.now_local().date() + timedelta(days=1)
-
-    def at(hour: int, minute: int) -> float:
-        return clock.to_epoch(datetime(tomorrow.year, tomorrow.month, tomorrow.day, hour, minute))
-    named = await manager.create("household", literal, at(*literal_due), scope=ReminderScope.SHARED)
-    timed = await manager.create("household", other, at(*other_due), scope=ReminderScope.SHARED)
-    asked, counted = await _cancel(leaves, f"cancelá el recordatorio de {literal}", dispatcher=dispatcher)
+    named = await manager.create("household", literal, _tomorrow_at(leaves, *literal_due), scope=ReminderScope.SHARED)
+    timed = await manager.create("household", other, _tomorrow_at(leaves, *other_due), scope=ReminderScope.SHARED)
+    asked, counted = await _cancel(leaves, f"cancelá el recordatorio de {said}", dispatcher=dispatcher)
     assert counted == ZERO and asked.outcome.status.value == "needs_input"
-    assert asked.response == response
+    assert asked.response == (f"Encontré 2 parecidos. 1: {literal} a las {clock.format_time(named.trigger_at)}; "
+                              f"2: {other} a las {clock.format_time(timed.trigger_at)}; ¿cuál? Decime el número.")
     assert {r.id for r in await manager.get_active(None, shared_only=True)} == {named.id, timed.id}
-    example = response.split("por ejemplo: ", 1)[1].split(". ", 1)[0].removesuffix(".")
-    done, counted = await _cancel(leaves, example, dispatcher=dispatcher)
+    done, counted = await _cancel(leaves, "el uno", dispatcher=dispatcher)
     assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
     assert [r.id for r in await manager.get_active(None, shared_only=True)] == [timed.id]
     assert (await leaves.reminder_store.get_by_id(named.id)).state == "cancelled"
-
-
-async def test_the_text_clock_with_the_due_day_never_cancels_another_reminder(leaves):
-    """Review T032-U1-FV2-1: before it, this cancelled "pagar la luz" at 17:00.
-
-    "a las 5" is the text of the first reminder and the day is its due
-    day; a reminder was a candidate only with clock and day both due or
-    both text, so the mixed reading was lost. Now KZA asks, cancels
-    nothing, and each proposed command cancels exactly its reminder.
-    """
-    from datetime import datetime, timedelta
-    dispatcher = leaves.dispatcher()
-    manager = leaves.reminder_manager
-    clock = manager._household_clock
-    tomorrow = clock.now_local().date() + timedelta(days=1)
-
-    def at(hour: int) -> float:
-        return clock.to_epoch(datetime(tomorrow.year, tomorrow.month, tomorrow.day, hour))
-    named = await manager.create("household", "pagar la luz a las 5", at(10), scope=ReminderScope.SHARED)
-    timed = await manager.create("household", "pagar la luz", at(17), scope=ReminderScope.SHARED)
-    day = manager.spoken_day_reference(named)
-    assert day.startswith("del ")
-    asked, counted = await _cancel(leaves, f"cancelá el recordatorio de pagar la luz a las 5 {day}",
-                                   dispatcher=dispatcher)
-    assert counted == ZERO and asked.outcome.status.value == "needs_input"
-    # Review FV3-2: "pagar la luz" at 17:00 is not nameable next to the text
-    # "a las 5" ("de las 17" is that clock too), so the reply adds the web.
-    example = "cancelá el recordatorio de pagar la luz de las 10 de la mañana"
-    assert asked.response == ("Encontré 2: pagar la luz a las 5 a las 10:00 y pagar la luz a las 17:00. "
-                              f"Repetímelo con la hora, por ejemplo: {example}. Si es otro, borralo desde la web.")
-    assert {r.id for r in await manager.get_active(None, shared_only=True)} == {named.id, timed.id}
-    references = await manager.voice_references(None, (named, timed), with_time=True, shared_only=True)
-    assert {rid: f"cancelá el recordatorio de {ref}" for rid, ref in references.items()} == {named.id: example}
-    done, counted = await _cancel(leaves, example, dispatcher=dispatcher)
-    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
-    assert [r.id for r in await manager.get_active(None, shared_only=True)] == [timed.id]
-    done, counted = await _cancel(leaves, "cancelá el recordatorio de pagar la luz", dispatcher=dispatcher)
-    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
-    assert await manager.get_active(None, shared_only=True) == []
-
-
-@pytest.mark.parametrize(("literal", "spoken"), [
-    ("tomar pastillas a las 8:30", "tomar pastillas a las 8 y media"),
-    ("tomar pastillas a las 8 y media", "tomar pastillas a las 8:30"),
-])
-async def test_the_text_clock_said_another_way_never_cancels_another_reminder(leaves, literal, spoken):
-    """Review T032-U1-FV3-1: before it, these cancelled "tomar pastillas" due at 20:30.
-
-    The text's "8:30" was compared as a token, so "8 y media" (and the
-    reverse) never read it. Now KZA asks, cancels nothing, and each
-    proposed command cancels exactly its reminder.
-    """
-    from datetime import datetime, timedelta
-    dispatcher = leaves.dispatcher()
-    manager = leaves.reminder_manager
-    clock = manager._household_clock
-    tomorrow = clock.now_local().date() + timedelta(days=1)
-
-    def at(hour: int, minute: int) -> float:
-        return clock.to_epoch(datetime(tomorrow.year, tomorrow.month, tomorrow.day, hour, minute))
-    named = await manager.create("household", literal, at(9, 0), scope=ReminderScope.SHARED)
-    timed = await manager.create("household", "tomar pastillas", at(20, 30), scope=ReminderScope.SHARED)
-    asked, counted = await _cancel(leaves, f"cancelá el recordatorio de {spoken}", dispatcher=dispatcher)
-    assert counted == ZERO and asked.outcome.status.value == "needs_input"
-    example = "cancelá el recordatorio de tomar pastillas de las 9 de la mañana"
-    # Review FV3-2: "de las 8:30 de la noche" (or "de las 20:30") is the text
-    # "8:30" too, so the 20:30 one has no voice reference.
-    assert asked.response == (f"Encontré 2: {literal} a las 09:00 y tomar pastillas a las 20:30. "
-                              f"Repetímelo con la hora, por ejemplo: {example}. Si es otro, borralo desde la web.")
-    assert {r.id for r in await manager.get_active(None, shared_only=True)} == {named.id, timed.id}
-    references = await manager.voice_references(None, (named, timed), with_time=True, shared_only=True)
-    assert {rid: f"cancelá el recordatorio de {ref}" for rid, ref in references.items()} == {named.id: example}
-    for reminder in (timed, named):
-        if reminder.id not in references:
-            continue
-        still = {r.id for r in await manager.get_active(None, shared_only=True)} - {reminder.id}
-        done, counted = await _cancel(leaves, f"cancelá el recordatorio de {references[reminder.id]}",
-                                      dispatcher=dispatcher)
-        assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
-        assert {r.id for r in await manager.get_active(None, shared_only=True)} == still
-        assert (await leaves.reminder_store.get_by_id(reminder.id)).state == "cancelled"
-
-
-async def test_a_24_hour_text_clock_said_on_the_12_hour_clock_never_cancels_another_reminder(leaves):
-    """Review T032-U1-FV3-2: before it, this cancelled "tomar pastillas" due at 20:00.
-
-    "las 20" in the text was compared as a token, so "las 8 de la noche"
-    never read it. Now KZA asks, cancels nothing, and the proposed command
-    cancels exactly its reminder; the other one is sent to the web, and
-    is the only "tomar pastillas" left after that.
-    """
-    from datetime import datetime, timedelta
-    dispatcher = leaves.dispatcher()
-    manager = leaves.reminder_manager
-    clock = manager._household_clock
-    tomorrow = clock.now_local().date() + timedelta(days=1)
-
-    def at(hour: int) -> float:
-        return clock.to_epoch(datetime(tomorrow.year, tomorrow.month, tomorrow.day, hour))
-    named = await manager.create("household", "tomar pastillas a las 20", at(9), scope=ReminderScope.SHARED)
-    timed = await manager.create("household", "tomar pastillas", at(20), scope=ReminderScope.SHARED)
-    asked, counted = await _cancel(leaves, "cancelá el recordatorio de tomar pastillas a las 8 de la noche",
-                                   dispatcher=dispatcher)
-    assert counted == ZERO and asked.outcome.status.value == "needs_input"
-    example = "cancelá el recordatorio de tomar pastillas de las 9 de la mañana"
-    assert asked.response == ("Encontré 2: tomar pastillas a las 20 a las 09:00 y tomar pastillas a las 20:00. "
-                              f"Repetímelo con la hora, por ejemplo: {example}. Si es otro, borralo desde la web.")
-    assert {r.id for r in await manager.get_active(None, shared_only=True)} == {named.id, timed.id}
-    done, counted = await _cancel(leaves, example, dispatcher=dispatcher)
-    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
-    assert [r.id for r in await manager.get_active(None, shared_only=True)] == [timed.id]
-    assert (await leaves.reminder_store.get_by_id(named.id)).state == "cancelled"
-    done, counted = await _cancel(leaves, "cancelá el recordatorio de tomar pastillas a las 8 de la noche",
-                                  dispatcher=dispatcher)
-    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
-    assert await manager.get_active(None, shared_only=True) == []
 
 
 @pytest.mark.parametrize(("text", "response"), [
@@ -978,110 +780,181 @@ async def test_two_reminders_in_one_turn_are_asked_one_at_a_time(leaves, text, r
     assert set(await _states(leaves)) == {"tomar agua", "sacar la basura"}
 
 
-# Review T032-U1-RR-F1: a clock or day word inside the only reminder's text
-# never makes KZA say it cannot tell reminders apart.
-
-def _hour_word_not(hour: int) -> str:
-    return next(str(h) for h in (3, 5, 7) if h not in (hour % 12, hour))
-
-
-async def test_the_only_reminder_with_a_clock_in_its_text_is_named_and_cancelled(leaves):
+async def test_the_only_reminder_with_a_clock_in_its_text_is_listed_and_named(leaves):
+    """Review T032-U1-RR-F1: the only reminder is offered by number and its text cancels it directly."""
     dispatcher = leaves.dispatcher()
     manager, at = leaves.reminder_manager, _minute_start(1)
-    text = f"llamar a mamá a las {_hour_word_not(manager._household_clock.to_local(at).hour)}"
-    await manager.create("household", text, at, scope=ReminderScope.SHARED)
+    await manager.create("household", "llamar a mamá a las 3", at, scope=ReminderScope.SHARED)
     hm = manager._household_clock.format_time(at)
     asked, counted = await _cancel(leaves, "cancelá el recordatorio", dispatcher=dispatcher)
     assert counted == ZERO and asked.outcome.status.value == "needs_input"
-    assert asked.response == f"Hay uno: {text} a las {hm}. Para cancelarlo, decime: cancelá el recordatorio de {text}."
-    done, counted = await _cancel(leaves, f"cancelá el recordatorio de {text}", dispatcher=dispatcher)
+    assert asked.response == f"Hay uno. 1: llamar a mamá a las 3 a las {hm}; ¿lo cancelo? Decime: el uno."
+    done, counted = await _cancel(leaves, "cancelá el recordatorio de llamar a mamá a las 5", dispatcher=dispatcher)
     assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
     assert await manager.get_active(None, shared_only=True) == []
 
 
-@pytest.mark.parametrize("said", ["llevar el auto al taller mañana", "llevar el auto al taller"])
-async def test_the_only_reminder_with_a_day_in_its_text_is_named_and_cancelled(leaves, said):
-    dispatcher = leaves.dispatcher()
-    manager, at = leaves.reminder_manager, _minute_start(1)
-    await manager.create("household", "llevar el auto al taller mañana", at, scope=ReminderScope.SHARED)
-    asked, counted = await _cancel(leaves, "cancelá el recordatorio", dispatcher=dispatcher)
-    assert counted == ZERO and asked.outcome.status.value == "needs_input"
-    assert asked.response.endswith(". Para cancelarlo, decime: cancelá el recordatorio de llevar el auto al taller "
-                                   "mañana.")
-    done, counted = await _cancel(leaves, f"cancelá el recordatorio de {said}", dispatcher=dispatcher)
+@pytest.mark.parametrize("said", ["llevar el auto al taller mañana", "llevar el auto al taller",
+                                  "llevar el auto al taller el lunes"])
+async def test_the_only_reminder_with_a_day_in_its_text_is_cancelled_by_its_words(leaves, said):
+    await leaves.reminder_manager.create("household", "llevar el auto al taller mañana", _minute_start(1),
+                                         scope=ReminderScope.SHARED)
+    done, counted = await _cancel(leaves, f"cancelá el recordatorio de {said}")
     assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
 
 
-async def test_a_clock_in_the_text_is_left_out_of_a_proposed_command_with_the_time(leaves):
-    """With several reminders the command carries the time, so the text's own clock is left out."""
+# ---------------------------------------------------------------------------
+# T032-U1 numbered_choice_round: the answer goes back to the open choice
+# ---------------------------------------------------------------------------
+
+TWO_SIMILAR = "reminder_shared_active:tomar agua fría;reminder_shared_active:tomar agua con gas;queued_request"
+
+
+async def _asked(leaves, dispatcher=None, *, user_id="unknown", room=None):
+    dispatcher = dispatcher or leaves.dispatcher()
+    await leaves.apply_state(dispatcher, TWO_SIMILAR)
+    asked = await dispatcher.dispatch(user_id=user_id, text="cancelá el recordatorio de tomar agua",
+                                      context_room_id=room)
+    assert asked.response.startswith("Encontré 2 parecidos. 1: tomar agua fría a las ")
+    return dispatcher
+
+
+@pytest.mark.parametrize(("answer", "kept"), [
+    ("el primero", "tomar agua con gas"), ("la primera", "tomar agua con gas"), ("el 1", "tomar agua con gas"),
+    ("uno", "tomar agua con gas"), ("Nexa, el primero, por favor", "tomar agua con gas"),
+    ("cancelá el primero", "tomar agua con gas"), ("el número uno", "tomar agua con gas"),
+    ("el dos", "tomar agua fría"), ("la segunda", "tomar agua fría"), ("el 2", "tomar agua fría"),
+    ("segundo", "tomar agua fría"), ("sí, el segundo", "tomar agua fría"),
+])
+async def test_the_numbered_answer_cancels_exactly_the_listed_reminder(leaves, answer, kept):
+    dispatcher = await _asked(leaves)
+    result, counted = await _cancel(leaves, answer, dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1)
+    assert (result.path.value, result.outcome.task_completed, result.outcome.persistence.value) == (
+        "fast_reminder", True, "committed")
+    assert result.response.startswith("Cancelé el recordatorio tomar agua ")
+    assert await _states(leaves) == {kept: "active"}
+    assert len(leaves.queue) == 1
+    # The choice is spent: the same answer again cancels nothing.
+    again, counted = await _cancel(leaves, answer, dispatcher=dispatcher)
+    assert counted["reminder_transitions"] == 0 and again.path.value != "fast_reminder"
+    assert await _states(leaves) == {kept: "active"}
+
+
+async def test_a_number_that_was_not_listed_cancels_nothing(leaves):
+    dispatcher = await _asked(leaves)
+    result, counted = await _cancel(leaves, "el tercero", dispatcher=dispatcher)
+    assert counted == ZERO
+    assert (result.response, result.outcome.status.value) == ("No nombré un 3. No cancelé nada.", "needs_input")
+    assert set(await _states(leaves)) == {"tomar agua fría", "tomar agua con gas"}
+
+
+@pytest.mark.parametrize("other", ["el de las 2", "el de la tarde", "qué hora es", "el primero de la lista",
+                                   "cancelá el recordatorio de regar"])
+async def test_any_other_turn_drops_the_choice_and_cancels_nothing(leaves, other):
+    dispatcher = await _asked(leaves)
+    first, counted = await _cancel(leaves, other, dispatcher=dispatcher)
+    assert counted["reminder_transitions"] == 0
+    late, counted = await _cancel(leaves, "el primero", dispatcher=dispatcher)
+    assert counted["reminder_transitions"] == 0 and late.path.value != "fast_reminder"
+    assert set(await _states(leaves)) == {"tomar agua fría", "tomar agua con gas"}
+
+
+async def test_an_answer_after_the_window_cancels_nothing(leaves):
+    leaves.reminder_manager = ReminderManager(store=leaves.reminder_store, config={"voice_choice_window_s": 5})
     dispatcher = leaves.dispatcher()
-    manager, at = leaves.reminder_manager, _minute_start(1)
-    text = f"llamar a mamá a las {_hour_word_not(manager._household_clock.to_local(at).hour)}"
-    call, water = await _two_shared(leaves, text, "tomar agua", at, at + 3 * 3600)
-    clock = manager._household_clock
-    asked, counted = await _cancel(leaves, "cancelá el recordatorio", dispatcher=dispatcher)
-    assert counted == ZERO and asked.outcome.status.value == "needs_input"
-    example = f"cancelá el recordatorio de llamar a mamá de {manager.spoken_time_reference(call)}"
-    assert asked.response == (f"Hay 2: {text} a las {clock.format_time(at)} y tomar agua a las "
-                              f"{clock.format_time(water.trigger_at)}. Para cancelar uno, decímelo entero, por "
-                              f"ejemplo: {example}.")
-    done, counted = await _cancel(leaves, example, dispatcher=dispatcher)
-    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
-    assert [r.id for r in await manager.get_active(None, shared_only=True)] == [water.id]
-
-
-async def test_the_only_reminder_is_never_called_indistinct(leaves, monkeypatch):
-    """Last resort when no command can be proposed: singular wording, not 'no los puedo distinguir'."""
-    dispatcher = leaves.dispatcher()
-    await leaves.apply_state(dispatcher, "reminder_shared_active:tomar agua")
-    calls = []
-
-    async def none_found(user_id, candidates, *, with_time, **kwargs):
-        calls.append(with_time)
-        return {}
-    monkeypatch.setattr(leaves.reminder_manager, "voice_references", none_found)
-    result, counted = await _cancel(leaves, "cancelá el recordatorio", dispatcher=dispatcher)
+    now = [1000.0]
+    dispatcher._monotonic = lambda: now[0]
+    await _asked(leaves, dispatcher)
+    now[0] += 5.5
+    result, counted = await _cancel(leaves, "el primero", dispatcher=dispatcher)
     assert counted == ZERO and result.outcome.status.value == "needs_input"
-    assert result.response.startswith("Hay uno: tomar agua a las ")
-    assert result.response.endswith(". Por voz no lo puedo nombrar; podés borrarlo desde la web.")
-    assert calls == [False, True]
+    assert result.response == "Pasó el tiempo para elegir. No cancelé nada; pedímelo de nuevo."
+    assert set(await _states(leaves)) == {"tomar agua fría", "tomar agua con gas"}
 
 
-# Review T032-U1-RR-F2: only the same text and the same trigger are duplicates;
-# the same text and HH:MM on another day is named by its day.
-
-async def test_the_same_text_and_time_on_two_days_are_not_duplicates(leaves):
+async def test_an_answer_inside_the_window_cancels(leaves):
+    leaves.reminder_manager = ReminderManager(store=leaves.reminder_store, config={"voice_choice_window_s": 5})
     dispatcher = leaves.dispatcher()
-    manager, base = leaves.reminder_manager, _minute_start(1)
-    first, second = await _two_shared(leaves, "tomar agua", "tomar agua", base, base + 86400)
-    hm, spoken = manager._household_clock.format_time(base), manager.spoken_time_reference(first)
-    assert manager._household_clock.format_time(second.trigger_at) == hm  # America/Montevideo has no DST
-    d1, d2 = manager.spoken_day_reference(first), manager.spoken_day_reference(second)
-    asked, counted = await _cancel(leaves, "cancelá el recordatorio de tomar agua", dispatcher=dispatcher)
-    assert counted == ZERO and asked.outcome.status.value == "needs_input"
-    example = f"cancelá el recordatorio de tomar agua de {spoken} {d1}"
-    assert asked.response == (f"Encontré 2: tomar agua a las {hm} {d1} y tomar agua a las {hm} {d2}. "
-                              f"Repetímelo con la hora y el día, por ejemplo: {example}.")
-    done, counted = await _cancel(leaves, example, dispatcher=dispatcher)
-    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
-    assert [r.id for r in await manager.get_active(None, shared_only=True)] == [second.id]
+    now = [1000.0]
+    dispatcher._monotonic = lambda: now[0]
+    await _asked(leaves, dispatcher)
+    now[0] += 4.9
+    result, counted = await _cancel(leaves, "el primero", dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1) and result.outcome.task_completed
 
 
-async def test_a_superset_on_another_day_is_named_by_the_day_not_sent_to_the_web(leaves):
+async def test_the_window_comes_from_the_reminder_settings(leaves):
+    leaves.reminder_manager = ReminderManager(store=leaves.reminder_store, config={"voice_choice_window_s": 7})
     dispatcher = leaves.dispatcher()
-    manager, base = leaves.reminder_manager, _minute_start(1)
-    plain, lemon = await _two_shared(leaves, "tomar agua", "tomar agua con limón", base, base + 86400)
-    hm = manager._household_clock.format_time(base)
-    assert manager._household_clock.format_time(lemon.trigger_at) == hm  # America/Montevideo has no DST
-    asked, counted = await _cancel(leaves, "cancelá el recordatorio de tomar agua", dispatcher=dispatcher)
-    assert counted == ZERO and asked.outcome.status.value == "needs_input"
-    example = (f"cancelá el recordatorio de tomar agua de {manager.spoken_time_reference(plain)} "
-               f"{manager.spoken_day_reference(plain)}")
-    assert asked.response == (f"Encontré 2: tomar agua a las {hm} y tomar agua con limón a las {hm}. "
-                              f"Repetímelo con la hora y el día, por ejemplo: {example}.")
-    done, counted = await _cancel(leaves, example, dispatcher=dispatcher)
-    assert counted == effects(reminder_transitions=1) and done.outcome.task_completed
-    assert [r.id for r in await manager.get_active(None, shared_only=True)] == [lemon.id]
+    dispatcher._monotonic = lambda: 100.0
+    await _asked(leaves, dispatcher)
+    assert dispatcher._reminder_choices[("unknown", None)].deadline == 107.0
+
+
+@pytest.mark.parametrize(("speaker", "room"), [("ana", None), ("unknown", "hall")])
+async def test_another_speaker_or_room_cannot_answer(leaves, speaker, room):
+    dispatcher = await _asked(leaves, room=None)
+    result, counted = await _cancel(leaves, "el primero", dispatcher=dispatcher, user_id=speaker,
+                                    room=room)
+    assert counted["reminder_transitions"] == 0 and result.path.value != "fast_reminder"
+    assert set(await _states(leaves)) == {"tomar agua fría", "tomar agua con gas"}
+    assert dispatcher.awaits_reminder_choice("unknown", None, "el primero")
+    done, counted = await _cancel(leaves, "el primero", dispatcher=dispatcher)
+    assert counted["reminder_transitions"] == 1 and done.outcome.task_completed
+
+
+async def test_a_listed_reminder_that_fired_before_the_answer_is_not_reported(leaves):
+    dispatcher = await _asked(leaves)
+    cold = next(r for r in await leaves.reminder_manager.get_active(None, shared_only=True)
+                if r.text == "tomar agua fría")
+    assert await leaves.reminder_store.mark_fired(cold.id)
+    result, counted = await _cancel(leaves, "el primero", dispatcher=dispatcher)
+    assert counted == ZERO
+    assert (result.response, result.outcome.status.value) == (
+        "Ese recordatorio ya no estaba activo. No cancelé nada.", "needs_input")
+
+
+async def test_a_number_without_an_open_choice_is_not_a_reminder_turn(leaves):
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, TWO_SIMILAR)
+    assert not dispatcher.awaits_reminder_choice("unknown", None, "el primero")
+    result, counted = await _cancel(leaves, "el primero", dispatcher=dispatcher)
+    assert counted["reminder_transitions"] == 0 and result.path.value != "fast_reminder"
+
+
+async def test_a_choice_store_failure_is_uncertain(leaves, monkeypatch):
+    from unittest.mock import AsyncMock
+    dispatcher = await _asked(leaves)
+    monkeypatch.setattr(leaves.reminder_manager, "cancel_resolved", AsyncMock(side_effect=RuntimeError("synthetic")))
+    result, counted = await _cancel(leaves, "el primero", dispatcher=dispatcher)
+    assert (result.success, result.outcome.status.value) == (False, "uncertain")
+
+
+@pytest.mark.parametrize(("text", "number"), [
+    ("el primero", 1), ("la primera", 1), ("el 1", 1), ("uno", 1), ("el uno", 1), ("el dos", 2), ("la segunda", 2),
+    ("tres", 3), ("el tercero", 3), ("Nexa, la segunda, por favor", 2), ("bueno, el 2", 2), ("borrá el primero", 1),
+    ("el de las 2", None), ("el primero de la lista", None), ("dos pastillas", None), ("el 0", None), ("", None),
+    ("el", None), ("primero cancelá", None),
+])
+def test_the_numbered_answer_grammar(text, number):
+    from src.orchestrator.dispatcher import _reminder_choice_number
+    assert _reminder_choice_number(text) == number
+
+
+async def test_the_orchestrator_tells_the_router_when_a_household_answer_is_awaited(leaves):
+    orchestrator = MultiUserOrchestrator(
+        chroma_sync=leaves.chroma, ha_client=leaves.ha, routine_manager=leaves.routines, router=leaves.router,
+        list_manager=leaves.list_manager, reminder_manager=leaves.reminder_manager)
+    leaves.attach(orchestrator.dispatcher)
+    await leaves.apply_state(orchestrator.dispatcher, TWO_SIMILAR)
+    assert not orchestrator.awaits_reminder_choice("el primero", "living")
+    await orchestrator.process(user_id=None, text="cancelá el recordatorio de tomar agua", context_room_id="living")
+    assert orchestrator.awaits_reminder_choice("el primero", "living")
+    assert not orchestrator.awaits_reminder_choice("el primero", "hall")
+    assert not orchestrator.awaits_reminder_choice("qué hora es", "living")
+    done = await orchestrator.process(user_id=None, text="el segundo", context_room_id="living")
+    assert done.outcome.task_completed and await _states(leaves) == {"tomar agua fría": "active"}
 
 
 async def test_olvidate_ya_del_recordatorio_cancels_exactly_that_reminder(leaves):

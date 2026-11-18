@@ -118,6 +118,16 @@ class CountedLeaves:
                 # A personal reminder of an acoustic label ("ana"): never visible to household voice.
                 await self.reminder_manager.create("ana", name.split(":", 1)[1], time.time() + 3600,
                                                    scope=ReminderScope.PRIVATE)
+            elif name.startswith("reminder_choice_open"):
+                # T032-U1: a cancel that lists similar reminders by number ("@room" names its room).
+                head, said = name.split(":", 1)
+                room = head.partition("@")[2] or None
+                asked = await dispatcher.dispatch(user_id="unknown", text=said, context_room_id=room)
+                assert asked.response.startswith(("Encontré ", "Hay ")), asked.response
+            elif name == "reminder_choice_expired":
+                # The open choice's window has passed (reminders.voice_choice_window_s).
+                monotonic, window = dispatcher._monotonic, self.reminder_manager.choice_window_s
+                dispatcher._monotonic = lambda: monotonic() + window + 1
             elif name == "light_match":
                 self.chroma.asearch_command.return_value = LIGHT_MATCH
             else:

@@ -130,7 +130,7 @@ _OBJECT_NOUN_RE = re.compile(r"\b(?:recordatorios?|t[ií]mers?|temporizador(?:es
 
 # P3F2-R1-Q4: a request to create a routine is refused honestly until T033.
 _ROUTINE_CREATE_REFUSAL = "Todavía no creo rutinas por voz. Podés crearlas desde la web."
-# Candidates a reminder clarification names aloud (T032-U1).
+# Candidates a reminder clarification lists aloud, numbered (T032-U1).
 _REMINDER_CHOICES_SPOKEN = 3
 # A cancel verb before "recordatorio" in a turn the classifier did not claim
 # (accent-folded); "un recordatorio para cancelar ..." is a creation instead.
@@ -139,12 +139,51 @@ _UNCLAIMED_CANCEL_REPLY = "Si querés cancelar un recordatorio, decime: cancelá
 # "cancelá el recordatorio de X y el de Y": two reminders in one turn (review T032-U1-R7).
 _SECOND_REMINDER_RE = re.compile(r"\s+y\s+(?:el|la|los|las)\s+(?:recordatorios?\s+)?de\b")
 _ONE_AT_A_TIME = "Por voz cancelo de a un recordatorio. "
-# T032-U1-Q1 = A: a reminder whose words and time are all inside another's is
-# never cancelled by voice; the reply says where it can be removed.
-_VOICE_INDISTINCT = "Por voz no los puedo distinguir; podés borrar el que querés desde la web."
-# The only active reminder can always be named; this is a last resort (review T032-U1-RR-F1).
-_VOICE_UNNAMEABLE = "Por voz no lo puedo nombrar; podés borrarlo desde la web."
-_OTHER_FROM_WEB = "Si es otro, borralo desde la web."
+# The answer to a numbered reminder choice ("el primero", "la segunda", "el 2",
+# "uno"): one ordinal or number word, after an optional article and "número".
+_CHOICE_NUMBERS = {"primero": 1, "primera": 1, "primer": 1, "uno": 1, "una": 1, "segundo": 2, "segunda": 2,
+                   "dos": 2, "tercero": 3, "tercera": 3, "tercer": 3, "tres": 3, "cuarto": 4, "cuarta": 4,
+                   "cuatro": 4, "quinto": 5, "quinta": 5, "cinco": 5}
+_CHOICE_LEADS = frozenset({"bueno", "dale", "oye", "ey", "che", "si", "cancela", "cancelame", "borra", "elimina",
+                           "saca", "quita", "anula"})
+
+
+def _reminder_choice_number(text: str) -> int | None:
+    """The number a reminder choice answer names, or None when the turn is anything else.
+
+    Wake words, fillers, a cancel verb and "por favor" around it are ignored
+    ("Nexa, cancelá el primero, por favor"). A time ("el de las 2") is never an answer: the
+    choice is by the listed number only (user decision t032_design_20261118).
+    """
+    words = re.findall(r"[^\W_]+", _strip_accents((text or "").lower()))
+    while words and (words[0] in WAKE_TERMS or words[0] in _CHOICE_LEADS):
+        words.pop(0)
+    if words[-2:] == ["por", "favor"]:
+        del words[-2:]
+    elif words[-1:] == ["porfa"]:
+        words.pop()
+    if words[:1] in (["el"], ["la"]):
+        words.pop(0)
+    if words[:1] in (["numero"], ["opcion"]):
+        words.pop(0)
+    if len(words) != 1:
+        return None
+    if words[0].isdecimal():
+        return int(words[0]) if 0 < int(words[0]) < 100 else None
+    return _CHOICE_NUMBERS.get(words[0])
+
+
+@dataclass(frozen=True)
+class _ReminderChoice:
+    """A numbered reminder clarification waiting for its answer (T032-U1).
+
+    Attributes:
+        listed: The reminders as spoken, the first one being number 1.
+        deadline: ``time.monotonic()`` after which the answer cancels nothing.
+    """
+
+    listed: tuple
+    deadline: float
 
 # P3-F2 decision on F10: the orchestrated path has no sync or enrollment
 # consumer, so only the explicit whole requests are recognised (the same
@@ -738,6 +777,11 @@ class RequestDispatcher:
         # Rate-limiting para el warning del weather_no_data (review PR #14)
         self._last_weather_nodata_warn = float("-inf")
 
+        # T032-U1: numbered reminder choices waiting for their answer, by
+        # (speaker id, room); the monotonic clock is replaceable in tests.
+        self._reminder_choices: dict[tuple[str, str | None], _ReminderChoice] = {}
+        self._monotonic = time.monotonic
+
     async def dispatch(
         self,
         user_id: str,
@@ -794,13 +838,23 @@ class RequestDispatcher:
         ctx = self.context_manager.get_household(context_room_id if context_room_id is not None else zone_id)
         origin = self.room_namespace.origin_room(context_room_id)
 
+        # T032-U1: a numbered reminder choice is open only for the next turn
+        # of the same speaker id in the same room; any other turn drops it.
+        choice_key = (user_id, context_room_id if context_room_id is not None else zone_id)
+        choice = self._reminder_choices.pop(choice_key, None)
+        number = _reminder_choice_number(text) if choice is not None else None
+
         # 0. P3-F2 D1: a claimed household turn goes straight to its family
         # path. Special commands, _classify_request and the caller's
         # service_filter/query_slots/target never apply to it.
-        household = self.household_intents.classify(text)
-        if household is not None:
-            logger.info("[Household] dispatch %s", household.summary())
-            result = await self._dispatch_household(household, text, user_id=user_id, zone_id=zone_id)
+        household = self.household_intents.classify(text) if number is None else None
+        if household is not None or number is not None:
+            if number is not None:
+                result = await self._answer_reminder_choice(choice, number)
+            else:
+                logger.info("[Household] dispatch %s", household.summary())
+                result = await self._dispatch_household(household, text, user_id=user_id, zone_id=zone_id,
+                                                        choice_key=choice_key)
             self._stats["fast_path"] += 1
             self._stats["by_path"][result.path] += 1
             result.timings["total"] = (time.perf_counter() - start_time) * 1000
@@ -1103,7 +1157,8 @@ class RequestDispatcher:
         )
 
     async def _dispatch_household(self, household: HouseholdIntent, text: str, *, user_id: str,
-                                  zone_id: str | None) -> DispatchResult:
+                                  zone_id: str | None,
+                                  choice_key: tuple[str, str | None] | None = None) -> DispatchResult:
         """Send a claimed household turn to its family path (P3-F2 D1).
 
         Families without a handler yet answer honestly (UNSUPPORTED or
@@ -1114,6 +1169,8 @@ class RequestDispatcher:
             text: Dispatch text.
             user_id: Caller id (never an account authority).
             zone_id: Reply zone.
+            choice_key: Speaker id and room a numbered reminder choice
+                waits on (T032-U1); None opens no choice.
         """
         family, operation = household.family, household.operation
         if family is HouseholdFamily.COMPOUND:
@@ -1136,7 +1193,7 @@ class RequestDispatcher:
                                                "Con los recordatorios puedo consultarlos o cancelarlos. ¿Cuál querés?",
                                                TaskStatus.NEEDS_INPUT)
             return await self._fast_reminder_path(text, user_id, zone_id, operation=operation,
-                                                  reference=household.complement)
+                                                  reference=household.complement, choice_key=choice_key)
         if family is HouseholdFamily.LIST:
             if operation in (HouseholdOperation.STOP, HouseholdOperation.PAUSE, HouseholdOperation.RESUME,
                              HouseholdOperation.DISABLE):
@@ -1730,7 +1787,8 @@ class RequestDispatcher:
 
     async def _fast_reminder_path(self, text: str, user_id: str, zone_id: str = None,
                                   operation: HouseholdOperation | None = None,
-                                  reference: str | None = None) -> DispatchResult:
+                                  reference: str | None = None,
+                                  choice_key: tuple[str, str | None] | None = None) -> DispatchResult:
         """Do not claim creation or cancellation without an operation receipt.
 
         Args:
@@ -1740,6 +1798,8 @@ class RequestDispatcher:
                 keyword routing.
             reference: Words after the governed noun of a claimed cancel
                 ("de tomar agua"); None derives them from ``text``.
+            choice_key: Speaker id and room a numbered choice of this cancel
+                waits on; None lists the candidates without opening one.
         """
         if not self.reminder_manager:
             return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, "Recordatorios no configurados",
@@ -1772,7 +1832,7 @@ class RequestDispatcher:
                 if reference is None:
                     match = re.search(r"recordatorios?\b(.*)", folded)
                     reference = match.group(1) if match else ""
-                response, outcome = await self._cancel_reminder_by_voice(folded, reference)
+                response, outcome = await self._cancel_reminder_by_voice(folded, reference, choice_key)
             elif cancel_mention:
                 response = _UNCLAIMED_CANCEL_REPLY
                 outcome = TaskOutcome(TaskStatus.NEEDS_INPUT, persistence=PersistenceState.NOT_WRITTEN)
@@ -1786,61 +1846,59 @@ class RequestDispatcher:
             return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, "Hubo un error con el recordatorio",
                 intent="reminder", outcome=TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.UNCERTAIN))
 
-    async def _cancel_example(self, candidates: tuple, *, with_time: bool) -> tuple[str | None, bool]:
-        """A full cancel command the resolver maps back to one candidate.
+    def _open_reminder_choice(self, candidates: tuple, choice_key: tuple[str, str | None] | None, *,
+                              similar: bool = False) -> str:
+        """Number at most three candidates aloud and wait for the answer (T032-U1).
 
-        There is no pending clarification, so a short answer ("el de las
-        8") would not be routed back here: the reply proposes the whole
-        command, with the time when the text alone is not enough. Only a
-        command that, said back, selects exactly one reminder is proposed
-        (T032-U1-Q1 = A: one whose words are all inside another's at the
-        same time is never reachable by voice).
+        The candidates are spoken in trigger order with their due time ("1:
+        tomar pastillas a las 14:00; 2: ..."); the same label is told apart
+        by its day. Only the listed ones can be chosen, for
+        ``reminders.voice_choice_window_s`` seconds, by the same speaker id
+        in the same room.
+
+        Args:
+            candidates: Shared reminders in trigger order.
+            choice_key: Speaker id and room the choice waits on; None opens none.
+            similar: Count them as "parecidos" (several matched the words).
 
         Returns:
-            The command for the first candidate that has one (None when no
-            candidate can be told apart by voice), whether every candidate
-            has one, and whether the command names the day.
+            The count and the numbered list ("2. 1: ...; 2: ...; ¿cuál? Decime el número.").
         """
-        references = await self.reminder_manager.voice_references(None, candidates, with_time=with_time,
-                                                                   shared_only=True)
-        named = next((r for r in candidates if r.id in references), None)
-        if named is None:
-            return None, False, False
-        reference = references[named.id]
-        with_day = with_time and reference.endswith(f" {self.reminder_manager.spoken_day_reference(named)}")
-        return f"cancelá el recordatorio de {reference}", len(references) == len(candidates), with_day
-
-    def _reminder_choices(self, candidates: tuple) -> str:
-        """At most three shared candidates in trigger order ("2: A y B").
-
-        Candidates with the same text and time are told apart by their day
-        ("tomar agua a las 17:00 de hoy y tomar agua a las 17:00 del jueves").
-        """
-        spoken = candidates[:_REMINDER_CHOICES_SPOKEN]
-        labels = [self.reminder_manager.voice_label(r) for r in spoken]
+        listed = candidates[:_REMINDER_CHOICES_SPOKEN]
+        labels = [self.reminder_manager.voice_label(r) for r in listed]
         if len(set(labels)) < len(labels):
-            dated = [f"{label} {self.reminder_manager.spoken_day_reference(r)}" for label, r in zip(labels, spoken)]
+            dated = [f"{label} {self.reminder_manager.spoken_day_reference(r)}" for label, r in zip(labels, listed)]
             if len(set(dated)) > len(set(labels)):
                 labels = dated
-        if len(candidates) == 1:
-            return f"uno: {labels[0]}"
-        joined = ", ".join(labels[:-1]) + " y " + labels[-1]
-        if len(candidates) > _REMINDER_CHOICES_SPOKEN:
-            return f"{len(candidates)}, por ejemplo: {joined}"
-        return f"{len(candidates)}: {joined}"
+        if choice_key is not None:
+            now = self._monotonic()
+            self._reminder_choices = {key: choice for key, choice in self._reminder_choices.items()
+                                      if choice.deadline > now}
+            self._reminder_choices[choice_key] = _ReminderChoice(listed, now + self.reminder_manager.choice_window_s)
+        count = "uno" if len(candidates) == 1 else f"{len(candidates)}{' parecidos' if similar else ''}"
+        if len(candidates) > len(listed):
+            count += f"; te digo los {len(listed)} más próximos"
+        numbered = "; ".join(f"{n}: {label}" for n, label in enumerate(labels, start=1))
+        question = "¿cuál? Decime el número." if len(listed) > 1 else "¿lo cancelo? Decime: el uno."
+        other = " Si es otro, nombralo con más palabras." if len(candidates) > len(listed) else ""
+        return f"{count}. {numbered}; {question}{other}"
 
-    async def _cancel_reminder_by_voice(self, folded: str, reference: str) -> tuple[str, TaskOutcome]:
+    async def _cancel_reminder_by_voice(self, folded: str, reference: str,
+                                        choice_key: tuple[str, str | None] | None = None
+                                        ) -> tuple[str, TaskOutcome]:
         """Cancel exactly one shared reminder named by voice (T032-U1).
 
-        Unique match or nothing: no reference, no match, several matches or a
-        reminder that stopped being active answer NEEDS_INPUT with zero
-        effects. Only shared reminders are read, so a private reminder's text
-        is never spoken; the queue is never touched. Success is reported only
-        when the store committed the transition.
+        One candidate is cancelled; several, or no reference, are listed
+        numbered and the answer is routed back (:meth:`_answer_reminder_choice`);
+        no match or a reminder that stopped being active answer NEEDS_INPUT
+        with zero effects. Only shared reminders are read, so a private
+        reminder's text is never spoken; the queue is never touched. Success
+        is reported only when the store committed the transition.
 
         Args:
             folded: Accent-folded lowercase utterance.
             reference: Words naming the reminder (may be empty).
+            choice_key: Speaker id and room the numbered choice waits on.
 
         Returns:
             The spoken response and the task outcome.
@@ -1856,41 +1914,56 @@ class RequestDispatcher:
                     len(resolution.candidates))
         if resolution.match is CancelMatch.NONE_ACTIVE:
             return "No hay recordatorios compartidos activos para cancelar.", needs_input
-        if resolution.match is CancelMatch.NO_REFERENCE:
-            lead = _ONE_AT_A_TIME if re.search(r"\brecordatorios\b", folded) else ""
-            several = len(resolution.candidates) > 1
-            example, all_reachable, _ = await self._cancel_example(resolution.candidates, with_time=several)
-            if example is None and not several:
-                example, all_reachable, _ = await self._cancel_example(resolution.candidates, with_time=True)
-            choices = f"{lead}Hay {self._reminder_choices(resolution.candidates)}."
-            if example is None:
-                return f"{choices} {_VOICE_INDISTINCT if several else _VOICE_UNNAMEABLE}", needs_input
-            ask = "Para cancelar uno, decímelo entero, por ejemplo" if several else "Para cancelarlo, decime"
-            tail = "" if all_reachable else f" {_OTHER_FROM_WEB}"
-            return f"{choices} {ask}: {example}.{tail}", needs_input
         if resolution.match is CancelMatch.NOT_FOUND:
             return ("No encontré un recordatorio activo con eso. Podés preguntarme qué recordatorios hay.",
                     needs_input)
+        if resolution.match is CancelMatch.NO_REFERENCE:
+            lead = _ONE_AT_A_TIME if re.search(r"\brecordatorios\b", folded) else ""
+            return f"{lead}Hay {self._open_reminder_choice(resolution.candidates, choice_key)}", needs_input
         if resolution.match is CancelMatch.AMBIGUOUS:
-            # Duplicates only when text and trigger are the same: the same text
-            # and HH:MM on another day is told apart by its day (review RR-F2).
-            if len({(r.text, r.trigger_at) for r in resolution.candidates}) == 1:
-                label = self.reminder_manager.voice_label(resolution.candidates[0])
-                return (f"Hay {len(resolution.candidates)} recordatorios iguales: {label}. "
-                        "Podés borrar el que sobra desde la web."), needs_input
-            example, all_reachable, with_day = await self._cancel_example(resolution.candidates, with_time=True)
-            choices = f"Encontré {self._reminder_choices(resolution.candidates)}."
-            if example is None:
-                return f"{choices} {_VOICE_INDISTINCT}", needs_input
-            tail = "" if all_reachable else f" {_OTHER_FROM_WEB}"
-            ask = "Repetímelo con la hora y el día" if with_day else "Repetímelo con la hora"
-            return f"{choices} {ask}, por ejemplo: {example}.{tail}", needs_input
-        reminder = resolution.reminder
+            return f"Encontré {self._open_reminder_choice(resolution.candidates, choice_key, similar=True)}", needs_input
+        return await self._cancel_listed_reminder(resolution.reminder)
+
+    async def _cancel_listed_reminder(self, reminder) -> tuple[str, TaskOutcome]:
+        """Cancel one resolved or chosen shared reminder; success only on a committed transition."""
         if not await self.reminder_manager.cancel_resolved(reminder, shared_only=True):
-            return "Ese recordatorio ya no estaba activo. No cancelé nada.", needs_input
+            return "Ese recordatorio ya no estaba activo. No cancelé nada.", TaskOutcome(
+                TaskStatus.NEEDS_INPUT, persistence=PersistenceState.NOT_WRITTEN)
         return (f"Cancelé el recordatorio {self.reminder_manager.voice_label(reminder)}.",
                 TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
                             effect=EffectState.OBSERVED, observation_scope="software_state"))
+
+    async def _answer_reminder_choice(self, choice: _ReminderChoice, number: int) -> DispatchResult:
+        """Resolve a numbered answer by the listed index only (T032-U1).
+
+        An answer after ``reminders.voice_choice_window_s`` or with a number
+        that was not listed cancels nothing.
+        """
+        needs_input = TaskOutcome(TaskStatus.NEEDS_INPUT, persistence=PersistenceState.NOT_WRITTEN)
+        try:
+            if self._monotonic() > choice.deadline:
+                response, outcome = ("Pasó el tiempo para elegir. No cancelé nada; pedímelo de nuevo.",
+                                     needs_input)
+            elif not 1 <= number <= len(choice.listed):
+                response, outcome = f"No nombré un {number}. No cancelé nada.", needs_input
+            else:
+                response, outcome = await self._cancel_listed_reminder(choice.listed[number - 1])
+        except Exception:
+            logger.warning("Reminder choice unavailable; no completion receipt")
+            return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, "Hubo un error con el recordatorio",
+                intent="reminder", outcome=TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.UNCERTAIN))
+        logger.info("[Reminder] voice choice answered status=%s", outcome.status.value)
+        return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, outcome.task_completed, response,
+                              intent="reminder", outcome=outcome)
+
+    def awaits_reminder_choice(self, user_id: str, context_room_id: str | None, text: str) -> bool:
+        """Whether ``text`` answers a numbered reminder choice open for this speaker id and room.
+
+        The voice pipeline uses it to route the answer back here instead of
+        to the command producers; an expired choice still counts, so the
+        answer is told that nothing was cancelled.
+        """
+        return (user_id, context_room_id) in self._reminder_choices and _reminder_choice_number(text) is not None
 
     async def _handle_weather(self, text: str, priority: Priority) -> DispatchResult:
         """Answer from an exact, current HA observation or report missing data.
@@ -2375,6 +2448,14 @@ class MultiUserOrchestrator:
             query_slots=query_slots, target_entity_id=target_entity_id, memory_sources=memory_sources,
             context_room_id=context_room_id,
         )
+
+    def awaits_reminder_choice(self, text: str, context_room_id: str | None) -> bool:
+        """Whether a household voice turn answers a numbered reminder choice open in its room (T032-U1).
+
+        Household voice is dispatched as the unknown speaker (:meth:`process`),
+        so the choice is the one opened by a household cancel in that room.
+        """
+        return self.dispatcher.awaits_reminder_choice("unknown", context_room_id, text)
 
     async def _identify_speaker(self, audio, *, sources=(), transcript='', room_id=None) -> tuple[str, str]:
         """Identificar usuario por voz"""

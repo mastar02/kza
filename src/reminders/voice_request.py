@@ -473,27 +473,6 @@ def _day_at(words: list[str], i: int, *, joined: bool = False) -> tuple[str, int
     return "weekday", weekday, modifier, k
 
 
-def spoken_day_at(words: list[str], i: int, *, joined: bool = False) -> tuple[str, int, int] | None:
-    """The day phrase at token ``i`` of accent-folded words (T031 day grammar).
-
-    Shared with the voice reminder cancel (T032-U1), so both read "hoy",
-    "mañana", "pasado mañana" and weekdays alike; "de mañana" and "la
-    mañana" stay periods of the day unless ``joined``.
-
-    Args:
-        words: Accent-folded lowercase tokens.
-        i: Index where the phrase would start.
-        joined: The word follows "de" right after a taken time phrase.
-
-    Returns:
-        ``(kind, value, next index)`` with kind "today" (value 0), "offset"
-        (days ahead) or "weekday" (Monday is 0); None when no day phrase
-        starts at ``i``.
-    """
-    found = _day_at(words, i, joined=joined)
-    return None if found is None else (found[0], found[1], found[3])
-
-
 def _scan(words: list[str]) -> _Scan:
     """Find every time construct; later passes skip tokens already taken."""
     scan = _Scan(used=[False] * len(words))
