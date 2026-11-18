@@ -1,9 +1,10 @@
 """SC-6b: the release-mode rehearsals, compiled and under this account's real user systemd.
 
-sc-release-design v4 implementation_units SC-6b, items (1)-(14) and (16)
-(items (15) and (17) are SC-6b-B's; (06-12) rehearses row PA's regressed
-source over an adopted head; the final downtime and disk measurements run
-alone, later). Every operator step
+sc-release-design v4 implementation_units SC-6b, items (1)-(17): (1)-(14)
+and (16) from SC-6b-A, (15) and (17) from SC-6b-B (rows DR and PA as
+implemented by SC-PA-DR; (06-12) also rehearses row PA's regressed source
+over an adopted head; the final downtime and disk numbers are
+test_linux_sc6b_measurements.py, run alone in a solo window). Every operator step
 is the runbook's (docs/runbooks/2026-11-17-release-mode.md, SC-5b) as a
 compiled CLI run as a subprocess:
 
@@ -25,9 +26,12 @@ compiled CLI run as a subprocess:
   only the hidden ``--child-command`` is appended. Starts, stops, enables,
   disables and SIGKILLs are real ``systemctl --user`` calls through the guard
   (tests/mocks/real_systemd.py), which never lets a production unit name
-  reach systemctl; every unit is stopped and removed afterwards;
+  reach systemctl; every unit is stopped and removed afterwards; (15) kills
+  the compiled ``adopt --dry-run`` mid-copy through tests/mocks/compiled_stage.py
+  (KZA_REHEARSAL_KILL_AT_STEP=dry-run-mid-copy);
 - the child is the rehearsal child (tests/mocks/launcher_child.py, its
-  ``--exec`` is a NEW that changes K' at boot), except in (14), where it is
+  ``--exec`` is a NEW that changes K' at boot, or in (17) an accepted release
+  that changes its own state before it dies), except in (14), where it is
   the real compiled application (tools/sc0/sc0_child.py: the real managed
   entry with synthetic leaves, no models, no microphone). Its synthetic
   memory leaf keeps Chroma's default embedding configuration, as
@@ -54,8 +58,10 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import socket
 import sqlite3
+import stat
 import subprocess
 import sys
 import tarfile
@@ -1339,6 +1345,72 @@ def _first_t0_app(world: World) -> None:
     world.serve_clean("t0-h-check-real-app", enable=True, app=True)
 
 
+# --- (15) adopt --dry-run killed after acceptance: the next serve removes the shadow (row DR) ---------------
+
+def _accepted_release_killed_without_restart(world: World, name: str) -> dict:
+    """The accepted release SIGKILLed after READY with Restart=no: the head stays open (no receipt, no R-b)."""
+    world.child("clean", restart=False)
+    world.begin(name + "-start")
+    assert world.wait_active()["ActiveState"] == "active"
+    world.kill(name + "-sigkill")
+    world.d.wait_inactive(60)
+    head = world.head()
+    assert head["status"] in ("running", "unknown"), head
+    world.ctl(name + "-reset-failed", "reset-failed", world.unit, expect=None)
+    return head
+
+
+def test_15_a_killed_adopt_dry_run_leaves_its_shadow_under_the_root_until_the_next_serve(builds, tmp_path, systemd,
+                                                                                        record):
+    """Row DR after acceptance: the compiled ``adopt --dry-run`` SIGKILLed mid-copy leaves its plaintext
+    shadow only under <root>/admission/dry-run/<32 hex>/ (0700), nothing in TMPDIR and the head untouched;
+    the next lease holder, the unit's serve, removes it before anything else, recovers the head (bounded
+    R-b) and serves."""
+    rec = record("15", "adopt --dry-run killed mid-copy after acceptance: the shadow stays only under the root "
+                       "(row DR); the next serve removes it, recovers the head with R-b and serves")
+    world = World(builds, tmp_path, systemd, rec)
+    _first_t0(world)
+    world.transition("x5", name="r1-to-r2")  # k1 accepted: R2 serves
+    killed = _accepted_release_killed_without_restart(world, "accepted")
+    world.stop_and_disable("dr-paso1")
+    tmpdir = tmp_path / "adopt-tmpdir"
+    tmpdir.mkdir()
+    env = world.systemd.environment({"TMPDIR": str(tmpdir), "KZA_REHEARSAL_KILL_AT_STEP": "dry-run-mid-copy"})
+    witness = world.witness()
+    world.run("adopt-dry-run-killed-mid-copy", [sys.executable, "-I", "-B", str(WRAPPER), str(world.controller),
+                                                "--root", str(world.root), "--offline", "adopt", "--dry-run"],
+              expect=-signal.SIGKILL, env=env)
+    directory = stage.dry_run_directory(world.root)
+    [shadow] = list(directory.iterdir())
+    copied = sorted(path.relative_to(shadow / "state").as_posix() for path in (shadow / "state").rglob("*")
+                    if path.is_file())
+    left = {"shadow_name_is_32_hex": re.fullmatch(r"[0-9a-f]{32}", shadow.name) is not None,
+            "modes": {"dry-run": oct(stat.S_IMODE(os.lstat(directory).st_mode)),
+                      "shadow": oct(stat.S_IMODE(os.lstat(shadow).st_mode))},
+            "files_copied": copied, "tmpdir_entries": sorted(path.name for path in tmpdir.iterdir()),
+            "head_unchanged": world.head() == killed}
+    rec.result(killed_dry_run=left)
+    assert left["shadow_name_is_32_hex"] and left["modes"] == {"dry-run": "0o700", "shadow": "0o700"}, left
+    assert len(copied) == 2 and left["tmpdir_entries"] == [] and left["head_unchanged"], left
+    # The kill wrote nothing else under the root: only the shadow is new.
+    after = world.witness()
+    changed = sorted(key for key in set(after) | set(witness) if after.get(key) != witness.get(key))
+    rec.result(paths_changed_under_the_root=len(changed),
+               all_under_admission_dry_run=all(key.startswith("admission/dry-run") for key in changed))
+    assert changed and all(key.startswith("admission/dry-run") for key in changed), changed
+    # The next serve (the unit's start: the next lease holder) removes the copy, then recovers and serves.
+    before = launcher._recoveries(world.root)
+    served = world.serve_clean("serve-after-killed-dry-run", enable=True, keep_enabled=True)
+    added = [item for item in launcher._recoveries(world.root) if item not in before]
+    rec.result(after_serve={"shadow_left": os.path.lexists(directory),
+                            "recoveries_added": [item["mode"] for item in added], "head": world.head()["status"],
+                            "start_to_ready": round(served["start_to_ready"], 3)})
+    assert not os.path.lexists(directory)
+    assert [item["mode"] for item in added] == ["automatic"], added
+    assert world.head()["status"] == "closed" and world.slot_of_head() == "k1"
+    assert list(tmpdir.iterdir()) == []
+
+
 # --- (16) a NEW that ignores the verify flag -----------------------------------------------------------------
 
 def test_16_a_new_ignoring_the_verify_flag_is_stopped_at_ready_and_aborted(builds, tmp_path, systemd, record):
@@ -1360,3 +1432,185 @@ def test_16_a_new_ignoring_the_verify_flag_is_stopped_at_ready_and_aborted(build
     [started] = [event for event in world.log(compaction_id)["events"] if event["kind"] == "abort_started"]
     assert started["data"]["w"]["class"] == compaction.W_EQUAL
     world.back_on_h(compaction_id, h_binding)
+
+
+# --- (17) accepted release dying with a regressed R-b: adopt, hotfix with the flag, retire, one more -------
+
+DELETE_PA_TOMBSTONE = cw.sql(("DELETE FROM conversation_tombstones WHERE conversation_id = 'conv-pa'", ()))
+# A fact the owner deleted (the row turns 'deleted' with its ledger entry, as the production delete does),
+# and the dying release that brings it back (a resurrected_fact family at R-b).
+FACT_DELETED = "\n".join([
+    cw.sql(("INSERT INTO facts(id, content, category, confidence, state, extracted_at, revision)"
+            " VALUES ('fact-sc6b', NULL, 'other', 1.0, 'deleted', 1.0, 1)", ())),
+    cw.ledger_append("fact_deleted", "fact-sc6b"),
+])
+FACT_RESURRECTED = cw.sql(("UPDATE facts SET state = 'confirmed' WHERE id = 'fact-sc6b'", ()))
+
+
+def _accepted_release_dies(world: World, name: str, execute: str, code: str) -> dict:
+    """The accepted release changes its own state at boot and is SIGKILLed after READY under managed.conf's
+    Restart=on-failure: the one restart's bounded R-b refuses ``code`` (exit 69, no second restart) and the
+    head stays open."""
+    shown = world.v_run(name, scenario="clean", execute=execute, kill_after_ready=True)
+    lines = [line.split("[Launcher] ", 1)[1] for line in world.console().splitlines() if "[Launcher] " in line]
+    found = {"exec_main_status": shown["ExecMainStatus"], "restarts": shown["NRestarts"],
+             "status_text": shown["StatusText"], "head": world.head()["status"],
+             "recovery_events": [line for line in lines if line.startswith("recovery")][-2:]}
+    world.rec.result(**{name + ".r_b": found})
+    assert shown["ExecMainStatus"] == "69" and shown["NRestarts"] == "1", found
+    assert any(line.startswith(f"recovery R-b {code}") for line in lines), found
+    assert found["head"] in ("running", "unknown"), found
+    return found
+
+
+def _confirmed_adopt(world: World, tmp_path: Path) -> tuple[list[str], str, dict]:
+    """The runbook's adopt after acceptance (row PA): the dry run (its shadow under the root, row DR), the
+    confirmation refused without the families, then adopt confirming exactly the dry run's families."""
+    world.stop_and_disable("pa-paso1")
+    tmpdir = tmp_path / "adopt-tmpdir"
+    tmpdir.mkdir()
+    env = world.systemd.environment({"TMPDIR": str(tmpdir)})
+    dry = world.st("adopt-dry-run", "adopt", "--dry-run", env=env)
+    report = dry["report"]
+    families = sorted({item.split(":", 1)[0] for item in report["regressions"]}
+                      | {"resurrected_" + name for name, count in report["resurrected"].items() if count})
+    inside = stage.dry_run_directory(world.root)
+    leftover = sorted(path.name for path in tmpdir.iterdir()) + (
+        sorted(path.name for path in inside.iterdir()) if inside.is_dir() else [])
+    world.rec.result(adopt_dry_run={"failures": report["failures"], "families": families,
+                                    "resurrected": report["resurrected"], "shadow_left": leftover})
+    assert report["failures"] == [] and leftover == [], (report, leftover)
+    unconfirmed = world.st("adopt-confirm-without-regressions", "adopt", "--confirm", dry["head_sha256"],
+                           expect=None, env=env)
+    world.rec.result(adopt_unconfirmed=unconfirmed.get("refused"))
+    assert unconfirmed.get("refused") == "runtime_admission_recovery_confirmation", unconfirmed
+    assert world.head()["status"] in ("running", "unknown")
+    adopted = world.st("adopt-confirm", "adopt", "--confirm", dry["head_sha256"], "--confirm-regressions",
+                       ",".join(families), env=env)
+    head, sha256 = world.head(), adopted["recovery_record_sha256"]
+    recovery = stage._read_recovery_record(world.root, head)
+    assert head["status"] == "closed" and stage.read_manual_head(world.root, head)["kind"] == "recovery"
+    assert stage._digest(recovery) == sha256 and recovery["checks"]["regressed"] == families
+    assert recovery["mode"] == "operator", recovery["mode"]
+    return families, sha256, head
+
+
+def _hotfix_t0_without_the_h_check(world: World, build: str) -> None:
+    """A greater-triple hotfix over the adopted head: T0, SR-1 alone gates it, no H check (R4-OPS-2)."""
+    new = world.extract(build)
+    assert world.triple_check(new) == "T0"
+    installed = world.t0(build, new=new)
+    assert list(stage.installed_controller_triple(world.root)) == world.builds[build]["triple"], installed
+
+
+def _accepting_transition_to_v(world: World, build: str, families: list[str], sha256: str) -> tuple[str, str]:
+    """Row PA: plan and start refuse without --accept-regressed-source (naming the record and its families,
+    writing nothing), a foreign prefix refuses, then plan, start (the intent binds the full sha256), V."""
+    world.k += 1
+    k = f"k{world.k}"
+    refused = world.refused("pa-plan-without-flag", compaction.REGRESSED_SOURCE_REQUIRED, "compact", "plan", k,
+                            "--archive", str(world.builds[build]["archive"]))
+    world.rec.result(plan_over_regressed_head=refused["refused"], plan_report=refused.get("report"))
+    assert refused["report"] == {"recovery_record_sha256": sha256, "regressed": families}, refused
+    world.plan(build, k, expect=78, code=compaction.REGRESSED_SOURCE_MISMATCH,
+               accept=("0" if sha256[0] != "0" else "1") + sha256[1:12])
+    planned = world.plan(build, k, accept=sha256[:12])
+    assert planned["source_recovery_sha256"] == sha256, planned
+    world.refused("pa-start-without-flag", compaction.REGRESSED_SOURCE_REQUIRED,
+                  *world.start_arguments(build, k, planned))
+    compaction_id = world.start(build, k, planned, accept=sha256[:12])
+    assert world.log(compaction_id)["intent"]["source_recovery_sha256"] == sha256
+    world.verify(compaction_id)
+    world.v_run("hotfix-v")
+    status = world.status(compaction_id)
+    assert status["verified"] is True and status["armed_run"] == "consumed", status
+    return k, compaction_id
+
+
+def test_17_an_accepted_release_dying_with_a_regressed_r_b_is_adopted_hotfixed_and_followed(builds, tmp_path,
+                                                                                           systemd, record):
+    """R5-1 and R5V-2 with a non-resurrected family (user answer scpadr_q1_20261118): k1 (accepted, R2)
+    records a tombstone and closes; then, under the production restart, it removes that tombstone at boot
+    and is SIGKILLed after READY: the restart's R-b refuses runtime_admission_recovery_regression (exit 69,
+    one restart). The operator's adopt confirms conversation_tombstones; a greater-triple hotfix (R2', T0
+    without the H check); plan and start only with --accept-regressed-source; V; retire (W 'equal'); K'
+    serves without the tombstone (nothing revived); then one more ordinary transition completes with no
+    flag, which the accepted head refuses."""
+    rec = record("17", "Accepted release dying with a regressed R-b: adopt with confirmation, hotfix T0 without "
+                       "the H check, plan and start with --accept-regressed-source, V, retire (R5-1), then one "
+                       "more ordinary transition completes (R5V-2)")
+    world = World(builds, tmp_path, systemd, rec)
+    _first_t0(world)
+    world.transition("x5", name="r1-to-r2")  # k1 accepted: R2 serves
+    world.serve_clean("accepted-records-a-tombstone", execute=PA_TOMBSTONE)
+    k1_privacy = world.root / "slots" / "k1" / "state" / "data" / "privacy.db"
+    assert _sql(k1_privacy, "SELECT conversation_id FROM conversation_tombstones") == [("conv-pa",)]
+    _accepted_release_dies(world, "accepted-dies", DELETE_PA_TOMBSTONE, "runtime_admission_recovery_regression")
+    families, sha256, adopted = _confirmed_adopt(world, tmp_path)
+    assert families == ["conversation_tombstones"], families
+    _hotfix_t0_without_the_h_check(world, "x5r2")
+    k, compaction_id = _accepting_transition_to_v(world, "x5r2", families, sha256)
+    retired = world.retire(compaction_id)
+    [begun] = [event for event in world.log(compaction_id)["events"] if event["kind"] == "retire_started"]
+    assert begun["data"]["w"]["class"] == compaction.W_EQUAL
+    assert world.slot_of_head() == k and not k1_privacy.exists()
+    world.serve_clean("hotfix-serve-k-prime", enable=True, keep_enabled=True)
+    carried = _sql(world.root / "slots" / k / "state" / "data" / "privacy.db",
+                   "SELECT conversation_id FROM conversation_tombstones")
+    rec.result(hotfix={"k": k, "compaction_id": compaction_id, "w_class": begun["data"]["w"]["class"],
+                       "destroyed": retired.get("destroyed"), "adopted_binding": adopted["binding_id"],
+                       "installed_triple": list(stage.installed_controller_triple(world.root))[:2],
+                       "tombstones_carried": carried})
+    assert carried == [], carried  # the confirmed regression goes forward as adopted; nothing is revived
+    # R5V-2: from the accepted head the flag names no regressed record; the next ordinary transition (equal
+    # triple, no T0, no flag) completes.
+    world.plan("x5r2", f"k{world.k + 1}", expect=78, code=compaction.REGRESSED_SOURCE_MISMATCH, accept=sha256[:12])
+    moved = world.transition("x5r2", name="ordinary-after-hotfix")
+    intent = world.log(moved["id"])["intent"]
+    rec.result(ordinary_after_hotfix={"k": moved["k"], "plan_source_recovery_sha256":
+                                      moved["planned"].get("source_recovery_sha256"),
+                                      "intent_source_recovery_sha256": intent.get("source_recovery_sha256")})
+    assert moved["planned"].get("source_recovery_sha256") is None and intent.get("source_recovery_sha256") is None
+    assert world.slot_of_head() == moved["k"] and sorted(os.listdir(world.root / "slots")) == [moved["k"]]
+
+
+def test_17b_a_resurrected_family_in_the_regressed_source_exits_by_abort_to_h(builds, tmp_path, systemd, record):
+    """User answer scpadr_q1_20261118 (the documented limit, runbook «Después de la aceptación»): k1 deletes
+    a fact and closes; dying under the production restart it brings the fact back, and the restart's R-b
+    refuses runtime_admission_recovery_resurrection. adopt confirms resurrected_fact; the hotfix plans, starts
+    and passes V with --accept-regressed-source, but retire refuses
+    runtime_admission_compaction_retire_resurrected (K's baseline is follow-up) and abort --to-h returns
+    losslessly (W 'equal') to the adopted H, where completion-status still counts the fact: the service stays
+    down (not started here)."""
+    rec = record("17b", "Accepted release dying with a resurrected family: adopt with confirmation, hotfix "
+                        "with --accept-regressed-source to V, retire refused (retire_resurrected), abort to H")
+    world = World(builds, tmp_path, systemd, rec)
+    _first_t0(world)
+    world.transition("x5", name="r1-to-r2")  # k1 accepted: R2 serves
+    world.serve_clean("accepted-deletes-a-fact", execute=FACT_DELETED)
+    _accepted_release_dies(world, "accepted-dies", FACT_RESURRECTED, "runtime_admission_recovery_resurrection")
+    families, sha256, adopted = _confirmed_adopt(world, tmp_path)
+    assert families == ["resurrected_fact"], families
+    _hotfix_t0_without_the_h_check(world, "x5r2")
+    k, compaction_id = _accepting_transition_to_v(world, "x5r2", families, sha256)
+    refused = world.refused("paso8-retire-refused", compaction.RETIRE_RESURRECTED, "compact", "retire",
+                            compaction_id)
+    rec.result(retire_refused=refused["refused"], retire_report=refused.get("report"))
+    assert refused["report"]["resurrected"]["fact"] == 1 and sum(refused["report"]["resurrected"].values()) == 1
+    world.abort_to_h(compaction_id)
+    [started] = [event for event in world.log(compaction_id)["events"] if event["kind"] == "abort_started"]
+    head = world.head()
+    rec.result(abort={"w_class": started["data"]["w"]["class"], "head": head["status"],
+                      "head_is_the_adopted_h": head["binding_id"] == adopted["binding_id"]})
+    assert started["data"]["w"]["class"] == compaction.W_EQUAL
+    assert head["status"] == "closed" and head["binding_id"] == adopted["binding_id"]
+    assert world.log(compaction_id)["terminal"] and world.kinds(compaction_id)[-1] == "aborted"
+    assert not (world.root / "slots" / k).exists()
+    # Paso 0 on the H it returned to still counts the resurrected fact: the service stays down (48-hour
+    # written decisions) until K's baseline exists; the unit stays stopped and disabled.
+    completion = world.st("h-completion-status", "completion-status")
+    unit = world.systemd.raw_show(world.d.unit, "ActiveState", "UnitFileState")
+    rec.result(h_completion={"resurrected": completion["resurrected"], "complete": completion["complete"]},
+               unit=unit)
+    assert completion["resurrected"]["fact"] == 1 and completion["complete"] is False, completion
+    assert unit == {"ActiveState": "inactive", "UnitFileState": "disabled"}, unit
