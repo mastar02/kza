@@ -14,8 +14,12 @@ modules load, so their ``wall=time.time`` defaults see it.
 ``KZA_REHEARSAL_KILL_AT_STEP`` (SC-6b, rows T0 and T0S) makes the compiled
 ``install-controller`` SIGKILL its own process at that ``step_hook`` step
 ('checked': after the read-only checks, before the switch; 'switched':
-after ``current`` moved, before controller.json). Everything else is the
-compiled bytecode of the archive. Not a product entry point.
+after ``current`` moved, before controller.json). The value
+'dry-run-mid-copy' (SC-6b-B, row DR) instead makes the compiled
+``adopt --dry-run`` SIGKILL its own process mid-copy: two files of the
+state copied into its shadow under <root>/admission/dry-run/, the third
+not. Everything else is the compiled bytecode of the archive. Not a product
+entry point.
 """
 import importlib.util
 import os
@@ -50,5 +54,19 @@ if kill_at and "install-controller" in arguments:
         return _install(root, archive, step_hook=hook, **options)
 
     compiled_launcher.install_controller = install_controller
+if kill_at == "dry-run-mid-copy" and "adopt" in arguments and "--dry-run" in arguments:
+    compiled_launcher = module._launcher_module()
+    _wanted = compiled_launcher._shadow_wanted
+    _copied = []
+
+    def _shadow_wanted(relative):
+        if not _wanted(relative):
+            return False
+        _copied.append(relative)
+        if len(_copied) == 3:  # two files copied, the third not: a dry run killed mid-copy
+            os.kill(os.getpid(), signal.SIGKILL)
+        return True
+
+    compiled_launcher._shadow_wanted = _shadow_wanted
 sys.argv = [pyc, *arguments]
 module.main()
