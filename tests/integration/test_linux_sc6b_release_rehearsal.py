@@ -862,6 +862,20 @@ def test_05_new_revoking_a_credential_stops_safely_until_the_discard(builds, tmp
     assert shown["ExecMainStatus"] == "78" and shown["NRestarts"] == "0", shown
     if shown["ActiveState"] == "failed":
         world.ctl("ss-reset-failed", "reset-failed", world.unit)
+    # The runbook's SS state: nothing destroyed or revived, three copies (H, the snapshot, K'), the unit
+    # stopped and disabled, so no process runs the scheduled deletions of any copy.
+    h_state = Path(stage.read_binding(world.root, h_binding)["state_root"])
+    k_state = world.root / "slots" / f"k{world.k}" / "state"
+    snapshots = [event["data"] for event in world.log(compaction_id)["events"] if event["kind"] == "snapshot"]
+    unit = world.systemd.raw_show(world.d.unit, "ActiveState", "UnitFileState")
+    ss_state = {"h": _sql(h_state / "data" / "auth.db", "SELECT id FROM credentials"),
+                "k_prime": _sql(k_state / "data" / "auth.db", "SELECT id FROM credentials"),
+                "snapshots": [Path(item["path"]).is_dir() and stage._identity(Path(item["path"])) == item["identity"]
+                              for item in snapshots],
+                "head_slot": world.slot_of_head(), "unit": unit}
+    rec.result(ss_state=ss_state)
+    assert ss_state == {"h": [("cred-sc6b",)], "k_prime": [], "snapshots": [True], "head_slot": f"k{world.k}",
+                        "unit": {"ActiveState": "inactive", "UnitFileState": "disabled"}}, ss_state
     world.refused("ss-discard-wrong-digest", compaction.DISCARD_MISMATCH, "compact", "abort", compaction_id,
                   "--to-h", "--confirm-h", world.confirm_h[:12], "--discard-k-changes", "0" * 12)
     world.abort_to_h(compaction_id, discard=digest[:12])  # SC-D8 A: the person confirmed in writing
@@ -887,6 +901,8 @@ def test_06_12_rollbacks_and_the_accepted_release_killed(builds, tmp_path, syste
     world.t0("x5r2", new=new)
     world.h_check("t0-r2prime-h-check")
     world.transition("x5r2", name="r2-to-r2prime")  # k2 serves R2'
+    # Data go forward: a deletion recorded under R2' (a tombstone and its erasure) must survive the rollback.
+    world.serve_clean("r2prime-records-a-deletion", execute=H_TOMBSTONE)
     # (6) the rollback R2' -> R2: a lower triple in served(root), no T0 (install-controller refuses it).
     new = world.extract("x5")
     decision = world.triple_check(new)
@@ -897,6 +913,11 @@ def test_06_12_rollbacks_and_the_accepted_release_killed(builds, tmp_path, syste
     refused = world.t0("x5", new=new, expect=78)
     assert refused["refused"] == "runtime_admission_controller_downgrade" and world.witness() == witness
     world.transition("x5", name="rollback-r2prime-to-r2")  # k3 serves R2 under the revision-2 controller
+    privacy = world.root / "slots" / world.slot_of_head() / "state" / "data" / "privacy.db"
+    kept = {"tombstones": _sql(privacy, "SELECT conversation_id FROM conversation_tombstones"),
+            "erasures": _sql(privacy, "SELECT id, conversation_id FROM conversation_erasures")}
+    rec.result(rollback_kept_the_deletion=kept)
+    assert kept == {"tombstones": [("conv-h",)], "erasures": [("op-h", "conv-h")]}, kept
     assert list(stage.installed_controller_triple(world.root)) == builds["x5r2"]["triple"]
     world.transition("x5r2", name="forward-r2-to-r2prime")  # k4 serves R2' again: the equal triple, no T0
     # (12) the accepted release (k4, R2') killed without receipt; the production restart runs R-b.
@@ -918,6 +939,7 @@ def test_06_12_rollbacks_and_the_accepted_release_killed(builds, tmp_path, syste
     world.d.wait_inactive(120)
     assert world.head()["status"] == "closed" and world.slot_of_head() == "k4"
     rec.result(head_binding_kept=world.head()["binding_id"] == killed_head)
+    assert world.head()["binding_id"] == killed_head
     world.ctl("accepted-disable", "disable", world.unit)
     world.transition("x5", name="rollback-after-r-b")  # k5 serves R2
     k5_binding = world.head()["binding_id"]
@@ -1099,11 +1121,13 @@ def test_13a_t0_killed_after_its_checks_then_h_serves_and_the_install_is_repeate
     world.stop_and_disable("t0-paso1")
     before = (json.loads((world.root / "admission" / "controller.json").read_text()),
               os.readlink(world.root / "controller" / "current"))
+    witness = world.witness()
     killed = world.t0("x5", expect=-9, kill_at="checked")
     after = (json.loads((world.root / "admission" / "controller.json").read_text()),
              os.readlink(world.root / "controller" / "current"))
-    rec.result(killed_exit=killed["exit"], unchanged=after == before)
-    assert after == before
+    nothing_written = world.witness() == witness  # row T0: the epoch-5 checks write nothing under the root
+    rec.result(killed_exit=killed["exit"], unchanged=after == before, nothing_written=nothing_written)
+    assert after == before and nothing_written
     world.serve_clean("h-under-the-old-controller", enable=True)
     installed = world.t0("x5")
     assert installed["controller_epoch"] == 5
