@@ -541,8 +541,11 @@ class World:
         return armed
 
     def v_run(self, name: str, *, scenario: str = "verify", execute: str | None = None, restart: bool = True,
-              app: bool = False, kill_after_ready: bool = False, timeout: float = 400) -> dict:
-        """Paso 6: start the (disabled) unit once; serve runs V and stops it itself."""
+              app: bool = False, kill_after_ready: bool = False, after_kill=None, timeout: float = 400) -> dict:
+        """Paso 6: start the (disabled) unit once; serve runs V and stops it itself.
+
+        ``after_kill()`` runs right after the SIGKILL (kill_after_ready), before waiting for the unit to settle.
+        """
         if app:
             self.app_child(restart=restart)
         else:
@@ -552,6 +555,8 @@ class World:
             reached = self.d.wait_phase("ready", 180)
             assert reached, (name, self.console()[-3000:])
             self.kill(name + "-sigkill")
+            if after_kill is not None:
+                after_kill()
         shown = self.wait_settled(timeout)
         seconds = time.monotonic() - started
         assert shown["ActiveState"] in ("inactive", "failed"), (name, shown, self.console()[-4000:])
@@ -718,8 +723,11 @@ def test_02_v_boot_failure_is_aborted_losslessly(builds, tmp_path, systemd, reco
                              if "[Launcher] " in line and ("refused" in line or "recovery" in line
                                                             or "exit" in line)][-12:])
     assert status["armed_run"] == "consumed" and status["verified"] is False
-    retired = world.st("paso8-retire-refused", "compact", "retire", compaction_id, expect=78)
-    rec.result(retire_refused=retired.get("refused"))
+    # The NEW dies at boot: serve exits 69 (RestartPreventExitStatus: no restart) and leaves K' open.
+    assert shown["ExecMainStatus"] == "69" and shown["NRestarts"] == "0", shown
+    retired = world.refused("paso8-retire-refused", "runtime_admission_not_closed", "compact", "retire",
+                            compaction_id)
+    rec.result(retire_refused=retired["refused"])
     aborted = world.abort_to_h(compaction_id)
     [started] = [event for event in world.log(compaction_id)["events"] if event["kind"] == "abort_started"]
     rec.result(w_class=started["data"]["w"]["class"], abort=aborted.get("phase"))
@@ -760,12 +768,32 @@ def test_03b_v_sigkilled_under_the_production_restart(builds, tmp_path, systemd,
     _first_t0(world)
     h_binding = world.head()["binding_id"]
     compaction_id = world.armed("x5", "v-sigkill-restart")
-    shown = world.v_run("v-sigkill-restart", restart=True, kill_after_ready=True)
+    k_prime = world.root / "slots" / f"k{world.k}"
+    seen: dict = {}
+
+    def before_the_restart() -> None:
+        """K' as the kill left it, read during RestartSec (SubState auto-restart, no restart yet)."""
+        shown = world.systemd.wait_for(world.d.unit, lambda value: value["SubState"] == "auto-restart"
+                                       or value["NRestarts"] not in ("", "0"), 60, *STATUS)
+        assert shown["SubState"] == "auto-restart" and shown["NRestarts"] == "0", shown
+        seen["k_prime"] = cw.tree(k_prime)
+        again = world.show()
+        assert again["SubState"] == "auto-restart" and again["NRestarts"] == "0", ("restart began", again)
+
+    shown = world.v_run("v-sigkill-restart", restart=True, kill_after_ready=True, after_kill=before_the_restart)
     status = world.status(compaction_id)
     rec.result(head_after_restart=world.head()["status"], restarts=shown["NRestarts"],
                status={key: status[key] for key in ("armed_run", "verified", "verify_branch_reached")},
                serve_events=[line.split("[Launcher] ", 1)[1] for line in world.console().splitlines()
                              if "[Launcher] " in line][-20:])
+    # The one production restart refuses over the open K' (recovery_pending, exit 69, no second restart)
+    # and leaves K' exactly as the kill did.
+    assert shown["ExecMainStatus"] == "69" and shown["NRestarts"] == "1", shown
+    assert any("[Launcher] recovery R-b runtime_admission_compaction_recovery_pending" in line
+               for line in world.console().splitlines())
+    k_prime_unchanged = cw.tree(k_prime) == seen["k_prime"]
+    rec.result(k_prime_unchanged_by_the_restart=k_prime_unchanged)
+    assert k_prime_unchanged
     parsed = world.st("abort-to-h-first", "compact", "abort", compaction_id, "--to-h", "--confirm-h",
                       world.confirm_h[:12], expect=None)
     rec.result(first_abort=parsed.get("refused") or parsed.get("phase"))
