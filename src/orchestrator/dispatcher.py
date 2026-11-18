@@ -151,6 +151,9 @@ _CHOICE_ORDINALS = {"primero": 1, "primera": 1, "primer": 1, "segundo": 2, "segu
 _CHOICE_CARDINALS = {"uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5}
 # Lead words of a choice answer besides the shared fillers of strip_fillers (review BFR-1).
 _CHOICE_LEADS = frozenset({"si", "cancela", "cancelame", "borra", "elimina", "saca", "quita", "anula"})
+# A trailing "dale" is a filler only in a choice answer, a closed vocabulary; the classifier keeps it, as
+# it may end a reminder's name ("decirle que dale", review BFR1-R1).
+_CHOICE_TRAILS = frozenset({"dale"})
 # T032-U1-Q3: the hour of "el de las 2" (12-hour reading) and the 24-hour hours a period allows.
 _CHOICE_HOUR_WORDS = {**_CHOICE_CARDINALS, "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10, "once": 11,
                       "doce": 12}
@@ -203,16 +206,16 @@ def _reminder_choice_answer(text: str, *, hours: bool = False,
 
     The household classifier's fillers (:func:`strip_fillers`: wake words,
     "bueno", "bue", "dale", "hola", "porfa", a "no" followed by a pause,
-    "por favor" and a trailing "dale", review BFR-1) and a cancel verb
-    around it are ignored ("Nexa, cancelá el primero, por favor", "no, el
-    segundo", "el segundo, dale"). An ordinal or "el número N" is
-    always the listed number; a bare number ("dos", "el 2") may also be a
+    "por favor", review BFR-1), a cancel verb and a trailing "dale" (only
+    here, review BFR1-R1) around it are ignored ("Nexa, cancelá el primero,
+    por favor", "no, el segundo", "el segundo, dale"). An ordinal or "el
+    número N" is always the listed number; a bare number ("dos", "el 2") may also be a
     due hour (user answer T032-U1-Q3). A time ("el de las 2") is an answer
     only when ``hours`` is set, after Nexa asked "¿El segundo o el de las
     2?"; otherwise the choice is by the listed number only (user decision
     t032_design_20261118).
     """
-    words = list(strip_fillers(text, wake_words, extra_leads=_CHOICE_LEADS))
+    words = list(strip_fillers(text, wake_words, extra_leads=_CHOICE_LEADS, extra_trails=_CHOICE_TRAILS))
     if hours and (hour := _choice_hour(words)) is not None:
         return hour
     if words[:1] in (["el"], ["la"]):

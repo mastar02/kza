@@ -220,9 +220,10 @@ class HouseholdIntentClassifier:
 _WORD_RE = re.compile(r"\d+(?:[:.]\d{2}|[.,]\d(?!\d))?|[^\W\d_]+")
 _LEAD_WORDS = frozenset({"che", "ey", "oye", "hola", "porfa", "podes", "podrias", "puedes", "podras", "bueno",
                          "bue", "dale"})
-# Fillers dropped at the end of a turn ("..., por favor", "... porfa", "el segundo, dale"); "por favor"
-# is matched as a pair (review BFR-1).
-_TRAIL_WORDS = frozenset({"porfa", "dale"})
+# Fillers dropped at the end of a turn ("..., por favor", "... porfa"); "por favor" is matched as a pair
+# (review BFR-1). A trailing "dale" may be part of a name ("decirle que dale", "llamar a Dale"), so only
+# a caller with a closed vocabulary drops it, through ``extra_trails`` (review BFR1-R1).
+_TRAIL_WORDS = frozenset({"porfa"})
 # A leading "no" is stripped only when punctuation follows it ("no, cancelá ..."):
 # "no cancelar el recordatorio" is a negation (review T032-U1-R3).
 _PAUSE_AFTER = re.compile(r"\s*[,;:.!]")
@@ -270,10 +271,11 @@ def _tokens(text: str) -> _Utterance:
 
 
 def _filler_bounds(utt: _Utterance, text: str, wake_words: Iterable[str],
-                   extra_leads: frozenset[str]) -> tuple[int, int]:
+                   extra_leads: frozenset[str], extra_trails: frozenset[str]) -> tuple[int, int]:
     """Token range of ``utt`` (the tokens of ``text``) without its lead and trail fillers."""
     ends = [m.end() for m in _WORD_RE.finditer((text or "").lower())]
     leads = WAKE_TERMS | {_fold(w) for w in wake_words} | _LEAD_WORDS | extra_leads
+    trails = _TRAIL_WORDS | extra_trails
     start, end = 0, len(utt)
     for _ in range(_MAX_LEADS):
         word = utt.at(start)
@@ -288,33 +290,37 @@ def _filler_bounds(utt: _Utterance, text: str, wake_words: Iterable[str],
     while end > start:
         if end - start >= 2 and utt.folded[end - 2:end] == ("por", "favor"):
             end -= 2
-        elif utt.folded[end - 1] in _TRAIL_WORDS:
+        elif utt.folded[end - 1] in trails:
             end -= 1
         else:
             break
     return start, end
 
 
-def strip_fillers(text: str, wake_words: Iterable[str] = (), *,
-                  extra_leads: frozenset[str] = frozenset()) -> tuple[str, ...]:
+def strip_fillers(text: str, wake_words: Iterable[str] = (), *, extra_leads: frozenset[str] = frozenset(),
+                  extra_trails: frozenset[str] = frozenset()) -> tuple[str, ...]:
     """Accent-folded tokens of ``text`` without the fillers the household classifier ignores.
 
     The one filler rule for every short voice answer (review BFR-1): up to
     six leading wake words, fillers ("bueno", "bue", "dale", "hola",
     "porfa", "che", ...), "por favor" and a "no" followed by a pause ("no,
-    el segundo"; "no el segundo" keeps it), and any trailing "por favor",
-    "porfa" or "dale".
+    el segundo"; "no el segundo" keeps it), and any trailing "por favor"
+    or "porfa". A trailing "dale" is kept: it may be part of a name
+    ("decirle que dale", review BFR1-R1).
 
     Args:
         text: The utterance as heard.
         wake_words: Configured wake words, besides ``WAKE_TERMS``.
         extra_leads: Further lead words the caller ignores (accent-folded).
+        extra_trails: Further trailing words the caller ignores
+            (accent-folded); only for a closed vocabulary such as a numbered
+            choice answer ("el segundo, dale").
 
     Returns:
         The remaining tokens, lowercase and accent-folded.
     """
     utt = _tokens(text)
-    start, end = _filler_bounds(utt, text, wake_words, extra_leads)
+    start, end = _filler_bounds(utt, text, wake_words, extra_leads, extra_trails)
     return utt.folded[start:end]
 
 
@@ -326,7 +332,7 @@ def _normalize(text: str, wake_words: Iterable[str] = ()) -> _Utterance:
     claimed.
     """
     utt = _tokens(text)
-    start, end = _filler_bounds(utt, text, wake_words, frozenset())
+    start, end = _filler_bounds(utt, text, wake_words, frozenset(), frozenset())
     if start + 1 < end and utt.at(start + 1) == "ya":
         # Checked without the "ya": "olvidate" is a cancel head only before
         # "de/del" (review T032-U1-RR-F4).
