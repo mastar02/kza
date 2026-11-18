@@ -12,6 +12,7 @@ import asyncio
 import inspect
 from contextvars import ContextVar
 import logging
+import re
 import threading
 import time
 import unicodedata
@@ -32,6 +33,7 @@ from src.nlu.command_grammar import (
 from src.nlu.household_intents import HouseholdIntent, HouseholdIntentClassifier, HouseholdIntentSettings
 from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
+from src.orchestrator.dispatcher import has_domotics_action_verb
 from src.pipeline.earcon_gate import should_play_earcon
 from src.pipeline.post_wake_endpoint import CaptureTrigger
 from src.pipeline.wake_verification import WakeVerifier
@@ -95,6 +97,70 @@ _UNSUPPORTED_INTENT_MESSAGES: dict[str, str] = {
 # OWW a 0.40–0.45 solapa con TV. Nexa real en prod mide 0.54–0.93. El bonus
 # de wake sobre 'prende la luz' (conf 0.70) no aplica debajo de este piso.
 _GRAMMAR_BONUS_MIN_WAKE_SCORE = 0.50
+
+
+_OWN_WAKE_TRIGGERS = frozenset({CaptureTrigger.WAKE, CaptureTrigger.INLINE})
+
+
+def _capture_without_own_wake(capture_trigger: str | None) -> bool:
+    """Whether the producer says this capture was not opened by its own wake (T037-U5).
+
+    MultiRoomAudioLoop tags every capture. ``wake`` was opened by an acoustic
+    wake, and ``inline`` is that wake's own utterance ('nexa apagá la luz'
+    said in one go, when the wake detector hands over the command audio), so
+    its wake score belongs to this turn (T037-U5-R2). A follow-up or barge-in
+    capture (or an ``unknown`` one, fail closed) carries the score of the
+    last real wake, so that score says nothing about this turn. None means
+    the producer does not say (raw audio, the textual wake channel, the
+    single-room loop's own wake): those keep their own signals as before.
+
+    Args:
+        capture_trigger: ``CommandEvent.capture_trigger``, or None.
+
+    Returns:
+        True when the capture has no wake of its own.
+    """
+    return capture_trigger is not None and capture_trigger not in _OWN_WAKE_TRIGGERS
+
+
+_LIGHT_WORDS = frozenset({
+    "light", "luz", "luces", "lampara", "lamparas",
+    # The dispatcher's other light nouns (T037-U5-FV2).
+    "foco", "focos", "luminaria", "luminarias", "veladora", "veladoras",
+})
+
+
+def _dispatch_targets_light(text: str, classification) -> bool:
+    """Whether a turn about to reach the dispatcher acts on a light (T037-U5-R1).
+
+    The unresolved-light-location guard holds whichever producer accepted the
+    turn: the grammar fast path (entity_hint ``light``), the 7B (its
+    entity_hint is a domain such as ``light`` or free text such as ``luz del
+    quincho``), or neither (no LLMCommandRouter configured, the textual wake
+    channel). The text's own grammar parse also counts when it names a light
+    and either finds an action on it, or the accepted classification carries
+    an intent, or the text has a verb the dispatcher routes to FAST_DOMOTICS
+    ('bajá la luz del quincho', 'cambiá la luz del quincho': the grammar has
+    no intent for those verbs, T037-U5-FV1). A question that only mentions a
+    light, with no action verb, does not.
+
+    Args:
+        text: Accepted transcript of the turn.
+        classification: The accepted grammar or 7B classification, or None.
+
+    Returns:
+        True when the turn acts on a light.
+    """
+    hint = getattr(classification, "entity_hint", None)
+    accepted_intent = getattr(classification, "intent", None) is not None
+    if accepted_intent and isinstance(hint, str):
+        folded = unicodedata.normalize("NFKD", hint.lower()).encode("ascii", "ignore").decode()
+        if _LIGHT_WORDS.intersection(re.findall(r"[a-z]+", folded)):
+            return True
+    parsed = parse_partial_command(text)
+    if parsed.entity != "light":
+        return False
+    return parsed.intent is not None or accepted_intent or has_domotics_action_verb(text)
 
 
 def _grammar_fastpath_classification(
@@ -988,7 +1054,15 @@ class RequestRouter:
         # domotics producer (design F26: never move it after the grammar).
         # T032-U1: the answer to a numbered reminder choice ("el primero")
         # goes back to it on the same household path, never to a producer.
-        tv_signal = textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE
+        # T037-U5 (user answer T037-U4-Q1): a follow-up or barge-in capture
+        # (or an unknown one) has no wake of its own, so it counts as a TV signal: household
+        # shortcuts and the extended home command need the 7B veto, and the
+        # grammar fast path below is skipped. While :8101 is down, or with no
+        # LLMCommandRouter configured (T037-U5-R1), such a turn fails silently
+        # and the user repeats it with the wake word.
+        borrowed_wake = _capture_without_own_wake(capture_trigger)
+        tv_signal = (textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE
+                     or borrowed_wake)
         household = self.household_intents.classify(text)
         if household is not None or self._answers_reminder_choice(text, room_id):
             return await self._process_household_turn(
@@ -1018,11 +1092,13 @@ class RequestRouter:
         # Wake textual: el utterance YA contiene "nexa" (así matcheó). Grammar
         # lo marca full y ejecutaba luces fantasma; el 7B es el gate. El canal
         # textual no está en el presupuesto <300ms.
-        if textual_wake:
+        if textual_wake or borrowed_wake:
+            # T037-U5: a capture without its own wake (follow-up, barge-in,
+            # unknown) never bypasses the 7B either, whatever wake score it carries.
             grammar_cls = None
             logger.info(
-                "[GRAMMAR_FASTPATH] skip textual_wake — forcing LLM router: %r",
-                text,
+                "[GRAMMAR_FASTPATH] skip %s — forcing LLM router: %r",
+                "textual_wake" if textual_wake else f"capture_trigger={capture_trigger}", text,
             )
         else:
             grammar_cls = _grammar_fastpath_classification(
@@ -1091,6 +1167,15 @@ class RequestRouter:
             # Si es así, NO le aplicamos el confidence gate del LLM (la
             # gramática ya es señal de alta confianza).
             grammar_backed = False
+            # T037-U5: without its own wake the turn has no signal but the 7B;
+            # while :8101 cannot decide it ends silently (no grammar dispatch,
+            # no confirmation question) and the user repeats it with the wake.
+            if borrowed_wake and classification.rejection_reason == "unavailable":
+                result["intent"] = "llm_rejected:unavailable"
+                result["success"] = False
+                result["response"] = ""
+                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+                return result
             # Fallback: el LLM no pudo decidir (timeout/error → 'unavailable').
             # NO descartar si la gramática tenía señal parcial.
             if classification.rejection_reason == "unavailable":
@@ -1167,6 +1252,16 @@ class RequestRouter:
             # Resultado válido — guardar para que el caller registre en history
             # tras dispatch exitoso (line ~480, post-orchestrator).
             result["llm_classification"] = classification
+        elif borrowed_wake:
+            # T037-U5-R1: with no LLMCommandRouter configured nothing can veto
+            # a capture without its own wake, so it fails closed (as a weakly
+            # woken household claim does) and the user repeats it with the wake.
+            logger.info("[LLMRouter] not configured — capture_trigger=%s fails closed: %r", capture_trigger, text)
+            result["intent"] = "llm_rejected:no_router"
+            result["success"] = False
+            result["response"] = ""
+            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+            return result
 
         # 1b. Confidence gate — low-confidence sensitive commands pide
         #     confirmación antes de dispatchar al orchestrator.
@@ -1235,9 +1330,11 @@ class RequestRouter:
         # Target selection is deterministic after either the acoustic grammar
         # or the textual channel's LLM gate has accepted the command.
         default_target = parse_default_light_target(text)
+        # T037-U5-R1: a light location the rooms cannot resolve asks, whatever
+        # accepted the turn (grammar, 7B, or no model at all); a vector search
+        # never guesses the light.
         if (
-            fast_classification is not None
-            and fast_classification.entity_hint == "light"
+            _dispatch_targets_light(text, result.get("llm_classification"))
             and has_unresolved_light_location(text)
         ):
             result["intent"] = "unresolved_target"
@@ -1304,7 +1401,8 @@ class RequestRouter:
 
         Args:
             text: Accepted transcript of the turn.
-            tv_signal: Textual wake, ambient_strict or a low wake score.
+            tv_signal: Textual wake, ambient_strict, a low wake score or a
+                capture without its own wake (T037-U5).
             capture_trigger: What opened this capture, or None if unknown.
 
         Returns:
@@ -1321,8 +1419,8 @@ class RequestRouter:
         'unavailable', and a finite confidence within the configured range.
         The model can only stop the turn; it never chooses a family, a part,
         a target or a service. Without a configured LLMCommandRouter a turn
-        with a TV signal (textual wake, ambient_strict, low wake score) fails
-        closed; otherwise it proceeds as an unclaimed turn would without a
+        with a TV signal (textual wake, ambient_strict, low wake score, or a
+        capture without its own wake, T037-U5) fails closed; otherwise it proceeds as an unclaimed turn would without a
         model gate.
         """
         if self.llm_command_router is None:
@@ -1359,9 +1457,10 @@ class RequestRouter:
                                       audio, room_id: str | None, pipeline_start: float, tv_signal: bool) -> dict:
         """Dispatch a claimed household turn (P3-F2 S6).
 
-        A weak wake (TV signal, a transcript-based wake engine, or a turn
-        longer than ``household_intents.unvetoed_max_words``) needs the 7B
-        veto; a rejection ends the turn with no effect. The turn never
+        A weak wake (TV signal, a capture without its own wake such as a
+        follow-up or barge-in (T037-U5), a transcript-based wake engine, or a
+        turn longer than ``household_intents.unvetoed_max_words``) needs the
+        7B veto; a rejection ends the turn with no effect. The turn never
         carries a service_filter, slots or a target from any producer, never
         uses audio_manager.detect_source_zone, and its origin room is only the
         capturing microphone's room (the dispatcher derives it from

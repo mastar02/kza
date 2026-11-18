@@ -531,19 +531,45 @@ def parse_default_light_target(text: str) -> ParsedCommand | None:
     return pc if re.fullmatch(pattern, norm) else None
 
 
+_HOUSEHOLD_LOCATIONS = frozenset({"hogar", "toda la casa", "todo el hogar", "la casa entera"})
+# The dispatcher's other light nouns (T037-U5-FV2). Unlike 'luz', a bare 'de'
+# after them qualifies the fixture ('lámpara de pie'), so only a place
+# preposition with an article opens a location.
+_FIXTURE_LIGHT_LOCATION_RE = re.compile(
+    r"\b(?:lamparas?|focos?|luminarias?|veladoras?)\b.*?\b(?:del|de la|de el|en el|en la)\s+(.+)"
+)
+
+
+def _strip_location_tail(location: str) -> str:
+    return re.sub(r"(?:\s+(?:por favor|ahora))+$", "", location).strip()
+
+
 def has_unresolved_light_location(text: str) -> bool:
-    """Reject explicit light locations that cannot be resolved exactly."""
+    """Reject explicit light locations that cannot be resolved exactly.
+
+    'luz'/'luces' need the location to be exactly a known room. A lamp, bulb or
+    fixture ('lámpara', 'foco', 'luminaria', 'veladora') asks only when its
+    location names no known room: 'la lámpara de pie del living' still picks
+    the fixture in the living, 'la lámpara del quincho' asks (T037-U5-FV2).
+    """
     if parse_default_light_target(text) is not None:
         return False
     norm = _norm(text)
+    rooms = "|".join(re.escape(alias) for alias in ROOM_ALIASES)
     match = re.search(r"\b(?:luz|luces)\b.*?\b(?:del|de la|de el|en el|en la|en|de)\s+(.+)", norm)
     if match is None:
-        return bool(re.search(r"\b(?:ambiente|habitacion)\b", norm) and extract_room(text) is None)
-    location = re.sub(r"(?:\s+(?:por favor|ahora))+$", "", match.group(1)).strip()
-    if location in {"hogar", "toda la casa", "todo el hogar", "la casa entera"}:
+        if re.search(r"\b(?:ambiente|habitacion)\b", norm) and extract_room(text) is None:
+            return True
+    else:
+        location = _strip_location_tail(match.group(1))
+        if (location not in _HOUSEHOLD_LOCATIONS
+                and re.fullmatch(rf"(?:{rooms})(?:\s+(?:al|a|con)\s+.+)?", location) is None):
+            return True
+    fixture = _FIXTURE_LIGHT_LOCATION_RE.search(norm)
+    if fixture is None:
         return False
-    rooms = "|".join(re.escape(alias) for alias in ROOM_ALIASES)
-    return re.fullmatch(rf"(?:{rooms})(?:\s+(?:al|a|con)\s+.+)?", location) is None
+    location = _strip_location_tail(fixture.group(1))
+    return location not in _HOUSEHOLD_LOCATIONS and re.search(rf"\b(?:{rooms})\b", location) is None
 
 
 # ============================================================
