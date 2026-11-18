@@ -1199,10 +1199,42 @@ def test_14_a_correct_new_over_h_with_residue_is_retired(builds, tmp_path, syste
                                      "SELECT 1 FROM reminder_home_actions WHERE status='sending'")),
         "routine_running": len(_sql(graph / "routines.db", "SELECT 1 FROM routine_runs WHERE status='running'"))})
     _first_t0_app(world)
-    moved = world.transition("x5", name="residue", app=True)
-    log = world.log(moved["id"])
-    [run] = [event for event in log["events"] if event["kind"] == "verified"]
-    rec.result(verified_event=sorted(run["data"]), k=moved["k"])
+    h_binding = world.head()["binding_id"]
+    world.st("residue-paso0-completion-status", "completion-status")
+    world.stop_and_disable("residue-paso1")
+    world.k += 1
+    planned = world.plan("x5", "k1")
+    stores = planned["chroma"]["stores"]
+    rec.result(plan_chroma=stores)
+    assert stores["data/chroma_db"]["dropped_collections"] == ["home_assistant_routines"]
+    started = world.st("start-k1-x5", "compact", "start", "k1", "--archive", str(builds["x5"]["archive"]),
+                       "--plan-sha256", planned["plan_sha256"], "--acknowledge-untouched",
+                       planned["untouched_sha256"], "--destroy-rollback-states", expect=None)
+    if started.get("refused"):
+        # The synthetic memory leaf (tests/mocks/restore_application_graph.MemorySDK) records its test-only
+        # embedding function in the memory collection's configuration; SC-4c's isolated rebuild child cannot
+        # load it (production's collection carries Chroma's default one). Row S, with the real app's H: the
+        # plain abort returns to H without loss and H serves again.
+        assert started["refused"] == "runtime_admission_compaction_chroma_rebuild_failed", started
+        [pending] = [item for item in world.st("row-s-status", "compact", "status")["compactions"]
+                     if item.get("phase") not in ("complete", "aborted")]
+        aborted = world.st("row-s-plain-abort", "compact", "abort", pending["compaction_id"])
+        rec.result(start_refused=started["refused"], row_s={"phase_before": pending.get("phase"),
+                                                            "abort": aborted.get("phase")})
+        assert aborted["phase"] == "aborted"
+        assert world.head()["binding_id"] == h_binding and not (world.root / "slots" / "k1").exists()
+        world.serve_clean("row-s-h-serves-real-app", enable=True, app=True)
+        rec.result(v_and_retire="not reached: the rebuild refusal above (harness limit); the real app's V over "
+                                "this residue is SCR-P-3's compiled CR-7 R1-H run")
+        return
+    compaction_id = started["compaction_id"]
+    world.verify(compaction_id)
+    world.v_run("residue-v", app=True)
+    status = world.status(compaction_id)
+    assert status["verified"] is True and status["verify_branch_reached"] == "yes", status
+    world.retire(compaction_id)
+    world.serve_clean("residue-serve-k-prime", enable=True, app=True)
+    rec.result(retired={"k": "k1", "compaction_id": compaction_id})
 
 
 def _first_t0_app(world: World) -> None:
