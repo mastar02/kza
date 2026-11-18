@@ -849,7 +849,7 @@ def test_05_new_revoking_a_credential_stops_safely_until_the_discard(builds, tmp
 
 def test_06_12_rollbacks_and_the_accepted_release_killed(builds, tmp_path, systemd, record):
     rec = record("06-12", "(6) R2 -> R2' and back without T0; (12) accepted release killed without receipt, "
-                          "R-b, rollback; extended: adopt, hotfix T0 without the H check, plan")
+                          "R-b, rollback; extended: adopt, hotfix T0 without the H check, plan refused (row PA)")
     world = World(builds, tmp_path, systemd, rec)
     _first_t0(world)
     world.transition("x5", name="r1-to-r2")  # k1 serves R2 (served: x5)
@@ -892,6 +892,7 @@ def test_06_12_rollbacks_and_the_accepted_release_killed(builds, tmp_path, syste
     rec.result(head_binding_kept=world.head()["binding_id"] == killed_head)
     world.ctl("accepted-disable", "disable", world.unit)
     world.transition("x5", name="rollback-after-r-b")  # k5 serves R2
+    k5_binding = world.head()["binding_id"]
     # Extended (R4-OPS-2): killed again with no restart; adopt; a greater-triple hotfix T0, H check skipped.
     world.child("clean", restart=False)
     world.begin("pa-start")
@@ -920,26 +921,13 @@ def test_06_12_rollbacks_and_the_accepted_release_killed(builds, tmp_path, syste
     assert world.triple_check(new) == "T0"
     installed = world.t0("x5r3", new=new)  # SR-1 alone gates it; no H check (R4-OPS-2)
     assert installed["controller_revision"] == 3
-    world.k += 1
-    k = f"k{world.k}"
-    planned = world.st("pa-plan-hotfix", "compact", "plan", k, "--archive", str(builds["x5r3"]["archive"]),
-                       expect=None)
-    rec.result(plan_over_recovery_head=planned.get("refused") or "admitted")
-    if planned.get("refused"):
-        # The runbook's 'Después de la aceptación' (row PA fails closed until SC5B-Q1's work exists).
-        rec.result(extended_pending="V and retire over the adopted head wait for row PA (item 17)")
-        return
-    # R4-OPS-2 as designed: the adopted head is the source; plan, start, V and retire of the hotfix.
-    compaction_id = world.start("x5r3", k, planned)
-    world.verify(compaction_id)
-    world.v_run("hotfix-v")
-    status = world.status(compaction_id)
-    assert status["verified"] is True, status
-    world.retire(compaction_id)
-    assert world.slot_of_head() == k
-    world.serve_clean("hotfix-serve-k-prime", enable=True)
-    rec.result(hotfix_after_adopt={"k": k, "compaction_id": compaction_id,
-                                   "installed_triple": list(stage.installed_controller_triple(world.root))[:2]})
+    # Row PA fails closed (SC5B-Q1; the runbook's 'Después de la aceptación'): the adopted head keeps the
+    # binding k5's closure proved, and plan still refuses it, writing nothing. The hotfix V and retire over
+    # an adopted head are item (17), with row PA.
+    refused = world.refused("pa-plan-hotfix", compaction.RECOVERY_HEAD, "compact", "plan", f"k{world.k + 1}",
+                            "--archive", str(builds["x5r3"]["archive"]))
+    rec.result(plan_over_recovery_head=refused["refused"], adopted_binding_is_k5s=head["binding_id"] == k5_binding)
+    assert head["binding_id"] == k5_binding
 
 
 # --- (7) and (9): schema mismatch; lower revision and equal pair with another digest -----------------------

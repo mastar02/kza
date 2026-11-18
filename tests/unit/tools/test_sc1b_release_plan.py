@@ -25,6 +25,7 @@ import os
 from pathlib import Path
 import sqlite3
 import subprocess
+import time
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -376,6 +377,31 @@ def test_controller_behind_and_the_rollback_admitted_through_served(x5, x5r2, tm
     _refusal("runtime_admission_compaction_log_invalid", lambda: compaction.served_releases(root, head))
     [listed] = [entry for entry in compaction.compact_status(root)["compactions"] if entry["compaction_id"] == odd]
     assert listed == {"compaction_id": odd, "invalid": True, "code": "runtime_admission_compaction_log_invalid"}
+
+
+def test_a_head_closed_by_recovery_is_no_source_until_a_clean_close(x5, tmp_path):
+    """Row PA fails closed (SC5B-Q1, SC-6b review F1): a run killed without a receipt and closed by R-b
+    keeps H's binding, which an earlier closure proved; plan still refuses recovery_head and writes
+    nothing. A later clean run of the head closes it with its own closure: a source again."""
+    world = _world(x5, tmp_path)
+    root = world["root"]
+    h_binding = stage.read_admission_head(root)["binding_id"]
+    phase_file = tmp_path / "phases-crash"
+    crashed = rehearsal.run_serve(root, rehearsal.child_command(phase_file, "crash", seconds=0.1),
+                                  phase_file=phase_file)
+    assert crashed.code != 0 and stage.read_admission_head(root)["status"] in ("running", "unknown")
+    with stage.AdmissionController(root, allow_open_head=True):
+        decision = launcher.recover_open_head(root, stage.read_admission_head(root), mode="bounded",
+                                              boot_id="b", wall=time.time())
+    head = stage.read_admission_head(root)
+    assert decision.closed_head == head and head["binding_id"] == h_binding
+    assert stage.read_manual_head(root, head)["kind"] == "recovery"
+    assert compaction.recovery_closed(root, head)
+    _row_p(root, tmp_path, "recovered-h-serves", compaction.RECOVERY_HEAD, lambda: cw.plan(root, x5["archive"]))
+    head = stage.read_admission_head(root)
+    assert stage.read_manual_head(root, head)["kind"] == "closure" and head["binding_id"] == h_binding
+    assert not compaction.recovery_closed(root, head)
+    assert cw.plan(root, x5["archive"])["plan_sha256"]
 
 
 # --- P6'(a), (b) upper bound, (d), (g) ------------------------------------------------------------------
