@@ -1370,7 +1370,8 @@ reconstruye. La transición del modo release lo resuelve: K se escribe desde
 el hijo limpio (ahora también con el patrón) y H, con su residuo, se destruye
 en el retiro (hasta entonces sigue en H y en la copia opaca del snapshot,
 sección anterior). (4) Los procesos que `kza-voice` lance heredan las
-variables (llenado de memoria también en ellos). (5) Las copias privadas que
+variables (llenado de memoria también en ellos, con su costo en RSS: ver
+«Costo en memoria»). (5) Las copias privadas que
 abre el trabajador de compactación para exportar se borran al terminar; su
 residuo de sistema de archivos es el límite general ya documentado. (6) Q3
 no cambia que el vector de un registro borrado siga en `data_level0.bin`
@@ -1406,9 +1407,28 @@ variables, mediana de 10 corridas alternadas; evidencia
 `data/autonomous-roadmap-20261102/sc4c-q3/evidence.json`, con el server
 cargado por otras corridas): consulta de Chroma (1200 × 1024) p50 0,885 →
 0,960 ms y p95 1,19 → 1,13 ms; 3000 tramas de audio de 30 ms con numpy
-81,7 → 98,5 ms (unos 5,6 µs más por trama); importaciones, JSON, SQLite y
-torch en CPU sin diferencia fuera del ruido. Lejos del objetivo de 300 ms;
-la medición del servicio real queda para la ventana de SC-6b.
+81,7 → 98,5 ms (unos 5,6 µs más por trama); `upsert` de Chroma 15,4 →
+23,3 ms en esa ronda (14,5 → 14,3 ms en la primera, 6 corridas: sin
+conclusión); importaciones, JSON, SQLite y torch en CPU sin diferencia fuera
+del ruido. Lejos del objetivo de 300 ms.
+
+**Costo en memoria.** Con `perturb`, glibc llena cada bloque que entrega
+(también los de `calloc` y los mapeados), así que toca cada página: un
+buffer pedido y no usado pasa a ser memoria residente. Medido en el server
+(revisión SC4CQ3-R2, 5 corridas alternadas por caso, mediana de `maxrss`):
+un proceso que sólo pide dos buffers de 256 MiB sin tocarlos (`np.zeros`, que
+usa `calloc`, y `np.empty`, `malloc`) pasa de 25,5 a 538,5 MiB y de 0,06 a
+0,30 s; `import src.main` (el arranque sin modelos) 474,9 → 475,5 MiB y
+3,45 → 3,50 s; el script de costo de arriba 298,2 → 298,2 MiB. El riesgo está
+en las reservas grandes que no se llenan enseguida: buffers de torch,
+ctranslate2 y numpy, la capacidad de los índices, y cada proceso que
+`kza-voice` lance (hereda las variables). La memoria de GPU no cambia.
+`kza-voice` no tiene `MemoryMax` (ni la unidad heredada
+`systemd/kza-voice.service` ni el drop-in administrado), así que el riesgo es
+presión de memoria en el host, no un OOM kill del servicio. La carga real de
+modelos (GPU, cuda:1) no se pudo medir sin tocar producción: en la ventana
+de SC-6b se miden juntos la latencia, el RSS máximo y el tiempo de arranque
+con carga de modelos del servicio real, con y sin las variables.
 
 Tests: `tests/unit/core/test_heap_hygiene.py` y la prueba del hijo limpio en
 `tests/unit/tools/test_sc4c_chroma_closed_list.py`.
