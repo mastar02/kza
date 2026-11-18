@@ -591,6 +591,23 @@ def _record_snapshot_failure(operation, destination: Path, root_identity: dict |
     return failures
 
 
+def source_witness(stage, root: Path, binding_id: str) -> dict:
+    """What a snapshot records of its source's closed_witness (row PA, sc-release-design v4).
+
+    ``{"kind": "closure", "proof", "receipt"}`` for a closure proof (the
+    former 'source_closure' content), ``{"kind": "recovery", "record_sha256",
+    "record"}`` for a recovery record; journal derivation re-derives it and
+    requires equality. A regressed record is admitted only as closed_witness
+    admits it (the compaction worker's bound sha256).
+    """
+    witness = stage.closed_witness(root, binding_id)
+    if witness["kind"] == "recovery":
+        return {"kind": "recovery", "record_sha256": witness["record_sha256"], "record": witness["record"]}
+    proof = witness["proof"]
+    receipt = _read_json(root / "admission" / "receipts" / (proof["running_head"]["run_id"] + ".json"))
+    return {"kind": "closure", "proof": proof, "receipt": receipt}
+
+
 def snapshot_closed_state(controller: "AdmissionController", binding_id: str,
                           destination: Path, *, before_manifest=None, chroma_collections=None) -> ClosedStateSnapshot:
     """Capture a source-qualified image while the caller retains admission.
@@ -687,15 +704,14 @@ def snapshot_closed_state(controller: "AdmissionController", binding_id: str,
                                      copy_operation=operation)
         if stage.verify_closed_binding(root, binding_id) != binding or _inventory(source) != inventory:
             raise ValueError("state_snapshot_source_changed")
-        proof = _read_json(root / "admission" / "closures" / (binding_id + ".json"))
-        receipt = _read_json(root / "admission" / "receipts" / (proof["running_head"]["run_id"] + ".json"))
+        witness = source_witness(stage, root, binding_id)
         blobs = destination / "blobs"
         if blobs.exists():
             for relative, record in _inventory(blobs).items():
                 files["blobs/" + relative] = {**record, "source_path": None,
                                             "source_identity": None, "kind": "blob"}
         manifest = {"schema_version": 1, "source_binding_id": binding_id,
-            "source_binding": binding, "source_closure": {"proof": proof, "receipt": receipt},
+            "source_binding": binding, "source_witness": witness,
             "source_roots": binding["store_roots"], "source_schemas": binding["schemas"],
             "source_inventory": inventory, "files": files, "databases": images, "index_exports": exports,
             "history_archives": history_archives}

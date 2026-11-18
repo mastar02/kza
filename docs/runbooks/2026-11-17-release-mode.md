@@ -37,22 +37,23 @@ Todas estas condiciones, antes de la primera transición:
   `RELEASED_CONTROLLERS` (`tests/unit/tools/test_sc1a_controller_install.py`).
 - **Primera transición dentro de los 14 días de L4 (SC4B-Q1).** La primera
   transición gestionada después de R1 termina, con su retiro, antes de DÍA 0
-  + 14 × 24 h y antes de que exista la intención del retiro Q5. Si cae
-  después, no se hace: primero se implementa la salida de la fila PA (testigo
-  de cierre por registro de recuperación y `--accept-regressed-source`), que
-  hoy no existe en el código. Sin ella, si la release nueva ya aceptada muere
-  en cada arranque sin recibo (fila PA), la única salida es L4, y L4 existe
-  sólo hasta el retiro Q5.
-- **Filas PA y DR implementadas antes del día 14 de R1 (SC5B-Q1 y
-  SC5B-Q2).** La primera transición, dentro de los 14 días de L4, se hace con
-  lo que el código hace hoy: la fila PA falla cerrado (salida L4 mientras
-  exista) y la copia en claro de `adopt --dry-run` en `$TMPDIR` se borra a
-  mano con la comprobación documentada (fila T0F, punto 2, y «Después de la
-  aceptación»). Antes de DÍA 0 + 14 × 24 h se implementan la salida de la
-  fila PA (testigo de cierre por registro de recuperación y
-  `--accept-regressed-source`) y la sombra de la fila DR bajo
-  `<raíz>/admission/dry-run/`, que borra el próximo que toma la concesión.
-  Sin las dos, ninguna transición después del día 14.
+  + 14 × 24 h y antes de que exista la intención del retiro Q5, salvo que la
+  salida de la fila PA (testigo de cierre por registro de recuperación y
+  `--accept-regressed-source`) ya esté en el controlador instalado. Esa
+  salida está implementada desde la unidad SC-PA-DR (2026-11-17, «Después de
+  la aceptación»); sin ella, si la release nueva ya aceptada muere en cada
+  arranque sin recibo (fila PA), la única salida es L4, y L4 existe sólo
+  hasta el retiro Q5.
+- **Filas PA y DR (SC5B-Q1 y SC5B-Q2).** El usuario pidió implementarlas
+  antes del día 14 de R1 y están implementadas (unidad SC-PA-DR): un head
+  cerrado por un registro de recuperación limpio es fuente de un hotfix o un
+  rollback, uno con regresiones confirmadas sólo con
+  `--accept-regressed-source` (fila PA), y la copia en claro de `adopt
+  --dry-run` vive sólo bajo `<raíz>/admission/dry-run/`, que borra el próximo
+  que toma la concesión (fila DR). Las dos tienen que estar en el
+  controlador instalado (el `$ST` de `controller/current`), revisadas (SC-R)
+  y ensayadas (SC-6b, ensayos 12, 15 y 17); sin las dos, ninguna transición
+  después del día 14.
 - **Paso 0 con `resurrected` en 0 (SC4B-Q2)**, abajo. Si no da 0, no hay
   transición: se implementan antes la línea base salada de K y el
   reencolado (R5V-2, R5V-3).
@@ -235,7 +236,7 @@ Rechazos antes de mover `current` (fila T0; no escriben nada):
 | --- | --- | --- |
 | `runtime_admission_compaction_pending` | un log de compactación pendiente | terminarlo (con su runbook) y repetir |
 | `runtime_admission_compaction_log_invalid` | un log ilegible | «Compactación trabada» del runbook de compactación |
-| `runtime_admission_not_closed` | head abierto o desconocido | cerrarlo con R-b (arrancar la unidad una vez; R-b cierra el head y sirve H, así que después detener y deshabilitar la unidad otra vez antes de repetir `install-controller`, que rechaza mientras H corre) o `adopt` (sin log pendiente lo admite; después de `adopt --dry-run`, la comprobación de su copia en claro de la fila T0F, punto 2), y repetir |
+| `runtime_admission_not_closed` | head abierto o desconocido | cerrarlo con R-b (arrancar la unidad una vez; R-b cierra el head y sirve H, así que después detener y deshabilitar la unidad otra vez antes de repetir `install-controller`, que rechaza mientras H corre) o `adopt` (sin log pendiente lo admite; la copia en claro de `adopt --dry-run` queda sólo bajo `<raíz>/admission/dry-run/` y la borra el próximo comando que toma la concesión, fila DR), y repetir |
 | `runtime_admission_delegation_frozen` | una entrada en `admission/delegations/` | filas DL/DO, abajo |
 | `runtime_admission_owners_present` | un head con dueños | fila DO, abajo |
 | `runtime_admission_controller_binding_changed` | SR-1: el código nuevo calcula otro binding para el slot de H | no instalar ese NUEVO; habilitar y arrancar (sirve H) y pasar a desarrollo |
@@ -292,17 +293,13 @@ rechaza un triple menor. Si H no llega a `READY` con el controlador nuevo:
    arranque más de la unidad) o `$ST adopt --dry-run` y `$ST adopt --confirm
    <head_sha256>`. `install-controller` rechaza un head desconocido
    (`runtime_admission_not_closed`). Sin log pendiente, `adopt` y `adopt
-   --dry-run` corren, también acá, en la primera transición, y el dry-run
-   copia todo el estado en claro a un directorio temporal del sistema
-   («Después de la aceptación»). Después del dry-run, cortado o no,
-   comprobar que no quedó ninguna copia:
-
-   ```bash
-   ls -d "${TMPDIR:-/tmp}"/kza-adopt-dry-run-*   # sin salida: no quedó ninguna
-   ```
-
-   Si aparece alguna, borrarla a mano (`rm -rf` sobre esa ruta exacta) antes
-   de seguir: está fuera de todo retiro y de todo borrado.
+   --dry-run` corren, también acá, en la primera transición. El dry-run
+   copia todo el estado en claro, sólo bajo la concesión, a
+   `<raíz>/admission/dry-run/<id>/` (0700, nunca a `$TMPDIR`) y la borra al
+   terminar; si se corta, la copia queda ahí hasta el próximo comando que
+   toma la concesión (`serve`, `plan`, `adopt`, `install-controller`), que la
+   borra antes de cualquier otra comprobación (fila DR). No se busca ni se
+   borra a mano.
 3. Salida: un controlador corregido con una revisión mayor (otro T0 sobre el
    head cerrado, con SR-1), hecho por desarrollo; o L4 mientras exista (sin
    log pendiente su compuerta lo admite), con la frase y la decisión que pide
@@ -685,31 +682,54 @@ un arreglo se construye sobre esa línea («Construir NUEVO», punto 3).
 
   `--confirm-regressions` sólo si el dry-run informa regresiones.
   `install-controller` rechaza un head desconocido
-  (`runtime_admission_not_closed`) hasta que se cierre. **Hoy un head
-  cerrado por recuperación no es fuente de ninguna transición** (`plan`
-  rechaza: el testigo de cierre por registro de recuperación y
-  `--accept-regressed-source` no están implementados). Así que hoy la salida
-  de PA es **L4 mientras exista** (SC-D7 A, SC4B-Q1), con el servicio caído
-  mientras tanto y la decisión escrita cada 48 horas. **L4 trae de vuelta
-  los datos borrados**: vuelve a servir el slot heredado, y lo que se borró
-  desde entonces vuelve con él (`uninstall-launcher`). Pide la frase del
-  runbook de R1 y la decisión del usuario, no del operador. Cuando esa parte
-  exista: un head de recuperación limpio empieza el hotfix o el rollback
-  directamente (se implementa antes del día 14 de R1, SC5B-Q1); con
-  regresiones confirmadas, el plan las liga con
-  `--accept-regressed-source`; y un hotfix con triple mayor lleva su T0 con
-  la comprobación de H salteada (paso 3).
-- **`adopt --dry-run` hace una copia completa en claro.** Corre siempre que
-  no haya un log del modo release pendiente: después de la aceptación (fila
-  PA) y también durante la primera transición, antes del plan, en la salida
-  T0F (punto 2) y en el rechazo `runtime_admission_not_closed` del T0; con
-  un log pendiente rechaza. Hoy la copia va a un
-  directorio temporal del sistema (`kza-adopt-dry-run-*` bajo `$TMPDIR` o
-  `/tmp`) y se borra al terminar; si el dry-run se corta, queda ahí, fuera de
-  todo retiro y de todo borrado: comprobarlo con `ls -d
-  "${TMPDIR:-/tmp}"/kza-adopt-dry-run-*` y borrarlo a mano. La sombra bajo
-  `<raíz>/admission/dry-run/` que el diseño pide (fila DR) es trabajo
-  pendiente, que se implementa antes del día 14 de R1 (SC5B-Q2).
+  (`runtime_admission_not_closed`) hasta que se cierre. **El head cerrado por
+  recuperación es fuente del hotfix o del rollback** (`closed_witness`): su
+  registro de recuperación inmutable hace de testigo de cierre en el plan,
+  el start, W0 y el snapshot, como la prueba de cierre de un cierre limpio.
+  - **Sin regresiones** (R-b, o `adopt` sin `--confirm-regressions`): los
+    pasos 4 a 9 de siempre, sin ninguna marca.
+  - **Con regresiones confirmadas**: `plan` rechaza
+    `runtime_admission_compaction_regressed_source_required` y nombra el
+    `recovery_record_sha256` (el mismo que imprime `adopt --confirm`) y las
+    familias. Comprobar que son las que se confirmaron y repetir el plan y
+    el start con 12 caracteres o más de ese sha256:
+
+    ```bash
+    $ST compact plan "$K" --archive "$NEW_ARCHIVE" --accept-regressed-source <recovery_record_sha256, 12 o más caracteres>
+    $ST compact start "$K" --archive "$NEW_ARCHIVE" --plan-sha256 <plan_sha256> --acknowledge-untouched <untouched_sha256> --destroy-rollback-states --accept-regressed-source <el mismo prefijo>
+    ```
+
+    El digest del plan y la intención ligan el sha256 completo
+    (`source_recovery_sha256` en la salida del plan): sólo ese registro y
+    sólo para el H de ese log, nunca para K'. Un prefijo corto, ajeno o sobre
+    un head sin regresiones rechaza
+    `runtime_admission_compaction_regressed_source_mismatch` sin escribir
+    nada. La transición lleva hacia adelante las regresiones confirmadas tal
+    como están en el head adoptado (no revive nada nuevo) y las
+    transiciones siguientes, desde el head aceptado, no llevan la marca.
+    **Límite de hoy:** si entre las familias confirmadas hay una
+    `resurrected_*`, el retiro rechaza
+    `runtime_admission_compaction_retire_resurrected` (el escaneo sigue
+    absoluto hasta la línea base de K, SC4B-Q2): volver a H con W, servicio
+    caído y desarrollo, con la decisión escrita cada 48 horas.
+
+  Un hotfix con triple mayor lleva su T0 con la comprobación de H salteada
+  (paso 3). Mientras tanto el servicio está caído (decisión escrita cada 48
+  horas). L4, mientras exista, sigue siendo otra salida, pero **L4 trae de
+  vuelta los datos borrados**: vuelve a servir el slot heredado, y lo que se
+  borró desde entonces vuelve con él (`uninstall-launcher`). Pide la frase
+  del runbook de R1 y la decisión del usuario, no del operador.
+- **`adopt --dry-run` hace una copia completa en claro (fila DR).** Corre
+  siempre que no haya un log del modo release pendiente: después de la
+  aceptación (fila PA) y también durante la primera transición, antes del
+  plan, en la salida T0F (punto 2) y en el rechazo
+  `runtime_admission_not_closed` del T0; con un log pendiente rechaza. La
+  copia se hace sólo bajo la concesión, en `<raíz>/admission/dry-run/<id>/`
+  (0700, en el mismo sistema de archivos que el estado, nunca en `$TMPDIR`),
+  y se borra al terminar. Si el dry-run se corta, queda ahí hasta el próximo
+  comando que toma la concesión (`serve`, `plan`, `adopt`,
+  `install-controller`), que la borra antes de cualquier otra comprobación;
+  en ese intervalo un borrado no la alcanza. No se busca ni se borra a mano.
 - **`adopt --confirm`** pide el `head_sha256` que imprime `adopt --dry-run`
   (`runtime_admission_adopt_confirmation` si no coincide).
 - **Defectos de las reparaciones que V saltea** (SC-D6 A): aparecen recién
