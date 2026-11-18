@@ -10,11 +10,16 @@ compiled adoption commands to ``KZA_REHEARSAL_MODELS_ROOT`` (the logs and
 metrics rows keep their production values, as in the in-process tests).
 ``KZA_REHEARSAL_WALL_OFFSET`` (seconds) moves the wall clock forward for the
 day-14 rehearsal of retire-legacy-state; it is applied before the compiled
-modules load, so their ``wall=time.time`` defaults see it. Everything else
-is the compiled bytecode of the archive. Not a product entry point.
+modules load, so their ``wall=time.time`` defaults see it.
+``KZA_REHEARSAL_KILL_AT_STEP`` (SC-6b, rows T0 and T0S) makes the compiled
+``install-controller`` SIGKILL its own process at that ``step_hook`` step
+('checked': after the read-only checks, before the switch; 'switched':
+after ``current`` moved, before controller.json). Everything else is the
+compiled bytecode of the archive. Not a product entry point.
 """
 import importlib.util
 import os
+import signal
 import sys
 import time
 
@@ -33,5 +38,17 @@ if models and any(argument in module.ADOPTION_COMMANDS for argument in arguments
     library = commands.adoption
     commands.production_paths = lambda: commands.ProductionPaths(models, library.PRODUCTION_LOGS,
                                                                  library.PRODUCTION_METRICS)
+kill_at = os.environ.get("KZA_REHEARSAL_KILL_AT_STEP")
+if kill_at and "install-controller" in arguments:
+    compiled_launcher = module._launcher_module()
+    _install = compiled_launcher.install_controller
+
+    def install_controller(root, archive, **options):
+        def hook(step):
+            if step == kill_at:
+                os.kill(os.getpid(), signal.SIGKILL)
+        return _install(root, archive, step_hook=hook, **options)
+
+    compiled_launcher.install_controller = install_controller
 sys.argv = [pyc, *arguments]
 module.main()
