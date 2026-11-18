@@ -577,6 +577,27 @@ def _hour24(clock: _Clock, meridiem: str | None) -> tuple[int | None, ReminderAm
     return None, ReminderAmbiguity.AMBIGUOUS_MERIDIEM
 
 
+def period_hours(hour: int, period: str) -> frozenset[int]:
+    """The 24-hour hours '<hour> de la <period>' can mean, read with the creation table.
+
+    A 12-hour clock hour (1-12) the period's table holds is one hour
+    ("9 de la mañana" -> 9, "2 de la tarde" -> 14); one it leaves out is both
+    readings ("12 de la mañana" -> 0 and 12), because creating a reminder
+    with it asks ``AMBIGUOUS_MERIDIEM`` instead of picking (T032-NUM-FV-5).
+
+    Args:
+        hour: The spoken clock hour, 1-12.
+        period: A ``_PERIOD_HOURS`` key ("manana", "tarde", "noche", ...).
+
+    Returns:
+        The 24-hour hours the phrase allows.
+    """
+    table = _PERIOD_HOURS.get(period, {})
+    if hour in table:
+        return frozenset({table[hour]})
+    return frozenset({hour % 12, hour % 12 + 12})
+
+
 def _category(period: str) -> str:
     return "am" if period in _AM_KINDS else "pm"
 

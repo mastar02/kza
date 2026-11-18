@@ -74,6 +74,7 @@ from src.orchestrator.priority_queue import (
     PriorityRequestQueue
 )
 from src.reminders.reminder_manager import CancelMatch, CancelResolution
+from src.reminders.voice_request import period_hours
 from src.world.weather import DEFAULT_ENTITY as DEFAULT_WEATHER_ENTITY
 
 logger = get_logger(__name__)
@@ -150,6 +151,7 @@ _CHOICE_LEADS = frozenset({"bueno", "dale", "oye", "ey", "che", "si", "cancela",
 _CHOICE_HOUR_WORDS = {**_CHOICE_CARDINALS, "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10, "once": 11,
                       "doce": 12}
 _CHOICE_PERIODS = frozenset({"manana", "tarde", "noche", "madrugada"})
+_CHOICE_NARROWING_PERIODS = frozenset({"manana", "tarde", "madrugada"})
 _SPOKEN_ORDINALS = ("primero", "segundo", "tercero", "cuarto", "quinto")
 
 
@@ -231,9 +233,17 @@ def _reminder_choice_answer(text: str, *, hours: bool = False) -> _ChoiceAnswer 
 
 
 def _choice_hours(hour: int, period: str | None) -> frozenset[int]:
-    """The 24-hour hours '<hour> (de la <period>)' can mean; 12 reads as 0 and 12."""
+    """The 24-hour hours '<hour> (de la <period>)' can mean; 12 reads as 0 and 12.
+
+    "mañana", "madrugada" and "tarde" narrow the hour only as the reminder
+    creation parser reads them, so "12 de la mañana", which creating a
+    reminder calls ambiguous, keeps both readings (T032-NUM-FV-5). "noche"
+    and no period keep both readings.
+    """
+    if period in _CHOICE_NARROWING_PERIODS:
+        return period_hours(hour, period)
     base = hour % 12
-    return frozenset({"manana": {base}, "madrugada": {base}, "tarde": {base + 12}}.get(period, {base, base + 12}))
+    return frozenset({base, base + 12})
 
 
 def _of_hour(hour: int) -> str:

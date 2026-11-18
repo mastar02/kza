@@ -1026,8 +1026,9 @@ async def _listed_at(leaves, specs=THREE_WATERS, *, room=None):
     dispatcher = leaves.dispatcher()
     await leaves.apply_state(dispatcher, "queued_request")
     manager = leaves.reminder_manager
-    created = [await manager.create("household", text, _tomorrow_at(leaves, hour), scope=ReminderScope.SHARED)
-               for text, hour in specs]
+    dues = [due if isinstance(due, tuple) else (due,) for _, due in specs]  # hour or (hour, minute)
+    created = [await manager.create("household", text, _tomorrow_at(leaves, *due), scope=ReminderScope.SHARED)
+               for (text, _), due in zip(specs, dues)]
     asked = await dispatcher.dispatch(user_id="unknown", text="cancelá el recordatorio de tomar agua",
                                       context_room_id=room)
     assert asked.response.startswith(f"Encontré {len(specs)} parecidos. 1: {specs[0][0]} a las "), asked.response
@@ -1078,6 +1079,70 @@ async def test_after_the_hour_question_an_unclear_answer_cancels_nothing(leaves,
     again, counted = await _cancel(leaves, follow_up, dispatcher=dispatcher)
     assert counted == ZERO and (again.response, again.outcome.status.value) == (response, "needs_input")
     assert set(await _states(leaves)) == {text for text, _ in THREE_WATERS}
+
+
+# T032-NUM-FV-5: "12 de la mañana" is ambiguous when a reminder is created, so after
+# the hour question it must not narrow to 00:xx and cancel the reminder due at 00:30.
+NOON_CLASH = (("tomar agua fría", (0, 30)), ("tomar agua con gas", 12), ("tomar agua tibia", 14))
+
+
+@pytest.mark.parametrize(("follow_up", "response"), [
+    ("el de las 12 de la mañana", "Hay más de uno de las 12: decime el primero o el segundo."),
+    ("el de las doce de la mañana", "Hay más de uno de las 12: decime el primero o el segundo."),
+    ("el de las 12 de la noche", "Hay más de uno de las 12: decime el primero o el segundo."),
+    ("el de las 12", "Hay más de uno de las 12: decime el primero o el segundo."),
+])
+async def test_twelve_in_the_morning_after_the_hour_question_asks_by_ordinal(leaves, follow_up, response):
+    """Listed 00:30, 12:00 and 14:00: '12 de la mañana' may mean either of the first two, so nothing is cancelled."""
+    dispatcher, _ = await _listed_at(leaves, NOON_CLASH)
+    asked, counted = await _cancel(leaves, "dos", dispatcher=dispatcher)
+    assert counted == ZERO and asked.response == "¿El segundo o el de las 2?"
+    again, counted = await _cancel(leaves, follow_up, dispatcher=dispatcher)
+    assert counted == ZERO
+    assert (again.response, again.outcome.status.value, again.outcome.persistence.value) == (
+        response, "needs_input", "not_written")
+    assert set(await _states(leaves)) == {text for text, _ in NOON_CLASH}
+    assert dispatcher.awaits_reminder_choice("unknown", None, "el primero")
+    done, counted = await _cancel(leaves, "el segundo", dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1)
+    assert done.response.startswith("Cancelé el recordatorio tomar agua con gas a las ")
+    assert set(await _states(leaves)) == {"tomar agua fría", "tomar agua tibia"}
+
+
+@pytest.mark.parametrize(("follow_up", "cancelled"), [
+    ("el de las 2 de la tarde", "tomar agua tibia"), ("el de las 12 de la tarde", "tomar agua con gas"),
+    ("el de las 2", "tomar agua tibia"),
+])
+async def test_a_period_the_creation_table_holds_still_names_one_reminder(leaves, follow_up, cancelled):
+    dispatcher, _ = await _listed_at(leaves, NOON_CLASH)
+    await _cancel(leaves, "dos", dispatcher=dispatcher)
+    done, counted = await _cancel(leaves, follow_up, dispatcher=dispatcher)
+    assert counted == effects(reminder_transitions=1)
+    assert done.response.startswith(f"Cancelé el recordatorio {cancelled} a las ")
+    assert set(await _states(leaves)) == {text for text, _ in NOON_CLASH} - {cancelled}
+
+
+@pytest.mark.parametrize("period", ["manana", "madrugada", "tarde"])
+@pytest.mark.parametrize("hour", range(1, 13))
+def test_a_narrowing_period_reads_the_hour_as_reminder_creation_does(period, hour):
+    """T032-NUM-FV-5: a period narrows the hour only where creating a reminder resolves it; else both readings."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from src.orchestrator.dispatcher import _choice_hours
+    from src.reminders.voice_request import ReminderAmbiguity, parse_reminder_request
+    zone = ZoneInfo("America/Montevideo")
+    word = {"manana": "mañana"}.get(period, period)
+    parsed = parse_reminder_request(f"recordame regar el jueves a las {hour} de la {word}",
+                                    datetime(2026, 11, 16, 10, 0, tzinfo=zone))
+    assert parsed is not None, hour
+    if parsed.ok:
+        expected = {datetime.fromtimestamp(parsed.trigger_at, zone).hour}
+    elif parsed.detail == "midnight_with_day":  # the hour resolved to 00:00; only the day is asked
+        expected = {0}
+    else:
+        assert parsed.issues == (ReminderAmbiguity.AMBIGUOUS_MERIDIEM,), parsed
+        expected = {hour % 12, hour % 12 + 12}
+    assert _choice_hours(hour, period) == expected
 
 
 async def test_the_hour_question_keeps_the_choice_for_a_fresh_window(leaves):
