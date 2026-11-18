@@ -37,9 +37,13 @@ T0, boots, stops, V, retire, abort). The boots here are the rehearsal child's,
 not the real application with its models: W8's real boot-to-READY B is the
 operator's, so each path also records D with every boot replaced by
 ``KZA_SC6B_W8_B_SECONDS`` when it is given, and the default N per
-downtime_and_disk.formula_check (N = min(60, 600 - T_copy - boots x B -
-stops), refused below 10) from this run's T_copy. V's N is
-``KZA_SC6B_SMOKE_SECONDS`` (default 10, the runbook's N with T0).
+downtime_and_disk.formula_check in the design's terms (N = min(60, 600 -
+T_copy - boots x B - stops), refused below 10; stops = paso 1's, the H
+check's with T0 and V's) from this run's T_copy; the measured remainder
+(the commands in between and V's verify overhead) is kept apart, with the N
+that also subtracts it named as the conservative variant. The chosen default
+N is the smallest over the three paths. V's N is ``KZA_SC6B_SMOKE_SECONDS``
+(default 10, the runbook's N with T0).
 
 Disk: the bytes allocated under the root (tree walk every 0.5 s) and the
 free space of the root's filesystem and of SQLite's temporary directory's
@@ -151,12 +155,25 @@ def _serve_until_ready(world: MeasuredWorld, name: str) -> float:
 
 
 def _v(world: MeasuredWorld, name: str, *, execute: str | None = None) -> None:
-    """Paso 6: one start of the disabled unit; serve runs V for N seconds and stops it itself."""
+    """Paso 6: one start of the disabled unit; serve runs V for N seconds and stops it itself.
+
+    V's three parts are timed apart (the child's phase file, polled every 0.05 s): its boot to READY
+    (``.start_to_ready``, one of the boots), its run from READY until the stop reaches the child
+    (``.run``: N and the launcher's verify overhead) and its stop, from there to inactive (``.stop``).
+    """
     world.child("verify", execute=execute)
     started = world.begin(name + "-start")
+    assert world.d.wait_phase("ready", 600), (name, world.console()[-4000:])
+    ready = time.monotonic()
+    assert world.d.wait_phase("stop_received", 600), (name, world.console()[-4000:])
+    stopping = time.monotonic()
     shown = world.systemd.wait_for(world.d.unit, lambda value: value["ActiveState"] in ("inactive", "failed"),
                                    600, *STATUS)
-    world.rec.time(name + ".start_to_inactive", time.monotonic() - started)
+    inactive = time.monotonic()
+    world.rec.time(name + ".start_to_ready", ready - started)
+    world.rec.time(name + ".run", stopping - ready)
+    world.rec.time(name + ".stop", inactive - stopping)
+    world.rec.time(name + ".start_to_inactive", inactive - started)
     assert shown["ActiveState"] == "inactive" and shown["Result"] == "success", (name, shown,
                                                                                 world.console()[-4000:])
 
@@ -175,8 +192,9 @@ def _path(world: MeasuredWorld, name: str, build: str, *, t0: bool = False, abor
     world.st(name + "-paso0-completion-status", "completion-status")  # the service is up: not in D
     with Disk(world) as disk:
         down = time.monotonic()
-        world.stop_and_disable(name + "-paso1")
-        world.rec.time(name + ".paso1_stop_and_disable", time.monotonic() - down)
+        world.ctl(name + "-paso1-stop", "stop", world.unit)  # paso 1 (World.stop_and_disable), the stop timed
+        world.rec.time(name + ".paso1_stop", time.monotonic() - down)
+        world.ctl(name + "-paso1-disable", "disable", world.unit)
         boots = 0
         if t0:
             new = world.extract(build)
@@ -213,10 +231,15 @@ def _path(world: MeasuredWorld, name: str, build: str, *, t0: bool = False, abor
         d_seconds = ready - down
     parts = {key: value for key, value in world.rec.times.items() if key not in times_before}
     t_copy = parts[f"plan-{k}"] + parts[f"start-{k}"]
+    # The design's terms: every boot to READY (the H check's, V's, K''s or H's), every stop (paso 1's stop of
+    # the serving unit, the H check's, V's) and V's run; the measured remainder is everything else.
     to_ready = [value for key, value in parts.items() if key.endswith(".start_to_ready")]
-    stops = [value for key, value in parts.items() if key.endswith((".stop", ".paso1_stop_and_disable"))]
-    v_seconds = parts[name + "-v.start_to_inactive"]  # V's boot, its N seconds and its stop
-    other = d_seconds - t_copy - sum(to_ready) - sum(stops) - v_seconds  # extract, T0, verify, status, ...
+    stops = [value for key, value in parts.items() if key.endswith((".stop", ".paso1_stop"))]
+    assert len(to_ready) == boots and len(stops) == (3 if t0 else 2), (boots, parts)
+    v_seconds = parts[name + "-v.start_to_inactive"]  # V's boot, its run and its stop
+    v_run = parts[name + "-v.run"]
+    commands = d_seconds - t_copy - sum(to_ready) - sum(stops) - v_run  # extract, T0, verify, status, ...
+    remainder = commands + (v_run - SMOKE_SECONDS)
     if abort:
         assert world.head()["binding_id"] == h_binding  # H serves (its head is running while it does)
     else:
@@ -225,21 +248,28 @@ def _path(world: MeasuredWorld, name: str, build: str, *, t0: bool = False, abor
               "d_seconds": round(d_seconds, 3), "budget_seconds": BUDGET_SECONDS,
               "within_budget": d_seconds <= BUDGET_SECONDS, "t_copy_seconds": round(t_copy, 3),
               "smoke_seconds": SMOKE_SECONDS, "boots": boots, "boot_to_ready_seconds": to_ready,
-              "stop_seconds": stops, "v_seconds": v_seconds, "other_seconds": round(other, 3), "parts": parts,
-              "disk": disk.result(planned.get("capacity") or {})}
+              "stop_seconds": stops, "v_seconds": v_seconds, "v_run_seconds": v_run,
+              "measured_remainder": {"seconds": round(remainder, 3),
+                                     "commands_in_between_seconds": round(commands, 3),
+                                     "v_verify_overhead_seconds": round(v_run - SMOKE_SECONDS, 3)},
+              "parts": parts, "disk": disk.result(planned.get("capacity") or {})}
     if W8_B is not None:
-        # Conservative: every boot to READY becomes B, and V keeps its measured time plus B for its boot.
+        # Every boot to READY (V's included) becomes B; everything else keeps its measured time.
         projected = d_seconds - sum(to_ready) + boots * W8_B
         result["w8"] = {"b_seconds": W8_B, "d_seconds_projected": round(projected, 3),
                         "within_budget_projected": projected <= BUDGET_SECONDS}
-    # downtime_and_disk.formula_check: N = min(60, 600 - T_copy - boots x B - stops), refused below 10; here
-    # also minus what the formula leaves out (V's measured run minus its N, and the commands in between).
+    # downtime_and_disk.formula_check, in the design's terms: N = min(60, 600 - T_copy - boots x B - stops),
+    # refused below 10, stops = paso 1 + the H check's (with T0) + V's. The variant that also subtracts the
+    # measured remainder is kept beside it under its own name.
     b = W8_B if W8_B is not None else max(to_ready)
-    rest = sum(stops) + (v_seconds - SMOKE_SECONDS) + other
-    n = min(60.0, BUDGET_SECONDS - t_copy - boots * b - rest)
+    n = min(60.0, BUDGET_SECONDS - t_copy - boots * b - sum(stops))
+    conservative = min(60.0, BUDGET_SECONDS - t_copy - boots * b - sum(stops) - remainder)
     result["formula_check"] = {"b_seconds": round(b, 3), "b_source": "W8" if W8_B is not None else "measured_max",
-                               "stops_and_rest_seconds": round(rest, 3), "default_n": round(n, 1),
-                               "n_refused_below_10": n < 10}
+                               "stops_seconds": round(sum(stops), 3), "default_n": round(n, 1),
+                               "n_refused_below_10": n < 10,
+                               "conservative_minus_measured_remainder": {
+                                   "remainder_seconds": round(remainder, 3), "default_n": round(conservative, 1),
+                                   "n_refused_below_10": conservative < 10}}
     world.rec.result(**{name: result})
     return result
 
@@ -280,6 +310,15 @@ def test_sc6b_final_downtime_and_disk_numbers(builds, tmp_path, systemd, record)
     world.d.wait_inactive(120)
     world.ctl("final-disable", "disable", world.unit)
     summary = summarize(True)
+    # SC-6b's chosen default N: the smallest over the three paths (the design's formula; the conservative
+    # variant beside it).
+    chosen = min(item["formula_check"]["default_n"] for item in paths)
+    chosen_conservative = min(item["formula_check"]["conservative_minus_measured_remainder"]["default_n"]
+                              for item in paths)
+    summary["chosen_default_n"] = {"default_n": chosen, "n_refused_below_10": chosen < 10,
+                                   "rule": "min over paths of downtime_and_disk.formula_check",
+                                   "b_source": "W8" if W8_B is not None else "measured_max (stub boots; W8 pending)",
+                                   "conservative_minus_measured_remainder": chosen_conservative}
     rec.result(summary=summary)
     real_systemd.record("sc6b-measurements", summary)
     # SC-D2 A, re-checked by SC-6b: every path within 600 s (with W8's B when it is given).
