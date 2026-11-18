@@ -355,8 +355,9 @@ async def test_stale_lookup_cannot_prove_a_committed_deletion(leaves, tmp_path, 
 
 
 @pytest.mark.parametrize(("text", "path", "intent", "status"), [
-    ("recordame apagar la luz", "fast_reminder", "reminder", "unsupported"),
-    ("Nexa, recordame prender la luz del living", "fast_reminder", "reminder", "unsupported"),
+    # T031-U2 (deliberate): creation exists; without a time it asks (NEEDS_INPUT, was the interim UNSUPPORTED).
+    ("recordame apagar la luz", "fast_reminder", "reminder", "needs_input"),
+    ("Nexa, recordame prender la luz del living", "fast_reminder", "reminder", "needs_input"),
     # T030-U1: the graph is built but the FeatureManager was never started, so no timer is confirmed.
     ("poné un temporizador de 5 minutos", "fast_timer", "timer", "failed"),
     ("cancelá el timer y el recordatorio", "fast_household", "compound", "needs_input"),
