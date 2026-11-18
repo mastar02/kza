@@ -1969,6 +1969,24 @@ unidad SC-5b. Evidencia: `t040-t041/sc5b-evidence.json` (local).
   compuerta, un control y 13 de los arreglos). Detalle en la evidencia
   (`review_round_2`).
 
+## SC4C-Q3 — sin residuo de heap en los índices de Chroma del servicio (2026-11-18)
+
+Prioridad alta por decisión del usuario (SC4C-Q3, 2026-11-16). Rama
+`sc4c-q3` desde `batch-f` (`1008cc1e`). Mecanismo medido en el server: Chroma
+1.5.5 escribe enteros los buffers `malloc` de un índice HNSW al
+inicializarlo (`data_level0.bin`, `length.bin`) y lo vuelve a inicializar en
+cada proceso que abre un segmento sin mapa de ids persistido (menos de 1000
+operaciones: el caso de producción), así que cada apertura de `kza-voice`
+reescribía esos archivos con su heap; un canario sembrado llenó
+`data_level0.bin` tras un `count()`. Corrección: el launcher le da al hijo
+administrado `GLIBC_TUNABLES=glibc.malloc.perturb=165:glibc.malloc.tcache_count=0`
+(lo mismo el hijo limpio de la compactación) y `src.main`, con ticket y en
+glibc, sale con 78 antes de armarse si su `malloc` no devuelve el patrón
+(`runtime_admission_heap_hygiene_inactive`). Detalle, límites y costo en
+DEPLOYMENT («Residuo de heap en los índices de Chroma (SC4C-Q3)»);
+evidencia `data/autonomous-roadmap-20261102/sc4c-q3/evidence.json` (local,
+fuera de Git).
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.
