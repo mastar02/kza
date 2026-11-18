@@ -23,7 +23,7 @@ design.json), evaluated in the order R3, R5, R1, R2, R3a, R4, R6:
   a cancel or query of an alarm with a clock time ("cancelá la alarma de las 7")
   names the reminders (user answer T030-U1-Q8), and so does a stop or disable
   of one ("apagá/pará/desactivá la alarma de las 7" is its cancel, user answer
-  T031-U2-Q1).
+  T031-U2-Q1; desactivá is the assistant's reading, pending confirmation).
 * R2: timer creation, and list item additions/removals.
 * R3a: "alarma" with a duration (timer) or a clock time (reminder).
 * R4: a domotics verb with a deferral time expression.
@@ -461,7 +461,8 @@ _OBJECT_NOUNS: dict[str, HouseholdFamily] = {
 # timer (R3a, user answer Q4), so cancel/stop/pause/resume/query of "la alarma" reach the timers. Claimed in
 # R1 only; creation stays in R3a. The security alarm verbs (activá/desactivá/armá/desarmá la alarma) are never
 # claimed (design R3a): they stay on the existing path, where alarm panels are not controllable. The one exception
-# is "desactivá la alarma de las 7": a clock time names the alarm reminder, not the panel (user answer T031-U2-Q1).
+# is "desactivá la alarma de las 7": a clock time names the alarm reminder, not the panel (T031-U2-Q1: the answer
+# named apagá/pará; desactivá is the assistant's reading, pending the user's confirmation, review BH-R1).
 _ALARM_NOUNS = frozenset({"alarma", "alarmas", "despertador", "despertadores"})
 _SECURITY_ALARM_NOUNS = frozenset({"alarma", "alarmas"})
 # User answer T030-U1-Q8 (A, 2026-11-17): an alarm named with a clock time ("la alarma de las 7") was created as
@@ -601,8 +602,9 @@ def _clock_alarm(utt: _Utterance, k: int) -> bool:
     return utt.at(k) in _ALARM_NOUNS and _ALARM_CLOCK.search(" ".join(utt.folded[k + 1:])) is not None
 
 
-# User answer T031-U2-Q1 (2026-11-18): "apagá/pará/desactivá la alarma de las 7" turns off an alarm set for a
-# clock time, which is a reminder: it is that reminder's cancel (numbered list first, T032-U1). Pause and resume
+# User answer T031-U2-Q1 (2026-11-18): "apagá/pará la alarma de las 7" turns off an alarm set for a clock time,
+# which is a reminder: it is that reminder's cancel (numbered list first, T032-U1). The other stop verbs and
+# desactivá follow it as the assistant's reading, pending the user's confirmation (review BH-R1). Pause and resume
 # stay with the timers; a stop without a clock time keeps stopping the timers (T030-U1).
 _CLOCK_ALARM_CANCELS = frozenset({HouseholdOperation.CANCEL, HouseholdOperation.STOP, HouseholdOperation.DISABLE})
 
@@ -699,7 +701,11 @@ def _r1_object(utt: _Utterance, verb: _Verb) -> tuple[HouseholdFamily, Household
     family, k = governed
     if utt.at(k) in _SECURITY_ALARM_NOUNS and verb.form in _SECURITY_ALARM_VERBS and not (
             _DISABLE in verb.classes and _clock_alarm(utt, k)):
-        # "desactivá la alarma de las 7" names the alarm set for a clock time, not the panel (T031-U2-Q1).
+        # "desactivá la alarma de las 7" names the alarm set for a clock time, not the panel (T031-U2-Q1; the
+        # user's answer named apagá/pará, desactivá is the assistant's reading, pending the user's confirmation).
+        # The _DISABLE test changes nothing today (activá/armá/desarmá carry no R1 class, so the loop below returns
+        # None for them anyway; review BH-R1); it is kept so that only the disable verb is excepted if a security
+        # verb ever gains an R1 class.
         return None
     for cls, operation in _R1_OPERATIONS:
         if cls not in verb.classes:
