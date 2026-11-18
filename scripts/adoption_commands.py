@@ -231,9 +231,11 @@ def layout_record(layout) -> dict:
 def current_link(root: Path, container_slot: str) -> str:
     """The raw readlink of 'current'; it must resolve to the container slot's runtime.
 
-    That runtime must be the legacy container release (launcher.LEGACY_CONTAINER_COMMIT,
-    e9669ec since 2026-10-29): the slot L4 and the aborts roll back to. Any other release
-    there, an unreadable one included, refuses with runtime_admission_adoption_container_commit.
+    That runtime must be the legacy container release, its git_commit exactly
+    launcher.LEGACY_CONTAINER_RELEASE (e9669ec since 2026-10-29; the full commit, not a
+    prefix): the slot L4 and the aborts roll back to. Any other release there, one that only
+    shares the prefix and an unreadable one included, refuses with
+    runtime_admission_adoption_container_commit.
     """
     current = root / "current"
     if not os.path.islink(current):
@@ -244,7 +246,7 @@ def current_link(root: Path, container_slot: str) -> str:
         commit = json.loads((root / "slots" / container_slot / "runtime" / "release.json").read_text())["git_commit"]
     except (OSError, ValueError, TypeError, KeyError):
         commit = None
-    if type(commit) is not str or not commit.startswith(launcher.LEGACY_CONTAINER_COMMIT):
+    if type(commit) is not str or commit != launcher.LEGACY_CONTAINER_RELEASE:
         _refuse("runtime_admission_adoption_container_commit")
     return os.readlink(current)
 

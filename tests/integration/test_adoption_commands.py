@@ -136,7 +136,8 @@ class World:
         self.root = base / "legacy" / "releases"
         runtime = self.root / "slots" / CONTAINER / "runtime"
         runtime.mkdir(mode=0o700)  # Production mode; 0o700 holds under any umask.
-        (runtime / "release.json").write_text(json.dumps({"git_commit": "e9669ec" + "0" * 33, "files": {}}))
+        (runtime / "release.json").write_text(json.dumps({"git_commit": launcher.LEGACY_CONTAINER_RELEASE,
+                                                          "files": {}}))
         (self.root / "current").symlink_to(Path("slots") / CONTAINER / "runtime")
         self.scratch = base / "tmpfs"
         self.scratch.mkdir(mode=0o700)
@@ -2133,6 +2134,8 @@ def _container_release(world: World, value) -> None:
 def test_r1e_the_legacy_commits_are_the_state_slot_and_the_e9669ec_container():
     assert launcher.LEGACY_STATE_COMMIT == "b0866e8" and launcher.LEGACY_CONTAINER_COMMIT == "e9669ec"
     assert launcher.LEGACY_COMMITS == ("b0866e8", "e9669ec")
+    assert launcher.LEGACY_CONTAINER_RELEASE == "e9669ec1edb101ca6b190ef8df09314e1ac63562"
+    assert launcher.LEGACY_CONTAINER_RELEASE.startswith(launcher.LEGACY_CONTAINER_COMMIT)
     assert CONTAINER == "release_20261029T185008966364Z_e9669ec"
 
 
@@ -2144,9 +2147,19 @@ def test_r1e_the_legacy_commits_are_the_state_slot_and_the_e9669ec_container():
     {"git_commit": 7, "files": {}},
     [],
     None,
-], ids=["63ea8d3", "b0866e8", "unlisted", "no_commit", "not_text", "not_object", "unreadable"])
+    # Review R1E-RV3: the exact commit, not a prefix or a substring of it.
+    {"git_commit": "e9669ec" + "0" * 33, "files": {}},
+    {"git_commit": "e9669ec1edb101ca6b190ef8df09314e1ac6356", "files": {}},
+    {"git_commit": "e9669ec", "files": {}},
+    {"git_commit": "e96" + "1" * 37, "files": {}},
+    {"git_commit": "0" * 33 + "e9669ec", "files": {}},
+    {"git_commit": "e9669ec1edb101ca6b190ef8df09314e1ac63562 ", "files": {}},
+], ids=["63ea8d3", "b0866e8", "unlisted", "no_commit", "not_text", "not_object", "unreadable",
+        "same_prefix_other_commit", "one_hex_short", "short_prefix", "three_hex_prefix", "substring",
+        "trailing_space"])
 def test_r1e_dry_run_and_prepare_refuse_a_container_that_is_not_e9669ec(world, release):
-    """'current' on the named container slot is not enough: its release must be the e9669ec container."""
+    """'current' on the named container slot is not enough: its release must be the e9669ec container,
+    git_commit exactly launcher.LEGACY_CONTAINER_RELEASE (the World's own release passes)."""
     _container_release(world, release)
     code, report = world.dry_run()
     assert code == 78 and "runtime_admission_adoption_container_commit" in report["problems"]

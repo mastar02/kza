@@ -117,6 +117,9 @@ UNINSTALL_PHRASE = "revivir datos borrados"
 LEGACY_STATE_COMMIT = "b0866e8"
 LEGACY_CONTAINER_COMMIT = "e9669ec"
 LEGACY_COMMITS = (LEGACY_STATE_COMMIT, LEGACY_CONTAINER_COMMIT)
+# The adoption (dry run, W2, W4's re-check) requires exactly this release in the container: the full
+# commit, not the 7-hex prefix L4 and the aborts match (review R1E-RV3).
+LEGACY_CONTAINER_RELEASE = "e9669ec1edb101ca6b190ef8df09314e1ac63562"
 # Q5 retirement of the frozen b0866e8 state (U3b-0e5, P7=B): admission/legacy-retirement/
 # intent-<plan>.json before the deletion, retired-<plan>.json after it. Both name the slots
 # that leave L4 eligibility; uninstall-launcher and adoption-abort refuse them.
