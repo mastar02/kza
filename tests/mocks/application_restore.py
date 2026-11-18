@@ -25,7 +25,6 @@ from src.memory.fact_ledger import MemoryReviewer
 from src.memory.producer_context import producer_context
 from src.users.voice_ledger import VoiceReviewer
 from tests.mocks import integrated_restore as data_helpers
-from tests.mocks.memory_graph import SyntheticEmbedding
 from tests.mocks.memory_sources import memory_source
 from tests.mocks.producer_erasure_graph import launch, producer_step, until
 from tests.mocks.restore_application_graph import ApplicationPeer, TOKEN
@@ -329,8 +328,9 @@ def read_index(root, snapshot, witness):
     client = chromadb.PersistentClient(path=witness.index_path,
         settings=Settings(anonymized_telemetry=False))
     try:
-        collection = client.get_collection(name=witness.index_collection,
-            embedding_function=SyntheticEmbedding())
+        # The stored configuration decides (the memory leaf keeps Chroma's default one, as production's
+        # collection does; SC-6b review F2): read and upsert with explicit embeddings, as the product does.
+        collection = client.get_collection(name=witness.index_collection, embedding_function=None)
         if collection.metadata != witness.index_metadata:
             raise ReplayRejected("restore_index_metadata_mismatch")
         return index_values(collection.get(include=["embeddings", "documents", "metadatas"]))
@@ -344,8 +344,9 @@ def restore_payload(root, snapshot, witness):
     client = chromadb.PersistentClient(path=witness.index_path,
         settings=Settings(anonymized_telemetry=False))
     try:
-        collection = client.get_collection(name=witness.index_collection,
-            embedding_function=SyntheticEmbedding())
+        # The stored configuration decides (the memory leaf keeps Chroma's default one, as production's
+        # collection does; SC-6b review F2): read and upsert with explicit embeddings, as the product does.
+        collection = client.get_collection(name=witness.index_collection, embedding_function=None)
         if collection.metadata != witness.index_metadata:
             raise ReplayRejected("restore_index_metadata_mismatch")
         current_index = index_values(collection.get(include=["embeddings", "documents", "metadatas"]))
