@@ -334,9 +334,29 @@ autocontenidas y la delegación a estados dueños se apaga. Desde SC-2
   `c5305d588a228aca445489b90c00a2b11165d24f8fa1078ad19a68fbe9630a24`, en
   `/home/yo/projects/releases-r1/r1-357dcb5.tar.gz` (0600, directorio 0700,
   con `SHA256SUMS`). Frente al de c6462e5 cambian sólo `release.json` y
-  `src/memory/capture_recorders.pyc`. El runbook de R1 fija ese sha256 y su
-  commit, y antes de W1 exige que `sha256sum "$R1_ARCHIVE"` coincida o se
-  detiene.
+  `src/memory/capture_recorders.pyc`. El runbook de R1 fijó ese sha256 y su
+  commit hasta R1E (abajo); ese archivo sigue al lado con su nombre.
+- R1 re-fijado en R1E (2026-11-18): adoptar el contenedor de e9669ec y la
+  ronda 1 de la revisión independiente de R1E (R1E-RV3: commit completo del
+  contenedor; R1E-RV4: ruta de logrotate entre comillas) cambian
+  `scripts/`, así que R1 se reconstruyó igual desde d045156
+  (`d045156bd8922c5c6f2b6364827a314a5bc50da0`, `controller_epoch` 4,
+  `schema_contract` 1, 416 módulos compilados, 476 archivos): dos veces en
+  el server, idéntico byte a byte, y una en la Mac, igual. sha256
+  `b2205650f045ece0058c05db02b03c5bdb6523e4ad8b229fbbcd702685133990`, en
+  `/home/yo/projects/releases-r1/r1-d045156.tar.gz` (0600, directorio 0700,
+  con `SHA256SUMS-d045156`). Frente al de 357dcb5 cambian sólo
+  `release.json`, `scripts/adoption.pyc`, `scripts/adoption_commands.pyc` y
+  `scripts/managed_launcher.pyc`. Una primera reconstrucción desde 695708a
+  (`r1-695708a.tar.gz`, sha256 `d6e5a21a…`) no se fijó. Los archivos de
+  357dcb5 y 695708a quedan al lado sin renombrar y no se transfieren. El
+  runbook de R1 fija el sha256 de d045156 y su commit, y antes de W1 exige
+  que `sha256sum "$R1_ARCHIVE"` coincida o se detiene. Que ese commit adopte
+  el contenedor de `C` lo comprueba un test
+  (`test_r1e_the_pinned_r1_admits_the_runbook_container`): un R1 anterior a
+  R1E deja pasar el contenedor de e9669ec en la corrida de prueba, W1b, W2
+  y el commit de W4, W-abort-1 salta su comprobación, y sólo W-abort-2, L4
+  y Q5 lo rechazan.
 - Ensayo: `tests/integration/test_sc6a_r1_rehearsal.py` (en proceso, Mac y
   server) y la ventana real de `tests/integration/test_linux_adoption_window.py`
   agregan los casos (i)–(iv) del diseño. Después de W9, `delegate`,
@@ -1963,7 +1983,9 @@ b02116c, 357dcb5) cambiaron código, y R1 se re-fijó desde 357dcb5. La
 re-revisión independiente de esos arreglos (ronda 2, 2026-11-16) aprobó; sus
 hallazgos bajos RR3-1 y RR3-2 se corrigieron sin tocar código de ejecución,
 así que R1 sigue fijado desde 357dcb5. Las revisiones del lado de desarrollo
-previas a la ventana están hechas. La suite batch completa sobre 51fbc43 pasó en la Mac y en el server (`u3b/full-51fbc43/RESULT.md`), y el visto bueno visual del panel de R1-B2 sigue con el usuario.
+previas a la ventana están hechas. R1E (2026-11-18) cambió código de
+ejecución y R1 se re-fijó desde d045156; la ventana espera la revisión
+independiente de esa ronda, su T-A17 y la suite batch. La suite batch completa sobre 51fbc43 pasó en la Mac y en el server (`u3b/full-51fbc43/RESULT.md`), y el visto bueno visual del panel de R1-B2 sigue con el usuario.
 Después quedan los pasos del operador
 (transferir y verificar el R1 fijado, el drop-in sudo de W7, el arranque real
 hasta READY de W8); la ventana la programa el usuario, como operador, y sigue
@@ -2022,8 +2044,9 @@ dentro de alguno (también a través de un enlace), rechaza
 `current` o `head_state`.
 
 Pendiente antes del día 14 (R1E, 2026-11-18). En producción hoy la corrida de
-prueba rechaza sin borrar nada, por dos hechos que el ensayo T-A17 no tiene y
-que necesitan una decisión del usuario:
+prueba rechaza sin borrar nada, por dos hechos que necesitan una decisión del
+usuario. T-A17 los tiene desde W0 (revisión R1E-RV2) y comprueba los dos
+rechazos en este orden, sin cambios en el slot ni en los respaldos:
 
 - el contenedor anterior `release_20261029T174830709997Z_63ea8d3` conserva sus
   cinco enlaces, cuatro de ellos al estado de b0866e8. El retiro los lee como

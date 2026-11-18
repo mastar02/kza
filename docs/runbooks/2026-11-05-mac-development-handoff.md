@@ -1132,7 +1132,8 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   lado de desarrollo previas a la ventana están hechas. La suite batch completa sobre 51fbc43 pasó en la Mac y en el server (`u3b/full-51fbc43/RESULT.md`); si algo posterior cambia código, R1 se vuelve a construir y a fijar. El visto bueno visual del panel de R1-B2 sigue con
   el usuario. Después quedan los
   pasos del operador: registrar la autorización de la ventana y los ids
-  P1=D y L4, transferir a `kza` el R1 fijado (`r1-357dcb5.tar.gz`) y
+  P1=D y L4, transferir a `kza` el R1 fijado (`r1-d045156.tar.gz`, desde
+  R1E; ver «R1E») y
   verificarlo, el drop-in sudo de W7 y el arranque real hasta READY de W8.
   La ventana la programa el usuario, como operador.
 
@@ -1998,13 +1999,33 @@ reemplaza la premisa de P5.
   - qué hacer con los tres `*-report.json` del slot de b0866e8.
 - Antes de R2 hay que decidir también los slots 63ea8d3 y 2c5adb4: el primer
   plan del modo release los rechaza (`release_unproven_copy`).
-- R1 reconstruido desde `695708ac40a101ccbeadd008ff3fd2fe01c4ed5b` (época 4):
+- R1 reconstruido primero desde `695708ac40a101ccbeadd008ff3fd2fe01c4ed5b`
+  (sha256 `d6e5a21aea71dd576fc4afa34821eed2a93c013c439ef4b37334d6856b7e1dba`,
+  `r1-695708a.tar.gz`); no se fijó.
+- Revisión independiente de R1E, ronda 1: «changes_needed», seis hallazgos
+  (R1E-RV1 a RV6), uno por commit:
+  - RV3: la adopción exige el commit completo del contenedor
+    (`LEGACY_CONTAINER_RELEASE`), no un prefijo de 7;
+  - RV4: Q5 lee la ruta de logrotate entre comillas, como la escribió
+    producción;
+  - RV5: un test de L4 por `uninstall_launcher` hacia b0866e8 y e9669ec;
+  - RV2: T-A17 corre con la forma de producción desde W0 (slots 63ea8d3 y
+    2c5adb4, los tres `*-report.json`, los enlaces del runtime del
+    contenedor), y el día 14 rechaza dos veces sin borrar nada;
+  - RV1: la condición del pin es un test
+    (`test_r1e_the_pinned_r1_admits_the_runbook_container`). Un R1 de
+    357dcb5 deja pasar el contenedor de e9669ec en la corrida de prueba,
+    W1b, W2 y el commit de W4, y W-abort-1 salta su comprobación; sólo
+    W-abort-2, L4 y Q5 lo rechazan (no «los dos aborts», como decía el
+    resumen anterior);
+  - RV6: redacción (W4).
+- R1 re-fijado desde `d045156bd8922c5c6f2b6364827a314a5bc50da0` (época 4):
   dos veces en el server y una en la Mac, idénticas, sha256
-  `d6e5a21aea71dd576fc4afa34821eed2a93c013c439ef4b37334d6856b7e1dba`, en
-  `/home/yo/projects/releases-r1/r1-695708a.tar.gz` con `SHA256SUMS-695708a`.
-  El archivo de 357dcb5 y su `SHA256SUMS` quedan intactos. Falta re-fijar el
-  runbook de R1 a 695708a, después de la revisión independiente de R1E. Hasta
-  entonces no se programa la ventana.
+  `b2205650f045ece0058c05db02b03c5bdb6523e4ad8b229fbbcd702685133990`, en
+  `/home/yo/projects/releases-r1/r1-d045156.tar.gz` con `SHA256SUMS-d045156`.
+  `r1-357dcb5.tar.gz`, `r1-695708a.tar.gz` y el `SHA256SUMS` de 357dcb5
+  quedan intactos. No se programa la ventana antes de la revisión
+  independiente de esta ronda, su T-A17 y la suite batch.
 - Evidencia: `data/autonomous-roadmap-20261102/r1e/` (recon y
   `evidence.json`).
 
