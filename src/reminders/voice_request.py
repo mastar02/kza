@@ -473,27 +473,6 @@ def _day_at(words: list[str], i: int, *, joined: bool = False) -> tuple[str, int
     return "weekday", weekday, modifier, k
 
 
-def spoken_day_at(words: list[str], i: int, *, joined: bool = False) -> tuple[str, int, int] | None:
-    """The day phrase at token ``i`` of accent-folded words (T031 day grammar).
-
-    Shared with the voice reminder cancel (T032-U1), so both read "hoy",
-    "mañana", "pasado mañana" and weekdays alike; "de mañana" and "la
-    mañana" stay periods of the day unless ``joined``.
-
-    Args:
-        words: Accent-folded lowercase tokens.
-        i: Index where the phrase would start.
-        joined: The word follows "de" right after a taken time phrase.
-
-    Returns:
-        ``(kind, value, next index)`` with kind "today" (value 0), "offset"
-        (days ahead) or "weekday" (Monday is 0); None when no day phrase
-        starts at ``i``.
-    """
-    found = _day_at(words, i, joined=joined)
-    return None if found is None else (found[0], found[1], found[3])
-
-
 def _scan(words: list[str]) -> _Scan:
     """Find every time construct; later passes skip tokens already taken."""
     scan = _Scan(used=[False] * len(words))
@@ -596,6 +575,27 @@ def _hour24(clock: _Clock, meridiem: str | None) -> tuple[int | None, ReminderAm
     if h in table:
         return table[h], None
     return None, ReminderAmbiguity.AMBIGUOUS_MERIDIEM
+
+
+def period_hours(hour: int, period: str) -> frozenset[int]:
+    """The 24-hour hours '<hour> de la <period>' can mean, read with the creation table.
+
+    A 12-hour clock hour (1-12) the period's table holds is one hour
+    ("9 de la mañana" -> 9, "2 de la tarde" -> 14); one it leaves out is both
+    readings ("12 de la mañana" -> 0 and 12), because creating a reminder
+    with it asks ``AMBIGUOUS_MERIDIEM`` instead of picking (T032-NUM-FV-5).
+
+    Args:
+        hour: The spoken clock hour, 1-12.
+        period: A ``_PERIOD_HOURS`` key ("manana", "tarde", "noche", ...).
+
+    Returns:
+        The 24-hour hours the phrase allows.
+    """
+    table = _PERIOD_HOURS.get(period, {})
+    if hour in table:
+        return frozenset({table[hour]})
+    return frozenset({hour % 12, hour % 12 + 12})
 
 
 def _category(period: str) -> str:

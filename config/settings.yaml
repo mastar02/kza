@@ -717,6 +717,11 @@ reminders:
   missed_reminder_on_arrival: true
   default_time: "09:00"
   tts_prefix: "Oye, recuerda"
+  # Cancelar por voz con varios recordatorios parecidos (decisión del usuario
+  # 2026-11-18, t032_design_20261118): Nexa los numera con su hora y la respuesta
+  # ("el primero", "el dos") vale solo para la misma voz en la misma habitación
+  # durante estos segundos; después, o ante cualquier otra frase, no cancela nada.
+  voice_choice_window_s: 30
   # Zona de los avisos compartidos (nunca la presencia BLE de una persona); si es null
   # usa tts.streaming.default_output_zone. Decisión del usuario 2026-11-16: hasta que
   # SCHEMA-V2 agregue la zona de origen (delivery_room), los recordatorios compartidos

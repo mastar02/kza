@@ -1,15 +1,15 @@
 """ReminderManager — CRUD, unique-match cancellation, and voice formatting."""
 import logging
+import math
 import re
 import time
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date, timedelta
 from enum import StrEnum
+from functools import lru_cache
 
 from src.reminders.reminder_store import ReminderStore, Reminder, ReminderScope
-from src.reminders.voice_request import spoken_day_at
 from src.core.household_clock import HouseholdClock
 from src.core.sqlite_work import AuthorityGuard
 from src.home_assistant.control_policy import ActionOrigin, HomeActor
@@ -17,6 +17,8 @@ from src.home_assistant.home_actions import HomeActionService, request_from_serv
 
 logger = logging.getLogger(__name__)
 
+# Seconds a numbered reminder choice waits for its answer (reminders.voice_choice_window_s).
+DEFAULT_VOICE_CHOICE_WINDOW_S = 30.0
 # Words of a spoken cancel complement that never identify a reminder (T032-U1).
 _QUERY_STOPWORDS = frozenset({
     "de", "del", "el", "la", "los", "las", "lo", "un", "una", "unos", "unas", "que", "a", "al", "para", "por",
@@ -24,17 +26,25 @@ _QUERY_STOPWORDS = frozenset({
     "dice", "diga", "decia", "llama", "sobre", "recordatorio", "recordatorios", "todos", "todas", "nuestro",
     "nuestra", "hs", "horas", "hora",
 })
-_HOUR_WORDS = {"una": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5, "seis": 6, "siete": 7, "ocho": 8,
-               "nueve": 9, "diez": 10, "once": 11, "doce": 12}
-_MINUTE_WORDS = {"media": 30, "cuarto": 15}
-_CLOCK_DIGITS = re.compile(r"^(\d{1,2})(?:[:.](\d{2}))?$")
 _WORD = re.compile(r"\d{1,2}[:.]\d{2}|\d+|[^\W\d_]+")
-_AM_PERIODS = frozenset({"manana", "madrugada"})
-_PM_PERIODS = frozenset({"tarde", "noche", "mediodia"})
-# "las 12 de la noche" is midnight and "las 2 de la noche" is 02:00, not 14:00.
-_NIGHT_EARLY_HOURS = frozenset({12, 1, 2, 3, 4})
-# Weekday names a clarification speaks ("del miércoles"), Monday first.
-_SPOKEN_WEEKDAYS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+# User decision t032_design_20261118: a spoken time never narrows the candidates.
+# Besides every token with a digit and every single letter ("14h", "2 p.m."),
+# these words of clocks, days, periods and spans are left out of a reference
+# (singular forms; plurals are matched by _forms).
+_TIME_WORDS = frozenset({
+    "cero", "uno", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez", "once", "doce",
+    "trece", "catorce", "quince", "dieciseis", "diecisiete", "dieciocho", "diecinueve", "veinte", "veintiun",
+    "veintiuno", "veintiuna", "veintidos", "veintitres", "veinticuatro", "veinticinco", "veintiseis",
+    "veintisiete", "veintiocho", "veintinueve", "treinta", "cuarenta", "cincuenta", "media", "medio", "cuarto",
+    "menos", "punto", "pico", "algo", "pasada", "pasadita", "tipo", "eso", "hacia", "antes", "despues", "dentro",
+    "luego", "temprano", "tardisimo", "primera", "primer", "manana", "mananita", "tarde", "tardecita", "noche",
+    "nochecita", "madrugada", "mediodia", "medianoche", "amanecer", "atardecer", "anochecer", "desayuno",
+    "almuerzo", "merienda", "cena", "hoy", "ayer", "pasado", "proximo", "proxima", "viene", "siguiente", "lunes",
+    "martes", "miercoles", "jueves", "viernes", "sabado", "domingo", "finde", "fin", "semana", "mes", "ano",
+    "dia", "diario", "diaria", "cada", "vez", "rato", "minuto", "segundo", "enero", "febrero", "marzo", "abril",
+    "mayo", "junio", "julio", "agosto", "septiembre", "setiembre", "octubre", "noviembre", "diciembre", "am",
+    "pm", "hrs",
+})
 # A leading relative clause names how the reminder was made, not what it says:
 # "que (te) pedí", "que puse", "que hay" (review T032-U1-R6).
 _RELATIVE_PRONOUNS = frozenset({"te", "le", "les", "me", "nos", "se"})
@@ -43,6 +53,8 @@ _RELATIVE_VERBS = frozenset({
     "anotamos", "agende", "agendaste", "agendo", "agendamos", "programe", "programaste", "guarde", "guardaste",
     "tenia", "tenias", "teniamos", "tengo", "tenemos", "hay", "habia",
 })
+# Weekday names a clarification speaks ("del miércoles"), Monday first.
+_SPOKEN_WEEKDAYS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
 
 
 def _fold(text: str) -> str:
@@ -60,6 +72,11 @@ def _forms(word: str) -> frozenset[str]:
     return frozenset(forms)
 
 
+def _is_time_word(word: str) -> bool:
+    """A folded token that may belong to a spoken time ("14h", "2", "tarde", "lunes", "cena")."""
+    return len(word) == 1 or any(c.isdigit() for c in word) or not _forms(word).isdisjoint(_TIME_WORDS)
+
+
 def _content(words: list[str]) -> tuple[frozenset[str], ...]:
     """Identifying words of a text, each as its set of plural-insensitive forms."""
     return tuple(dict.fromkeys(_forms(w) for w in words if w not in _QUERY_STOPWORDS))
@@ -70,89 +87,6 @@ def _covers(text_words: tuple[frozenset[str], ...], query_words: tuple[frozenset
     return all(any(q & t for t in text_words) for q in query_words)
 
 
-@dataclass(frozen=True)
-class _SpokenClock:
-    """Clock time named in a cancel request ("de las 6 de la tarde")."""
-
-    hour: int
-    minute: int = 0
-    period: str | None = None
-
-    def matches(self, hour: int, minute: int) -> bool:
-        """Whether a household wall time ``hour:minute`` is this spoken time.
-
-        Without a period a 1-12 hour is either half of the day. "de la
-        noche" moves 12 and 1-4 past midnight ("las 12 de la noche" is
-        00:00); "del mediodía" and "de la tarde" keep 12 at noon.
-        """
-        if minute != self.minute:
-            return False
-        if self.hour > 12:
-            return hour == self.hour
-        base = self.hour % 12
-        if self.period in _AM_PERIODS or (self.period == "noche" and self.hour in _NIGHT_EARLY_HOURS):
-            return hour == base
-        if self.period in _PM_PERIODS:
-            return hour == base + 12
-        return hour in (base, base + 12)
-
-
-def _clock_at(words: list[str], i: int) -> tuple[_SpokenClock, int, int] | None:
-    """A clock time at token ``i``: the clock and the token span it covers.
-
-    Accepted: "10:30" anywhere, and "las 10"/"la una" with an optional
-    "y media"/"y cuarto" and "de la mañana/tarde/noche/madrugada" or
-    "del mediodía". A bare "las 2" followed by a content word is a number
-    of the reminder ("tomar las 2 pastillas"), not a time.
-    """
-    word = words[i]
-    article = i > 0 and words[i - 1] in ("las", "la")
-    digits = _CLOCK_DIGITS.match(word)
-    if digits is not None and (digits.group(2) is not None or article):
-        hour, minute = int(digits.group(1)), int(digits.group(2) or 0)
-    elif word in _HOUR_WORDS and article:
-        hour, minute = _HOUR_WORDS[word], 0
-    else:
-        return None
-    if hour > 23 or minute > 59:
-        return None
-    end = i + 1
-    if digits is None or digits.group(2) is None:
-        if words[end:end + 1] == ["y"] and words[end + 1:end + 2] and words[end + 1] in _MINUTE_WORDS:
-            minute = _MINUTE_WORDS[words[end + 1]]
-            end += 2
-    period = None
-    if words[end:end + 2] == ["de", "la"] and words[end + 2:end + 3] \
-            and words[end + 2] in _AM_PERIODS | _PM_PERIODS:
-        period = words[end + 2]
-        end += 3
-    elif words[end:end + 2] == ["del", "mediodia"]:
-        period = "mediodia"
-        end += 2
-    bare = end == i + 1 and (digits is None or digits.group(2) is None)
-    if bare and words[end:end + 1] and words[end] not in _QUERY_STOPWORDS and spoken_day_at(words, end) is None:
-        return None
-    return _SpokenClock(hour, minute, period), i - 1 if article else i, end
-
-
-@dataclass(frozen=True)
-class _SpokenDay:
-    """Day named in a cancel request ("de hoy", "del lunes")."""
-
-    kind: str
-    value: int
-
-    def matches(self, day: date, today: date) -> bool:
-        """Whether a reminder's household trigger date is this day.
-
-        A weekday matches any date on that weekday ("el lunes que viene"
-        and "este lunes" alike); more than one such reminder asks.
-        """
-        if self.kind == "weekday":
-            return day.weekday() == self.value
-        return day == today + timedelta(days=self.value)
-
-
 def _without_relative_clause(words: list[str]) -> list[str]:
     """Drop a leading "que (te) pedí/puse/hay" ("que te pedí de tomar agua")."""
     if words[:1] != ["que"]:
@@ -161,107 +95,16 @@ def _without_relative_clause(words: list[str]) -> list[str]:
     return words[j + 1:] if words[j:j + 1] and words[j] in _RELATIVE_VERBS else words
 
 
-@dataclass(frozen=True)
-class _ParsedQuery:
-    """A spoken cancel complement split into content words and time phrases.
-
-    Attributes:
-        words: Content words outside the clock and day phrases.
-        clock: The spoken clock time, if any.
-        day: The spoken day, if any.
-        phrases: The clock and day phrases as spoken tokens ("la una",
-            "las 2 de la tarde", "mañana"), for the literal reading.
-    """
-
-    words: tuple[frozenset[str], ...]
-    clock: _SpokenClock | None
-    day: _SpokenDay | None
-    phrases: tuple[tuple[str, ...], ...]
+def _base_words(reference: str) -> tuple[frozenset[str], ...]:
+    """Content words of a spoken reference that may narrow: no stopword, no time word."""
+    words = _without_relative_clause(_WORD.findall(_fold(reference)))
+    return _content([w for w in words if not _is_time_word(w)])
 
 
-def _parse_query(query: str) -> _ParsedQuery:
-    """Content words, an optional clock time and day of a spoken cancel complement."""
-    words = _without_relative_clause(_WORD.findall(_fold(query)))
-    clock, clock_span, day, day_span = _spans(words)
-    taken = set(clock_span) | set(day_span)
-    phrases = [tuple(words[k] for k in clock_span)] if clock_span else []
-    if day_span:
-        # "del lunes" is said of a text "el lunes" too: the day phrase starts at its day word.
-        day_words = [words[k] for k in day_span]
-        while day_words and day_words[0] in _QUERY_STOPWORDS:
-            day_words.pop(0)
-        phrases.append(tuple(day_words))
-    content = _content([w for k, w in enumerate(words) if k not in taken])
-    return _ParsedQuery(content, clock, day, tuple(phrases))
-
-
-def _contains_phrase(text: list[str], phrase: tuple[str, ...]) -> bool:
-    """The folded text tokens hold ``phrase`` as contiguous tokens."""
-    size = len(phrase)
-    return size > 0 and any(tuple(text[k:k + size]) == phrase for k in range(len(text) - size + 1))
-
-
-def _spans(words: list[str]) -> tuple[_SpokenClock | None, range, _SpokenDay | None, range]:
-    """The first clock time and day phrase, each with the token span it covers."""
-    clock, clock_span = None, range(0)
-    for i in range(len(words)):
-        found = _clock_at(words, i)
-        if found is not None:
-            clock, start, end = found
-            clock_span = range(start, end)
-            break
-    # "de las 9 de la noche de mañana": "mañana" right after the time is the day.
-    clock_end = clock_span.stop if clock_span else None
-    day, day_span = None, range(0)
-    for i in range(len(words)):
-        if i in clock_span:
-            continue
-        joined = clock_end is not None and i == clock_end + 1 and words[clock_end] == "de"
-        found = spoken_day_at(words, i, joined=joined)
-        if found is not None and not set(clock_span) & set(range(i, found[2])):
-            kind, value, end = found
-            day, day_span = _SpokenDay(kind, value), range(i, end)
-            break
-    return clock, clock_span, day, day_span
-
-
-def _time_spans(words: list[str]) -> tuple[set[int], _SpokenClock | None, _SpokenDay | None]:
-    """Indexes of the first clock time and day phrase, and what they name."""
-    clock, clock_span, day, day_span = _spans(words)
-    return set(clock_span) | set(day_span), clock, day
-
-
-def _without_time_words(text: str) -> str | None:
-    """A reminder text without the clock and day words the resolver would read as times.
-
-    "llamar a mamá a las 3" -> "llamar a mamá"; "llevar el auto al taller
-    mañana" -> "llevar el auto al taller". Articles and prepositions left
-    hanging at a cut are dropped. None when nothing is read as a time or
-    the folded and spoken tokens do not line up.
-    """
-    spoken = _WORD.findall(unicodedata.normalize("NFC", text.lower()))
-    folded = ["de"] + [_fold(word) for word in spoken]
-    if folded[1:] != _WORD.findall(_fold(text)):
-        return None
-    taken, _, _ = _time_spans(folded)
-    if not taken:
-        return None
-    runs, run = [], []
-    for k, word in enumerate(spoken, start=1):
-        if k in taken:
-            runs.append(run)
-            run = []
-        else:
-            run.append((word, folded[k]))
-    runs.append(run)
-    kept = []
-    for n, run in enumerate(runs):
-        while n > 0 and run and run[0][1] in _QUERY_STOPWORDS:
-            run = run[1:]
-        while n < len(runs) - 1 and run and run[-1][1] in _QUERY_STOPWORDS:
-            run = run[:-1]
-        kept.extend(word for word, _ in run)
-    return " ".join(kept) or None
+@lru_cache(maxsize=4096)
+def _text_words(text: str) -> tuple[frozenset[str], ...]:
+    """Content words of a reminder text, its own time words included."""
+    return _content(_WORD.findall(_fold(text)))
 
 
 class CancelMatch(StrEnum):
@@ -272,6 +115,7 @@ class CancelMatch(StrEnum):
     NO_REFERENCE = "no_reference"
     NOT_FOUND = "not_found"
     AMBIGUOUS = "ambiguous"
+    PARTIAL = "partial"
 
 
 @dataclass(frozen=True)
@@ -282,8 +126,9 @@ class CancelResolution:
         match: How the reference resolved.
         reminder: The single match, only for ``CancelMatch.UNIQUE``.
         candidates: Every eligible candidate for a clarification (all active
-            ones for ``NO_REFERENCE``, the tied matches for ``AMBIGUOUS``),
-            in trigger order.
+            ones for ``NO_REFERENCE``, every reminder sharing the base words
+            for ``AMBIGUOUS``, every reminder holding the known words for
+            ``PARTIAL``), in trigger order.
     """
 
     match: CancelMatch
@@ -292,7 +137,7 @@ class CancelResolution:
 
 
 class ReminderManager:
-    """High-level reminder operations with fuzzy search and voice output."""
+    """High-level reminder operations with unique-match search and voice output."""
 
     def __init__(self, store: ReminderStore, config: dict | None = None, *,
                  home_actions: HomeActionService | None = None,
@@ -310,7 +155,8 @@ class ReminderManager:
                 "today" and spoken times are on its local calendar.
 
         Raises:
-            ValueError: Both ``clock`` and ``household_clock`` were given.
+            ValueError: Both ``clock`` and ``household_clock`` were given, or
+                ``voice_choice_window_s`` is not a positive number.
         """
         if clock is not None and household_clock is not None:
             raise ValueError("Pass either clock or household_clock, not both")
@@ -320,6 +166,10 @@ class ReminderManager:
         self.home_actions = home_actions if home_actions is not None else HomeActionService(None)
         self._tts_prefix = self._config.get("tts_prefix", "Recuerda")
         self._default_time = self._config.get("default_time", "09:00")
+        window = self._config.get("voice_choice_window_s", DEFAULT_VOICE_CHOICE_WINDOW_S)
+        if type(window) not in (int, float) or not math.isfinite(window) or window <= 0:
+            raise ValueError("reminders.voice_choice_window_s must be a positive number of seconds")
+        self._choice_window_s = float(window)
 
     async def create(
         self,
@@ -383,22 +233,22 @@ class ReminderManager:
                       guard: AuthorityGuard | None = None) -> CancelResolution:
         """Resolve a spoken reference to exactly one active reminder (T032-U1).
 
-        Scope is applied by the store before any text is compared. Every
-        content word of the reference (accents, articles and plurals ignored)
-        must be a word of the reminder's text; a spoken clock time ("de las
-        6 de la tarde") and day ("de hoy", "del lunes", the T031 day
-        grammar) must equal its next trigger on the household clock. A
-        leading "que (te) pedí/puse/hay" clause is not content. The spoken
-        clock and day phrases are also read as words of the text, as
-        contiguous words ("la una", "las 2 de la tarde"); when that reading
-        selects other reminders than the time reading, both sets are
-        candidates and KZA asks (T032-U1-RR-P1, review FV-1).
-        Several matches are always ambiguous, even when one reminder's words
-        are exactly the reference's: another active reminder that contains
-        every spoken word may be the one meant, so KZA asks rather than
-        cancel the wrong one (user answer T032-U1-Q1 = A). There is no
-        similarity threshold: a misheard word finds nothing rather than a
-        neighbouring reminder.
+        User decision t032_design_20261118: the candidates are every active
+        reminder in scope whose text holds the reference's base content
+        words (accents, articles and plurals ignored). Time words (clocks,
+        days, periods, spans, any token with a digit) never narrow: a spoken
+        time is never guessed. Exactly one candidate holding every base word
+        is ``UNIQUE``; more are ``AMBIGUOUS`` and KZA lists them numbered, so
+        an exact text match is cancelled only when no other active reminder
+        shares its base words. A base word that no active reminder's text
+        holds ("llamar a mamá" with only "llamar a papá") is never ignored
+        into a cancel: the reminders holding the other words are
+        ``PARTIAL`` and KZA lists them numbered, even a single one, so a
+        misheard word costs one confirmation and never cancels a different
+        reminder (verification T032-NUM-FV-1). A reference with no base
+        word at all ("cancelá el recordatorio", "el de las 5") is
+        ``NO_REFERENCE``; one whose words are all unknown is ``NOT_FOUND``.
+        A leading "que (te) pedí/puse/hay" clause is not content.
 
         Args:
             user_id: Trusted user for a private view (ignored when ``shared_only``).
@@ -416,103 +266,25 @@ class ReminderManager:
         """Resolve a reference among already scoped active reminders (see :meth:`resolve`)."""
         if not active:
             return CancelResolution(CancelMatch.NONE_ACTIVE)
-        query = _parse_query(reference)
-        words, clock, day = query.words, query.clock, query.day
-        if not words and clock is None and day is None:
+        spoken = _base_words(reference)
+        if not spoken:
             return CancelResolution(CancelMatch.NO_REFERENCE, candidates=tuple(active))
-        today = self._household_clock.local_date()
-        matches = []
-        for reminder in active:
-            text_words = _content(_WORD.findall(_fold(reminder.text)))
-            if not _covers(text_words, words):
-                continue
-            local = self._household_clock.to_local(reminder.trigger_at)
-            if clock is not None and not clock.matches(local.hour, local.minute):
-                continue
-            if day is not None and not day.matches(local.date(), today):
-                continue
-            matches.append(reminder)
-        if clock is not None or day is not None:
-            # The time words may be the reminder's own text ("llamar a mamá a
-            # las 3" due at 17:43): read as words they select by text alone
-            # (review T032-U1-RR-F1). When that reading and the time reading
-            # select different reminders, both are candidates and KZA asks
-            # which rather than pick one (user answer T032-U1-RR-P1: "tomar
-            # las pastillas de las 2" with "tomar las 2 pastillas" also
-            # active asks). The literal reading needs each spoken time phrase
-            # ("la una", "las 2", "mañana", with its period if one was said)
-            # as contiguous words of the text, plus the other content words:
-            # a repeated number ("tomar 2 pastillas a las 2") or the stopword
-            # "una" still count, while "de la una" or "de la una de la tarde"
-            # never select a text that only shares "tarde" or no word at all
-            # (review T032-U1-FV-1..3).
-            timed = {r.id for r in matches}
-            matches = []
-            for reminder in active:
-                text = _WORD.findall(_fold(reminder.text))
-                if reminder.id in timed or (
-                        _covers(_content(text), words)
-                        and all(_contains_phrase(text, phrase) for phrase in query.phrases)):
-                    matches.append(reminder)
-        if not matches:
+        texts = [(reminder, _text_words(reminder.text)) for reminder in active]
+        vocabulary = frozenset().union(*(form for _, words in texts for form in words))
+        known = tuple(word for word in spoken if word & vocabulary)
+        candidates = tuple(reminder for reminder, words in texts if known and _covers(words, known))
+        if not candidates:
             return CancelResolution(CancelMatch.NOT_FOUND)
-        if len(matches) == 1:
-            return CancelResolution(CancelMatch.UNIQUE, matches[0])
-        return CancelResolution(CancelMatch.AMBIGUOUS, candidates=tuple(matches))
+        if len(known) < len(spoken):
+            return CancelResolution(CancelMatch.PARTIAL, candidates=candidates)
+        if len(candidates) == 1:
+            return CancelResolution(CancelMatch.UNIQUE, candidates[0])
+        return CancelResolution(CancelMatch.AMBIGUOUS, candidates=candidates)
 
-    async def voice_references(self, user_id: str | None, candidates: tuple[Reminder, ...], *, with_time: bool,
-                               shared_only: bool = False,
-                               guard: AuthorityGuard | None = None) -> dict[str, str]:
-        """Spoken references that :meth:`resolve` maps back to exactly one candidate.
-
-        A clarification proposes "<text>" or "<text> de <time>", or the
-        same without the text's own clock and day words when those keep it
-        from selecting itself ("llamar a mamá a las 3" due at 17:43); one is
-        kept only when, said back now, it selects that candidate and no
-        other active reminder. A reminder whose words and time are all
-        inside another one's (or identical to it) gets no reference: by
-        voice it cannot be told apart (T032-U1-Q1 = A).
-
-        Args:
-            user_id: Trusted user for a private view (ignored when ``shared_only``).
-            candidates: Reminders to name, from a previous resolution.
-            with_time: Add the unambiguous spoken time of the next trigger.
-            shared_only: Restrict to shared household reminders.
-            guard: Authority guard of the caller.
-
-        Returns:
-            Reminder id -> reference (without the leading "de"), for the
-            candidates that have one.
-        """
-        active = await self._store.get_active_for_user(user_id, shared_only=shared_only, guard=guard)
-        references = {}
-        for reminder in candidates:
-            for reference in self._reference_attempts(reminder, with_time=with_time):
-                found = self._resolve_among(active, f"de {reference}")
-                if found.match is CancelMatch.UNIQUE and found.reminder.id == reminder.id:
-                    references[reminder.id] = reference
-                    break
-        return references
-
-    def _reference_attempts(self, reminder: Reminder, *, with_time: bool) -> list[str]:
-        """Spoken references to try for one reminder, most natural first.
-
-        The whole text, then the text without the words the resolver reads
-        as a time or day ("llamar a mamá a las 3" -> "llamar a mamá"). With
-        ``with_time`` each carries the spoken time, and then the time and
-        day ("de las 5 de la tarde de hoy") for reminders the time alone
-        does not tell apart (review T032-U1-RR-F2).
-        """
-        bases = [reminder.text]
-        content = _without_time_words(reminder.text)
-        if content is not None and content != reminder.text:
-            bases.append(content)
-        if not with_time:
-            return bases
-        spoken_time = self.spoken_time_reference(reminder)
-        spoken_day = self.spoken_day_reference(reminder)
-        return ([f"{base} de {spoken_time}" for base in bases]
-                + [f"{base} de {spoken_time} {spoken_day}" for base in bases])
+    @property
+    def choice_window_s(self) -> float:
+        """Seconds a numbered voice choice stays open (``reminders.voice_choice_window_s``)."""
+        return self._choice_window_s
 
     async def cancel_resolved(self, reminder: Reminder, *, shared_only: bool = False,
                               guard: AuthorityGuard | None = None) -> bool:
@@ -538,35 +310,11 @@ class ReminderManager:
         trigger_time = self._household_clock.format_time(reminder.trigger_at)
         return f"{self._tts_prefix} {reminder.text} a las {trigger_time}"
 
-    def spoken_time_reference(self, reminder: Reminder) -> str:
-        """Spoken time that :meth:`resolve` reads back as exactly this trigger.
-
-        The period removes the half-day doubt: "las 8 de la mañana", "las
-        8:30 de la noche", "las 12 del mediodía", "la 1 de la madrugada".
-        """
-        local = self._household_clock.to_local(reminder.trigger_at)
-        hour = local.hour % 12 or 12
-        if local.hour == 0:
-            period = "de la noche"
-        elif local.hour < 6:
-            period = "de la madrugada"
-        elif local.hour < 12:
-            period = "de la mañana"
-        elif local.hour == 12:
-            period = "del mediodía"
-        elif local.hour < 20:
-            period = "de la tarde"
-        else:
-            period = "de la noche"
-        clock = f"{hour}:{local.minute:02d}" if local.minute else str(hour)
-        return f"{'la' if hour == 1 else 'las'} {clock} {period}"
-
     def spoken_day_reference(self, reminder: Reminder) -> str:
-        """Spoken day that :meth:`resolve` reads back as the trigger's household date.
+        """Spoken household date of the trigger, to tell apart listed reminders with the same label.
 
         "de hoy", "de pasado mañana" or "del <weekday>". Never "de mañana",
-        which the T031 day grammar reads as the morning; tomorrow is named
-        by its weekday.
+        which also means "in the morning"; tomorrow is named by its weekday.
         """
         day = self._household_clock.to_local(reminder.trigger_at).date()
         offset = (day - self._household_clock.local_date()).days
@@ -575,6 +323,10 @@ class ReminderManager:
         if offset == 2:
             return "de pasado mañana"
         return f"del {_SPOKEN_WEEKDAYS[day.weekday()]}"
+
+    def due_hour(self, reminder: Reminder) -> int:
+        """Household-clock hour (0-23) of the next trigger, to tell a listed number from a due hour (T032-U1-Q3)."""
+        return self._household_clock.to_local(reminder.trigger_at).hour
 
     def voice_label(self, reminder: Reminder) -> str:
         """Short spoken name of a shared reminder: its text and next time."""

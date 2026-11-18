@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -113,6 +114,16 @@ class CountedLeaves:
             elif name.startswith("reminder_shared_active:"):
                 await self.reminder_manager.create("household", name.split(":", 1)[1], time.time() + 3600,
                                                    scope=ReminderScope.SHARED)
+            elif name.startswith("reminder_shared_at_"):
+                # "reminder_shared_at_HHMM:<text>": tomorrow at HH:MM on the household clock, so a bare number
+                # answer and the listed due hours are fixed (T032-U1-Q3), whatever the time of day of the run.
+                head, text = name.split(":", 1)
+                hhmm = head.removeprefix("reminder_shared_at_")
+                clock = self.reminder_manager._household_clock
+                tomorrow = clock.now_local().date() + timedelta(days=1)
+                due = datetime(tomorrow.year, tomorrow.month, tomorrow.day, int(hhmm[:2]), int(hhmm[2:]))
+                await self.reminder_manager.create("household", text, clock.to_epoch(due),
+                                                   scope=ReminderScope.SHARED)
             elif name.startswith("reminder_shared_today:"):
                 # Before the household midnight, so "de hoy" names it at any time of day.
                 clock = self.reminder_manager._household_clock
@@ -127,6 +138,16 @@ class CountedLeaves:
                 # A personal reminder of an acoustic label ("ana"): never visible to household voice.
                 await self.reminder_manager.create("ana", name.split(":", 1)[1], time.time() + 3600,
                                                    scope=ReminderScope.PRIVATE)
+            elif name.startswith("reminder_choice_open"):
+                # T032-U1: a cancel that lists similar reminders by number ("@room" names its room).
+                head, said = name.split(":", 1)
+                room = head.partition("@")[2] or None
+                asked = await dispatcher.dispatch(user_id="unknown", text=said, context_room_id=room)
+                assert asked.response.startswith(("Encontré ", "Hay ")), asked.response
+            elif name == "reminder_choice_expired":
+                # The open choice's window has passed (reminders.voice_choice_window_s).
+                monotonic, window = dispatcher._monotonic, self.reminder_manager.choice_window_s
+                dispatcher._monotonic = lambda: monotonic() + window + 1
             elif name == "light_match":
                 self.chroma.asearch_command.return_value = LIGHT_MATCH
             elif name.startswith(("timer_running:", "timer_paused:")):

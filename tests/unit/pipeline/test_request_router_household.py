@@ -149,6 +149,17 @@ C02_ROUTER = (
        "needs_input", "not_written", "clarification",
        state="reminder_private_active:la clave;reminder_shared_active:tomar agua", counts=SPOKEN_ONE,
        effect_class="privacy_disclosure", unit="T032-U1", note="T032-U1: private text is never read or spoken by household voice"),
+    _r("C02-CAN-0303", "el primero", "reminder", "completed", "fast_reminder", "completed", "committed", "readback",
+       state="reminder_shared_active:tomar agua fría;reminder_shared_active:tomar agua con gas;queued_request;"
+             "reminder_choice_open@living:cancelá el recordatorio de tomar agua",
+       counts=effects(reminder_transitions=1, spoken_utterances=1), unit="T032-U1",
+       note="T032-U1 numbered_choice_round: the answer is routed back to the choice open in the mic's room, on the "
+            "household path (no producer, no service_filter)"),
+    _r("C02-CAN-0304", "el primero", "reminder", "no_turn", None, None, None, "none", wake="textual",
+       llm="stub:noise", state="reminder_shared_active:tomar agua fría;reminder_shared_active:tomar agua con gas;"
+                               "reminder_choice_open@living:cancelá el recordatorio de tomar agua",
+       counts=effects(llm_8101_calls=1), effect_class="stale_audio", unit="T032-U1",
+       note="T032-U1 numbered_choice_round: a weakly woken answer takes the household 7B veto; rejected, zero effects"),
 )
 
 WAKES = {
@@ -383,3 +394,75 @@ def test_gate_passes_a_claimed_routine_creation_but_keeps_the_silent_drops():
         assert (claimed.family.value, claimed.operation.value, claimed.reason) == ("routine", "propose", None), text
         decision = gate.evaluate(text)
         assert decision.accept is False and decision.reason.startswith("non_immediate:"), text
+
+
+# Due at 09:00 and 10:00 tomorrow: the bare 'el dos' is no listed due hour (user answer T032-U1-Q3).
+TWO_SIMILAR_OPEN = ("reminder_shared_at_0900:tomar agua fría;reminder_shared_at_1000:tomar agua con gas;"
+                    "queued_request;reminder_choice_open@living:cancelá el recordatorio de tomar agua")
+
+
+@pytest.mark.parametrize("others", [("poné la persiana",), ("gracias",), ("poné la persiana", "gracias")],
+                         ids=["router_clarification", "gate_reject", "both"])
+async def test_a_turn_the_router_ends_itself_drops_the_open_reminder_choice(leaves, others):
+    """Review T032-NUM-FV-2: only the next turn may answer; a turn ended before the dispatcher drops the choice.
+
+    At 538ef6a1 'poné la persiana' (router clarification) left the list open
+    and 'el dos' then cancelled 'tomar agua con gas'.
+    """
+    house = Household(leaves, text="el dos")
+    dispatcher = house.orchestrator.dispatcher
+    await leaves.apply_state(dispatcher, TWO_SIMILAR_OPEN)
+    assert house.orchestrator.awaits_reminder_choice("el dos", "living")
+    processor = house.router.command_processor.process_command
+    for other in others:
+        processor.return_value = ProcessedCommand(text=other, timings={"stt": 1.0}, success=True)
+        before = leaves.snapshot()
+        await house.turn()
+        house.orchestrator.process.assert_not_awaited()  # the router ended the turn itself
+        assert house.effects(before)["reminder_transitions"] == 0
+    assert not house.orchestrator.awaits_reminder_choice("el dos", "living")
+    processor.return_value = ProcessedCommand(text="el dos", timings={"stt": 1.0}, success=True)
+    before = leaves.snapshot()
+    result = await house.turn()
+    assert house.effects(before)["reminder_transitions"] == 0 and result.get("path") != "fast_reminder"
+    states = {r.text: r.state.value for r in await leaves.reminder_manager.get_active(None, shared_only=True)}
+    assert states == {"tomar agua fría": "active", "tomar agua con gas": "active"}
+
+
+async def test_a_turn_in_another_room_keeps_the_open_reminder_choice(leaves):
+    """The choice waits on the mic's room: a turn ended by the router in another room does not drop it."""
+    house = Household(leaves, text="gracias")
+    await leaves.apply_state(house.orchestrator.dispatcher, TWO_SIMILAR_OPEN)
+    await house.turn(room_id="hall")
+    assert house.orchestrator.awaits_reminder_choice("el dos", "living")
+    house.router.command_processor.process_command.return_value = ProcessedCommand(
+        text="el dos", timings={"stt": 1.0}, success=True)
+    before = leaves.snapshot()
+    result = await house.turn()
+    assert house.effects(before)["reminder_transitions"] == 1 and result["outcome"]["status"] == "completed"
+    states = {r.text: r.state.value for r in await leaves.reminder_manager.get_active(None, shared_only=True)}
+    assert states == {"tomar agua fría": "active"}
+
+
+async def test_the_hour_question_and_its_answer_go_through_the_router(leaves):
+    """User answer T032-U1-Q3 end to end: 'el dos' with the first listed due at 14:00 asks and cancels nothing;
+    'el de las 2' is then routed back to the choice in the mic's room and cancels exactly that one."""
+    house = Household(leaves, text="el dos")
+    await leaves.apply_state(house.orchestrator.dispatcher,
+                             "reminder_shared_at_1400:tomar agua fría;reminder_shared_at_2100:tomar agua con gas;"
+                             "queued_request;reminder_choice_open@living:cancelá el recordatorio de tomar agua")
+    before = leaves.snapshot()
+    asked = await house.turn()
+    assert house.effects(before) == effects(spoken_utterances=1)
+    assert (asked["response"], asked["outcome"]["status"]) == ("¿El segundo o el de las 2?", "needs_input")
+    assert house.orchestrator.awaits_reminder_choice("el de las 2", "living")
+    assert not house.orchestrator.awaits_reminder_choice("el de las 2", "hall")
+    house.router.command_processor.process_command.return_value = ProcessedCommand(
+        text="el de las 2", timings={"stt": 1.0}, success=True)
+    before = leaves.snapshot()
+    done = await house.turn()
+    assert house.effects(before)["reminder_transitions"] == 1 and house.handler.aspeak.await_count == 2
+    assert done["outcome"]["status"] == "completed" and done["response"].startswith(
+        "Cancelé el recordatorio tomar agua fría a las ")
+    states = {r.text: r.state.value for r in await leaves.reminder_manager.get_active(None, shared_only=True)}
+    assert states == {"tomar agua con gas": "active"}
