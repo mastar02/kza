@@ -716,6 +716,7 @@ def test_read_back_text_has_no_time_words(utterance, expected, text, time_phrase
     "recordame a las 10 de la noche llevar mañana el auto al taller",
     "recordame mañana a las 8 de la noche que el informe es para el martes",
     "recordame a las 9 de la noche de que mañana viene el plomero",
+    "recordame mañana a las 8 de la noche de que el informe es para el martes",
     "recordame a las 9 de la noche que hoy viene el plomero",
     "recordame a las 10 de la noche que el lunes que viene hay reunión",
 ])
