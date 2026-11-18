@@ -932,6 +932,12 @@ class RequestRouter:
             )
             return result
 
+        # T032-U1 (review T032-NUM-FV-2): a turn that does not answer the room's
+        # numbered reminder choice drops it here, before the router ends turns
+        # of its own (verification, gate, memory proposal, home clarification,
+        # 7B reject), so a number said later never answers it.
+        self._drop_reminder_choice_unless_answered(text, room_id)
+
         # 0. U3b-4b-2: a verification phrase never reaches the gate, its log or the ASR event.
         if await self._try_voice_verification(text, result, room_id=room_id, textual_wake=textual_wake):
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
@@ -1295,6 +1301,14 @@ class RequestRouter:
         """The turn answers a numbered reminder choice open in its room (T032-U1)."""
         awaits = getattr(self._orchestrator, "awaits_reminder_choice", None)
         return callable(awaits) and awaits(text, room_id) is True
+
+    def _drop_reminder_choice_unless_answered(self, text: str, room_id: str | None) -> None:
+        """Drop the room's open reminder choice unless this turn answers it (review T032-NUM-FV-2)."""
+        if self._answers_reminder_choice(text, room_id):
+            return
+        drop = getattr(self._orchestrator, "drop_reminder_choice", None)
+        if callable(drop) and drop(room_id) is True:
+            logger.info("[Household] reminder choice dropped by another turn room=%s", room_id)
 
     async def _process_household_turn(self, text: str, household: HouseholdIntent | None, result: dict, *, cmd,
                                       audio, room_id: str | None, pipeline_start: float, tv_signal: bool) -> dict:

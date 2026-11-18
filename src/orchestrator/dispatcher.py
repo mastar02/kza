@@ -1974,6 +1974,18 @@ class RequestDispatcher:
         """
         return (user_id, context_room_id) in self._reminder_choices and _reminder_choice_number(text) is not None
 
+    def drop_reminder_choice(self, user_id: str, context_room_id: str | None) -> bool:
+        """Drop the numbered reminder choice open for this speaker id and room (review T032-NUM-FV-2).
+
+        For turns that end before :meth:`dispatch` (the voice pipeline's own
+        clarifications, gate rejects, vetoes): any turn but the answer drops
+        the choice, so a later number never answers it.
+
+        Returns:
+            Whether a choice was open.
+        """
+        return self._reminder_choices.pop((user_id, context_room_id), None) is not None
+
     async def _handle_weather(self, text: str, priority: Priority) -> DispatchResult:
         """Answer from an exact, current HA observation or report missing data.
 
@@ -2465,6 +2477,16 @@ class MultiUserOrchestrator:
         so the choice is the one opened by a household cancel in that room.
         """
         return self.dispatcher.awaits_reminder_choice("unknown", context_room_id, text)
+
+    def drop_reminder_choice(self, context_room_id: str | None) -> bool:
+        """Drop the household reminder choice open in this room (review T032-NUM-FV-2).
+
+        Household voice is dispatched as the unknown speaker (:meth:`process`).
+
+        Returns:
+            Whether a choice was open.
+        """
+        return self.dispatcher.drop_reminder_choice("unknown", context_room_id)
 
     async def _identify_speaker(self, audio, *, sources=(), transcript='', room_id=None) -> tuple[str, str]:
         """Identificar usuario por voz"""

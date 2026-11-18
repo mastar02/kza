@@ -384,3 +384,50 @@ def test_gate_passes_a_claimed_routine_creation_but_keeps_the_silent_drops():
         assert (claimed.family.value, claimed.operation.value, claimed.reason) == ("routine", "propose", None), text
         decision = gate.evaluate(text)
         assert decision.accept is False and decision.reason.startswith("non_immediate:"), text
+
+
+TWO_SIMILAR_OPEN = ("reminder_shared_active:tomar agua fría;reminder_shared_active:tomar agua con gas;queued_request;"
+                    "reminder_choice_open@living:cancelá el recordatorio de tomar agua")
+
+
+@pytest.mark.parametrize("others", [("poné la persiana",), ("gracias",), ("poné la persiana", "gracias")],
+                         ids=["router_clarification", "gate_reject", "both"])
+async def test_a_turn_the_router_ends_itself_drops_the_open_reminder_choice(leaves, others):
+    """Review T032-NUM-FV-2: only the next turn may answer; a turn ended before the dispatcher drops the choice.
+
+    At 538ef6a1 'poné la persiana' (router clarification) left the list open
+    and 'el dos' then cancelled 'tomar agua con gas'.
+    """
+    house = Household(leaves, text="el dos")
+    dispatcher = house.orchestrator.dispatcher
+    await leaves.apply_state(dispatcher, TWO_SIMILAR_OPEN)
+    assert house.orchestrator.awaits_reminder_choice("el dos", "living")
+    processor = house.router.command_processor.process_command
+    for other in others:
+        processor.return_value = ProcessedCommand(text=other, timings={"stt": 1.0}, success=True)
+        before = leaves.snapshot()
+        await house.turn()
+        house.orchestrator.process.assert_not_awaited()  # the router ended the turn itself
+        assert house.effects(before)["reminder_transitions"] == 0
+    assert not house.orchestrator.awaits_reminder_choice("el dos", "living")
+    processor.return_value = ProcessedCommand(text="el dos", timings={"stt": 1.0}, success=True)
+    before = leaves.snapshot()
+    result = await house.turn()
+    assert house.effects(before)["reminder_transitions"] == 0 and result.get("path") != "fast_reminder"
+    states = {r.text: r.state.value for r in await leaves.reminder_manager.get_active(None, shared_only=True)}
+    assert states == {"tomar agua fría": "active", "tomar agua con gas": "active"}
+
+
+async def test_a_turn_in_another_room_keeps_the_open_reminder_choice(leaves):
+    """The choice waits on the mic's room: a turn ended by the router in another room does not drop it."""
+    house = Household(leaves, text="gracias")
+    await leaves.apply_state(house.orchestrator.dispatcher, TWO_SIMILAR_OPEN)
+    await house.turn(room_id="hall")
+    assert house.orchestrator.awaits_reminder_choice("el dos", "living")
+    house.router.command_processor.process_command.return_value = ProcessedCommand(
+        text="el dos", timings={"stt": 1.0}, success=True)
+    before = leaves.snapshot()
+    result = await house.turn()
+    assert house.effects(before)["reminder_transitions"] == 1 and result["outcome"]["status"] == "completed"
+    states = {r.text: r.state.value for r in await leaves.reminder_manager.get_active(None, shared_only=True)}
+    assert states == {"tomar agua fría": "active"}
