@@ -1604,8 +1604,10 @@ def test_17b_a_resurrected_family_in_the_regressed_source_exits_by_abort_to_h(bu
     refuses runtime_admission_recovery_resurrection. adopt confirms resurrected_fact; the hotfix plans, starts
     and passes V with --accept-regressed-source, but retire refuses
     runtime_admission_compaction_retire_resurrected (K's baseline is follow-up) and abort --to-h returns
-    losslessly (W 'equal') to the adopted H, where completion-status still counts the fact: the service stays
-    down (not started here)."""
+    losslessly (W 'equal') to the adopted H, where completion-status still counts the fact. Keeping the
+    service down from there is the operator procedure (runbook «Después de la aceptación»: a written decision
+    every 48 hours), not something the system enforces: no product gate refuses to serve that H, and this
+    test simply never starts it."""
     rec = record("17b", "Accepted release dying with a resurrected family: adopt with confirmation, hotfix "
                         "with --accept-regressed-source to V, retire refused (retire_resurrected), abort to H")
     world = World(builds, tmp_path, systemd, rec)
@@ -1644,11 +1646,13 @@ def test_17b_a_resurrected_family_in_the_regressed_source_exits_by_abort_to_h(bu
     assert head["status"] == "closed" and head["binding_id"] == adopted["binding_id"]
     assert world.log(compaction_id)["terminal"] and world.kinds(compaction_id)[-1] == "aborted"
     assert not (world.root / "slots" / k).exists()
-    # Paso 0 on the H it returned to still counts the resurrected fact: the service stays down (48-hour
-    # written decisions) until K's baseline exists; the unit stays stopped and disabled.
+    # Paso 0 on the H it returned to still counts the resurrected fact. The service stays down by the operator
+    # procedure (runbook «Después de la aceptación», a written decision every 48 hours) until K's baseline
+    # exists, not by a product gate; the unit check below only records that nothing here started it.
     completion = world.st("h-completion-status", "completion-status")
     unit = world.systemd.raw_show(world.d.unit, "ActiveState", "UnitFileState")
     rec.result(h_completion={"resurrected": completion["resurrected"], "complete": completion["complete"]},
-               unit=unit)
+               unit_not_started_here=unit, service_down_by="operator procedure (runbook «Después de la "
+                                                            "aceptación»), not enforced by the system")
     assert completion["resurrected"]["fact"] == 1 and completion["complete"] is False, completion
     assert unit == {"ActiveState": "inactive", "UnitFileState": "disabled"}, unit
