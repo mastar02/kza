@@ -257,11 +257,10 @@ def test_an_open_without_hygiene_writes_planted_heap_contents_into_the_index(tmp
 @needs_glibc
 def test_an_open_under_the_launcher_s_environment_writes_no_heap_contents(tmp_path):
     """The managed child's environment (what child_environment gives it), plus the harness device."""
-    tunables = hh.with_heap_hygiene(None)
     launched = _launcher_tunables({hh.GLIBC_TUNABLES_ENV: "glibc.malloc.arena_max=1"})
-    assert launched.startswith("glibc.malloc.arena_max=1:") and launched.endswith(tunables)
     residue = _residue_after_open(tmp_path, "managed", launched)
     assert residue and not any(residue.values()), residue
+    assert launched == "glibc.malloc.arena_max=1:" + hh.with_heap_hygiene(None)
     # Every byte of the reinitialized buffers is the allocation pattern (not only canary-free).
     store = tmp_path / "managed"
     [level0] = store.rglob("data_level0.bin")
