@@ -1372,10 +1372,12 @@ residuo de sistema de archivos es el límite general ya documentado.
 
 **Costo medido** (server, núcleos 24-47, el mismo script con y sin las
 variables, mediana de 10 corridas alternadas; evidencia
-`data/autonomous-roadmap-20261102/sc4c-q3/evidence.json`): ver la evidencia;
-la consulta de Chroma (1200 × 1024) no cambia de forma medible y el costo
-por trama de audio de 30 ms queda en microsegundos, lejos del objetivo de
-300 ms.
+`data/autonomous-roadmap-20261102/sc4c-q3/evidence.json`, con el server
+cargado por otras corridas): consulta de Chroma (1200 × 1024) p50 0,885 →
+0,960 ms y p95 1,19 → 1,13 ms; 3000 tramas de audio de 30 ms con numpy
+81,7 → 98,5 ms (unos 5,6 µs más por trama); importaciones, JSON, SQLite y
+torch en CPU sin diferencia fuera del ruido. Lejos del objetivo de 300 ms;
+la medición del servicio real queda para la ventana de SC-6b.
 
 Tests: `tests/unit/core/test_heap_hygiene.py` y la prueba del hijo limpio en
 `tests/unit/tools/test_sc4c_chroma_closed_list.py`.
