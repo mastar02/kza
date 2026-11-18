@@ -1,8 +1,9 @@
 """SC-6b: the release-mode rehearsals, compiled and under this account's real user systemd.
 
 sc-release-design v4 implementation_units SC-6b, items (1)-(14) and (16)
-(items (15) and (17) need rows DR and PA, which are not implemented yet; the
-final downtime and disk measurements run alone, later). Every operator step
+(items (15) and (17) are SC-6b-B's; (06-12) rehearses row PA's regressed
+source over an adopted head; the final downtime and disk measurements run
+alone, later). Every operator step
 is the runbook's (docs/runbooks/2026-11-17-release-mode.md, SC-5b) as a
 compiled CLI run as a subprocess:
 
@@ -504,8 +505,11 @@ class World:
 
     # -- one transition -----------------------------------------------------------------------------
 
-    def plan(self, build: str, k: str, *, expect: int = 0, code: str | None = None) -> dict:
-        arguments = ("compact", "plan", k, "--archive", str(self.builds[build]["archive"]))
+    def plan(self, build: str, k: str, *, expect: int = 0, code: str | None = None,
+             accept: str | None = None) -> dict:
+        """Paso 4; ``accept`` is --accept-regressed-source's prefix (row PA, 'Después de la aceptación')."""
+        arguments = ("compact", "plan", k, "--archive", str(self.builds[build]["archive"]),
+                     *(("--accept-regressed-source", accept) if accept is not None else ()))
         if expect == 78:
             return self.refused(f"plan-{k}-{build}", code, *arguments)
         started = time.monotonic()
@@ -514,12 +518,15 @@ class World:
         assert planned["plan_sha256"] and planned["untouched_sha256"], planned
         return planned
 
-    def start(self, build: str, k: str, planned: dict) -> str:
+    def start_arguments(self, build: str, k: str, planned: dict, accept: str | None = None) -> tuple[str, ...]:
+        return ("compact", "start", k, "--archive", str(self.builds[build]["archive"]), "--plan-sha256",
+                planned["plan_sha256"], "--acknowledge-untouched", planned["untouched_sha256"],
+                "--destroy-rollback-states", *(("--accept-regressed-source", accept) if accept is not None else ()))
+
+    def start(self, build: str, k: str, planned: dict, *, accept: str | None = None) -> str:
         h_binding = self.head()["binding_id"]
         started = time.monotonic()
-        result = self.st(f"start-{k}-{build}", "compact", "start", k, "--archive",
-                         str(self.builds[build]["archive"]), "--plan-sha256", planned["plan_sha256"],
-                         "--acknowledge-untouched", planned["untouched_sha256"], "--destroy-rollback-states")
+        result = self.st(f"start-{k}-{build}", *self.start_arguments(build, k, planned, accept))
         self.rec.time(f"start-{k}", time.monotonic() - started)
         compaction_id = result["compaction_id"]
         assert result["next"] == "compact verify " + compaction_id
@@ -658,6 +665,7 @@ def _sql(path: Path, query: str) -> list:
 H_TOMBSTONE = cw.sql(("INSERT INTO conversation_tombstones VALUES ('conv-h', 1.0, 'owner')", ()),
                      ("INSERT INTO conversation_erasures VALUES ('op-h', 'conv-h', 1.0, 'owner')", ()))
 DELETE_TOMBSTONES = cw.sql(("DELETE FROM conversation_tombstones", ()))
+PA_TOMBSTONE = cw.sql(("INSERT INTO conversation_tombstones VALUES ('conv-pa', 2.0, 'owner')", ()))
 H_CREDENTIAL = "\n".join([
     "import sqlite3",
     "from contextlib import closing",
@@ -891,7 +899,8 @@ def test_05_new_revoking_a_credential_stops_safely_until_the_discard(builds, tmp
 
 def test_06_12_rollbacks_and_the_accepted_release_killed(builds, tmp_path, systemd, record):
     rec = record("06-12", "(6) R2 -> R2' and back without T0; (12) accepted release killed without receipt, "
-                          "R-b, rollback; extended: adopt, hotfix T0 without the H check, plan refused (row PA)")
+                          "R-b, rollback; extended: adopt with a confirmed regression, hotfix T0 without the H "
+                          "check, plan and start only with --accept-regressed-source (row PA), V and retire")
     world = World(builds, tmp_path, systemd, rec)
     _first_t0(world)
     world.transition("x5", name="r1-to-r2")  # k1 serves R2 (served: x5)
@@ -943,7 +952,14 @@ def test_06_12_rollbacks_and_the_accepted_release_killed(builds, tmp_path, syste
     world.ctl("accepted-disable", "disable", world.unit)
     world.transition("x5", name="rollback-after-r-b")  # k5 serves R2
     k5_binding = world.head()["binding_id"]
-    # Extended (R4-OPS-2): killed again with no restart; adopt; a greater-triple hotfix T0, H check skipped.
+    k5_state = world.root / "slots" / "k5" / "state"
+    # Extended (R4-OPS-2, row PA with confirmed regressions): k5 records one more tombstone and closes; then
+    # it is killed with no restart (the head stays open) and that tombstone goes, so the tombstone row set is
+    # older than k5's last closure: exactly the state k5's earlier clean close proved (SC6B-A-12's shape).
+    # The operator's adopt confirms that regression; a greater-triple hotfix T0 without the H check; plan and
+    # start need --accept-regressed-source with the record's sha256.
+    world.serve_clean("pa-records-a-tombstone", execute=PA_TOMBSTONE)
+    assert world.head()["binding_id"] != k5_binding
     world.child("clean", restart=False)
     world.begin("pa-start")
     assert world.wait_active()["ActiveState"] == "active"
@@ -953,31 +969,72 @@ def test_06_12_rollbacks_and_the_accepted_release_killed(builds, tmp_path, syste
     assert world.head()["status"] in ("running", "unknown"), world.head()  # open: no receipt, no R-b
     world.ctl("pa-reset-failed", "reset-failed", world.unit, expect=None)
     world.stop_and_disable("pa-paso1")
+    with closing(sqlite3.connect(k5_state / "data" / "privacy.db")) as db, db:
+        db.execute("DELETE FROM conversation_tombstones WHERE conversation_id = 'conv-pa'")
     shadows = tmp_path / "adopt-tmpdir"
     shadows.mkdir()
     env = world.systemd.environment({"TMPDIR": str(shadows)})
     dry = world.st("adopt-dry-run", "adopt", "--dry-run", env=env)
-    leftover = sorted(path.name for path in shadows.glob("kza-adopt-dry-run-*"))
-    rec.result(adopt_dry_run={"regressions": dry.get("report", {}).get("regressions", []),
-                              "shadow_left": leftover})
-    assert leftover == []
-    confirm = ["adopt", "--confirm", dry["head_sha256"]]
-    if dry.get("report", {}).get("regressions"):
-        confirm += ["--confirm-regressions", ",".join(dry["report"]["regressions"])]
-    world.st("adopt-confirm", *confirm, env=env)
-    head = world.head()
+    inside = stage.dry_run_directory(world.root)
+    leftover = sorted(path.name for path in shadows.glob("kza-adopt-dry-run-*")) + (
+        sorted(path.name for path in inside.iterdir()) if inside.is_dir() else [])
+    families = sorted({item.split(":", 1)[0] for item in dry["report"]["regressions"]})
+    rec.result(adopt_dry_run={"regressions": families, "shadow_left": leftover})
+    assert families == ["conversation_tombstones"], dry["report"]
+    assert leftover == []  # row DR: the dry run's copy is under the root and removed when it finishes
+    unconfirmed = world.st("adopt-confirm-without-regressions", "adopt", "--confirm", dry["head_sha256"],
+                           expect=None, env=env)
+    rec.result(adopt_unconfirmed=unconfirmed.get("refused"))
+    assert unconfirmed.get("refused") == "runtime_admission_recovery_confirmation", unconfirmed
+    assert world.head()["status"] in ("running", "unknown")
+    adopted = world.st("adopt-confirm", "adopt", "--confirm", dry["head_sha256"], "--confirm-regressions",
+                       ",".join(families), env=env)
+    head, sha256 = world.head(), adopted["recovery_record_sha256"]
+    record = stage._read_recovery_record(world.root, head)
     assert head["status"] == "closed" and stage.read_manual_head(world.root, head)["kind"] == "recovery"
+    assert stage._digest(record) == sha256 and record["checks"]["regressed"] == families
+    # SC6B-A-12's shape: the adopted head has k5's earlier binding, which k5's earlier clean close proved.
+    proved = (world.root / "admission" / "closures" / (head["binding_id"] + ".json")).exists()
+    rec.result(adopted_binding_is_k5s=head["binding_id"] == k5_binding, older_closure_proves_it=proved)
+    assert head["binding_id"] == k5_binding and proved
     new = world.extract("x5r3")
     assert world.triple_check(new) == "T0"
     installed = world.t0("x5r3", new=new)  # SR-1 alone gates it; no H check (R4-OPS-2)
     assert installed["controller_revision"] == 3
-    # Row PA fails closed (SC5B-Q1; the runbook's 'Después de la aceptación'): the adopted head keeps the
-    # binding k5's closure proved, and plan still refuses it, writing nothing. The hotfix V and retire over
-    # an adopted head are item (17), with row PA.
-    refused = world.refused("pa-plan-hotfix", compaction.RECOVERY_HEAD, "compact", "plan", f"k{world.k + 1}",
-                            "--archive", str(builds["x5r3"]["archive"]))
-    rec.result(plan_over_recovery_head=refused["refused"], adopted_binding_is_k5s=head["binding_id"] == k5_binding)
-    assert head["binding_id"] == k5_binding
+    world.k += 1
+    k = f"k{world.k}"
+    # Row PA: without the flag plan refuses, naming the record and its families, and writes nothing.
+    refused = world.refused("pa-plan-hotfix-without-flag", compaction.REGRESSED_SOURCE_REQUIRED, "compact", "plan",
+                            k, "--archive", str(builds["x5r3"]["archive"]))
+    rec.result(plan_over_regressed_head=refused["refused"], plan_report=refused.get("report"))
+    assert refused["report"] == {"recovery_record_sha256": sha256, "regressed": families}, refused
+    world.plan("x5r3", k, expect=78, code=compaction.REGRESSED_SOURCE_MISMATCH,
+               accept=("0" if sha256[0] != "0" else "1") + sha256[1:12])
+    planned = world.plan("x5r3", k, accept=sha256[:12])
+    assert planned["source_recovery_sha256"] == sha256, planned
+    world.refused("pa-start-hotfix-without-flag", compaction.REGRESSED_SOURCE_REQUIRED,
+                  *world.start_arguments("x5r3", k, planned))
+    compaction_id = world.start("x5r3", k, planned, accept=sha256[:12])
+    assert world.log(compaction_id)["intent"]["source_recovery_sha256"] == sha256
+    world.verify(compaction_id)
+    world.v_run("hotfix-v")
+    status = world.status(compaction_id)
+    assert status["verified"] is True and status["armed_run"] == "consumed", status
+    world.retire(compaction_id)
+    [begun] = [event for event in world.log(compaction_id)["events"] if event["kind"] == "retire_started"]
+    assert begun["data"]["w"]["class"] == compaction.W_EQUAL
+    assert world.slot_of_head() == k and not k5_state.exists()
+    world.serve_clean("hotfix-serve-k-prime", enable=True)
+    privacy = world.root / "slots" / k / "state" / "data" / "privacy.db"
+    carried = {"tombstones": _sql(privacy, "SELECT conversation_id FROM conversation_tombstones"),
+               "erasures": _sql(privacy, "SELECT id, conversation_id FROM conversation_erasures")}
+    rec.result(hotfix_after_adopt={"k": k, "compaction_id": compaction_id, "w_class": begun["data"]["w"]["class"],
+                                   "installed_triple": list(stage.installed_controller_triple(world.root))[:2],
+                                   "carried_forward": carried})
+    # The confirmed regression goes forward as the adopted head had it (no 'conv-pa'); nothing is revived.
+    assert carried == {"tombstones": [("conv-h",)], "erasures": [("op-h", "conv-h")]}, carried
+    # R5V-2: from the accepted head the flag names no regressed record.
+    world.plan("x5r3", f"k{world.k + 1}", expect=78, code=compaction.REGRESSED_SOURCE_MISMATCH, accept=sha256[:12])
 
 
 # --- (7) and (9): schema mismatch; lower revision and equal pair with another digest -----------------------

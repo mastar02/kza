@@ -167,10 +167,6 @@ REGRESSED_SOURCE_MISMATCH = "runtime_admission_compaction_regressed_source_misma
 REGRESSED_SOURCE_PREFIX = re.compile("[0-9a-f]{12,64}")
 # Review RB-3: K' head's closure proof unreadable after V (storage damage, a manual edit): an HD-like stop.
 K_CLOSURE_UNREADABLE = "runtime_admission_compaction_k_closure_unreadable"
-# Row PA fails closed until its witness exists (SC5B-Q1; runbook «Después de la aceptación»): a head closed
-# by a recovery record (R-b or adopt) is not the source of a release-mode transition, even when its binding
-# equals one an earlier closure proved (SC-6b review F1). Row PA's closed_witness replaces this refusal.
-RECOVERY_HEAD = "runtime_admission_compaction_recovery_head"
 # SC-4c closed collection list (sc-release-design v4 start.chroma_allowlist, PA-8, V4R2-C1). The worker
 # (src/memory/owner_compaction.py) holds the same list; tests/unit/tools/test_sc4c_chroma_closed_list.py pins both.
 CHROMA_STORE = "chroma.sqlite3"
@@ -1402,8 +1398,6 @@ def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftov
         raise
     if stage.head_aborted(root, head):
         _refuse("runtime_admission_adoption_aborted_head")
-    if release and recovery_closed(root, head):
-        _refuse(RECOVERY_HEAD)
     owners = owner_selection(root, source)  # P3
     if _lexists(root / "slots" / k_slot):
         _refuse("runtime_admission_compaction_k_exists")
@@ -1487,26 +1481,6 @@ def _plan_value(root: Path, k_slot: str, archive: Path, *, retire_prepare_leftov
     if regressed_source is not None:
         value["source_recovery_sha256"] = regressed_source  # R5-1: the plan digest and the intent bind it
     return value
-
-
-def recovery_closed(root: Path, head: dict) -> bool:
-    """Whether a closed head was closed by a recovery record (row PA), read only.
-
-    Its manual companion is of kind 'recovery' (R-b or ``adopt``); a
-    'compaction_return' head (an abort's return to H) is the H it names,
-    repeatedly. A later clean close of the same binding writes a 'closure'
-    companion, so a recovered head that served and stopped cleanly is a
-    source again.
-    """
-    seen = set()
-    while True:
-        kind = stage.read_manual_head(root, head)["kind"]
-        if kind != "compaction_return":
-            return kind == "recovery"
-        seen.add(stage._digest(head))
-        head = stage._read_compaction_return(root, head)["h_head"]
-        if stage._digest(head) in seen:
-            _refuse("runtime_admission_manual_companion_changed")
 
 
 START_TIME_SLACK = 1.0  # seconds: ps lstart has one-second resolution
