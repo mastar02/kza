@@ -52,6 +52,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from uuid import uuid4
 
 logger = logging.getLogger("kza.launcher")
 
@@ -1430,6 +1431,10 @@ def recovery_report(root: Path, head: dict, *, read_only: bool = False, progress
     ``read_only`` (adopt --dry-run, review P3) opens nothing under the state
     for writing: the writers check uses read-only descriptors, and the
     database checks run on a private copy (_shadow_state) outside the state.
+    That copy (row DR, mechanism.dry_run_shadow) is made only under the lease,
+    in <root>/admission/dry-run/<random id>/ (0700, the state's filesystem),
+    never in TMPDIR, and removed when the checks end; a killed dry run's copy
+    is removed by the next lease holder (AdmissionController.__enter__).
     ``progress(step)`` is called between steps (the serve start-time
     extension, review P6).
     """
@@ -1448,13 +1453,18 @@ def recovery_report(root: Path, head: dict, *, read_only: bool = False, progress
         return report
     if not read_only:
         return _recovery_checks(state, state, binding, report, step)
-    with tempfile.TemporaryDirectory(prefix="kza-adopt-dry-run-") as temporary:
+    stage._require_root_lease(root)  # row DR: the shadow is created under the lease, before the copy
+    shadow_root = stage.dry_run_directory(root) / uuid4().hex
+    try:
+        stage.private_directories(shadow_root)
         try:
-            shadow = _shadow_state(state, Path(temporary) / "state")
+            shadow = _shadow_state(state, shadow_root / "state")
         except (ValueError, OSError) as error:
             report["failures"].append(str(error) if isinstance(error, ValueError) else "shadow_copy_failed")
             return report
         return _recovery_checks(state, shadow, binding, report, step)
+    finally:
+        stage.remove_dry_run_shadows(root)
 
 
 def _recovery_checks(state: Path, checked: Path, binding: dict, report: dict, step) -> dict:
@@ -2201,7 +2211,9 @@ def adopt(root: Path, *, confirm: str, regressions: list[str], boot_id_path: str
                                                             "regressions": sorted(regressions)})
         if decision.closed_head is None:
             raise LauncherRefusal(decision.code, decision.exit_code or ExitCode.UNRECOVERABLE)
+        # Row PA: what `compact plan --accept-regressed-source` names (12+ hex) when regressions were confirmed.
         return {"head": decision.closed_head, "path": decision.path,
+                "recovery_record_sha256": stage.recovery_record_sha256(root, decision.closed_head),
                 "checks": {"regressed": decision.report.get("regressions", []),
                            "resurrected": decision.report.get("resurrected", {})}}
 

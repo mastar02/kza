@@ -71,7 +71,7 @@ CHROMA_REBUILD_TIMEOUT.
 """
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import ExitStack, closing
 from dataclasses import dataclass, field
 import hashlib
 import importlib.metadata
@@ -1046,9 +1046,14 @@ def run_materialization(root: Path, compaction_id: str, *, wall, before_vacuum=N
     root = Path(root).resolve(strict=True)
     # SC-0b O1: H does not change under the lease, so its repeated authority
     # captures reuse one content-addressed result (every input byte is still hashed).
-    with stage.authority_memo(), stage.AdmissionController(root, gate="compaction:" + compaction_id) as controller:
+    with ExitStack() as scope_stack:
+        scope_stack.enter_context(stage.authority_memo())
+        controller = scope_stack.enter_context(stage.AdmissionController(root, gate="compaction:" + compaction_id))
         log = controller.compaction
         intent = log["intent"]
+        # Row PA (R5-1): this log's bound regressed source, for H's reads in the snapshot, the copy
+        # catalog and the journal derivation; only H's exact recovery record has that sha256.
+        scope_stack.enter_context(stage.regressed_source_bound(intent.get("source_recovery_sha256")))
         _require(_events(log, "k_runtime") and not _events(log, "materialized"), "phase_order")
         _require(not any(event["kind"] in {"abort_started", "aborted"} for event in log["events"]), "phase_order")
         head = stage.read_admission_head(root)

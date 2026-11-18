@@ -708,7 +708,7 @@ def reserve_copy(controller: AdmissionController, kind: str, destination: Path,
         sources = {}
         for identity in source_binding_ids:
             sources[identity] = stage.read_binding(root, identity)
-            stage._closure_proof(root, identity)
+            stage.closed_witness(root, identity)  # row PA: a closure or the head's admitted recovery record
         refs = _snapshot_refs(root, source_snapshot_refs, sources)
         source_roots = [Path(item["state_root"]) for item in sources.values()]
         source_roots.extend(Path(ref["snapshot_root"]) for ref in refs)
