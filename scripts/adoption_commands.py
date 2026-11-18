@@ -2161,15 +2161,16 @@ def _superseded_census(root: Path, name: str, commit: str, *, links_only: bool) 
 
 
 def _reports_census(slot: Path) -> dict:
-    """The R1E-Q3 report files present beside the b0866e8 state: names and bytes only (never read)."""
+    """The R1E-Q3 report files present beside the b0866e8 state: names and bytes only (never read).
+
+    _legacy_scope already refused any of them that is not a regular file.
+    """
     names, size = [], 0
     for name in LEGACY_SLOT_REPORTS:
         try:
             info = os.lstat(slot / name)
         except FileNotFoundError:
             continue
-        if not stat.S_ISREG(info.st_mode):
-            _refuse("runtime_admission_legacy_retire_slot_unexpected")
         names.append(name)
         size += info.st_size
     return {"names": names, "bytes": size}
