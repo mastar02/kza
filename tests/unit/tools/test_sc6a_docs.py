@@ -148,12 +148,14 @@ def test_the_superseded_archives_are_recorded_not_pinned():
     assert "El runbook de R1 lo fijó hasta ese re-fijado" in handoff
     # R1E: 357dcb5's archive and the unpinned first R1E build stay beside the pin under their own names.
     unpinned = {"357dcb57816834a9f4bfffb9bb5357ebd13d926e": "c5305d588a228aca445489b90c00a2b11165d24f8fa1078ad19a68fbe9630a24",
-                "695708ac40a101ccbeadd008ff3fd2fe01c4ed5b": "d6e5a21aea71dd576fc4afa34821eed2a93c013c439ef4b37334d6856b7e1dba"}
+                "695708ac40a101ccbeadd008ff3fd2fe01c4ed5b": "d6e5a21aea71dd576fc4afa34821eed2a93c013c439ef4b37334d6856b7e1dba",
+                "d045156bd8922c5c6f2b6364827a314a5bc50da0": "b2205650f045ece0058c05db02b03c5bdb6523e4ad8b229fbbcd702685133990"}  # R1E-2: d045156
     assert pin["R1_COMMIT"] not in unpinned and pin["R1_SHA256"] not in unpinned.values()
     for relative in ("docs/runbooks/2026-11-13-r1-adoption-window.md", "docs/architecture/DEPLOYMENT.md",
                      "docs/runbooks/2026-11-05-mac-development-handoff.md"):
         flat = " ".join((REPO / relative).read_text().split())
         assert "r1-357dcb5.tar.gz" in flat and "r1-695708a.tar.gz" in flat, relative
+        assert "r1-d045156.tar.gz" in flat, relative
 
 
 def test_the_scheduling_gate_states_what_is_done_and_leaves_scheduling_to_the_user():
@@ -172,7 +174,7 @@ def test_the_scheduling_gate_states_what_is_done_and_leaves_scheduling_to_the_us
                       "/home/yo/projects/runs/sc6a"):
         assert reference in gate, reference
     assert "Este runbook no autoriza ni programa la ventana: la programa el usuario, como operador de `kza`." in gate
-    for step in ("W7", "drop-in sudo", "arranque real hasta READY", "`r1-d045156.tar.gz`"):
+    for step in ("W7", "drop-in sudo", "arranque real hasta READY", "`r1-7752570.tar.gz`"):
         assert step in gate, step
     open_reviews = ("re-revisión de la ronda de arreglos de SC-6a", "cbb509c", "9ec7d95",
                     "revisión independiente de la ronda 1 de arreglos de R1-B1/R1-B2",
@@ -263,3 +265,27 @@ def test_r1e_the_pinned_r1_admits_the_runbook_container():
     assert len(release) == 1 and release[0].startswith(suffix), release
     assert "runtime_admission_adoption_container_commit" in commands.stdout
     assert "commit != launcher.LEGACY_CONTAINER_RELEASE" in commands.stdout
+
+
+def test_r1e2_the_pinned_r1_retires_production_s_day14_layout():
+    """R1E-2 (r1e_questions_20261118): the pinned R1 commit's own code carries the day-14 scope the
+    runbook describes (the three report names, the 63ea8d3 and 2c5adb4 slots by exact name and full commit,
+    the superseded check) and serves L4 only to the e9669ec container. The d045156 pin (review round 1)
+    refuses that layout on day 14 and fails here."""
+    text = r1_runbook.runbook_text()
+    commit = r1_runbook.pinned(text)["R1_COMMIT"]
+    launcher = _git("show", commit + ":scripts/managed_launcher.py")
+    commands = _git("show", commit + ":scripts/adoption_commands.py")
+    assert launcher.returncode == 0 and commands.returncode == 0, (launcher.stderr, commands.stderr)
+    assert re.findall(r"(?m)^LEGACY_COMMITS = (.+)$", launcher.stdout) == ["(LEGACY_CONTAINER_COMMIT,)"]
+    assert re.findall(r"(?m)^LEGACY_SLOT_REPORTS = (.+)$", commands.stdout) == [
+        '("activation-report.json", "live-report.json", "prepare-report.json")']
+    assert re.findall(r"(?m)^LEGACY_SUPERSEDED_CONTAINER = (.+)$", commands.stdout) == [
+        '("release_20261029T174830709997Z_63ea8d3", "63ea8d319b50506cc37ba73df1e41c87a41054cf")']
+    assert re.findall(r"(?m)^LEGACY_OLDER_SLOT = (.+)$", commands.stdout) == [
+        '("release_20261028T144002Z_2c5adb4", "2c5adb4f3825e94bff86ef5ccff4e1391a1bc012")']
+    assert "runtime_admission_legacy_retire_superseded" in commands.stdout
+    flat = " ".join(text.split())
+    for name in ("release_20261029T174830709997Z_63ea8d3", "release_20261028T144002Z_2c5adb4",
+                 "activation-report.json", "live-report.json", "prepare-report.json"):
+        assert name in flat, name

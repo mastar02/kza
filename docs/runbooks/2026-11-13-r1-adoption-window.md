@@ -69,29 +69,39 @@ autoriza la ventana.
   época 4), dos veces en el server y una en la Mac, con resultado idéntico:
   sha256 `b2205650f045ece0058c05db02b03c5bdb6523e4ad8b229fbbcd702685133990`,
   en `/home/yo/projects/releases-r1/r1-d045156.tar.gz` (con
-  `SHA256SUMS-d045156`). «Archivo R1 fijado» pasó a ese archivo.
+  `SHA256SUMS-d045156`). «Archivo R1 fijado» pasó a ese archivo hasta R1E-2.
   `r1-357dcb5.tar.gz` y `r1-695708a.tar.gz` quedan al lado con sus nombres:
   no se transfieren ni se usan.
+- R1E-2 (2026-11-18, decisiones `r1e_questions_20261118`, R1E-Q1 a R1E-Q5):
+  el día 14 retira además los tres `*-report.json`, las diez copias de las
+  14:48 y los slots de 63ea8d3 y 2c5adb4, y L4 sólo sirve el contenedor de
+  e9669ec. Cambia `scripts/adoption_commands.py` y
+  `scripts/managed_launcher.py`, así que R1 se reconstruyó desde
+  `7752570fb0e4812c5888770111eb2da59d12877a` (rama `r1e`, época 4), dos veces en el
+  server y una en la Mac, con resultado idéntico: sha256
+  `bec0b82dbfaf4c13af543e5cab7bb81315550d8f2136cd9c948dae34131dc3ce`, en
+  `/home/yo/projects/releases-r1/r1-7752570.tar.gz` (con
+  `SHA256SUMS-7752570`). «Archivo R1 fijado» pasó a ese archivo.
+  `r1-d045156.tar.gz` queda al lado con su nombre: no se transfiere ni se usa.
 - Un R1 anterior a R1E (357dcb5) no sirve con `C` en e9669ec, y no lo
   rechaza en todos los pasos: deja pasar ese contenedor en la corrida de
   prueba, W1b, W2 y el commit de W4, y W-abort-1 salta la comprobación del
   destino de rollback. Sólo W-abort-2, L4 y Q5 lo rechazan. Por eso esta
   condición no queda escrita sólo acá: `test_r1e_the_pinned_r1_admits_the_runbook_container`
   (`tests/unit/tools/test_sc6a_docs.py`) falla si el commit fijado no adopta
-  el contenedor de las dos líneas `C=`.
-- **No programar la ventana** antes de la revisión independiente de esta
-  ronda de arreglos (con el re-fijado), del T-A17 y de la suite batch
-  sobre ella. Además, con la forma de producción el retiro Q5 del día 14
-  rechaza dos veces sin borrar nada (T-A17 lo ensaya): primero por los tres
-  `*-report.json` del slot de b0866e8 y después por los enlaces del slot de
-  63ea8d3. Sigue así hasta que el usuario decida R1E-Q2 y R1E-Q3. Si la
-  ventana se programa antes, el plazo P7 del día 14 depende de esas
-  decisiones.
+  el contenedor de las dos líneas `C=`, y
+  `test_r1e2_the_pinned_r1_retires_production_s_day14_layout` falla si no
+  trae el alcance del día 14 de R1E-2 (un R1 de d045156 rechaza el día 14
+  con la forma de producción).
+- **No programar la ventana** antes de la revisión independiente de R1E-2
+  (con este re-fijado) y de la suite batch sobre ella. T-A17 ya corre el día
+  14 compilado con la forma de producción hasta el retiro completo, y
+  después L4 rechaza los cuatro slots (`r1e/evidence.json`, `r1e2_round`).
 - Después quedan los pasos del operador. Este runbook no autoriza ni programa
   la ventana: la programa el usuario, como operador de `kza`. Antes, el
   usuario registra la autorización de la ventana y los ids P1=D y L4 («Antes
   de la ventana»); el operador transfiere a `kza` el archivo fijado
-  (`r1-d045156.tar.gz`) y lo verifica con «Archivo R1 fijado». En la ventana, en W7 el usuario aplica el drop-in
+  (`r1-7752570.tar.gz`) y lo verifica con «Archivo R1 fijado». En la ventana, en W7 el usuario aplica el drop-in
   sudo y lo verifica en lectura, y en W8 se mide el arranque real hasta READY
   (la aplicación con sus modelos, que los ensayos no cargan).
 - **Paso del día 14**: el borrado Q5 corre desde DÍA 0 + 14 × 24 h (DÍA 0 = el
@@ -145,7 +155,10 @@ transfiere ni se usa. R1E (adoptar el contenedor de e9669ec) y la ronda 1 de
 su revisión cambiaron código de ejecución: R1 se reconstruyó igual desde
 d045156 y el pin pasó a ese archivo. Los de 357dcb5 y 695708a quedaron al
 lado sin renombrar (`r1-357dcb5.tar.gz`, `r1-695708a.tar.gz`): no se
-transfieren ni se usan.
+transfieren ni se usan. R1E-2 (alcance del día 14 y L4 sólo hacia e9669ec)
+cambió código de ejecución: R1 se reconstruyó igual desde 7752570 y el pin
+pasó a ese archivo. El de d045156 quedó al lado sin renombrar
+(`r1-d045156.tar.gz`): no se transfiere ni se usa.
 
 Después de R1 no hay transiciones gestionadas (ningún arreglo de código) hasta
 que exista el modo release; el único rollback es L4 durante sus 14 días. Ver
@@ -187,16 +200,17 @@ archivo verificado, nunca una ruta relativa ni otra copia.
 
 ### Archivo R1 fijado (paso obligatorio antes de W1)
 
-R1 se construyó bajo `yo` con `scripts/build_runtime.py` desde d045156, dos
+R1 se construyó bajo `yo` con `scripts/build_runtime.py` desde 7752570, dos
 veces y con resultado idéntico byte a byte, y aquí se fija su sha256 y su
 commit (SC-6a lo había fijado desde 81ed568; se re-fijó desde c6462e5 después
-de R1-B1/R1-B2, desde 357dcb5 después del arreglo RR2-1 de la re-revisión y
-desde d045156 en R1E, después de la ronda 1 de su revisión independiente).
+de R1-B1/R1-B2, desde 357dcb5 después del arreglo RR2-1 de la re-revisión,
+desde d045156 en R1E, después de la ronda 1 de su revisión independiente, y
+desde 7752570 en R1E-2).
 El valor vive en un commit de documentación posterior al commit construido: un
 archivo no puede contener su propio hash, y el archivo no incluye `docs/`.
 El archivo queda bajo `yo` en el server, en
-`/home/yo/projects/releases-r1/r1-d045156.tar.gz` (modo 0600, directorio
-0700, con su `SHA256SUMS-d045156`). Llevarlo a `kza` es parte de la release y lo hace
+`/home/yo/projects/releases-r1/r1-7752570.tar.gz` (modo 0600, directorio
+0700, con su `SHA256SUMS-7752570`). Llevarlo a `kza` es parte de la release y lo hace
 el operador; esa copia transferida es la que se verifica aquí.
 
 Antes de extraer `$R1`, antes de la corrida de prueba y otra vez justo antes
@@ -204,8 +218,8 @@ de W1, correr exactamente:
 
 ```bash
 R1_ARCHIVE=<ruta del r1.tar.gz transferido>
-R1_SHA256=b2205650f045ece0058c05db02b03c5bdb6523e4ad8b229fbbcd702685133990
-R1_COMMIT=d045156bd8922c5c6f2b6364827a314a5bc50da0
+R1_SHA256=bec0b82dbfaf4c13af543e5cab7bb81315550d8f2136cd9c948dae34131dc3ce
+R1_COMMIT=7752570fb0e4812c5888770111eb2da59d12877a
 if [ "$(sha256sum "$R1_ARCHIVE" | cut -d' ' -f1)" = "$R1_SHA256" ]; then echo "R1 fijado: OK"; else echo "R1 distinto del fijado: DETENER"; false; fi
 ```
 
