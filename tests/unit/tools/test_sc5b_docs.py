@@ -27,7 +27,9 @@ REPO = Path(__file__).resolve().parents[3]
 RUNBOOK = REPO / "docs/runbooks/2026-11-17-release-mode.md"
 DEPLOYMENT = REPO / "docs/architecture/DEPLOYMENT.md"
 COMPACTION_RUNBOOK = REPO / "docs/runbooks/2026-11-14-owner-compaction.md"
-SOURCES = ("scripts/stage_runtime.py", "scripts/compaction.py", "scripts/managed_launcher.py")
+# src/core/heap_hygiene.py: the child refuses at start with its own code (SC4C-Q3), which the runbook names.
+SOURCES = ("scripts/stage_runtime.py", "scripts/compaction.py", "scripts/managed_launcher.py",
+           "src/core/heap_hygiene.py")
 _LINK = re.compile(r"\]\(([^)\s]+)\)")
 _CODE = re.compile(r"runtime_admission_[a-z0-9_]*[a-z0-9]")
 
