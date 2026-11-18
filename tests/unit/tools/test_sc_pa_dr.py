@@ -22,7 +22,10 @@ head, T0 to X5, plan and start in release mode, V run by serve).
 
 from __future__ import annotations
 
-from contextlib import closing
+import argparse
+from contextlib import closing, redirect_stderr, redirect_stdout
+import io
+import json
 import os
 from pathlib import Path
 import signal
@@ -334,6 +337,91 @@ def test_the_regressed_source_flag_is_release_mode_only(x4, tmp_path):
                      lambda: cw.plan(root, x4["archive"], "k2", accept_regressed_source=prefix))
         assert cw.witness(root) == witness
 
+
+
+def _operator(root: Path, *argv: str) -> tuple[int, dict]:
+    """One operator command through stage_runtime's parser (its launcher and compact sub-commands), as the
+    rehearsals type it; returns the exit code and the JSON it printed (a refusal included)."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--offline", action="store_true", required=True)
+    commands = parser.add_subparsers(dest="command", required=True)
+    launcher.add_commands(commands)
+    compaction.add_commands(commands)
+    args = parser.parse_args(["--root", str(root), "--offline", *argv])
+    out, err = io.StringIO(), io.StringIO()
+    with redirect_stdout(out), redirect_stderr(err):
+        code = (compaction.run_command(args, scan=cw.no_units) if args.command == "compact"
+                else launcher.run_command(args))
+    [line] = (out.getvalue() or err.getvalue()).strip().splitlines()
+    return code, json.loads(line)
+
+
+def test_a_head_adopted_with_confirmed_regressions_is_refused_by_plan_and_start_without_the_flag(
+        x4, x5, tmp_path):
+    """Row PA, R5-1, SC-6b finding SC6B-A-12 (plan admitted a recovery-closed head because an older closure
+    proved the same binding): the operator's adopt --dry-run, adopt --confirm with the confirmed regression
+    closes the head with the binding the last clean close proved; compact plan without
+    --accept-regressed-source refuses (78) naming the record's sha256 and its families, and so does compact
+    start with a plan digest made with the flag; neither writes anything. With the flag the plan binds the
+    full sha256."""
+    world = _accepted(x4, x5, tmp_path)
+    root = world["root"]
+    assert cw.serve(root, tmp_path, "tombstone", execute=_tombstone("conv-a12")).code == 0
+    _crash(root, tmp_path, "crash")
+    with closing(sqlite3.connect(world["state"] / "data" / "privacy.db")) as db, db:
+        db.execute("DELETE FROM conversation_tombstones")
+    code, dry = _operator(root, "adopt", "--dry-run")
+    assert code == 0 and sorted({item.split(":", 1)[0] for item in dry["report"]["regressions"]}) == [
+        "conversation_tombstones"], dry
+    code, adopted = _operator(root, "adopt", "--confirm", dry["head_sha256"],
+                              "--confirm-regressions", "conversation_tombstones")
+    assert code == 0, adopted
+    head, sha256 = _head(root), adopted["recovery_record_sha256"]
+    assert head["status"] == "closed" and sha256 == stage.recovery_record_sha256(root, head)
+    assert stage._read_recovery_record(root, head)["checks"]["regressed"] == ["conversation_tombstones"]
+    # What SC6B-A-12 admitted through: an older clean closure proves this very binding.
+    assert (root / "admission" / "closures" / (head["binding_id"] + ".json")).exists()
+    witness = cw.witness(root)
+    code, refused = _operator(root, "compact", "plan", "k2", "--archive", str(x5["archive"]))
+    assert (code, refused) == (78, {"refused": compaction.REGRESSED_SOURCE_REQUIRED, "report": {
+        "recovery_record_sha256": sha256, "regressed": ["conversation_tombstones"]}})
+    assert cw.witness(root) == witness
+    code, planned = _operator(root, "compact", "plan", "k2", "--archive", str(x5["archive"]),
+                              "--accept-regressed-source", sha256[:12])
+    assert code == 0 and planned["source_recovery_sha256"] == sha256, planned
+    code, refused = _operator(root, "compact", "start", "k2", "--archive", str(x5["archive"]),
+                              "--plan-sha256", planned["plan_sha256"],
+                              "--acknowledge-untouched", planned["untouched_sha256"], "--destroy-rollback-states")
+    assert (code, refused["refused"]) == (78, compaction.REGRESSED_SOURCE_REQUIRED), refused
+    assert cw.witness(root) == witness
+    assert stage.read_admission_head(root) == head
+
+
+def test_a_head_adopted_clean_is_a_source_through_its_recovery_record_without_the_flag(x4, x5, tmp_path):
+    """Row PA (SC6B-A-12's clean case): a killed accepted release adopted by the operator with no
+    regression (adopt --dry-run, adopt --confirm) is closed by a clean recovery record with the binding
+    the last clean close proved; that record is the witness, compact plan admits it without the flag, and
+    the flag is refused (the record names no regression)."""
+    world = _accepted(x4, x5, tmp_path)
+    root = world["root"]
+    _crash(root, tmp_path, "crash")
+    code, dry = _operator(root, "adopt", "--dry-run")
+    assert code == 0 and dry["report"]["regressions"] == [], dry
+    code, adopted = _operator(root, "adopt", "--confirm", dry["head_sha256"])
+    assert code == 0, adopted
+    head = _head(root)
+    record = stage._read_recovery_record(root, head)
+    assert head["status"] == "closed" and record["checks"]["regressed"] == []
+    assert (root / "admission" / "closures" / (head["binding_id"] + ".json")).exists()
+    with stage.AdmissionController(root):
+        assert stage.closed_witness(root, head["binding_id"]) == {
+            "kind": "recovery", "record_sha256": stage._digest(record), "record": record}
+    code, planned = _operator(root, "compact", "plan", "k2", "--archive", str(x5["archive"]))
+    assert code == 0 and "source_recovery_sha256" not in planned, planned
+    code, refused = _operator(root, "compact", "plan", "k2", "--archive", str(x5["archive"]),
+                              "--accept-regressed-source", stage._digest(record)[:12])
+    assert (code, refused["refused"]) == (78, compaction.REGRESSED_SOURCE_MISMATCH), refused
 
 # --- DR: the dry-run shadow ----------------------------------------------------------------------------
 
