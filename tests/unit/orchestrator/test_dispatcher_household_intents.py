@@ -936,7 +936,8 @@ UNCLAIMED_CANCEL_MENTIONS = (
     ("¿ya cancelaron el recordatorio de tomar agua?", "needs_input"),
     ("no cancelar el recordatorio de tomar agua", "needs_input"),
     ("no cancelá el recordatorio de tomar agua", "needs_input"),
-    ("quiero un recordatorio para cancelar la suscripción", "unsupported"),
+    # T031-U2: an unclaimed creation is guided to the reminder verb (NEEDS_INPUT, was the interim UNSUPPORTED).
+    ("quiero un recordatorio para cancelar la suscripción", "needs_input"),
     ("olvidate ya mismo del recordatorio de tomar agua", "needs_input"),
 )
 
@@ -1751,12 +1752,11 @@ async def test_clock_alarm_query_reads_the_shared_alarms_only(leaves):
         "No hay alarmas con hora guardadas.")
     await leaves.apply_state(dispatcher, "reminder_private_active:alarma privada")
     await dispatcher.dispatch(user_id="unknown", text="poné una alarma a las 7 de la tarde")
-    await dispatcher.dispatch(user_id="unknown", text="poné un despertador para el miércoles a las 7 de la mañana")
+    await dispatcher.dispatch(user_id="unknown", text="poné un despertador para el jueves a las 7 de la mañana")
     await dispatcher.dispatch(user_id="unknown", text="recordame sacar la basura a las 8 de la noche")
     before = leaves.snapshot()
     result = await dispatcher.dispatch(user_id="ana", text="qué alarmas hay a las 7")
-    assert result.response == ("Alarmas guardadas: alarma, hoy a las 19:00. despertador, el miércoles a las "
-                               "07:00.")
+    assert result.response == "Alarmas guardadas: alarma, hoy a las 19:00. despertador, el jueves a las 07:00."
     assert result.outcome.status.value == "completed" and leaves.effects(before) == ZERO
     assert "privada" not in result.response
 
