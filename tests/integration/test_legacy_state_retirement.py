@@ -980,6 +980,38 @@ def test_r1e_l4_refuses_the_superseded_63ea8d3_container(world):
     assert unit_dir_files(world) == units and world.units.reloads == 0
 
 
+def state_slot_runtime(world: World) -> Path:
+    """The b0866e8 slot's own runtime (production has one beside its state): release b0866e8 and the
+    config/data/.env links into its state."""
+    runtime = world.root / "slots" / LEGACY / "runtime"
+    runtime.mkdir(mode=0o700)
+    (runtime / "release.json").write_text(json.dumps({"git_commit": "b0866e8" + "0" * 33, "files": {}}))
+    for name in ("config", "data", ".env"):
+        os.symlink(Path("..") / "state" / name, runtime / name)
+    return runtime
+
+
+@pytest.mark.parametrize("role", ["state", "container"])
+def test_r1e_l4_through_uninstall_launcher_serves_both_listed_legacy_roles(world, role):
+    """Review R1E-RV5: L4 with uninstall_launcher's own default list renders legacy.conf for the b0866e8
+    slot's runtime as well as for the e9669ec container (DEPLOYMENT: L4 accepts both)."""
+    adopted(world)
+    install_record(world)
+    state_slot_runtime(world)
+    slot = LEGACY if role == "state" else CONTAINER
+    current, head = os.readlink(world.root / "current"), world.head()
+    result = uninstall(world, slot)
+    legacy = (world.unit_dir / "legacy.conf").read_text()
+    runtime, state = world.root / "slots" / slot / "runtime", world.root / "slots" / slot / "state"
+    assert "Environment=PYTHONPATH=" + os.fspath(runtime) in legacy.splitlines()
+    assert "WorkingDirectory=" + os.fspath(state) in legacy.splitlines()
+    assert not (world.unit_dir / "managed.conf").exists() and (world.unit_dir / "managed.conf.disabled").exists()
+    record = json.loads((world.root / "admission" / "launcher" / result["record"]).read_text())
+    assert record["legacy_slot"] == slot
+    assert record["legacy_commit"] == ("b0866e8" + "0" * 33 if role == "state" else launcher.LEGACY_CONTAINER_RELEASE)
+    assert os.readlink(world.root / "current") == current and world.head() == head
+
+
 def test_r1e_the_superseded_container_links_stop_q5_as_found(world):
     """Pinned as found (R1E open question): Q5 with C=e9669ec reads the 63ea8d3 container's links into the
     frozen state as live references and refuses before any deletion; deciding that slot's fate comes first."""
