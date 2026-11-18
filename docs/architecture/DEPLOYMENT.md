@@ -1342,9 +1342,11 @@ heap, una apertura con `count()` dejó el canario en todo `data_level0.bin`
 con `GLIBC_TUNABLES=glibc.malloc.perturb=165:glibc.malloc.tcache_count=0`:
 glibc llena cada bloque que entrega con 0x5A (y cada bloque liberado con
 0xA5), y sin la caché por hilo, que devuelve bloques sin ese llenado. Así
-cada byte que Chroma recibe de `malloc` es el patrón o cero (un mapeo nuevo),
-nunca contenido anterior, y lo que escribe al inicializar un índice no tiene
-residuo. Las variables las lee el cargador al hacer `exec`, por eso las pone
+lo que Chroma recibe de `malloc` nunca tiene contenido anterior: un bloque
+pedido viene con el patrón (o en cero, un mapeo nuevo); la parte nueva de un
+`realloc` que crece en el lugar puede traer el relleno de liberación 0xA5 y
+palabras de enlace de bloques libres (direcciones del heap), pero no datos
+del proceso. Lo que escribe al inicializar un índice no tiene residuo. Las variables las lee el cargador al hacer `exec`, por eso las pone
 el padre: `managed_launcher.child_environment` (conserva los otros
 tunables de la unidad y reemplaza los del mismo nombre),
 `AdmissionController.run` (`run_slot`, el mismo valor; lo usan los ensayos y
@@ -1370,7 +1372,20 @@ en el retiro (hasta entonces sigue en H y en la copia opaca del snapshot,
 sección anterior). (4) Los procesos que `kza-voice` lance heredan las
 variables (llenado de memoria también en ellos). (5) Las copias privadas que
 abre el trabajador de compactación para exportar se borran al terminar; su
-residuo de sistema de archivos es el límite general ya documentado.
+residuo de sistema de archivos es el límite general ya documentado. (6) Q3
+no cambia que el vector de un registro borrado siga en `data_level0.bin`
+hasta la compactación (borrar sólo marca el lugar): eso es la compactación
+(SC-4c), no residuo de heap.
+
+**Revisión independiente (2026-11-18, glibc 2.39).** Con `tcache_count=0`
+todo `free` pasa por el llenado (fast bins y bloques normales) y los bloques
+mapeados se desmapean, así que lo liberado se borra al liberarse, y toda
+salida de `_int_malloc` llena los bytes pedidos. Los buffers de hnswlib vienen
+de glibc (el asignador de objetos chicos de Python no le entrega memoria). Una
+prueba aparte (150 y 300 registros, `sync_threshold` 20, borrados, canarios
+liberados en 13 tamaños) no encontró canario en ningún archivo del índice, y
+los índices persistidos tenían capacidad igual a los registros en uso: un
+cambio de tamaño no deja cola sin usar.
 
 **Costo medido** (server, núcleos 24-47, el mismo script con y sin las
 variables, mediana de 10 corridas alternadas; evidencia

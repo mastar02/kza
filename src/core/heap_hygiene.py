@@ -16,9 +16,12 @@ had in memory, a deleted fact's included, and heap addresses.
 
 Fix: the managed child runs with glibc's ``perturb`` tunable and without the
 per-thread cache (``tcache_count=0``; a cached chunk is returned without the
-perturb fill). Then every byte ``malloc`` returns is the perturb pattern, or
-zero (a fresh mapping, ``calloc``), never earlier contents, so an initialized
-index writes no residue. The tunables are read by the dynamic loader at exec,
+perturb fill). Then ``malloc`` never returns earlier contents: the requested
+bytes are the perturb pattern (or zero, a fresh mapping); the new part of a
+``realloc`` grown in place can hold the free fill and free-chunk link words
+(heap addresses), never process data. So an initialized index writes no
+residue. The vector of a deleted record stays in ``data_level0.bin`` until
+compaction (a deletion only marks its slot); this does not change that. The tunables are read by the dynamic loader at exec,
 so the parent sets them: the managed launcher (``child_environment``, the same
 literal as :data:`HEAP_HYGIENE_TUNABLES`, a test pins both) and the
 owner-compaction clean child. The managed entry refuses (exit 78) before it
