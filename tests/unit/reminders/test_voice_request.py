@@ -514,6 +514,7 @@ VERBS = [
     "recuérdale", "acordame", "acuérdame", "haceme acordar", "hacenos acordar", "avisame", "avísame",
     "avisanos", "avisale", "avisales", "no me dejes olvidar", "me podés recordar", "podrías recordarme",
     "podés avisarme", "me recordás", "me avisás",
+    "acordate de", "acuérdate de",                # review T031-U2-RV7
 ]
 
 
@@ -527,6 +528,7 @@ def test_reminder_verbs(verb):
 
 @pytest.mark.parametrize("utterance", [
     "acordate que mañana viene Juan",          # memory proposal (U3b), not a reminder
+    "acordate de que mañana viene Juan",       # review T031-U2-RV7: 'de que' is still not a reminder head
     "recordá que me gusta el café",
     "apagá la luz en 10 minutos",
     "poné un temporizador de 5 minutos",
@@ -1055,3 +1057,33 @@ def test_microbenchmark_under_one_millisecond_per_parse():
 ])
 def test_forbidden_home_order(text, kind):
     assert forbidden_home_order(text) == kind
+
+
+@pytest.mark.parametrize("utterance,expected,text", [
+    # Review T031-U2-RV7: "cuando sean las H" names the clock time.
+    ("avisame cuando sean las 9 de la noche que hay que salir", local(2026, 11, 16, 21), "hay que salir"),
+    ("avisame cuando sea la una de la tarde que llame a mamá", local(2026, 11, 16, 13), "llame a mamá"),
+    ("acordate de sacar la basura cuando sean las 8 de la noche", local(2026, 11, 16, 20), "sacar la basura"),
+])
+def test_cuando_sean_las_is_a_clock_time(utterance, expected, text):
+    result = parse(utterance)
+    assert result.ok, (result.ambiguity, result.detail)
+    assert (result.trigger_at, result.text) == (expected, text)
+
+
+@pytest.mark.parametrize("utterance", [
+    "avisame cuando sean las 9 de la noche",
+    "recordame nada a las 9 de la noche",
+    "recordame algo a las 9 de la noche",
+    "recordame eso a las 9 de la noche",
+    "Recordame NADA MÁS a las 9 de la noche",
+])
+def test_a_text_that_names_nothing_is_missing_text(utterance):
+    """Review T031-U2-RV7: a time with nothing to remember asks what, never saves 'nada'."""
+    result = parse(utterance)
+    assert (result.ambiguity, result.trigger_at) == (A.MISSING_TEXT, None)
+
+
+def test_a_filler_word_inside_a_real_text_is_kept():
+    result = parse("recordame nada más que pagar la luz a las 9 de la noche")
+    assert (result.ok, result.text) == (True, "nada más que pagar la luz")

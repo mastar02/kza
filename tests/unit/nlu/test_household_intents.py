@@ -61,6 +61,13 @@ PRECEDENCE = [
     ("recordame apagar la luz y prendé la tele", (F.REMINDER, O.CLARIFY, "R3")),
     # U3b memory proposals are not reminders (the router runs them earlier).
     ("acordate que mañana a las 8 viene el plomero", None),
+    # Review T031-U2-RV7: 'acordate de <algo>' asks KZA to remind; 'acordate (de) que' stays a memory request.
+    ("acordate de sacar la basura a las 8 de la noche", (F.REMINDER, O.CREATE, "R3")),
+    ("acuérdate de llamar a mamá", (F.REMINDER, O.CREATE, "R3")),
+    ("acordate de que mañana viene el plomero", None),
+    ("avisame cuando sean las 9 de la noche", (F.REMINDER, O.CREATE, "R3")),
+    ("poné una alarma al mediodía", (F.REMINDER, O.CREATE, "R3a")),
+    ("poné una alarma cuando sean las 7 de la tarde", (F.REMINDER, O.CREATE, "R3a")),
     ("recordá que el gas se paga el 10", None),
     # R1 object operations.
     ("cancelá el recordatorio de agregar leche a la lista", (F.REMINDER, O.CANCEL, "R1")),

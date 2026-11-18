@@ -126,6 +126,8 @@ _VERB = re.compile(
     r"|(?:me|nos)\s+(?:recordas|avisas)"
     r"|recorda(?:me|nos|le|les)|recuerda(?:me|nos|le|les)"
     r"|acorda(?:me|nos)|acuerda(?:me|nos)"
+    # "acordate de sacar la basura ..." (review T031-U2-RV7); "acordate (de) que ..." stays a memory request.
+    r"|acordate\s+de(?!\s+que\b)|acuerdate\s+de(?!\s+que\b)"
     r"|avisa(?:me|nos|le|les))\b"
 )
 _LEAD = re.compile(r"[\s¿¡,.;:!?\"']*(?:(?:che|ey|oye|hola|por\s+favor|porfa)\b[\s,.;:!?]*)*")
@@ -149,6 +151,8 @@ _DATE_WORDS = frozenset({
     "feriado", "feriados", "navidad", "nochebuena", "hoy", "pasado",
 })
 _CUT_WORDS = {"salvo", "excepto", "menos"}
+# A reminder text that names nothing to remember ("recordame nada a las 9") is asked (review T031-U2-RV7).
+_FILLER_TEXTS = frozenset({"nada", "nada mas", "algo", "eso", "esto", "una cosa", "lo que sea", "cualquier cosa"})
 _SINGULAR_ONE = {"un", "una", "uno"}
 # Words that may follow bare "y N" minutes without making N part of the content.
 _LOOSE_FOLLOWERS = {"que", "de", "y", "en", "para", "a"}
@@ -296,9 +300,12 @@ def _clock_at(words: list[str], i: int) -> tuple[_Clock, int] | None:
     n = len(words)
     if _at(words, i, ("al", "mediodia")):
         return _Clock(12, 0, "mediodia", True), i + 2
-    if words[i] not in ("a", "para"):
+    if words[i] in ("a", "para"):
+        j = i + 1
+    elif _at(words, i, ("cuando", "sean")) or _at(words, i, ("cuando", "sea")):
+        j = i + 2                     # "avisame cuando sean las 9 de la noche" (review T031-U2-RV7)
+    else:
         return None
-    j = i + 1
     loose = None
     if j < n and words[j] == "medianoche":
         return _Clock(0, 0, None, True), j + 1
@@ -911,7 +918,7 @@ def _analyse(original: str, folded: str, start: int, aliases: tuple[tuple[str, .
         cursor = b
     pieces.append(original[cursor:])
     text = _clean(" ".join(pieces), connectors=connectors)
-    if not text:
+    if not text or (connectors and _fold(text) in _FILLER_TEXTS):
         issues.add(ReminderAmbiguity.MISSING_TEXT)
     if issues:
         trigger, recurrence = None, None

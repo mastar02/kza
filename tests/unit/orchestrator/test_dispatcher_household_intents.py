@@ -1588,6 +1588,9 @@ ALARM_EXAMPLE = "poné una alarma mañana a las 7 de la mañana"
      "minutos, por ejemplo: poné una alarma a las 7 y 15 minutos de la mañana."),
     ("poné una alarma a las 7 y 15 minutos de la mañana",
      f"Esa hora de hoy ya pasó. Si es para mañana, decímelo completo con el día, por ejemplo: {ALARM_EXAMPLE}."),
+    # Review T031-U2-RV7: a time with nothing to remember asks what.
+    ("avisame cuando sean las 9 de la noche", f"¿Qué querés que te recuerde? Decímelo completo, por ejemplo: {EXAMPLE}."),
+    ("recordame nada a las 9 de la noche", f"¿Qué querés que te recuerde? Decímelo completo, por ejemplo: {EXAMPLE}."),
     ("recordame a las 8 de la noche y a las 9 de la noche llamar",
      f"Escuché más de una hora. Decímelo completo con una sola, por ejemplo: {EXAMPLE}."),
     ("recordame en 10 minutos llamar a las 8 de la noche",
@@ -1685,6 +1688,12 @@ async def test_every_ambiguity_code_has_its_question():
      "Anotado: sacar la basura, hoy a las 20:05."),
     ("poné una alarma a las 20 y 5 minutos para la reunión",
      ("alarma para la reunión", (2026, 11, 16, 20, 5), None), "Anotado: alarma para la reunión, hoy a las 20:05."),
+    # Review T031-U2-RV7: common rioplatense forms.
+    ("acordate de sacar la basura a las 8 de la noche", ("sacar la basura", (2026, 11, 16, 20, 0), None),
+     "Anotado: sacar la basura, hoy a las 20:00."),
+    ("avisame cuando sean las 9 de la noche que hay que salir", ("hay que salir", (2026, 11, 16, 21, 0), None),
+     "Anotado: hay que salir, hoy a las 21:00."),
+    ("poné una alarma al mediodía", ("alarma", (2026, 11, 16, 12, 0), None), "Anotado: alarma, hoy a las 12:00."),
 ])
 @pytest.mark.parametrize("speaker", ["unknown", "ana"])
 async def test_voice_creation_commits_one_shared_household_row(leaves, text, row, response, speaker):

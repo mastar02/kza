@@ -414,6 +414,7 @@ _REMINDER_HEAD = re.compile(
     r"|(?:me|nos) (?:podes|podrias|puedes) (?:recordar|avisar)"
     r"|(?:me|nos) (?:recordas|avisas)"
     r"|recorda(?:me|nos|melo)|recuerda(?:me|nos|melo)|acorda(?:me|nos)|acuerda(?:me|nos)|avisa(?:me|nos)"
+    r"|acordate de(?! que\b)|acuerdate de(?! que\b)"
     r"|recordar(?:me|nos)|avisar(?:me|nos)"
     r"|(?P<other>recorda(?:le|les)|recuerda(?:le|les)|avisa(?:le|les)|recordar(?:le|les)|avisar(?:le|les)"
     r"|(?:le|les) (?:podes|podrias|puedes) (?:recordar|avisar)))\b"
@@ -424,8 +425,8 @@ _NUMBER = (r"(?:\d+|un|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|
            r"|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|media|medio|cuartos?)")
 _DURATION = re.compile(rf"\b{_NUMBER}(?: y \w+)? (?:de )?(?:segundos?|minutos?|mins?|horas?)\b|\bmedia hora\b"
                        r"|\bhora y (?:media|cuarto)\b|\bminuto y medio\b")
-_CLOCK = re.compile(r"\b(?:a|para) (?:las? )?(?:\d{1,2}(?:[:.]\d{2})?|una|dos|tres|cuatro|cinco|seis|siete|ocho"
-                    r"|nueve|diez|once|doce|mediodia|medianoche)\b")
+_CLOCK = re.compile(r"\b(?:a|para|cuando sean?) (?:las? )?(?:\d{1,2}(?:[:.]\d{2})?|una|dos|tres|cuatro|cinco"
+                    r"|seis|siete|ocho|nueve|diez|once|doce|mediodia|medianoche)\b|\bal mediodia\b")
 # Review T031-U2-RV2: "a las 19 horas", "para las 8 hs" and "de las 7 horas de la mañana" name an hour of the
 # day (the article before the number), not a duration; R3a reads them before its duration check. "de 19 horas"
 # (no article) stays a duration. Likewise "a las 20 y 5 minutos" is 20:05, not a 5-minute timer (review
