@@ -1114,8 +1114,10 @@ def test_r1e2_q5_retires_production_s_layout_in_one_step(world):
         *(os.fspath(world.root / "backups" / C63 / name) for name in (".env", "config", "release.conf"))]
     assert "R1E-Q1" in intent["plan"]["authorization"] and "Q2=A" in intent["plan"]["authorization"]
     for slot in (CONTAINER, LEGACY, C63, OLDER):
-        with pytest.raises(launcher.LauncherRefusal, match="^runtime_admission_uninstall_legacy_retired$"):
+        with pytest.raises(launcher.LauncherRefusal, match="^runtime_admission_uninstall_legacy_retired") as refused:
             uninstall(world, slot)
+        assert refused.value.code == "runtime_admission_uninstall_legacy_retired"
+        assert refused.value.problems == [result["record"]]
 
 
 def test_r1e2_q5_records_absent_superseded_entries_and_still_names_them(world):
@@ -1300,8 +1302,9 @@ def test_r1e2_a_crash_inside_the_superseded_slots_completes_from_the_intent(worl
     monkeypatch.setattr(stage, "make_writable_then_remove", original)
     assert sorted(os.listdir(world.root / "slots" / OLDER)) == ["runtime"] and not (world.root / "slots" / C63).exists()
     for slot in (C63, OLDER):  # the intent already makes both ineligible
-        with pytest.raises(launcher.LauncherRefusal, match="^runtime_admission_uninstall_legacy_retired$"):
+        with pytest.raises(launcher.LauncherRefusal, match="^runtime_admission_uninstall_legacy_retired") as refused:
             uninstall(world, slot)
+        assert refused.value.problems == ["legacy-retirement/intent-" + plan + ".json"]
     result = retire(world, confirm=plan)
     assert result["resumed"] is True and not os.path.lexists(world.root / "slots" / OLDER)
     record = json.loads((world.root / "admission" / result["record"]).read_text())

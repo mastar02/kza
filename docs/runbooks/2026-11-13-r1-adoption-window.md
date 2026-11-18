@@ -460,7 +460,7 @@ intérprete del ensayo).
   responsable (el usuario, como operador de `kza`). Anotar también los dos
   arranques hasta READY de W8/W9 y la salida de `completion-status`.
 
-## Día 14: retiro Q5 del estado de b0866e8, sus copias y los slots superados
+## Día 14: retiro Q5 del estado de b0866e8 y sus copias del 2026-10-29
 
 Desde DÍA 0 + 14 × 24 h exactas («día 14», decisión Q1 = A), nunca antes: el
 comando lo rechaza (`runtime_admission_legacy_retire_too_early`, con
