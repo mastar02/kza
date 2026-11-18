@@ -48,10 +48,11 @@ READY; the retention after activation (after start) and after retire or
 abort; each against plan's P9 need (``capacity``). SQLite's temporary
 directory is ``KZA_SC6B_SQLITE_TMPDIR`` (default: a directory beside the root,
 on its filesystem, as SC-0b measured) and is passed to every controller
-command as TMPDIR and SQLITE_TMPDIR. Results: ``sc6b-measurements.json`` and
-the usual per-step logs (``sc6b-measure.json``, ``logs/measure/``) in
-KZA_0E4_EVIDENCE. Nothing here touches the kza account, /home/kza or a
-production unit.
+command as TMPDIR and SQLITE_TMPDIR. Results: ``sc6b-measurements.json``
+(rewritten after each path with ``complete`` false, so a later failure keeps
+the finished paths, and once more at the end) and the usual per-step logs
+(``sc6b-measure.json``, ``logs/measure/``) in KZA_0E4_EVIDENCE. Nothing
+here touches the kza account, /home/kza or a production unit.
 """
 from __future__ import annotations
 
@@ -191,12 +192,19 @@ def _path(world: MeasuredWorld, name: str, build: str, *, t0: bool = False, abor
         boots += 1
         status = _status(world, compaction_id)
         assert status["verified"] is True and status["armed_run"] == "consumed", status
+        h_binding = world.log(compaction_id)["intent"]["source_binding_id"]
         if abort:
             parsed = world.st("paso8-retire-refused", "compact", "retire", compaction_id, expect=78)
             assert parsed["refused"] == compaction.RETIRE_PROTECTED_CHANGED, parsed
             assert parsed["report"]["w"]["class"] == compaction.W_LOSS_ONLY, parsed["report"]["w"]
             world.abort_to_h(compaction_id)
             disk.mark("after_abort")
+            # The abort's outcome before H serves (serving opens the head again): H's head, closed, the log
+            # terminal and aborted, K gone.
+            head = world.head()
+            assert head["status"] == "closed" and head["binding_id"] == h_binding, head
+            assert world.log(compaction_id)["terminal"] and world.kinds(compaction_id)[-1] == "aborted"
+            assert not (world.root / "slots" / k).exists()
         else:
             world.retire(compaction_id)
             disk.mark("after_retire")
@@ -210,8 +218,7 @@ def _path(world: MeasuredWorld, name: str, build: str, *, t0: bool = False, abor
     v_seconds = parts[name + "-v.start_to_inactive"]  # V's boot, its N seconds and its stop
     other = d_seconds - t_copy - sum(to_ready) - sum(stops) - v_seconds  # extract, T0, verify, status, ...
     if abort:
-        head = world.head()
-        assert head["status"] == "closed" and world.log(compaction_id)["terminal"]
+        assert world.head()["binding_id"] == h_binding  # H serves (its head is running while it does)
     else:
         assert world.slot_of_head() == k
     result = {"path": name, "k": k, "compaction_id": compaction_id, "t0": t0, "lossless_abort": abort,
@@ -253,18 +260,26 @@ def test_sc6b_final_downtime_and_disk_numbers(builds, tmp_path, systemd, record)
                "databases": {path.name: path.stat().st_size for path in sorted((state / "data").glob("*.db"))},
                "grow_and_close_seconds": round(time.monotonic() - started, 1)}
     _serve_until_ready(world, "h-serving")  # production's state before the first transition
-    paths = [_path(world, "a-first-with-t0", "x5", t0=True),
-             _path(world, "b-later-without-t0", "x5"),
-             _path(world, "c-lossless-abort", "x5", abort=True)]
+    paths: list[dict] = []
+
+    def summarize(complete: bool) -> dict:
+        return {"complete": complete, "events": EVENTS, "utterances": UTTERANCES, "h_state": h_state,
+                "host": os.uname().nodename, "cpus": os.cpu_count(), "load_now": os.getloadavg(),
+                "sqlite_tmp": str(sqlite_tmp), "w8_b_seconds": W8_B, "smoke_seconds": SMOKE_SECONDS,
+                "budget_seconds": BUDGET_SECONDS,
+                "paths": {item["path"]: {key: item[key] for key in ("d_seconds", "within_budget", "t_copy_seconds",
+                                                                    "boots", "formula_check", "disk")}
+                          | ({"w8": item["w8"]} if "w8" in item else {}) for item in paths}}
+
+    # Each path's numbers reach the evidence as soon as it finishes, so a later failure keeps them.
+    for name, t0, abort in (("a-first-with-t0", True, False), ("b-later-without-t0", False, False),
+                            ("c-lossless-abort", False, True)):
+        paths.append(_path(world, name, "x5", t0=t0, abort=abort))
+        real_systemd.record("sc6b-measurements", summarize(False))
     world.ctl("final-stop", "stop", world.unit)
     world.d.wait_inactive(120)
     world.ctl("final-disable", "disable", world.unit)
-    summary = {"events": EVENTS, "utterances": UTTERANCES, "h_state": h_state, "host": os.uname().nodename,
-               "cpus": os.cpu_count(), "load_at_end": os.getloadavg(), "sqlite_tmp": str(sqlite_tmp),
-               "w8_b_seconds": W8_B, "smoke_seconds": SMOKE_SECONDS, "budget_seconds": BUDGET_SECONDS,
-               "paths": {item["path"]: {key: item[key] for key in ("d_seconds", "within_budget", "t_copy_seconds",
-                                                                   "boots", "formula_check", "disk")}
-                         | ({"w8": item["w8"]} if "w8" in item else {}) for item in paths}}
+    summary = summarize(True)
     rec.result(summary=summary)
     real_systemd.record("sc6b-measurements", summary)
     # SC-D2 A, re-checked by SC-6b: every path within 600 s (with W8's B when it is given).
