@@ -240,6 +240,19 @@ C02_DISPATCHER = tuple(_REMINDER_GRID) + (
              spoken="clarification", state="light_match;reminder_shared_active:alarma", unit="T031-U2-Q1",
              note="user answer T031-U2-Q1: the alarm reminder is listed; no HA send, no alarm panel, no vector "
                   "search, even with a caller's turn_off"),
+    *(_d(id_, text, "reminder", "false_confirmation", "completed", "fast_reminder", "completed", "committed",
+         "readback", counts=effects(reminder_rows_delta=1), conditions={"state": "household_clock_tomorrow_at_1000"},
+         unit="BFR1-Q1", note=note)
+      for id_, text, note in (
+          ("C02-REM-0321", "bueno, recordame sacar la basura mañana a las 8 de la noche",
+           "unit BFR1-Q1: the classifier's fillers before the verb are read by the creation too (was: asked again)"),
+          ("C02-REM-0322", "no, recordame sacar la basura mañana a las 8 de la noche",
+           "unit BFR1-Q1: a 'no' followed by a pause is a filler (T032-U1-Q4)"),
+          ("C02-REM-0323", "recordame sacar la basura mañana a las 8 de la noche, dale",
+           "unit BFR1-Q1: a paused trailing 'dale' is not saved in the text"),
+          ("C02-ALM-0220", "bueno, poné una alarma a las 7 de la tarde, dale",
+           "unit BFR1-Q1: R3a with the same fillers; the alarm text is 'alarma'"),
+      )),
     _timer("C02-ALM-0214", "poné una alarma de 19 horas", "completed", "volatile", "readback", counts=CREATED,
            effect_class="wrong_family", note="review T031-U2-RV2: without the article 'N horas' is a duration"),
     _timer("C02-ALM-0103", "poné una alarma", "needs_input", "not_written", "clarification", seed="C02-ALM-0004",
@@ -2196,3 +2209,75 @@ async def test_the_security_alarm_without_a_clock_time_stays_unclaimed(leaves):
     counted = leaves.effects(before)
     assert (counted["timer_transitions"], counted["reminder_transitions"]) == (0, 0)
 
+
+# ---------------------------------------------------------------------------
+# Unit BFR1-Q1 (user answer, assistant_defaults_recommended): voice reminder
+# creation reads the request after the classifier's fillers (strip_fillers) and
+# never saves a paused trailing "dale".
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(("text", "row", "response"), [
+    ("recordame regar las plantas a las 9 de la noche, dale", ("regar las plantas", (2026, 11, 16, 21, 0)),
+     "Anotado: regar las plantas, hoy a las 21:00."),
+    ("bueno, recordame regar las plantas a las 9 de la noche", ("regar las plantas", (2026, 11, 16, 21, 0)),
+     "Anotado: regar las plantas, hoy a las 21:00."),
+    ("no, recordame regar las plantas a las 9 de la noche", ("regar las plantas", (2026, 11, 16, 21, 0)),
+     "Anotado: regar las plantas, hoy a las 21:00."),
+    ("Nexa, bue, recordame sacar la basura a las 9 de la noche, dale, porfa", ("sacar la basura",
+                                                                            (2026, 11, 16, 21, 0)),
+     "Anotado: sacar la basura, hoy a las 21:00."),
+    ("dale, recordame tomar agua a las 5 de la tarde. Dale.", ("tomar agua", (2026, 11, 16, 17, 0)),
+     "Anotado: tomar agua, hoy a las 17:00."),
+    ("hola, por favor, recordame tomar agua a las 5 de la tarde, porfa, dale", ("tomar agua", (2026, 11, 16, 17, 0)),
+     "Anotado: tomar agua, hoy a las 17:00."),
+    ("poné una alarma a las 7 de la tarde, dale", ("alarma", (2026, 11, 16, 19, 0)), "Anotado: alarma, hoy a las 19:00."),
+    ("bueno, poné un despertador mañana a las 7 de la mañana", ("despertador", (2026, 11, 17, 7, 0)),
+     "Anotado: despertador, mañana a las 07:00."),
+    ("no, poné una alarma a las 7 de la tarde para ir al médico, dale",
+     ("alarma para ir al médico", (2026, 11, 16, 19, 0)), "Anotado: alarma para ir al médico, hoy a las 19:00."),
+    # Without a pause a trailing 'dale' may end the text (review BFR1-R1): it stays.
+    ("recordame a las 9 de la noche decirle a Juan que dale", ("decirle a Juan que dale", (2026, 11, 16, 21, 0)),
+     "Anotado: decirle a Juan que dale, hoy a las 21:00."),
+    ("recordame a las 9 de la noche decirle a Juan que dale, dale", ("decirle a Juan que dale",
+                                                                    (2026, 11, 16, 21, 0)),
+     "Anotado: decirle a Juan que dale, hoy a las 21:00."),
+    ("recordame regar las plantas a las 9 de la noche dale", ("regar las plantas dale", (2026, 11, 16, 21, 0)),
+     "Anotado: regar las plantas dale, hoy a las 21:00."),
+])
+async def test_voice_creation_ignores_the_shared_fillers(leaves, text, row, response):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    dispatcher = leaves.dispatcher()
+    _frozen_leaves(leaves, dispatcher, _monday_10())
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text=text)
+    assert (result.path, result.success, result.response) == (PathType.FAST_REMINDER, True, response)
+    assert result.outcome.persistence.value == "committed"
+    assert leaves.effects(before) == effects(reminder_rows_delta=1)
+    expected = datetime(*row[1], tzinfo=ZoneInfo("America/Montevideo")).timestamp()
+    assert _rows(leaves.reminders_db) == [("household", "shared", row[0], expected, None, None, "active")]
+
+
+@pytest.mark.parametrize("text", ["no recordame regar las plantas a las 9 de la noche",
+                                  "no me recuerdes regar las plantas a las 9 de la noche"])
+async def test_a_leading_no_without_a_pause_is_a_negation_and_writes_nothing(leaves, text):
+    """T032-U1-Q4: only 'no' followed by a pause is a filler; 'no recordame ...' never creates a reminder."""
+    dispatcher = leaves.dispatcher()
+    _frozen_leaves(leaves, dispatcher, _monday_10())
+    assert dispatcher.household_intents.classify(text) is None
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text=text)
+    assert not result.response.startswith("Anotado")
+    assert leaves.effects(before)["reminder_rows_delta"] == 0
+    assert _rows(leaves.reminders_db) == []
+
+
+async def test_a_filled_creation_question_asks_without_the_fillers(leaves):
+    """A request that still needs input is asked as before: the fillers never become the reminder text."""
+    dispatcher = leaves.dispatcher()
+    _frozen_leaves(leaves, dispatcher, _monday_10())
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text="bueno, recordame a las 9 de la noche, dale")
+    assert result.response == f"¿Qué querés que te recuerde? Decímelo completo, por ejemplo: {EXAMPLE}."
+    assert (result.outcome.status.value, result.outcome.persistence.value) == ("needs_input", "not_written")
+    assert leaves.effects(before) == ZERO

@@ -116,6 +116,12 @@ C02_ROUTER = (
        counts=SPOKEN_ONE, unit="T031-U2-Q1",
        note="user answer T031-U2-Q1: a clock time names the alarm reminder, not the alarm panel; 6 words on a "
             "strong acoustic wake: no 7B call, no grammar, no HA send"),
+    _r("C02-REM-0324", "bueno, recordame sacar la basura mañana a las 8 de la noche, dale", "reminder", "completed",
+       "fast_reminder", "completed", "committed", "readback", state="household_clock_tomorrow_at_1000",
+       counts=effects(reminder_rows_delta=1, spoken_utterances=1), effect_class="false_confirmation",
+       unit="BFR1-Q1",
+       note="unit BFR1-Q1: the router hands the dispatcher the turn as heard; the creation reads it after the "
+            "shared fillers (was: asked again) and saves 'sacar la basura' without the paused 'dale'"),
     _r("C02-LST-0201", "agregá leche a la lista de compras", "list", "no_turn", None, None, None, "none",
        engine="whisper", llm="stub:noise", state="shared_list_compras", counts=effects(llm_8101_calls=1),
        effect_class="stale_audio", note="transcript-based wake engine: every claimed turn needs the veto"),
@@ -485,3 +491,18 @@ async def test_the_hour_question_and_its_answer_go_through_the_router(leaves):
     states = {r.text: r.state.value for r in await leaves.reminder_manager.get_active(None, shared_only=True)}
     assert states == {"tomar agua con gas": "active"}
 
+
+@pytest.mark.parametrize(("text", "saved"), [
+    ("bueno, recordame sacar la basura mañana a las 8 de la noche, dale", "sacar la basura"),
+    ("no, poné una alarma mañana a las 8 de la noche, dale", "alarma"),
+])
+async def test_a_filled_voice_reminder_is_saved_without_its_fillers(leaves, text, saved):
+    """Unit BFR1-Q1 through the router: one shared row whose text has no filler, and its read-back says so."""
+    import sqlite3
+    house = Household(leaves, text=text)
+    await leaves.apply_state(house.orchestrator.dispatcher, "household_clock_tomorrow_at_1000")
+    result = await house.turn()
+    assert (result["path"], result["outcome"]["persistence"]) == ("fast_reminder", "committed")
+    assert result["response"] == f"Anotado: {saved}, mañana a las 20:00."
+    with sqlite3.connect(leaves.reminders_db) as conn:
+        assert [r[0] for r in conn.execute("SELECT text FROM reminders")] == [saved]

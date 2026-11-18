@@ -274,10 +274,15 @@ def _tokens(text: str) -> _Utterance:
     return _Utterance(original, tuple(_fold(t) for t in original))
 
 
-def _filler_bounds(utt: _Utterance, text: str, wake_words: Iterable[str],
-                   extra_leads: frozenset[str], extra_trails: frozenset[str]) -> tuple[int, int]:
-    """Token range of ``utt`` (the tokens of ``text``) without its lead and trail fillers."""
-    ends = [m.end() for m in _WORD_RE.finditer((text or "").lower())]
+def _filler_bounds(utt: _Utterance, text: str, wake_words: Iterable[str], extra_leads: frozenset[str],
+                   extra_trails: frozenset[str], paused_trails: frozenset[str] = frozenset()) -> tuple[int, int]:
+    """Token range of ``utt`` (the tokens of ``text``) without its lead and trail fillers.
+
+    A word of ``paused_trails`` is a trailing filler only after a pause
+    (punctuation before it: "..., dale").
+    """
+    lowered = (text or "").lower()
+    spans = [m.span() for m in _WORD_RE.finditer(lowered)]
     leads = WAKE_TERMS | {_fold(w) for w in wake_words} | _LEAD_WORDS | extra_leads
     trails = _TRAIL_WORDS | extra_trails
     start, end = 0, len(utt)
@@ -287,7 +292,7 @@ def _filler_bounds(utt: _Utterance, text: str, wake_words: Iterable[str],
             start += 1
         elif word == "por" and utt.at(start + 1) == "favor":
             start += 2
-        elif word == "no" and _PAUSE_AFTER.match((text or "").lower(), ends[start]):
+        elif word == "no" and _PAUSE_AFTER.match(lowered, spans[start][1]):
             start += 1
         else:
             break
@@ -296,9 +301,44 @@ def _filler_bounds(utt: _Utterance, text: str, wake_words: Iterable[str],
             end -= 2
         elif utt.folded[end - 1] in trails:
             end -= 1
+        elif utt.folded[end - 1] in paused_trails and end - start >= 2 \
+                and _PAUSE_AFTER.match(lowered, spans[end - 2][1]):
+            end -= 1
         else:
             break
     return start, end
+
+
+def filler_span(text: str, wake_words: Iterable[str] = (), *, paused_trails: frozenset[str] = frozenset()
+                ) -> tuple[int, int]:
+    """Character range of ``text`` left by the filler rule of :func:`strip_fillers`.
+
+    For a caller that needs the words as heard, with their punctuation (the
+    voice reminder parser, unit BFR1-Q1): ``text[start:end]`` holds every
+    token :func:`strip_fillers` keeps and nothing before or after them.
+
+    Args:
+        text: The utterance as heard.
+        wake_words: Configured wake words, besides ``WAKE_TERMS``.
+        paused_trails: Trailing words (accent-folded) dropped only after a
+            pause ("tomar agua a las 5, dale"); without the pause they stay,
+            as they may end a free text ("decirle que dale").
+
+    Returns:
+        ``(start, end)`` offsets into ``text``; ``(0, len(text))`` when
+        lowercasing changes the length of ``text`` (offsets would not match),
+        and ``(0, 0)`` when only fillers were said.
+    """
+    text = text or ""
+    lowered = text.lower()
+    if len(lowered) != len(text):
+        return 0, len(text)
+    utt = _tokens(text)
+    start, end = _filler_bounds(utt, text, wake_words, frozenset(), frozenset(), paused_trails)
+    if start >= end:
+        return 0, 0
+    spans = [m.span() for m in _WORD_RE.finditer(lowered)]
+    return spans[start][0], spans[end - 1][1]
 
 
 def strip_fillers(text: str, wake_words: Iterable[str] = (), *, extra_leads: frozenset[str] = frozenset(),

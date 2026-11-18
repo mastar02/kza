@@ -15,6 +15,7 @@ from src.nlu.household_intents import (
     HouseholdIntentSettings,
     HouseholdOperation,
     classify_household_intent,
+    filler_span,
     starts_with_reminder_request,
     strip_fillers,
 )
@@ -708,6 +709,53 @@ def test_strip_fillers_takes_configured_wake_words_and_extra_leads():
     assert strip_fillers("el segundo porfa dale", extra_trails=frozenset({"dale"})) == ("el", "segundo")
     assert strip_fillers("el segundo, dale, porfa") == ("el", "segundo", "dale")
 
+
+FILLER_SHAPES = [
+    "Nexa, bueno, el segundo, porfa", "bue, el segundo", "hola, el segundo", "porfa el segundo", "no, el segundo",
+    "Nexa, no. El segundo", "no el segundo", "el segundo, no", "che oye ey podés el segundo por favor",
+    "el segundo porfa por favor porfa", "el segundo, dale", "decirle que dale", "dale", "", "el número dos",
+    "dale dale dale dale dale dale el segundo", "dale dale dale dale dale dale dale el segundo",
+    "bueno, recordame tomar agua a las 5, porfa", "no, recordame tomar agua", "no recordame tomar agua",
+]
+
+
+@pytest.mark.parametrize("text", FILLER_SHAPES)
+def test_filler_span_keeps_exactly_the_words_strip_fillers_keeps(text):
+    """Unit BFR1-Q1: the character range of the reminder request is the shared filler rule, not a second one."""
+    from src.nlu.household_intents import _tokens
+    start, end = filler_span(text, ("nexa",))
+    assert _tokens(text[start:end]).folded == strip_fillers(text, ("nexa",))
+
+
+@pytest.mark.parametrize(("text", "heard"), [
+    ("bueno, recordame tomar agua a las 5, dale", "recordame tomar agua a las 5"),
+    ("Nexa, no, recordame tomar agua a las 5. Dale.", "recordame tomar agua a las 5"),
+    ("recordame tomar agua a las 5, dale, porfa", "recordame tomar agua a las 5"),
+    ("recordame tomar agua a las 5, porfa, dale", "recordame tomar agua a las 5"),
+    ("recordame tomar agua a las 5 por favor, dale", "recordame tomar agua a las 5"),
+    ("recordame tomar agua a las 5; dale", "recordame tomar agua a las 5"),
+    # Without a pause a trailing 'dale' may end the text (review BFR1-R1): kept.
+    ("recordame tomar agua a las 5 dale", "recordame tomar agua a las 5 dale"),
+    ("recordame a las 5 decirle que dale", "recordame a las 5 decirle que dale"),
+    ("recordame a las 5 decirle que dale, porfa", "recordame a las 5 decirle que dale"),
+    ("recordame decirle que dale, dale", "recordame decirle que dale"),
+    ("no recordame tomar agua, dale", "no recordame tomar agua"),
+    ("dale, dale", ""),
+])
+def test_filler_span_drops_a_trailing_dale_only_after_a_pause(text, heard):
+    start, end = filler_span(text, ("nexa",), paused_trails=frozenset({"dale"}))
+    assert text[start:end] == heard
+
+
+def test_filler_span_without_paused_trails_keeps_a_paused_dale():
+    text = "recordame tomar agua a las 5, dale"
+    assert filler_span(text) == (0, len(text))
+
+
+def test_filler_span_strips_nothing_when_lowercasing_moves_the_offsets():
+    """'İ' lowercases to two characters: offsets into the lowered text would cut the wrong words."""
+    text = "bueno, recordame İr al banco a las 5, dale"
+    assert filler_span(text, paused_trails=frozenset({"dale"})) == (0, len(text))
 
 
 @pytest.mark.parametrize("text", [

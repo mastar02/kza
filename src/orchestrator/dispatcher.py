@@ -66,6 +66,7 @@ from src.nlu.household_intents import (
     HouseholdIntent,
     HouseholdIntentClassifier,
     HouseholdOperation,
+    filler_span,
     strip_fillers,
 )
 from src.orchestrator.cancellation import CancellationReason
@@ -207,6 +208,9 @@ _CHOICE_LEADS = frozenset({"si", "cancela", "cancelame", "borra", "elimina", "sa
 # A trailing "dale" is a filler only in a choice answer, a closed vocabulary; the classifier keeps it, as
 # it may end a reminder's name ("decirle que dale", review BFR1-R1).
 _CHOICE_TRAILS = frozenset({"dale"})
+# Unit BFR1-Q1 (user answer, 2026-11-18): a voice reminder request is read after the same fillers, and a trailing
+# "dale" after a pause ("..., dale") is not reminder text; without the pause it may be ("decirle que dale").
+_REQUEST_PAUSED_TRAILS = frozenset({"dale"})
 # T032-U1-Q3: the hour of "el de las 2" (12-hour reading) and the 24-hour hours a period allows.
 _CHOICE_HOUR_WORDS = {**_CHOICE_CARDINALS, "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10, "once": 11,
                       "doce": 12}
@@ -2145,6 +2149,9 @@ class RequestDispatcher:
         with a question that asks for the whole request again, and nothing is
         written (single turn, user answers Q7/Q8). An "alarma"/"despertador"
         with a clock time (R3a) is a reminder whose text starts with that noun.
+        The request is read without the fillers the classifier ignored
+        (:func:`filler_span`: "bueno, recordame ...", "no, recordame ...") and
+        without a trailing "dale" after a pause (unit BFR1-Q1).
 
         The row is always ``user_id='household'``, scope shared and without
         home actions (T031-U5 adds them), whatever acoustic label spoke.
@@ -2162,7 +2169,16 @@ class RequestDispatcher:
         alarm = household.rule == "R3a"
         example = _ALARM_EXAMPLE if alarm else _REMINDER_EXAMPLE
         minutes_example = _ALARM_MINUTES_EXAMPLE if alarm else _REMINDER_MINUTES_EXAMPLE
-        spoken = f"recordame {_alarm_noun(text)} {household.complement}" if alarm else text
+        start, end = filler_span(text, self.household_intents.settings.wake_words,
+                                 paused_trails=_REQUEST_PAUSED_TRAILS)
+        heard = text[start:end]
+        if alarm:
+            # The R3a complement of the heard words: the same words after the alarm noun, without a paused "dale".
+            trimmed = self.household_intents.classify(heard) if heard != text else household
+            complement = trimmed.complement if trimmed is not None and trimmed.rule == "R3a" else household.complement
+            spoken = f"recordame {_alarm_noun(text)} {complement}"
+        else:
+            spoken = heard
         try:
             request = self._reminder_requests.parse_reminder(spoken)
         except ValueError:
