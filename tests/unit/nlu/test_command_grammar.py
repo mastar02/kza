@@ -362,3 +362,34 @@ class TestLlmIntentEvidenced:
         from src.nlu.command_grammar import llm_intent_evidenced
         assert llm_intent_evidenced(None, "qué hora es") is True
         assert llm_intent_evidenced("timer", "en diez minutos") is True
+
+
+# -----------------------------------------------------------------
+# Unresolved light location (T037-U5-FV2)
+# -----------------------------------------------------------------
+
+@pytest.mark.parametrize("text,expected", [
+    # 'luz'/'luces': unchanged, the location must be exactly a known room.
+    ("prendé la luz del quincho", True),
+    ("prendé las luces del quincho", True),
+    ("prendé la luz del living", False),
+    ("apagá la luz", False),
+    # The dispatcher's other light nouns: a location that names no known room asks.
+    ("prendé la lámpara del quincho", True),
+    ("prendé las lámparas del quincho por favor", True),
+    ("apagá el foco del quincho", True),
+    ("prendé la luminaria del quincho", True),
+    ("prendé la veladora en el quincho", True),
+    ("prendé la luz del living y la lámpara del quincho", True),
+    # A known room still resolves, even after a fixture qualifier.
+    ("prendé la lámpara del living", False),
+    ("prendé el foco de la cocina", False),
+    ("prendé la lámpara de pie del living", False),
+    ("bajá la lámpara del living al 50", False),
+    # A bare 'de' qualifies the fixture, it is no location.
+    ("prendé la lámpara de pie", False),
+    ("apagame la lámpara", False),
+])
+def test_has_unresolved_light_location(text, expected):
+    from src.nlu.command_grammar import has_unresolved_light_location
+    assert has_unresolved_light_location(text) is expected

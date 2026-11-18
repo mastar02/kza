@@ -353,6 +353,39 @@ async def test_unresolved_light_the_grammar_names_no_intent_for_asks(leaves, tex
     assert_asks_room_no_effect(house, result, before, llm_8101_calls=1)
 
 
+# A lamp or bulb in an unknown room asks like 'luz' does (T037-U5-FV2).
+UNRESOLVED_FIXTURE = ["prendé la lámpara del quincho", "apagá el foco del quincho"]
+
+
+@pytest.mark.parametrize("capture", ["follow_up", "barge_in"])
+@pytest.mark.parametrize(("text", "llm"), zip(UNRESOLVED_FIXTURE, ["stub:turn_on@0.95", "stub:turn_off@0.95"]))
+async def test_unresolved_fixture_without_own_wake_the_7b_accepts_asks(leaves, text, llm, capture):
+    house = await house_for(leaves, text, llm, "light_match")
+    before = leaves.snapshot()
+    result = await turn(house, capture)
+    assert_asks_room_no_effect(house, result, before, llm_8101_calls=1)
+
+
+@pytest.mark.parametrize("capture", list(OWN))
+@pytest.mark.parametrize("text", UNRESOLVED_FIXTURE)
+async def test_unresolved_fixture_on_own_wake_asks_with_no_7b_call(leaves, text, capture):
+    house = await house_for(leaves, text, "stub:unavailable", "light_match")
+    before = leaves.snapshot()
+    result = await turn(house, capture)
+    assert "llm_router" not in result["timings"]
+    assert_asks_room_no_effect(house, result, before, llm_8101_calls=0)
+
+
+@pytest.mark.parametrize("capture", list(OWN))
+async def test_fixture_in_a_known_room_on_own_wake_still_runs(leaves, capture):
+    """A fixture qualifier before a known room is no unknown location: the vector search picks the lamp."""
+    house = await house_for(leaves, "prendé la lámpara de pie del living", "stub:unavailable", "light_match")
+    before = leaves.snapshot()
+    result = await turn(house, capture)
+    assert result["success"] is True and result["path"] == "fast_domotics"
+    assert house.effects(before) == effects(ha_service_calls=1, vector_searches=1)
+
+
 @pytest.mark.parametrize(("hint", "intent", "text", "expected"), [
     ("light", "turn_on", "dale nomás", True),
     ("luz del quincho", "turn_on", "dale nomás", True),
@@ -374,6 +407,9 @@ async def test_unresolved_light_the_grammar_names_no_intent_for_asks(leaves, tex
     ("quincho", None, "la luz del quincho", False),
     ("quincho", "set_brightness", "bajá la persiana del quincho", False),
     (None, None, "bajá la persiana del quincho", False),
+    # T037-U5-FV2: the dispatcher's other light nouns in a 7B hint.
+    ("foco del quincho", "turn_on", "dale nomás", True),
+    ("veladoras", "turn_off", "dale nomás", True),
 ])
 def test_dispatch_targets_light(hint, intent, text, expected):
     from src.nlu.llm_router import CommandClassification

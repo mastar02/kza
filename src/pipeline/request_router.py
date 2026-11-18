@@ -123,7 +123,11 @@ def _capture_without_own_wake(capture_trigger: str | None) -> bool:
     return capture_trigger is not None and capture_trigger not in _OWN_WAKE_TRIGGERS
 
 
-_LIGHT_WORDS = frozenset({"light", "luz", "luces", "lampara", "lamparas"})
+_LIGHT_WORDS = frozenset({
+    "light", "luz", "luces", "lampara", "lamparas",
+    # The dispatcher's other light nouns (T037-U5-FV2).
+    "foco", "focos", "luminaria", "luminarias", "veladora", "veladoras",
+})
 
 
 def _dispatch_targets_light(text: str, classification) -> bool:
