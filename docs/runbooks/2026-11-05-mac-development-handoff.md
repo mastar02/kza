@@ -1987,6 +1987,17 @@ DEPLOYMENT («Residuo de heap en los índices de Chroma (SC4C-Q3)»);
 evidencia `data/autonomous-roadmap-20261102/sc4c-q3/evidence.json` (local,
 fuera de Git).
 
+Revisión independiente, ronda 1 (2026-11-18): `changes_needed`, cuatro
+hallazgos, aplicados uno por commit. R1 (alto): `AdmissionController.run`
+(`run_slot`) arrancaba un `src.main` con ticket sin los tunables y el ensayo
+compilado `test_compiled_stop_contract.py` salía con 78; ahora les pone los
+mismos que el launcher (test nuevo). R2: el costo en memoria (RSS) y en
+arranque, medido y anotado en DEPLOYMENT; la carga real de modelos se mide
+en la ventana de SC-6b. R3: un controlador anterior a Q3 con un slot de Q3
+lo cierra el triple del controlador (límite 7 en DEPLOYMENT y nota en el
+runbook del modo release). R4: redacción («nunca contenido anterior»).
+Detalle en la evidencia (`review_round_1`).
+
 ## Prompt para la sesión nueva
 
 Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.
