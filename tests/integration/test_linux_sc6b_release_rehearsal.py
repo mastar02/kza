@@ -210,7 +210,9 @@ class Recorder:
         self.results: dict = {}
         self.times: dict = {}
         evidence = real_systemd.evidence_directory()
-        self.logs = (evidence if evidence is not None else tmp_path) / "logs" / item
+        # Without an evidence directory (the batch suite), keep the step logs out of tmp_path/logs:
+        # RealDeployment creates that directory for the unit's console log (batch F suite collision).
+        self.logs = (evidence / "logs" if evidence is not None else tmp_path / "rehearsal-logs") / item
         self.logs.mkdir(parents=True, exist_ok=True)
         self.pairs: list[tuple[str, str]] = [(sys.executable, "$PY"), (str(REPO) + "/", "<repo>/"),
                                              (str(tmp_path), "<tmp>")]
