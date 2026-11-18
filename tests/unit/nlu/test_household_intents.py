@@ -159,6 +159,30 @@ PRECEDENCE = [
     ("cuánto falta para la alarma", (F.TIMER, O.QUERY, "R1")),
     ("¿hay alguna alarma?", (F.TIMER, O.QUERY, "R1")),
     ("decime las alarmas", (F.TIMER, O.QUERY, "R1")),
+    # User answer T030-U1-Q8 (A): a cancel or query of an alarm with a clock time reaches the reminders (it was
+    # created as one, R3a); without a clock time, and for stop/pause/resume, the alarm stays a timer.
+    ("cancelá la alarma de las 7", (F.REMINDER, O.CANCEL, "R1")),
+    ("borrá el despertador de las 6:30", (F.REMINDER, O.CANCEL, "R1")),
+    ("sacá la alarma de la una", (F.REMINDER, O.CANCEL, "R1")),
+    ("cancelá la alarma de las siete y media", (F.REMINDER, O.CANCEL, "R1")),
+    ("anulá la alarma de las veintitrés", (F.REMINDER, O.CANCEL, "R1")),
+    ("olvidate de la alarma de las 8", (F.REMINDER, O.CANCEL, "R1")),
+    ("cancelá la alarma del mediodía", (F.REMINDER, O.CANCEL, "R1")),
+    ("cancelá la alarma para las 7", (F.REMINDER, O.CANCEL, "R1")),
+    ("cancelá las alarmas de las 7", (F.REMINDER, O.CANCEL, "R1")),
+    ("qué alarmas hay a las 7", (F.REMINDER, O.QUERY, "R1")),
+    ("¿hay alguna alarma a las 7?", (F.REMINDER, O.QUERY, "R1")),
+    ("decime la alarma de las 8 y media", (F.REMINDER, O.QUERY, "R1")),
+    ("cuánto falta para la alarma de las 7", (F.REMINDER, O.QUERY, "R1")),
+    ("cancelá la alarma de 7 minutos", (F.TIMER, O.CANCEL, "R1")),
+    ("cancelá la alarma de las 7 minutos", (F.TIMER, O.CANCEL, "R1")),
+    ("cancelá la alarma de la pasta", (F.TIMER, O.CANCEL, "R1")),
+    ("cancelá la alarma de la lasaña", (F.TIMER, O.CANCEL, "R1")),
+    ("cancelá el timer de las 7", (F.TIMER, O.CANCEL, "R1")),
+    ("apagá la alarma de las 7", (F.TIMER, O.STOP, "R1")),
+    ("pausá la alarma de las 7", (F.TIMER, O.PAUSE, "R1")),
+    ("desactivá la alarma de las 7", None),
+    ("cancelá el recordatorio de las 7", (F.REMINDER, O.CANCEL, "R1")),
     # R3a durations the timer parser reads (16-19, 21-29, tres cuartos, hora y media).
     ("poné una alarma de diecisiete minutos", (F.TIMER, O.CREATE, "R3a")),
     ("poné una alarma de veintidós minutos", (F.TIMER, O.CREATE, "R3a")),
@@ -261,6 +285,8 @@ def test_precedence_table(text, expected):
     ("poné una alarma de 10 minutos", "duration"),
     ("poné una alarma a las 7", "clock_time"),
     ("poné una alarma", "no_time"),
+    ("cancelá la alarma de las 7", "clock_alarm"),
+    ("qué alarmas hay a las 7", "clock_alarm"),
     ("prendé la luz y apagá la luz", "conflicting_parts"),
     ("abrí la persiana y cerrá la persiana", "conflicting_parts"),
     ("apagá la luz en 10 minutos y pausá la música", "deferred_part"),
@@ -273,6 +299,19 @@ def test_precedence_table(text, expected):
 ])
 def test_reason_codes(text, reason):
     assert classify_household_intent(text).reason == reason
+
+
+@pytest.mark.parametrize("text", ["cancelá el recordatorio de las 7", "cancelá la alarma", "qué alarmas hay",
+                                  "apagá la alarma de las 7", "poné una alarma a las 7"])
+def test_clock_alarm_reason_only_on_an_alarm_cancel_or_query(text):
+    """T030-U1-Q8: the reason marks only a cancel/query of an alarm named with a clock time."""
+    assert classify_household_intent(text).reason != "clock_alarm"
+
+
+def test_clock_alarm_complement_keeps_the_time_words():
+    intent = classify_household_intent("nexa cancelá la alarma de las 7 de la mañana")
+    assert (intent.family, intent.reason, intent.verb, intent.complement) == (
+        F.REMINDER, "clock_alarm", "cancela", "de las 7 de la mañana")
 
 
 def test_governed_object_and_complement():
@@ -700,6 +739,12 @@ C02_CLASSIFIER = (
     _cls("C02-ALM-0006", "apagá la alarma", "timer",
          {"family": "timer", "operation": "stop", "rule": "R1"}, unit="T030-U1", effect_class="unauthorized_effect",
          note="R3: pairs C02-ALM-0001; never a switch or alarm entity"),
+    _cls("C02-ALM-0201", "cancelá la alarma de las 7", "reminder",
+         {"family": "reminder", "operation": "cancel", "rule": "R1"}, unit="T031-U2", effect_class="wrong_family",
+         note="user answer T030-U1-Q8 (A): the alarm with a clock time is a reminder (R3a), never a timer"),
+    _cls("C02-ALM-0202", "qué alarmas hay a las 7", "reminder",
+         {"family": "reminder", "operation": "query", "rule": "R1"}, unit="T031-U2",
+         note="user answer T030-U1-Q8 (A)"),
     _cls("C02-ALM-0007", "desactivá la alarma", "special", None, unit="T030-U1", effect_class="unauthorized_effect",
          note="security alarm verb: never claimed (design R3a), unlike 'desactivá el despertador'"),
     _cls("C02-ALM-0104", "activá la alarma", "special", None, effect_class="unauthorized_effect",
