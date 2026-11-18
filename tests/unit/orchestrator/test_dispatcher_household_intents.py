@@ -226,7 +226,8 @@ C02_DISPATCHER = tuple(_REMINDER_GRID) + (
        conditions={"state": "reminder_shared_active:alarma;reminder_private_active:alarma privada;"
                             "timer_running_unnamed"},
        unit="T031-U2", note="T030-U1-Q8: lists the shared alarms only"),
-    # User answer T031-U2-Q1: apagá/pará/desactivá an alarm with a clock time is that reminder's cancel.
+    # User answer T031-U2-Q1: apagá/pará an alarm with a clock time is that reminder's cancel; desactivá only of a
+    # despertador ('desactivá la alarma <hora>' is a security verb, unclaimed: user answer BH-R1-Q1).
     _refused("C02-ALM-0209", "apagá la alarma de las 7", "reminder", status="needs_input", spoken="clarification",
              state="reminder_shared_active:alarma;timer_running_unnamed;queued_request", effect_class="wrong_family",
              unit="T031-U2-Q1",
@@ -236,10 +237,11 @@ C02_DISPATCHER = tuple(_REMINDER_GRID) + (
              state="timer_running_unnamed", effect_class="wrong_family", unit="T031-U2-Q1",
              note="no alarm reminder: 'No hay alarmas con hora guardadas'; the running timer is never stopped in "
                   "its place"),
-    _refused("C02-ALM-0219", "desactivá la alarma de las 7", "reminder", sf="turn_off", status="needs_input",
-             spoken="clarification", state="light_match;reminder_shared_active:alarma", unit="T031-U2-Q1",
-             note="user answer T031-U2-Q1: the alarm reminder is listed; no HA send, no alarm panel, no vector "
-                  "search, even with a caller's turn_off"),
+    _refused("C02-ALM-0219", "desactivá el despertador de las 7", "reminder", sf="turn_off", status="needs_input",
+             spoken="clarification", state="light_match;reminder_shared_active:alarma", unit="BH-R1-Q1",
+             note="user answer BH-R1-Q1 (B): the disable of a despertador with a clock time lists the alarm "
+                  "reminder; no HA send, no vector search, even with a caller's turn_off ('desactivá la alarma "
+                  "de las 7' is no longer claimed, C02-ALM-0217)"),
     *(_d(id_, text, "reminder", "false_confirmation", "completed", "fast_reminder", "completed", "committed",
          "readback", counts=effects(reminder_rows_delta=1), conditions={"state": "household_clock_tomorrow_at_1000"},
          unit="BFR1-Q1", note=note)
@@ -2101,13 +2103,17 @@ async def test_an_alarm_without_a_clock_time_still_reaches_the_timers(leaves):
 
 
 # ---------------------------------------------------------------------------
-# User answer T031-U2-Q1 (batch_g_questions_20261118): "apagá/pará/desactivá la
-# alarma de las 7" is the cancel of the alarm set for that clock time, through
-# the same numbered list as "cancelá la alarma de las 7" (T032-U1 rules).
+# User answer T031-U2-Q1 (batch_g_questions_20261118): "apagá/pará la alarma de
+# las 7" is the cancel of the alarm set for that clock time, through the same
+# numbered list as "cancelá la alarma de las 7" (T032-U1 rules). User answer
+# BH-R1-Q1 (r1e_questions_20261118): "desactivá la alarma <hora>" is a security
+# alarm verb and stays unclaimed (design R3a); "desactivá el despertador <hora>"
+# stays the cancel.
 # ---------------------------------------------------------------------------
 
-CLOCK_ALARM_OFF = ["apagá la alarma de las 7", "pará la alarma de las 7", "desactivá la alarma de las 7",
-                   "Nexa, apagame el despertador de las 7", "detené la alarma de las 7", "para la alarma de las 7"]
+CLOCK_ALARM_OFF = ["apagá la alarma de las 7", "pará la alarma de las 7", "desactivá el despertador de las 7",
+                   "Nexa, apagame el despertador de las 7", "detené la alarma de las 7", "para la alarma de las 7",
+                   "silenciá la alarma de las 7"]
 
 
 @pytest.mark.parametrize("text", CLOCK_ALARM_OFF)
@@ -2171,7 +2177,7 @@ async def test_turning_off_a_clock_alarm_is_never_narrowed_by_the_spoken_time(le
 
 
 @pytest.mark.parametrize("text", ["apagá la alarma de las 7", "pará la alarma de las 7",
-                                  "desactivá la alarma de las 7"])
+                                  "desactivá el despertador de las 7"])
 async def test_turning_off_a_clock_alarm_without_one_never_stops_the_timer(leaves, text):
     """Before T031-U2-Q1 'apagá/pará la alarma de las 7' stopped the running timer instead."""
     dispatcher = leaves.dispatcher()
@@ -2199,15 +2205,21 @@ async def test_an_alarm_without_a_clock_time_is_still_stopped_on_the_timers(leav
     assert [r.text for r in await leaves.reminder_manager.get_active(None, shared_only=True)] == ["alarma"]
 
 
-async def test_the_security_alarm_without_a_clock_time_stays_unclaimed(leaves):
-    """'desactivá la alarma' alone never reaches the timers or the reminders (design R3a)."""
+@pytest.mark.parametrize("text", ["desactivá la alarma", "desactivá la alarma de las 7",
+                                  "desactivar la alarma de las 7 de la mañana", "desactivá la alarma para mañana",
+                                  "Nexa, desactivá la alarma de la casa a las 23"])
+async def test_the_security_alarm_stays_unclaimed_with_or_without_a_clock_time(leaves, text):
+    """'desactivá la alarma' never reaches the timers or the reminders (design R3a, user answer BH-R1-Q1)."""
     dispatcher = leaves.dispatcher()
     await leaves.apply_state(dispatcher, "reminder_shared_active:alarma;timer_running_unnamed")
     before = leaves.snapshot()
-    result = await dispatcher.dispatch(user_id="unknown", text="desactivá la alarma")
+    result = await dispatcher.dispatch(user_id="unknown", text=text)
     assert result.path not in (PathType.FAST_TIMER, PathType.FAST_REMINDER)
+    assert not result.response.startswith(("Hay ", "No hay alarmas"))
     counted = leaves.effects(before)
     assert (counted["timer_transitions"], counted["reminder_transitions"]) == (0, 0)
+    assert [r.text for r in await leaves.reminder_manager.get_active(None, shared_only=True)] == ["alarma"]
+    assert [t.state.value for t in leaves.timers.get_all_timers()] == ["running"]
 
 
 # ---------------------------------------------------------------------------

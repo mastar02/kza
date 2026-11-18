@@ -111,11 +111,12 @@ C02_ROUTER = (
        counts=SPOKEN_ONE, effect_class="wrong_family", unit="T031-U2-Q1",
        note="user answer T031-U2-Q1: turning off the alarm set for 7 is its cancel, listed by number; the timer "
             "is no longer stopped in its place and the queue is untouched"),
-    _r("C02-ALM-0303", "desactivá la alarma de las 7", "reminder", "needs_input", "fast_reminder", "needs_input",
-       "not_written", "clarification", llm="stub:turn_off@0.95", state="reminder_shared_active:alarma;light_match",
-       counts=SPOKEN_ONE, unit="T031-U2-Q1",
-       note="user answer T031-U2-Q1: a clock time names the alarm reminder, not the alarm panel; 6 words on a "
-            "strong acoustic wake: no 7B call, no grammar, no HA send"),
+    _r("C02-ALM-0303", "desactivá el despertador de las 7", "reminder", "needs_input", "fast_reminder",
+       "needs_input", "not_written", "clarification", llm="stub:turn_off@0.95",
+       state="reminder_shared_active:alarma;light_match", counts=SPOKEN_ONE, unit="BH-R1-Q1",
+       note="user answer BH-R1-Q1 (B): the disable of a despertador with a clock time is the alarm reminder's "
+            "cancel; 6 words on a strong acoustic wake: no 7B call, no grammar, no HA send ('desactivá la alarma "
+            "de las 7' is a security verb, unclaimed: C02-ALM-0217)"),
     _r("C02-REM-0324", "bueno, recordame sacar la basura mañana a las 8 de la noche, dale", "reminder", "completed",
        "fast_reminder", "completed", "committed", "readback", state="household_clock_tomorrow_at_1000",
        counts=effects(reminder_rows_delta=1, spoken_utterances=1), effect_class="false_confirmation",

@@ -192,13 +192,20 @@ PRECEDENCE = [
     ("cancelá el timer de las 7", (F.TIMER, O.CANCEL, "R1")),
     ("pausá la alarma de las 7", (F.TIMER, O.PAUSE, "R1")),
     ("reanudá la alarma de las 7", (F.TIMER, O.RESUME, "R1")),
-    # User answer T031-U2-Q1 (2026-11-18): apagá/pará/desactivá an alarm with a clock time is its cancel; with
-    # a duration, a name or no time it stays the timers' stop/disable; the other security verbs stay unclaimed.
+    # User answer T031-U2-Q1 (2026-11-18): apagá/pará (and the other stop verbs) an alarm with a clock time is
+    # its cancel; with a duration, a name or no time it stays the timers' stop/disable. User answer BH-R1-Q1: the
+    # security verbs (desactivá/activá/armá/desarmá la alarma) stay unclaimed with a clock time or a day too
+    # (design R3a); "desactivá el despertador <hora>" is no security alarm and stays the cancel.
     ("apagá la alarma de las 7", (F.REMINDER, O.CANCEL, "R1")),
     ("pará la alarma de las 7", (F.REMINDER, O.CANCEL, "R1")),
     ("para la alarma de las 7", (F.REMINDER, O.CANCEL, "R1")),
-    ("desactivá la alarma de las 7", (F.REMINDER, O.CANCEL, "R1")),
-    ("desactivar la alarma de las 7 de la mañana", (F.REMINDER, O.CANCEL, "R1")),
+    ("frená la alarma de las 7", (F.REMINDER, O.CANCEL, "R1")),
+    ("silenciá la alarma de mañana", (F.REMINDER, O.CANCEL, "R1")),
+    ("desactivá la alarma de las 7", None),
+    ("desactivar la alarma de las 7 de la mañana", None),
+    ("desactivá la alarma para mañana", None),
+    ("desactivá la alarma de la casa a las 23", None),
+    ("desactive las alarmas de las 7", None),
     ("desactivá el despertador de las 6:30", (F.REMINDER, O.CANCEL, "R1")),
     ("apagame el despertador de las 7", (F.REMINDER, O.CANCEL, "R1")),
     ("detené la alarma del mediodía", (F.REMINDER, O.CANCEL, "R1")),
@@ -353,7 +360,7 @@ def test_precedence_table(text, expected):
     ("qué alarmas hay a las 7", "clock_alarm"),
     ("apagá la alarma de las 7", "clock_alarm"),
     ("pará el despertador de las 7", "clock_alarm"),
-    ("desactivá la alarma de las 7", "clock_alarm"),
+    ("desactivá el despertador de las 7", "clock_alarm"),
     ("prendé la luz y apagá la luz", "conflicting_parts"),
     ("abrí la persiana y cerrá la persiana", "conflicting_parts"),
     ("apagá la luz en 10 minutos y pausá la música", "deferred_part"),
@@ -384,8 +391,8 @@ def test_clock_alarm_complement_keeps_the_time_words():
 
 @pytest.mark.parametrize(("text", "verb"), [
     ("nexa apagá la alarma de las 7 de la mañana", "apaga"), ("pará la alarma de las 7 de la mañana", "para"),
-    ("desactivá la alarma de las 7 de la mañana", "desactiva"), ("bueno, detené la alarma de las 7 de la mañana",
-                                                                  "detene"),
+    ("desactivá el despertador de las 7 de la mañana", "desactiva"),
+    ("bueno, detené la alarma de las 7 de la mañana", "detene"),
 ])
 def test_a_stopped_or_disabled_clock_alarm_is_its_cancel(text, verb):
     """User answer T031-U2-Q1: the operation is CANCEL (the reminders take no stop); verb and time words kept."""
@@ -953,11 +960,14 @@ C02_CLASSIFIER = (
     _cls("C02-ALM-0216", "pará el despertador de las 7", "reminder",
          {"family": "reminder", "operation": "cancel", "rule": "R1"}, unit="T031-U2-Q1", effect_class="wrong_family",
          note="user answer T031-U2-Q1"),
-    _cls("C02-ALM-0217", "desactivá la alarma de las 7", "reminder",
-         {"family": "reminder", "operation": "cancel", "rule": "R1"}, unit="T031-U2-Q1",
+    _cls("C02-ALM-0217", "desactivá la alarma de las 7", "special", None, unit="BH-R1-Q1",
          effect_class="unauthorized_effect",
-         note="user answer T031-U2-Q1: the clock time names the alarm reminder, never the alarm panel; "
-              "'desactivá la alarma' alone stays unclaimed (C02-ALM-0007)"),
+         note="user answer BH-R1-Q1: a security alarm verb is never claimed, with a clock time too (design R3a), "
+              "like 'desactivá la alarma' alone (C02-ALM-0007)"),
+    _cls("C02-ALM-0221", "desactivá el despertador de las 7", "reminder",
+         {"family": "reminder", "operation": "cancel", "rule": "R1"}, unit="BH-R1-Q1", effect_class="wrong_family",
+         note="user answer BH-R1-Q1 (B): 'despertador' is no security alarm: with a clock time it stays the "
+              "reminder's cancel (numbered list first), never a timer disable"),
     _cls("C02-ALM-0218", "apagá la alarma de 10 minutos", "timer",
          {"family": "timer", "operation": "stop", "rule": "R1"}, unit="T031-U2-Q1", effect_class="wrong_family",
          note="T030-U1: an alarm with a duration stays a timer"),
