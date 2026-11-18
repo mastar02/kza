@@ -1980,8 +1980,11 @@ reemplaza la premisa de P5.
   - `LEGACY_STATE_COMMIT = "b0866e8"` y `LEGACY_CONTAINER_COMMIT = "e9669ec"`.
     L4 y los dos aborts rechazan cualquier otro commit, también 63ea8d3
     (`runtime_admission_uninstall_legacy_commit`).
-  - La corrida de prueba, W2 y W4 rechazan un contenedor que no sea la release
-    de e9669ec (`runtime_admission_adoption_container_commit`).
+  - La corrida de prueba y W2 rechazan un contenedor que no sea la release
+    de e9669ec (`runtime_admission_adoption_container_commit`). Si la release
+    del contenedor cambia después de W2, el commit de W4 rechaza con
+    `runtime_admission_adoption_plan_mismatch:current`, porque el plan ya
+    no coincide.
   - W-abort-1 corre la comprobación del destino de rollback sobre todo
     `current` no gestionado, en vez de saltarla si el commit no estaba en la
     lista.
