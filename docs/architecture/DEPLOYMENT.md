@@ -1375,7 +1375,21 @@ abre el trabajador de compactación para exportar se borran al terminar; su
 residuo de sistema de archivos es el límite general ya documentado. (6) Q3
 no cambia que el vector de un registro borrado siga en `data_level0.bin`
 hasta la compactación (borrar sólo marca el lugar): eso es la compactación
-(SC-4c), no residuo de heap.
+(SC-4c), no residuo de heap. (7) Controlador anterior a Q3 con un slot de
+Q3: `src.main` rechaza (78) si su padre no le puso los tunables, y ni
+`LAUNCHER_CONTRACT` ni `CONTROLLER_REVISION` subieron, así que ese caso no
+tiene un rechazo propio en `check_slot`; falla al arrancar el hijo. Hoy no
+pasa: no hay ningún controlador administrado publicado (`RELEASED_CONTROLLERS`
+vacío; producción corre la unidad heredada) y el primero ya trae Q3. Después,
+el triple lo cierra: Q3 cambia la clausura del controlador
+(`managed_launcher`, `stage_runtime`), así que con la misma revisión `plan`
+rechaza `runtime_admission_compaction_controller_revision_conflict`, y con la
+revisión subida hace falta el T0 que instala el controlador nuevo antes de
+servir el slot. Subir `LAUNCHER_CONTRACT` no serviría: el controlador sólo
+exige un mínimo (un controlador viejo aceptaría el 4) y uno nuevo dejaría de
+servir los slots anteriores a Q3, rollbacks incluidos. Regla que sigue: si
+esto se integra después de publicar un controlador, subir
+`CONTROLLER_REVISION` (cambia la clausura de un controlador publicado).
 
 **Revisión independiente (2026-11-18, glibc 2.39).** Con `tcache_count=0`
 todo `free` pasa por el llenado (fast bins y bloques normales) y los bloques
