@@ -75,7 +75,9 @@ C02_DISPATCHER = tuple(_REMINDER_GRID) + (
     _refused("C02-REM-0121", "nexa recordame prender la luz del living", "reminder", sf="turn_on",
              note=CREATE_ASKS),
     _refused("C02-REM-0122", "recordame cancelar el turno del médico", "reminder", state="queued_request",
-             note="the cancel verb is reminder content: the queued request is not cancelled"),
+             status="needs_input", spoken="clarification",
+             note="the cancel verb is reminder content: the queued request is not cancelled; T031-U2: without a "
+                  "time the creation asks for it (was the interim UNSUPPORTED)"),
     _refused("C02-REM-0123", "recordame tomar la pastilla a las 8 y apagá la luz", "reminder", sf="turn_off",
              status="needs_input", spoken="clarification",
              note="second imperative clause after a reminder: not split (planner choice)"),
