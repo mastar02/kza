@@ -437,6 +437,8 @@ def test_the_run_refuses_outside_its_preconditions(world, case, code):
     ("unit", "unit:kza-legacy-tool.service"),
     ("unit_environment", "unit:kza-legacy-tool.service"),
     ("logrotate", "logrotate"),
+    ("logrotate_quoted", "logrotate"),
+    ("logrotate_single_quoted", "logrotate"),
     ("config", "config:observability.legacy_path"),
     ("env", "env:LEGACY_DATA"),
     ("admission", "admission:history"),
@@ -462,6 +464,11 @@ def test_anything_pointing_at_the_copies_refuses(world, case, problem):
             "Environment": "DATA=" + os.fspath(legacy_state(world) / "data"), "WorkingDirectory": "/"}
     elif case == "logrotate":
         (world.root / launcher.LOGROTATE_NAME).write_text(container_logs + "/console.log {\n  copytruncate\n}\n")
+    elif case == "logrotate_quoted":  # review R1E-RV4: production's stanza, as written on 2026-10-28
+        (world.root / launcher.LOGROTATE_NAME).write_text(production_logrotate(world))
+    elif case == "logrotate_single_quoted":
+        (world.root / launcher.LOGROTATE_NAME).write_text(
+            "'" + os.fspath(legacy_state(world) / "logs" / "console.log") + "' {\n  copytruncate\n}\n")
     elif case == "config":
         settings = r1_state / "config" / "settings.yaml"
         os.chmod(settings, 0o600)
@@ -477,6 +484,31 @@ def test_anything_pointing_at_the_copies_refuses(world, case, problem):
         dry(world)
     assert problem in refused.value.report["problems"]
     assert legacy_state(world).is_dir() and not launcher.legacy_retirement_directory(world.root).exists()
+
+
+def production_logrotate(world: World) -> str:
+    """Production's console-logrotate.conf (read-only recon 2026-11-18): one stanza whose path, the
+    b0866e8 state's console log, is double-quoted."""
+    console = os.fspath(legacy_state(world) / "logs" / "console.log")
+    return (f'"{console}" {{\n    hourly\n    rotate 24\n    maxage 1\n    missingok\n    notifempty\n'
+            "    copytruncate\n    compress\n    delaycompress\n    dateext\n    dateformat -%Y%m%d%H\n}\n")
+
+
+def test_q5_reads_a_quoted_logrotate_path_only_when_it_points_at_the_copies(world):
+    """Review R1E-RV4: the quotes are stripped before the path test, so production's stanza refuses and
+    nothing changes; a quoted managed stanza (outside the copies) and a commented one do not."""
+    adopted(world)
+    conf = world.root / launcher.LOGROTATE_NAME
+    managed = launcher.render_console_logrotate(os.fspath(world.root / "logs" / "console.log"))
+    quoted_managed = '"' + os.fspath(world.root / "logs" / "console.log") + '" {\n    copytruncate\n}\n'
+    conf.write_text(managed + quoted_managed + "# " + production_logrotate(world).splitlines()[0] + "\n")
+    assert dry(world)["eligible"] is True
+    conf.write_text(managed + production_logrotate(world))
+    before = tree_manifest(world.root / "slots" / LEGACY)
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_legacy_retire_referenced:logrotate$"):
+        dry(world)
+    assert tree_manifest(world.root / "slots" / LEGACY) == before
+    assert not launcher.legacy_retirement_directory(world.root).exists()
 
 
 _EMBEDDED = "exec /usr/bin/tool $TOOL_ARGS"

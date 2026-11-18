@@ -508,17 +508,20 @@ postergaría; si esa respuesta cambiara, no ejecutarlo.
    L4 sirvió en ese período necesitan una decisión nueva del usuario.
 1. El mismo día, antes de la corrida de prueba, quitar la estrofa de la
    consola vieja de `console-logrotate.conf`. Mientras exista, el retiro
-   rechaza `referenced:logrotate`. Su texto exacto se escribió en el server
+   rechaza `referenced:logrotate`, con la ruta entre comillas o sin ellas.
+   Su texto exacto se escribió en el server
    el 2026-10-28 y no está en Git: es el bloque que empieza en la línea con
    la ruta de la consola bajo `/home/kza/releases/slots/` (la de
-   `state/logs/console.log`) y termina en su `}`. Según el runbook del
-   2026-10-28 tiene esta forma (horario, 24 rotaciones, `maxage 1`,
-   `copytruncate`):
+   `state/logs/console.log`) y termina en su `}`. En producción (lectura del
+   2026-11-18) la ruta va entre comillas dobles y es la del slot de b0866e8;
+   tiene esta forma (horario, 24 rotaciones, `maxage 1`, `copytruncate`):
    ```
-   /home/kza/releases/slots/<slot>/state/logs/console.log {
+   "/home/kza/releases/slots/release_20261028T145442Z_b0866e8/state/logs/console.log" {
        hourly
        rotate 24
        maxage 1
+       missingok
+       notifempty
        copytruncate
        ...
    }
