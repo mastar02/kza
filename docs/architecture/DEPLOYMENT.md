@@ -1446,7 +1446,9 @@ otra transición y retiro; la activación de K con filas de audio en cola,
 cuya autoridad difiere de la de H; la transición siguiente sin la marca; la
 derivación con un testigo cambiado; el dry-run cortado a mitad de la copia
 con `SIGKILL`, sin nada en `$TMPDIR`, borrado por la concesión siguiente
-aunque después rechace) y `tests/unit/tools/test_sc5b_docs.py`.
+aunque después rechace, también la de `install-controller` y la de una
+compuerta de compactación; la marca fuera del modo release) y
+`tests/unit/tools/test_sc5b_docs.py`.
 
 ### Sin transiciones gestionadas después de R1 hasta el modo release
 

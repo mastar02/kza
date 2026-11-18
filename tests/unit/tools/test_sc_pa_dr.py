@@ -41,8 +41,10 @@ from src.memory import owner_compaction as oc
 from src.memory import state_journal_derivation as derivation
 from src.memory.state_snapshot import ClosedStateSnapshot, _json as snapshot_json, snapshot_closed_state
 from tests.mocks import compaction_world as cw
+from tests.mocks.epoch4 import epoch4_in_process
 from tests.mocks import launcher_rehearsal as rehearsal
-from tests.unit.tools.test_sc1b_release_plan import _QUEUE, _post_r1_world, _refusal, clone, x4, x5  # noqa: F401
+from tests.unit.tools.test_sc1b_release_plan import (  # noqa: F401
+    _QUEUE, _install, _post_r1_world, _refusal, clone, x4, x5)
 from tests.unit.tools.test_sc4b_release_exits import SMOKE, _scaled, _tombstone, _world
 
 REPO = Path(__file__).resolve().parents[3]
@@ -318,6 +320,21 @@ def test_journal_derivation_requires_the_snapshot_witness_to_be_the_source_witne
             derivation._source(stage, root, changed, privacy, latest=True)
 
 
+def test_the_regressed_source_flag_is_release_mode_only(x4, tmp_path):
+    """Row PA, review SCPADR-R2 (MB): in plain mode (an epoch-4 controller and root) plan with
+    --accept-regressed-source refuses runtime_admission_transition_requires_release_mode, before the prefix
+    is compared with any record, and writes nothing."""
+    with epoch4_in_process():
+        world = cw.world(x4["archive"], tmp_path, hops=())
+        root = world["root"]
+        assert compaction.release_mode() is False
+        witness = cw.witness(root)
+        for prefix in ("0" * 12, stage.recovery_record_sha256(root, _head(root)) or "f" * 64):
+            _refusal(stage.TRANSITION_REQUIRES_RELEASE_MODE,
+                     lambda: cw.plan(root, x4["archive"], "k2", accept_regressed_source=prefix))
+        assert cw.witness(root) == witness
+
+
 # --- DR: the dry-run shadow ----------------------------------------------------------------------------
 
 KILLED_DRY_RUN = """
@@ -405,6 +422,59 @@ def test_a_finished_dry_run_checks_a_copy_under_the_root_and_leaves_nothing(x4, 
     with pytest.raises(ValueError, match="^runtime_admission_controller_lease_required$"):
         launcher.recovery_report(root, head, read_only=True)
     assert not os.path.lexists(stage.dry_run_directory(root)) and len(seen) == 1
+
+
+def _leftover(root: Path, outside: Path) -> Path:
+    """A dry run's leftover under <root>/admission/dry-run/ (a copied file and a link outside)."""
+    shadow = stage.dry_run_directory(root)
+    (shadow / "a" / "state").mkdir(parents=True)
+    (shadow / "a" / "state" / "privacy.db").write_bytes(b"copy")
+    (shadow / "a" / "link").symlink_to(outside)
+    return shadow
+
+
+def test_install_controller_removes_a_killed_dry_runs_copy_at_its_lease_even_when_it_refuses(x4, x5, tmp_path):
+    """Row DR, review SCPADR-R2 (MA): install-controller (gate 'install', named in the runbook) removes a
+    killed dry run's copy right after its flock: T0 over an unknown head refuses runtime_admission_not_closed
+    under the lease and the copy is gone; T0 itself (the first install over an epoch-4 head) removes a
+    leftover and installs."""
+    world = _post_r1_world(x4, x5, tmp_path)
+    root = world["root"]
+    _crash(root, tmp_path, "crash")
+    tmpdir = tmp_path / "tmpdir"
+    tmpdir.mkdir()
+    _killed_dry_run(root, tmpdir)
+    with pytest.raises(launcher.LauncherRefusal, match="^runtime_admission_not_closed$"):
+        _install(root, x5)
+    assert not os.path.lexists(stage.dry_run_directory(root)) and list(tmpdir.iterdir()) == []
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("kept")
+    (tmp_path / "t0").mkdir()
+    with epoch4_in_process():
+        first = cw.world(x4["archive"], tmp_path / "t0", hops=())
+    shadow = _leftover(first["root"], outside)
+    _install(first["root"], x5)
+    assert stage.installed_controller_triple(first["root"]) == x5["triple"]
+    assert not os.path.lexists(shadow) and (outside / "keep.txt").read_text() == "kept"
+
+
+def test_a_compaction_gate_removes_a_dry_run_leftover_at_its_lease_even_when_it_refuses(x4, x5, tmp_path):
+    """Row DR, review SCPADR-R2 (ME): under a pending release-mode log the 'compaction:<id>' gate removes a
+    leftover right after its flock: retire before V refuses runtime_admission_compaction_not_verified under
+    the lease and the leftover is gone; after V, retire removes another and completes."""
+    world = _world(x4, x5, tmp_path)
+    root = world["root"]
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("kept")
+    shadow = _leftover(root, outside)
+    _refusal("runtime_admission_compaction_not_verified", lambda: _retire(root, world["id"]))
+    assert not os.path.lexists(shadow)
+    assert _run_v(root, tmp_path, "v").code == 0
+    shadow = _leftover(root, outside)
+    assert _retire(root, world["id"])["phase"] == "complete"
+    assert not os.path.lexists(shadow) and (outside / "keep.txt").read_text() == "kept"
 
 
 def test_the_lease_removes_any_dry_run_leftover_without_following_links(tmp_path):
