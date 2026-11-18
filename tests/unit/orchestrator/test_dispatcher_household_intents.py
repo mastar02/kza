@@ -1845,6 +1845,26 @@ ALARM_NOTE_CANCEL = (" Hay 1 alarma: mañana a las 07:00; para cancelarla decí:
 
 
 @pytest.mark.parametrize(("text", "response"), [
+    ("qué alarmas hay a las 7", "Alarmas guardadas: alarma, mañana a las 07:00."),
+    ("cancelá la alarma de las 7", "Hay uno. 1: alarma a las 07:00; ¿lo cancelo? Decime: el primero."),
+    ("cancelá la alarma", "No hay temporizadores activos." + ALARM_NOTE_CANCEL),
+])
+async def test_only_a_reminder_whose_text_starts_with_the_alarm_noun_is_an_alarm(leaves, text, response):
+    """Review T031-U2-RV6: a reminder that only mentions an alarm is never listed or cancelled as one."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    dispatcher = leaves.dispatcher()
+    _frozen_leaves(leaves, dispatcher, _monday_10())
+    due = datetime(2026, 11, 17, 7, 0, tzinfo=ZoneInfo("America/Montevideo")).timestamp()
+    for saved in ("desactivar la alarma", "revisar el despertador", "alarma"):
+        await leaves.reminder_manager.create("household", saved, due, scope=ReminderScope.SHARED)
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text=text)
+    assert result.response == response
+    assert leaves.effects(before) == ZERO
+
+
+@pytest.mark.parametrize(("text", "response"), [
     ("cancelá la alarma", "No hay temporizadores activos." + ALARM_NOTE_CANCEL),
     ("cancelá el despertador", "No hay temporizadores activos." + ALARM_NOTE_CANCEL),
     ("apagá la alarma", "No hay temporizadores activos." + ALARM_NOTE_CANCEL),
