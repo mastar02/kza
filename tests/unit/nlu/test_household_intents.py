@@ -197,6 +197,11 @@ PRECEDENCE = [
     ("cancelá la alarma de las 10 hs", (F.REMINDER, O.CANCEL, "R1")),
     ("qué alarmas hay a las 19 horas", (F.REMINDER, O.QUERY, "R1")),
     ("cancelá la alarma de 2 horas", (F.TIMER, O.CANCEL, "R1")),
+    # Review T031-U2-RV5: 'a las H y M minutos' is a clock time; 'de H hora(s) y M minutos' stays a duration.
+    ("poné una alarma a las 20 y 5 minutos para la reunión", (F.REMINDER, O.CREATE, "R3a")),
+    ("poné una alarma a las 7 y 15 minutos de la mañana", (F.REMINDER, O.CREATE, "R3a")),
+    ("poné una alarma de 1 hora y 5 minutos", (F.TIMER, O.CREATE, "R3a")),
+    ("poné una alarma de 20 y 5 minutos", (F.TIMER, O.CREATE, "R3a")),
     # Review T031-U2-RV3: a day alone names an alarm set for a clock time (a timer has no day); the
     # time question is answered from the timers and the alarm reminders, never the cloud model.
     ("cancelá la alarma de mañana", (F.REMINDER, O.CANCEL, "R1")),

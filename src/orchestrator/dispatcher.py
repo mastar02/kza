@@ -155,6 +155,9 @@ _ONE_AT_A_TIME = "Por voz cancelo de a un recordatorio. "
 # turn, Q8 always ask); nothing is kept pending and nothing is written.
 _REMINDER_EXAMPLE = "recordame sacar la basura mañana a las 8 de la noche"
 _ALARM_EXAMPLE = "poné una alarma mañana a las 7 de la mañana"
+# Minutes said as minutes, a form both the reminder parser and R3a read as a clock time (review T031-U2-RV5).
+_REMINDER_MINUTES_EXAMPLE = "recordame a las 8 y 5 minutos de la noche sacar la basura"
+_ALARM_MINUTES_EXAMPLE = "poné una alarma a las 7 y 15 minutos de la mañana"
 _REMINDER_QUESTIONS = {
     ReminderAmbiguity.MISSING_TEXT: "¿Qué querés que te recuerde? Decímelo completo, por ejemplo: {example}.",
     ReminderAmbiguity.MISSING_TIME: "¿Para cuándo? Decímelo completo, con el día y la hora, por ejemplo: {example}.",
@@ -173,7 +176,7 @@ _REMINDER_DETAIL_QUESTIONS = {
                          "todos los días o de lunes a viernes; no por fecha ni por mes. Decímelo completo así, "
                          "por ejemplo: {example}."),
     "ambiguous_minutes": ("No sé si ese número es parte de la hora o de lo que hay que recordar. Decímelo completo "
-                          "con una coma después de la hora o diciendo minutos, por ejemplo: a las 20 y 5 minutos."),
+                          "diciendo los minutos, por ejemplo: {minutes_example}."),
     "multiple_times": "Escuché más de una hora. Decímelo completo con una sola, por ejemplo: {example}.",
     "conflicting_times": "Escuché más de una hora. Decímelo completo con una sola, por ejemplo: {example}.",
     "dst_gap": "Esa hora no existe ese día por el cambio de horario. Decímelo completo con otra hora.",
@@ -2155,6 +2158,7 @@ class RequestDispatcher:
                                   intent="reminder", outcome=TaskOutcome(TaskStatus.UNSUPPORTED))
         alarm = household.rule == "R3a"
         example = _ALARM_EXAMPLE if alarm else _REMINDER_EXAMPLE
+        minutes_example = _ALARM_MINUTES_EXAMPLE if alarm else _REMINDER_MINUTES_EXAMPLE
         spoken = f"recordame {_alarm_noun(text)} {household.complement}" if alarm else text
         try:
             request = self._reminder_requests.parse_reminder(spoken)
@@ -2162,7 +2166,7 @@ class RequestDispatcher:
             logger.warning("[Reminder] voice create refused: household clock unusable; nothing written")
             return self._household_refusal(PathType.FAST_REMINDER, "reminder",
                                            "No pude leer el reloj de la casa. No guardé nada.", TaskStatus.FAILED)
-        question = self._reminder_question(request, example)
+        question = self._reminder_question(request, example, minutes_example)
         if question is not None:
             return self._household_refusal(PathType.FAST_REMINDER, "reminder", question, TaskStatus.NEEDS_INPUT)
         try:
@@ -2218,7 +2222,8 @@ class RequestDispatcher:
                               intent="reminder", outcome=outcome)
 
     @staticmethod
-    def _reminder_question(request: VoiceReminderRequest | None, example: str) -> str | None:
+    def _reminder_question(request: VoiceReminderRequest | None, example: str,
+                           minutes_example: str = _REMINDER_MINUTES_EXAMPLE) -> str | None:
         """The question that asks again for a voice reminder, or None when it can be created as heard."""
         if request is None:
             logger.info("[Reminder] voice create needs input: no reminder verb read")
@@ -2226,7 +2231,8 @@ class RequestDispatcher:
         if request.ambiguity is not None:
             logger.info("[Reminder] voice create needs input: %s detail=%s", request.ambiguity.value, request.detail)
             if request.ambiguity is ReminderAmbiguity.UNPARSEABLE and request.detail in _REMINDER_DETAIL_QUESTIONS:
-                return _REMINDER_DETAIL_QUESTIONS[request.detail].format(example=example)
+                return _REMINDER_DETAIL_QUESTIONS[request.detail].format(example=example,
+                                                                         minutes_example=minutes_example)
             return _REMINDER_QUESTIONS[request.ambiguity].format(example=example)
         if request.zone_phrase is not None:
             logger.info("[Reminder] voice create needs input: room named")

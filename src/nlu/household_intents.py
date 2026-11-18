@@ -428,8 +428,10 @@ _CLOCK = re.compile(r"\b(?:a|para) (?:las? )?(?:\d{1,2}(?:[:.]\d{2})?|una|dos|tr
                     r"|nueve|diez|once|doce|mediodia|medianoche)\b")
 # Review T031-U2-RV2: "a las 19 horas", "para las 8 hs" and "de las 7 horas de la mañana" name an hour of the
 # day (the article before the number), not a duration; R3a reads them before its duration check. "de 19 horas"
-# (no article) stays a duration.
-_ARTICLE_CLOCK_UNIT = re.compile(rf"\b(?:a|para|de) (?:la|las) {_ALARM_HOUR} (?:h|hs|hrs|horas?)\b")
+# (no article) stays a duration. Likewise "a las 20 y 5 minutos" is 20:05, not a 5-minute timer (review
+# T031-U2-RV5: the form the minutes question suggests).
+_ARTICLE_CLOCK_UNIT = re.compile(rf"\b(?:a|para|de) (?:la|las) {_ALARM_HOUR} "
+                                 rf"(?:h|hs|hrs|horas?|y {_NUMBER} (?:minutos?|mins?))\b")
 _INTERCOM_TARGET = re.compile(
     r"\b(?:en|a|por) (?:el |la |los |las |toda la |todas las )?(?:casa|todos|parlantes|"
     + "|".join(re.escape(alias) for alias in sorted(ROOM_ALIASES)) + r")\b")

@@ -1579,9 +1579,15 @@ ALARM_EXAMPLE = "poné una alarma mañana a las 7 de la mañana"
     ("recordame el 5 de diciembre pagar la luz",
      "Por ahora programo recordatorios para hoy, mañana, pasado mañana, un día de la semana, todos los días o de "
      f"lunes a viernes; no por fecha ni por mes. Decímelo completo así, por ejemplo: {EXAMPLE}."),
+    # Review T031-U2-RV5: a form that can be said aloud and that both R3a and the parser read as a clock time.
     ("recordame a las 20 y 5 sacar la basura",
-     "No sé si ese número es parte de la hora o de lo que hay que recordar. Decímelo completo con una coma "
-     "después de la hora o diciendo minutos, por ejemplo: a las 20 y 5 minutos."),
+     "No sé si ese número es parte de la hora o de lo que hay que recordar. Decímelo completo diciendo los "
+     "minutos, por ejemplo: recordame a las 8 y 5 minutos de la noche sacar la basura."),
+    ("poné una alarma a las 20 y 5 tomar la pastilla",
+     "No sé si ese número es parte de la hora o de lo que hay que recordar. Decímelo completo diciendo los "
+     "minutos, por ejemplo: poné una alarma a las 7 y 15 minutos de la mañana."),
+    ("poné una alarma a las 7 y 15 minutos de la mañana",
+     f"Esa hora de hoy ya pasó. Si es para mañana, decímelo completo con el día, por ejemplo: {ALARM_EXAMPLE}."),
     ("recordame a las 8 de la noche y a las 9 de la noche llamar",
      f"Escuché más de una hora. Decímelo completo con una sola, por ejemplo: {EXAMPLE}."),
     ("recordame en 10 minutos llamar a las 8 de la noche",
@@ -1674,6 +1680,11 @@ async def test_every_ambiguity_code_has_its_question():
      "Anotado: abrir el portón, hoy a las 20:00. Es solo un aviso: eso no lo hago yo."),
     ("recordame pintar la puerta a las 8 de la noche", ("pintar la puerta", (2026, 11, 16, 20, 0), None),
      "Anotado: pintar la puerta, hoy a las 20:00."),
+    # Review T031-U2-RV5: the minutes example works as said, for a reminder and for an alarm.
+    ("recordame a las 8 y 5 minutos de la noche sacar la basura", ("sacar la basura", (2026, 11, 16, 20, 5), None),
+     "Anotado: sacar la basura, hoy a las 20:05."),
+    ("poné una alarma a las 20 y 5 minutos para la reunión",
+     ("alarma para la reunión", (2026, 11, 16, 20, 5), None), "Anotado: alarma para la reunión, hoy a las 20:05."),
 ])
 @pytest.mark.parametrize("speaker", ["unknown", "ana"])
 async def test_voice_creation_commits_one_shared_household_row(leaves, text, row, response, speaker):
