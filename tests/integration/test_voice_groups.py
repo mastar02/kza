@@ -420,3 +420,35 @@ async def test_credential_rotation_during_proof_write_rolls_back_the_final_group
         finally:
             await voices.acall(tracing,None)
         assert await rows(voices)==before
+
+
+async def test_group_state_filter_follows_manual_corrections_and_a_correction_retires_the_filtered_page(tmp_path,dashboard_auth):
+    """T044-U1: group_state is filtered in SQL per chunk and fenced by the group revision."""
+    from src.users.voice_ledger import VoiceCaptureFilter
+
+    def state(value):
+        return VoiceCaptureFilter(None,None,None,None,value,None,False)
+
+    async with web_graph(tmp_path) as (_,_,voices,clock,bus):
+        members = [(await sample(voices,clock))[1] for _ in range(3)]
+        other = (await sample(voices,clock,90))[1]
+        suggested = await voices.acall(voices.ledger.query_captures,state('suggested'),None,ACTOR)
+        assert {row['id'] for row in suggested.rows}=={*members,other} and suggested.summary.matching_count==4
+        assert (await voices.acall(voices.ledger.query_captures,state('manual'),None,ACTOR)).summary.matching_count==0
+        async with ready_browser(bus,version=3) as peer:
+            app = DashboardAPI(voice_registry=voices,event_bus=bus,authority=bus.test_authority).app
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://testserver',
+                    headers={**dashboard_auth,'X-KZA-Live-Connection':peer.connection}) as client:
+                body = {'room':None,'window':None,'group_state':'suggested','association':None,'listenable_only':False,
+                    'text':None,'cursor':None}
+                page = (await client.post('/api/voices/captures/query',json=body)).json()['snapshot']
+                assert page['matching_count']==4
+                assert await edit(voices,(members[0],other),'merge')
+                async with asyncio.timeout(3):
+                    control = await peer.outgoing.get()
+                assert control['channel']=='voices:captures' and control['payload']['event_ids']==[page['event_id']]
+                again = (await client.post('/api/voices/captures/query',json=body)).json()
+                assert again['snapshot'] is None and again['empty_page']['matching_count']==0
+        manual = await voices.acall(voices.ledger.query_captures,state('manual'),None,ACTOR)
+        assert {row['id'] for row in manual.rows}=={*members,other}
+        assert {row['group_state'] for row in manual.rows}=={'manual'} and manual.summary.matching_count==4
