@@ -116,8 +116,8 @@ Todas estas condiciones, antes de la primera transición:
   posteriores, con N = 60, D ≈ 554 s (retiro) o ≈ 533 s (abort sin pérdida).
   **Primera transición (decisión del usuario SC6B-B-M1, 2026-11-19):** puede
   pasar los 10 minutos una sola vez y usa N = 10 (`--smoke-seconds 10`),
-  aunque la fórmula del paso 6 da 600 − 164,8 − 3 × 146 − 14,7 = −17,5 y la
-  rechazaría (menos de 10). Antes de la primera transición, con el B que
+  aunque la fórmula del paso 6 da 600 − 164,8 − 3 × 146 − 14,7 = −17,5 y
+  rechazaría ese N (menos de 10). Antes de la primera transición, con el B que
   mida W8, se recalcula D ≈ 222,4 + 3 × B con N = 10 (222,4 s es lo medido
   sin los arranques del stub): si pasa de unos 660 s, no se sigue bajo
   SC6B-B-M1 y se vuelve a preguntar al usuario. Con B ≤ 136,8 s la fórmula
@@ -409,7 +409,7 @@ N va de 10 a 60 y es obligatorio
 (`runtime_admission_compaction_release_smoke_seconds`); la herramienta sólo
 controla ese rango y no calcula la fórmula del diseño, N = min(60, 600 −
 T_copy − arranques × B − paradas). **Primera transición, con T0:**
-`--smoke-seconds 10`. La fórmula da −17,5 y la rechazaría; el operador pasa
+`--smoke-seconds 10`. La fórmula da −17,5 y rechazaría ese N; el operador pasa
 igual 10 por la decisión SC6B-B-M1 (ver «Presupuesto de bajada»), y la
 herramienta lo acepta. Antes, con el B que mida W8, recalcular D ≈ 222,4 +
 3 × B: si pasa de unos 660 s, no seguir y volver a preguntar al usuario.

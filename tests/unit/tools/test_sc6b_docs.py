@@ -85,7 +85,7 @@ def test_the_release_runbook_budget_states_the_measured_values_and_the_one_time_
                  "D ≈ 660 s (unos 11 minutos) con N = 10",
                  "**Primera transición (decisión del usuario SC6B-B-M1, 2026-11-19):** puede pasar los 10 minutos "
                  "una sola vez y usa N = 10 (`--smoke-seconds 10`)",
-                 "600 − 164,8 − 3 × 146 − 14,7 = −17,5 y la rechazaría",
+                 "600 − 164,8 − 3 × 146 − 14,7 = −17,5 y rechazaría ese N (menos de 10)",
                  "Las transiciones posteriores siguen dentro de los 600 s.",
                  "En cada transición, anotar las horas de la parada y del `READY`",
                  "si la primera pasa los ≈ 11 minutos proyectados, o una posterior pasa los 10, se anota y el diseño "
@@ -96,7 +96,7 @@ def test_the_release_runbook_budget_states_the_measured_values_and_the_one_time_
 def test_step_6_states_what_the_operator_passes_and_the_tool_parses_it(monkeypatch):
     step = _flat(_section(RUNBOOK.read_text(), "### Paso 6: corrida de verificación V"))
     assert "**Primera transición, con T0:** `--smoke-seconds 10`." in step
-    assert "el operador pasa igual 10 por la decisión SC6B-B-M1" in step
+    assert "La fórmula da −17,5 y rechazaría ese N; el operador pasa igual 10 por la decisión SC6B-B-M1" in step
     assert "**Transiciones posteriores:** con los valores de hoy la fórmula da ≈ 135, así que `--smoke-seconds 60`" in step
     for n in (10, 60):
         args = _parse(monkeypatch, ["compact", "verify", "c-1", "--smoke-seconds", str(n)])
@@ -144,6 +144,15 @@ def test_the_first_transition_is_rechecked_against_the_b_that_w8_measures():
     assert round((600 - t_copy - stops - 10) / 3, 1) == 136.8
 
 
+@pytest.mark.parametrize("path", [RUNBOOK, DEPLOYMENT, COMPACTION_RUNBOOK], ids=lambda path: path.name)
+def test_it_is_n_that_the_formula_refuses(path):
+    """SC6B-B-M1-RV4: no pronoun that makes the tool or the transition the formula's object."""
+    flat = _flat(path.read_text())
+    for ambiguous in ("la fórmula no la calcula", "fórmula la rechazaría", "y la rechazaría"):
+        assert ambiguous not in flat, ambiguous
+    assert "rechazaría ese N" in flat
+
+
 def test_the_owner_compaction_runbook_keeps_the_recompute_with_w8_b_caveat():
     """SC6B-B-M1-RV2: 'posteriores, 60' holds with B ~ 146 s only; the step points to the release runbook."""
     flat = _flat(COMPACTION_RUNBOOK.read_text())
@@ -163,9 +172,9 @@ def test_the_sc0b_copy_duration_points_to_the_sc6b_measurement():
 def test_deployment_carries_the_per_path_table_and_the_accepted_overrun():
     text = DEPLOYMENT.read_text()
     n_rule = _bullet(text, "**N del modo release (SC4A-N14).**")
-    for fact in ("La herramienta sólo controla 10 ≤ N ≤ 60; la fórmula no la calcula.",
+    for fact in ("La herramienta sólo controla 10 ≤ N ≤ 60; no calcula la fórmula.",
                  "T_copy 163–165 s, paradas 14,7 s con T0",
-                 "600 − 164,8 − 3 × 146 − 14,7 = −17,5: la fórmula la rechazaría (menos de 10)",
+                 "600 − 164,8 − 3 × 146 − 14,7 = −17,5: la fórmula rechazaría ese N (menos de 10)",
                  "El operador pasa igual `--smoke-seconds 10` por la decisión del usuario SC6B-B-M1 (2026-11-19)"):
         assert fact in n_rule, fact
     section = _section(text, "### Medición de bajada y disco (SC-6b) — 2026-11-19")

@@ -390,11 +390,11 @@ R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
    (`runtime_admission_compaction_release_smoke_seconds` si falta o pasa de
    60): N = min(60, 600 − T_copy − arranques × B − paradas). Con los valores
    medidos por SC-6b (T_copy 163–165 s, paradas 14,7 s con T0, B ≈ 146 s):
-   primera transición, con T0, `--smoke-seconds 10` aunque la fórmula la
-   rechazaría (decisión del usuario SC6B-B-M1, 2026-11-19: esa transición
-   puede pasar una vez los 10 minutos); transiciones posteriores, 60. Esos N
-   valen con B ≈ 146 s: si W8 mide otro B, se recalculan con ese B (paso 6
-   y «Presupuesto de bajada» en el runbook del modo release).
+   primera transición, con T0, `--smoke-seconds 10` aunque la fórmula
+   rechazaría ese N (decisión del usuario SC6B-B-M1, 2026-11-19: esa
+   transición puede pasar una vez los 10 minutos); transiciones posteriores,
+   60. Esos N valen con B ≈ 146 s: si W8 mide otro B, se recalculan con ese
+   B (paso 6 y «Presupuesto de bajada» en el runbook del modo release).
 
    ```bash
    $ST compact verify <compaction_id> --smoke-seconds <N>

@@ -1079,11 +1079,11 @@ ninguna transición gestionada existe hasta cerrar el resto del modo release
   menos de 10. Por eso un log del modo release no tiene N por omisión
   (`compact verify` sin `--smoke-seconds` rechaza
   `runtime_admission_compaction_release_smoke_seconds`) y rechaza N > 60.
-  La herramienta sólo controla 10 ≤ N ≤ 60; la fórmula no la calcula. Con
+  La herramienta sólo controla 10 ≤ N ≤ 60; no calcula la fórmula. Con
   los valores medidos por SC-6b a tamaño de producción (T_copy 163–165 s,
   paradas 14,7 s con T0) y B ≈ 146 s de la compuerta de W8, la primera
   transición, con T0, da 600 − 164,8 − 3 × 146 − 14,7 = −17,5: la fórmula
-  la rechazaría (menos de 10). El operador pasa igual `--smoke-seconds 10`
+  rechazaría ese N (menos de 10). El operador pasa igual `--smoke-seconds 10`
   por la decisión del usuario SC6B-B-M1 (2026-11-19), que acepta pasar una
   vez el presupuesto (D ≈ 660 s). Antes de esa transición, D se recalcula
   con el B que mida W8: D ≈ 222,4 + 3 × B con N = 10 (222,4 s es el D medido
