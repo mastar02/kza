@@ -429,6 +429,17 @@ def _day_ahead(offset):
     ("estuvo lloviendo el pasado sábado", UNSUPPORTED),
     ("estuvo lloviendo la pasada semana", UNSUPPORTED),
     ("va a llover el pasado mes", UNSUPPORTED),
+    # T037-U2b (FV-L1): a preterite weather verb with a plain weekday is a past day.
+    ("estuvo lloviendo el sábado", UNSUPPORTED),
+    ("cuál fue el pronóstico del sábado", UNSUPPORTED),
+    ("¿llovió el martes?", UNSUPPORTED),
+    ("qué tiempo hizo el domingo", UNSUPPORTED),
+    # ... but not the imperfect, a coming weekday, or no weekday at all.
+    ("cuál era el pronóstico del sábado", WeatherHorizon(HorizonKind.FORECAST, weekday=5)),
+    ("cuál fue el pronóstico del sábado que viene",
+     WeatherHorizon(HorizonKind.FORECAST, weekday=5, next_week=True)),
+    ("estuvo lloviendo", CURRENT),
+    ("va a llover el sábado", WeatherHorizon(HorizonKind.FORECAST, weekday=5)),
     # A future day after a past-looking word stays a forecast day.
     ("va a llover el lunes, pasado mañana", SEVERAL),
     # Two different days in one question.

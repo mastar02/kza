@@ -122,6 +122,15 @@ _UNSUPPORTED_HORIZON_RE = re.compile(
 # Future-tense cues: with no day word, or with today's, the question is about
 # today's forecast entry rather than the current conditions (user answer Q23).
 _FORECAST_CUE_RE = re.compile(r"\b(?:va|van) a\b|\bpronostico\b|\b(?:llovera|hara|habra|estara)\b")
+# T037-U2b (fix verification FV-L1): third-person preterite of the weather
+# verbs (estar, ser, hacer, llover, haber, nevar). With a plain weekday
+# ("estuvo lloviendo el sábado", "cuál fue el pronóstico del sábado") the
+# question is about a day that already passed, never the coming one. The
+# imperfect ("cuál era el pronóstico del sábado") is left out on purpose: it
+# often asks again for a forecast already given for the coming day.
+_PAST_TENSE_WORDS = frozenset({
+    "estuvo", "estuvieron", "fue", "fueron", "hizo", "hicieron", "llovio", "hubo", "nevo",
+})
 # "mañana" after these words is the morning ("esta/por la/a la mañana"), not tomorrow.
 _MORNING_PREVIOUS = frozenset({"esta", "la", "pasado"})
 _TODAY_PERIODS = frozenset({"manana", "tarde", "noche"})
@@ -195,6 +204,8 @@ def parse_weather_horizon(text: str) -> WeatherHorizon:
     * Today (said or implied) is current conditions unless the question is in
       the future ("va a llover", "pronóstico"), which asks for today's entry.
     * Two different days in one question are several days.
+    * A plain weekday with a preterite weather verb ("estuvo lloviendo el
+      sábado") is a past day and unsupported (T037-U2b).
 
     Args:
         text: Utterance already routed to the weather path.
@@ -224,6 +235,8 @@ def parse_weather_horizon(text: str) -> WeatherHorizon:
         return WeatherHorizon(HorizonKind.SEVERAL_DAYS)
     day = next(iter(days), ("offset", 0))
     if day[0] == "weekday":
+        if not day[2] and _PAST_TENSE_WORDS.intersection(words):
+            return WeatherHorizon(HorizonKind.UNSUPPORTED)
         return WeatherHorizon(HorizonKind.FORECAST, weekday=day[1], next_week=day[2])
     if day[1] == 0 and not _FORECAST_CUE_RE.search(joined):
         return WeatherHorizon(HorizonKind.CURRENT)

@@ -838,6 +838,9 @@ async def test_present_tense_about_today_reads_current_conditions(dispatcher_wit
     # Fix verification T037-U2-FV2.
     ("va a llover el día 25", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
     ("estuvo lloviendo el pasado sábado", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
+    # T037-U2b (FV-L1): past tense with a plain weekday.
+    ("estuvo lloviendo el sábado", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
+    ("cuál fue el pronóstico del sábado", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
 ])
 async def test_unsupported_horizons_are_refused_without_any_read(dispatcher_with_async_ha, text, spoken, status):
     d = _no_current_read(_frozen(dispatcher_with_async_ha))
@@ -1026,6 +1029,9 @@ def _ahead(offset):
     ("cómo está el tiempo de cocción", PathType.SLOW_LLM, None),
     ("cuánto tiempo va a hacer falta", PathType.SLOW_LLM, None),
     # FV-L1: past tense with a plain weekday is refused, never the coming day.
+    ("estuvo lloviendo el sábado", PathType.FAST_WEATHER, WeatherHorizon(HorizonKind.UNSUPPORTED)),
+    ("cuál fue el pronóstico del sábado", PathType.FAST_WEATHER, WeatherHorizon(HorizonKind.UNSUPPORTED)),
+    ("¿estuvo lloviendo el martes?", PathType.FAST_WEATHER, WeatherHorizon(HorizonKind.UNSUPPORTED)),
     # Neighbours: future or imperfect forms keep the coming weekday; no day keeps today.
     ("va a llover el sábado", PathType.FAST_WEATHER, _SAT),
     ("cuál es el pronóstico del sábado", PathType.FAST_WEATHER, _SAT),
