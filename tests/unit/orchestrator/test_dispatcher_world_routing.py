@@ -1081,3 +1081,25 @@ def test_each_temperature_keyword_about_a_room_is_household(dispatcher, keyword)
 ])
 def test_temperature_keywords_with_a_place_keep_the_room_off_the_outdoor_entity(dispatcher, text, path):
     assert dispatcher._classify_request(text.lower())[0] is path
+
+
+@pytest.mark.parametrize(("text", "path"), [
+    # Review T037-U2b-RV2: a climate device's temperature is never the
+    # outdoor forecast; these keep the path they had before T037-U2b.
+    ("cuál va a ser la temperatura del termostato mañana", PathType.SLOW_LLM),
+    ("cuál va a ser la temperatura del aire mañana", PathType.SLOW_LLM),
+    ("a cuánto va a ser la temperatura del aire acondicionado", PathType.SLOW_LLM),
+    ("cuál va a ser la temperatura de la calefacción", PathType.SLOW_LLM),
+    ("cuál va a ser la temperatura de la caldera mañana", PathType.SLOW_LLM),
+    ("cuál es la temperatura de mañana del termostato", PathType.SLOW_LLM),
+    ("cuál es la temperatura para mañana de la estufa", PathType.SLOW_LLM),
+    ("cuál va a ser la temperatura del split", PathType.SLOW_LLM),
+    # Neighbours: outside, a room, or no complement keep their path.
+    ("qué temperatura va a hacer al aire libre mañana", PathType.FAST_WEATHER),
+    ("cuál va a ser la temperatura mañana", PathType.FAST_WEATHER),
+    ("cuál va a ser la temperatura del sábado", PathType.FAST_WEATHER),
+    ("cuál va a ser la temperatura del living mañana", PathType.FAST_HOUSEHOLD),
+    ("bajá la temperatura del aire", PathType.FAST_DOMOTICS),
+])
+def test_device_temperature_questions_never_read_the_forecast(dispatcher, text, path):
+    assert dispatcher._classify_request(text.lower())[0] is path

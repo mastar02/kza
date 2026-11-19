@@ -814,6 +814,18 @@ class RequestDispatcher:
         r"|manten)\s+(?:el|la|los|las)?\s*(?:temperatura|grados)\b"
     )
 
+    # Review T037-U2b-RV2: "la temperatura del termostato / del aire" (with
+    # or without "de mañana" in between) is a climate device's setpoint,
+    # never the outdoor forecast. With a device noun right after the
+    # temperature noun, the "temperatura" keywords do not route to weather and
+    # the turn keeps the path it had before T037-U2b. "aire libre" is
+    # outside and is not a device.
+    _DEVICE_TEMPERATURE_RE = re.compile(
+        r"\btemperatura (?:(?:de|para) (?:hoy|manana) )?(?:del?|de la|de los|de las) "
+        r"(?:termostato|aire(?! libre)|acondicionado|calefaccion|calefactor|clima|estufa|caldera"
+        r"|radiador|split)\b"
+    )
+
     # Marcadores de no-imperativo (Finding I1, review PR #15). El veto de
     # WEATHER_CLAUSE_FRAGMENTS de arriba asume que "fragmento + verbo
     # domótico sin '?'" es un comando con una cláusula de justificación
@@ -1287,11 +1299,14 @@ class RequestDispatcher:
             non_command_hint = any(h in text_lower for h in self._NON_COMMAND_HINTS)
             tiempo_of_something = bool(self._TIEMPO_OF_SOMETHING_RE.search(_strip_accents(text_lower)))
             setting_command = bool(self._CLIMATE_SETTING_COMMAND_RE.search(_strip_accents(text_lower)))
+            device_temperature = bool(self._DEVICE_TEMPERATURE_RE.search(_strip_accents(text_lower)))
             for keyword in self.WEATHER_KEYWORDS:
                 if keyword in text_lower:
                     if tiempo_of_something and "el tiempo" in keyword:
                         continue
                     if setting_command and keyword in self._TEMPERATURE_OF_DAY_KEYWORDS:
+                        continue
+                    if device_temperature and "temperatura" in keyword:
                         continue
                     # Review T037-U2b-RV1: "la temperatura de/para mañana en
                     # el living" is the room's temperature, never the outdoor
