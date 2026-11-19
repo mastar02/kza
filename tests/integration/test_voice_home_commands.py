@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from tests.mocks.responses import response_handler_mock
-from src.home_assistant.control_policy import EntityGrant, HomeControlPolicy
+from src.home_assistant.control_policy import EntityGrant, HomeActor, HomeControlPolicy
 from src.home_assistant.voice_resolver import HomeVoiceResolver
 from src.hooks import HookRegistry, RewriteResult
 from src.nlu.command_gate import CommandAcceptanceGate
@@ -20,8 +20,7 @@ from src.rooms.room_context import RoomConfig
 from tests.integration import test_typed_home_operations as typed_fixtures
 
 
-@pytest.fixture(params=[False, True], ids=["legacy", "orchestrated"])
-def voice_graph(request):
+def _build_voice_graph(orchestrator_enabled: bool):
     ha, actions = typed_fixtures.typed_graph.__wrapped__()
     rooms = {"test_room": RoomConfig("test_room", "Test room", "el salón", aliases=["salón"],
         default_light="light.test_lamp", default_climate="climate.test_ac", default_cover="cover.test_blind")}
@@ -33,16 +32,29 @@ def voice_graph(request):
     manager = MagicMock()
     manager.check_entity_permission.side_effect = AssertionError("Voice profiles are not authorization")
     router = RequestRouter(processor, response_handler_mock(), MagicMock(), orchestrator=orchestrator,
-        orchestrator_enabled=request.param, chroma_sync=chroma, ha_client=ha, home_actions=actions,
+        orchestrator_enabled=orchestrator_enabled, chroma_sync=chroma, ha_client=ha, home_actions=actions,
         home_voice_resolver=HomeVoiceResolver(actions, rooms), user_manager=manager,
         command_gate=CommandAcceptanceGate(), wake_acoustically_confirmed=True)
     return router, ha, actions, processor, chroma
 
 
-async def speak(graph, text, *, room_id="test_room", **metadata):
+@pytest.fixture(params=[False, True], ids=["legacy", "orchestrated"])
+def voice_graph(request):
+    return _build_voice_graph(request.param)
+
+
+@pytest.fixture
+def orchestrated_graph():
+    """Only the orchestrated path has the household layer that runs compound turns (T037-U6)."""
+    return _build_voice_graph(True)
+
+
+async def speak(graph, text, *, room_id="test_room", request_id=None, **metadata):
     router, _, _, processor, _ = graph
     processor.process_command.return_value = ProcessedCommand(text=text, user=None, emotion=None, timings={}, success=True)
-    return await router.process_command(CommandEvent(np.zeros(16000, dtype=np.float32), room_id, capture_complete=True, **metadata))
+    options = {"request_id": request_id} if request_id is not None else {}
+    return await router.process_command(
+        CommandEvent(np.zeros(16000, dtype=np.float32), room_id, capture_complete=True, **metadata), **options)
 
 
 @pytest.mark.parametrize("text,domain,service,entity,data", [
@@ -216,3 +228,36 @@ async def test_compound_runs_its_extended_control_part_only_on_the_orchestrated_
     assert [(p["verdict"], p["task_status"]) for p in result["compound_parts"]] == [
         ("done", "completed"), ("not_done", "needs_input")]
     assert chroma.asearch_command.await_count == 1
+
+
+async def test_compound_opposite_cover_parts_on_one_entity_send_only_the_first(orchestrated_graph):
+    """T037-U6-RV1: both parts resolve to cover.test_blind; the close would undo the open, so it is not sent."""
+    _, ha, _, _, _ = orchestrated_graph
+    result = await speak(orchestrated_graph, "Abrí la persiana y cerrá la persiana del salón")
+    assert ha.sends == [("cover", "open_cover", "cover.test_blind", None)]
+    assert [(p["verdict"], p["task_status"], p["dispatch"]) for p in result["compound_parts"]] == [
+        ("done", "completed", "accepted"), ("conflict", "cancelled", "not_sent")]
+    assert result["outcome"]["status"] == "failed" and result["outcome"]["dispatch"] == "partial"
+
+
+async def test_compound_duplicate_extended_action_is_sent_once(orchestrated_graph):
+    """T037-U6-RV1: the same open on the same cover (once by default, once by room) is not sent again."""
+    _, ha, _, _, _ = orchestrated_graph
+    result = await speak(orchestrated_graph, "Abrí la persiana y abrí la persiana del salón")
+    assert ha.sends == [("cover", "open_cover", "cover.test_blind", None)]
+    assert [(p["verdict"], p["dispatch"]) for p in result["compound_parts"]] == [
+        ("done", "accepted"), ("duplicate", "not_sent")]
+
+
+async def test_compound_extended_parts_each_get_their_own_receipt(orchestrated_graph):
+    """T037-U6-RV1: every extended-control part goes to HomeActionService under '<turn>:part<n>'."""
+    _, ha, actions, _, _ = orchestrated_graph
+    result = await speak(orchestrated_graph, "Poné el aire a 22 grados y abrí la persiana", request_id="voice:ext")
+    assert ha.sends == [("climate", "set_temperature", "climate.test_ac", {"temperature": 22}),
+                        ("cover", "open_cover", "cover.test_blind", None)]
+    assert [(p["verdict"], p["request_id"]) for p in result["compound_parts"]] == [
+        ("done", "voice:ext:part1"), ("done", "voice:ext:part2")]
+    receipts = [actions.get_receipt(actor=HomeActor.household(), request_id=f"voice:ext:part{n}") for n in (1, 2)]
+    assert [(r.entity_id, r.status) for r in receipts] == [("climate.test_ac", "confirmed"),
+                                                           ("cover.test_blind", "confirmed")]
+    assert actions.get_receipt(actor=HomeActor.household(), request_id="voice:ext") is None
