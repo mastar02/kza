@@ -17,6 +17,7 @@ from src.main import build_application
 from src.monitoring.loop_lag import LoopLagConfig, LoopLagProbe
 from src.pipeline.command_event import CommandEvent
 from src.routines.models import RunStatus, parse_routine_spec
+from src.routines.routine_manager import RoutineManager
 from src.routines.voice_routines import VoiceRoutineService
 from tests.mocks.application_graph import OfflineEncoder, OfflineSTT, OfflineTTS, offline_config, offline_home
 from tests.mocks.audio_output import AudioBackend
@@ -203,4 +204,37 @@ async def test_general_questions_about_routines_are_not_answered_as_unknown_rout
                 result = await graph.pipeline.process_command(event())
                 assert result["intent"] != "routine", text
                 assert "No encontré una rutina" not in (result["response"] or ""), text
+            assert observed["service_calls"] == 0
+
+
+@pytest.mark.parametrize("orchestrated", [True, False])
+async def test_list_and_consult_phrases_reach_the_read_in_the_real_graph(leaves, tmp_path, orchestrated):
+    """T033-U1-RV6: the phrases the unit tests list as reads reach the read in the graph, not
+    only detect(). Orchestrated: 'lista de rutinas' is no longer taken by the shared lists
+    (FAST_LIST). Legacy: the read runs before stage 2, so a consult after an answer is no
+    longer taken as feedback on that answer."""
+    async with offline_home() as (url, observed):
+        config = offline_config(tmp_path, url)
+        config["orchestrator"]["enabled"] = orchestrated
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=leaves)
+            await seed(graph)
+            listing = "Hay 3 rutinas: Buenos días, Buenas noches (desactivada) y Riego."
+            night = "La rutina Buenas noches está desactivada. Todavía no se ejecutó."
+            turns = [(text, listing) for text in RoutineManager.LIST_PATTERNS] + [
+                ("¿Se ejecutó la rutina Buenas Noches?", night),
+                ("¿qué hace la rutina buenas noches?", night),
+                ("¿la rutina buenas noches anduvo bien hoy?", night),
+                ("¿cómo salió la rutina que se llama riego?",
+                 "La rutina Riego está activada y no tiene horario: se ejecuta solo cuando se pide. "
+                 "La última ejecución falló."),
+                ("¿qué rutina apaga las luces?", listing),
+            ]
+            for text, said in turns:
+                graph.models.stt.text = text
+                result = await graph.pipeline.process_command(event())
+                assert (result["intent"], result["response"]) == ("routine", said), text
+                assert result["outcome"]["status"] == "completed", text
+                if orchestrated:
+                    assert result["path"] == "fast_routine", text
             assert observed["service_calls"] == 0
