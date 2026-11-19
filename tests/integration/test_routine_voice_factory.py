@@ -253,6 +253,10 @@ NIGHT = "La rutina Buenas noches está desactivada. Todavía no se ejecutó."
 ROUTINE_QUESTIONS = [
     ("qué rutinas hay", LISTING),
     ("¿qué rutina apaga las luces?", LISTING),
+    # T033-U1b-RV1: list questions the household layer claims (R1 routine query) with more words than
+    # household_intents.unvetoed_max_words (6) skip its 7B veto too; the clock bypass has no length limit either.
+    ("¿cuáles son las rutinas que tengo guardadas ahora?", LISTING),
+    ("mostrame las rutinas que hay en la casa por favor", LISTING),
     ("¿está activa la rutina riego?", WATERING),
     ("¿la rutina riego está activa?", WATERING),
     ("¿cómo salió la rutina riego?", WATERING),
@@ -312,8 +316,10 @@ async def test_routine_questions_without_a_clear_own_wake_keep_the_7b_veto(leave
             household = graph.pipeline.request_router.household_intents
             texts = [text for text, _ in ROUTINE_QUESTIONS
                      # An untagged capture is not a TV signal for the household layer (P3-F2 S6), which answers
-                     # a short claimed turn ('qué rutinas hay') with no veto; only unclaimed ones reach the 7B.
-                     if capture != "untagged" or household.classify(text) is None]
+                     # a short claimed turn ('qué rutinas hay') with no veto; unclaimed and longer claimed ones
+                     # reach the 7B.
+                     if capture != "untagged" or household.classify(text) is None
+                     or len(text.split()) > household.settings.unvetoed_max_words]
             assert len(texts) >= len(ROUTINE_QUESTIONS) - 1
             for text in texts:
                 graph.models.stt.text = text

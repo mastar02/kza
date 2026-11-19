@@ -30,7 +30,13 @@ from src.nlu.command_grammar import (
     WAKE_TERMS, PartialCommand, has_unresolved_light_location, non_immediate_action_reason,
     parse_default_light_target, parse_partial_command,
 )
-from src.nlu.household_intents import HouseholdIntent, HouseholdIntentClassifier, HouseholdIntentSettings
+from src.nlu.household_intents import (
+    HouseholdFamily,
+    HouseholdIntent,
+    HouseholdIntentClassifier,
+    HouseholdIntentSettings,
+    HouseholdOperation,
+)
 from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
 from src.orchestrator.dispatcher import has_domotics_action_verb
@@ -1111,7 +1117,7 @@ class RequestRouter:
         if household is not None or self._answers_reminder_choice(text, room_id):
             return await self._process_household_turn(
                 text, household, result, cmd=cmd, audio=audio, room_id=room_id, pipeline_start=pipeline_start,
-                tv_signal=tv_signal,
+                tv_signal=tv_signal, capture_trigger=capture_trigger,
             )
 
         if await self._try_home_command(
@@ -1490,6 +1496,35 @@ class RequestRouter:
             return False
         return self.voice_routines.claims(text)
 
+    def _is_clear_wake_household_routine_query(self, text: str, household: HouseholdIntent | None, *,
+                                               tv_signal: bool, capture_trigger: str | None) -> bool:
+        """Whether a household-claimed turn is a routine question that skips the veto (T033-U1b-RV1).
+
+        The user's answer (routine questions with a clear own wake skip the
+        7B, like the clock questions) does not depend on the length rule
+        ``unvetoed_max_words``, as the clock's bypass does not. Only a turn
+        the household layer claims as a routine QUERY qualifies, with
+        ``_is_clear_wake_routine_question`` (clear own wake and
+        ``VoiceRoutineService.claims``). A compound claim (R5) that also
+        names a list keeps the S6 veto, since one of its parts may act.
+
+        Args:
+            text: Accepted transcript of the turn.
+            household: The household layer's claim, or None for the answer
+                to a numbered reminder choice.
+            tv_signal: Textual wake, ambient_strict, a low wake score or a
+                capture without its own wake (T037-U5).
+            capture_trigger: What opened this capture, or None if unknown.
+
+        Returns:
+            True when the claimed turn is dispatched with no 7B call.
+        """
+        if household is None or household.family is not HouseholdFamily.ROUTINE:
+            return False
+        if household.operation is not HouseholdOperation.QUERY:
+            return False
+        return self._is_clear_wake_routine_question(text, tv_signal=tv_signal, capture_trigger=capture_trigger)
+
     def _has_clear_own_wake(self, *, tv_signal: bool, capture_trigger: str | None) -> bool:
         """Whether this capture was opened by a clear acoustic wake of its own (T037-U4, T037-U4-R1).
 
@@ -1543,7 +1578,8 @@ class RequestRouter:
             logger.info("[Household] reminder choice dropped by another turn room=%s", room_id)
 
     async def _process_household_turn(self, text: str, household: HouseholdIntent | None, result: dict, *, cmd,
-                                      audio, room_id: str | None, pipeline_start: float, tv_signal: bool) -> dict:
+                                      audio, room_id: str | None, pipeline_start: float, tv_signal: bool,
+                                      capture_trigger: str | None = None) -> dict:
         """Dispatch a claimed household turn (P3-F2 S6).
 
         A weak wake (TV signal, a capture without its own wake such as a
@@ -1555,7 +1591,8 @@ class RequestRouter:
         capturing microphone's room (the dispatcher derives it from
         ``context_room_id``, P3F1-R3 option A). ``household`` is None for
         the answer to a numbered reminder choice (T032-U1), which takes the
-        same veto.
+        same veto. A routine question with a clear own wake skips it whatever
+        its length (T033-U1b-RV1, ``_is_clear_wake_household_routine_query``).
         """
         summary = household.summary() if household is not None else "reminder_choice"
         result["household"] = summary
@@ -1565,6 +1602,10 @@ class RequestRouter:
             or not self.wake_acoustically_confirmed
             or len(text.split()) > self.household_intents.settings.unvetoed_max_words
         )
+        if weak_wake and self._is_clear_wake_household_routine_query(
+                text, household, tv_signal=tv_signal, capture_trigger=capture_trigger):
+            logger.info("[Routines] clear wake, skipping the household 7B veto: %r", text)
+            weak_wake = False
         if weak_wake and not await self._household_veto_passes(text, result, room_id=room_id, tv_signal=tv_signal):
             logger.info("[Household] vetoed %s", summary)
             result["intent"] = "llm_rejected:household"
