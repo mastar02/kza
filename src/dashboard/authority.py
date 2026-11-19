@@ -84,6 +84,10 @@ _HOME_PERMISSIONS = frozenset({
 _PERSON_MEMORY_PERMISSIONS = frozenset({
     DashboardPermission.MEMORY_OWN_READ, DashboardPermission.MEMORY_OWN_WRITE, DashboardPermission.MEMORY_OWN_VOICE,
 })
+# A person's own material: personal tasks (T035-U1) and 'Mis recuerdos'. Only a
+# household credential bound to a person holds it; an operator holds shared
+# tasks only (user answer Q16, 'Solo tareas compartidas').
+_PERSONAL_PERMISSIONS = frozenset({DashboardPermission.PERSONAL_TASKS}) | _PERSON_MEMORY_PERMISSIONS
 MAX_CREDENTIAL_TTL_S = 30 * 86400
 DEFAULT_SESSION_TTL_S = 30 * 86400
 MAX_CREDENTIALS = 256
@@ -261,10 +265,9 @@ def _expected_token() -> str | None:
 
 def _permissions(role: DashboardRole, user_id: str | None) -> frozenset[str]:
     if role is DashboardRole.OPERATOR:
-        values = frozenset(DashboardPermission) - _PERSON_MEMORY_PERMISSIONS
+        values = frozenset(DashboardPermission) - _PERSONAL_PERMISSIONS
     elif role is DashboardRole.HOME:
-        values = _HOME_PERMISSIONS | (frozenset({DashboardPermission.PERSONAL_TASKS}) | _PERSON_MEMORY_PERMISSIONS
-                                      if user_id else frozenset())
+        values = _HOME_PERMISSIONS | (_PERSONAL_PERMISSIONS if user_id else frozenset())
     else:
         values = frozenset({DashboardPermission.EVALUATION_READ})
     return frozenset(value.value for value in values)

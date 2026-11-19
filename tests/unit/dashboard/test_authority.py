@@ -99,9 +99,12 @@ async def test_server_roles_do_not_inherit_admin_personal_or_review_authority(au
     # U3b-2 / U3b-4a-2: memory:own:* belongs only to a household credential bound to a person.
     assert lease.current(own) is (role is Role.HOME and personal)
     if role is Role.OPERATOR:
-        assert lease.current(frozenset(Permission) - own)
+        # T035-U1 / user answer Q16 ('Solo tareas compartidas'): no personal tasks either.
+        assert lease.current(frozenset(Permission) - own - {Permission.PERSONAL_TASKS})
         assert not lease.current(frozenset({Permission.MEMORY_OWN_READ}))
         assert not lease.current(frozenset({Permission.MEMORY_OWN_VOICE}))
+        assert Permission.PERSONAL_TASKS not in lease.principal.permissions
+        assert lease.current(frozenset({Permission.TASKS_READ, Permission.TASKS_WRITE}))
     else:
         assert not lease.current(frozenset({Permission.MEMORY_ASSIGN}))
         for permission in (Permission.ADMIN_MANAGE, Permission.AUTH_MANAGE, Permission.MEMORY_REVIEW,
@@ -112,6 +115,36 @@ async def test_server_roles_do_not_inherit_admin_personal_or_review_authority(au
         assert lease.current(frozenset({Permission.ROUTINES_EXECUTE})) is (role is Role.HOME)
         with pytest.raises(PermissionError):
             await service.issue_credential(lease, subject="forbidden", role=Role.OPERATOR, expires_at=now[0] + 30)
+
+
+@pytest.mark.asyncio
+async def test_operator_permission_set_holds_shared_tasks_only(authority):
+    """Q16: neither the administrative bearer nor an issued operator holds tasks:personal."""
+    service, _, token = authority
+    issued = await issue(authority, Role.OPERATOR)
+    for lease in (service.resolve(token[0]), service.resolve("Bearer " + issued.token),
+                  (await service.login(token[0])).lease, legacy_lease(token[0], expected=lambda: token[0])):
+        assert lease.principal.role is Role.OPERATOR and lease.principal.user_id is None
+        assert Permission.PERSONAL_TASKS not in lease.principal.permissions
+        assert {Permission.TASKS_READ, Permission.TASKS_WRITE} <= lease.principal.permissions
+
+
+@pytest.mark.asyncio
+async def test_visitor_credential_is_household_without_person_for_seven_days(authority):
+    """Q17: a ~7 day household credential without a person has exactly the voice's scope."""
+    service, now, _ = authority
+    issued_at = now[0]
+    visitor = await issue(authority, Role.HOME, subject="synthetic-visitor", expires_at=issued_at + 7 * 86400)
+    assert visitor.principal.user_id is None and visitor.principal.expires_at == issued_at + 7 * 86400
+    assert visitor.principal.permissions == {"home:read", "home:control", "tasks:read", "tasks:write",
+                                             "routines:execute"}
+    now[0] = issued_at + 6 * 86400
+    day_six = service.resolve("Bearer " + visitor.token)
+    assert day_six is not None and day_six.current(frozenset({Permission.TASKS_WRITE}))
+    assert not day_six.current(frozenset({Permission.PERSONAL_TASKS}))
+    now[0] = issued_at + 7 * 86400 + 1
+    assert not day_six.current()
+    assert service.resolve("Bearer " + visitor.token) is None
 
 
 @pytest.mark.asyncio
