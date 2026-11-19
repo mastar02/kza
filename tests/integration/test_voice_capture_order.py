@@ -184,6 +184,45 @@ async def test_time_window_selects_creation_times_and_leaves_rows_metadata_only(
             assert not {'transcript', 'audio_base64', 'audio_wav', 'embedding', 'vector'} & set(row)
 
 
+async def test_time_window_includes_since_and_excludes_until_exactly(tmp_path):
+    """The window is [since, until) on created_at, at the exact boundary values."""
+    async with graph(tmp_path) as (_, _, voices, clock):
+        made = [(await capture(voices, clock))[1] for _ in range(3)]
+        created = {row['id']: row['created_at'] for row in (await query(voices, flt())).rows}
+        times = [created[identity] for identity in made]
+        projection = await query(voices, flt(since=times[0], until=times[2]))
+        assert ids(projection) == set(made[:2]) and projection.summary.matching_count == 2
+        projection = await query(voices, flt(since=times[1], until=times[2]))
+        assert ids(projection) == {made[1]} and projection.summary.matching_count == 1
+        # The same boundaries hold for a search.
+        assert ids(await query(voices, flt(since=times[1], until=times[2], text='texto'))) == {made[1]}
+
+
+async def test_a_group_expiring_before_its_row_and_sources_sets_the_row_deadline(tmp_path):
+    """The group's own expiry is a term of the row deadline (count and room options expiry)."""
+    async with graph(tmp_path) as (_, _, voices, clock):
+        source, identity = await capture(voices, clock, room=SALA, ttl=3600)
+        early = clock.now + 100
+        assert early < source.expires_at
+
+        def shorten():
+            # Today a group's expires_at always equals its earliest source's; set it
+            # directly so this term is pinned independently of the source terms.
+            with voices.ledger.ledger._transaction() as db:
+                db.execute('''UPDATE voice_groups SET expires_at=? WHERE id=
+                    (SELECT group_id FROM voice_group_members WHERE fingerprint_id=?)''', (early, identity))
+
+        await voices.acall(shorten)
+        projection = await query(voices, flt())
+        assert ids(projection) == {identity} and projection.rows[0]['group_expires_at'] == early
+        assert projection.summary.count_expires_at == early
+        assert projection.summary.room_options == (SALA,) and projection.summary.room_options_expires_at == early
+        clock.now = early
+        projection = await query(voices, flt())
+        assert projection.rows == [] and projection.summary.matching_count == 0
+        assert projection.summary.room_options == ()
+
+
 async def test_count_is_the_window_total_on_every_page_and_cursors_continue_without_gaps(tmp_path):
     async with graph(tmp_path) as (_, _, voices, clock):
         made = [(await capture(voices, clock, room=SALA if index % 2 else COCINA, review=index % 2 == 1))[1]
