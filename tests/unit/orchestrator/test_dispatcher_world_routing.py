@@ -943,7 +943,12 @@ def test_tiempo_and_clima_outside_a_weather_question_frame_are_not_weather(dispa
     "cómo va a estar el tiempo del sábado",
     "cómo va a estar el tiempo del fin de semana",
     "como esta el tiempo hoy",
+    "cómo está el tiempo de hoy",  # fix verification: pins "hoy" in the day allowlist
     "qué tiempo va a hacer",
+    # Fix verification T037-U2-FV1: mixed accents, as STT or typing leaves them.
+    "como está el tiempo",
+    "cómo esta el tiempo",
+    "¿como está el tiempo hoy?",
 ])
 def test_tiempo_questions_about_a_day_stay_weather(dispatcher, text):
     path, _ = dispatcher._classify_request(text)

@@ -738,6 +738,9 @@ class RequestDispatcher:
         "cómo va a estar el clima", "como va a estar el clima",
         "cómo va a estar el tiempo", "como va a estar el tiempo",
         "cómo está el tiempo", "como esta el tiempo",
+        # Fix verification T037-U2-FV1: the narrowed keyword lost the
+        # mixed-accent transcriptions the old "está el tiempo" caught.
+        "como está el tiempo", "cómo esta el tiempo",
         # Review T037-U2-RV2: the future temperature question. Explicit (not
         # a fragment): the subject is the temperature, never a command, and a
         # thermostat command ("poné la temperatura en 22") has none of these.
