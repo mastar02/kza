@@ -765,6 +765,26 @@ async def test_weekday_outside_the_forecast_is_named_and_never_current(dispatche
     assert d._stats["weather_no_data"] == 1
 
 
+@pytest.mark.parametrize(("text", "spoken"), [
+    ("qué temperatura va a hacer mañana", "Mañana: lluvioso, entre 9 y 18 grados."),
+    ("cuántos grados va a hacer el sábado", "El sábado: lloviendo fuerte, entre 6 y 12 grados."),
+    ("cuál es la temperatura de mañana", "Mañana: lluvioso, entre 9 y 18 grados."),
+    ("qué temperatura va a hacer", "Hoy: soleado, entre 10 y 20 grados."),
+])
+async def test_future_temperature_questions_answer_the_forecast_day(dispatcher_with_async_ha, text, spoken):
+    """Review T037-U2-RV2: routed to FAST_WEATHER and answered by date, never the reasoner."""
+    d = _no_current_read(_frozen(dispatcher_with_async_ha))
+    d.router, d.llm = MagicMock(), MagicMock()
+    d.ha.call_service_with_response = AsyncMock(return_value=_forecast_payload(WEEK))
+    # Classified first: a regression to SLOW_LLM fails here instead of waiting on the mocked reasoner.
+    assert d._classify_request(text.lower())[0] is PathType.FAST_WEATHER
+    result = await d.dispatch(user_id="u1", text=text, zone_id="zone_test")
+    assert result.path is PathType.FAST_WEATHER and result.intent == "weather"
+    assert result.response == spoken
+    assert result.outcome.status is TaskStatus.COMPLETED
+    assert d.router.mock_calls == [] and d.llm.mock_calls == []
+
+
 async def test_today_forecast_missing_is_named_not_replaced_by_current(dispatcher_with_async_ha):
     d = _no_current_read(_frozen(dispatcher_with_async_ha))
     d.ha.call_service_with_response = AsyncMock(return_value=_forecast_payload(WEEK[1:]))
@@ -862,6 +882,13 @@ def test_configured_room_names_count_for_indoor_temperature():
     "cómo está el tiempo",
     "va a hacer frío mañana",
     "va a hacer calor el sábado",
+    # Review T037-U2-RV2: future temperature questions, not the cloud reasoner.
+    "qué temperatura va a hacer mañana",
+    "cuántos grados va a hacer mañana",
+    "cuántos grados va a hacer el sábado",
+    "qué temperatura va a hacer el sábado",
+    "cuál es la temperatura de mañana",
+    "¿qué temperatura va a hacer pasado mañana?",
 ])
 def test_weather_intent_fixes_route_to_fast_weather(dispatcher, text):
     path, _ = dispatcher._classify_request(text)
@@ -873,6 +900,10 @@ def test_weather_intent_fixes_route_to_fast_weather(dispatcher, text):
     "cerrá la persiana que va a hacer calor",
     "bajá la temperatura del living",
     "poné la temperatura del living en 22",
+    # Review T037-U2-RV2: the new temperature keywords leave thermostat commands alone.
+    "poné la temperatura en 22",
+    "subí la temperatura a 23 grados",
+    "bajá los grados del aire",
 ])
 def test_new_weather_fragments_keep_commands_as_domotics(dispatcher, text):
     path, _ = dispatcher._classify_request(text)

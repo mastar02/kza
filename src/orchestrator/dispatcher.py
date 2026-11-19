@@ -731,6 +731,11 @@ class RequestDispatcher:
         # ("¿qué tiempo va a hacer el sábado?", "¿cómo está el tiempo?").
         "tiempo va a hacer", "va a estar el clima", "va a estar el tiempo",
         "está el tiempo", "esta el tiempo",
+        # Review T037-U2-RV2: the future temperature question. Explicit (not
+        # a fragment): the subject is the temperature, never a command, and a
+        # thermostat command ("poné la temperatura en 22") has none of these.
+        "temperatura va a hacer", "grados va a hacer",
+        "temperatura de mañana", "temperatura de manana",
         # Finding 3 (review 2026-08-04): sin esto, una pregunta como "¿tengo
         # que prender el clima o hace calor afuera?" no matcheaba ningún
         # WEATHER_KEYWORDS y caía al loop de DOMOTICS_KEYWORDS de abajo, que
