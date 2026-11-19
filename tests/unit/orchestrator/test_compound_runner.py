@@ -188,7 +188,8 @@ def test_part_outcome_without_an_outcome():
     music = SimpleNamespace(outcome=None, success=True, path=SimpleNamespace(value="fast_music"))
     assert part_outcome(music) == TaskOutcome(TaskStatus.COMPLETED, dispatch=DispatchState.ACCEPTED)
     music_failed = SimpleNamespace(outcome=None, success=False, path=SimpleNamespace(value="slow_music"))
-    assert part_outcome(music_failed).dispatch is DispatchState.UNKNOWN
+    assert part_outcome(music_failed) == TaskOutcome(TaskStatus.UNCERTAIN, dispatch=DispatchState.UNKNOWN,
+                                                     effect=EffectState.UNKNOWN)
     conflict = SimpleNamespace(outcome=None, success=False, path=SimpleNamespace(value="fast_domotics"))
     assert part_outcome(conflict) == TaskOutcome(TaskStatus.FAILED, dispatch=DispatchState.NOT_SENT,
                                                  effect=EffectState.NOT_OBSERVED)
@@ -199,3 +200,16 @@ def test_task_outcome_parts_are_flat_outcomes():
         TaskOutcome(TaskStatus.COMPLETED, parts=(TaskOutcome(TaskStatus.COMPLETED, parts=(DONE_HA,)),))
     with pytest.raises(ValueError, match="invalid_task_parts"):
         TaskOutcome(TaskStatus.COMPLETED, parts=[DONE_HA])
+
+
+async def test_failed_music_part_is_uncertain_not_refused():
+    """T037-U6-RV3: a failed music call may have reached the player: uncertain, and the aggregate says so."""
+    music_failed = SimpleNamespace(outcome=None, success=False, response="No pude pausar", action=None,
+                                   receipt=None, intent="pause", path=SimpleNamespace(value="fast_music"),
+                                   response_requirement=ResponseRequirement.REQUIRED)
+    run, _ = await _run([_part("pausá la música"), _part("apagá la luz del escritorio")],
+                        [music_failed, _result(DONE_HA, entity="light.a", service="turn_off", silent=True)])
+    assert [r.verdict for r in run.reports] == [PartVerdict.UNCERTAIN, PartVerdict.DONE]
+    assert run.outcome.status is TaskStatus.UNCERTAIN and run.outcome.dispatch is DispatchState.UNCERTAIN
+    assert run.response == ("Pausá la música: no sé si se hizo; fijate antes de repetirlo. "
+                            "Apagá la luz del escritorio: hecho.")

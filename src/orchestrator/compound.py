@@ -196,10 +196,12 @@ def part_outcome(result) -> TaskOutcome:
 
     A result without an outcome is read conservatively: a music command the
     music service accepted is COMPLETED (its effect is not observed by the
-    music path, so it is not required); a failed music command is FAILED with
-    an unknown send; any other result without an outcome returned before
-    sending (domain conflict, unknown speaker, invalid target) and is FAILED,
-    not sent.
+    music path, so it is not required); a failed music command is UNCERTAIN
+    with an unknown send, because the music service reports a refusal and a
+    call that failed after reaching the player the same way (T037-U6-RV3:
+    the reply says "no sé si se hizo", never "no lo hice"); any other result
+    without an outcome returned before sending (domain conflict, unknown
+    speaker, invalid target) and is FAILED, not sent.
     """
     outcome = getattr(result, "outcome", None)
     if isinstance(outcome, TaskOutcome):
@@ -208,7 +210,7 @@ def part_outcome(result) -> TaskOutcome:
     if path in _MUSIC_PATHS:
         if getattr(result, "success", False) is True:
             return TaskOutcome(TaskStatus.COMPLETED, dispatch=DispatchState.ACCEPTED)
-        return TaskOutcome(TaskStatus.FAILED, dispatch=DispatchState.UNKNOWN, effect=EffectState.UNKNOWN)
+        return TaskOutcome(TaskStatus.UNCERTAIN, dispatch=DispatchState.UNKNOWN, effect=EffectState.UNKNOWN)
     return TaskOutcome(TaskStatus.FAILED, dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED)
 
 
