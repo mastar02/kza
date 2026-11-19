@@ -26,7 +26,7 @@ import logging
 import re
 import unicodedata
 
-from src.core.task_outcome import TaskOutcome, TaskStatus
+from src.core.task_outcome import DispatchState, EffectState, PersistenceState, TaskOutcome, TaskStatus
 from src.nlu.command_grammar import WAKE_TERMS
 from src.routines.models import RunStatus, ScheduledRoutine, TimeSchedule
 
@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "RoutineCatalogEntry", "RoutineReadKind", "RoutineReadQuery", "RoutineReadResult", "VoiceRoutineService",
+    "legacy_routine_outcome",
 ]
 
 _SINGULAR_NOUNS = frozenset({"rutina", "automatizacion"})
@@ -154,6 +155,22 @@ class RoutineReadResult:
     entries: tuple[RoutineCatalogEntry, ...] = ()
 
 
+def legacy_routine_outcome(success: bool) -> TaskOutcome:
+    """Outcome of a turn the legacy routine handlers answered (until T033-U4 retires them).
+
+    Those handlers return no evidence of a stored or executed change, so a
+    reply they mark successful is UNCERTAIN, never COMPLETED; a refusal is
+    FAILED with nothing written, sent or observed.
+
+    Args:
+        success: The legacy handler's own ``success`` flag.
+    """
+    if success:
+        return TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.UNCERTAIN)
+    return TaskOutcome(TaskStatus.FAILED, persistence=PersistenceState.NOT_WRITTEN,
+                       dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED)
+
+
 def _fold(text: str) -> str:
     decomposed = unicodedata.normalize("NFD", text.lower())
     return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
@@ -271,8 +288,10 @@ class VoiceRoutineService:
         before = words[:noun]
         wh_head = bool(words) and (words[0] in _WH_HEADS or (
             words[0] in {"a", "en", "de", "hasta"} and len(words) > 1 and words[1] in _WH_HEADS))
-        for word in before:
-            if word in _BLOCKING_VERBS and not (wh_head and word in _QUESTION_FORMS):
+        for k, word in enumerate(before):
+            # "¿está activa la rutina X?": after "está" the form is an adjective, not a command.
+            adjective = k > 0 and before[k - 1] in {"esta", "estan"}
+            if word in _BLOCKING_VERBS and not adjective and not (wh_head and word in _QUESTION_FORMS):
                 return None
         asks = (wh_head or (bool(before) and before[0] in _YES_NO_HEADS)
                 or any(word in _READ_VERBS for word in before)

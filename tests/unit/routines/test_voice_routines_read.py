@@ -281,7 +281,8 @@ async def leaves(tmp_path):
 
 
 NON_ROUTINE_TURNS = [
-    "cuando juega Peñarol", "cuándo es el cumpleaños de Ana", "algo rutinario, pará", "apagá la luz del living",
+    "cuando juega Peñarol", "cuándo es el cumpleaños de Ana", "algo rutinario, pará", "algo rutinario",
+    "apagá la luz del living",
     "qué tiempo hace", "qué recordatorios tengo", "agregá leche a la lista de compras", "qué listas hay",
     "poné un timer de 5 minutos", "ejecutá la rutina buenas noches", "desactivá la rutina de la noche",
     "creá una rutina que apague las luces", "explicame la relatividad",
@@ -295,8 +296,20 @@ async def test_non_routine_turns_never_read_the_routine_store(leaves, routines):
     dispatcher = leaves.dispatcher(voice_routines=VoiceRoutineService(scheduler))
     for text in NON_ROUTINE_TURNS:
         result = await dispatcher.dispatch(user_id="unknown", text=text)
-        assert result.intent != "routine" or result.outcome.status is TaskStatus.UNSUPPORTED, text
+        assert result.outcome is not None, text
+        if result.intent == "routine":
+            # Honest refusals, or the legacy handler (a spy here) with no completion evidence.
+            assert result.outcome.status in (TaskStatus.UNSUPPORTED, TaskStatus.UNCERTAIN), text
     assert counted.calls == []
+
+
+@pytest.mark.parametrize(("success", "status"), [(True, TaskStatus.UNCERTAIN), (False, TaskStatus.FAILED)])
+async def test_legacy_routine_results_carry_an_outcome_without_completion(leaves, success, status):
+    leaves.routines.handle.return_value = {"handled": True, "success": success, "response": "legacy"}
+    dispatcher = leaves.dispatcher(voice_routines=VoiceRoutineService())
+    result = await dispatcher.dispatch(user_id="unknown", text="algo rutinario")
+    assert (result.path, result.intent) == (PathType.FAST_ROUTINE, "routine")
+    assert result.outcome.status is status and not result.outcome.task_completed
 
 
 async def test_cuando_questions_no_longer_route_to_routines(leaves, routines):
@@ -304,6 +317,7 @@ async def test_cuando_questions_no_longer_route_to_routines(leaves, routines):
     dispatcher = leaves.dispatcher(voice_routines=VoiceRoutineService(scheduler))
     for text in ("cuando juega peñarol", "cuándo es el cumpleaños de ana", "cuando llega el pedido"):
         assert dispatcher._classify_request(text)[0] is not PathType.FAST_ROUTINE
+        leaves.cloud.reset_mock()
         before = leaves.snapshot()
         result = await dispatcher.dispatch(user_id="unknown", text=text)
         assert result.path is not PathType.FAST_ROUTINE

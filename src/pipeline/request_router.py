@@ -37,7 +37,7 @@ from src.orchestrator.dispatcher import has_domotics_action_verb
 from src.pipeline.earcon_gate import should_play_earcon
 from src.pipeline.post_wake_endpoint import CaptureTrigger
 from src.pipeline.wake_verification import WakeVerifier
-from src.routines.voice_routines import VoiceRoutineService
+from src.routines.voice_routines import VoiceRoutineService, legacy_routine_outcome
 from src.analytics.asr_quality import alog_asr_outcome
 from src.memory.transient import TransientCache
 from src.memory.voice_phrase import VERIFICATION_REPLY
@@ -1898,6 +1898,7 @@ class RequestRouter:
                 result["intent"] = "routine"
                 result["response"] = routine_result["response"]
                 result["success"] = routine_result["success"]
+                result["_task_outcome"] = legacy_routine_outcome(bool(routine_result["success"]))
                 await self._speak_response(result["response"])
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
                 return result
@@ -1910,6 +1911,7 @@ class RequestRouter:
             result["intent"] = "routine"
             result["response"] = routine_result["response"]
             result["success"] = routine_result["success"]
+            result["_task_outcome"] = legacy_routine_outcome(bool(routine_result["success"]))
             await self._speak_response(result["response"])
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result

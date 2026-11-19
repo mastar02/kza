@@ -78,7 +78,12 @@ from src.orchestrator.priority_queue import (
 )
 from src.reminders.reminder_manager import CancelMatch, CancelResolution
 from src.reminders.reminder_store import ReminderScope
-from src.routines.voice_routines import RoutineReadKind, RoutineReadQuery, VoiceRoutineService
+from src.routines.voice_routines import (
+    RoutineReadKind,
+    RoutineReadQuery,
+    VoiceRoutineService,
+    legacy_routine_outcome,
+)
 from src.timers.named_timers import NamedTimerManager
 from src.timers.voice_commands import TimerVoiceCommands
 from src.world.household_time import CLOCK_UNAVAILABLE, describe_clock, parse_clock_query
@@ -1789,7 +1794,9 @@ class RequestDispatcher:
                     success=routine_result["success"],
                     response=routine_result["response"],
                     intent="routine",
-                    timings=timings
+                    timings=timings,
+                    # T033-U1: routine results carry a TaskOutcome; the legacy handler has no evidence.
+                    outcome=legacy_routine_outcome(bool(routine_result["success"])),
                 )
 
         # Fallback a slow path

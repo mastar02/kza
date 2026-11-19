@@ -124,8 +124,13 @@ async def test_non_routine_turns_never_read_routines_db(leaves, tmp_path, monkey
             graph = await build_application(config, shutdown=stack, factories=leaves)
             await seed(graph)
             reads = count_reads(monkeypatch, graph.routine_scheduler.store)
-            for text in ("cuando juega Peñarol", "algo rutinario", "agrega leche a la lista de compras",
-                         "qué recordatorios tengo"):
+            texts = ["agrega leche a la lista de compras", "qué recordatorios tengo", "vacía la lista de inexistente",
+                     "cancela el recordatorio de agua"]
+            if not orchestrated:
+                # The graph's orchestrator worker is not started, so an orchestrated slow-path turn would only
+                # wait for its response timeout; these two are covered on the dispatcher with a stubbed cloud.
+                texts += ["cuando juega Peñarol", "algo rutinario"]
+            for text in texts:
                 graph.models.stt.text = text
                 result = await graph.pipeline.process_command(event())
                 assert result.get("intent") != "routine", text
