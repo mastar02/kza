@@ -89,6 +89,7 @@ from src.reminders.voice_request import (
     period_hours,
 )
 from src.world.weather import DEFAULT_ENTITY as DEFAULT_WEATHER_ENTITY
+from src.world.weather import INDOOR_TEMPERATURE_UNSUPPORTED, is_indoor_temperature_question
 
 logger = get_logger(__name__)
 
@@ -726,6 +727,10 @@ class RequestDispatcher:
         "temperatura afuera", "grados hay afuera", "grados hace",
         "llueve", "va a llover", "lloviendo",
         "pronóstico", "pronostico",
+        # T037-U2: future and "el tiempo" forms of the explicit questions
+        # ("¿qué tiempo va a hacer el sábado?", "¿cómo está el tiempo?").
+        "tiempo va a hacer", "va a estar el clima", "va a estar el tiempo",
+        "está el tiempo", "esta el tiempo",
         # Finding 3 (review 2026-08-04): sin esto, una pregunta como "¿tengo
         # que prender el clima o hace calor afuera?" no matcheaba ningún
         # WEATHER_KEYWORDS y caía al loop de DOMOTICS_KEYWORDS de abajo, que
@@ -733,6 +738,7 @@ class RequestDispatcher:
         # incorrecto. "hace calor"/"hace frío" son vocabulario de clima
         # genérico, no colisionan con ningún comando de domótica.
         "hace calor", "hace frío", "hace frio",
+        "va a hacer calor", "va a hacer frío", "va a hacer frio",
     ]
 
     # Subconjunto de WEATHER_KEYWORDS que son FRAGMENTOS DE CLÁUSULA, no
@@ -749,6 +755,7 @@ class RequestDispatcher:
     # aunque "prende" matchee como substring de "prender".
     WEATHER_CLAUSE_FRAGMENTS = frozenset({
         "hace calor", "hace frío", "hace frio",
+        "va a hacer calor", "va a hacer frío", "va a hacer frio",
         "llueve", "va a llover", "lloviendo",
     })
 
@@ -909,6 +916,9 @@ class RequestDispatcher:
         self.weather_entity = weather_entity
         self.home_capabilities = home_capabilities
         self.room_namespace = room_namespace if room_namespace is not None else RoomNamespace(())
+        # Room words an indoor temperature question can name (T037-U2): the
+        # configured catalog plus the grammar's spoken aliases.
+        self._indoor_room_words = frozenset(ROOM_ALIASES) | self.room_namespace.rooms
         self.household_intents = household_intents if household_intents is not None else HouseholdIntentClassifier()
         self.timer_manager = timer_manager
         self.timer_fallback_zone = timer_fallback_zone
@@ -1092,6 +1102,14 @@ class RequestDispatcher:
             result = self._answer_clock(text)
             self._stats["fast_path"] += 1
 
+        elif path == PathType.FAST_HOUSEHOLD:
+            # Only _classify_request's indoor temperature question lands here
+            # (T037-U2): an honest refusal with zero effects until T037-U4.
+            logger.info("[Weather] indoor temperature question refused (household state, T037-U4)")
+            result = self._household_refusal(PathType.FAST_HOUSEHOLD, "indoor_temperature",
+                                             INDOOR_TEMPERATURE_UNSUPPORTED, TaskStatus.UNSUPPORTED)
+            self._stats["fast_path"] += 1
+
         else:
             # Slow path - encolar para LLM
             result = await self._slow_path(
@@ -1140,6 +1158,14 @@ class RequestDispatcher:
         # upstream turn_on/turn_off guess never turns a question into an action.
         if parse_clock_query(text_lower, self._clock_wake_words) is not None:
             return PathType.FAST_CLOCK, Priority.HIGH
+
+        # T037-U2: a temperature question about a room or the inside of the
+        # house is household state (T037-U4), never the outdoor weather
+        # entity, the 7B or an action. Like the clock it precedes the
+        # service_filter shortcut; a thermostat command ("bajá la temperatura
+        # del living") is not a question and keeps its path.
+        if is_indoor_temperature_question(text_lower, self._indoor_room_words):
+            return PathType.FAST_HOUSEHOLD, Priority.HIGH
 
         if service_filter in ("turn_on", "turn_off"):
             return PathType.FAST_DOMOTICS, Priority.HIGH

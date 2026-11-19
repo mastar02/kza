@@ -11,7 +11,8 @@ from src.core.task_outcome import TaskStatus
 from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.dispatcher import PathType, Priority, RequestDispatcher
 from src.orchestrator.priority_queue import PriorityRequestQueue
-from src.world.weather import DEFAULT_ENTITY, NO_DATA, NO_FORECAST, NO_FORECAST_HORIZON, ONE_DAY_AT_A_TIME
+from src.world.weather import (DEFAULT_ENTITY, INDOOR_TEMPERATURE_UNSUPPORTED, NO_DATA, NO_FORECAST,
+                               NO_FORECAST_HORIZON, ONE_DAY_AT_A_TIME)
 from src.home_assistant.ha_client import HAStatesSnapshot
 
 
@@ -734,7 +735,7 @@ def _no_current_read(d):
     ("va a llover mañana por la mañana", "Mañana: lluvioso, entre 9 y 18 grados."),
     ("qué tiempo hace pasado mañana", "Pasado mañana: nublado, entre 7 y 15 grados."),
     ("¿va a llover el sábado?", "El sábado: lloviendo fuerte, entre 6 y 12 grados."),
-    ("cómo está el clima el miércoles", "El miércoles: lluvioso, entre 9 y 18 grados."),
+    ("qué tiempo va a hacer el miércoles", "El miércoles: lluvioso, entre 9 y 18 grados."),
     ("va a llover el martes", "Hoy: soleado, entre 10 y 20 grados."),
 ])
 async def test_forecast_horizons_select_the_day_by_household_date(dispatcher_with_async_ha, text, spoken):
@@ -774,6 +775,7 @@ async def test_today_forecast_missing_is_named_not_replaced_by_current(dispatche
 
 @pytest.mark.parametrize("text", [
     "qué tiempo hace", "qué tiempo hace hoy", "qué tiempo hace esta mañana", "llueve por la mañana",
+    "cómo está el tiempo",
 ])
 async def test_present_tense_about_today_reads_current_conditions(dispatcher_with_async_ha, text):
     d = _frozen(dispatcher_with_async_ha)
@@ -803,3 +805,68 @@ async def test_unsupported_horizons_are_refused_without_any_read(dispatcher_with
     assert result.observation is None
     d.ha.call_service_with_response.assert_not_awaited()
     assert d._stats["weather_no_data"] == 0
+
+
+@pytest.mark.parametrize("text", [
+    "qué temperatura hay en el living",
+    "¿qué temperatura hace en la cocina?",
+    "cuántos grados hay en el escritorio",
+    "qué temperatura tiene el living",
+    "qué temperatura hay adentro",
+    "cuál es la temperatura del cuarto",
+])
+def test_room_temperature_questions_leave_fast_weather(dispatcher, text):
+    path, _ = dispatcher._classify_request(text.lower())
+    assert path is PathType.FAST_HOUSEHOLD
+    # An upstream turn_on/turn_off guess never turns the question into an action.
+    path, _ = dispatcher._classify_request(text.lower(), service_filter="turn_on")
+    assert path is PathType.FAST_HOUSEHOLD
+
+
+async def test_room_temperature_question_is_refused_with_no_read_send_or_model(dispatcher_with_async_ha):
+    d = dispatcher_with_async_ha
+    d.router, d.llm = MagicMock(), MagicMock()
+    d.ha.get_state_snapshot = AsyncMock(side_effect=AssertionError("state read"))
+    d.ha.call_service_with_response = AsyncMock(side_effect=AssertionError("forecast read"))
+    d.ha.call_service = AsyncMock(side_effect=AssertionError("send"))
+    result = await d.dispatch(user_id="u1", text="qué temperatura hay en el living", zone_id="zone_test")
+    assert result.path is PathType.FAST_HOUSEHOLD and result.intent == "indoor_temperature"
+    assert result.response == INDOOR_TEMPERATURE_UNSUPPORTED and not result.success
+    assert result.outcome.status is TaskStatus.UNSUPPORTED
+    d.ha.call_service.assert_not_awaited()
+    assert d.router.mock_calls == [] and d.llm.mock_calls == []
+
+
+def test_configured_room_names_count_for_indoor_temperature():
+    from src.core.household_clock import RoomNamespace
+
+    d = RequestDispatcher(chroma_sync=MagicMock(), ha_client=MagicMock(), routine_manager=MagicMock(),
+                          room_namespace=RoomNamespace(("quincho",)))
+    assert d._classify_request("qué temperatura hay en el quincho")[0] is PathType.FAST_HOUSEHOLD
+
+
+@pytest.mark.parametrize("text", [
+    "qué temperatura hace afuera",
+    "cuántos grados hay afuera",
+    "qué temperatura hace",
+    "qué tiempo va a hacer mañana",
+    "cómo va a estar el clima el sábado",
+    "cómo va a estar el tiempo mañana",
+    "cómo está el tiempo",
+    "va a hacer frío mañana",
+    "va a hacer calor el sábado",
+])
+def test_weather_intent_fixes_route_to_fast_weather(dispatcher, text):
+    path, _ = dispatcher._classify_request(text)
+    assert path is PathType.FAST_WEATHER
+
+
+@pytest.mark.parametrize("text", [
+    "prendé la luz que va a hacer frío",
+    "cerrá la persiana que va a hacer calor",
+    "bajá la temperatura del living",
+    "poné la temperatura del living en 22",
+])
+def test_new_weather_fragments_keep_commands_as_domotics(dispatcher, text):
+    path, _ = dispatcher._classify_request(text)
+    assert path is PathType.FAST_DOMOTICS

@@ -61,7 +61,8 @@ import pytest
 
 from src.core.household_clock import SUPPORTED_HOUSEHOLD_TIMEZONE
 from src.world.weather import (NO_DATA, NO_FORECAST, ForecastAlignment, HorizonKind, WeatherHorizon,
-                               describe_forecast, forecast_target_date, parse_weather_horizon)
+                               describe_forecast, forecast_target_date, is_indoor_temperature_question,
+                               parse_weather_horizon)
 
 # T037-U1: el día del pronóstico se elige por FECHA local del hogar, nunca por
 # posición. Hora de Montevideo = UTC-3 sin horario de verano.
@@ -448,3 +449,41 @@ def test_weekday_forecast_names_the_day_when_found_and_when_missing():
     missing = _say(FORECAST, "el sábado", date(2026, 8, 8))
     assert missing.text == "No tengo el pronóstico para el sábado."
     assert missing.alignment is ForecastAlignment.MISSING_DAY
+
+
+ROOM_WORDS = ("living", "cocina", "escritorio", "sala", "cuarto")
+
+
+@pytest.mark.parametrize("text", [
+    "qué temperatura hay en el living",
+    "¿Qué temperatura hace en la cocina?",
+    "cuántos grados hay en el escritorio",
+    "qué temperatura tiene el living",
+    "cuál es la temperatura del living",
+    "a cuánto está la temperatura en la sala",
+    "qué temperatura hay en el dormitorio",
+    "qué temperatura hay en la pieza",
+    "qué temperatura hay adentro",
+    "qué temperatura hay en casa",
+])
+def test_room_or_house_temperature_questions_are_indoor(text):
+    assert is_indoor_temperature_question(text, ROOM_WORDS)
+
+
+@pytest.mark.parametrize("text", [
+    "qué temperatura hace",
+    "qué temperatura hace afuera",
+    "cuántos grados hay afuera",
+    "qué temperatura hace afuera de la casa",
+    "qué tiempo hace en el living",          # not a temperature question
+    "bajá la temperatura del living",        # thermostat command, not a question
+    "poné la temperatura del living en 22",
+    "subí los grados del escritorio",
+])
+def test_outdoor_or_non_question_temperatures_are_not_indoor(text):
+    assert not is_indoor_temperature_question(text, ROOM_WORDS)
+
+
+def test_configured_rooms_count_as_indoor_places():
+    assert not is_indoor_temperature_question("qué temperatura hay en el quincho")
+    assert is_indoor_temperature_question("qué temperatura hay en el quincho", ("quincho",))

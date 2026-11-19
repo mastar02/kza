@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, tzinfo
 from enum import StrEnum
@@ -94,6 +95,8 @@ NO_FORECAST = "No tengo el pronóstico ahora mismo."
 NO_FORECAST_HORIZON = ("No tengo ese pronóstico. Puedo decirte el de hoy, mañana, pasado mañana "
                        "o un día de la semana.")
 ONE_DAY_AT_A_TIME = "Preguntame por un día a la vez."
+# Room temperatures are household state (T037-U4), not the outdoor weather entity.
+INDOOR_TEMPERATURE_UNSUPPORTED = "Todavía no puedo decirte la temperatura de adentro de la casa, solo la de afuera."
 _DIA_INDEX = {"hoy": 0, "mañana": 1, "manana": 1, "pasado mañana": 2, "pasado manana": 2}
 _OFFSET_LABEL = {0: "hoy", 1: "mañana", 2: "pasado mañana"}
 _WEEKDAY_INDEX = {normalize(name): index for index, name in enumerate(WEEKDAYS)}
@@ -113,6 +116,18 @@ _FORECAST_CUE_RE = re.compile(r"\b(?:va|van) a\b|\bpronostico\b|\b(?:llovera|har
 # "mañana" after these words is the morning ("esta/por la/a la mañana"), not tomorrow.
 _MORNING_PREVIOUS = frozenset({"esta", "la", "pasado"})
 _TODAY_PERIODS = frozenset({"manana", "tarde", "noche"})
+# Question shapes about a temperature (normalized text). "qué temperatura hace
+# afuera" matches too: the location decides indoor or outdoor.
+_TEMPERATURE_QUESTION_RE = re.compile(
+    r"\b(?:que|cual es la|cuanta) temperatura\b|\bcuantos grados\b"
+    r"|\b(?:temperatura|grados) (?:hay|hace|tiene|marca)\b|\besta la temperatura\b"
+)
+_ROOM_PLACE_RE = re.compile(r"\b(?:en|del|de|tiene)(?: (?:el|la|los|las))? (\w+)")
+_HOUSE_RE = re.compile(r"\b(?:adentro|dentro|en casa|en la casa|de la casa)\b")
+_OUTSIDE_RE = re.compile(r"\b(?:afuera|fuera|en la calle)\b")
+# Indoor places named without being a configured room or a grammar alias.
+_GENERIC_INDOOR_PLACES = frozenset({"pieza", "comedor", "lavadero", "dormitorio", "cuarto", "habitacion"})
+
 
 class HorizonKind(StrEnum):
     """What a weather question asks for."""
@@ -200,6 +215,27 @@ def parse_weather_horizon(text: str) -> WeatherHorizon:
     if day[1] == 0 and not _FORECAST_CUE_RE.search(joined):
         return WeatherHorizon(HorizonKind.CURRENT)
     return WeatherHorizon(HorizonKind.FORECAST, offset=day[1])
+
+
+def is_indoor_temperature_question(text: str, room_words: Iterable[str] = ()) -> bool:
+    """True for a temperature question about a room or the inside of the house.
+
+    The outdoor weather entity never answers it (T037-U2): "qué temperatura hay
+    en el living" is household state for T037-U4. A question about outside
+    ("qué temperatura hace afuera") stays weather.
+
+    Args:
+        text: Utterance in any case, accents or punctuation.
+        room_words: Room ids and aliases (configured rooms plus the grammar's
+            room lexicon), compared accent-free.
+    """
+    plain = normalize(text)
+    if not _TEMPERATURE_QUESTION_RE.search(plain):
+        return False
+    rooms = {normalize(word) for word in room_words if isinstance(word, str)} | _GENERIC_INDOOR_PLACES
+    if any(match.group(1) in rooms for match in _ROOM_PLACE_RE.finditer(plain)):
+        return True
+    return bool(_HOUSE_RE.search(plain)) and not _OUTSIDE_RE.search(plain)
 
 
 def no_forecast_for(label: str) -> str:

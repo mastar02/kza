@@ -9,7 +9,7 @@ from httpx import ASGITransport, AsyncClient
 import pytest
 
 from src.main import build_application
-from src.world.weather import NO_DATA, NO_FORECAST, NO_FORECAST_HORIZON
+from src.world.weather import INDOOR_TEMPERATURE_UNSUPPORTED, NO_DATA, NO_FORECAST, NO_FORECAST_HORIZON
 from tests.integration.test_capability_application import configuration, leaves as capability_leaves
 from tests.integration.test_task_outcomes import event
 from tests.mocks.task_transport import TaskTransport
@@ -249,4 +249,21 @@ async def test_present_tense_this_morning_reads_current_conditions_through_the_a
             result = await graph.pipeline.process_command(event())
             assert result['intent'] == 'weather' and '22 grados' in result['response']
             assert result['source_observation']['source'] == 'ha-rest-states'
+            assert transport.forecast_reads == [] and transport.sends == []
+
+
+@pytest.mark.parametrize('text', ['qué temperatura hay en el living', 'cuántos grados hay en la cocina'])
+async def test_room_temperature_question_never_reaches_the_weather_entity(leaves, tmp_path, text):
+    transport = TaskTransport()
+    weather(transport)
+    async with transport.serve() as url:
+        config, _ = configuration(tmp_path, url)
+        config['home_assistant']['weather_entity'] = WEATHER
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=leaves)
+            graph.models.stt.text = text
+            result = await graph.pipeline.process_command(event())
+            assert result['path'] != 'fast_weather' and result['intent'] != 'weather'
+            assert result['response'] == INDOOR_TEMPERATURE_UNSUPPORTED
+            assert '22 grados' not in result['response'] and not result['task_completed']
             assert transport.forecast_reads == [] and transport.sends == []
