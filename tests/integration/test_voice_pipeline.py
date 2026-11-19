@@ -213,7 +213,8 @@ class TestVoicePipelineIntegration:
         assert result["intent"] == "routine"
         assert result["handled"] is True
         assert result["task_completed"] is False
-        assert result["outcome"]["status"] == "unknown"
+        # T033-U1: the legacy handler's success carries no evidence of a stored change: UNCERTAIN.
+        assert result["outcome"]["status"] == "uncertain"
         assert result["success"] is False
 
     @pytest.mark.asyncio
