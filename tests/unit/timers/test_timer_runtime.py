@@ -8,6 +8,7 @@ ring_failed/undelivered receipt, never a delivered one; stop() leaves no task.
 
 import asyncio
 import heapq
+import threading
 
 import pytest
 
@@ -134,17 +135,23 @@ def _manager_tasks() -> list[asyncio.Task]:
 
 
 async def test_concurrent_timers_keep_their_deadlines_while_one_rings():
-    """A 2 s ring no longer delays the others: each starts ringing at its own deadline."""
+    """A 2 s ring no longer delays the others: each starts ringing at its own deadline.
+
+    salsa is created 0.3 s off the 0.5 s tick grid (review T030-U2-RV3 M8): it rings at 11.3 s only if
+    the loop wakes for the deadline instead of on the next tick.
+    """
     clock, output, timers = await _manager()
     try:
         first = timers.create_timer("pasta", 10)
+        await clock.advance(0.3)
         second = timers.create_timer("salsa", 11)
         third = timers.create_timer("arroz", 13)
-        assert [t.ends_at for t in (first, second, third)] == [clock.wall() + d for d in (10, 11, 13)]
+        assert [t.ends_at for t in (first, second, third)] == pytest.approx(
+            [clock.wall() + d for d in (9.7, 11, 13)])
         await clock.advance(40)
         starts = {name: output.starts(name) for name in ("pasta", "salsa", "arroz")}
         gap = RING_S + RING_GAP_S
-        for name, due in (("pasta", 10), ("salsa", 11), ("arroz", 13)):
+        for name, due in (("pasta", 10), ("salsa", 11.3), ("arroz", 13.3)):
             assert starts[name] == pytest.approx([due + k * gap for k in range(RING_REPEATS)], abs=1e-6)
         assert {t.state for t in (first, second, third)} == {TimerState.COMPLETED}
         assert {t.ring for t in (first, second, third)} == {RingDelivery.DELIVERED}
@@ -318,5 +325,72 @@ async def test_a_repeating_timer_rearms_from_its_old_deadline():
         assert timers.cancel_timer(timer.timer_id)
         await clock.advance(60)
         assert max(output.starts()) < 35
+    finally:
+        await timers.stop()
+
+
+async def test_a_late_tick_rearms_a_repeating_timer_from_its_old_deadline():
+    """Review T030-U2-RV3 M7: a tick found 0.4 s late must not push the next round 0.4 s later (no drift)."""
+    clock, _, timers = await _manager(start=False)
+    timer = timers.create_timer("", 10)
+    timer.repeat = True
+    await clock.advance(10.4)
+    timers._tick()
+    try:
+        assert timer.state is TimerState.RUNNING
+        assert timer.deadline == pytest.approx(START + 20)
+        assert timer.remaining_seconds == pytest.approx(9.6)
+        assert timer.ends_at == pytest.approx(START + WALL_OFFSET + 20)
+    finally:
+        await timers.stop()
+
+
+async def test_a_repeating_timer_shorter_than_its_ring_ends_the_previous_ring():
+    """Review T030-U2-RV3 M11: when the next round comes due, the previous ring stops (one ring per timer)."""
+    clock, output, timers = await _manager()
+    try:
+        timer = timers.create_timer("", 3)
+        timer.repeat = True
+        await clock.advance(10)
+        # Each round speaks once (2 s) and is cut in its 2 s gap by the next round: never two rings at once.
+        assert output.starts() == [3.0, 6.0, 9.0]
+        assert timers.get_status()["delivery_tasks"] == 1
+        assert timers.cancel_timer(timer.timer_id)
+        await clock.advance(30)
+        assert output.starts() == [3.0, 6.0, 9.0] and timers.get_status()["delivery_tasks"] == 0
+    finally:
+        await timers.stop()
+
+
+async def test_stop_after_a_heard_repetition_keeps_the_ring_delivered():
+    """Review T030-U2-RV3 M16 (open question 5): shutdown in the gap after a heard repetition is DELIVERED."""
+    clock, output, timers = await _manager()
+    timer = timers.create_timer("pasta", 5)
+    await clock.advance(5 + RING_S + RING_GAP_S / 2)
+    assert [e[1] for e in output.events] == ["start", "end"] and timer.ring is RingDelivery.RINGING
+    await timers.stop()
+    assert timer.ring is RingDelivery.DELIVERED and timers.get_status()["ring_not_heard"] == 0
+
+
+async def test_a_sync_voice_callback_runs_off_the_event_loop():
+    """Review T030-U2-RV3 M17: a blocking (sync) output is called in a worker thread, never on the loop."""
+    clock = VirtualClock()
+    threads: list[int] = []
+
+    def speak(text: str, zone_id: str) -> bool:
+        threads.append(threading.get_ident())
+        return True
+
+    timers = NamedTimerManager(tts_callback=speak, clock=clock, wall_clock=clock.wall, sleep=clock.sleep)
+    timers.create_timer("pasta", 5)
+    clock.now += 5
+    timers._tick()
+    try:
+        for _ in range(500):
+            if threads:
+                break
+            await asyncio.sleep(0.01)
+        assert threads and threads[0] != threading.get_ident()
+        await clock.settle()
     finally:
         await timers.stop()
