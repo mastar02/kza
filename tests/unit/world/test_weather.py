@@ -410,6 +410,10 @@ def _day_ahead(offset):
     ("va a llover el 1ro", UNSUPPORTED),
     ("qué tiempo va a hacer el 1ero de diciembre", UNSUPPORTED),
     ("va a llover el 1er día del mes", UNSUPPORTED),
+    # Fix verification T037-U2-FV2: a day number after "día", a month named in words.
+    ("va a llover el día 25", UNSUPPORTED),
+    ("va a llover el primero de diciembre", UNSUPPORTED),
+    ("va a llover en diciembre", UNSUPPORTED),
     ("llovió ayer?", UNSUPPORTED),
     # Past weekdays, weeks, months and years (review T037-U2-RV1): never the coming day.
     ("estuvo lloviendo el sábado pasado", UNSUPPORTED),
@@ -420,6 +424,12 @@ def _day_ahead(offset):
     ("qué tiempo va a hacer el mes pasado", UNSUPPORTED),
     ("llovió mucho la semana pasada", UNSUPPORTED),
     ("hizo frío el año pasado", UNSUPPORTED),
+    # Fix verification T037-U2-FV2: "pasado" before the weekday or period.
+    ("estuvo lloviendo el pasado sábado", UNSUPPORTED),
+    ("estuvo lloviendo la pasada semana", UNSUPPORTED),
+    ("va a llover el pasado mes", UNSUPPORTED),
+    # A future day after a past-looking word stays a forecast day.
+    ("va a llover el lunes, pasado mañana", SEVERAL),
     # Two different days in one question.
     ("va a llover hoy o mañana", SEVERAL),
     ("va a llover mañana o el sábado", SEVERAL),
