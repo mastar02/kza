@@ -404,10 +404,21 @@ def _day_ahead(offset):
     ("va a llover el 25", UNSUPPORTED),
     ("va a llover el 3 de diciembre", UNSUPPORTED),
     ("llovió ayer?", UNSUPPORTED),
+    # Past weekdays, weeks, months and years (review T037-U2-RV1): never the coming day.
+    ("estuvo lloviendo el sábado pasado", UNSUPPORTED),
+    ("el martes pasado llovió?", UNSUPPORTED),
+    ("cuál fue el pronóstico del sábado pasado", UNSUPPORTED),
+    ("qué tiempo hizo el miércoles pasado", UNSUPPORTED),
+    ("estuvo lloviendo el mes pasado", UNSUPPORTED),
+    ("qué tiempo va a hacer el mes pasado", UNSUPPORTED),
+    ("llovió mucho la semana pasada", UNSUPPORTED),
+    ("hizo frío el año pasado", UNSUPPORTED),
     # Two different days in one question.
     ("va a llover hoy o mañana", SEVERAL),
     ("va a llover mañana o el sábado", SEVERAL),
     ("va a llover mañana o pasado mañana", SEVERAL),
+    # "pasado mañana" after a weekday is a second future day, not a past weekday.
+    ("va a llover el sábado o pasado mañana", SEVERAL),
 ])
 def test_weather_horizon_table(text, expected):
     assert parse_weather_horizon(text) == expected

@@ -101,12 +101,16 @@ _DIA_INDEX = {"hoy": 0, "mañana": 1, "manana": 1, "pasado mañana": 2, "pasado 
 _OFFSET_LABEL = {0: "hoy", 1: "mañana", 2: "pasado mañana"}
 _WEEKDAY_INDEX = {normalize(name): index for index, name in enumerate(WEEKDAYS)}
 _MONTHS = "enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre"
+_WEEKDAY_WORDS = "|".join(normalize(name) for name in WEEKDAYS)
 # Horizons a daily forecast keyed by date cannot answer honestly: ranges,
-# weeks, months, past days and calendar dates (normalized text).
+# weeks, months, past days and calendar dates (normalized text). A past
+# weekday ("el sábado pasado") is past, not the coming one (review T037-U2-RV1);
+# "pasado mañana" after a weekday is still a future day.
 _UNSUPPORTED_HORIZON_RE = re.compile(
-    r"\b(?:la semana|esta semana|proxima semana|fin(?:es)? de semana|finde"
-    r"|mes que viene|proximo mes|este mes|ano que viene|proximo ano"
+    r"\b(?:la semana|esta semana|proxima semana|semana pasada|fin(?:es)? de semana|finde"
+    r"|mes que viene|proximo mes|este mes|mes pasado|ano que viene|proximo ano|ano pasado"
     r"|proximos dias|estos dias|dias que vienen|ayer|anoche|anteayer"
+    rf"|(?:{_WEEKDAY_WORDS}) pasado(?! manana)"
     r"|(?:en|dentro de) (?:\d+|un|una|dos|tres|cuatro|cinco|seis|siete|diez|quince) (?:dias|semanas?)"
     rf"|el \d+|\d+ de (?:{_MONTHS}))\b"
 )

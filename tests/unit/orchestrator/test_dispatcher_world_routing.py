@@ -795,6 +795,12 @@ async def test_present_tense_about_today_reads_current_conditions(dispatcher_wit
     ("el pronóstico para el 25", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
     ("va a llover en tres días", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
     ("va a llover hoy o mañana", ONE_DAY_AT_A_TIME, TaskStatus.NEEDS_INPUT),
+    # Review T037-U2-RV1: a past day is refused, never the coming weekday or the current conditions.
+    ("estuvo lloviendo el sábado pasado", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
+    ("cuál fue el pronóstico del sábado pasado", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
+    ("estuvo lloviendo el mes pasado", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
+    ("qué tiempo va a hacer el mes pasado", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
+    ("estuvo lloviendo la semana pasada", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
 ])
 async def test_unsupported_horizons_are_refused_without_any_read(dispatcher_with_async_ha, text, spoken, status):
     d = _no_current_read(_frozen(dispatcher_with_async_ha))
