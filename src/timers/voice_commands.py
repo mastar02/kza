@@ -27,6 +27,10 @@ Rules:
   pasta): the command then cancels as in T030-U1. A stop that finds the ring
   already silent says so ("ya no suena") and claims no effect.
   "cancelá todos los timers" also silences every ring.
+* A bare "listo" (T030-U2b, user answer morning_questions_20261119) stops a
+  ring under the same rules as "pará el timer" with no name, and only a ring:
+  it never cancels a timer. The command gate lets it through only while
+  ``ring_stop_open`` holds; with no ring left it changes nothing.
 * A ring nobody heard (receipt ring_failed/undelivered) is said once in the
   next general query, so a failed ring is never a silent completion (T030-U2).
 * Labels are household content and are never logged above DEBUG.
@@ -64,6 +68,7 @@ TIMERS_UNSUPPORTED = "Los temporizadores no están disponibles."
 TIMERS_UNAVAILABLE = "Ahora no puedo manejar temporizadores. Probá de nuevo en un rato."
 NO_RING_ROUTE = "No tengo dónde hacer sonar el temporizador: falta configurar la salida de los avisos."
 NO_ACTIVE = "No hay temporizadores activos."
+NO_RING = "No hay ningún temporizador sonando."
 ALARM_CLARIFY = "¿Para cuándo es la alarma? Decímelo completo, por ejemplo: poné una alarma de 10 minutos."
 _ASK_DURATION = "¿De cuánto tiempo es el temporizador? Decímelo completo, por ejemplo: poné un temporizador de 10 minutos."
 _ISSUE_REPLIES = {
@@ -198,6 +203,36 @@ class TimerVoiceCommands:
                                     lambda n: f"Siguen {n} temporizadores.")
         return _refusal("Con los temporizadores puedo ponerlos, pausarlos, seguirlos, consultarlos o cancelarlos.",
                         TaskStatus.NEEDS_INPUT)
+
+    def ring_stop_open(self) -> bool:
+        """Whether a stop naming no timer would silence a ring now (T030-U2b).
+
+        True while a timer rings, or within ``RING_FOLLOW_UP_S`` after the
+        household cut a ring not superseded by a newer timer (the T030-U2
+        receipt rules). Synchronous and in memory, no I/O: the command gate
+        asks it before letting a bare "listo" through.
+        """
+        if self.manager is None or not self.manager.running:
+            return False
+        return bool(self._rings_to_silence(TimerSelector()))
+
+    async def stop_ring(self) -> TimerVoiceReply:
+        """Run a bare "listo" (T030-U2b): silence the open ring as "pará el timer" would; never cancel a timer.
+
+        Returns:
+            The reply of :meth:`execute` for a nameless stop during that ring, or a
+            NEEDS_INPUT with no effects when no ring is open any more.
+        """
+        if self.manager is None:
+            return _refusal(TIMERS_UNSUPPORTED, TaskStatus.UNSUPPORTED)
+        if not self.manager.running:
+            logger.warning("[Timer] manager not running; ring stop refused")
+            return _refusal(TIMERS_UNAVAILABLE, TaskStatus.FAILED)
+        rung = self._rings_to_silence(TimerSelector())
+        if not rung:
+            logger.info("[Timer] ring stop found no open ring")
+            return _refusal(NO_RING, TaskStatus.NEEDS_INPUT, no_match=True)
+        return await self._silence(rung)
 
     # ------------------------------------------------------------------
 

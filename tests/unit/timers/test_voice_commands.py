@@ -12,6 +12,7 @@ from src.timers.named_timers import RING_FOLLOW_UP_S, NamedTimerManager, RingDel
 from src.timers.voice_commands import (
     ALARM_CLARIFY,
     NO_ACTIVE,
+    NO_RING,
     NO_RING_ROUTE,
     TIMERS_UNAVAILABLE,
     TIMERS_UNSUPPORTED,
@@ -591,3 +592,141 @@ async def test_a_ring_nobody_heard_is_said_once_in_the_next_query(manager):
     only = await say(commands, "¿cuánto le falta al timer?")
     assert (only.response, only.no_match) == (f"El temporizador de té terminó, pero no pude avisarlo. {NO_ACTIVE}",
                                               False)
+
+
+# ---------------------------------------------------------------- T030-U2b: a bare "listo" during a ring
+
+
+def _outcome(reply):
+    return (reply.response, reply.outcome, reply.no_match)
+
+
+async def test_listo_during_a_ring_stops_it_like_a_nameless_stop(manager):
+    """User answer morning_questions_20261119: same reply and TaskOutcome as 'pará el timer' during the ring;
+    the running salsa is not cancelled and the ring does not repeat."""
+    commands = TimerVoiceCommands(manager)
+    pasta = manager.create_timer("pasta", 300)
+    salsa = manager.create_timer("salsa", 600)
+    await _ring(manager, pasta)
+    assert commands.ring_stop_open()
+    rings = manager.tts.await_count
+    reply = await commands.stop_ring()
+
+    twin = FrozenTimerManager(tts_callback=AsyncMock())
+    await twin.start()
+    try:
+        other = twin.create_timer("pasta", 300)
+        twin.create_timer("salsa", 600)
+        await _ring(twin, other)
+        expected = await say(TimerVoiceCommands(twin), "pará el timer")
+    finally:
+        await twin.stop()
+    assert _outcome(reply) == _outcome(expected)
+    assert reply.response == "Paré el temporizador de pasta."
+    assert (reply.outcome.status, reply.outcome.persistence, reply.outcome.effect) == (
+        TaskStatus.COMPLETED, PersistenceState.NOT_REQUIRED, EffectState.OBSERVED)
+    assert (pasta.ring, pasta.state, salsa.state) == (RingDelivery.STOPPED, TimerState.COMPLETED, TimerState.RUNNING)
+    assert manager.ringing_timers() == [] and manager.get_status()["delivery_tasks"] == 0
+    await asyncio.sleep(0)
+    assert manager.tts.await_count == rings
+
+
+async def test_listo_with_no_ring_never_cancels_a_running_timer(manager):
+    """Unlike 'pará el timer', which cancels the only running timer, a bare 'listo' stops only a ring."""
+    commands = TimerVoiceCommands(manager)
+    pasta = manager.create_timer("pasta", 300)
+    assert not commands.ring_stop_open()
+    reply = await commands.stop_ring()
+    assert (reply.response, reply.outcome.status, reply.no_match) == (NO_RING, TaskStatus.NEEDS_INPUT, True)
+    assert (reply.outcome.persistence, reply.outcome.effect) == (PersistenceState.NOT_WRITTEN,
+                                                                 EffectState.NOT_OBSERVED)
+    assert pasta.state is TimerState.RUNNING
+
+
+@pytest.mark.parametrize(("ended_ago", "open_"), [(0.0, True), (10.0, True), (RING_FOLLOW_UP_S - 0.5, True),
+                                                  (RING_FOLLOW_UP_S, False), (RING_FOLLOW_UP_S + 1, False)])
+async def test_listo_follows_a_cut_ring_only_within_the_follow_up_window(manager, ended_ago, open_):
+    """T030-U2 receipt rules: a ring the household cut (STOPPED) is open for RING_FOLLOW_UP_S."""
+    commands = TimerVoiceCommands(manager)
+    pasta = manager.create_timer("pasta", 300)
+    salsa = manager.create_timer("salsa", 600)
+    pasta.state, pasta.ring, pasta.ring_ended_at = TimerState.COMPLETED, RingDelivery.STOPPED, manager.frozen.now
+    manager.frozen.now += ended_ago
+    assert commands.ring_stop_open() is open_
+    reply = await commands.stop_ring()
+    if open_:
+        assert reply.response == "Listo, el temporizador de pasta ya no suena."
+        assert (reply.outcome.status, reply.outcome.effect) == (TaskStatus.COMPLETED, EffectState.NOT_REQUIRED)
+    else:
+        assert (reply.response, reply.outcome.status) == (NO_RING, TaskStatus.NEEDS_INPUT)
+    assert salsa.state is TimerState.RUNNING
+
+
+@pytest.mark.parametrize("receipt", [RingDelivery.DELIVERED, RingDelivery.RING_FAILED, RingDelivery.UNDELIVERED])
+async def test_a_ring_that_ended_on_its_own_leaves_no_listo_window(manager, receipt):
+    """Review T030-U2-RV2 applies to 'listo' too: only a ring the household cut opens the follow-up."""
+    commands = TimerVoiceCommands(manager)
+    pasta = manager.create_timer("pasta", 300)
+    pasta.state, pasta.ring, pasta.ring_ended_at = TimerState.COMPLETED, receipt, manager.frozen.now
+    manager.frozen.now += 5.0
+    assert not commands.ring_stop_open()
+    assert (await commands.stop_ring()).response == NO_RING
+    assert pasta.ring is receipt
+
+
+async def test_a_timer_set_after_the_cut_ring_closes_the_listo_window(manager):
+    """Review T030-U2-RV1 with no name: a newer timer is what the household talks about now."""
+    commands = TimerVoiceCommands(manager)
+    pasta = manager.create_timer("pasta", 300)
+    pasta.state, pasta.ring, pasta.ring_ended_at = TimerState.COMPLETED, RingDelivery.STOPPED, manager.frozen.now
+    manager.frozen.now += 2.0
+    arroz = manager.create_timer("arroz", 600)
+    manager.frozen.now += 2.0
+    assert not commands.ring_stop_open()
+    assert (await commands.stop_ring()).response == NO_RING
+    assert arroz.state is TimerState.RUNNING
+
+
+async def test_a_cut_ring_newer_than_every_running_timer_keeps_the_listo_window(manager):
+    commands = TimerVoiceCommands(manager)
+    salsa = manager.create_timer("salsa", 600)
+    manager.frozen.now += 1.0
+    pasta = manager.create_timer("pasta", 300)
+    manager.frozen.now += 1.0
+    pasta.state, pasta.ring, pasta.ring_ended_at = TimerState.COMPLETED, RingDelivery.STOPPED, manager.frozen.now
+    manager.frozen.now += 3.0
+    assert commands.ring_stop_open()
+    assert (await commands.stop_ring()).response == "Listo, el temporizador de pasta ya no suena."
+    assert salsa.state is TimerState.RUNNING
+
+
+async def test_two_rings_are_both_stopped_by_listo(manager):
+    commands = TimerVoiceCommands(manager)
+    pasta = manager.create_timer("pasta", 300)
+    salsa = manager.create_timer("salsa", 300)
+    pasta.deadline = salsa.deadline = manager.frozen.now
+    manager._tick()
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert manager.ringing_timers() == [pasta, salsa]
+    reply = await commands.stop_ring()
+    assert reply.response == "Paré 2 temporizadores."
+    assert (pasta.ring, salsa.ring) == (RingDelivery.STOPPED, RingDelivery.STOPPED)
+
+
+async def test_the_ring_check_is_false_without_a_running_manager():
+    assert TimerVoiceCommands(None).ring_stop_open() is False
+    assert (await TimerVoiceCommands(None).stop_ring()).response == TIMERS_UNSUPPORTED
+    stopped = FrozenTimerManager(tts_callback=AsyncMock())
+    assert TimerVoiceCommands(stopped).ring_stop_open() is False
+    reply = await TimerVoiceCommands(stopped).stop_ring()
+    assert (reply.response, reply.outcome.status) == (TIMERS_UNAVAILABLE, TaskStatus.FAILED)
+
+
+async def test_the_ring_check_is_synchronous_and_changes_nothing(manager):
+    """The command gate calls it inline: no coroutine, no ring stopped, no timer touched."""
+    pasta = manager.create_timer("pasta", 300)
+    await _ring(manager, pasta)
+    commands = TimerVoiceCommands(manager)
+    assert commands.ring_stop_open() is True and commands.ring_stop_open() is True
+    assert pasta.ring is RingDelivery.RINGING and manager.ringing_timers() == [pasta]
