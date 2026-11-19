@@ -376,6 +376,7 @@ def _day_ahead(offset):
     ("va a llover", _day_ahead(0)),
     ("cuál es el pronóstico", _day_ahead(0)),
     ("qué tiempo va a hacer esta noche", _day_ahead(0)),
+    ("qué temperatura habrá hoy", _day_ahead(0)),  # T037-U2b: "habrá" is future
     ("va a llover hoy a la tarde", _day_ahead(0)),
     # Named days.
     ("va a llover mañana", _day_ahead(1)),
@@ -493,6 +494,7 @@ ROOM_WORDS = ("living", "cocina", "escritorio", "sala", "cuarto")
     "qué temperatura hay en la pieza",
     "qué temperatura hay adentro",
     "qué temperatura hay en casa",
+    "cuál va a ser la temperatura del living mañana",  # T037-U2b: future form
 ])
 def test_room_or_house_temperature_questions_are_indoor(text):
     assert is_indoor_temperature_question(text, ROOM_WORDS)

@@ -746,6 +746,17 @@ class RequestDispatcher:
         # thermostat command ("poné la temperatura en 22") has none of these.
         "temperatura va a hacer", "grados va a hacer",
         "temperatura de mañana", "temperatura de manana",
+        # T037-U2b (fix verification FV-L2): the other future temperature
+        # questions ("¿qué temperatura hará mañana?", "¿cuántos grados van a
+        # hacer?", "¿qué temperatura va a haber?", "¿cuál va a ser la
+        # temperatura?", "¿cuál es la temperatura para mañana?"). The subject
+        # is still the temperature; "para" is tied to the day so "la
+        # temperatura para el living" never reaches the outdoor entity.
+        "temperatura hará", "temperatura hara", "temperatura habrá", "temperatura habra",
+        "grados hará", "grados hara", "grados habrá", "grados habra",
+        "grados van a hacer", "temperatura va a haber", "grados va a haber", "grados van a haber",
+        "va a ser la temperatura",
+        "temperatura para mañana", "temperatura para manana",
         # Finding 3 (review 2026-08-04): sin esto, una pregunta como "¿tengo
         # que prender el clima o hace calor afuera?" no matcheaba ningún
         # WEATHER_KEYWORDS y caía al loop de DOMOTICS_KEYWORDS de abajo, que

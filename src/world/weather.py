@@ -121,7 +121,7 @@ _UNSUPPORTED_HORIZON_RE = re.compile(
 )
 # Future-tense cues: with no day word, or with today's, the question is about
 # today's forecast entry rather than the current conditions (user answer Q23).
-_FORECAST_CUE_RE = re.compile(r"\b(?:va|van) a\b|\bpronostico\b|\b(?:llovera|hara|estara)\b")
+_FORECAST_CUE_RE = re.compile(r"\b(?:va|van) a\b|\bpronostico\b|\b(?:llovera|hara|habra|estara)\b")
 # "mañana" after these words is the morning ("esta/por la/a la mañana"), not tomorrow.
 _MORNING_PREVIOUS = frozenset({"esta", "la", "pasado"})
 _TODAY_PERIODS = frozenset({"manana", "tarde", "noche"})
@@ -130,6 +130,8 @@ _TODAY_PERIODS = frozenset({"manana", "tarde", "noche"})
 _TEMPERATURE_QUESTION_RE = re.compile(
     r"\b(?:que|cual es la|cuanta) temperatura\b|\bcuantos grados\b"
     r"|\b(?:temperatura|grados) (?:hay|hace|tiene|marca)\b|\besta la temperatura\b"
+    # T037-U2b: the future form routed to weather must still meet the indoor check.
+    r"|\bva a ser la temperatura\b"
 )
 # A room right after "afuera/fuera" ("afuera de la cocina") is outside, not
 # the room (review T037-U2-RV5).
