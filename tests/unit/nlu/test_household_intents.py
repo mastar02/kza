@@ -437,6 +437,21 @@ def test_security_order_is_a_parsed_part_its_own_part_refuses(text, security):
     assert [security_order(part.segment) for part in intent.parts].count(None) == 1
 
 
+@pytest.mark.parametrize("text", [
+    "apagá la luz y activá la alarma a las 11",
+    "apagá la luz y abrí la puerta mañana a las 5",
+    "prendé la luz del living y cerrá la puerta con llave en diez minutos",
+    "activá la alarma más tarde y apagá la luz",
+])
+def test_security_part_with_a_time_makes_the_compound_clarify(text):
+    """T037-U6-RV2: a deferred security part makes the whole turn CLARIFY (deferred_part), zero effects.
+
+    The time may be meant for every part, so no part runs now (design compound_contract.not_admissible).
+    """
+    intent = classify_household_intent(text)
+    assert (intent.family, intent.operation, intent.reason) == (F.COMPOUND, O.CLARIFY, "deferred_part")
+
+
 def test_compound_parts_in_spoken_order():
     """R5 runs before R1/R2 (user answer Q21): each part is re-classified alone."""
     timer_and_light = classify_household_intent("poné un temporizador de 5 minutos y apagá la luz")

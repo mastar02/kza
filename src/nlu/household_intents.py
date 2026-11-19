@@ -48,6 +48,7 @@ from src.nlu.command_grammar import (
     ENTITY_TERMS,
     ROOM_ALIASES,
     WAKE_TERMS,
+    has_deferral_time,
     non_immediate_action_reason,
     parse_command,
     security_order,
@@ -1183,6 +1184,10 @@ def _r5(utt: _Utterance, max_parts: int) -> HouseholdIntent | None:
         # them); it never reaches a domotics producer and never makes the
         # whole compound CLARIFY.
         security = intent is None and security_order(segment.heard) is not None
+        if security and has_deferral_time(segment.heard):
+            # T037-U6-RV2: "activá la alarma a las 11" has no domotics device, so
+            # _deferred misses its time; the time may be meant for every part.
+            return clarify("deferred_part")
         if intent is None and not security and _names_object(segment):
             # A household object never reaches a domotics producer as an unclaimed part.
             return clarify("unparsed_part")

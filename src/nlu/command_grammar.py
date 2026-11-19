@@ -377,6 +377,12 @@ _STATE_DESCRIPTION = re.compile(
 )
 
 
+_DEFERRAL_TIME = re.compile(
+    r"\b(?:ma[ñn]ana|m[aá]s\s+tarde|despu[eé]s|luego|"
+    r"en\s+(?:[\w]+\s+){1,5}(?:segundos?|minutos?|horas?)|a\s+las?\s+(?:\d+|una?|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce))\b",
+)
+
+
 def non_immediate_action_reason(text: str) -> str | None:
     """Identify speech that must not authorize an immediate device action.
 
@@ -408,13 +414,21 @@ def non_immediate_action_reason(text: str) -> str | None:
         return "non_immediate:future_action"
     if _INFORMATIONAL_ACTION.search(normalized) or _STATE_DESCRIPTION.search(normalized):
         return "non_immediate:information_request"
-    if re.search(
-        r"\b(?:ma[ñn]ana|m[aá]s\s+tarde|despu[eé]s|luego|"
-        r"en\s+(?:[\w]+\s+){1,5}(?:segundos?|minutos?|horas?)|a\s+las?\s+(?:\d+|una?|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce))\b",
-        normalized,
-    ) and (extract_entity(text) is not None or light_request):
+    if _DEFERRAL_TIME.search(normalized) and (extract_entity(text) is not None or light_request):
         return "non_immediate:deferred"
     return None
+
+
+def has_deferral_time(text: str) -> bool:
+    """Whether ``text`` names when to act ("mañana", "a las 11", "en 5 minutos").
+
+    The same time pattern that makes a device action deferred in
+    :func:`non_immediate_action_reason`, without its device requirement: a
+    compound part with no domotics device (a lock or alarm order) still
+    carries a deferral that may apply to the whole turn (T037-U6-RV2).
+    """
+    from src.nlu.regex.normalize import normalize
+    return _DEFERRAL_TIME.search(normalize(text)) is not None
 
 
 def security_order(text: str) -> str | None:
