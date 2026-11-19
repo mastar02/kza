@@ -1186,6 +1186,13 @@ class RequestDispatcher:
         # entity, the 7B or an action. Like the clock it precedes the
         # service_filter shortcut; a thermostat command ("bajá la temperatura
         # del living") is not a question and keeps its path.
+        # Accepted (review T037-U2-RV5): a turn that is both a command and an
+        # indoor temperature question ("subí el aire del living, qué
+        # temperatura hay en el living?") and that the compound detector does
+        # not claim gets this refusal and the command is not run. Zero
+        # effects and an honest answer; the user repeats the command. Letting
+        # an upstream turn_on/turn_off win instead would act on a turn that
+        # carries a question, the phantom-action risk this ordering avoids.
         if is_indoor_temperature_question(text_lower, self._indoor_room_words):
             return PathType.FAST_HOUSEHOLD, Priority.HIGH
 

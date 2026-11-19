@@ -493,6 +493,8 @@ def test_room_or_house_temperature_questions_are_indoor(text):
     "qué temperatura hace afuera",
     "cuántos grados hay afuera",
     "qué temperatura hace afuera de la casa",
+    "cuántos grados hay afuera de la cocina",  # review T037-U2-RV5: outside, not the room
+    "qué temperatura hace fuera del living",
     "qué tiempo hace en el living",          # not a temperature question
     "bajá la temperatura del living",        # thermostat command, not a question
     "poné la temperatura del living en 22",

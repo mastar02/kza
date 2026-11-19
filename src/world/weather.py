@@ -127,7 +127,9 @@ _TEMPERATURE_QUESTION_RE = re.compile(
     r"\b(?:que|cual es la|cuanta) temperatura\b|\bcuantos grados\b"
     r"|\b(?:temperatura|grados) (?:hay|hace|tiene|marca)\b|\besta la temperatura\b"
 )
-_ROOM_PLACE_RE = re.compile(r"\b(?:en|del|de|tiene)(?: (?:el|la|los|las))? (\w+)")
+# A room right after "afuera/fuera" ("afuera de la cocina") is outside, not
+# the room (review T037-U2-RV5).
+_ROOM_PLACE_RE = re.compile(r"(?<!fuera )\b(?:en|del|de|tiene)(?: (?:el|la|los|las))? (\w+)")
 _HOUSE_RE = re.compile(r"\b(?:adentro|dentro|en casa|en la casa|de la casa)\b")
 _OUTSIDE_RE = re.compile(r"\b(?:afuera|fuera|en la calle)\b")
 # Indoor places named without being a configured room or a grammar alias.

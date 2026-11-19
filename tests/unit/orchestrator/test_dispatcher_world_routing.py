@@ -867,6 +867,18 @@ async def test_room_temperature_question_is_refused_with_no_read_send_or_model(d
     assert d.router.mock_calls == [] and d.llm.mock_calls == []
 
 
+def test_outside_of_a_room_is_the_outdoor_weather(dispatcher):
+    # Review T037-U2-RV5: "afuera de la cocina" is outside, answered by the weather entity.
+    assert dispatcher._classify_request("cuántos grados hay afuera de la cocina")[0] is PathType.FAST_WEATHER
+
+
+def test_command_with_an_indoor_temperature_question_is_refused_with_no_effects(dispatcher):
+    # Review T037-U2-RV5, accepted and documented: the question part wins over an
+    # upstream turn_on/turn_off guess, so nothing is acted on; the refusal is honest.
+    text = "subí el aire del living, qué temperatura hay en el living?"
+    assert dispatcher._classify_request(text, service_filter="turn_on")[0] is PathType.FAST_HOUSEHOLD
+
+
 def test_configured_room_names_count_for_indoor_temperature():
     from src.core.household_clock import RoomNamespace
 
