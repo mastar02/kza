@@ -391,12 +391,14 @@ async def test_budget_full_window_filters_cursor_mode_search_and_worker_time(tmp
         timings = []
 
         async def timed(*args):
+            # Wall time around the awaited call (thread hand-off included), not worker CPU time.
             started = time.perf_counter()
             result = await query(voices, *args)
             timings.append(time.perf_counter() - started)
             return result
 
         everything = await timed(flt())
+        full_window = timings.pop()  # One sample: the filters-only scan of all 4096 rows.
         assert len(everything.rows) == 50 and everything.summary.matching_count == 4096
         assert everything.summary.scan_complete and everything.summary.room_options == (SALA,)
         # 600 review rows exceed the 512-row search budget: cursor mode, no count.
@@ -418,8 +420,10 @@ async def test_budget_full_window_filters_cursor_mode_search_and_worker_time(tmp
         following = await timed(window, fitted.next_cursor)
         assert following.summary.matching_count == fitted.summary.matching_count
         timings.sort()
-        print('t044 query worker seconds p50=%.3f p95=%.3f max=%.3f n=%d' % (
-            timings[len(timings) // 2], timings[int(len(timings) * .95)], timings[-1], len(timings)))
+        # Different queries, not repetitions of one: no percentile is claimed.
+        print('t044 query wall seconds: filters-only full-window scan (1 sample)=%.3f; '
+              'search and windowed pages median=%.3f max=%.3f n=%d' % (
+                  full_window, timings[len(timings) // 2], timings[-1], len(timings)))
 
 
 async def test_cursor_key_is_random_per_process():
