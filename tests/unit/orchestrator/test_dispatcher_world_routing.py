@@ -1094,6 +1094,11 @@ def test_temperature_keywords_with_a_place_keep_the_room_off_the_outdoor_entity(
     ("cuál es la temperatura de mañana del termostato", PathType.SLOW_LLM),
     ("cuál es la temperatura para mañana de la estufa", PathType.SLOW_LLM),
     ("cuál va a ser la temperatura del split", PathType.SLOW_LLM),
+    # Fix verification T037-U2b-FV2: "en el <device>" and "la calefa".
+    ("cuál va a ser la temperatura en el termostato mañana", PathType.SLOW_LLM),
+    ("cuál es la temperatura de mañana en el termostato", PathType.SLOW_LLM),
+    ("cuál va a ser la temperatura de la calefa mañana", PathType.SLOW_LLM),
+    ("cuál va a ser la temperatura en el aire libre mañana", PathType.FAST_WEATHER),
     # Neighbours: outside, a room, or no complement keep their path.
     ("qué temperatura va a hacer al aire libre mañana", PathType.FAST_WEATHER),
     ("cuál va a ser la temperatura mañana", PathType.FAST_WEATHER),

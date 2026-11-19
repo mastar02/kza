@@ -832,10 +832,12 @@ class RequestDispatcher:
     # never the outdoor forecast. With a device noun right after the
     # temperature noun, the "temperatura" keywords do not route to weather and
     # the turn keeps the path it had before T037-U2b. "aire libre" is
-    # outside and is not a device.
+    # outside and is not a device. Fix verification T037-U2b-FV2: "en el
+    # termostato" places the reading on the device too, and "la calefa" is
+    # the everyday Rioplatense "calefacción".
     _DEVICE_TEMPERATURE_RE = re.compile(
-        r"\btemperatura (?:(?:de|para) (?:hoy|manana) )?(?:del?|de la|de los|de las) "
-        r"(?:termostato|aire(?! libre)|acondicionado|calefaccion|calefactor|clima|estufa|caldera"
+        r"\btemperatura (?:(?:de|para) (?:hoy|manana) )?(?:del?|de la|de los|de las|en el|en la) "
+        r"(?:termostato|aire(?! libre)|acondicionado|calefaccion|calefa|calefactor|clima|estufa|caldera"
         r"|radiador|split)\b"
     )
 
