@@ -213,3 +213,26 @@ async def test_failed_music_part_is_uncertain_not_refused():
     assert run.outcome.status is TaskStatus.UNCERTAIN and run.outcome.dispatch is DispatchState.UNCERTAIN
     assert run.response == ("Pausá la música: no sé si se hizo; fijate antes de repetirlo. "
                             "Apagá la luz del escritorio: hecho.")
+
+
+async def test_part_reported_from_the_ledger_still_blocks_its_target():
+    """T037-U6-RV4: on a retried turn, an earlier part read from the ledger as not completed keeps the
+    same-target rule for later parts that run now (here the first run was interrupted before part 2)."""
+    runner = CompoundRunner()
+    failed = TaskOutcome(TaskStatus.FAILED, persistence=PersistenceState.NOT_WRITTEN, dispatch=DispatchState.NOT_SENT,
+                         effect=EffectState.NOT_OBSERVED)
+    parts = [_part("poné un timer", "timer"), _part("pausá el timer", "timer")]
+    flag = {"stop": False}
+
+    def first(context):
+        flag["stop"] = True
+        return _result(failed, path="fast_timer")
+
+    run, seen = await _run(parts, [first, None], runner=runner, turn="voice:l", interrupted=lambda: flag["stop"],
+                           part_target=lambda part: part.intent)
+    assert len(seen) == 1 and run.reports[1].verdict is PartVerdict.INTERRUPTED
+    again, seen = await _run(parts, [None, _result(TIMER_DONE, path="fast_timer")], runner=runner, turn="voice:l",
+                             part_target=lambda part: part.intent)
+    assert seen == []
+    assert again.reports[0].retried and again.reports[0].verdict is PartVerdict.NOT_DONE
+    assert again.reports[1].verdict is PartVerdict.SAME_TARGET

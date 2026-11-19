@@ -9,7 +9,7 @@ import pytest
 from tests.mocks.responses import response_handler_mock
 from src.home_assistant.control_policy import EntityGrant, HomeActor, HomeControlPolicy
 from src.home_assistant.voice_resolver import HomeVoiceResolver
-from src.hooks import HookRegistry, RewriteResult
+from src.hooks import BlockResult, HookRegistry, RewriteResult
 from src.nlu.command_gate import CommandAcceptanceGate
 from src.nlu.llm_router import CommandClassification
 from src.orchestrator.dispatcher import MultiUserOrchestrator
@@ -261,3 +261,34 @@ async def test_compound_extended_parts_each_get_their_own_receipt(orchestrated_g
     assert [(r.entity_id, r.status) for r in receipts] == [("climate.test_ac", "confirmed"),
                                                            ("cover.test_blind", "confirmed")]
     assert actions.get_receipt(actor=HomeActor.household(), request_id="voice:ext") is None
+
+
+@pytest.mark.parametrize("failure", ["hook_blocked", "entity_unavailable"])
+async def test_compound_part_failure_has_no_feedback_of_its_own(orchestrated_graph, failure):
+    """T037-U6-RV4: a failed extended part plays no earcon and speaks no hook reason; the one reply reports it."""
+    router, ha, _, _, _ = orchestrated_graph
+    handler = router.response_handler
+    if failure == "hook_blocked":
+        hooks = HookRegistry()
+        hooks.register_before("before_ha_action", lambda call: BlockResult(
+            reason="Regla de prueba: la persiana no", rule_name="test") if call.domain == "cover" else None,
+            priority=10)
+        router._compound_voice_actions.hooks = hooks
+    else:
+        original = ha.get_entity_state_fresh
+
+        async def fresh(entity_id, **kwargs):
+            if entity_id == "cover.test_blind":
+                return {"entity_id": entity_id, "state": "unavailable", "attributes": {}}
+            return await original(entity_id, **kwargs)
+
+        ha.is_entity_available = lambda entity_id: False if entity_id == "cover.test_blind" else None
+        ha.get_entity_state_fresh = fresh
+    result = await speak(orchestrated_graph, "Poné el aire a 22 grados y abrí la persiana")
+    assert ha.sends == [("climate", "set_temperature", "climate.test_ac", {"temperature": 22})]
+    assert [p["verdict"] for p in result["compound_parts"]] == ["done", "not_done"]
+    assert result["compound_parts"][1]["reason"] == failure
+    handler.aplay_earcon.assert_not_awaited()
+    assert handler.aspeak.await_count == 1
+    reason = "Una regla de la casa lo bloqueó." if failure == "hook_blocked" else "El dispositivo no está disponible."
+    assert handler.aspeak.await_args.args[0] == f"Poné el aire a 22 grados: hecho. Abrí la persiana: no lo hice. {reason}"
