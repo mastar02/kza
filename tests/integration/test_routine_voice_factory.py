@@ -7,6 +7,7 @@ TaskOutcome, in both router modes, without blocking the event loop.
 """
 
 from contextlib import AsyncExitStack
+from unittest.mock import AsyncMock, MagicMock
 
 from httpx import ASGITransport, AsyncClient
 import numpy as np
@@ -15,6 +16,7 @@ import pytest
 from src.application import ApplicationFactories
 from src.main import build_application
 from src.monitoring.loop_lag import LoopLagConfig, LoopLagProbe
+from src.nlu.llm_router import CommandClassification
 from src.pipeline.command_event import CommandEvent
 from src.routines.models import RunStatus, parse_routine_spec
 from src.routines.routine_manager import RoutineManager
@@ -237,4 +239,165 @@ async def test_list_and_consult_phrases_reach_the_read_in_the_real_graph(leaves,
                 assert result["outcome"]["status"] == "completed", text
                 if orchestrated:
                     assert result["path"] == "fast_routine", text
+            assert observed["service_calls"] == 0
+
+
+# T033-U1b (user answer 2026-11-19, "T033-U1 routines"): production runs the 7B LLMCommandRouter
+# (nlu.llm_router.enabled); the offline graph has none, so these tests attach one that rejects every turn.
+REJECTING_7B = CommandClassification(is_command=False, confidence=0.1, intent="noise", rejection_reason="noise")
+LISTING = "Hay 3 rutinas: Buenos días, Buenas noches (desactivada) y Riego."
+WATERING = ("La rutina Riego está activada y no tiene horario: se ejecuta solo cuando se pide. "
+            "La última ejecución falló.")
+NIGHT = "La rutina Buenas noches está desactivada. Todavía no se ejecutó."
+# Routine questions the read always answers (VoiceRoutineService.claims), with what they say.
+ROUTINE_QUESTIONS = [
+    ("qué rutinas hay", LISTING),
+    ("¿qué rutina apaga las luces?", LISTING),
+    # T033-U1b-RV1: list questions the household layer claims (R1 routine query) with more words than
+    # household_intents.unvetoed_max_words (6) skip its 7B veto too; the clock bypass has no length limit either.
+    ("¿cuáles son las rutinas que tengo guardadas ahora?", LISTING),
+    ("mostrame las rutinas que hay en la casa por favor", LISTING),
+    ("¿está activa la rutina riego?", WATERING),
+    ("¿la rutina riego está activa?", WATERING),
+    ("¿cómo salió la rutina riego?", WATERING),
+    ("¿qué hace la rutina buenas noches?", NIGHT),
+    ("¿está desactivada la rutina buenas noches?", NIGHT),
+]
+# How each capture reaches the router (MultiRoomAudioLoop tags it; see test_request_router_clock).
+OWN_WAKE = {"capture_trigger": "wake", "wake_score": 0.9}
+WITHOUT_A_CLEAR_OWN_WAKE = {
+    "follow_up": {"capture_trigger": "follow_up", "wake_score": 0.9},
+    "barge_in": {"capture_trigger": "barge_in", "wake_score": 0.9},
+    "untagged": {"wake_score": 0.9},
+    "textual": {"capture_trigger": "wake", "wake_score": 0.9, "textual_wake": True},
+    "ambient_strict": {"capture_trigger": "wake", "wake_score": 0.9, "ambient_strict": True},
+    "low_score": {"capture_trigger": "wake", "wake_score": 0.42},
+}
+
+
+def captured(**fields) -> CommandEvent:
+    return CommandEvent(np.full(16000, .1, dtype=np.float32), room_id="", **fields)
+
+
+async def graph_with_rejecting_7b(stack, tmp_path, url, leaves):
+    graph = await build_application(offline_config(tmp_path, url), shutdown=stack, factories=leaves)
+    await seed(graph)
+    router = graph.pipeline.request_router
+    assert router.orchestrator_enabled and router.wake_acoustically_confirmed
+    router.llm_command_router = MagicMock()
+    router.llm_command_router.classify = AsyncMock(return_value=REJECTING_7B)
+    return graph, router.llm_command_router
+
+
+async def test_routine_questions_on_a_clear_own_wake_skip_the_7b_veto(leaves, tmp_path):
+    """T033-U1-FV2: a 7B that rejects the turn no longer silences a routine question woken by its own wake.
+    The voice list keeps disabled routines marked '(desactivada)', like the web catalog."""
+    async with offline_home() as (url, observed):
+        async with AsyncExitStack() as stack:
+            graph, veto = await graph_with_rejecting_7b(stack, tmp_path, url, leaves)
+            for text, said in ROUTINE_QUESTIONS:
+                graph.models.stt.text = text
+                result = await graph.pipeline.process_command(captured(**OWN_WAKE))
+                assert (result["intent"], result["response"], result["path"]) == ("routine", said, "fast_routine"), text
+                assert result["outcome"]["status"] == "completed", text
+                assert "llm_router" not in result["timings"], text
+            veto.classify.assert_not_awaited()
+            assert observed["service_calls"] == 0
+
+
+@pytest.mark.parametrize("capture", sorted(WITHOUT_A_CLEAR_OWN_WAKE))
+async def test_routine_questions_without_a_clear_own_wake_keep_the_7b_veto(leaves, tmp_path, monkeypatch, capture):
+    """T037-U5: a follow-up or barge-in capture borrows the last wake's score, so a TV saying a routine
+    question in that window is vetoed; so is every weak wake the clock bypass excludes (T037-U4)."""
+    async with offline_home() as (url, observed):
+        async with AsyncExitStack() as stack:
+            graph, veto = await graph_with_rejecting_7b(stack, tmp_path, url, leaves)
+            reads = count_reads(monkeypatch, graph.routine_scheduler.store)
+            household = graph.pipeline.request_router.household_intents
+            texts = [text for text, _ in ROUTINE_QUESTIONS
+                     # An untagged capture is not a TV signal for the household layer (P3-F2 S6), which answers
+                     # a short claimed turn ('qué rutinas hay') with no veto; unclaimed and longer claimed ones
+                     # reach the 7B.
+                     if capture != "untagged" or household.classify(text) is None
+                     or len(text.split()) > household.settings.unvetoed_max_words]
+            assert len(texts) >= len(ROUTINE_QUESTIONS) - 1
+            for text in texts:
+                graph.models.stt.text = text
+                veto.classify.reset_mock()
+                result = await graph.pipeline.process_command(captured(**WITHOUT_A_CLEAR_OWN_WAKE[capture]))
+                assert veto.classify.await_count == 1, text
+                assert result["intent"].startswith("llm_rejected:"), (text, result["intent"])
+                assert result["success"] is False and result["response"] == "", text
+            assert reads == []
+            assert observed["service_calls"] == 0
+
+
+@pytest.mark.parametrize("text", [
+    "contame un chiste",
+    # T033-U1-RV2: general questions that only mention "rutina" are not routine reads.
+    "¿cuál es una buena rutina de ejercicios?",
+    # An uncued consult that names no saved routine: the read would decline it, so it keeps the gate.
+    "¿qué hago en mi rutina de ejercicios?",
+])
+async def test_other_turns_on_a_clear_own_wake_still_meet_the_7b(leaves, tmp_path, monkeypatch, text):
+    async with offline_home() as (url, observed):
+        async with AsyncExitStack() as stack:
+            graph, veto = await graph_with_rejecting_7b(stack, tmp_path, url, leaves)
+            reads = count_reads(monkeypatch, graph.routine_scheduler.store)
+            graph.models.stt.text = text
+            result = await graph.pipeline.process_command(captured(**OWN_WAKE))
+            assert veto.classify.await_count == 1
+            assert result["intent"] == "llm_rejected:noise"
+            assert result["success"] is False and result["response"] == ""
+            assert reads == []
+            assert observed["service_calls"] == 0
+
+
+@pytest.mark.parametrize("text", [
+    "decime las rutinas y prendé la luz",
+    "decime las rutinas y abrí la puerta",
+])
+async def test_compound_turns_naming_the_routines_keep_the_household_veto(leaves, tmp_path, monkeypatch, text):
+    """T033-U1b-RV2: a compound the household layer claims (R5) is not a routine query, so even on a clear own
+    wake a turn over unvetoed_max_words meets its 7B veto; a rejecting 7B ends it silently with no read or action."""
+    async with offline_home() as (url, observed):
+        async with AsyncExitStack() as stack:
+            graph, veto = await graph_with_rejecting_7b(stack, tmp_path, url, leaves)
+            router = graph.pipeline.request_router
+            assert router.household_intents.classify(text).family.value == "compound"
+            assert router.voice_routines.claims(text)
+            reads = count_reads(monkeypatch, graph.routine_scheduler.store)
+            graph.models.stt.text = text
+            result = await graph.pipeline.process_command(captured(**OWN_WAKE))
+            assert veto.classify.await_count == 1
+            assert result["intent"] == "llm_rejected:household"
+            assert result["success"] is False and result["response"] == ""
+            assert reads == []
+            assert observed["service_calls"] == 0
+
+
+@pytest.mark.parametrize("text", [
+    "¿qué hay en la lista de rutinas?",
+    "mostrame la lista de rutinas que hay en la casa",
+])
+async def test_other_household_queries_naming_the_routines_keep_the_household_veto(leaves, tmp_path, monkeypatch,
+                                                                                    text):
+    """T033-U1b-FV1: only a claim of the routine family skips the household veto. A shared-list query (R1, family
+    list) that names the routines is also accepted by VoiceRoutineService.claims, yet over unvetoed_max_words it
+    meets the 7B on a clear own wake; a rejecting 7B ends it silently with no read or action."""
+    async with offline_home() as (url, observed):
+        async with AsyncExitStack() as stack:
+            graph, veto = await graph_with_rejecting_7b(stack, tmp_path, url, leaves)
+            router = graph.pipeline.request_router
+            household = router.household_intents.classify(text)
+            assert (household.family.value, household.operation.value) == ("list", "query")
+            assert router.voice_routines.claims(text)
+            assert len(text.split()) > router.household_intents.settings.unvetoed_max_words
+            reads = count_reads(monkeypatch, graph.routine_scheduler.store)
+            graph.models.stt.text = text
+            result = await graph.pipeline.process_command(captured(**OWN_WAKE))
+            assert veto.classify.await_count == 1
+            assert result["intent"] == "llm_rejected:household"
+            assert result["success"] is False and result["response"] == ""
+            assert reads == []
             assert observed["service_calls"] == 0
