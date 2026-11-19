@@ -118,9 +118,41 @@ tienen conmutación de alimentación por puerto: `authorized` y `port/disable` r
 **no cortan VBUS**, así que el XVF3800 nunca pierde alimentación y su DSP queda atascado en
 el mismo estado. Tras el replug físico: `ch0 rms 130.6 / ch1 rms 352.1`, 99.6-99.8% no-cero.
 
-**Regla:** para un XVF3800 con el isócrono muerto, el único reset efectivo es el físico.
-No perder tiempo con sysfs. Si el mic es inaccesible, hace falta un hub con per-port power
-switching (PPPS, `uhubctl`) para poder hacerlo remotamente.
+**Regla (2026-07-25, corregida el 2026-11-19 — ver abajo):** los resets por sysfs no reviven un
+XVF3800 con el isócrono muerto. ~~El único reset efectivo es el físico.~~ El comando de firmware
+`REBOOT` del propio XVF3800 también lo revive, sin tocar el cable.
+
+### Actualización 2026-11-19: el `REBOOT` de firmware recupera el mic a distancia
+
+Tras el reboot en caliente del server del 2026-11-19 (kernel 6.8.0-149) los **cuatro** XVF3800
+quedaron trabados: en los controladores de la CPU (Living, Escritorio) cada microframe daba
+`Babble Detected` con 0 bytes; en el del chipset `0000:8c:00.0` (Cocina, Hall) daba
+`Isoch Buffer Overrun`, un `xhci_warn` sin rate-limit que inundó kmsg y tumbó a journald
+(evidencia: `data/autonomous-roadmap-20261102/usb-overrun-20261119/`, checkpoint
+`usb_overrun_20261119`). El mismo flood ya había pasado en 6.8.0-110 el 2026-10-27/28.
+
+Los control transfers siguen funcionando con el isócrono muerto, y el comando de firmware
+`REBOOT` (resid 48, cmdid 7, payload un `uint8` = 1; `ctrl_transfer(0x40, 0, 7, 48, b"\x01")`,
+`xvf_host.py` oficial de Seeed) reinicia el chip: el device se re-enumera en ~1 s en el mismo
+puerto y vuelve a capturar (2 s de `arecord`: 32000 frames, rms 128–720, ≥99,6 % no-cero en los
+cuatro). Procedimiento a mano, como `kza` con el venv de producción:
+
+1. Localizar el device por bus y `port_numbers` (nunca el primero que aparezca) y mandar `REBOOT`.
+   Si el puerto estaba desautorizado para cortar el flood, `echo 1 > .../authorized` y mandar el
+   `REBOOT` enseguida, antes de que kza-voice abra el stream.
+2. El `REBOOT` deja **todos** los parámetros del DSP en el preset de fábrica: re-escribir el
+   `xvf_tuning` de `config/settings.yaml` (lectura con reintento mientras el byte de estado no sea 0).
+3. Una release sin el refresh de catálogo (T025-U2) no ve las cards nuevas mientras otra room
+   está sana; el refresh global ocurre cuando ninguna room entrega audio.
+
+Scripts usados: `data/autonomous-roadmap-20261102/usb-overrun-20261119/scripts/`
+(`xvf_reboot.py`, `xvf_tune4.py`, `xvf_rec.sh`). Desde **T048-U1** kza-voice lo hace solo
+(`stream_watchdog.xvf_reboot_*` en `config/settings.yaml`): tras `xvf_reboot_after_failures`
+recuperaciones fallidas manda el `REBOOT` solo al device de esa room (por su puerto), re-aplica el
+tuning, refresca el catálogo, nunca durante un comando, conversación o respuesta, y con tope
+`xvf_reboot_max_per_hour`; al llegar al tope loguea que hace falta el replug físico, que sigue
+siendo el último recurso. No usar `SAVE_CONFIGURATION`/`CLEAR_CONFIGURATION` (issue #8 de Seeed).
+No cortar la alimentación del hub: también alimenta el coordinador Zigbee y los adaptadores BT.
 
 **Disparador probable:** perturbación USB al manipular el rack. A las 13:15 aparecieron
 `usb 3-1: clear tt 1 (9032) error -71` y `usb 1-2: clear tt ...` mientras se conectaba el
