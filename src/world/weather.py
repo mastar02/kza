@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, tzinfo
 from enum import StrEnum
+
+from src.world.household_time import WEEKDAYS, normalize
 
 # HA condition slugs -> Rioplatense Spanish. Anything unlisted is omitted
 # rather than guessed: a wrong condition spoken aloud is worse than silence.
@@ -86,7 +89,122 @@ def describe_current(state: dict | None) -> str:
 
 
 NO_FORECAST = "No tengo el pronóstico ahora mismo."
+# T037-U2: a horizon the forecast cannot serve is refused without reading HA,
+# and never answered with the current conditions.
+NO_FORECAST_HORIZON = ("No tengo ese pronóstico. Puedo decirte el de hoy, mañana, pasado mañana "
+                       "o un día de la semana.")
+ONE_DAY_AT_A_TIME = "Preguntame por un día a la vez."
 _DIA_INDEX = {"hoy": 0, "mañana": 1, "manana": 1, "pasado mañana": 2, "pasado manana": 2}
+_OFFSET_LABEL = {0: "hoy", 1: "mañana", 2: "pasado mañana"}
+_WEEKDAY_INDEX = {normalize(name): index for index, name in enumerate(WEEKDAYS)}
+_MONTHS = "enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre"
+# Horizons a daily forecast keyed by date cannot answer honestly: ranges,
+# weeks, months, past days and calendar dates (normalized text).
+_UNSUPPORTED_HORIZON_RE = re.compile(
+    r"\b(?:la semana|esta semana|proxima semana|fin(?:es)? de semana|finde"
+    r"|mes que viene|proximo mes|este mes|ano que viene|proximo ano"
+    r"|proximos dias|estos dias|dias que vienen|ayer|anoche|anteayer"
+    r"|(?:en|dentro de) (?:\d+|un|una|dos|tres|cuatro|cinco|seis|siete|diez|quince) (?:dias|semanas?)"
+    rf"|el \d+|\d+ de (?:{_MONTHS}))\b"
+)
+# Future-tense cues: with no day word, or with today's, the question is about
+# today's forecast entry rather than the current conditions (user answer Q23).
+_FORECAST_CUE_RE = re.compile(r"\b(?:va|van) a\b|\bpronostico\b|\b(?:llovera|hara|estara)\b")
+# "mañana" after these words is the morning ("esta/por la/a la mañana"), not tomorrow.
+_MORNING_PREVIOUS = frozenset({"esta", "la", "pasado"})
+_TODAY_PERIODS = frozenset({"manana", "tarde", "noche"})
+
+class HorizonKind(StrEnum):
+    """What a weather question asks for."""
+
+    CURRENT = "current"
+    FORECAST = "forecast"
+    UNSUPPORTED = "unsupported"
+    SEVERAL_DAYS = "several_days"
+
+
+@dataclass(frozen=True)
+class WeatherHorizon:
+    """The day a weather question refers to (T037-U2).
+
+    Attributes:
+        kind: Current conditions, one forecast day, an unsupported horizon or
+            several different days.
+        offset: Days from the household's today for a named day ("hoy",
+            "mañana", "pasado mañana"); None otherwise.
+        weekday: Monday-based weekday for a named weekday; None otherwise.
+        next_week: The weekday was said with "que viene" or "próximo", so the
+            same weekday as today means a week from today.
+    """
+
+    kind: HorizonKind
+    offset: int | None = None
+    weekday: int | None = None
+    next_week: bool = False
+
+    def spoken_day(self, days_ahead: int) -> str:
+        """Spoken label of the resolved day, e.g. "mañana" or "el sábado".
+
+        Args:
+            days_ahead: Days from the household's today to the resolved date.
+        """
+        if self.weekday is None:
+            return _OFFSET_LABEL.get(days_ahead, "ese día")
+        if days_ahead == 0:
+            return "hoy"
+        return f"el {WEEKDAYS[self.weekday]}" + (" que viene" if days_ahead == 7 else "")
+
+
+def parse_weather_horizon(text: str) -> WeatherHorizon:
+    """Day a weather question refers to, from the words only (no clock).
+
+    Rules (T037-U2, user answer Q23):
+
+    * "esta/por la/a la mañana", "esta tarde", "esta noche" and "hoy" are today.
+    * "mañana" and "pasado mañana" are named days; "mañana por la mañana" is tomorrow.
+    * A weekday ("el sábado", "el sábado que viene") is a forecast day by date.
+    * Weeks, months, ranges, past days and calendar dates are unsupported.
+    * Today (said or implied) is current conditions unless the question is in
+      the future ("va a llover", "pronóstico"), which asks for today's entry.
+    * Two different days in one question are several days.
+
+    Args:
+        text: Utterance already routed to the weather path.
+
+    Returns:
+        The horizon; never raises.
+    """
+    words = normalize(text).split()
+    joined = " ".join(words)
+    if _UNSUPPORTED_HORIZON_RE.search(joined):
+        return WeatherHorizon(HorizonKind.UNSUPPORTED)
+    days: set[tuple] = set()
+    for i, word in enumerate(words):
+        previous = words[i - 1] if i else ""
+        following = words[i + 1] if i + 1 < len(words) else ""
+        if word == "pasado" and following == "manana":
+            days.add(("offset", 2))
+        elif word == "manana" and previous not in _MORNING_PREVIOUS:
+            days.add(("offset", 1))
+        elif word == "hoy" or (word == "esta" and following in _TODAY_PERIODS):
+            days.add(("offset", 0))
+        elif word in _WEEKDAY_INDEX:
+            after = words[i + 1:i + 3]
+            next_week = previous == "proximo" or after == ["que", "viene"] or after[:1] == ["proximo"]
+            days.add(("weekday", _WEEKDAY_INDEX[word], next_week))
+    if len(days) > 1:
+        return WeatherHorizon(HorizonKind.SEVERAL_DAYS)
+    day = next(iter(days), ("offset", 0))
+    if day[0] == "weekday":
+        return WeatherHorizon(HorizonKind.FORECAST, weekday=day[1], next_week=day[2])
+    if day[1] == 0 and not _FORECAST_CUE_RE.search(joined):
+        return WeatherHorizon(HorizonKind.CURRENT)
+    return WeatherHorizon(HorizonKind.FORECAST, offset=day[1])
+
+
+def no_forecast_for(label: str) -> str:
+    """Honest refusal naming the requested day (user answer PQ-T037-1)."""
+    return f"No tengo el pronóstico para {label}."
 
 # La zona horaria del hogar para alinear el pronóstico por fecha local llega
 # inyectada: HouseholdClock.zone (src/core/household_clock.py, P3-F1), construido
@@ -108,7 +226,8 @@ class ForecastAnswer:
     """Spoken forecast sentence and the date alignment that produced it.
 
     Attributes:
-        text: Sentence to speak; NO_FORECAST whenever no single day was selected.
+        text: Sentence to speak; a refusal (NO_FORECAST, or the day-named one
+            for a missing or conflicting day) whenever no single day was selected.
         alignment: Outcome of matching the target local date to entry dates.
     """
 
@@ -121,11 +240,15 @@ class ForecastAnswer:
         return self.alignment is ForecastAlignment.ALIGNED
 
 
-def forecast_target_date(dia: str, now: datetime, zone: tzinfo) -> date | None:
+def forecast_target_date(dia: str | WeatherHorizon, now: datetime, zone: tzinfo) -> date | None:
     """Local calendar date a spoken horizon refers to.
 
+    A weekday is the next date with that weekday, today included; with "que
+    viene" or "próximo" today's weekday means a week from today.
+
     Args:
-        dia: Spoken horizon ("hoy", "mañana", "pasado mañana").
+        dia: Spoken horizon ("hoy", "mañana", "pasado mañana") or a parsed
+            forecast horizon (see `parse_weather_horizon`).
         now: Timezone-aware instant of the question.
         zone: Household timezone.
 
@@ -137,10 +260,19 @@ def forecast_target_date(dia: str, now: datetime, zone: tzinfo) -> date | None:
     """
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("forecast target needs an aware clock")
-    offset = _DIA_INDEX.get(dia.lower())
+    today = now.astimezone(zone).date()
+    if isinstance(dia, WeatherHorizon):
+        if dia.kind is not HorizonKind.FORECAST:
+            return None
+        if dia.weekday is not None:
+            ahead = (dia.weekday - today.weekday()) % 7
+            return today + timedelta(days=7 if ahead == 0 and dia.next_week else ahead)
+        offset = dia.offset
+    else:
+        offset = _DIA_INDEX.get(dia.lower())
     if offset is None:
         return None
-    return now.astimezone(zone).date() + timedelta(days=offset)
+    return today + timedelta(days=offset)
 
 
 def _entry_local_date(entry: object, zone: tzinfo) -> date | None:
@@ -183,7 +315,9 @@ def describe_forecast(forecast: list[dict] | None, dia: str, target: date | None
     timezone, never by its position. Any entry with a missing, non-string,
     unparseable or naive datetime makes the whole payload unusable (it could
     be the requested day). Two entries for the target day that would be
-    spoken differently are a conflict. Every such case answers NO_FORECAST.
+    spoken differently are a conflict. A missing or conflicting day names the
+    requested day ("No tengo el pronóstico para mañana.", user answer
+    PQ-T037-1); an empty or invalid payload answers the generic NO_FORECAST.
 
     Never mentions rain probability: `precipitation_probability` is absent
     from this HA integration's payload, so the condition is the only honest
@@ -196,7 +330,7 @@ def describe_forecast(forecast: list[dict] | None, dia: str, target: date | None
 
     Args:
         forecast: Daily entries from `weather.get_forecasts`.
-        dia: Spoken horizon, used only as the sentence label.
+        dia: Spoken day label ("mañana", "el sábado"), used only in the sentence.
         target: Household local date requested (see `forecast_target_date`).
         zone: Household timezone.
 
@@ -213,9 +347,9 @@ def describe_forecast(forecast: list[dict] | None, dia: str, target: date | None
         if local_date == target:
             matches.append(_forecast_parts(entry))
     if not matches:
-        return ForecastAnswer(NO_FORECAST, ForecastAlignment.MISSING_DAY)
+        return ForecastAnswer(no_forecast_for(dia), ForecastAlignment.MISSING_DAY)
     if len(set(matches)) > 1:
-        return ForecastAnswer(NO_FORECAST, ForecastAlignment.CONFLICTING_DAY)
+        return ForecastAnswer(no_forecast_for(dia), ForecastAlignment.CONFLICTING_DAY)
 
     parts = matches[0]
     if not parts:

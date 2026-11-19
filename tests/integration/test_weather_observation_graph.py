@@ -9,7 +9,7 @@ from httpx import ASGITransport, AsyncClient
 import pytest
 
 from src.main import build_application
-from src.world.weather import NO_DATA, NO_FORECAST
+from src.world.weather import NO_DATA, NO_FORECAST, NO_FORECAST_HORIZON
 from tests.integration.test_capability_application import configuration, leaves as capability_leaves
 from tests.integration.test_task_outcomes import event
 from tests.mocks.task_transport import TaskTransport
@@ -163,8 +163,9 @@ async def test_forecast_day_is_selected_by_household_date_through_the_applicatio
                 assert result['response'] == spoken
                 assert observation['unobserved_fields'] == ('issued_at',)
             else:
-                assert result['response'] == NO_FORECAST and not result['success']
-                assert 'lluvioso' not in result['response']
+                # PQ-T037-1: a missing or conflicting day names it; invalid payloads stay generic.
+                assert result['response'] == (NO_FORECAST if invalid else 'No tengo el pronóstico para mañana.')
+                assert not result['success'] and 'lluvioso' not in result['response']
                 if invalid:
                     assert observation['reason'] == 'source_invalid' and observation['observed_at'] is None
                 else:
@@ -191,3 +192,61 @@ async def test_cancelled_forecast_query_has_one_attempt_and_no_detached_read(lea
             finally:
                 transport.forecast_release.set()
                 await asyncio.gather(request, return_exceptions=True)
+
+
+# T037-U2: one real-factory case per horizon (FROZEN is Tuesday 4 August, 23:30 local).
+SATURDAY = {'datetime': '2026-08-08T15:00:00+00:00', 'condition': 'pouring', 'temperature': 12}
+
+
+@pytest.mark.parametrize(('text', 'spoken', 'forecast_reads', 'completed'), [
+    pytest.param('va a llover hoy', 'Hoy: soleado, 22 grados.', 1, True, id='hoy'),
+    pytest.param('va a llover mañana', 'Mañana: lluvioso, 25 grados.', 1, True, id='manana'),
+    pytest.param('va a llover esta mañana', 'Hoy: soleado, 22 grados.', 1, True, id='esta-manana'),
+    pytest.param('va a llover por la mañana', 'Hoy: soleado, 22 grados.', 1, True, id='por-la-manana'),
+    pytest.param('qué tiempo hace pasado mañana', 'Pasado mañana: nublado, 19 grados.', 1, True, id='pasado-manana'),
+    pytest.param('va a llover el sábado', 'El sábado: lloviendo fuerte, 12 grados.', 1, True, id='el-sabado'),
+    pytest.param('va a llover el viernes', 'No tengo el pronóstico para el viernes.', 1, False, id='weekday-missing'),
+    pytest.param('va a llover la semana que viene', NO_FORECAST_HORIZON, 0, False, id='la-semana-que-viene'),
+])
+async def test_each_horizon_through_the_application(leaves, tmp_path, monkeypatch, text, spoken, forecast_reads,
+                                                    completed):
+    transport = TaskTransport()
+    weather(transport)
+    transport.forecast_payload = {'service_response': {WEATHER: {'forecast': [SATURDAY, AFTER, TOMORROW, TODAY]}}}
+    async with transport.serve() as url:
+        config, _ = configuration(tmp_path, url)
+        config['home_assistant']['weather_entity'] = WEATHER
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=leaves)
+            monkeypatch.setattr(graph.home_capabilities, '_clock', lambda: FROZEN)
+            graph.models.stt.text = text
+            reads_before = transport.state_reads
+            result = await graph.pipeline.process_command(event())
+            assert result['intent'] == 'weather' and result['path'] == 'fast_weather'
+            assert result['response'] == spoken
+            assert result['task_completed'] is completed
+            assert len(transport.forecast_reads) == forecast_reads and transport.sends == []
+            # A forecast horizon never falls back to the current conditions.
+            assert transport.state_reads == reads_before
+            if forecast_reads:
+                assert result['source_observation']['source'] == 'ha-weather-forecast'
+            else:
+                assert 'source_observation' not in result
+
+
+async def test_present_tense_this_morning_reads_current_conditions_through_the_application(leaves, tmp_path,
+                                                                                          monkeypatch):
+    transport = TaskTransport()
+    weather(transport)
+    transport.forecast_payload = {'service_response': {WEATHER: {'forecast': [TODAY, TOMORROW]}}}
+    async with transport.serve() as url:
+        config, _ = configuration(tmp_path, url)
+        config['home_assistant']['weather_entity'] = WEATHER
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=leaves)
+            monkeypatch.setattr(graph.home_capabilities, '_clock', lambda: FROZEN)
+            graph.models.stt.text = 'qué tiempo hace esta mañana'
+            result = await graph.pipeline.process_command(event())
+            assert result['intent'] == 'weather' and '22 grados' in result['response']
+            assert result['source_observation']['source'] == 'ha-rest-states'
+            assert transport.forecast_reads == [] and transport.sends == []

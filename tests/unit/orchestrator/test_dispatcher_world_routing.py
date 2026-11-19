@@ -11,7 +11,7 @@ from src.core.task_outcome import TaskStatus
 from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.dispatcher import PathType, Priority, RequestDispatcher
 from src.orchestrator.priority_queue import PriorityRequestQueue
-from src.world.weather import DEFAULT_ENTITY, NO_DATA, NO_FORECAST
+from src.world.weather import DEFAULT_ENTITY, NO_DATA, NO_FORECAST, NO_FORECAST_HORIZON, ONE_DAY_AT_A_TIME
 from src.home_assistant.ha_client import HAStatesSnapshot
 
 
@@ -580,22 +580,31 @@ async def test_aligned_forecast_observes_date_alignment_but_never_issue_time(dis
     d.ha.call_service_with_response.assert_awaited_once()
 
 
-@pytest.mark.parametrize("forecast", [
+# PQ-T037-1 (user answer "Nombra el día"): a missing or conflicting day names
+# the requested day; an empty payload keeps the generic NO_FORECAST.
+NO_FORECAST_TOMORROW = "No tengo el pronóstico para mañana."
+
+
+@pytest.mark.parametrize(("forecast", "spoken"), [
     # Falta el día pedido (por posición, el segundo sería "mañana").
-    [_entry("2026-08-04T15:00:00+00:00", "sunny", 20), _entry("2026-08-06T15:00:00+00:00", "rainy", 18)],
+    ([_entry("2026-08-04T15:00:00+00:00", "sunny", 20), _entry("2026-08-06T15:00:00+00:00", "rainy", 18)],
+     NO_FORECAST_TOMORROW),
     # Primer elemento de ayer; el segundo es hoy, no mañana.
-    [_entry("2026-08-03T15:00:00+00:00", "sunny", 20), _entry("2026-08-04T15:00:00+00:00", "rainy", 18)],
+    ([_entry("2026-08-03T15:00:00+00:00", "sunny", 20), _entry("2026-08-04T15:00:00+00:00", "rainy", 18)],
+     NO_FORECAST_TOMORROW),
     # Duplicados del mismo día local que se dirían distinto.
-    [_entry("2026-08-05T12:00:00+00:00", "sunny", 20), _entry("2026-08-05T18:00:00+00:00", "rainy", 18)],
+    ([_entry("2026-08-05T12:00:00+00:00", "sunny", 20), _entry("2026-08-05T18:00:00+00:00", "rainy", 18)],
+     NO_FORECAST_TOMORROW),
     # Misma condición, distinta temperatura: también es conflicto (R1, review 1).
-    [_entry("2026-08-05T15:00:00+00:00", "rainy", 13), _entry("2026-08-05T18:00:00+00:00", "rainy", 20)],
-    [],
+    ([_entry("2026-08-05T15:00:00+00:00", "rainy", 13), _entry("2026-08-05T18:00:00+00:00", "rainy", 20)],
+     NO_FORECAST_TOMORROW),
+    ([], NO_FORECAST),
 ])
-async def test_unaligned_forecast_is_honest_and_not_completed(dispatcher_with_async_ha, forecast):
+async def test_unaligned_forecast_is_honest_and_not_completed(dispatcher_with_async_ha, forecast, spoken):
     d = _frozen(dispatcher_with_async_ha)
     d.ha.call_service_with_response = AsyncMock(return_value=_forecast_payload(forecast))
     result = await d._handle_weather("va a llover mañana", Priority.HIGH)
-    assert result.response == NO_FORECAST
+    assert result.response == spoken
     assert result.outcome.status is TaskStatus.FAILED and not result.outcome.task_completed
     assert result.observation.unobserved_fields == ("issued_at", "forecast_date_alignment")
     assert result.observation.observed_at == FROZEN
@@ -629,21 +638,21 @@ async def test_no_data_increments_stat_and_warns(dispatcher_with_async_ha, caplo
     assert any("weather_entity" in r.message for r in caplog.records)
 
 
-@pytest.mark.parametrize(("forecast", "alignment"), [
-    ([_entry("2026-08-04T15:00:00+00:00", "sunny", 20)], "missing_day"),
+@pytest.mark.parametrize(("forecast", "alignment", "spoken"), [
+    ([_entry("2026-08-04T15:00:00+00:00", "sunny", 20)], "missing_day", NO_FORECAST_TOMORROW),
     ([_entry("2026-08-05T15:00:00+00:00", "rainy", 13), _entry("2026-08-05T18:00:00+00:00", "rainy", 20)],
-     "conflicting_day"),
-    ([_entry("2026-08-05T15:00:00", "rainy", 13)], "invalid_entries"),
+     "conflicting_day", NO_FORECAST_TOMORROW),
+    ([_entry("2026-08-05T15:00:00", "rainy", 13)], "invalid_entries", NO_FORECAST),
 ])
 async def test_unaligned_forecast_warning_names_the_alignment_not_the_entity(
-    dispatcher_with_async_ha, caplog, forecast, alignment
+    dispatcher_with_async_ha, caplog, forecast, alignment, spoken
 ):
     """R2, review 1: la entidad respondió; culpar a weather_entity despista."""
     d = _frozen(dispatcher_with_async_ha)
     d.ha.call_service_with_response = AsyncMock(return_value=_forecast_payload(forecast))
     with caplog.at_level("WARNING"):
         result = await d._handle_weather("va a llover mañana", Priority.HIGH)
-    assert result.response == NO_FORECAST
+    assert result.response == spoken
     warnings = [r.getMessage() for r in caplog.records if "answered honestly with no data" in r.getMessage()]
     assert len(warnings) == 1
     assert f"alignment={alignment}" in warnings[0]
@@ -694,3 +703,103 @@ async def test_no_data_warning_is_rate_limited_but_stat_is_not(
     assert d._stats["weather_no_data"] == 2
     warnings = [r for r in caplog.records if "answered honestly with no data" in r.message]
     assert len(warnings) == 1
+
+
+# ---------------------------------------------------------------------------
+# T037-U2: weather horizon and intent fixes (user answers Q23, PQ-T037-1).
+# FROZEN is Tuesday 4 August 2026, 23:30 in Montevideo.
+# ---------------------------------------------------------------------------
+
+WEEK = [
+    _entry("2026-08-04T15:00:00+00:00", "sunny", 20, 10),     # martes (hoy)
+    _entry("2026-08-05T15:00:00+00:00", "rainy", 18, 9),      # miércoles (mañana)
+    _entry("2026-08-06T15:00:00+00:00", "cloudy", 15, 7),     # jueves (pasado mañana)
+    _entry("2026-08-08T15:00:00+00:00", "pouring", 12, 6),    # sábado
+]
+
+
+def _no_current_read(d):
+    d.ha.get_state_snapshot = AsyncMock(side_effect=AssertionError("current conditions read"))
+    return d
+
+
+@pytest.mark.parametrize(("text", "spoken"), [
+    ("¿va a llover hoy?", "Hoy: soleado, entre 10 y 20 grados."),
+    ("va a llover esta mañana", "Hoy: soleado, entre 10 y 20 grados."),
+    ("va a llover por la mañana", "Hoy: soleado, entre 10 y 20 grados."),
+    ("va a llover a la mañana", "Hoy: soleado, entre 10 y 20 grados."),
+    ("va a llover", "Hoy: soleado, entre 10 y 20 grados."),
+    ("cuál es el pronóstico", "Hoy: soleado, entre 10 y 20 grados."),
+    ("va a llover mañana", "Mañana: lluvioso, entre 9 y 18 grados."),
+    ("va a llover mañana por la mañana", "Mañana: lluvioso, entre 9 y 18 grados."),
+    ("qué tiempo hace pasado mañana", "Pasado mañana: nublado, entre 7 y 15 grados."),
+    ("¿va a llover el sábado?", "El sábado: lloviendo fuerte, entre 6 y 12 grados."),
+    ("cómo está el clima el miércoles", "El miércoles: lluvioso, entre 9 y 18 grados."),
+    ("va a llover el martes", "Hoy: soleado, entre 10 y 20 grados."),
+])
+async def test_forecast_horizons_select_the_day_by_household_date(dispatcher_with_async_ha, text, spoken):
+    d = _no_current_read(_frozen(dispatcher_with_async_ha))
+    d.ha.call_service_with_response = AsyncMock(return_value=_forecast_payload(list(reversed(WEEK))))
+    assert d._classify_request(text.lower())[0] is PathType.FAST_WEATHER
+    result = await d._handle_weather(text, Priority.HIGH)
+    assert result.response == spoken
+    assert result.outcome.status is TaskStatus.COMPLETED
+    assert result.observation.source.value == "ha-weather-forecast"
+    d.ha.call_service_with_response.assert_awaited_once()
+
+
+@pytest.mark.parametrize(("text", "spoken"), [
+    # The week has no Monday or next Tuesday: name the day, never the current conditions.
+    ("va a llover el lunes", "No tengo el pronóstico para el lunes."),
+    ("va a llover el martes que viene", "No tengo el pronóstico para el martes que viene."),
+    ("va a llover el viernes", "No tengo el pronóstico para el viernes."),
+])
+async def test_weekday_outside_the_forecast_is_named_and_never_current(dispatcher_with_async_ha, text, spoken):
+    d = _no_current_read(_frozen(dispatcher_with_async_ha))
+    d.ha.call_service_with_response = AsyncMock(return_value=_forecast_payload(WEEK))
+    result = await d._handle_weather(text, Priority.HIGH)
+    assert result.response == spoken
+    assert result.outcome.status is TaskStatus.FAILED and not result.outcome.task_completed
+    assert result.observation.unobserved_fields == ("issued_at", "forecast_date_alignment")
+    assert d._stats["weather_no_data"] == 1
+
+
+async def test_today_forecast_missing_is_named_not_replaced_by_current(dispatcher_with_async_ha):
+    d = _no_current_read(_frozen(dispatcher_with_async_ha))
+    d.ha.call_service_with_response = AsyncMock(return_value=_forecast_payload(WEEK[1:]))
+    result = await d._handle_weather("¿va a llover hoy?", Priority.HIGH)
+    assert result.response == "No tengo el pronóstico para hoy."
+    assert result.outcome.status is TaskStatus.FAILED
+
+
+@pytest.mark.parametrize("text", [
+    "qué tiempo hace", "qué tiempo hace hoy", "qué tiempo hace esta mañana", "llueve por la mañana",
+])
+async def test_present_tense_about_today_reads_current_conditions(dispatcher_with_async_ha, text):
+    d = _frozen(dispatcher_with_async_ha)
+    d.ha.call_service_with_response = AsyncMock(side_effect=AssertionError("forecast read"))
+    d.ha.get_state_snapshot = AsyncMock(return_value=weather_snapshot(
+        {"state": "cloudy", "attributes": {"temperature": 17}}))
+    assert d._classify_request(text.lower())[0] is PathType.FAST_WEATHER
+    result = await d._handle_weather(text, Priority.HIGH)
+    assert result.response == "Hay 17 grados, nublado."
+    d.ha.call_service_with_response.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("text", "spoken", "status"), [
+    ("va a llover la semana que viene", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
+    ("qué tiempo va a hacer el fin de semana", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
+    ("el pronóstico para el 25", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
+    ("va a llover en tres días", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
+    ("va a llover hoy o mañana", ONE_DAY_AT_A_TIME, TaskStatus.NEEDS_INPUT),
+])
+async def test_unsupported_horizons_are_refused_without_any_read(dispatcher_with_async_ha, text, spoken, status):
+    d = _no_current_read(_frozen(dispatcher_with_async_ha))
+    d.ha.call_service_with_response = AsyncMock(side_effect=AssertionError("forecast read"))
+    result = await d.dispatch(user_id="u1", text=text, zone_id="zone_test")
+    assert result.path is PathType.FAST_WEATHER and result.intent == "weather"
+    assert result.response == spoken and not result.success
+    assert result.outcome.status is status and not result.outcome.task_completed
+    assert result.observation is None
+    d.ha.call_service_with_response.assert_not_awaited()
+    assert d._stats["weather_no_data"] == 0

@@ -60,8 +60,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from src.core.household_clock import SUPPORTED_HOUSEHOLD_TIMEZONE
-from src.world.weather import (NO_DATA, NO_FORECAST, ForecastAlignment,
-                               describe_forecast, forecast_target_date)
+from src.world.weather import (NO_DATA, NO_FORECAST, ForecastAlignment, HorizonKind, WeatherHorizon,
+                               describe_forecast, forecast_target_date, parse_weather_horizon)
 
 # T037-U1: el día del pronóstico se elige por FECHA local del hogar, nunca por
 # posición. Hora de Montevideo = UTC-3 sin horario de verano.
@@ -130,15 +130,18 @@ def test_empty_forecast_says_so():
 
 @pytest.mark.parametrize("forecast", [[FOG], [FOG, CLOUD], [YESTERDAY, FOG], [CLOUD]])
 def test_forecast_without_requested_day_says_so(forecast):
+    # PQ-T037-1 (user answer: "Nombra el día"): a missing day names it.
     answer = _say(forecast)
-    assert answer.text == NO_FORECAST
+    assert answer.text == "No tengo el pronóstico para mañana."
     assert answer.alignment is ForecastAlignment.MISSING_DAY and not answer.aligned
 
 
-def test_unsupported_horizon_has_no_target_and_no_answer():
+def test_unparsed_weekday_string_has_no_target_and_no_answer():
+    # A raw weekday string is not a horizon: weekdays come parsed (T037-U2).
     assert forecast_target_date("el sábado", datetime(2026, 8, 4, 15, tzinfo=UTC), ZONE) is None
     answer = describe_forecast(FORECAST, "el sábado", None, ZONE)
-    assert answer.text == NO_FORECAST and answer.alignment is ForecastAlignment.MISSING_DAY
+    assert answer.text == "No tengo el pronóstico para el sábado."
+    assert answer.alignment is ForecastAlignment.MISSING_DAY
 
 
 @pytest.mark.parametrize("bad_datetime", [
@@ -168,7 +171,7 @@ def test_entry_without_datetime_makes_the_payload_invalid():
 def test_conflicting_duplicates_for_the_day_are_not_spoken():
     other = _day("2026-08-05T18:00:00+00:00", "sunny", 14.0, 20.0)
     answer = _say([FOG, RAIN, other, CLOUD])
-    assert answer.text == NO_FORECAST
+    assert answer.text == "No tengo el pronóstico para mañana."
     assert answer.alignment is ForecastAlignment.CONFLICTING_DAY and not answer.aligned
     # Las otras fechas siguen respondiendo: el conflicto es solo de ese día.
     assert _say([FOG, RAIN, other, CLOUD], "hoy", TODAY).aligned
@@ -179,7 +182,7 @@ def test_same_condition_with_different_temperatures_is_a_conflict():
     # mismo día local se dirían distinto, así que no se elige ninguno.
     warmer = {**RAIN, "datetime": "2026-08-05T18:00:00+00:00", "temperature": 20}
     answer = _say([FOG, RAIN, warmer, CLOUD])
-    assert answer.text == NO_FORECAST
+    assert answer.text == "No tengo el pronóstico para mañana."
     assert answer.alignment is ForecastAlignment.CONFLICTING_DAY and not answer.aligned
     colder = {**RAIN, "datetime": "2026-08-05T18:00:00+00:00", "templow": 4}
     assert _say([FOG, colder, RAIN]).alignment is ForecastAlignment.CONFLICTING_DAY
@@ -334,6 +337,114 @@ def test_describe_forecast_pasado_manana_is_selected_by_date():
 
 
 def test_describe_forecast_pasado_manana_short_forecast_is_honest():
-    # Solo 2 días de pronóstico: la fecha pedida no está -> NO_FORECAST.
+    # Solo 2 días de pronóstico: la fecha pedida no está y se nombra (PQ-T037-1).
     answer = _say([FOG, RAIN], "pasado mañana", AFTER)
-    assert answer.text == NO_FORECAST and answer.alignment is ForecastAlignment.MISSING_DAY
+    assert answer.text == "No tengo el pronóstico para pasado mañana."
+    assert answer.alignment is ForecastAlignment.MISSING_DAY
+
+
+# ---------------------------------------------------------------------------
+# T037-U2: horizon of a weather question (user answer Q23) and indoor
+# temperature questions. The words decide the day; the clock resolves it.
+# ---------------------------------------------------------------------------
+
+CURRENT = WeatherHorizon(HorizonKind.CURRENT)
+UNSUPPORTED = WeatherHorizon(HorizonKind.UNSUPPORTED)
+SEVERAL = WeatherHorizon(HorizonKind.SEVERAL_DAYS)
+
+
+def _day_ahead(offset):
+    return WeatherHorizon(HorizonKind.FORECAST, offset=offset)
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    # Present tense about today: current conditions ("¿qué tiempo hace?", Q23).
+    ("qué tiempo hace", CURRENT),
+    ("qué tiempo hace hoy", CURRENT),
+    ("¿Qué tiempo hace esta mañana?", CURRENT),
+    ("llueve por la mañana", CURRENT),
+    ("hace frío a la mañana", CURRENT),
+    ("cómo está el clima esta noche", CURRENT),
+    # The morning is today, never tomorrow.
+    ("¿va a llover esta mañana?", _day_ahead(0)),
+    ("va a llover por la mañana", _day_ahead(0)),
+    ("va a llover a la mañana", _day_ahead(0)),
+    ("va a llover en la mañana", _day_ahead(0)),
+    # Future about today: today's forecast entry.
+    ("¿va a llover hoy?", _day_ahead(0)),
+    ("va a llover", _day_ahead(0)),
+    ("cuál es el pronóstico", _day_ahead(0)),
+    ("qué tiempo va a hacer esta noche", _day_ahead(0)),
+    ("va a llover hoy a la tarde", _day_ahead(0)),
+    # Named days.
+    ("va a llover mañana", _day_ahead(1)),
+    ("Mañana llueve?", _day_ahead(1)),
+    ("va a llover mañana por la mañana", _day_ahead(1)),
+    ("qué tiempo hace mañana a la mañana", _day_ahead(1)),
+    ("el pronóstico de mañana", _day_ahead(1)),
+    ("qué tiempo hace pasado mañana", _day_ahead(2)),
+    ("va a llover pasado mañana a la mañana", _day_ahead(2)),
+    # Weekdays: by date, never the current conditions.
+    ("¿va a llover el sábado?", WeatherHorizon(HorizonKind.FORECAST, weekday=5)),
+    ("qué tiempo va a hacer este lunes", WeatherHorizon(HorizonKind.FORECAST, weekday=0)),
+    ("cómo está el clima el miércoles", WeatherHorizon(HorizonKind.FORECAST, weekday=2)),
+    ("va a llover el sábado que viene", WeatherHorizon(HorizonKind.FORECAST, weekday=5, next_week=True)),
+    ("va a llover el próximo sábado", WeatherHorizon(HorizonKind.FORECAST, weekday=5, next_week=True)),
+    ("va a llover el sábado próximo", WeatherHorizon(HorizonKind.FORECAST, weekday=5, next_week=True)),
+    # Unsupported: refused, never the current conditions.
+    ("va a llover la semana que viene", UNSUPPORTED),
+    ("qué tiempo va a hacer la próxima semana", UNSUPPORTED),
+    ("el pronóstico para esta semana", UNSUPPORTED),
+    ("va a llover el fin de semana", UNSUPPORTED),
+    ("va a llover el sábado de la semana que viene", UNSUPPORTED),
+    ("qué tiempo va a hacer el mes que viene", UNSUPPORTED),
+    ("va a llover los próximos días", UNSUPPORTED),
+    ("va a llover en tres días", UNSUPPORTED),
+    ("va a llover el 25", UNSUPPORTED),
+    ("va a llover el 3 de diciembre", UNSUPPORTED),
+    ("llovió ayer?", UNSUPPORTED),
+    # Two different days in one question.
+    ("va a llover hoy o mañana", SEVERAL),
+    ("va a llover mañana o el sábado", SEVERAL),
+    ("va a llover mañana o pasado mañana", SEVERAL),
+])
+def test_weather_horizon_table(text, expected):
+    assert parse_weather_horizon(text) == expected
+
+
+# Tuesday 4 August 2026, 23:30 in Montevideo (02:30Z on the 5th).
+TUESDAY_NIGHT = datetime(2026, 8, 5, 2, 30, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(("horizon", "target", "label"), [
+    (_day_ahead(0), TODAY, "hoy"),
+    (_day_ahead(1), TOMORROW, "mañana"),
+    (_day_ahead(2), AFTER, "pasado mañana"),
+    (WeatherHorizon(HorizonKind.FORECAST, weekday=2), TOMORROW, "el miércoles"),
+    (WeatherHorizon(HorizonKind.FORECAST, weekday=5), date(2026, 8, 8), "el sábado"),
+    (WeatherHorizon(HorizonKind.FORECAST, weekday=0), date(2026, 8, 10), "el lunes"),
+    # The weekday of today, said bare: today (named "hoy" in the answer).
+    (WeatherHorizon(HorizonKind.FORECAST, weekday=1), TODAY, "hoy"),
+    # With "que viene"/"próximo": a week from today.
+    (WeatherHorizon(HorizonKind.FORECAST, weekday=1, next_week=True), date(2026, 8, 11), "el martes que viene"),
+    # "el próximo sábado" on a Tuesday is this Saturday.
+    (WeatherHorizon(HorizonKind.FORECAST, weekday=5, next_week=True), date(2026, 8, 8), "el sábado"),
+])
+def test_forecast_horizon_resolves_by_household_date(horizon, target, label):
+    resolved = forecast_target_date(horizon, TUESDAY_NIGHT, ZONE)
+    assert resolved == target
+    assert horizon.spoken_day((resolved - TODAY).days) == label
+
+
+@pytest.mark.parametrize("horizon", [CURRENT, UNSUPPORTED, SEVERAL])
+def test_non_forecast_horizons_have_no_target(horizon):
+    assert forecast_target_date(horizon, TUESDAY_NIGHT, ZONE) is None
+
+
+def test_weekday_forecast_names_the_day_when_found_and_when_missing():
+    saturday = _day("2026-08-08T15:00:00+00:00", "rainy", 9.0, 14.0)
+    assert _say([FOG, RAIN, saturday], "el sábado", date(2026, 8, 8)).text == (
+        "El sábado: lluvioso, entre 9 y 14 grados.")
+    missing = _say(FORECAST, "el sábado", date(2026, 8, 8))
+    assert missing.text == "No tengo el pronóstico para el sábado."
+    assert missing.alignment is ForecastAlignment.MISSING_DAY

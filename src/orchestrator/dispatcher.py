@@ -2459,23 +2459,39 @@ class RequestDispatcher:
         by position; 'forecast_date_alignment' is observed only when exactly one
         entry matched. Neither branch substitutes another entity or uses an
         unclocked cache.
-        """
-        from src.world.weather import (NO_DATA, NO_FORECAST, ForecastAlignment,
-                                       describe_current, describe_forecast, forecast_target_date)
 
-        text_lower = text.lower()
-        dia = ("pasado mañana" if "pasado mañana" in text_lower or "pasado manana" in text_lower
-               else "mañana" if "mañana" in text_lower or "manana" in text_lower else None)
+        The day comes from :func:`parse_weather_horizon` (T037-U2, user answer
+        Q23): "esta/por la/a la mañana" is today; today in the future tense
+        ("¿va a llover hoy?") reads today's forecast entry and in the present
+        ("¿qué tiempo hace?") the current conditions; a weekday is a forecast
+        day by date. An unsupported horizon or several days are refused before
+        any read, never answered with the current conditions.
+        """
+        from src.world.weather import (NO_DATA, NO_FORECAST, NO_FORECAST_HORIZON, ONE_DAY_AT_A_TIME,
+                                       ForecastAlignment, HorizonKind, describe_current, describe_forecast,
+                                       forecast_target_date, parse_weather_horizon)
+
+        horizon = parse_weather_horizon(text)
+        if horizon.kind in (HorizonKind.UNSUPPORTED, HorizonKind.SEVERAL_DAYS):
+            logger.info("Weather horizon refused before any read (horizon=%s)", horizon.kind.value)
+            unsupported = horizon.kind is HorizonKind.UNSUPPORTED
+            return self._household_refusal(
+                PathType.FAST_WEATHER, "weather", NO_FORECAST_HORIZON if unsupported else ONE_DAY_AT_A_TIME,
+                TaskStatus.UNSUPPORTED if unsupported else TaskStatus.NEEDS_INPUT)
+        forecasting = horizon.kind is HorizonKind.FORECAST
+        dia: str | None = None
         clock = self.home_capabilities.now if self.home_capabilities is not None else self.household_clock.now_utc
         attempted = clock()
-        source = ObservationSource.HA_FORECAST if dia else ObservationSource.HA_STATES
+        source = ObservationSource.HA_FORECAST if forecasting else ObservationSource.HA_STATES
         observation = Observation.from_read(source, available=False, observed_at=None,
             ttl_s=STATE_OBSERVATION_TTL_S, attempted_at=attempted)
         alignment: ForecastAlignment | None = None
+        answered = False
         try:
-            if dia:
+            if forecasting:
                 zone = self.household_clock.zone  # built once in the household clock's constructor
-                target = forecast_target_date(dia, attempted, zone)
+                target = forecast_target_date(horizon, attempted, zone)
+                dia = horizon.spoken_day((target - attempted.astimezone(zone).date()).days)
                 payload = await self.ha.call_service_with_response(
                     "weather", "get_forecasts", self.weather_entity,
                     {"type": "daily"}, timeout=WEATHER_FORECAST_TIMEOUT_S)
@@ -2491,6 +2507,7 @@ class RequestDispatcher:
                         unobserved_fields=("issued_at",) if answer.aligned
                         else ("issued_at", "forecast_date_alignment"))
                     response = answer.text
+                    answered = answer.aligned and response != NO_FORECAST
                 else:
                     observation = Observation.from_read(source, available=False, observed_at=None,
                         ttl_s=STATE_OBSERVATION_TTL_S, attempted_at=attempted,
@@ -2517,6 +2534,7 @@ class RequestDispatcher:
                 observation = observation.as_of(now)
                 entity = next((value for value in states.states if value.get("entity_id") == self.weather_entity), None) if observation.current(now) else None
                 response = describe_current(entity)
+                answered = response != NO_DATA
                 observation = replace(observation,
                     state=ObservationState.PARTIAL if observation.state is ObservationState.FRESH else observation.state,
                     unobserved_fields=tuple(sorted(set(observation.unobserved_fields) | {"measurement_time"})))
@@ -2524,7 +2542,7 @@ class RequestDispatcher:
         except Exception as error:
             logger.warning("Weather read unavailable (entity=%s, horizon=%s): %s",
                            self.weather_entity, dia, type(error).__name__)
-            response, success = NO_DATA, False
+            response, success, answered = NO_DATA, False, False
 
         # Observabilidad (review PR #14, 2026-08-06): un weather_entity mal
         # configurado o una lectura actual no disponible degradan TODOS a
@@ -2539,7 +2557,7 @@ class RequestDispatcher:
         # al usuario escuchando NADA. El bloque está protegido para reforzar
         # la garantía anti-mudo: si observabilidad falla, se loguea y listo.
         try:
-            if success and response in (NO_DATA, NO_FORECAST):
+            if success and not answered:
                 self._stats["weather_no_data"] += 1
                 now = time.monotonic()
                 if now - self._last_weather_nodata_warn > _WEATHER_NODATA_WARN_INTERVAL_S:
@@ -2569,7 +2587,7 @@ class RequestDispatcher:
         return DispatchResult(
             path=PathType.FAST_WEATHER, priority=priority,
             success=success, response=response, intent="weather", observation=observation,
-            outcome=TaskOutcome(TaskStatus.COMPLETED if success and response not in (NO_DATA, NO_FORECAST) else TaskStatus.FAILED),
+            outcome=TaskOutcome(TaskStatus.COMPLETED if success and answered else TaskStatus.FAILED),
         )
 
     def _extract_list_name(self, text: str) -> str | None:
