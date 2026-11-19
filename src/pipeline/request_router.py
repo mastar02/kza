@@ -1452,9 +1452,20 @@ class RequestRouter:
         Returns:
             True when the turn goes to the dispatcher with no 7B call.
         """
-        if tv_signal or not self.wake_acoustically_confirmed or capture_trigger != CaptureTrigger.WAKE:
+        if not self._has_clear_own_wake(tv_signal=tv_signal, capture_trigger=capture_trigger):
             return False
         return parse_clock_query(text, self._clock_wake_words) is not None
+
+    def _has_clear_own_wake(self, *, tv_signal: bool, capture_trigger: str | None) -> bool:
+        """Whether this capture was opened by a clear acoustic wake of its own (T037-U4, T037-U4-R1).
+
+        Not a weak wake as P3-F2 defines it (TV signal or a transcript-based
+        wake engine), and the producer tags the capture ``wake``. A follow-up
+        or barge-in capture carries the last real wake's score (T037-U5), and
+        ``inline`` or an untagged capture (None) keep the gate too, as they
+        did for the clock.
+        """
+        return not tv_signal and self.wake_acoustically_confirmed and capture_trigger == CaptureTrigger.WAKE
 
     async def _household_veto_passes(self, text: str, result: dict, *, room_id: str | None, tv_signal: bool) -> bool:
         """Run the 7B as a veto on a weakly woken claimed turn (P3-F2 S6).
