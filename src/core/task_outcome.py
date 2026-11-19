@@ -76,7 +76,11 @@ class ResponseRequirement(str, Enum):
 
 @dataclass(frozen=True)
 class TaskOutcome:
-    """Domain evidence that remains true even when confirmation audio fails."""
+    """Domain evidence that remains true even when confirmation audio fails.
+
+    ``parts`` is set only for a compound voice turn (T037-U6): the outcome of
+    each spoken part in order, each a plain outcome without parts of its own.
+    """
 
     status: TaskStatus
     handled: bool = True
@@ -85,6 +89,7 @@ class TaskOutcome:
     effect: EffectState = EffectState.NOT_REQUIRED
     observation_scope: str | None = None
     replication: DispatchState = DispatchState.NOT_REQUIRED
+    parts: tuple["TaskOutcome", ...] = ()
 
     def __post_init__(self) -> None:
         if (not isinstance(self.status, TaskStatus) or type(self.handled) is not bool
@@ -95,6 +100,8 @@ class TaskOutcome:
             raise ValueError("invalid_task_evidence_type")
         if self.observation_scope not in {None, "software_state", "ha_state"}:
             raise ValueError("invalid_observation_scope")
+        if type(self.parts) is not tuple or any(type(part) is not TaskOutcome or part.parts for part in self.parts):
+            raise ValueError("invalid_task_parts")
         if self.status is TaskStatus.COMPLETED and not (
             self.handled
             and self.persistence in {PersistenceState.NOT_REQUIRED, PersistenceState.VOLATILE, PersistenceState.COMMITTED}
@@ -110,9 +117,15 @@ class TaskOutcome:
         return self.status is TaskStatus.COMPLETED
 
     def to_dict(self) -> dict:
-        """Return bounded, content-free evidence suitable for live projection."""
-        return {key: value.value if isinstance(value, Enum) else value
-                for key, value in asdict(self).items()}
+        """Return bounded, content-free evidence suitable for live projection.
+
+        ``parts`` appears only for a compound turn, as one such dict per part.
+        """
+        evidence = {key: value.value if isinstance(value, Enum) else value
+                    for key, value in asdict(self).items() if key != "parts"}
+        if self.parts:
+            evidence["parts"] = [part.to_dict() for part in self.parts]
+        return evidence
 
 
 @dataclass(frozen=True)
