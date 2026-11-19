@@ -27,13 +27,19 @@ from src.home_assistant.voice_resolver import HomeVoiceResolver
 from src.nlu.home_command import parse_home_command
 from src.nlu.command_gate import AcceptanceDecision, CommandAcceptanceGate, contains_wake_word
 from src.nlu.command_grammar import (
-    WAKE_TERMS, PartialCommand, has_unresolved_light_location, non_immediate_action_reason,
-    parse_default_light_target, parse_partial_command,
+    WAKE_TERMS, PartialCommand, has_unresolved_light_location, non_immediate_action_reason, parse_command,
+    parse_default_light_target, parse_partial_command, security_order,
 )
-from src.nlu.household_intents import HouseholdIntent, HouseholdIntentClassifier, HouseholdIntentSettings
+from src.nlu.household_intents import (
+    HouseholdFamily, HouseholdIntent, HouseholdIntentClassifier, HouseholdIntentSettings, HouseholdOperation,
+)
 from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
-from src.orchestrator.dispatcher import has_domotics_action_verb
+from src.orchestrator.compound import CompoundPartContext, CompoundRunner
+from src.orchestrator.dispatcher import (
+    DispatchResult, compound_dispatch_result, compound_part_target, has_domotics_action_verb,
+)
+from src.orchestrator.priority_queue import Priority
 from src.pipeline.earcon_gate import should_play_earcon
 from src.pipeline.post_wake_endpoint import CaptureTrigger
 from src.pipeline.wake_verification import WakeVerifier
@@ -457,6 +463,19 @@ class RequestRouter:
             before_handler_warn_ms=before_handler_warn_ms,
             unavailable_precheck_enabled=unavailable_precheck_enabled,
         )
+        # T037-U6: the same action boundary for a compound part, without its
+        # own failure earcon or hook reason (the compound's one reply reports it).
+        self._compound_voice_actions = VoiceHomeActionExecutor(
+            ha_client, self.home_actions, response_handler=None, hooks=hooks,
+            before_handler_warn_ms=before_handler_warn_ms,
+            unavailable_precheck_enabled=unavailable_precheck_enabled,
+        )
+        # T037-U6: compound turns run here part by part (each part meets this
+        # router's own gates); the runner remembers parts by request id.
+        self._compound = CompoundRunner()
+        # T037-U6: accepted turns per microphone room. A compound stops its
+        # remaining parts when another turn (a barge-in) is accepted in its room.
+        self._room_turns: dict[str | None, int] = {}
 
         # State
         from src.memory.memory_manager import MemoryManager
@@ -673,31 +692,9 @@ class RequestRouter:
                 result["intent"] = "llm_rejected:home_command"
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
                 return True
-        reason = command.reason
-        target = None
-        if reason is None:
-            try:
-                target = await self.home_voice_resolver.resolve(command, room_id=room_id)
-                reason = target.reason
-                if target.observation is not None:
-                    result["capability_observation"] = target.observation.to_dict(self.home_voice_resolver.capabilities.now())
-            except Exception:
-                logger.exception("[HomeVoice] Target resolution unavailable")
-                reason = "selection_unavailable"
+        target, reason = await self._resolve_home_command(command, result, room_id=room_id)
         if reason is not None or target is None or target.entity_id is None:
-            if command.reason is not None:
-                question = {
-                    "climate": "¿A qué temperatura en grados Celsius o en qué modo querés poner el aire?",
-                    "cover": "¿Querés abrir, cerrar, detener o poner la persiana en un porcentaje concreto?",
-                    "light": "¿Qué temperatura de luz en kelvin querés usar?",
-                    "scene": "¿Qué escena querés activar?",
-                }[command.domain]
-            elif reason == "capability_unavailable":
-                question = "No tengo una observación actual suficiente para realizar esa operación."
-            elif reason == "operation_unavailable":
-                question = "Esa operación no está disponible para el dispositivo seleccionado."
-            else:
-                question = "¿Qué escena querés activar? Necesito su nombre exacto entre las escenas seleccionadas." if command.domain == "scene" else "¿En qué habitación? Necesito un dispositivo seleccionado para esa habitación."
+            question = self._home_command_question(command, reason)
             result.update(intent="clarification_requested", needs_confirmation=True,
                           confirmation_question=question, response=question, reason=reason)
             await self._speak_response(question, zone_id=zone_id)
@@ -716,6 +713,44 @@ class RequestRouter:
             result["success"] = receipt.status == "confirmed"
         result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
         return True
+
+    async def _resolve_home_command(self, command, result: dict, *, room_id: str | None):
+        """Resolve an extended home command's target through the shared selection.
+
+        Returns:
+            ``(target, reason)``: the resolver's target (or None) and the
+            reason it cannot act, or None when it resolved.
+        """
+        reason = command.reason
+        target = None
+        if reason is None:
+            try:
+                target = await self.home_voice_resolver.resolve(command, room_id=room_id)
+                reason = target.reason
+                if target.observation is not None:
+                    result["capability_observation"] = target.observation.to_dict(self.home_voice_resolver.capabilities.now())
+            except Exception:
+                logger.exception("[HomeVoice] Target resolution unavailable")
+                reason = "selection_unavailable"
+        return target, reason
+
+    @staticmethod
+    def _home_command_question(command, reason: str | None) -> str:
+        """What KZA asks when an extended home command cannot act (missing value, target or capability)."""
+        if command.reason is not None:
+            return {
+                "climate": "¿A qué temperatura en grados Celsius o en qué modo querés poner el aire?",
+                "cover": "¿Querés abrir, cerrar, detener o poner la persiana en un porcentaje concreto?",
+                "light": "¿Qué temperatura de luz en kelvin querés usar?",
+                "scene": "¿Qué escena querés activar?",
+            }[command.domain]
+        if reason == "capability_unavailable":
+            return "No tengo una observación actual suficiente para realizar esa operación."
+        if reason == "operation_unavailable":
+            return "Esa operación no está disponible para el dispositivo seleccionado."
+        if command.domain == "scene":
+            return "¿Qué escena querés activar? Necesito su nombre exacto entre las escenas seleccionadas."
+        return "¿En qué habitación? Necesito un dispositivo seleccionado para esa habitación."
 
     async def process_command(self, audio_or_event, *, request_id: str | None = None) -> dict:
         """Compose operation and actual speech receipts for one captured turn."""
@@ -1087,6 +1122,9 @@ class RequestRouter:
             self._asr_signals(gate_decision.signals), wake_score, wake_rms,
             sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
         )
+        # T037-U6: an accepted turn (a barge-in included) stops the remaining
+        # parts of a compound still running in this room.
+        self._room_turns[room_id] = self._room_turns.get(room_id, 0) + 1
         await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
 
         if await self._try_memory_proposal(text, result):
@@ -1537,6 +1575,12 @@ class RequestRouter:
         if zone_id:
             self.response_handler.set_active_zone(zone_id)
             self._response_zone.set(zone_id)
+        if (household is not None and household.family is HouseholdFamily.COMPOUND
+                and household.operation is HouseholdOperation.EXECUTE
+                and self.household_intents.settings.compound_execute):
+            return await self._process_compound_turn(
+                household, result, text=text, cmd=cmd, room_id=room_id, room_context=room_context,
+                zone_id=zone_id, pipeline_start=pipeline_start)
         dispatch_result = await self._orchestrator.process(
             user_id=None,
             text=text,
@@ -1552,6 +1596,112 @@ class RequestRouter:
             dispatch_result, result, text=text, zone_id=zone_id, room_context=room_context, emotion=cmd.emotion,
             pipeline_start=pipeline_start,
         )
+
+    async def _process_compound_turn(self, household: HouseholdIntent, result: dict, *, text: str, cmd,
+                                     room_id: str | None, room_context, zone_id: str | None,
+                                     pipeline_start: float) -> dict:
+        """Run an admissible compound now, part by part (T037-U6, user answer Q21).
+
+        The turn already passed the household veto once (P3-F2 S6). Each part
+        runs in spoken order through the gates and handler it would meet
+        alone (:meth:`_run_compound_part`), with its own request id
+        (``<turn>:part<n>``) and receipt. A failed, refused or uncertain part
+        never stops independent later parts; another turn accepted in this
+        room (a barge-in) stops the remaining ones. One reply reports every
+        part, and the turn's TaskOutcome aggregates them (design
+        ``compound_contract``).
+        """
+        started = self._room_turns.get(room_id, 0)
+
+        async def run_part(part: CompoundPartContext):
+            return await self._run_compound_part(part, room_id=room_id, room_context=room_context,
+                                                 zone_id=zone_id)
+
+        run = await self._compound.run(household.parts, run_part,
+                                       interrupted=lambda: self._room_turns.get(room_id, 0) != started,
+                                       part_target=compound_part_target)
+        result["compound_parts"] = [report.summary() for report in run.reports]
+        return await self._finish_orchestrated_turn(
+            compound_dispatch_result(run), result, text=text, zone_id=zone_id, room_context=room_context,
+            emotion=cmd.emotion, pipeline_start=pipeline_start)
+
+    async def _run_compound_part(self, part: CompoundPartContext, *, room_id: str | None, room_context,
+                                 zone_id: str | None):
+        """One compound part through the gates it would meet alone, without the 7B (T037-U6).
+
+        A claimed part goes to its family path. An unclaimed part meets, in
+        order: the security-device refusal, the extended home command
+        (shared selection and capabilities, then HomeActionService), the
+        confidence gate for sensitive actions, the unresolved-light-location
+        question (T037-U5), the room's default light, and the dispatcher's
+        domotics or music path with the part's own grammar service and
+        slots. The 7B never chooses a part, a target or a service.
+        """
+        segment = part.part.segment
+        memory = (self._memory_source.get(),) if self._memory_source.get() is not None else ()
+
+        async def dispatch(**evidence):
+            return await self._orchestrator.process(
+                user_id=None, text=segment, audio=None, zone_id=zone_id, context_room_id=room_id,
+                memory_sources=memory, compound_part=part, **evidence)
+
+        if part.part.intent is not None or security_order(segment) is not None:
+            return await dispatch(service_filter=None, query_slots=None)
+        command = parse_home_command(segment, wake_words=self._wake_words)
+        if command is not None:
+            return await self._home_command_part(command, part, room_id=room_id, zone_id=zone_id)
+        gate: dict = {}
+        self._check_confidence_gate(segment, gate, speak=False)
+        if gate.get("pending_confirmation"):
+            return self._part_question(gate["response"], "pending_confirmation")
+        parsed = parse_command(segment)
+        service_filter = parsed.intent if parsed.intent in ("turn_on", "turn_off") else None
+        query_slots = dict(parsed.slots) or None
+        if _dispatch_targets_light(segment, None) and has_unresolved_light_location(segment):
+            return self._part_question("¿En qué ambiente querés controlar la luz?", "unresolved_target")
+        target_entity_id = None
+        default_target = parse_default_light_target(segment)
+        if default_target is not None and self.room_context_manager is not None:
+            target_room = default_target.room or (room_context.room_id if room_context else None)
+            config = self.room_context_manager.get_room_config(target_room) if target_room else None
+            if config is None or not config.default_light:
+                return self._part_question("No tengo una luz configurada para ese ambiente.", "unresolved_target")
+            target_entity_id = config.default_light
+            if default_target.slots.keys() == {"brightness_pct"}:
+                service_filter = "turn_on"
+                query_slots = dict(default_target.slots)
+        return await dispatch(service_filter=service_filter, query_slots=query_slots,
+                              **({"target_entity_id": target_entity_id} if target_entity_id else {}))
+
+    async def _home_command_part(self, command, part: CompoundPartContext, *, room_id: str | None,
+                                 zone_id: str | None):
+        """An extended home command part: shared selection, then HomeActionService with the part's id."""
+        target, reason = await self._resolve_home_command(command, {}, room_id=room_id)
+        if reason is not None or target is None or target.entity_id is None:
+            return self._part_question(self._home_command_question(command, reason), "clarification_requested")
+        request = HomeActionRequest(target.entity_id, command.operation, "voice-parse", **command.parameters)
+        effect = compile_effect(request)
+        action = {"domain": effect.domain, "service": effect.service, "data": effect.data,
+                  "entity_id": target.entity_id, "zone_id": zone_id}
+        skipped = part.check(target.entity_id, effect.service, effect.data)
+        if skipped is not None:
+            logger.info("[Compound] part %d not sent: %s", part.index, skipped.value)
+            return DispatchResult(PathType.FAST_DOMOTICS, Priority.HIGH, False, "", intent="domotics",
+                                  action=action, outcome=part.skip(skipped))
+        action_result = await self._compound_voice_actions.execute_with_feedback(action, request_id=part.request_id)
+        receipt = action_result.receipt
+        confirmed = receipt.status == "confirmed"
+        return DispatchResult(
+            PathType.FAST_DOMOTICS, Priority.HIGH, confirmed, "", intent="domotics", action=action,
+            receipt=receipt, outcome=receipt.task_outcome,
+            response_requirement=ResponseRequirement.SILENT if confirmed else ResponseRequirement.REQUIRED)
+
+    @staticmethod
+    def _part_question(question: str, intent: str):
+        """A compound part that asks instead of acting: NEEDS_INPUT, nothing sent."""
+        return DispatchResult(PathType.FAST_DOMOTICS, Priority.HIGH, False, question, intent=intent,
+                              outcome=TaskOutcome(TaskStatus.NEEDS_INPUT, dispatch=DispatchState.NOT_SENT,
+                                                  effect=EffectState.NOT_OBSERVED))
 
     async def _finish_orchestrated_turn(self, dispatch_result, result: dict, *, text: str, zone_id: str | None,
                                         room_context, emotion, pipeline_start: float) -> dict:
@@ -1718,6 +1868,9 @@ class RequestRouter:
             self._asr_signals(gate_decision.signals), wake_score, wake_rms,
             sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
         )
+        # T037-U6: an accepted turn (a barge-in included) stops the remaining
+        # parts of a compound still running in this room.
+        self._room_turns[room_id] = self._room_turns.get(room_id, 0) + 1
         await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
 
         if await self._try_memory_proposal(text, result):

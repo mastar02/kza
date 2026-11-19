@@ -377,6 +377,12 @@ _STATE_DESCRIPTION = re.compile(
 )
 
 
+_DEFERRAL_TIME = re.compile(
+    r"\b(?:ma[ñn]ana|m[aá]s\s+tarde|despu[eé]s|luego|"
+    r"en\s+(?:[\w]+\s+){1,5}(?:segundos?|minutos?|horas?)|a\s+las?\s+(?:\d+|una?|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce))\b",
+)
+
+
 def non_immediate_action_reason(text: str) -> str | None:
     """Identify speech that must not authorize an immediate device action.
 
@@ -408,13 +414,43 @@ def non_immediate_action_reason(text: str) -> str | None:
         return "non_immediate:future_action"
     if _INFORMATIONAL_ACTION.search(normalized) or _STATE_DESCRIPTION.search(normalized):
         return "non_immediate:information_request"
-    if re.search(
-        r"\b(?:ma[ñn]ana|m[aá]s\s+tarde|despu[eé]s|luego|"
-        r"en\s+(?:[\w]+\s+){1,5}(?:segundos?|minutos?|horas?)|a\s+las?\s+(?:\d+|una?|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce))\b",
-        normalized,
-    ) and (extract_entity(text) is not None or light_request):
+    if _DEFERRAL_TIME.search(normalized) and (extract_entity(text) is not None or light_request):
         return "non_immediate:deferred"
     return None
+
+
+def has_deferral_time(text: str) -> bool:
+    """Whether ``text`` names when to act ("mañana", "a las 11", "en 5 minutos").
+
+    The same time pattern that makes a device action deferred in
+    :func:`non_immediate_action_reason`, without its device requirement: a
+    compound part with no domotics device (a lock or alarm order) still
+    carries a deferral that may apply to the whole turn (T037-U6-RV2).
+    """
+    from src.nlu.regex.normalize import normalize
+    return _DEFERRAL_TIME.search(normalize(text)) is not None
+
+
+def security_order(text: str) -> str | None:
+    """The security device order in ``text`` that voice never executes, or None.
+
+    Locks, doors and gates ("cerrar la puerta con llave", "abrí el portón")
+    and the alarm panel ("activá la alarma") are not controllable by voice:
+    the same patterns as a reminder's ``forbidden_home_order`` (T031-U2). A
+    compound part that names one is refused by its own part (T037-U6, seed
+    C02-CMP-0004).
+
+    Args:
+        text: A spoken clause or a reminder text.
+
+    Returns:
+        ``"lock"`` or ``"alarm"``, or None when no such order is named.
+    """
+    # Lazy: the patterns live in the pure-stdlib reminder parser (review T031-U2-RV4), whose
+    # package is not loaded by the NLU layer at import time.
+    from src.reminders.voice_request import forbidden_home_order
+    return forbidden_home_order(text)
+
 
 def _is_default_light_brightness_phrase(text: str) -> bool:
     """Recognize one complete room-light percentage request without guessing."""

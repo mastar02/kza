@@ -58,7 +58,7 @@ from src.llm.generation_stream import GenerationStream, GuardedGeneration
 from src.llm.error_classifier import is_consent_withdrawn
 from src.memory.fact_ledger import MemorySource
 from src.memory.producer_scopes import ProducerScopes, current_producer_scope
-from src.nlu.command_grammar import ROOM_ALIASES, WAKE_TERMS, parse_command
+from src.nlu.command_grammar import ROOM_ALIASES, WAKE_TERMS, parse_command, security_order
 from src.nlu.household_intents import (
     LIST_CLEAR_VERBS,
     LIST_DELETE_VERBS,
@@ -70,6 +70,7 @@ from src.nlu.household_intents import (
     strip_fillers,
 )
 from src.orchestrator.cancellation import CancellationReason
+from src.orchestrator.compound import CompoundPartContext, CompoundRunner
 from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.priority_queue import (
     Priority,
@@ -151,6 +152,10 @@ _OBJECT_NOUN_RE = re.compile(r"\b(?:recordatorios?|t[ií]mers?|temporizador(?:es
 
 # P3F2-R1-Q4: a request to create a routine is refused honestly until T033.
 _ROUTINE_CREATE_REFUSAL = "Todavía no creo rutinas por voz. Podés crearlas desde la web."
+# T037-U6: a compound part on a lock, door or the alarm panel (voice never controls them, Q9b).
+_SECURITY_REFUSAL = "Las cerraduras, las puertas y la alarma no las manejo por voz."
+# T037-U6: a compound part whose device the vector search cannot find (no 7B or LLM fallback).
+_COMPOUND_NO_TARGET = "No encontré ese dispositivo."
 # Candidates a reminder clarification lists aloud, numbered (T032-U1).
 _REMINDER_CHOICES_SPOKEN = 3
 # A cancel verb before "recordatorio" in a turn the classifier did not claim
@@ -596,6 +601,8 @@ class DispatchResult:
     observation: Observation | None = None
     # Canonical bare room id of the mic that heard the turn (P3-F1 RoomNamespace.origin_room), or None.
     origin_room: str | None = None
+    # Compound turn (T037-U6): content-free summary of each part, in spoken order.
+    compound_parts: tuple[dict, ...] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.outcome is None and self.intent in {"simple_query", "conversation"}:
@@ -1017,6 +1024,9 @@ class RequestDispatcher:
         self.timer_fallback_zone = timer_fallback_zone
         self.voice_routines = voice_routines
         self._timers = TimerVoiceCommands(timer_manager)
+        # T037-U6: runs compound turns that reach the dispatcher whole (callers
+        # without the router's per-part gates); remembers parts by request id.
+        self._compound = CompoundRunner()
         # T037-U3-R1: the dispatch text still carries the wake pre-roll, often
         # heard as an alias; strip the same wake terms the rest of the NLU does.
         self._clock_wake_words = tuple(sorted(WAKE_TERMS | set(self.household_intents.settings.wake_words)))
@@ -1074,6 +1084,7 @@ class RequestDispatcher:
         target_entity_id: str | None = None,
         memory_sources: tuple[MemorySource, ...] | None = None,
         context_room_id: str | None = None,
+        compound_part: CompoundPartContext | None = None,
     ) -> DispatchResult:
         """
         Procesar una peticion, enrutando al path correcto.
@@ -1100,6 +1111,11 @@ class RequestDispatcher:
                 habitación si está configurada, si no None; nunca la zona
                 detectada por audio, el Bluetooth solo, la última habitación
                 conocida, la habitación nombrada ni ``rooms.fallback_room``.
+            compound_part: Una parte de un turno compuesto (T037-U6) que el
+                RequestRouter ya pasó por sus compuertas; ``text`` es el
+                segmento de la parte. Va al handler de su familia o, sin
+                familia, solo a domótica o música, nunca a comandos especiales,
+                al 7B ni al LLM.
         """
         start_time = time.perf_counter()
         self._stats["total_requests"] += 1
@@ -1119,6 +1135,20 @@ class RequestDispatcher:
         # T032-U1: a numbered reminder choice is open only for the next turn
         # of the same speaker id in the same room; any other turn drops it.
         choice_key = (user_id, context_room_id if context_room_id is not None else zone_id)
+        if compound_part is not None:
+            # T037-U6: a compound part is never the answer to a numbered choice;
+            # the router already dropped the room's choice for the whole turn.
+            result = await self._dispatch_compound_part(
+                text, compound_part, user_id=user_id, zone_id=zone_id, origin_room=origin, choice_key=choice_key,
+                service_filter=service_filter, query_slots=query_slots, target_entity_id=target_entity_id,
+                context_key=ctx.user_id)
+            self._stats["fast_path"] += 1
+            self._stats["by_path"][result.path] += 1
+            result.timings["total"] = (time.perf_counter() - start_time) * 1000
+            result.user_id = user_id
+            result.zone_id = zone_id
+            result.origin_room = origin
+            return result
         choice = self._reminder_choices.pop(choice_key, None)
         answer = None if choice is None else _reminder_choice_answer(
             text, hours=choice.hours, wake_words=self.household_intents.settings.wake_words)
@@ -1574,7 +1604,11 @@ class RequestDispatcher:
         """
         family, operation = household.family, household.operation
         if family is HouseholdFamily.COMPOUND:
-            # Interim gate (household_intents.compound_execute: false) until T037-U6.
+            if operation is HouseholdOperation.EXECUTE and self.household_intents.settings.compound_execute:
+                return await self._run_compound(household, user_id=user_id, zone_id=zone_id,
+                                                origin_room=origin_room, choice_key=choice_key)
+            # Not admissible (CLARIFY: zero effects for the whole turn), or
+            # household_intents.compound_execute: false (kill switch).
             return self._household_refusal(PathType.FAST_HOUSEHOLD, "compound", "Decímelo de a una cosa.",
                                            TaskStatus.NEEDS_INPUT)
         if family is HouseholdFamily.TIMER:
@@ -1632,6 +1666,80 @@ class RequestDispatcher:
         return self._household_refusal(PathType.FAST_HOUSEHOLD, "deferred_action",
                                        "Todavía no programo acciones de la casa por voz; podés crear una rutina en la web.",
                                        TaskStatus.UNSUPPORTED)
+
+    async def _run_compound(self, household: HouseholdIntent, *, user_id: str, zone_id: str | None,
+                            origin_room: str | None, choice_key: tuple[str, str | None] | None) -> DispatchResult:
+        """Run an admissible compound that reached the dispatcher whole (T037-U6).
+
+        The RequestRouter runs voice compounds part by part itself, so each
+        part also meets the router's own gates; this path serves callers that
+        dispatch the whole text. Each part goes through
+        :meth:`_dispatch_compound_part` in spoken order with its own request
+        id; the reply and the aggregate outcome come from the runner.
+        """
+        ctx = self.context_manager.get_household(zone_id)
+
+        async def run_part(part: CompoundPartContext) -> DispatchResult:
+            return await self._dispatch_compound_part(
+                part.part.segment, part, user_id=user_id, zone_id=zone_id, origin_room=origin_room,
+                choice_key=choice_key, context_key=ctx.user_id)
+
+        run = await self._compound.run(household.parts, run_part, part_target=compound_part_target)
+        return compound_dispatch_result(run)
+
+    async def _dispatch_compound_part(self, text: str, part: CompoundPartContext, *, user_id: str,
+                                      zone_id: str | None, origin_room: str | None,
+                                      choice_key: tuple[str, str | None] | None,
+                                      service_filter: str | None = None, query_slots: dict | None = None,
+                                      target_entity_id: str | None = None,
+                                      context_key: str | None = None) -> DispatchResult:
+        """Send one compound part to the handler it would meet alone (T037-U6, design D1 compound_note).
+
+        A claimed part goes to its family path as in D1. An unclaimed part
+        naming a lock, door or the alarm panel is refused (voice never
+        controls them). Any other unclaimed part goes to D3 restricted to
+        domotics and music; special commands, the 7B and the LLM never run
+        for a part, and anything else is refused with no effect.
+
+        Args:
+            text: The part's segment.
+            part: The part's context (index, request id, classified part).
+            user_id: Caller id (never an account authority).
+            zone_id: Reply zone.
+            origin_room: Room of the microphone that heard the turn.
+            choice_key: Where a numbered reminder choice the part opens waits.
+            service_filter: The part's own grammar service (router), or None.
+            query_slots: The part's own grammar slots (router), or None.
+            target_entity_id: The part's resolved default light (router), or None.
+            context_key: Household context key for the domotics path.
+        """
+        intent = getattr(part.part, "intent", None)
+        if intent is not None:
+            if intent.family is HouseholdFamily.COMPOUND:
+                return self._household_refusal(PathType.FAST_HOUSEHOLD, "compound", "Decímelo por separado.",
+                                               TaskStatus.NEEDS_INPUT)
+            logger.info("[Compound] part %d -> %s", part.index, intent.summary())
+            return await self._dispatch_household(intent, text, user_id=user_id, zone_id=zone_id,
+                                                  origin_room=origin_room, choice_key=choice_key)
+        if security_order(text) is not None:
+            logger.info("[Compound] part %d refused: security device", part.index)
+            return self._household_refusal(PathType.FAST_DOMOTICS, "security_device", _SECURITY_REFUSAL,
+                                           TaskStatus.UNSUPPORTED)
+        path, _ = self._classify_request(text.lower(), service_filter=service_filter)
+        logger.info("[Compound] part %d -> %s", part.index, path.value)
+        if path is PathType.FAST_DOMOTICS:
+            return await self._fast_path(
+                text=text, path=path, user_id=user_id, zone_id=zone_id, permission_level=0,
+                service_filter=service_filter, query_slots=query_slots, target_entity_id=target_entity_id,
+                context_key=context_key, compound_part=part)
+        if path is PathType.FAST_MUSIC:
+            self._stats["music_requests"] += 1
+            return await self._fast_music_path(text, user_id)
+        if path is PathType.SLOW_MUSIC:
+            self._stats["music_requests"] += 1
+            return await self._slow_music_path(text, user_id)
+        return self._household_refusal(PathType.FAST_HOUSEHOLD, "compound_part_unsupported",
+                                       "Eso no lo hago junto con otra orden; pedímelo solo.", TaskStatus.UNSUPPORTED)
 
     async def _fast_timer_path(self, household: HouseholdIntent, text: str,
                                origin_room: str | None) -> DispatchResult:
@@ -1709,9 +1817,16 @@ class RequestDispatcher:
         query_slots: dict | None = None,
         target_entity_id: str | None = None,
         context_key: str | None = None,
+        compound_part: CompoundPartContext | None = None,
     ) -> DispatchResult:
         """
         Procesar peticion por fast path (paralelo, sin cola).
+
+        ``compound_part`` (T037-U6): the turn is one part of a compound. Its
+        action is not sent when an earlier part on the same entity did not
+        complete, already asked for it, or asked for the opposite; nothing
+        the vector search cannot resolve falls back to the 7B or the LLM;
+        and the part's failure feedback is left to the compound's one reply.
         """
         timings = {}
 
@@ -1808,10 +1923,18 @@ class RequestDispatcher:
                     timings=timings,
                 )
 
+            if command and compound_part is not None:
+                skipped = compound_part.check(command.get("entity_id"), command.get("service"), command.get("data"))
+                if skipped is not None:
+                    logger.info("[Compound] part %d not sent: %s", compound_part.index, skipped.value)
+                    return DispatchResult(path=path, priority=Priority.HIGH, success=False, response="",
+                                          intent="domotics", action=command, timings=timings,
+                                          outcome=compound_part.skip(skipped))
+
             if command:
                 command = {**command, "zone_id": zone_id, "user_id": user_id}
                 t0 = time.perf_counter()
-                action_result = await self._dispatch_home_action(command)
+                action_result = await self._dispatch_home_action(command, feedback=compound_part is None)
                 receipt = action_result.receipt
                 success = receipt.status == "confirmed"
                 timings["home_assistant"] = (time.perf_counter() - t0) * 1000
@@ -1828,6 +1951,14 @@ class RequestDispatcher:
                     delivery_outcome=action_result.feedback,
                     response_requirement=ResponseRequirement.SILENT if success else ResponseRequirement.REQUIRED,
                 )
+
+            if compound_part is not None:
+                # T037-U6: the 7B and the LLM never choose a part's target.
+                return DispatchResult(
+                    path=path, priority=Priority.HIGH, success=False, response=_COMPOUND_NO_TARGET,
+                    intent="unresolved_target", timings=timings,
+                    outcome=TaskOutcome(TaskStatus.NEEDS_INPUT, dispatch=DispatchState.NOT_SENT,
+                                        effect=EffectState.NOT_OBSERVED))
 
             # No encontrado en vector DB, intentar con router
             if self.router:
@@ -2871,14 +3002,43 @@ class RequestDispatcher:
         """Compatibility predicate; actual dispatch keeps the complete receipt."""
         return (await self._dispatch_home_action(command)).receipt.status == "confirmed"
 
-    async def _dispatch_home_action(self, command: dict, *, request_id: str | None = None) -> VoiceActionResult:
-        """Retain transport, HA observations and local feedback independently."""
+    async def _dispatch_home_action(self, command: dict, *, request_id: str | None = None,
+                                    feedback: bool = True) -> VoiceActionResult:
+        """Retain transport, HA observations and local feedback independently.
+
+        ``feedback=False`` (a compound part, T037-U6) plays no failure earcon
+        or hook reason: the compound's one reply reports the part.
+        """
         executor = VoiceHomeActionExecutor(
-            self.ha, self.home_actions, response_handler=self.response_handler,
+            self.ha, self.home_actions, response_handler=self.response_handler if feedback else None,
             hooks=self.hooks, before_handler_warn_ms=getattr(self, "_before_handler_warn_ms", 5.0),
             unavailable_precheck_enabled=self._unavailable_precheck_enabled,
         )
         return await executor.execute_with_feedback(command, request_id=request_id or CURRENT_REQUEST_ID.get())
+
+
+def compound_part_target(part) -> str | None:
+    """The target of a compound part known before it runs (T037-U6).
+
+    A claimed part acts on its household family, and a music part on the
+    music player. A home action's entity is only known once its own gates
+    resolve it, so it is checked right before sending instead.
+    """
+    intent = getattr(part, "intent", None)
+    if intent is not None:
+        return f"household:{intent.family.value}"
+    if parse_command(getattr(part, "segment", "")).target == "music":
+        return "music"
+    return None
+
+
+def compound_dispatch_result(run) -> DispatchResult:
+    """The turn's DispatchResult for a finished compound run (T037-U6): one reply, aggregate outcome."""
+    return DispatchResult(
+        path=PathType.FAST_HOUSEHOLD, priority=Priority.HIGH, success=run.outcome.task_completed,
+        response=run.response, intent="compound", outcome=run.outcome,
+        compound_parts=tuple(report.summary() for report in run.reports),
+    )
 
 
 def has_domotics_action_verb(text: str) -> bool:
@@ -3173,13 +3333,19 @@ class MultiUserOrchestrator:
         query_slots: dict | None = None, target_entity_id: str | None = None,
         memory_sources: tuple[MemorySource, ...] | None = None,
         context_room_id: str | None = None,
+        compound_part: CompoundPartContext | None = None,
     ) -> DispatchResult:
-        """Dispatch household voice without deriving account authority from acoustics."""
+        """Dispatch household voice without deriving account authority from acoustics.
+
+        ``compound_part`` marks one part of a compound turn (T037-U6); see
+        :meth:`RequestDispatcher.dispatch`.
+        """
         return await self.dispatcher.dispatch(
             user_id=user_id or "unknown", text=text, user_name="Hogar", zone_id=zone_id,
             permission_level=0, on_response=on_response, service_filter=service_filter,
             query_slots=query_slots, target_entity_id=target_entity_id, memory_sources=memory_sources,
             context_room_id=context_room_id,
+            **({"compound_part": compound_part} if compound_part is not None else {}),
         )
 
     def awaits_reminder_choice(self, text: str, context_room_id: str | None) -> bool:

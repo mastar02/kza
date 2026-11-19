@@ -415,6 +415,43 @@ def test_governed_object_and_complement():
     assert (item.verb, item.complement) == ("agrega", "pan y leche a la lista de compras")
 
 
+@pytest.mark.parametrize(("text", "security"), [
+    ("apagá la luz del escritorio y abrí la cerradura", "abrí la cerradura"),
+    ("abrí la puerta y prendé la luz del living", "abrí la puerta"),
+    ("apagá la luz y cerrá la puerta con llave", "cerrá la puerta con llave"),
+    ("apagá la luz y desactivá la alarma", "desactivá la alarma"),
+    ("cerrá la persiana y abrí el portón", "abrí el portón"),
+])
+def test_security_order_is_a_parsed_part_its_own_part_refuses(text, security):
+    """T037-U6 (seed C02-CMP-0004): a lock, door or alarm-panel order never makes the compound CLARIFY.
+
+    It is an unclaimed part (no household family, never a domotics producer's: the part refuses it), and
+    the other part keeps its own grammar parse.
+    """
+    from src.nlu.command_grammar import security_order
+    intent = classify_household_intent(text)
+    assert (intent.family, intent.operation, intent.reason) == (F.COMPOUND, O.EXECUTE, None)
+    parts = {part.segment: part.intent for part in intent.parts}
+    assert security in parts and parts[security] is None
+    assert security_order(security) in ("lock", "alarm")
+    assert [security_order(part.segment) for part in intent.parts].count(None) == 1
+
+
+@pytest.mark.parametrize("text", [
+    "apagá la luz y activá la alarma a las 11",
+    "apagá la luz y abrí la puerta mañana a las 5",
+    "prendé la luz del living y cerrá la puerta con llave en diez minutos",
+    "activá la alarma más tarde y apagá la luz",
+])
+def test_security_part_with_a_time_makes_the_compound_clarify(text):
+    """T037-U6-RV2: a deferred security part makes the whole turn CLARIFY (deferred_part), zero effects.
+
+    The time may be meant for every part, so no part runs now (design compound_contract.not_admissible).
+    """
+    intent = classify_household_intent(text)
+    assert (intent.family, intent.operation, intent.reason) == (F.COMPOUND, O.CLARIFY, "deferred_part")
+
+
 def test_compound_parts_in_spoken_order():
     """R5 runs before R1/R2 (user answer Q21): each part is re-classified alone."""
     timer_and_light = classify_household_intent("poné un temporizador de 5 minutos y apagá la luz")
@@ -824,7 +861,7 @@ def test_grammar_blocker_leaves_other_phrases_alone(text):
 
 def test_settings_from_config_and_validation():
     settings = HouseholdIntentSettings.from_config(None, wake_words=["Nexa", " Kaza "])
-    assert (settings.unvetoed_max_words, settings.compound_max_parts, settings.compound_execute) == (6, 3, False)
+    assert (settings.unvetoed_max_words, settings.compound_max_parts, settings.compound_execute) == (6, 3, True)
     assert settings.wake_words == ("nexa", "kaza")
     custom = HouseholdIntentSettings.from_config({"unvetoed_max_words": 9, "compound_max_parts": 4})
     assert (custom.unvetoed_max_words, custom.compound_max_parts) == (9, 4)
@@ -832,8 +869,9 @@ def test_settings_from_config_and_validation():
                 {"compound_execute": "false"}, {"unvetoed_max_words": True}):
         with pytest.raises(ValueError):
             HouseholdIntentSettings.from_config(bad)
-    with pytest.raises(ValueError, match="T037-U6"):
-        HouseholdIntentSettings.from_config({"compound_execute": True})
+    # T037-U6 landed: execution is on by default and false stays available as the kill switch.
+    assert HouseholdIntentSettings.from_config({"compound_execute": False}).compound_execute is False
+    assert HouseholdIntentSettings.from_config({"compound_execute": True}).compound_execute is True
     with pytest.raises(ValueError):
         HouseholdIntentSettings.from_config(["not", "a", "mapping"])
 
@@ -844,7 +882,7 @@ def test_settings_file_declares_the_section():
     import yaml
     config = yaml.safe_load(Path("config/settings.yaml").read_text())
     settings = HouseholdIntentSettings.from_config(config["household_intents"])
-    assert (settings.unvetoed_max_words, settings.compound_max_parts, settings.compound_execute) == (6, 3, False)
+    assert (settings.unvetoed_max_words, settings.compound_max_parts, settings.compound_execute) == (6, 3, True)
 
 
 def test_classifier_never_logs(caplog):

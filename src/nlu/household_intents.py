@@ -48,8 +48,10 @@ from src.nlu.command_grammar import (
     ENTITY_TERMS,
     ROOM_ALIASES,
     WAKE_TERMS,
+    has_deferral_time,
     non_immediate_action_reason,
     parse_command,
+    security_order,
 )
 from src.nlu.home_command import parse_home_command
 
@@ -138,15 +140,17 @@ class HouseholdIntentSettings:
         unvetoed_max_words: Longest claimed turn that skips the 7B veto on a
             strong acoustic wake (same limit as the grammar's wake bonus).
         compound_max_parts: More parts make a compound not admissible.
-        compound_execute: Compound execution (T037-U6). Must stay False until
-            that unit lands; compounds then answer "Decímelo de a una cosa".
+        compound_execute: Compound execution (T037-U6): each part of an
+            admissible compound runs in spoken order. False is the kill
+            switch: compounds then answer "Decímelo de a una cosa", with no
+            effect.
         wake_words: Configured wake words stripped from the head of a turn,
             in addition to the grammar's wake terms.
     """
 
     unvetoed_max_words: int = 6
     compound_max_parts: int = 3
-    compound_execute: bool = False
+    compound_execute: bool = True
     wake_words: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -156,8 +160,6 @@ class HouseholdIntentSettings:
             raise ValueError("household_intents.compound_max_parts must be an integer >= 2")
         if type(self.compound_execute) is not bool:
             raise ValueError("household_intents.compound_execute must be a boolean")
-        if self.compound_execute:
-            raise ValueError("household_intents.compound_execute requires compound execution (T037-U6)")
 
     @classmethod
     def from_config(cls, section: Mapping | None, wake_words: Iterable[str] = ()) -> "HouseholdIntentSettings":
@@ -168,7 +170,7 @@ class HouseholdIntentSettings:
             wake_words: ``rooms.wake_word.words`` (or ``wake_word.words``).
 
         Raises:
-            ValueError: A value is out of range, or compound execution is on.
+            ValueError: A value is out of range or of the wrong type.
         """
         section = section or {}
         if not isinstance(section, Mapping):
@@ -177,7 +179,7 @@ class HouseholdIntentSettings:
         return cls(
             unvetoed_max_words=section.get("unvetoed_max_words", 6),
             compound_max_parts=section.get("compound_max_parts", 3),
-            compound_execute=section.get("compound_execute", False),
+            compound_execute=section.get("compound_execute", True),
             wake_words=words,
         )
 
@@ -1177,10 +1179,19 @@ def _r5(utt: _Utterance, max_parts: int) -> HouseholdIntent | None:
             return clarify("deferred_part")
         if intent is not None and intent.operation is HouseholdOperation.CLARIFY:
             return clarify("unparsed_part")
-        if intent is None and _names_object(segment):
+        # T037-U6 (seed C02-CMP-0004): a lock, door or alarm-panel order is a
+        # deterministic parse its own part refuses (voice never controls
+        # them); it never reaches a domotics producer and never makes the
+        # whole compound CLARIFY.
+        security = intent is None and security_order(segment.heard) is not None
+        if security and has_deferral_time(segment.heard):
+            # T037-U6-RV2: "activá la alarma a las 11" has no domotics device, so
+            # _deferred misses its time; the time may be meant for every part.
+            return clarify("deferred_part")
+        if intent is None and not security and _names_object(segment):
             # A household object never reaches a domotics producer as an unclaimed part.
             return clarify("unparsed_part")
-        parsed = parse_command(segment.heard) if intent is None else None
+        parsed = parse_command(segment.heard) if intent is None and not security else None
         if parsed is not None and parsed.quality != "full" and parse_home_command(segment.heard) is None:
             return clarify("unparsed_part")
         parses.append(parsed)

@@ -363,8 +363,8 @@ async def test_stale_lookup_cannot_prove_a_committed_deletion(leaves, tmp_path, 
     ("Nexa, recordame prender la luz del living", "fast_reminder", "reminder", "needs_input"),
     # T030-U1: the graph is built but the FeatureManager was never started, so no timer is confirmed.
     ("poné un temporizador de 5 minutos", "fast_timer", "timer", "failed"),
-    ("cancelá el timer y el recordatorio", "fast_household", "compound", "needs_input"),
-    ("apagá la luz y pausá la música", "fast_household", "compound", "needs_input"),
+    # T037-U6: each part runs; the timer part fails (FeatureManager not started), nothing to cancel otherwise.
+    ("cancelá el timer y el recordatorio", "fast_household", "compound", "failed"),
 ])
 async def test_claimed_household_turn_never_reaches_home_control(leaves, monkeypatch, tmp_path, text, path, intent,
                                                                  status):

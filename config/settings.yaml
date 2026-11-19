@@ -749,9 +749,11 @@ household_intents:
   unvetoed_max_words: 6
   # Más partes que esto vuelven no admisible un comando compuesto.
   compound_max_parts: 3
-  # Ejecutar compuestos parte por parte llega con T037-U6; hasta entonces false
-  # ("Decímelo de a una cosa", sin efectos). true se rechaza al arrancar.
-  compound_execute: false
+  # T037-U6 (respuesta Q21 del usuario): cada parte de un compuesto admisible
+  # se ejecuta ya, en el orden dicho, por los mismos controles que tendría
+  # sola, con su recibo, y una sola respuesta dice qué salió y qué no.
+  # false es el interruptor de apagado: "Decímelo de a una cosa", sin efectos.
+  compound_execute: true
 
 # Contexto Persistente por Usuario
 # Guarda historial de conversación por persona detectada

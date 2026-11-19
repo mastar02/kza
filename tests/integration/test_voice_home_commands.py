@@ -7,9 +7,9 @@ import numpy as np
 import pytest
 
 from tests.mocks.responses import response_handler_mock
-from src.home_assistant.control_policy import EntityGrant, HomeControlPolicy
+from src.home_assistant.control_policy import EntityGrant, HomeActor, HomeControlPolicy
 from src.home_assistant.voice_resolver import HomeVoiceResolver
-from src.hooks import HookRegistry, RewriteResult
+from src.hooks import BlockResult, HookRegistry, RewriteResult
 from src.nlu.command_gate import CommandAcceptanceGate
 from src.nlu.llm_router import CommandClassification
 from src.orchestrator.dispatcher import MultiUserOrchestrator
@@ -20,8 +20,7 @@ from src.rooms.room_context import RoomConfig
 from tests.integration import test_typed_home_operations as typed_fixtures
 
 
-@pytest.fixture(params=[False, True], ids=["legacy", "orchestrated"])
-def voice_graph(request):
+def _build_voice_graph(orchestrator_enabled: bool, hooks: HookRegistry | None = None):
     ha, actions = typed_fixtures.typed_graph.__wrapped__()
     rooms = {"test_room": RoomConfig("test_room", "Test room", "el salón", aliases=["salón"],
         default_light="light.test_lamp", default_climate="climate.test_ac", default_cover="cover.test_blind")}
@@ -33,16 +32,29 @@ def voice_graph(request):
     manager = MagicMock()
     manager.check_entity_permission.side_effect = AssertionError("Voice profiles are not authorization")
     router = RequestRouter(processor, response_handler_mock(), MagicMock(), orchestrator=orchestrator,
-        orchestrator_enabled=request.param, chroma_sync=chroma, ha_client=ha, home_actions=actions,
+        orchestrator_enabled=orchestrator_enabled, chroma_sync=chroma, ha_client=ha, home_actions=actions,
         home_voice_resolver=HomeVoiceResolver(actions, rooms), user_manager=manager,
-        command_gate=CommandAcceptanceGate(), wake_acoustically_confirmed=True)
+        command_gate=CommandAcceptanceGate(), wake_acoustically_confirmed=True, hooks=hooks)
     return router, ha, actions, processor, chroma
 
 
-async def speak(graph, text, *, room_id="test_room", **metadata):
+@pytest.fixture(params=[False, True], ids=["legacy", "orchestrated"])
+def voice_graph(request):
+    return _build_voice_graph(request.param)
+
+
+@pytest.fixture
+def orchestrated_graph():
+    """Only the orchestrated path has the household layer that runs compound turns (T037-U6)."""
+    return _build_voice_graph(True)
+
+
+async def speak(graph, text, *, room_id="test_room", request_id=None, **metadata):
     router, _, _, processor, _ = graph
     processor.process_command.return_value = ProcessedCommand(text=text, user=None, emotion=None, timings={}, success=True)
-    return await router.process_command(CommandEvent(np.zeros(16000, dtype=np.float32), room_id, capture_complete=True, **metadata))
+    options = {"request_id": request_id} if request_id is not None else {}
+    return await router.process_command(
+        CommandEvent(np.zeros(16000, dtype=np.float32), room_id, capture_complete=True, **metadata), **options)
 
 
 @pytest.mark.parametrize("text,domain,service,entity,data", [
@@ -70,7 +82,7 @@ async def test_spoken_extended_effect_is_single_exact_and_confirmed(voice_graph,
 
 @pytest.mark.parametrize("text", [
     "Prendé el aire", "Poné el aire a dos tres grados", "Poné el aire a 70°F",
-    "Poné el aire a 22 grados y apagá la luz", "Poné el aire a -20 grados",
+    "Poné el aire a -20 grados",
     "Poné la persiana al -10%", "Bajá la persiana al 101%", "Poné la luz cálida al 0%",
     "Bajá la persiana un poco", "Poné el aire del balcón a 22 grados",
     "Poné el aire a 36 grados", "Poné el aire a 24,2 grados", "Poné la luz a 9000 kelvin",
@@ -199,3 +211,98 @@ async def test_incomplete_capture_does_not_run_stt_or_effect(voice_graph):
     assert result["intent"] == "gate_rejected:incomplete_capture"
     processor.process_command.assert_not_called()
     assert ha.sends == []
+
+
+async def test_compound_runs_its_extended_control_part_only_on_the_orchestrated_path(voice_graph):
+    """T037-U6: the climate part meets the shared selection and runs; the light part finds no device and asks.
+
+    The legacy path has no household layer and still drops the claimed turn silently.
+    """
+    router, ha, _, _, chroma = voice_graph
+    chroma.asearch_command = AsyncMock(return_value=None)
+    result = await speak(voice_graph, "Poné el aire a 22 grados y apagá la luz")
+    if not router.orchestrator_enabled:
+        assert ha.sends == []
+        return
+    assert ha.sends == [("climate", "set_temperature", "climate.test_ac", {"temperature": 22})]
+    assert [(p["verdict"], p["task_status"]) for p in result["compound_parts"]] == [
+        ("done", "completed"), ("not_done", "needs_input")]
+    assert chroma.asearch_command.await_count == 1
+
+
+async def test_compound_opposite_cover_parts_on_one_entity_send_only_the_first(orchestrated_graph):
+    """T037-U6-RV1: both parts resolve to cover.test_blind; the close would undo the open, so it is not sent."""
+    _, ha, _, _, _ = orchestrated_graph
+    result = await speak(orchestrated_graph, "Abrí la persiana y cerrá la persiana del salón")
+    assert ha.sends == [("cover", "open_cover", "cover.test_blind", None)]
+    assert [(p["verdict"], p["task_status"], p["dispatch"]) for p in result["compound_parts"]] == [
+        ("done", "completed", "accepted"), ("conflict", "cancelled", "not_sent")]
+    assert result["outcome"]["status"] == "failed" and result["outcome"]["dispatch"] == "partial"
+
+
+async def test_compound_duplicate_extended_action_is_sent_once(orchestrated_graph):
+    """T037-U6-RV1: the same open on the same cover (once by default, once by room) is not sent again."""
+    _, ha, _, _, _ = orchestrated_graph
+    result = await speak(orchestrated_graph, "Abrí la persiana y abrí la persiana del salón")
+    assert ha.sends == [("cover", "open_cover", "cover.test_blind", None)]
+    assert [(p["verdict"], p["dispatch"]) for p in result["compound_parts"]] == [
+        ("done", "accepted"), ("duplicate", "not_sent")]
+
+
+async def test_compound_extended_parts_each_get_their_own_receipt(orchestrated_graph):
+    """T037-U6-RV1: every extended-control part goes to HomeActionService under '<turn>:part<n>'."""
+    _, ha, actions, _, _ = orchestrated_graph
+    result = await speak(orchestrated_graph, "Poné el aire a 22 grados y abrí la persiana", request_id="voice:ext")
+    assert ha.sends == [("climate", "set_temperature", "climate.test_ac", {"temperature": 22}),
+                        ("cover", "open_cover", "cover.test_blind", None)]
+    assert [(p["verdict"], p["request_id"]) for p in result["compound_parts"]] == [
+        ("done", "voice:ext:part1"), ("done", "voice:ext:part2")]
+    receipts = [actions.get_receipt(actor=HomeActor.household(), request_id=f"voice:ext:part{n}") for n in (1, 2)]
+    assert [(r.entity_id, r.status) for r in receipts] == [("climate.test_ac", "confirmed"),
+                                                           ("cover.test_blind", "confirmed")]
+    assert actions.get_receipt(actor=HomeActor.household(), request_id="voice:ext") is None
+
+
+@pytest.mark.parametrize("failure", ["hook_blocked", "entity_unavailable"])
+async def test_compound_part_failure_has_no_feedback_of_its_own(orchestrated_graph, failure):
+    """T037-U6-RV4: a failed extended part plays no earcon and speaks no hook reason; the one reply reports it."""
+    router, ha, _, _, _ = orchestrated_graph
+    handler = router.response_handler
+    if failure == "hook_blocked":
+        hooks = HookRegistry()
+        hooks.register_before("before_ha_action", lambda call: BlockResult(
+            reason="Regla de prueba: la persiana no", rule_name="test") if call.domain == "cover" else None,
+            priority=10)
+        router._compound_voice_actions.hooks = hooks
+    else:
+        original = ha.get_entity_state_fresh
+
+        async def fresh(entity_id, **kwargs):
+            if entity_id == "cover.test_blind":
+                return {"entity_id": entity_id, "state": "unavailable", "attributes": {}}
+            return await original(entity_id, **kwargs)
+
+        ha.is_entity_available = lambda entity_id: False if entity_id == "cover.test_blind" else None
+        ha.get_entity_state_fresh = fresh
+    result = await speak(orchestrated_graph, "Poné el aire a 22 grados y abrí la persiana")
+    assert ha.sends == [("climate", "set_temperature", "climate.test_ac", {"temperature": 22})]
+    assert [p["verdict"] for p in result["compound_parts"]] == ["done", "not_done"]
+    assert result["compound_parts"][1]["reason"] == failure
+    handler.aplay_earcon.assert_not_awaited()
+    assert handler.aspeak.await_count == 1
+    reason = "Una regla de la casa lo bloqueó." if failure == "hook_blocked" else "El dispositivo no está disponible."
+    assert handler.aspeak.await_args.args[0] == f"Poné el aire a 22 grados: hecho. Abrí la persiana: no lo hice. {reason}"
+
+
+async def test_compound_extended_part_meets_the_hooks_the_router_was_built_with():
+    """T037-U6-FV3: the compound part executor shares the router's hook registry, so a house rule blocks a part."""
+    hooks = HookRegistry()
+    hooks.register_before("before_ha_action", lambda call: BlockResult(
+        reason="Regla de prueba: la persiana no", rule_name="test") if call.domain == "cover" else None,
+        priority=10)
+    graph = _build_voice_graph(True, hooks=hooks)
+    _, ha, _, _, _ = graph
+    result = await speak(graph, "Poné el aire a 22 grados y abrí la persiana")
+    assert ha.sends == [("climate", "set_temperature", "climate.test_ac", {"temperature": 22})]
+    assert [p["verdict"] for p in result["compound_parts"]] == ["done", "not_done"]
+    assert result["compound_parts"][1]["reason"] == "hook_blocked"
