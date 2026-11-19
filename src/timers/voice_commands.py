@@ -22,7 +22,10 @@ Rules:
   after the household cut its ring (receipt STOPPED: a barge-in or an earlier
   stop), silences that ring and touches no other timer (T030-U2,
   C02-TIM-0007). A ring that ended on its own (delivered, failed, undelivered)
-  opens no follow-up: the command then cancels as in T030-U1.
+  opens no follow-up, and neither does a cut ring once a timer the command
+  also names was created after it ("cancelá el timer de pasta" after a new
+  pasta): the command then cancels as in T030-U1. A stop that finds the ring
+  already silent says so ("ya no suena") and claims no effect.
   "cancelá todos los timers" also silences every ring.
 * A ring nobody heard (receipt ring_failed/undelivered) is said once in the
   next general query, so a failed ring is never a silent completion (T030-U2).
@@ -114,6 +117,12 @@ def _silenced(response: str) -> TimerVoiceReply:
                                                  effect=EffectState.OBSERVED, observation_scope="software_state"))
 
 
+def _already_silent(response: str) -> TimerVoiceReply:
+    """A stop that found the ring already cut (barge-in): answered, nothing changed by this command."""
+    return TimerVoiceReply(response, TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.NOT_REQUIRED,
+                                                 effect=EffectState.NOT_REQUIRED))
+
+
 def _changed(response: str) -> TimerVoiceReply:
     return TimerVoiceReply(response, TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.VOLATILE,
                                                  effect=EffectState.OBSERVED, observation_scope="software_state"))
@@ -203,16 +212,27 @@ class TimerVoiceCommands:
         if sounding:
             return sounding
         recent = self.manager.ringing_timers(within_s=RING_FOLLOW_UP_S)
-        return self._select(selector, [t for t in recent if t.ring is RingDelivery.STOPPED])
+        cut = self._select(selector, [t for t in recent if t.ring is RingDelivery.STOPPED])
+        # A timer created after the cut ring is what the household now talks about (review T030-U2-RV1).
+        newer = self._select(selector, self._active())
+        return [t for t in cut if not any(n.created_mono > t.ring_ended_at for n in newer)]
 
     async def _silence(self, rung: list[NamedTimer]) -> TimerVoiceReply:
-        """Stop the rings of ``rung`` (a ring already cut by a barge-in stays silent)."""
+        """Stop the rings of ``rung``; a ring a barge-in already cut is reported silent, not stopped.
+
+        "Paré" (effect observed) only when this command stopped a sounding ring; when every ring
+        was already silent the reply says so and claims no effect (review T030-U2-RV1).
+        """
         stopped = [t for t in rung if await self.manager.stop_ring(t.timer_id)]
         logger.info("[Timer] ring silenced ids=%s already_silent=%d", [t.timer_id for t in stopped],
                     len(rung) - len(stopped))
-        if len(rung) == 1:
-            return _silenced(f"Paré el temporizador {describe(rung[0])}.")
-        return _silenced(f"Paré {len(rung)} temporizadores.")
+        if not stopped:
+            if len(rung) == 1:
+                return _already_silent(f"Listo, el temporizador {describe(rung[0])} ya no suena.")
+            return _already_silent(f"Listo, ya no suena ninguno de los {len(rung)} temporizadores.")
+        if len(stopped) == 1:
+            return _silenced(f"Paré el temporizador {describe(stopped[0])}.")
+        return _silenced(f"Paré {len(stopped)} temporizadores.")
 
     def _unheard_rings(self) -> str:
         """Say once each finished timer whose ring nobody heard (ring_failed/undelivered)."""

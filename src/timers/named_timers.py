@@ -133,11 +133,13 @@ class NamedTimer:
     wall_clock: Callable[[], float] = field(default=time.time, repr=False, compare=False)
     warned: set[int] = field(default_factory=set, repr=False, compare=False)
     ring_ended_at: float | None = field(default=None, repr=False, compare=False)
+    created_mono: float = field(default=0.0, init=False, repr=False, compare=False)  # on ``clock``
     _left: float = field(default=0.0, init=False, repr=False, compare=False)
 
     def __post_init__(self):
         if self.started_at is None:
             self.started_at = datetime.now()
+        self.created_mono = self.clock()
         if self.announce_at is None:
             self.announce_at = warning_thresholds(self.duration_seconds)
         self._left = float(self.duration_seconds)
