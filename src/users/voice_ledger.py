@@ -60,8 +60,15 @@ _CAPTURE_COLUMNS = '''v.id,v.model_key,v.created_at,v.expires_at,v.duration_s,v.
 
 
 def normalize_voice_text(value: str) -> str:
-    """Accent-, case- and spacing-insensitive form shared by a query and a transcript."""
-    decomposed = unicodedata.normalize('NFKD',value.casefold())
+    """Accent-, case- and spacing-insensitive form shared by a query and a transcript.
+
+    Casefolding comes after the compatibility decomposition ('℡' -> 'TEL' ->
+    'tel'), and the decomposition runs again on the casefolded text, so the
+    result is a fixed point: normalising it again changes nothing.
+    """
+    decomposed = unicodedata.normalize('NFKD',value)
+    folded = ''.join(char for char in decomposed if not unicodedata.combining(char)).casefold()
+    decomposed = unicodedata.normalize('NFKD',folded)
     return ' '.join(''.join(char for char in decomposed if not unicodedata.combining(char)).split())
 
 

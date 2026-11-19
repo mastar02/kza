@@ -12,7 +12,7 @@ from src.dashboard.api import DashboardAPI
 from src.memory.fact_ledger import MemoryReviewer
 from src.users import voice_ledger as voice_ledger_module
 from src.users.voice_capture import build_review_capture
-from src.users.voice_ledger import VoiceCaptureFilter, VoiceReviewer
+from src.users.voice_ledger import VoiceCaptureFilter, VoiceReviewer, normalize_voice_text
 from tests.mocks.memory_sources import memory_source
 from tests.mocks.rest_browser import ready_browser
 from tests.mocks.voice_registry import ACTOR, AUDIO, VECTOR, graph, web_graph
@@ -308,6 +308,27 @@ async def test_search_matches_accents_case_and_every_term_over_the_filtered_live
         assert absent.rows == [] and absent.summary.matching_count == 0 and absent.summary.scan_complete
         for row in (await query(voices, flt(text='camara'))).rows:
             assert set(row) == CAPTURE_ROW  # Metadata only: no transcript, excerpt or highlight.
+
+
+async def test_search_normalisation_is_a_fixed_point_for_every_code_point():
+    """A normalised query is always a valid filter text (the route normalises, the filter re-checks)."""
+    for code in range(0x110000):
+        if 0xD800 <= code <= 0xDFFF:
+            continue
+        once = normalize_voice_text(chr(code) + 'a')
+        assert normalize_voice_text(once) == once, hex(code)
+        assert once == once.casefold(), hex(code)
+
+
+async def test_search_matches_compatibility_characters_in_either_case(tmp_path):
+    async with graph(tmp_path) as (_, _, voices, clock):
+        made = (await capture(voices, clock, text='Llamá al ℡ de casa, banda de 5 ㎒ y ℌola'))[1]
+        await capture(voices, clock, text='Otro texto sintetico')
+        query_text = normalize_voice_text('℡ CASA')
+        assert query_text == 'tel casa'
+        for text in (query_text, 'mhz', 'hola', normalize_voice_text('㎒'), normalize_voice_text('ℌOLA')):
+            projection = await query(voices, flt(text=text))
+            assert ids(projection) == {made} and projection.summary.matching_count == 1
 
 
 async def test_search_never_matches_expired_or_unreviewed_rows(tmp_path):
