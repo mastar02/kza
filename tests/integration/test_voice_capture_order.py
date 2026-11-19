@@ -263,6 +263,28 @@ async def test_room_options_ignore_the_room_filter_and_expire_at_each_rooms_last
         assert searched.summary.room_options is None and searched.summary.room_options_expires_at is None
 
 
+async def test_count_expires_at_the_earliest_deadline_among_the_counted_rows(tmp_path):
+    """contract.count.expiry: no tolerance window, even when the earliest deadline is an off-page row's."""
+    async with graph(tmp_path) as (_, _, voices, clock):
+        off_page = await capture(voices, clock, ttl=200)
+        deadlines = [off_page[0].expires_at]
+        for index in range(52):
+            # Distinct deadlines, none earlier than the oldest row's, newest-first not in deadline order.
+            deadlines.append((await capture(voices, clock, ttl=900 + (index * 37) % 500))[0].expires_at)
+        middle = await capture(voices, clock, ttl=400)
+        deadlines.append(middle[0].expires_at)
+        projection = await query(voices, flt())
+        assert len(projection.rows) == 50 and off_page[1] not in ids(projection)
+        assert projection.summary.matching_count == 54
+        assert projection.summary.count_expires_at == min(deadlines) == off_page[0].expires_at
+        clock.now = off_page[0].expires_at
+        projection = await query(voices, flt())
+        assert projection.summary.matching_count == 53
+        assert projection.summary.count_expires_at == middle[0].expires_at == min(deadlines[1:])
+        following = await query(voices, flt(), projection.next_cursor)
+        assert following.summary.count_expires_at == middle[0].expires_at
+
+
 async def test_page_capacity_cuts_at_256_sources_without_changing_the_count(tmp_path):
     async with graph(tmp_path) as (_, _, voices, clock):
         for _ in range(3):
