@@ -17,7 +17,8 @@ stand-in unit:
 - retire completes (P14 again) and the unit then serves K'.
 
 Skipped off Linux, without a running user manager, or as root or kza
-(real_systemd.unavailable). Run alone, one pytest at a time (it
+(real_systemd.module_mark; a collection error
+instead under KZA_REQUIRE_REAL_SYSTEMD=1). Run alone, one pytest at a time (it
 daemon-reloads this account's manager). KZA_0E4_EVIDENCE=<dir> records
 content-free results.
 """
@@ -39,8 +40,7 @@ from tests.mocks import real_systemd
 from tests.mocks.epoch4 import epoch4_commit
 from tests.mocks.legacy_transitions import legacy_managed_transitions
 
-pytestmark = pytest.mark.skipif(real_systemd.unavailable() is not None,
-                                reason=real_systemd.unavailable() or "available")
+pytestmark = real_systemd.module_mark()
 
 
 

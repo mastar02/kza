@@ -39,7 +39,8 @@ The scan reads every unit of this account in the user unit directories; a
 refusal in (b) that names another unit is a real finding about this
 account, not a flake. Nothing is started, enabled or stopped by the scan.
 Skipped off Linux, without a running user manager, or as root or kza
-(real_systemd.unavailable). KZA_0E4_EVIDENCE=<dir> records content-free
+(real_systemd.module_mark; a collection error
+instead under KZA_REQUIRE_REAL_SYSTEMD=1). KZA_0E4_EVIDENCE=<dir> records content-free
 results. Run it alone (it daemon-reloads this account's manager).
 """
 from __future__ import annotations
@@ -52,8 +53,7 @@ from scripts import compaction_units as units_module
 from scripts import managed_launcher as launcher
 from tests.mocks import real_systemd
 
-pytestmark = pytest.mark.skipif(real_systemd.unavailable() is not None,
-                                reason=real_systemd.unavailable() or "available")
+pytestmark = real_systemd.module_mark()
 
 UNAVAILABLE = "runtime_admission_compaction_unit_scan_unavailable"
 PATH_HIT = "runtime_admission_compaction_unit_path:"

@@ -6,7 +6,8 @@ Not a functional rehearsal: it measures, so it runs **alone, in a solo
 window** (no other pytest of any account, no other compiled rehearsal, the
 server otherwise idle) and only when asked: it is skipped unless
 ``KZA_SC6B_MEASURE=1`` (and skipped like the rehearsals off Linux, without a
-user manager, or as root or kza). Suggested command (server, as yo, own clone)::
+user manager, or as root or kza: real_systemd.module_mark; a collection error
+instead under KZA_REQUIRE_REAL_SYSTEMD=1). Suggested command (server, as yo, own clone)::
 
     KZA_SC6B_MEASURE=1 KZA_0E4_EVIDENCE=<evidence dir> nohup taskset -c 24-47 \\
         .venv/bin/python -m pytest -p no:cacheprovider -v \\
@@ -76,7 +77,7 @@ from tests.mocks import real_systemd
 from tools.sc0.compaction_timing import FreeSampler, Sampler, _tree_bytes, grow_snippet
 
 pytestmark = [
-    pytest.mark.skipif(real_systemd.unavailable() is not None, reason=real_systemd.unavailable() or "available"),
+    real_systemd.module_mark(),
     pytest.mark.skipif(os.environ.get("KZA_SC6B_MEASURE") != "1",
                        reason="SC-6b final measurements: run alone in a solo window with KZA_SC6B_MEASURE=1"),
 ]

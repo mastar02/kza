@@ -37,7 +37,8 @@ The legacy service itself is never started (it would load models):
 W1's stop is a real ``systemctl stop`` of an inactive unit.
 
 Skipped only off Linux, without a running user manager, or as root or the
-production account kza (real_systemd.unavailable). KZA_0E4_EVIDENCE=<dir>
+production account kza (real_systemd.module_mark; a collection error
+instead under KZA_REQUIRE_REAL_SYSTEMD=1). KZA_0E4_EVIDENCE=<dir>
 records the measurements. Each module first sweeps kza-rehearsal-* units a
 killed earlier run left behind (real_systemd.sweep_stale); run it under
 nohup so a dropped ssh does not kill it mid-test.
@@ -93,8 +94,7 @@ from tests.mocks import real_systemd
 from tests.mocks.epoch4 import apply_epoch4, epoch4_commit
 from tests.unit.tools.test_stage_runtime_admission import _witness
 
-pytestmark = pytest.mark.skipif(real_systemd.unavailable() is not None,
-                                reason=real_systemd.unavailable() or "available")
+pytestmark = real_systemd.module_mark()
 
 REPO = Path(__file__).resolve().parents[2]
 WRAPPER = REPO / "tests" / "mocks" / "compiled_stage.py"

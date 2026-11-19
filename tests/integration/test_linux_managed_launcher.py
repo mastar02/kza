@@ -34,7 +34,8 @@ The restore-after-crash refusal (design T-C8) runs on the adopted state in
 tests/integration/test_linux_adoption_window.py (T-A5).
 
 Skipped only off Linux, without a running user manager, or as root or the
-production account kza (real_systemd.unavailable). KZA_0E4_EVIDENCE=<dir>
+production account kza (real_systemd.module_mark; a collection error
+instead under KZA_REQUIRE_REAL_SYSTEMD=1). KZA_0E4_EVIDENCE=<dir>
 records the measurements. Each module first sweeps kza-rehearsal-* units a
 killed earlier run left behind (real_systemd.sweep_stale); run it under
 nohup so a dropped ssh does not kill it mid-test.
@@ -69,8 +70,7 @@ from scripts.build_runtime import build_runtime
 from tests.mocks import launcher_rehearsal as rehearsal
 from tests.mocks import real_systemd
 
-pytestmark = pytest.mark.skipif(real_systemd.unavailable() is not None,
-                                reason=real_systemd.unavailable() or "available")
+pytestmark = real_systemd.module_mark()
 
 REPO = Path(__file__).resolve().parents[2]
 TEMPLATE = REPO / "systemd" / "kza-voice.service.d" / "managed.conf.template"
