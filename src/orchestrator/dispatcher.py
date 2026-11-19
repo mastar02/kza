@@ -62,11 +62,13 @@ from src.nlu.command_grammar import ROOM_ALIASES, WAKE_TERMS, parse_command, sec
 from src.nlu.household_intents import (
     LIST_CLEAR_VERBS,
     LIST_DELETE_VERBS,
+    RING_STOP_INTENT,
     HouseholdFamily,
     HouseholdIntent,
     HouseholdIntentClassifier,
     HouseholdOperation,
     filler_span,
+    is_bare_ring_stop,
     strip_fillers,
 )
 from src.orchestrator.cancellation import CancellationReason
@@ -1157,6 +1159,10 @@ class RequestDispatcher:
         # path. Special commands, _classify_request and the caller's
         # service_filter/query_slots/target never apply to it.
         household = self.household_intents.classify(text) if answer is None else None
+        if household is None and answer is None and is_bare_ring_stop(text, self.household_intents.settings.wake_words):
+            # T030-U2b: a bare "listo" passes the command gate only while a ring is open (ring_stop_open);
+            # it stops only a ring, never reaching a conversation or domotics path.
+            household = RING_STOP_INTENT
         if household is not None or answer is not None:
             if answer is not None:
                 result = await self._answer_reminder_choice(choice, answer, choice_key)
@@ -1750,6 +1756,10 @@ class RequestDispatcher:
         the living until SCHEMA-V2); never the acoustic speaker or a detected
         source zone. With neither, a creation is refused.
         """
+        if household is RING_STOP_INTENT:
+            reply = await self._timers.stop_ring()
+            return DispatchResult(PathType.FAST_TIMER, Priority.HIGH, reply.outcome.task_completed, reply.response,
+                                  intent="timer", outcome=reply.outcome)
         ring_zone = self.room_namespace.to_zone(origin_room) or self.timer_fallback_zone
         reply = await self._timers.execute(household.operation, household.complement, text=text, zone_id=ring_zone)
         response = reply.response

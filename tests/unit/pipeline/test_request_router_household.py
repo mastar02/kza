@@ -19,6 +19,7 @@ from src.orchestrator.dispatcher import MultiUserOrchestrator  # noqa: E402
 from src.pipeline.command_event import CommandEvent  # noqa: E402
 from src.pipeline.command_processor import ProcessedCommand  # noqa: E402
 from src.pipeline.request_router import RequestRouter  # noqa: E402
+from src.timers.voice_commands import TimerVoiceCommands  # noqa: E402
 from tests.mocks.c02_matrix import C02Entry, effects  # noqa: E402
 from tests.mocks.household_dispatch import CountedLeaves  # noqa: E402
 from tests.mocks.responses import response_handler_mock  # noqa: E402
@@ -185,6 +186,25 @@ C02_ROUTER = (
                                "reminder_choice_open@living:cancelá el recordatorio de tomar agua",
        counts=effects(llm_8101_calls=1), effect_class="stale_audio", unit="T032-U1",
        note="T032-U1 numbered_choice_round: a weakly woken answer takes the household 7B veto; rejected, zero effects"),
+    _r("C02-TIM-0206", "listo", "timer", "completed", "fast_timer", "completed", "not_required", "readback",
+       llm="stub:noise", state="timer_ringing:pasta;timer_running:salsa", counts=SPOKEN_ONE,
+       effect_class="stale_audio", unit="T030-U2b",
+       note="user answer morning_questions_20261119: during the ring a bare 'listo' passes the gate and stops it "
+            "as 'pará el timer' does (strong acoustic wake, 1 word: no 7B call); the salsa keeps running"),
+    _r("C02-TIM-0207", "listo", "timer", "no_turn", None, None, None, "none", llm="stub:command@0.9",
+       state="timer_running:pasta;queued_request", effect_class="false_confirmation", unit="T030-U2b",
+       note="no ring: the gate keeps dropping 'listo' as noise; no 7B call, the pasta and the queue untouched"),
+    _r("C02-TIM-0208", "listo", "timer", "no_turn", None, None, None, "none", wake="textual",
+       llm="stub:command@0.9", state="timer_running:pasta", effect_class="stale_audio", unit="T030-U2b",
+       note="TV/echo 'listo' with no ring: dropped by the gate before the 7B"),
+    _r("C02-TIM-0209", "listo", "timer", "no_turn", None, None, None, "none", wake="low_score", llm="stub:noise",
+       state="timer_ringing:pasta", counts=effects(llm_8101_calls=1), effect_class="stale_audio",
+       unit="T030-U2b",
+       note="a TV-score 'listo' during the ring takes the household 7B veto like 'pará el timer'; rejected"),
+    _r("C02-TIM-0210", "listo", "timer", "completed", "fast_timer", "completed", "not_required", "readback",
+       wake="low_score", llm="stub:command@0.9", state="timer_ringing:pasta",
+       counts=effects(llm_8101_calls=1, spoken_utterances=1), effect_class="stale_audio", unit="T030-U2b",
+       note="a weakly woken 'listo' during the ring that the 7B accepts stops it"),
 )
 
 WAKES = {
@@ -224,7 +244,9 @@ class Household:
             command_processor=processor, response_handler=self.handler, audio_manager=self.audio,
             room_context_manager=room_context_manager, orchestrator=self.orchestrator, orchestrator_enabled=True,
             chroma_sync=leaves.chroma, ha_client=leaves.ha, wake_words=("nexa",),
-            command_gate=CommandAcceptanceGate(household_intents=self.classifier),
+            # T030-U2b: wired as main does, so a bare "listo" passes only while a ring is open.
+            command_gate=CommandAcceptanceGate(household_intents=self.classifier,
+                                               ring_stop_open=TimerVoiceCommands(leaves.timers).ring_stop_open),
             llm_command_router=self.veto, wake_acoustically_confirmed=engine != "whisper",
             household_intents=self.classifier)
 
@@ -257,7 +279,8 @@ async def test_c02_router_entries(leaves, entry):
     if entry.expected_outcome == "no_turn":
         house.orchestrator.process.assert_not_awaited()
         assert result["success"] is False and result["response"] == ""
-        assert result["intent"].startswith(("llm_rejected:household", "gate_rejected:non_immediate:"))
+        assert result["intent"].startswith(("llm_rejected:household", "gate_rejected:non_immediate:",
+                                            "gate_rejected:noise_phrase:"))
         return
     assert result["path"] == entry.path
     assert result["outcome"]["status"] == entry.task_status
@@ -507,3 +530,97 @@ async def test_a_filled_voice_reminder_is_saved_without_its_fillers(leaves, text
     assert result["response"] == f"Anotado: {saved}, mañana a las 20:00."
     with sqlite3.connect(leaves.reminders_db) as conn:
         assert [r[0] for r in conn.execute("SELECT text FROM reminders")] == [saved]
+
+
+# ---------------------------------------------------------------- T030-U2b: a bare "listo" during a ring
+
+
+async def test_listo_during_a_ring_is_spoken_and_recorded_like_para_el_timer(tmp_path):
+    """User answer morning_questions_20261119: same path, reply and TaskOutcome as 'pará el timer'."""
+    results = {}
+    for text in ("listo", "pará el timer"):
+        root = tmp_path / text.replace(" ", "_")
+        root.mkdir()
+        twin = CountedLeaves(root)
+        await twin.start()
+        try:
+            house = Household(twin, text=text, llm="stub:noise")
+            await twin.apply_state(house.orchestrator.dispatcher, "timer_ringing:pasta;timer_running:salsa")
+            rings = twin.ring.await_count
+            result = await house.turn()
+            (pasta, salsa) = sorted(twin.timers.get_all_timers(), key=lambda t: t.name)
+            assert (pasta.ring.value, salsa.state.value) == ("stopped", "running")
+            assert twin.timers.ringing_timers() == [] and twin.ring.await_count == rings
+            house.veto.classify.assert_not_awaited()
+            results[text] = (result["path"], result["intent"], result["success"], result["response"],
+                             result["outcome"], house.handler.aspeak.await_args.args[0])
+        finally:
+            await twin.close()
+    assert results["listo"] == results["pará el timer"]
+    assert results["listo"][3] == "Paré el temporizador de pasta."
+
+
+async def test_the_router_claims_listo_only_on_the_gate_ring_signal(leaves):
+    house = Household(leaves, text="Nexa, listo.")
+    await leaves.apply_state(house.orchestrator.dispatcher, "timer_ringing:pasta")
+    result = await house.turn()
+    assert result["household"] == {"family": "timer", "operation": "stop", "rule": "R1", "reason": "ring_stop",
+                                   "parts": 0}
+    assert (result["path"], result["response"]) == ("fast_timer", "Paré el temporizador de pasta.")
+    # The voice stop cut the ring (STOPPED): a second 'listo' is in its T030-U2 follow-up, as 'pará el timer' is.
+    house.router.command_processor.process_command.return_value = ProcessedCommand(
+        text="listo", timings={"stt": 1.0}, success=True)
+    again = await house.turn()
+    assert (again["path"], again["response"]) == ("fast_timer", "Listo, el temporizador de pasta ya no suena.")
+
+
+async def test_listo_with_no_ring_is_dropped_by_the_gate_before_any_producer(leaves, monkeypatch):
+    import src.pipeline.request_router as module
+    monkeypatch.setattr(module, "_grammar_fastpath_classification",
+                        MagicMock(side_effect=AssertionError("grammar reached")))
+    house = Household(leaves, text="listo", llm="stub:command@0.9")
+    await leaves.apply_state(house.orchestrator.dispatcher, "timer_running:pasta")
+    house.router._try_home_command = AsyncMock(side_effect=AssertionError("home command reached"))
+    before = leaves.snapshot()
+    for wake in ("acoustic", "textual", "ambient_strict", "low_score"):
+        dropped = await house.turn(wake)
+        assert dropped["intent"] == "gate_rejected:noise_phrase:'listo'" and dropped["response"] == ""
+    house.orchestrator.process.assert_not_awaited()
+    house.veto.classify.assert_not_awaited()
+    assert house.effects(before) == effects()
+
+
+async def test_the_follow_up_window_of_a_cut_ring_holds_for_listo_through_the_router(leaves):
+    """T030-U2 receipt rules: after a barge-in cut (STOPPED) 'listo' is answered for RING_FOLLOW_UP_S only."""
+    from src.timers.named_timers import RING_FOLLOW_UP_S, RingDelivery
+
+    house = Household(leaves, text="listo")
+    await leaves.apply_state(house.orchestrator.dispatcher, "timer_ringing:pasta;timer_running:salsa")
+    (pasta,) = leaves.timers.ringing_timers()
+    clock = leaves.timers._clock
+    cut_at = clock()
+    # The barge-in that cut the ring: same receipt as stop_ring, then the window runs on the manager clock.
+    assert await leaves.timers.stop_ring(pasta.timer_id) and pasta.ring is RingDelivery.STOPPED
+    result = await house.turn()
+    assert (result["path"], result["response"]) == ("fast_timer", "Listo, el temporizador de pasta ya no suena.")
+    assert result["outcome"]["status"] == "completed"
+    leaves.timers._clock = lambda: cut_at + RING_FOLLOW_UP_S + 1
+    try:
+        late = await house.turn()
+    finally:
+        leaves.timers._clock = clock
+    assert late["intent"] == "gate_rejected:noise_phrase:'listo'"
+    assert [t.state.value for t in sorted(leaves.timers.get_all_timers(), key=lambda t: t.name)] == [
+        "completed", "running"]
+
+
+async def test_the_legacy_path_keeps_dropping_listo_during_a_ring(leaves):
+    """The legacy timer commands do not stop a ring: the ring_stop exemption is dropped as the noise it was."""
+    from src.nlu.command_gate import AcceptanceDecision
+
+    house = Household(leaves, text="listo")
+    passed = AcceptanceDecision(True, "ok", {"ring_stop": True})
+    dropped = house.router._legacy_household_drop("listo", passed)
+    assert (dropped.accept, dropped.reason) == (False, "noise_phrase:'listo'")
+    plain = AcceptanceDecision(True, "ok", {})
+    assert house.router._legacy_household_drop("nexa prendé la luz", plain) is plain

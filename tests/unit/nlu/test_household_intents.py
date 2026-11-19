@@ -16,6 +16,7 @@ from src.nlu.household_intents import (
     HouseholdOperation,
     classify_household_intent,
     filler_span,
+    is_bare_ring_stop,
     starts_with_reminder_request,
     strip_fillers,
 )
@@ -1052,3 +1053,31 @@ def test_c02_classifier_entries(entry):
     assert entry.effects == effects()
     assert (entry.task_status, entry.persistence, entry.path) == (CLASSIFIER, CLASSIFIER, None)
     assert _as_classification(classify_household_intent(entry.text)) == entry.classification
+
+
+# ---------------------------------------------------------------- T030-U2b: the bare ring stop
+
+
+@pytest.mark.parametrize("text", ["listo", "Listo.", "¡Listo!", "nexa, listo", "Nexa listo", "kaza, listo",
+                                  "bueno, listo", "listo, por favor", "listo porfa", "che, listo"])
+def test_a_bare_listo_with_the_shared_fillers_is_a_ring_stop(text):
+    """User answer morning_questions_20261119: 'listo' and its BFR-1 filler variants."""
+    assert is_bare_ring_stop(text)
+
+
+@pytest.mark.parametrize("text", ["", "listo listo", "listo, apagá la luz", "ya está listo", "ya está listo el arroz",
+                                  "estoy listo", "listo dale", "perfecto", "hecho", "pará el timer", "casa listo"])
+def test_anything_more_than_a_bare_listo_is_not_a_ring_stop(text):
+    assert not is_bare_ring_stop(text)
+
+
+def test_a_configured_wake_word_is_a_filler_of_the_ring_stop():
+    assert not is_bare_ring_stop("jarvis, listo")
+    assert is_bare_ring_stop("jarvis, listo", wake_words=("jarvis",))
+
+
+@pytest.mark.parametrize("text", ["listo", "Listo.", "nexa, listo"])
+def test_the_classifier_never_claims_a_bare_listo(text):
+    """The claim depends on an open ring, so the pure, memoized classifier leaves it to the gate and callers."""
+    assert classify_household_intent(text) is None
+    assert HouseholdIntentClassifier().classify(text) is None

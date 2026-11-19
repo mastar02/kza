@@ -155,6 +155,14 @@ C02_DISPATCHER = tuple(_REMINDER_GRID) + (
     _timer("C02-TIM-0119", "apagá la alarma", "completed", "not_required", "readback", sf="turn_off",
            state="light_match;timer_ringing:pasta", effect_class="stale_audio", unit="T030-U2",
            note="the ringing alarm is silenced; no turn_off reaches the light"),
+    _timer("C02-TIM-0120", "listo", "completed", "not_required", "readback",
+           state="timer_ringing:pasta;timer_running:salsa", effect_class="stale_audio", unit="T030-U2b",
+           note="user answer morning_questions_20261119: a bare 'listo' during the ring stops it as 'pará el timer' "
+                "does; the running salsa is not cancelled"),
+    _timer("C02-TIM-0121", "listo", "needs_input", "not_written", "clarification",
+           state="queued_request;timer_running:pasta", effect_class="false_confirmation", unit="T030-U2b",
+           note="the gate drops 'listo' with no ring open; should one still arrive (the ring ended in between), "
+                "it stops only a ring: 'No hay ningún temporizador sonando.', the pasta and the queue untouched"),
     _timer("C02-ALM-0101", "poné una alarma de 10 minutos", "completed", "volatile", "readback", counts=CREATED,
            seed="C02-ALM-0001", note="Q4: an alarm with a duration is a timer; no alarm_control_panel call"),
     _timer("C02-ALM-0105", "cancelá la alarma", "completed", "volatile", "readback", counts=CHANGED,
@@ -2335,3 +2343,45 @@ async def test_a_configured_wake_word_before_the_filled_request_is_ignored(leave
     result = await dispatcher.dispatch(user_id="unknown", text="Jarvis, bueno, recordame tomar agua a las 5 de la tarde")
     assert (result.success, result.response) == (True, "Anotado: tomar agua, hoy a las 17:00.")
     assert [row[2] for row in _rows(leaves.reminders_db)] == ["tomar agua"]
+
+
+async def test_listo_during_a_ring_reaches_neither_conversation_nor_domotics(leaves):
+    """T030-U2b: the dispatcher claims a bare 'listo' for the ring; the stop is the nameless timer stop."""
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, "light_match;timer_ringing:pasta")
+    before = leaves.snapshot()
+    rings = leaves.ring.await_count
+    result = await dispatcher.dispatch(user_id="unknown", text="Nexa, listo.", service_filter="turn_off")
+    assert (result.path, result.intent, result.success) == (PathType.FAST_TIMER, "timer", True)
+    assert result.response == "Paré el temporizador de pasta."
+    assert (result.outcome.status.value, result.outcome.persistence.value) == ("completed", "not_required")
+    assert leaves.effects(before) == effects()
+    (timer,) = leaves.timers.get_all_timers()
+    assert timer.ring.value == "stopped" and leaves.timers.ringing_timers() == []
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert leaves.ring.await_count == rings
+
+
+async def test_listo_on_the_dispatcher_never_cancels_the_only_running_timer(leaves):
+    """'pará el timer' cancels the only running timer (C02-TIM-0108); 'listo' must not."""
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, "timer_running:pasta")
+    result = await dispatcher.dispatch(user_id="unknown", text="listo")
+    assert (result.path, result.success, result.response) == (PathType.FAST_TIMER, False,
+                                                              "No hay ningún temporizador sonando.")
+    assert [t.state.value for t in leaves.timers.get_all_timers()] == ["running"]
+
+
+async def test_a_configured_wake_word_before_listo_still_stops_the_ring(leaves):
+    """T030-U2b-RV1: the dispatcher claims 'Jarvis, listo' with the configured wake words the gate used."""
+    classifier = HouseholdIntentClassifier(HouseholdIntentSettings.from_config({}, wake_words=["Jarvis"]))
+    dispatcher = leaves.dispatcher(household_intents=classifier)
+    await leaves.apply_state(dispatcher, "light_match;timer_ringing:pasta")
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text="Jarvis, listo", service_filter="turn_off")
+    assert (result.path, result.intent, result.success) == (PathType.FAST_TIMER, "timer", True)
+    assert result.response == "Paré el temporizador de pasta."
+    assert leaves.effects(before) == effects()
+    (timer,) = leaves.timers.get_all_timers()
+    assert timer.ring.value == "stopped" and leaves.timers.ringing_timers() == []
