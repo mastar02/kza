@@ -207,9 +207,17 @@ class ReminderManager:
         return reminder
 
     async def cancel_by_id(self, reminder_id: str, *, guard: AuthorityGuard | None = None,
-                           shared_only: bool = False) -> bool:
-        """Cancel only within the original authority and selected native scope."""
-        return await self._store.cancel(reminder_id, guard=guard, shared_only=shared_only)
+                           shared_only: bool = False, owner: str | None = None) -> bool:
+        """Cancel only within the original authority and selected native scope.
+
+        ``owner`` limits the scope to shared reminders and that person's own.
+        """
+        return await self._store.cancel(reminder_id, guard=guard, shared_only=shared_only, owner=owner)
+
+    async def get_in_scope(self, reminder_id: str, *, shared_only: bool = False, owner: str | None = None,
+                           guard: AuthorityGuard | None = None) -> Reminder | None:
+        """One reminder, in any state, when it is in the given scope (T035-U1)."""
+        return await self._store.get_by_id(reminder_id, guard=guard, shared_only=shared_only, owner=owner)
 
     async def cancel_by_text(self, user_id: str | None, search_text: str, *,
                              shared_only: bool = False,
@@ -294,9 +302,13 @@ class ReminderManager:
         return await self._store.cancel(reminder.id, shared_only=shared_only, guard=guard)
 
     async def get_active(self, user_id: str | None, *, shared_only: bool = False,
-                         guard: AuthorityGuard | None = None) -> list[Reminder]:
-        """Project eligible active jobs without deriving authority from a profile."""
-        return await self._store.get_active_for_user(user_id, shared_only=shared_only, guard=guard)
+                         guard: AuthorityGuard | None = None, include_shared: bool = False) -> list[Reminder]:
+        """Project eligible active jobs without deriving authority from a profile.
+
+        ``include_shared`` adds the shared jobs to a person's own view (T035-U1).
+        """
+        return await self._store.get_active_for_user(user_id, shared_only=shared_only, guard=guard,
+                                                     include_shared=include_shared)
 
     async def get_today(self, user_id: str | None, *, shared_only: bool = False,
                         guard: AuthorityGuard | None = None) -> list[Reminder]:

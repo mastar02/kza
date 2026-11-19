@@ -109,3 +109,24 @@ async def test_find_list_by_name_shared(store):
     await store.create_list("casa", "shared", None)
     found = await store.find_list_by_name("casa", "u1")
     assert found is not None
+
+
+@pytest.mark.asyncio
+async def test_owner_scope_admits_shared_and_own_lists_only(store):
+    """T035-U1: a person's session reaches shared lists and her own, never another person's."""
+    from src.lists.list_store import OwnerType
+    shared = await store.create_list("compras", OwnerType.SHARED, None)
+    own = await store.create_list("mia", OwnerType.USER, "ana")
+    other = await store.create_list("ajena", OwnerType.USER, "beto")
+    foreign = await store.add_item(other.id, "secreto", "beto")
+    assert [i.text for i in await store.get_items_in_scope(own.id, owner="ana")] == []
+    assert await store.get_items_in_scope(other.id, owner="ana") is None
+    assert await store.get_items_in_scope(own.id, shared_only=True) is None
+    assert await store.get_items_in_scope(shared.id, shared_only=True) == []
+    assert await store.get_items_in_scope("missing") is None
+    assert await store.add_item(other.id, "intruso", "ana", owner="ana") is None
+    assert (await store.add_item(shared.id, "pan", "ana", owner="ana")).list_id == shared.id
+    assert await store.remove_item(foreign.id, list_id=other.id, owner="ana") is False
+    assert await store.remove_item(foreign.id, owner="ana") is False
+    assert [i.text for i in await store.get_items(other.id)] == ["secreto"]
+    assert await store.remove_item(foreign.id, list_id=other.id) is True

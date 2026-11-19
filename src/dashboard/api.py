@@ -6,8 +6,10 @@ API REST con FastAPI para gestión de rutinas, presencia y configuración
 import asyncio
 from contextlib import AsyncExitStack
 from contextvars import Context
+from dataclasses import dataclass
 import json
 import logging
+import math
 import os
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -25,8 +27,10 @@ from src.core.observation import Observation, ObservationReason, ObservationSour
 from src.core.task_outcome import EffectState, PersistenceState, TaskOutcome, TaskStatus
 from src.audio.microphone_status import MicrophonesSnapshot
 from src.dashboard.admin import register_admin_routes
-from src.dashboard.auth import COOKIE_NAME, DashboardPrincipal, require_admin, require_dashboard_access, require_dashboard_session, session_guard
-from src.dashboard.authority import DashboardAuthority
+from src.dashboard.auth import COOKIE_NAME, DashboardPrincipal, require_dashboard_access, require_dashboard_session, session_guard
+from src.dashboard.authority import DashboardAuthority, DashboardPermission
+from src.home_assistant.control_policy import HomeActor
+from src.lists.list_store import OwnerType
 from src.dashboard.native_work import ensure_admin_work
 from src.memory import output_registration_v2 as output_registration
 from src.reminders.reminder_scheduler import NoticeDismissal
@@ -144,14 +148,21 @@ class PresenceUserModel(BaseModel):
 
 
 class ListCreateModel(BaseModel):
-    name: str
-    user_id: str
+    """A list for the session: shared, or personal to the session person (T035-U1).
+
+    The owner never comes from the client: a ``user_id`` field is rejected (422).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=200)
     shared: bool = False
 
 
 class ListItemCreateModel(BaseModel):
-    text: str
-    user_id: str | None = None
+    """One item; the session decides who added it (T035-U1)."""
+
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=500)
 
 
 class ReminderNoticeDismissModel(BaseModel):
@@ -191,13 +202,126 @@ def _notice_counts(entries) -> dict:
             "uncertain": sum(entry.status == "uncertain" for entry in entries)}
 
 
+# Exclusive upper bound of a web reminder time: 9999-01-01T00:00:00Z. Any later
+# epoch cannot be formatted or advanced on the household calendar (T035-U1-RV1).
+REMINDER_TRIGGER_MAX = 253_370_764_800.0
+# The recurrences parse_recurrence and next_trigger can walk (weekday 1..7, month day 1..31).
+REMINDER_RECURRENCE_PATTERN = r"^(daily|weekdays|weekly:[1-7]|monthly:([1-9]|[12][0-9]|3[01]))$"
+
+
 class ReminderCreateModel(BaseModel):
-    user_id: str
-    text: str
+    """A shared or private reminder; the owner comes from the session (T035-U1).
+
+    Every household session may write one, so the text is bounded and the
+    recurrence is one the scheduler can walk (422 here). ``trigger_at`` is
+    checked by the route (``_valid_trigger_at``): a validation error would echo
+    a non-finite input, which no JSON response can carry.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=500)
     trigger_at: float
-    recurrence: str | None = None
+    recurrence: str | None = Field(default=None, max_length=16, pattern=REMINDER_RECURRENCE_PATTERN)
     ha_actions: list[dict] | None = None
     scope: ReminderScope = ReminderScope.PRIVATE
+
+
+_NO_STORE = {"Cache-Control": "no-store"}
+
+
+def _valid_trigger_at(value: float) -> bool:
+    """A finite positive epoch before ``REMINDER_TRIGGER_MAX`` (T035-U1-RV1)."""
+    return math.isfinite(value) and 0 < value < REMINDER_TRIGGER_MAX
+
+
+@dataclass(frozen=True)
+class TaskScope:
+    """Task scope of one dashboard session, derived from its principal only (T035-U1).
+
+    A household session bound to a person (``tasks:personal``) sees shared tasks
+    and that person's own; every other session (household without a person,
+    a visitor, an operator — user answer Q16) sees shared tasks only. A voice
+    or persona label never selects it.
+
+    Attributes:
+        person: The session's person, or None for a shared-only session.
+    """
+
+    person: str | None
+
+    @classmethod
+    def of(cls, principal: DashboardPrincipal) -> "TaskScope":
+        """Scope of a server-owned principal."""
+        personal = DashboardPermission.PERSONAL_TASKS in principal.permissions and principal.user_id is not None
+        return cls(principal.user_id if personal else None)
+
+    @property
+    def shared_only(self) -> bool:
+        """Whether only shared tasks are in scope."""
+        return self.person is None
+
+    def permissions(self, *, write: bool) -> frozenset[str]:
+        """Permissions every native step of the operation rechecks.
+
+        A lease's permissions never change: revising, revoking, expiring or
+        retiring a credential's person retires the whole lease. The
+        ``tasks:personal`` recheck is therefore defense in depth; it refuses a
+        lease that does not hold it even if a scope naming a person were built
+        for it (T035-U1-RV5).
+        """
+        needed = {DashboardPermission.TASKS_WRITE if write else DashboardPermission.TASKS_READ}
+        if self.person is not None:
+            needed.add(DashboardPermission.PERSONAL_TASKS)
+        return frozenset(permission.value for permission in needed)
+
+
+def _committed() -> dict:
+    return TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
+                       effect=EffectState.OBSERVED, observation_scope="software_state").to_dict()
+
+
+def _task_error(status_code: int, detail: str, *, write: bool, handled: bool = True) -> JSONResponse:
+    """A task route refusal with its TaskOutcome: nothing was written."""
+    outcome = TaskOutcome(TaskStatus.FAILED, handled=handled,
+                          persistence=PersistenceState.NOT_WRITTEN if write else PersistenceState.NOT_REQUIRED)
+    return JSONResponse(status_code=status_code, content={"detail": detail, "outcome": outcome.to_dict()},
+                        headers=_NO_STORE)
+
+
+def _query_rejection(request: Request, *allowed: str, write: bool = False) -> JSONResponse | None:
+    """Reject a client-chosen owner and any unknown query parameter (422), on reads and writes."""
+    names = set(request.query_params)
+    if "user_id" in names:
+        return _task_error(422, "user_id_not_accepted", write=write)
+    if names - set(allowed):
+        return _task_error(422, "unexpected_query_parameter", write=write)
+    return None
+
+
+def _list_to_dict(lst) -> dict:
+    # A shared list never names a person, even one recorded by an older client.
+    return {"id": lst.id, "name": lst.name, "owner_type": lst.owner_type,
+            "owner_id": lst.owner_id if lst.owner_type is OwnerType.USER else None}
+
+
+def _reminder_actions(reminder, rooms: Mapping[str, str]) -> list[dict] | None:
+    """What a reminder will do: domain, service, entity and catalog room; never service data."""
+    if not reminder.ha_actions:
+        return None
+    actions = []
+    for action in reminder.ha_actions:
+        if not isinstance(action, Mapping):
+            continue
+        entity_id = action.get("entity_id")
+        actions.append({"domain": action.get("domain"), "service": action.get("service"), "entity_id": entity_id,
+                        "room": rooms.get(entity_id) if isinstance(entity_id, str) else None})
+    return actions
+
+
+def _reminder_to_dict(reminder, rooms: Mapping[str, str]) -> dict:
+    return {"id": reminder.id, "text": reminder.text, "trigger_at": reminder.trigger_at,
+            "recurrence": reminder.recurrence, "state": reminder.state, "scope": reminder.scope,
+            "ha_actions": _reminder_actions(reminder, rooms)}
 
 
 # ==================== Dashboard API ====================
@@ -350,6 +474,21 @@ class DashboardAPI:
         # Registrar rutas
         self._register_routine_exception_handlers()
         self._register_routes()
+
+    async def _action_rooms(self, reminders) -> dict[str, str]:
+        """Room names of the entities reminder actions target, from the home catalog.
+
+        Display only: a catalog that cannot be read leaves every room unknown
+        (None) and never fails the reminder read.
+        """
+        if self.home_catalog is None or not any(r.ha_actions for r in reminders):
+            return {}
+        try:
+            snapshot = await self.home_catalog.snapshot()
+        except Exception as error:
+            logger.warning("[Reminders] home catalog unavailable for action rooms: %s", type(error).__name__)
+            return {}
+        return {entity_id: room.name for room in snapshot.rooms for entity_id in room.entity_ids}
 
     def _register_routes(self):
         """Registrar todas las rutas de la API"""
@@ -779,115 +918,181 @@ class DashboardAPI:
             ]
 
         # ==================== Lists ====================
+        # T035-U1: authority and scope come from the session, never from the client.
 
-        @self.app.get("/api/lists", dependencies=[Depends(require_admin)])
-        async def get_lists(user_id: str, request: Request):
+        @self.app.get("/api/lists")
+        async def get_lists(request: Request, scope: Literal["shared", "personal"] | None = None,
+                            principal: DashboardPrincipal = Depends(require_dashboard_session)):
+            """Shared lists, plus the session person's own lists."""
+            if (rejected := _query_rejection(request, "scope")) is not None:
+                return rejected
+            tasks = TaskScope.of(principal)
             if not self.list_manager:
-                raise HTTPException(status_code=503, detail="Lists not configured")
+                return _task_error(503, "Lists not configured", write=False, handled=False)
+            if scope == "personal" and tasks.person is None:
+                return _task_error(403, "personal_session_required", write=False)
             try:
-                lists = await self.list_manager.get_all_lists(user_id,
-                    guard=session_guard(request, frozenset({'admin:manage'})))
-            except PermissionError as error:
-                raise HTTPException(status_code=403, detail="list_read_denied") from error
-            return [{"id": l.id, "name": l.name, "owner_type": l.owner_type, "owner_id": l.owner_id} for l in lists]
+                lists = await self.list_manager.get_all_lists(tasks.person,
+                    shared_only=tasks.shared_only or scope == "shared",
+                    guard=session_guard(request, tasks.permissions(write=False), principal))
+            except PermissionError:
+                return _task_error(403, "list_read_denied", write=False)
+            if scope is not None:
+                wanted = OwnerType.SHARED if scope == "shared" else OwnerType.USER
+                lists = [lst for lst in lists if lst.owner_type is wanted]
+            return JSONResponse(content=[_list_to_dict(lst) for lst in lists], headers=_NO_STORE)
 
         @self.app.post("/api/lists")
-        async def create_list(data: ListCreateModel, request: Request):
+        async def create_list(data: ListCreateModel, request: Request,
+                              principal: DashboardPrincipal = Depends(require_dashboard_session)):
+            """A shared list, or a personal list of the session person."""
+            if (rejected := _query_rejection(request, write=True)) is not None:
+                return rejected
+            tasks = TaskScope.of(principal)
             if not self.list_manager:
-                raise HTTPException(status_code=503, detail="Lists not configured")
+                return _task_error(503, "Lists not configured", write=True, handled=False)
+            if not data.shared and tasks.person is None:
+                return _task_error(403, "personal_session_required", write=True)
             try:
-                lst = await self.list_manager.create_list(data.user_id, data.name, data.shared,
-                    guard=session_guard(request, frozenset({'admin:manage'})))
-            except PermissionError as error:
-                raise HTTPException(status_code=403, detail="list_write_denied") from error
-            return {"id": lst.id, "name": lst.name, "owner_type": lst.owner_type, "owner_id": lst.owner_id,
-                    "outcome": TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
-                        effect=EffectState.OBSERVED, observation_scope="software_state").to_dict()}
+                lst = await self.list_manager.create_list(None if data.shared else tasks.person, data.name,
+                    data.shared, shared_only=data.shared,
+                    guard=session_guard(request, tasks.permissions(write=True), principal))
+            except PermissionError:
+                return _task_error(403, "list_write_denied", write=True)
+            return JSONResponse(content={**_list_to_dict(lst), "outcome": _committed()}, headers=_NO_STORE)
 
-        @self.app.get("/api/lists/{list_id}/items", dependencies=[Depends(require_admin)])
-        async def get_list_items(list_id: str, request: Request):
+        @self.app.get("/api/lists/{list_id}/items")
+        async def get_list_items(list_id: str, request: Request,
+                                 principal: DashboardPrincipal = Depends(require_dashboard_session)):
+            """Items of one list in the session scope; any other list is not found."""
+            if (rejected := _query_rejection(request)) is not None:
+                return rejected
+            tasks = TaskScope.of(principal)
             if not self.list_manager:
-                raise HTTPException(status_code=503, detail="Lists not configured")
+                return _task_error(503, "Lists not configured", write=False, handled=False)
             try:
-                items = await self.list_manager.get_items_by_list_id(list_id,
-                    guard=session_guard(request, frozenset({'admin:manage'})))
-            except PermissionError as error:
-                raise HTTPException(status_code=403, detail="list_read_denied") from error
-            return [{"id": i.id, "text": i.text, "completed": i.completed} for i in items]
+                items = await self.list_manager.get_items_in_scope(list_id, shared_only=tasks.shared_only,
+                    owner=tasks.person, guard=session_guard(request, tasks.permissions(write=False), principal))
+            except PermissionError:
+                return _task_error(403, "list_read_denied", write=False)
+            if items is None:
+                return _task_error(404, "list_not_found", write=False)
+            return JSONResponse(content=[{"id": i.id, "text": i.text, "completed": i.completed} for i in items],
+                                headers=_NO_STORE)
 
         @self.app.post("/api/lists/{list_id}/items")
-        async def add_list_item(list_id: str, data: ListItemCreateModel, request: Request):
+        async def add_list_item(list_id: str, data: ListItemCreateModel, request: Request,
+                                principal: DashboardPrincipal = Depends(require_dashboard_session)):
+            """Add an item to one list in the session scope."""
+            if (rejected := _query_rejection(request, write=True)) is not None:
+                return rejected
+            tasks = TaskScope.of(principal)
             if not self.list_manager:
-                raise HTTPException(status_code=503, detail="Lists not configured")
+                return _task_error(503, "Lists not configured", write=True, handled=False)
             try:
-                item = await self.list_manager.add_item_to_list_id(list_id, data.text, data.user_id,
-                    guard=session_guard(request, frozenset({'admin:manage'})))
-            except PermissionError as error:
-                raise HTTPException(status_code=403, detail="list_write_denied") from error
+                item = await self.list_manager.add_item_to_list_id(list_id, data.text, tasks.person,
+                    shared_only=tasks.shared_only, owner=tasks.person,
+                    guard=session_guard(request, tasks.permissions(write=True), principal))
+            except PermissionError:
+                return _task_error(403, "list_write_denied", write=True)
             if item is None:
-                raise HTTPException(status_code=404, detail="list_not_found")
-            return {"id": item.id, "text": item.text, "completed": item.completed, "list_id": item.list_id,
-                    "outcome": TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
-                        effect=EffectState.OBSERVED, observation_scope="software_state").to_dict()}
+                return _task_error(404, "list_not_found", write=True)
+            return JSONResponse(content={"id": item.id, "text": item.text, "completed": item.completed,
+                                         "list_id": item.list_id, "outcome": _committed()}, headers=_NO_STORE)
 
         @self.app.delete("/api/lists/{list_id}/items/{item_id}")
-        async def delete_list_item(list_id: str, item_id: str, request: Request):
+        async def delete_list_item(list_id: str, item_id: str, request: Request,
+                                   principal: DashboardPrincipal = Depends(require_dashboard_session)):
+            """Remove an item of one list in the session scope."""
+            if (rejected := _query_rejection(request, write=True)) is not None:
+                return rejected
+            tasks = TaskScope.of(principal)
             if not self.list_manager:
-                raise HTTPException(status_code=503, detail="Lists not configured")
+                return _task_error(503, "Lists not configured", write=True, handled=False)
             try:
                 removed = await self.list_manager.remove_item_by_id(item_id, list_id=list_id,
-                    guard=session_guard(request, frozenset({'admin:manage'})))
-            except PermissionError as error:
-                raise HTTPException(status_code=403, detail="list_write_denied") from error
+                    shared_only=tasks.shared_only, owner=tasks.person,
+                    guard=session_guard(request, tasks.permissions(write=True), principal))
+            except PermissionError:
+                return _task_error(403, "list_write_denied", write=True)
             if removed is not True:
-                raise HTTPException(status_code=404, detail="List item not found")
-            return {"status": "deleted", "outcome": TaskOutcome(TaskStatus.COMPLETED,
-                persistence=PersistenceState.COMMITTED, effect=EffectState.OBSERVED,
-                observation_scope="software_state").to_dict()}
+                return _task_error(404, "List item not found", write=True)
+            return JSONResponse(content={"status": "deleted", "outcome": _committed()}, headers=_NO_STORE)
 
         # ==================== Reminders ====================
 
-        @self.app.get("/api/reminders", dependencies=[Depends(require_admin)])
-        async def get_reminders(user_id: str, request: Request):
+        @self.app.get("/api/reminders")
+        async def get_reminders(request: Request, scope: Literal["shared", "personal"] | None = None,
+                                principal: DashboardPrincipal = Depends(require_dashboard_session)):
+            """Active shared reminders with their home actions, plus the session person's own."""
+            if (rejected := _query_rejection(request, "scope")) is not None:
+                return rejected
+            tasks = TaskScope.of(principal)
             if not self.reminder_manager:
-                raise HTTPException(status_code=503, detail="Reminders not configured")
+                return _task_error(503, "Reminders not configured", write=False, handled=False)
+            if scope == "personal" and tasks.person is None:
+                return _task_error(403, "personal_session_required", write=False)
             try:
-                reminders = await self.reminder_manager.get_active(user_id,
-                    guard=session_guard(request, frozenset({'admin:manage'})))
-            except PermissionError as error:
-                raise HTTPException(status_code=403, detail="reminder_read_denied") from error
-            return [{"id": r.id, "text": r.text, "trigger_at": r.trigger_at, "recurrence": r.recurrence,
-                     "state": r.state, "scope": r.scope} for r in reminders]
+                reminders = await self.reminder_manager.get_active(tasks.person,
+                    shared_only=tasks.shared_only or scope == "shared", include_shared=scope is None,
+                    guard=session_guard(request, tasks.permissions(write=False), principal))
+            except PermissionError:
+                return _task_error(403, "reminder_read_denied", write=False)
+            if scope is not None:
+                wanted = ReminderScope.SHARED if scope == "shared" else ReminderScope.PRIVATE
+                reminders = [r for r in reminders if r.scope is wanted]
+            rooms = await self._action_rooms(reminders)
+            return JSONResponse(content=[_reminder_to_dict(r, rooms) for r in reminders], headers=_NO_STORE)
 
         @self.app.post("/api/reminders")
-        async def create_reminder(data: ReminderCreateModel, request: Request):
+        async def create_reminder(data: ReminderCreateModel, request: Request,
+                                  principal: DashboardPrincipal = Depends(require_dashboard_session)):
+            """A shared household reminder, or a private one of the session person."""
+            if (rejected := _query_rejection(request, write=True)) is not None:
+                return rejected
+            tasks = TaskScope.of(principal)
             if not self.reminder_manager:
-                raise HTTPException(status_code=503, detail="Reminders not configured")
+                return _task_error(503, "Reminders not configured", write=True, handled=False)
+            if not _valid_trigger_at(data.trigger_at):
+                return _task_error(422, "invalid_trigger_at", write=True)
+            shared = data.scope is ReminderScope.SHARED
+            if not shared and tasks.person is None:
+                return _task_error(403, "personal_session_required", write=True)
+            owner = HomeActor.household().subject if shared else tasks.person
             try:
-                r = await self.reminder_manager.create(data.user_id, data.text, data.trigger_at,
+                r = await self.reminder_manager.create(owner, data.text, data.trigger_at,
                     data.recurrence, data.ha_actions, scope=data.scope,
-                    guard=session_guard(request, frozenset({'admin:manage'})))
-            except PermissionError as error:
-                raise HTTPException(status_code=403, detail="reminder_write_denied") from error
-            return {"id": r.id, "text": r.text, "trigger_at": r.trigger_at, "recurrence": r.recurrence,
-                    "state": r.state, "scope": r.scope,
-                    "outcome": TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
-                        effect=EffectState.OBSERVED, observation_scope="software_state").to_dict()}
+                    guard=session_guard(request, tasks.permissions(write=True), principal))
+            except PermissionError:
+                return _task_error(403, "reminder_write_denied", write=True)
+            except ValueError:
+                return _task_error(422, "invalid_reminder_action", write=True)
+            return JSONResponse(content={"id": r.id, "text": r.text, "trigger_at": r.trigger_at,
+                                         "recurrence": r.recurrence, "state": r.state, "scope": r.scope,
+                                         "outcome": _committed()}, headers=_NO_STORE)
 
         @self.app.delete("/api/reminders/{reminder_id}")
-        async def delete_reminder(reminder_id: str, request: Request):
+        async def delete_reminder(reminder_id: str, request: Request,
+                                  principal: DashboardPrincipal = Depends(require_dashboard_session)):
+            """Cancel one active reminder in the session scope; its home actions never run."""
+            if (rejected := _query_rejection(request, write=True)) is not None:
+                return rejected
+            tasks = TaskScope.of(principal)
             if not self.reminder_manager:
-                raise HTTPException(status_code=503, detail="Reminders not configured")
+                return _task_error(503, "Reminders not configured", write=True, handled=False)
+            guard = session_guard(request, tasks.permissions(write=True), principal)
             try:
-                cancelled = await self.reminder_manager.cancel_by_id(reminder_id,
-                    guard=session_guard(request, frozenset({'admin:manage'})))
-            except PermissionError as error:
-                raise HTTPException(status_code=403, detail="reminder_write_denied") from error
+                cancelled = await self.reminder_manager.cancel_by_id(reminder_id, shared_only=tasks.shared_only,
+                                                                     owner=tasks.person, guard=guard)
+                existing = None if cancelled is True else await self.reminder_manager.get_in_scope(
+                    reminder_id, shared_only=tasks.shared_only, owner=tasks.person, guard=guard)
+            except PermissionError:
+                return _task_error(403, "reminder_write_denied", write=True)
             if cancelled is not True:
-                raise HTTPException(status_code=404, detail="Reminder not found")
-            return {"status": "cancelled", "outcome": TaskOutcome(TaskStatus.COMPLETED,
-                persistence=PersistenceState.COMMITTED, effect=EffectState.OBSERVED,
-                observation_scope="software_state").to_dict()}
+                if existing is not None:
+                    return _task_error(409, "reminder_not_active", write=True)
+                return _task_error(404, "Reminder not found", write=True)
+            return JSONResponse(content={"status": "cancelled", "outcome": _committed()}, headers=_NO_STORE)
 
         @self.app.get("/api/reminders/notices")
         async def get_reminder_notices(request: Request):

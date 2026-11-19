@@ -4,8 +4,9 @@ Each family unit contributes tagged entries in its own test module; an entry
 counts toward C02 only when its test asserts every effect counter, the task
 status and the persistence (``counting_rules``). Layers: ``classifier`` (the
 pure P3-F2 classifier), ``dispatcher`` (RequestDispatcher.dispatch),
-``router`` (RequestRouter.process_command with a real orchestrator) and
-``graph`` (build_application).
+``router`` (RequestRouter.process_command with a real orchestrator),
+``graph`` (build_application) and ``web`` (a dashboard HTTP task route with a
+real session authority, actors ``web_home``/``web_person``; T035-U1).
 """
 
 from __future__ import annotations
@@ -36,8 +37,9 @@ class C02Entry:
     Attributes:
         id: Stable ``C02-<FAMILY>-<NNNN>``; design seed ids are kept when the
             entry implements a seed (``seed`` notes any interim difference).
-        text: Utterance as the STT would deliver it.
-        layer: classifier | router | dispatcher | graph.
+        text: Utterance as the STT would deliver it; for ``web``, the request
+            ("METHOD path [body]").
+        layer: classifier | router | dispatcher | graph | web.
         family, effect_class, expected_outcome, actor: C02 tags.
         path: PathType value, or None (classifier layer, or a gated turn).
         task_status: TaskStatus value, None for 'no_turn', or CLASSIFIER.
@@ -71,7 +73,7 @@ class C02Entry:
     def __post_init__(self) -> None:
         if set(self.effects) != set(EFFECT_COUNTERS):
             raise ValueError(f"{self.id}: every effect counter must be stated")
-        if self.layer not in ("classifier", "router", "dispatcher", "graph"):
+        if self.layer not in ("classifier", "router", "dispatcher", "graph", "web"):
             raise ValueError(f"{self.id}: unknown layer {self.layer}")
 
 

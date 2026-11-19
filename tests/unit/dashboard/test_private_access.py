@@ -150,3 +150,25 @@ def test_proxy_origin_uses_effective_https_port(dashboard_auth, _session_client)
         assert "Secure" in login.headers["set-cookie"]
         assert client.get("/api/health", headers={**dashboard_auth, "Origin": "https://HOME.test:443"}).status_code == 200
         assert client.get("/api/health", headers={**dashboard_auth, "Origin": "http://home.test"}).status_code == 403
+
+
+def test_every_task_route_is_a_household_task_not_an_operator_default():
+    """T035-U1: lists and reminders need tasks:read/tasks:write, held by every household session."""
+    from starlette.requests import Request
+
+    from src.dashboard.auth import _route_permissions
+    from src.dashboard.authority import DashboardRole, _permissions
+
+    task_routes = [(method, path) for method, path in _private_routes()
+                   if path.startswith(("/api/lists", "/api/reminders"))
+                   and path not in {"/api/reminders/status"} and not path.startswith("/api/reminders/notices")]
+    assert {path for _, path in task_routes} == {"/api/lists", "/api/lists/example/items",
+                                                 "/api/lists/example/items/example", "/api/reminders",
+                                                 "/api/reminders/example"}
+    for method, path in task_routes:
+        needed = _route_permissions(Request({"type": "http", "method": method, "path": path,
+                                             "query_string": b"", "headers": []}))
+        assert needed == {"tasks:read" if method == "GET" else "tasks:write"}, (method, path)
+        assert needed <= _permissions(DashboardRole.HOME, None)
+        assert needed <= _permissions(DashboardRole.OPERATOR, None)
+        assert not needed & _permissions(DashboardRole.EVALUATOR, None)

@@ -1,4 +1,8 @@
-"""Original HTTP leases govern native reminders; approved commit owns its wake."""
+"""Original HTTP leases govern native reminders; approved commit owns its wake.
+
+T035-U1: the web session is a household credential bound to the person 'u1'
+(private reminders need tasks:personal, which an operator no longer holds, Q16).
+"""
 
 import asyncio
 from contextlib import AsyncExitStack
@@ -12,7 +16,8 @@ from httpx import ASGITransport, AsyncClient
 import pytest
 
 from src.dashboard.api import DashboardAPI
-from src.dashboard.authority import DashboardAuthority
+from src.core.account_metadata import ActiveAccounts
+from src.dashboard.authority import DashboardAuthority, DashboardRole
 from src.reminders.reminder_manager import ReminderManager
 from src.reminders.reminder_store import ReminderActionStatus, ReminderScope, ReminderStore
 from tests.mocks.memory_graph import Clock
@@ -28,7 +33,8 @@ async def reminder_graph(tmp_path, dashboard_auth):
         state.published += 1
         wake.set()
     async with AsyncExitStack() as stack:
-        authority = DashboardAuthority(tmp_path / 'auth.db', clock=clock, session_ttl_s=60)
+        authority = DashboardAuthority(tmp_path / 'auth.db', clock=clock, session_ttl_s=60,
+                                       account_provider=lambda: ActiveAccounts(True, frozenset({'u1'})))
         stack.push_async_callback(authority.aclose)
         await authority.initialize()
         path = tmp_path / 'reminders.db'
@@ -38,25 +44,37 @@ async def reminder_graph(tmp_path, dashboard_auth):
         api = DashboardAPI(authority=authority, reminder_manager=ReminderManager(store))
         stack.push_async_callback(api.stop)
         async with AsyncClient(transport=ASGITransport(app=api.app), base_url='http://testserver') as client:
-            token = dashboard_auth['Authorization'].split(' ', 1)[1]
-            assert (await client.post('/api/admin/auth/login', json={'token': token})).status_code == 200
+            person = await authority.issue_credential(authority.resolve(dashboard_auth['Authorization']),
+                subject='synthetic-person', role=DashboardRole.HOME, user_id='u1', expires_at=clock.now + 3600)
+            assert (await client.post('/api/admin/auth/login', json={'token': person.token})).status_code == 200
             yield SimpleNamespace(authority=authority, store=store, client=client, path=path,
-                                  clock=clock, wake=wake, state=state)
+                                  clock=clock, wake=wake, state=state,
+                                  person={'Authorization': f'Bearer {person.token}'})
 
 
-async def test_admin_reminder_scope_is_closed_and_implicit_creation_stays_private(reminder_graph):
+async def test_session_reminder_scope_is_closed_and_implicit_creation_stays_private(
+    reminder_graph, dashboard_auth,
+):
     graph = reminder_graph
-    default = await graph.client.post('/api/reminders', json={
-        'user_id': 'unknown', 'text': 'Private default', 'trigger_at': 1.})
+    default = await graph.client.post('/api/reminders', json={'text': 'Private default', 'trigger_at': 1.})
     shared = await graph.client.post('/api/reminders', json={
-        'user_id': 'known-profile', 'text': 'Shared explicit', 'trigger_at': 2., 'scope': 'shared'})
+        'text': 'Shared explicit', 'trigger_at': 2., 'scope': 'shared'})
     invalid = await graph.client.post('/api/reminders', json={
-        'user_id': 'unknown', 'text': 'Invalid scope', 'trigger_at': 3., 'scope': 'public'})
-    assert default.status_code == shared.status_code == 200 and invalid.status_code == 422
+        'text': 'Invalid scope', 'trigger_at': 3., 'scope': 'public'})
+    injected = await graph.client.post('/api/reminders', json={
+        'user_id': 'known-profile', 'text': 'Injected owner', 'trigger_at': 4.})
+    assert default.status_code == shared.status_code == 200
+    assert invalid.status_code == injected.status_code == 422
     assert default.json()['scope'] == 'private' and shared.json()['scope'] == 'shared'
-    assert (await graph.store.get_by_id(default.json()['id'])).scope is ReminderScope.PRIVATE
+    stored_default, stored_shared = (await graph.store.get_by_id(default.json()['id']),
+                                     await graph.store.get_by_id(shared.json()['id']))
+    assert stored_default.scope is ReminderScope.PRIVATE and stored_default.user_id == 'u1'
+    # A shared reminder never names the person whose session wrote it.
+    assert stored_shared.user_id == 'household'
     assert await graph.store.count_active() == 2
-    status = (await graph.client.get('/api/reminders/status')).json()
+    # The reminder status is an operator diagnosis, not a household task read.
+    assert (await graph.client.get('/api/reminders/status')).status_code == 403
+    status = (await graph.client.get('/api/reminders/status', headers=dashboard_auth)).json()
     assert status['pending_count'] == 1 and status['next_trigger_at'] == 2.
 
 
@@ -87,12 +105,16 @@ async def test_http_reminder_read_rechecks_original_scope_before_native_projecti
         return await original_read(function, guard=guard)
 
     monkeypatch.setattr(graph.store, '_row_to_reminder', convert)
+    if resource == 'status':
+        # The status is an operator diagnosis: this browser's session becomes an operator's.
+        token = dashboard_auth['Authorization'].split(' ', 1)[1]
+        assert (await graph.client.post('/api/admin/auth/login', json={'token': token})).status_code == 200
     blocker = asyncio.create_task(original_read(block))
     pending = None
     try:
         assert await asyncio.to_thread(entered.wait, 3)
         monkeypatch.setattr(graph.store._work, 'read', read)
-        path = '/api/reminders?user_id=u1' if resource == 'private' else '/api/reminders/status'
+        path = '/api/reminders?scope=personal' if resource == 'private' else '/api/reminders/status'
         pending = asyncio.create_task(graph.client.get(path))
         await asyncio.wait_for(queued.wait(), 2)
         if cancel_observer:
@@ -106,7 +128,7 @@ async def test_http_reminder_read_rechecks_original_scope_before_native_projecti
         assert (await pending).status_code == 403
     await graph.store._work.drain_admitted()
     assert projections == []
-    response = await graph.client.get(path, headers=dashboard_auth)
+    response = await graph.client.get(path, headers=graph.person if resource == 'private' else dashboard_auth)
     assert response.status_code == 200
     if resource == 'private':
         assert response.json()[0]['id'] == private.id and response.json()[0]['scope'] == 'private'
@@ -142,7 +164,7 @@ async def test_retired_reminder_session_rolls_back_only_its_provisional_sql(
 
     monkeypatch.setattr(graph.store._work, 'write', gated_write)
     if operation == 'create':
-        request = graph.client.post('/api/reminders', json={'user_id': 'u1',
+        request = graph.client.post('/api/reminders', json={
             'text': 'Withdrawn synthetic reminder', 'trigger_at': time.time() + 600})
     else:
         request = graph.client.delete(f'/api/reminders/{original_reminder.id}')
@@ -155,8 +177,8 @@ async def test_retired_reminder_session_rolls_back_only_its_provisional_sql(
             with pytest.raises(asyncio.CancelledError):
                 await pending
         assert (await graph.client.post('/api/admin/auth/logout')).json()['session_revoked']
-        independent = asyncio.create_task(graph.client.post('/api/reminders', headers=dashboard_auth,
-            json={'user_id': 'u1', 'text': 'Independent authorized reminder', 'trigger_at': time.time() + 600}))
+        independent = asyncio.create_task(graph.client.post('/api/reminders', headers=graph.person,
+            json={'text': 'Independent authorized reminder', 'trigger_at': time.time() + 600}))
         reader = asyncio.create_task(graph.store.get_active_for_user('u1'))
     finally:
         release.set()
@@ -235,7 +257,7 @@ async def test_committed_reminder_wake_remains_owned_after_logout_cancel_and_clo
 
     monkeypatch.setattr(graph.store._db, '_execute', after_native_commit)
     pending = asyncio.create_task(graph.client.post('/api/reminders', json={
-        'user_id': 'u1', 'text': 'Committed synthetic reminder', 'trigger_at': time.time() + 600}))
+        'text': 'Committed synthetic reminder', 'trigger_at': time.time() + 600}))
     closing = None
     try:
         await asyncio.wait_for(entered.wait(), 3)

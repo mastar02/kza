@@ -99,8 +99,7 @@ async def test_factory_reminder_keeps_original_lease_after_real_home_selection(
         token = dashboard_auth['Authorization'].split(' ', 1)[1]
         assert (await client.post('/api/admin/auth/login', json={'token': token})).status_code == 200
         pending = asyncio.create_task(client.post('/api/reminders', json={
-            'user_id': 'synthetic-owner', 'text': 'Synthetic deferred light action',
-            'trigger_at': time.time() + 600,
+            'text': 'Synthetic deferred light action', 'trigger_at': time.time() + 600, 'scope': 'shared',
             'ha_actions': [{'domain': 'light', 'service': 'turn_on', 'entity_id': 'light.living'}],
         }))
         try:
@@ -108,7 +107,7 @@ async def test_factory_reminder_keeps_original_lease_after_real_home_selection(
             assert (await client.post('/api/admin/auth/logout')).json()['session_revoked']
             release.set()
             assert (await pending).status_code == 403
-            assert await graph.reminder_manager.get_active('synthetic-owner') == []
+            assert await graph.reminder_manager.get_active(None, shared_only=True) == []
             wake = graph.reminder_manager._store._on_created.__self__
             assert isinstance(wake, asyncio.Event) and not wake.is_set()
             assert (await graph.ha_client.get_entity_state('light.living'))['state'] == 'off'
@@ -123,11 +122,11 @@ async def test_factory_committed_reminder_publishes_its_injected_wake(session_gr
     assert isinstance(wake, asyncio.Event) and not wake.is_set()
     async with AsyncClient(transport=ASGITransport(app=graph.dashboard.app), base_url='http://testserver') as client:
         response = await client.post('/api/reminders', headers=dashboard_auth,
-            json={'user_id': 'synthetic-owner', 'text': 'Synthetic reminder', 'trigger_at': time.time() + 600})
+            json={'text': 'Synthetic reminder', 'trigger_at': time.time() + 600, 'scope': 'shared'})
         assert response.status_code == 200
         assert response.json()['outcome']['persistence'] == 'committed'
         assert wake.is_set()
-        assert (await graph.reminder_manager.get_active('synthetic-owner'))[0].id == response.json()['id']
+        assert (await graph.reminder_manager.get_active(None, shared_only=True))[0].id == response.json()['id']
 
 
 @pytest.mark.parametrize('role', [DashboardRole.HOME, DashboardRole.EVALUATOR])
@@ -148,8 +147,11 @@ async def test_role_and_permissions_come_from_server_grant_not_login_fields(sess
         assert identity['role'] == role.value and not identity['personal_scope']
         assert 'admin:manage' not in identity['permissions']
         for path in ('/api/users', '/api/conversations', '/api/voices', '/api/memory/facts',
-                     '/api/system/gpus', '/api/home/microphones', '/api/lists?user_id=another-person'):
+                     '/api/system/gpus', '/api/home/microphones'):
             assert (await client.get(path)).status_code == 403
+        # T035-U1: a household session reads tasks, but never names their owner.
+        injected = await client.get('/api/lists?user_id=another-person')
+        assert injected.status_code == (422 if role is DashboardRole.HOME else 403)
         assert (await client.post('/api/llm/endpoints/synthetic/clear-cooldown')).status_code == 403
         catalog = await client.get('/api/home/catalog')
         assert catalog.status_code == (200 if role is DashboardRole.HOME else 403)
