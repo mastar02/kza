@@ -28,7 +28,10 @@ import sounddevice as sd
 from src.ambient.tap import MultiChannelTap
 from src.audio.input_group import InputGroup
 from src.audio.owned_input import InputNotAdmitted
-from src.audio.xvf_controller import XvfController
+from src.audio.xvf_controller import XvfController, XvfRebootOutcome
+from src.audio.xvf_recovery import (
+    REBOOT_DEFERRAL_ALERT_S, XvfRebootBudget, XvfRebootDecision, XvfRebootPolicy,
+)
 from src.pipeline.ambient_guard import AmbientGuard, GuardState, classify_outcome
 from src.pipeline.command_event import CapturedTranscript, CommandEvent, TranscriptSource
 from src.wakeword.wake_clip_writer import WakeClipWriter
@@ -238,6 +241,38 @@ class PortAudioReset(Enum):
     UNINITIALIZED = "uninitialized"
 
 
+@dataclass(frozen=True)
+class XvfRebootReport:
+    """What the native part of one XVF firmware reboot observed (T048-U1).
+
+    Attributes:
+        outcome: Result of the REBOOT control transfer.
+        reenumerated: The device came back on its port within the settle wait.
+        alsa_card: ALSA card it exposes again, or None if none appeared in time.
+        devnum: Kernel device number it came back with (sysfs), when readable.
+    """
+
+    outcome: XvfRebootOutcome
+    reenumerated: bool = False
+    alsa_card: int | None = None
+    devnum: int | None = None
+
+
+@dataclass
+class _RebootDeferral:
+    """A due firmware reboot waiting for an activity to end (T048-U1-RV1 F3).
+
+    Attributes:
+        reason: Blocker last logged (``command``, ``conversation``, ``response``).
+        since: Microphone-clock time the deferral started.
+        escalated: The long-deferral error was already logged.
+    """
+
+    reason: str
+    since: float
+    escalated: bool = False
+
+
 class _CaptureHolder:
     """One callback-owned observation pointer; retired holders stay isolated."""
 
@@ -301,6 +336,7 @@ class MultiRoomAudioLoop:
         stream_watchdog_first_frame_grace_s: float = 180.0,
         stream_watchdog_catalog_refresh_min_interval_s: float = 0.0,
         stream_watchdog_catalog_refresh_max_interval_s: float = 3600.0,
+        xvf_reboot_policy: XvfRebootPolicy | None = None,
         audio_health_path: str = "./data/audio_health.json",
         microphone_rooms: tuple[MicrophoneRoom, ...] | None = None,
         microphone_usb_root: Path = Path("/sys/bus/usb/devices"),
@@ -424,9 +460,16 @@ class MultiRoomAudioLoop:
         # Tuning del DSP XVF3800 (L-2 2026-06-04): writes EN RAM aplicados al
         # arrancar (reversibles al re-enchufar; SAVE_CONFIGURATION no existe en
         # el command-map a propósito). Default None/apply_on_start=False = cero
-        # writes. Como es RAM, un re-enchufe del mic restaura el preset Seeed →
-        # re-aplicar requiere reiniciar kza-voice (aceptado: evento raro).
+        # writes. Como es RAM, un re-enchufe o un REBOOT de firmware restauran
+        # el preset de fábrica: desde T048-U1 el tuning se re-aplica a la room
+        # cuyo device re-enumera (inventario USB) y tras cada REBOOT propio.
         self._xvf_tuning = xvf_tuning or {}
+        # room_id -> (devnum, alsa_card) last seen at the controller's port
+        # (None = absent). A change means the device re-enumerated.
+        self._xvf_port_seen: dict[str, tuple | None] = {}
+        # Rooms whose firmware reboot is in flight; that reboot reapplies the
+        # tuning itself, so the inventory does not do it a second time.
+        self._xvf_rebooting: set[str] = set()
 
         # AmbientGuard (spec 2026-06-05): compuerta acústica integral por room.
         # None = sin guard (comportamiento previo exacto). La escalera
@@ -487,6 +530,15 @@ class MultiRoomAudioLoop:
         # next refresh waits only the short backoff and the futile streak
         # above, which protects working rooms, does not grow (T025-U2-RV3-1).
         self._catalog_deaf_refreshes = 0
+        # Stuck XVF3800 (T048-U1, incident 2026-11-19): a stream that keeps
+        # opening dead after the ordinary recovery failed N times gets a
+        # firmware REBOOT of that room's device only, bounded per hour.
+        self._xvf_reboot_budget = XvfRebootBudget(
+            xvf_reboot_policy or XvfRebootPolicy(), clock=lambda: self._microphone_monotonic())
+        # room_id -> a due reboot waiting for an activity (log once per
+        # blocker; an error once if it waits too long).
+        self._xvf_reboot_deferred: dict[str, _RebootDeferral] = {}
+        self._xvf_reboot_unavailable: set[str] = set()
         self._watchdog_task = None
         self._recovery_task = None
         self._recovery_epoch = 0
@@ -1366,31 +1418,64 @@ class MultiRoomAudioLoop:
                 "XvfController — tuning NO aplicado (¿mic XVF3800 presente?)"
             )
             return
-        params = self._xvf_tuning.get("params") or {}
         # El tuning se aplica al DSP de CADA mic: son chips distintos y cada uno
         # arranca con el preset persistido de fábrica al re-enchufarse.
         for room_id, ctrl in self._xvf_by_room.items():
-            for name, values in params.items():
-                try:
-                    before = ctrl.read_param(name)
-                except ValueError:
-                    before = None
-                try:
-                    ok = ctrl.write_param(name, values)
-                except ValueError as e:  # typo en el yaml: log y seguir
-                    logger.error(f"[XVF-tuning] parámetro inválido en config: {e}")
-                    continue
-                except Exception as e:  # cualquier otra cosa: fail-open
-                    logger.warning(f"[XVF-tuning] {room_id}: {name} no aplicado: {e}")
-                    continue
-                if ok:
-                    logger.info(
-                        f"[XVF-tuning] {room_id}: {name}: {before} → {values} (RAM)"
-                    )
-                else:
-                    logger.warning(
-                        f"[XVF-tuning] {room_id}: {name} no aplicado (write fail-open)"
-                    )
+            self._apply_xvf_tuning_room(room_id, ctrl)
+
+    def _xvf_tuning_enabled(self) -> bool:
+        """Whether the configured tuning is written to the DSP (``apply_on_start``)."""
+        return bool(self._xvf_tuning.get("apply_on_start", False)
+                    and self._xvf_tuning.get("params"))
+
+    def _apply_xvf_tuning_room(self, room_id: str, ctrl) -> None:
+        """Write the configured tuning to one room's DSP (RAM). Fail-open per param.
+
+        Blocking USB I/O: runs on the ``_xvf_native`` owner, never on the loop.
+
+        Args:
+            room_id: Room whose controller is written (for the audit log).
+            ctrl: That room's port-bound XVF controller.
+        """
+        if not self._xvf_tuning.get("apply_on_start", False):
+            return
+        params = self._xvf_tuning.get("params") or {}
+        for name, values in params.items():
+            try:
+                before = ctrl.read_param(name)
+            except ValueError:
+                before = None
+            try:
+                ok = ctrl.write_param(name, values)
+            except ValueError as e:  # typo en el yaml: log y seguir
+                logger.error(f"[XVF-tuning] parámetro inválido en config: {e}")
+                continue
+            except Exception as e:  # cualquier otra cosa: fail-open
+                logger.warning(f"[XVF-tuning] {room_id}: {name} no aplicado: {e}")
+                continue
+            if ok:
+                logger.info(
+                    f"[XVF-tuning] {room_id}: {name}: {before} → {values} (RAM)"
+                )
+            else:
+                logger.warning(
+                    f"[XVF-tuning] {room_id}: {name} no aplicado (write fail-open)"
+                )
+
+    def _reapply_xvf_tuning(self, room_id: str, ctrl) -> None:
+        """Reapply the tuning after the room's device re-enumerated (native).
+
+        The controller may still cache the handle of the device that left the
+        bus, so it is dropped first and the next transfer finds the new one.
+
+        Args:
+            room_id: Room whose device re-enumerated.
+            ctrl: That room's port-bound XVF controller.
+        """
+        invalidate = getattr(ctrl, "invalidate_device", None)
+        if callable(invalidate):
+            invalidate()
+        self._apply_xvf_tuning_room(room_id, ctrl)
 
     def _make_stream(self, rs: "RoomStream", *, report_not_admitted: bool = False):
         """Construct only; its retained owner configures and starts the handle."""
@@ -1835,7 +1920,8 @@ class MultiRoomAudioLoop:
         self._reopen_tasks[rs.room_id] = task
         task.add_done_callback(lambda done: None if done.cancelled() else done.exception(), context=Context())
 
-    def _schedule_recovery(self, trigger_room_ids: list, *, catalog_refresh: bool = False) -> bool:
+    def _schedule_recovery(self, trigger_room_ids: list, *, catalog_refresh: bool = False,
+                           xvf_reboot: bool = False) -> bool:
         """Admit one finite controller; native effects remain owned by InputGroup.
 
         Args:
@@ -1843,6 +1929,8 @@ class MultiRoomAudioLoop:
             catalog_refresh: Refresh the PortAudio catalog for a late
                 microphone even while other rooms are healthy; re-checked
                 against active commands and conversations when it starts.
+            xvf_reboot: Firmware-reboot the single trigger room's XVF3800
+                (T048-U1); re-checked against activity when it starts.
 
         Returns:
             True when a recovery controller was admitted.
@@ -1859,7 +1947,9 @@ class MultiRoomAudioLoop:
         async def recover():
             if not (self._input_epoch_current(epoch) and self._running and self._recovery_ready):
                 return
-            if catalog_refresh:
+            if xvf_reboot:
+                await self._recover_with_xvf_reboot(rooms[0])
+            elif catalog_refresh:
                 # A wake or a response may have started since admission.
                 if self._catalog_refresh_blocker() is not None:
                     return
@@ -1886,6 +1976,140 @@ class MultiRoomAudioLoop:
         self._recovery_task.add_done_callback(finished, context=Context())
         return True
 
+    def _reboot_xvf_room(self, ctrl, usb_port: str, epoch: int) -> XvfRebootReport:
+        """Send the firmware reboot and wait for the device and its ALSA card (native).
+
+        Runs on the ``_xvf_native`` owner. Both waits share the policy's
+        settle bound and stop early when a pause or close supersedes the
+        recovery epoch.
+
+        Args:
+            ctrl: The room's port-bound XVF controller.
+            usb_port: The room's mic port, where the card must reappear.
+            epoch: Recovery epoch that admitted this reboot.
+
+        Returns:
+            What was observed; never raises for USB problems (fail-open).
+        """
+        deadline = time.monotonic() + self._xvf_reboot_budget.policy.settle_s
+
+        def superseded() -> bool:
+            return not self._input_epoch_current(epoch)
+
+        result = ctrl.reboot()
+        if result.outcome is XvfRebootOutcome.NO_DEVICE:
+            return XvfRebootReport(result.outcome)
+        # A transfer error may be the device resetting before it answered.
+        if not ctrl.wait_reenumerated(result.previous_address, deadline - time.monotonic(),
+                                      abort=superseded):
+            return XvfRebootReport(result.outcome)
+        card = None
+        while not superseded():
+            card = usb_port_to_alsa_card(usb_port, str(self._microphone_usb_root))
+            if card is not None or time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+        try:
+            devnum_text = (self._microphone_usb_root / usb_port / "devnum").read_text().strip()
+        except OSError:
+            devnum_text = ""
+        devnum = int(devnum_text) if devnum_text.isdigit() else None
+        return XvfRebootReport(result.outcome, reenumerated=True, alsa_card=card, devnum=devnum)
+
+    async def _recover_with_xvf_reboot(self, room_id: str) -> None:
+        """Firmware-reboot one room's stuck XVF3800 and bring its capture back.
+
+        Incident 2026-11-19: the isochronous endpoint of every XVF3800 kept
+        sending oversized packets after a warm host reboot. The stream opened
+        and never delivered audio, and only the firmware REBOOT recovered it.
+        Sequence: retire this room's stream, reboot its device (located by
+        its mic port), wait for the re-enumeration, reapply the RAM tuning
+        (the reboot restores the factory preset), then reopen; when PortAudio
+        does not list the new card yet, refresh its catalog (T025-U2 path).
+        The other rooms keep capturing unless that refresh is needed.
+
+        Args:
+            room_id: Room whose ordinary recovery failed the configured times.
+        """
+        epoch = self._recovery_epoch
+        if not self._input_epoch_current(epoch):
+            return
+        reason = self._catalog_refresh_blocker()
+        if reason is not None:
+            # A wake or a response may have started since admission.
+            self._note_xvf_reboot_deferred(room_id, reason)
+            return
+        ctrl = self._xvf_reboot_controller(room_id)
+        if ctrl is None:
+            return
+        rs = self.room_streams[room_id]
+        port = self._xvf_room_port(room_id)
+        budget = self._xvf_reboot_budget
+        failures = budget.failures(room_id)
+        attempt = budget.charge(room_id)
+        self._xvf_reboot_deferred.pop(room_id, None)
+        logger.error(
+            f"[audio-watchdog] {room_id}: isochronous capture dead after {failures} reopens; "
+            f"XVF firmware reboot {attempt}/{budget.policy.max_per_hour} (USB port {port})"
+        )
+        report = None
+        self._xvf_rebooting.add(room_id)
+        try:
+            await self._inputs.retire(room_id)
+            if not self._input_epoch_current(epoch):
+                return
+            try:
+                report = await self._xvf_native.run(self._reboot_xvf_room, ctrl, port, epoch)
+            except Exception as error:
+                logger.warning(f"[audio-watchdog] {room_id}: XVF firmware reboot failed: {type(error).__name__}")
+            if report is not None and report.reenumerated:
+                logger.info(
+                    f"[audio-watchdog] {room_id}: XVF3800 re-enumerated at {port} "
+                    f"(ALSA card {report.alsa_card}); reapplying the tuning"
+                )
+                try:
+                    await self._xvf_native.run(self._apply_xvf_tuning_room, room_id, ctrl)
+                except Exception as error:
+                    logger.warning(f"[XVF-tuning] {room_id}: tuning not reapplied: {type(error).__name__}")
+                if room_id in self._xvf_port_seen and report.alsa_card is not None:
+                    # This reboot already retuned the new device: record it as
+                    # the baseline so a later inventory poll does not retune
+                    # it a second time (T048-U1-RV1 F4).
+                    self._xvf_port_seen[room_id] = (report.devnum, report.alsa_card)
+            elif report is not None and report.outcome is not XvfRebootOutcome.NO_DEVICE:
+                logger.warning(
+                    f"[audio-watchdog] {room_id}: XVF3800 at {port} did not re-enumerate within "
+                    f"{budget.policy.settle_s:.0f}s after the firmware reboot"
+                )
+        finally:
+            self._xvf_rebooting.discard(room_id)
+        if not self._input_epoch_current(epoch):
+            return
+        if await self._try_reopen_once(rs):
+            logger.info(
+                f"[audio-watchdog] {room_id}: stream reopened after the XVF firmware reboot "
+                f"(device={rs.device_index}); awaiting audio frames"
+            )
+            return
+        if not self._input_epoch_current(epoch):
+            return
+        if report is not None and report.alsa_card is not None:
+            # The card is back in sysfs but PortAudio still lists its old
+            # catalog: refresh it (brief cut in every room). The reboot took
+            # seconds, so a wake or a response may have started meanwhile:
+            # check again and never cut the other rooms under it
+            # (T048-U1-RV1 F1). The room's reopen waiter asks for the refresh
+            # through _request_catalog_refresh once the activity ends.
+            blocker = self._catalog_refresh_blocker()
+            if blocker is None:
+                await self._recover_streams([room_id], catalog_refresh=True)
+                return
+            logger.info(
+                f"[audio-watchdog] {room_id}: PortAudio catalog refresh after the XVF firmware "
+                f"reboot deferred ({blocker}); waiting for ALSA card {report.alsa_card}"
+            )
+        self._schedule_reopen(rs)
+
     async def _recover_streams(self, trigger_room_ids: list, *, catalog_refresh: bool = False) -> None:
         """Recover failed rooms without interrupting rooms still receiving audio.
 
@@ -1902,6 +2126,22 @@ class MultiRoomAudioLoop:
         epoch = self._recovery_epoch
         if not self._input_epoch_current(epoch):
             return
+        if catalog_refresh:
+            blocker = self._catalog_refresh_blocker()
+            if blocker is not None:
+                # Check before anything is retired: the cut itself is what
+                # must not happen under a command, conversation or response
+                # (T048-U1-RV1 F1). The trigger rooms keep (or get) their
+                # reopen waiter, which asks for the refresh again later.
+                logger.info(
+                    f"[audio-watchdog] PortAudio catalog refresh for {list(trigger_room_ids)} "
+                    f"deferred ({blocker}) before any capture cut"
+                )
+                for room_id in trigger_room_ids:
+                    rs = self.room_streams.get(room_id)
+                    if rs is not None and self._streams.get(room_id) is None:
+                        self._schedule_reopen(rs)
+                return
         now = time.monotonic()
         healthy_other = not catalog_refresh and any(
             room_id not in trigger_room_ids and rs.last_frame_ts > 0
@@ -2091,8 +2331,78 @@ class MultiRoomAudioLoop:
             return
         self._microphone_read_task = None
         self._publish_microphone_inventory(inventory)
+        reenumerated = self._note_xvf_reenumerations(inventory)
         if self._auxiliary_allowed(epoch):
             await self._sync_direction_observers()
+        for room_id in reenumerated:
+            if not self._auxiliary_allowed(epoch):
+                return
+            await self._retune_reenumerated(room_id)
+
+    def _xvf_room_port(self, room_id: str) -> str | None:
+        """USB port the room's XVF controller itself is bound to, or None.
+
+        Deliberately no fallback to the room's ``mic_usb_port``: a controller
+        without its own port discovers whichever XVF3800 comes first on the
+        bus, so rebooting or retuning through it could hit another room's
+        microphone (T048-U1-RV1 F2).
+        """
+        port = getattr(self._xvf_by_room.get(room_id), "usb_port", None)
+        return port if isinstance(port, str) and port else None
+
+    def _note_xvf_reenumerations(self, inventory: UsbInventory) -> tuple[str, ...]:
+        """Find rooms whose XVF3800 re-enumerated since the previous inventory.
+
+        A re-enumeration (physical replug, firmware reboot, bus reset) resets
+        the DSP to its factory preset. It shows up as the device appearing at
+        the room's port, or with another kernel device number or ALSA card.
+        The first observation of a room only records a baseline: the start
+        already applied the tuning.
+
+        Args:
+            inventory: Inventory just published.
+
+        Returns:
+            Rooms whose tuning must be reapplied (none while tuning is off,
+            and never one whose own firmware reboot is in flight).
+        """
+        if not inventory.success or not self._xvf_tuning_enabled():
+            return ()
+        by_port = {device.usb_port: (device.devnum, device.alsa_card)
+                   for device in inventory.devices}
+        changed = []
+        for room_id in self._xvf_by_room:
+            port = self._xvf_room_port(room_id)
+            if not port:
+                continue
+            current = by_port.get(port)
+            known = room_id in self._xvf_port_seen
+            previous = self._xvf_port_seen.get(room_id)
+            self._xvf_port_seen[room_id] = current
+            if (known and current is not None and current != previous
+                    and room_id not in self._xvf_rebooting):
+                changed.append(room_id)
+        return tuple(changed)
+
+    async def _retune_reenumerated(self, room_id: str) -> None:
+        """Reapply the tuning to one re-enumerated room; never raises.
+
+        Args:
+            room_id: Room reported by ``_note_xvf_reenumerations``.
+        """
+        ctrl = self._xvf_by_room.get(room_id)
+        if ctrl is None:
+            return
+        logger.info(
+            f"[XVF-tuning] {room_id}: device re-enumerated at {self._xvf_room_port(room_id)}; "
+            "reapplying the tuning"
+        )
+        try:
+            await self._xvf_native.run(self._reapply_xvf_tuning, room_id, ctrl)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.warning(f"[XVF-tuning] {room_id}: tuning not reapplied: {type(error).__name__}")
 
     async def _microphone_telemetry_loop(self) -> None:
         """Poll only while capture auxiliaries may admit native work."""
@@ -2350,15 +2660,106 @@ class MultiRoomAudioLoop:
                 logger.warning('Audio health publication failed: %s', type(error).__name__)
             if not self._recovery_ready or not self._inputs.accepting:
                 continue
-            states = [
-                (room_id, rs.last_frame_ts, rs.opened_ts)
-                for room_id, rs in self.room_streams.items()
-                if not self._is_awaiting_reopen(room_id)
-            ]
-            stale = detect_stale_streams(states, time.monotonic(),
+            now = time.monotonic()
+            states = []
+            for room_id, rs in self.room_streams.items():
+                if rs.last_frame_ts > 0.0 and now - rs.last_frame_ts <= self._watchdog_timeout_s:
+                    # Real audio ends the dead-capture streak (T048-U1).
+                    self._xvf_reboot_budget.note_audio(room_id)
+                    self._xvf_reboot_deferred.pop(room_id, None)
+                if not self._is_awaiting_reopen(room_id):
+                    states.append((room_id, rs.last_frame_ts, rs.opened_ts))
+            stale = detect_stale_streams(states, now,
                 self._watchdog_timeout_s, self._watchdog_first_frame_grace_s)
             if stale:
-                self._schedule_recovery(stale)
+                self._recover_dead_streams(stale)
+
+    def _xvf_reboot_controller(self, room_id: str):
+        """The room's controller when it can send a firmware reboot, else None."""
+        ctrl = self._xvf_by_room.get(room_id)
+        if (ctrl is None or not callable(getattr(ctrl, "reboot", None))
+                or not callable(getattr(ctrl, "wait_reenumerated", None))
+                or not self._xvf_room_port(room_id)):
+            return None
+        return ctrl
+
+    def _note_xvf_reboot_deferred(self, room_id: str, reason: str) -> None:
+        """Log once per blocker that a due firmware reboot waits for it.
+
+        A deferral longer than ``REBOOT_DEFERRAL_ALERT_S`` is logged once as
+        an error: an activity flag that never clears would otherwise keep the
+        reboot away forever with a single info line (T048-U1-RV1 F3).
+        """
+        now = self._microphone_monotonic()
+        deferral = self._xvf_reboot_deferred.get(room_id)
+        if deferral is None:
+            deferral = self._xvf_reboot_deferred[room_id] = _RebootDeferral(reason, now)
+            logger.info(f"[audio-watchdog] {room_id}: XVF firmware reboot deferred ({reason})")
+        elif deferral.reason != reason:
+            deferral.reason = reason
+            logger.info(f"[audio-watchdog] {room_id}: XVF firmware reboot deferred ({reason})")
+        if not deferral.escalated and now - deferral.since >= REBOOT_DEFERRAL_ALERT_S:
+            deferral.escalated = True
+            logger.error(
+                f"[audio-watchdog] {room_id}: XVF firmware reboot deferred for "
+                f"{now - deferral.since:.0f}s ({reason}); capture is still dead and only the "
+                "ordinary reopen runs; check whether that activity is stuck"
+            )
+
+    def _recover_dead_streams(self, stale: list[str]) -> None:
+        """Route rooms whose stream delivers no audio to a reboot or the recovery.
+
+        A room whose ordinary recovery already failed the configured number
+        of times gets a firmware reboot of its own XVF3800 instead, unless a
+        command, conversation or response is active: then the reboot waits
+        and the room keeps the ordinary recovery it had before T048-U1.
+        Rooms over the hourly cap, or without a usable controller, keep the
+        ordinary recovery too.
+
+        Args:
+            stale: Rooms the watchdog found without audio.
+        """
+        budget = self._xvf_reboot_budget
+        ordinary = []
+        for room_id in stale:
+            decision = budget.decide(room_id)
+            if decision is XvfRebootDecision.REBOOT:
+                if self._xvf_reboot_controller(room_id) is None:
+                    if room_id not in self._xvf_reboot_unavailable:
+                        self._xvf_reboot_unavailable.add(room_id)
+                        logger.warning(
+                            f"[audio-watchdog] {room_id}: capture dead after "
+                            f"{budget.failures(room_id)} reopens but the room has no XVF "
+                            "controller bound to its mic port; firmware reboot unavailable"
+                        )
+                    ordinary.append(room_id)
+                    continue
+                reason = self._catalog_refresh_blocker()
+                if reason is not None:
+                    # Keep the ordinary recovery meanwhile, exactly as before
+                    # T048-U1: the room is never left worse off than without
+                    # the reboot, even if the activity flag sticks (RV1 F3).
+                    self._note_xvf_reboot_deferred(room_id, reason)
+                    ordinary.append(room_id)
+                    continue
+                # One recovery owner at a time: a busy owner retries next check.
+                self._schedule_recovery([room_id], xvf_reboot=True)
+                continue
+            if decision is XvfRebootDecision.CAPPED and budget.report_cap(room_id):
+                logger.error(
+                    f"[audio-watchdog] {room_id}: isochronous capture still dead after "
+                    f"{budget.reboots_in_window(room_id)} XVF firmware reboots in the last hour "
+                    f"(cap {budget.policy.max_per_hour}); no more reboots for now: physically "
+                    f"unplug and replug the microphone at USB port "
+                    f"{self._xvf_room_port(room_id) or self.room_streams[room_id].mic_usb_port}"
+                )
+            ordinary.append(room_id)
+        if not ordinary:
+            return
+        openings = {room_id: self.room_streams[room_id].opened_ts for room_id in ordinary}
+        if self._schedule_recovery(ordinary):
+            for room_id, opening in openings.items():
+                budget.note_recovery(room_id, opening)
 
 
     async def run(self):

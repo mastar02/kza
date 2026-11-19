@@ -32,6 +32,14 @@ def test_capture_projection_only_returns_diagnostic_settings():
     assert 'private' not in json.dumps(result)
 
 
+def test_capture_projection_shows_the_xvf_reboot_policy():
+    """T048-U1-RV1 F4: operators see the effective firmware-reboot policy."""
+    watchdog = {'enabled': True, 'xvf_reboot_enabled': True, 'xvf_reboot_after_failures': 2,
+                'xvf_reboot_max_per_hour': 3, 'xvf_reboot_settle_s': 10.0}
+    result = diagnostics._capture_settings({'rooms': {'stream_watchdog': watchdog}})
+    assert {key: result['watchdog'][key] for key in watchdog} == watchdog
+
+
 def test_ssh_requested_commands_and_cli_arguments_are_never_executed(monkeypatch, capsys):
     monkeypatch.setenv('SSH_ORIGINAL_COMMAND', 'touch /tmp/forbidden-diagnostic-write')
     monkeypatch.setattr('sys.argv', ['tool.pyc', '--file', '/home/kza/secrets/.env'])

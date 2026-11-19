@@ -70,6 +70,9 @@ class UsbMicrophone:
     product: str | None = None
     alsa_card: int | None = None
     observed_at: float | None = None
+    # Kernel device number on its bus; a new value at the same port means the
+    # device re-enumerated (replug or firmware reboot).
+    devnum: int | None = None
 
 
 @dataclass(frozen=True)
@@ -251,9 +254,11 @@ def read_usb_microphones(usb_root: Path) -> UsbInventory:
             # Multiple sound cards under one physical USB device cannot be
             # assigned by arbitrarily taking the first directory entry.
             card = port_cards[0] if len(set(port_cards)) == 1 else None
+            devnum = _attribute(device, "devnum")
             devices.append(UsbMicrophone(
                 usb_port=port, serial=_attribute(device, "serial"),
                 product=_attribute(device, "product"), alsa_card=card,
+                devnum=int(devnum) if devnum is not None and devnum.isdigit() else None,
             ))
     except OSError:
         success = False

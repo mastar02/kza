@@ -149,14 +149,17 @@ def load_config(config_path: str = "config/settings.yaml") -> dict:
 
 def _build_xvf_controllers(
     room_streams: dict, spe_cfg: dict, tuning_cfg: dict, direction_room_ids: tuple[str, ...],
+    reboot_enabled: bool = False,
 ) -> dict:
-    """Construct one port-bound controller per room needing gate, tuning, or DoA.
+    """Construct one port-bound controller per room needing gate, tuning, reboot or DoA.
 
     Construction never opens USB or starts the legacy SPENERGY poller.
+    ``reboot_enabled`` (T048-U1) needs a controller per mic to send the
+    firmware reboot to a stuck XVF3800.
     """
     from src.audio.xvf_controller import XvfController
 
-    legacy_needed = spe_cfg.get('enabled', False) or (
+    legacy_needed = spe_cfg.get('enabled', False) or reboot_enabled or (
         tuning_cfg.get('apply_on_start', False) and tuning_cfg.get('params')
     )
     controllers = {}
@@ -1452,8 +1455,17 @@ async def build_application(
             _, direction_room_ids, _ = parse_direction_observation(
                 direction_cfg, room_context_manager.get_all_rooms(),
             )
+            # Firmware reboot of a stuck XVF3800 (T048-U1, incident 2026-11-19).
+            from src.audio.xvf_recovery import XvfRebootPolicy
+            xvf_reboot_policy = XvfRebootPolicy(
+                enabled=watchdog_cfg.get("xvf_reboot_enabled", False),
+                failures_before_reboot=watchdog_cfg.get("xvf_reboot_after_failures", 2),
+                max_per_hour=watchdog_cfg.get("xvf_reboot_max_per_hour", 3),
+                settle_s=watchdog_cfg.get("xvf_reboot_settle_s", 10.0),
+            )
             xvf_controllers = _build_xvf_controllers(
                 room_streams, spe_cfg, tuning_cfg, direction_room_ids,
+                reboot_enabled=xvf_reboot_policy.enabled,
             )
             # AmbientGuard (spec 2026-06-05): compuerta acústica integral.
             # Default enabled=false → pasivo. Umbrales: ver settings.yaml.
@@ -1560,6 +1572,7 @@ async def build_application(
                 stream_watchdog_catalog_refresh_max_interval_s=watchdog_cfg.get(
                     "catalog_refresh_max_interval_s", 3600.0
                 ),
+                xvf_reboot_policy=xvf_reboot_policy,
                 audio_health_path=watchdog_cfg.get(
                     "health_path", "./data/audio_health.json"
                 ),
