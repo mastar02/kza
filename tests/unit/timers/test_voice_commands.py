@@ -485,6 +485,30 @@ async def test_the_stop_that_follows_a_barge_in_names_that_ring(manager, ended_a
     assert pasta.ring is RingDelivery.STOPPED
 
 
+@pytest.mark.parametrize("receipt", [RingDelivery.DELIVERED, RingDelivery.RING_FAILED, RingDelivery.UNDELIVERED])
+@pytest.mark.parametrize("text", ["cancelá el timer", "pará el timer"])
+async def test_a_ring_that_ended_on_its_own_opens_no_follow_up(manager, receipt, text):
+    """Review T030-U2-RV2: only a ring the household cut (STOPPED) is named by the next stop; after a ring
+    that played out or failed, the stop cancels the running timer and never claims 'Paré'."""
+    pasta = manager.create_timer("pasta", 300)
+    salsa = manager.create_timer("salsa", 600)
+    pasta.state, pasta.ring, pasta.ring_ended_at = TimerState.COMPLETED, receipt, manager.frozen.now
+    manager.frozen.now += 10.0
+    reply = await say(TimerVoiceCommands(manager), text)
+    assert reply.response == "Cancelé el temporizador de salsa." and salsa.state is TimerState.CANCELLED
+    assert (reply.outcome.status, reply.outcome.persistence) == (TaskStatus.COMPLETED, PersistenceState.VOLATILE)
+    assert pasta.ring is receipt
+
+
+async def test_a_stop_after_a_ring_that_played_out_with_nothing_running_is_not_a_false_stop(manager):
+    """Review T030-U2-RV2: nothing sounds and nothing runs, so nothing is claimed."""
+    pasta = manager.create_timer("pasta", 300)
+    pasta.state, pasta.ring, pasta.ring_ended_at = TimerState.COMPLETED, RingDelivery.DELIVERED, manager.frozen.now
+    manager.frozen.now += 5.0
+    reply = await say(TimerVoiceCommands(manager), "pará el timer")
+    assert (reply.response, reply.outcome.status, reply.no_match) == (NO_ACTIVE, TaskStatus.NEEDS_INPUT, True)
+
+
 async def test_a_ring_nobody_heard_is_said_once_in_the_next_query(manager):
     """A failed ring is never a silent completion (T030-U2)."""
     commands = TimerVoiceCommands(manager)

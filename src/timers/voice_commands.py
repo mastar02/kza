@@ -19,9 +19,11 @@ Rules:
 * Timers are volatile until SCHEMA-V2 (T030-U3): a completed change reports
   ``PersistenceState.VOLATILE``, never COMMITTED.
 * A cancel/stop/disable while a timer rings, or within ``RING_FOLLOW_UP_S``
-  after its ring ended (a barge-in already cut it), silences that ring and
-  touches no other timer (T030-U2, C02-TIM-0007). "cancelá todos los timers"
-  also silences every ring.
+  after the household cut its ring (receipt STOPPED: a barge-in or an earlier
+  stop), silences that ring and touches no other timer (T030-U2,
+  C02-TIM-0007). A ring that ended on its own (delivered, failed, undelivered)
+  opens no follow-up: the command then cancels as in T030-U1.
+  "cancelá todos los timers" also silences every ring.
 * A ring nobody heard (receipt ring_failed/undelivered) is said once in the
   next general query, so a failed ring is never a silent completion (T030-U2).
 * Labels are household content and are never logged above DEBUG.
@@ -35,7 +37,14 @@ from dataclasses import dataclass
 from src.core.task_outcome import DispatchState, EffectState, PersistenceState, TaskOutcome, TaskStatus
 from src.home_assistant.control_policy import HomeActor
 from src.nlu.household_intents import HouseholdOperation
-from src.timers.named_timers import RING_FOLLOW_UP_S, RING_NOT_HEARD, NamedTimer, NamedTimerManager, TimerState
+from src.timers.named_timers import (
+    RING_FOLLOW_UP_S,
+    RING_NOT_HEARD,
+    NamedTimer,
+    NamedTimerManager,
+    RingDelivery,
+    TimerState,
+)
 from src.timers.voice_request import (
     TimerRequestIssue,
     TimerSelector,
@@ -160,7 +169,7 @@ class TimerVoiceCommands:
         if operation is HouseholdOperation.QUERY:
             return self._query(selector)
         if operation in (HouseholdOperation.CANCEL, HouseholdOperation.STOP, HouseholdOperation.DISABLE):
-            rung = self._select(selector, self.manager.ringing_timers(within_s=RING_FOLLOW_UP_S))
+            rung = self._rings_to_silence(selector)
             if rung and not every:
                 return await self._silence(rung)
             silenced = await self._silence(rung) if rung else None
@@ -182,6 +191,19 @@ class TimerVoiceCommands:
                         TaskStatus.NEEDS_INPUT)
 
     # ------------------------------------------------------------------
+
+    def _rings_to_silence(self, selector: TimerSelector) -> list[NamedTimer]:
+        """Rings a stop names: those sounding, else those the household cut less than ``RING_FOLLOW_UP_S`` ago.
+
+        Only a cut ring (receipt STOPPED) opens the follow-up: the command heard right after a
+        barge-in must not cancel another timer. A ring that played out, failed or was never heard
+        stopped on its own, so a later stop is about the timers still running (review T030-U2-RV2).
+        """
+        sounding = self._select(selector, self.manager.ringing_timers())
+        if sounding:
+            return sounding
+        recent = self.manager.ringing_timers(within_s=RING_FOLLOW_UP_S)
+        return self._select(selector, [t for t in recent if t.ring is RingDelivery.STOPPED])
 
     async def _silence(self, rung: list[NamedTimer]) -> TimerVoiceReply:
         """Stop the rings of ``rung`` (a ring already cut by a barge-in stays silent)."""

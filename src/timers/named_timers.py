@@ -48,8 +48,8 @@ RING_REPEATS = 3
 RING_GAP_S = 2.0
 # A warning found this late (the loop was stalled) would name a wrong time left: it is skipped.
 WARNING_STALE_S = 5.0
-# A stop command this soon after a ring ended (barge-in already cut it) still names that ring,
-# so it never falls through to cancelling another running timer.
+# A stop command this soon after the household cut a ring (barge-in, receipt STOPPED) still names
+# that ring, so it never falls through to cancelling another running timer (voice_commands).
 RING_FOLLOW_UP_S = 30.0
 
 
