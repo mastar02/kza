@@ -309,7 +309,13 @@ async def test_routine_questions_without_a_clear_own_wake_keep_the_7b_veto(leave
         async with AsyncExitStack() as stack:
             graph, veto = await graph_with_rejecting_7b(stack, tmp_path, url, leaves)
             reads = count_reads(monkeypatch, graph.routine_scheduler.store)
-            for text, _ in ROUTINE_QUESTIONS:
+            household = graph.pipeline.request_router.household_intents
+            texts = [text for text, _ in ROUTINE_QUESTIONS
+                     # An untagged capture is not a TV signal for the household layer (P3-F2 S6), which answers
+                     # a short claimed turn ('qué rutinas hay') with no veto; only unclaimed ones reach the 7B.
+                     if capture != "untagged" or household.classify(text) is None]
+            assert len(texts) >= len(ROUTINE_QUESTIONS) - 1
+            for text in texts:
                 graph.models.stt.text = text
                 veto.classify.reset_mock()
                 result = await graph.pipeline.process_command(captured(**WITHOUT_A_CLEAR_OWN_WAKE[capture]))
