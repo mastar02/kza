@@ -144,6 +144,13 @@ def test_the_first_transition_is_rechecked_against_the_b_that_w8_measures():
     assert round((600 - t_copy - stops - 10) / 3, 1) == 136.8
 
 
+def test_the_owner_compaction_runbook_keeps_the_recompute_with_w8_b_caveat():
+    """SC6B-B-M1-RV2: 'posteriores, 60' holds with B ~ 146 s only; the step points to the release runbook."""
+    flat = _flat(COMPACTION_RUNBOOK.read_text())
+    assert "transiciones posteriores, 60. Esos N valen con B ≈ 146 s: si W8 mide otro B, se recalculan con ese B" in flat
+    assert "(paso 6 y «Presupuesto de bajada» en el runbook del modo release)" in flat
+
+
 def test_deployment_carries_the_per_path_table_and_the_accepted_overrun():
     text = DEPLOYMENT.read_text()
     n_rule = _bullet(text, "**N del modo release (SC4A-N14).**")
