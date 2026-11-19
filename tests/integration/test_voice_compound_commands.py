@@ -335,3 +335,17 @@ async def test_failed_part_does_not_stop_an_independent_later_part(graph):
         ("not_done", "failed", "not_sent"), ("done", "completed", "accepted")]
     assert result["outcome"]["status"] == "failed" and result["outcome"]["dispatch"] == "partial"
     graph.handler.play_earcon.assert_not_called()
+
+
+async def test_part_without_a_found_device_asks_and_never_falls_back_to_a_model(graph):
+    """The vector search finds no fan: that part asks; neither the 7B nor the LLM chooses its target."""
+    dispatcher = graph.orchestrator.dispatcher
+    dispatcher.router = MagicMock()
+    dispatcher.router.complete = AsyncMock(return_value="hola")
+    dispatcher._slow_path = AsyncMock(side_effect=AssertionError("LLM reached"))
+    result = await graph.turn("apagá el ventilador y pausá la música")
+    assert graph.effects() == effects(vector_searches=1, music_calls=1, spoken_utterances=1)
+    dispatcher.router.complete.assert_not_awaited()
+    assert [(p["verdict"], p["task_status"], p["dispatch"]) for p in result["compound_parts"]] == [
+        ("not_done", "needs_input", "not_sent"), ("done", "completed", "accepted")]
+    assert graph.spoken().startswith("Apagá el ventilador: no lo hice. No encontré ese dispositivo.")
