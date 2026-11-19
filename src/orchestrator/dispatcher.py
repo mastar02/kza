@@ -788,9 +788,11 @@ class RequestDispatcher:
     # Review T037-U2-RV4: "el tiempo de(l) <algo>" is the weather only when
     # <algo> is a day or a period ("el tiempo de mañana", "del sábado", "del
     # fin de semana"); "el tiempo del temporizador" is a duration. Applied to
-    # the "el tiempo" keywords only, on accent-free text.
+    # the "el tiempo" keywords only, on accent-free text. T037-U2b (fix
+    # verification FV-L4): a place outside ("el tiempo de afuera") and "el
+    # tiempo del día (de hoy)" are the weather too.
     _TIEMPO_OF_SOMETHING_RE = re.compile(
-        r"\bel tiempo del? (?!(?:hoy|manana|pasado|esta|este|fin|finde|proxim\w*"
+        r"\bel tiempo del? (?!(?:hoy|manana|pasado|esta|este|fin|finde|proxim\w*|afuera|fuera|dia"
         r"|la (?:manana|tarde|noche|semana)"
         r"|lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b)"
     )

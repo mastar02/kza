@@ -1018,6 +1018,9 @@ def _ahead(offset):
     ("poné la temperatura en 22", PathType.FAST_DOMOTICS, None),
     ("bajá la temperatura del living", PathType.FAST_DOMOTICS, None),
     # FV-L4: "el tiempo de afuera" and "el tiempo del día de hoy" are the weather again.
+    ("cómo está el tiempo de afuera", PathType.FAST_WEATHER, WeatherHorizon(HorizonKind.CURRENT)),
+    ("cómo está el tiempo del día de hoy", PathType.FAST_WEATHER, WeatherHorizon(HorizonKind.CURRENT)),
+    ("¿cómo va a estar el tiempo del día de mañana?", PathType.FAST_WEATHER, _ahead(1)),
     # Neighbours: "tiempo" as a duration stays out of the weather path.
     ("cómo está el tiempo del temporizador", PathType.SLOW_LLM, None),
     ("cómo está el tiempo de cocción", PathType.SLOW_LLM, None),
