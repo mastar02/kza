@@ -7,7 +7,8 @@ A2), `operator_procedure`, `crash_table` y la unidad SC-5b. Decisiones del
 usuario: SC-D2, SC-D4, SC-D5, SC-D6, SC-D7 y SC-D8 = A
 (`u3b_sc_release_mode_questions`), SC4B-Q1 y SC4B-Q2
 (`sc4b_questions_20261116`), SC4C-Q1, SC4C-Q2b y SC4C-Q6, y SC5B-Q1 y
-SC5B-Q2 (`batch_f_questions_20261117`), todas en
+SC5B-Q2 (`batch_f_questions_20261117`), y SC6B-B-M1
+(`morning_questions_20261119`), todas en
 `data/autonomous-roadmap-20261102/t040-t041/user-decisions-20261110.json`
 (local, fuera de Git). Los comandos y códigos de rechazo son los de
 `scripts/stage_runtime.py`, `scripts/compaction.py` y
@@ -108,11 +109,20 @@ Todas estas condiciones, antes de la primera transición:
 - **Presupuesto de bajada (SC-D2 A).** Como mucho 10 minutos sin servicio
   por transición, desde que se detiene la unidad hasta el `READY` del head
   nuevo (o de H después de un abort sin pérdida), con el T0 y su arranque de
-  H incluidos. Con los valores medidos hoy (T_copy ≈ 146 s, arranque hasta
-  `READY` B ≈ 146 s) la primera transición, con T0, usa N = 10. Anotar las
-  horas de la parada y del `READY`; si pasan los 10 minutos, se anota y el
-  diseño se revisa antes de la próxima transición. Las paradas SS, HD, CI,
-  T0F y PA quedan fuera del presupuesto: van por la regla de 48 horas.
+  H incluidos. Medido por SC-6b a tamaño de producción (2026-11-19): T_copy
+  163–165 s y paradas 14,7 s con T0 (9,5–9,7 s sin T0). Con el arranque hasta
+  `READY` B ≈ 146 s de la compuerta de W8, la primera transición, con T0
+  (tres arranques), da D ≈ 660 s (unos 11 minutos) con N = 10; las
+  posteriores, con N = 60, D ≈ 554 s (retiro) o ≈ 533 s (abort sin pérdida).
+  **Primera transición (decisión del usuario SC6B-B-M1, 2026-11-19):** puede
+  pasar los 10 minutos una sola vez y usa N = 10 (`--smoke-seconds 10`),
+  aunque la fórmula del paso 6 da 600 − 164,8 − 3 × 146 − 14,7 = −17,5 y la
+  rechazaría (menos de 10). Las transiciones posteriores siguen dentro de los
+  600 s. En cada transición, anotar las horas de la parada y del `READY`; si
+  la primera pasa los ≈ 11 minutos proyectados, o una posterior pasa los 10,
+  se anota y el diseño se revisa antes de la próxima transición. Las paradas
+  SS, HD, CI, T0F y PA quedan fuera del presupuesto: van por la regla de 48
+  horas.
 - **Regla de 48 horas.** Ver «Decisión escrita cada 48 horas» al final. Vale
   para todo período con la unidad deshabilitada.
 
@@ -392,8 +402,14 @@ systemctl --user show -p ActiveState kza-voice.service   # esperar ActiveState=i
 ```
 
 N va de 10 a 60 y es obligatorio
-(`runtime_admission_compaction_release_smoke_seconds`): N = min(60, 600 −
-T_copy − arranques × B − paradas); la primera transición, con T0, usa 10. No
+(`runtime_admission_compaction_release_smoke_seconds`); la herramienta sólo
+controla ese rango y no calcula la fórmula del diseño, N = min(60, 600 −
+T_copy − arranques × B − paradas). **Primera transición, con T0:**
+`--smoke-seconds 10`. La fórmula da −17,5 y la rechazaría; el operador pasa
+igual 10 por la decisión SC6B-B-M1 (ver «Presupuesto de bajada»), y la
+herramienta lo acepta. **Transiciones posteriores:** con los valores de hoy
+la fórmula da ≈ 135, así que `--smoke-seconds 60`; si W8 mide otro B, se
+recalcula con ese B. No
 habilitar la unidad, no detenerla a mano y no usar el panel: `serve` arranca
 NUEVO sin panel, micrófono, rutinas ni recordatorios, mide N segundos desde
 el `READY` reconocido y lo detiene.
