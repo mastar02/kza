@@ -351,3 +351,26 @@ async def test_other_turns_on_a_clear_own_wake_still_meet_the_7b(leaves, tmp_pat
             assert result["success"] is False and result["response"] == ""
             assert reads == []
             assert observed["service_calls"] == 0
+
+
+@pytest.mark.parametrize("text", [
+    "decime las rutinas y prendé la luz",
+    "decime las rutinas y abrí la puerta",
+])
+async def test_compound_turns_naming_the_routines_keep_the_household_veto(leaves, tmp_path, monkeypatch, text):
+    """T033-U1b-RV2: a compound the household layer claims (R5) is not a routine query, so even on a clear own
+    wake a turn over unvetoed_max_words meets its 7B veto; a rejecting 7B ends it silently with no read or action."""
+    async with offline_home() as (url, observed):
+        async with AsyncExitStack() as stack:
+            graph, veto = await graph_with_rejecting_7b(stack, tmp_path, url, leaves)
+            router = graph.pipeline.request_router
+            assert router.household_intents.classify(text).family.value == "compound"
+            assert router.voice_routines.claims(text)
+            reads = count_reads(monkeypatch, graph.routine_scheduler.store)
+            graph.models.stt.text = text
+            result = await graph.pipeline.process_command(captured(**OWN_WAKE))
+            assert veto.classify.await_count == 1
+            assert result["intent"] == "llm_rejected:household"
+            assert result["success"] is False and result["response"] == ""
+            assert reads == []
+            assert observed["service_calls"] == 0
