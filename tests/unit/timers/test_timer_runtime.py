@@ -278,9 +278,9 @@ async def test_no_audio_after_a_timer_is_cancelled_during_its_warning():
 
 async def test_stop_cancels_and_awaits_every_warning_and_ring():
     clock, output, timers = await _manager()
-    ringing = timers.create_timer("pasta", 5)
-    warning = timers.create_timer("salsa", 66)
-    await clock.advance(6.5)  # pasta rings, salsa's warning is speaking
+    ringing = timers.create_timer("pasta", 125)
+    warning = timers.create_timer("salsa", 185)  # its 1-minute warning comes due when pasta rings
+    await clock.advance(125.5)  # pasta rings, salsa's warning is speaking
     assert len(_manager_tasks()) == 3 and timers.get_status()["delivery_tasks"] == 2
     await timers.stop()
     assert _manager_tasks() == [] and timers.running is False
