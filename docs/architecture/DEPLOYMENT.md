@@ -1079,9 +1079,15 @@ ninguna transición gestionada existe hasta cerrar el resto del modo release
   menos de 10. Por eso un log del modo release no tiene N por omisión
   (`compact verify` sin `--smoke-seconds` rechaza
   `runtime_admission_compaction_release_smoke_seconds`) y rechaza N > 60.
-  Con los valores de hoy (T_copy ≈ 146 s, B ≈ 146 s de la compuerta de W8):
-  primera transición, con T0, N ≈ 10 s; transiciones posteriores, N ≤ 60 s.
-  SC-6b fija el valor por omisión con los B y T_copy medidos.
+  La herramienta sólo controla 10 ≤ N ≤ 60; la fórmula no la calcula. Con
+  los valores medidos por SC-6b a tamaño de producción (T_copy 163–165 s,
+  paradas 14,7 s con T0) y B ≈ 146 s de la compuerta de W8, la primera
+  transición, con T0, da 600 − 164,8 − 3 × 146 − 14,7 = −17,5: la fórmula
+  la rechazaría (menos de 10). El operador pasa igual `--smoke-seconds 10`
+  por la decisión del usuario SC6B-B-M1 (2026-11-19), que acepta pasar una
+  vez el presupuesto (D ≈ 660 s); las transiciones posteriores dan ≈ 135 s,
+  así que N = 60, y siguen dentro de 600 s. Detalle en «Medición de bajada y
+  disco (SC-6b)».
 
 **Compuerta de release hasta SC-4b (SC4A-N13, revisión RA-1/RB-1), levantada
 por SC-4b.** Sin W, después de la corrida no había salida por la herramienta
@@ -1554,6 +1560,40 @@ en 0 en el paso 0). Lo que el operador tiene que saber de antemano:
 
 Tests: `tests/unit/tools/test_sc5b_docs.py` (comandos y códigos del runbook
 contra el código, el orden de los pasos y las salidas).
+
+### Medición de bajada y disco (SC-6b) — 2026-11-19
+
+Medición de la unidad SC-6b-B en una ventana sola en el servidor (como
+`yo`, head c70a8c20, sin otro pytest en curso, `kza-voice` de producción
+sirviendo como siempre), con un H de tamaño de producción: 500 000 eventos y
+250 000 enunciados (154 MB de estado). Los arranques son del stub de los
+ensayos (6,7–6,8 s cada uno), no del servicio real; N = 10. Evidencia:
+`data/autonomous-roadmap-20261102/sc6b/solo-20261119/RESULT.md` y
+`sc6b-measurements.json` (locales, fuera de Git).
+
+| Camino | Arranques (stub) | D medido | T_copy | Paradas | Disco: pico / necesidad de P9 | Después del retiro o abort | D con B ≈ 146 s |
+|---|---|---|---|---|---|---|---|
+| A: primera, con T0 | 3 (20,2 s) | 242,6 s | 164,8 s | 14,7 s | 924 / 1243 MB | 13,1 MB | ≈ 660 s |
+| B: posterior, sin T0 | 2 (13,3 s) | 225,5 s | 163,2 s | 9,5 s | 883 / 1216 MB | 0,3 MB | ≈ 504 s |
+| C: abort sin pérdida | 2 (13,4 s) | 204,2 s | 162,7 s | 9,7 s | 882 / 1216 MB | 0,4 MB | ≈ 483 s |
+
+- **D con el arranque real.** La última columna cambia los arranques del
+  stub por B ≈ 146 s (compuerta de W8, todavía sin medir en R1) con N = 10.
+  Con N = 60, B da ≈ 554 s y C ≈ 533 s. El valor de «N ≈ 10» que daba esta
+  página antes ya no vale: T_copy a tamaño de producción es 163–165 s (no
+  146 s) y las tres paradas de A suman 14,7 s.
+- **Fórmula de N.** A: 600 − 164,8 − 3 × 146 − 14,7 = −17,5, que la
+  fórmula rechaza (menos de 10). B y C: ≈ 135 s, así que N = 60. A cabe en
+  los 600 s sólo con B ≤ 125,8 s, y N ≥ 10 necesita B ≤ 136,8 s.
+- **Presupuesto superado una vez, aceptado (SC6B-B-M1, respuesta del
+  usuario del 2026-11-19, `morning_questions_20261119`).** La primera
+  transición gestionada, con T0, puede pasar una vez los 10 minutos de
+  SC-D2 A (≈ 660 s, unos 11 minutos) y usa `--smoke-seconds 10`, que la
+  herramienta acepta; las transiciones posteriores siguen dentro de 600 s.
+  No fue la opción recomendada (medir antes B en W8 de R1). Ni el código ni
+  la aserción del presupuesto del ensayo cambiaron.
+- **Disco.** En los tres caminos el pico del sistema de archivos queda
+  dentro de la necesidad que calcula P9.
 
 ### Filas PA y DR (SC-PA-DR)
 
