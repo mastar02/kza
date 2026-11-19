@@ -405,3 +405,135 @@ class TestUsbPortBinding:
         c = XvfController(usb_port="5-5.4")
         assert c.open() is False
         assert c._dev is None
+
+
+# ============================================================
+# Firmware REBOOT (T048-U1, incidente 2026-11-19): un XVF3800 con el endpoint
+# isócrono trabado solo se recuperó con el comando REBOOT del firmware. Es un
+# método deliberado, separado de write_param, y sigue fuera de PARAMETERS.
+# ============================================================
+
+import time
+
+from src.audio.xvf_controller import XvfRebootOutcome, XvfRebootResult
+
+
+class FakeBusDev(FakeUsbDev):
+    """Device pyusb falso con dirección USB y control transfers registrados."""
+
+    def __init__(self, bus, port_numbers, address, raise_exc=None):
+        super().__init__(bus, port_numbers)
+        self.address = address
+        self.raise_exc = raise_exc
+        self.transfers = []
+
+    def ctrl_transfer(self, bm, brequest, wvalue, windex, data_or_length, timeout):
+        self.transfers.append((bm, brequest, wvalue, windex, bytes(data_or_length), timeout))
+        if self.raise_exc is not None:
+            raise self.raise_exc
+        return len(data_or_length)
+
+
+class _Bus:
+    """usb.core falso cuyo contenido cambia entre llamadas a find()."""
+
+    def __init__(self, monkeypatch, states):
+        self.states = list(states)  # una lista de devices por find()
+        self.calls = 0
+        core = types.ModuleType("usb.core")
+        core.find = self.find
+        pkg = types.ModuleType("usb")
+        pkg.core = core
+        monkeypatch.setitem(sys.modules, "usb", pkg)
+        monkeypatch.setitem(sys.modules, "usb.core", core)
+
+    def find(self, *, idVendor=None, idProduct=None, custom_match=None, **kw):
+        devices = self.states[min(self.calls, len(self.states) - 1)]
+        self.calls += 1
+        for d in devices:
+            if custom_match is None or custom_match(d):
+                return d
+        return None
+
+
+class TestFirmwareReboot:
+    def test_reboot_payload_and_addressing_are_exact(self, monkeypatch):
+        other = FakeBusDev(3, (1, 4), address=4)
+        target = FakeBusDev(7, (5, 3), address=9)
+        _Bus(monkeypatch, [[other, target]])
+        c = XvfController(usb_port="7-5.3")
+        result = c.reboot()
+        assert result == XvfRebootResult(XvfRebootOutcome.SENT, previous_address=9)
+        # vendor OUT (0x40), bRequest 0, wValue = cmdid 7, wIndex = resid 48,
+        # payload = un uint8 con valor 1.
+        assert [t[:5] for t in target.transfers] == [(0x40, 0, 7, 48, b"\x01")]
+        assert other.transfers == []  # solo el device de ESTA room
+        assert c._dev is None  # el handle viejo se retira
+
+    def test_reboot_is_not_reachable_through_parameters(self):
+        for name in ("REBOOT", "SAVE_CONFIGURATION", "CLEAR_CONFIGURATION"):
+            assert name not in PARAMETERS
+            with pytest.raises(ValueError):
+                XvfController(device=FakeRWDev()).write_param(name, [1])
+
+    def test_reboot_ignores_a_stale_cached_handle(self, monkeypatch):
+        stale = FakeBusDev(7, (5, 3), address=9, raise_exc=OSError("No such device"))
+        fresh = FakeBusDev(7, (5, 3), address=12)
+        _Bus(monkeypatch, [[fresh]])
+        c = XvfController(usb_port="7-5.3", device=stale)
+        assert c.reboot().outcome is XvfRebootOutcome.SENT
+        assert stale.transfers == [] and len(fresh.transfers) == 1
+
+    def test_reboot_without_device_fails_open(self, monkeypatch):
+        _Bus(monkeypatch, [[FakeBusDev(3, (1, 4), address=4)]])
+        c = XvfController(usb_port="7-5.3")
+        assert c.reboot() == XvfRebootResult(XvfRebootOutcome.NO_DEVICE)
+
+    def test_reboot_without_pyusb_fails_open(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "usb.core", None)
+        c = XvfController(usb_port="7-5.3")
+        assert c.reboot().outcome is XvfRebootOutcome.NO_DEVICE
+
+    def test_reboot_transfer_error_fails_open_and_retires_the_handle(self, monkeypatch):
+        dev = FakeBusDev(7, (5, 3), address=9, raise_exc=OSError("pipe error"))
+        _Bus(monkeypatch, [[dev]])
+        c = XvfController(usb_port="7-5.3")
+        c._record(5.0, time.time(), c._device_generation)
+        result = c.reboot()
+        assert result == XvfRebootResult(XvfRebootOutcome.USB_ERROR, previous_address=9)
+        assert c._dev is None
+        assert c.peak_since(0) is None  # muestras del device viejo descartadas
+
+    def test_wait_adopts_the_device_with_a_new_address(self, monkeypatch):
+        old = FakeBusDev(7, (5, 3), address=9)
+        new = FakeBusDev(7, (5, 3), address=10)
+        bus = _Bus(monkeypatch, [[old], [], [new]])
+        c = XvfController(usb_port="7-5.3")
+        sleeps = []
+        assert c.wait_reenumerated(9, 5.0, sleep=sleeps.append) is True
+        assert c._dev is new and bus.calls == 3 and len(sleeps) == 2
+
+    def test_wait_with_unknown_address_needs_the_device_to_leave_first(self, monkeypatch):
+        old = FakeBusDev(7, (5, 3), address=9)
+        _Bus(monkeypatch, [[old], [old], [], [old]])
+        c = XvfController(usb_port="7-5.3")
+        assert c.wait_reenumerated(None, 5.0, sleep=lambda _s: None) is True
+        assert c._dev is old
+
+    def test_wait_times_out_when_the_device_never_comes_back(self, monkeypatch):
+        _Bus(monkeypatch, [[]])
+        clock = [0.0]
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        c = XvfController(usb_port="7-5.3")
+        assert c.wait_reenumerated(9, 1.0, poll_interval_s=0.25, sleep=sleep,
+                                   monotonic=lambda: clock[0]) is False
+        assert c._dev is None and clock[0] == pytest.approx(1.0)
+
+    def test_wait_stops_when_the_owner_aborts(self, monkeypatch):
+        bus = _Bus(monkeypatch, [[]])
+        c = XvfController(usb_port="7-5.3")
+        assert c.wait_reenumerated(9, 60.0, abort=lambda: True, sleep=lambda _s: None) is False
+        assert bus.calls == 0

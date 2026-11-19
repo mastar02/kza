@@ -19,6 +19,10 @@ uint8 = 1 byte por valor.
 que persisten o rebootean (SAVE_CONFIGURATION, CLEAR_CONFIGURATION, REBOOT,
 TEST_*) están DELIBERADAMENTE fuera de ``PARAMETERS`` — el issue #8 del repo
 Seeed documenta que ``save_configuration`` puede dejar el device sin enumerar.
+REBOOT existe solo como el método deliberado ``reboot()`` (T048-U1): recupera
+un XVF3800 con el endpoint isócrono trabado (incidente 2026-11-19) y deja el
+DSP en el preset de fábrica, así que el tuning en RAM se re-aplica después.
+SAVE_CONFIGURATION y CLEAR_CONFIGURATION siguen sin exponerse.
 
 Diseño FAIL-OPEN operativo: cualquier problema de hardware/USB (sin device,
 sin permisos, timeout) degrada a None/False sin excepción, de modo que NUNCA
@@ -32,6 +36,7 @@ import struct
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
@@ -106,6 +111,12 @@ _BM_REQUEST_WRITE = 0x40
 _CONTROL_SUCCESS = 0
 _SERVICER_COMMAND_RETRY = 64
 
+# Firmware REBOOT (python_control/xvf_host.py oficial: resid 48, cmdid 7, one
+# uint8 = 1). Deliberately NOT in PARAMETERS: write_param must never reach it.
+_REBOOT_RESID = 48
+_REBOOT_CMDID = 7
+_REBOOT_PAYLOAD = b"\x01"
+
 # Bytes por valor según tipo declarado en PARAMETERS.
 _TYPE_SIZE = {"uint8": 1, "uint16": 2, "int32": 4, "uint32": 4, "float": 4, "radians": 4}
 _TYPE_STRUCT = {"uint16": "H", "int32": "i", "uint32": "I", "float": "f", "radians": "f"}
@@ -131,6 +142,26 @@ class XvfReadResult:
     outcome: XvfReadOutcome
     values: tuple[int | float, ...] | None = None
     device_status: int | None = None
+
+
+class XvfRebootOutcome(str, Enum):
+    """What happened to one firmware REBOOT request."""
+
+    # The control transfer completed: the device is rebooting.
+    SENT = "sent"
+    # No device on the bound port (or pyusb unavailable): nothing was sent.
+    NO_DEVICE = "no_device"
+    # The transfer raised. A device that resets before acknowledging looks
+    # the same, so the caller still watches for a re-enumeration.
+    USB_ERROR = "usb_error"
+
+
+@dataclass(frozen=True)
+class XvfRebootResult:
+    """Outcome of ``XvfController.reboot`` and the address it had before."""
+
+    outcome: XvfRebootOutcome
+    previous_address: int | None = None
 
 # Rangos válidos por parámetro, tomados de las descripciones del xvf_host.py
 # oficial ("Valid range: ..."). Solo se valida lo que el oficial declara;
@@ -253,23 +284,22 @@ class XvfController:
         self._poll_run: _XvfPollRun | None = None
 
     # ---- USB device ----
-    def open(self) -> bool:
-        """Descubre y abre el XVF3800. True si hay device usable. Fail-open."""
-        if self._dev is not None:
-            return True
+    def _locate(self) -> tuple[object | None, str | None]:
+        """Find the device on the bound port without caching it.
+
+        Returns:
+            ``(device, None)`` when found, or ``(None, reason)`` with the
+            warning ``open`` logs. Never raises.
+        """
         try:
             import usb.core
         except Exception as e:  # pyusb no instalado
-            logger.warning(f"pyusb no disponible — SPENERGY gate OFF: {e}")
-            return False
+            return None, f"pyusb no disponible — SPENERGY gate OFF: {e}"
         target = None
         if self.usb_port:
             target = parse_usb_port(self.usb_port)
             if target is None:
-                logger.warning(
-                    f"XVF3800 usb_port {self.usb_port!r} no parseable — gate OFF"
-                )
-                return False
+                return None, f"XVF3800 usb_port {self.usb_port!r} no parseable — gate OFF"
         try:
             if target is None:
                 dev = usb.core.find(idVendor=self.vid, idProduct=self.pid)
@@ -282,16 +312,116 @@ class XvfController:
                     and tuple(getattr(d, "port_numbers", None) or ()) == ports,
                 )
         except Exception as e:  # sin permisos / error de backend
-            logger.warning(f"XVF3800 no accesible (¿udev rule?) — SPENERGY gate OFF: {e}")
-            return False
+            return None, f"XVF3800 no accesible (¿udev rule?) — SPENERGY gate OFF: {e}"
         if dev is None:
             # Con usb_port declarado NO caemos al primer XVF3800 disponible:
             # gatear una room con el SPENERGY de OTRA es peor que no gatear.
             where = f" en {self.usb_port}" if self.usb_port else ""
-            logger.warning(f"XVF3800 no encontrado{where} — SPENERGY gate OFF")
+            return None, f"XVF3800 no encontrado{where} — SPENERGY gate OFF"
+        return dev, None
+
+    def open(self) -> bool:
+        """Descubre y abre el XVF3800. True si hay device usable. Fail-open."""
+        if self._dev is not None:
+            return True
+        dev, problem = self._locate()
+        if dev is None:
+            logger.warning(problem)
             return False
         self._dev = dev
         return True
+
+    def reboot(self) -> XvfRebootResult:
+        """Send the XVF3800 firmware REBOOT command to the bound device.
+
+        Deliberately separate from ``write_param``: REBOOT is not in
+        ``PARAMETERS``. The device leaves the bus and re-enumerates about a
+        second later on the same port with every DSP parameter back at its
+        factory value, so the caller reapplies the RAM tuning afterwards.
+        The device is discovered afresh on the bound port, and the cached
+        handle is retired either way; ``wait_reenumerated``
+        adopts the new device. Blocking: run it off the event loop.
+
+        Returns:
+            The outcome and the USB address the device had, which changes
+            when it re-enumerates. Never raises (fail-open).
+        """
+        with self._usb_lock:
+            # Fresh discovery, never the cached handle: after a replug the
+            # cache may still point to a device that left the bus.
+            dev, problem = self._locate()
+            if dev is None:
+                logger.warning(f"XvfController: REBOOT not sent: {problem}")
+                return XvfRebootResult(XvfRebootOutcome.NO_DEVICE)
+            address = getattr(dev, "address", None)
+            try:
+                dev.ctrl_transfer(
+                    _BM_REQUEST_WRITE, 0, _REBOOT_CMDID, _REBOOT_RESID,
+                    _REBOOT_PAYLOAD, self.read_timeout_ms,
+                )
+            except Exception as e:
+                outcome = XvfRebootOutcome.USB_ERROR
+                logger.warning(f"XvfController: REBOOT transfer on {self.usb_port} failed: {e}")
+            else:
+                outcome = XvfRebootOutcome.SENT
+                logger.info(f"XvfController: firmware REBOOT sent to {self.usb_port}")
+            finally:
+                self._dev = None
+                with self._lock:
+                    self._device_generation += 1
+                    self._samples.clear()
+        return XvfRebootResult(outcome, address if isinstance(address, int) else None)
+
+    def wait_reenumerated(
+        self,
+        previous_address: int | None,
+        timeout_s: float,
+        *,
+        poll_interval_s: float = 0.1,
+        abort: Callable[[], bool] | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> bool:
+        """Wait until the bound port holds a re-enumerated device and adopt it.
+
+        A device counts as re-enumerated when its USB address differs from
+        ``previous_address`` or, when that address is unknown, once it was
+        absent at least once and is back. Blocking: run it off the event loop.
+
+        Args:
+            previous_address: Address reported by ``reboot``.
+            timeout_s: Upper bound for the whole wait.
+            poll_interval_s: Pause between two discoveries.
+            abort: Returns True when the owner no longer wants the result.
+            sleep: Injectable pause (tests).
+            monotonic: Injectable clock (tests).
+
+        Returns:
+            True when the new device was found and cached; False on timeout,
+            abort or any discovery failure (fail-open).
+        """
+        deadline = monotonic() + max(0.0, timeout_s)
+        seen_absent = False
+        while True:
+            if abort is not None and abort():
+                return False
+            dev, _problem = self._locate()
+            if dev is None:
+                seen_absent = True
+            else:
+                address = getattr(dev, "address", None)
+                changed = (previous_address is not None and isinstance(address, int)
+                           and address != previous_address)
+                if changed or seen_absent:
+                    with self._usb_lock:
+                        self._dev = dev
+                        with self._lock:
+                            self._device_generation += 1
+                            self._samples.clear()
+                    return True
+            if monotonic() >= deadline:
+                return False
+            sleep(poll_interval_s)
 
     def invalidate_device(self) -> None:
         """Retire a disconnected handle and cached energy without USB transfers.
