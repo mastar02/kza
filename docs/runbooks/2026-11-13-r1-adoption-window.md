@@ -633,6 +633,13 @@ postergaría; si esa respuesta cambiara, no ejecutarlo.
    `backups.databases` y diez en `superseded_backups.databases`, los tres
    informes en `slot_reports.names` y los dos slots en `superseded_slots`
    (`"exists": true`, con el commit). Anotar `plan_sha256`.
+   - Si alguno de los dos slots de `superseded_slots` o `superseded_backups`
+     dice `"exists": false`, o hay menos de diez nombres en
+     `backups.databases` o en `superseded_backups.databases`, parar y avisar
+     al usuario antes de `--confirm`. El comando tolera la ausencia (la anota
+     en el plan y en el registro), pero en producción (lectura del
+     2026-11-18) están las tres entradas: que falte una sólo puede venir de
+     un cambio manual no registrado.
    - `referenced:<qué>`: `problems` lista todo lo que todavía apunta a los
      slots de b0866e8, e9669ec, 63ea8d3 o 2c5adb4 o a esas bases. Corregirlo
      antes de seguir. No borrar a mano.

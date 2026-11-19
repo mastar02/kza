@@ -1157,8 +1157,9 @@ def test_r1e2_only_the_three_report_files_are_exempt(world, case):
 
 
 @pytest.mark.parametrize("which", ["c63", "older"])
-@pytest.mark.parametrize("case", ["slot_link", "slot_file", "extra_entry", "no_runtime", "commit_prefix",
-                                  "other_commit", "release_link", "release_not_json", "fifo", "mount"])
+@pytest.mark.parametrize("case", ["slot_link", "slot_file", "extra_entry", "no_runtime", "runtime_link",
+                                  "state_link", "commit_prefix", "other_commit", "release_link",
+                                  "release_not_json", "release_list", "fifo", "mount"])
 def test_r1e2_a_superseded_slot_of_any_other_shape_refuses_before_any_deletion(world, monkeypatch, which, case):
     adopted(world)
     name = C63 if which == "c63" else OLDER
@@ -1175,6 +1176,10 @@ def test_r1e2_a_superseded_slot_of_any_other_shape_refuses_before_any_deletion(w
         (slot / "notes.txt").write_text("x")
     elif case == "no_runtime":
         os.rename(slot / "runtime", slot / "runtime-aside")
+    elif case in ("runtime_link", "state_link"):  # review R1E2-RV-3: runtime/ and state/ must be directories
+        part = case.split("_")[0]
+        os.rename(slot / part, world.base / (part + "-aside"))
+        os.symlink(world.base / (part + "-aside"), slot / part)
     elif case == "commit_prefix":
         release.write_text(json.dumps({"git_commit": commit[:7], "files": {}}))
     elif case == "other_commit":
@@ -1184,6 +1189,8 @@ def test_r1e2_a_superseded_slot_of_any_other_shape_refuses_before_any_deletion(w
         os.symlink(world.base / "release-aside.json", release)
     elif case == "release_not_json":
         release.write_text("not json")
+    elif case == "release_list":  # review R1E2-RV-3: JSON that is not an object refuses, never raises
+        release.write_text(json.dumps([commit]))
     elif case == "fifo":
         os.mkfifo(slot / "runtime" / "fifo")
     else:

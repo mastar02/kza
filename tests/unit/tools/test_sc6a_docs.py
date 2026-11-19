@@ -237,7 +237,10 @@ def test_r1e_the_container_is_e9669ec_and_day14_retires_production_s_legacy_entr
                    "el slot `release_20261029T174830709997Z_63ea8d3` entero",
                    "slot `release_20261028T144002Z_2c5adb4` entero", "veinte copias",
                    "L4 sólo sirve el contenedor de e9669ec", "`release_unproven_copy`",
-                   "$R/slots/release_20261028T144002Z_2c5adb4 # todos: No such file or directory"):
+                   "$R/slots/release_20261028T144002Z_2c5adb4 # todos: No such file or directory",
+                   # R1E2-RV-1: an absent entry on day 14 stops the operator before --confirm
+                   'dice `"exists": false`, o hay menos de diez nombres en `backups.databases` o en '
+                   '`superseded_backups.databases`, parar y avisar al usuario antes de `--confirm`'):
         assert needle in flat, needle
     for stale in ("L4 hacia 63ea8d3", "contenedor de 63ea8d3", "Falta que el usuario confirme",
                   "hacen falta además dos decisiones del usuario", "los dos slots con"):
