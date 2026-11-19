@@ -1134,6 +1134,8 @@ def test_device_temperature_questions_never_read_the_forecast(dispatcher, text, 
     "quiero que mantengas la temperatura de mañana en 20",
     # Value before the noun, and the noun first with an enclitic "la".
     "programá a 20 la temperatura de mañana",
+    # Fix verification T037-U2b-FV3: the value with "en" too.
+    "programá en 20 la temperatura de mañana",
     "la temperatura de mañana programala en 20",
     # Fix verification T037-U2b-FV1: a comma after the noun phrase.
     "la temperatura de mañana, programala en 20",
