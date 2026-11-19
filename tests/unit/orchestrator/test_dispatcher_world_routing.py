@@ -1103,3 +1103,50 @@ def test_temperature_keywords_with_a_place_keep_the_room_off_the_outdoor_entity(
 ])
 def test_device_temperature_questions_never_read_the_forecast(dispatcher, text, path):
     assert dispatcher._classify_request(text.lower())[0] is path
+
+
+@pytest.mark.parametrize("text", [
+    # Review T037-U2b-RV3: voseo present and subjunctive request forms of a
+    # setting verb on "la temperatura de/para mañana" are commands.
+    "¿me ajustás la temperatura para mañana a 22?",
+    "¿me programás la temperatura de mañana en 20?",
+    "me programás la temperatura de mañana en 20",
+    "¿me dejás la temperatura de mañana en 20?",
+    "¿me configurás la temperatura de mañana en 21?",
+    "¿me fijás la temperatura de mañana en 20?",
+    "¿me regulás la temperatura de mañana a 19?",
+    "¿me seteás la temperatura para mañana en 22?",
+    "¿me establecés la temperatura de mañana en 20?",
+    "¿me mantenés la temperatura de mañana en 20?",
+    "quiero que programes la temperatura de mañana en 20",
+    "necesito que ajustes la temperatura de mañana a 22",
+    "quiero que configures la temperatura para mañana en 21",
+    "quiero que dejes la temperatura de mañana en 20",
+    "quiero que fijes la temperatura de mañana en 20",
+    "quiero que regules la temperatura de mañana a 19",
+    "quiero que setees la temperatura de mañana en 22",
+    "quiero que establezcas la temperatura de mañana en 20",
+    "quiero que mantengas la temperatura de mañana en 20",
+    # Value before the noun, and the noun first with an enclitic "la".
+    "programá a 20 la temperatura de mañana",
+    "la temperatura de mañana programala en 20",
+    # Imperatives not in the T037-U2b table.
+    "fijá la temperatura de mañana en 20",
+    "establecé la temperatura de mañana en 20",
+    "seteá la temperatura de mañana en 22",
+    "regulá la temperatura de mañana a 19",
+    "mantené la temperatura de mañana en 20",
+    "mantén la temperatura de mañana en 20",
+])
+def test_setting_request_forms_on_tomorrows_temperature_are_not_weather(dispatcher, text):
+    assert dispatcher._classify_request(text.lower())[0] is PathType.SLOW_LLM
+
+
+@pytest.mark.parametrize("text", [
+    # Neighbours: asking for tomorrow's temperature with another verb.
+    "¿me decís la temperatura de mañana?",
+    "fijate la temperatura de mañana",
+    "decime la temperatura para mañana",
+])
+def test_asking_for_tomorrows_temperature_stays_weather(dispatcher, text):
+    assert dispatcher._classify_request(text.lower())[0] is PathType.FAST_WEATHER

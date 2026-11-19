@@ -809,9 +809,17 @@ class RequestDispatcher:
         "temperatura de mañana", "temperatura de manana",
         "temperatura para mañana", "temperatura para manana",
     })
+    # Review T037-U2b-RV3: the Rioplatense request forms too, the voseo
+    # present ("¿me programás la temperatura de mañana?") and the subjunctive
+    # ("quiero que ajustes ..."), a value before the noun ("programá a 20 la
+    # temperatura de mañana") and the noun first with an enclitic "la" ("la
+    # temperatura de mañana programala en 20").
+    _CLIMATE_SETTING_STEMS = r"(?:programa|configura|ajusta|fija|establece|setea|regula|deja|mantene)"
     _CLIMATE_SETTING_COMMAND_RE = re.compile(
-        r"\b(?:(?:programa|configura|ajusta|fija|establece|setea|regula|deja|mantene)r?(?:me|le|nos)?"
-        r"|manten)\s+(?:el|la|los|las)?\s*(?:temperatura|grados)\b"
+        r"\b(?:" + _CLIMATE_SETTING_STEMS + r"(?:r?(?:me|le|nos)?|s)"
+        r"|(?:programe|configure|ajuste|fije|establezca|setee|regule|deje|mantenga)s?|manten)"
+        r"\s+(?:(?:a|en)\s+\d+\s+)?(?:el|la|los|las)?\s*(?:temperatura|grados)\b"
+        r"|\btemperatura (?:de|para) manana\s+" + _CLIMATE_SETTING_STEMS + r"r?(?:me|nos)?la\b"
     )
 
     # Review T037-U2b-RV2: "la temperatura del termostato / del aire" (with
