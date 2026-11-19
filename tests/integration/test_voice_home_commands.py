@@ -20,7 +20,7 @@ from src.rooms.room_context import RoomConfig
 from tests.integration import test_typed_home_operations as typed_fixtures
 
 
-def _build_voice_graph(orchestrator_enabled: bool):
+def _build_voice_graph(orchestrator_enabled: bool, hooks: HookRegistry | None = None):
     ha, actions = typed_fixtures.typed_graph.__wrapped__()
     rooms = {"test_room": RoomConfig("test_room", "Test room", "el salón", aliases=["salón"],
         default_light="light.test_lamp", default_climate="climate.test_ac", default_cover="cover.test_blind")}
@@ -34,7 +34,7 @@ def _build_voice_graph(orchestrator_enabled: bool):
     router = RequestRouter(processor, response_handler_mock(), MagicMock(), orchestrator=orchestrator,
         orchestrator_enabled=orchestrator_enabled, chroma_sync=chroma, ha_client=ha, home_actions=actions,
         home_voice_resolver=HomeVoiceResolver(actions, rooms), user_manager=manager,
-        command_gate=CommandAcceptanceGate(), wake_acoustically_confirmed=True)
+        command_gate=CommandAcceptanceGate(), wake_acoustically_confirmed=True, hooks=hooks)
     return router, ha, actions, processor, chroma
 
 
@@ -292,3 +292,17 @@ async def test_compound_part_failure_has_no_feedback_of_its_own(orchestrated_gra
     assert handler.aspeak.await_count == 1
     reason = "Una regla de la casa lo bloqueó." if failure == "hook_blocked" else "El dispositivo no está disponible."
     assert handler.aspeak.await_args.args[0] == f"Poné el aire a 22 grados: hecho. Abrí la persiana: no lo hice. {reason}"
+
+
+async def test_compound_extended_part_meets_the_hooks_the_router_was_built_with():
+    """T037-U6-FV3: the compound part executor shares the router's hook registry, so a house rule blocks a part."""
+    hooks = HookRegistry()
+    hooks.register_before("before_ha_action", lambda call: BlockResult(
+        reason="Regla de prueba: la persiana no", rule_name="test") if call.domain == "cover" else None,
+        priority=10)
+    graph = _build_voice_graph(True, hooks=hooks)
+    _, ha, _, _, _ = graph
+    result = await speak(graph, "Poné el aire a 22 grados y abrí la persiana")
+    assert ha.sends == [("climate", "set_temperature", "climate.test_ac", {"temperature": 22})]
+    assert [p["verdict"] for p in result["compound_parts"]] == ["done", "not_done"]
+    assert result["compound_parts"][1]["reason"] == "hook_blocked"
