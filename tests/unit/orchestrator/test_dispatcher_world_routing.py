@@ -1130,6 +1130,9 @@ def test_device_temperature_questions_never_read_the_forecast(dispatcher, text, 
     # Value before the noun, and the noun first with an enclitic "la".
     "programá a 20 la temperatura de mañana",
     "la temperatura de mañana programala en 20",
+    # Fix verification T037-U2b-FV1: a comma after the noun phrase.
+    "la temperatura de mañana, programala en 20",
+    "la temperatura para mañana, ajustala a 22",
     # Imperatives not in the T037-U2b table.
     "fijá la temperatura de mañana en 20",
     "establecé la temperatura de mañana en 20",
@@ -1147,6 +1150,10 @@ def test_setting_request_forms_on_tomorrows_temperature_are_not_weather(dispatch
     "¿me decís la temperatura de mañana?",
     "fijate la temperatura de mañana",
     "decime la temperatura para mañana",
+    # Fix verification T037-U2b-FV1: "te fijás" is "fijarse", look it up.
+    "¿te fijás la temperatura de mañana?",
+    "¿te fijás la temperatura para mañana?",
+    "quiero que te fijes la temperatura de mañana",
 ])
 def test_asking_for_tomorrows_temperature_stays_weather(dispatcher, text):
     assert dispatcher._classify_request(text.lower())[0] is PathType.FAST_WEATHER

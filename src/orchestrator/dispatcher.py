@@ -815,13 +815,16 @@ class RequestDispatcher:
     # temperatura de mañana") and the noun first with an enclitic "la" ("la
     # temperatura de mañana programala en 20"). Review T037-U2b-RV4: only
     # "temperatura" is the object; every filtered keyword names it, so
-    # "grados" here was dead code.
+    # "grados" here was dead code. Fix verification T037-U2b-FV1: "te" right
+    # before the verb is "fijarse", asking to look it up ("¿te fijás la
+    # temperatura de mañana?"), not a setting; Whisper may put a comma after
+    # the noun phrase ("la temperatura de mañana, programala en 20").
     _CLIMATE_SETTING_STEMS = r"(?:programa|configura|ajusta|fija|establece|setea|regula|deja|mantene)"
     _CLIMATE_SETTING_COMMAND_RE = re.compile(
-        r"\b(?:" + _CLIMATE_SETTING_STEMS + r"(?:r?(?:me|le|nos)?|s)"
+        r"(?<!\bte )\b(?:" + _CLIMATE_SETTING_STEMS + r"(?:r?(?:me|le|nos)?|s)"
         r"|(?:programe|configure|ajuste|fije|establezca|setee|regule|deje|mantenga)s?|manten)"
         r"\s+(?:(?:a|en)\s+\d+\s+)?(?:el|la|los|las)?\s*temperatura\b"
-        r"|\btemperatura (?:de|para) manana\s+" + _CLIMATE_SETTING_STEMS + r"r?(?:me|nos)?la\b"
+        r"|\btemperatura (?:de|para) manana,?\s+" + _CLIMATE_SETTING_STEMS + r"r?(?:me|nos)?la\b"
     )
 
     # Review T037-U2b-RV2: "la temperatura del termostato / del aire" (with
