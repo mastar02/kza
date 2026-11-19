@@ -70,7 +70,7 @@ async def test_spoken_extended_effect_is_single_exact_and_confirmed(voice_graph,
 
 @pytest.mark.parametrize("text", [
     "Prendé el aire", "Poné el aire a dos tres grados", "Poné el aire a 70°F",
-    "Poné el aire a 22 grados y apagá la luz", "Poné el aire a -20 grados",
+    "Poné el aire a -20 grados",
     "Poné la persiana al -10%", "Bajá la persiana al 101%", "Poné la luz cálida al 0%",
     "Bajá la persiana un poco", "Poné el aire del balcón a 22 grados",
     "Poné el aire a 36 grados", "Poné el aire a 24,2 grados", "Poné la luz a 9000 kelvin",
@@ -199,3 +199,20 @@ async def test_incomplete_capture_does_not_run_stt_or_effect(voice_graph):
     assert result["intent"] == "gate_rejected:incomplete_capture"
     processor.process_command.assert_not_called()
     assert ha.sends == []
+
+
+async def test_compound_runs_its_extended_control_part_only_on_the_orchestrated_path(voice_graph):
+    """T037-U6: the climate part meets the shared selection and runs; the light part finds no device and asks.
+
+    The legacy path has no household layer and still drops the claimed turn silently.
+    """
+    router, ha, _, _, chroma = voice_graph
+    chroma.asearch_command = AsyncMock(return_value=None)
+    result = await speak(voice_graph, "Poné el aire a 22 grados y apagá la luz")
+    if not router.orchestrator_enabled:
+        assert ha.sends == []
+        return
+    assert ha.sends == [("climate", "set_temperature", "climate.test_ac", {"temperature": 22})]
+    assert [(p["verdict"], p["task_status"]) for p in result["compound_parts"]] == [
+        ("done", "completed"), ("not_done", "needs_input")]
+    assert chroma.asearch_command.await_count == 1

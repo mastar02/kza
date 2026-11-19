@@ -136,9 +136,9 @@ C02_ROUTER = (
     _r("C02-DOM-0201", "apagá la luz", "domotics", "completed", "fast_domotics", "completed", "not_required",
        "none", state="light_match", counts=effects(ha_service_calls=1, vector_searches=1),
        effect_class="wrong_family", note="regression: unclaimed domotics keeps the grammar fast path, no 7B call"),
-    _r("C02-CMP-0201", "cancelá el timer y el recordatorio", "compound", "needs_input", "fast_household",
-       "needs_input", "not_written", "clarification", state="queued_request", counts=SPOKEN_ONE,
-       note="interim compound gate until T037-U6"),
+    _r("C02-CMP-0201", "cancelá el timer y el recordatorio", "compound", "failed", "fast_household",
+       "failed", "not_written", "readback", state="queued_request", counts=SPOKEN_ONE, unit="T037-U6",
+       note="T037-U6: each part reaches its family path (nothing to cancel in either); one reply"),
     _r("C02-NTF-0201", "activá el no molestar", "notification", "no_turn", None, None, None, "none",
        llm="stub:turn_on@0.95", state="light_match",
        note="characterized: the gate drops it as non_immediate:negation ('no molestar') before the household "

@@ -846,7 +846,7 @@ def test_grammar_blocker_leaves_other_phrases_alone(text):
 
 def test_settings_from_config_and_validation():
     settings = HouseholdIntentSettings.from_config(None, wake_words=["Nexa", " Kaza "])
-    assert (settings.unvetoed_max_words, settings.compound_max_parts, settings.compound_execute) == (6, 3, False)
+    assert (settings.unvetoed_max_words, settings.compound_max_parts, settings.compound_execute) == (6, 3, True)
     assert settings.wake_words == ("nexa", "kaza")
     custom = HouseholdIntentSettings.from_config({"unvetoed_max_words": 9, "compound_max_parts": 4})
     assert (custom.unvetoed_max_words, custom.compound_max_parts) == (9, 4)
@@ -854,8 +854,9 @@ def test_settings_from_config_and_validation():
                 {"compound_execute": "false"}, {"unvetoed_max_words": True}):
         with pytest.raises(ValueError):
             HouseholdIntentSettings.from_config(bad)
-    with pytest.raises(ValueError, match="T037-U6"):
-        HouseholdIntentSettings.from_config({"compound_execute": True})
+    # T037-U6 landed: execution is on by default and false stays available as the kill switch.
+    assert HouseholdIntentSettings.from_config({"compound_execute": False}).compound_execute is False
+    assert HouseholdIntentSettings.from_config({"compound_execute": True}).compound_execute is True
     with pytest.raises(ValueError):
         HouseholdIntentSettings.from_config(["not", "a", "mapping"])
 
@@ -866,7 +867,7 @@ def test_settings_file_declares_the_section():
     import yaml
     config = yaml.safe_load(Path("config/settings.yaml").read_text())
     settings = HouseholdIntentSettings.from_config(config["household_intents"])
-    assert (settings.unvetoed_max_words, settings.compound_max_parts, settings.compound_execute) == (6, 3, False)
+    assert (settings.unvetoed_max_words, settings.compound_max_parts, settings.compound_execute) == (6, 3, True)
 
 
 def test_classifier_never_logs(caplog):
