@@ -254,7 +254,14 @@ class TaskScope:
         return self.person is None
 
     def permissions(self, *, write: bool) -> frozenset[str]:
-        """Permissions every native step of the operation rechecks."""
+        """Permissions every native step of the operation rechecks.
+
+        A lease's permissions never change: revising, revoking, expiring or
+        retiring a credential's person retires the whole lease. The
+        ``tasks:personal`` recheck is therefore defense in depth; it refuses a
+        lease that does not hold it even if a scope naming a person were built
+        for it (T035-U1-RV5).
+        """
         needed = {DashboardPermission.TASKS_WRITE if write else DashboardPermission.TASKS_READ}
         if self.person is not None:
             needed.add(DashboardPermission.PERSONAL_TASKS)

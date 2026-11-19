@@ -19,7 +19,7 @@ import pytest
 from starlette.requests import Request
 
 from src.core.account_metadata import ActiveAccounts
-from src.dashboard.api import DashboardAPI
+from src.dashboard.api import DashboardAPI, TaskScope
 from src.dashboard.auth import _route_permissions
 from src.dashboard.authority import DashboardRole, DashboardAuthority, EvaluationModality, EvaluationSample
 from src.dashboard.home_catalog import HomeRoom
@@ -530,3 +530,24 @@ async def test_a_legacy_shared_list_never_names_its_recorded_owner(tasks_graph):
             assert 'beto' not in response.text, session
     personal = (await graph.client.get('/api/lists?scope=personal', headers=graph.headers['beto'])).json()
     assert [row['id'] for row in personal] == [graph.seeded.B.id]
+
+
+async def test_native_steps_recheck_the_personal_permission_of_the_lease(tasks_graph):
+    """T035-U1-RV5: a person's scope rechecks tasks:personal; a lease without it is refused.
+
+    A current lease never loses a permission (any revision retires it), so the
+    refusal is shown on a lease that never held it: the operator's.
+    """
+    graph = tasks_graph
+    ana = graph.authority.resolve(graph.headers['ana']['Authorization'])
+    home = graph.authority.resolve(graph.headers['home']['Authorization'])
+    ana_scope, home_scope, operator_scope = (TaskScope.of(ana.principal), TaskScope.of(home.principal),
+                                             TaskScope.of(graph.root.principal))
+    assert (ana_scope.person, home_scope.person, operator_scope.person) == ('ana', None, None)
+    assert ana_scope.permissions(write=True) == frozenset({'tasks:write', 'tasks:personal'})
+    assert ana_scope.permissions(write=False) == frozenset({'tasks:read', 'tasks:personal'})
+    assert operator_scope.permissions(write=True) == frozenset({'tasks:write'})
+    assert ana.current(ana_scope.permissions(write=True)) is True
+    for lease in (graph.root, home):
+        assert lease.current(operator_scope.permissions(write=True)) is True
+        assert lease.current(ana_scope.permissions(write=True)) is False
