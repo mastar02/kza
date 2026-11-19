@@ -821,6 +821,9 @@ async def test_present_tense_about_today_reads_current_conditions(dispatcher_wit
     ("estuvo lloviendo el mes pasado", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
     ("qué tiempo va a hacer el mes pasado", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
     ("estuvo lloviendo la semana pasada", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
+    # Review T037-U2-RV3: a weekday with a day of the month, or an ordinal, is a date.
+    ("va a llover el lunes 17", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
+    ("va a llover el 1ro", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
 ])
 async def test_unsupported_horizons_are_refused_without_any_read(dispatcher_with_async_ha, text, spoken, status):
     d = _no_current_read(_frozen(dispatcher_with_async_ha))

@@ -112,7 +112,8 @@ _UNSUPPORTED_HORIZON_RE = re.compile(
     r"|proximos dias|estos dias|dias que vienen|ayer|anoche|anteayer"
     rf"|(?:{_WEEKDAY_WORDS}) pasado(?! manana)"
     r"|(?:en|dentro de) (?:\d+|un|una|dos|tres|cuatro|cinco|seis|siete|diez|quince) (?:dias|semanas?)"
-    rf"|el \d+|\d+ de (?:{_MONTHS}))\b"
+    # Calendar dates (review T037-U2-RV3): "el 25", "el lunes 17", "el 1ro".
+    rf"|el \d+|\d+ de (?:{_MONTHS})|(?:{_WEEKDAY_WORDS}) \d+|\d+(?:ro|ero|er))\b"
 )
 # Future-tense cues: with no day word, or with today's, the question is about
 # today's forecast entry rather than the current conditions (user answer Q23).

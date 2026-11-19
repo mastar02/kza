@@ -403,6 +403,13 @@ def _day_ahead(offset):
     ("va a llover en tres días", UNSUPPORTED),
     ("va a llover el 25", UNSUPPORTED),
     ("va a llover el 3 de diciembre", UNSUPPORTED),
+    # A weekday with a day of the month, or an ordinal, is a calendar date (review T037-U2-RV3).
+    ("qué tiempo hace el lunes 10", UNSUPPORTED),
+    ("va a llover el lunes 17", UNSUPPORTED),
+    ("va a llover el sábado 8?", UNSUPPORTED),
+    ("va a llover el 1ro", UNSUPPORTED),
+    ("qué tiempo va a hacer el 1ero de diciembre", UNSUPPORTED),
+    ("va a llover el 1er día del mes", UNSUPPORTED),
     ("llovió ayer?", UNSUPPORTED),
     # Past weekdays, weeks, months and years (review T037-U2-RV1): never the coming day.
     ("estuvo lloviendo el sábado pasado", UNSUPPORTED),
