@@ -911,3 +911,28 @@ def test_weather_intent_fixes_route_to_fast_weather(dispatcher, text):
 def test_new_weather_fragments_keep_commands_as_domotics(dispatcher, text):
     path, _ = dispatcher._classify_request(text)
     assert path is PathType.FAST_DOMOTICS
+
+
+@pytest.mark.parametrize("text", [
+    # Review T037-U2-RV4: "tiempo" as a duration and "clima" as the HVAC are not weather.
+    "cómo está el tiempo del temporizador",
+    "¿cómo está el tiempo del temporizador?",
+    "cuánto tiempo va a hacer falta",
+    "¿a qué hora va a estar el clima prendido?",
+    "va a estar el clima prendido toda la noche?",
+])
+def test_tiempo_and_clima_outside_a_weather_question_frame_are_not_weather(dispatcher, text):
+    path, _ = dispatcher._classify_request(text)
+    assert path is not PathType.FAST_WEATHER
+
+
+@pytest.mark.parametrize("text", [
+    "cómo está el tiempo de mañana",
+    "cómo va a estar el tiempo del sábado",
+    "cómo va a estar el tiempo del fin de semana",
+    "como esta el tiempo hoy",
+    "qué tiempo va a hacer",
+])
+def test_tiempo_questions_about_a_day_stay_weather(dispatcher, text):
+    path, _ = dispatcher._classify_request(text)
+    assert path is PathType.FAST_WEATHER

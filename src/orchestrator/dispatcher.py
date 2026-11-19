@@ -729,8 +729,15 @@ class RequestDispatcher:
         "pronóstico", "pronostico",
         # T037-U2: future and "el tiempo" forms of the explicit questions
         # ("¿qué tiempo va a hacer el sábado?", "¿cómo está el tiempo?").
-        "tiempo va a hacer", "va a estar el clima", "va a estar el tiempo",
-        "está el tiempo", "esta el tiempo",
+        # Review T037-U2-RV4: only inside a question frame. Unqualified,
+        # "cuánto tiempo va a hacer falta", "¿cómo está el tiempo del
+        # temporizador?" and "¿a qué hora va a estar el clima prendido?"
+        # (HVAC) were weather; "el tiempo de <algo>" is also checked against
+        # _TIEMPO_OF_SOMETHING_RE below.
+        "qué tiempo va a hacer", "que tiempo va a hacer",
+        "cómo va a estar el clima", "como va a estar el clima",
+        "cómo va a estar el tiempo", "como va a estar el tiempo",
+        "cómo está el tiempo", "como esta el tiempo",
         # Review T037-U2-RV2: the future temperature question. Explicit (not
         # a fragment): the subject is the temperature, never a command, and a
         # thermostat command ("poné la temperatura en 22") has none of these.
@@ -763,6 +770,16 @@ class RequestDispatcher:
         "va a hacer calor", "va a hacer frío", "va a hacer frio",
         "llueve", "va a llover", "lloviendo",
     })
+
+    # Review T037-U2-RV4: "el tiempo de(l) <algo>" is the weather only when
+    # <algo> is a day or a period ("el tiempo de mañana", "del sábado", "del
+    # fin de semana"); "el tiempo del temporizador" is a duration. Applied to
+    # the "el tiempo" keywords only, on accent-free text.
+    _TIEMPO_OF_SOMETHING_RE = re.compile(
+        r"\bel tiempo del? (?!(?:hoy|manana|pasado|esta|este|fin|finde|proxim\w*"
+        r"|la (?:manana|tarde|noche|semana)"
+        r"|lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b)"
+    )
 
     # Marcadores de no-imperativo (Finding I1, review PR #15). El veto de
     # WEATHER_CLAUSE_FRAGMENTS de arriba asume que "fragmento + verbo
@@ -1228,8 +1245,11 @@ class RequestDispatcher:
             # probablemente es: una pregunta u observación sin "?"
             # transcrita.
             non_command_hint = any(h in text_lower for h in self._NON_COMMAND_HINTS)
+            tiempo_of_something = bool(self._TIEMPO_OF_SOMETHING_RE.search(_strip_accents(text_lower)))
             for keyword in self.WEATHER_KEYWORDS:
                 if keyword in text_lower:
+                    if tiempo_of_something and "el tiempo" in keyword:
+                        continue
                     if (not is_question and domotics_verb
                             and keyword in self.WEATHER_CLAUSE_FRAGMENTS
                             and not non_command_hint):
