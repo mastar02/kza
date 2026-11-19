@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.core.task_outcome import TaskStatus
+from src.nlu.command_gate import CommandAcceptanceGate
 from src.orchestrator.dispatcher import PathType
 from src.routines.models import ActionStatus, RoutineActionResult, RunStatus, parse_routine_spec
 from src.routines.routine_manager import RoutineManager
@@ -95,6 +96,11 @@ CONSULT_TEXTS = [
     ("la rutina riego falló", "riego"),
     ("¿está activa la rutina riego?", "riego"),
     ("nexa, ¿cuándo corre la automatización riego?", "riego"),
+    # T033-U1-RV1: the state questions in either order, and a reflexive "se activa".
+    ("¿la rutina riego está activa?", "riego"),
+    ("¿está desactivada la rutina buenas noches?", "buenas noches"),
+    ("¿se activa sola la rutina riego?", "riego"),
+    ("¿la rutina riego se activa sola?", "riego"),
 ]
 
 NOT_ROUTINE_READS = [
@@ -370,3 +376,54 @@ async def test_without_the_service_the_claimed_query_keeps_its_honest_refusal(le
     result = await leaves.dispatcher().dispatch(user_id="unknown", text="qué rutinas hay")
     assert result.response == "Todavía no manejo rutinas por voz. Podés verlas desde la web."
     assert result.outcome.status is TaskStatus.UNSUPPORTED
+
+
+# ---------------------------------------------------------------- RV1: the read precedes domotics
+
+
+LIGHT_HIT = {"entity_id": "light.living", "domain": "light", "service": "turn_on", "description": "Luz encendida",
+             "data": {}, "similarity": 0.95}
+
+STATE_QUESTIONS = [
+    "¿está activa la rutina riego?", "¿la rutina riego está activa?", "¿está desactivada la rutina riego?",
+    "¿se activa sola la rutina riego?", "nexa, ¿está activa la rutina riego?", "¿qué rutina apaga las luces?",
+]
+
+
+@pytest.mark.parametrize("service_filter", [None, "turn_on"])
+@pytest.mark.parametrize("text", STATE_QUESTIONS)
+async def test_routine_state_questions_never_reach_domotics(leaves, routines, text, service_filter):
+    """T033-U1-RV1: 'activa'/'apaga' are domotics keywords and an upstream turn_on guess is a
+    domotics shortcut; a detected routine question is read from the store before either, even
+    when the vector index has a matching light."""
+    scheduler, store = routines
+    await store.save(spec("Riego"), actor="admin")
+    leaves.chroma.asearch_command.return_value = dict(LIGHT_HIT)
+    dispatcher = leaves.dispatcher(voice_routines=VoiceRoutineService(scheduler))
+    assert dispatcher._classify_request(text.lower(), service_filter=service_filter)[0] is PathType.FAST_ROUTINE
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text=text, service_filter=service_filter)
+    assert (result.path, result.intent) == (PathType.FAST_ROUTINE, "routine"), text
+    assert result.outcome is not None and result.outcome.status in (TaskStatus.COMPLETED, TaskStatus.NEEDS_INPUT)
+    assert leaves.effects(before) == effects()
+    leaves.chroma.asearch_command.assert_not_called()
+
+
+async def test_without_the_service_the_dispatcher_keeps_its_base_classification(leaves):
+    dispatcher = leaves.dispatcher()
+    assert dispatcher._classify_request("¿está activa la rutina riego?")[0] is PathType.FAST_DOMOTICS
+
+
+@pytest.mark.parametrize("text", ["¿está activa la rutina riego?", "¿qué rutina apaga las luces?",
+                                  "¿qué rutina prende la luz del living?"])
+def test_gate_lets_a_routine_read_pass_the_non_immediate_rule(text):
+    plain = CommandAcceptanceGate().evaluate(text)
+    assert (plain.accept, plain.reason) == (False, "non_immediate:information_request")
+    assert CommandAcceptanceGate(voice_routines=VoiceRoutineService()).evaluate(text).accept
+
+
+@pytest.mark.parametrize("text", ["¿está prendida la luz del living?", "¿qué luz apagaste?",
+                                  "no apagues la luz", "apagá la luz en 10 minutos"])
+def test_gate_exemption_is_only_for_routine_reads(text):
+    decision = CommandAcceptanceGate(voice_routines=VoiceRoutineService()).evaluate(text)
+    assert not decision.accept and decision.reason.startswith("non_immediate:")

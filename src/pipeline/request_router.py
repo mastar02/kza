@@ -424,7 +424,7 @@ class RequestRouter:
 
         # Command acceptance gate (consolidates _is_noise_text + STT confidence).
         self.command_gate = command_gate or CommandAcceptanceGate(
-            wake_words=self._wake_words, household_intents=self.household_intents,
+            wake_words=self._wake_words, household_intents=self.household_intents, voice_routines=voice_routines,
         )
 
         # LLM-based command validator. Si está configurado, intercepta el
@@ -605,6 +605,32 @@ class RequestRouter:
         result["voice_delivery"] = delivered.delivery.value
         if window is not None:
             attributor.verify(window, source)
+        return True
+
+    async def _try_routine_read(self, text: str, result: dict, *, pipeline_start: float) -> bool:
+        """Legacy path: answer a routine question from the scheduler store (T033-U1).
+
+        Read-only and never from the legacy Chroma index; detection reads only
+        the words of the turn. It runs before the legacy stages (feedback,
+        learning, the legacy routine handlers, the vector search), so a
+        question such as "¿está activa la rutina riego?" never reaches a
+        producer that could act on 'activa' (T033-U1-RV1).
+
+        Returns:
+            True when the turn was a routine question and has been answered.
+        """
+        query = self.voice_routines.detect(text) if self.voice_routines is not None else None
+        if query is None:
+            return False
+        started = time.perf_counter()
+        read = await self.voice_routines.answer(query)
+        result["timings"]["routine_check"] = (time.perf_counter() - started) * 1000
+        result["intent"] = "routine"
+        result["response"] = read.response
+        result["success"] = read.outcome.task_completed
+        result["_task_outcome"] = read.outcome
+        await self._speak_response(result["response"])
+        result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
         return True
 
     async def _try_home_command(self, text: str, result: dict, *, room_id: str | None,
@@ -911,6 +937,11 @@ class RequestRouter:
         try:
             reason = non_immediate_action_reason(text)
             if reason is None:
+                return gate_decision
+            # T033-U1-RV1: the legacy path answers a routine question itself
+            # (_try_routine_read, before every producer), so the gate's
+            # exemption for it stands.
+            if self.voice_routines is not None and self.voice_routines.detect(text) is not None:
                 return gate_decision
         except Exception as e:  # fail-open like the gate: never drop voice control on an internal bug
             logger.error(f"[LegacyHouseholdDrop] error (keeping the gate decision): {e}")
@@ -1746,6 +1777,11 @@ class RequestRouter:
                     exc_info=True,
                 )
 
+        # T033-U1-RV1: a routine question is read from the scheduler store before
+        # the confidence gate, feedback, learning and the legacy routine handlers.
+        if await self._try_routine_read(text, result, pipeline_start=pipeline_start):
+            return result
+
         # 1b. Confidence gate — si confidence baja y combo sensible, pide
         #     confirmación en vez de ejecutar. Comandos sin intent/entity o
         #     reversibles con confidence baja siguen de largo (con log).
@@ -1873,20 +1909,6 @@ class RequestRouter:
 
         # 7. Check routine (new system with VoiceRoutineHandler)
         t_routine = time.perf_counter()
-
-        # T033-U1: a routine question is read from the scheduler store, never from
-        # the legacy Chroma index; detection reads only the words of the turn.
-        routine_query = self.voice_routines.detect(text) if self.voice_routines is not None else None
-        if routine_query is not None:
-            read = await self.voice_routines.answer(routine_query)
-            result["timings"]["routine_check"] = (time.perf_counter() - t_routine) * 1000
-            result["intent"] = "routine"
-            result["response"] = read.response
-            result["success"] = read.outcome.task_completed
-            result["_task_outcome"] = read.outcome
-            await self._speak_response(result["response"])
-            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
-            return result
 
         # Try the new voice handler first (more complete)
         if self.voice_routine_handler:

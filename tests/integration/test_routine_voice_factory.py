@@ -160,3 +160,29 @@ async def test_routine_reads_keep_the_loop_responsive_and_survive_a_rebuild(leav
             assert probe.snapshot()["max_ms"] < 200, probe.snapshot()
             assert result["response"] == ("La rutina Buenos días está activada y corre a las 7:00 de lunes a "
                                           "viernes. Todavía no se ejecutó.")
+
+
+@pytest.mark.parametrize("orchestrated", [True, False])
+async def test_routine_state_questions_reach_the_read_in_the_real_graph(leaves, tmp_path, orchestrated):
+    """T033-U1-RV1: the command gate's non-immediate rule and the dispatcher's domotics keywords
+    ('activa') no longer drop or divert a routine state question, in either word order."""
+    async with offline_home() as (url, observed):
+        config = offline_config(tmp_path, url)
+        config["orchestrator"]["enabled"] = orchestrated
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=leaves)
+            await seed(graph)
+            watering = ("La rutina Riego está activada y no tiene horario: se ejecuta solo cuando se pide. "
+                        "La última ejecución falló.")
+            for text, said in (("¿está activa la rutina riego?", watering),
+                               ("¿la rutina riego está activa?", watering),
+                               ("nexa, ¿está activa la rutina riego?", watering),
+                               ("¿está desactivada la rutina buenas noches?",
+                                "La rutina Buenas noches está desactivada. Todavía no se ejecutó.")):
+                graph.models.stt.text = text
+                result = await graph.pipeline.process_command(event())
+                assert (result["intent"], result["response"]) == ("routine", said), text
+                assert result["task_completed"] and result["outcome"]["status"] == "completed", text
+                if orchestrated:
+                    assert result["path"] == "fast_routine", text
+            assert observed["service_calls"] == 0

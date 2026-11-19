@@ -1211,6 +1211,15 @@ class RequestDispatcher:
         if is_indoor_temperature_question(text_lower, self._indoor_room_words):
             return PathType.FAST_HOUSEHOLD, Priority.HIGH
 
+        # T033-U1-RV1: a routine question is read from the store before any
+        # shortcut or keyword that could act on the home ("¿está activa la
+        # rutina riego?" carries 'activa', "¿qué rutina apaga las luces?"
+        # carries 'apaga'). Like the clock it precedes the service_filter
+        # shortcut, so an upstream turn_on/turn_off guess never turns a routine
+        # question into an action. Detection is pure (words only, no I/O).
+        if self.voice_routines is not None and self.voice_routines.detect(text_lower) is not None:
+            return PathType.FAST_ROUTINE, Priority.MEDIUM
+
         if service_filter in ("turn_on", "turn_off"):
             return PathType.FAST_DOMOTICS, Priority.HIGH
 

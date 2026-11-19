@@ -84,6 +84,13 @@ _NAME_TAIL_CUES = frozenset({"se", "salio", "anduvo", "funciono", "corrio", "est
                              "o", "no", "ejecuto", "activo"})
 # Past-tense status verbs after the noun that make "la rutina X anduvo/falló" a question.
 _STATUS_AFTER = frozenset({"salio", "anduvo", "funciono", "corrio", "termino", "fallo", "ejecuto"})
+# "¿la rutina riego está activa?": a state copula after the noun followed by one
+# of these makes the sentence a question about the routine's state (T033-U1-RV1).
+_STATE_COPULAS = frozenset({"esta", "estan", "sigue", "siguen", "quedo", "quedaron"})
+_STATE_ADJECTIVES = frozenset({"activa", "activo", "activada", "activado", "activas", "activadas", "desactivada",
+                               "desactivado", "desactivadas", "habilitada", "habilitado", "deshabilitada",
+                               "deshabilitado", "andando", "corriendo", "funcionando", "programada", "programado",
+                               "pausada", "pausado"})
 _SUBJECT_DETERMINERS = frozenset({"la", "el", "las", "los", "mi", "mis", "nuestra", "nuestras"})
 # Leading words ignored when two names are compared ("la rutina de la mañana" ~ "Mañana").
 _NAME_LEADS = frozenset({"la", "el", "los", "las", "de", "del", "mi", "mis", "rutina", "rutinas",
@@ -207,6 +214,14 @@ def _strip_leads(words: list[str]) -> list[str]:
     return words[k:]
 
 
+def _states_after(after: list[str]) -> bool:
+    """Whether the words after the noun ask about the routine's runs or state."""
+    if _STATUS_AFTER & set(after):
+        return True
+    return any((word in _STATE_COPULAS and after[k + 1] in _STATE_ADJECTIVES)
+               or (word == "se" and after[k + 1] in _QUESTION_FORMS) for k, word in enumerate(after[:-1]))
+
+
 def _name_candidates(complement: list[str]) -> tuple[str, ...]:
     if not complement or complement[0] in _DESCRIPTION_STARTS or all(w in _NAME_TAIL_CUES for w in complement):
         return ()
@@ -289,14 +304,17 @@ class VoiceRoutineService:
         wh_head = bool(words) and (words[0] in _WH_HEADS or (
             words[0] in {"a", "en", "de", "hasta"} and len(words) > 1 and words[1] in _WH_HEADS))
         for k, word in enumerate(before):
-            # "¿está activa la rutina X?": after "está" the form is an adjective, not a command.
+            # "¿está activa la rutina X?": after "está" the form is an adjective, not a command;
+            # "¿se activa sola la rutina X?": after "se" a third-person form is a question (RV1).
             adjective = k > 0 and before[k - 1] in {"esta", "estan"}
-            if word in _BLOCKING_VERBS and not adjective and not (wh_head and word in _QUESTION_FORMS):
+            reflexive = k > 0 and before[k - 1] == "se" and word in _QUESTION_FORMS
+            if (word in _BLOCKING_VERBS and not adjective and not reflexive
+                    and not (wh_head and word in _QUESTION_FORMS)):
                 return None
         asks = (wh_head or (bool(before) and before[0] in _YES_NO_HEADS)
                 or any(word in _READ_VERBS for word in before)
                 or (words[noun] in _PLURAL_NOUNS and before[-1:] == ["mis"])
-                or (set(before) <= _SUBJECT_DETERMINERS and bool(_STATUS_AFTER & set(words[noun + 1:]))))
+                or (set(before) <= _SUBJECT_DETERMINERS and _states_after(words[noun + 1:])))
         if not asks:
             return None
         if words[noun] in _PLURAL_NOUNS:

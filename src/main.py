@@ -1937,6 +1937,8 @@ async def build_application(
         # era UnboundLocalError al boot (review 2026-07-05).
         initial_prompt=config.get("stt", {}).get("initial_prompt"),
         household_intents=household_intents,
+        # T033-U1-RV1: a routine question is a read, not a non-immediate action.
+        voice_routines=voice_routines,
     )
     home_voice_resolver = HomeVoiceResolver(
         home_action_service, room_context_manager.get_all_rooms() if room_context_manager else {},
