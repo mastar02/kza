@@ -112,7 +112,8 @@ class HouseholdIntent:
         reason: Code for clarifications and refusals (``other_person``,
             ``second_clause``, ``too_many_parts``, ``conflicting_parts``,
             ``deferred_part``, ``unparsed_part``, ``duration``, ``clock_time``,
-            ``no_time``, ``new_routine``, ``clock_alarm``), or None.
+            ``no_time``, ``new_routine``, ``clock_alarm``,
+            ``ring_stop``), or None.
         parts: COMPOUND only: the parts in spoken order.
     """
 
@@ -372,6 +373,32 @@ def strip_fillers(text: str, wake_words: Iterable[str] = (), *, extra_leads: fro
     utt = _tokens(text)
     start, end = _filler_bounds(utt, text, wake_words, extra_leads, extra_trails)
     return utt.folded[start:end]
+
+
+# T030-U2b (user answer morning_questions_20261119 "T030-U2 bare 'listo'"): the one bare word that
+# stops a ringing timer. It is not a classifier rule: the command gate drops it as noise unless a ring
+# is sounding or in its stop follow-up, so only the router and the dispatcher claim it, after the gate.
+_RING_STOP_WORDS = ("listo",)
+
+RING_STOP_INTENT = HouseholdIntent(HouseholdFamily.TIMER, HouseholdOperation.STOP, rule="R1", verb="listo",
+                                   reason="ring_stop")
+"""The claim of a bare ring stop ("listo"): stop only a ring, never cancel a timer (T030-U2b)."""
+
+
+def is_bare_ring_stop(text: str, wake_words: Iterable[str] = ()) -> bool:
+    """Whether the turn is a bare "listo", with only the shared fillers of :func:`strip_fillers` (BFR-1).
+
+    "Listo.", "Nexa, listo", "bueno, listo" and "listo, por favor" are; "listo, apagá la luz", "ya
+    está listo" and "listo listo" are not. Pure: whether a ring is open is the caller's question.
+
+    Args:
+        text: The utterance as heard.
+        wake_words: Configured wake words, besides ``WAKE_TERMS``.
+
+    Returns:
+        True for a bare ring stop word.
+    """
+    return isinstance(text, str) and strip_fillers(text, wake_words) == _RING_STOP_WORDS
 
 
 def _normalize(text: str, wake_words: Iterable[str] = ()) -> _Utterance:

@@ -9,7 +9,7 @@ import difflib
 import logging
 import re
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -125,6 +125,7 @@ class CommandAcceptanceGate:
         initial_prompt: str | None = None,
         household_intents: HouseholdIntentClassifier | None = None,
         voice_routines: VoiceRoutineService | None = None,
+        ring_stop_open: Callable[[], bool] | None = None,
     ):
         """Configure the gate.
 
@@ -160,6 +161,12 @@ class CommandAcceptanceGate:
                 not drop it; the dispatcher and the legacy router answer it
                 from the store before any domotics producer, and every
                 producer keeps its own non-immediate check. None: no exemption.
+            ring_stop_open: Cheap synchronous check, no I/O (T030-U2b): True
+                while a timer rings or its ring is in the stop follow-up
+                (``TimerVoiceCommands.ring_stop_open``). Only then a bare
+                "listo" (with the shared fillers, BFR-1) is not noise; the
+                accepted decision carries the signal ``ring_stop``. On every
+                other turn "listo" stays a noise phrase. None: no exemption.
         """
         self._wake_words = normalize_wake_words(wake_words)
         self._enforce_confidence = enforce_confidence
@@ -173,6 +180,7 @@ class CommandAcceptanceGate:
             household_intents = HouseholdIntentClassifier()
         self._household_intents = household_intents
         self._voice_routines = voice_routines
+        self._ring_stop_open = ring_stop_open
 
     def evaluate(self, text: str, stt_confidence: "STTResult | None" = None) -> AcceptanceDecision:
         """Evaluate a capture. Fail-open: on internal error, accept."""
@@ -205,8 +213,25 @@ class CommandAcceptanceGate:
         """Whether the turn is a routine question the read always answers (T033-U1-RV1/RV2)."""
         return self._voice_routines is not None and self._voice_routines.claims(text)
 
-    def _hard_reason(self, text: str) -> str | None:
-        """Return the first matching hard rule name, or None. Migrated from _is_noise_text."""
+    def _ring_stop(self, text: str) -> bool:
+        """A bare "listo" while a ring is open (T030-U2b); a failing check keeps it noise."""
+        if self._ring_stop_open is None or not text:
+            return False
+        from src.nlu.household_intents import is_bare_ring_stop
+
+        if not is_bare_ring_stop(text, self._household_intents.settings.wake_words):
+            return False
+        try:
+            return self._ring_stop_open() is True
+        except Exception as error:
+            logger.warning("[CommandGate] ring check failed, 'listo' stays noise: %s", type(error).__name__)
+            return False
+
+    def _hard_reason(self, text: str, ring_stop: bool = False) -> str | None:
+        """Return the first matching hard rule name, or None. Migrated from _is_noise_text.
+
+        ``ring_stop`` lifts only the "listo" noise phrase (T030-U2b); every other rule still applies.
+        """
         if not text:
             return "empty"
         from src.nlu.command_grammar import non_immediate_action_reason
@@ -219,6 +244,8 @@ class CommandAcceptanceGate:
             return "empty_after_norm"
         for phrase in _NOISE_PHRASES:
             if phrase in norm:
+                if ring_stop and phrase == "listo":
+                    continue
                 if phrase in _STATE_ECHO_PHRASES:
                     from src.nlu.command_grammar import parse_command
 
@@ -274,7 +301,8 @@ class CommandAcceptanceGate:
         return None, cr
 
     def _evaluate(self, text: str, stt_confidence: "STTResult | None") -> AcceptanceDecision:
-        hard = self._hard_reason(text)
+        ring_stop = self._ring_stop(text)
+        hard = self._hard_reason(text, ring_stop)
         conf_reason, signals = self._confidence_reason(stt_confidence)
         comp_reason, comp_ratio = self._compression_reason(stt_confidence)
         signals["compression_ratio"] = comp_ratio
@@ -294,6 +322,8 @@ class CommandAcceptanceGate:
                 )
             else:
                 decision = AcceptanceDecision(True, "ok", signals)
+            if ring_stop:
+                decision = AcceptanceDecision(True, decision.reason, {**decision.signals, "ring_stop": True})
 
         if logger.isEnabledFor(logging.INFO):
             logger.info(

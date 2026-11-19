@@ -1,4 +1,6 @@
 """Tests: CommandAcceptanceGate."""
+import pytest
+
 from src.nlu.command_gate import CommandAcceptanceGate
 from src.stt.whisper_fast import STTResult
 
@@ -329,3 +331,81 @@ def test_prompt_echo_calibration_against_live_settings_prompt():
     ):
         d = g.evaluate(cmd)
         assert d.accept is True, f"false-reject con prompt vivo: {cmd!r} → {d.reason}"
+
+
+# ---------------------------------------------------------------- T030-U2b: "listo" while a timer rings
+
+
+class _Ring:
+    """Injected ring check (TimerVoiceCommands.ring_stop_open in production): counts its calls."""
+
+    def __init__(self, open_: bool) -> None:
+        self.open = open_
+        self.calls = 0
+
+    def __call__(self) -> bool:
+        self.calls += 1
+        return self.open
+
+
+@pytest.mark.parametrize("text", ["listo", "Listo.", "¡Listo!", "nexa, listo", "bueno, listo", "listo, por favor"])
+def test_a_bare_listo_passes_only_while_a_ring_is_open(text):
+    """User answer morning_questions_20261119 (T030-U2 bare 'listo'): accepted with the ring_stop signal."""
+    ring = _Ring(True)
+    decision = CommandAcceptanceGate(ring_stop_open=ring).evaluate(text)
+    assert (decision.accept, decision.reason, decision.signals.get("ring_stop")) == (True, "ok", True)
+    assert ring.calls == 1
+    ring.open = False
+    closed = CommandAcceptanceGate(ring_stop_open=ring).evaluate(text)
+    assert (closed.accept, closed.reason) == (False, "noise_phrase:'listo'")
+    assert "ring_stop" not in closed.signals
+
+
+@pytest.mark.parametrize("text", ["listo", "Listo.", "nexa, listo"])
+def test_listo_stays_noise_without_a_ring_check(text):
+    decision = CommandAcceptanceGate().evaluate(text)
+    assert (decision.accept, decision.reason) == (False, "noise_phrase:'listo'")
+
+
+@pytest.mark.parametrize("text", ["listo, apagá la luz", "ya está listo el arroz", "listo listo",
+                                  "luces apagadas, listo", "perfecto, listo", "hecho, listo",
+                                  "gracias por ver, listo", "listo, suscribite al canal"])
+def test_tv_and_echo_phrases_with_listo_stay_dropped_even_while_a_ring_is_open(text):
+    """Only a bare 'listo' is lifted: TV and TTS echo phrases that contain it keep their noise drop."""
+    ring = _Ring(True)
+    decision = CommandAcceptanceGate(ring_stop_open=ring).evaluate(text)
+    assert decision.accept is False and decision.reason.startswith("noise_phrase:")
+    assert ring.calls == 0
+
+
+def test_the_ring_check_runs_only_for_a_bare_listo():
+    ring = _Ring(True)
+    gate = CommandAcceptanceGate(ring_stop_open=ring)
+    assert gate.evaluate("prendé la luz del escritorio").accept is True
+    assert gate.evaluate("gracias").accept is False
+    assert ring.calls == 0
+
+
+def test_a_failing_ring_check_keeps_listo_noise_instead_of_failing_open():
+    def broken() -> bool:
+        raise RuntimeError("boom")
+
+    decision = CommandAcceptanceGate(ring_stop_open=broken).evaluate("listo")
+    assert (decision.accept, decision.reason) == (False, "noise_phrase:'listo'")
+
+
+@pytest.mark.parametrize("value", [None, 1, "yes"])
+def test_only_a_true_ring_check_lifts_the_drop(value):
+    decision = CommandAcceptanceGate(ring_stop_open=lambda: value).evaluate("listo")
+    assert decision.accept is False
+
+
+def test_the_other_hard_rules_still_apply_to_a_ring_stop():
+    """A transcript wake engine still needs the wake word in the text; confidence enforcement still applies."""
+    ring = _Ring(True)
+    assert _gate(ring_stop_open=ring).evaluate("listo").reason == "missing_wake:'nexa'"
+    woken = _gate(ring_stop_open=ring).evaluate("nexa, listo")
+    assert (woken.accept, woken.signals.get("ring_stop")) == (True, True)
+    low = CommandAcceptanceGate(ring_stop_open=ring, enforce_confidence=True).evaluate(
+        "listo", stt_confidence=STTResult("listo", 1.0, no_speech_prob=0.9, avg_logprob=-0.2))
+    assert low.accept is False and low.reason.startswith("low_confidence") and "ring_stop" not in low.signals
