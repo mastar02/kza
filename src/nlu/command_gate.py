@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from src.nlu.household_intents import HouseholdIntentClassifier
+    from src.routines.voice_routines import VoiceRoutineService
     from src.stt.whisper_fast import STTResult
 
 logger = logging.getLogger(__name__)
@@ -123,6 +124,7 @@ class CommandAcceptanceGate:
         max_compression_ratio: float = 2.2,
         initial_prompt: str | None = None,
         household_intents: HouseholdIntentClassifier | None = None,
+        voice_routines: VoiceRoutineService | None = None,
     ):
         """Configure the gate.
 
@@ -151,6 +153,13 @@ class CommandAcceptanceGate:
                 immediate action, so the non-immediate action rule does not
                 drop it (the other hard rules still apply). None builds one
                 with the default settings.
+            voice_routines: Read-only voice routines (T033-U1-RV1), the
+                instance the router and the dispatcher answer from. A routine
+                question it detects ("¿está activa la rutina riego?") is a
+                read, not an immediate action, so the non-immediate rule does
+                not drop it; the dispatcher and the legacy router answer it
+                from the store before any domotics producer, and every
+                producer keeps its own non-immediate check. None: no exemption.
         """
         self._wake_words = normalize_wake_words(wake_words)
         self._enforce_confidence = enforce_confidence
@@ -163,6 +172,7 @@ class CommandAcceptanceGate:
             from src.nlu.household_intents import HouseholdIntentClassifier
             household_intents = HouseholdIntentClassifier()
         self._household_intents = household_intents
+        self._voice_routines = voice_routines
 
     def evaluate(self, text: str, stt_confidence: "STTResult | None" = None) -> AcceptanceDecision:
         """Evaluate a capture. Fail-open: on internal error, accept."""
@@ -191,6 +201,10 @@ class CommandAcceptanceGate:
         return claimed.family is HouseholdFamily.REMINDER or (
             claimed.family is HouseholdFamily.ROUTINE and claimed.reason == "new_routine")
 
+    def _routine_read(self, text: str) -> bool:
+        """Whether the turn is a routine question the read always answers (T033-U1-RV1/RV2)."""
+        return self._voice_routines is not None and self._voice_routines.claims(text)
+
     def _hard_reason(self, text: str) -> str | None:
         """Return the first matching hard rule name, or None. Migrated from _is_noise_text."""
         if not text:
@@ -198,7 +212,7 @@ class CommandAcceptanceGate:
         from src.nlu.command_grammar import non_immediate_action_reason
 
         action_block = non_immediate_action_reason(text)
-        if action_block and not self._claimed_reminder(text):
+        if action_block and not self._claimed_reminder(text) and not self._routine_read(text):
             return action_block
         norm = _normalize(text)
         if not norm:
