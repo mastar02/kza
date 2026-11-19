@@ -82,6 +82,15 @@ _NAME_TAIL_CUES = frozenset({"se", "salio", "anduvo", "funciono", "corrio", "est
                              "termino", "quedo", "fallo", "hoy", "ayer", "anoche", "ahora", "recien", "tiene",
                              "corre", "ejecuta", "activa", "arranca", "hace", "como", "cuando", "bien", "mal",
                              "o", "no", "ejecuto", "activo"})
+# Third-person verbs that make the words after the noun a predicate, not a name
+# ("¿qué rutina apaga las luces?", "la rutina riego prende el living") (T033-U1-RV3).
+_PREDICATE_VERBS = frozenset({"apaga", "prende", "enciende", "sube", "baja", "abre", "cierra", "riega", "desactiva",
+                              "manda", "avisa", "cambia", "toca", "suena", "reproduce", "controla", "maneja", "usa",
+                              "incluye", "empieza", "comienza", "dura"})
+_NAME_BREAKS = _NAME_TAIL_CUES | _QUESTION_FORMS | _PREDICATE_VERBS
+# Words that introduce the name itself ("la rutina que se llama riego").
+_NAMING_LEADS = (("que", "se", "llama"), ("que", "se", "llamaba"), ("con", "el", "nombre"), ("con", "nombre"),
+                 ("de", "nombre"))
 # Past-tense status verbs after the noun that make "la rutina X anduvo/falló" a question.
 _STATUS_AFTER = frozenset({"salio", "anduvo", "funciono", "corrio", "termino", "fallo", "ejecuto"})
 # "¿la rutina riego está activa?": a state copula after the noun followed by one
@@ -223,11 +232,23 @@ def _states_after(after: list[str]) -> bool:
 
 
 def _name_candidates(complement: list[str]) -> tuple[str, ...]:
-    if not complement or complement[0] in _DESCRIPTION_STARTS or all(w in _NAME_TAIL_CUES for w in complement):
+    """Name keys heard after the routine noun, longest first; () when it names nothing.
+
+    "la rutina que se llama riego" names Riego (T033-U1-RV3: the naming lead is
+    read before "que" makes the complement a description). A complement that
+    starts with a tail cue or a predicate verb ("¿qué rutina corre a las 7?",
+    "¿qué rutina apaga las luces?") names nothing, so the question lists.
+    """
+    lead = next((lead for lead in _NAMING_LEADS if tuple(complement[:len(lead)]) == lead), None)
+    if lead is not None:
+        complement = complement[len(lead):]
+    elif complement and complement[0] in _DESCRIPTION_STARTS:
+        return ()
+    cut = next((k for k, word in enumerate(complement) if word in _NAME_BREAKS), None)
+    if not complement or cut == 0:
         return ()
     candidates = [name_key(" ".join(complement))]
-    cut = next((k for k, word in enumerate(complement) if word in _NAME_TAIL_CUES), None)
-    if cut:
+    if cut is not None:
         candidates.append(name_key(" ".join(complement[:cut])))
     return tuple(dict.fromkeys(key for key in candidates if key))
 

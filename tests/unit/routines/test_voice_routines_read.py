@@ -82,6 +82,8 @@ LIST_TEXTS = [
     "decime las rutinas", "mostrame las automatizaciones", "quiero ver las rutinas", "a ver qué rutinas nuevas hay",
     "¿hay alguna rutina?", "¿cómo salieron las rutinas?", "¿hay una rutina que apague las luces?",
     "¿la rutina se ejecutó?", "¿qué rutina se ejecutó hoy?",
+    # T033-U1-RV3: a complement that starts with a verb is a predicate, not a name.
+    "¿qué rutina corre a las 7?", "¿qué rutina apaga las luces?", "¿qué automatización prende la luz del living?",
     # The legacy RoutineManager list phrases now read the scheduler store.
     *RoutineManager.LIST_PATTERNS,
 ]
@@ -101,6 +103,9 @@ CONSULT_TEXTS = [
     ("¿está desactivada la rutina buenas noches?", "buenas noches"),
     ("¿se activa sola la rutina riego?", "riego"),
     ("¿la rutina riego se activa sola?", "riego"),
+    # T033-U1-RV3: the naming lead is read before "que" makes the complement a description.
+    ("¿cómo salió la rutina que se llama riego?", "riego"),
+    ("¿está activa la rutina con el nombre buenas noches?", "buenas noches"),
 ]
 
 NOT_ROUTINE_READS = [
@@ -427,3 +432,21 @@ def test_gate_lets_a_routine_read_pass_the_non_immediate_rule(text):
 def test_gate_exemption_is_only_for_routine_reads(text):
     decision = CommandAcceptanceGate(voice_routines=VoiceRoutineService()).evaluate(text)
     assert not decision.accept and decision.reason.startswith("non_immediate:")
+
+
+# ---------------------------------------------------------------- RV3: names
+
+
+async def test_a_named_routine_and_a_predicate_complement_are_read_as_heard(routines):
+    scheduler, store = routines
+    await store.save(spec("Riego"), actor="admin")
+    await store.save(spec("Buenas noches"), actor="admin")
+    service = VoiceRoutineService(scheduler)
+    named = await service.answer(VoiceRoutineService.detect("¿cómo salió la rutina que se llama riego?"))
+    assert named.outcome.status is TaskStatus.COMPLETED
+    assert named.response == ("La rutina Riego está activada y no tiene horario: se ejecuta solo cuando se pide. "
+                              "Todavía no se ejecutó.")
+    for text in ("¿qué rutina corre a las 7?", "¿qué rutina apaga las luces?"):
+        listed = await service.answer(VoiceRoutineService.detect(text))
+        assert listed.response == "Hay 2 rutinas: Riego y Buenas noches.", text
+        assert listed.outcome.status is TaskStatus.COMPLETED
