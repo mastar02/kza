@@ -30,7 +30,12 @@ from src.nlu.command_grammar import (
     WAKE_TERMS, PartialCommand, has_unresolved_light_location, non_immediate_action_reason,
     parse_default_light_target, parse_partial_command,
 )
-from src.nlu.household_intents import HouseholdIntent, HouseholdIntentClassifier, HouseholdIntentSettings
+from src.nlu.household_intents import (
+    RING_STOP_INTENT,
+    HouseholdIntent,
+    HouseholdIntentClassifier,
+    HouseholdIntentSettings,
+)
 from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
 from src.orchestrator.dispatcher import has_domotics_action_verb
@@ -929,7 +934,10 @@ class RequestRouter:
         the grammar and the vector search as an immediate action (review
         Q4-RV-1). An accepted turn that carries a non-immediate reason is
         dropped with that reason, as before the exemption; with the real gate
-        only an exempted (claimed) turn gets here. Never fails the turn on an
+        only an exempted (claimed) turn gets here. A bare "listo" the gate
+        let through because a ring is open (signal ``ring_stop``, T030-U2b)
+        is dropped as the noise phrase it is on every other turn: the legacy
+        timer commands do not stop a ring. Never fails the turn on an
         internal error.
 
         Args:
@@ -941,6 +949,9 @@ class RequestRouter:
         """
         if not gate_decision.accept:
             return gate_decision
+        if (gate_decision.signals or {}).get("ring_stop") is True:
+            # T030-U2b: the legacy timer commands do not stop a ring, so a bare "listo" stays noise here.
+            return AcceptanceDecision(False, "noise_phrase:'listo'", gate_decision.signals)
         try:
             reason = non_immediate_action_reason(text)
             if reason is None:
@@ -1108,6 +1119,10 @@ class RequestRouter:
         tv_signal = (textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE
                      or borrowed_wake)
         household = self.household_intents.classify(text)
+        if household is None and (gate_decision.signals or {}).get("ring_stop") is True:
+            # T030-U2b: the gate let a bare "listo" through because a ring is open; it stops that ring
+            # on the household path (same wake guards and 7B veto as "pará el timer").
+            household = RING_STOP_INTENT
         if household is not None or self._answers_reminder_choice(text, room_id):
             return await self._process_household_turn(
                 text, household, result, cmd=cmd, audio=audio, room_id=room_id, pipeline_start=pipeline_start,

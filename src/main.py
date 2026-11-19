@@ -56,6 +56,7 @@ from src.routines.routine_manager import RoutineManager
 from src.routines.factory import build_routine_scheduler
 from src.routines.routine_scheduler import RoutineScheduler
 from src.routines.voice_routines import VoiceRoutineService
+from src.timers.voice_commands import TimerVoiceCommands
 from src.home_assistant.home_actions import HomeActionService
 from src.home_assistant.capability_service import HomeCapabilityService
 from src.home_assistant.voice_resolver import HomeVoiceResolver
@@ -1939,6 +1940,9 @@ async def build_application(
         household_intents=household_intents,
         # T033-U1-RV1: a routine question is a read, not a non-immediate action.
         voice_routines=voice_routines,
+        # T030-U2b: a bare "listo" passes only while a timer rings or is in its stop
+        # follow-up; the in-memory check reads the same timer manager the dispatcher uses.
+        ring_stop_open=TimerVoiceCommands(voice_services.features.timer_manager).ring_stop_open,
     )
     home_voice_resolver = HomeVoiceResolver(
         home_action_service, room_context_manager.get_all_rooms() if room_context_manager else {},

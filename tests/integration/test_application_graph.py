@@ -410,6 +410,49 @@ async def test_stop_by_voice_while_the_timer_rings_on_the_shared_output(leaves, 
             assert observations["service_calls"] == 0
 
 
+async def test_listo_stops_the_ring_only_while_it_sounds_on_the_real_graph(leaves, monkeypatch, tmp_path):
+    """T030-U2b (user answer morning_questions_20261119) on the graph main builds: the command gate gets the
+    timer manager's ring check, so 'listo' is noise while a timer only runs and stops the ring when it sounds,
+    with the reply and outcome of 'pará el timer'."""
+    import src.tts.piper_tts as output_module
+    from src.timers.named_timers import RingDelivery, TimerState
+
+    backend = AudioBackend()
+    monkeypatch.setattr(output_module, "sd", backend)
+    async with offline_home() as (url, observations):
+        config = offline_config(tmp_path, url)
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=leaves)
+            features = graph.voice_services.features
+            timers = features.timer_manager
+            await features.start()
+            graph.models.stt.text = "poné un timer de 1 segundo"
+            created = await graph.pipeline.process_command(_timer_turn())
+            assert (created["path"], created["success"]) == ("fast_timer", True)
+            (timer,) = timers.get_all_timers()
+            assert timers.pause_timer(timer.timer_id)  # held before its ring while 'listo' is heard
+            spoken = len(graph.models.tts.texts)
+            graph.models.stt.text = "listo"
+            early = await graph.pipeline.process_command(_timer_turn())
+            assert early["intent"] == "gate_rejected:noise_phrase:'listo'"
+            assert timer.state is TimerState.PAUSED and len(graph.models.tts.texts) == spoken
+            assert timers.resume_timer(timer.timer_id)
+            ring = "¡Terminó el temporizador de 1 segundo!"
+            for _ in range(100):
+                if ring in graph.models.tts.texts:
+                    break
+                await asyncio.sleep(0.05)
+            assert ring in graph.models.tts.texts and timers.ringing_timers() == [timer]
+            stopped = await graph.pipeline.process_command(_timer_turn())
+            assert (stopped["intent"], stopped["path"], stopped["task_completed"]) == ("timer", "fast_timer", True)
+            assert stopped["outcome"]["persistence"] == "not_required"
+            assert graph.models.tts.texts[-1] == "Paré el temporizador de 1 segundo."
+            assert (timer.state, timer.ring) == (TimerState.COMPLETED, RingDelivery.STOPPED)
+            assert timers.ringing_timers() == [] and timers.get_status()["delivery_tasks"] == 0
+            assert graph.models.tts.texts.count(ring) == 1
+            assert observations["service_calls"] == 0
+
+
 async def test_replay_t010_bare_temporizador_phrase_creates_a_timer(leaves, monkeypatch, tmp_path):
     """T010 graph-third.log:80-83: 'temporizador de 5 minutos' reached vector search; now it is a timer."""
     async with offline_home() as (url, observations):
