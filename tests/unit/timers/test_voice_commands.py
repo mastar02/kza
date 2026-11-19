@@ -519,6 +519,34 @@ async def test_a_cut_ring_older_than_every_running_timer_is_still_the_follow_up(
     assert reply.response == "Listo, el temporizador de pasta ya no suena." and salsa.state is TimerState.RUNNING
 
 
+async def test_a_newer_timer_with_another_name_does_not_end_the_named_cut_ring_follow_up(manager):
+    """RV1 rule counts only newer timers the stop also names: a salsa set after the cut pasta ring is not 'pasta'."""
+    commands = TimerVoiceCommands(manager)
+    pasta = manager.create_timer("pasta", 300)
+    pasta.state, pasta.ring, pasta.ring_ended_at = TimerState.COMPLETED, RingDelivery.STOPPED, manager.frozen.now
+    manager.frozen.now += 2.0
+    await say(commands, "poné un timer de salsa de 10 minutos")
+    (salsa,) = [t for t in manager.get_all_timers() if t.state is TimerState.RUNNING]
+    manager.frozen.now += 2.0
+    reply = await say(commands, "pará el timer de pasta")
+    assert reply.response == "Listo, el temporizador de pasta ya no suena." and salsa.state is TimerState.RUNNING
+    assert (reply.outcome.status, reply.outcome.effect) == (TaskStatus.COMPLETED, EffectState.NOT_REQUIRED)
+
+
+async def test_a_paused_timer_created_after_the_cut_ring_is_the_one_cancelled(manager):
+    """RV1 rule: a re-created pasta that is paused is still the timer the household now talks about."""
+    commands = TimerVoiceCommands(manager)
+    old = manager.create_timer("pasta", 300)
+    old.state, old.ring, old.ring_ended_at = TimerState.COMPLETED, RingDelivery.STOPPED, manager.frozen.now
+    manager.frozen.now += 2.0
+    await say(commands, "poné un timer de pasta de 10 minutos")
+    (new,) = [t for t in manager.get_all_timers() if t.state is TimerState.RUNNING]
+    assert manager.pause_timer(new.timer_id)
+    manager.frozen.now += 2.0
+    reply = await say(commands, "cancelá el timer de pasta")
+    assert reply.response == "Cancelé el temporizador de pasta." and new.state is TimerState.CANCELLED
+
+
 @pytest.mark.parametrize("receipt", [RingDelivery.DELIVERED, RingDelivery.RING_FAILED, RingDelivery.UNDELIVERED])
 @pytest.mark.parametrize("text", ["cancelá el timer", "pará el timer"])
 async def test_a_ring_that_ended_on_its_own_opens_no_follow_up(manager, receipt, text):

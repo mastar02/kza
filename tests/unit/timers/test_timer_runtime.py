@@ -146,8 +146,9 @@ async def test_concurrent_timers_keep_their_deadlines_while_one_rings():
         await clock.advance(0.3)
         second = timers.create_timer("salsa", 11)
         third = timers.create_timer("arroz", 13)
+        # Epoch-scale values: an absolute tolerance (approx's relative default allows ~30 min here).
         assert [t.ends_at for t in (first, second, third)] == pytest.approx(
-            [clock.wall() + d for d in (9.7, 11, 13)])
+            [clock.wall() + d for d in (9.7, 11, 13)], abs=1e-3)
         await clock.advance(40)
         starts = {name: output.starts(name) for name in ("pasta", "salsa", "arroz")}
         gap = RING_S + RING_GAP_S
@@ -170,7 +171,7 @@ async def test_remaining_time_follows_the_deadline_not_the_ticks():
     await clock.advance(100)
     assert timer.remaining_seconds == pytest.approx(40)
     assert timers.resume_timer(timer.timer_id)
-    assert timer.ends_at == pytest.approx(clock.wall() + 40)
+    assert timer.ends_at == pytest.approx(clock.wall() + 40, abs=1e-3)
     await clock.advance(10)
     assert timer.remaining_seconds == pytest.approx(30)
     assert timers.cancel_timer(timer.timer_id)
@@ -340,7 +341,7 @@ async def test_a_late_tick_rearms_a_repeating_timer_from_its_old_deadline():
         assert timer.state is TimerState.RUNNING
         assert timer.deadline == pytest.approx(START + 20)
         assert timer.remaining_seconds == pytest.approx(9.6)
-        assert timer.ends_at == pytest.approx(START + WALL_OFFSET + 20)
+        assert timer.ends_at == pytest.approx(START + WALL_OFFSET + 20, abs=1e-3)
     finally:
         await timers.stop()
 
