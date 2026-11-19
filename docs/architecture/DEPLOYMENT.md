@@ -1085,7 +1085,11 @@ ninguna transición gestionada existe hasta cerrar el resto del modo release
   transición, con T0, da 600 − 164,8 − 3 × 146 − 14,7 = −17,5: la fórmula
   la rechazaría (menos de 10). El operador pasa igual `--smoke-seconds 10`
   por la decisión del usuario SC6B-B-M1 (2026-11-19), que acepta pasar una
-  vez el presupuesto (D ≈ 660 s); las transiciones posteriores dan ≈ 135 s,
+  vez el presupuesto (D ≈ 660 s). Antes de esa transición, D se recalcula
+  con el B que mida W8: D ≈ 222,4 + 3 × B con N = 10 (222,4 s es el D medido
+  de A sin los arranques del stub). Si pasa de unos 660 s, la transición no
+  sigue bajo SC6B-B-M1 y se vuelve a preguntar al usuario; con B ≤ 136,8 s
+  la fórmula misma ya da N ≥ 10. Las transiciones posteriores dan ≈ 135 s,
   así que N = 60, y siguen dentro de 600 s. Detalle en «Medición de bajada y
   disco (SC-6b)».
 

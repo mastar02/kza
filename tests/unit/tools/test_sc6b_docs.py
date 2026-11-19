@@ -122,6 +122,28 @@ def test_the_tool_accepts_n_10_and_refuses_9_before_any_release_check(monkeypatc
     assert 10 <= compaction.RELEASE_SMOKE_SECONDS_MAX
 
 
+def test_the_first_transition_is_rechecked_against_the_b_that_w8_measures():
+    """SC6B-B-M1-RV1: the accepted overrun (~660 s) assumed B ~ 146 s; W8's B is recomputed before the first transition."""
+    text = RUNBOOK.read_text()
+    budget = _bullet(text, "**Presupuesto de bajada (SC-D2 A).**")
+    assert ("Antes de la primera transición, con el B que mida W8, se recalcula D ≈ 222,4 + 3 × B con N = 10"
+            in budget)
+    assert "si pasa de unos 660 s, no se sigue bajo SC6B-B-M1 y se vuelve a preguntar al usuario" in budget
+    assert "Con B ≤ 136,8 s la fórmula misma ya da N ≥ 10." in budget
+    step = _flat(_section(text, "### Paso 6: corrida de verificación V"))
+    assert ("Antes, con el B que mida W8, recalcular D ≈ 222,4 + 3 × B: si pasa de unos 660 s, no seguir y volver "
+            "a preguntar al usuario.") in step
+    n_rule = _bullet(DEPLOYMENT.read_text(), "**N del modo release (SC4A-N14).**")
+    assert "Antes de esa transición, D se recalcula con el B que mida W8: D ≈ 222,4 + 3 × B con N = 10" in n_rule
+    assert "Si pasa de unos 660 s, la transición no sigue bajo SC6B-B-M1 y se vuelve a preguntar al usuario" in n_rule
+    # The numbers: A's measured D without its three stub boots, and the B limits they imply.
+    measured_d, stub_boots, t_copy, stops = 242.6, 20.2, 164.8, 14.7
+    rest = round(measured_d - stub_boots, 1)
+    assert rest == 222.4
+    assert round(rest + 3 * 146, 1) == 660.4
+    assert round((600 - t_copy - stops - 10) / 3, 1) == 136.8
+
+
 def test_deployment_carries_the_per_path_table_and_the_accepted_overrun():
     text = DEPLOYMENT.read_text()
     n_rule = _bullet(text, "**N del modo release (SC4A-N14).**")
